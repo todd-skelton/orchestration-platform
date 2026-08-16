@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { regularCapabilitySlot } from "../scripts/capability-slots.mjs";
+import { capabilitySlotRoot, regularCapabilitySlot } from "../scripts/capability-slots.mjs";
 
 const roots: string[] = [];
 
@@ -57,6 +57,40 @@ afterEach(async () => {
 });
 
 describe("capability slots", () => {
+  test("accepts only a canonical real slot root", async () => {
+    const root = await fixture();
+    await mkdir(resolve(root, "test/capability-slots"), { recursive: true });
+    await expect(capabilitySlotRoot(root)).resolves.toBe(resolve(root, "test/capability-slots"));
+  });
+
+  test.each(["Test", "test/Capability-Slots"])(
+    "rejects a case-aliased slot root component %s",
+    async (path) => {
+      const root = await fixture();
+      await mkdir(resolve(root, path), { recursive: true });
+      await expect(capabilitySlotRoot(root)).rejects.toThrow(/noncanonical spelling/);
+      await expect(
+        regularCapabilitySlot(root, "ISS-001", "inventory:check"),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  test("rejects a symlinked slot root", async () => {
+    const root = await fixture();
+    const target = resolve(root, "external");
+    await mkdir(target, { recursive: true });
+    await mkdir(resolve(root, "test"), { recursive: true });
+    await symlink(
+      target,
+      resolve(root, "test/capability-slots"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await expect(capabilitySlotRoot(root)).rejects.toThrow(/unsafe directory/);
+    await expect(
+      regularCapabilitySlot(root, "ISS-001", "inventory:check"),
+    ).resolves.toBeUndefined();
+  });
+
   test.each([
     ["no", [], 0],
     ["two", ["one", "two"], 2],
