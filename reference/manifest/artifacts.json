@@ -1,8 +1,8 @@
 {
-  "schemaVersion": "reference-artifact-inventory/v1",
+  "schemaVersion": "reference-artifact-inventory/v2",
+  "semanticRoot": "21b696f7b99f0bf75dbef540f87cd932adbc4d3ba3f14e3d87983cf561ad5ee5",
   "artifacts": [
     {
-      "artifactId": "artifact-001",
       "pathDigest": "0025d9086cf48f25d9cbfcc17be9209666e5d9b9549435ae8e3cd6b94057c119",
       "objectId": "f72c9df8767cf4c5d86d0b053044489e5d7bdcf5",
       "contentDigest": "d7046da7c7d6c08da35389c8b26f0266ead3682b89f822309479e2d02b87fb63",
@@ -10,12 +10,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-001",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-002",
       "pathDigest": "09490507b58b386484080062810d310756d4d83d046ec872229942766ebef3c6",
       "objectId": "2450f38d9093314d92f9601d708955e92c30073a",
       "contentDigest": "6ef4e286b941f3393352285d166b9b160e6803dbf02fa9b137a29cb57dc9dc55",
@@ -23,12 +23,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-002",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-release-authority", "behavior-session-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-003",
       "pathDigest": "0b0569381d993666bae28783c8ac61386de963f9ecc9968e5162b087bb0fd26c",
       "objectId": "c7ed84315b35bd9dbb3a9c7c27d11806c0c731e9",
       "contentDigest": "0ba5bea1c4dd4f4e0f3d94eeec1e9615d7b3d1a4dc60408d77152e1559ea0491",
@@ -36,12 +36,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "sh",
+      "artifactId": "artifact-003",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-004",
       "pathDigest": "0b98c8cbdbdcc285ac5636f7adee72eae7a58cc1106893bc255f0a59768371a4",
       "objectId": "5602334c5b84e1a3ffa2adb08e6988e7d2afcd1a",
       "contentDigest": "422a4f6b4b8781d08afbcf397f89da527653d6457ac20dc986d1ff5746268e6c",
@@ -49,12 +49,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-004",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-release-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-005",
       "pathDigest": "0d2a73cb8d714108eeb9c0907b7203b862c343659fed61ac42d507115df53f3c",
       "objectId": "226d4b336c2ddc1dccf4f7402f33ae4146b9d34f",
       "contentDigest": "89c71c3d9d3ee6879123649c22290847b27ddba8d6939c7b5e4a53fc3c730cc9",
@@ -62,12 +62,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-005",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-session-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-006",
       "pathDigest": "0d688cdd0611a32ff227c1f9bd8fc95d474e49deed70e508e0866dafdf1d80aa",
       "objectId": "65c8bd7048d633d3666fe06e5c4b38bf932c3394",
       "contentDigest": "79930b56eddbef4312a80051a283af250b3f93a6b6dcdc65607986ca597de5a4",
@@ -75,12 +75,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-006",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-007",
       "pathDigest": "0f7feacfd768725aa853b11f5a932b4df4688ff6674f786757bd59ba86c85456",
       "objectId": "0d15b88f300fb1cfcbc99974ab44a0e340ea3ea9",
       "contentDigest": "1d1c3106303b07e1b7048a4e9eddcae91eae979bfce058e6e4ea2b3e4b319a79",
@@ -88,12 +88,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-007",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-008",
       "pathDigest": "1264f4cee8945e7c398352c45e9b89aa67e85626eac428fd05fc228d5db34c50",
       "objectId": "8816d23adc032b5efb40146d0627b23afbc82505",
       "contentDigest": "566678ff75eac51e6fd16b6776abe5564b8624d858c2a149333efb37457109ac",
@@ -101,12 +101,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-008",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-009",
       "pathDigest": "13369f8ec5653130973a68ac5b16ae765923501a9ca02aa842fc6661417f51fe",
       "objectId": "ed3b482d9d72ed8bb3ce7c5663a94f6afc5da1e6",
       "contentDigest": "210253d7e662639306714f5af6f16f285b8c64fb5e35c429fb35984d8f86025b",
@@ -114,6 +114,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "fixture",
+      "artifactId": "artifact-009",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-breaker-recovery",
@@ -123,7 +124,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-010",
       "pathDigest": "1741f0b02f3095ec8408e2e4fd7a78267ac6aa5d32a790643c9e9c6d452b4dc1",
       "objectId": "7cb9585f3cfb5a5da66dee417a9da306a9d441cb",
       "contentDigest": "a02aa77f3d6af6a15ecbf8a6c1a3e62597692142ca8b0a16ebb0d80208bad113",
@@ -131,12 +131,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "cjs",
+      "artifactId": "artifact-010",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-011",
       "pathDigest": "1865151d1f851161e16c28f4eacb70cf49bb1bc42544383521897c1ff9c1c575",
       "objectId": "6b812dbccdb05436cb128ff749e84e74e67a3f07",
       "contentDigest": "bf20eb5b7cd77a43b435dfe334ebcc818143ca282f17a6e0df59f661fdfda1b7",
@@ -144,12 +144,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-011",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-012",
       "pathDigest": "1ab7f1801589a6cdf701be79f1da8bdcdec1d963337e21a545db676a3b825666",
       "objectId": "18f4d5a2b7ac3e965b1a45e5541280e7a304d345",
       "contentDigest": "c98e861e41d8d21383f039033837ae101b7f3a20a42610d9af63be545f950dc4",
@@ -157,12 +157,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-012",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-013",
       "pathDigest": "1c310e3e763032ab0017ddcb7b8f660c1f3da398ac23dbcf9ce6f839135e6a70",
       "objectId": "a1cd0fa63fce2eace8b3b43e4630b0ae3710d0aa",
       "contentDigest": "92660f061c8ad427eefdb5603fb13c69d213adb4bdf2de9e5eaac1aadb60b599",
@@ -170,12 +170,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-013",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-release-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-014",
       "pathDigest": "1cc88b2e792566c15a90f3c333ababd4c461d4013f8aa81a827ddb005a17fe65",
       "objectId": "0794a1fe6d39cc50770071ace5f012c3d245e071",
       "contentDigest": "ff5873d49fc344f0523151efce661264c1dfe7dc7b7785acd0242f76a9e7d849",
@@ -183,12 +183,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-014",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-workspace-identity"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-015",
       "pathDigest": "1d4c6efda3fccf3b2d6e376285f0b705540e5de0a97d09211d6ba696e7e9f864",
       "objectId": "585738f7644cf95e4208b95a65ad695ce72a5e19",
       "contentDigest": "a79bb6c12beaeceb4c610df2a04d692629d12b698da853ab01a8085526960e1a",
@@ -196,12 +196,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "cjs",
+      "artifactId": "artifact-015",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-016",
       "pathDigest": "1e5b013090437f77ab06d474738f6a1770c7541e44b1bd2d907dd9a10155e6b1",
       "objectId": "74815c670fddbec4c3e5d3c8b4707579003cd46d",
       "contentDigest": "9872fcf0183c5b32f35b0ed3cf6e74f4b85ef9c30d11bdf8a2c8b813be4d1c3f",
@@ -209,12 +209,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-016",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-017",
       "pathDigest": "1f7456623ff300638304e21edf2de2e8b255406591daa2c5737bf0b88cf2066b",
       "objectId": "39e0889deda437b4139400251f9a225c3a8a59ad",
       "contentDigest": "2561c8a198f44b7721124b8a2c64e8aed9e78b1b70cee8cb9c808a204e53e306",
@@ -222,12 +222,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-017",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-model-routing"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-018",
       "pathDigest": "220af783b1623896c4899fc44c5b58307f88e2939ecd6e409db2567032ef0506",
       "objectId": "6aeda4654fdf8bb8a24956c2db273e51622905f0",
       "contentDigest": "f16af5204210de568eb0a249b3d312485cadb026bebb8f2edb7093be7f34a10f",
@@ -235,12 +235,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-018",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-release-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-019",
       "pathDigest": "22b64b72be8a70ae52769ec6698289535e81b87fb79406d48cfec175e6a98d07",
       "objectId": "d54d627e2b83843f49505bed072fd9e438bf45fd",
       "contentDigest": "231eea40fb1b4e9f8f9daa7d79627923ff70352237bf884ac67f764289cbecc9",
@@ -248,12 +248,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-019",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-020",
       "pathDigest": "245f7942be2be1d8557147f01d8f697dbbadca3bc8f23b3b5c1cece76fd86df8",
       "objectId": "f186c709bb19f8c8ca7dabb2f967a3276dc5f41c",
       "contentDigest": "17f1bd80dfa4a8a0587db89e5e2161bac5fd3fe76fcc29fd3b6965a5fac078eb",
@@ -261,12 +261,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-020",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-021",
       "pathDigest": "250f339d5902a3482c05d2d46c9bc99948ae15bbe4133e4b48b7d98a39d288ca",
       "objectId": "88d08f72757b92ff125f444a73a9fc5b8622b109",
       "contentDigest": "49b841afdcfcbb3883de748ae5cbb3eccdafdf0f5c81dbbef911fec0c695c9bf",
@@ -274,12 +274,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-021",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-model-routing", "behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-022",
       "pathDigest": "28027d77668692109e337578b53359de2b6ace8d5f2cf21644a402f3572cfd17",
       "objectId": "f16cf8b826b90ebab3fb72542035c2dbd2079406",
       "contentDigest": "7f6062ecbd275fb7060376867f8be67eee837be567460b613337e0766f2af486",
@@ -287,12 +287,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-022",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-023",
       "pathDigest": "29bdf81d4689a93ad0f1657d3f66a724c93947acfe5610556612d2e44efcaf63",
       "objectId": "56a28aa341ee881ecdb5070028a041f1e7cc0b92",
       "contentDigest": "04c5e740b1cb5c7fcce0803cd808e093780cae88c5eef31ddc9130715a92f4e2",
@@ -300,12 +300,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "psm1",
+      "artifactId": "artifact-023",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-session-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-024",
       "pathDigest": "2a30805915f010afab8436a85b170a5738b0582e1eedfc321304a0ea4bd0fbb9",
       "objectId": "95e7845e0677da908508a5df40d56b7024f90c92",
       "contentDigest": "fd159ec08e07a2e3965868a0cb432ccac747f6808467c0005f5acab279adf551",
@@ -313,12 +313,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-024",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-025",
       "pathDigest": "2b5ffc6242cf3b69f901461877346fdd19c93a5ebb8c5755a07b13120680ca71",
       "objectId": "325096dcadc93bc7dc5e7aecdc0c15e919875ef5",
       "contentDigest": "8d7231032826d895c7d15e77531c9e433bff3a2f52b71bbf1384330853a69a99",
@@ -326,12 +326,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-025",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-026",
       "pathDigest": "2fa86fc92669f84345d04b2fb6f09d16ffd7bcefc2177313fb0465cba86de33a",
       "objectId": "908c0b63f5ab19887ec387d84f1c43a6ddd7a4e4",
       "contentDigest": "c7d0f6a24051142608b1aa610c86e54265b5fbb48c499e279e22d53935ce4f7e",
@@ -339,12 +339,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-026",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-model-routing"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-027",
       "pathDigest": "33f3f5180cef415e610fa1e2dabaee8db71bac543113bf8d2d7631e8755c405f",
       "objectId": "fdace3b8c6fccadd244bc961ef5d030990389bf6",
       "contentDigest": "ac8ad5bb9c94e9363efd7f72425496262244cd2e4fe393ab19b3dd4adea45842",
@@ -352,12 +352,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-027",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-028",
       "pathDigest": "37355368e27baad8c39e708fa29f293110f483fa51dc659e87f0b938ff592889",
       "objectId": "e4eeb972072947893bd81eb2b682e6f70635ad40",
       "contentDigest": "31d6a9ef3cb31d74ff424e0acfffce59ba2eebed29ec10168e90aff0b568ea1e",
@@ -365,12 +365,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-028",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-029",
       "pathDigest": "3c27aca4e7f58802cfc404b4a62a86304812d40be76f0166be119ab9c8538d02",
       "objectId": "bcfd489aaa1fd704de168a4c81a1f8ce14d20bce",
       "contentDigest": "aee7c41b006fd9ef4a870ff27271ed6065beeebc9439fa7e6ad566eb49829245",
@@ -378,6 +378,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-029",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-evidence-conformance",
@@ -387,7 +388,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-030",
       "pathDigest": "3fa50513835d43a9574e86bc7f615cd4b3ea58a97190821f9d0e5f9b52a6c4f6",
       "objectId": "42e6751d7fc22250bb5a8bacc91cd9c6cd7363b1",
       "contentDigest": "dd4e36c3c748aa05e083f91e603366ac179af83cbe9514af268bdc97d456db70",
@@ -395,12 +395,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-030",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-031",
       "pathDigest": "40e2b703e6ca1e00fbf86f0296f4e40ea1557d87265d4e8160a9552c588a71ee",
       "objectId": "d963d21e4288dfb5d39255e5bb53ab4d09465455",
       "contentDigest": "9710820991d5e07a1cc8437227d7fcbcd5ff7e97a00ff6229060d9815ed7ed89",
@@ -408,12 +408,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-031",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-032",
       "pathDigest": "4455efa9cb4713d11773c799c5bc4199d3ca10a38ceeb920910fe4fa47a391b2",
       "objectId": "75145954d4c424a112b2cf18e7b218e05b128bfb",
       "contentDigest": "df879f79005fadf022509681b3c9831a2dba75b841d9de902e3bf9cb97c1b490",
@@ -421,12 +421,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-032",
       "classification": "adapter-policy",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-033",
       "pathDigest": "4c016b7332c9f30e3370441133399d83e9ef5868723a9da09932c3da3539b58e",
       "objectId": "9555fb1f125072703216d1514de3399090749203",
       "contentDigest": "d8a123ad90f2b1fae9c9cb6aa04700828c1e7cb585945e40e6e8f6802cae4968",
@@ -434,12 +434,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-033",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-model-routing", "behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-034",
       "pathDigest": "4e1a48a2fa676f077825950ebf7df4c9c393c0f89613dcdc4d7e0c692d59b6ee",
       "objectId": "e7bcc2f109cb5ead7cea6bf25115aaf352228f30",
       "contentDigest": "af4d261a5575aa86c82e55613f756eb7cb9b43e52ad62ac8ac565f20720c33bb",
@@ -447,12 +447,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-034",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-035",
       "pathDigest": "4f0c889f634569c8ba27df064e754d32f3b6c2beff652c0102c0ecc19d4ac7bc",
       "objectId": "b6ad214203ef1a83acd16107e7c676c48dbdfe28",
       "contentDigest": "7f97c2a64730991eb2912a84fe792e20e24b1cce925f2ef8a48f5cec2d0b29af",
@@ -460,12 +460,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-035",
       "classification": "adapter-policy",
       "behaviorFamilyIds": ["behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-036",
       "pathDigest": "4fc36c55e4c61dc25212f7b47a18d4ac437f2f2969425e17d1478f0bfef4e9c5",
       "objectId": "a5cfbdecb8b2d4dfe5b1aa9646b8e4d3ede91f28",
       "contentDigest": "5652352687b3fb7b0aa664b0e993a04fcfd88063dfb18e62a9531c97b77d1143",
@@ -473,6 +473,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-036",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-evidence-conformance",
@@ -482,7 +483,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-037",
       "pathDigest": "521ecc407c1ad6e94046aefdd1db5e1cb7032de61922810818c60572a2bd8b2d",
       "objectId": "a77e6c9e93ef99754fbc4b513273a27be2879e0b",
       "contentDigest": "f9abc9a47efdbf4b47b402519de6ebff3ec8eb89d1bfcbbea147fde815264810",
@@ -490,12 +490,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-037",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-breaker-recovery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-038",
       "pathDigest": "53787231c7d6e2ac8b4d3fdd825b0dc1ac17a165e8dbe8f7e6c59d3226d180bd",
       "objectId": "a050b12fefd7e43c5ad18571f312b45c809ed3af",
       "contentDigest": "daf2e14c150fc52ea3c1aa3586602ba2348b907e07d2cab44f4db5670aae24b4",
@@ -503,12 +503,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-038",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-breaker-recovery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-039",
       "pathDigest": "588164268d87681acbf38c615d1cbef332dc901c86b238d01444639c80199606",
       "objectId": "c9f14491e0d0e4eeac45d9f966dedff3505b53f7",
       "contentDigest": "10a3992a3eca886b9b873cb302c440ead4ab612f4c3929220e935f982a414484",
@@ -516,12 +516,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-039",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-040",
       "pathDigest": "588d4961633fd31fee129751e2e7894e61db7013036fb9459b51a97dea3f3ae4",
       "objectId": "f2fea4bcce7148675fec34662a53ba1a17b37de9",
       "contentDigest": "534c928b2a142c7e6f1c7aefb1c5f3eb3794db83e27f29328fe418f019879aad",
@@ -529,12 +529,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-040",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-041",
       "pathDigest": "5d2e285d6b007cf3f09f90e3fb0ad7d2f9944a8d8cdf2468787e05db41b0dde9",
       "objectId": "7802477bd42f0ddb5860c2d8511042be20608d76",
       "contentDigest": "9c997f3979e8ab5e1088c1f885605f41f3deadc55b4f91d0df33d3bafd9c86d2",
@@ -542,12 +542,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-041",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-042",
       "pathDigest": "5dba69e1850fb51ebb773d12ad1194b32e7b8942308457338ae9fac5ce185e79",
       "objectId": "4501eabc508c018639677490b57d1b89fa529c41",
       "contentDigest": "3d3e83d623f0006493dda869da4c47e485bd888a04be6ba23a13b090d16dcedb",
@@ -555,12 +555,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-042",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-043",
       "pathDigest": "60dd7002cd413a152ad52fd666243fae6888b3d991498e0b2f86be5f9a232383",
       "objectId": "0dc171f6404a89de6101e379c12d086184d46986",
       "contentDigest": "9a0a161557a37b5f8ed8f7dffb2eb506e0c7bc8ce0ba4e4e40edbdc0df39b83f",
@@ -568,12 +568,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-043",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-044",
       "pathDigest": "6517a76787a2443d53a3b94d724ddc7249f3e18be23b97ce0ca0be1093457683",
       "objectId": "40d87ec5b9d5ab3b405926c87c6a1572a0457934",
       "contentDigest": "8ad15f05727a3c1ff8164b3b9f8313bcbf3b4e40a8466594de1c6acebd35e5e5",
@@ -581,12 +581,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-044",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-model-routing", "behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-045",
       "pathDigest": "6664c9953cbe5de37f22eedfcc1929902972740644689ff03d13dd145e1d3f6f",
       "objectId": "5bb5254324d9ea119eae76d584de5833c36df988",
       "contentDigest": "5035c0851e8d20aaa4d1ee55b07a21cfa1217b3d11b5f20eae51dbb51af6c04f",
@@ -594,12 +594,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-045",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-046",
       "pathDigest": "683e7ab569e9a4f007971c6a7b310033cb59013b4d7f87c4c1064b829b8ce114",
       "objectId": "9c461fcd630d6e9f330be2f20f5d1782fa377a94",
       "contentDigest": "9e27319d0789613cd46407b0f97f184ee64fb64608ba831d04aeb4f68e073773",
@@ -607,12 +607,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "yaml",
+      "artifactId": "artifact-046",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-model-routing", "behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-047",
       "pathDigest": "68adbd7826294942bcb4497a92fb67a2a52e5bb2ba9df1b0f647499984e4894d",
       "objectId": "1c0a6d4c44280ca1dd2b9f9bd3296582bbb6c848",
       "contentDigest": "5ac51f377027cc34fd883651d01cd71768f2151cb3ea68b030f67cf98a8b0d60",
@@ -620,12 +620,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-047",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-model-routing"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-048",
       "pathDigest": "68d51e84a23a26be9a6f7151f0a15f010eeab43f45bb3c1a93f63413ea30ab83",
       "objectId": "67ca7be491c9463f468a81fe9458683c9a27867a",
       "contentDigest": "b3e0da24e263e30628e79a50b4ae3250d04af29e5af7f958fb3763d51efabed6",
@@ -633,12 +633,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "vbs",
+      "artifactId": "artifact-048",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-049",
       "pathDigest": "6cdbea3f88a0a0d57e159d3698eedaaaa8af8042a6aae141c785a39b19a25888",
       "objectId": "68736315519f527a5731ec7d19c258ad0445243a",
       "contentDigest": "fdcccafb7971bb81bb1b9f22381f953702f2e8ea50449c9d3a1e9b32f8940015",
@@ -646,12 +646,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-049",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-050",
       "pathDigest": "6d560324255db7022db8b15b232d7344ed5941fedced4e478484bda4ae32f122",
       "objectId": "ddbaade710aabf4a5df6067caa0bd0998f2fe06f",
       "contentDigest": "a1613e404fe1c9b4ca08f82146866db70fb32dae48d62e6fc7a83914cce24f4a",
@@ -659,12 +659,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-050",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-051",
       "pathDigest": "6da89916651e7333dece4e1516da216cff3a450954cc51f7121129d8f3be839c",
       "objectId": "8b9c3702d61788319a1206d45e099d3ea6f6507e",
       "contentDigest": "52872a5d14a4e45c91c21e59fce0acbfdb00f99303d828244b6563b941abe200",
@@ -672,12 +672,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-051",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-052",
       "pathDigest": "6e172ccd73a5e4f4d3096fff6f00e3121e972927f41559397cae06a4469a9708",
       "objectId": "95817f099ade267448be82bd6c78806e30521c9a",
       "contentDigest": "377fbc913076aa9e76a78653bdb53b66373d240d72f979d7c317c0e044db723d",
@@ -685,12 +685,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-052",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-053",
       "pathDigest": "708783908a09afae79fae79c799e31e379e98cd97bfcc9754bdf4d113d9ebd43",
       "objectId": "f08f720570e6118755b41a6f71a794cd471fd269",
       "contentDigest": "69fb291760c39413d96e0ba9edba1db5ab5156be4ea24fc22408ebf01192ad98",
@@ -698,6 +698,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-053",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-evidence-conformance",
@@ -707,7 +708,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-054",
       "pathDigest": "70a494440b6b53f84be08851d1dfe878fb94e0644ca4935219d2744e778c8695",
       "objectId": "45a155d96c5d5fa20f74ef9d023f3cad78b27f87",
       "contentDigest": "378c121c90971398a1ff0bcecb668f384d5e4ff43d920b65a9f8d3895f9b0fc3",
@@ -715,12 +715,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-054",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-055",
       "pathDigest": "71593a158eafc5b75ce8ed995ed597935dad888e9abcf0dd0e03e9ba1d2c0330",
       "objectId": "491f236cae7d3db32d401989a5d11a7a7bc45951",
       "contentDigest": "8c2fafd594f78a8c17aec8420406c172fdeefdc501fa208d59d1b33d2b670d8c",
@@ -728,12 +728,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-055",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-session-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-056",
       "pathDigest": "7193c93407e1126e53b2308d75e6d10f97e278080f5a4dc00189bf92b3f88252",
       "objectId": "5fcf7536fac8e6c775fc948e56b1ce186621bbe1",
       "contentDigest": "7a7aabaab61430b31f9807eb5c3147815b149913cf4e25281f4375c5ded7adb8",
@@ -741,12 +741,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-056",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-model-routing", "behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-057",
       "pathDigest": "74910b45f927db15716ef1fbc0e0a120ff1913b9c535949a63aad97fe570de51",
       "objectId": "a441414cdcc55a4f87c3cd8adf7b3f64362a7a06",
       "contentDigest": "d7f3cae2af40c2838d2f9b4e1bc2b0e42e4e41b0feb51af448ceda69aa4c9ef5",
@@ -754,12 +754,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-057",
       "classification": "adapter-policy",
       "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-058",
       "pathDigest": "7847baa196c166d9ed2c7b22a77f8df7e833dca99874f850fffb88a4cd0faf52",
       "objectId": "3b2b226e39dbe289606fa56dd105b3f9b62ecc13",
       "contentDigest": "ebf163854408dd27a52b139e4bdd5b3185c81ed59bef4dcfddc610ce2ff2e040",
@@ -767,6 +767,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-058",
       "classification": "adapter-policy",
       "behaviorFamilyIds": [
         "behavior-evidence-conformance",
@@ -776,7 +777,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-059",
       "pathDigest": "7c907a74d03b9175e197176030f1a30b3de044b1a8613e10be3b4961dbf669ae",
       "objectId": "5dc5210ee75b651da6d1b88188f597c75b2779f0",
       "contentDigest": "7bcc8f10192a9c76b09159de4366515bc8f796b888fdb40cb261f3e1d202a0b0",
@@ -784,12 +784,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-059",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-release-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-060",
       "pathDigest": "810c537bf0238083582a9120b13e1157c8d58bcc9918cb243b18e786fad7267a",
       "objectId": "893c53ff42a7c9181e5a29b6462b9853e8841e7e",
       "contentDigest": "99d4c5c8c5227ee47ab1771b7b6497f48890940d63fbf6e0980b3bd84a5b8a23",
@@ -797,12 +797,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "psm1",
+      "artifactId": "artifact-060",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-061",
       "pathDigest": "81e9c9c9036a2f235663fecc92c06aa10e420495c2da0f01b373531522c4a821",
       "objectId": "b272102f2f9f924b0842cc62c2f5bfc4a618ab1a",
       "contentDigest": "84db06b07fdf36c5acd547fb608cef4e14a8d24292254a0a539af746ac1027c9",
@@ -810,6 +810,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-061",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-breaker-recovery",
@@ -819,7 +820,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-062",
       "pathDigest": "856490fd48c27bf95cbbc658e6362a08b07be5819257fc17c3e56d95e4824030",
       "objectId": "adda00e2d0d50e77ff9bcb72b20d8b48d5424a09",
       "contentDigest": "512fd331ce69c9705b9847c54a9d149a080180126dbb4d13ba73d7cffdcc949c",
@@ -827,12 +827,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-062",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-063",
       "pathDigest": "86710f0d696fa98caf3702b42fb0c1de83d76f1ed3de6aeba758ab5edf501c56",
       "objectId": "99fee4acc23b06d7166d4292ab46291c9fc35679",
       "contentDigest": "66985f43750bfc2e2050ca27b357117c678a935d2639a3c7c2a7c048a8fab1c9",
@@ -840,12 +840,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-063",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-064",
       "pathDigest": "879f977701ac5b7bc786f3ba25b917df140fc7afb420fc79cb7c36e4dfdf8833",
       "objectId": "94d04e5a5aeec66f8be0dbf9543404a4496e035e",
       "contentDigest": "e739efda57f411467fb07c57c69f5ad255afc8ed33e976f7fd184a5220c003ed",
@@ -853,12 +853,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-064",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-workspace-identity"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-065",
       "pathDigest": "884721147eba76a305add4764136fcca93a4b0b9057a6c861e122bfd96acc56a",
       "objectId": "15b2de409d9fa95066cfe629dac3ceb41bd8ae9a",
       "contentDigest": "2c19639c9f256d6c626bc1703a1b315ea84bf7cd1f1845885dfc864d0a4b2e3b",
@@ -866,12 +866,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-065",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-066",
       "pathDigest": "887640a10304d2666699700e54dd2ffe026992ee968b7037042c3c4e82f34c40",
       "objectId": "3d04caee6f8c22d2f55708abef6e584adc534c5d",
       "contentDigest": "4c98fad3643c4cc7c20b9c01c6927242e6cdf76d5c8d7fc4861f2025838d1482",
@@ -879,12 +879,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-066",
       "classification": "adapter-policy",
       "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-067",
       "pathDigest": "8ce2a83c4be963557adaf06147513da770acfa4122f7a5f3b204f4a16fbd7873",
       "objectId": "4d336575fce8988e8f4b514b8709b1130f757afa",
       "contentDigest": "a6b7ac19c405ae2ffa95d9b43d490b8be31507a8f47103a8b6b4153bc1a3030b",
@@ -892,12 +892,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "psm1",
+      "artifactId": "artifact-067",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-068",
       "pathDigest": "8cef1d706f3ca3bab4253d981b7b2ea20082827ccd377d9aff7f8dfeeb724c51",
       "objectId": "c8e43869c4ee1089c030efa9871818fa26598067",
       "contentDigest": "40febcd203fae5729457bbc7b04718ba1479fd3160c57dbcb6f369c9350a0880",
@@ -905,12 +905,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-068",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-069",
       "pathDigest": "9113f5a55c14ebd97542cdf1fbb731f792ea30f0e41bda5f6122eeb7d9c689f3",
       "objectId": "9f38b107ba33ab9cc81fc88ad59f9072a5c8628c",
       "contentDigest": "f6d25f46c11e0a3c0b8186ea65d81a17157f49fff3a11dee2aed5a3b51806f01",
@@ -918,12 +918,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-069",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-070",
       "pathDigest": "9196570eef00017108ba2a2b2b0cc264d75f6608436e87b1da5d6ab035999373",
       "objectId": "b40c1b680cc960791ff06a799a8e26acae739e93",
       "contentDigest": "9d1adb819d10d7070f21d800b714b90257f904f04866c57ade1817426cf32322",
@@ -931,12 +931,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-070",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-071",
       "pathDigest": "93190a339c6a8956a71b83de88e117e4045ddd6012a0d7db9ca61f586a111737",
       "objectId": "ab13d47d037d578a4bc6e62e0844ea4911957f5c",
       "contentDigest": "15bdb8e261e9d65826b1ba8f4af12044ce909928cbcec15134b213bb9391a50f",
@@ -944,12 +944,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-071",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-072",
       "pathDigest": "9464ac1e844dd849c58f8513aa095d8feac337216b526b21f1574049e9af1da7",
       "objectId": "1851c1761b831e6af551a255d680fb05fa453b44",
       "contentDigest": "cc816bbb9112dbd69308c0d8827bda06b4583a10676c2579b0c08d0d3873834f",
@@ -957,12 +957,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-072",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-073",
       "pathDigest": "95dbd5398e9b0e65c08680a5fda98060559372579baadabfb1be6f69d77e96ed",
       "objectId": "622ed4102bb1e7927b4e25eba1e75e2da4d10136",
       "contentDigest": "8636fccdf03e0884322d23274abe31099ff5279fa58009b569c8c49f490f01dd",
@@ -970,12 +970,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-073",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-074",
       "pathDigest": "98d1baa0cc95e6ba646903a3bf654cccb8b1188874c449e26613a4dc01d7e193",
       "objectId": "21c845b2cb2b9901442931da1ecfdeebcdfb1dbb",
       "contentDigest": "ace5448d8c1383ea6a61b50a6063692e57dee62bed39c9b4d279244032b42599",
@@ -983,12 +983,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-074",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-075",
       "pathDigest": "9a9e4129dcdf4ef3795c919bffa4daf715461e0f860333c37d88b92471f26f13",
       "objectId": "3843ee9b4b50a15a8232b65fc7a3e02487768911",
       "contentDigest": "45be069f97b7cc4f1adbc7c0cfbc5eb0f0b8415ed8f159505a6e5dc4d3dc694f",
@@ -996,12 +996,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-075",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-076",
       "pathDigest": "9afab10842b66d7e70f606aec29a7117dad03e653c39f63907d6e47918c6a4ca",
       "objectId": "11418ebf29dceb75c317654971311ae606a63f56",
       "contentDigest": "12760d9874f52ac632fe15d00e4061db3604a58872d5bfc773a8aada05e15660",
@@ -1009,12 +1009,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-076",
       "classification": "adapter-policy",
       "behaviorFamilyIds": ["behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-077",
       "pathDigest": "9b42b96bdbd376f4fa9c4e6566756e284345c72c8cbed19781aa45e56ba652b8",
       "objectId": "9d270a05291597029a348441147cdc5f61c84404",
       "contentDigest": "43eb27e5842bb455425d38c7d15361ebb28ac78af59ee67e4a971842d91be101",
@@ -1022,6 +1022,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-077",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-evidence-conformance",
@@ -1031,7 +1032,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-078",
       "pathDigest": "9d571c01bfea8405f2e643a3601cd0534c80fd9c093eed281b25dfc497509d80",
       "objectId": "d7d768cebd08c578a83872a411fdc24def42eea7",
       "contentDigest": "bb0aa6238ad9d2926f6076eb80bc60a3acce06509c914252d8452de03a96c3fe",
@@ -1039,12 +1039,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "psm1",
+      "artifactId": "artifact-078",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-release-authority"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-079",
       "pathDigest": "a12c51a7afa3dd275a25dcf0932e5ba978bedded23b3549186481d65c6e91e7c",
       "objectId": "81ca488d896bd54b31928022fcb855aa7aa3f3e1",
       "contentDigest": "9f5b480e900d99cb5be1ae0d2e52daf46fa6a0b22287f52ed69d935d4491195f",
@@ -1052,12 +1052,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-079",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-workspace-identity"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-080",
       "pathDigest": "a2d3306660e7aa2e16c52268931762e1d400b16bfbb12b4d5b9f6a193f2649e2",
       "objectId": "ec22947210d96a1981de642acd4c5b598ec18d17",
       "contentDigest": "30880161dd427c25a9af890d6a1ee58b1b1c92cfc1075ebedfc335efb35213a3",
@@ -1065,6 +1065,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-080",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-evidence-conformance",
@@ -1074,7 +1075,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-081",
       "pathDigest": "a56ab3b88c237d5e4979f98af7986a2dee894eeaa6aee5f36e0c4f6c93e76174",
       "objectId": "eb1a3e06d5f0433409d1d93ab68485c866cb2720",
       "contentDigest": "5b7409235f42b14f6bfa1996217f419a7ef34ef4bc319f19e46fafbd2fd016d9",
@@ -1082,12 +1082,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-081",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-082",
       "pathDigest": "a6dd4b08b51377ebf871b290f6cc9631523e076db9a32efabca31cd9d1cff235",
       "objectId": "77133d0cc237d13163d985ed087536efcdcd58cc",
       "contentDigest": "9c636fc44467c5aea35ee574e69b32a38d266420b5818cd186e3cbe010f8bdf3",
@@ -1095,12 +1095,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-082",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-083",
       "pathDigest": "a7a7905f1729a326d428bd8fbf7eae6a965720a6d0c7711e8aa7a3671d53216f",
       "objectId": "46e13276bc8b71947049777cd9c82f6f75c0f06b",
       "contentDigest": "e1eadb382aae49afb0e75c5be479d90655de76ec3b422f4b45b5edc513b60e7f",
@@ -1108,12 +1108,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-083",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-084",
       "pathDigest": "add0d7c430320bd8cd596ca7cc41a0828b136f51c66c6cfd280f727661542483",
       "objectId": "1bf10c934594b7f818604ab546c568ffc029dae0",
       "contentDigest": "101d916c5be0e154441880cea7bf1ecda36a0487d63ca1df348af26fada8d45e",
@@ -1121,12 +1121,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-084",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-085",
       "pathDigest": "b3d39733b4c6cbd157162a46855d5b148380511ba65e5b367da4dc6ac9c0879a",
       "objectId": "ff4f7e4f6dde4a8182247587cd9191d16146cd2a",
       "contentDigest": "5807d459cd981dfa0428433c66f7a03d6f2eee1ebf7f954ece166aced6d82825",
@@ -1134,12 +1134,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-085",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-086",
       "pathDigest": "b7cb51c0aecdec8cee50ab2ab36b37c8c2b74dc1468cb455791c1bf0c4cd0747",
       "objectId": "5d6a79502ee8505ce6258a0e9e5e5895ee20b814",
       "contentDigest": "fca606a408fe8a31b5c86cd9037b47cbb0b2f26e1323cfa91739a3a9a473b875",
@@ -1147,12 +1147,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-086",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-087",
       "pathDigest": "ba9d9107f108ed4469c027a63e8161d3e5ee26a521ed99be35b062bc1ca22b0b",
       "objectId": "f63c5626109eb9a94bef5ce4d98381aa77d42b1d",
       "contentDigest": "ec4e012e199dd65653ef053bdc7f317ffa2a1bb2c80cda3d8760bb684a83c507",
@@ -1160,12 +1160,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-087",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-088",
       "pathDigest": "bc840ee935673fa12c18ffe7f2bb1d6a6c4a7f542df514e6717e56efe8cd6632",
       "objectId": "1e154fc1c472bea80d1c6731f3e7e3f70b642e03",
       "contentDigest": "8e146d7e1bc9a7b45f786a4b011a87516b0bfe863f6fe0898fd806bb6ad16f71",
@@ -1173,12 +1173,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "psm1",
+      "artifactId": "artifact-088",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-089",
       "pathDigest": "be54ec6cffa432ed634f691df7d5f460c97478826eae94b1adbed52e495e1b41",
       "objectId": "962552784311061993f4e7dfc3e712525dff4891",
       "contentDigest": "6ead11af035a3cdfe956672cb7713c2332b972844d8b678eb0264eb12615c29d",
@@ -1186,12 +1186,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "txt",
+      "artifactId": "artifact-089",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-090",
       "pathDigest": "c0f9fdbdfe6d0ac2367268c3f0f8f2754e3e10bf14812cb9fe2ac15e241c8580",
       "objectId": "34c365c89a51ecdadfda97c49898a8d8c4aca0ac",
       "contentDigest": "9ca594e89c7f6d4a89c536fe2f4b559462a5dea28bd1fa1fb14220e9bfc68c3f",
@@ -1199,12 +1199,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-090",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-breaker-recovery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-091",
       "pathDigest": "c5294a955e80b60ae53e90c1405d635f600a59f7dd415a9355fa6f5ba7f3e763",
       "objectId": "6a84b17e958edaff4e74b370325251c82e843835",
       "contentDigest": "42ad019534c168ccc6a34dee0e5fdbc99cb6673eafe7e94b78284a8a658abf0f",
@@ -1212,12 +1212,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-091",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-092",
       "pathDigest": "cf700880bdfad3ddd4b39f381c5d3adb1dfdb384cc164648a5941d2885856a25",
       "objectId": "4106630569820d409f1d8b0d7cdb1594bcec202e",
       "contentDigest": "bcd5d0fddef8672a277339dfb2532ac3fcbd4ec1a98c2f9833ca375d5fa7b1e8",
@@ -1225,12 +1225,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-092",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-093",
       "pathDigest": "d2a3dde34446423d9a33e1ab486068982c296793a3a9c09fdc92d78919942786",
       "objectId": "b7eced125440fa78fedfa95ad66ee29c1305cacf",
       "contentDigest": "7b827de8f8f0be3e08a4bc6fd7c088ead1504b6507d4d8c2ce5a4734474e66f8",
@@ -1238,12 +1238,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-093",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-094",
       "pathDigest": "d4994c0045715798621c15a4752f4cbc6e519bd4595cba78af43750d54fbfcd3",
       "objectId": "c07e8376966aa437eceec1fae018d25e1aa82e3d",
       "contentDigest": "3e5dfa48731da04df9210a6857b489df780b59b5f9a9eccb7600532239a5572c",
@@ -1251,6 +1251,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "fixture",
+      "artifactId": "artifact-094",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-breaker-recovery",
@@ -1260,7 +1261,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-095",
       "pathDigest": "d77479e10a73ff2ed610973d02e1886ca3df616f620141dcd31e2be5eaa4d23f",
       "objectId": "1361b73ccdc81a77df1656c10e97d3103bbe8a8d",
       "contentDigest": "d34e6da417ca6458d28fe7014583555e4823b3439117f4cb12f5e890c192b21c",
@@ -1268,12 +1268,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "md",
+      "artifactId": "artifact-095",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-096",
       "pathDigest": "d77ce2c5a31001b2e59a9bb8f5a3129085ff63e46f51c25f6bf247bbac6a6f2c",
       "objectId": "62e5621bf926aed4514bb555e534db7decf7a9ae",
       "contentDigest": "6129860fc98fd72582cce5b98ef16232a23a260a0a99f5e72491982b73205d70",
@@ -1281,12 +1281,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-096",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-097",
       "pathDigest": "d89ea429e344b8d0fab423e72da8f7914a96d5f6428f64b482abb55b68cc117d",
       "objectId": "23f9a67a848892c0570b7ab42241be62de6083da",
       "contentDigest": "08a4d8ec3e55fee07681dd618bdfc3fa2960880e1551a239740c695824a11391",
@@ -1294,12 +1294,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-097",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-098",
       "pathDigest": "dca3a3bd50ef196ce7b95d594a14c6a7f4f1fb13615c0f16614f32a27ef6ef35",
       "objectId": "a1658512752456d0dff2503d519336bded1c6a90",
       "contentDigest": "df826b0fa43bc55a03ee474e20caec4390cde7882a6af11a292efccb3756aee7",
@@ -1307,12 +1307,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-098",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-099",
       "pathDigest": "dd061557c2b135075aa38b151ae5ff9a3fd99c26e51045e259458d6ac8f81bcb",
       "objectId": "80428e18046d9d751959d79e4ce07b7fa00a0952",
       "contentDigest": "218e55448bfc746082a477e7b65359372befcb45196e9942a7f60029ae2d8d7c",
@@ -1320,12 +1320,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-099",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-100",
       "pathDigest": "de05a499d6466b04f953ccfc0e609bb7c3c3394c714cf82065b944a55c831a0f",
       "objectId": "04572df2c65473551e12038c27894d708a7d9d41",
       "contentDigest": "05a34aef0d50cb9c60da0f91135b114a68f1a60e05964f730fbe053737766e64",
@@ -1333,12 +1333,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-100",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-101",
       "pathDigest": "e0dc6ea518f2370bbdd9489d2af256a9a30fa83749fea682e7b8d6b9b2deb926",
       "objectId": "2c3893d44f2abb9873489b147724cb4cdf93d2ed",
       "contentDigest": "9679a5a209dbbc435b820fafb0f75d36000f8588c72cd81e046f440bcf81feb8",
@@ -1346,12 +1346,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "yaml",
+      "artifactId": "artifact-101",
       "classification": "adapter-policy",
       "behaviorFamilyIds": ["behavior-planning-delivery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-102",
       "pathDigest": "e176b57e6dd13271761320f81a7b9c79891c995a86fee36b981be5ba212a8944",
       "objectId": "abf15d41089023c2b6fc8e3eee40febad9e98e06",
       "contentDigest": "6be10e1c768ef7d48b462e20655fe69a28e3d10dda89c418efc06e0163ab56a2",
@@ -1359,6 +1359,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "fixture",
+      "artifactId": "artifact-102",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-breaker-recovery",
@@ -1368,7 +1369,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-103",
       "pathDigest": "e1db012600eb51ee7612ce94c07c9d30a5b9b9c48d59c9be7d301ffcaeff0a74",
       "objectId": "1bc6b2a8cb409b8c2b1c3b94980f580884a61f23",
       "contentDigest": "5b6705660b08d7b1a00e766e8f1b8aa4d35e9ae28f30e664095e80bed484254b",
@@ -1376,12 +1376,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-103",
       "classification": "historical-compatibility",
       "behaviorFamilyIds": ["behavior-evidence-conformance"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-104",
       "pathDigest": "ea2791b6b31d5ba654d6da7c43b0e731524d1e99ab732e3de0782ed538fe95ad",
       "objectId": "e640d5bd4e0e936749bb03d489a1be758257778d",
       "contentDigest": "d5d75660594073d992ecd47d4069a603d612b0d4ed19b7328a353d8684c0e15f",
@@ -1389,12 +1389,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-104",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-model-routing"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-105",
       "pathDigest": "ea6edade1b8a03745cd182164f06709264ed5ecbe6bb7dcf242ac9c5f1e7efc5",
       "objectId": "391098f49591a32591138a90a5de2a603cc0b16b",
       "contentDigest": "bd0e66fee2afe6e5ed2af70b3afe7cae1cb5b67748c538db5e19a86a623c2a37",
@@ -1402,12 +1402,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-105",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-106",
       "pathDigest": "ebb54c0a172a0b9b86c4eb5603864dd1c4af42640dcec08121ffd75d8d5403bc",
       "objectId": "9e8b1ce838d6d38a97af8b2ce29091a9ede654c3",
       "contentDigest": "ea40bb96f135768ec926ccc7233038f5c8c85f8386f9069d929a8ce908dd666f",
@@ -1415,12 +1415,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-106",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-107",
       "pathDigest": "f1b7b44e068ffea246308dde3995e953e0cd0cf78eff2585c3ea7f07fdd13f2c",
       "objectId": "349818a254460017689cde5ff9be5d44f882c88f",
       "contentDigest": "db499ef5a9ea610afd0653168fe52d8b79b05f39b5daa95e98301293a8f260b4",
@@ -1428,12 +1428,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-107",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-108",
       "pathDigest": "f6d9042d48c10a59d6d7d0305e2d503717c308eeb094e47dd932036a7699b994",
       "objectId": "0150ee03ec2396231fdd47243a90de08c107a976",
       "contentDigest": "0dd2b40f2ef507a9418e9a9d6c735cf833eba1ab89b68d6344d93c7fa5ac259a",
@@ -1441,12 +1441,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-108",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-worker-lifecycle"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-109",
       "pathDigest": "f82c7fbc72197721e274c199947787b4ccf5c5604cd7f2d838a810f51f5a8526",
       "objectId": "81cbced1c1f824367a006f52c79906ec4834b4d8",
       "contentDigest": "3577af9097cb8375464b24850d7d277d871f43c9647706e3994b172179c31642",
@@ -1454,12 +1454,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-109",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-telemetry-learning"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-110",
       "pathDigest": "f8fead5dae7ee17ada7fc0eeec0e9a4bedf2488463a2ed3a3275606c3d1da7ef",
       "objectId": "9f454439e2b021a60467df0c674c8cc8d93e2089",
       "contentDigest": "bb2d0121b8f842c4cee3cc09bf2f3bd48a382b726105db31cf0679846351e7b9",
@@ -1467,6 +1467,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-110",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": [
         "behavior-evidence-conformance",
@@ -1476,7 +1477,6 @@
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-111",
       "pathDigest": "fa51b24c5b0468a5b56d99cf15056cc464bb3a41aa30df134f3ffb4166cc711e",
       "objectId": "82fc2968a97692c27d115a56b91d08fe9650550e",
       "contentDigest": "6652947cd32e5fca6f7ca608b03c2941f8747bab12c9e1830a3d450a66b06f57",
@@ -1484,12 +1484,12 @@
       "mode": "100644",
       "type": "blob",
       "extension": "json",
+      "artifactId": "artifact-111",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-breaker-recovery"],
       "disposition": "characterize"
     },
     {
-      "artifactId": "artifact-112",
       "pathDigest": "fcc83a37688b5840810b7f74f2be2c07e513ac19d74d2121095d4e0c22cbb463",
       "objectId": "8fd60afa53f3e5b064629a6f4b1334e216474302",
       "contentDigest": "e89d7899b0e00564fb50802ea96f67f27139859ef3cc750f14d840913a53300f",
@@ -1497,6 +1497,7 @@
       "mode": "100644",
       "type": "blob",
       "extension": "ps1",
+      "artifactId": "artifact-112",
       "classification": "platform-mechanism",
       "behaviorFamilyIds": ["behavior-review-promotion"],
       "disposition": "characterize"

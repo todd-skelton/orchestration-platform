@@ -1,12 +1,12 @@
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "vitest";
 import { regularCapabilitySlot } from "../../scripts/capability-slots.mjs";
-import { loadInventory, validateInventory } from "./inventory.mjs";
+import { inventoryTestApi, loadInventory, validateInventory } from "./inventory.mjs";
 import { redactionTestApi } from "./redaction.mjs";
 import { parseLiveArguments } from "./source-evidence.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
-let baseline: Awaited<ReturnType<typeof loadInventory>>;
+let baseline: any;
 
 function mutant(): any {
   return structuredClone(baseline);
@@ -17,13 +17,34 @@ beforeAll(async () => {
 });
 
 describe("sanitized reference inventory", () => {
-  test("binds every artifact, entrypoint, mutation candidate, and linked uncertainty", () => {
+  test("binds every artifact, entrypoint, semantic mutation, path, and linked uncertainty", () => {
     expect(validateInventory(baseline)).toEqual({
       artifactCount: 112,
       entrypointCount: 79,
       effectCandidateCount: 887,
+      mutationGroupCount: 10,
+      sourcePathCount: 112,
       unresolved: 2,
     });
+  });
+
+  test("semantically partitions the broad local-write signal by independently classified artifacts", () => {
+    const writes = baseline.mutations.callsites.filter(
+      ({ signalKind }: any) => signalKind === "fixture-local-write",
+    );
+    const count = (classification: string) =>
+      writes.filter((row: any) => row.classification === classification).length;
+    const artifacts = (classification: string) =>
+      new Set(
+        writes
+          .filter((row: any) => row.classification === classification)
+          .map(({ artifactId }: any) => artifactId),
+      ).size;
+    expect({
+      platform: [count("platform-mechanism"), artifacts("platform-mechanism")],
+      compatibility: [count("historical-compatibility"), artifacts("historical-compatibility")],
+      adapter: [count("adapter-policy"), artifacts("adapter-policy")],
+    }).toEqual({ platform: [387, 44], compatibility: [52, 11], adapter: [4, 1] });
   });
 
   test.each([
@@ -52,15 +73,28 @@ describe("sanitized reference inventory", () => {
       },
     ],
     [
+      "semantic artifact relabel",
+      (snapshot: any) => {
+        snapshot.artifacts.artifacts[0].classification = "adapter-policy";
+      },
+    ],
+    [
+      "obsolete disposition without issue evidence",
+      (snapshot: any) => {
+        snapshot.artifacts.artifacts[0].classification = "obsolete";
+        snapshot.artifacts.artifacts[0].disposition = "obsolete";
+      },
+    ],
+    [
       "extension census mismatch",
       (snapshot: any) => {
         snapshot.source.extensionCensus.ps1 -= 1;
       },
     ],
     [
-      "missing behavior classification",
+      "empty behavior capability",
       (snapshot: any) => {
-        snapshot.artifacts.artifacts[0].behaviorFamilyIds = [];
+        snapshot.behaviors.families[0].capabilities = [];
       },
     ],
     ["missing entrypoint", (snapshot: any) => snapshot.entrypoints.entrypoints.pop()],
@@ -71,58 +105,197 @@ describe("sanitized reference inventory", () => {
       },
     ],
     [
-      "unclassified entrypoint",
+      "empty entrypoint behavior family",
       (snapshot: any) => {
-        snapshot.entrypoints.entrypoints[0].classification = "unclassified";
-      },
-    ],
-    ["missing mutation group", (snapshot: any) => snapshot.mutations.mutationGroups.pop()],
-    [
-      "missing mutation authorization",
-      (snapshot: any) => {
-        delete snapshot.mutations.mutationGroups[0].authorizingObservationId;
+        snapshot.entrypoints.entrypoints[0].behaviorFamilyIds = [];
       },
     ],
     [
-      "missing mutation failure mode",
+      "substituted entrypoint behavior family",
       (snapshot: any) => {
-        snapshot.mutations.mutationGroups[0].failureModes = [];
+        snapshot.entrypoints.entrypoints[0].behaviorFamilyIds = ["behavior-worker-lifecycle"];
       },
     ],
     [
-      "missing mutation recovery",
+      "entrypoint semantic reroot",
       (snapshot: any) => {
-        delete snapshot.mutations.mutationGroups[0].recoveryTransitionId;
+        snapshot.entrypoints.entrypoints[0].behaviorFamilyIds = ["behavior-worker-lifecycle"];
+        const rootValue = inventoryTestApi.aggregateRows(
+          "reference-entrypoint-semantic-root/v1",
+          snapshot.entrypoints.entrypoints.map(inventoryTestApi.entrypointEvidence),
+        );
+        snapshot.entrypoints.semanticRoot = rootValue;
+        snapshot.source.semanticRoots.entrypoints = rootValue;
+      },
+    ],
+    ["missing mutation callsite", (snapshot: any) => snapshot.mutations.callsites.pop()],
+    [
+      "duplicate mutation callsite",
+      (snapshot: any) => {
+        snapshot.mutations.callsites[1] = structuredClone(snapshot.mutations.callsites[0]);
       },
     ],
     [
-      "missing idempotency rule",
+      "callsite artifact substitution",
       (snapshot: any) => {
-        snapshot.mutations.mutationGroups[0].idempotency = "";
+        snapshot.mutations.callsites[0].artifactId = snapshot.mutations.callsites[1].artifactId;
       },
     ],
     [
-      "dangling authority",
+      "callsite mutation-class relabel",
       (snapshot: any) => {
-        snapshot.mutations.mutationGroups[0].authorityId = "authority-missing";
+        snapshot.mutations.callsites[0].mutationClass = "repository";
       },
     ],
     [
-      "unlinked unknown",
+      "cross-classification callsite move",
       (snapshot: any) => {
-        snapshot.assumptions.assumptions[0].classification = "unknown";
+        const row = snapshot.mutations.callsites.find(
+          ({ signalKind, classification }: any) =>
+            signalKind === "fixture-local-write" && classification === "platform-mechanism",
+        );
+        row.classification = "historical-compatibility";
+        row.mutationGroupId = "mutation-compatibility-filesystem";
       },
     ],
     [
-      "unresolved row without probe or decision",
+      "semantic mutation reroot",
+      (snapshot: any) => {
+        snapshot.mutations.callsites[0].mutationClass = "repository";
+        const rootValue = inventoryTestApi.aggregateRows(
+          "reference-semantic-mutation-root/v1",
+          snapshot.mutations.callsites.map(inventoryTestApi.callsiteEvidence),
+        );
+        snapshot.mutations.semanticRoot = rootValue;
+        snapshot.source.semanticRoots.mutations = rootValue;
+      },
+    ],
+    ["missing semantic group", (snapshot: any) => snapshot.mutations.mutationGroups.pop()],
+    [
+      "arbitrary extra semantic group",
+      (snapshot: any) =>
+        snapshot.mutations.mutationGroups.push(
+          structuredClone(snapshot.mutations.mutationGroups[0]),
+        ),
+    ],
+    [
+      "wrong group callsite count",
+      (snapshot: any) => {
+        snapshot.mutations.mutationGroups[0].callsiteCount += 1;
+      },
+    ],
+    [
+      "wrong group callsite root",
+      (snapshot: any) => {
+        snapshot.mutations.mutationGroups[0].callsiteRoot = "0".repeat(64);
+      },
+    ],
+    [
+      "fixture authority substituted onto platform writes",
+      (snapshot: any) => {
+        snapshot.mutations.mutationGroups.find(
+          ({ mutationGroupId }: any) => mutationGroupId === "mutation-platform-filesystem",
+        ).authorityId = "authority-test-fixture";
+      },
+    ],
+    [
+      "mismatched authorizing observation",
+      (snapshot: any) => {
+        snapshot.mutations.mutationGroups[0].authorizingObservationId =
+          "observation-fixture-confinement";
+      },
+    ],
+    [
+      "unbounded extra failure mode",
+      (snapshot: any) => {
+        snapshot.mutations.mutationGroups[0].failureModes.push("arbitrary-failure");
+      },
+    ],
+    [
+      "incompatible recovery",
+      (snapshot: any) => {
+        snapshot.mutations.mutationGroups[0].recoveryTransitionId = "transition-remove-fixture";
+      },
+    ],
+    [
+      "arbitrary idempotency phrase",
+      (snapshot: any) => {
+        snapshot.mutations.mutationGroups[0].idempotency = "retry-sometimes";
+      },
+    ],
+    [
+      "arbitrary extra authority",
+      (snapshot: any) =>
+        snapshot.authorities.authorities.push({
+          id: "authority-extra",
+          kind: "host-state",
+          requiredObservation: "observation-path-confinement",
+        }),
+    ],
+    [
+      "arbitrary extra transition",
+      (snapshot: any) =>
+        snapshot.transitions.transitions.push({
+          id: "transition-extra",
+          from: "partial-write",
+          to: "terminal",
+          preserves: ["evidence"],
+        }),
+    ],
+    [
+      "resolution issue substitution",
+      (snapshot: any) => {
+        snapshot.assumptions.assumptions.at(-1).resolution.issue = "ISS-022";
+      },
+    ],
+    [
+      "resolution kind substitution",
+      (snapshot: any) => {
+        snapshot.assumptions.assumptions.at(-1).resolution.kind = "decision";
+      },
+    ],
+    [
+      "extra linked resolution",
+      (snapshot: any) => {
+        snapshot.assumptions.assumptions[0].disposition = "linked-probe";
+        snapshot.assumptions.assumptions[0].resolution = { kind: "probe", issue: "ISS-024" };
+      },
+    ],
+    [
+      "unlinked uncertainty",
       (snapshot: any) => {
         delete snapshot.assumptions.assumptions.at(-1).resolution;
       },
     ],
     [
-      "dangling behavior family",
+      "missing source path",
+      (snapshot: any) => snapshot["redaction-oracle"].sourcePathCensus.entries.pop(),
+    ],
+    [
+      "extra source path",
+      (snapshot: any) =>
+        snapshot["redaction-oracle"].sourcePathCensus.entries.push(
+          structuredClone(snapshot["redaction-oracle"].sourcePathCensus.entries[0]),
+        ),
+    ],
+    [
+      "source path component digest change",
       (snapshot: any) => {
-        snapshot.assumptions.assumptions[0].behaviorFamilyId = "behavior-missing";
+        snapshot["redaction-oracle"].sourcePathCensus.entries[0].componentDigests[0] = "0".repeat(
+          64,
+        );
+      },
+    ],
+    [
+      "missing source path token evidence",
+      (snapshot: any) => {
+        snapshot["redaction-oracle"].sourcePathCensus.entries[0].tokenDigests = [];
+      },
+    ],
+    [
+      "missing source path ngram evidence",
+      (snapshot: any) => {
+        snapshot["redaction-oracle"].sourcePathCensus.entries[0].ngramDigests = [];
       },
     ],
     [
@@ -159,46 +332,105 @@ describe("reference redaction controls", () => {
     );
   });
 
-  test("rejects local paths, credential canaries, and high-entropy canaries", () => {
-    const localPath = ["C:", "Users", "operator", "source"].join("\\");
-    const credential = ["ghp", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"].join("_");
-    const entropy = ["AbCdEfGhIjKlMnOp", "QrStUvWxYz012345", "6789AbCdEfGhIjKl", "MnOp"].join("");
-    const findings = redactionTestApi.textFindings(
-      `${localPath}\n${credential}\n${entropy}`,
-      new Set(),
-    );
-    expect(findings).toEqual(
-      expect.arrayContaining([
-        "absolute-local-path",
-        "credential-or-secret",
-        "high-entropy-canary",
+  test("hashed source-path evidence detects paths and leaf components without retaining them", () => {
+    const syntheticPath = ["neutral", "deep-source-file.ps1"].join("/");
+    const component = syntheticPath.split("/").at(-1)!;
+    const oracle = {
+      rawPaths: new Set([redactionTestApi.pathDigest("reference-artifact-path/v1", syntheticPath)]),
+      normalizedPaths: new Set([
+        redactionTestApi.pathDigest("reference-source-path-normalized/v1", syntheticPath),
       ]),
+      components: new Set([
+        redactionTestApi.pathDigest("reference-source-path-component/v1", component),
+      ]),
+      tokens: new Set<string>(),
+      ngrams: new Set<string>(),
+    };
+    expect(redactionTestApi.textFindings(syntheticPath, new Set(), oracle)).toContain(
+      "source-relative-path",
+    );
+    expect(redactionTestApi.textFindings(component, new Set(), oracle)).toContain(
+      "source-path-component",
     );
   });
 
-  test("rejects package evidence paths and inventory markers", () => {
-    expect(() =>
-      redactionTestApi.validatePackedFile(
-        "reference/manifest/source.json",
-        Buffer.from("{}"),
-        new Set(),
-      ),
-    ).toThrow(/reference\/test evidence/);
-    expect(() =>
-      redactionTestApi.validatePackedFile(
-        "src/index.ts",
-        Buffer.from('export const marker = "reference-artifact-inventory/v1";'),
-        new Set(),
-      ),
-    ).toThrow(/inventory material/);
+  test("rejects root leaf paths and common credential forms", () => {
+    const driveLeaf = ["Z:", "leaf.txt"].join("\\");
+    const posixLeaf = ["", "private", "leaf.txt"].join("/");
+    const token = ["Ab3d", "Ef6h", "Ij9l", "Mn2p", "Qr5t", "Uv8x"].join("");
+    const api = `${["api", "key"].join("_")} = "${token}"`;
+    const client = `${["client", "secret"].join("-")}='${token}'`;
+    const bearer = ["Bearer", token].join(" ");
+    for (const value of [driveLeaf, posixLeaf, api, client, bearer]) {
+      expect(redactionTestApi.textFindings(value, new Set())).toEqual(
+        expect.arrayContaining([
+          value === driveLeaf || value === posixLeaf
+            ? "absolute-local-path"
+            : "credential-or-secret",
+        ]),
+      );
+    }
   });
 
-  test("rejects copied source chunks without retaining source text", () => {
-    const source = "source evidence block ".repeat(12);
-    expect(redactionTestApi.copiedSourceBytes([source], [`prefix ${source} suffix`])).toBe(true);
+  test("rejects shifted 200-byte and boundary-overlapping 160-byte source slices", () => {
+    const alphabet = [
+      "abcdefghijklmnopqrstuvwxyz",
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "0123456789",
+    ].join("");
+    const source = Array.from(
+      { length: 640 },
+      (_, index) => alphabet[(index * 17 + Math.floor(index / 13)) % alphabet.length],
+    ).join("");
+    expect(
+      redactionTestApi.copiedSourceBytes([source], [`prefix-${source.slice(37, 237)}-suffix`]),
+    ).toBe(true);
+    expect(
+      redactionTestApi.copiedSourceBytes([source], [`offset-${source.slice(79, 239)}-boundary`]),
+    ).toBe(true);
     expect(redactionTestApi.copiedSourceBytes([source], ["independent neutral evidence"])).toBe(
       false,
     );
+  });
+
+  test("all manifest schema families are excluded from package and built surfaces", () => {
+    const schemas = [
+      "reference-source-census/v9",
+      "reference-artifact-inventory/v9",
+      "reference-behavior-families/v9",
+      "reference-entrypoint-census/v9",
+      "reference-mutation-census/v9",
+      "reference-authority-inventory/v9",
+      "reference-recovery-transitions/v9",
+      "reference-assumption-inventory/v9",
+      "reference-forbidden-vocabulary/v9",
+    ];
+    for (const schema of schemas) {
+      expect(() =>
+        redactionTestApi.validatePackedFile("src/index.js", Buffer.from(schema), new Set()),
+      ).toThrow(/inventory material/);
+      expect(() => redactionTestApi.validateBuiltText(schema, new Set())).toThrow(
+        /inventory material/,
+      );
+    }
+  });
+
+  test("renamed behavior, authority, transition, assumption, and oracle schemas remain excluded", () => {
+    const renamed = [
+      '{"schemaVersion":"renamed/v9","familyRoot":"x"}',
+      '{"schemaVersion":"renamed/v9","authorityRoot":"x"}',
+      '{"schemaVersion":"renamed/v9","transitionRoot":"x"}',
+      '{"schemaVersion":"renamed/v9","assumptionRoot":"x"}',
+      '{"schemaVersion":"renamed/v9","vocabularyRoot":"x"}',
+    ];
+    for (const content of renamed) {
+      expect(() =>
+        redactionTestApi.validatePackedFile("src/index.js", Buffer.from(content), new Set()),
+      ).toThrow(/inventory material/);
+      expect(() => redactionTestApi.validateBuiltText(content, new Set())).toThrow(
+        /inventory material/,
+      );
+    }
   });
 
   test("live comparison flags are exact, complete, and duplicate-free", () => {

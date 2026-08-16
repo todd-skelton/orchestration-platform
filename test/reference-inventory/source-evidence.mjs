@@ -51,6 +51,34 @@ function extension(pathBytes) {
   return dot < 0 ? "none" : leaf.slice(dot + 1).toLowerCase();
 }
 
+function uniqueDigests(domain, values) {
+  return [...new Set(values.map((value) => digest(domain, value)))].sort();
+}
+
+function pathEvidence(artifactId, pathDigest, pathBytes) {
+  const normalized = pathBytes
+    .toString("utf8")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replaceAll("\\", "/");
+  const components = normalized.split("/").filter(Boolean);
+  const tokens = components.flatMap((component) => component.match(/[a-z0-9]+/g) ?? []);
+  const ngrams = [];
+  for (let start = 0; start < tokens.length; start += 1) {
+    for (let length = 2; length <= 4 && start + length <= tokens.length; length += 1) {
+      ngrams.push(tokens.slice(start, start + length).join("/"));
+    }
+  }
+  return {
+    artifactId,
+    pathDigest,
+    normalizedPathDigest: digest("reference-source-path-normalized/v1", normalized),
+    componentDigests: uniqueDigests("reference-source-path-component/v1", components),
+    tokenDigests: uniqueDigests("reference-source-path-token/v1", tokens),
+    ngramDigests: uniqueDigests("reference-source-path-ngram/v1", ngrams),
+  };
+}
+
 const signalPatterns = Object.freeze([
   [
     "fixture-local-write",
@@ -81,6 +109,7 @@ function effectCandidates(artifactId, bytes) {
       for (const [kind, pattern] of signalPatterns) {
         if (pattern.test(line)) {
           result.push({
+            artifactId,
             kind,
             digest: digest(
               "reference-effect-candidate/v1",
@@ -115,6 +144,7 @@ export async function extractSourceEvidence({ repository, commit, subtree }) {
   const sourceRows = parseTree(treeBytes, subtree);
   const artifacts = [];
   const candidates = [];
+  const sourcePaths = [];
   for (const row of sourceRows) {
     if (row.mode !== "100644" || row.type !== "blob") {
       throw new Error("source subtree contains a non-regular blob");
@@ -136,6 +166,13 @@ export async function extractSourceEvidence({ repository, commit, subtree }) {
   artifacts.forEach((artifact, index) => {
     artifact.artifactId = `artifact-${String(index + 1).padStart(3, "0")}`;
   });
+  for (const row of sourceRows) {
+    const pathDigest = digest("reference-artifact-path/v1", row.relativePath);
+    const artifact = artifacts.find((candidate) => candidate.pathDigest === pathDigest);
+    if (!artifact) throw new Error("source path lacks an artifact identity");
+    sourcePaths.push(pathEvidence(artifact.artifactId, pathDigest, row.relativePath));
+  }
+  sourcePaths.sort((left, right) => left.artifactId.localeCompare(right.artifactId));
   for (const artifact of artifacts) {
     if (!new Set(["ps1", "psm1", "cjs", "sh", "vbs"]).has(artifact.extension)) continue;
     const bytes = await git(repository, ["cat-file", "blob", artifact.objectId], "buffer");
@@ -159,7 +196,13 @@ export async function extractSourceEvidence({ repository, commit, subtree }) {
         kind,
         {
           count: rows.length,
-          root: aggregateRows("reference-effect-group/v1", rows),
+          root: aggregateRows(
+            "reference-effect-group/v1",
+            rows.map(({ kind: signalKind, digest: callsiteDigest }) => ({
+              kind: signalKind,
+              digest: callsiteDigest,
+            })),
+          ),
         },
       ];
     }),
@@ -173,15 +216,25 @@ export async function extractSourceEvidence({ repository, commit, subtree }) {
     treeObject,
     artifactCount: artifacts.length,
     artifactRoot: aggregateRows("reference-artifact-root/v1", artifacts),
+    sourcePathRoot: aggregateRows("reference-source-path-census/v1", sourcePaths),
     entrypointCount: entrypoints.length,
     entrypointRoot: aggregateRows("reference-entrypoint-root/v1", entrypoints),
     effectCandidateCount: candidates.length,
-    effectCandidateRoot: aggregateRows("reference-effect-root/v1", candidates),
+    effectCandidateRoot: aggregateRows(
+      "reference-effect-root/v1",
+      candidates.map(({ kind: signalKind, digest: callsiteDigest }) => ({
+        kind: signalKind,
+        digest: callsiteDigest,
+      })),
+    ),
+    effectCandidateMappingRoot: aggregateRows("reference-effect-mapping/v1", candidates),
     extensionCensus,
     candidateCensus,
     candidateGroups,
     artifacts,
+    sourcePaths,
     entrypoints,
+    candidates,
   };
 }
 

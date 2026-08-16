@@ -1,5 +1,6 @@
 {
-  "schemaVersion": "reference-behavior-families/v1",
+  "schemaVersion": "reference-behavior-families/v2",
+  "familyRoot": "1276d2f5cb963ab948ddae20b9b422503bb95ad4f04654295bc6c893cde15eca",
   "families": [
     {
       "id": "behavior-session-authority",
@@ -9,37 +10,37 @@
     {
       "id": "behavior-worker-lifecycle",
       "classification": "platform-mechanism",
-      "capabilities": ["admission", "dispatch", "ownership", "bounded-termination"]
+      "capabilities": ["admission", "bounded-termination", "dispatch", "ownership"]
     },
     {
       "id": "behavior-workspace-identity",
       "classification": "platform-mechanism",
-      "capabilities": ["cleanliness", "revision-identity", "isolation", "reclamation"]
+      "capabilities": ["cleanliness", "isolation", "reclamation", "revision-identity"]
     },
     {
       "id": "behavior-review-promotion",
       "classification": "platform-mechanism",
-      "capabilities": ["exact-subject-review", "queue-health", "landing-preflight"]
+      "capabilities": ["exact-subject-review", "landing-preflight", "queue-health"]
     },
     {
       "id": "behavior-telemetry-learning",
       "classification": "platform-mechanism",
-      "capabilities": ["event-journal", "flow-snapshot", "metrics", "digest"]
+      "capabilities": ["digest", "event-journal", "flow-snapshot", "metrics"]
     },
     {
       "id": "behavior-breaker-recovery",
       "classification": "platform-mechanism",
-      "capabilities": ["fail-closed-guard", "replan", "recovery", "breaker-lifecycle"]
+      "capabilities": ["breaker-lifecycle", "fail-closed-guard", "recovery", "replan"]
     },
     {
       "id": "behavior-planning-delivery",
       "classification": "adapter-policy",
-      "capabilities": ["frontier-selection", "planning-repair", "delivery-cycle"]
+      "capabilities": ["delivery-cycle", "frontier-selection", "planning-repair"]
     },
     {
       "id": "behavior-model-routing",
       "classification": "platform-mechanism",
-      "capabilities": ["capability-matrix", "placement", "cost-observation"]
+      "capabilities": ["capability-matrix", "cost-observation", "placement"]
     },
     {
       "id": "behavior-release-authority",
@@ -49,7 +50,7 @@
     {
       "id": "behavior-evidence-conformance",
       "classification": "historical-compatibility",
-      "capabilities": ["fixture", "negative-control", "compatibility-proof", "bounded-probe"]
+      "capabilities": ["bounded-probe", "compatibility-proof", "fixture", "negative-control"]
     }
   ]
 }
