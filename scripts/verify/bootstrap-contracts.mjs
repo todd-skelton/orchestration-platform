@@ -504,7 +504,7 @@ function assertRegistry(registry, expected, label) {
       observed.family !== family ||
       observed.owner !== owner ||
       observed.issue !== issue ||
-      observed.implementation !== "placeholder" ||
+      !["placeholder", "implemented"].includes(observed.implementation) ||
       observed.commands.length !== commandCount
     ) {
       fail(`${label} registration mismatch for ${family}`);
@@ -568,6 +568,10 @@ function validateHandlerSources(handlerFiles, handlerSources) {
 
 function validateBuildScriptSource(source) {
   const normalized = source.replace(/\r\n/g, "\n");
+  const expectedBrokerCompositionPath =
+    'const brokerCompositionPath = resolve(repositoryRoot, "packages/credentials/build/compose.ts");';
+  const expectedAliasTargets =
+    'const aliasTargets = new Set(["bootstrap", "self-host", "host-custody-bootstrap"]);';
   const expectedResolver = `function brokerComposeResolver(targetId) {
   return {
     name: "broker-compose-closed-resolver",
@@ -592,6 +596,8 @@ function validateBuildScriptSource(source) {
     logLevel: "silent",
   });`;
   if (
+    !normalized.includes(expectedBrokerCompositionPath) ||
+    !normalized.includes(expectedAliasTargets) ||
     !normalized.includes(expectedResolver) ||
     !normalized.includes(expectedInvocation) ||
     (normalized.match(/\bbuild\s*\(/g) ?? []).length !== 1 ||

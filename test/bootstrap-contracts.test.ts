@@ -79,6 +79,24 @@ describe("bootstrap manifest graph", () => {
         );
       },
     ],
+    [
+      "broker alias allowlist widening",
+      (snapshot: any) => {
+        snapshot.buildScriptSource = snapshot.buildScriptSource.replace(
+          'const aliasTargets = new Set(["bootstrap", "self-host", "host-custody-bootstrap"]);',
+          'const aliasTargets = new Set(["bootstrap", "self-host", "host-custody-bootstrap", "credential-broker"]);',
+        );
+      },
+    ],
+    [
+      "moved broker composition destination",
+      (snapshot: any) => {
+        snapshot.buildScriptSource = snapshot.buildScriptSource.replace(
+          "packages/credentials/build/compose.ts",
+          "packages/credentials/build/moved-compose.ts",
+        );
+      },
+    ],
     ["non-empty module row", (snapshot: any) => snapshot.moduleManifest.push({ id: "planning" })],
     [
       "missing OS smoke lane",
@@ -118,6 +136,12 @@ describe("bootstrap manifest graph", () => {
       "moved CLI owner",
       (snapshot: any) => {
         snapshot.cliRegistry[0].owner = "@orchestration-platform/engine";
+      },
+    ],
+    [
+      "invalid handler implementation",
+      (snapshot: any) => {
+        snapshot.cliRegistry[0].implementation = "in-progress";
       },
     ],
     [
@@ -199,5 +223,15 @@ describe("bootstrap manifest graph", () => {
     await expect(validateBootstrapSnapshot(snapshot)).rejects.toThrow(
       /BOOTSTRAP_CONTRACT_MISMATCH/,
     );
+  });
+
+  test.each([
+    ["CLI", "cliRegistry"],
+    ["bootstrap", "bootstrapRegistry"],
+    ["host-custody", "hostRegistry"],
+  ])("accepts implemented %s handler registrations", async (_label, registryName) => {
+    const snapshot = mutant();
+    snapshot[registryName][0].implementation = "implemented";
+    await expect(validateBootstrapSnapshot(snapshot)).resolves.toBeUndefined();
   });
 });
