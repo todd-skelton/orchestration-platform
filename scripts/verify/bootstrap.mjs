@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -25,13 +26,12 @@ async function run(executable, args) {
 }
 
 if (process.argv.length !== 2) throw new Error("verify:bootstrap accepts no arguments");
-const pnpmEntrypoint = process.env.npm_execpath;
-if (!pnpmEntrypoint) throw new Error("verify:bootstrap must run through pnpm");
+const pnpmLauncher = await resolvePnpmLauncher();
 
 const before = await status();
 await run(process.execPath, [resolve(repositoryRoot, "scripts/verify/bootstrap-contracts.mjs")]);
 for (const script of ["format:check", "typecheck", "test", "build", "planning:check"]) {
-  await run(process.execPath, [pnpmEntrypoint, "run", script]);
+  await run(pnpmLauncher.executable, [...pnpmLauncher.prefixArgs, "run", script]);
 }
 const after = await status();
 if (after !== before) {

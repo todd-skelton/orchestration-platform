@@ -1,30 +1,21 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "vitest";
 import {
   loadPlanningSnapshot,
   verificationCommands,
   type PlanningSnapshot,
 } from "../scripts/planning/check.mjs";
+import { resolvePnpmLauncher } from "../scripts/pnpm-launcher.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const placeholder = resolve(root, "scripts/capability-not-implemented.mjs");
 let snapshot: PlanningSnapshot;
-
-function pnpmEntrypoint(): string[] {
-  if (process.env.npm_execpath) return [process.env.npm_execpath];
-  for (const candidate of [
-    resolve(dirname(process.execPath), "node_modules/corepack/dist/corepack.js"),
-    resolve(dirname(process.execPath), "../lib/node_modules/corepack/dist/corepack.js"),
-  ]) {
-    if (existsSync(candidate)) return [candidate, "pnpm"];
-  }
-  throw new Error("cannot locate pnpm entrypoint");
-}
+let pnpmLauncher: Awaited<ReturnType<typeof resolvePnpmLauncher>>;
 
 beforeAll(async () => {
   snapshot = await loadPlanningSnapshot();
+  pnpmLauncher = await resolvePnpmLauncher();
 });
 
 describe("planned verification command execution census", () => {
@@ -60,8 +51,8 @@ describe("planned verification command execution census", () => {
         const forwardedTail = rootCommand ? command.slice(rootCommand[0].length).trim() : "";
         const forwardedArguments = forwardedTail ? forwardedTail.split(/\s+/) : [];
         const result = spawnSync(
-          process.execPath,
-          [...pnpmEntrypoint(), ...command.split(/\s+/).slice(1)],
+          pnpmLauncher.executable,
+          [...pnpmLauncher.prefixArgs, ...command.split(/\s+/).slice(1)],
           {
             cwd: root,
             encoding: "utf8",

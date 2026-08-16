@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
+import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const execFileAsync = promisify(execFile);
@@ -232,23 +233,9 @@ function equal(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-async function pnpmEntrypoint() {
-  if (process.env.npm_execpath) return [process.env.npm_execpath];
-  const candidates = [
-    resolve(dirname(process.execPath), "node_modules/corepack/dist/corepack.js"),
-    resolve(dirname(process.execPath), "../lib/node_modules/corepack/dist/corepack.js"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      await access(candidate);
-      return [candidate, "pnpm"];
-    } catch {}
-  }
-  fail("cannot locate the pinned pnpm entrypoint for package inventory verification");
-}
-
 async function runPnpm(args, cwd) {
-  const result = await execFileAsync(process.execPath, [...(await pnpmEntrypoint()), ...args], {
+  const launcher = await resolvePnpmLauncher();
+  const result = await execFileAsync(launcher.executable, [...launcher.prefixArgs, ...args], {
     cwd,
     windowsHide: true,
     maxBuffer: 20 * 1024 * 1024,

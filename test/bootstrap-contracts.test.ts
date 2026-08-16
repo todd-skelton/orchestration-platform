@@ -3,6 +3,7 @@ import {
   loadBootstrapSnapshot,
   validateBootstrapSnapshot,
 } from "../scripts/verify/bootstrap-contracts.mjs";
+import { resolvePnpmLauncher } from "../scripts/pnpm-launcher.mjs";
 
 let baseline: Awaited<ReturnType<typeof loadBootstrapSnapshot>>;
 
@@ -15,6 +16,20 @@ beforeAll(async () => {
 }, 30_000);
 
 describe("bootstrap manifest graph", () => {
+  test("uses native Windows pnpm executables without a Node prefix", async () => {
+    await expect(resolvePnpmLauncher("C:\\pnpm\\pnpm.exe")).resolves.toEqual({
+      executable: "C:\\pnpm\\pnpm.exe",
+      prefixArgs: [],
+    });
+  });
+
+  test("uses JavaScript pnpm entrypoints through Node", async () => {
+    await expect(resolvePnpmLauncher("/opt/pnpm/dist/pnpm.mjs")).resolves.toEqual({
+      executable: process.execPath,
+      prefixArgs: ["/opt/pnpm/dist/pnpm.mjs"],
+    });
+  });
+
   test("matches the authoritative package, build, and handler censuses", async () => {
     await expect(validateBootstrapSnapshot(baseline)).resolves.toBeUndefined();
   });
