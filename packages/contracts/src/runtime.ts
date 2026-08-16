@@ -1,0 +1,262 @@
+import { createHash } from "node:crypto";
+
+export type JsonPrimitive = null | boolean | number | string;
+export type JsonValue =
+  JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+export type ContractRecord = Readonly<Record<string, JsonValue>>;
+
+export type ScalarKind =
+  | "boolean"
+  | "bounded-string"
+  | "decimal"
+  | "file-url"
+  | "integer"
+  | "opaque"
+  | "positive-integer"
+  | "relative-path"
+  | "schema-id"
+  | "semver"
+  | "sha256"
+  | "timestamp"
+  | "uuid-v7";
+
+export interface FieldRule {
+  readonly kind: ScalarKind;
+  readonly nullable?: boolean;
+  readonly array?: boolean;
+  readonly values?: readonly string[];
+}
+
+export interface SchemaDefinition {
+  readonly schemaVersion: string;
+  readonly authority: true;
+  readonly fields: Readonly<Record<string, FieldRule>>;
+  readonly validate?: (record: ContractRecord) => readonly string[];
+}
+
+export type ParseResult<T extends ContractRecord = ContractRecord> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+const uuidV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const sha256 = /^[0-9a-f]{64}$/;
+const decimal = /^(?:0|[1-9][0-9]*)$/;
+const opaque = /^[a-z0-9](?:[a-z0-9._:@+-]{0,126}[a-z0-9])?$/;
+const schemaId = /^[a-z][a-z0-9-]*\/v[1-9][0-9]*$/;
+const semver = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/;
+const drivePrefix = /^[a-z]:/i;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function validUnicode(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function isCanonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value))
+    return false;
+  const date = new Date(value);
+  return Number.isFinite(date.valueOf()) && date.toISOString() === value;
+}
+
+export function isContractRelativePath(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1024) return false;
+  if (
+    !validUnicode(value) ||
+    value.includes("\\") ||
+    value.startsWith("/") ||
+    drivePrefix.test(value)
+  )
+    return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return false;
+  const parts = value.split("/");
+  return parts.every((part) => part !== "" && part !== "." && part !== "..");
+}
+
+export function isCanonicalFileUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !value.startsWith("file:///")) return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "file:" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.search === "" &&
+      parsed.hash === "" &&
+      parsed.href === value &&
+      !value.includes("\\")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validScalar(kind: ScalarKind, value: unknown): boolean {
+  switch (kind) {
+    case "boolean":
+      return typeof value === "boolean";
+    case "bounded-string":
+      return (
+        typeof value === "string" && value.length > 0 && value.length <= 512 && validUnicode(value)
+      );
+    case "decimal":
+      return typeof value === "string" && decimal.test(value);
+    case "file-url":
+      return isCanonicalFileUrl(value);
+    case "integer":
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    case "opaque":
+      return typeof value === "string" && opaque.test(value);
+    case "positive-integer":
+      return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+    case "relative-path":
+      return isContractRelativePath(value);
+    case "schema-id":
+      return typeof value === "string" && schemaId.test(value);
+    case "semver":
+      return typeof value === "string" && semver.test(value);
+    case "sha256":
+      return typeof value === "string" && sha256.test(value);
+    case "timestamp":
+      return isCanonicalTimestamp(value);
+    case "uuid-v7":
+      return typeof value === "string" && uuidV7.test(value);
+  }
+}
+
+function validateField(name: string, rule: FieldRule, value: unknown): readonly string[] {
+  if (value === null) return rule.nullable ? [] : [`${name}:null-refused`];
+  const values = rule.array ? (Array.isArray(value) ? value : undefined) : [value];
+  if (!values) return [`${name}:array-required`];
+  if (rule.array && values.length > 256) return [`${name}:array-too-large`];
+  const issues: string[] = [];
+  for (const entry of values) {
+    if (rule.values) {
+      if (typeof entry !== "string" || !rule.values.includes(entry))
+        issues.push(`${name}:unknown-enum`);
+    } else if (!validScalar(rule.kind, entry)) {
+      issues.push(`${name}:invalid-${rule.kind}`);
+    }
+  }
+  if (rule.array) {
+    const encoded = values.map((entry) => JSON.stringify(entry));
+    if (new Set(encoded).size !== encoded.length) issues.push(`${name}:duplicate-array-entry`);
+  }
+  return issues;
+}
+
+export function validateAgainstSchema(definition: SchemaDefinition, input: unknown): ParseResult {
+  if (!isPlainRecord(input)) return { ok: false, issues: ["record:object-required"] };
+  const expected = Object.keys(definition.fields).sort();
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const observed = Object.keys(descriptors).sort();
+  const issues: string[] = [];
+  for (const name of expected) {
+    if (!Object.hasOwn(descriptors, name)) issues.push(`${name}:missing`);
+  }
+  for (const name of observed) {
+    if (!Object.hasOwn(definition.fields, name)) issues.push(`${name}:unknown-field`);
+    if (!Object.hasOwn(descriptors[name]!, "value")) issues.push(`${name}:accessor-refused`);
+  }
+  const snapshot = Object.fromEntries(
+    observed.flatMap((name) => {
+      const descriptor = descriptors[name]!;
+      if (!Object.hasOwn(descriptor, "value")) return [];
+      const value = descriptor.value;
+      return [[name, Array.isArray(value) ? Object.freeze([...value]) : value]];
+    }),
+  );
+  for (const name of expected) {
+    if (Object.hasOwn(snapshot, name))
+      issues.push(...validateField(name, definition.fields[name]!, snapshot[name]));
+  }
+  if (snapshot.schemaVersion !== definition.schemaVersion) issues.push("schemaVersion:mismatch");
+  if (issues.length === 0 && definition.validate)
+    issues.push(...definition.validate(snapshot as ContractRecord));
+  return issues.length === 0
+    ? { ok: true, value: Object.freeze(snapshot as ContractRecord) }
+    : { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function canonicalValue(value: unknown, seen: Set<object>): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0))
+      throw new TypeError("noncanonical number");
+    return String(value);
+  }
+  if (typeof value === "string") {
+    if (!validUnicode(value)) throw new TypeError("invalid unicode scalar sequence");
+    return JSON.stringify(value);
+  }
+  if (typeof value !== "object" || value === undefined) throw new TypeError("non-JSON value");
+  if (seen.has(value)) throw new TypeError("cyclic JSON value");
+  seen.add(value);
+  let result: string;
+  if (Array.isArray(value)) {
+    result = `[${value.map((entry) => canonicalValue(entry, seen)).join(",")}]`;
+  } else if (isPlainRecord(value)) {
+    result = `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalValue(value[key], seen)}`)
+      .join(",")}}`;
+  } else {
+    throw new TypeError("non-plain JSON object");
+  }
+  seen.delete(value);
+  return result;
+}
+
+export function canonicalJson(value: JsonValue): string {
+  return `${canonicalValue(value, new Set())}\n`;
+}
+
+export function canonicalBytes(value: JsonValue): Uint8Array {
+  return new TextEncoder().encode(canonicalJson(value));
+}
+
+export function canonicalDigest(value: JsonValue): string {
+  return createHash("sha256").update(canonicalBytes(value)).digest("hex");
+}
+
+export function parseCanonicalBytes(definition: SchemaDefinition, bytes: Uint8Array): ParseResult {
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    return { ok: false, issues: ["encoding:bom-refused"] };
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+  } catch {
+    return { ok: false, issues: ["encoding:invalid-utf8"] };
+  }
+  if (text.startsWith("\ufeff")) return { ok: false, issues: ["encoding:bom-refused"] };
+  let input: unknown;
+  try {
+    input = JSON.parse(text);
+  } catch {
+    return { ok: false, issues: ["encoding:invalid-json"] };
+  }
+  const parsed = validateAgainstSchema(definition, input);
+  if (!parsed.ok) return parsed;
+  try {
+    if (canonicalJson(parsed.value) !== text)
+      return { ok: false, issues: ["encoding:noncanonical"] };
+  } catch {
+    return { ok: false, issues: ["encoding:noncanonical"] };
+  }
+  return parsed;
+}
