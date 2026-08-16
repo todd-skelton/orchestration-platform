@@ -243,8 +243,10 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
     case "repository-protection-receipt/v1":
       return {
         verifierAnchorVariableName: "VERIFIER_ANCHOR_SHA256",
-        issuedAt: instant,
-        expiresAt: later,
+        verifierAnchorVariableUpdatedAt: "2026-08-16T12:33:56.789Z",
+        producerStartedAt: instant,
+        issuedAt: later,
+        expiresAt: "2026-08-16T12:36:56.789Z",
       };
     default:
       return {};

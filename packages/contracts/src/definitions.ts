@@ -1,4 +1,11 @@
-import type { ContractRecord, FieldRule, SchemaDefinition } from "./runtime.js";
+import {
+  canonicalDigest,
+  validateAgainstSchema,
+  type ContractRecord,
+  type FieldRule,
+  type JsonValue,
+  type SchemaDefinition,
+} from "./runtime.js";
 
 const field = (kind: FieldRule["kind"], options: Omit<FieldRule, "kind"> = {}): FieldRule =>
   Object.freeze({ kind, ...options });
@@ -1021,17 +1028,24 @@ const definitions = [
         (record.lifecycle !== "PENDING" || record.publication !== "NOT_PUBLISHED")
       )
         issues.push("ordinal:zero-must-be-pending-not-published");
-      if (text(record, "lifecycle") === "ABORTING" && record.abortRevocationReceiptDigest === null)
-        issues.push("abortRevocationReceiptDigest:required");
-      if (
-        text(record, "lifecycle") === "COMPLETE" &&
-        record.terminalRevocationReceiptDigest === null
-      )
+      const lifecycle = text(record, "lifecycle");
+      const publication = text(record, "publication");
+      if (["PENDING", "ACTIVATING"].includes(lifecycle)) {
+        if (record.abortRevocationReceiptDigest !== null)
+          issues.push("abortRevocationReceiptDigest:premature");
+        if (record.terminalRevocationReceiptDigest !== null)
+          issues.push("terminalRevocationReceiptDigest:premature");
+      } else if (lifecycle === "ABORTING") {
+        if (record.abortRevocationReceiptDigest === null)
+          issues.push("abortRevocationReceiptDigest:required");
+        if (record.terminalRevocationReceiptDigest !== null)
+          issues.push("terminalRevocationReceiptDigest:premature");
+      } else if (record.terminalRevocationReceiptDigest === null) {
         issues.push("terminalRevocationReceiptDigest:required");
-      if (
-        ["PUBLISHED", "CLEARED"].includes(text(record, "publication")) &&
-        record.fenceDigest === null
-      )
+      }
+      if (publication === "NOT_PUBLISHED" && record.fenceDigest !== null)
+        issues.push("fenceDigest:not-published-must-be-null");
+      if (["PUBLISHED", "CLEARED"].includes(publication) && record.fenceDigest === null)
         issues.push("fenceDigest:publication-required");
       return issues;
     },
@@ -1184,13 +1198,13 @@ const definitions = [
       ...(record.verifierAnchorDigest === record.verifierAnchorVariableValue
         ? []
         : ["verifierAnchorDigest:variable-value-mismatch"]),
-      ...(Date.parse(text(record, "verifierAnchorVariableUpdatedAt")) <=
+      ...(Date.parse(text(record, "verifierAnchorVariableUpdatedAt")) <
       Date.parse(text(record, "producerStartedAt"))
         ? []
         : ["verifierAnchorVariableUpdatedAt:not-pre-run"]),
-      ...(Date.parse(text(record, "producerStartedAt")) <= Date.parse(text(record, "issuedAt"))
+      ...(Date.parse(text(record, "producerStartedAt")) < Date.parse(text(record, "issuedAt"))
         ? []
-        : ["producerStartedAt:after-issuedAt"]),
+        : ["producerStartedAt:not-before-issuedAt"]),
       ...(Date.parse(text(record, "expiresAt")) - Date.parse(text(record, "issuedAt")) <=
       604_800_000
         ? []
@@ -1254,6 +1268,23 @@ export function validateRecoveryAuthorizationAttachment(
   liveDigest: string,
 ): readonly string[] {
   const issues: string[] = [];
+  for (const [label, schemaVersion, record] of [
+    ["authorization", "recovery-authorization/v1", authorization],
+    ["readyRecord", "activation-recovery-launch/v1", ready],
+    ["liveRecord", "activation-recovery-launch/v1", live],
+    ["current", "activation-recovery-launch-current/v1", current],
+  ] as const) {
+    const parsed = validateAgainstSchema(schemaDefinitions[schemaVersion]!, record);
+    if (!parsed.ok) issues.push(...parsed.issues.map((issue) => `${label}:${issue}`));
+  }
+  try {
+    if (canonicalDigest(ready as JsonValue) !== readyDigest)
+      issues.push("readyRecordDigest:content-mismatch");
+    if (canonicalDigest(live as JsonValue) !== liveDigest)
+      issues.push("liveRecordDigest:content-mismatch");
+  } catch {
+    issues.push("launchRecord:noncanonical");
+  }
   if (authorization.mode !== "successor" || authorization.lifecycle !== "CONSUMED_BOUND")
     issues.push("authorization:not-consumed-successor");
   for (const name of ["transactionId", "installationId", "stateRootDigest"]) {
@@ -1278,8 +1309,25 @@ export function validateRecoveryAuthorizationAttachment(
     )
       issues.push(`${authorizationName}:attachment-mismatch`);
   }
+  for (const [authorizationName, launchName] of [
+    ["promotionCycleId", "cycleId"],
+    ["expectedActiveRecordDigest", "activeRecordDigest"],
+    ["predecessorExecutableDigest", "predecessorExecutableDigest"],
+    ["predecessorReleaseDigest", "predecessorReleaseDigest"],
+  ] as const) {
+    if (authorization[authorizationName] !== ready[launchName])
+      issues.push(`${authorizationName}:attachment-mismatch`);
+  }
   if (ready.lifecycle !== "READY" || ready.ordinal !== 0)
     issues.push("readyRecord:not-generation-root");
+  issues.push(
+    ...validateRecoveryLaunchTransition(
+      ready,
+      live,
+      readyDigest,
+      current.expectedPointerDigest as string,
+    ).map((issue) => `readyToLive:${issue}`),
+  );
   if (
     live.lifecycle !== "LIVE" ||
     live.ordinal !== 1 ||
@@ -1297,6 +1345,31 @@ export function validateRecoveryAuthorizationAttachment(
     current.expectedPointerDigest !== live.priorPointerDigest
   )
     issues.push("current:live-binding-mismatch");
+  for (const [currentName, launchName] of [
+    ["transactionId", "transactionId"],
+    ["source", "source"],
+    ["sourcePathToken", "sourcePathToken"],
+    ["cycleId", "cycleId"],
+    ["installationId", "installationId"],
+    ["projectId", "projectId"],
+    ["stateRootDigest", "stateRootDigest"],
+    ["predecessorExecutablePath", "predecessorExecutablePath"],
+    ["predecessorExecutableDigest", "predecessorExecutableDigest"],
+    ["activeRecordDigest", "activeRecordDigest"],
+    ["argvDigest", "argvDigest"],
+    ["expectedFenceRootDigest", "expectedFenceRootDigest"],
+    ["fenceRootDigest", "fenceRootDigest"],
+    ["fenceHeadOrdinal", "fenceHeadOrdinal"],
+    ["fenceHeadDigest", "fenceHeadDigest"],
+    ["gateRootDigest", "gateRootDigest"],
+    ["gateHeadOrdinal", "gateHeadOrdinal"],
+    ["gateHeadDigest", "gateHeadDigest"],
+    ["generation", "generation"],
+    ["attempt", "attempt"],
+  ] as const) {
+    if (current[currentName] !== live[launchName])
+      issues.push(`${currentName}:current-launch-mismatch`);
+  }
   for (const [authorizationName, launchName] of [
     ["recoveryGateRootDigest", "gateRootDigest"],
     ["recoveryFenceRootDigest", "fenceRootDigest"],

@@ -121,6 +121,12 @@ head. Cleanup archives bind the root, ordered head-chain digest, revocation
 proof, one exclusive activated/aborted proof union, and the active record
 retained by the canonical cleanup head.
 
+Recovery authorization attachment validates the complete canonical READY to
+LIVE transition, recomputes both immutable record digests, and requires every
+shared current-pointer authority field to equal the LIVE record. Cleanup heads
+carry no fence or revocation proof before publication; later heads admit only
+the proofs authorized by their exact lifecycle and publication state.
+
 Repository-protection authority pins API version `2022-11-28`, protected
 environment `host-custody-bootstrap-root`, and verifier version `2.93.0`. The
 anchor digest equals the protected variable value, whose API update is at or
