@@ -10,8 +10,8 @@
   },
   "scripts": {
     "build": "node scripts/build/private-compositions.mjs",
-    "format": "prettier --write package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json vitest.config.ts .prettierrc.json .github/workflows/bootstrap.yml scripts packages adapters bootstrap modules config test",
-    "format:check": "prettier --check package.json pnpm-workspace.yaml tsconfig.base.json tsconfig.json vitest.config.ts .prettierrc.json .github/workflows/bootstrap.yml scripts packages adapters bootstrap modules config test",
+    "format": "node scripts/format.mjs write",
+    "format:check": "node scripts/format.mjs check",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "verify:bootstrap": "node scripts/verify/bootstrap.mjs",

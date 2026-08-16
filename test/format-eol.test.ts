@@ -1,11 +1,10 @@
-import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { runPinnedPrettier, validateFormatterInputs } from "../scripts/format.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const prettier = resolve(root, "node_modules/prettier/bin/prettier.cjs");
 const temporaryRoots: string[] = [];
 
 async function fixture(source: string) {
@@ -14,18 +13,6 @@ async function fixture(source: string) {
   const file = resolve(directory, "fixture.ts");
   await writeFile(file, source);
   return file;
-}
-
-function check(file: string) {
-  return spawnSync(
-    process.execPath,
-    [prettier, "--config", resolve(root, ".prettierrc.json"), "--check", file],
-    {
-      cwd: root,
-      encoding: "utf8",
-      windowsHide: true,
-    },
-  );
 }
 
 afterEach(async () => {
@@ -37,11 +24,21 @@ afterEach(async () => {
 describe("formatter line ending policy", () => {
   test.each(["\n", "\r\n"])("accepts formatted %j sources", async (lineEnding) => {
     const file = await fixture(`export const value = "ok";${lineEnding}`);
-    expect(check(file).status).toBe(0);
+    await expect(validateFormatterInputs([file])).resolves.toBeUndefined();
+  });
+
+  test.each([
+    ["CR-only", 'export const value = "ok";\r'],
+    ["a lone carriage return", 'export const value = "ok";\rconst other = 1;\n'],
+    ["CRLF followed by LF", 'export const value = "ok";\r\nconst other = 1;\n'],
+    ["LF followed by CRLF", 'export const value = "ok";\nconst other = 1;\r\n'],
+  ])("rejects %s sources", async (_name, source) => {
+    const file = await fixture(source);
+    await expect(validateFormatterInputs([file])).rejects.toThrow(/invalid line endings/);
   });
 
   test("rejects a real formatting defect", async () => {
     const file = await fixture("export const value={ok:true};\n");
-    expect(check(file).status).not.toBe(0);
+    await expect(runPinnedPrettier("check", [file])).rejects.toThrow();
   });
 });
