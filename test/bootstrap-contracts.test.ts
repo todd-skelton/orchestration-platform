@@ -4,11 +4,16 @@ import {
   validateBootstrapSnapshot,
 } from "../scripts/verify/bootstrap-contracts.mjs";
 import { resolvePnpmLauncher } from "../scripts/pnpm-launcher.mjs";
+import { normalizeTrackedText } from "../scripts/tracked-text.mjs";
 
 let baseline: Awaited<ReturnType<typeof loadBootstrapSnapshot>>;
 
 function mutant(): any {
   return structuredClone(baseline);
+}
+
+function asCrLf(value: string) {
+  return normalizeTrackedText(value).replace(/\n/g, "\r\n");
 }
 
 beforeAll(async () => {
@@ -18,9 +23,9 @@ beforeAll(async () => {
 describe("bootstrap manifest graph", () => {
   test("accepts CRLF tracked text contracts without changing their semantics", async () => {
     const snapshot = mutant();
-    snapshot.workspace = snapshot.workspace.replace(/\n/g, "\r\n");
-    snapshot.moduleManifestSource = snapshot.moduleManifestSource.replace(/\n/g, "\r\n");
-    snapshot.workflow = snapshot.workflow.replace(/\n/g, "\r\n");
+    snapshot.workspace = asCrLf(snapshot.workspace);
+    snapshot.moduleManifestSource = asCrLf(snapshot.moduleManifestSource);
+    snapshot.workflow = asCrLf(snapshot.workflow);
     await expect(validateBootstrapSnapshot(snapshot)).resolves.toBeUndefined();
   });
 
@@ -28,7 +33,7 @@ describe("bootstrap manifest graph", () => {
     [
       "mixed line endings",
       (snapshot: any) => {
-        snapshot.workspace = snapshot.workspace.replace("\n", "\r\n");
+        snapshot.workspace = normalizeTrackedText(snapshot.workspace).replace("\n", "\r\n");
       },
     ],
     [

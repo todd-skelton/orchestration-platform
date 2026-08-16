@@ -21,7 +21,7 @@ async function symlinkFixture(target: string, path: string, type: "file" | "dire
     await symlink(
       target,
       path,
-      process.platform === "win32" && type === "directory" ? "junction" : type,
+      type === "directory" ? (process.platform === "win32" ? "junction" : "dir") : "file",
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
