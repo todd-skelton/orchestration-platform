@@ -48,6 +48,9 @@ const maximumDecodedScalarCharacters = 4096;
 const maximumEncodedScalarCharacters = 32768;
 const maximumStreamScalarTokens = 65536;
 const maximumStreamRelationshipSpan = 8;
+const maximumTemplateCandidates = 256;
+const maximumTemplateInterpolations = 16;
+const maximumTemplateAlternativesPerInterpolation = 16;
 const backslash = String.fromCharCode(92);
 const uncClass = `[a-z0-9][a-z0-9._-]*`;
 const uncSeparator = `[${backslash.repeat(2)}/]`;
@@ -305,8 +308,8 @@ function quotedScalarsFromExpression(expression) {
 function decodeTemplateScalar(token) {
   if (token.length > maximumEncodedScalarCharacters) return { status: "overflow", values: [] };
   if (token[0] !== "`" || token.at(-1) !== "`") return { status: "invalid", values: [] };
-  let known = "";
-  let withQuotedAmbiguity = "";
+  let candidates = [""];
+  let interpolationCount = 0;
   let segmentStart = 1;
   let index = 1;
   while (index < token.length - 1) {
@@ -320,39 +323,45 @@ function decodeTemplateScalar(token) {
     }
     const literal = decodeEscapedContent(token.slice(segmentStart, index));
     if (literal.status !== "valid") return { status: literal.status, values: [] };
-    known += literal.value;
-    withQuotedAmbiguity += literal.value;
+    candidates = candidates.map((candidate) => candidate + literal.value);
     const close = interpolationEnd(token, index + 2);
     if (close < 0) return { status: "invalid", values: [] };
+    interpolationCount += 1;
+    if (interpolationCount > maximumTemplateInterpolations)
+      return { status: "overflow", values: [] };
     const expression = token.slice(index + 2, close).trim();
     const decodedExpression = decodeOrdinaryQuotedScalar(expression);
     if (decodedExpression.status === "overflow") return decodedExpression;
+    let alternatives;
     if (decodedExpression.status === "valid") {
-      known += decodedExpression.values[0];
-      withQuotedAmbiguity += decodedExpression.values[0];
+      alternatives = decodedExpression.values;
     } else {
       const quoted = quotedScalarsFromExpression(expression);
       if (quoted.status === "overflow") return quoted;
-      withQuotedAmbiguity += quoted.values.join("");
+      alternatives = [...new Set(["", ...quoted.values])];
     }
-    if (
-      known.length > maximumDecodedScalarCharacters ||
-      withQuotedAmbiguity.length > maximumDecodedScalarCharacters
-    )
+    if (alternatives.length > maximumTemplateAlternativesPerInterpolation)
       return { status: "overflow", values: [] };
+    const expanded = new Set();
+    for (const candidate of candidates) {
+      for (const alternative of alternatives) {
+        const combined = candidate + alternative;
+        if (combined.length > maximumDecodedScalarCharacters)
+          return { status: "overflow", values: [] };
+        expanded.add(combined);
+        if (expanded.size > maximumTemplateCandidates) return { status: "overflow", values: [] };
+      }
+    }
+    candidates = [...expanded];
     index = close + 1;
     segmentStart = index;
   }
   const tail = decodeEscapedContent(token.slice(segmentStart, -1));
   if (tail.status !== "valid") return { status: tail.status, values: [] };
-  known += tail.value;
-  withQuotedAmbiguity += tail.value;
-  if (
-    known.length > maximumDecodedScalarCharacters ||
-    withQuotedAmbiguity.length > maximumDecodedScalarCharacters
-  )
+  candidates = candidates.map((candidate) => candidate + tail.value);
+  if (candidates.some((candidate) => candidate.length > maximumDecodedScalarCharacters))
     return { status: "overflow", values: [] };
-  return { status: "valid", values: [...new Set([known, withQuotedAmbiguity])] };
+  return { status: "valid", values: candidates };
 }
 
 function decodeQuotedScalar(token) {
@@ -376,6 +385,7 @@ function scalarValuesFromText(text) {
     if (/^["'`]/.test(token)) {
       const decoded = decodeQuotedScalar(token);
       if (decoded.status === "overflow") return { values: [], overflow: true };
+      if (token[0] === "`" && decoded.status === "invalid") return { values: [], overflow: true };
       if (decoded.status === "valid") values.push(...decoded.values);
     } else if (/^true$/i.test(token)) {
       values.push(true);

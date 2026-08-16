@@ -699,7 +699,7 @@ describe("reference redaction controls", () => {
     ).not.toThrow();
   }, 120_000);
 
-  test("decodes continued and static-template strings and fails closed at the scalar bound", () => {
+  test("enumerates bounded template alternatives and fails closed at every scalar bound", () => {
     const publication = redactionTestApi.buildPublicationOracle(baseline);
     const protectedValue = baseline.artifacts.artifacts[0].contentDigest as string;
     const pieces = protectedValue.match(/.{1,5}/g)!;
@@ -750,16 +750,62 @@ describe("reference redaction controls", () => {
     );
     rejected(["`", escapedPieces.join("${''}"), "`"].join(""));
 
+    const [prefix, middle, suffix] = [
+      protectedValue.slice(0, 20),
+      protectedValue.slice(20, 44),
+      protectedValue.slice(44),
+    ];
+    const branch = (expression: string) => `\`${prefix}\${${expression}}${suffix}\``;
+    rejected(branch(`flag ? ${JSON.stringify(middle)} : "neutral"`));
+    rejected(branch(`flag ? "neutral" : ${JSON.stringify(middle)}`));
+    rejected(branch(`flag && ${JSON.stringify(middle)}`));
+    rejected(branch(`candidate ?? ${JSON.stringify(middle)}`));
+    rejected(branch(`["neutral", ${JSON.stringify(middle)}][choice]`));
+    rejected(branch(`"" || "neutral" || ${JSON.stringify(middle)}`));
+    rejected(branch(`"" || ${JSON.stringify(middle)} || ${JSON.stringify(middle)}`));
+
+    const segments = [
+      protectedValue.slice(0, 12),
+      protectedValue.slice(12, 24),
+      protectedValue.slice(24, 36),
+      protectedValue.slice(36, 48),
+      protectedValue.slice(48),
+    ];
+    rejected(
+      `\`${segments[0]}\${left ? ${JSON.stringify(segments[1])} : "left-neutral"}${segments[2]}\${right ? "right-neutral" : ${JSON.stringify(segments[3])}}${segments[4]}\``,
+    );
+
+    const encodedMiddle = [...middle]
+      .map((character) => `\\u{${character.codePointAt(0)!.toString(16)}}`)
+      .join("");
+    rejected(branch(`flag ? '${encodedMiddle}' : "neutral"`));
+    rejected(branch(`flag ? '${middle.match(/.{1,5}/g)!.join("\\\n")}' : "neutral"`));
+    rejected(branch(`flag ? '${middle.match(/.{1,5}/g)!.join("\\\r\n")}' : "neutral"`));
+
+    const alternatives = (prefixValue: string, count: number) =>
+      Array.from({ length: count }, (_, index) => JSON.stringify(`${prefixValue}${index}`)).join(
+        ",",
+      );
+    accepted(
+      `\`safe\${[${alternatives("left-neutral-", 15)}][left]}center\${[${alternatives("right-neutral-", 15)}][right]}tail\``,
+    );
+    rejected(`\`safe\${[${alternatives("overflow-neutral-", 16)}][choice]}tail\``);
+    accepted(`\`${"${'x'}".repeat(16)}\``);
+    rejected(`\`${"${'x'}".repeat(17)}\``);
+
+    const encodedBoundary = ["`", "safe", "\\\n".repeat(16_381), "`"].join("");
+    expect(encodedBoundary.length).toBe(32_768);
+    accepted(encodedBoundary);
+    rejected(["`", "safe", "\\\n".repeat(16_382), "`"].join(""));
+
     accepted(`"${"a".repeat(4096)}"`);
     rejected(`"${"a".repeat(4097)}"`);
-    for (const malformed of [
-      '"unterminated',
-      "`unterminated${",
-      '"\\u{110000}"',
-      "`neutral${unknown}text`",
-    ]) {
+    rejected(["`", "neutral${'value'", "`"].join(""));
+    for (const malformed of ['"unterminated', "`unterminated${", '"\\u{110000}"']) {
       accepted(malformed);
     }
+    accepted("`safe${(() => { throw new Error('neutral'); })()}tail`");
+    accepted("`neutral${unknown}text`");
   });
 
   test("live comparison flags are exact, complete, and duplicate-free", () => {

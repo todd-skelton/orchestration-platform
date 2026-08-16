@@ -177,7 +177,7 @@ const pinnedSource = Object.freeze({
     sourcePaths: "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     transitions: "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
     pathSensitivity: "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
-    publicationFingerprints: "2320502e4bcda0bba61f2dc1d06f65ccd0ef4ba6e15b666009d39855fa5ae4e5",
+    publicationFingerprints: "dd6a3783577d1ee54f071c82e05c3c22fc245590d49b87ec22ca3ab896157b82",
   },
   extensionCensus: {
     cjs: 2,
@@ -432,9 +432,9 @@ export function buildPublicationFingerprints(snapshot) {
     });
   }
   const census = {
-    schemaVersion: "reference-publication-fingerprints/v5",
+    schemaVersion: "reference-publication-fingerprints/v6",
     derivation:
-      "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion, valid continuations and static template fragments are reconstructed without evaluation, and collision-resistant strings are independently marked.",
+      "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion, valid continuations are decoded, and template static segments are combined with every independently decoded quoted branch alternative without evaluation under pinned Cartesian bounds.",
     minimumFragmentPolicy: {
       directValueRelationshipArity: 2,
       streamRelationshipArity: 2,
@@ -443,12 +443,16 @@ export function buildPublicationFingerprints(snapshot) {
       maximumDecodedScalarCharacters: 4096,
       maximumEncodedScalarCharacters: 32768,
       maximumScalarTokensPerScan: 65536,
+      maximumTemplateCandidates: 256,
+      maximumTemplateInterpolations: 16,
+      maximumTemplateAlternativesPerInterpolation: 16,
       strongStringMinimumNormalizedCharacters: 12,
       propertyNameDisposition: "candidate-scalar",
       javascriptCodePointEscapeDisposition: "decode-without-evaluation",
       javascriptLineContinuationDisposition: "remove-lf-or-crlf",
       templateInterpolationDisposition:
-        "concatenate-static-quoted-literals-and-fingerprint-static-pieces-of-ambiguous-expressions",
+        "bounded-cartesian-quoted-alternatives-with-omission-and-static-segments",
+      templateFailureDisposition: "reject-malformed-or-bound-overflow",
       decodedScalarBoundaryDisposition: "4096-allowed-4097-rejected",
       overflowDisposition: "reject",
       publicationCollisionDisposition:
