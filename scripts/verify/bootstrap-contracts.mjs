@@ -233,6 +233,11 @@ function equal(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function normalizeLineEndings(value) {
+  if (/\r(?!\n)/.test(value)) fail("text contract contains a malformed line ending");
+  return value.replace(/\r\n/g, "\n");
+}
+
 async function runPnpm(args, cwd) {
   const launcher = await resolvePnpmLauncher();
   const result = await execFileAsync(launcher.executable, [...launcher.prefixArgs, ...args], {
@@ -661,7 +666,7 @@ export async function validateBootstrapSnapshot(snapshot) {
     if (!/^\d+\.\d+\.\d+$/.test(version)) fail(`${dependency} is not exactly pinned`);
   }
   if (
-    snapshot.workspace !==
+    normalizeLineEndings(snapshot.workspace) !==
     'packages:\n  - "packages/*"\n  - "modules/*"\n  - "adapters/*"\n\nallowBuilds:\n  esbuild: true\n'
   ) {
     fail("workspace globs are not the exact predeclared set");
@@ -724,8 +729,10 @@ export async function validateBootstrapSnapshot(snapshot) {
   if (!Array.isArray(snapshot.moduleManifest) || snapshot.moduleManifest.length !== 0) {
     fail("bootstrap module manifest must be the exact empty list");
   }
-  if (snapshot.moduleManifestSource !== "[]\n") fail("bootstrap module manifest bytes mismatch");
-  if (snapshot.workflow !== expectedWorkflow) fail("three-OS bootstrap workflow mismatch");
+  if (normalizeLineEndings(snapshot.moduleManifestSource) !== "[]\n")
+    fail("bootstrap module manifest bytes mismatch");
+  if (normalizeLineEndings(snapshot.workflow) !== expectedWorkflow)
+    fail("three-OS bootstrap workflow mismatch");
   validateCliRegistrySource(snapshot.cliRegistrySource);
   validateHandlerSources(snapshot.handlerFiles, snapshot.handlerSources);
   validateCredentialPackageInventory(snapshot.credentialPackageInventory);

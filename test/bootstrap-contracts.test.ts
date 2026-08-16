@@ -16,6 +16,14 @@ beforeAll(async () => {
 }, 30_000);
 
 describe("bootstrap manifest graph", () => {
+  test("accepts CRLF tracked text contracts without changing their semantics", async () => {
+    const snapshot = mutant();
+    snapshot.workspace = snapshot.workspace.replace(/\n/g, "\r\n");
+    snapshot.moduleManifestSource = snapshot.moduleManifestSource.replace(/\n/g, "\r\n");
+    snapshot.workflow = snapshot.workflow.replace(/\n/g, "\r\n");
+    await expect(validateBootstrapSnapshot(snapshot)).resolves.toBeUndefined();
+  });
+
   test("uses native Windows pnpm executables without a Node prefix", async () => {
     await expect(resolvePnpmLauncher("C:\\pnpm\\pnpm.exe")).resolves.toEqual({
       executable: "C:\\pnpm\\pnpm.exe",
