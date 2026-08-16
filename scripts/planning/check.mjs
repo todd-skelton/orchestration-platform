@@ -1,6 +1,7 @@
-import { readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { capabilitySlotName } from "../capability-slots.mjs";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -154,6 +155,49 @@ function validateCommandCensus(snapshot) {
   }
 }
 
+function declaredCapabilities(issueDrafts) {
+  const declared = new Map();
+  for (const [issue, source] of Object.entries(issueDrafts)) {
+    for (const command of verificationCommands(source)) {
+      const root = command.match(/^pnpm run ([a-z0-9:-]+)/);
+      const filtered = command.match(/^pnpm --filter (\S+) (\S+)/);
+      const capability = root?.[1] ?? (filtered ? `${filtered[1]}:${filtered[2]}` : undefined);
+      if (!capability || issue === "ISS-000") continue;
+      if (declared.has(capability)) fail(`duplicate declared capability ${capability}`);
+      declared.set(capability, issue);
+    }
+  }
+  return declared;
+}
+
+function validateCapabilitySlots(snapshot) {
+  const declared = declaredCapabilities(snapshot.issueDrafts);
+  const seen = new Set();
+  for (const slot of snapshot.capabilitySlots) {
+    if (!/^ISS-\d{3}$/.test(slot.issue) || !slot.isDirectory || slot.directorySymlink) {
+      fail(`malformed capability slot owner ${slot.issue}`);
+    }
+    if (!slot.isFile || slot.isSymbolicLink || !slot.name.endsWith(".mjs")) {
+      fail(`malformed capability slot ${slot.issue}/${slot.name}`);
+    }
+    const encoded = slot.name.slice(0, -4);
+    let capability;
+    try {
+      capability = decodeURIComponent(encoded);
+    } catch {
+      fail(`malformed capability slot encoding ${slot.name}`);
+    }
+    if (!capability || capabilitySlotName(capability) !== slot.name) {
+      fail(`capability slot encoding collision ${slot.name}`);
+    }
+    if (declared.get(capability) !== slot.issue) {
+      fail(`capability slot has wrong owner or is extra ${slot.issue}/${slot.name}`);
+    }
+    if (seen.has(capability)) fail(`duplicate capability slot ${capability}`);
+    seen.add(capability);
+  }
+}
+
 export function validatePlanningSnapshot(snapshot) {
   const { roadmap } = snapshot;
   if (roadmap.schemaVersion !== "orchestration-roadmap/v1") fail("unknown roadmap schema");
@@ -215,6 +259,45 @@ export function validatePlanningSnapshot(snapshot) {
   }
 
   validateCommandCensus(snapshot);
+  validateCapabilitySlots(snapshot);
+}
+
+async function loadCapabilitySlots(root) {
+  const slotsRoot = resolve(root, "test/capability-slots");
+  try {
+    const owners = await readdir(slotsRoot, { withFileTypes: true });
+    const slots = [];
+    for (const owner of owners) {
+      const ownerPath = resolve(slotsRoot, owner.name);
+      const ownerMetadata = await lstat(ownerPath);
+      if (!ownerMetadata.isDirectory() || ownerMetadata.isSymbolicLink()) {
+        slots.push({
+          issue: owner.name,
+          name: "",
+          isDirectory: false,
+          directorySymlink: ownerMetadata.isSymbolicLink(),
+          isFile: false,
+          isSymbolicLink: false,
+        });
+        continue;
+      }
+      for (const entry of await readdir(ownerPath, { withFileTypes: true })) {
+        const metadata = await lstat(resolve(ownerPath, entry.name));
+        slots.push({
+          issue: owner.name,
+          name: entry.name,
+          isDirectory: true,
+          directorySymlink: false,
+          isFile: metadata.isFile(),
+          isSymbolicLink: metadata.isSymbolicLink(),
+        });
+      }
+    }
+    return slots;
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
 }
 
 export async function loadPlanningSnapshot(root = defaultRoot) {
@@ -256,6 +339,7 @@ export async function loadPlanningSnapshot(root = defaultRoot) {
     epicDrafts,
     rootPackage: JSON.parse(await readFile(resolve(root, "package.json"), "utf8")),
     packageManifests,
+    capabilitySlots: await loadCapabilitySlots(root),
   };
 }
 

@@ -7,6 +7,7 @@ import {
   type PlanningSnapshot,
 } from "../scripts/planning/check.mjs";
 import { resolvePnpmLauncher } from "../scripts/pnpm-launcher.mjs";
+import { regularCapabilitySlot } from "../scripts/capability-slots.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const placeholder = resolve(root, "scripts/capability-not-implemented.mjs");
@@ -35,7 +36,7 @@ describe("planned verification command execution census", () => {
     });
   });
 
-  test("every unimplemented planned wrapper emits its fixed owner and forwarded argv", () => {
+  test("every unimplemented planned wrapper emits its fixed owner and forwarded argv", async () => {
     let executed = 0;
     let argumentBearing = 0;
     for (const [issue, source] of Object.entries(snapshot.issueDrafts)) {
@@ -47,6 +48,7 @@ describe("planned verification command execution census", () => {
           rootCommand?.[1] ??
           (filteredCommand ? `${filteredCommand[1]}:${filteredCommand[2]}` : undefined);
         if (!capability) continue;
+        if (await regularCapabilitySlot(root, issue, capability)) continue;
 
         const forwardedTail = rootCommand ? command.slice(rootCommand[0].length).trim() : "";
         const forwardedArguments = forwardedTail ? forwardedTail.split(/\s+/) : [];
