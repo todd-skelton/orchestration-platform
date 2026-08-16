@@ -1,6 +1,13 @@
 export const formatterTargets: readonly string[];
 
-export function validateFormatterInputs(paths: readonly string[]): Promise<void>;
+export interface FormatterInputOptions {
+  ignorePath?: string | readonly string[];
+}
+
+export function validateFormatterInputs(
+  paths: readonly string[],
+  options?: FormatterInputOptions,
+): Promise<void>;
 
 export function runPinnedPrettier(
   mode: "check" | "write",

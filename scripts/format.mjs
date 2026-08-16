@@ -1,23 +1,17 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { extname, relative, resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { getFileInfo } from "prettier";
 import { normalizeTrackedText } from "./tracked-text.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(fileURLToPath(import.meta.url), "../..");
-const supportedExtensions = new Set([
-  ".cjs",
-  ".cts",
-  ".js",
-  ".json",
-  ".mjs",
-  ".mts",
-  ".ts",
-  ".yaml",
-  ".yml",
-]);
+const ignorePaths = [
+  resolve(repositoryRoot, ".gitignore"),
+  resolve(repositoryRoot, ".prettierignore"),
+];
 
 export const formatterTargets = Object.freeze([
   "package.json",
@@ -38,7 +32,7 @@ export const formatterTargets = Object.freeze([
 
 async function collectFiles(path) {
   const metadata = await stat(path);
-  if (metadata.isFile()) return supportedExtensions.has(extname(path)) ? [path] : [];
+  if (metadata.isFile()) return [path];
   if (!metadata.isDirectory()) return [];
   const files = [];
   const entries = await readdir(path, { withFileTypes: true });
@@ -47,9 +41,11 @@ async function collectFiles(path) {
   return files;
 }
 
-export async function validateFormatterInputs(paths) {
+export async function validateFormatterInputs(paths, { ignorePath = ignorePaths } = {}) {
   for (const path of paths) {
     for (const file of await collectFiles(path)) {
+      const fileInfo = await getFileInfo(file, { ignorePath });
+      if (fileInfo.ignored || !fileInfo.inferredParser) continue;
       try {
         normalizeTrackedText(await readFile(file, "utf8"));
       } catch (error) {
