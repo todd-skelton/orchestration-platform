@@ -302,7 +302,19 @@ function quotedScalarsFromExpression(expression) {
     if (decoded.status === "overflow") return decoded;
     if (decoded.status === "valid") values.push(...decoded.values);
   }
-  return { status: "valid", values };
+  const alternatives = new Set(["", ...values]);
+  for (let start = 0; start < values.length; start += 1) {
+    let concatenated = values[start];
+    for (let end = start + 1; end < values.length; end += 1) {
+      concatenated += values[end];
+      if (concatenated.length > maximumDecodedScalarCharacters)
+        return { status: "overflow", values: [] };
+      alternatives.add(concatenated);
+      if (alternatives.size > maximumTemplateAlternativesPerInterpolation)
+        return { status: "overflow", values: [] };
+    }
+  }
+  return { status: "valid", values: [...alternatives] };
 }
 
 function decodeTemplateScalar(token) {
@@ -338,7 +350,7 @@ function decodeTemplateScalar(token) {
     } else {
       const quoted = quotedScalarsFromExpression(expression);
       if (quoted.status === "overflow") return quoted;
-      alternatives = [...new Set(["", ...quoted.values])];
+      alternatives = quoted.values;
     }
     if (alternatives.length > maximumTemplateAlternativesPerInterpolation)
       return { status: "overflow", values: [] };
@@ -370,6 +382,7 @@ function decodeQuotedScalar(token) {
 
 function scalarValuesFromText(text) {
   const values = [];
+  const quotedTokens = [];
   const pattern =
     /"(?:\\(?:\r\n|[\s\S])|[^"\\])*"|'(?:\\(?:\r\n|[\s\S])|[^'\\])*'|`(?:\\(?:\r\n|[\s\S])|[^`\\])*`|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?|\b(?:true|false|null)\b/gi;
   for (const match of text.matchAll(pattern)) {
@@ -386,7 +399,10 @@ function scalarValuesFromText(text) {
       const decoded = decodeQuotedScalar(token);
       if (decoded.status === "overflow") return { values: [], overflow: true };
       if (token[0] === "`" && decoded.status === "invalid") return { values: [], overflow: true };
-      if (decoded.status === "valid") values.push(...decoded.values);
+      if (decoded.status === "valid") {
+        values.push(...decoded.values);
+        quotedTokens.push({ start, end, values: decoded.values });
+      }
     } else if (/^true$/i.test(token)) {
       values.push(true);
     } else if (/^false$/i.test(token)) {
@@ -401,6 +417,40 @@ function scalarValuesFromText(text) {
       return { values: [], overflow: true };
     }
   }
+  let chain = [];
+  const appendChain = () => {
+    if (chain.length < 2) return true;
+    if (chain.length > maximumTemplateInterpolations) return false;
+    let candidates = [""];
+    for (const token of chain) {
+      const expanded = new Set();
+      for (const candidate of candidates) {
+        for (const alternative of token.values) {
+          const combined = candidate + alternative;
+          if (combined.length > maximumDecodedScalarCharacters) return false;
+          expanded.add(combined);
+          if (expanded.size > maximumTemplateCandidates) return false;
+        }
+      }
+      candidates = [...expanded];
+    }
+    values.push(...candidates);
+    return values.length <= maximumStreamScalarTokens;
+  };
+  for (const token of quotedTokens) {
+    const previous = chain.at(-1);
+    if (
+      previous &&
+      /\+/.test(text.slice(previous.end, token.start)) &&
+      /^[\s()+]+$/.test(text.slice(previous.end, token.start))
+    ) {
+      chain.push(token);
+    } else {
+      if (!appendChain()) return { values: [], overflow: true };
+      chain = [token];
+    }
+  }
+  if (!appendChain()) return { values: [], overflow: true };
   return { values, overflow: false };
 }
 

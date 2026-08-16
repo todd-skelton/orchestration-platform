@@ -764,6 +764,23 @@ describe("reference redaction controls", () => {
     rejected(branch(`"" || "neutral" || ${JSON.stringify(middle)}`));
     rejected(branch(`"" || ${JSON.stringify(middle)} || ${JSON.stringify(middle)}`));
 
+    const middleA = middle.slice(0, 12);
+    const middleB = middle.slice(12);
+    rejected(branch(`${JSON.stringify(middleA)} + ${JSON.stringify(middleB)}`));
+    rejected(branch(`(${JSON.stringify(middleA)} + ${JSON.stringify(middleB)})`));
+    const middleParts = [middle.slice(0, 8), middle.slice(8, 16), middle.slice(16)];
+    rejected(branch(middleParts.map((part) => JSON.stringify(part)).join(" + ")));
+    rejected(branch(`"" + ${JSON.stringify(middleA)} + "" + ${JSON.stringify(middleB)} + ""`));
+    rejected(
+      branch(`flag ? (${JSON.stringify(middleA)} + ${JSON.stringify(middleB)}) : "neutral"`),
+    );
+    rejected(
+      branch(`flag ? "neutral" : (${JSON.stringify(middleA)} + ${JSON.stringify(middleB)})`),
+    );
+    rejected(
+      branch(`["neutral", ${JSON.stringify(middleA)} + ${JSON.stringify(middleB)}][choice]`),
+    );
+
     const segments = [
       protectedValue.slice(0, 12),
       protectedValue.slice(12, 24),
@@ -774,6 +791,18 @@ describe("reference redaction controls", () => {
     rejected(
       `\`${segments[0]}\${left ? ${JSON.stringify(segments[1])} : "left-neutral"}${segments[2]}\${right ? "right-neutral" : ${JSON.stringify(segments[3])}}${segments[4]}\``,
     );
+    const concatenatedSegments = [
+      protectedValue.slice(0, 10),
+      protectedValue.slice(10, 18),
+      protectedValue.slice(18, 26),
+      protectedValue.slice(26, 36),
+      protectedValue.slice(36, 44),
+      protectedValue.slice(44, 52),
+      protectedValue.slice(52),
+    ];
+    rejected(
+      `\`${concatenatedSegments[0]}\${${JSON.stringify(concatenatedSegments[1])} + ${JSON.stringify(concatenatedSegments[2])}}${concatenatedSegments[3]}\${${JSON.stringify(concatenatedSegments[4])} + ${JSON.stringify(concatenatedSegments[5])}}${concatenatedSegments[6]}\``,
+    );
 
     const encodedMiddle = [...middle]
       .map((character) => `\\u{${character.codePointAt(0)!.toString(16)}}`)
@@ -781,15 +810,22 @@ describe("reference redaction controls", () => {
     rejected(branch(`flag ? '${encodedMiddle}' : "neutral"`));
     rejected(branch(`flag ? '${middle.match(/.{1,5}/g)!.join("\\\n")}' : "neutral"`));
     rejected(branch(`flag ? '${middle.match(/.{1,5}/g)!.join("\\\r\n")}' : "neutral"`));
+    const encodedMiddleB = [...middleB]
+      .map((character) => `\\u{${character.codePointAt(0)!.toString(16)}}`)
+      .join("");
+    rejected(branch(`"${middleA.match(/.{1,4}/g)!.join("\\\n")}" + '${encodedMiddleB}'`));
+
+    rejected(["`", prefix, "` + (`", middleA, "` + `", middleB, "`) + `", suffix, "`"].join(""));
+    rejected(branch(`\`${middleA}\` + \`${middleB}\``));
 
     const alternatives = (prefixValue: string, count: number) =>
       Array.from({ length: count }, (_, index) => JSON.stringify(`${prefixValue}${index}`)).join(
         ",",
       );
     accepted(
-      `\`safe\${[${alternatives("left-neutral-", 15)}][left]}center\${[${alternatives("right-neutral-", 15)}][right]}tail\``,
+      `\`safe\${[${alternatives("left-neutral-", 5)}][left]}center\${[${alternatives("right-neutral-", 5)}][right]}tail\``,
     );
-    rejected(`\`safe\${[${alternatives("overflow-neutral-", 16)}][choice]}tail\``);
+    rejected(`\`safe\${[${alternatives("overflow-neutral-", 6)}][choice]}tail\``);
     accepted(`\`${"${'x'}".repeat(16)}\``);
     rejected(`\`${"${'x'}".repeat(17)}\``);
 
