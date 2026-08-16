@@ -597,6 +597,24 @@ describe("reference redaction controls", () => {
         redactionTestApi.validateBuiltText(content, new Set(), undefined, [], publication),
       ).toThrow(/inventory material/);
     };
+    const encodedJsLiteral = (value: any): string => {
+      if (typeof value === "string") {
+        return `"${[...value]
+          .map((character) => `\\u{${character.codePointAt(0)!.toString(16)}}`)
+          .join("")}"`;
+      }
+      if (Array.isArray(value)) return `[${value.map(encodedJsLiteral).join(",")}]`;
+      if (value && typeof value === "object") {
+        return `{${Object.entries(value)
+          .map(([key, child]) => `${encodedJsLiteral(key)}:${encodedJsLiteral(child)}`)
+          .join(",")}}`;
+      }
+      return JSON.stringify(value);
+    };
+    const propertyKeyLiteral = (value: any): string =>
+      typeof value === "string" || (value && typeof value === "object")
+        ? JSON.stringify(typeof value === "string" ? value : JSON.stringify(value))
+        : String(value);
     let transformedRowCount = 0;
     let arbitraryStreamTransformCount = 0;
     let substantiveDeletionCount = 0;
@@ -615,6 +633,9 @@ describe("reference redaction controls", () => {
           `export default ${JSON.stringify(renamed)};`,
           JSON.stringify(reversedValues),
           reversedValues.map((value) => JSON.stringify(value)).join(","),
+          reversedValues.map((value) => JSON.stringify(value)).join(",0,"),
+          `({${reversedValues.map((value) => `${propertyKeyLiteral(value)}:0`).join(",")}})`,
+          reversedValues.map(encodedJsLiteral).join(",0,"),
         ]) {
           arbitraryStreamTransformCount += 1;
           excluded(content);
@@ -640,7 +661,7 @@ describe("reference redaction controls", () => {
       }
     }
     expect(transformedRowCount).toBe(1240);
-    expect(arbitraryStreamTransformCount).toBe(3720);
+    expect(arbitraryStreamTransformCount).toBe(7440);
     expect(substantiveDeletionCount).toBe(9012);
     expect(belowMinimumDeletionCount).toBe(1);
 

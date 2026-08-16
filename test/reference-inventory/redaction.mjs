@@ -44,6 +44,9 @@ const sourceContentMarkers = [
   /"sourcePathCensus"\s*:/,
 ];
 const copyWindow = 160;
+const maximumDecodedScalarCharacters = 4096;
+const maximumStreamScalarTokens = 65536;
+const maximumStreamRelationshipSpan = 8;
 const backslash = String.fromCharCode(92);
 const uncClass = `[a-z0-9][a-z0-9._-]*`;
 const uncSeparator = `[${backslash.repeat(2)}/]`;
@@ -201,15 +204,8 @@ function canonicalTokensFromText(value) {
 }
 
 function decodeQuotedScalar(token) {
-  if (token.startsWith('"')) {
-    try {
-      return JSON.parse(token);
-    } catch {
-      return undefined;
-    }
-  }
   const quote = token[0];
-  if (quote !== "'" && quote !== "`") return undefined;
+  if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
   if (quote === "`" && token.includes("${")) return undefined;
   let result = "";
   for (let index = 1; index < token.length - 1; index += 1) {
@@ -224,6 +220,15 @@ function decodeQuotedScalar(token) {
     const simple = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", 0: "\0" };
     if (Object.hasOwn(simple, escaped)) {
       result += simple[escaped];
+    } else if (escaped === "u" && token[index + 1] === "{") {
+      const close = token.indexOf("}", index + 2);
+      if (close < 0) return undefined;
+      const digits = token.slice(index + 2, close);
+      if (!/^[a-f0-9]{1,6}$/i.test(digits)) return undefined;
+      const codePoint = Number.parseInt(digits, 16);
+      if (codePoint > 0x10ffff) return undefined;
+      result += String.fromCodePoint(codePoint);
+      index = close;
     } else if (escaped === "u" || escaped === "x") {
       const length = escaped === "u" ? 4 : 2;
       const digits = token.slice(index + 1, index + 1 + length);
@@ -233,6 +238,7 @@ function decodeQuotedScalar(token) {
     } else {
       result += escaped;
     }
+    if (result.length > maximumDecodedScalarCharacters) return undefined;
   }
   return result;
 }
@@ -245,7 +251,6 @@ function scalarValuesFromText(text) {
     const token = match[0];
     const start = match.index;
     const end = start + token.length;
-    if (/^\s*:/.test(text.slice(end))) continue;
     if (
       /^[-\d]/.test(token) &&
       ((start > 0 && /[a-z0-9_$]/i.test(text[start - 1])) ||
@@ -265,12 +270,16 @@ function scalarValuesFromText(text) {
       const number = Number(token);
       if (Number.isFinite(number)) values.push(number);
     }
+    if (values.length > maximumStreamScalarTokens) {
+      return { values: [], overflow: true };
+    }
   }
-  return values;
+  return { values, overflow: false };
 }
 
 function streamFingerprintFinding(text, oracle) {
-  const values = scalarValuesFromText(text);
+  const { values, overflow } = scalarValuesFromText(text);
+  if (overflow) return true;
   for (const value of values) {
     const fingerprints = publicationStreamFingerprints([value]);
     if (
@@ -280,14 +289,17 @@ function streamFingerprintFinding(text, oracle) {
     )
       return true;
   }
-  for (let index = 0; index + 1 < values.length; index += 1) {
-    const fingerprints = publicationStreamFingerprints(values.slice(index, index + 2));
-    if (
-      fingerprints.streamRelationshipDigests.some((digestValue) =>
-        oracle.streamRelationshipDigests.has(digestValue),
+  for (let left = 0; left < values.length; left += 1) {
+    const limit = Math.min(values.length, left + maximumStreamRelationshipSpan + 1);
+    for (let right = left + 1; right < limit; right += 1) {
+      const fingerprints = publicationStreamFingerprints([values[left], values[right]]);
+      if (
+        fingerprints.streamRelationshipDigests.some((digestValue) =>
+          oracle.streamRelationshipDigests.has(digestValue),
+        )
       )
-    )
-      return true;
+        return true;
+    }
   }
   if (oracle.streamArities.has(values.length)) {
     const fingerprints = publicationStreamFingerprints(values);

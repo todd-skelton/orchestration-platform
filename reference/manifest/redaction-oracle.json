@@ -3047,13 +3047,20 @@
     "boundaryDisposition": "159-bytes-allowed-160-bytes-rejected-at-every-offset"
   },
   "publicationFingerprintCensus": {
-    "schemaVersion": "reference-publication-fingerprints/v3",
-    "derivation": "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent row and pair relationships; collision-resistant strings are independently marked and schema/root metadata are excluded.",
+    "schemaVersion": "reference-publication-fingerprints/v4",
+    "derivation": "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion and collision-resistant strings are independently marked.",
     "minimumFragmentPolicy": {
       "directValueRelationshipArity": 2,
       "streamRelationshipArity": 2,
       "streamRowMinimumScalarCount": 2,
+      "maximumNeutralInterleavingScalars": 7,
+      "maximumDecodedScalarCharacters": 4096,
+      "maximumScalarTokensPerScan": 65536,
       "strongStringMinimumNormalizedCharacters": 12,
+      "propertyNameDisposition": "candidate-scalar",
+      "javascriptCodePointEscapeDisposition": "decode-without-evaluation",
+      "overflowDisposition": "reject",
+      "publicationCollisionDisposition": "zero-collision-required-on-actual-packed-and-built-surfaces",
       "belowMinimumDisposition": "not-identifying-without-an-independent-marker"
     },
     "families": [
@@ -3211,6 +3218,6 @@
         "streamRelationshipRoot": "80adf373a275b3acdd7b988562a62aa5bff25bac4bf7de9677ca773ceb87cf57"
       }
     ],
-    "fingerprintRoot": "f64f9fdce25b58b39bb90033c82cca0c5c9414b3c4890bbe0f6416f02764daee"
+    "fingerprintRoot": "4f73d5709d558bb456a2576519de77f72ca65735c122c0c63ee034e5cf12ce7b"
   }
 }

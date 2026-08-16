@@ -177,7 +177,7 @@ const pinnedSource = Object.freeze({
     sourcePaths: "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     transitions: "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
     pathSensitivity: "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
-    publicationFingerprints: "f64f9fdce25b58b39bb90033c82cca0c5c9414b3c4890bbe0f6416f02764daee",
+    publicationFingerprints: "4f73d5709d558bb456a2576519de77f72ca65735c122c0c63ee034e5cf12ce7b",
   },
   extensionCensus: {
     cjs: 2,
@@ -432,19 +432,34 @@ export function buildPublicationFingerprints(snapshot) {
     });
   }
   const census = {
-    schemaVersion: "reference-publication-fingerprints/v3",
+    schemaVersion: "reference-publication-fingerprints/v4",
     derivation:
-      "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent row and pair relationships; collision-resistant strings are independently marked and schema/root metadata are excluded.",
+      "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion and collision-resistant strings are independently marked.",
     minimumFragmentPolicy: {
       directValueRelationshipArity: 2,
       streamRelationshipArity: 2,
       streamRowMinimumScalarCount: 2,
+      maximumNeutralInterleavingScalars: 7,
+      maximumDecodedScalarCharacters: 4096,
+      maximumScalarTokensPerScan: 65536,
       strongStringMinimumNormalizedCharacters: 12,
+      propertyNameDisposition: "candidate-scalar",
+      javascriptCodePointEscapeDisposition: "decode-without-evaluation",
+      overflowDisposition: "reject",
+      publicationCollisionDisposition:
+        "zero-collision-required-on-actual-packed-and-built-surfaces",
       belowMinimumDisposition: "not-identifying-without-an-independent-marker",
     },
     families,
   };
-  census.fingerprintRoot = aggregateRows("reference-publication-fingerprint-root/v1", families);
+  census.fingerprintRoot = aggregateRows("reference-publication-fingerprint-root/v2", [
+    {
+      schemaVersion: census.schemaVersion,
+      derivation: census.derivation,
+      minimumFragmentPolicy: census.minimumFragmentPolicy,
+      families,
+    },
+  ]);
   return {
     census,
     rowDigests,
