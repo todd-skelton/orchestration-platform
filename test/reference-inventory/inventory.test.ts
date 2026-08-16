@@ -772,6 +772,19 @@ describe("reference redaction controls", () => {
     rejected(branch(middleParts.map((part) => JSON.stringify(part)).join(" + ")));
     rejected(branch(`"" + ${JSON.stringify(middleA)} + "" + ${JSON.stringify(middleB)} + ""`));
     rejected(
+      branch(`${JSON.stringify(middleA)} + (flag ? "noise" : "") + ${JSON.stringify(middleB)}`),
+    );
+    rejected(
+      branch(
+        `${JSON.stringify(middleA)} + (left ? "noise-left" : "") + (right ? "noise-right" : "") + ${JSON.stringify(middleB)}`,
+      ),
+    );
+    rejected(
+      branch(
+        `${JSON.stringify(middleA)} + (outer ? (inner ? "noise-a" : "noise-b") : "") + ${JSON.stringify(middleB)}`,
+      ),
+    );
+    rejected(
       branch(`flag ? (${JSON.stringify(middleA)} + ${JSON.stringify(middleB)}) : "neutral"`),
     );
     rejected(
@@ -817,15 +830,43 @@ describe("reference redaction controls", () => {
 
     rejected(["`", prefix, "` + (`", middleA, "` + `", middleB, "`) + `", suffix, "`"].join(""));
     rejected(branch(`\`${middleA}\` + \`${middleB}\``));
+    const commentPieces = Array.from({ length: 8 }, (_, index) =>
+      protectedValue.slice(
+        Math.floor((protectedValue.length * index) / 8),
+        Math.floor((protectedValue.length * (index + 1)) / 8),
+      ),
+    );
+    rejected(commentPieces.map((piece) => JSON.stringify(piece)).join(" + /* neutral */ "));
+    rejected(commentPieces.map((piece) => JSON.stringify(piece)).join(" + // neutral\n"));
+    accepted('"/* neutral */" + "// neutral"');
+    rejected(
+      [
+        JSON.stringify(prefix),
+        " + /* unterminated ",
+        JSON.stringify(middle),
+        " + ",
+        JSON.stringify(suffix),
+      ].join(""),
+    );
+    rejected(
+      [
+        JSON.stringify(prefix),
+        " + // unterminated ",
+        JSON.stringify(middle),
+        " + ",
+        JSON.stringify(suffix),
+      ].join(""),
+    );
+    rejected(`"safe" + /*${"x".repeat(4097)}*/ "neutral"`);
 
     const alternatives = (prefixValue: string, count: number) =>
       Array.from({ length: count }, (_, index) => JSON.stringify(`${prefixValue}${index}`)).join(
         ",",
       );
     accepted(
-      `\`safe\${[${alternatives("left-neutral-", 5)}][left]}center\${[${alternatives("right-neutral-", 5)}][right]}tail\``,
+      `\`safe\${[${alternatives("left-neutral-", 4)}][left]}center\${[${alternatives("right-neutral-", 4)}][right]}tail\``,
     );
-    rejected(`\`safe\${[${alternatives("overflow-neutral-", 6)}][choice]}tail\``);
+    rejected(`\`safe\${[${alternatives("overflow-neutral-", 5)}][choice]}tail\``);
     accepted(`\`${"${'x'}".repeat(16)}\``);
     rejected(`\`${"${'x'}".repeat(17)}\``);
 

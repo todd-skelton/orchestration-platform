@@ -51,6 +51,7 @@ const maximumStreamRelationshipSpan = 8;
 const maximumTemplateCandidates = 256;
 const maximumTemplateInterpolations = 16;
 const maximumTemplateAlternativesPerInterpolation = 16;
+const maximumLiteralSeparatorCharacters = 4096;
 const backslash = String.fromCharCode(92);
 const uncClass = `[a-z0-9][a-z0-9._-]*`;
 const uncSeparator = `[${backslash.repeat(2)}/]`;
@@ -295,26 +296,54 @@ function interpolationEnd(token, start) {
 }
 
 function quotedScalarsFromExpression(expression) {
-  const values = [];
+  const pieces = [];
   const pattern = /"(?:\\(?:\r\n|[\s\S])|[^"\\])*"|'(?:\\(?:\r\n|[\s\S])|[^'\\])*'/g;
   for (const match of expression.matchAll(pattern)) {
     const decoded = decodeOrdinaryQuotedScalar(match[0]);
     if (decoded.status === "overflow") return decoded;
-    if (decoded.status === "valid") values.push(...decoded.values);
+    if (decoded.status === "valid") pieces.push(...decoded.values);
   }
-  const alternatives = new Set(["", ...values]);
-  for (let start = 0; start < values.length; start += 1) {
-    let concatenated = values[start];
-    for (let end = start + 1; end < values.length; end += 1) {
-      concatenated += values[end];
-      if (concatenated.length > maximumDecodedScalarCharacters)
+  let alternatives = new Set([""]);
+  for (const piece of pieces) {
+    const expanded = new Set(alternatives);
+    for (const candidate of alternatives) {
+      const combined = candidate + piece;
+      if (combined.length > maximumDecodedScalarCharacters)
         return { status: "overflow", values: [] };
-      alternatives.add(concatenated);
-      if (alternatives.size > maximumTemplateAlternativesPerInterpolation)
+      expanded.add(combined);
+      if (expanded.size > maximumTemplateAlternativesPerInterpolation)
         return { status: "overflow", values: [] };
     }
+    alternatives = expanded;
   }
   return { status: "valid", values: [...alternatives] };
+}
+
+function literalConcatenationSeparator(separator) {
+  if (separator.length > maximumLiteralSeparatorCharacters) return { status: "overflow" };
+  let hasPlus = false;
+  let index = 0;
+  while (index < separator.length) {
+    if (/\s/.test(separator[index])) {
+      index += 1;
+    } else if (separator[index] === "+") {
+      hasPlus = true;
+      index += 1;
+    } else if (separator[index] === "(" || separator[index] === ")") {
+      index += 1;
+    } else if (separator.startsWith("/*", index)) {
+      const close = separator.indexOf("*/", index + 2);
+      if (close < 0) return { status: "invalid" };
+      index = close + 2;
+    } else if (separator.startsWith("//", index)) {
+      const lineEnd = separator.slice(index + 2).search(/[\r\n]/);
+      if (lineEnd < 0) return { status: "invalid" };
+      index += lineEnd + 2;
+    } else {
+      return { status: "valid", concatenates: false };
+    }
+  }
+  return { status: "valid", concatenates: hasPlus };
 }
 
 function decodeTemplateScalar(token) {
@@ -439,11 +468,12 @@ function scalarValuesFromText(text) {
   };
   for (const token of quotedTokens) {
     const previous = chain.at(-1);
-    if (
-      previous &&
-      /\+/.test(text.slice(previous.end, token.start)) &&
-      /^[\s()+]+$/.test(text.slice(previous.end, token.start))
-    ) {
+    const separator = previous
+      ? literalConcatenationSeparator(text.slice(previous.end, token.start))
+      : undefined;
+    if (separator?.status !== undefined && separator.status !== "valid")
+      return { values: [], overflow: true };
+    if (previous && separator.concatenates) {
       chain.push(token);
     } else {
       if (!appendChain()) return { values: [], overflow: true };

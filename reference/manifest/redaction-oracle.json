@@ -3047,8 +3047,8 @@
     "boundaryDisposition": "159-bytes-allowed-160-bytes-rejected-at-every-offset"
   },
   "publicationFingerprintCensus": {
-    "schemaVersion": "reference-publication-fingerprints/v7",
-    "derivation": "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion, valid continuations are decoded, template static segments are combined with every independently decoded ordered contiguous quoted alternative, and adjacent literal concatenations are reconstructed without evaluation under pinned Cartesian bounds.",
+    "schemaVersion": "reference-publication-fingerprints/v8",
+    "derivation": "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion, valid continuations are decoded, template static segments are combined with every independently decoded ordered quoted subsequence, and comment-separated adjacent literal concatenations are reconstructed without evaluation under pinned Cartesian bounds.",
     "minimumFragmentPolicy": {
       "directValueRelationshipArity": 2,
       "streamRelationshipArity": 2,
@@ -3061,12 +3061,14 @@
       "maximumTemplateInterpolations": 16,
       "maximumTemplateAlternativesPerInterpolation": 16,
       "maximumAdjacentLiteralChainTokens": 16,
+      "maximumLiteralSeparatorCharacters": 4096,
       "strongStringMinimumNormalizedCharacters": 12,
       "propertyNameDisposition": "candidate-scalar",
       "javascriptCodePointEscapeDisposition": "decode-without-evaluation",
       "javascriptLineContinuationDisposition": "remove-lf-or-crlf",
-      "templateInterpolationDisposition": "bounded-cartesian-ordered-contiguous-quoted-alternatives-with-omission-and-static-segments",
-      "adjacentLiteralConcatenationDisposition": "bounded-cartesian-reconstruction-across-plus-and-parenthesis-only-separators",
+      "templateInterpolationDisposition": "bounded-cartesian-ordered-quoted-subsequences-with-omission-and-static-segments",
+      "adjacentLiteralConcatenationDisposition": "bounded-cartesian-reconstruction-across-plus-parenthesis-whitespace-and-lexed-comments",
+      "literalSeparatorCommentDisposition": "strip-bounded-block-or-line-comments-and-reject-unterminated-comments",
       "templateFailureDisposition": "reject-malformed-or-bound-overflow",
       "decodedScalarBoundaryDisposition": "4096-allowed-4097-rejected",
       "overflowDisposition": "reject",
@@ -3228,6 +3230,6 @@
         "streamRelationshipRoot": "80adf373a275b3acdd7b988562a62aa5bff25bac4bf7de9677ca773ceb87cf57"
       }
     ],
-    "fingerprintRoot": "47d85cf377850f6b2753df066d579454527ba3d1bd663c3ca8835df320012a50"
+    "fingerprintRoot": "b9ae11a5d5a713c742971d86af9a642a3d59ff8a1881b151fb4c3e2ffa769701"
   }
 }
