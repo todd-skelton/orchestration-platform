@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "reference-authority-inventory/v2",
+  "authorityRoot": "248d82572d5f582cfe2453a6c7d7335f761403e75a6c23a7fea8f6922a8acc7f",
+  "authorities": [
+    {
+      "id": "authority-external-provider",
+      "kind": "external-control-plane",
+      "requiredObservation": "observation-fresh-external-subject"
+    },
+    {
+      "id": "authority-filesystem",
+      "kind": "host-state",
+      "requiredObservation": "observation-path-confinement"
+    },
+    {
+      "id": "authority-process-table",
+      "kind": "host-state",
+      "requiredObservation": "observation-exact-process-identity"
+    },
+    {
+      "id": "authority-test-fixture",
+      "kind": "synthetic-only",
+      "requiredObservation": "observation-fixture-confinement"
+    },
+    {
+      "id": "authority-version-control",
+      "kind": "repository-state",
+      "requiredObservation": "observation-exact-revision-and-cleanliness"
+    }
+  ],
+  "observations": [
+    {
+      "id": "observation-exact-process-identity",
+      "unavailableDisposition": "capacity-indeterminate"
+    },
+    {
+      "id": "observation-exact-revision-and-cleanliness",
+      "unavailableDisposition": "refuse-repository-mutation"
+    },
+    {
+      "id": "observation-fixture-confinement",
+      "unavailableDisposition": "refuse-fixture"
+    },
+    {
+      "id": "observation-fresh-external-subject",
+      "unavailableDisposition": "external-unavailable"
+    },
+    {
+      "id": "observation-path-confinement",
+      "unavailableDisposition": "refuse-write"
+    }
+  ]
+}

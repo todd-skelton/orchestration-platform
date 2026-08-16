@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "reference-recovery-transitions/v2",
+  "transitionRoot": "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
+  "transitions": [
+    {
+      "id": "transition-open-breaker",
+      "from": "external-failure",
+      "to": "mutation-blocked",
+      "preserves": ["failure-evidence", "last-safe-state"]
+    },
+    {
+      "id": "transition-reconcile-filesystem",
+      "from": "partial-write",
+      "to": "recovery-required",
+      "preserves": ["mutation-receipt", "prior-generation"]
+    },
+    {
+      "id": "transition-remove-fixture",
+      "from": "fixture-created",
+      "to": "fixture-absent",
+      "preserves": ["synthetic-evidence"]
+    },
+    {
+      "id": "transition-replan-moved-revision",
+      "from": "subject-moved",
+      "to": "needs-replan",
+      "preserves": ["observed-revision", "prior-review"]
+    },
+    {
+      "id": "transition-terminate-exact-owner",
+      "from": "partial-launch",
+      "to": "terminal",
+      "preserves": ["ownership-evidence", "process-census"]
+    }
+  ]
+}

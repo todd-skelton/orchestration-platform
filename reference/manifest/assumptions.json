@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "reference-assumption-inventory/v2",
+  "assumptionRoot": "da05fe041327366d34efa83c271a4be777cee472c0685375aa1200bab5d55876",
+  "assumptions": [
+    {
+      "id": "assumption-native-process-boundary",
+      "classification": "platform-mechanism",
+      "behaviorFamilyId": "behavior-worker-lifecycle",
+      "disposition": "retain-as-contract"
+    },
+    {
+      "id": "assumption-exact-subject-authority",
+      "classification": "platform-mechanism",
+      "behaviorFamilyId": "behavior-review-promotion",
+      "disposition": "retain-as-contract"
+    },
+    {
+      "id": "assumption-repository-policy-shape",
+      "classification": "adapter-policy",
+      "behaviorFamilyId": "behavior-planning-delivery",
+      "disposition": "move-behind-adapter"
+    },
+    {
+      "id": "assumption-legacy-receipt-family",
+      "classification": "historical-compatibility",
+      "behaviorFamilyId": "behavior-evidence-conformance",
+      "disposition": "retain-only-as-named-fixture"
+    },
+    {
+      "id": "assumption-host-specific-launch-helper",
+      "classification": "obsolete",
+      "behaviorFamilyId": "behavior-evidence-conformance",
+      "disposition": "replace-with-native-process-adapter"
+    },
+    {
+      "id": "assumption-unresolved-parser-equivalence",
+      "classification": "historical-compatibility",
+      "behaviorFamilyId": "behavior-evidence-conformance",
+      "disposition": "linked-probe",
+      "resolution": {
+        "kind": "probe",
+        "issue": "ISS-022"
+      }
+    },
+    {
+      "id": "assumption-unresolved-host-tool-surface",
+      "classification": "adapter-policy",
+      "behaviorFamilyId": "behavior-worker-lifecycle",
+      "disposition": "linked-probe",
+      "resolution": {
+        "kind": "probe",
+        "issue": "ISS-023"
+      }
+    }
+  ]
+}

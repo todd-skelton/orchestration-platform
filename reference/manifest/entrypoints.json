@@ -1,0 +1,826 @@
+{
+  "schemaVersion": "reference-entrypoint-census/v2",
+  "entrypointCount": 79,
+  "entrypointRoot": "62ab3dfacdc527459aaf77262959c2aa3adf20cb36a4d9f60ddb99c9a3f9eae3",
+  "semanticRoot": "33e8feee34b6d78246e46c0a6a391aad6ad449b47e563500a9742f165d6c1331",
+  "entrypoints": [
+    {
+      "entrypointId": "entrypoint-001",
+      "artifactId": "artifact-001",
+      "pathDigest": "0025d9086cf48f25d9cbfcc17be9209666e5d9b9549435ae8e3cd6b94057c119",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-planning-delivery"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-002",
+      "artifactId": "artifact-002",
+      "pathDigest": "09490507b58b386484080062810d310756d4d83d046ec872229942766ebef3c6",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-release-authority", "behavior-session-authority"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-003",
+      "artifactId": "artifact-003",
+      "pathDigest": "0b0569381d993666bae28783c8ac61386de963f9ecc9968e5162b087bb0fd26c",
+      "kind": "sh",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-004",
+      "artifactId": "artifact-004",
+      "pathDigest": "0b98c8cbdbdcc285ac5636f7adee72eae7a58cc1106893bc255f0a59768371a4",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-release-authority"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-005",
+      "artifactId": "artifact-005",
+      "pathDigest": "0d2a73cb8d714108eeb9c0907b7203b862c343659fed61ac42d507115df53f3c",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-session-authority"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-006",
+      "artifactId": "artifact-006",
+      "pathDigest": "0d688cdd0611a32ff227c1f9bd8fc95d474e49deed70e508e0866dafdf1d80aa",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-review-promotion"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-007",
+      "artifactId": "artifact-007",
+      "pathDigest": "0f7feacfd768725aa853b11f5a932b4df4688ff6674f786757bd59ba86c85456",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-review-promotion"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-008",
+      "artifactId": "artifact-008",
+      "pathDigest": "1264f4cee8945e7c398352c45e9b89aa67e85626eac428fd05fc228d5db34c50",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-009",
+      "artifactId": "artifact-010",
+      "pathDigest": "1741f0b02f3095ec8408e2e4fd7a78267ac6aa5d32a790643c9e9c6d452b4dc1",
+      "kind": "cjs",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-010",
+      "artifactId": "artifact-011",
+      "pathDigest": "1865151d1f851161e16c28f4eacb70cf49bb1bc42544383521897c1ff9c1c575",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-011",
+      "artifactId": "artifact-012",
+      "pathDigest": "1ab7f1801589a6cdf701be79f1da8bdcdec1d963337e21a545db676a3b825666",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-012",
+      "artifactId": "artifact-013",
+      "pathDigest": "1c310e3e763032ab0017ddcb7b8f660c1f3da398ac23dbcf9ce6f839135e6a70",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-release-authority"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-013",
+      "artifactId": "artifact-014",
+      "pathDigest": "1cc88b2e792566c15a90f3c333ababd4c461d4013f8aa81a827ddb005a17fe65",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-workspace-identity"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-014",
+      "artifactId": "artifact-015",
+      "pathDigest": "1d4c6efda3fccf3b2d6e376285f0b705540e5de0a97d09211d6ba696e7e9f864",
+      "kind": "cjs",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-015",
+      "artifactId": "artifact-016",
+      "pathDigest": "1e5b013090437f77ab06d474738f6a1770c7541e44b1bd2d907dd9a10155e6b1",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-016",
+      "artifactId": "artifact-017",
+      "pathDigest": "1f7456623ff300638304e21edf2de2e8b255406591daa2c5737bf0b88cf2066b",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-model-routing"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-017",
+      "artifactId": "artifact-018",
+      "pathDigest": "220af783b1623896c4899fc44c5b58307f88e2939ecd6e409db2567032ef0506",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-release-authority"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-018",
+      "artifactId": "artifact-019",
+      "pathDigest": "22b64b72be8a70ae52769ec6698289535e81b87fb79406d48cfec175e6a98d07",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-019",
+      "artifactId": "artifact-020",
+      "pathDigest": "245f7942be2be1d8557147f01d8f697dbbadca3bc8f23b3b5c1cece76fd86df8",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-020",
+      "artifactId": "artifact-024",
+      "pathDigest": "2a30805915f010afab8436a85b170a5738b0582e1eedfc321304a0ea4bd0fbb9",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-021",
+      "artifactId": "artifact-026",
+      "pathDigest": "2fa86fc92669f84345d04b2fb6f09d16ffd7bcefc2177313fb0465cba86de33a",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-model-routing"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-022",
+      "artifactId": "artifact-027",
+      "pathDigest": "33f3f5180cef415e610fa1e2dabaee8db71bac543113bf8d2d7631e8755c405f",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-023",
+      "artifactId": "artifact-028",
+      "pathDigest": "37355368e27baad8c39e708fa29f293110f483fa51dc659e87f0b938ff592889",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-024",
+      "artifactId": "artifact-029",
+      "pathDigest": "3c27aca4e7f58802cfc404b4a62a86304812d40be76f0166be119ab9c8538d02",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": [
+        "behavior-evidence-conformance",
+        "behavior-planning-delivery",
+        "behavior-release-authority"
+      ],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-025",
+      "artifactId": "artifact-031",
+      "pathDigest": "40e2b703e6ca1e00fbf86f0296f4e40ea1557d87265d4e8160a9552c588a71ee",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-026",
+      "artifactId": "artifact-032",
+      "pathDigest": "4455efa9cb4713d11773c799c5bc4199d3ca10a38ceeb920910fe4fa47a391b2",
+      "kind": "ps1",
+      "classification": "adapter-policy",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-027",
+      "artifactId": "artifact-034",
+      "pathDigest": "4e1a48a2fa676f077825950ebf7df4c9c393c0f89613dcdc4d7e0c692d59b6ee",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-028",
+      "artifactId": "artifact-036",
+      "pathDigest": "4fc36c55e4c61dc25212f7b47a18d4ac437f2f2969425e17d1478f0bfef4e9c5",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": [
+        "behavior-evidence-conformance",
+        "behavior-planning-delivery",
+        "behavior-telemetry-learning"
+      ],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-029",
+      "artifactId": "artifact-037",
+      "pathDigest": "521ecc407c1ad6e94046aefdd1db5e1cb7032de61922810818c60572a2bd8b2d",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-breaker-recovery"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-030",
+      "artifactId": "artifact-040",
+      "pathDigest": "588d4961633fd31fee129751e2e7894e61db7013036fb9459b51a97dea3f3ae4",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-031",
+      "artifactId": "artifact-042",
+      "pathDigest": "5dba69e1850fb51ebb773d12ad1194b32e7b8942308457338ae9fac5ce185e79",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-032",
+      "artifactId": "artifact-043",
+      "pathDigest": "60dd7002cd413a152ad52fd666243fae6888b3d991498e0b2f86be5f9a232383",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-033",
+      "artifactId": "artifact-045",
+      "pathDigest": "6664c9953cbe5de37f22eedfcc1929902972740644689ff03d13dd145e1d3f6f",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-034",
+      "artifactId": "artifact-047",
+      "pathDigest": "68adbd7826294942bcb4497a92fb67a2a52e5bb2ba9df1b0f647499984e4894d",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-model-routing"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-035",
+      "artifactId": "artifact-048",
+      "pathDigest": "68d51e84a23a26be9a6f7151f0a15f010eeab43f45bb3c1a93f63413ea30ab83",
+      "kind": "vbs",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-planning-delivery"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-036",
+      "artifactId": "artifact-049",
+      "pathDigest": "6cdbea3f88a0a0d57e159d3698eedaaaa8af8042a6aae141c785a39b19a25888",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-037",
+      "artifactId": "artifact-050",
+      "pathDigest": "6d560324255db7022db8b15b232d7344ed5941fedced4e478484bda4ae32f122",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-038",
+      "artifactId": "artifact-051",
+      "pathDigest": "6da89916651e7333dece4e1516da216cff3a450954cc51f7121129d8f3be839c",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-039",
+      "artifactId": "artifact-052",
+      "pathDigest": "6e172ccd73a5e4f4d3096fff6f00e3121e972927f41559397cae06a4469a9708",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-040",
+      "artifactId": "artifact-054",
+      "pathDigest": "70a494440b6b53f84be08851d1dfe878fb94e0644ca4935219d2744e778c8695",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-041",
+      "artifactId": "artifact-055",
+      "pathDigest": "71593a158eafc5b75ce8ed995ed597935dad888e9abcf0dd0e03e9ba1d2c0330",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-session-authority"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-042",
+      "artifactId": "artifact-058",
+      "pathDigest": "7847baa196c166d9ed2c7b22a77f8df7e833dca99874f850fffb88a4cd0faf52",
+      "kind": "ps1",
+      "classification": "adapter-policy",
+      "behaviorFamilyIds": [
+        "behavior-evidence-conformance",
+        "behavior-planning-delivery",
+        "behavior-telemetry-learning"
+      ],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-043",
+      "artifactId": "artifact-059",
+      "pathDigest": "7c907a74d03b9175e197176030f1a30b3de044b1a8613e10be3b4961dbf669ae",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-release-authority"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-044",
+      "artifactId": "artifact-061",
+      "pathDigest": "81e9c9c9036a2f235663fecc92c06aa10e420495c2da0f01b373531522c4a821",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": [
+        "behavior-breaker-recovery",
+        "behavior-evidence-conformance",
+        "behavior-planning-delivery"
+      ],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-045",
+      "artifactId": "artifact-062",
+      "pathDigest": "856490fd48c27bf95cbbc658e6362a08b07be5819257fc17c3e56d95e4824030",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-046",
+      "artifactId": "artifact-063",
+      "pathDigest": "86710f0d696fa98caf3702b42fb0c1de83d76f1ed3de6aeba758ab5edf501c56",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-047",
+      "artifactId": "artifact-065",
+      "pathDigest": "884721147eba76a305add4764136fcca93a4b0b9057a6c861e122bfd96acc56a",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-048",
+      "artifactId": "artifact-066",
+      "pathDigest": "887640a10304d2666699700e54dd2ffe026992ee968b7037042c3c4e82f34c40",
+      "kind": "ps1",
+      "classification": "adapter-policy",
+      "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-049",
+      "artifactId": "artifact-068",
+      "pathDigest": "8cef1d706f3ca3bab4253d981b7b2ea20082827ccd377d9aff7f8dfeeb724c51",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-planning-delivery", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-050",
+      "artifactId": "artifact-070",
+      "pathDigest": "9196570eef00017108ba2a2b2b0cc264d75f6608436e87b1da5d6ab035999373",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-051",
+      "artifactId": "artifact-071",
+      "pathDigest": "93190a339c6a8956a71b83de88e117e4045ddd6012a0d7db9ca61f586a111737",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-052",
+      "artifactId": "artifact-072",
+      "pathDigest": "9464ac1e844dd849c58f8513aa095d8feac337216b526b21f1574049e9af1da7",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-053",
+      "artifactId": "artifact-075",
+      "pathDigest": "9a9e4129dcdf4ef3795c919bffa4daf715461e0f860333c37d88b92471f26f13",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-054",
+      "artifactId": "artifact-077",
+      "pathDigest": "9b42b96bdbd376f4fa9c4e6566756e284345c72c8cbed19781aa45e56ba652b8",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": [
+        "behavior-evidence-conformance",
+        "behavior-planning-delivery",
+        "behavior-release-authority"
+      ],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-055",
+      "artifactId": "artifact-079",
+      "pathDigest": "a12c51a7afa3dd275a25dcf0932e5ba978bedded23b3549186481d65c6e91e7c",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-workspace-identity"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-056",
+      "artifactId": "artifact-080",
+      "pathDigest": "a2d3306660e7aa2e16c52268931762e1d400b16bfbb12b4d5b9f6a193f2649e2",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": [
+        "behavior-evidence-conformance",
+        "behavior-release-authority",
+        "behavior-session-authority"
+      ],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-057",
+      "artifactId": "artifact-081",
+      "pathDigest": "a56ab3b88c237d5e4979f98af7986a2dee894eeaa6aee5f36e0c4f6c93e76174",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-058",
+      "artifactId": "artifact-082",
+      "pathDigest": "a6dd4b08b51377ebf871b290f6cc9631523e076db9a32efabca31cd9d1cff235",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-059",
+      "artifactId": "artifact-083",
+      "pathDigest": "a7a7905f1729a326d428bd8fbf7eae6a965720a6d0c7711e8aa7a3671d53216f",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-060",
+      "artifactId": "artifact-084",
+      "pathDigest": "add0d7c430320bd8cd596ca7cc41a0828b136f51c66c6cfd280f727661542483",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-061",
+      "artifactId": "artifact-085",
+      "pathDigest": "b3d39733b4c6cbd157162a46855d5b148380511ba65e5b367da4dc6ac9c0879a",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-062",
+      "artifactId": "artifact-087",
+      "pathDigest": "ba9d9107f108ed4469c027a63e8161d3e5ee26a521ed99be35b062bc1ca22b0b",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-063",
+      "artifactId": "artifact-090",
+      "pathDigest": "c0f9fdbdfe6d0ac2367268c3f0f8f2754e3e10bf14812cb9fe2ac15e241c8580",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-breaker-recovery"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-064",
+      "artifactId": "artifact-091",
+      "pathDigest": "c5294a955e80b60ae53e90c1405d635f600a59f7dd415a9355fa6f5ba7f3e763",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-065",
+      "artifactId": "artifact-092",
+      "pathDigest": "cf700880bdfad3ddd4b39f381c5d3adb1dfdb384cc164648a5941d2885856a25",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-066",
+      "artifactId": "artifact-093",
+      "pathDigest": "d2a3dde34446423d9a33e1ab486068982c296793a3a9c09fdc92d78919942786",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-breaker-recovery", "behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-067",
+      "artifactId": "artifact-097",
+      "pathDigest": "d89ea429e344b8d0fab423e72da8f7914a96d5f6428f64b482abb55b68cc117d",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-068",
+      "artifactId": "artifact-098",
+      "pathDigest": "dca3a3bd50ef196ce7b95d594a14c6a7f4f1fb13615c0f16614f32a27ef6ef35",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-planning-delivery"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-069",
+      "artifactId": "artifact-099",
+      "pathDigest": "dd061557c2b135075aa38b151ae5ff9a3fd99c26e51045e259458d6ac8f81bcb",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-070",
+      "artifactId": "artifact-100",
+      "pathDigest": "de05a499d6466b04f953ccfc0e609bb7c3c3394c714cf82065b944a55c831a0f",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-071",
+      "artifactId": "artifact-103",
+      "pathDigest": "e1db012600eb51ee7612ce94c07c9d30a5b9b9c48d59c9be7d301ffcaeff0a74",
+      "kind": "ps1",
+      "classification": "historical-compatibility",
+      "behaviorFamilyIds": ["behavior-evidence-conformance"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-072",
+      "artifactId": "artifact-104",
+      "pathDigest": "ea2791b6b31d5ba654d6da7c43b0e731524d1e99ab732e3de0782ed538fe95ad",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-model-routing"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-073",
+      "artifactId": "artifact-105",
+      "pathDigest": "ea6edade1b8a03745cd182164f06709264ed5ecbe6bb7dcf242ac9c5f1e7efc5",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-074",
+      "artifactId": "artifact-106",
+      "pathDigest": "ebb54c0a172a0b9b86c4eb5603864dd1c4af42640dcec08121ffd75d8d5403bc",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-review-promotion"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-075",
+      "artifactId": "artifact-107",
+      "pathDigest": "f1b7b44e068ffea246308dde3995e953e0cd0cf78eff2585c3ea7f07fdd13f2c",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-evidence-conformance", "behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-076",
+      "artifactId": "artifact-108",
+      "pathDigest": "f6d9042d48c10a59d6d7d0305e2d503717c308eeb094e47dd932036a7699b994",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-worker-lifecycle"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-077",
+      "artifactId": "artifact-109",
+      "pathDigest": "f82c7fbc72197721e274c199947787b4ccf5c5604cd7f2d838a810f51f5a8526",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-telemetry-learning"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-078",
+      "artifactId": "artifact-110",
+      "pathDigest": "f8fead5dae7ee17ada7fc0eeec0e9a4bedf2488463a2ed3a3275606c3d1da7ef",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": [
+        "behavior-evidence-conformance",
+        "behavior-planning-delivery",
+        "behavior-telemetry-learning"
+      ],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    },
+    {
+      "entrypointId": "entrypoint-079",
+      "artifactId": "artifact-112",
+      "pathDigest": "fcc83a37688b5840810b7f74f2be2c07e513ac19d74d2121095d4e0c22cbb463",
+      "kind": "ps1",
+      "classification": "platform-mechanism",
+      "behaviorFamilyIds": ["behavior-review-promotion"],
+      "argumentPolicy": "explicit-only",
+      "authorityPolicy": "behavior-family-owned"
+    }
+  ]
+}

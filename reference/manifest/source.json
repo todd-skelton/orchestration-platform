@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "reference-source-census/v2",
+  "source": {
+    "commit": "216887080f0570edbbac1c4e3a74a17add242ce3",
+    "treeObject": "c9ca742a3248d5ea78a41b11956ac2a9ba4805f2",
+    "artifactCount": 112,
+    "artifactRoot": "fd456ea8dfb266007dd7e6851df54df8e29f1099c81cf9e5fde66a38c1132cfe",
+    "entrypointCount": 79,
+    "entrypointRoot": "62ab3dfacdc527459aaf77262959c2aa3adf20cb36a4d9f60ddb99c9a3f9eae3",
+    "effectCandidateCount": 887,
+    "effectCandidateRoot": "6fb36afcf05336b3a6c7dd0666c9e498139872d3a91340b66ecfba680c62ec04"
+  },
+  "semanticRoots": {
+    "artifacts": "21b696f7b99f0bf75dbef540f87cd932adbc4d3ba3f14e3d87983cf561ad5ee5",
+    "assumptions": "da05fe041327366d34efa83c271a4be777cee472c0685375aa1200bab5d55876",
+    "authorities": "248d82572d5f582cfe2453a6c7d7335f761403e75a6c23a7fea8f6922a8acc7f",
+    "behaviors": "1276d2f5cb963ab948ddae20b9b422503bb95ad4f04654295bc6c893cde15eca",
+    "entrypoints": "33e8feee34b6d78246e46c0a6a391aad6ad449b47e563500a9742f165d6c1331",
+    "forbiddenVocabulary": "82e1b8c8bc4003c1e0db858098fbd8dc6cdaca5fc0076abc8cf203868d9fb7b7",
+    "mutations": "059160923c453eafcfca2226f6f623099ab85d714dd65f8f9688df73df8c7cd5",
+    "sourcePaths": "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
+    "transitions": "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
+    "pathSensitivity": "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
+    "publicationFingerprints": "384459b5fc1db1fb8bc90eb8d59f13b4ddf5205213a3173a36a8502096c068e7"
+  },
+  "extensionCensus": {
+    "cjs": 2,
+    "fixture": 3,
+    "json": 14,
+    "md": 8,
+    "ps1": 75,
+    "psm1": 5,
+    "sh": 1,
+    "txt": 1,
+    "vbs": 1,
+    "yaml": 2
+  },
+  "effectCandidateCensus": {
+    "dynamic-invocation": 279,
+    "fixture-local-write": 443,
+    "member-mutation": 39,
+    "process-lifecycle": 23,
+    "provider-control-plane": 34,
+    "stream-redirection": 50,
+    "version-control": 19
+  },
+  "pathDigest": "sha256(reference-artifact-path/v1 NUL subtree-relative-path-bytes NUL)",
+  "coverageRule": "All selected tree entries are regular blobs and occur exactly once in artifacts.json."
+}
