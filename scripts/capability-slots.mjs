@@ -26,12 +26,38 @@ async function exactRegularChild(parent, name, directory) {
   return path;
 }
 
+async function requiredCanonicalDirectory(parent, name) {
+  const entries = await readdir(parent, { withFileTypes: true });
+  const exact = entries.find((entry) => entry.name === name);
+  if (!exact) {
+    if (entries.some((entry) => entry.name.toLowerCase() === name.toLowerCase())) {
+      throw new Error(`capability slot path has noncanonical spelling for ${name}`);
+    }
+    return undefined;
+  }
+  const path = resolve(parent, name);
+  const metadata = await lstat(path);
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new Error(`capability slot path has unsafe directory ${name}`);
+  }
+  return path;
+}
+
+export async function capabilitySlotRoot(root) {
+  const testDirectory = await requiredCanonicalDirectory(root, "test");
+  return testDirectory && requiredCanonicalDirectory(testDirectory, "capability-slots");
+}
+
 export async function regularCapabilitySlot(root, issue, capability) {
-  const testDirectory = await exactRegularChild(root, "test", true);
-  const slotsDirectory =
-    testDirectory && (await exactRegularChild(testDirectory, "capability-slots", true));
-  const ownerDirectory = slotsDirectory && (await exactRegularChild(slotsDirectory, issue, true));
-  return ownerDirectory && exactRegularChild(ownerDirectory, capabilitySlotName(capability), false);
+  try {
+    const slotsDirectory = await capabilitySlotRoot(root);
+    const ownerDirectory = slotsDirectory && (await exactRegularChild(slotsDirectory, issue, true));
+    return (
+      ownerDirectory && exactRegularChild(ownerDirectory, capabilitySlotName(capability), false)
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 export function pathBelow(root, path) {

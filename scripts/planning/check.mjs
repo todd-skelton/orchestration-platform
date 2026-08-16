@@ -1,7 +1,7 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capabilitySlotName } from "../capability-slots.mjs";
+import { capabilitySlotName, capabilitySlotRoot } from "../capability-slots.mjs";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -263,7 +263,8 @@ export function validatePlanningSnapshot(snapshot) {
 }
 
 async function loadCapabilitySlots(root) {
-  const slotsRoot = resolve(root, "test/capability-slots");
+  const slotsRoot = await capabilitySlotRoot(root);
+  if (!slotsRoot) return [];
   try {
     const owners = await readdir(slotsRoot, { withFileTypes: true });
     const slots = [];
