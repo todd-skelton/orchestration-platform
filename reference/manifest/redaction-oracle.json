@@ -3047,18 +3047,22 @@
     "boundaryDisposition": "159-bytes-allowed-160-bytes-rejected-at-every-offset"
   },
   "publicationFingerprintCensus": {
-    "schemaVersion": "reference-publication-fingerprints/v4",
-    "derivation": "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion and collision-resistant strings are independently marked.",
+    "schemaVersion": "reference-publication-fingerprints/v5",
+    "derivation": "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion, valid continuations and static template fragments are reconstructed without evaluation, and collision-resistant strings are independently marked.",
     "minimumFragmentPolicy": {
       "directValueRelationshipArity": 2,
       "streamRelationshipArity": 2,
       "streamRowMinimumScalarCount": 2,
       "maximumNeutralInterleavingScalars": 7,
       "maximumDecodedScalarCharacters": 4096,
+      "maximumEncodedScalarCharacters": 32768,
       "maximumScalarTokensPerScan": 65536,
       "strongStringMinimumNormalizedCharacters": 12,
       "propertyNameDisposition": "candidate-scalar",
       "javascriptCodePointEscapeDisposition": "decode-without-evaluation",
+      "javascriptLineContinuationDisposition": "remove-lf-or-crlf",
+      "templateInterpolationDisposition": "concatenate-static-quoted-literals-and-fingerprint-static-pieces-of-ambiguous-expressions",
+      "decodedScalarBoundaryDisposition": "4096-allowed-4097-rejected",
       "overflowDisposition": "reject",
       "publicationCollisionDisposition": "zero-collision-required-on-actual-packed-and-built-surfaces",
       "belowMinimumDisposition": "not-identifying-without-an-independent-marker"
@@ -3218,6 +3222,6 @@
         "streamRelationshipRoot": "80adf373a275b3acdd7b988562a62aa5bff25bac4bf7de9677ca773ceb87cf57"
       }
     ],
-    "fingerprintRoot": "4f73d5709d558bb456a2576519de77f72ca65735c122c0c63ee034e5cf12ce7b"
+    "fingerprintRoot": "2320502e4bcda0bba61f2dc1d06f65ccd0ef4ba6e15b666009d39855fa5ae4e5"
   }
 }

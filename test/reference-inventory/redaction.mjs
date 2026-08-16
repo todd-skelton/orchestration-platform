@@ -45,6 +45,7 @@ const sourceContentMarkers = [
 ];
 const copyWindow = 160;
 const maximumDecodedScalarCharacters = 4096;
+const maximumEncodedScalarCharacters = 32768;
 const maximumStreamScalarTokens = 65536;
 const maximumStreamRelationshipSpan = 8;
 const backslash = String.fromCharCode(92);
@@ -203,50 +204,165 @@ function canonicalTokensFromText(value) {
   return value.match(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null/gi) ?? [];
 }
 
-function decodeQuotedScalar(token) {
-  const quote = token[0];
-  if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
-  if (quote === "`" && token.includes("${")) return undefined;
+function decodeEscapedContent(content) {
   let result = "";
-  for (let index = 1; index < token.length - 1; index += 1) {
-    const character = token[index];
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
     if (character !== "\\") {
       result += character;
+      if (result.length > maximumDecodedScalarCharacters) return { status: "overflow", value: "" };
       continue;
     }
     index += 1;
-    if (index >= token.length - 1) return undefined;
-    const escaped = token[index];
+    if (index >= content.length) return { status: "invalid", value: "" };
+    const escaped = content[index];
     const simple = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", 0: "\0" };
-    if (Object.hasOwn(simple, escaped)) {
+    if (escaped === "\n") {
+      continue;
+    } else if (escaped === "\r") {
+      if (content[index + 1] === "\n") index += 1;
+      continue;
+    } else if (Object.hasOwn(simple, escaped)) {
       result += simple[escaped];
-    } else if (escaped === "u" && token[index + 1] === "{") {
-      const close = token.indexOf("}", index + 2);
-      if (close < 0) return undefined;
-      const digits = token.slice(index + 2, close);
-      if (!/^[a-f0-9]{1,6}$/i.test(digits)) return undefined;
+    } else if (escaped === "u" && content[index + 1] === "{") {
+      const close = content.indexOf("}", index + 2);
+      if (close < 0) return { status: "invalid", value: "" };
+      const digits = content.slice(index + 2, close);
+      if (!/^[a-f0-9]{1,6}$/i.test(digits)) return { status: "invalid", value: "" };
       const codePoint = Number.parseInt(digits, 16);
-      if (codePoint > 0x10ffff) return undefined;
+      if (codePoint > 0x10ffff) return { status: "invalid", value: "" };
       result += String.fromCodePoint(codePoint);
       index = close;
     } else if (escaped === "u" || escaped === "x") {
       const length = escaped === "u" ? 4 : 2;
-      const digits = token.slice(index + 1, index + 1 + length);
-      if (!new RegExp(`^[a-f0-9]{${length}}$`, "i").test(digits)) return undefined;
+      const digits = content.slice(index + 1, index + 1 + length);
+      if (!new RegExp(`^[a-f0-9]{${length}}$`, "i").test(digits))
+        return { status: "invalid", value: "" };
       result += String.fromCodePoint(Number.parseInt(digits, 16));
       index += length;
     } else {
       result += escaped;
     }
-    if (result.length > maximumDecodedScalarCharacters) return undefined;
+    if (result.length > maximumDecodedScalarCharacters) return { status: "overflow", value: "" };
   }
-  return result;
+  return { status: "valid", value: result };
+}
+
+function decodeOrdinaryQuotedScalar(token) {
+  if (token.length > maximumEncodedScalarCharacters) return { status: "overflow", values: [] };
+  const quote = token[0];
+  if ((quote !== '"' && quote !== "'") || token.at(-1) !== quote)
+    return { status: "invalid", values: [] };
+  const complete =
+    quote === '"'
+      ? /^"(?:\\(?:\r\n|[\s\S])|[^"\\])*"$/.test(token)
+      : /^'(?:\\(?:\r\n|[\s\S])|[^'\\])*'$/.test(token);
+  if (!complete) return { status: "invalid", values: [] };
+  const decoded = decodeEscapedContent(token.slice(1, -1));
+  return {
+    status: decoded.status,
+    values: decoded.status === "valid" ? [decoded.value] : [],
+  };
+}
+
+function interpolationEnd(token, start) {
+  let depth = 1;
+  let quote;
+  for (let index = start; index < token.length - 1; index += 1) {
+    const character = token[index];
+    if (quote) {
+      if (character === "\\") {
+        if (token[index + 1] === "\r" && token[index + 2] === "\n") index += 2;
+        else index += 1;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function quotedScalarsFromExpression(expression) {
+  const values = [];
+  const pattern = /"(?:\\(?:\r\n|[\s\S])|[^"\\])*"|'(?:\\(?:\r\n|[\s\S])|[^'\\])*'/g;
+  for (const match of expression.matchAll(pattern)) {
+    const decoded = decodeOrdinaryQuotedScalar(match[0]);
+    if (decoded.status === "overflow") return decoded;
+    if (decoded.status === "valid") values.push(...decoded.values);
+  }
+  return { status: "valid", values };
+}
+
+function decodeTemplateScalar(token) {
+  if (token.length > maximumEncodedScalarCharacters) return { status: "overflow", values: [] };
+  if (token[0] !== "`" || token.at(-1) !== "`") return { status: "invalid", values: [] };
+  let known = "";
+  let withQuotedAmbiguity = "";
+  let segmentStart = 1;
+  let index = 1;
+  while (index < token.length - 1) {
+    if (token[index] === "\\") {
+      index += token[index + 1] === "\r" && token[index + 2] === "\n" ? 3 : 2;
+      continue;
+    }
+    if (token[index] !== "$" || token[index + 1] !== "{") {
+      index += 1;
+      continue;
+    }
+    const literal = decodeEscapedContent(token.slice(segmentStart, index));
+    if (literal.status !== "valid") return { status: literal.status, values: [] };
+    known += literal.value;
+    withQuotedAmbiguity += literal.value;
+    const close = interpolationEnd(token, index + 2);
+    if (close < 0) return { status: "invalid", values: [] };
+    const expression = token.slice(index + 2, close).trim();
+    const decodedExpression = decodeOrdinaryQuotedScalar(expression);
+    if (decodedExpression.status === "overflow") return decodedExpression;
+    if (decodedExpression.status === "valid") {
+      known += decodedExpression.values[0];
+      withQuotedAmbiguity += decodedExpression.values[0];
+    } else {
+      const quoted = quotedScalarsFromExpression(expression);
+      if (quoted.status === "overflow") return quoted;
+      withQuotedAmbiguity += quoted.values.join("");
+    }
+    if (
+      known.length > maximumDecodedScalarCharacters ||
+      withQuotedAmbiguity.length > maximumDecodedScalarCharacters
+    )
+      return { status: "overflow", values: [] };
+    index = close + 1;
+    segmentStart = index;
+  }
+  const tail = decodeEscapedContent(token.slice(segmentStart, -1));
+  if (tail.status !== "valid") return { status: tail.status, values: [] };
+  known += tail.value;
+  withQuotedAmbiguity += tail.value;
+  if (
+    known.length > maximumDecodedScalarCharacters ||
+    withQuotedAmbiguity.length > maximumDecodedScalarCharacters
+  )
+    return { status: "overflow", values: [] };
+  return { status: "valid", values: [...new Set([known, withQuotedAmbiguity])] };
+}
+
+function decodeQuotedScalar(token) {
+  return token[0] === "`" ? decodeTemplateScalar(token) : decodeOrdinaryQuotedScalar(token);
 }
 
 function scalarValuesFromText(text) {
   const values = [];
   const pattern =
-    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?|\b(?:true|false|null)\b/gi;
+    /"(?:\\(?:\r\n|[\s\S])|[^"\\])*"|'(?:\\(?:\r\n|[\s\S])|[^'\\])*'|`(?:\\(?:\r\n|[\s\S])|[^`\\])*`|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?|\b(?:true|false|null)\b/gi;
   for (const match of text.matchAll(pattern)) {
     const token = match[0];
     const start = match.index;
@@ -259,7 +375,8 @@ function scalarValuesFromText(text) {
       continue;
     if (/^["'`]/.test(token)) {
       const decoded = decodeQuotedScalar(token);
-      if (decoded !== undefined) values.push(decoded);
+      if (decoded.status === "overflow") return { values: [], overflow: true };
+      if (decoded.status === "valid") values.push(...decoded.values);
     } else if (/^true$/i.test(token)) {
       values.push(true);
     } else if (/^false$/i.test(token)) {

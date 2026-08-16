@@ -699,6 +699,69 @@ describe("reference redaction controls", () => {
     ).not.toThrow();
   }, 120_000);
 
+  test("decodes continued and static-template strings and fails closed at the scalar bound", () => {
+    const publication = redactionTestApi.buildPublicationOracle(baseline);
+    const protectedValue = baseline.artifacts.artifacts[0].contentDigest as string;
+    const pieces = protectedValue.match(/.{1,5}/g)!;
+    const rejected = (content: string) => {
+      expect(() =>
+        redactionTestApi.validatePackedFile(
+          "src/index.js",
+          Buffer.from(content),
+          new Set(),
+          undefined,
+          publication,
+        ),
+      ).toThrow(/inventory material/);
+      expect(() =>
+        redactionTestApi.validateBuiltText(content, new Set(), undefined, [], publication),
+      ).toThrow(/inventory material/);
+    };
+    const accepted = (content: string) => {
+      expect(() =>
+        redactionTestApi.validatePackedFile(
+          "src/index.js",
+          Buffer.from(content),
+          new Set(),
+          undefined,
+          publication,
+        ),
+      ).not.toThrow();
+      expect(() =>
+        redactionTestApi.validateBuiltText(content, new Set(), undefined, [], publication),
+      ).not.toThrow();
+    };
+
+    for (const [quote, newline] of [
+      ['"', "\n"],
+      ['"', "\r\n"],
+      ["'", "\n"],
+      ["'", "\r\n"],
+    ]) {
+      rejected(`${quote}${pieces.join(`\\${newline}`)}${quote}`);
+    }
+
+    const template = (interpolation: string) => ["`", pieces.join(interpolation), "`"].join("");
+    rejected(template("${''}"));
+    rejected(template('${""}'));
+    rejected(template("${unknown}"));
+    const escapedPieces = [...protectedValue].map(
+      (character) => `\\u{${character.codePointAt(0)!.toString(16)}}`,
+    );
+    rejected(["`", escapedPieces.join("${''}"), "`"].join(""));
+
+    accepted(`"${"a".repeat(4096)}"`);
+    rejected(`"${"a".repeat(4097)}"`);
+    for (const malformed of [
+      '"unterminated',
+      "`unterminated${",
+      '"\\u{110000}"',
+      "`neutral${unknown}text`",
+    ]) {
+      accepted(malformed);
+    }
+  });
+
   test("live comparison flags are exact, complete, and duplicate-free", () => {
     expect(parseLiveArguments([])).toBeUndefined();
     expect(

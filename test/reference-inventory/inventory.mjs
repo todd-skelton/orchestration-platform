@@ -177,7 +177,7 @@ const pinnedSource = Object.freeze({
     sourcePaths: "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     transitions: "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
     pathSensitivity: "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
-    publicationFingerprints: "4f73d5709d558bb456a2576519de77f72ca65735c122c0c63ee034e5cf12ce7b",
+    publicationFingerprints: "2320502e4bcda0bba61f2dc1d06f65ccd0ef4ba6e15b666009d39855fa5ae4e5",
   },
   extensionCensus: {
     cjs: 2,
@@ -432,19 +432,24 @@ export function buildPublicationFingerprints(snapshot) {
     });
   }
   const census = {
-    schemaVersion: "reference-publication-fingerprints/v4",
+    schemaVersion: "reference-publication-fingerprints/v5",
     derivation:
-      "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion and collision-resistant strings are independently marked.",
+      "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion, valid continuations and static template fragments are reconstructed without evaluation, and collision-resistant strings are independently marked.",
     minimumFragmentPolicy: {
       directValueRelationshipArity: 2,
       streamRelationshipArity: 2,
       streamRowMinimumScalarCount: 2,
       maximumNeutralInterleavingScalars: 7,
       maximumDecodedScalarCharacters: 4096,
+      maximumEncodedScalarCharacters: 32768,
       maximumScalarTokensPerScan: 65536,
       strongStringMinimumNormalizedCharacters: 12,
       propertyNameDisposition: "candidate-scalar",
       javascriptCodePointEscapeDisposition: "decode-without-evaluation",
+      javascriptLineContinuationDisposition: "remove-lf-or-crlf",
+      templateInterpolationDisposition:
+        "concatenate-static-quoted-literals-and-fingerprint-static-pieces-of-ambiguous-expressions",
+      decodedScalarBoundaryDisposition: "4096-allowed-4097-rejected",
       overflowDisposition: "reject",
       publicationCollisionDisposition:
         "zero-collision-required-on-actual-packed-and-built-surfaces",
