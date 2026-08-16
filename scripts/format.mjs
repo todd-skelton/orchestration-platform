@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -31,13 +31,16 @@ export const formatterTargets = Object.freeze([
 ]);
 
 async function collectFiles(path) {
-  const metadata = await stat(path);
+  const metadata = await lstat(path);
+  if (metadata.isSymbolicLink()) return [];
   if (metadata.isFile()) return [path];
   if (!metadata.isDirectory()) return [];
   const files = [];
   const entries = await readdir(path, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) files.push(...(await collectFiles(resolve(path, entry.name))));
+  for (const entry of entries) {
+    if (!entry.isSymbolicLink()) files.push(...(await collectFiles(resolve(path, entry.name))));
+  }
   return files;
 }
 

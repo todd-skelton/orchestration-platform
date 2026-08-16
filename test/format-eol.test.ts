@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -14,6 +14,19 @@ async function fixture(source: string, path = "fixture.ts") {
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, source);
   return { directory, file };
+}
+
+async function symlinkFixture(target: string, path: string, type: "file" | "directory") {
+  try {
+    await symlink(
+      target,
+      path,
+      process.platform === "win32" && type === "directory" ? "junction" : type,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot create ${type} symlink fixture: ${message}`);
+  }
 }
 
 afterEach(async () => {
@@ -47,6 +60,32 @@ describe("formatter line ending policy", () => {
       await expect(validateFormatterInputs([file], { ignorePath })).resolves.toBeUndefined();
     },
   );
+
+  test.each(["file", "tree"])(
+    "skips malformed symlinked %s sources that Prettier skips",
+    async (kind) => {
+      const { directory } = await fixture('export const value = "ok";\n', "scan/good.ts");
+      const external = resolve(directory, "external");
+      const scan = resolve(directory, "scan");
+      const malformed = resolve(external, "bad.ts");
+      await mkdir(external, { recursive: true });
+      await writeFile(malformed, 'export const value = "bad";\r');
+      if (kind === "file") {
+        await symlinkFixture(malformed, resolve(scan, "bad.ts"), "file");
+      } else {
+        await symlinkFixture(external, resolve(scan, "linked"), "directory");
+      }
+      await expect(validateFormatterInputs([scan])).resolves.toBeUndefined();
+      await expect(runPinnedPrettier("check", [scan])).resolves.toMatchObject({});
+    },
+  );
+
+  test("does not recurse through a symlink cycle", async () => {
+    const { directory } = await fixture('export const value = "ok";\n', "scan/good.ts");
+    const scan = resolve(directory, "scan");
+    await symlinkFixture(scan, resolve(scan, "cycle"), "directory");
+    await expect(validateFormatterInputs([scan])).resolves.toBeUndefined();
+  });
 
   test("rejects a real formatting defect", async () => {
     const { file } = await fixture("export const value={ok:true};\n");
