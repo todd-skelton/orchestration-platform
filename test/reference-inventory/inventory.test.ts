@@ -838,6 +838,38 @@ describe("reference redaction controls", () => {
     );
     rejected(commentPieces.map((piece) => JSON.stringify(piece)).join(" + /* neutral */ "));
     rejected(commentPieces.map((piece) => JSON.stringify(piece)).join(" + // neutral\n"));
+    const quotedCommentPieces = commentPieces.map((piece) => JSON.stringify(piece));
+    rejected(`${quotedCommentPieces[0]}.concat(${quotedCommentPieces.slice(1).join(",")})`);
+    rejected(`${quotedCommentPieces[0]}.con\\u0063at(${quotedCommentPieces.slice(1).join(",")})`);
+    rejected(
+      `${quotedCommentPieces[0]}.concat(${quotedCommentPieces.slice(1, 4).join(",")}).concat(${quotedCommentPieces.slice(4).join(",")})`,
+    );
+    rejected(
+      `${quotedCommentPieces[0]} . /* receiver */ con\\u{63}at /* call */ ( (${quotedCommentPieces[1]}), /* argument */ ${quotedCommentPieces.slice(2).join(",")} )`,
+    );
+    rejected(
+      `\`${commentPieces[0]}\`.concat(${commentPieces
+        .slice(1)
+        .map((piece) => `\`${piece}\``)
+        .join(",")})`,
+    );
+    const mixedConcatPieces = [...quotedCommentPieces];
+    mixedConcatPieces[1] = `"${commentPieces[1]!.match(/.{1,3}/g)!.join("\\\n")}"`;
+    mixedConcatPieces[2] = `'${[...commentPieces[2]!]
+      .map((character) => `\\u{${character.codePointAt(0)!.toString(16)}}`)
+      .join("")}'`;
+    rejected(`${mixedConcatPieces[0]}.concat(${mixedConcatPieces.slice(1).join(",")})`);
+    rejected(
+      `${JSON.stringify(prefix)}.concat(dynamic,${JSON.stringify(middle)},${JSON.stringify(suffix)})`,
+    );
+    rejected(
+      `${JSON.stringify(prefix)}.concat(${JSON.stringify(middle)},${JSON.stringify(suffix)}`,
+    );
+    accepted('"safe".concatenate("neutral")');
+    accepted('"safe".con\\u0063atenate("neutral")');
+    accepted('"safe".concatValue("neutral")');
+    accepted(`"safe".concat(${Array.from({ length: 15 }, (_, index) => `"n${index}"`).join(",")})`);
+    rejected(`"safe".concat(${Array.from({ length: 16 }, (_, index) => `"n${index}"`).join(",")})`);
     accepted('"/* neutral */" + "// neutral"');
     rejected(
       [

@@ -319,17 +319,12 @@ function quotedScalarsFromExpression(expression) {
   return { status: "valid", values: [...alternatives] };
 }
 
-function literalConcatenationSeparator(separator) {
+function compactLiteralSeparator(separator) {
   if (separator.length > maximumLiteralSeparatorCharacters) return { status: "overflow" };
-  let hasPlus = false;
+  let compact = "";
   let index = 0;
   while (index < separator.length) {
     if (/\s/.test(separator[index])) {
-      index += 1;
-    } else if (separator[index] === "+") {
-      hasPlus = true;
-      index += 1;
-    } else if (separator[index] === "(" || separator[index] === ")") {
       index += 1;
     } else if (separator.startsWith("/*", index)) {
       const close = separator.indexOf("*/", index + 2);
@@ -340,10 +335,75 @@ function literalConcatenationSeparator(separator) {
       if (lineEnd < 0) return { status: "invalid" };
       index += lineEnd + 2;
     } else {
-      return { status: "valid", concatenates: false };
+      compact += separator[index];
+      index += 1;
     }
   }
-  return { status: "valid", concatenates: hasPlus };
+  return { status: "valid", compact };
+}
+
+function decodeIdentifierEscapes(value) {
+  let decoded = "";
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "\\") {
+      decoded += value[index];
+      continue;
+    }
+    if (value[index + 1] !== "u") return { status: "invalid" };
+    let digits;
+    if (value[index + 2] === "{") {
+      const close = value.indexOf("}", index + 3);
+      if (close < 0) return { status: "invalid" };
+      digits = value.slice(index + 3, close);
+      if (!/^[a-f0-9]{1,6}$/i.test(digits)) return { status: "invalid" };
+      index = close;
+    } else {
+      digits = value.slice(index + 2, index + 6);
+      if (!/^[a-f0-9]{4}$/i.test(digits)) return { status: "invalid" };
+      index += 5;
+    }
+    const codePoint = Number.parseInt(digits, 16);
+    if (codePoint > 0x10ffff) return { status: "invalid" };
+    const character = String.fromCodePoint(codePoint);
+    if (!/[a-z0-9_$]/i.test(character)) return { status: "invalid" };
+    decoded += character;
+  }
+  return { status: "valid", value: decoded };
+}
+
+function literalConcatenationSeparator(separator, concatOpen) {
+  const compacted = compactLiteralSeparator(separator);
+  if (compacted.status !== "valid") return compacted;
+  if (compacted.compact.includes("\\") && !compacted.compact.includes(".con")) {
+    if (concatOpen) return { status: "invalid" };
+    return { status: "valid", concatenates: false, concatOpen: false };
+  }
+  const decoded = decodeIdentifierEscapes(compacted.compact);
+  if (decoded.status !== "valid") return decoded;
+  const compact = decoded.value;
+  const concatStart = /^(\)*)\.concat\((\(*)$/.exec(compact);
+  if (concatStart) {
+    if (concatOpen && concatStart[1].length === 0) return { status: "invalid" };
+    return { status: "valid", concatenates: true, concatOpen: true };
+  }
+  const concatArgument = /^(\)*),(\(*)$/.exec(compact);
+  if (concatArgument) {
+    if (!concatOpen) return { status: "valid", concatenates: false, concatOpen: false };
+    return { status: "valid", concatenates: true, concatOpen: true };
+  }
+  const plus = /^(\)*)\+(\(*)$/.exec(compact);
+  if (plus) {
+    if (concatOpen && plus[1].length === 0) return { status: "invalid" };
+    return { status: "valid", concatenates: true, concatOpen: false };
+  }
+  if (compact.includes(".concat(") || (concatOpen && !compact.startsWith(")")))
+    return { status: "invalid" };
+  return {
+    status: "valid",
+    concatenates: false,
+    concatOpen: false,
+    closesConcat: concatOpen && compact.startsWith(")"),
+  };
 }
 
 function decodeTemplateScalar(token) {
@@ -466,19 +526,27 @@ function scalarValuesFromText(text) {
     values.push(...candidates);
     return values.length <= maximumStreamScalarTokens;
   };
+  let concatOpen = false;
   for (const token of quotedTokens) {
     const previous = chain.at(-1);
     const separator = previous
-      ? literalConcatenationSeparator(text.slice(previous.end, token.start))
+      ? literalConcatenationSeparator(text.slice(previous.end, token.start), concatOpen)
       : undefined;
     if (separator?.status !== undefined && separator.status !== "valid")
       return { values: [], overflow: true };
     if (previous && separator.concatenates) {
       chain.push(token);
+      concatOpen = separator.concatOpen;
     } else {
+      if (concatOpen && !separator.closesConcat) return { values: [], overflow: true };
       if (!appendChain()) return { values: [], overflow: true };
       chain = [token];
+      concatOpen = false;
     }
+  }
+  if (concatOpen && quotedTokens.length > 0) {
+    const tail = literalConcatenationSeparator(text.slice(quotedTokens.at(-1).end), concatOpen);
+    if (tail.status !== "valid" || !tail.closesConcat) return { values: [], overflow: true };
   }
   if (!appendChain()) return { values: [], overflow: true };
   return { values, overflow: false };
