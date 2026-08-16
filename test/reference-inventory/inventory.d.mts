@@ -4,6 +4,8 @@ export interface InventorySummary {
   effectCandidateCount: number;
   mutationGroupCount: number;
   sourcePathCount: number;
+  sensitiveComponentCount: number;
+  sensitiveTokenCount: number;
   unresolved: number;
 }
 
@@ -13,6 +15,11 @@ export declare function compareLiveSource(
   snapshot: unknown,
   options: { repository: string; commit: string; subtree: string },
 ): Promise<unknown>;
+export declare function buildPublicationFingerprints(snapshot: any): {
+  census: any;
+  rowDigests: Set<string>;
+  chunkDigests: Set<string>;
+};
 export declare function runInventoryCli(argv: string[], root?: string): Promise<void>;
 export declare const inventoryTestApi: Readonly<{
   aggregateRows(domain: string, rows: unknown[]): string;
@@ -20,4 +27,5 @@ export declare const inventoryTestApi: Readonly<{
   callsiteEvidence(row: any): unknown;
   entrypointEvidence(row: any): unknown;
   semanticCallsite(row: any, artifact: any): unknown;
+  buildPublicationFingerprints(snapshot: any): unknown;
 }>;

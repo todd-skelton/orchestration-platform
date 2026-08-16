@@ -176,6 +176,8 @@ const pinnedSource = Object.freeze({
     mutations: "059160923c453eafcfca2226f6f623099ab85d714dd65f8f9688df73df8c7cd5",
     sourcePaths: "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     transitions: "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
+    pathSensitivity: "a09d0e1d9e289576896e7d0abaf4ec3e00f4d483ba2841d3ac2f8d556f5c8a46",
+    publicationFingerprints: "68e1d3e0c4a351a2984a28643dd0ec33082d72f74efde1412ad42672f1a3fe1e",
   },
   extensionCensus: {
     cjs: 2,
@@ -215,6 +217,98 @@ function digest(domain, ...parts) {
 
 function aggregateRows(domain, rows) {
   return digest(domain, ...rows.map((row) => JSON.stringify(row)));
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, stableValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+function canonicalTokens(value) {
+  return (
+    JSON.stringify(stableValue(value)).match(
+      /"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null/gi,
+    ) ?? []
+  );
+}
+
+function publicationRows(snapshot) {
+  const pathCensus = snapshot["redaction-oracle"].sourcePathCensus;
+  return new Map([
+    [
+      "source",
+      [
+        snapshot.source.source,
+        snapshot.source.extensionCensus,
+        snapshot.source.effectCandidateCensus,
+      ],
+    ],
+    ["artifacts", snapshot.artifacts.artifacts],
+    ["behaviors", snapshot.behaviors.families],
+    ["entrypoints", snapshot.entrypoints.entrypoints],
+    ["mutations", [...snapshot.mutations.mutationGroups, ...snapshot.mutations.callsites]],
+    ["authorities", [...snapshot.authorities.authorities, ...snapshot.authorities.observations]],
+    ["transitions", snapshot.transitions.transitions],
+    ["assumptions", snapshot.assumptions.assumptions],
+    [
+      "redaction-oracle",
+      [
+        ...snapshot["redaction-oracle"].entries,
+        ...pathCensus.entries,
+        pathCensus.sensitivity,
+        snapshot["redaction-oracle"].copyPolicy,
+      ],
+    ],
+  ]);
+}
+
+export function buildPublicationFingerprints(snapshot) {
+  const families = [];
+  const rowDigests = new Set();
+  const chunkDigests = new Set();
+  for (const [familyId, rows] of publicationRows(snapshot)) {
+    const familyRows = [];
+    const familyChunks = [];
+    for (const row of rows) {
+      const canonical = JSON.stringify(stableValue(row));
+      const rowDigest = digest("reference-publication-row/v1", canonical);
+      familyRows.push(rowDigest);
+      rowDigests.add(rowDigest);
+      const tokens = canonicalTokens(row);
+      for (let offset = 0; offset + 6 <= tokens.length; offset += 1) {
+        const chunkDigest = digest(
+          "reference-publication-chunk/v1",
+          ...tokens.slice(offset, offset + 6),
+        );
+        familyChunks.push(chunkDigest);
+        chunkDigests.add(chunkDigest);
+      }
+    }
+    const uniqueRows = sortedUnique(familyRows);
+    const uniqueChunks = sortedUnique(familyChunks);
+    families.push({
+      familyId,
+      rowCount: uniqueRows.length,
+      rowRoot: aggregateRows("reference-publication-row-root/v1", uniqueRows),
+      chunkCount: uniqueChunks.length,
+      chunkRoot: aggregateRows("reference-publication-chunk-root/v1", uniqueChunks),
+    });
+  }
+  const census = {
+    schemaVersion: "reference-publication-fingerprints/v1",
+    derivation:
+      "Canonical sorted-key JSON rows and every overlapping six-token row chunk; schema and aggregate-root metadata are excluded.",
+    families,
+  };
+  census.fingerprintRoot = aggregateRows("reference-publication-fingerprint-root/v1", families);
+  return { census, rowDigests, chunkDigests };
 }
 
 function same(left, right) {
@@ -686,6 +780,104 @@ function validateOracle(snapshot) {
   const pathRoot = aggregateRows("reference-source-path-census/v1", paths.entries);
   if (paths.pathEvidenceRoot !== pathRoot || source.semanticRoots.sourcePaths !== pathRoot)
     fail("source path oracle root mismatch");
+  const componentUniverse = sortedUnique(
+    paths.entries.flatMap(({ componentDigests }) => componentDigests),
+  );
+  const tokenUniverse = sortedUnique(paths.entries.flatMap(({ tokenDigests }) => tokenDigests));
+  const sensitivity = paths.sensitivity;
+  exactKeys(
+    sensitivity,
+    [
+      "schemaVersion",
+      "derivation",
+      "componentUniverseCount",
+      "tokenUniverseCount",
+      "sensitiveComponentDigests",
+      "componentCollisionDigests",
+      "sensitiveTokenDigests",
+      "tokenCollisionDigests",
+      "sensitiveComponentCount",
+      "componentCollisionCount",
+      "sensitiveTokenCount",
+      "tokenCollisionCount",
+      "sensitivityRoot",
+    ],
+    "path sensitivity census",
+  );
+  const digestLists = [
+    sensitivity.sensitiveComponentDigests,
+    sensitivity.componentCollisionDigests,
+    sensitivity.sensitiveTokenDigests,
+    sensitivity.tokenCollisionDigests,
+  ];
+  if (
+    sensitivity.schemaVersion !== "reference-path-sensitivity/v1" ||
+    !digestLists.every(
+      (values) =>
+        Array.isArray(values) &&
+        same(values, sortedUnique(values)) &&
+        values.every((value) => hex64.test(value)),
+    ) ||
+    sensitivity.componentUniverseCount !== componentUniverse.length ||
+    sensitivity.tokenUniverseCount !== tokenUniverse.length ||
+    sensitivity.sensitiveComponentCount !== sensitivity.sensitiveComponentDigests.length ||
+    sensitivity.componentCollisionCount !== sensitivity.componentCollisionDigests.length ||
+    sensitivity.sensitiveTokenCount !== sensitivity.sensitiveTokenDigests.length ||
+    sensitivity.tokenCollisionCount !== sensitivity.tokenCollisionDigests.length ||
+    !same(
+      sortedUnique([
+        ...sensitivity.sensitiveComponentDigests,
+        ...sensitivity.componentCollisionDigests,
+      ]),
+      componentUniverse,
+    ) ||
+    !same(
+      sortedUnique([...sensitivity.sensitiveTokenDigests, ...sensitivity.tokenCollisionDigests]),
+      tokenUniverse,
+    ) ||
+    sensitivity.sensitiveComponentDigests.some((value) =>
+      sensitivity.componentCollisionDigests.includes(value),
+    ) ||
+    sensitivity.sensitiveTokenDigests.some((value) =>
+      sensitivity.tokenCollisionDigests.includes(value),
+    )
+  )
+    fail("path sensitivity census is incomplete or overlapping");
+  const sensitivityEvidence = {
+    schemaVersion: sensitivity.schemaVersion,
+    derivation: sensitivity.derivation,
+    componentUniverseCount: sensitivity.componentUniverseCount,
+    tokenUniverseCount: sensitivity.tokenUniverseCount,
+    sensitiveComponentDigests: sensitivity.sensitiveComponentDigests,
+    componentCollisionDigests: sensitivity.componentCollisionDigests,
+    sensitiveTokenDigests: sensitivity.sensitiveTokenDigests,
+    tokenCollisionDigests: sensitivity.tokenCollisionDigests,
+    sensitiveComponentCount: sensitivity.sensitiveComponentCount,
+    componentCollisionCount: sensitivity.componentCollisionCount,
+    sensitiveTokenCount: sensitivity.sensitiveTokenCount,
+    tokenCollisionCount: sensitivity.tokenCollisionCount,
+  };
+  const sensitivityRoot = aggregateRows("reference-path-sensitivity-root/v1", [
+    sensitivityEvidence,
+  ]);
+  if (
+    sensitivity.sensitivityRoot !== sensitivityRoot ||
+    source.semanticRoots.pathSensitivity !== sensitivityRoot
+  )
+    fail("path sensitivity root mismatch");
+  if (
+    !same(oracle.copyPolicy, {
+      minimumNormalizedBytes: 160,
+      boundaryDisposition: "159-bytes-allowed-160-bytes-rejected-at-every-offset",
+    })
+  )
+    fail("copied-source boundary policy mismatch");
+  const publication = buildPublicationFingerprints(snapshot).census;
+  if (
+    !same(oracle.publicationFingerprintCensus, publication) ||
+    source.semanticRoots.publicationFingerprints !== publication.fingerprintRoot
+  )
+    fail("publication fingerprint census mismatch");
 }
 
 async function validateResolutionIssueFiles(root) {
@@ -735,6 +927,10 @@ export function validateInventory(snapshot) {
     effectCandidateCount: snapshot.source.source.effectCandidateCount,
     mutationGroupCount: snapshot.mutations.mutationGroups.length,
     sourcePathCount: snapshot["redaction-oracle"].sourcePathCensus.entries.length,
+    sensitiveComponentCount:
+      snapshot["redaction-oracle"].sourcePathCensus.sensitivity.sensitiveComponentCount,
+    sensitiveTokenCount:
+      snapshot["redaction-oracle"].sourcePathCensus.sensitivity.sensitiveTokenCount,
     unresolved: resolutionIssues.size,
   };
 }
@@ -801,4 +997,5 @@ export const inventoryTestApi = Object.freeze({
   callsiteEvidence,
   entrypointEvidence,
   semanticCallsite,
+  buildPublicationFingerprints,
 });

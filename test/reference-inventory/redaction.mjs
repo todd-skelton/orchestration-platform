@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { resolvePnpmLauncher } from "../../scripts/pnpm-launcher.mjs";
-import { loadInventory, validateInventory } from "./inventory.mjs";
+import { buildPublicationFingerprints, loadInventory, validateInventory } from "./inventory.mjs";
 import { parseLiveArguments } from "./source-evidence.mjs";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -39,11 +39,11 @@ const sourceContentMarkers = [
 ];
 const copyWindow = 160;
 const backslash = String.fromCharCode(92);
-const uncClass = `[^${backslash}s${backslash.repeat(2)}/]+`;
+const uncClass = `[a-z0-9][a-z0-9._-]*`;
 const uncSeparator = `[${backslash.repeat(2)}/]`;
 const uncPathPattern = new RegExp(
-  `${backslash.repeat(4)}${uncClass}${uncSeparator}${uncClass}`,
-  "m",
+  `(?:^|[${backslash}s"'(=])${backslash.repeat(4)}${uncClass}${uncSeparator}${uncClass}`,
+  "im",
 );
 
 function fail(message) {
@@ -80,6 +80,7 @@ function pathDigest(domain, value) {
 
 function sourcePathFindings(value, oracle) {
   if (!oracle) return [];
+  const findings = new Set();
   const candidates = [
     ...(value.match(/[a-z0-9_.-]+(?:[\\/][a-z0-9_.-]+)+/gi) ?? []),
     ...(value.match(/\b[a-z0-9][a-z0-9._-]*\.[a-z0-9]{1,8}\b/gi) ?? []),
@@ -99,28 +100,30 @@ function sourcePathFindings(value, oracle) {
           oracle.rawPaths.has(pathDigest("reference-artifact-path/v1", span)) ||
           oracle.normalizedPaths.has(pathDigest("reference-source-path-normalized/v1", span))
         ) {
-          return ["source-relative-path"];
+          findings.add("source-relative-path");
         }
       }
     }
     for (const component of components) {
       if (
-        (component.length >= 12 || /[.-]/.test(component)) &&
-        oracle.components.has(pathDigest("reference-source-path-component/v1", component))
-      ) {
-        return ["source-path-component"];
-      }
+        oracle.sensitiveComponents.has(pathDigest("reference-source-path-component/v1", component))
+      )
+        findings.add("source-path-component");
+    }
+    for (const token of tokens) {
+      if (oracle.sensitiveTokens.has(pathDigest("reference-source-path-token/v1", token)))
+        findings.add("source-path-token");
     }
     for (let start = 0; start < tokens.length; start += 1) {
       for (let length = 2; length <= 4 && start + length <= tokens.length; length += 1) {
         const ngram = tokens.slice(start, start + length).join("/");
         if (oracle.ngrams.has(pathDigest("reference-source-path-ngram/v1", ngram))) {
-          return ["source-path-ngram"];
+          findings.add("source-path-ngram");
         }
       }
     }
   }
-  return [];
+  return [...findings];
 }
 
 function textFindings(value, forbiddenDigests, pathOracle) {
@@ -141,7 +144,7 @@ function textFindings(value, forbiddenDigests, pathOracle) {
   if (
     /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value) ||
     /\b(?:gh[pousr]_[A-Za-z0-9_]{24,}|AKIA[A-Z0-9]{16})\b/.test(value) ||
-    /\b(?:password|secret|access[_-]?token|api[_-]?key|client[_-]?secret)\s*[:=]\s*["']?[^\s"']{12,}["']?/i.test(
+    /\b(?:password|secret|credential|access[._-]?token|api[._-]?key|client[._-]?secret)(?:\s*[:=]\s*|\s+)["']?[^\s"']{12,}["']?/i.test(
       value,
     ) ||
     /\bbearer\s+[a-z0-9._~+/-]{12,}/i.test(value)
@@ -164,12 +167,72 @@ function textFindings(value, forbiddenDigests, pathOracle) {
   return [...new Set(findings)];
 }
 
-function containsInventoryMaterial(value) {
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, stableValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+function canonicalTokensFromText(value) {
+  return value.match(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null/gi) ?? [];
+}
+
+function digestParts(domain, parts) {
+  const hash = createHash("sha256").update(`${domain}\0`);
+  for (const part of parts) hash.update(part).update("\0");
+  return hash.digest("hex");
+}
+
+function collectJsonObjects(value, result = []) {
+  if (!value || typeof value !== "object") return result;
+  if (!Array.isArray(value)) result.push(value);
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    collectJsonObjects(child, result);
+  }
+  return result;
+}
+
+function publicationFingerprintFinding(text, oracle) {
+  if (!oracle) return false;
+  try {
+    const parsed = JSON.parse(text);
+    for (const row of collectJsonObjects(parsed)) {
+      const canonical = JSON.stringify(stableValue(row));
+      if (oracle.rowDigests.has(pathDigest("reference-publication-row/v1", canonical))) return true;
+    }
+  } catch {
+    // Canonical chunks below intentionally cover valid fragments and non-JSON bundles.
+  }
+  const tokens = canonicalTokensFromText(text);
+  for (let offset = 0; offset + 6 <= tokens.length; offset += 1) {
+    if (
+      oracle.chunkDigests.has(
+        digestParts("reference-publication-chunk/v1", tokens.slice(offset, offset + 6)),
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
+function containsInventoryMaterial(value, publicationOracle) {
   const text = Buffer.isBuffer(value) ? value.toString("utf8") : value;
   return (
     sourceMarkers.some((marker) => text.includes(marker)) ||
-    sourceContentMarkers.some((pattern) => pattern.test(text))
+    sourceContentMarkers.some((pattern) => pattern.test(text)) ||
+    publicationFingerprintFinding(text, publicationOracle)
   );
+}
+
+function buildPublicationOracle(snapshot) {
+  const { rowDigests, chunkDigests } = buildPublicationFingerprints(snapshot);
+  return { rowDigests, chunkDigests };
 }
 
 async function collectFiles(path) {
@@ -223,11 +286,11 @@ async function readTarball(path) {
   return files;
 }
 
-function validatePackedFile(path, bytes, forbiddenDigests, pathOracle) {
+function validatePackedFile(path, bytes, forbiddenDigests, pathOracle, publicationOracle) {
   if (/^(?:reference|test)\//.test(path)) fail("package archive contains reference/test evidence");
   const findings = textFindings(`${path}\n${bytes.toString("utf8")}`, forbiddenDigests, pathOracle);
-  if (findings.length > 0) fail(`package archive contains ${findings.join(",")}`);
-  if (containsInventoryMaterial(bytes)) {
+  if (findings.length > 0) fail(`package archive ${path} contains ${findings.join(",")}`);
+  if (containsInventoryMaterial(bytes, publicationOracle)) {
     fail("package archive contains reference inventory material");
   }
 }
@@ -246,7 +309,7 @@ async function packageManifests(root) {
   return result.sort();
 }
 
-async function scanPackedSurfaces(root, forbiddenDigests, pathOracle) {
+async function scanPackedSurfaces(root, forbiddenDigests, pathOracle, publicationOracle) {
   const temporaryRoot = await mkdtemp(resolve(tmpdir(), "orchestration-reference-pack-"));
   let fileCount = 0;
   try {
@@ -262,7 +325,7 @@ async function scanPackedSurfaces(root, forbiddenDigests, pathOracle) {
       );
       for (const [path, bytes] of await readTarball(packed.filename)) {
         fileCount += 1;
-        validatePackedFile(path, bytes, forbiddenDigests, pathOracle);
+        validatePackedFile(path, bytes, forbiddenDigests, pathOracle, publicationOracle);
       }
     }
   } finally {
@@ -271,7 +334,13 @@ async function scanPackedSurfaces(root, forbiddenDigests, pathOracle) {
   return fileCount;
 }
 
-async function scanBuiltSurfaces(root, forbiddenDigests, pathOracle, artifactDigests) {
+async function scanBuiltSurfaces(
+  root,
+  forbiddenDigests,
+  pathOracle,
+  artifactDigests,
+  publicationOracle,
+) {
   await runPnpm(["run", "build"], root);
   const configuration = JSON.parse(
     await readFile(resolve(root, "config/private-compositions.json"), "utf8"),
@@ -283,15 +352,24 @@ async function scanBuiltSurfaces(root, forbiddenDigests, pathOracle, artifactDig
   for (const path of paths) {
     const bytes = await readFile(resolve(root, path));
     const text = bytes.toString("utf8");
-    validateBuiltText(text, forbiddenDigests, pathOracle, artifactDigests);
+    validateBuiltText(text, forbiddenDigests, pathOracle, artifactDigests, publicationOracle);
   }
   return paths.length;
 }
 
-function validateBuiltText(text, forbiddenDigests, pathOracle, artifactDigests = []) {
+function validateBuiltText(
+  text,
+  forbiddenDigests,
+  pathOracle,
+  artifactDigests = [],
+  publicationOracle,
+) {
   const findings = textFindings(text, forbiddenDigests, pathOracle);
   if (findings.length > 0) fail(`built surface contains ${findings.join(",")}`);
-  if (containsInventoryMaterial(text) || artifactDigests.some((value) => text.includes(value))) {
+  if (
+    containsInventoryMaterial(text, publicationOracle) ||
+    artifactDigests.some((value) => text.includes(value))
+  ) {
     fail("built surface contains reference inventory material");
   }
 }
@@ -333,7 +411,70 @@ async function git(repository, args, encoding = "utf8") {
   ).stdout;
 }
 
-async function compareSourceChunks(live, targetTexts) {
+function verifyLivePathProbes(sourcePaths, oracle) {
+  const fullPaths = new Map();
+  const components = new Map();
+  const tokens = new Map();
+  const ngrams = new Map();
+  for (const sourcePath of sourcePaths) {
+    const normalized = sourcePath.normalize("NFKC").toLowerCase().replaceAll("\\", "/");
+    const pathComponents = normalized.split("/").filter(Boolean);
+    const pathTokens = pathComponents.flatMap((component) => component.match(/[a-z0-9]+/g) ?? []);
+    fullPaths.set(pathDigest("reference-artifact-path/v1", normalized), normalized);
+    for (const component of pathComponents)
+      components.set(pathDigest("reference-source-path-component/v1", component), component);
+    for (const token of pathTokens)
+      tokens.set(pathDigest("reference-source-path-token/v1", token), token);
+    for (let start = 0; start < pathTokens.length; start += 1) {
+      for (let length = 2; length <= 4 && start + length <= pathTokens.length; length += 1) {
+        const ngram = pathTokens.slice(start, start + length).join("/");
+        ngrams.set(pathDigest("reference-source-path-ngram/v1", ngram), ngram);
+      }
+    }
+  }
+  for (const value of fullPaths.values()) {
+    if (!sourcePathFindings(value.toUpperCase(), oracle).includes("source-relative-path"))
+      fail("live full source-path probe evaded the hashed oracle");
+  }
+  for (const digestValue of oracle.sensitiveComponents) {
+    const value = components.get(digestValue);
+    if (
+      !value ||
+      !sourcePathFindings(`boundary/${value.toUpperCase()}/boundary`, oracle).includes(
+        "source-path-component",
+      )
+    )
+      fail("live sensitive component probe evaded the hashed oracle");
+  }
+  for (const digestValue of oracle.sensitiveTokens) {
+    const value = tokens.get(digestValue);
+    if (
+      !value ||
+      !sourcePathFindings(`boundary/${value.toUpperCase()}/boundary`, oracle).includes(
+        "source-path-token",
+      )
+    )
+      fail("live sensitive token probe evaded the hashed oracle");
+  }
+  for (const value of ngrams.values()) {
+    if (
+      !sourcePathFindings(`boundary/${value.toUpperCase()}/boundary`, oracle).includes(
+        "source-path-ngram",
+      )
+    )
+      fail("live source-path ngram probe evaded the hashed oracle");
+  }
+  return {
+    liveFullPathProbeCount: fullPaths.size,
+    liveSensitiveComponentProbeCount: oracle.sensitiveComponents.size,
+    liveComponentCollisionCount: oracle.componentCollisions.size,
+    liveSensitiveTokenProbeCount: oracle.sensitiveTokens.size,
+    liveTokenCollisionCount: oracle.tokenCollisions.size,
+    liveNgramProbeCount: ngrams.size,
+  };
+}
+
+async function compareSourceChunks(live, targetTexts, pathOracle) {
   const exact = (await git(live.repository, ["rev-parse", `${live.commit}^{commit}`])).trim();
   if (exact !== live.commit) fail("redaction source commit did not resolve exactly");
   const raw = await git(
@@ -343,25 +484,37 @@ async function compareSourceChunks(live, targetTexts) {
   );
   const targetChunks = new Set(targetTexts.flatMap((text) => [...overlappingChunks(text)]));
   let sourceChunkCount = 0;
+  const sourcePaths = [];
+  const prefix = `${live.subtree.replace(/\/$/, "")}/`;
   for (const record of raw.subarray(0, -1).toString("utf8").split("\0")) {
-    const header = record.slice(0, record.indexOf("\t")).split(" ");
+    const tab = record.indexOf("\t");
+    const header = record.slice(0, tab).split(" ");
     if (header[1] !== "blob") continue;
+    const sourcePath = record.slice(tab + 1);
+    if (!sourcePath.startsWith(prefix)) fail("live redaction tree escaped its selected subtree");
+    sourcePaths.push(sourcePath.slice(prefix.length));
     const bytes = await git(live.repository, ["cat-file", "blob", header[2]], "buffer");
     for (const digest of overlappingChunks(bytes.toString("utf8"))) {
       sourceChunkCount += 1;
       if (targetChunks.has(digest)) fail("ISS-001 surface contains copied source bytes");
     }
   }
-  return sourceChunkCount;
+  return {
+    liveSourceChunkCount: sourceChunkCount,
+    ...verifyLivePathProbes(sourcePaths, pathOracle),
+  };
 }
 
 function buildPathOracle(snapshot) {
   const entries = snapshot["redaction-oracle"].sourcePathCensus.entries;
+  const sensitivity = snapshot["redaction-oracle"].sourcePathCensus.sensitivity;
   return {
     rawPaths: new Set(entries.map(({ pathDigest: value }) => value)),
     normalizedPaths: new Set(entries.map(({ normalizedPathDigest }) => normalizedPathDigest)),
-    components: new Set(entries.flatMap(({ componentDigests }) => componentDigests)),
-    tokens: new Set(entries.flatMap(({ tokenDigests }) => tokenDigests)),
+    sensitiveComponents: new Set(sensitivity.sensitiveComponentDigests),
+    componentCollisions: new Set(sensitivity.componentCollisionDigests),
+    sensitiveTokens: new Set(sensitivity.sensitiveTokenDigests),
+    tokenCollisions: new Set(sensitivity.tokenCollisionDigests),
     ngrams: new Set(entries.flatMap(({ ngramDigests }) => ngramDigests)),
   };
 }
@@ -373,6 +526,7 @@ export async function runRedaction(root = defaultRoot, live) {
     snapshot["redaction-oracle"].entries.map(({ digest }) => digest),
   );
   const pathOracle = buildPathOracle(snapshot);
+  const publicationOracle = buildPublicationOracle(snapshot);
   const surfaceRoots = [
     resolve(root, "reference/manifest"),
     resolve(root, "test/reference-inventory"),
@@ -393,19 +547,25 @@ export async function runRedaction(root = defaultRoot, live) {
     pathDigest,
     contentDigest,
   ]);
-  const packageFileCount = await scanPackedSurfaces(root, forbiddenDigests, pathOracle);
+  const packageFileCount = await scanPackedSurfaces(
+    root,
+    forbiddenDigests,
+    pathOracle,
+    publicationOracle,
+  );
   const builtSurfaceCount = await scanBuiltSurfaces(
     root,
     forbiddenDigests,
     pathOracle,
     artifactDigests,
+    publicationOracle,
   );
-  const sourceChunkCount = live ? await compareSourceChunks(live, targetTexts) : undefined;
+  const liveEvidence = live ? await compareSourceChunks(live, targetTexts, pathOracle) : {};
   return {
     scannedSurfaceFiles: surfaceFiles.length,
     packageFileCount,
     builtSurfaceCount,
-    liveSourceChunkCount: sourceChunkCount,
+    ...liveEvidence,
   };
 }
 
@@ -419,6 +579,7 @@ export async function runRedactionCli(argv, root = defaultRoot) {
 
 export const redactionTestApi = Object.freeze({
   buildPathOracle,
+  buildPublicationOracle,
   containsInventoryMaterial,
   copiedSourceBytes,
   forbiddenDigest,

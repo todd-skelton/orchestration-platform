@@ -55,7 +55,7 @@ function uniqueDigests(domain, values) {
   return [...new Set(values.map((value) => digest(domain, value)))].sort();
 }
 
-function pathEvidence(artifactId, pathDigest, pathBytes) {
+function pathProbeEvidence(pathBytes) {
   const normalized = pathBytes
     .toString("utf8")
     .normalize("NFKC")
@@ -69,6 +69,11 @@ function pathEvidence(artifactId, pathDigest, pathBytes) {
       ngrams.push(tokens.slice(start, start + length).join("/"));
     }
   }
+  return { normalized, components, tokens, ngrams };
+}
+
+function pathEvidence(artifactId, pathDigest, pathBytes) {
+  const { normalized, components, tokens, ngrams } = pathProbeEvidence(pathBytes);
   return {
     artifactId,
     pathDigest,
@@ -145,6 +150,7 @@ export async function extractSourceEvidence({ repository, commit, subtree }) {
   const artifacts = [];
   const candidates = [];
   const sourcePaths = [];
+  const sourcePathProbes = [];
   for (const row of sourceRows) {
     if (row.mode !== "100644" || row.type !== "blob") {
       throw new Error("source subtree contains a non-regular blob");
@@ -171,6 +177,7 @@ export async function extractSourceEvidence({ repository, commit, subtree }) {
     const artifact = artifacts.find((candidate) => candidate.pathDigest === pathDigest);
     if (!artifact) throw new Error("source path lacks an artifact identity");
     sourcePaths.push(pathEvidence(artifact.artifactId, pathDigest, row.relativePath));
+    sourcePathProbes.push(pathProbeEvidence(row.relativePath));
   }
   sourcePaths.sort((left, right) => left.artifactId.localeCompare(right.artifactId));
   for (const artifact of artifacts) {
@@ -233,6 +240,7 @@ export async function extractSourceEvidence({ repository, commit, subtree }) {
     candidateGroups,
     artifacts,
     sourcePaths,
+    sourcePathProbes,
     entrypoints,
     candidates,
   };

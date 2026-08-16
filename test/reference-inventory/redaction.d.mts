@@ -6,7 +6,8 @@ export declare function runRedactionCli(argv: string[], root?: string): Promise<
 
 export declare const redactionTestApi: Readonly<{
   buildPathOracle(snapshot: any): any;
-  containsInventoryMaterial(value: string | Buffer): boolean;
+  buildPublicationOracle(snapshot: any): any;
+  containsInventoryMaterial(value: string | Buffer, publicationOracle?: any): boolean;
   copiedSourceBytes(sourceTexts: string[], targetTexts: string[]): boolean;
   forbiddenDigest(value: string): string;
   pathDigest(domain: string, value: string): string;
@@ -17,11 +18,13 @@ export declare const redactionTestApi: Readonly<{
     bytes: Buffer,
     forbiddenDigests: Set<string>,
     pathOracle?: any,
+    publicationOracle?: any,
   ): void;
   validateBuiltText(
     text: string,
     forbiddenDigests: Set<string>,
     pathOracle?: any,
     artifactDigests?: string[],
+    publicationOracle?: any,
   ): void;
 }>;
