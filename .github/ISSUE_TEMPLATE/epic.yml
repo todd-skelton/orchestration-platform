@@ -1,0 +1,24 @@
+name: Capability epic
+description: A coordinated capability composed of implementation slices.
+title: "Epic: "
+labels: ["type:epic"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+    validations:
+      required: true
+  - type: textarea
+    id: handoff
+    attributes:
+      label: Orchestrator handoff
+      description: Include chain DAG, gates, parked work, and decisions.
+    validations:
+      required: true
+  - type: textarea
+    id: children
+    attributes:
+      label: Child index
+    validations:
+      required: true

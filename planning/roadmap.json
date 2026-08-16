@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "orchestration-roadmap/v1",
+  "repository": "todd-skelton/orchestration-platform",
+  "milestones": [
+    {
+      "key": "M1",
+      "title": "Portable foundation",
+      "description": "Outcome: the repository has an executable TypeScript toolchain and the same configuration, contract, filesystem, lock, process, and CLI guarantees are proven on current macOS, Windows, and Linux. Scope boundary: no orchestration kernel, self-promotion, or consumer mutation. Entry gates: none. Exit evidence: trusted three-OS harness receipts plus the portable capability and primitive conformance matrices."
+    },
+    {
+      "key": "M2",
+      "title": "Self-hosting release",
+      "description": "Outcome: independently authorized bootstrap N0 uses the released platform, concrete worker host, independent review, final OS certification, and promotion protocol to produce and activate N1. Scope boundary: no external-consumer authority transfer. Entry gates: none; preparatory slices may run when their own blocked-by edges clear. Activation gate: ISS-019 requires Portable foundation exit evidence before N0 authorization. Exit evidence: N0 bootstrap receipt, joined N0-to-N1 journal, exact-candidate review and promotion receipts, negative controls, and a healthy next routine N1 cycle."
+    },
+    {
+      "key": "M3",
+      "title": "First consumer adoption",
+      "description": "Outcome: the selected external repository pins the platform, supplies its policy through an adapter, proves authoritative shadow parity, and transfers control with tested recovery. Scope boundary: no second consumer or general marketplace. Entry gates: none; parity-fixture preparation may run when its own blocked-by edges clear. Activation gate: ISS-017 cannot begin live shadow or cutover work until the self-hosting release dependencies clear. Exit evidence: parity fixture coverage, terminal shadow report, cutover/recovery receipts, and the seven-day post-cutover observation report."
+    }
+  ],
+  "epics": [
+    { "key": "EPIC-RUNTIME", "file": "planning/drafts/EPIC-RUNTIME.md" },
+    { "key": "EPIC-KERNEL", "file": "planning/drafts/EPIC-KERNEL.md" },
+    { "key": "EPIC-MODULES", "file": "planning/drafts/EPIC-MODULES.md" },
+    { "key": "EPIC-SELFHOST", "file": "planning/drafts/EPIC-SELFHOST.md" },
+    { "key": "EPIC-ADOPTION", "file": "planning/drafts/EPIC-ADOPTION.md" }
+  ],
+  "issues": [
+    { "key": "ISS-000", "file": "planning/drafts/ISS-000.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": [] },
+    { "key": "ISS-001", "file": "planning/drafts/ISS-001.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-000"] },
+    { "key": "ISS-002", "file": "planning/drafts/ISS-002.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-000", "ISS-001"] },
+    { "key": "ISS-003", "file": "planning/drafts/ISS-003.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-006"] },
+    { "key": "ISS-006", "file": "planning/drafts/ISS-006.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-000", "ISS-002"] },
+    { "key": "ISS-022", "file": "planning/drafts/ISS-022.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-006"] },
+    { "key": "ISS-031", "file": "planning/drafts/ISS-031.md", "milestone": "M2", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-006", "ISS-022"] },
+    { "key": "ISS-032", "file": "planning/drafts/ISS-032.md", "milestone": "M2", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-003", "ISS-022", "ISS-031"] },
+    { "key": "ISS-035", "file": "planning/drafts/ISS-035.md", "milestone": "M2", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-006", "ISS-022", "ISS-031"] },
+    { "key": "ISS-038", "file": "planning/drafts/ISS-038.md", "milestone": "M2", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-003", "ISS-032", "ISS-035", "ISS-036"] },
+    { "key": "ISS-004", "file": "planning/drafts/ISS-004.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-022"] },
+    { "key": "ISS-005", "file": "planning/drafts/ISS-005.md", "milestone": "M1", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-002", "ISS-022"] },
+    { "key": "ISS-013", "file": "planning/drafts/ISS-013.md", "milestone": "M2", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-002", "ISS-003"] },
+    { "key": "ISS-025", "file": "planning/drafts/ISS-025.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-002", "ISS-004", "ISS-013"] },
+    { "key": "ISS-007", "file": "planning/drafts/ISS-007.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-003", "ISS-004", "ISS-006"] },
+    { "key": "ISS-008", "file": "planning/drafts/ISS-008.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-005", "ISS-007", "ISS-013", "ISS-025", "ISS-032"] },
+    { "key": "ISS-009", "file": "planning/drafts/ISS-009.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-002", "ISS-008"] },
+    { "key": "ISS-010", "file": "planning/drafts/ISS-010.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-002", "ISS-003", "ISS-004", "ISS-007"] },
+    { "key": "ISS-011", "file": "planning/drafts/ISS-011.md", "milestone": "M2", "parent": "EPIC-MODULES", "blockedBy": ["ISS-002", "ISS-006", "ISS-013"] },
+    { "key": "ISS-012", "file": "planning/drafts/ISS-012.md", "milestone": "M2", "parent": "EPIC-MODULES", "blockedBy": ["ISS-010", "ISS-011", "ISS-025"] },
+    { "key": "ISS-014", "file": "planning/drafts/ISS-014.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-004", "ISS-009", "ISS-010", "ISS-032"] },
+    { "key": "ISS-029", "file": "planning/drafts/ISS-029.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-000", "ISS-006", "ISS-038"] },
+    { "key": "ISS-020", "file": "planning/drafts/ISS-020.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-006", "ISS-014", "ISS-021", "ISS-029", "ISS-032", "ISS-033", "ISS-038"] },
+    { "key": "ISS-023", "file": "planning/drafts/ISS-023.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-003", "ISS-006", "ISS-012", "ISS-031"] },
+    { "key": "ISS-021", "file": "planning/drafts/ISS-021.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-005", "ISS-008", "ISS-011", "ISS-012", "ISS-013", "ISS-023", "ISS-032"] },
+    { "key": "ISS-026", "file": "planning/drafts/ISS-026.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-003", "ISS-007", "ISS-008", "ISS-009", "ISS-010", "ISS-011", "ISS-012", "ISS-013", "ISS-014", "ISS-025", "ISS-032"] },
+    { "key": "ISS-030", "file": "planning/drafts/ISS-030.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-003", "ISS-005", "ISS-006", "ISS-007", "ISS-010", "ISS-026", "ISS-032", "ISS-038"] },
+    { "key": "ISS-036", "file": "planning/drafts/ISS-036.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-000", "ISS-002", "ISS-006", "ISS-013"] },
+    { "key": "ISS-033", "file": "planning/drafts/ISS-033.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-003", "ISS-004", "ISS-005", "ISS-008", "ISS-010", "ISS-011", "ISS-013", "ISS-014", "ISS-021", "ISS-026", "ISS-032", "ISS-036", "ISS-038"] },
+    { "key": "ISS-019", "file": "planning/drafts/ISS-019.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-006", "ISS-007", "ISS-008", "ISS-009", "ISS-010", "ISS-011", "ISS-012", "ISS-013", "ISS-014", "ISS-020", "ISS-021", "ISS-025", "ISS-026", "ISS-030", "ISS-032", "ISS-033", "ISS-038"] },
+    { "key": "ISS-037", "file": "planning/drafts/ISS-037.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-019", "ISS-023", "ISS-038"] },
+    { "key": "ISS-034", "file": "planning/drafts/ISS-034.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-020", "ISS-032", "ISS-033", "ISS-038", "ISS-037"] },
+    { "key": "ISS-027", "file": "planning/drafts/ISS-027.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-019", "ISS-034", "ISS-037"] },
+    { "key": "ISS-015", "file": "planning/drafts/ISS-015.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-027", "ISS-033"] },
+    { "key": "ISS-028", "file": "planning/drafts/ISS-028.md", "milestone": "M3", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-013"] },
+    { "key": "ISS-016", "file": "planning/drafts/ISS-016.md", "milestone": "M3", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-001", "ISS-002", "ISS-013", "ISS-025"] },
+    { "key": "ISS-024", "file": "planning/drafts/ISS-024.md", "milestone": "M3", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-004", "ISS-013", "ISS-016", "ISS-028"] },
+    { "key": "ISS-017", "file": "planning/drafts/ISS-017.md", "milestone": "M3", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-013", "ISS-015", "ISS-016", "ISS-019", "ISS-028"] },
+    { "key": "ISS-018", "file": "planning/drafts/ISS-018.md", "milestone": "M3", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-017", "ISS-024", "ISS-028"] }
+  ]
+}

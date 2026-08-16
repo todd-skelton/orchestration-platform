@@ -1,0 +1,29 @@
+name: Evidence probe
+description: Resolve an authority or feasibility question before implementation.
+title: "Probe: "
+labels: ["type:probe"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Probe method and lifecycle timing
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Required durable evidence
+    validations:
+      required: true
+  - type: textarea
+    id: disposition
+    attributes:
+      label: Disposition rule
+    validations:
+      required: true

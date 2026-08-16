@@ -1,0 +1,53 @@
+name: Implementation slice
+description: A bounded, independently verifiable implementation outcome.
+title: ""
+labels: ["type:slice"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and evidence
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: Decisions already made
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria and evidence methods
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+    validations:
+      required: true
+  - type: textarea
+    id: footprint
+    attributes:
+      label: Predicted footprint and dependencies
+    validations:
+      required: true
+  - type: textarea
+    id: operator
+    attributes:
+      label: Operator actions
+    validations:
+      required: true
+  - type: textarea
+    id: review
+    attributes:
+      label: Independent review packet seed
+    validations:
+      required: true
