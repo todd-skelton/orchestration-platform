@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
+import { normalizeTrackedText } from "../tracked-text.mjs";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const execFileAsync = promisify(execFile);
@@ -233,9 +234,12 @@ function equal(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function normalizeLineEndings(value) {
-  if (/\r(?!\n)/.test(value)) fail("text contract contains a malformed line ending");
-  return value.replace(/\r\n/g, "\n");
+function normalizeContractText(value) {
+  try {
+    return normalizeTrackedText(value);
+  } catch {
+    fail("text contract contains malformed or mixed line endings");
+  }
 }
 
 async function runPnpm(args, cwd) {
@@ -666,7 +670,7 @@ export async function validateBootstrapSnapshot(snapshot) {
     if (!/^\d+\.\d+\.\d+$/.test(version)) fail(`${dependency} is not exactly pinned`);
   }
   if (
-    normalizeLineEndings(snapshot.workspace) !==
+    normalizeContractText(snapshot.workspace) !==
     'packages:\n  - "packages/*"\n  - "modules/*"\n  - "adapters/*"\n\nallowBuilds:\n  esbuild: true\n'
   ) {
     fail("workspace globs are not the exact predeclared set");
@@ -729,9 +733,9 @@ export async function validateBootstrapSnapshot(snapshot) {
   if (!Array.isArray(snapshot.moduleManifest) || snapshot.moduleManifest.length !== 0) {
     fail("bootstrap module manifest must be the exact empty list");
   }
-  if (normalizeLineEndings(snapshot.moduleManifestSource) !== "[]\n")
+  if (normalizeContractText(snapshot.moduleManifestSource) !== "[]\n")
     fail("bootstrap module manifest bytes mismatch");
-  if (normalizeLineEndings(snapshot.workflow) !== expectedWorkflow)
+  if (normalizeContractText(snapshot.workflow) !== expectedWorkflow)
     fail("three-OS bootstrap workflow mismatch");
   validateCliRegistrySource(snapshot.cliRegistrySource);
   validateHandlerSources(snapshot.handlerFiles, snapshot.handlerSources);

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeTrackedText } from "../../scripts/tracked-text.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const manifestPath = resolve(repositoryRoot, "modules/manifest.json");
@@ -11,7 +12,12 @@ if (process.argv.length !== 2) {
   throw new Error("CAPABILITY_NOT_IMPLEMENTED: ISS-011 does not accept module arguments");
 }
 
-const manifestSource = await readFile(manifestPath, "utf8");
+let manifestSource;
+try {
+  manifestSource = normalizeTrackedText(await readFile(manifestPath, "utf8"));
+} catch {
+  throw new Error("CAPABILITY_NOT_IMPLEMENTED: ISS-011 owns malformed module manifests");
+}
 if (manifestSource !== "[]\n") {
   throw new Error("CAPABILITY_NOT_IMPLEMENTED: ISS-011 owns edited module manifests");
 }

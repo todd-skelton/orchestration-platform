@@ -24,6 +24,33 @@ describe("bootstrap manifest graph", () => {
     await expect(validateBootstrapSnapshot(snapshot)).resolves.toBeUndefined();
   });
 
+  test.each([
+    [
+      "mixed line endings",
+      (snapshot: any) => {
+        snapshot.workspace = snapshot.workspace.replace("\n", "\r\n");
+      },
+    ],
+    [
+      "lone carriage return",
+      (snapshot: any) => {
+        snapshot.moduleManifestSource = "[]\r";
+      },
+    ],
+    [
+      "semantic text change",
+      (snapshot: any) => {
+        snapshot.workflow = snapshot.workflow.replace("name: bootstrap", "name: changed");
+      },
+    ],
+  ])("rejects %s tracked text", async (_name, mutate) => {
+    const snapshot = mutant();
+    mutate(snapshot);
+    await expect(validateBootstrapSnapshot(snapshot)).rejects.toThrow(
+      /BOOTSTRAP_CONTRACT_MISMATCH/,
+    );
+  });
+
   test("uses native Windows pnpm executables without a Node prefix", async () => {
     await expect(resolvePnpmLauncher("C:\\pnpm\\pnpm.exe")).resolves.toEqual({
       executable: "C:\\pnpm\\pnpm.exe",
