@@ -1,0 +1,5 @@
+node_modules
+**/dist
+modules/.generated
+pnpm-lock.yaml
+planning/pressure-tests

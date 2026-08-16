@@ -1,0 +1,18 @@
+{
+  "name": "@orchestration-platform/review",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node ../../scripts/capability-not-implemented.mjs ISS-009 @orchestration-platform/review:test"
+  }
+}

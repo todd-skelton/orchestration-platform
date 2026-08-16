@@ -1,0 +1,22 @@
+{
+  "name": "@orchestration-platform/host-codex",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./bootstrap-canaries": {
+      "types": "./src/bootstrap-canaries/index.ts",
+      "default": "./src/bootstrap-canaries/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node ../../scripts/capability-not-implemented.mjs ISS-021 @orchestration-platform/host-codex:test"
+  }
+}

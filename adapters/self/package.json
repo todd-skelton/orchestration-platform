@@ -1,0 +1,38 @@
+{
+  "name": "@orchestration-platform/adapter-self",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./workspace": {
+      "types": "./src/workspace/index.ts",
+      "default": "./src/workspace/index.ts"
+    },
+    "./code-host": {
+      "types": "./src/code-host/index.ts",
+      "default": "./src/code-host/index.ts"
+    },
+    "./certification": {
+      "types": "./src/certification/index.ts",
+      "default": "./src/certification/index.ts"
+    },
+    "./bootstrap-canaries": {
+      "types": "./src/bootstrap-canaries/index.ts",
+      "default": "./src/bootstrap-canaries/index.ts"
+    },
+    "./broker-operations": {
+      "types": "./src/broker-operations/index.ts",
+      "default": "./src/broker-operations/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node ../../scripts/capability-not-implemented.mjs ISS-033 @orchestration-platform/adapter-self:test"
+  }
+}

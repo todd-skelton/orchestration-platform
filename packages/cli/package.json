@@ -1,0 +1,34 @@
+{
+  "name": "@orchestration-platform/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "src",
+    "bin"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node ../../scripts/capability-not-implemented.mjs ISS-003 @orchestration-platform/cli:test"
+  },
+  "dependencies": {
+    "@orchestration-platform/config": "workspace:*",
+    "@orchestration-platform/session": "workspace:*",
+    "@orchestration-platform/dispatch": "workspace:*",
+    "@orchestration-platform/review": "workspace:*",
+    "@orchestration-platform/journal": "workspace:*",
+    "@orchestration-platform/adapter-sdk": "workspace:*",
+    "@orchestration-platform/release": "workspace:*",
+    "@orchestration-platform/engine": "workspace:*",
+    "@orchestration-platform/supervisor": "workspace:*",
+    "@orchestration-platform/credentials": "workspace:*"
+  },
+  "bin": {
+    "orchestrate": "./bin/orchestrate.mjs"
+  }
+}
