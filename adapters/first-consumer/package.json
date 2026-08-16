@@ -1,0 +1,30 @@
+{
+  "name": "@orchestration-platform/adapter-first-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./shadow": {
+      "types": "./src/shadow/index.ts",
+      "default": "./src/shadow/index.ts"
+    },
+    "./import": {
+      "types": "./src/import/index.ts",
+      "default": "./src/import/index.ts"
+    },
+    "./mutation": {
+      "types": "./src/mutation/index.ts",
+      "default": "./src/mutation/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node ../../scripts/capability-not-implemented.mjs ISS-028 @orchestration-platform/adapter-first-consumer:test"
+  }
+}

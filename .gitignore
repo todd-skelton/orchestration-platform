@@ -1,0 +1,9 @@
+node_modules/
+.pnpm-store/
+.artifacts/
+.orchestration-state/
+coverage/
+**/dist/
+modules/.generated/
+*.tsbuildinfo
+*.tmp

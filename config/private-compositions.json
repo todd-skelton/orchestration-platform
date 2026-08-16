@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "private-compositions/v1",
+  "options": {
+    "bundle": true,
+    "platform": "node",
+    "format": "esm",
+    "target": "node24",
+    "splitting": false,
+    "sourcemap": false,
+    "minify": false,
+    "treeShaking": false,
+    "packages": "bundle",
+    "external": ["node:*"]
+  },
+  "targets": [
+    {
+      "id": "bootstrap",
+      "entryPoint": "bootstrap/build/composition.ts",
+      "output": "bootstrap/dist/orchestration-bootstrap.mjs"
+    },
+    {
+      "id": "self-host",
+      "entryPoint": "adapters/self/build/composition.ts",
+      "output": "adapters/self/dist/orchestration-self.mjs"
+    },
+    {
+      "id": "credential-broker",
+      "entryPoint": "bootstrap/build/broker-service-composition.ts",
+      "output": "packages/credentials/dist/orchestration-credential-broker.mjs"
+    },
+    {
+      "id": "host-custody-bootstrap",
+      "entryPoint": "packages/host-custody/build/composition.ts",
+      "output": "packages/host-custody/dist/orchestration-host-custody-bootstrap.mjs"
+    },
+    {
+      "id": "host-custody-broker",
+      "entryPoint": "packages/host-custody/build/broker-service-composition.ts",
+      "output": "packages/host-custody/dist/orchestration-host-custody-broker.mjs"
+    }
+  ]
+}
