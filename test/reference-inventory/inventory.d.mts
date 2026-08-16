@@ -19,6 +19,14 @@ export declare function buildPublicationFingerprints(snapshot: any): {
   census: any;
   rowDigests: Set<string>;
   chunkDigests: Set<string>;
+  valueRowDigests: Set<string>;
+  relationshipDigests: Set<string>;
+  strongScalarDigests: Set<string>;
+};
+export declare function publicationValueFingerprints(value: any): {
+  valueRowDigest?: string;
+  relationshipDigests: string[];
+  strongScalarDigests: string[];
 };
 export declare function runInventoryCli(argv: string[], root?: string): Promise<void>;
 export declare const inventoryTestApi: Readonly<{
@@ -28,4 +36,9 @@ export declare const inventoryTestApi: Readonly<{
   entrypointEvidence(row: any): unknown;
   semanticCallsite(row: any, artifact: any): unknown;
   buildPublicationFingerprints(snapshot: any): unknown;
+  publicationValueFingerprints(value: any): {
+    valueRowDigest?: string;
+    relationshipDigests: string[];
+    strongScalarDigests: string[];
+  };
 }>;

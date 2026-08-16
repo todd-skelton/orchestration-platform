@@ -20,8 +20,8 @@
     "mutations": "059160923c453eafcfca2226f6f623099ab85d714dd65f8f9688df73df8c7cd5",
     "sourcePaths": "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     "transitions": "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
-    "pathSensitivity": "a09d0e1d9e289576896e7d0abaf4ec3e00f4d483ba2841d3ac2f8d556f5c8a46",
-    "publicationFingerprints": "68e1d3e0c4a351a2984a28643dd0ec33082d72f74efde1412ad42672f1a3fe1e"
+    "pathSensitivity": "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
+    "publicationFingerprints": "ca1a8265f976683bf7e8865c49ef1f1c831341d6b0b386915ac49741576c93b9"
   },
   "extensionCensus": {
     "cjs": 2,

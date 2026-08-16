@@ -176,8 +176,8 @@ const pinnedSource = Object.freeze({
     mutations: "059160923c453eafcfca2226f6f623099ab85d714dd65f8f9688df73df8c7cd5",
     sourcePaths: "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     transitions: "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
-    pathSensitivity: "a09d0e1d9e289576896e7d0abaf4ec3e00f4d483ba2841d3ac2f8d556f5c8a46",
-    publicationFingerprints: "68e1d3e0c4a351a2984a28643dd0ec33082d72f74efde1412ad42672f1a3fe1e",
+    pathSensitivity: "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
+    publicationFingerprints: "ca1a8265f976683bf7e8865c49ef1f1c831341d6b0b386915ac49741576c93b9",
   },
   extensionCensus: {
     cjs: 2,
@@ -239,6 +239,48 @@ function canonicalTokens(value) {
   );
 }
 
+function typedValueSignature(value) {
+  if (value === null) return JSON.stringify(["null"]);
+  if (Array.isArray(value)) {
+    return JSON.stringify(["array", value.map(typedValueSignature).sort()]);
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(["object", Object.values(value).map(typedValueSignature).sort()]);
+  }
+  return JSON.stringify([typeof value, value]);
+}
+
+function collectStrongScalars(value, result = []) {
+  if (Array.isArray(value)) {
+    for (const child of value) collectStrongScalars(child, result);
+  } else if (value && typeof value === "object") {
+    for (const child of Object.values(value)) collectStrongScalars(child, result);
+  } else if (typeof value === "string" && value.normalize("NFKC").length >= 12) {
+    result.push(digest("reference-publication-strong-scalar/v1", typedValueSignature(value)));
+  }
+  return result;
+}
+
+export function publicationValueFingerprints(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { valueRowDigest: undefined, relationshipDigests: [], strongScalarDigests: [] };
+  }
+  const signatures = Object.values(value).map(typedValueSignature).sort();
+  const relationshipDigests = [];
+  for (let left = 0; left < signatures.length; left += 1) {
+    for (let right = left + 1; right < signatures.length; right += 1) {
+      relationshipDigests.push(
+        digest("reference-publication-value-relationship/v1", signatures[left], signatures[right]),
+      );
+    }
+  }
+  return {
+    valueRowDigest: digest("reference-publication-value-row/v1", ...signatures),
+    relationshipDigests: sortedUnique(relationshipDigests),
+    strongScalarDigests: sortedUnique(collectStrongScalars(value)),
+  };
+}
+
 function publicationRows(snapshot) {
   const pathCensus = snapshot["redaction-oracle"].sourcePathCensus;
   return new Map([
@@ -273,9 +315,15 @@ export function buildPublicationFingerprints(snapshot) {
   const families = [];
   const rowDigests = new Set();
   const chunkDigests = new Set();
+  const valueRowDigests = new Set();
+  const relationshipDigests = new Set();
+  const strongScalarDigests = new Set();
   for (const [familyId, rows] of publicationRows(snapshot)) {
     const familyRows = [];
     const familyChunks = [];
+    const familyValueRows = [];
+    const familyRelationships = [];
+    const familyStrongScalars = [];
     for (const row of rows) {
       const canonical = JSON.stringify(stableValue(row));
       const rowDigest = digest("reference-publication-row/v1", canonical);
@@ -290,25 +338,63 @@ export function buildPublicationFingerprints(snapshot) {
         familyChunks.push(chunkDigest);
         chunkDigests.add(chunkDigest);
       }
+      const valueFingerprints = publicationValueFingerprints(row);
+      familyValueRows.push(valueFingerprints.valueRowDigest);
+      valueRowDigests.add(valueFingerprints.valueRowDigest);
+      for (const relationshipDigest of valueFingerprints.relationshipDigests) {
+        familyRelationships.push(relationshipDigest);
+        relationshipDigests.add(relationshipDigest);
+      }
+      for (const scalarDigest of valueFingerprints.strongScalarDigests) {
+        familyStrongScalars.push(scalarDigest);
+        strongScalarDigests.add(scalarDigest);
+      }
     }
     const uniqueRows = sortedUnique(familyRows);
     const uniqueChunks = sortedUnique(familyChunks);
+    const uniqueValueRows = sortedUnique(familyValueRows);
+    const uniqueRelationships = sortedUnique(familyRelationships);
+    const uniqueStrongScalars = sortedUnique(familyStrongScalars);
     families.push({
       familyId,
       rowCount: uniqueRows.length,
       rowRoot: aggregateRows("reference-publication-row-root/v1", uniqueRows),
       chunkCount: uniqueChunks.length,
       chunkRoot: aggregateRows("reference-publication-chunk-root/v1", uniqueChunks),
+      valueRowCount: uniqueValueRows.length,
+      valueRowRoot: aggregateRows("reference-publication-value-row-root/v1", uniqueValueRows),
+      relationshipCount: uniqueRelationships.length,
+      relationshipRoot: aggregateRows(
+        "reference-publication-value-relationship-root/v1",
+        uniqueRelationships,
+      ),
+      strongScalarCount: uniqueStrongScalars.length,
+      strongScalarRoot: aggregateRows(
+        "reference-publication-strong-scalar-root/v1",
+        uniqueStrongScalars,
+      ),
     });
   }
   const census = {
-    schemaVersion: "reference-publication-fingerprints/v1",
+    schemaVersion: "reference-publication-fingerprints/v2",
     derivation:
-      "Canonical sorted-key JSON rows and every overlapping six-token row chunk; schema and aggregate-root metadata are excluded.",
+      "Canonical rows/chunks plus key-independent typed value rows, every direct-value relationship pair, and collision-resistant string scalars; schema and aggregate-root metadata are excluded.",
+    minimumFragmentPolicy: {
+      directValueRelationshipArity: 2,
+      strongStringMinimumNormalizedCharacters: 12,
+      belowMinimumDisposition: "not-identifying-without-an-independent-marker",
+    },
     families,
   };
   census.fingerprintRoot = aggregateRows("reference-publication-fingerprint-root/v1", families);
-  return { census, rowDigests, chunkDigests };
+  return {
+    census,
+    rowDigests,
+    chunkDigests,
+    valueRowDigests,
+    relationshipDigests,
+    strongScalarDigests,
+  };
 }
 
 function same(left, right) {
@@ -796,10 +882,14 @@ function validateOracle(snapshot) {
       "componentCollisionDigests",
       "sensitiveTokenDigests",
       "tokenCollisionDigests",
+      "arbitraryTextComponentCollisionDigests",
+      "arbitraryTextTokenCollisionDigests",
       "sensitiveComponentCount",
       "componentCollisionCount",
       "sensitiveTokenCount",
       "tokenCollisionCount",
+      "enforcedComponentCount",
+      "enforcedTokenCount",
       "sensitivityRoot",
     ],
     "path sensitivity census",
@@ -809,7 +899,15 @@ function validateOracle(snapshot) {
     sensitivity.componentCollisionDigests,
     sensitivity.sensitiveTokenDigests,
     sensitivity.tokenCollisionDigests,
+    sensitivity.arbitraryTextComponentCollisionDigests,
+    sensitivity.arbitraryTextTokenCollisionDigests,
   ];
+  const enforcedComponents = sensitivity.sensitiveComponentDigests.filter(
+    (value) => !sensitivity.arbitraryTextComponentCollisionDigests.includes(value),
+  );
+  const enforcedTokens = sensitivity.sensitiveTokenDigests.filter(
+    (value) => !sensitivity.arbitraryTextTokenCollisionDigests.includes(value),
+  );
   if (
     sensitivity.schemaVersion !== "reference-path-sensitivity/v1" ||
     !digestLists.every(
@@ -824,6 +922,8 @@ function validateOracle(snapshot) {
     sensitivity.componentCollisionCount !== sensitivity.componentCollisionDigests.length ||
     sensitivity.sensitiveTokenCount !== sensitivity.sensitiveTokenDigests.length ||
     sensitivity.tokenCollisionCount !== sensitivity.tokenCollisionDigests.length ||
+    sensitivity.enforcedComponentCount !== enforcedComponents.length ||
+    sensitivity.enforcedTokenCount !== enforcedTokens.length ||
     !same(
       sortedUnique([
         ...sensitivity.sensitiveComponentDigests,
@@ -840,6 +940,12 @@ function validateOracle(snapshot) {
     ) ||
     sensitivity.sensitiveTokenDigests.some((value) =>
       sensitivity.tokenCollisionDigests.includes(value),
+    ) ||
+    !sensitivity.arbitraryTextComponentCollisionDigests.every((value) =>
+      sensitivity.sensitiveComponentDigests.includes(value),
+    ) ||
+    !sensitivity.arbitraryTextTokenCollisionDigests.every((value) =>
+      sensitivity.sensitiveTokenDigests.includes(value),
     )
   )
     fail("path sensitivity census is incomplete or overlapping");
@@ -852,10 +958,14 @@ function validateOracle(snapshot) {
     componentCollisionDigests: sensitivity.componentCollisionDigests,
     sensitiveTokenDigests: sensitivity.sensitiveTokenDigests,
     tokenCollisionDigests: sensitivity.tokenCollisionDigests,
+    arbitraryTextComponentCollisionDigests: sensitivity.arbitraryTextComponentCollisionDigests,
+    arbitraryTextTokenCollisionDigests: sensitivity.arbitraryTextTokenCollisionDigests,
     sensitiveComponentCount: sensitivity.sensitiveComponentCount,
     componentCollisionCount: sensitivity.componentCollisionCount,
     sensitiveTokenCount: sensitivity.sensitiveTokenCount,
     tokenCollisionCount: sensitivity.tokenCollisionCount,
+    enforcedComponentCount: sensitivity.enforcedComponentCount,
+    enforcedTokenCount: sensitivity.enforcedTokenCount,
   };
   const sensitivityRoot = aggregateRows("reference-path-sensitivity-root/v1", [
     sensitivityEvidence,
@@ -928,9 +1038,9 @@ export function validateInventory(snapshot) {
     mutationGroupCount: snapshot.mutations.mutationGroups.length,
     sourcePathCount: snapshot["redaction-oracle"].sourcePathCensus.entries.length,
     sensitiveComponentCount:
-      snapshot["redaction-oracle"].sourcePathCensus.sensitivity.sensitiveComponentCount,
+      snapshot["redaction-oracle"].sourcePathCensus.sensitivity.enforcedComponentCount,
     sensitiveTokenCount:
-      snapshot["redaction-oracle"].sourcePathCensus.sensitivity.sensitiveTokenCount,
+      snapshot["redaction-oracle"].sourcePathCensus.sensitivity.enforcedTokenCount,
     unresolved: resolutionIssues.size,
   };
 }
@@ -998,4 +1108,5 @@ export const inventoryTestApi = Object.freeze({
   entrypointEvidence,
   semanticCallsite,
   buildPublicationFingerprints,
+  publicationValueFingerprints,
 });

@@ -7,7 +7,12 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { resolvePnpmLauncher } from "../../scripts/pnpm-launcher.mjs";
-import { buildPublicationFingerprints, loadInventory, validateInventory } from "./inventory.mjs";
+import {
+  buildPublicationFingerprints,
+  loadInventory,
+  publicationValueFingerprints,
+  validateInventory,
+} from "./inventory.mjs";
 import { parseLiveArguments } from "./source-evidence.mjs";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -81,17 +86,26 @@ function pathDigest(domain, value) {
 function sourcePathFindings(value, oracle) {
   if (!oracle) return [];
   const findings = new Set();
+  const normalizedText = value.normalize("NFKC").toLowerCase();
+  const textComponents = new Set(normalizedText.match(/[a-z0-9_.-]*[a-z0-9][a-z0-9_.-]*/g) ?? []);
+  for (const component of [...textComponents]) {
+    const punctuationTrimmed = component.replace(/^[._-]+|[._-]+$/g, "");
+    if (punctuationTrimmed) textComponents.add(punctuationTrimmed);
+  }
+  for (const component of textComponents) {
+    if (oracle.sensitiveComponents.has(pathDigest("reference-source-path-component/v1", component)))
+      findings.add("source-path-component");
+  }
+  for (const token of normalizedText.match(/[a-z0-9]+/g) ?? []) {
+    if (oracle.sensitiveTokens.has(pathDigest("reference-source-path-token/v1", token)))
+      findings.add("source-path-token");
+  }
   const candidates = [
-    ...(value.match(/[a-z0-9_.-]+(?:[\\/][a-z0-9_.-]+)+/gi) ?? []),
-    ...(value.match(/\b[a-z0-9][a-z0-9._-]*\.[a-z0-9]{1,8}\b/gi) ?? []),
+    ...(normalizedText.match(/[a-z0-9_.-]+(?:[\\/][a-z0-9_.-]+)+/g) ?? []),
+    ...(normalizedText.match(/\b[a-z0-9][a-z0-9._-]*\.[a-z0-9]{1,8}\b/g) ?? []),
   ];
   for (const candidate of candidates) {
-    const components = candidate
-      .normalize("NFKC")
-      .toLowerCase()
-      .replaceAll("\\", "/")
-      .split("/")
-      .filter(Boolean);
+    const components = candidate.replaceAll("\\", "/").split("/").filter(Boolean);
     const tokens = components.flatMap((component) => component.match(/[a-z0-9]+/g) ?? []);
     for (let start = 0; start < components.length; start += 1) {
       for (let length = 1; start + length <= components.length; length += 1) {
@@ -137,17 +151,19 @@ function textFindings(value, forbiddenDigests, pathOracle) {
     /(?:^|[\s"'(=])\/(?:etc|mnt|opt|private|root|srv|tmp|usr|var)(?:\/[a-z0-9._-]+)+/im.test(
       value,
     ) ||
-    uncPathPattern.test(value)
+    uncPathPattern.test(value) ||
+    /(?:^|[\s"'(=])(?:~|\$(?:home|userprofile)|\$\{(?:home|userprofile)\}|\$env:(?:home|userprofile)|%(?:home|userprofile)%)(?:[\\/][^\s"'`]+)+/im.test(
+      value,
+    )
   ) {
     findings.push("absolute-local-path");
   }
   if (
     /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value) ||
     /\b(?:gh[pousr]_[A-Za-z0-9_]{24,}|AKIA[A-Z0-9]{16})\b/.test(value) ||
-    /\b(?:password|secret|credential|access[._-]?token|api[._-]?key|client[._-]?secret)(?:\s*[:=]\s*|\s+)["']?[^\s"']{12,}["']?/i.test(
+    /\b(?:password|secret|credential|access(?:[\s._-]*token)|api(?:[\s._-]*key)|client(?:[\s._-]*secret)|bearer)(?:\s*[:=._-]\s*|\s+)["']?[a-z0-9][a-z0-9._~+/=-]{11,}["']?(?=$|[^a-z0-9._~+/=-])/i.test(
       value,
-    ) ||
-    /\bbearer\s+[a-z0-9._~+/-]{12,}/i.test(value)
+    )
   ) {
     findings.push("credential-or-secret");
   }
@@ -205,6 +221,17 @@ function publicationFingerprintFinding(text, oracle) {
     for (const row of collectJsonObjects(parsed)) {
       const canonical = JSON.stringify(stableValue(row));
       if (oracle.rowDigests.has(pathDigest("reference-publication-row/v1", canonical))) return true;
+      const fingerprints = publicationValueFingerprints(row);
+      if (
+        oracle.valueRowDigests.has(fingerprints.valueRowDigest) ||
+        fingerprints.relationshipDigests.some((digestValue) =>
+          oracle.relationshipDigests.has(digestValue),
+        ) ||
+        fingerprints.strongScalarDigests.some((digestValue) =>
+          oracle.strongScalarDigests.has(digestValue),
+        )
+      )
+        return true;
     }
   } catch {
     // Canonical chunks below intentionally cover valid fragments and non-JSON bundles.
@@ -231,8 +258,15 @@ function containsInventoryMaterial(value, publicationOracle) {
 }
 
 function buildPublicationOracle(snapshot) {
-  const { rowDigests, chunkDigests } = buildPublicationFingerprints(snapshot);
-  return { rowDigests, chunkDigests };
+  const { rowDigests, chunkDigests, valueRowDigests, relationshipDigests, strongScalarDigests } =
+    buildPublicationFingerprints(snapshot);
+  return {
+    rowDigests,
+    chunkDigests,
+    valueRowDigests,
+    relationshipDigests,
+    strongScalarDigests,
+  };
 }
 
 async function collectFiles(path) {
@@ -438,23 +472,19 @@ function verifyLivePathProbes(sourcePaths, oracle) {
   }
   for (const digestValue of oracle.sensitiveComponents) {
     const value = components.get(digestValue);
-    if (
-      !value ||
-      !sourcePathFindings(`boundary/${value.toUpperCase()}/boundary`, oracle).includes(
-        "source-path-component",
-      )
-    )
-      fail("live sensitive component probe evaded the hashed oracle");
+    if (!value) fail("live sensitive component probe is absent from source evidence");
+    for (const probe of [value, value.toUpperCase(), `ordinary ${value} text`]) {
+      if (!textFindings(probe, new Set(), oracle).includes("source-path-component"))
+        fail("live sensitive component probe evaded the hashed oracle");
+    }
   }
   for (const digestValue of oracle.sensitiveTokens) {
     const value = tokens.get(digestValue);
-    if (
-      !value ||
-      !sourcePathFindings(`boundary/${value.toUpperCase()}/boundary`, oracle).includes(
-        "source-path-token",
-      )
-    )
-      fail("live sensitive token probe evaded the hashed oracle");
+    if (!value) fail("live sensitive token probe is absent from source evidence");
+    for (const probe of [value, value.toUpperCase(), `ordinary ${value} text`]) {
+      if (!textFindings(probe, new Set(), oracle).includes("source-path-token"))
+        fail("live sensitive token probe evaded the hashed oracle");
+    }
   }
   for (const value of ngrams.values()) {
     if (
@@ -508,13 +538,29 @@ async function compareSourceChunks(live, targetTexts, pathOracle) {
 function buildPathOracle(snapshot) {
   const entries = snapshot["redaction-oracle"].sourcePathCensus.entries;
   const sensitivity = snapshot["redaction-oracle"].sourcePathCensus.sensitivity;
+  const arbitraryTextComponentCollisions = new Set(
+    sensitivity.arbitraryTextComponentCollisionDigests,
+  );
+  const arbitraryTextTokenCollisions = new Set(sensitivity.arbitraryTextTokenCollisionDigests);
   return {
     rawPaths: new Set(entries.map(({ pathDigest: value }) => value)),
     normalizedPaths: new Set(entries.map(({ normalizedPathDigest }) => normalizedPathDigest)),
-    sensitiveComponents: new Set(sensitivity.sensitiveComponentDigests),
-    componentCollisions: new Set(sensitivity.componentCollisionDigests),
-    sensitiveTokens: new Set(sensitivity.sensitiveTokenDigests),
-    tokenCollisions: new Set(sensitivity.tokenCollisionDigests),
+    sensitiveComponents: new Set(
+      sensitivity.sensitiveComponentDigests.filter(
+        (value) => !arbitraryTextComponentCollisions.has(value),
+      ),
+    ),
+    componentCollisions: new Set([
+      ...sensitivity.componentCollisionDigests,
+      ...arbitraryTextComponentCollisions,
+    ]),
+    sensitiveTokens: new Set(
+      sensitivity.sensitiveTokenDigests.filter((value) => !arbitraryTextTokenCollisions.has(value)),
+    ),
+    tokenCollisions: new Set([
+      ...sensitivity.tokenCollisionDigests,
+      ...arbitraryTextTokenCollisions,
+    ]),
     ngrams: new Set(entries.flatMap(({ ngramDigests }) => ngramDigests)),
   };
 }

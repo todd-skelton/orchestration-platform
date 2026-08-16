@@ -25,7 +25,7 @@ describe("sanitized reference inventory", () => {
       mutationGroupCount: 10,
       sourcePathCount: 112,
       sensitiveComponentCount: 116,
-      sensitiveTokenCount: 110,
+      sensitiveTokenCount: 55,
       unresolved: 2,
     });
   });
@@ -315,6 +315,14 @@ describe("sanitized reference inventory", () => {
       },
     ],
     [
+      "missing arbitrary-text collision exclusion",
+      (snapshot: any) => {
+        snapshot[
+          "redaction-oracle"
+        ].sourcePathCensus.sensitivity.arbitraryTextTokenCollisionDigests.pop();
+      },
+    ],
+    [
       "changed copied-source byte boundary",
       (snapshot: any) => {
         snapshot["redaction-oracle"].copyPolicy.minimumNormalizedBytes = 159;
@@ -387,12 +395,20 @@ describe("reference redaction controls", () => {
     expect(redactionTestApi.textFindings(component, new Set(), oracle)).toContain(
       "source-path-component",
     );
-    expect(
-      redactionTestApi.textFindings(`boundary/${token}/boundary`, new Set(), oracle),
-    ).toContain("source-path-token");
-    expect(
-      redactionTestApi.textFindings(`boundary/${shortComponent}/boundary`, new Set(), oracle),
-    ).toContain("source-path-component");
+    for (const value of [token, token.toUpperCase(), `ordinary ${token} text`]) {
+      expect(redactionTestApi.textFindings(value, new Set(), oracle)).toContain(
+        "source-path-token",
+      );
+    }
+    for (const value of [
+      shortComponent,
+      shortComponent.toUpperCase(),
+      `ordinary ${shortComponent} text`,
+    ]) {
+      expect(redactionTestApi.textFindings(value, new Set(), oracle)).toContain(
+        "source-path-component",
+      );
+    }
   });
 
   test("committed collision partitions are disjoint exhaustive self-scan negatives", () => {
@@ -405,8 +421,8 @@ describe("reference redaction controls", () => {
     }).toEqual({
       sensitiveComponents: 116,
       componentCollisions: 2,
-      sensitiveTokens: 110,
-      tokenCollisions: 29,
+      sensitiveTokens: 55,
+      tokenCollisions: 84,
     });
     expect(
       [...oracle.sensitiveComponents].some((value) => oracle.componentCollisions.has(value)),
@@ -419,29 +435,41 @@ describe("reference redaction controls", () => {
     ).toEqual([]);
   });
 
-  test("rejects root leaf paths and common credential forms", () => {
+  test("rejects root, portable home paths, and common credential forms", () => {
     const driveLeaf = ["Z:", "leaf.txt"].join("\\");
     const posixLeaf = ["", "private", "leaf.txt"].join("/");
+    const tildeHome = ["~", "private", "file"].join("/");
+    const shellHome = [["$", "HOME"].join(""), "private", "file"].join("/");
+    const profileHome = [["%", "USERPROFILE", "%"].join(""), "private", "file"].join("\\");
     const token = ["Ab3d", "Ef6h", "Ij9l", "Mn2p", "Qr5t", "Uv8x"].join("");
     const api = `${["api", "key"].join("_")} = "${token}"`;
     const dottedApi = `${["API", "KEY"].join(".")}: "${token}"`;
+    const spacedApi = `${["API", "KEY"].join(" ")}: "${token}"`;
     const client = `${["client", "secret"].join("-")}='${token}'`;
     const dottedClient = `${["Client", "Secret"].join(".")} = '${token}'`;
     const credential = `${["creden", "tial"].join("")}=${token}`;
+    const dottedCredential = `${["creden", "tial"].join("")}.${token}`;
+    const access = `${["access", "token"].join(" ")}=${token}`;
     const bearer = ["bEaReR", token].join(" ");
     for (const value of [
       driveLeaf,
       posixLeaf,
+      tildeHome,
+      shellHome,
+      profileHome,
       api,
       dottedApi,
+      spacedApi,
       client,
       dottedClient,
       credential,
+      dottedCredential,
+      access,
       bearer,
     ]) {
       expect(redactionTestApi.textFindings(value, new Set())).toEqual(
         expect.arrayContaining([
-          value === driveLeaf || value === posixLeaf
+          [driveLeaf, posixLeaf, tildeHome, shellHome, profileHome].includes(value)
             ? "absolute-local-path"
             : "credential-or-secret",
         ]),
@@ -516,7 +544,7 @@ describe("reference redaction controls", () => {
     }
   });
 
-  test("canonical rows and six-token fragments exclude every manifest family after metadata renames", () => {
+  test("key-independent value relationships exclude all renamed, reordered, wrapped, and substantive one-field-deleted rows", () => {
     const publication = redactionTestApi.buildPublicationOracle(baseline);
     const stable = (value: any): any =>
       Array.isArray(value)
@@ -528,35 +556,88 @@ describe("reference redaction controls", () => {
                 .map((key) => [key, stable(value[key])]),
             )
           : value;
-    const rows = [
-      baseline.source.source,
-      baseline.artifacts.artifacts[0],
-      baseline.behaviors.families[0],
-      baseline.entrypoints.entrypoints[0],
-      baseline.mutations.mutationGroups[0],
-      baseline.authorities.authorities[0],
-      baseline.transitions.transitions[0],
-      baseline.assumptions.assumptions[0],
-      baseline["redaction-oracle"].entries[0],
-    ];
-    for (const row of rows) {
-      const canonical = JSON.stringify(stable(row));
-      const renamedWrapper = JSON.stringify({ renamedSchema: "neutral/v9", payload: row });
-      const rootStrippedFragment = canonical.slice(1, -1);
-      for (const content of [renamedWrapper, rootStrippedFragment]) {
-        expect(() =>
-          redactionTestApi.validatePackedFile(
-            "src/index.js",
-            Buffer.from(content),
-            new Set(),
-            undefined,
-            publication,
-          ),
-        ).toThrow(/inventory material/);
-        expect(() =>
-          redactionTestApi.validateBuiltText(content, new Set(), undefined, [], publication),
-        ).toThrow(/inventory material/);
+    const pathCensus = baseline["redaction-oracle"].sourcePathCensus;
+    const families = new Map([
+      [
+        "source",
+        [
+          baseline.source.source,
+          baseline.source.extensionCensus,
+          baseline.source.effectCandidateCensus,
+        ],
+      ],
+      ["artifacts", baseline.artifacts.artifacts],
+      ["behaviors", baseline.behaviors.families],
+      ["entrypoints", baseline.entrypoints.entrypoints],
+      ["mutations", [...baseline.mutations.mutationGroups, ...baseline.mutations.callsites]],
+      ["authorities", [...baseline.authorities.authorities, ...baseline.authorities.observations]],
+      ["transitions", baseline.transitions.transitions],
+      ["assumptions", baseline.assumptions.assumptions],
+      [
+        "redaction-oracle",
+        [
+          ...baseline["redaction-oracle"].entries,
+          ...pathCensus.entries,
+          pathCensus.sensitivity,
+          baseline["redaction-oracle"].copyPolicy,
+        ],
+      ],
+    ]);
+    const excluded = (content: string) => {
+      expect(() =>
+        redactionTestApi.validatePackedFile(
+          "src/index.js",
+          Buffer.from(content),
+          new Set(),
+          undefined,
+          publication,
+        ),
+      ).toThrow(/inventory material/);
+      expect(() =>
+        redactionTestApi.validateBuiltText(content, new Set(), undefined, [], publication),
+      ).toThrow(/inventory material/);
+    };
+    let transformedRowCount = 0;
+    let substantiveDeletionCount = 0;
+    let belowMinimumDeletionCount = 0;
+    for (const rows of families.values()) {
+      for (const row of rows as any[]) {
+        transformedRowCount += 1;
+        const renamed = Object.fromEntries(
+          Object.values(row)
+            .reverse()
+            .map((value, index) => [`renamed-${String(index).padStart(2, "0")}`, value]),
+        );
+        excluded(JSON.stringify({ neutralWrapper: [renamed] }));
+        for (const deletedKey of Object.keys(row)) {
+          const deleted = Object.fromEntries(
+            Object.entries(row)
+              .filter(([key]) => key !== deletedKey)
+              .reverse()
+              .map(([, value], index) => [`renamed-${String(index).padStart(2, "0")}`, value]),
+          );
+          const fingerprints = inventoryTestApi.publicationValueFingerprints(deleted);
+          if (
+            fingerprints.relationshipDigests.length > 0 ||
+            fingerprints.strongScalarDigests.length > 0
+          ) {
+            substantiveDeletionCount += 1;
+            excluded(JSON.stringify({ neutralWrapper: deleted }));
+          } else {
+            belowMinimumDeletionCount += 1;
+          }
+        }
       }
+    }
+    expect(transformedRowCount).toBe(1240);
+    expect(substantiveDeletionCount).toBe(9012);
+    expect(belowMinimumDeletionCount).toBe(1);
+
+    const representativeRows = [...families.values()].map((rows) => (rows as any[])[0]);
+    for (const row of representativeRows) {
+      const canonical = JSON.stringify(stable(row));
+      const rootStrippedFragment = canonical.slice(1, -1);
+      excluded(rootStrippedFragment);
     }
     const neutral = JSON.stringify({ id: "independent-row", kind: "neutral", value: "safe" });
     expect(() =>
@@ -571,7 +652,7 @@ describe("reference redaction controls", () => {
     expect(() =>
       redactionTestApi.validateBuiltText(neutral, new Set(), undefined, [], publication),
     ).not.toThrow();
-  });
+  }, 30_000);
 
   test("live comparison flags are exact, complete, and duplicate-free", () => {
     expect(parseLiveArguments([])).toBeUndefined();

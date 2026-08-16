@@ -2707,7 +2707,7 @@
     ],
     "sensitivity": {
       "schemaVersion": "reference-path-sensitivity/v1",
-      "derivation": "Sensitive digests are the source-path component/token universe minus the closed ISS-001 self-scan and platform-publication path vocabulary at generation; both partitions are committed, disjoint, complete, and immutable.",
+      "derivation": "Candidate-sensitive digests are the source-path component/token universe minus the closed ISS-001 and platform-publication path vocabulary; explicit arbitrary-text collision sets then remove values present in the complete ISS-001, package, and bundle-input text surfaces before boundary enforcement.",
       "componentUniverseCount": 118,
       "tokenUniverseCount": 139,
       "sensitiveComponentDigests": [
@@ -2975,11 +2975,71 @@
         "e745c0f25a48d3175d32190404b0d414651697d8c67869acb05ac7bb05527ce5",
         "ecfb1f9c25fe40dd36e255fae77f50e3afc3a4682dad6aa5bcd3fa78803042fc"
       ],
+      "arbitraryTextComponentCollisionDigests": [],
+      "arbitraryTextTokenCollisionDigests": [
+        "006a9015ef19d1f3a9e063a24cfa098a7a16d1d49ca96b4f8461d7bc7c0438a7",
+        "00e201162708180406c5635168057fded5914512eac4b0cae47c4424bfc0e53e",
+        "017cf487388e30fa59fd45df58cfc8a0e3acd0051b8f1e7870c2c590213e157a",
+        "030d9c9ee9261525710192ef5fe810800470bb3602f75e5ad3e6585cc169c481",
+        "0dad079e6f529073980944236dcd9589da644d72a9365e957a3eb86a70145e38",
+        "0ea8ed58cfad276c0bf755edf9e0cb6defd67b62569732184781338b85f20e49",
+        "118187fa72a10f9c8a5eda51e57e56194c2e69c4df8d242c9a3628990f73c5a7",
+        "143d6e3f7dee321bd57675525835e081c4ff443ed7310e328c6a72d4ecb7f9bc",
+        "153e43751ab481462266d046a33d6cfdb59d7a427d63cdafc726d49f18bc3005",
+        "1bb7fe0546b75cd18f23f02e7e422a162f7f99c61d4076211b50bee31a79ce1d",
+        "22c56ea28b7f13067fb2eeb27a27fb9de2dc43840b3505087c3a4977d82375e1",
+        "24cf3908fb62c28946ebdf9088e9f5c20e5792dfd1d729ec8a680864d4b5f3f9",
+        "2b07718292e9573af0b91abafa8f468b8261bf77c3268738d28ca25e6f116c3c",
+        "2f5668bc3744764b96f24180084f03e1fb9858f6cc4fd1c9b519ea50c35e5a32",
+        "32d71559797359ba03fd135d74094c72717d0a4a2c024058a331b101c2ab0235",
+        "433ab10b9b7c1665306b33f94fd8ba623a121d3c1e47132aa068cac472a084ab",
+        "4665b5f224fcce3eb4100aa5c0ace89b7b0de97e921422545971e6ca49a86113",
+        "4711abc76626c0f8ca4ca16f6ad70591bbc9ecaa273a4513ada7c7181fd63787",
+        "48ff88af363bfb3e787e7b0791ff5aa9ea9b1c9a86f0d3d7fe1642f321c189e1",
+        "4af926182462e0dfc1ce3d009c083913c7acddaa0920332da95d268b3bc182ef",
+        "4d37647427c0e31f8381c0dea330fccf2ab9e5e4dd68ee479c884e1393e1e939",
+        "5147d0fd6eb058cb7e0ae24073e0e2846dc13335d498ca2e2e81ec57793442fb",
+        "51d7f1793d8c382b5d649c499c210d00e25faa44cca30e36f378877e5fd83fe9",
+        "5852fd5585c99de7dac98100ff21c9222118389e5bf2034a9150b2fa7c453eff",
+        "5f0c4374eabf8ea297bd00b08ec024c9da76b13d51ad7531349bb11650648774",
+        "6788211daf60a236da25a8b57fbe7dfc4e2587d07df3a42efa16ca19170c456d",
+        "6b3725394fea8bcb3f54b9813cba18affaf90d17411f550a600c067762ac429f",
+        "79f7a9dc627499d7d5576e26217780a29b80880bb43b39f8682477aae83e61ad",
+        "840ddad5f3e0a4debe3a92b221ef466d9436ceb6269e848af8f94f4d38a32234",
+        "8a3ca8bce232aed1e454c0291bf7549f2069746b6f2938b2174f376985da6eac",
+        "8bc1fd90694edefbf355e608dd83c25ac0831faee6fb238bff3d2d284956bad2",
+        "8c4b7759722996626834a386cf23be11c7f3739e0db1ca5e97c356d98eeb33fc",
+        "8c64c6c30697fe928f7f51ca8788824ec5abc17135f1ecce650b5f3b2aaca941",
+        "90e7579fce78586306f82f849cb5038b9bfffeee6de5c7022e73dcdb8e7e71d5",
+        "9185cd5889a14373d49f4b97935ba904deafb719c9df4ecadaeec7623f712164",
+        "943b80f07781037ed56467a01ef6083f7f3cfa50b5a031dd66b4c2a1ba77ba2f",
+        "945cfb11c6da35c38c5c68a18b5e42dba50c8f6e85501fb4115336695aa595e5",
+        "9750e0413862c1c923a5017047ee0870814271b90ebe3f43c7da3cedb80baec0",
+        "9c686b3d7d6c273049791e16c898dc8f3fd1bf0fb770303e2f77a2987599e896",
+        "a2312e589c077d922030d861c363f3a204ab5d4d450da5936da7b1a812822592",
+        "b2ba4c05c826a80ec758100cad3ffd1d3eaea3ce39316e6a8b8fd044567559b2",
+        "c7e8ad80445953275ec0ff8205faa5645a3e6ebafe440700626dc17d550ba21b",
+        "ca5ea3e572a2fdcc2148ee183e8f563719f04261ee75170e80dd30686574abda",
+        "cc6b17c825608848ea6dae5892caa4509cd277dfabcc0076da38b2c5897a2ba9",
+        "ccea5ec7e26b5ce4c9f605fd9ed574927d83a5db181cd0322f83f20631ba0172",
+        "cd93433d6fab401efd19f0ce24c0751f7f4a582b45458050aadd36e04a309c2e",
+        "cf9c56db31b52db20680694fa65c72be760183b39e7de6c971177dedf938e66f",
+        "d076ded841d86831b4d6eb66a53cd6f395af4520ed9c43cf7041631f3976f904",
+        "e04ae3d71463dab13e7fd4746725b91f001833acc93d81773b90fe4efe78d996",
+        "e354b4e812362e40b52e2bee0fddf84e2c0e1f26fd0dc7c647142751c274009d",
+        "e3ab8138386567d61a32e071574285b6029f6cca71504e75dc81a839eb9c07dc",
+        "e4f523727773ed9a770cdd263ec9e5ce87f51e1478c861db97ae81e8872e158e",
+        "e52bc384c6acd576a028e2e6b5e55a940a6e7797cdc9609ad7afb902b50a0bf6",
+        "e6d1b0640e868b31c661e637aae51dfd840dca18a90aa040c45aeadfae67f586",
+        "ea55dc80d74fb752d7dd07a4d610a995dde0937865db5a67e7bd507b137779ef"
+      ],
       "sensitiveComponentCount": 116,
       "componentCollisionCount": 2,
       "sensitiveTokenCount": 110,
       "tokenCollisionCount": 29,
-      "sensitivityRoot": "a09d0e1d9e289576896e7d0abaf4ec3e00f4d483ba2841d3ac2f8d556f5c8a46"
+      "enforcedComponentCount": 116,
+      "enforcedTokenCount": 55,
+      "sensitivityRoot": "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69"
     }
   },
   "copyPolicy": {
@@ -2987,73 +3047,132 @@
     "boundaryDisposition": "159-bytes-allowed-160-bytes-rejected-at-every-offset"
   },
   "publicationFingerprintCensus": {
-    "schemaVersion": "reference-publication-fingerprints/v1",
-    "derivation": "Canonical sorted-key JSON rows and every overlapping six-token row chunk; schema and aggregate-root metadata are excluded.",
+    "schemaVersion": "reference-publication-fingerprints/v2",
+    "derivation": "Canonical rows/chunks plus key-independent typed value rows, every direct-value relationship pair, and collision-resistant string scalars; schema and aggregate-root metadata are excluded.",
+    "minimumFragmentPolicy": {
+      "directValueRelationshipArity": 2,
+      "strongStringMinimumNormalizedCharacters": 12,
+      "belowMinimumDisposition": "not-identifying-without-an-independent-marker"
+    },
     "families": [
       {
         "familyId": "source",
         "rowCount": 3,
         "rowRoot": "1e73ea36725659086b80aa78312e4422ecf3173ab2af15f19d32fe9157623a73",
         "chunkCount": 35,
-        "chunkRoot": "a0794d32af31a8f838103235481073d0d41446cbb1afa2e39b81ae9c6dfe9cb6"
+        "chunkRoot": "a0794d32af31a8f838103235481073d0d41446cbb1afa2e39b81ae9c6dfe9cb6",
+        "valueRowCount": 3,
+        "valueRowRoot": "b46d3fd6372c29a8cfd30f8799d126e2d6df4a345dfe9842876fb0fa1619164c",
+        "relationshipCount": 72,
+        "relationshipRoot": "83c681a64d60120377b4c2346f5e102df1394f7aaa6f1172c42a1f8e61ee9036",
+        "strongScalarCount": 5,
+        "strongScalarRoot": "070e0f67632fdaede222f49dba80deed5adcfd9211af093bd03240d707a0a70b"
       },
       {
         "familyId": "artifacts",
         "rowCount": 112,
         "rowRoot": "848a5edbf66dff68247fdddb09a9e58ca8efd9ec78295414a4135fc6016b16f9",
         "chunkCount": 1765,
-        "chunkRoot": "6d338f7c5b8975883982648b0e09922280c7ec23fca4be3d74da16bfa44f56f8"
+        "chunkRoot": "6d338f7c5b8975883982648b0e09922280c7ec23fca4be3d74da16bfa44f56f8",
+        "valueRowCount": 112,
+        "valueRowRoot": "e5ff221dd188dfc8fd5ce581a2e486c2f61d923eecd4af26718b65145efa73ae",
+        "relationshipCount": 4710,
+        "relationshipRoot": "0043e63cb15d9422041bebd64f488794213a6aede981bed89db30784948610ab",
+        "strongScalarCount": 462,
+        "strongScalarRoot": "75ecc38ba514baa8542380eb284ba6bb1774349996e73ea2fd5d1bdd40d27157"
       },
       {
         "familyId": "behaviors",
         "rowCount": 10,
         "rowRoot": "9872396a32af7607439514b4eb26a17fa12b1d722413d69b38353a1e3bf93473",
         "chunkCount": 37,
-        "chunkRoot": "eee690b4e49a4568813b237e91d9e890638319e5c1d2e259630089feca3a239d"
+        "chunkRoot": "eee690b4e49a4568813b237e91d9e890638319e5c1d2e259630089feca3a239d",
+        "valueRowCount": 10,
+        "valueRowRoot": "76c16384a868672e3a31fc24a630d1370619708f4cb75148fba44fd99b24ca91",
+        "relationshipCount": 30,
+        "relationshipRoot": "9d55f5b13b000e4ee1d495c5090e19befa060c1d569ed8aa790051d608f5ea1b",
+        "strongScalarCount": 34,
+        "strongScalarRoot": "fd2f9834a478ed1783996c1f1cc2fb07303be95213110419ff0715d71e0f3f9a"
       },
       {
         "familyId": "entrypoints",
         "rowCount": 79,
         "rowRoot": "0f392f210367f2c14389799841615e325aa346c02d31f42dd3c4f27b1d24ed87",
         "chunkCount": 795,
-        "chunkRoot": "51dba32e9631a9145543885bd2030dd7facd0c7356eb26d80327c2d99da77104"
+        "chunkRoot": "51dba32e9631a9145543885bd2030dd7facd0c7356eb26d80327c2d99da77104",
+        "valueRowCount": 79,
+        "valueRowRoot": "0521827e7dfde722a87d7195900d574262ebd4ceebcf228aaee3d0b46f43fe22",
+        "relationshipCount": 1556,
+        "relationshipRoot": "d191dc48122a6bef9f36eaf9fd108b984b61e70aca6f078820df6dc094a2b6a6",
+        "strongScalarCount": 252,
+        "strongScalarRoot": "941872f13209b135b63a4793674e3e624b5f024a51a93a9d546ec4740bdd0d22"
       },
       {
         "familyId": "mutations",
         "rowCount": 897,
         "rowRoot": "4f42924e9fda6a6c0585b00f069fea74ea888b630d2c24581855c85fc2fad3d4",
         "chunkCount": 5539,
-        "chunkRoot": "b39a988140132d0798d2b6dee5ba3f44a2fed8897e5cce714f032da576ee6522"
+        "chunkRoot": "b39a988140132d0798d2b6dee5ba3f44a2fed8897e5cce714f032da576ee6522",
+        "valueRowCount": 897,
+        "valueRowRoot": "b256d14afe8c2289f83ec9e8690a94e8fb916bb34ee47bc2605e5553b1840c05",
+        "relationshipCount": 6985,
+        "relationshipRoot": "1c1f5a11ae110ca70675a3b8772be6c930b3d375e0c1993362d5c6b794cbab1c",
+        "strongScalarCount": 1093,
+        "strongScalarRoot": "5aa12bb9eb7ff3b90d0be4cd126d2959242518c0fc276a6d7e3945e819273c4b"
       },
       {
         "familyId": "authorities",
         "rowCount": 10,
         "rowRoot": "271512a246df4411ed1f39ea0c97fc7a92ef67a388df42ff04f48994cef3148a",
         "chunkCount": 5,
-        "chunkRoot": "1bca61dfc440c0fc80f172c2b5deef9e44d6b4c041eb0da70147a97ea541ee9f"
+        "chunkRoot": "1bca61dfc440c0fc80f172c2b5deef9e44d6b4c041eb0da70147a97ea541ee9f",
+        "valueRowCount": 10,
+        "valueRowRoot": "407df294db325378ccc2b8299127bf61e53be272a27dc0f7085cef877df5d813",
+        "relationshipCount": 20,
+        "relationshipRoot": "4dd1329c7454a57c4f2a4cadd9726282869db62c2478530777ec4859378cbb25",
+        "strongScalarCount": 18,
+        "strongScalarRoot": "da5bf71f378a28c7adba4438962f261ac0b6725b2ce44f4fa9550724a0fdd849"
       },
       {
         "familyId": "transitions",
         "rowCount": 5,
         "rowRoot": "4326635c17cd950952ad5aceaf6a77320ff20c8b922fac8d4a1344eb4c7b3d36",
         "chunkCount": 19,
-        "chunkRoot": "cb0d82008017dd6d905888ffce8e0a90e0b28a54224c1475f312211d69abf87a"
+        "chunkRoot": "cb0d82008017dd6d905888ffce8e0a90e0b28a54224c1475f312211d69abf87a",
+        "valueRowCount": 5,
+        "valueRowRoot": "01867de76db981859b74dafece88b647912d50bf8f0e183392690c259cdf05c8",
+        "relationshipCount": 30,
+        "relationshipRoot": "c0813673114b693da93365d4d769645cefeee71ba785a5e23765c2bc16006e18",
+        "strongScalarCount": 23,
+        "strongScalarRoot": "30e20c7542da54eef3849f2bcc842279bb5c314a94f97394248100c21535c76d"
       },
       {
         "familyId": "assumptions",
         "rowCount": 7,
         "rowRoot": "ae0df62e6eb0b6ac13473320c54b425beed90de45dff99139f7a4dbf20b6c847",
         "chunkCount": 31,
-        "chunkRoot": "796301ab03d6cf710b1c9c60d85df27799e9553f868a766d8b481f8e67bb7ac9"
+        "chunkRoot": "796301ab03d6cf710b1c9c60d85df27799e9553f868a766d8b481f8e67bb7ac9",
+        "valueRowCount": 7,
+        "valueRowRoot": "7097b10add581257af67b9acac15e1157ab6228332ea86d9e0b7227bb2f09fe0",
+        "relationshipCount": 48,
+        "relationshipRoot": "9831295da843e6d318919d67c369c383d197dcad912f380055f64d55b288223a",
+        "strongScalarCount": 19,
+        "strongScalarRoot": "373429015cf890d4680678ca6bc72032f0a73106997a0de68423c5a795fb4500"
       },
       {
         "familyId": "redaction-oracle",
         "rowCount": 117,
-        "rowRoot": "e6e89d2ff9531386c3677b5dd0045980e1d6d54eb460b14ed32abcc015cce676",
-        "chunkCount": 2365,
-        "chunkRoot": "8422db93679e0a1533f18d2a9bbaaaeda66732003676be153af0252485a094c1"
+        "rowRoot": "7089551431386e3ab1d299cc8eb70184455a6acffd7a0b1facdc646efd171a71",
+        "chunkCount": 2421,
+        "chunkRoot": "8f0f127ad1a42f7161918243962b89bb625f0c540be51eccd79fefaa48dbdf05",
+        "valueRowCount": 117,
+        "valueRowRoot": "ed09f7212ecf399700fe131426d8ce345b27fbb4da27de9fdcc14bee97a176d7",
+        "relationshipCount": 1809,
+        "relationshipRoot": "7707d98cf391f56d0947e5c881cdcf5b8d7323e0e26c4f738f335da6158caf62",
+        "strongScalarCount": 1259,
+        "strongScalarRoot": "7ee3110cc4ccde9f62c62c46fe72dd8650befbef1a519220eaad62784da5532e"
       }
     ],
-    "fingerprintRoot": "68e1d3e0c4a351a2984a28643dd0ec33082d72f74efde1412ad42672f1a3fe1e"
+    "fingerprintRoot": "ca1a8265f976683bf7e8865c49ef1f1c831341d6b0b386915ac49741576c93b9"
   }
 }
