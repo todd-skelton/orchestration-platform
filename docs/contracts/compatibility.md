@@ -21,9 +21,9 @@ exactly millisecond precision. Durable IDs are lowercase UUIDv7 and content
 IDs are lowercase SHA-256 hex.
 
 Contract-relative paths use `/`, are never absolute, and refuse empty, `.`,
-`..`, drive-designator, URI, and alternate-separator components. A host path
-may cross the configuration boundary only as a canonical `file:` URL. Runtime
-state remains outside source checkouts.
+`..`, drive-designator, URI, alternate-separator, NUL, and every C0/C1 control
+character. A host path may cross the configuration boundary only as a canonical
+`file:` URL. Runtime state remains outside source checkouts.
 
 ## Closed schema census
 
@@ -56,9 +56,10 @@ mutation access.
 | Missing, malformed, unknown, or future version | `refused`                                        |
 
 The named fixture migration is deterministic, does not mutate its input, and
-produces a record that must pass the current closed parser. No other implicit
-migration exists. A later writer must add the complete pairwise matrix before
-emitting another version.
+accepts only a plain own-data-property snapshot. Accessors, proxies, class
+instances, and exotic objects refuse. Its result must pass the current closed
+parser. No other implicit migration exists. A later writer must add the complete
+pairwise matrix before emitting another version.
 
 ## Recovery and cleanup paths
 
@@ -90,9 +91,11 @@ exhaustive mapping: `recovery-fence/v1` maps to `recovery-fence-v1`, while
 `cleanup-gate-pre-fence/v1` maps to `cleanup-gate-pre-fence-v1`. Source/token,
 transaction, generation, ordinal, or path mismatch refuses.
 
-Ordinal-zero heads have canonical-null predecessors and current pointers use
-CAS-from-absence only for the initial generation/ordinal. Later pointers and
-heads require prior digests. The initialization reducer recognizes only
+Ordinal-zero heads have canonical-null predecessors. Each new cleanup/fence
+transaction creates its ordinal-zero current pointer by CAS from absence,
+regardless of active generation; later head ordinals require an exact prior
+pointer digest. Recovery-launch CAS from absence is narrower: only generation
+zero ordinal zero. The initialization reducer recognizes only
 all-absent, root-only, root-plus-initial-head, and fully-current prefixes; mixed,
 extra, or reordered histories reduce to `UNKNOWN`.
 
@@ -102,13 +105,26 @@ generation-zero ordinal-zero is only `READY` and both predecessors are `null`.
 Every later transition requires both nonzero digests. A retry advances one
 generation and resets the ordinal, while an authority rebind retains process and
 lifecycle identity and advances exactly one adjacent gate or fence head.
+Observed authority compares both the digest and ordinal of each gate/fence head.
+A pre-fence handoff requires gate `PENDING` plus `PUBLISHED`; `ABORTING` can
+terminalize only as `TERMINAL_ABORTED`. Recovery fence roots separately bind the
+predecessor and successor operation-manifest digests.
 
 Recovery authorization is a closed union on `bootstrap-n0` or `successor`.
 Mode-inapplicable bindings are canonical `null`; successor launch attachment is
-either entirely absent or a complete fence-backed READY/LIVE identity. Cleanup
-archives bind the root, ordered head-chain digest, revocation proof, outcome,
-mode-specific terminal proof, and the active record retained by the canonical
-cleanup head.
+either entirely absent or a complete fence-backed READY/LIVE identity. Its
+broker generations are adjacent, duplicated gate/fence authority roots must be
+equal, attachment generation and attempt match the exact launch/current chain,
+and consumed authority has no expiry. Cleanup ordinal zero is exactly
+`PENDING`/`NOT_PUBLISHED`; promotion roots require their predecessor cleanup
+head. Cleanup archives bind the root, ordered head-chain digest, revocation
+proof, one exclusive activated/aborted proof union, and the active record
+retained by the canonical cleanup head.
+
+Repository-protection authority pins API version `2022-11-28`, protected
+environment `host-custody-bootstrap-root`, and verifier version `2.93.0`. The
+anchor digest equals the protected variable value, whose API update is at or
+before producer start; producer start is at or before receipt issue.
 
 ## Review attack surface
 

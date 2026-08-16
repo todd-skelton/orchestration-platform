@@ -63,5 +63,47 @@ describe("contract compatibility matrix", () => {
     );
     expect(() => migrateNamedLegacyFixture(hostile)).not.toThrow();
     expect(migrateNamedLegacyFixture(hostile).ok).toBe(false);
+
+    const accessor = {
+      adapterId: "alpha",
+      projectId: uuid,
+      stateRoot: "file:///var/lib/orchestration/state",
+      get schemaVersion() {
+        return "platform-configuration/v0-fixture";
+      },
+    };
+    class LegacyRecord {
+      adapterId = "alpha";
+      projectId = uuid;
+      schemaVersion = "platform-configuration/v0-fixture";
+      stateRoot = "file:///var/lib/orchestration/state";
+    }
+    const transparentProxy = new Proxy(
+      {
+        adapterId: "alpha",
+        projectId: uuid,
+        schemaVersion: "platform-configuration/v0-fixture",
+        stateRoot: "file:///var/lib/orchestration/state",
+      },
+      {},
+    );
+    const symbolBearing = {
+      adapterId: "alpha",
+      projectId: uuid,
+      schemaVersion: "platform-configuration/v0-fixture",
+      stateRoot: "file:///var/lib/orchestration/state",
+      [Symbol("hidden")]: true,
+    };
+    for (const value of [
+      accessor,
+      transparentProxy,
+      symbolBearing,
+      new LegacyRecord(),
+      new Map(),
+      new Date(),
+    ]) {
+      expect(() => migrateNamedLegacyFixture(value)).not.toThrow();
+      expect(migrateNamedLegacyFixture(value).ok).toBe(false);
+    }
   });
 });

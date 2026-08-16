@@ -77,6 +77,7 @@ export function isContractRelativePath(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 1024) return false;
   if (
     !validUnicode(value) ||
+    /[\u0000-\u001f\u007f-\u009f]/.test(value) ||
     value.includes("\\") ||
     value.startsWith("/") ||
     drivePrefix.test(value)

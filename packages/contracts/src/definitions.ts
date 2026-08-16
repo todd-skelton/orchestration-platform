@@ -415,15 +415,16 @@ const definitions = [
       installationId: field("uuid-v7"),
       oldActiveRecordDigest: field("sha256"),
       oldGeneration: field("integer"),
-      operationManifestDigest: field("sha256"),
       pendingAdmissionDigest: field("sha256"),
       predecessorExecutableDigest: field("sha256"),
+      predecessorOperationManifestDigest: field("sha256"),
       predecessorReleaseDigest: field("sha256"),
       projectId: field("uuid-v7"),
       recordPath: field("relative-path"),
       recoveryReferenceDigest: field("sha256"),
       stateRootDigest: field("sha256"),
       successorExecutableDigest: field("sha256"),
+      successorOperationManifestDigest: field("sha256"),
       successorReleaseDigest: field("sha256"),
       transactionId: field("uuid-v7"),
     },
@@ -499,7 +500,7 @@ const definitions = [
       )
         ? []
         : ["headPath:mismatch"]),
-      ...(integer(record, "generation") === 0 && integer(record, "headOrdinal") === 0
+      ...(integer(record, "headOrdinal") === 0
         ? record.expectedPointerDigest === null
           ? []
           : ["expectedPointerDigest:initial-cas-requires-null"]
@@ -621,9 +622,11 @@ const definitions = [
         issues.push("terminalAt:terminal-state-required");
       if (
         state === "TERMINAL_HANDOFF" &&
-        (source !== "cleanup-gate-pre-fence/v1" || record.gatePublication !== "PUBLISHED")
+        (source !== "cleanup-gate-pre-fence/v1" ||
+          record.gateLifecycle !== "PENDING" ||
+          record.gatePublication !== "PUBLISHED")
       )
-        issues.push("lifecycle:handoff-requires-published-pre-fence");
+        issues.push("lifecycle:handoff-requires-pending-published-pre-fence");
       if (state === "TERMINAL_ABORTED" && record.gateLifecycle !== "ABORTING")
         issues.push("lifecycle:aborted-requires-gate-aborting");
       if (state === "TERMINAL_COMPLETE" && source !== "recovery-fence/v1")
@@ -811,6 +814,7 @@ const definitions = [
       expectedActiveRecordDigest: nullable("sha256"),
       expiresAt: nullable("timestamp"),
       fenceRootDigest: nullable("sha256"),
+      gateRootDigest: nullable("sha256"),
       installationId: field("uuid-v7"),
       lifecycle: enumeration("CREATED_UNCONSUMED", "CONSUMED_BOUND", "REVOKED", "UNKNOWN"),
       mode: enumeration("bootstrap-n0", "successor"),
@@ -853,6 +857,7 @@ const definitions = [
       const successorFields = [
         record.expectedActiveRecordDigest,
         record.fenceRootDigest,
+        record.gateRootDigest,
         record.operationManifestDigest,
         record.pendingAdmissionDigest,
         record.predecessorExecutableDigest,
@@ -871,6 +876,12 @@ const definitions = [
         if (!bootstrapFields.every((value) => value === null))
           issues.push("mode:bootstrap-bindings-must-be-null");
         if (successorFields.includes(null)) issues.push("mode:successor-bindings-required");
+        if (
+          record.priorBrokerGeneration !== null &&
+          record.successorBrokerGeneration !== null &&
+          record.successorBrokerGeneration !== (record.priorBrokerGeneration as number) + 1
+        )
+          issues.push("successorBrokerGeneration:not-adjacent");
       }
       const launchFields = [
         record.recoveryFenceRootDigest,
@@ -885,6 +896,12 @@ const definitions = [
         issues.push("recoveryLaunch:partial-binding");
       if (text(record, "mode") === "bootstrap-n0" && !launchFields.every((value) => value === null))
         issues.push("recoveryLaunch:bootstrap-must-be-null");
+      if (!launchFields.includes(null)) {
+        if (record.recoveryFenceRootDigest !== record.fenceRootDigest)
+          issues.push("recoveryFenceRootDigest:authority-mismatch");
+        if (record.recoveryGateRootDigest !== record.gateRootDigest)
+          issues.push("recoveryGateRootDigest:authority-mismatch");
+      }
       if (
         state === "CREATED_UNCONSUMED" &&
         (record.consumedAt !== null ||
@@ -892,8 +909,13 @@ const definitions = [
           !launchFields.every((value) => value === null))
       )
         issues.push("lifecycle:unconsumed-fields");
-      if (state === "CONSUMED_BOUND" && (record.consumedAt === null || record.revokedAt !== null))
+      if (
+        state === "CONSUMED_BOUND" &&
+        (record.consumedAt === null || record.revokedAt !== null || record.expiresAt !== null)
+      )
         issues.push("lifecycle:consumed-fields");
+      if (record.consumedAt !== null && record.expiresAt !== null)
+        issues.push("expiresAt:consumed-must-be-null");
       if (state === "REVOKED" && record.revokedAt === null)
         issues.push("lifecycle:revoked-time-required");
       if (
@@ -942,7 +964,8 @@ const definitions = [
       (record.expectedActiveRecordDigest !== null ||
         integer(record, "expectedActiveGeneration") !== 0 ||
         record.expectedFenceRootPath !== null ||
-        record.expectedFenceRootDigest !== null)
+        record.expectedFenceRootDigest !== null ||
+        record.priorCleanupHeadDigest !== null)
         ? ["mode:n0-active-state-mismatch"]
         : []),
       ...(text(record, "mode") === "PROMOTION" &&
@@ -950,6 +973,7 @@ const definitions = [
         record.expectedActiveRecordDigest,
         record.expectedFenceRootPath,
         record.expectedFenceRootDigest,
+        record.priorCleanupHeadDigest,
       ].includes(null)
         ? ["mode:promotion-bindings-required"]
         : []),
@@ -992,6 +1016,11 @@ const definitions = [
           : record.previousHeadDigest === null
       )
         issues.push("previousHeadDigest:ordinal-mismatch");
+      if (
+        integer(record, "ordinal") === 0 &&
+        (record.lifecycle !== "PENDING" || record.publication !== "NOT_PUBLISHED")
+      )
+        issues.push("ordinal:zero-must-be-pending-not-published");
       if (text(record, "lifecycle") === "ABORTING" && record.abortRevocationReceiptDigest === null)
         issues.push("abortRevocationReceiptDigest:required");
       if (
@@ -1079,8 +1108,14 @@ const definitions = [
       ...(text(record, "outcome") === "ABORTED" && record.abortProofDigest === null
         ? ["abortProofDigest:aborted-required"]
         : []),
+      ...(text(record, "outcome") === "ABORTED" && record.terminalProofDigest !== null
+        ? ["terminalProofDigest:aborted-must-be-null"]
+        : []),
       ...(text(record, "outcome") === "ACTIVATED" && record.terminalProofDigest === null
         ? ["terminalProofDigest:activated-required"]
+        : []),
+      ...(text(record, "outcome") === "ACTIVATED" && record.abortProofDigest !== null
+        ? ["abortProofDigest:activated-must-be-null"]
         : []),
     ],
   ),
@@ -1108,6 +1143,7 @@ const definitions = [
     "repository-protection-receipt/v1",
     {
       actorPolicyDigest: field("sha256"),
+      apiVersion: enumeration("2022-11-28"),
       apiPageDigests: array("sha256"),
       apiPageCount: field("positive-integer"),
       apiProvenanceDigest: field("sha256"),
@@ -1121,8 +1157,9 @@ const definitions = [
       probeWorkflowIdentity: field("bounded-string"),
       producerAttempt: field("positive-integer"),
       producerRunId: field("decimal"),
+      producerStartedAt: field("timestamp"),
       protectedEnvironmentId: field("decimal"),
-      protectedEnvironmentName: field("bounded-string"),
+      protectedEnvironmentName: enumeration("host-custody-bootstrap-root"),
       protectedPathPolicyDigest: field("sha256"),
       repositoryId: field("decimal"),
       repositoryIdentity: field("bounded-string"),
@@ -1134,6 +1171,7 @@ const definitions = [
       verifierAnchorVariableName: enumeration("VERIFIER_ANCHOR_SHA256"),
       verifierAnchorVariableUpdatedAt: field("timestamp"),
       verifierAnchorVariableValue: field("sha256"),
+      verifierVersion: enumeration("2.93.0"),
     },
     (record) => [
       ...(text(record, "verifierAnchorVariableName") === "VERIFIER_ANCHOR_SHA256"
@@ -1143,6 +1181,16 @@ const definitions = [
         ? []
         : ["apiPageDigests:count-mismatch"]),
       ...orderedTimes(record, "issuedAt", "expiresAt"),
+      ...(record.verifierAnchorDigest === record.verifierAnchorVariableValue
+        ? []
+        : ["verifierAnchorDigest:variable-value-mismatch"]),
+      ...(Date.parse(text(record, "verifierAnchorVariableUpdatedAt")) <=
+      Date.parse(text(record, "producerStartedAt"))
+        ? []
+        : ["verifierAnchorVariableUpdatedAt:not-pre-run"]),
+      ...(Date.parse(text(record, "producerStartedAt")) <= Date.parse(text(record, "issuedAt"))
+        ? []
+        : ["producerStartedAt:after-issuedAt"]),
       ...(Date.parse(text(record, "expiresAt")) - Date.parse(text(record, "issuedAt")) <=
       604_800_000
         ? []
@@ -1161,6 +1209,7 @@ const definitions = [
     signerIdentity: field("bounded-string"),
     trustSource: enumeration("OPERATOR_CONFIRMED_OFFICIAL"),
     verifierExecutableDigest: field("sha256"),
+    verifierVersion: enumeration("2.93.0"),
   }),
 ] as const;
 
@@ -1194,6 +1243,72 @@ export function validateImportReceiptAgainstPlan(
   return bindings
     .filter((name) => plan[name] !== receipt[name])
     .map((name) => `${name}:transaction-binding-mismatch`);
+}
+
+export function validateRecoveryAuthorizationAttachment(
+  authorization: ContractRecord,
+  ready: ContractRecord,
+  live: ContractRecord,
+  current: ContractRecord,
+  readyDigest: string,
+  liveDigest: string,
+): readonly string[] {
+  const issues: string[] = [];
+  if (authorization.mode !== "successor" || authorization.lifecycle !== "CONSUMED_BOUND")
+    issues.push("authorization:not-consumed-successor");
+  for (const name of ["transactionId", "installationId", "stateRootDigest"]) {
+    if (
+      authorization[name] !== ready[name] ||
+      ready[name] !== live[name] ||
+      live[name] !== current[name]
+    )
+      issues.push(`${name}:attachment-mismatch`);
+  }
+  for (const name of ["source", "generation", "attempt"] as const) {
+    const authorizationName =
+      name === "source"
+        ? "recoveryLaunchSource"
+        : name === "generation"
+          ? "recoveryLaunchGeneration"
+          : "recoveryLaunchAttempt";
+    if (
+      authorization[authorizationName] !== ready[name] ||
+      ready[name] !== live[name] ||
+      live[name] !== current[name]
+    )
+      issues.push(`${authorizationName}:attachment-mismatch`);
+  }
+  if (ready.lifecycle !== "READY" || ready.ordinal !== 0)
+    issues.push("readyRecord:not-generation-root");
+  if (
+    live.lifecycle !== "LIVE" ||
+    live.ordinal !== 1 ||
+    live.previousStateRecordDigest !== readyDigest
+  )
+    issues.push("liveRecord:not-ready-successor");
+  if (authorization.recoveryReadyRecordDigest !== readyDigest)
+    issues.push("recoveryReadyRecordDigest:mismatch");
+  if (authorization.recoveryInitialLiveRecordDigest !== liveDigest)
+    issues.push("recoveryInitialLiveRecordDigest:mismatch");
+  if (
+    current.launchDigest !== liveDigest ||
+    current.launchLifecycle !== "LIVE" ||
+    current.launchOrdinal !== live.ordinal ||
+    current.expectedPointerDigest !== live.priorPointerDigest
+  )
+    issues.push("current:live-binding-mismatch");
+  for (const [authorizationName, launchName] of [
+    ["recoveryGateRootDigest", "gateRootDigest"],
+    ["recoveryFenceRootDigest", "fenceRootDigest"],
+  ] as const) {
+    if (
+      authorization[authorizationName] !== ready[launchName] ||
+      ready[launchName] !== live[launchName] ||
+      live[launchName] !== current[launchName]
+    )
+      issues.push(`${authorizationName}:root-mismatch`);
+  }
+  return [...new Set(issues)].sort();
 }
 
 function changed(
@@ -1323,13 +1438,22 @@ export function validateRecoveryLaunchTransition(
 
 export function validateRecoveryAuthorityAlignment(
   launch: ContractRecord,
-  observed: { readonly gateHeadDigest: string | null; readonly fenceHeadDigest: string | null },
+  observed: {
+    readonly gateHeadDigest: string;
+    readonly gateHeadOrdinal: number;
+    readonly fenceHeadDigest: string | null;
+    readonly fenceHeadOrdinal: number | null;
+  },
 ): readonly string[] {
   const issues: string[] = [];
   if (launch.gateHeadDigest !== observed.gateHeadDigest)
     issues.push("gateHeadDigest:launch-behind");
+  if (launch.gateHeadOrdinal !== observed.gateHeadOrdinal)
+    issues.push("gateHeadOrdinal:launch-behind");
   if (launch.fenceHeadDigest !== observed.fenceHeadDigest)
     issues.push("fenceHeadDigest:launch-behind");
+  if (launch.fenceHeadOrdinal !== observed.fenceHeadOrdinal)
+    issues.push("fenceHeadOrdinal:launch-behind");
   return issues;
 }
 

@@ -1,3 +1,4 @@
+import { types as nodeTypes } from "node:util";
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./definitions.js";
 import {
   canonicalBytes,
@@ -92,11 +93,26 @@ export function migrateNamedLegacyFixture(input: unknown): MigrationResult {
 function migrateNamedLegacyFixtureUnchecked(input: unknown): MigrationResult {
   if (input === null || typeof input !== "object" || Array.isArray(input))
     return { ok: false, issues: ["legacy:object-required"] };
-  const record = input as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
+  if (nodeTypes.isProxy(input)) return { ok: false, issues: ["legacy:proxy-refused"] };
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null)
+    return { ok: false, issues: ["legacy:plain-object-required"] };
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const propertyKeys = Reflect.ownKeys(descriptors);
+  if (propertyKeys.some((name) => typeof name !== "string"))
+    return { ok: false, issues: ["legacy:symbol-property-refused"] };
+  const keys = (propertyKeys as string[]).sort();
   const expected = ["adapterId", "projectId", "schemaVersion", "stateRoot"];
   if (JSON.stringify(keys) !== JSON.stringify(expected))
     return { ok: false, issues: ["legacy:closed-fields-required"] };
+  if (
+    keys.some(
+      (name) =>
+        !Object.hasOwn(descriptors[name]!, "value") || descriptors[name]!.enumerable !== true,
+    )
+  )
+    return { ok: false, issues: ["legacy:data-properties-required"] };
+  const record = Object.fromEntries(keys.map((name) => [name, descriptors[name]!.value]));
   if (record.schemaVersion !== "platform-configuration/v0-fixture")
     return { ok: false, issues: ["legacy:not-named-fixture"] };
   const migrated = {

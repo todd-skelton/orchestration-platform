@@ -29,6 +29,7 @@ import {
   validateFenceAuthorityBinding,
   validateFenceHeadTransition,
   validateImportReceiptAgainstPlan,
+  validateRecoveryAuthorizationAttachment,
   validateRecoveryAuthorityAlignment,
   validateRecoveryLaunchTransition,
   type ContractRecord,
@@ -48,6 +49,34 @@ import {
 
 function mutant(schemaVersion: string, changes: Record<string, unknown>): Record<string, unknown> {
   return { ...fixtureFor(schemaVersion), ...changes };
+}
+
+function successorAuthorizationFixture(
+  changes: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return mutant("recovery-authorization/v1", {
+    mode: "successor",
+    bootstrapGrantDigest: null,
+    bootstrapInstallerDigest: null,
+    candidateDigest: null,
+    destinationStateRootDigest: null,
+    expectedActiveRecordDigest: digest,
+    fenceRootDigest: digest,
+    gateRootDigest: digest,
+    operationManifestDigest: digest,
+    pendingAdmissionDigest: digest,
+    predecessorExecutableDigest: digest,
+    predecessorReleaseDigest: digest,
+    priorBrokerGeneration: 0,
+    promotionCycleId: uuid,
+    successorBrokerGeneration: 1,
+    successorExecutableDigest: digest,
+    successorReleaseDigest: digest,
+    lifecycle: "CONSUMED_BOUND",
+    consumedAt: instant,
+    expiresAt: null,
+    ...changes,
+  });
 }
 
 function invalidFor(rule: FieldRule): unknown {
@@ -260,7 +289,7 @@ describe("canonical exact-byte serialization", () => {
       root.update(serialized.bytes);
     }
     expect(root.digest("hex")).toBe(
-      "de298a59550920ec7c10c72e33d5c775a47255b1820d36627a2c6f1dae7cd004",
+      "8e4536e06e88c37790e667228b8278743b3e06b280442b9aff42810731e7430e",
     );
   });
 
@@ -328,6 +357,22 @@ describe("portable authority guards", () => {
         expect(parseContract(schemaVersion, mutant(schemaVersion, { [pathName]: path })).ok).toBe(
           false,
         );
+    }
+  });
+
+  test("contract-relative paths refuse every C0/C1 control character", () => {
+    const controls = [
+      ...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)),
+      ...Array.from({ length: 33 }, (_, offset) => String.fromCharCode(0x7f + offset)),
+    ];
+    for (const control of controls) {
+      expect(
+        parseContract(
+          "installed-release/v1",
+          mutant("installed-release/v1", { releasePath: `release${control}item` }),
+        ).ok,
+        `control U+${control.charCodeAt(0).toString(16).padStart(4, "0")}`,
+      ).toBe(false);
     }
   });
 
@@ -473,6 +518,54 @@ describe("activation, recovery, and cleanup authority", () => {
         }),
       ).ok,
     ).toBe(false);
+
+    expect(Object.keys(schemaDefinitions["activation-recovery-fence-root/v1"]!.fields)).toEqual(
+      expect.arrayContaining([
+        "predecessorOperationManifestDigest",
+        "successorOperationManifestDigest",
+      ]),
+    );
+    expect(schemaDefinitions["activation-recovery-fence-root/v1"]!.fields).not.toHaveProperty(
+      "operationManifestDigest",
+    );
+    expect(
+      parseContract(
+        "activation-recovery-fence-root/v1",
+        mutant("activation-recovery-fence-root/v1", {
+          operationManifestDigest: digest,
+          predecessorOperationManifestDigest: digest,
+          successorOperationManifestDigest: digest2,
+        }),
+      ).ok,
+    ).toBe(false);
+  });
+
+  test("each fence transaction creates ordinal-zero current authority by CAS from absence", () => {
+    const laterGenerationInitial = mutant("activation-recovery-fence-current/v1", {
+      generation: 7,
+      headOrdinal: 0,
+      expectedPointerDigest: null,
+    });
+    expect(parseContract("activation-recovery-fence-current/v1", laterGenerationInitial).ok).toBe(
+      true,
+    );
+    expect(
+      parseContract("activation-recovery-fence-current/v1", {
+        ...laterGenerationInitial,
+        expectedPointerDigest: digest,
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract(
+        "activation-recovery-fence-current/v1",
+        mutant("activation-recovery-fence-current/v1", {
+          generation: 7,
+          headOrdinal: 1,
+          headPath: recoveryFenceHeadPath(uuid, 1, "PREPARED"),
+          expectedPointerDigest: null,
+        }),
+      ).ok,
+    ).toBe(false);
   });
 
   test("recovery launch source/token/path and conditional authority are closed", () => {
@@ -514,6 +607,20 @@ describe("activation, recovery, and cleanup authority", () => {
       terminalAt: later,
     });
     expect(parseContract("activation-recovery-launch/v1", preFence).ok).toBe(true);
+    expect(
+      parseContract("activation-recovery-launch/v1", {
+        ...preFence,
+        gateLifecycle: "ABORTING",
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("activation-recovery-launch/v1", {
+        ...preFence,
+        lifecycle: "TERMINAL_ABORTED",
+        recordPath: recoveryLaunchPath(uuid, "cleanup-gate-pre-fence-v1", 0, 1, "TERMINAL_ABORTED"),
+        gateLifecycle: "ABORTING",
+      }).ok,
+    ).toBe(true);
   });
 
   test("authorization and cleanup discriminators refuse partial authority", () => {
@@ -536,31 +643,38 @@ describe("activation, recovery, and cleanup authority", () => {
       ).ok,
     ).toBe(false);
 
-    const successorAuthorization = mutant("recovery-authorization/v1", {
-      mode: "successor",
-      bootstrapGrantDigest: null,
-      bootstrapInstallerDigest: null,
-      candidateDigest: null,
-      destinationStateRootDigest: null,
-      expectedActiveRecordDigest: digest,
-      fenceRootDigest: digest,
-      operationManifestDigest: digest,
-      pendingAdmissionDigest: digest,
-      predecessorExecutableDigest: digest,
-      predecessorReleaseDigest: digest,
-      priorBrokerGeneration: 0,
-      promotionCycleId: uuid,
-      successorBrokerGeneration: 1,
-      successorExecutableDigest: digest,
-      successorReleaseDigest: digest,
-      lifecycle: "CONSUMED_BOUND",
-      consumedAt: instant,
-    });
+    const successorAuthorization = successorAuthorizationFixture();
     expect(parseContract("recovery-authorization/v1", successorAuthorization).ok).toBe(true);
+    for (const changes of [
+      { successorBrokerGeneration: 2 },
+      { expiresAt: later },
+      { gateRootDigest: null },
+      { fenceRootDigest: null },
+      { bootstrapGrantDigest: digest },
+    ]) {
+      expect(
+        parseContract("recovery-authorization/v1", {
+          ...successorAuthorization,
+          ...changes,
+        }).ok,
+      ).toBe(false);
+    }
     expect(
       parseContract("recovery-authorization/v1", {
         ...successorAuthorization,
         recoveryLaunchSource: "recovery-fence/v1",
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("recovery-authorization/v1", {
+        ...successorAuthorization,
+        recoveryLaunchSource: "recovery-fence/v1",
+        recoveryLaunchGeneration: 0,
+        recoveryLaunchAttempt: 1,
+        recoveryReadyRecordDigest: digest,
+        recoveryInitialLiveRecordDigest: digest,
+        recoveryGateRootDigest: digest,
+        recoveryFenceRootDigest: digest2,
       }).ok,
     ).toBe(false);
     expect(
@@ -582,12 +696,19 @@ describe("activation, recovery, and cleanup authority", () => {
       expectedActiveRecordDigest: digest,
       expectedFenceRootPath: recoveryFenceRootPath(uuid),
       expectedFenceRootDigest: digest,
+      priorCleanupHeadDigest: digest,
     });
     expect(parseContract("activation-cleanup-gate-root/v1", promotionGate).ok).toBe(true);
     expect(
       parseContract("activation-cleanup-gate-root/v1", {
         ...promotionGate,
         expectedFenceRootPath: recoveryFenceRootPath(uuid2),
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("activation-cleanup-gate-root/v1", {
+        ...promotionGate,
+        priorCleanupHeadDigest: null,
       }).ok,
     ).toBe(false);
   });
@@ -635,6 +756,109 @@ describe("activation, recovery, and cleanup authority", () => {
     ).toBe(false);
   });
 
+  test("cleanup initialization and archive outcomes are exact closed unions", () => {
+    expect(
+      parseContract(
+        "activation-cleanup-gate-head/v1",
+        mutant("activation-cleanup-gate-head/v1", {
+          lifecycle: "ACTIVATING",
+          publication: "PUBLISHED",
+          fenceDigest: digest,
+          recordPath: cleanupGateHeadPath(uuid, 0, "ACTIVATING", "PUBLISHED"),
+        }),
+      ).ok,
+    ).toBe(false);
+
+    const activated = fixtureFor("activation-cleanup-gate-archive/v1");
+    expect(parseContract("activation-cleanup-gate-archive/v1", activated).ok).toBe(true);
+    expect(
+      parseContract("activation-cleanup-gate-archive/v1", {
+        ...activated,
+        abortProofDigest: digest,
+      }).ok,
+    ).toBe(false);
+    const aborted = {
+      ...activated,
+      outcome: "ABORTED",
+      terminalProofDigest: null,
+      abortProofDigest: digest,
+    };
+    expect(parseContract("activation-cleanup-gate-archive/v1", aborted).ok).toBe(true);
+    for (const changes of [{ terminalProofDigest: digest }, { abortProofDigest: null }]) {
+      expect(
+        parseContract("activation-cleanup-gate-archive/v1", { ...aborted, ...changes }).ok,
+      ).toBe(false);
+    }
+  });
+
+  test("successor recovery attachment binds one exact READY to LIVE chain and current pointer", () => {
+    const ready = fixtureFor("activation-recovery-launch/v1");
+    const readyDigest = canonicalDigest(ready as JsonValue);
+    const priorPointerDigest = digest2;
+    const live = mutant("activation-recovery-launch/v1", {
+      ordinal: 1,
+      previousStateRecordDigest: readyDigest,
+      priorPointerDigest,
+      lifecycle: "LIVE",
+      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 1, "LIVE"),
+      processTreeDigest: digest,
+      startedAt: instant,
+      heartbeatAt: instant,
+    }) as ContractRecord;
+    const liveDigest = canonicalDigest(live as JsonValue);
+    const current = mutant("activation-recovery-launch-current/v1", {
+      expectedPointerDigest: priorPointerDigest,
+      launchDigest: liveDigest,
+      launchLifecycle: "LIVE",
+      launchOrdinal: 1,
+      launchPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 1, "LIVE"),
+    }) as ContractRecord;
+    const authorization = successorAuthorizationFixture({
+      recoveryLaunchSource: "recovery-fence/v1",
+      recoveryLaunchGeneration: 0,
+      recoveryLaunchAttempt: 1,
+      recoveryReadyRecordDigest: readyDigest,
+      recoveryInitialLiveRecordDigest: liveDigest,
+      recoveryGateRootDigest: digest,
+      recoveryFenceRootDigest: digest,
+    }) as ContractRecord;
+    expect(parseContract("activation-recovery-launch/v1", live).ok).toBe(true);
+    expect(parseContract("activation-recovery-launch-current/v1", current).ok).toBe(true);
+    expect(parseContract("recovery-authorization/v1", authorization).ok).toBe(true);
+    expect(
+      validateRecoveryAuthorizationAttachment(
+        authorization,
+        ready,
+        live,
+        current,
+        readyDigest,
+        liveDigest,
+      ),
+    ).toEqual([]);
+    for (const changed of [
+      { authorization: { ...authorization, recoveryLaunchGeneration: 1 } as ContractRecord },
+      { authorization: { ...authorization, recoveryLaunchAttempt: 2 } as ContractRecord },
+      { live: { ...live, attempt: 2 } as ContractRecord },
+      { current: { ...current, launchOrdinal: 2 } as ContractRecord },
+      { current: { ...current, gateRootDigest: digest2 } as ContractRecord },
+    ] as Array<{
+      authorization?: ContractRecord;
+      live?: ContractRecord;
+      current?: ContractRecord;
+    }>) {
+      expect(
+        validateRecoveryAuthorizationAttachment(
+          changed.authorization ?? authorization,
+          ready,
+          changed.live ?? live,
+          changed.current ?? current,
+          readyDigest,
+          liveDigest,
+        ),
+      ).not.toEqual([]);
+    }
+  });
+
   test("cross-record transitions bind adjacent ordinals, prior digests, immutable roots, and one authority advance", () => {
     const ready = fixtureFor("activation-recovery-launch/v1");
     const readyDigest = canonicalDigest(ready as JsonValue);
@@ -678,9 +902,21 @@ describe("activation, recovery, and cleanup authority", () => {
     expect(
       validateRecoveryAuthorityAlignment(rebound, {
         gateHeadDigest: digest,
+        gateHeadOrdinal: 0,
         fenceHeadDigest: "e".repeat(64),
+        fenceHeadOrdinal: 1,
       }),
     ).toContain("fenceHeadDigest:launch-behind");
+    expect(
+      validateRecoveryAuthorityAlignment(rebound, {
+        gateHeadDigest: digest,
+        gateHeadOrdinal: 1,
+        fenceHeadDigest: "d".repeat(64),
+        fenceHeadOrdinal: 2,
+      }),
+    ).toEqual(
+      expect.arrayContaining(["gateHeadOrdinal:launch-behind", "fenceHeadOrdinal:launch-behind"]),
+    );
 
     const fence0 = fixtureFor("activation-recovery-fence-head/v1");
     const fenceDigest = canonicalDigest(fence0 as JsonValue);
@@ -927,6 +1163,12 @@ describe("protection and verifier roots", () => {
       { repositoryId: 1 },
       { rulesetId: "01" },
       { producerRunId: Number.MAX_SAFE_INTEGER + 1 },
+      { verifierAnchorDigest: digest2 },
+      { verifierAnchorVariableUpdatedAt: later },
+      { producerStartedAt: later },
+      { verifierVersion: "2.94.0" },
+      { apiVersion: "latest" },
+      { protectedEnvironmentName: "other" },
     ])
       expect(
         parseContract(
@@ -957,6 +1199,12 @@ describe("protection and verifier roots", () => {
           mutant("bootstrap-verifier-anchor/v1", { [field]: digest }),
         ).ok,
       ).toBe(false);
+    expect(
+      parseContract(
+        "bootstrap-verifier-anchor/v1",
+        mutant("bootstrap-verifier-anchor/v1", { verifierVersion: "2.94.0" }),
+      ).ok,
+    ).toBe(false);
   });
 
   test("timestamp and numeric authority are exact", () => {
