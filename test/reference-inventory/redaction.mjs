@@ -346,6 +346,7 @@ function decodeIdentifierEscapes(value) {
   let decoded = "";
   for (let index = 0; index < value.length; index += 1) {
     if (value[index] !== "\\") {
+      if (!/[a-z0-9_$]/i.test(value[index])) return { status: "invalid" };
       decoded += value[index];
       continue;
     }
@@ -374,16 +375,18 @@ function decodeIdentifierEscapes(value) {
 function literalConcatenationSeparator(separator, concatOpen) {
   const compacted = compactLiteralSeparator(separator);
   if (compacted.status !== "valid") return compacted;
-  if (compacted.compact.includes("\\") && !compacted.compact.includes(".con")) {
-    if (concatOpen) return { status: "invalid" };
-    return { status: "valid", concatenates: false, concatOpen: false };
-  }
-  const decoded = decodeIdentifierEscapes(compacted.compact);
-  if (decoded.status !== "valid") return decoded;
-  const compact = decoded.value;
-  const concatStart = /^(\)*)\.concat\((\(*)$/.exec(compact);
-  if (concatStart) {
-    if (concatOpen && concatStart[1].length === 0) return { status: "invalid" };
+  const compact = compacted.compact;
+  const method = /^(\)*)\.([^()]*)\(/.exec(compact);
+  if (method) {
+    const decodedMethod = decodeIdentifierEscapes(method[2]);
+    if (decodedMethod.status !== "valid") return decodedMethod;
+    if (decodedMethod.value !== "concat") {
+      if (concatOpen) return { status: "invalid" };
+      return { status: "valid", concatenates: false, concatOpen: false };
+    }
+    const argumentPrefix = compact.slice(method[0].length);
+    if (!/^\(*$/.test(argumentPrefix)) return { status: "invalid" };
+    if (concatOpen && method[1].length === 0) return { status: "invalid" };
     return { status: "valid", concatenates: true, concatOpen: true };
   }
   const concatArgument = /^(\)*),(\(*)$/.exec(compact);

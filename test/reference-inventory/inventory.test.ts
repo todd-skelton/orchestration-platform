@@ -841,6 +841,25 @@ describe("reference redaction controls", () => {
     const quotedCommentPieces = commentPieces.map((piece) => JSON.stringify(piece));
     rejected(`${quotedCommentPieces[0]}.concat(${quotedCommentPieces.slice(1).join(",")})`);
     rejected(`${quotedCommentPieces[0]}.con\\u0063at(${quotedCommentPieces.slice(1).join(",")})`);
+    for (let index = 0; index < "concat".length; index += 1) {
+      const codePoint = "concat".codePointAt(index)!.toString(16);
+      for (const escaped of [`\\u${codePoint.padStart(4, "0")}`, `\\u{${codePoint}}`]) {
+        const method = `${"concat".slice(0, index)}${escaped}${"concat".slice(index + 1)}`;
+        rejected(`${quotedCommentPieces[0]}.${method}(${quotedCommentPieces.slice(1).join(",")})`);
+      }
+    }
+    for (const malformedMethod of [
+      "\\u{110000}oncat",
+      "\\ud800oncat",
+      "\\u{d800}oncat",
+      "\\udfffoncat",
+      "\\u00g0oncat",
+      "\\u{63oncat",
+    ]) {
+      rejected(
+        `${quotedCommentPieces[0]}.${malformedMethod}(${quotedCommentPieces.slice(1).join(",")})`,
+      );
+    }
     rejected(
       `${quotedCommentPieces[0]}.concat(${quotedCommentPieces.slice(1, 4).join(",")}).concat(${quotedCommentPieces.slice(4).join(",")})`,
     );
@@ -867,6 +886,7 @@ describe("reference redaction controls", () => {
     );
     accepted('"safe".concatenate("neutral")');
     accepted('"safe".con\\u0063atenate("neutral")');
+    accepted('"safe".\\u0063oncatValue("neutral")');
     accepted('"safe".concatValue("neutral")');
     accepted(`"safe".concat(${Array.from({ length: 15 }, (_, index) => `"n${index}"`).join(",")})`);
     rejected(`"safe".concat(${Array.from({ length: 16 }, (_, index) => `"n${index}"`).join(",")})`);

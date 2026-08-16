@@ -177,7 +177,7 @@ const pinnedSource = Object.freeze({
     sourcePaths: "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     transitions: "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
     pathSensitivity: "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
-    publicationFingerprints: "a71ce74efe891733522b3e8588060bf397535ad13636cd4f1a828abc4992bf49",
+    publicationFingerprints: "384459b5fc1db1fb8bc90eb8d59f13b4ddf5205213a3173a36a8502096c068e7",
   },
   extensionCensus: {
     cjs: 2,
@@ -432,7 +432,7 @@ export function buildPublicationFingerprints(snapshot) {
     });
   }
   const census = {
-    schemaVersion: "reference-publication-fingerprints/v9",
+    schemaVersion: "reference-publication-fingerprints/v10",
     derivation:
       "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent subset relationships across bounded arbitrary text; scalar syntax position does not grant exclusion, valid continuations are decoded, template static segments are combined with every independently decoded ordered quoted subsequence, and comment-separated plus or statically provable String.prototype concat chains are reconstructed without evaluation under pinned Cartesian bounds.",
     minimumFragmentPolicy: {
@@ -462,6 +462,8 @@ export function buildPublicationFingerprints(snapshot) {
         "quoted-or-template-receiver-with-only-bounded-static-quoted-or-template-arguments",
       javascriptIdentifierEscapeDisposition:
         "decode-valid-identifier-code-unit-or-code-point-escapes-and-require-exact-concat",
+      escapedIdentifierPositionDisposition:
+        "decode-every-method-identifier-position-before-exact-name-comparison",
       staticStringConcatFailureDisposition:
         "reject-dynamic-malformed-or-bound-overflow-with-multiple-static-pieces",
       templateFailureDisposition: "reject-malformed-or-bound-overflow",
