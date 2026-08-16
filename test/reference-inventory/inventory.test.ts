@@ -598,6 +598,7 @@ describe("reference redaction controls", () => {
       ).toThrow(/inventory material/);
     };
     let transformedRowCount = 0;
+    let arbitraryStreamTransformCount = 0;
     let substantiveDeletionCount = 0;
     let belowMinimumDeletionCount = 0;
     for (const rows of families.values()) {
@@ -609,6 +610,15 @@ describe("reference redaction controls", () => {
             .map((value, index) => [`renamed-${String(index).padStart(2, "0")}`, value]),
         );
         excluded(JSON.stringify({ neutralWrapper: [renamed] }));
+        const reversedValues = Object.values(row).reverse();
+        for (const content of [
+          `export default ${JSON.stringify(renamed)};`,
+          JSON.stringify(reversedValues),
+          reversedValues.map((value) => JSON.stringify(value)).join(","),
+        ]) {
+          arbitraryStreamTransformCount += 1;
+          excluded(content);
+        }
         for (const deletedKey of Object.keys(row)) {
           const deleted = Object.fromEntries(
             Object.entries(row)
@@ -630,14 +640,28 @@ describe("reference redaction controls", () => {
       }
     }
     expect(transformedRowCount).toBe(1240);
+    expect(arbitraryStreamTransformCount).toBe(3720);
     expect(substantiveDeletionCount).toBe(9012);
     expect(belowMinimumDeletionCount).toBe(1);
 
     const representativeRows = [...families.values()].map((rows) => (rows as any[])[0]);
-    for (const row of representativeRows) {
+    for (const [index, row] of representativeRows.entries()) {
       const canonical = JSON.stringify(stable(row));
       const rootStrippedFragment = canonical.slice(1, -1);
       excluded(rootStrippedFragment);
+      const next = representativeRows[(index + 1) % representativeRows.length];
+      const renamed = (value: any) =>
+        Object.fromEntries(
+          Object.values(value).map((child, childIndex) => [`field-${childIndex}`, child]),
+        );
+      excluded(`${JSON.stringify(renamed(row))}${JSON.stringify(renamed(next))}`);
+      excluded(
+        Object.values(row)
+          .slice(1)
+          .reverse()
+          .map((value) => JSON.stringify(value))
+          .join(","),
+      );
     }
     const neutral = JSON.stringify({ id: "independent-row", kind: "neutral", value: "safe" });
     expect(() =>
@@ -652,7 +676,7 @@ describe("reference redaction controls", () => {
     expect(() =>
       redactionTestApi.validateBuiltText(neutral, new Set(), undefined, [], publication),
     ).not.toThrow();
-  }, 30_000);
+  }, 120_000);
 
   test("live comparison flags are exact, complete, and duplicate-free", () => {
     expect(parseLiveArguments([])).toBeUndefined();

@@ -177,7 +177,7 @@ const pinnedSource = Object.freeze({
     sourcePaths: "da092a7f8c24652b1db4e77b62b4ca4cba1b6cceb751d66a0924f4908194e536",
     transitions: "ad1f114e1c2c751fe38880a79e897f8dbce4b0c2c8a1bc97eb21157435815fad",
     pathSensitivity: "c3992bebb297085dda146efe839c54301a3f0f0e74025680d9b207db2c293f69",
-    publicationFingerprints: "ca1a8265f976683bf7e8865c49ef1f1c831341d6b0b386915ac49741576c93b9",
+    publicationFingerprints: "f64f9fdce25b58b39bb90033c82cca0c5c9414b3c4890bbe0f6416f02764daee",
   },
   extensionCensus: {
     cjs: 2,
@@ -261,6 +261,38 @@ function collectStrongScalars(value, result = []) {
   return result;
 }
 
+function collectTypedScalars(value, result = []) {
+  if (Array.isArray(value)) {
+    for (const child of value) collectTypedScalars(child, result);
+  } else if (value && typeof value === "object") {
+    for (const child of Object.values(value)) collectTypedScalars(child, result);
+  } else {
+    result.push(typedValueSignature(value));
+  }
+  return result;
+}
+
+export function publicationStreamFingerprints(values) {
+  const signatures = collectTypedScalars(values).sort();
+  const relationshipDigests = [];
+  for (let left = 0; left < signatures.length; left += 1) {
+    for (let right = left + 1; right < signatures.length; right += 1) {
+      relationshipDigests.push(
+        digest("reference-publication-stream-relationship/v1", signatures[left], signatures[right]),
+      );
+    }
+  }
+  return {
+    scalarCount: signatures.length,
+    streamRowDigest:
+      signatures.length >= 2
+        ? digest("reference-publication-stream-row/v1", ...signatures)
+        : undefined,
+    streamRelationshipDigests: sortedUnique(relationshipDigests),
+    strongScalarDigests: sortedUnique(collectStrongScalars(values)),
+  };
+}
+
 export function publicationValueFingerprints(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { valueRowDigest: undefined, relationshipDigests: [], strongScalarDigests: [] };
@@ -318,12 +350,17 @@ export function buildPublicationFingerprints(snapshot) {
   const valueRowDigests = new Set();
   const relationshipDigests = new Set();
   const strongScalarDigests = new Set();
+  const streamRowDigests = new Set();
+  const streamRelationshipDigests = new Set();
+  const streamArities = new Set();
   for (const [familyId, rows] of publicationRows(snapshot)) {
     const familyRows = [];
     const familyChunks = [];
     const familyValueRows = [];
     const familyRelationships = [];
     const familyStrongScalars = [];
+    const familyStreamRows = [];
+    const familyStreamRelationships = [];
     for (const row of rows) {
       const canonical = JSON.stringify(stableValue(row));
       const rowDigest = digest("reference-publication-row/v1", canonical);
@@ -349,12 +386,24 @@ export function buildPublicationFingerprints(snapshot) {
         familyStrongScalars.push(scalarDigest);
         strongScalarDigests.add(scalarDigest);
       }
+      const streamFingerprints = publicationStreamFingerprints(Object.values(row));
+      streamArities.add(streamFingerprints.scalarCount);
+      if (streamFingerprints.streamRowDigest) {
+        familyStreamRows.push(streamFingerprints.streamRowDigest);
+        streamRowDigests.add(streamFingerprints.streamRowDigest);
+      }
+      for (const relationshipDigest of streamFingerprints.streamRelationshipDigests) {
+        familyStreamRelationships.push(relationshipDigest);
+        streamRelationshipDigests.add(relationshipDigest);
+      }
     }
     const uniqueRows = sortedUnique(familyRows);
     const uniqueChunks = sortedUnique(familyChunks);
     const uniqueValueRows = sortedUnique(familyValueRows);
     const uniqueRelationships = sortedUnique(familyRelationships);
     const uniqueStrongScalars = sortedUnique(familyStrongScalars);
+    const uniqueStreamRows = sortedUnique(familyStreamRows);
+    const uniqueStreamRelationships = sortedUnique(familyStreamRelationships);
     families.push({
       familyId,
       rowCount: uniqueRows.length,
@@ -373,14 +422,23 @@ export function buildPublicationFingerprints(snapshot) {
         "reference-publication-strong-scalar-root/v1",
         uniqueStrongScalars,
       ),
+      streamRowCount: uniqueStreamRows.length,
+      streamRowRoot: aggregateRows("reference-publication-stream-row-root/v1", uniqueStreamRows),
+      streamRelationshipCount: uniqueStreamRelationships.length,
+      streamRelationshipRoot: aggregateRows(
+        "reference-publication-stream-relationship-root/v1",
+        uniqueStreamRelationships,
+      ),
     });
   }
   const census = {
-    schemaVersion: "reference-publication-fingerprints/v2",
+    schemaVersion: "reference-publication-fingerprints/v3",
     derivation:
-      "Canonical rows/chunks plus key-independent typed value rows, every direct-value relationship pair, and collision-resistant string scalars; schema and aggregate-root metadata are excluded.",
+      "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent row and pair relationships; collision-resistant strings are independently marked and schema/root metadata are excluded.",
     minimumFragmentPolicy: {
       directValueRelationshipArity: 2,
+      streamRelationshipArity: 2,
+      streamRowMinimumScalarCount: 2,
       strongStringMinimumNormalizedCharacters: 12,
       belowMinimumDisposition: "not-identifying-without-an-independent-marker",
     },
@@ -394,6 +452,9 @@ export function buildPublicationFingerprints(snapshot) {
     valueRowDigests,
     relationshipDigests,
     strongScalarDigests,
+    streamRowDigests,
+    streamRelationshipDigests,
+    streamArities: new Set([...streamArities].sort((left, right) => left - right)),
   };
 }
 
@@ -1109,4 +1170,5 @@ export const inventoryTestApi = Object.freeze({
   semanticCallsite,
   buildPublicationFingerprints,
   publicationValueFingerprints,
+  publicationStreamFingerprints,
 });

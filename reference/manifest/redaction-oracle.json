@@ -3047,10 +3047,12 @@
     "boundaryDisposition": "159-bytes-allowed-160-bytes-rejected-at-every-offset"
   },
   "publicationFingerprintCensus": {
-    "schemaVersion": "reference-publication-fingerprints/v2",
-    "derivation": "Canonical rows/chunks plus key-independent typed value rows, every direct-value relationship pair, and collision-resistant string scalars; schema and aggregate-root metadata are excluded.",
+    "schemaVersion": "reference-publication-fingerprints/v3",
+    "derivation": "Canonical rows/chunks, key-independent typed value rows, and flattened typed scalar streams with order-independent row and pair relationships; collision-resistant strings are independently marked and schema/root metadata are excluded.",
     "minimumFragmentPolicy": {
       "directValueRelationshipArity": 2,
+      "streamRelationshipArity": 2,
+      "streamRowMinimumScalarCount": 2,
       "strongStringMinimumNormalizedCharacters": 12,
       "belowMinimumDisposition": "not-identifying-without-an-independent-marker"
     },
@@ -3066,7 +3068,11 @@
         "relationshipCount": 72,
         "relationshipRoot": "83c681a64d60120377b4c2346f5e102df1394f7aaa6f1172c42a1f8e61ee9036",
         "strongScalarCount": 5,
-        "strongScalarRoot": "070e0f67632fdaede222f49dba80deed5adcfd9211af093bd03240d707a0a70b"
+        "strongScalarRoot": "070e0f67632fdaede222f49dba80deed5adcfd9211af093bd03240d707a0a70b",
+        "streamRowCount": 3,
+        "streamRowRoot": "8cad3149fbcf0c93f0fbb8f0e8333f885a29ef7e6c0e33b938fcd3f1ec39dc56",
+        "streamRelationshipCount": 72,
+        "streamRelationshipRoot": "f17ab3d8e200719a226ed934a707a0ef347113bbfcaa79980b7c77b9a6d0ba07"
       },
       {
         "familyId": "artifacts",
@@ -3079,7 +3085,11 @@
         "relationshipCount": 4710,
         "relationshipRoot": "0043e63cb15d9422041bebd64f488794213a6aede981bed89db30784948610ab",
         "strongScalarCount": 462,
-        "strongScalarRoot": "75ecc38ba514baa8542380eb284ba6bb1774349996e73ea2fd5d1bdd40d27157"
+        "strongScalarRoot": "75ecc38ba514baa8542380eb284ba6bb1774349996e73ea2fd5d1bdd40d27157",
+        "streamRowCount": 112,
+        "streamRowRoot": "c8e0c519ee1cd6cfa2bdd3c686cc94895b1d8b73572a78660ffb7683fba6ee5a",
+        "streamRelationshipCount": 4961,
+        "streamRelationshipRoot": "d6c562a5f9732e29b969edbe4c5e7549cfee65a2c8c94932ad8e88200d3c0384"
       },
       {
         "familyId": "behaviors",
@@ -3092,7 +3102,11 @@
         "relationshipCount": 30,
         "relationshipRoot": "9d55f5b13b000e4ee1d495c5090e19befa060c1d569ed8aa790051d608f5ea1b",
         "strongScalarCount": 34,
-        "strongScalarRoot": "fd2f9834a478ed1783996c1f1cc2fb07303be95213110419ff0715d71e0f3f9a"
+        "strongScalarRoot": "fd2f9834a478ed1783996c1f1cc2fb07303be95213110419ff0715d71e0f3f9a",
+        "streamRowCount": 10,
+        "streamRowRoot": "aac206849232a53bf28d3cf954b0e81caccc22c1bc794dcca96ad6e945b3cc2f",
+        "streamRelationshipCount": 135,
+        "streamRelationshipRoot": "0122e2a479f5266de953c88afd9541881b451e85b00909acea49980c57b98f17"
       },
       {
         "familyId": "entrypoints",
@@ -3105,7 +3119,11 @@
         "relationshipCount": 1556,
         "relationshipRoot": "d191dc48122a6bef9f36eaf9fd108b984b61e70aca6f078820df6dc094a2b6a6",
         "strongScalarCount": 252,
-        "strongScalarRoot": "941872f13209b135b63a4793674e3e624b5f024a51a93a9d546ec4740bdd0d22"
+        "strongScalarRoot": "941872f13209b135b63a4793674e3e624b5f024a51a93a9d546ec4740bdd0d22",
+        "streamRowCount": 79,
+        "streamRowRoot": "3fa83160aefba93389eaf6271ca5b408ca43f0573bed420fea023d6a199e22ca",
+        "streamRelationshipCount": 1643,
+        "streamRelationshipRoot": "e733f256680e3a13180227e1e523590dbad9f7c490cd39fc9fd580af1da9a755"
       },
       {
         "familyId": "mutations",
@@ -3118,7 +3136,11 @@
         "relationshipCount": 6985,
         "relationshipRoot": "1c1f5a11ae110ca70675a3b8772be6c930b3d375e0c1993362d5c6b794cbab1c",
         "strongScalarCount": 1093,
-        "strongScalarRoot": "5aa12bb9eb7ff3b90d0be4cd126d2959242518c0fc276a6d7e3945e819273c4b"
+        "strongScalarRoot": "5aa12bb9eb7ff3b90d0be4cd126d2959242518c0fc276a6d7e3945e819273c4b",
+        "streamRowCount": 897,
+        "streamRowRoot": "2002640b537b208d5bbfca11e4e5e186812d954c1f2b4d48f397b716cc32a761",
+        "streamRelationshipCount": 7106,
+        "streamRelationshipRoot": "ac1300c1324e51fd5316bf28803466035e13ac6720efd46091062300b2acba23"
       },
       {
         "familyId": "authorities",
@@ -3131,7 +3153,11 @@
         "relationshipCount": 20,
         "relationshipRoot": "4dd1329c7454a57c4f2a4cadd9726282869db62c2478530777ec4859378cbb25",
         "strongScalarCount": 18,
-        "strongScalarRoot": "da5bf71f378a28c7adba4438962f261ac0b6725b2ce44f4fa9550724a0fdd849"
+        "strongScalarRoot": "da5bf71f378a28c7adba4438962f261ac0b6725b2ce44f4fa9550724a0fdd849",
+        "streamRowCount": 10,
+        "streamRowRoot": "f8a91e23083e45fcf23c1040543902163b60158c1c7523a94bfd13f7918eb394",
+        "streamRelationshipCount": 20,
+        "streamRelationshipRoot": "16497dad3953cee5790349dfdd3dad37dcbaf84ef334ce750e677bd2dfd885ea"
       },
       {
         "familyId": "transitions",
@@ -3144,7 +3170,11 @@
         "relationshipCount": 30,
         "relationshipRoot": "c0813673114b693da93365d4d769645cefeee71ba785a5e23765c2bc16006e18",
         "strongScalarCount": 23,
-        "strongScalarRoot": "30e20c7542da54eef3849f2bcc842279bb5c314a94f97394248100c21535c76d"
+        "strongScalarRoot": "30e20c7542da54eef3849f2bcc842279bb5c314a94f97394248100c21535c76d",
+        "streamRowCount": 5,
+        "streamRowRoot": "32a7820cf26213cba3a0abe7a1fadacea6e9a022d2be47408e5a5323e3d4d423",
+        "streamRelationshipCount": 46,
+        "streamRelationshipRoot": "4cb8999a8fcff6ec0f94eb6339eb30f4892819449946a339bed3cc02e91afdbd"
       },
       {
         "familyId": "assumptions",
@@ -3157,7 +3187,11 @@
         "relationshipCount": 48,
         "relationshipRoot": "9831295da843e6d318919d67c369c383d197dcad912f380055f64d55b288223a",
         "strongScalarCount": 19,
-        "strongScalarRoot": "373429015cf890d4680678ca6bc72032f0a73106997a0de68423c5a795fb4500"
+        "strongScalarRoot": "373429015cf890d4680678ca6bc72032f0a73106997a0de68423c5a795fb4500",
+        "streamRowCount": 7,
+        "streamRowRoot": "4acf564bd0d919bfce49c66e6e6bd3577ee2c6f5a78bc97fa7d9b9a582e97e1c",
+        "streamRelationshipCount": 57,
+        "streamRelationshipRoot": "eb1dd0117a5c60c794399ee788e1140d4202a5ea5f025ddefc7230c6013ea4f1"
       },
       {
         "familyId": "redaction-oracle",
@@ -3170,9 +3204,13 @@
         "relationshipCount": 1809,
         "relationshipRoot": "7707d98cf391f56d0947e5c881cdcf5b8d7323e0e26c4f738f335da6158caf62",
         "strongScalarCount": 1259,
-        "strongScalarRoot": "7ee3110cc4ccde9f62c62c46fe72dd8650befbef1a519220eaad62784da5532e"
+        "strongScalarRoot": "7ee3110cc4ccde9f62c62c46fe72dd8650befbef1a519220eaad62784da5532e",
+        "streamRowCount": 117,
+        "streamRowRoot": "6f61809d6fa4b8eadfb7e9ea8004362e56336e472e1000246dfc16e277aab6da",
+        "streamRelationshipCount": 50210,
+        "streamRelationshipRoot": "80adf373a275b3acdd7b988562a62aa5bff25bac4bf7de9677ca773ceb87cf57"
       }
     ],
-    "fingerprintRoot": "ca1a8265f976683bf7e8865c49ef1f1c831341d6b0b386915ac49741576c93b9"
+    "fingerprintRoot": "f64f9fdce25b58b39bb90033c82cca0c5c9414b3c4890bbe0f6416f02764daee"
   }
 }

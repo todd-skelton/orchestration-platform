@@ -22,6 +22,15 @@ export declare function buildPublicationFingerprints(snapshot: any): {
   valueRowDigests: Set<string>;
   relationshipDigests: Set<string>;
   strongScalarDigests: Set<string>;
+  streamRowDigests: Set<string>;
+  streamRelationshipDigests: Set<string>;
+  streamArities: Set<number>;
+};
+export declare function publicationStreamFingerprints(values: unknown[]): {
+  scalarCount: number;
+  streamRowDigest?: string;
+  streamRelationshipDigests: string[];
+  strongScalarDigests: string[];
 };
 export declare function publicationValueFingerprints(value: any): {
   valueRowDigest?: string;
@@ -39,6 +48,12 @@ export declare const inventoryTestApi: Readonly<{
   publicationValueFingerprints(value: any): {
     valueRowDigest?: string;
     relationshipDigests: string[];
+    strongScalarDigests: string[];
+  };
+  publicationStreamFingerprints(values: unknown[]): {
+    scalarCount: number;
+    streamRowDigest?: string;
+    streamRelationshipDigests: string[];
     strongScalarDigests: string[];
   };
 }>;

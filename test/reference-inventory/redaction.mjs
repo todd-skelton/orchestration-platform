@@ -10,6 +10,7 @@ import { resolvePnpmLauncher } from "../../scripts/pnpm-launcher.mjs";
 import {
   buildPublicationFingerprints,
   loadInventory,
+  publicationStreamFingerprints,
   publicationValueFingerprints,
   validateInventory,
 } from "./inventory.mjs";
@@ -199,6 +200,102 @@ function canonicalTokensFromText(value) {
   return value.match(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null/gi) ?? [];
 }
 
+function decodeQuotedScalar(token) {
+  if (token.startsWith('"')) {
+    try {
+      return JSON.parse(token);
+    } catch {
+      return undefined;
+    }
+  }
+  const quote = token[0];
+  if (quote !== "'" && quote !== "`") return undefined;
+  if (quote === "`" && token.includes("${")) return undefined;
+  let result = "";
+  for (let index = 1; index < token.length - 1; index += 1) {
+    const character = token[index];
+    if (character !== "\\") {
+      result += character;
+      continue;
+    }
+    index += 1;
+    if (index >= token.length - 1) return undefined;
+    const escaped = token[index];
+    const simple = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", 0: "\0" };
+    if (Object.hasOwn(simple, escaped)) {
+      result += simple[escaped];
+    } else if (escaped === "u" || escaped === "x") {
+      const length = escaped === "u" ? 4 : 2;
+      const digits = token.slice(index + 1, index + 1 + length);
+      if (!new RegExp(`^[a-f0-9]{${length}}$`, "i").test(digits)) return undefined;
+      result += String.fromCodePoint(Number.parseInt(digits, 16));
+      index += length;
+    } else {
+      result += escaped;
+    }
+  }
+  return result;
+}
+
+function scalarValuesFromText(text) {
+  const values = [];
+  const pattern =
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?|\b(?:true|false|null)\b/gi;
+  for (const match of text.matchAll(pattern)) {
+    const token = match[0];
+    const start = match.index;
+    const end = start + token.length;
+    if (/^\s*:/.test(text.slice(end))) continue;
+    if (
+      /^[-\d]/.test(token) &&
+      ((start > 0 && /[a-z0-9_$]/i.test(text[start - 1])) ||
+        (end < text.length && /[a-z0-9_$]/i.test(text[end])))
+    )
+      continue;
+    if (/^["'`]/.test(token)) {
+      const decoded = decodeQuotedScalar(token);
+      if (decoded !== undefined) values.push(decoded);
+    } else if (/^true$/i.test(token)) {
+      values.push(true);
+    } else if (/^false$/i.test(token)) {
+      values.push(false);
+    } else if (/^null$/i.test(token)) {
+      values.push(null);
+    } else {
+      const number = Number(token);
+      if (Number.isFinite(number)) values.push(number);
+    }
+  }
+  return values;
+}
+
+function streamFingerprintFinding(text, oracle) {
+  const values = scalarValuesFromText(text);
+  for (const value of values) {
+    const fingerprints = publicationStreamFingerprints([value]);
+    if (
+      fingerprints.strongScalarDigests.some((digestValue) =>
+        oracle.strongScalarDigests.has(digestValue),
+      )
+    )
+      return true;
+  }
+  for (let index = 0; index + 1 < values.length; index += 1) {
+    const fingerprints = publicationStreamFingerprints(values.slice(index, index + 2));
+    if (
+      fingerprints.streamRelationshipDigests.some((digestValue) =>
+        oracle.streamRelationshipDigests.has(digestValue),
+      )
+    )
+      return true;
+  }
+  if (oracle.streamArities.has(values.length)) {
+    const fingerprints = publicationStreamFingerprints(values);
+    if (oracle.streamRowDigests.has(fingerprints.streamRowDigest)) return true;
+  }
+  return false;
+}
+
 function digestParts(domain, parts) {
   const hash = createHash("sha256").update(`${domain}\0`);
   for (const part of parts) hash.update(part).update("\0");
@@ -236,6 +333,7 @@ function publicationFingerprintFinding(text, oracle) {
   } catch {
     // Canonical chunks below intentionally cover valid fragments and non-JSON bundles.
   }
+  if (streamFingerprintFinding(text, oracle)) return true;
   const tokens = canonicalTokensFromText(text);
   for (let offset = 0; offset + 6 <= tokens.length; offset += 1) {
     if (
@@ -258,14 +356,25 @@ function containsInventoryMaterial(value, publicationOracle) {
 }
 
 function buildPublicationOracle(snapshot) {
-  const { rowDigests, chunkDigests, valueRowDigests, relationshipDigests, strongScalarDigests } =
-    buildPublicationFingerprints(snapshot);
+  const {
+    rowDigests,
+    chunkDigests,
+    valueRowDigests,
+    relationshipDigests,
+    strongScalarDigests,
+    streamRowDigests,
+    streamRelationshipDigests,
+    streamArities,
+  } = buildPublicationFingerprints(snapshot);
   return {
     rowDigests,
     chunkDigests,
     valueRowDigests,
     relationshipDigests,
     strongScalarDigests,
+    streamRowDigests,
+    streamRelationshipDigests,
+    streamArities,
   };
 }
 
