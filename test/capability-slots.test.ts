@@ -26,6 +26,14 @@ async function slot(root: string, source: string) {
   return path;
 }
 
+function invoke(root: string) {
+  return spawnSync(
+    process.execPath,
+    [resolve(root, "scripts/capability-not-implemented.mjs"), "ISS-001", "inventory:check"],
+    { cwd: root, encoding: "utf8" },
+  );
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -86,5 +94,27 @@ describe("capability slots", () => {
       { cwd: root, encoding: "utf8" },
     );
     expect(result.status).toBe(5);
+  });
+
+  test.each([
+    ["lowercase owner", "iss-001", "inventory%3Acheck.mjs"],
+    ["lowercase encoding", "ISS-001", "inventory%3acheck.mjs"],
+    ["uppercase extension", "ISS-001", "inventory%3Acheck.MJS"],
+  ])("refuses a noncanonical %s slot", async (_name, owner, name) => {
+    const root = await fixture();
+    const path = resolve(root, "test/capability-slots", owner, name);
+    await mkdir(resolve(path, ".."), { recursive: true });
+    await writeFile(path, "process.exit(0);\n");
+    expect(invoke(root).status).toBe(5);
+  });
+
+  test("refuses a symlinked owner directory", async () => {
+    const root = await fixture();
+    const target = resolve(root, "external");
+    await mkdir(target, { recursive: true });
+    await writeFile(resolve(target, "inventory%3Acheck.mjs"), "process.exit(0);\n");
+    await mkdir(resolve(root, "test/capability-slots"), { recursive: true });
+    await symlink(target, resolve(root, "test/capability-slots/ISS-001"), "dir");
+    expect(invoke(root).status).toBe(5);
   });
 });
