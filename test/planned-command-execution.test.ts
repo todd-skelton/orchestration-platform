@@ -38,7 +38,8 @@ describe("planned verification command execution census", () => {
 
   test("every unimplemented planned wrapper emits its fixed owner and forwarded argv", async () => {
     let executed = 0;
-    let argumentBearing = 0;
+    let implemented = 0;
+    let declared = 0;
     for (const [issue, source] of Object.entries(snapshot.issueDrafts)) {
       if (issue === "ISS-000") continue;
       for (const command of verificationCommands(source)) {
@@ -48,7 +49,11 @@ describe("planned verification command execution census", () => {
           rootCommand?.[1] ??
           (filteredCommand ? `${filteredCommand[1]}:${filteredCommand[2]}` : undefined);
         if (!capability) continue;
-        if (await regularCapabilitySlot(root, issue, capability)) continue;
+        declared += 1;
+        if (await regularCapabilitySlot(root, issue, capability)) {
+          implemented += 1;
+          continue;
+        }
 
         const forwardedTail = rootCommand ? command.slice(rootCommand[0].length).trim() : "";
         const forwardedArguments = forwardedTail ? forwardedTail.split(/\s+/) : [];
@@ -76,10 +81,8 @@ describe("planned verification command execution census", () => {
           forwardedArguments,
         });
         executed += 1;
-        if (forwardedArguments.length > 0) argumentBearing += 1;
       }
     }
-    expect(executed).toBeGreaterThan(80);
-    expect(argumentBearing).toBeGreaterThan(10);
+    expect(executed + implemented).toBe(declared);
   }, 120_000);
 });

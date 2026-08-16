@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { regularCapabilitySlot } from "../scripts/capability-slots.mjs";
 
 const roots: string[] = [];
 
@@ -26,6 +27,23 @@ async function slot(root: string, source: string) {
   return path;
 }
 
+async function slotCount(root: string, capabilities: string[]) {
+  for (const capability of capabilities) {
+    const path = resolve(
+      root,
+      "test/capability-slots/ISS-001",
+      `${encodeURIComponent(capability)}.mjs`,
+    );
+    await mkdir(resolve(path, ".."), { recursive: true });
+    await writeFile(path, "throw new Error('slot body must not execute');\n");
+  }
+  let count = 0;
+  for (const capability of ["one", "two", "three", "four"]) {
+    if (await regularCapabilitySlot(root, "ISS-001", capability)) count += 1;
+  }
+  return count;
+}
+
 function invoke(root: string) {
   return spawnSync(
     process.execPath,
@@ -39,6 +57,18 @@ afterEach(async () => {
 });
 
 describe("capability slots", () => {
+  test.each([
+    ["no", [], 0],
+    ["two", ["one", "two"], 2],
+    ["three", ["one", "two", "three"], 3],
+    ["all", ["one", "two", "three", "four"], 4],
+  ])(
+    "recognizes %s implemented slots without executing their bodies",
+    async (_name, capabilities, expected) => {
+      const root = await fixture();
+      await expect(slotCount(root, capabilities)).resolves.toBe(expected);
+    },
+  );
   test("runs an exact implemented slot with forwarded argv and exit status", async () => {
     const root = await fixture();
     await slot(
