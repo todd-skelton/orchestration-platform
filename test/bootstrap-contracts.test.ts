@@ -12,7 +12,7 @@ function mutant(): any {
 
 beforeAll(async () => {
   baseline = await loadBootstrapSnapshot();
-});
+}, 30_000);
 
 describe("bootstrap manifest graph", () => {
   test("matches the authoritative package, build, and handler censuses", async () => {
@@ -31,6 +31,12 @@ describe("bootstrap manifest graph", () => {
       (snapshot: any) => {
         snapshot.manifests["@orchestration-platform/credentials"].exports["./build"] =
           "./build/compose.ts";
+      },
+    ],
+    [
+      "credential private build files allowlist",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/credentials"].files = ["src", "build"];
       },
     ],
     [
@@ -64,6 +70,15 @@ describe("bootstrap manifest graph", () => {
         snapshot.buildConfiguration.options.sourcemap = true;
       },
     ],
+    [
+      "alternate esbuild plugin",
+      (snapshot: any) => {
+        snapshot.buildScriptSource = snapshot.buildScriptSource.replace(
+          "plugins: [brokerComposeResolver(target.id)]",
+          "plugins: [brokerComposeResolver(target.id), alternatePlugin]",
+        );
+      },
+    ],
     ["non-empty module row", (snapshot: any) => snapshot.moduleManifest.push({ id: "planning" })],
     [
       "missing OS smoke lane",
@@ -72,6 +87,27 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     ["missing CLI handler", (snapshot: any) => snapshot.cliRegistry.pop()],
+    [
+      "dynamic CLI registry discovery",
+      (snapshot: any) => {
+        snapshot.cliRegistrySource += '\nvoid import("./dynamic-handler.mjs");\n';
+      },
+    ],
+    [
+      "extra unregistered handler file",
+      (snapshot: any) => {
+        snapshot.handlerFiles.push("packages/state/src/command-handler.mjs");
+        snapshot.handlerFiles.sort();
+      },
+    ],
+    [
+      "missing registered handler file",
+      (snapshot: any) => {
+        snapshot.handlerFiles = snapshot.handlerFiles.filter(
+          (file: string) => file !== "packages/config/src/command-handler.mjs",
+        );
+      },
+    ],
     [
       "duplicate CLI family",
       (snapshot: any) => {
@@ -109,6 +145,52 @@ describe("bootstrap manifest graph", () => {
       "extra host-custody command",
       (snapshot: any) => {
         snapshot.hostRegistry[0].commands.push({ argv: ["clean"], required: [], optional: [] });
+      },
+    ],
+    [
+      "private build tarball path",
+      (snapshot: any) => {
+        snapshot.credentialPackageInventory.packFiles.push("build/compose.ts");
+        snapshot.credentialPackageInventory.packFiles.sort();
+      },
+    ],
+    [
+      "installed source map",
+      (snapshot: any) => {
+        snapshot.credentialPackageInventory.installedFiles.push("src/index.js.map");
+        snapshot.credentialPackageInventory.installedFiles.sort();
+      },
+    ],
+    [
+      "installed private bytes",
+      (snapshot: any) => {
+        snapshot.credentialPackageInventory.forbiddenByteMatches.push("src/index.ts");
+      },
+    ],
+    [
+      "tarball private bytes",
+      (snapshot: any) => {
+        snapshot.credentialPackageInventory.tarballForbiddenByteMatches.push("src/index.ts");
+      },
+    ],
+    [
+      "installed private export",
+      (snapshot: any) => {
+        snapshot.credentialPackageInventory.installedManifest.exports["./build"] =
+          "./build/compose.ts";
+      },
+    ],
+    [
+      "successful deep runtime import",
+      (snapshot: any) => {
+        snapshot.credentialPackageInventory.deepImports[0].status = 0;
+        snapshot.credentialPackageInventory.deepImports[0].stderr = "";
+      },
+    ],
+    [
+      "changed repeated tarball bytes",
+      (snapshot: any) => {
+        snapshot.credentialPackageInventory.repeatedTarballDigest = "0".repeat(64);
       },
     ],
   ])("rejects the %s mutant", async (_name, mutate) => {

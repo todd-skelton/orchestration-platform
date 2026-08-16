@@ -92,7 +92,7 @@ function parseDag(source, epicKey) {
   return result;
 }
 
-function verificationCommands(source) {
+export function verificationCommands(source) {
   const section = source.match(/## Verification plan\r?\n([\s\S]*?)(?=\r?\n## |$)/)?.[1] ?? "";
   const commands = [];
   for (const match of section.matchAll(/`([^`]*pnpm[^`]*)`/g)) commands.push(match[1].trim());

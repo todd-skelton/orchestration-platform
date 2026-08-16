@@ -1,8 +1,14 @@
-import { access, readFile, readdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const execFileAsync = promisify(execFile);
 
 export const packageContract = Object.freeze([
   ["@orchestration-platform/contracts", "packages/contracts", "ISS-002", ["."]],
@@ -131,6 +137,32 @@ const expectedCliFamilies = [
   ["credential", "@orchestration-platform/credentials", "ISS-032", 3],
 ];
 
+const expectedRegistryImports = [
+  ["config", "@orchestration-platform/config"],
+  ["session", "@orchestration-platform/session"],
+  ["worker", "@orchestration-platform/dispatch"],
+  ["review", "@orchestration-platform/review"],
+  ["journal", "@orchestration-platform/journal"],
+  ["project", "@orchestration-platform/adapter-sdk"],
+  ["release", "@orchestration-platform/release"],
+  ["cycle", "@orchestration-platform/engine"],
+  ["supervisor", "@orchestration-platform/supervisor"],
+  ["credential", "@orchestration-platform/credentials"],
+];
+
+const commandHandlerOwners = [
+  "packages/config",
+  "packages/session",
+  "packages/dispatch",
+  "packages/review",
+  "packages/journal",
+  "packages/adapter-sdk",
+  "packages/release",
+  "packages/engine",
+  "packages/supervisor",
+  "packages/credentials",
+];
+
 const expectedCliCommands = [
   "config validate||",
   "config paths||--reveal:false",
@@ -200,6 +232,220 @@ function equal(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+async function pnpmEntrypoint() {
+  if (process.env.npm_execpath) return [process.env.npm_execpath];
+  const candidates = [
+    resolve(dirname(process.execPath), "node_modules/corepack/dist/corepack.js"),
+    resolve(dirname(process.execPath), "../lib/node_modules/corepack/dist/corepack.js"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return [candidate, "pnpm"];
+    } catch {}
+  }
+  fail("cannot locate the pinned pnpm entrypoint for package inventory verification");
+}
+
+async function runPnpm(args, cwd) {
+  const result = await execFileAsync(process.execPath, [...(await pnpmEntrypoint()), ...args], {
+    cwd,
+    windowsHide: true,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return result.stdout;
+}
+
+async function listFiles(directory, prefix = "") {
+  const result = [];
+  const entries = await readdir(directory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory())
+      result.push(...(await listFiles(resolve(directory, entry.name), path)));
+    else if (entry.isFile()) result.push(path);
+  }
+  return result;
+}
+
+async function hash(path) {
+  return createHash("sha256")
+    .update(await readFile(path))
+    .digest("hex");
+}
+
+async function readTarballFiles(path) {
+  const archive = gunzipSync(await readFile(path));
+  const files = new Map();
+  for (let offset = 0; offset + 512 <= archive.length;) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const text = (start, length) =>
+      header
+        .subarray(start, start + length)
+        .toString("utf8")
+        .replace(/\0.*$/s, "");
+    const name = [text(345, 155), text(0, 100)].filter(Boolean).join("/");
+    const size = Number.parseInt(text(124, 12).trim() || "0", 8);
+    if (!Number.isSafeInteger(size) || size < 0) fail("package tarball has an invalid file size");
+    const type = text(156, 1);
+    offset += 512;
+    if (type === "" || type === "0") {
+      const publicPath = name.replace(/^package\//, "");
+      if (!publicPath || files.has(publicPath)) fail("package tarball has duplicate file paths");
+      files.set(publicPath, archive.subarray(offset, offset + size));
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+function parsePackResult(stdout) {
+  const start = stdout.indexOf("{");
+  if (start < 0) fail("pnpm pack did not emit a JSON inventory");
+  return JSON.parse(stdout.slice(start));
+}
+
+async function collectCredentialPackageInventory(root) {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "orchestration-package-inventory-"));
+  try {
+    const firstDestination = resolve(temporaryRoot, "pack-a");
+    const secondDestination = resolve(temporaryRoot, "pack-b");
+    const first = parsePackResult(
+      await runPnpm(
+        [
+          "--filter",
+          "@orchestration-platform/credentials",
+          "pack",
+          "--pack-destination",
+          firstDestination,
+          "--json",
+        ],
+        root,
+      ),
+    );
+    const second = parsePackResult(
+      await runPnpm(
+        [
+          "--filter",
+          "@orchestration-platform/credentials",
+          "pack",
+          "--pack-destination",
+          secondDestination,
+          "--json",
+        ],
+        root,
+      ),
+    );
+    const tarballDigest = await hash(first.filename);
+    const repeatedTarballDigest = await hash(second.filename);
+    const tarballFiles = await readTarballFiles(first.filename);
+
+    await writeFile(
+      resolve(temporaryRoot, "package.json"),
+      `${JSON.stringify({ name: "inventory-consumer", private: true, type: "module" })}\n`,
+    );
+    await runPnpm(["add", "--offline", "--ignore-scripts", first.filename], temporaryRoot);
+
+    const installedRoot = resolve(
+      temporaryRoot,
+      "node_modules/@orchestration-platform/credentials",
+    );
+    const installedFiles = await listFiles(installedRoot);
+    const forbiddenByteMatches = [];
+    for (const file of installedFiles) {
+      const text = (await readFile(resolve(installedRoot, file))).toString("utf8");
+      if (
+        text.includes("#broker-compose") ||
+        text.includes("packages/credentials/build") ||
+        text.includes("composeBrokerClient") ||
+        text.includes("sourceMappingURL")
+      ) {
+        forbiddenByteMatches.push(file);
+      }
+    }
+    const tarballForbiddenByteMatches = [];
+    for (const [file, bytes] of tarballFiles) {
+      const text = bytes.toString("utf8");
+      if (
+        text.includes("#broker-compose") ||
+        text.includes("packages/credentials/build") ||
+        text.includes("composeBrokerClient") ||
+        text.includes("sourceMappingURL")
+      ) {
+        tarballForbiddenByteMatches.push(file);
+      }
+    }
+
+    const publicImport = await execFileAsync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        'process.stdout.write(import.meta.resolve("@orchestration-platform/credentials"))',
+      ],
+      { cwd: temporaryRoot, windowsHide: true },
+    ).then(
+      () => ({ status: 0, stderr: "" }),
+      (error) => ({ status: error.code ?? 1, stderr: error.stderr ?? error.message }),
+    );
+    const deepImports = [];
+    for (const specifier of [
+      "@orchestration-platform/credentials/build/compose",
+      "@orchestration-platform/credentials/build/compose.ts",
+    ]) {
+      deepImports.push(
+        await execFileAsync(
+          process.execPath,
+          [
+            "--input-type=module",
+            "--eval",
+            `process.stdout.write(import.meta.resolve(${JSON.stringify(specifier)}))`,
+          ],
+          { cwd: temporaryRoot, windowsHide: true },
+        ).then(
+          () => ({ specifier, status: 0, stderr: "" }),
+          (error) => ({
+            specifier,
+            status: error.code ?? 1,
+            stderr: error.stderr ?? error.message,
+          }),
+        ),
+      );
+    }
+
+    return {
+      packFiles: first.files.map(({ path }) => path).sort(),
+      repeatedPackFiles: second.files.map(({ path }) => path).sort(),
+      tarballFiles: [...tarballFiles.keys()].sort(),
+      installedFiles,
+      installedManifest: JSON.parse(await readFile(resolve(installedRoot, "package.json"), "utf8")),
+      forbiddenByteMatches,
+      tarballForbiddenByteMatches,
+      tarballDigest,
+      repeatedTarballDigest,
+      publicImport,
+      deepImports,
+    };
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+async function findHandlerFiles(root) {
+  const files = [];
+  for (const [, packagePath] of packageContract) {
+    const sourceRoot = resolve(root, packagePath, "src");
+    for (const file of await listFiles(sourceRoot)) {
+      if (file.endsWith("command-handler.mjs") || file.endsWith("command-handler.d.mts")) {
+        files.push(`${packagePath}/src/${file}`);
+      }
+    }
+  }
+  return files.sort();
+}
+
 export async function loadBootstrapSnapshot(root = defaultRoot) {
   const manifests = {};
   for (const [name, path] of packageContract) {
@@ -214,6 +460,11 @@ export async function loadBootstrapSnapshot(root = defaultRoot) {
   const cliRegistryUrl = `${pathToFileURL(resolve(root, "packages/cli/src/registry.mjs")).href}?census=${Date.now()}`;
   const bootstrapRegistryUrl = `${pathToFileURL(resolve(root, "bootstrap/src/command-registry.mjs")).href}?census=${Date.now()}`;
   const hostRegistryUrl = `${pathToFileURL(resolve(root, "packages/host-custody/src/bootstrap-command-registry.mjs")).href}?census=${Date.now()}`;
+  const handlerFiles = await findHandlerFiles(root);
+  const handlerSources = {};
+  for (const file of handlerFiles.filter((file) => file.endsWith(".mjs"))) {
+    handlerSources[file] = await readFile(resolve(root, file), "utf8");
+  }
   return {
     rootPackage: JSON.parse(await readFile(resolve(root, "package.json"), "utf8")),
     workspace: await readFile(resolve(root, "pnpm-workspace.yaml"), "utf8"),
@@ -226,6 +477,14 @@ export async function loadBootstrapSnapshot(root = defaultRoot) {
     moduleManifestSource: await readFile(resolve(root, "modules/manifest.json"), "utf8"),
     moduleManifest: JSON.parse(await readFile(resolve(root, "modules/manifest.json"), "utf8")),
     workflow: await readFile(resolve(root, ".github/workflows/bootstrap.yml"), "utf8"),
+    cliRegistrySource: await readFile(resolve(root, "packages/cli/src/registry.mjs"), "utf8"),
+    buildScriptSource: await readFile(
+      resolve(root, "scripts/build/private-compositions.mjs"),
+      "utf8",
+    ),
+    handlerFiles,
+    handlerSources,
+    credentialPackageInventory: await collectCredentialPackageInventory(root),
     cliRegistry: (await import(cliRegistryUrl)).commandRegistry,
     bootstrapRegistry: (await import(bootstrapRegistryUrl)).bootstrapCommandRegistry,
     hostRegistry: (await import(hostRegistryUrl)).hostCustodyBootstrapCommandRegistry,
@@ -272,6 +531,130 @@ function registrySignatures(registry) {
   );
 }
 
+function validateCliRegistrySource(source) {
+  const expectedImports = expectedRegistryImports
+    .map(
+      ([binding, moduleName]) =>
+        `import { commandHandlerRegistration as ${binding} } from "${moduleName}";`,
+    )
+    .join("\n");
+  const expectedBindings = expectedRegistryImports.map(([binding]) => `  ${binding},`).join("\n");
+  const expectedSource = `${expectedImports}\n\nexport const commandRegistry = Object.freeze([\n${expectedBindings}\n]);\n`;
+  if (source.replace(/\r\n/g, "\n") !== expectedSource) {
+    fail("CLI registry is not one literal frozen static handler list");
+  }
+}
+
+function validateHandlerSources(handlerFiles, handlerSources) {
+  const expectedFiles = commandHandlerOwners
+    .flatMap((path) => [`${path}/src/command-handler.d.mts`, `${path}/src/command-handler.mjs`])
+    .sort();
+  if (!equal(handlerFiles, expectedFiles)) fail("command handler file census mismatch");
+  for (const file of expectedFiles.filter((path) => path.endsWith(".mjs"))) {
+    const source = handlerSources[file];
+    if (typeof source !== "string") fail(`missing command handler source ${file}`);
+    const normalized = source.replace(/\r\n/g, "\n");
+    if (
+      !normalized.startsWith("export const commandHandlerRegistration = Object.freeze({\n") ||
+      !normalized.endsWith("});\n") ||
+      (normalized.match(/\bexport\s+const\b/g) ?? []).length !== 1 ||
+      (normalized.match(/\bObject\.freeze\s*\(/g) ?? []).length !== 1 ||
+      /\b(?:import|require)\s*\(|\bawait\b|=>|\bfunction\b/.test(normalized)
+    ) {
+      fail(`${file} contains dynamic registration or discovery statements`);
+    }
+  }
+}
+
+function validateBuildScriptSource(source) {
+  const normalized = source.replace(/\r\n/g, "\n");
+  const expectedResolver = `function brokerComposeResolver(targetId) {
+  return {
+    name: "broker-compose-closed-resolver",
+    setup(buildContext) {
+      buildContext.onResolve({ filter: /^#broker-compose$/ }, () => {
+        if (!aliasTargets.has(targetId)) {
+          return { errors: [{ text: \`#broker-compose is forbidden for target \${targetId}\` }] };
+        }
+        return { path: brokerCompositionPath };
+      });
+    },
+  };
+}`;
+  const expectedInvocation = `const result = await build({
+    ...options,
+    absWorkingDir: repositoryRoot,
+    entryPoints: [entryPoint],
+    outfile: output,
+    write: false,
+    metafile: true,
+    plugins: [brokerComposeResolver(target.id)],
+    logLevel: "silent",
+  });`;
+  if (
+    !normalized.includes(expectedResolver) ||
+    !normalized.includes(expectedInvocation) ||
+    (normalized.match(/\bbuild\s*\(/g) ?? []).length !== 1 ||
+    (normalized.match(/\.onResolve\s*\(/g) ?? []).length !== 1 ||
+    (normalized.match(/\.onLoad\s*\(/g) ?? []).length !== 0 ||
+    (normalized.match(/\bplugins\s*:/g) ?? []).length !== 1 ||
+    /\bimport\s*\(/.test(normalized)
+  ) {
+    fail("private build must register exactly the broker-compose resolver plugin");
+  }
+}
+
+function validateCredentialPackageInventory(inventory) {
+  const expectedFiles = [
+    "package.json",
+    "src/command-handler.d.mts",
+    "src/command-handler.mjs",
+    "src/index.ts",
+  ];
+  if (
+    !equal(inventory.packFiles, expectedFiles) ||
+    !equal(inventory.repeatedPackFiles, expectedFiles) ||
+    !equal(inventory.tarballFiles, expectedFiles) ||
+    !equal(inventory.installedFiles, expectedFiles)
+  ) {
+    fail("credential package tarball/installed file census mismatch");
+  }
+  if (
+    inventory.packFiles.some((path) => /(^|\/)(build|dist)(\/|$)|\.map$/i.test(path)) ||
+    inventory.installedFiles.some((path) => /(^|\/)(build|dist)(\/|$)|\.map$/i.test(path))
+  ) {
+    fail("credential package contains private build, distribution, or source-map paths");
+  }
+  if (
+    inventory.forbiddenByteMatches.length !== 0 ||
+    inventory.tarballForbiddenByteMatches.length !== 0
+  ) {
+    fail("credential package installed/tarball bytes contain private composition material");
+  }
+  if (
+    inventory.tarballDigest !== inventory.repeatedTarballDigest ||
+    !/^[a-f0-9]{64}$/.test(inventory.tarballDigest)
+  ) {
+    fail("credential package tarball bytes are nondeterministic");
+  }
+  if (
+    !equal(inventory.installedManifest.files, ["src"]) ||
+    !equal(Object.keys(inventory.installedManifest.exports), ["."]) ||
+    inventory.installedManifest.imports
+  ) {
+    fail("installed credential package manifest widens files, exports, or runtime imports");
+  }
+  if (inventory.publicImport.status !== 0) fail("installed credential package public export fails");
+  if (
+    inventory.deepImports.length !== 2 ||
+    inventory.deepImports.some(
+      (result) => result.status === 0 || !result.stderr.includes("ERR_PACKAGE_PATH_NOT_EXPORTED"),
+    )
+  ) {
+    fail("installed credential package admits a private runtime/deep import");
+  }
+}
+
 export async function validateBootstrapSnapshot(snapshot) {
   if (
     snapshot.rootPackage.packageManager !== "pnpm@11.22.0" ||
@@ -307,6 +690,8 @@ export async function validateBootstrapSnapshot(snapshot) {
     if (manifest.name !== name || manifest.version !== "0.0.0" || manifest.type !== "module") {
       fail(`${name} identity mismatch`);
     }
+    const expectedFiles = name === "@orchestration-platform/cli" ? ["src", "bin"] : ["src"];
+    if (!equal(manifest.files, expectedFiles)) fail(`${name} package files census mismatch`);
     if (!equal(Object.keys(manifest.exports), exportKeys)) fail(`${name} export census mismatch`);
     if (manifest.imports || manifest.exports["#broker-compose"])
       fail(`${name} exposes private alias`);
@@ -342,11 +727,15 @@ export async function validateBootstrapSnapshot(snapshot) {
   if (!equal(snapshot.buildConfiguration, expectedBuildConfiguration)) {
     fail("private composition target/options contract mismatch");
   }
+  validateBuildScriptSource(snapshot.buildScriptSource);
   if (!Array.isArray(snapshot.moduleManifest) || snapshot.moduleManifest.length !== 0) {
     fail("bootstrap module manifest must be the exact empty list");
   }
   if (snapshot.moduleManifestSource !== "[]\n") fail("bootstrap module manifest bytes mismatch");
   if (snapshot.workflow !== expectedWorkflow) fail("three-OS bootstrap workflow mismatch");
+  validateCliRegistrySource(snapshot.cliRegistrySource);
+  validateHandlerSources(snapshot.handlerFiles, snapshot.handlerSources);
+  validateCredentialPackageInventory(snapshot.credentialPackageInventory);
   assertRegistry(snapshot.cliRegistry, expectedCliFamilies, "CLI");
   if (!equal(registrySignatures(snapshot.cliRegistry), expectedCliCommands)) {
     fail("CLI command/flag census mismatch");
