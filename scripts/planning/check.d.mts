@@ -4,6 +4,7 @@ export interface PlanningSnapshot {
   epicDrafts: Record<string, string>;
   rootPackage: Record<string, any>;
   packageManifests: Record<string, Record<string, any>>;
+  capabilitySlots: Array<Record<string, any>>;
 }
 
 export declare function parseFrontmatter(source: string, file: string): Record<string, any>;

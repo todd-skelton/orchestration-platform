@@ -106,6 +106,19 @@ describe("planning contract", () => {
         snapshot.rootPackage.scripts["unowned:command"] = "node nowhere.mjs";
       },
     ],
+    [
+      "extra capability slot",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.capabilitySlots.push({
+          issue: "ISS-001",
+          name: "extra.mjs",
+          isDirectory: true,
+          directorySymlink: false,
+          isFile: true,
+          isSymbolicLink: false,
+        });
+      },
+    ],
   ])("rejects the %s mutant", (_name, mutate) => {
     const snapshot = mutant();
     mutate(snapshot);
