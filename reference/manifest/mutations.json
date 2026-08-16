@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "reference-mutation-census/v1",
+  "candidateCount": 887,
+  "candidateRoot": "6fb36afcf05336b3a6c7dd0666c9e498139872d3a91340b66ecfba680c62ec04",
+  "mutationGroups": [
+    {
+      "mutationGroupId": "mutation-group-01",
+      "candidateKind": "dynamic-invocation",
+      "callsiteCount": 279,
+      "callsiteRoot": "0aacfa8673e4d28f321ef42afe7c5c8f124c3122a0cb899be1ca24139ca39182",
+      "authorityId": "authority-process-table",
+      "authorizingObservationId": "observation-exact-process-identity",
+      "failureModes": ["dynamic-target-unresolved", "partial-launch"],
+      "recoveryTransitionId": "transition-refuse-before-mutation",
+      "idempotency": "new-observation-required",
+      "classification": "platform-mechanism"
+    },
+    {
+      "mutationGroupId": "mutation-group-02",
+      "candidateKind": "fixture-local-write",
+      "callsiteCount": 443,
+      "callsiteRoot": "3a8f65f934974b646638954996f8a6ca77771839cc08ba45d7a608eed8190c9f",
+      "authorityId": "authority-test-fixture",
+      "authorizingObservationId": "observation-fixture-confinement",
+      "failureModes": ["fixture-escape", "partial-write"],
+      "recoveryTransitionId": "transition-remove-fixture",
+      "idempotency": "remove-then-recreate",
+      "classification": "historical-compatibility"
+    },
+    {
+      "mutationGroupId": "mutation-group-03",
+      "candidateKind": "member-mutation",
+      "callsiteCount": 39,
+      "callsiteRoot": "76b0ff246228cb12e92e955fb864542f46a172062ad84be10f1b0beb678f6604",
+      "authorityId": "authority-filesystem",
+      "authorizingObservationId": "observation-path-confinement",
+      "failureModes": ["partial-write", "destination-moved"],
+      "recoveryTransitionId": "transition-reconcile-filesystem",
+      "idempotency": "compare-before-replace",
+      "classification": "platform-mechanism"
+    },
+    {
+      "mutationGroupId": "mutation-group-04",
+      "candidateKind": "process-lifecycle",
+      "callsiteCount": 23,
+      "callsiteRoot": "154ffff21029314c92ff7035a2f46afcfd35d34a7d458e2f02327bcad0f42e1a",
+      "authorityId": "authority-process-table",
+      "authorizingObservationId": "observation-exact-process-identity",
+      "failureModes": ["partial-launch", "owner-moved"],
+      "recoveryTransitionId": "transition-terminate-exact-owner",
+      "idempotency": "exact-owner-once",
+      "classification": "platform-mechanism"
+    },
+    {
+      "mutationGroupId": "mutation-group-05",
+      "candidateKind": "provider-control-plane",
+      "callsiteCount": 34,
+      "callsiteRoot": "9c2caee6cc9aab84b8ef65ad0649df343030d6670967f7346f47fb9189ecdde6",
+      "authorityId": "authority-code-host",
+      "authorizingObservationId": "observation-fresh-external-subject",
+      "failureModes": ["external-unavailable", "subject-moved", "partial-provider-acceptance"],
+      "recoveryTransitionId": "transition-open-breaker",
+      "idempotency": "plan-id-and-fresh-subject",
+      "classification": "adapter-policy"
+    },
+    {
+      "mutationGroupId": "mutation-group-06",
+      "candidateKind": "stream-redirection",
+      "callsiteCount": 50,
+      "callsiteRoot": "91bfa1d1259b2bbee569501ce47a8d606968459ab9f83cb5aae2b5094fcf6304",
+      "authorityId": "authority-filesystem",
+      "authorizingObservationId": "observation-path-confinement",
+      "failureModes": ["partial-write", "destination-moved"],
+      "recoveryTransitionId": "transition-reconcile-filesystem",
+      "idempotency": "create-once-or-atomic-replace",
+      "classification": "platform-mechanism"
+    },
+    {
+      "mutationGroupId": "mutation-group-07",
+      "candidateKind": "version-control",
+      "callsiteCount": 19,
+      "callsiteRoot": "b1826c909642823bcd188bc0d90e67a789269f66ae60715106fa6f8cfc0ef74e",
+      "authorityId": "authority-version-control",
+      "authorizingObservationId": "observation-exact-revision-and-cleanliness",
+      "failureModes": ["subject-moved", "dirty-workspace", "partial-ref-update"],
+      "recoveryTransitionId": "transition-replan-moved-revision",
+      "idempotency": "exact-revision-and-plan-id",
+      "classification": "platform-mechanism"
+    }
+  ]
+}

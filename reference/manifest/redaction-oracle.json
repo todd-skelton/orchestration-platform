@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "reference-forbidden-vocabulary/v1",
+  "normalization": "Unicode NFKC, lowercase, identifier/path tokens, one-to-four word n-grams joined by space, hyphen, or empty string",
+  "digestDomain": "sha256(forbidden-vocabulary/v1 NUL normalized-span NUL)",
+  "entries": [
+    {
+      "digest": "3f2507cc13e9c80c9ce3c96f4a99bbed976e46af9ab4cbfb93b8b248fbb7e728",
+      "neutralCapability": "consumer-product-identity",
+      "matchPolicy": "normalized-token-or-bounded-ngram"
+    },
+    {
+      "digest": "4dc02c27a5b0e05c86e6003845dd9df27e94eb40167c3088f89b768c8b157a07",
+      "neutralCapability": "consumer-product-identity",
+      "matchPolicy": "normalized-token-or-bounded-ngram"
+    },
+    {
+      "digest": "67e8f3bd43e5ec2490e5ee8b414ed6acc9af3e5e75dfa66640a16e14577ed6fa",
+      "neutralCapability": "consumer-product-identity",
+      "matchPolicy": "normalized-token-or-bounded-ngram"
+    }
+  ]
+}

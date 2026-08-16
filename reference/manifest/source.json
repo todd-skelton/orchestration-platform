@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "reference-source-census/v1",
+  "source": {
+    "commit": "216887080f0570edbbac1c4e3a74a17add242ce3",
+    "treeObject": "c9ca742a3248d5ea78a41b11956ac2a9ba4805f2",
+    "artifactCount": 112,
+    "artifactRoot": "fd456ea8dfb266007dd7e6851df54df8e29f1099c81cf9e5fde66a38c1132cfe",
+    "entrypointCount": 79,
+    "entrypointRoot": "62ab3dfacdc527459aaf77262959c2aa3adf20cb36a4d9f60ddb99c9a3f9eae3",
+    "effectCandidateCount": 887,
+    "effectCandidateRoot": "6fb36afcf05336b3a6c7dd0666c9e498139872d3a91340b66ecfba680c62ec04"
+  },
+  "extensionCensus": {
+    "cjs": 2,
+    "fixture": 3,
+    "json": 14,
+    "md": 8,
+    "ps1": 75,
+    "psm1": 5,
+    "sh": 1,
+    "txt": 1,
+    "vbs": 1,
+    "yaml": 2
+  },
+  "effectCandidateCensus": {
+    "dynamic-invocation": 279,
+    "fixture-local-write": 443,
+    "member-mutation": 39,
+    "process-lifecycle": 23,
+    "provider-control-plane": 34,
+    "stream-redirection": 50,
+    "version-control": 19
+  },
+  "pathDigest": "sha256(reference-artifact-path/v1 NUL subtree-relative-path-bytes NUL)",
+  "coverageRule": "All selected tree entries are regular blobs and occur exactly once in artifacts.json."
+}

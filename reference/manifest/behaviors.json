@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "reference-behavior-families/v1",
+  "families": [
+    {
+      "id": "behavior-session-authority",
+      "classification": "platform-mechanism",
+      "capabilities": ["exclusive-session", "freshness", "handoff", "renewal"]
+    },
+    {
+      "id": "behavior-worker-lifecycle",
+      "classification": "platform-mechanism",
+      "capabilities": ["admission", "dispatch", "ownership", "bounded-termination"]
+    },
+    {
+      "id": "behavior-workspace-identity",
+      "classification": "platform-mechanism",
+      "capabilities": ["cleanliness", "revision-identity", "isolation", "reclamation"]
+    },
+    {
+      "id": "behavior-review-promotion",
+      "classification": "platform-mechanism",
+      "capabilities": ["exact-subject-review", "queue-health", "landing-preflight"]
+    },
+    {
+      "id": "behavior-telemetry-learning",
+      "classification": "platform-mechanism",
+      "capabilities": ["event-journal", "flow-snapshot", "metrics", "digest"]
+    },
+    {
+      "id": "behavior-breaker-recovery",
+      "classification": "platform-mechanism",
+      "capabilities": ["fail-closed-guard", "replan", "recovery", "breaker-lifecycle"]
+    },
+    {
+      "id": "behavior-planning-delivery",
+      "classification": "adapter-policy",
+      "capabilities": ["frontier-selection", "planning-repair", "delivery-cycle"]
+    },
+    {
+      "id": "behavior-model-routing",
+      "classification": "platform-mechanism",
+      "capabilities": ["capability-matrix", "placement", "cost-observation"]
+    },
+    {
+      "id": "behavior-release-authority",
+      "classification": "platform-mechanism",
+      "capabilities": ["candidate-assembly", "independent-review", "promotion", "runtime-cutover"]
+    },
+    {
+      "id": "behavior-evidence-conformance",
+      "classification": "historical-compatibility",
+      "capabilities": ["fixture", "negative-control", "compatibility-proof", "bounded-probe"]
+    }
+  ]
+}

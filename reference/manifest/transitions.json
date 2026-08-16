@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "reference-recovery-transitions/v1",
+  "transitions": [
+    {
+      "id": "transition-refuse-before-mutation",
+      "from": "observing",
+      "to": "refused",
+      "preserves": ["source-state", "authority-state"]
+    },
+    {
+      "id": "transition-reconcile-filesystem",
+      "from": "partial-write",
+      "to": "recovery-required",
+      "preserves": ["prior-generation", "mutation-receipt"]
+    },
+    {
+      "id": "transition-terminate-exact-owner",
+      "from": "partial-launch",
+      "to": "terminal",
+      "preserves": ["ownership-evidence", "process-census"]
+    },
+    {
+      "id": "transition-replan-moved-revision",
+      "from": "subject-moved",
+      "to": "needs-replan",
+      "preserves": ["prior-review", "observed-revision"]
+    },
+    {
+      "id": "transition-open-breaker",
+      "from": "external-failure",
+      "to": "mutation-blocked",
+      "preserves": ["failure-evidence", "last-safe-state"]
+    },
+    {
+      "id": "transition-replay-journal",
+      "from": "interrupted-append",
+      "to": "reduced",
+      "preserves": ["durable-prefix", "generation"]
+    },
+    {
+      "id": "transition-remove-fixture",
+      "from": "fixture-created",
+      "to": "fixture-absent",
+      "preserves": ["synthetic-evidence"]
+    }
+  ]
+}
