@@ -7,9 +7,13 @@ children: [ISS-013, ISS-028, ISS-016, ISS-024, ISS-017, ISS-018]
 
 ## Outcome
 
-An external project pins the platform, supplies its own delivery policy through
-a typed adapter, proves shadow parity, and cuts over with a rehearsed recovery
-path.
+Chase Sets first prepares its typed adapter, parity fixture, and import recovery
+without live mutation. After the platform self-hosts, Chase Sets pins that
+release, proves shadow parity, and cuts over with a rehearsed recovery path.
+
+The readiness slices (`ISS-028`, `ISS-016`, and `ISS-024`) run as soon as their
+native dependencies clear; they do not wait artificially for self-hosting.
+Only live shadow and cutover (`ISS-017`, `ISS-018`) require the self-host release.
 
 ## Orchestrator handoff
 

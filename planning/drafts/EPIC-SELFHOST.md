@@ -11,6 +11,11 @@ An independently authorized bootstrap release N0 is installed, then N0
 orchestrates and promotes unchanged N1 through a reviewed, crash-recoverable
 protocol. No candidate gains authority before promotion completes.
 
+This milestone consumes the minimum orchestration kernel rather than every
+future controller optimization. Cost forecasting, autonomy experiments,
+advanced board projections, and multi-model planning experiments remain
+post-self-host improvements unless a measured blocker promotes them.
+
 ## Orchestrator handoff
 
 - Direct-edge DAG (generated from `planning/roadmap.json`):

@@ -5,7 +5,7 @@
 Deliver a portable, self-hosting orchestration platform that can be adopted by
 an external project through a pinned release and versioned adapter.
 
-## Outcome 1: Portable foundation
+## Outcome 1: Portable substrate
 
 The same CLI, configuration, state contracts, and operating-system primitives
 pass conformance tests on current macOS, Windows, and Linux runners. The runtime
@@ -14,7 +14,16 @@ has no PowerShell dependency.
 Exit evidence: the complete conformance suite passes on all three operating
 systems from a clean checkout and produces equivalent normalized receipts.
 
-## Outcome 2: Self-hosting release
+## Outcome 2: Minimum orchestration kernel
+
+A policy-neutral cycle acquires a lease, selects work through an adapter,
+dispatches a concrete worker, obtains independent review, journals the result,
+applies routing and breaker policy, and resumes correctly after interruption.
+
+Exit evidence: one isolated end-to-end fixture completes with crash,
+stale-authority, provider-boundary, and self-certification negative controls.
+
+## Outcome 3: Self-hosting release
 
 A stable release orchestrates implementation and independent review of its
 successor, then promotes the unchanged candidate through a crash-recoverable
@@ -28,7 +37,19 @@ Exit evidence: stable N produces and promotes N+1 in an isolated fixture, with
 negative controls proving that moved, self-signed, or partially reviewed
 candidates are refused.
 
-## Outcome 3: First consumer adoption
+## Outcome 4: Chase Sets integration-ready
+
+The Chase Sets composition root, adapter contract, parity fixture, and
+state-import recovery rehearsal are complete. This preparation may run in
+parallel with kernel and self-host work whenever native dependencies clear, so
+the repository can begin Chase Sets implementation immediately after the
+self-hosting release exists.
+
+Exit evidence: the adapter builds against the pinned SDK, the fixture covers
+every authoritative incumbent decision, and a disposable import/recovery drill
+passes without live Chase Sets mutation.
+
+## Outcome 5: Chase Sets adoption
 
 An external repository pins the platform, supplies a project adapter, proves
 shadow-mode parity against its incumbent controller, and cuts over with a

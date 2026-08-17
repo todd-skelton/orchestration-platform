@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "orchestration-migration/v1",
+  "observedAt": "2026-08-17",
+  "sourceRepository": "chase-sets/chase-sets",
+  "sourceProject": {
+    "id": "PVT_kwDOEUHTf84BehDc",
+    "number": 1,
+    "title": "Chase Sets Delivery",
+    "url": "https://github.com/orgs/chase-sets/projects/1"
+  },
+  "destinationRepository": "todd-skelton/orchestration-platform",
+  "destinationProject": {
+    "id": "PVT_kwHOAQbtE84BgoZg",
+    "number": 1,
+    "title": "Orchestration Platform Delivery",
+    "url": "https://github.com/users/todd-skelton/projects/1"
+  },
+  "migrationPolicy": {
+    "mode": "capability-consolidation",
+    "sourceDisposition": "close-as-superseded",
+    "destinationExecution": "canonical-platform-issues-only",
+    "sourceEpicsRetainedAsProvenance": [6903, 6904, 6905]
+  },
+  "sourceIssueNumbers": [
+    4129, 5660, 5663, 5664, 6080, 6082, 6162, 6174, 6182, 6185,
+    6209, 6210, 6211, 6212, 6213, 6214, 6232, 6255, 6257, 6274,
+    6283, 6310, 6311, 6312, 6317, 6318, 6320, 6321, 6322, 6328,
+    6329, 6337, 6342, 6345, 6349, 6356, 6357, 6379, 6380, 6381,
+    6382, 6385, 6389, 6391, 6392, 6393, 6394, 6398, 6400, 6403,
+    6408, 6409, 6423, 6424, 6425, 6517, 6518, 6536, 6537, 6538,
+    6539, 6540, 6550, 6551, 6552, 6553, 6554, 6555, 6557, 6560,
+    6561, 6562, 6563, 6564, 6570, 6571, 6572, 6574, 6575, 6576,
+    6579, 6580, 6582, 6583, 6584, 6586, 6587, 6588, 6589, 6590,
+    6591, 6592, 6593, 6594, 6595, 6596, 6597, 6598, 6599, 6600,
+    6601, 6602, 6603, 6604, 6605, 6606, 6609, 6610, 6617, 6618,
+    6619, 6620, 6621, 6622, 6623, 6624, 6625, 6626, 6627, 6628,
+    6629, 6630, 6631, 6632, 6633, 6634, 6642, 6643, 6644, 6645,
+    6646, 6647, 6648, 6649, 6650, 6651, 6653, 6680, 6682, 6683,
+    6684, 6685, 6687, 6694, 6695, 6763, 6766, 6767, 6769, 6785,
+    6786, 6807, 6808, 6809, 6828, 6848, 6849, 6850, 6851, 6852,
+    6853, 6863, 6883, 6888, 6889, 6890, 6891, 6892, 6903, 6904,
+    6905, 6916, 6927, 6928, 6954, 6966, 6968, 6978, 6993, 6994,
+    6995, 6996, 6997
+  ],
+  "sourceBoardItemCount": 182,
+  "sourceIssuesNotOnSourceBoard": [6162],
+  "explicitExclusions": {
+    "issueNumbers": [6153, 6906],
+    "categories": [
+      "product-ci-and-deploy",
+      "doks-and-staging",
+      "commerce-and-payments",
+      "mobile-distribution-and-quality",
+      "provider-and-launch-operations",
+      "consumer-specific-production-policy"
+    ]
+  },
+  "canonicalDestinations": {
+    "leases-and-session-handoff": ["ISS-007"],
+    "dispatch-and-worker-ownership": ["ISS-008", "ISS-021", "ISS-023"],
+    "independent-review": ["ISS-009", "ISS-037"],
+    "journal-telemetry-and-reducers": ["ISS-010"],
+    "planning-delivery-and-review-skill": ["ISS-011"],
+    "routing-and-advisory-cost": ["ISS-012"],
+    "release-installation-and-recovery": ["ISS-014", "ISS-020", "ISS-027"],
+    "circuit-breaker-authority": ["ISS-025"],
+    "routine-cycle-and-supervision": ["ISS-026", "ISS-030"],
+    "github-board-actions-and-protection": ["ISS-033", "ISS-036"],
+    "portable-test-authority": ["ISS-006"]
+  }
+}
