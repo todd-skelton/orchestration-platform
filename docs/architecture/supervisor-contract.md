@@ -55,8 +55,9 @@ the reviewed successor active release/helper/profile/ABI/custody, settles all
 pending proposals among the other eleven pointer kinds in registry/`Dp`/
 predecessor/mutation order, and requires zero unrelated `PENDING` or `UNKNOWN`.
 It is an ordinary single-epoch commit run: it appends the exact
-`authority-history/v1` chain record and then performs the authority CAS as its
-final action, executes no checkpoint after that CAS under either epoch, and its
+`authority-history-record/v1` record (with `Dh` under `authority-history/v1`)
+and then performs the authority CAS as its final action, executes no checkpoint
+after that CAS under either epoch, and its
 run-current journal legitimately rests at CAS-armed across the selection. After
 authority CAS, every old handle is revoked. Terminal truth is derived from the
 selected authority, exact chain head, and old CAS-armed checkpoint; no fresh
@@ -245,6 +246,294 @@ state-component-profile digest, custody-instance digest, and admitted custody-
 observation digest. `reviewed-operation kind` is the closed union
 `BOOTSTRAP_INSTALL|STABLE_PROMOTION`. Its digest `Dop` is derived, never
 caller-supplied:
+
+#### Normative simplified-authority schema ledger
+
+This ledger is authoritative for the simplified current authority surfaces.
+Every table lists canonical JSON member names in ascending UTF-16 code-unit
+order, which is also their canonical serialized order. A branch has exactly the
+listed members: an unlisted member is forbidden, and a member is nullable only
+when its type explicitly says nullable. `sha256` is a lowercase 64-hex string,
+`safe-decimal` is the bounded canonical decimal string defined below,
+`uuid-v7`, `timestamp`, and `relative-path` use the platform scalar rules, and
+`record<S>` means a recursively closed record whose `schemaVersion` literal is
+`S`. Formula names such as `G`, `Dp`, and `Dsc` are explanatory aliases, never
+JSON member names. The literal names here replace every conceptual label used
+elsewhere in this document.
+
+`reviewed-authority-operation/v1` is a closed two-arm record. Its
+`BOOTSTRAP_INSTALL` member census is:
+
+| JSON member                      | Type / literal                            |
+| -------------------------------- | ----------------------------------------- |
+| `bootstrapGrantDigest`           | `sha256`                                  |
+| `bootstrapTransactionId`         | `uuid-v7`                                 |
+| `independentReviewReceiptDigest` | `sha256`                                  |
+| `installedBytesDigest`           | `sha256`                                  |
+| `operationKind`                  | literal `BOOTSTRAP_INSTALL`               |
+| `releaseManifestDigest`          | `sha256`                                  |
+| `releaseSubjectDigest`           | `sha256`                                  |
+| `reviewedInstallerDigest`        | `sha256`                                  |
+| `schemaVersion`                  | literal `reviewed-authority-operation/v1` |
+
+Its `STABLE_PROMOTION` member census is:
+
+| JSON member                                  | Type / literal                            |
+| -------------------------------------------- | ----------------------------------------- |
+| `independentReviewReceiptDigest`             | `sha256`                                  |
+| `installedBytesDigest`                       | `sha256`                                  |
+| `operationKind`                              | literal `STABLE_PROMOTION`                |
+| `predecessorActiveReleasePathInstanceDigest` | `sha256`                                  |
+| `predecessorActiveReleaseReceiptDigest`      | `sha256`                                  |
+| `predecessorActiveReleaseTipDigest`          | `sha256`                                  |
+| `predecessorActiveReleaseValueDigest`        | `sha256`                                  |
+| `promotionTransactionId`                     | `uuid-v7`                                 |
+| `releaseManifestDigest`                      | `sha256`                                  |
+| `releaseSubjectDigest`                       | `sha256`                                  |
+| `schemaVersion`                              | literal `reviewed-authority-operation/v1` |
+| `successorActiveReleasePathInstanceDigest`   | `sha256`                                  |
+| `successorActiveReleaseReceiptDigest`        | `sha256`                                  |
+| `successorActiveReleaseTipDigest`            | `sha256`                                  |
+| `successorActiveReleaseValueDigest`          | `sha256`                                  |
+
+It is a composed input with no persistence path. `Dop` uses digest domain
+`reviewed-authority-operation/v1`; its framed parts are the branch byte, then
+the non-`schemaVersion` members in the semantic order shown by the two formulas
+immediately below. It excludes authority-history facts, successor-authority
+value/proposal/tip, registry slots, readbacks, and timestamps.
+
+`state-mutation-successor-authority-core/v1` (`Dsc`) has this exact census:
+
+| JSON member                        | Type / literal                                       |
+| ---------------------------------- | ---------------------------------------------------- |
+| `abiDigest`                        | `sha256`                                             |
+| `admittedCustodyObservationDigest` | `sha256`                                             |
+| `authorityPathInstanceDigest`      | `sha256`                                             |
+| `custodyInstanceDigest`            | `sha256`                                             |
+| `globalIdentityDigest`             | `sha256`                                             |
+| `independentReviewReceiptDigest`   | `sha256`                                             |
+| `lockProfileDigest`                | `sha256`                                             |
+| `operationKind`                    | enum `BOOTSTRAP_INSTALL`, `STABLE_PROMOTION`         |
+| `reviewedInstalledBytesDigest`     | `sha256`                                             |
+| `reviewedOperationDigest`          | `sha256` (`Dop`)                                     |
+| `reviewedReleaseManifestDigest`    | `sha256`                                             |
+| `reviewedReleaseSubjectDigest`     | `sha256`                                             |
+| `schemaVersion`                    | literal `state-mutation-successor-authority-core/v1` |
+| `stateComponentProfileDigest`      | `sha256`                                             |
+| `successorAuthorityOrdinal`        | `safe-decimal`                                       |
+| `successorHelperDigest`            | `sha256`                                             |
+| `successorHelperProfileDigest`     | `sha256`                                             |
+
+It is a composed input with no persistence path. `Dsc` uses digest domain
+`state-mutation-successor-authority-core/v1`; framed parts are, in order,
+`globalIdentityDigest`, `authorityPathInstanceDigest`,
+`successorAuthorityOrdinal`, `reviewedReleaseManifestDigest`,
+`reviewedInstalledBytesDigest`, `reviewedReleaseSubjectDigest`,
+`independentReviewReceiptDigest`, the `operationKind` branch byte,
+`reviewedOperationDigest`, `successorHelperDigest`,
+`successorHelperProfileDigest`, `abiDigest`, `lockProfileDigest`,
+`stateComponentProfileDigest`, `custodyInstanceDigest`,
+`admittedCustodyObservationDigest`, and canonical core bytes. It excludes every
+predecessor/history field and every successor selecting or downstream field.
+
+`authority-history-genesis-bootstrap-input/v1` (`Dgb`) has this exact census:
+
+| JSON member                           | Type / literal                                         |
+| ------------------------------------- | ------------------------------------------------------ |
+| `bootstrapAnchorActiveReceiptDigest`  | `sha256`                                               |
+| `bootstrapAnchorActiveTipDigest`      | `sha256`                                               |
+| `bootstrapAnchorActiveValueDigest`    | `sha256`                                               |
+| `bootstrapAnchorDigest`               | `sha256` (`Dba`)                                       |
+| `bootstrapGrantDigest`                | `sha256`                                               |
+| `bootstrapTransactionId`              | `uuid-v7`                                              |
+| `destinationDigest`                   | `sha256` (`Ddest`)                                     |
+| `destinationOwnerActiveReceiptDigest` | `sha256`                                               |
+| `destinationOwnerActiveTipDigest`     | `sha256`                                               |
+| `destinationOwnerActiveValueDigest`   | `sha256`                                               |
+| `globalBootstrapIdentityDigest`       | `sha256`                                               |
+| `schemaVersion`                       | literal `authority-history-genesis-bootstrap-input/v1` |
+| `successorCoreDigest`                 | `sha256` (`Dsc`)                                       |
+| `useIntentDigest`                     | `sha256`                                               |
+
+It is a composed input with no persistence path. `Dgb` uses the same literal as
+its digest domain. Its ordered framed parts are `destinationDigest`, owner
+ACTIVE tip/value/receipt, `bootstrapAnchorDigest`, anchor ACTIVE
+tip/value/receipt, `useIntentDigest`, `globalBootstrapIdentityDigest`,
+`bootstrapTransactionId`, `bootstrapGrantDigest`, `successorCoreDigest`, and
+canonical input bytes. E0 selection, CONSUMED facts, consumption, and all
+readbacks are excluded.
+
+`authority-history-genesis-selection-evidence/v1` (`Dgse`) is a non-persisted
+composed validation record with this exact census:
+
+| JSON member                               | Type / literal                                            |
+| ----------------------------------------- | --------------------------------------------------------- |
+| `anchorConsumedProposalReadbackDigest`    | `sha256`                                                  |
+| `anchorConsumedReceiptDigest`             | `sha256`                                                  |
+| `anchorConsumedTipDigest`                 | `sha256`                                                  |
+| `anchorConsumedTipReadbackDigest`         | `sha256`                                                  |
+| `anchorConsumedValueDigest`               | `sha256`                                                  |
+| `anchorConsumedValueReadbackDigest`       | `sha256`                                                  |
+| `anchorConsumptionReceiptDigest`          | `sha256`                                                  |
+| `bootstrapAnchorActiveReceiptDigest`      | `sha256`                                                  |
+| `bootstrapAnchorActiveTipDigest`          | `sha256`                                                  |
+| `bootstrapAnchorActiveValueDigest`        | `sha256`                                                  |
+| `bootstrapAnchorDigest`                   | `sha256`                                                  |
+| `bootstrapGenesisCoreDigest`              | `sha256` (`Dbg`)                                          |
+| `bootstrapGrantDigest`                    | `sha256`                                                  |
+| `bootstrapTransactionId`                  | `uuid-v7`                                                 |
+| `destinationDigest`                       | `sha256`                                                  |
+| `destinationOwnerActiveReceiptDigest`     | `sha256`                                                  |
+| `destinationOwnerActiveTipDigest`         | `sha256`                                                  |
+| `destinationOwnerActiveValueDigest`       | `sha256`                                                  |
+| `genesisBootstrapInputDigest`             | `sha256` (`Dgb`)                                          |
+| `globalBootstrapIdentityDigest`           | `sha256`                                                  |
+| `historyRecordDigest`                     | `sha256` (`Dh`)                                           |
+| `ownerConsumedProposalReadbackDigest`     | `sha256`                                                  |
+| `ownerConsumedReceiptDigest`              | `sha256`                                                  |
+| `ownerConsumedTipDigest`                  | `sha256`                                                  |
+| `ownerConsumedTipReadbackDigest`          | `sha256`                                                  |
+| `ownerConsumedValueDigest`                | `sha256`                                                  |
+| `ownerConsumedValueReadbackDigest`        | `sha256`                                                  |
+| `schemaVersion`                           | literal `authority-history-genesis-selection-evidence/v1` |
+| `selectedAuthorityPathInstanceDigest`     | `sha256`                                                  |
+| `selectedAuthorityProposalReadbackDigest` | `sha256`                                                  |
+| `selectedAuthorityReceiptDigest`          | `sha256`                                                  |
+| `selectedAuthorityTipDigest`              | `sha256`                                                  |
+| `selectedAuthorityTipReadbackDigest`      | `sha256`                                                  |
+| `selectedAuthorityValueDigest`            | `sha256`                                                  |
+| `selectedAuthorityValueReadbackDigest`    | `sha256`                                                  |
+| `selectionPostReceiptDigest`              | `sha256` (`Dgp`)                                          |
+| `successorCoreDigest`                     | `sha256` (`Dsc`)                                          |
+| `useIntentDigest`                         | `sha256`                                                  |
+
+`Dgse` uses the same literal as its digest domain. Its framed parts are exactly
+the fields in the semantic order in the `Dgse` formula below followed by
+canonical evidence bytes. It has no canonical path, pointer, receipt, or
+mutation authority. It excludes any new pointer/proposal/tip that would select
+`Dgse` and any field downstream of owner/anchor CONSUMED readback.
+
+`state-mutation-authority-rotation-id/v1` (`Drot`) has this exact census:
+
+| JSON member                           | Type / literal                                    |
+| ------------------------------------- | ------------------------------------------------- |
+| `globalIdentityDigest`                | `sha256`                                          |
+| `priorHeadOrdinal`                    | `safe-decimal`                                    |
+| `priorRecordDigest`                   | `sha256`                                          |
+| `retiringAuthorityPathInstanceDigest` | `sha256`                                          |
+| `retiringAuthorityReceiptDigest`      | `sha256`                                          |
+| `retiringAuthorityTipDigest`          | `sha256`                                          |
+| `retiringAuthorityValueDigest`        | `sha256`                                          |
+| `reviewedOperationDigest`             | `sha256` (`Dop`)                                  |
+| `rotationTransactionId`               | `uuid-v7`                                         |
+| `schemaVersion`                       | literal `state-mutation-authority-rotation-id/v1` |
+| `successorAuthorityOrdinal`           | `safe-decimal`                                    |
+| `successorCoreDigest`                 | `sha256` (`Dsc`)                                  |
+
+It is a composed input with no persistence path. `Drot` uses the same literal
+as its digest domain. Its framed parts are `globalIdentityDigest`,
+`rotationTransactionId`, retiring authority path/tip/value/receipt,
+`priorHeadOrdinal`, `priorRecordDigest`, `successorAuthorityOrdinal`,
+`reviewedOperationDigest`, and `successorCoreDigest`. It excludes target
+mutation ID, successor authority value/receipt/tip, history-record digest,
+registry slots, readbacks, and timestamps.
+
+The serialized history record always has `schemaVersion` literal
+`authority-history-record/v1`; `authority-history/v1` is only its digest domain
+and is not a parseable record version. GENESIS has exactly:
+
+| JSON member                   | Type / literal                        |
+| ----------------------------- | ------------------------------------- |
+| `genesisBootstrapInputDigest` | `sha256` (`Dgb`)                      |
+| `globalIdentityDigest`        | `sha256`                              |
+| `ordinal`                     | literal `"0"`                         |
+| `predecessorKind`             | literal `GENESIS_LITERAL`             |
+| `recordKind`                  | literal `GENESIS`                     |
+| `schemaVersion`               | literal `authority-history-record/v1` |
+| `successorCoreDigest`         | `sha256` (`Dsc`)                      |
+
+ROTATION has exactly:
+
+| JSON member                           | Type / literal                        |
+| ------------------------------------- | ------------------------------------- |
+| `globalIdentityDigest`                | `sha256`                              |
+| `ordinal`                             | positive `safe-decimal`               |
+| `predecessorKind`                     | literal `RECORD`                      |
+| `priorHeadOrdinal`                    | `safe-decimal`, exactly `ordinal - 1` |
+| `priorRecordDigest`                   | `sha256`                              |
+| `recordKind`                          | literal `ROTATION`                    |
+| `retiringAuthorityPathInstanceDigest` | `sha256`                              |
+| `retiringAuthorityReceiptDigest`      | `sha256`                              |
+| `retiringAuthorityTipDigest`          | `sha256`                              |
+| `retiringAuthorityValueDigest`        | `sha256`                              |
+| `rotationInputDigest`                 | `sha256` (`Drot`)                     |
+| `schemaVersion`                       | literal `authority-history-record/v1` |
+| `successorCoreDigest`                 | `sha256` (`Dsc`)                      |
+
+Both persist only at
+`installation/state-mutation-authority-history/records/<ordinal>.json`.
+GENESIS `Dh` uses domain `authority-history/v1` and parts `0x00`,
+`globalIdentityDigest`, `ordinal`, the `GENESIS_LITERAL` tag,
+`genesisBootstrapInputDigest`, `successorCoreDigest`, and canonical record
+bytes. ROTATION uses that domain and parts `0x01`, `globalIdentityDigest`,
+`ordinal`, `priorHeadOrdinal`, `priorRecordDigest`, retiring authority
+path/tip/value/receipt, `rotationInputDigest`, `successorCoreDigest`, and
+canonical record bytes. Both exclude the successor value/proposal/tip/head,
+registry slots, selector evidence, and downstream receipts/readbacks.
+
+The selected `state-mutation-authority-value/v1` has exactly:
+
+| JSON member                        | Type / literal                              |
+| ---------------------------------- | ------------------------------------------- |
+| `activeReleasePathInstanceDigest`  | `sha256`                                    |
+| `activeReleaseReceiptDigest`       | `sha256`                                    |
+| `activeReleaseTipDigest`           | `sha256`                                    |
+| `activeReleaseValueDigest`         | `sha256`                                    |
+| `admittedCustodyObservationDigest` | `sha256`                                    |
+| `authorityOrdinal`                 | `safe-decimal`                              |
+| `custodyInstanceDigest`            | `sha256`                                    |
+| `globalIdentityDigest`             | `sha256`                                    |
+| `headOrdinal`                      | `safe-decimal`, equal to `authorityOrdinal` |
+| `headRecordDigest`                 | `sha256` (`Dh`)                             |
+| `helperAbiDigest`                  | `sha256`                                    |
+| `helperDigest`                     | `sha256`                                    |
+| `helperProfileDigest`              | `sha256`                                    |
+| `installationId`                   | `uuid-v7`                                   |
+| `lockProfileDigest`                | `sha256`                                    |
+| `priorAuthorityReceiptDigest`      | nullable `sha256`                           |
+| `priorAuthorityTipDigest`          | nullable `sha256`                           |
+| `priorAuthorityValueDigest`        | nullable `sha256`                           |
+| `projectId`                        | `uuid-v7`                                   |
+| `schemaVersion`                    | literal `state-mutation-authority-value/v1` |
+| `stateComponentProfileDigest`      | `sha256`                                    |
+| `stateRootDigest`                  | `sha256`                                    |
+
+The three predecessor members are all null only for GENESIS and all non-null
+only for ROTATION. The generic `pointer-value/v1` digest binds this record to
+the authority `Dp`; generic `pointer-cas-proposal-receipt/v1` and
+`pointer-current-tip/v1` select it. Its immutable value bytes persist at
+`installation/pointer-cas/<authority-Dp>/values/<mutation-id>.json`; the
+selected tip is the sole `installation/state-mutation-authority.json`. No
+separate head record exists. The value
+excludes its selecting proposal/receipt/tip, successor registry slot,
+post-selection readbacks, `Dgse`, and any later chain record.
+
+The adjacent simplified public-v1 rows were audited for conceptual-only names.
+No additional implementer-chosen label remains: `state-mutation-global-identity/v1`
+uses the literal installation/project/state/custody/authority-path members in
+the `G` formula; `pointer-mutation-run-checkpoint-evidence/v1` uses literal
+`segment`, `core`, `selectorSelection`, `postSelectionObservation`, and nullable
+`terminalResolution`; `pointer-evidence-slot/v1` uses literal `schemaVersion`,
+`pointerKind`, and nullable `selectedEvidence`; and
+`pointer-evidence-packet/v1` uses literal `schemaVersion`, `purpose`,
+`globalIdentity`, `currentAuthoritySelection`, `authorityHistoryBinding`,
+`currentCommit`, and `evidenceSlots`. The fixed
+`pointer-mutation-unknown-evidence/v1` record uses only `schemaVersion`,
+`targetPathInstanceDigest`, `targetMutationId`, `category`, `reason`,
+`observationDigest`, `observedByteLength`, and `observedAt`; there is no
+`observation`, message, path, or array member. Those established rows retain
+their existing digest formulas and paths; this amendment introduces no alias
+or second representation for them.
 
 ```text
 BOOTSTRAP_INSTALL Dop = H(F(reviewed-authority-operation/v1,
@@ -595,8 +884,9 @@ that selects its terminal core.
 Every commit intent is `SINGLE_EPOCH`. Every ordinary run's nine checkpoint
 selectors bind one authority triple. For the `STATE_MUTATION_AUTHORITY_ROTATION` target, the
 rotation run under the old capability executes checkpoints zero through five,
-appends the exact `authority-history/v1` chain record, and then performs the
-authority CAS as its final action. It executes no checkpoint after that CAS
+appends the exact `authority-history-record/v1` record (with `Dh` under
+`authority-history/v1`), and then performs the authority CAS as its final
+action. It executes no checkpoint after that CAS
 under either epoch; its run-current journal legitimately rests at the selected
 `CAS_ARMED` checkpoint across the selection. Terminal truth is a pure derived
 union. The closed `pointer-mutation-commit-evidence/v1` schema has common
@@ -685,6 +975,136 @@ Dcommit = H(F(pointer-mutation-commit-evidence/v1,
   packet-authority-tag, nullable packet-authority Dp/Dt/Dv/Dr raw32,
   branch-parts, canonical union bytes))
 ```
+
+The serialized `pointer-mutation-commit-evidence/v1` union is itself
+non-persisted composed evidence: it has no commit path or selecting pointer and
+appears only as a recursively closed value inside `pointer-evidence-packet/v1`.
+Both branches first carry this exact common census (canonical member order):
+
+| JSON member                         | Type / literal                                |
+| ----------------------------------- | --------------------------------------------- |
+| `canonicalPointerPath`              | `relative-path`                               |
+| `commitKind`                        | enum `ORDINARY`, `AUTHORITY_ROTATION`         |
+| `intentDigest`                      | `sha256`                                      |
+| `oldAuthorityPathInstanceDigest`    | `sha256`                                      |
+| `oldAuthorityReceiptDigest`         | `sha256`                                      |
+| `oldAuthorityTipDigest`             | `sha256`                                      |
+| `oldAuthorityValueDigest`           | `sha256`                                      |
+| `packetAuthorityKind`               | enum `KNOWN`, `UNKNOWN`                       |
+| `packetAuthorityPathInstanceDigest` | nullable `sha256`                             |
+| `packetAuthorityReceiptDigest`      | nullable `sha256`                             |
+| `packetAuthorityTipDigest`          | nullable `sha256`                             |
+| `packetAuthorityValueDigest`        | nullable `sha256`                             |
+| `runId`                             | `sha256`                                      |
+| `runOrdinal`                        | `safe-decimal`                                |
+| `schemaVersion`                     | literal `pointer-mutation-commit-evidence/v1` |
+| `targetMutationId`                  | `sha256`                                      |
+| `targetPathInstanceDigest`          | `sha256`                                      |
+| `targetPointerKind`                 | one of the exact twelve registry kinds        |
+
+For either branch, canonical JSON order is the single ascending UTF-16 merge
+of this common table, its branch table, and its one applicable outcome table;
+the tables are not serialized as concatenated groups.
+
+`packetAuthorityKind=KNOWN` requires all four packet-authority digests;
+`UNKNOWN` requires all four null. In addition to the common members, ORDINARY
+has exactly these members:
+
+| JSON member          | Type / literal                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `checkpoints`        | exact-length-9 ordered array of `record<pointer-mutation-run-checkpoint-evidence/v1>` |
+| `ordinaryResolution` | `record<pointer-mutation-commit-resolution/v1>`                                       |
+| `outcome`            | enum `SELECTED`, `LOST_CONFLICT`, `UNKNOWN_TERMINAL`                                  |
+| `targetRegistrySlot` | `record<pointer-evidence-slot/v1>` for `targetPointerKind`                            |
+
+ORDINARY requires `packetAuthorityKind=KNOWN` and the packet-authority tuple to
+equal the single run epoch. `targetRegistrySlot` contains the exact selected
+target for SELECTED, the recomputed real winner plus conflict receipt for
+LOST_CONFLICT, and is empty for UNKNOWN_TERMINAL. An empty/wrong-kind/stale
+slot for the first two outcomes or a nonempty slot for UNKNOWN_TERMINAL
+refuses. Rotation-only members are absent, not null.
+
+In addition to the common members, AUTHORITY_ROTATION always has exactly:
+
+| JSON member                    | Type / literal                                                                                                                      |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `authorityRegistrySlot`        | `record<pointer-evidence-slot/v1>` for `STATE_MUTATION_AUTHORITY_ROTATION`                                                          |
+| `checkpoint5`                  | `record<pointer-mutation-run-checkpoint-evidence/v1>` with ordinal `"5"`, stage `CAS_ARMED`, phase `CAS_AMBIGUOUS`, null resolution |
+| `expectedHeadOrdinal`          | positive `safe-decimal`                                                                                                             |
+| `expectedRecordDigest`         | `sha256`                                                                                                                            |
+| `expectedSuccessorValueDigest` | `sha256`                                                                                                                            |
+| `rotationInputDigest`          | `sha256` (`Drot`)                                                                                                                   |
+| `rotationOutcome`              | enum `RESUMABLE`, `SELECTED`, `UNKNOWN`                                                                                             |
+| `successorCoreDigest`          | `sha256` (`Dsc`)                                                                                                                    |
+
+Its outcome adds one exact direct-field set. RESUMABLE adds:
+
+| JSON member                               | Type / literal                                     |
+| ----------------------------------------- | -------------------------------------------------- |
+| `headPlusTwoAbsent`                       | literal `true`                                     |
+| `pendingRecord`                           | `record<authority-history-record/v1>` ROTATION arm |
+| `pendingRecordReadbackDigest`             | `sha256`, canonical bytes of `pendingRecord`       |
+| `resumableOldAuthorityPathInstanceDigest` | `sha256`                                           |
+| `resumableOldAuthorityReceiptDigest`      | `sha256`                                           |
+| `resumableOldAuthorityTipDigest`          | `sha256`                                           |
+| `resumableOldAuthorityValueDigest`        | `sha256`                                           |
+| `resumablePriorHeadOrdinal`               | `safe-decimal`                                     |
+| `resumablePriorRecordDigest`              | `sha256`                                           |
+
+RESUMABLE requires KNOWN packet authority, all four resumable authority fields
+equal the common old-authority tuple, and `authorityRegistrySlot` equal that
+same selected tuple. SELECTED instead adds:
+
+| JSON member                                    | Type / literal                                                 |
+| ---------------------------------------------- | -------------------------------------------------------------- |
+| `selectedHistoryRecord`                        | `record<authority-history-record/v1>` ROTATION arm             |
+| `selectedHistoryRecordReadbackDigest`          | `sha256`, canonical bytes of `selectedHistoryRecord`           |
+| `selectedSuccessorAuthorityPathInstanceDigest` | `sha256`                                                       |
+| `selectedSuccessorAuthorityReceiptDigest`      | `sha256`                                                       |
+| `selectedSuccessorAuthorityTipDigest`          | `sha256`                                                       |
+| `selectedSuccessorAuthorityValue`              | `record<state-mutation-authority-value/v1>`                    |
+| `selectedSuccessorAuthorityValueDigest`        | `sha256`, equal to `expectedSuccessorValueDigest`              |
+| `selectedSuccessorValueReadbackDigest`         | `sha256`, canonical bytes of `selectedSuccessorAuthorityValue` |
+
+SELECTED requires KNOWN packet authority and `authorityRegistrySlot` both equal
+the selected successor path/tip/value/receipt tuple. UNKNOWN instead adds only:
+
+| JSON member       | Type / literal                                        |
+| ----------------- | ----------------------------------------------------- |
+| `unknownEvidence` | closed `record<pointer-mutation-unknown-evidence/v1>` |
+
+UNKNOWN requires UNKNOWN/null packet authority and an empty
+`authorityRegistrySlot`. Its unknown record is the fixed category/reason/
+observation-digest/safe-length union defined below; it cannot carry JSON,
+native text, a path, or an array. Fields belonging to either other rotation
+outcome are absent. Every AUTHORITY_ROTATION arm forbids checkpoints 6–8,
+ordinary resolution, a selector observation after checkpoint 5, and any
+successor-epoch write.
+
+The `Dcommit` digest domain is exactly
+`pointer-mutation-commit-evidence/v1`. Framed parts are the branch byte;
+`targetPointerKind`; `canonicalPointerPath`; `targetPathInstanceDigest`;
+`targetMutationId`; `intentDigest`; `runId`; `runOrdinal`; old authority
+path/tip/value/receipt; the packet-authority byte; nullable packet authority
+path/tip/value/receipt; then the branch parts in the order below; finally
+canonical union bytes.
+
+- ORDINARY branch parts: for checkpoint ordinals zero through eight, the
+  recomputed digest of that closed checkpoint evidence in ordinal order; the
+  recomputed `ordinaryResolution` digest; the outcome byte; and canonical
+  `targetRegistrySlot` bytes.
+- AUTHORITY_ROTATION branch parts: recomputed checkpoint-5 `Dcore`, selected
+  selector path/tip/value/receipt, selector value/proposal/tip readback
+  digests, `Dpost`, `expectedSuccessorValueDigest`, `expectedHeadOrdinal`,
+  `expectedRecordDigest`, `rotationInputDigest`, `successorCoreDigest`, the
+  outcome byte, then the outcome members in their table order and canonical
+  `authorityRegistrySlot` bytes.
+
+`Dcommit` excludes the packet wrapper/handle/capability, every unrelated
+registry slot, and every artifact later than the selected outcome. Its
+canonical bytes bind `schemaVersion` and branch member absence; its framed
+parts bind the semantically ordered evidence. Neither representation may
+substitute for the other.
 
 `branch-tag` is `0x00` ORDINARY or
 `0x01` AUTHORITY_ROTATION; `packet-authority-tag` is `0x00` UNKNOWN or `0x01`

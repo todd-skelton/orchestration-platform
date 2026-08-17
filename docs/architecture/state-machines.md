@@ -46,8 +46,9 @@ An ordinary commit rereads the same selected authority before and after target
 selection. Rotation runs under the old private capability, resolves every
 pending proposal among the other eleven kinds of the twelve-kind registry,
 requires a complete zero-unrelated-PENDING/zero-UNKNOWN census, appends the
-exact `authority-history/v1` chain record, and performs the authority CAS as
-its final action; its run-current journal legitimately rests at the selected
+exact `authority-history-record/v1` record (with `Dh` under
+`authority-history/v1`), and performs the authority CAS as its final action;
+its run-current journal legitimately rests at the selected
 `CAS_ARMED` checkpoint across the selection. Authority CAS revokes the old
 context; selected authority, exact chain head, and the old CAS-armed checkpoint
 derive terminal truth without a post-CAS write. Kernel owner death is
@@ -114,6 +115,12 @@ the fully walked chain. `G` remains identical across rotations and excludes
 rotating helper/profile/ABI/lock/state-component facts. Projections revoke
 when the context/head changes.
 
+The record `schemaVersion` is always `authority-history-record/v1`; the
+similarly named `authority-history/v1` is only the branch-separated digest
+domain. The supervisor ledger's literal member sets and absence rules are part
+of every transition guard. No state-machine implementation may derive JSON
+keys from the `G`/`Dop`/`Dsc`/`Dgb`/`Dgse`/`Drot`/`Dh` labels.
+
 ### Authority rotation
 
 Every commit run is single-epoch, including authority rotation. The rotation
@@ -154,6 +161,14 @@ arbitrary JSON, native text, paths, and arrays refuse. Packet arrays are bounded
 by the closed evidence-slot census, not lifetime history. A structurally valid
 serialized packet without the corresponding live ISS-004 handle grants no
 authority.
+
+The exact `pointer-mutation-commit-evidence/v1` member census in the supervisor
+ledger makes outcome-to-slot equality executable. Ordinary SELECTED and
+LOST_CONFLICT require the selected target or recomputed winner in the target
+slot, while UNKNOWN_TERMINAL requires it empty; rotation RESUMABLE/SELECTED/
+UNKNOWN require the old/successor/empty authority slot respectively. Wrong,
+empty-at-positive, or nonempty-at-unknown slots refuse before capability
+issuance.
 
 ## Worker process and ownership
 

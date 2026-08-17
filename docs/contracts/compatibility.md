@@ -47,7 +47,8 @@ The current registry uses the approved authority contracts:
   `authority-history-genesis-bootstrap-input/v1`,
   `authority-history-genesis-selection-evidence/v1`,
   `state-mutation-authority-rotation-id/v1`,
-  `authority-history/v1` chain records,
+  `authority-history-record/v1` chain records (digested under
+  `authority-history/v1`),
   `pointer-evidence-slot/v1`, and `pointer-evidence-packet/v1`;
 - release/cleanup:
   `active-release/v1`, `activation-cleanup-gate-root/v1`,
@@ -196,6 +197,17 @@ operation `Dop`, helper/profile/ABI/lock/state-component, and custody instance/
 observation. `Dop` is the closed BOOTSTRAP_INSTALL/STABLE_PROMOTION formula in
 `supervisor-contract.md`, not caller input.
 
+The normative simplified-authority schema ledger in `supervisor-contract.md`
+pins the literal `schemaVersion`, canonical JSON member order, scalar type,
+nullability/branch absence, enum census, storage disposition, digest domain,
+ordered framed parts, and selecting/downstream exclusions for `Dop`, `Dsc`,
+`Dgb`, `Dgse`, `Drot`, both `Dh` arms, the selected authority value, and both
+`Dcommit` arms. Conceptual labels in this document are aliases for those exact
+member names and never authorize an implementation-defined key. In particular,
+history files parse only as `authority-history-record/v1`; the distinct literal
+`authority-history/v1` is the `Dh` digest domain and is never accepted as a
+record `schemaVersion`.
+
 `GENESIS` binds ordinal zero, the genesis predecessor, and `Dgb`; `Dgb` binds
 the selected destination-owner and anchor ACTIVE triples, use intent,
 bootstrap identity/transaction/grant, and `Dsc`, with no retiring epoch. The
@@ -225,6 +237,15 @@ selection observation for all nine stages and ends in exactly
 `SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL`. Cores and ordinary terminal
 resolutions exclude their selecting selector graph. `PROPOSED` is live-only;
 persisted ordinary recovery remains `CRASH_PREFIX|CAS_AMBIGUOUS`.
+
+`pointer-mutation-commit-evidence/v1` has no persistence path or selecting
+pointer. The ledger's exact common members and branch-only members are embedded
+in `pointer-evidence-packet/v1`; missing, null-for-absent, extra, or wrong-arm
+members refuse before `Dcommit` is recomputed. ORDINARY binds its target slot to
+the exact selected target, recomputed real winner, or empty slot for SELECTED,
+LOST_CONFLICT, or UNKNOWN_TERMINAL. AUTHORITY_ROTATION binds the authority slot
+to old, successor, or empty for RESUMABLE, SELECTED, or UNKNOWN. Structural
+success without that outcome-to-slot equality never grants a capability.
 
 AUTHORITY_ROTATION composes the old E(n) intent and selected checkpoint 5,
 expected successor `Dv`/target mutation/head/record/`Drot`/`Dsc`, then exactly
