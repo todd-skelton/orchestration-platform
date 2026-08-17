@@ -24,13 +24,17 @@ exotics, and traps refuse without executing user code.
 
 ## Current and diagnostic registries
 
-The current registry retains unaffected generic v1 contracts and adds these
-ISS-002 authority contracts:
+The current registry uses the approved v2 authority contracts:
 
 - pointer graph: `pointer-current-tip/v1`,
-  `pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`,
+  `pointer-cas-proposal-receipt/v2`, `pointer-conflict-receipt/v1`,
   `pointer-tombstone-value/v1`, and `authority-retention/v1`;
-- epoch/release/cleanup: `state-mutation-authority-value/v1`,
+- epoch/history: `state-mutation-authority-value/v2`,
+  `state-mutation-authority-successor-core/v1`,
+  `authority-history-leaf/v1`, `authority-history-node/v1`,
+  `authority-history-root/v1`, `authority-history-update-proof/v1`,
+  `authority-history-append-receipt/v1`, and `pointer-evidence-packet/v2`;
+- release/cleanup:
   `active-release/v2`, `activation-cleanup-gate-root/v2`,
   `activation-cleanup-gate-head/v2`,
   `activation-cleanup-archive-head/v2`,
@@ -45,14 +49,39 @@ ISS-002 authority contracts:
   `recovery-authorization-consume-receipt/v1`,
   `native-removal-receipt/v1`,
   `recovery-authorization-revoke-receipt/v1`, and
-  `recovery-authorization-attachment/v1`.
+  `recovery-authorization-attachment/v1`;
+- commit journal: `pointer-mutation-run-checkpoint-core/v1`,
+  `pointer-mutation-run-current-value/v1`,
+  `pointer-mutation-run-selector-post-selection-observation/v1`, and
+  `pointer-mutation-commit-resolution/v1`;
+- external bootstrap: `physical-destination-identity/v1`,
+  `physical-destination-locator-observation-receipt/v1`,
+  `state-mutation-destination-owner-value/v1`,
+  `state-mutation-destination-owner-cas-proposal/v1`,
+  `state-mutation-destination-owner-current-tip/v1`,
+  `state-mutation-destination-owner-conflict-receipt/v1`,
+  `state-mutation-destination-owner-teardown-archive/v1`,
+  `state-mutation-destination-owner-successor-review-core/v1`,
+  `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`,
+  `state-mutation-destination-owner-retention/v1`,
+  `state-mutation-bootstrap-anchor/v1`,
+  `state-mutation-bootstrap-anchor-lifecycle-value/v1`,
+  `state-mutation-bootstrap-anchor-use-intent/v1`,
+  `state-mutation-bootstrap-anchor-cas-proposal/v1`,
+  `state-mutation-bootstrap-anchor-current-tip/v1`,
+  `state-mutation-bootstrap-anchor-conflict-receipt/v1`,
+  `state-mutation-bootstrap-anchor-consumption-receipt/v1`,
+  `state-mutation-bootstrap-anchor-teardown-receipt/v1`,
+  `state-mutation-bootstrap-genesis-core/v1`, and
+  `state-mutation-bootstrap-genesis-post-selection-receipt/v1`.
 
-The thirteen superseded active-release, gate, fence, launch, cleanup-head, and
-recovery-authorization v1 schemas exist only under the frozen `diagnostic`
-namespace. `diagnostic.parseContract` can read their exact historical bytes;
-its legacy schemas, paths, and validators are not ordinary root exports and no
-package deep export exists. `parseContract` and every canonical authority path
-refuse them. No migration exists because no v1 authority was deployed.
+`pointer-cas-proposal-receipt/v1`, `state-mutation-authority-value/v1`, the
+capped serialized authority-history table/packet, and the thirteen superseded
+active-release, gate, fence, launch, cleanup-head, and authorization v1 schemas
+exist only under the frozen `diagnostic` namespace. `diagnostic.parseContract`
+may read their historical bytes. They are not ordinary/deep exports;
+`parseContract` and every canonical authority path refuse them. No migration
+exists because no v1 authority was deployed.
 
 Exact current versions are readable. The named
 `platform-configuration/v0-fixture` alone is migratable. Missing, diagnostic,
@@ -60,14 +89,22 @@ other legacy, malformed, unknown, and future versions are refused.
 
 ## Pointer registry and framing
 
-The closed pointer registry has exactly eleven kinds and, for each kind, exact
+The closed runtime pointer registry has exactly twelve kinds and, for each kind, exact
 tip path, roots, archives, genesis mode, source tokens, retention class, and
 value schemas. Transaction path bindings are lowercase UUIDv7; unused/extra,
 wrong-family, alternate, or partial bindings refuse. The fixed singleton lock is
-`installation/state-mutation.lock`. Launch/accumulator/reservation sources are
-exactly `recovery-fence-v2` or `cleanup-gate-pre-fence-v2`; all other kinds use
-`none`. Unknown, differently cased/encoded, cross-family, or colliding paths and
-tokens refuse.
+`installation/state-mutation.lock`. `ACTIVATION_RECOVERY_LAUNCH`,
+`RECOVERY_ATTEMPT_ACCUMULATOR`, and `RECOVERY_ATTEMPT_RESERVATION` each accept
+exactly `recovery-fence-v2` or `cleanup-gate-pre-fence-v2`; all other runtime
+kinds require `none`. Unknown, differently cased/encoded, cross-family, or
+colliding paths/tokens refuse.
+
+The twelve kinds are `ACTIVE_RELEASE`, `ACTIVATION_CLEANUP_GATE`,
+`ACTIVATION_RECOVERY_FENCE`, `ACTIVATION_RECOVERY_LAUNCH`,
+`RECOVERY_AUTHORIZATION_STATE`, `RECOVERY_AUTHORIZATION_ATTACHMENT`,
+`RECOVERY_ATTEMPT_ACCUMULATOR`, `ACTIVATION_CLEANUP_ARCHIVE_HEAD`,
+`AUTHORITY_RETENTION`, `RECOVERY_ATTEMPT_RESERVATION`,
+`STATE_MUTATION_AUTHORITY_ROTATION`, and `POINTER_MUTATION_RUN_CURRENT`.
 
 Public tip, root, and archive constructors expand placeholders even inside a
 filename. They require the exact closed transaction, source, predecessor,
@@ -86,12 +123,14 @@ accepted.
 Framing `F` is UTF-8 `orchestration-platform`, NUL, domain, NUL, U32 part count,
 then closed type tag, U64 byte length, and bytes for every part. Digests are raw
 32 bytes; nullable text/digests have distinct typed nulls; accumulator tags are
-raw fixed bytes `00` and `01`, never text. Goldens pin:
+raw fixed bytes `00` and `01`, never text. Authority/history/run ordinals and
+counts use `DECIMAL_ASCII` (`"0"|[1-9][0-9]*`), decimal carry, and no numeric
+lifetime cap. Goldens pin:
 
 - Dp under `pointer-instance/v2`;
 - Dv under `pointer-value/v2`;
 - Dr under `pointer-receipt/v2` over
-  `pointer-cas-proposal-receipt/v1`;
+  `pointer-cas-proposal-receipt/v2`;
 - Dt under `pointer-tip/v2` over `pointer-current-tip/v1`;
 - mutation ID under `pointer-mutation-id/v2`;
 - Dc under `pointer-conflict-receipt/v1`.
@@ -118,12 +157,29 @@ edges; an already-selected pair reduces to NO_APPEND. Fence history is exactly
 PREPARED then optional POST_ACTIVATION. Dense root/head histories bind ordinal,
 previous canonical digest, and exact edge.
 
-State mutation validators pin the fixed lock sequence, same authority epoch
-rereads, exact reviewed-bootstrap genesis versus selected-stable rotation
-predecessor/producer fields, and a sorted dense rotation census keyed by every
-other kind plus Dp, classification, and selected digests with zero
-PENDING/UNKNOWN. They validate evidence only; ISS-004 owns the kernel lock,
-private capability, CAS, reconciliation, tombstones, and rotation writes.
+External bootstrap validators distinguish stable `Dphys` from versioned `Dobs`,
+derive `Ddest` from raw `Dphys` alone, and validate FULL_REQUIRED destination-
+owner/anchor `ACTIVE|CONSUMED|RETIRED` lifecycles. They prove one owner per
+physical destination, acyclic successor review-core→anchor→owner→post-receipt,
+pre-expiry use-intent recovery, E0 core→proposal→tip→post receipts, consumption,
+teardown, and exact reinstall without parallel genesis.
+
+State mutation validators pin the fixed lock sequence, revocable ISS-004
+context identity, exact E0 bootstrap producer versus selected-stable rotation,
+and the twelve-kind census. `state-mutation-authority-value/v2` binds a
+FULL_REQUIRED 256-depth sparse root. En validates deterministic rotation,
+exact 256-sibling EMPTY→PRESENT update, append receipt, successor root/count,
+and historical membership against the live current root. Serialized tables are
+diagnostic only. ISS-004 owns locks, live handles, CAS, reconciliation,
+tombstones, history writes, and context revocation.
+
+Commit validators compose immutable segment→checkpoint core→selected
+`POINTER_MUTATION_RUN_CURRENT` value/proposal/tip→post-selection observation.
+Cores and terminal resolutions exclude their selecting selector graph.
+`PROPOSED` is a live branded view only; persisted recovery is `CRASH_PREFIX` or
+`CAS_AMBIGUOUS`, and final resolution is exactly
+`SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL`. META_LEAF follows generic storage/
+classification/retention but does not recursively journal itself.
 
 Recovery authorization core has closed BOOTSTRAP/SUCCESSOR unions. It excludes
 gate/lifecycle/consume/revoke/attachment and
@@ -186,33 +242,22 @@ distinct create-once pointer instance, so its selected RESERVED proposal must
 have a fully null prior triple; a TERMINAL-to-RESERVED replay is never an allowed
 transition.
 
-Every ordinary epoch-sequence observation carries the same selected authority
-epoch digest and Dt/Dv/Dr. The bounded packet carries selected value, proposal,
-and tip evidence for the epoch, gate, fence, launch, reservation, attachment,
-and accumulator. It recomputes each Dp/Dv/Dr/Dt and each proposal's own epoch
-fields plus current-family relationships, and refuses a consistent but
-unselected value set. Historical selected envelopes need not share the packet's
-current authority epoch. The observations within `epochSequence` must share one
-current authority digest/Dt/Dv/Dr and are compared to the recomputed current
-authority envelope rather than accepted as a parallel asserted quadruple. A
-packet that validates a mutation carries a closed `currentCommit`: the selected
-authority envelope, the exact sequence, and PROPOSED or SELECTED mutation
-evidence. The proposal's epoch triple must equal that authority selection; Dr,
-expected tip, and selected readback are recomputed. A historical-only packet
-sets `currentCommit` to null.
+`pointer-evidence-packet/v2` is an exact purpose union. `HISTORICAL_READ`
+requires `currentCommit=null` and a scoped read handle; `MUTATION_COMMIT`
+requires exact intent/run/current selector plus a live mutation handle. The nine
+same-epoch commit observations and new proposal/readbacks bind the live current
+selection. Historical envelopes keep their producer epoch and use deduplicated
+256-sibling membership projections rooted in that live selection; no caller-
+chosen root or unsigned row authenticates them. Packet proof count is bounded by
+the closed evidence-slot census, not lifetime rotations. Tombstones authenticate
+both removal and selected prior producers. Authority history remains
+FULL_REQUIRED.
 
-Historical producer epochs are authenticated through a bounded, strictly
-deduplicated authority-history table containing selected
-`STATE_MUTATION_AUTHORITY_ROTATION` envelopes, never caller-only digest triples.
-Every distinct producer triple used by a historical proposal must resolve to one
-exact table row with matching installation/project/state identity, and every row
-must be used. Tombstone authentication includes both its removal producer and
-its embedded selected prior producer. Rotation history remains FULL_REQUIRED;
-the bounded table is the packet's relevant-epoch projection, not a retention cap.
-
-Retention distinguishes CURRENT_AUTHORITY from TERMINAL_ATTEMPT_HISTORY.
-Compaction requires selected non-pending classification, checkpoint, plan, and
-completion in order and never applies to PENDING/UNKNOWN.
+Retention keeps destination/anchor lineage, physical identity/observations,
+authority history, and run audit FULL_REQUIRED. Terminal attempt history alone
+may use checkpoint compaction. Compaction requires selected non-pending
+classification, checkpoint, plan, and completion in order and never applies to
+PENDING/UNKNOWN.
 AUDIT_DEGRADED permits only existing recovery/retry/cleanup, selected attachment,
 and ordinary non-release ticks; it blocks new promotion/bootstrap/certification,
 unrelated authorization/attachment, compaction, and audit finalization.
@@ -224,6 +269,7 @@ substitution, domain/order/type/null framing changes, source/path collisions,
 fake lost conflicts, pointer deletion/bare absence, invalid cleanup cells/edges,
 mixed epochs, incomplete rotation census, candidate core fields, reordered
 native/post receipts, attachment-to-summary confusion, reservation forks,
-lifetime caps, packet overflow, compaction ordering, v1 at authority paths, and
-all hostile reflective shapes. Cross-OS conformance reuses the same canonical
-goldens without changing authority.
+lifetime caps, sparse-root/table substitution, run-current recursion, packet
+purpose overflow, compaction ordering, v1 at authority paths, and all hostile
+reflective shapes. Cross-OS conformance reuses the same canonical goldens
+without changing authority.
