@@ -14,14 +14,21 @@ become duplicate executable work on the new board.
 
 ## Completeness claim
 
-The claim is bounded to the 183 open source issues observed on 2026-08-17; it
-does not pretend to predict ideas filed after that census. Every observed issue
-appears exactly once in the manifest's `ownershipGroups` as `CAPTURED`,
-`PARKED`, or `COMPLETED_PROVENANCE`. Captured groups name their native platform
-owners. Parked groups name both their future owners and an evidence-based
-unpark condition. The planning checker rejects omissions, duplicate ownership,
-unknown destinations, overlapping exclusions, and parked work without an
-unpark condition.
+The historical base claim is bounded to the 183 open source issues observed on
+2026-08-17; it does not pretend to predict ideas filed after that census. Every
+base issue appears exactly once in the manifest's `ownershipGroups` as
+`CAPTURED`, `PARKED`, or `COMPLETED_PROVENANCE`. Captured groups name their
+native platform owners. Parked groups name both their future owners and an
+evidence-based unpark condition. The base list, its 182-board-item count, its
+one absent item, and its ownership groups remain the original snapshot rather
+than being relabeled when later issues arrive.
+
+A separate post-census addendum records two later registrations. The manifest
+therefore contains 185 provenance records in total: the immutable 183-record
+base plus two addendum records. The planning checker validates the two counts
+separately and rejects base/addendum overlap, duplicate identities,
+noncanonical destinations, incorrect source state, incomplete board
+provenance, and malformed addendum counts.
 
 New generic orchestration proposals must update the manifest or be filed
 directly under a native platform epic. New Chase-specific proposals remain in
@@ -46,12 +53,13 @@ clear, so self-host completion immediately unlocks live Chase Sets work.
 
 ## Source boundary
 
-The exact provider-mutation census is
-`planning/chase-sets-orchestration-migration.json`. It contains 183 open
+The exact historical provider-mutation census is
+`planning/chase-sets-orchestration-migration.json`. Its base contains 183 open
 source issues: 182 source-board items plus one orchestration issue that was
 already absent from the board. The set is the complete open native sub-issue
 census of these Chase Sets epics, all open generic controller issues, and the
-named successor series below, observed on 2026-08-17:
+named successor series below, observed before the post-census registrations on
+2026-08-17:
 
 - `chase-sets/chase-sets#6903` and child `#6403` — event-read authority.
 - `#6904` and children `#6536`, `#6537`, `#6538`, `#6539`, `#6540`, `#6563`,
@@ -72,6 +80,22 @@ named successor series below, observed on 2026-08-17:
   historical evidence and are removed from executable boards with the same
   destination as their latest successor.
 
+### Post-census addendum and current cleanup
+
+The addendum is intentionally not folded into the 183-record base or its
+182-item source-board count:
+
+- `chase-sets/chase-sets#6999` maps to `ISS-039`. The source issue is
+  `CLOSED` with state reason `NOT_PLANNED` and remains present on Chase Sets
+  Delivery only as non-executable provenance.
+- `chase-sets/chase-sets#7000` maps to `ISS-040`. The source issue remains
+  `OPEN` and present on Chase Sets Delivery pending cleanup; the platform issue
+  is its sole executable owner.
+
+Thus the current manifest proves 185 provenance identities, while the current
+addendum board cleanup is one provenance-only item plus one pending-cleanup
+item. Neither status changes the already reconciled historical base counts.
+
 Explicit exclusions stay on the Chase Sets delivery board:
 
 - `#6906` and its product CI/deploy children;
@@ -81,20 +105,22 @@ Explicit exclusions stay on the Chase Sets delivery board:
 
 ## Capability consolidation
 
-| Reusable source capability | Canonical platform destination |
-| --- | --- |
-| leases, session handoff, stale recovery | `ISS-007` |
-| dispatch briefs, lane ownership, admission, worker launch | `ISS-008`, `ISS-021`, `ISS-023` |
-| exact-head independent review and replan breaker | `ISS-009`, `ISS-037` |
-| durable ledger, reducers, telemetry, decision records | `ISS-010` |
-| portable planning/delivery/review skill | `ISS-011` |
-| provider-neutral routing and advisory cost evidence | `ISS-012` |
-| release installation, predecessor authority, rollback/recovery | `ISS-014`, `ISS-020`, `ISS-027` |
-| circuit breakers and repair admission | `ISS-025` |
-| routine cycle and supervision | `ISS-026`, `ISS-030` |
-| GitHub board, issue, Actions, and protection authority | `ISS-033`, `ISS-036` |
-| test/reporter hardening with demonstrated portable value | `ISS-006`; otherwise parked |
-| Chase-specific policy and pipeline behavior | Chase Sets adapter/backlog; not platform core |
+| Reusable source capability                                     | Canonical platform destination                |
+| -------------------------------------------------------------- | --------------------------------------------- |
+| leases, session handoff, stale recovery                        | `ISS-007`                                     |
+| dispatch briefs, lane ownership, admission, worker launch      | `ISS-008`, `ISS-021`, `ISS-023`               |
+| exact-head independent review and replan breaker               | `ISS-009`, `ISS-037`                          |
+| durable ledger, reducers, telemetry, decision records          | `ISS-010`                                     |
+| portable planning/delivery/review skill                        | `ISS-011`                                     |
+| advisory simplification findings                               | `ISS-039`                                     |
+| planning evidence proportionality                              | `ISS-040`                                     |
+| provider-neutral routing and advisory cost evidence            | `ISS-012`                                     |
+| release installation, predecessor authority, rollback/recovery | `ISS-014`, `ISS-020`, `ISS-027`               |
+| circuit breakers and repair admission                          | `ISS-025`                                     |
+| routine cycle and supervision                                  | `ISS-026`, `ISS-030`                          |
+| GitHub board, issue, Actions, and protection authority         | `ISS-033`, `ISS-036`                          |
+| test/reporter hardening with demonstrated portable value       | `ISS-006`; otherwise parked                   |
+| Chase-specific policy and pipeline behavior                    | Chase Sets adapter/backlog; not platform core |
 
 ## Anti-overengineering rules
 
@@ -128,12 +154,15 @@ Explicit exclusions stay on the Chase Sets delivery board:
 5. Do not move excluded consumer work. Reconcile item counts and source issue
    numbers from complete paginated project and issue collections against the
    checked-in migration manifest.
+6. Record issues created after the historical census in
+   `postCensusAddendum`; preserve their observed source state and board role,
+   and never rewrite the 183-record base count to absorb them.
 
 The new board's executable frontier is always derived from native issue
 dependencies and milestones. Imported source provenance never competes with a
 platform slice for dispatch.
 
-Destination keys `ISS-039` and `ISS-040` are reserved for PR49's post-census
-simplification and evidence-proportionality issues. This note does not amend
-the immutable 183-source snapshot or import PR49's `#6999/#7000` addendum; new
-issues in this replan begin at `ISS-041`.
+Destination keys `ISS-039` and `ISS-040` own the post-census simplification and
+evidence-proportionality registrations. Their `#6999/#7000` records live only
+in the addendum, while the later proportionality-replan issues retain
+`ISS-041` through `ISS-043` without collision.

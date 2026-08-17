@@ -60,6 +60,13 @@ repeated "clean removal" rounds: the repaired packet returns to the ordinary
 independent review gate. Complexity that only defends against threats the
 architecture excludes is a finding, not a safeguard.
 
+Portable planning standards also register a falsifiable prediction and
+review-by horizon, express acceptance criteria as observable properties with
+the cheapest discriminating evidence, and treat a prescribed replan mechanism
+only as the floor of properties to preserve. A surface with no current
+consumer must name either its consuming dependency or its parked unpark
+condition; hypothetical future-consumer prose does not make it ready.
+
 Registered blocked-by edges are the transitive reduction of correctness
 dependencies; the checker treats a transitively implied direct edge as drift.
 A draft's prose may name any consumed contract regardless of whether its edge
