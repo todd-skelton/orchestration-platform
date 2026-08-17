@@ -21,7 +21,7 @@ consumer-specific policy.
   `ISS-002, ISS-003, ISS-004, ISS-007 → ISS-010`;
   `ISS-003, ISS-007, ISS-008, ISS-009, ISS-010, ISS-011, ISS-012, ISS-013, ISS-014,
   ISS-025, ISS-032 → ISS-026`;
-  `ISS-003, ISS-005, ISS-006, ISS-007, ISS-010, ISS-026, ISS-032, ISS-038 → ISS-030`.
+  `ISS-003, ISS-004, ISS-005, ISS-006, ISS-007, ISS-010, ISS-026, ISS-032, ISS-038 → ISS-030`.
 - Parallelism: review authority and the event journal may proceed in parallel
   once their gates are satisfied.
 - Gate: no kernel module may invent a project priority, readiness, repository,
@@ -29,6 +29,9 @@ consumer-specific policy.
   identities and preflight facts from `ISS-013`.
 - Parked: distributed coordination across multiple machines; un-park after the
   single-host kernel is self-hosting.
+- Recovery attempts are unlimited over installation lifetime but each operation
+  verifies a bounded reservation/descriptor/summary/accumulator packet selected
+  through ISS-004.
 
 ## Child index
 

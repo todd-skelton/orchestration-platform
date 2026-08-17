@@ -33,6 +33,8 @@ protocol. No candidate gains authority before promotion completes.
   consumer completes shadow adoption.
 - Decision registry: bootstrap root, release layout, and predecessor authority
   are settled in `docs/architecture/contract-decisions.md`.
+  Reviewed bootstrap owns state-authority genesis/reinstall; later authority
+  rotation is a forward ISS-014 request selected by ISS-004 under the old epoch.
 
 ## Child index
 

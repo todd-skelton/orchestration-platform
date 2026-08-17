@@ -20,7 +20,7 @@ extends that foundation for cold-session self-hosting without ambient secrets.
   `ISS-002, ISS-006 → ISS-022`; `ISS-002, ISS-022 → ISS-004`;
   `ISS-002, ISS-022 → ISS-005`;
   `ISS-002, ISS-006, ISS-022 → ISS-031`;
-  `ISS-002, ISS-003, ISS-022, ISS-031 → ISS-032`;
+  `ISS-002, ISS-003, ISS-004, ISS-022, ISS-031 → ISS-032`;
   `ISS-002, ISS-006, ISS-022, ISS-031 → ISS-035`;
   `ISS-002, ISS-003, ISS-032, ISS-035, ISS-036 → ISS-038`.
 - Gate: the capability probe must prove the selected implementation can meet
@@ -28,6 +28,8 @@ extends that foundation for cold-session self-hosting without ambient secrets.
 - Parked: standalone native binaries and remote worker hosts; un-park after the
   local Node runtime reaches parity.
 - Decisions: TypeScript, Node.js 24, pnpm, three equal operating-system targets.
+  State authority additionally requires the ISS-022-proven fixed epoch lock;
+  ISS-004 owns selection and ISS-032 only requests typed broker transitions.
 
 ## Child index
 

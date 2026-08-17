@@ -20,6 +20,36 @@ it may not silently choose another equally plausible contract.
 - Unknown fields on authority records are refused. Advisory records preserve a
   named degraded result rather than guessing.
 
+### Closed records and arrays
+
+Public parse, serialize, migrate, and nested-evidence entry points first take a
+detached closed-record snapshot. They reject proxies (including transparent
+proxies), symbols, inherited or non-enumerable fields, accessors, exotic/class
+instances, and descriptor/prototype traps. Null-prototype records are allowed
+when their own enumerable data fields otherwise match exactly.
+
+Arrays must be same-realm arrays with exactly `Array.prototype`, dense indices
+plus `length` and no other `Reflect.ownKeys`. `length` is a non-enumerable,
+non-configurable data descriptor whose `writable` is true or false. Every index
+is an enumerable data descriptor; mutable, sealed, and frozen writable/
+configurable combinations are accepted. Holes, symbols, extras, accessors,
+custom iterators/prototypes, subclasses, cross-realm arrays, and proxies refuse.
+Descriptor values alone are copied; user code is never invoked.
+
+### Framed pointer digests
+
+Pointer contracts use SHA-256 over UTF-8 `orchestration-platform`, NUL, the
+closed domain tag, NUL, a big-endian unsigned 32-bit part count, then for each
+part a closed one-byte type tag, big-endian unsigned 64-bit byte length, and
+bytes. Digests embedded as parts are raw 32-byte values. Canonical JSON is an
+explicit bytes part.
+
+`Dv` hashes a family value, `Dr` hashes the create-once pre-CAS proposal that
+binds the prior `Dt/Dv/Dr` and successor `Dv`, and `Dt` hashes a tip containing
+`Dv+Dr`. Values do not contain their selecting proposal or tip. Pointer path,
+instance digest, proposal/conflict paths, mutation ID, tombstone, archive, and
+retention behavior are exactly those in `supervisor-contract.md`.
+
 ## Configuration and state roots
 
 - Project configuration is `.orchestration/project.json`.
@@ -51,8 +81,10 @@ it may not silently choose another equally plausible contract.
   only if the capability probe proves Node cannot provide a required guarantee
   on a target OS and the helper has a versioned protocol plus the same
   cross-platform conformance coverage.
-- Correctness relies on create-once identity, compare-and-swap, and verified
-  read-back rather than directory age or PID files.
+- Correctness relies on create-once identity, compare-and-swap, verified
+  read-back, the selected state-mutation epoch, its private capability, and the
+  kernel-exclusive `installation/state-mutation.lock`; directory age, PID,
+  timeout, lease, or unsigned lock bytes never grant authority.
 - Worker launch uses native argument arrays without a shell. Exact launch
   identity, not PID alone, owns the process lifecycle.
 
@@ -83,11 +115,12 @@ it may not silently choose another equally plausible contract.
 - A release is an immutable bundle containing npm tarballs, skill/module files,
   contract schemas, stable test-bundle digest, source revision, build
   provenance, and manifest hashes.
-- Installed releases live under `<state-root>/releases/<release-digest>/`;
-  canonical `<state-root>/installation/active-release.json` containing
-  `active-release/v1` is the only active-identity pointer and is atomically
-  replaced only after installed-byte verification. No `current.json`, symlink,
-  package-manager link, or second pointer has authority.
+- Installed releases live under `<state-root>/releases/<release-digest>/`.
+  Canonical `<state-root>/installation/active-release.json` is the sole
+  `ACTIVE_RELEASE` tip; its selected value binds the active-release family
+  record and reviewed installed-byte proof. It advances only through the common
+  epoch-fenced pointer protocol. No symlink, package-manager link, second
+  pointer, or candidate-owned record has authority.
 - Bootstrap N0 is built by pinned GitHub Actions workflow bytes from an exact
   source revision, certified on all required OS runners, independently reviewed
   by an identity distinct from the author/build attempts, and installed by a
@@ -119,12 +152,13 @@ it may not silently choose another equally plausible contract.
   The raw capability is never in argv, environment, source, journal, or artifact.
   Before N0's first destination mutation or N1+'s recovery fence is published,
   the
-  installer atomically consumes it into the exact durable, non-expiring
-  `CONSUMED_BOUND` transaction authorization. `recover` resolves and proves that
-  already-consumed binding after restart—never consuming it again—before
-  resuming only that transaction. The broker internally revokes/removes it
-  after terminal verification. Missing, locked, copied, replayed, wrong-host,
-  wrong-user, or substituted capability leaves `RECOVERY_REQUIRED` and refuses
+  installer performs the ordered native consume, selected non-expiring
+  `CONSUMED` authorization, and post-selection receipt protocol. `recover`
+  resolves and proves that already-consumed selection after restart—never
+  consuming it again—before resuming only that transaction. The broker performs
+  native removal, selected `REVOKED`, and its post-selection receipt after
+  terminal verification. Missing, locked, copied, replayed, wrong-host,
+  wrong-user, or substituted capability leaves recovery required and refuses
   all new install/promotion mutation. From N0 onward, stable predecessor N owns
   the otherwise identical promotion protocol.
 - Bootstrap cancellation is only canonical `orchestration-bootstrap abort
@@ -136,8 +170,9 @@ it may not silently choose another equally plausible contract.
   alternate cleanup command exists.
 - The installation-scoped supervisor shim and native scheduler definition do
   not change during N0→N1. Stable N stages/verifies N+1 and pending broker-client
-  admission, then atomically replaces canonical `active-release/v1`; this is the
-  sole activation point. N1+ staging bytes and pending admission are explicitly
+  admission, then requests selection of canonical `active-release/v2` through
+  the epoch-fenced pointer protocol; this is the sole activation point. N1+
+  staging bytes and pending admission are explicitly
   non-authoritative and may be removed by `ABORTED_PRE_ACTIVATION` until the
   cleanup gate CASes from `PENDING` to `ACTIVATING`. Abort races that decision
   only through `PENDING` → `ABORTING`; once `ACTIVATING` wins, recovery is

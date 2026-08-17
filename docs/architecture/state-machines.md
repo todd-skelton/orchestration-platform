@@ -5,13 +5,23 @@ for the current observation, not an automatically recoverable state.
 
 ## State mutation
 
-| State | Permitted authority | Trigger and durable evidence | Interruption/recovery | Next routine operation |
-|---|---|---|---|---|
-| `ABSENT` | create only | create-once identity | remain absent or read prepared record | create or inspect |
-| `PREPARED` | exact transaction | intent plus predecessor/candidate hashes | resume compare-and-swap or abort before commit | verify predecessor |
-| `COMMITTED` | readers | successor bytes and verified receipt | verify/read; never reapply | ordinary read |
-| `ABORTED` | readers | pre-commit abort receipt | no resume | start new transaction |
-| `UNKNOWN` | none | malformed, third-state, or moved evidence | external diagnosis | refuse mutation |
+Every authority pointer mutation holds the fixed kernel-exclusive installation
+lock and uses the selected state-mutation epoch. Values, proposals, conflicts,
+and tips form the acyclic `Dv/Dr/Dt` graph in `supervisor-contract.md`.
+
+| Proposal classification | Required evidence | Recovery/next operation |
+| --- | --- | --- |
+| `PENDING` | create-once value and proposal, no selected winner yet | under the same epoch lock perform the real CAS/read-back |
+| `SELECTED` | canonical tip equals the proposed `Dv/Dr` | idempotent read; never reapply |
+| `LOST_CONFLICT` | a different selected winner and exact conflict receipt | retain for census/audit |
+| `COMPACTED` | selected retention plan and completion receipt | retain the compacted classification proof |
+| `UNKNOWN` | malformed, contradictory, missing, fake-lost, or mixed epoch | external diagnosis; refuse mutation/start |
+
+An ordinary commit rereads the same selected authority before and after target
+selection. Rotation runs under the old private capability, resolves every
+other-kind pending proposal, requires a complete zero-PENDING/zero-UNKNOWN
+census, selects/read-backs the new epoch, and releases. Kernel owner death is
+the only lock-loss recovery; PID, age, lease, and timeout are never authority.
 
 ## Worker process and ownership
 
@@ -132,21 +142,83 @@ either path.
 | `REVIEWED` | distinct independent reviewer | distinct independent reviewer | exact-candidate acceptance | re-observe unchanged evidence | authorize |
 | `AUTHORIZED` | human operator grant over exact digest, validated by reviewed bootstrap installer | installed stable predecessor preflight | fresh authority plus one-use recovery digest | abort only before first mutation | apply |
 | `BOOTSTRAP_APPLYING` | reviewed bootstrap installer, same transaction | n/a | first N0 destination mutation | forward recovery only | install/verify N0 |
-| `BOOTSTRAP_ACTIVE` | installed N0 | n/a | generation-zero `active-release/v1` + broker client + shim read-back + bootstrap receipt + recovery authorization revoked + cleanup gate absent/archive verified | ordinary recovery rules | first N0 no-work tick |
+| `BOOTSTRAP_ACTIVE` | installed N0 | n/a | genesis active-release selected + broker client + shim read-back + bootstrap receipt + recovery authorization revoked + cleanup archive and gate tombstone selected | ordinary recovery rules | first N0 no-work tick |
 | `SUCCESSOR_STAGED_PRE_ACTIVATION` | n/a | installed stable predecessor | verified N+1 bytes + pending broker admission + `CONSUMED_BOUND` authorization + published recovery fence; gate `PENDING`, active pointer N | activation CASes gate `ACTIVATING`; abort CASes gate `ABORTING`; exactly one wins | `SUCCESSOR_ACTIVATING_PRE_POINTER` or abort |
 | `SUCCESSOR_ACTIVATING_PRE_POINTER` | n/a | exact predecessor/fence-backed recovery transaction | gate `ACTIVATING`; active pointer still N; exact expected N+1 record | forward-only active-release CAS; abort refuses; mismatch becomes unknown | `SUCCESSOR_ACTIVE_HANDOFF` |
 | `SUCCESSOR_ACTIVE_HANDOFF` | n/a | same live or shim-relaunched predecessor recovery transaction | atomic active pointer names N+1 while broker still names N | forward recovery only; ordinary ticks fenced | activate broker N+1, record follow-up, terminalize N cycle |
-| `SUCCESSOR_ACTIVE` | n/a | installed N+1 successor | atomic `active-release/v1`, activated broker-client generation, shim read-back, cleared fence, terminal predecessor cycle receipt, recovery authorization revoked, and cleanup gate absent/archive verified | ordinary recovery rules | next scheduler tick runs successor verification follow-up |
+| `SUCCESSOR_ACTIVE` | n/a | installed N+1 successor | selected active-release, activated broker-client generation, shim read-back, cleared fence, terminal predecessor cycle receipt, recovery authorization revoked, and cleanup archive/tombstones selected | ordinary recovery rules | next scheduler tick runs successor verification follow-up |
 | `BOOTSTRAP_ABORTING_PRE_MUTATION` | exact reviewed bootstrap abort command + broker internal reconciler | n/a | cleanup gate `ABORTING` and authoritative destination-absence plan | broker revokes; resumed command completes gate archive/head/removal | `ABORTED_PRE_MUTATION` |
 | `SUCCESSOR_ABORTING_PRE_ACTIVATION` | n/a | exact predecessor transaction/shim + broker internal reconciler | gate `ABORTING`; active pointer N; shim-proven staging absence; publication discriminator frozen; any exact fence retained | no authorization attachment or broker client; terminalize/archive any pre-fence child, broker compare-removes bound pending admission and revokes, then shim clears an exact fence and completes gate | `ABORTED_PRE_ACTIVATION` |
 | `ABORTED_PRE_MUTATION` | bootstrap installer or granting operator for exact transaction | installed stable predecessor for exact transaction | authoritative destination-absence + recovery authorization revocation + cleanup-gate archive/head/removal before first mutation | no resume | start new candidate transaction |
-| `ABORTED_PRE_ACTIVATION` | n/a | installed stable predecessor for exact transaction | staged bytes/pending admission/fence removed, authorization `REVOKED`, cleanup-gate archive/head committed and canonical gate absent while active pointer remains N | no resume | start new candidate transaction |
+| `ABORTED_PRE_ACTIVATION` | n/a | installed stable predecessor for exact transaction | staged bytes/pending admission terminalized, authorization `REVOKED`, cleanup/fence archives and tombstones selected while active pointer remains N | no resume | start new candidate transaction |
 | `BOOTSTRAP_RECOVERY_REQUIRED` | reviewed bootstrap installer, same transaction and existing `CONSUMED_BOUND` authorization | n/a | interrupted N0 post-mutation state | prove/reuse exact pre-bound authorization; never consume again; resume forward | reach `BOOTSTRAP_ACTIVE` |
 | `SUCCESSOR_RECOVERY_PRE_ACTIVATION` | n/a | exact predecessor/shim transaction; narrowed consume only while gate `PENDING` | interrupted pre-fence work while active pointer remains N | `PENDING` uses closed pre-fence handoff; `ABORTING` uses clientless shim staging cleanup plus broker-internal admission removal/revoke | staged or `ABORTED_PRE_ACTIVATION` |
 | `SUCCESSOR_RECOVERY_POST_ACTIVATION` | n/a | shim-launched exact predecessor recovery transaction/capability | pointer names N+1 and fence remains | forward recovery only | reach `SUCCESSOR_ACTIVE` |
 | `UNKNOWN` | none | none | candidate/evidence movement or third state | external diagnosis | refuse install/start |
 
-## Activation recovery launch
+## Activation recovery v2
+
+The current authority uses selected pointers; the v1 tables retained below are
+diagnostic-only and are refused at authority paths.
+
+### Attempt reservation
+
+| State | Permitted authority | Required evidence | Next state |
+| --- | --- | --- | --- |
+| `RESERVED` | selected old-epoch proposal winner | transaction/source and predecessor accumulator triple or tagged genesis select one prebound UUIDv7 and descriptor inputs | `CONSUMED` |
+| `CONSUMED` | exact launch transaction | accumulator `IN_PROGRESS` binds reservation `Dt/Dv/Dr` | `TERMINAL` |
+| `TERMINAL` | exact terminal reducer | selected summary and accumulator `TERMINAL` | `TOMBSTONE` |
+| `TOMBSTONE` | readers/later transaction | selected archive/tombstone proof | no transition |
+| `UNKNOWN` | none | collision, fork, malformed or wrong predecessor | refuse launch/start |
+
+The same predecessor and bytes reuse the selected reservation. A competing
+UUID proposal is classified lost. UUIDv7 supplies uniqueness only.
+
+### Attempt and accumulator
+
+| State | Required evidence | Next operation |
+| --- | --- | --- |
+| `READY_ONLY` descriptor | selected reservation and exact READY launch | start or prove absence |
+| `LIVE` descriptor | READY plus initial LIVE and exact process identity | attach or monitor |
+| `IN_PROGRESS` accumulator | current reservation/descriptor; first has no prior summary, later binds previous selected terminal triple | produce one terminal summary |
+| `TERMINAL` accumulator | same descriptor, selected terminal summary, tagged rolling digest | reserve from this terminal triple or tombstone |
+| `UNKNOWN` | malformed, duplicate ID, moved process, stale pointer, or mixed transaction | refuse launch/start |
+
+Attachment binds a selected LIVE descriptor, never a future summary. Terminal
+summary binds descriptor, optional attachment, terminal chain, exit/absence,
+channel-denial, and revocation evidence. Verification is bounded to current
+authority, reservation, descriptor, attachment, accumulator, READY/initial
+LIVE, and latest prior summary. There is no lifetime attempt cap.
+
+### Cleanup gate
+
+The ten admissible lifecycle/publication pairs are PN, PI, PP, AP, BN, BI, BP,
+BC, CN, and CC. Exactly these twelve mutation edges append:
+
+```text
+PN→PI  PN→BN  PN→CN  PI→PP  PI→BI  PP→AP
+PP→BP  AP→CC  BN→CN  BI→BP  BP→BC  BC→CC
+```
+
+All other cells and all self-loop writes refuse. Crash resume of an already
+selected pair is `NO_APPEND`. Fence state is `PREPARED→POST_ACTIVATION`; no
+self-loop write is allowed. Root/head histories are complete, dense,
+digest-linked arrays validated with the shared closed-array snapshot. Their
+canonical selected pointers never CAS from bare absence after genesis.
+
+### Retention and degraded audit
+
+Full-required current authority may not be discarded. Terminal attempt history
+may compact only after a selected checkpoint, selected plan, exact deletion,
+verified receipt, and completion selection. Pending proposals never compact.
+Unexpected old terminal loss may select `AUDIT_DEGRADED` only after an eligible
+checkpoint/tombstone. That state permits existing forward recovery, retry,
+cleanup, selected attachment, and ordinary non-release ticks; it blocks new
+promotion/bootstrap/certification, unrelated authorization/attachment,
+compaction, and audit finalization. Any earlier or full-required loss is
+`UNKNOWN` and blocks all mutation/start.
+
+## Activation recovery launch v1 (diagnostic only)
 
 This table governs one canonical current pointer plus immutable transition
 records per active promotion; the terminal archive permits the pointer path to
@@ -164,7 +236,7 @@ be reused by a later transaction.
 | `TERMINAL_COMPLETE` | exact transaction/shim cleanup | terminal cycle/broker/resource proof was recorded before fence clear; child may still be waiting | clear fence; observe child exit; wait for broker-internal recovery-authorization revocation; archive/verify complete immutable chain; CAS-remove current pointer | `ABSENT` for a later transaction |
 | `UNKNOWN` | none | multiple/ambiguous process, moved binding, malformed record, or fence mismatch | external diagnosis only | refuse launch/start |
 
-## Authority root/head initialization
+## Authority root/head initialization v1 (diagnostic only)
 
 This reducer applies independently to cleanup-gate and recovery-fence roots.
 
@@ -176,7 +248,7 @@ This reducer applies independently to cleanup-gate and recovery-fence roots.
 | `CURRENT` | exact root/head/current chain | enter the authority-specific state machine | gate `PENDING` or fence `PREPARED` |
 | `UNKNOWN` | head without root, current without both, malformed/moved/multiple/extra/mixed bytes, or non-null ordinal-zero predecessor | external diagnosis only | refuse mutation/start |
 
-## Activation cleanup gate
+## Activation cleanup gate v1 (diagnostic only)
 
 | State | Permitted authority | Trigger and durable evidence | Interruption/recovery | Next operation |
 | --- | --- | --- | --- | --- |
