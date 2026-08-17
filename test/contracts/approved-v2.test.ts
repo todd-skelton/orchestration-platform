@@ -94,7 +94,7 @@ describe("approved v2 authority contracts", () => {
           schemaVersion,
         })),
       ),
-    ).toBe("61ec448b230294e2cbf1b8ac8c73a64a8350b082bb257e596cdc83e72d02c24d");
+    ).toBe("457feac245fce1270aa80dbf9547343f4e752035be1f3708ec3ceaf70ba5c2ef");
   });
 
   test("closes bootstrap versus selected-epoch proposal producers", () => {
@@ -1010,6 +1010,7 @@ describe("approved v2 authority contracts", () => {
     ).toEqual([]);
     expect(
       validateAuthorityMembership({
+        schemaVersion: "authority-membership-evidence/v1",
         currentAuthoritySelection: {},
         globalIdentity: {},
         leaf,
@@ -1020,6 +1021,7 @@ describe("approved v2 authority contracts", () => {
     ).toEqual(["membership:empty-root-refused"]);
     expect(
       validateAuthorityMembership({
+        schemaVersion: "authority-membership-evidence/v1",
         currentAuthoritySelection: {},
         globalIdentity: {},
         leaf,
@@ -1374,6 +1376,7 @@ describe("approved v2 authority contracts", () => {
     };
     expect(
       validateAuthorityMembership({
+        schemaVersion: "authority-membership-evidence/v1",
         currentAuthoritySelection: rotatedEnvelope,
         globalIdentity: identity,
         leaf,
@@ -1381,9 +1384,10 @@ describe("approved v2 authority contracts", () => {
         rootKind: "NONEMPTY",
         siblingDigests: siblings,
       }),
-    ).toEqual([]);
+    ).not.toEqual([]);
     expect(
       validateAuthorityMembership({
+        schemaVersion: "authority-membership-evidence/v1",
         currentAuthoritySelection: rotatedEnvelope,
         globalIdentity: identity,
         leaf: { ...leaf, epochKey: digest },

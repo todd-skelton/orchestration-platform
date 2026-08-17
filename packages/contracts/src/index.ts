@@ -119,7 +119,6 @@ export {
   externalAuthorityPaths,
   incrementDecimalAscii,
   validateAuthorityMembership,
-  validateAuthorityMembershipV2,
   validateAuthorityHistoryNodeInventoryPage,
   validateAuthoritySingleUpdateWitness,
   validateAuthorityValueHistoryBinding,

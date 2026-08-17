@@ -27,6 +27,7 @@ export interface FieldRule {
   readonly nullable?: boolean;
   readonly array?: boolean;
   readonly values?: readonly string[];
+  readonly unique?: boolean;
 }
 
 export interface SchemaDefinition {
@@ -309,7 +310,7 @@ function validateField(name: string, rule: FieldRule, value: unknown): readonly 
       issues.push(`${name}:invalid-${rule.kind}`);
     }
   }
-  if (rule.array) {
+  if (rule.array && rule.unique === true) {
     const encoded = values.map((entry) => JSON.stringify(entry));
     if (new Set(encoded).size !== encoded.length) issues.push(`${name}:duplicate-array-entry`);
   }

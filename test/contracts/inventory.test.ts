@@ -22,6 +22,7 @@ import {
   computeAuthorityNodeRecordDigest,
   diagnostic,
   pointerKinds,
+  parseContract,
   pointerPath,
   pointerRegistry,
   schemaVersions,
@@ -45,6 +46,8 @@ describe("approved authority node inventory contracts", () => {
     expect(pointerKinds.at(-1)).toBe("AUTHORITY_NODE_MATERIALIZATION_RUN");
     expect(pointerRegistry.at(-1)).toMatchObject({
       kind: "AUTHORITY_NODE_MATERIALIZATION_RUN",
+      singletonScope: "AUTHORITY_DP",
+      genesis: "ABSENT_TO_IDLE",
       transactionPolicy: "NULL",
       sourceTokens: ["none"],
       retention: "FULL_REQUIRED",
@@ -87,6 +90,27 @@ describe("approved authority node inventory contracts", () => {
       expect(schemaVersions).not.toContain(old);
       expect(diagnostic.schemaVersions).toContain(old);
     }
+  });
+
+  test("allows repeated sparse siblings but enforces explicitly unique digest censuses", () => {
+    expect(
+      parseContract("authority-history-update-proof/v1", {
+        ...fixtureFor("authority-history-update-proof/v1"),
+        siblingDigests: Array(256).fill(digest),
+      }).ok,
+    ).toBe(true);
+    expect(
+      schemaVersions.includes("authority-node-materialization-plan/v1") &&
+        fixtureFor("authority-node-materialization-plan/v1"),
+    ).toBeTruthy();
+    const duplicatedPlan = {
+      ...fixtureFor("authority-node-materialization-plan/v1"),
+      planEntryDigests: [digest, digest],
+    };
+    expect(
+      // The current parser is reached through the public inventory composition helper.
+      () => computeAuthorityMaterializationPlanDigest(duplicatedPlan),
+    ).toThrow(/duplicate-array-entry/);
   });
 
   test("composes one exact planned node through filesystem, membership, receipt, and batch", () => {

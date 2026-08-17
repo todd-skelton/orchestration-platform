@@ -24,6 +24,8 @@ const enumeration = (...values: readonly string[]): FieldRule =>
   field("opaque", { values: Object.freeze([...values]) });
 const nullable = (kind: FieldRule["kind"]): FieldRule => field(kind, { nullable: true });
 const array = (kind: FieldRule["kind"]): FieldRule => field(kind, { array: true });
+const uniqueArray = (kind: FieldRule["kind"]): FieldRule =>
+  field(kind, { array: true, unique: true });
 const define = (
   schemaVersion: string,
   fields: Readonly<Record<string, FieldRule>>,
@@ -64,6 +66,75 @@ const decimalComponent = (value: string): string => {
 };
 const incrementDecimal = (value: string): string => (BigInt(value) + 1n).toString();
 
+function computeHistoryEmptyDigest(depth: number): string {
+  return digest("authority-history-empty/v1", [fixed(depth.toString(16).padStart(4, "0"))]);
+}
+
+function computeHistoryNodeDigest(depth: number, left: string, right: string): string {
+  return digest("authority-history-node/v1", [
+    fixed(depth.toString(16).padStart(4, "0")),
+    raw(left),
+    raw(right),
+  ]);
+}
+
+function computeHistorySparseRoot(
+  epochKey: string,
+  leafDigest: string | null,
+  siblingDigests: readonly string[],
+): string {
+  if (siblingDigests.length !== 256) throw new TypeError("history-siblings:invalid");
+  const bits = [...Buffer.from(epochKey, "hex")].flatMap((byte) =>
+    Array.from({ length: 8 }, (_, index) => (byte >> (7 - index)) & 1),
+  );
+  let current = leafDigest ?? computeHistoryEmptyDigest(256);
+  for (let level = 0; level < 256; level += 1) {
+    const depth = 255 - level;
+    const sibling = siblingDigests[level]!;
+    if (
+      leafDigest === null &&
+      current === computeHistoryEmptyDigest(depth + 1) &&
+      sibling === computeHistoryEmptyDigest(depth + 1)
+    )
+      current = computeHistoryEmptyDigest(depth);
+    else
+      current =
+        bits[depth] === 0
+          ? computeHistoryNodeDigest(depth, current, sibling)
+          : computeHistoryNodeDigest(depth, sibling, current);
+  }
+  return current;
+}
+
+function computeHistoryLeafDigest(record: ContractRecord): string {
+  return digest("authority-epoch-leaf/v1", [
+    raw(record.globalIdentityDigest as string),
+    raw(record.epochKey as string),
+    decimalPart(record.authorityOrdinal as string),
+    raw(record.authorityPathInstanceDigest as string),
+    raw(record.authorityTipDigest as string),
+    raw(record.authorityValueDigest as string),
+    raw(record.authorityReceiptDigest as string),
+    canonical(record),
+  ]);
+}
+
+function computeAuthorityUpdateProofDigestLocal(record: ContractRecord): string {
+  const siblings = record.siblingDigests as readonly string[];
+  return digest("authority-history-update-proof/v1", [
+    raw(record.globalIdentityDigest as string),
+    raw(record.epochKey as string),
+    raw(record.leafDigest as string),
+    text(record.priorRootKind as string),
+    raw(record.priorRootDigest as string),
+    raw(record.successorRootDigest as string),
+    decimalPart(record.priorCount as string),
+    decimalPart(record.successorCount as string),
+    ...siblings.map(raw),
+    canonical(record),
+  ]);
+}
+
 const runPostSelectionObservationDefinition = define(
   "pointer-mutation-run-selector-post-selection-observation/v1",
   {
@@ -79,6 +150,64 @@ const runPostSelectionObservationDefinition = define(
     observedAt: timestamp,
   },
 );
+const runSegmentDefinition = define("pointer-mutation-run-segment/v1", {
+  globalIdentityDigest: sha,
+  pointerKind: enumeration(...pointerKinds),
+  canonicalPointerPath: path,
+  installationId: uuid,
+  projectId: uuid,
+  stateRootDigest: sha,
+  transactionId: field("uuid-v7", { nullable: true }),
+  sourceToken: field("opaque"),
+  targetPathInstanceDigest: sha,
+  targetMutationId: sha,
+  runId: sha,
+  runOrdinal: decimal,
+  stage: enumeration(
+    "CURRENT_AUTHORITY_READ",
+    "TARGET_RECONCILED",
+    "VALUE_READBACK",
+    "PROPOSAL_READBACK",
+    "CURRENT_AUTHORITY_PRE_CAS_READ",
+    "CAS_ARMED",
+    "TARGET_POST_CAS_READBACK",
+    "PROPOSAL_CLASSIFIED",
+    "CURRENT_AUTHORITY_POST_CAS_READ",
+  ),
+  stageEvidenceDigest: sha,
+  recordedAt: timestamp,
+});
+const commitResolutionDefinition = define("pointer-mutation-commit-resolution/v1", {
+  targetPathInstanceDigest: sha,
+  targetMutationId: sha,
+  outcome: enumeration("SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"),
+  outcomeEvidenceDigest: sha,
+  selectedTargetTipDigest: nullableSha,
+  conflictReceiptDigest: nullableSha,
+  unknownEvidenceDigest: nullableSha,
+  producerEpochKey: sha,
+  resolvedAt: timestamp,
+});
+const authorityHistoryLeafDefinition = define("authority-history-leaf/v1", {
+  globalIdentityDigest: sha,
+  epochKey: sha,
+  authorityOrdinal: decimal,
+  authorityPathInstanceDigest: sha,
+  authorityTipDigest: sha,
+  authorityValueDigest: sha,
+  authorityReceiptDigest: sha,
+});
+const authorityHistoryUpdateProofDefinition = define("authority-history-update-proof/v1", {
+  globalIdentityDigest: sha,
+  epochKey: sha,
+  leafDigest: sha,
+  priorRootKind: enumeration("EMPTY", "NONEMPTY"),
+  priorRootDigest: sha,
+  successorRootDigest: sha,
+  priorCount: decimal,
+  successorCount: decimal,
+  siblingDigests: array("sha256"),
+});
 
 export function computeAuthorityInventoryEmptyDigest(depth: number): string {
   if (!Number.isInteger(depth) || depth < 0 || depth > 256)
@@ -335,7 +464,9 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         },
         (record) => {
           if (record.filesystemDisposition === "CREATED")
-            return record.existed === false && record.readbackDigest === record.nodeRecordDigest
+            return record.existed === false &&
+              record.observedBytesDigest === null &&
+              record.readbackDigest === record.nodeRecordDigest
               ? []
               : ["filesystemDisposition:created-fields"];
           if (record.filesystemDisposition === "READBACK_SAME")
@@ -434,7 +565,7 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         priorInventoryRootDigest: sha,
         priorInventoryCount: decimal,
         priorInventoryTreeRootDigest: sha,
-        planEntryDigests: array("sha256"),
+        planEntryDigests: uniqueArray("sha256"),
         successorInventoryKind: enumeration("NONEMPTY"),
         successorInventoryRootDigest: sha,
         successorInventoryCount: decimal,
@@ -465,8 +596,8 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         priorInventoryRootDigest: sha,
         priorInventoryCount: decimal,
         priorInventoryTreeRootDigest: sha,
-        materializationReceiptDigests: array("sha256"),
-        updateEntryDigests: array("sha256"),
+        materializationReceiptDigests: uniqueArray("sha256"),
+        updateEntryDigests: uniqueArray("sha256"),
         successorInventoryKind: enumeration("NONEMPTY"),
         successorInventoryRootDigest: sha,
         successorInventoryCount: decimal,
@@ -627,7 +758,7 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         priorCensusDigest: nullableSha,
         priorCumulativeCount: decimal,
         entries: array("json"),
-        entryDigests: array("sha256"),
+        entryDigests: uniqueArray("sha256"),
         enumerationObservationDigest: sha,
         successorCursor: field("relative-path", { nullable: true }),
         successorCumulativeCount: decimal,
@@ -840,22 +971,16 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         materializationFinishingSelection: nullableJson,
       }),
       define("pointer-mutation-run-checkpoint-evidence/v2", {
+        segment: json,
         core: json,
         selectorSelection: json,
         postSelectionObservation: json,
+        terminalResolution: nullableJson,
       }),
       define("pointer-evidence-slot/v3", {
         pointerKind: enumeration(...pointerKinds),
         selectedEvidence: field("json", { nullable: true }),
         producerMembership: field("json", { nullable: true }),
-      }),
-      define("authority-membership-evidence/v2", {
-        currentAuthoritySelection: json,
-        globalIdentity: json,
-        leaf: json,
-        root: json,
-        rootKind: enumeration("NONEMPTY"),
-        siblingDigests: array("sha256"),
       }),
       define(
         "pointer-evidence-packet/v3",
@@ -1089,10 +1214,28 @@ export function validateAuthorityValueV3Composition(input: unknown): readonly st
         closed.value.successorCore,
       );
       if (
+        append.globalIdentityDigest !== value.globalIdentityDigest ||
+        core.globalIdentityDigest !== value.globalIdentityDigest ||
+        append.predecessorTipDigest !== value.priorAuthorityTipDigest ||
+        append.predecessorValueDigest !== value.priorAuthorityValueDigest ||
+        append.predecessorReceiptDigest !== value.priorAuthorityReceiptDigest ||
+        core.predecessorTipDigest !== value.priorAuthorityTipDigest ||
+        core.predecessorValueDigest !== value.priorAuthorityValueDigest ||
+        core.predecessorReceiptDigest !== value.priorAuthorityReceiptDigest ||
+        core.successorOrdinal !== value.authorityOrdinal ||
+        core.selectedActiveReleaseTipDigest !== value.activeReleaseTipDigest ||
+        core.selectedActiveReleaseValueDigest !== value.activeReleaseValueDigest ||
+        core.selectedActiveReleaseReceiptDigest !== value.activeReleaseReceiptDigest ||
+        core.reviewedHelperDigest !== value.helperDigest ||
+        core.reviewedProfileDigest !== value.helperProfileDigest ||
+        core.reviewedCustodyDigest !== value.custodyReceiptDigest ||
         value.historyAppendReceiptDigest !== computeAuthorityAppendReceiptDigestV2(append) ||
         value.successorCoreDigest !== computeAuthoritySuccessorCoreDigestV2(core) ||
         append.successorRootDigest !== historyDigest ||
+        append.successorCount !== history.count ||
         append.successorInventoryRootDigest !== inventoryDigest ||
+        append.successorInventoryCount !== inventory.count ||
+        append.successorInventoryTreeRootDigest !== inventory.treeRootDigest ||
         append.successorCoreDigest !== value.successorCoreDigest ||
         core.successorHistoryRootDigest !== historyDigest ||
         core.successorInventoryRootDigest !== inventoryDigest ||
@@ -1714,6 +1857,15 @@ export function validateAuthorityMaterializationComposition(input: unknown): rea
         ].some((value) => value !== planDigest)
       )
         issues.push(`${index}:plan-mismatch`);
+      if (
+        observation.oldAuthorityTipDigest !== plan.oldAuthorityTipDigest ||
+        observation.oldAuthorityValueDigest !== plan.oldAuthorityValueDigest ||
+        observation.oldAuthorityReceiptDigest !== plan.oldAuthorityReceiptDigest ||
+        batch.startedTipDigest !== observation.startedTipDigest ||
+        batch.startedValueDigest !== observation.startedValueDigest ||
+        batch.startedReceiptDigest !== observation.startedReceiptDigest
+      )
+        issues.push(`${index}:started-old-authority-binding-mismatch`);
       const observationDigest = computeAuthorityFilesystemObservationDigest(observation);
       const updateDigest = computeAuthorityInventoryUpdateEntryDigest(update);
       if (
@@ -1798,10 +1950,13 @@ export function validateAuthorityMaterializationAuthorityComposition(
 ): readonly string[] {
   const closed = snapshotClosedRecord(input, [
     "appendReceipt",
+    "authorityLeaf",
+    "authorityUpdateProof",
     "authorityValue",
     "historyRoot",
     "inventoryRoot",
     "materialization",
+    "priorHistoryRoot",
     "successorCore",
   ]);
   if (!closed.ok) return closed.issues;
@@ -1825,7 +1980,25 @@ export function validateAuthorityMaterializationAuthorityComposition(
       materialization.value.batch,
     );
     const append = requireRecord("authority-history-append-receipt/v2", closed.value.appendReceipt);
+    const leafParsed = validateAgainstSchema(
+      authorityHistoryLeafDefinition,
+      closed.value.authorityLeaf,
+    );
+    const proofParsed = validateAgainstSchema(
+      authorityHistoryUpdateProofDefinition,
+      closed.value.authorityUpdateProof,
+    );
+    if (!leafParsed.ok || !proofParsed.ok)
+      return ["materialization-authority:update-proof-invalid"];
+    const leaf = leafParsed.value;
+    const proof = proofParsed.value;
     const history = requireRecord("authority-history-root/v2", closed.value.historyRoot);
+    const priorHistory = requireRecord(
+      proof.priorRootKind === "EMPTY"
+        ? "authority-history-empty-root/v2"
+        : "authority-history-root/v2",
+      closed.value.priorHistoryRoot,
+    );
     const inventory = requireRecord("authority-node-inventory-root/v1", closed.value.inventoryRoot);
     const authority = validateAgainstSchema(
       v2Definitions["state-mutation-authority-value/v3"]!,
@@ -1848,8 +2021,34 @@ export function validateAuthorityMaterializationAuthorityComposition(
     const planDigest = computeAuthorityMaterializationPlanDigest(plan);
     const batchDigest = computeAuthorityInventoryBatchDigest(batch);
     const historyDigest = computeAuthorityHistoryRootDigestV2(history);
+    const priorHistoryDigest =
+      proof.priorRootKind === "EMPTY"
+        ? computeAuthorityHistoryEmptyRootDigestV2(priorHistory)
+        : computeAuthorityHistoryRootDigestV2(priorHistory);
     const inventoryDigest = computeAuthorityInventoryRootDigest(inventory);
+    const epochKey = digest("authority-epoch-key/v1", [
+      raw(leaf.globalIdentityDigest as string),
+      raw(leaf.authorityPathInstanceDigest as string),
+      raw(leaf.authorityTipDigest as string),
+      raw(leaf.authorityValueDigest as string),
+      raw(leaf.authorityReceiptDigest as string),
+    ]);
+    const leafDigest = computeHistoryLeafDigest(leaf);
+    const proofSiblings = proof.siblingDigests as readonly string[];
     if (
+      leaf.epochKey !== epochKey ||
+      proof.globalIdentityDigest !== leaf.globalIdentityDigest ||
+      proof.epochKey !== epochKey ||
+      proof.leafDigest !== leafDigest ||
+      proof.priorRootDigest !== priorHistoryDigest ||
+      proof.successorRootDigest !== historyDigest ||
+      proof.priorCount !== priorHistory.count ||
+      proof.successorCount !== history.count ||
+      computeHistorySparseRoot(epochKey, null, proofSiblings) !== priorHistory.treeRootDigest ||
+      computeHistorySparseRoot(epochKey, leafDigest, proofSiblings) !== history.treeRootDigest ||
+      append.appendedEpochKey !== epochKey ||
+      append.leafDigest !== leafDigest ||
+      append.updateProofDigest !== computeAuthorityUpdateProofDigestLocal(proof) ||
       plan.globalIdentityDigest !== append.globalIdentityDigest ||
       plan.globalIdentityDigest !== core.globalIdentityDigest ||
       plan.globalIdentityDigest !== authority.value.globalIdentityDigest ||
@@ -1866,6 +2065,7 @@ export function validateAuthorityMaterializationAuthorityComposition(
       plan.priorHistoryKind !== append.priorRootKind ||
       plan.priorHistoryRootDigest !== append.priorRootDigest ||
       plan.priorHistoryCount !== append.priorCount ||
+      plan.priorHistoryTreeRootDigest !== priorHistory.treeRootDigest ||
       plan.predecessorLeafDigest !== append.leafDigest ||
       plan.authorityUpdateProofDigest !== append.updateProofDigest ||
       append.materializationPlanDigest !== planDigest ||
@@ -2173,6 +2373,9 @@ export function validateAuthorityInventoryCensus(input: unknown): readonly strin
     let count = "0";
     let firstPage: string | null = null;
     let selectedTuple: ContractRecord | null = null;
+    let previousNodePath: string | null = null;
+    const seenNodeDigests = new Set<string>();
+    const seenNodePaths = new Set<string>();
     for (const [index, page] of pages.entries()) {
       const core = requireRecord("authority-node-inventory-census-page-core/v1", page.core);
       const selectedInventoryRoot: ContractRecord = {
@@ -2221,6 +2424,15 @@ export function validateAuthorityInventoryCensus(input: unknown): readonly strin
           entry.inventoryLeafDigest !== leafDigest
         )
           issues.push(`${index}:${entryIndex}:node-binding-mismatch`);
+        if (
+          (previousNodePath !== null && previousNodePath >= String(entry.nodePath)) ||
+          seenNodeDigests.has(String(entry.nodeDigest)) ||
+          seenNodePaths.has(String(entry.nodePath))
+        )
+          issues.push(`${index}:${entryIndex}:global-order-or-duplicate-mismatch`);
+        previousNodePath = String(entry.nodePath);
+        seenNodeDigests.add(String(entry.nodeDigest));
+        seenNodePaths.add(String(entry.nodePath));
         if (
           computeAuthorityInventorySparseRoot(
             recomputed.digest,
@@ -2341,6 +2553,7 @@ export function validateAuthorityInventoryCensus(input: unknown): readonly strin
       terminal.pageCount !== String(pages.length) ||
       terminal.cumulativeCount !== count ||
       terminal.inventoryCount !== count ||
+      terminal.terminalEnumerationObservationDigest !== finalCore.enumerationObservationDigest ||
       !same(terminal, finalCore, [
         "globalIdentityDigest",
         "censusId",
@@ -2439,6 +2652,26 @@ export function computeRunPostSelectionDigestV1(input: unknown): string {
   ]);
 }
 
+function computeRunSegmentDigestV1(input: unknown): string {
+  const parsed = validateAgainstSchema(runSegmentDefinition, input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return digest("pointer-mutation-run-segment/v1", [canonical(parsed.value)]);
+}
+
+function computeRunAuditDigestV1(prior: string | null, segment: string): string {
+  return digest("pointer-mutation-run-audit/v1", [
+    fixed(prior === null ? "00" : "01"),
+    ...(prior === null ? [] : [raw(prior)]),
+    raw(segment),
+  ]);
+}
+
+function computeCommitResolutionDigestV1(input: unknown): string {
+  const parsed = validateAgainstSchema(commitResolutionDefinition, input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return digest("pointer-mutation-commit-resolution/v1", [canonical(parsed.value)]);
+}
+
 export function validateAuthorityCommitRunV3(input: unknown): readonly string[] {
   const parsed = validateAgainstSchema(
     inventoryDefinitions["pointer-mutation-commit-evidence/v3"]!,
@@ -2455,6 +2688,8 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
       requireRecord("pointer-mutation-run-checkpoint-core/v2", value.core),
     );
     const intent = requireRecord("pointer-mutation-run-intent/v2", parsed.value.intent);
+    const authority = resolveSelectedPointerEvidence(parsed.value.authoritySelection);
+    if (!authority.ok) return authority.issues.map((issue) => `authority:${issue}`);
     const issues: string[] = [];
     const identityFields = [
       "globalIdentityDigest",
@@ -2467,9 +2702,104 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
     ];
     let priorSelector: SelectedPointerEvidence | null = null;
     let priorPostDigest: string | null = null;
+    let priorAuditDigest: string | null = null;
+    let runId: string | null = null;
     for (let index = 0; index < checkpoints.length; index += 1) {
       const current = checkpoints[index]!;
       const envelope = checkpointEvidence[index]!;
+      const segment = validateAgainstSchema(runSegmentDefinition, envelope.segment);
+      if (!segment.ok) issues.push(`${index}:segment-invalid`);
+      else {
+        const segmentDigest = computeRunSegmentDigestV1(segment.value);
+        const auditDigest = computeRunAuditDigestV1(priorAuditDigest, segmentDigest);
+        const expectedRunId = digest("pointer-mutation-run-id/v1", [
+          raw(intent.globalIdentityDigest as string),
+          raw(intent.targetMutationId as string),
+          decimalPart(current.runOrdinal as string),
+          nullableRaw(intent.priorCheckpointDigest as string | null),
+          raw(authority.value.pathInstanceDigest),
+          raw(checkpoints[0]!.producerAuthorityTipDigest as string),
+          raw(checkpoints[0]!.producerAuthorityValueDigest as string),
+          raw(checkpoints[0]!.producerAuthorityReceiptDigest as string),
+        ]);
+        if (
+          current.segmentDigest !== segmentDigest ||
+          current.auditDigest !== auditDigest ||
+          segment.value.runId !== expectedRunId ||
+          (runId !== null && segment.value.runId !== runId) ||
+          segment.value.stage !== current.stage ||
+          segment.value.runOrdinal !== current.runOrdinal ||
+          !same(segment.value, intent, [
+            "globalIdentityDigest",
+            "pointerKind",
+            "canonicalPointerPath",
+            "installationId",
+            "projectId",
+            "stateRootDigest",
+            "transactionId",
+            "sourceToken",
+            "targetPathInstanceDigest",
+            "targetMutationId",
+          ])
+        )
+          issues.push(`${index}:segment-audit-binding-mismatch`);
+        runId ??= String(segment.value.runId);
+        priorAuditDigest = auditDigest;
+      }
+      if (index < 7) {
+        if (envelope.terminalResolution !== null || current.terminalResolutionDigest !== null)
+          issues.push(`${index}:terminal-resolution-unexpected`);
+      } else {
+        const resolution = validateAgainstSchema(
+          commitResolutionDefinition,
+          envelope.terminalResolution,
+        );
+        if (!resolution.ok) issues.push(`${index}:terminal-resolution-invalid`);
+        else {
+          const producerEpochKey = digest("authority-epoch-key/v1", [
+            raw(intent.globalIdentityDigest as string),
+            raw(authority.value.pathInstanceDigest),
+            raw(current.producerAuthorityTipDigest as string),
+            raw(current.producerAuthorityValueDigest as string),
+            raw(current.producerAuthorityReceiptDigest as string),
+          ]);
+          let outcomeMismatch = false;
+          if (parsed.value.outcome === "SELECTED") {
+            const selected = resolveSelectedPointerEvidence(parsed.value.selectedTarget);
+            outcomeMismatch =
+              !selected.ok ||
+              resolution.value.selectedTargetTipDigest !== selected.value.tipDigest ||
+              resolution.value.outcomeEvidenceDigest !== selected.value.tipDigest ||
+              resolution.value.conflictReceiptDigest !== null ||
+              resolution.value.unknownEvidenceDigest !== null;
+          } else if (parsed.value.outcome === "UNKNOWN_TERMINAL") {
+            const unknownDigest = digest("pointer-mutation-unknown-evidence/v1", [
+              canonical(parsed.value.unknownEvidence as JsonValue),
+            ]);
+            outcomeMismatch =
+              resolution.value.selectedTargetTipDigest !== null ||
+              resolution.value.conflictReceiptDigest !== null ||
+              resolution.value.unknownEvidenceDigest !== unknownDigest ||
+              resolution.value.outcomeEvidenceDigest !== unknownDigest;
+          } else {
+            outcomeMismatch =
+              resolution.value.selectedTargetTipDigest !== null ||
+              resolution.value.conflictReceiptDigest === null ||
+              resolution.value.unknownEvidenceDigest !== null ||
+              resolution.value.outcomeEvidenceDigest !== resolution.value.conflictReceiptDigest;
+          }
+          if (
+            current.terminalResolutionDigest !==
+              computeCommitResolutionDigestV1(resolution.value) ||
+            resolution.value.targetPathInstanceDigest !== intent.targetPathInstanceDigest ||
+            resolution.value.targetMutationId !== intent.targetMutationId ||
+            resolution.value.outcome !== parsed.value.outcome ||
+            resolution.value.producerEpochKey !== producerEpochKey ||
+            outcomeMismatch
+          )
+            issues.push(`${index}:terminal-resolution-binding-mismatch`);
+        }
+      }
       const selector = resolveSelectedPointerEvidence(envelope.selectorSelection);
       if (!selector.ok) {
         issues.push(`${index}:selector-invalid`);
@@ -2480,6 +2810,14 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
         selector.value.value.schemaVersion !== "pointer-mutation-run-current-value/v2"
       )
         issues.push(`${index}:selector-family-version-mismatch`);
+      if (
+        selector.value.proposal.authorityEpochTipDigest !== current.producerAuthorityTipDigest ||
+        selector.value.proposal.authorityEpochValueDigest !==
+          current.producerAuthorityValueDigest ||
+        selector.value.proposal.authorityEpochReceiptDigest !==
+          current.producerAuthorityReceiptDigest
+      )
+        issues.push(`${index}:selector-producer-epoch-mismatch`);
       const coreDigest = computeRunCheckpointCoreDigestV2(current);
       if (
         selector.value.value.checkpointCoreDigest !== coreDigest ||

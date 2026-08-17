@@ -60,7 +60,7 @@ import {
   stateMutationRegistry,
   validateAuthorizationReceiptChain,
   validateAuthorityCoordinatorComposition,
-  validateAuthorityMembershipV2,
+  validateAuthorityMembership,
   validateCommitEvidenceV3,
   validateEvidencePacketV3,
   validateAuthorizationRevokeReceiptChain,
@@ -612,7 +612,9 @@ describe("current and diagnostic schema registries", () => {
                 priorDr: positionValue.predecessorAccumulatorReceiptDigest,
               }),
             }
-          : {};
+          : row.kind === "AUTHORITY_NODE_MATERIALIZATION_RUN"
+            ? { authorityPathInstanceDigest: positionValue.authorityPathInstanceDigest as string }
+            : {};
       const position = derivePointerPositionEvidence(row.kind, positionValue, positionBindings);
       const positionDigest = computePointerPositionDigest(row.kind, position);
       expect(validatePointerPositionEvidence(row.kind, position)).toEqual([]);
@@ -665,7 +667,7 @@ describe("current and diagnostic schema registries", () => {
       });
     }
     expect(canonicalDigest(constructedPathCensus)).toBe(
-      "1f9b6e0f22149479ec152d1e0b45259de09726c1cdc25111f97e460db0b67b89",
+      "d69dda9caddb8e82c9ff8fedfe9009a136d9996e39deeba5a821e2e904f82ee2",
     );
     const familyCensus = pointerRegistry.map((row) => ({
       archiveTemplates: row.archiveTemplates,
@@ -682,7 +684,7 @@ describe("current and diagnostic schema registries", () => {
       valueSchemas: row.valueSchemas,
     }));
     expect(canonicalDigest(familyCensus)).toBe(
-      "e9ea4319b2c32149c5d77f3dcf84e520bfedc12a2e3b4a8bd4c28c2daa44b517",
+      "d2a38a0c7c4d2a16dcb903d9174407e614be87432f2ae702003d1d31baaa9fb8",
     );
     expect(pointerPath("ACTIVE_RELEASE")).toBe("installation/active-release.json");
     expect(pointerPath("RECOVERY_AUTHORIZATION_STATE", { transactionId: uuid })).toBe(
@@ -785,7 +787,7 @@ describe("current and diagnostic schema registries", () => {
   });
 
   test("removes superseded authority v1 from current dispatch and retains diagnostic parsing", () => {
-    expect(diagnostic.schemaVersions).toHaveLength(27);
+    expect(diagnostic.schemaVersions).toHaveLength(28);
     for (const schemaVersion of diagnostic.schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
       expect(schemaDefinitions).not.toHaveProperty(schemaVersion);
@@ -848,7 +850,7 @@ describe("current and diagnostic schema registries", () => {
       "authority-membership-evidence/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(126);
+    expect(schemaVersions).toHaveLength(125);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -1632,13 +1634,17 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     const pathBindings = { authorityPathInstanceDigest: authorityDp };
     const idle = pointerSelection(
       "AUTHORITY_NODE_MATERIALIZATION_RUN",
-      fixtureFor("authority-node-materialization-run-value/v1"),
+      {
+        ...fixtureFor("authority-node-materialization-run-value/v1"),
+        authorityPathInstanceDigest: authorityDp,
+      },
       { pathBindings, transactionId: null, sourceToken: "none" },
     );
     const plan = fixtureFor("authority-node-materialization-plan/v1");
     const planDigest = computeAuthorityMaterializationPlanDigest(plan);
     const preauthorizedValue: ContractRecord = {
       ...fixtureFor("authority-node-materialization-run-value/v1"),
+      authorityPathInstanceDigest: authorityDp,
       coordinatorOrdinal: "1",
       lifecycle: "PREAUTHORIZED",
       rotationId: plan.rotationId!,
@@ -3519,6 +3525,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     };
     let priorSelector: ReturnType<typeof pointerSelection> | null = null;
     let priorPostDigest: string | null = null;
+    let priorAuditDigest: string | null = null;
     const checkpoints: ContractRecord[] = [];
     for (const [index, stage] of [
       "CURRENT_AUTHORITY_READ",
@@ -3532,6 +3539,54 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       "CURRENT_AUTHORITY_POST_CAS_READ",
     ].entries()) {
       const terminal = index >= 7;
+      const runId = computeRunId({
+        globalIdentityDigest: g,
+        targetMutationId: target.proposal.mutationId!,
+        runOrdinal: "0",
+        priorCheckpointDigest: null,
+        authorityPathInstanceDigest: authority.pathInstanceDigest,
+        authorityTipDigest: authority.tipDigest,
+        authorityValueDigest: authority.valueDigest,
+        authorityReceiptDigest: authority.proposalReceiptDigest,
+      });
+      const segment: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-segment/v1"),
+        globalIdentityDigest: g,
+        pointerKind: "ACTIVE_RELEASE",
+        canonicalPointerPath: target.envelope.canonicalPointerPath,
+        installationId: target.envelope.installationId,
+        projectId: target.envelope.projectId,
+        stateRootDigest: target.envelope.stateRootDigest,
+        transactionId: target.envelope.transactionId,
+        sourceToken: target.envelope.sourceToken,
+        targetPathInstanceDigest: target.pathInstanceDigest,
+        targetMutationId: target.proposal.mutationId!,
+        runId,
+        runOrdinal: "0",
+        stage,
+      };
+      const segmentDigest = computeRunSegmentDigest(segment);
+      const auditDigest = computeRunAuditDigest(priorAuditDigest, segmentDigest);
+      priorAuditDigest = auditDigest;
+      const terminalResolution: ContractRecord | null = terminal
+        ? {
+            ...fixtureFor("pointer-mutation-commit-resolution/v1"),
+            targetPathInstanceDigest: target.pathInstanceDigest,
+            targetMutationId: target.proposal.mutationId!,
+            outcome: "SELECTED",
+            outcomeEvidenceDigest: target.tipDigest,
+            selectedTargetTipDigest: target.tipDigest,
+            conflictReceiptDigest: null,
+            unknownEvidenceDigest: null,
+            producerEpochKey: computeAuthorityEpochKey({
+              globalIdentityDigest: g,
+              authorityPathInstanceDigest: authority.pathInstanceDigest,
+              authorityTipDigest: authority.tipDigest,
+              authorityValueDigest: authority.valueDigest,
+              authorityReceiptDigest: authority.proposalReceiptDigest,
+            }),
+          }
+        : null;
       const core: ContractRecord = {
         ...fixtureFor("pointer-mutation-run-checkpoint-core/v2"),
         globalIdentityDigest: g,
@@ -3539,6 +3594,8 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         canonicalPointerPath: target.envelope.canonicalPointerPath,
         targetPathInstanceDigest: target.pathInstanceDigest,
         targetMutationId: target.proposal.mutationId!,
+        segmentDigest,
+        auditDigest,
         runOrdinal: "0",
         checkpointOrdinal: String(index),
         priorSelectorTipDigest: priorSelector?.tipDigest ?? null,
@@ -3556,7 +3613,9 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         rotationHandoffReceiptDigest: null,
         stage,
         phase: terminal ? "SELECTED" : index >= 5 ? "CAS_AMBIGUOUS" : "CRASH_PREFIX",
-        terminalResolutionDigest: terminal ? digest2 : null,
+        terminalResolutionDigest: terminal
+          ? computeCommitResolutionDigest(terminalResolution!)
+          : null,
       };
       const coreDigest = computeRunCheckpointCoreDigestV2(core);
       const selectorValue: ContractRecord = {
@@ -3606,9 +3665,11 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       priorSelector = selector;
       checkpoints.push({
         schemaVersion: "pointer-mutation-run-checkpoint-evidence/v2",
+        segment,
         core,
         selectorSelection: selector.envelope,
         postSelectionObservation: post,
+        terminalResolution,
       });
     }
     const commit = {
@@ -3635,6 +3696,38 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
             ? {
                 ...checkpoint,
                 core: { ...(checkpoint.core as ContractRecord), phase: "CRASH_PREFIX" },
+              }
+            : checkpoint,
+        ),
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...commit,
+        checkpoints: checkpoints.map((checkpoint, index) =>
+          index === 3
+            ? {
+                ...checkpoint,
+                segment: {
+                  ...(checkpoint.segment as ContractRecord),
+                  stageEvidenceDigest: digest2,
+                },
+              }
+            : checkpoint,
+        ),
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...commit,
+        checkpoints: checkpoints.map((checkpoint, index) =>
+          index === 8
+            ? {
+                ...checkpoint,
+                terminalResolution: {
+                  ...(checkpoint.terminalResolution as ContractRecord),
+                  targetMutationId: digest2,
+                },
               }
             : checkpoint,
         ),
@@ -3796,7 +3889,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       },
     });
     const membership = {
-      schemaVersion: "authority-membership-evidence/v2",
+      schemaVersion: "authority-membership-evidence/v1",
       currentAuthoritySelection: current.envelope,
       globalIdentity,
       leaf,
@@ -3804,7 +3897,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       rootKind: "NONEMPTY",
       siblingDigests: historySiblings,
     };
-    expect(validateAuthorityMembershipV2(membership)).toEqual([]);
+    expect(validateAuthorityMembership(membership)).toEqual([]);
     const historicalTarget = pointerSelection("ACTIVE_RELEASE", fixtureFor("active-release/v2"), {
       pathBindings: {},
       transactionId: uuid,
@@ -4073,6 +4166,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     expect(
       diagnostic.parseContract("pointer-mutation-proposed-target-evidence/v1", proposedTarget).ok,
     ).toBe(true);
+    expect(resolveProposedTargetEvidence(proposedTarget).ok).toBe(false);
     expect(
       diagnostic.parseContract("pointer-mutation-proposed-target-evidence/v1", {
         ...proposedTarget,

@@ -84,14 +84,16 @@ export interface PointerRegistryRow {
   readonly valueSchemas: readonly string[];
   readonly rootTemplates: readonly string[];
   readonly archiveTemplates: readonly string[];
-  readonly genesis: "REVIEWED_BOOTSTRAP" | "TRANSACTION_CREATE_ONCE" | "PREDECESSOR_TRIPLE";
+  readonly singletonScope: "INSTALLATION" | "PATH_INSTANCE" | "AUTHORITY_DP";
+  readonly genesis:
+    "REVIEWED_BOOTSTRAP" | "TRANSACTION_CREATE_ONCE" | "PREDECESSOR_TRIPLE" | "ABSENT_TO_IDLE";
   readonly transactionPolicy: "REQUIRED" | "NULL";
   readonly sourcePolicy: "NONE" | "RECOVERY_SOURCE";
   readonly positionDomain: string;
   readonly tombstonePositionDomain: string | null;
 }
 
-const pointerRows: readonly PointerRegistryRow[] = [
+const pointerRows: readonly Omit<PointerRegistryRow, "singletonScope">[] = [
   {
     kind: "ACTIVE_RELEASE",
     singleton: true,
@@ -299,7 +301,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     valueSchemas: ["authority-node-materialization-run-value/v1"],
     rootTemplates: [],
     archiveTemplates: [],
-    genesis: "REVIEWED_BOOTSTRAP",
+    genesis: "ABSENT_TO_IDLE",
     transactionPolicy: "NULL",
     sourcePolicy: "NONE",
     positionDomain: "authority-node-materialization-run-position/v1",
@@ -310,6 +312,12 @@ export const pointerRegistry: readonly PointerRegistryRow[] = Object.freeze(
   pointerRows.map((row) =>
     Object.freeze({
       ...row,
+      singletonScope:
+        row.kind === "AUTHORITY_NODE_MATERIALIZATION_RUN"
+          ? "AUTHORITY_DP"
+          : row.singleton
+            ? "INSTALLATION"
+            : "PATH_INSTANCE",
       sourceTokens: Object.freeze(row.sourceTokens),
       valueSchemas: Object.freeze(row.valueSchemas),
       rootTemplates: Object.freeze(row.rootTemplates),
@@ -1091,6 +1099,8 @@ export function derivePointerPositionEvidence(
         terminalResolutionDigest: value.terminalResolutionDigest!,
       });
     case "AUTHORITY_NODE_MATERIALIZATION_RUN":
+      if (pathBindings.authorityPathInstanceDigest !== value.authorityPathInstanceDigest)
+        throw new TypeError("authorityPathInstanceDigest:path-value-mismatch");
       return Object.freeze({
         pointerKind: kind,
         variant: "ORDINARY",
@@ -1133,6 +1143,16 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
       : (() => {
           throw new TypeError("position:shape-invalid");
         })();
+  if (kind === "AUTHORITY_NODE_MATERIALIZATION_RUN" && !tombstone)
+    return hashFrame(row.positionDomain, [
+      rawPart(closed.authorityPathInstanceDigest as string),
+      { type: "decimal-ascii", value: closed.coordinatorOrdinal as string },
+      textPart(closed.lifecycle as string),
+      nullableRawPart(closed.rotationId as string | null),
+      nullableRawPart(closed.materializationPlanDigest as string | null),
+      nullableRawPart(closed.phaseEvidenceDigest as string | null),
+      canonicalPart(closed),
+    ]);
   return hashFrame(tombstone ? row.tombstonePositionDomain! : row.positionDomain, [
     canonicalPart(closed),
   ]);

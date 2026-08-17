@@ -985,6 +985,14 @@ export const diagnosticAuthorityDefinitions: Readonly<Record<string, SchemaDefin
           authorityEpochReceiptDigest: sha,
           proposedAt: timestamp,
         }),
+        define("authority-membership-evidence/v2", {
+          currentAuthoritySelection: field("json"),
+          globalIdentity: field("json"),
+          leaf: field("json"),
+          root: field("json"),
+          rootKind: enumeration("NONEMPTY"),
+          siblingDigests: array("sha256"),
+        }),
         define("state-mutation-authority-value/v1", {
           installationId: uuid,
           projectId: uuid,
@@ -2648,7 +2656,7 @@ export function validateAuthoritySingleUpdateWitness(input: unknown): readonly s
   }
 }
 
-export function validateAuthorityMembership(input: unknown): readonly string[] {
+function validateDiagnosticAuthorityMembership(input: unknown): readonly string[] {
   const closed = snapshotClosedRecord(input, [
     "currentAuthoritySelection",
     "globalIdentity",
@@ -2706,9 +2714,20 @@ export function validateAuthorityMembership(input: unknown): readonly string[] {
   }
 }
 
-export function validateAuthorityMembershipV2(input: unknown): readonly string[] {
+export function validateAuthorityMembership(input: unknown): readonly string[] {
+  const preflight = snapshotClosedRecord(input, [
+    "currentAuthoritySelection",
+    "globalIdentity",
+    "leaf",
+    "root",
+    "rootKind",
+    "schemaVersion",
+    "siblingDigests",
+  ]);
+  if (preflight.ok && preflight.value.rootKind === "EMPTY")
+    return ["membership:empty-root-refused"];
   const parsed = validateAgainstSchema(
-    inventoryDefinitions["authority-membership-evidence/v2"]!,
+    approvedDefinitions["authority-membership-evidence/v1"]!,
     input,
   );
   if (!parsed.ok) return parsed.issues;
@@ -3212,8 +3231,9 @@ type ProposedTargetEvidence = Readonly<{
   sourceToken: string;
 }>;
 
-export function resolveProposedTargetEvidence(
+function resolveProposedTargetEvidenceInternal(
   input: unknown,
+  allowDiagnostic: boolean,
 ):
   | { readonly ok: true; readonly value: ProposedTargetEvidence }
   | { readonly ok: false; readonly issues: readonly string[] } {
@@ -3221,12 +3241,13 @@ export function resolveProposedTargetEvidence(
     approvedDefinitions["pointer-mutation-proposed-target-evidence/v2"]!,
     input,
   );
-  const diagnostic = current.ok
-    ? null
-    : validateAgainstSchema(
-        approvedDefinitions["pointer-mutation-proposed-target-evidence/v1"]!,
-        input,
-      );
+  const diagnostic =
+    current.ok || !allowDiagnostic
+      ? null
+      : validateAgainstSchema(
+          approvedDefinitions["pointer-mutation-proposed-target-evidence/v1"]!,
+          input,
+        );
   if (!current.ok && (!diagnostic || !diagnostic.ok)) return { ok: false, issues: current.issues };
   try {
     const record = current.ok
@@ -3380,6 +3401,14 @@ export function resolveProposedTargetEvidence(
   }
 }
 
+export function resolveProposedTargetEvidence(
+  input: unknown,
+):
+  | { readonly ok: true; readonly value: ProposedTargetEvidence }
+  | { readonly ok: false; readonly issues: readonly string[] } {
+  return resolveProposedTargetEvidenceInternal(input, false);
+}
+
 export function validateCommitRunComposition(input: unknown): readonly string[] {
   const parsed = validateAgainstSchema(
     approvedDefinitions["pointer-mutation-commit-evidence/v1"]!,
@@ -3408,7 +3437,7 @@ export function validateCommitRunComposition(input: unknown): readonly string[] 
   const proposedTarget =
     parsed.value.proposedTarget === null
       ? null
-      : resolveProposedTargetEvidence(parsed.value.proposedTarget);
+      : resolveProposedTargetEvidenceInternal(parsed.value.proposedTarget, true);
   if (selectedTarget && !selectedTarget.ok)
     return selectedTarget.issues.map((issue) => `selectedTarget:${issue}`);
   if (proposedTarget && !proposedTarget.ok)
@@ -3936,8 +3965,11 @@ export function validateEvidencePacketV3(input: unknown): readonly string[] {
         authority.value.value.nodeInventoryRootDigest !== inventoryDigest ||
         authority.value.value.historyCount !== history.value.count ||
         authority.value.value.nodeInventoryCount !== inventory.value.count ||
+        authority.value.value.nodeInventoryTreeRootDigest !== inventory.value.treeRootDigest ||
         history.value.nodeInventoryRootDigest !== inventoryDigest ||
-        history.value.nodeInventoryCount !== inventory.value.count
+        history.value.nodeInventoryCount !== inventory.value.count ||
+        (historyVersion === "authority-history-root/v2" &&
+          history.value.nodeInventoryTreeRootDigest !== inventory.value.treeRootDigest)
       )
         issues.push("currentAuthority:root-binding-mismatch");
     }
@@ -3946,12 +3978,12 @@ export function validateEvidencePacketV3(input: unknown): readonly string[] {
   const membershipEpochKeys: string[] = [];
   const usedMembershipDigests = new Set<string>();
   for (const [index, membership] of membershipsResult.value.entries()) {
-    const membershipIssues = validateAuthorityMembershipV2(membership);
+    const membershipIssues = validateAuthorityMembership(membership);
     if (membershipIssues.length > 0)
       issues.push(...membershipIssues.map((issue) => `membership:${index}:${issue}`));
     else {
       const membershipDigest = canonicalDigest(membership);
-      const membershipRecord = requireRecord("authority-membership-evidence/v2", membership);
+      const membershipRecord = requireRecord("authority-membership-evidence/v1", membership);
       const leaf = requireRecord("authority-history-leaf/v1", membershipRecord.leaf);
       if (membershipDigests.has(membershipDigest)) issues.push(`membership:${index}:duplicate`);
       membershipDigests.add(membershipDigest);
@@ -3987,7 +4019,7 @@ export function validateEvidencePacketV3(input: unknown): readonly string[] {
       if (selected.value.tip.pointerKind !== slot.value.pointerKind)
         issues.push(`${index}:selected-kind-mismatch`);
       const membershipParsed = validateAgainstSchema(
-        inventoryDefinitions["authority-membership-evidence/v2"]!,
+        approvedDefinitions["authority-membership-evidence/v1"]!,
         slot.value.producerMembership,
       );
       if (!membershipParsed.ok) {
@@ -4174,7 +4206,7 @@ export function validateEvidencePacketV2(input: unknown): readonly string[] {
         issues.push(`membership:${index}:identity-or-leaf-invalid`);
       }
       issues.push(
-        ...validateAuthorityMembership(membership.value).map(
+        ...validateDiagnosticAuthorityMembership(membership.value).map(
           (issue) => `membership:${index}:${issue}`,
         ),
       );
