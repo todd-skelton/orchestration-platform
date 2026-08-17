@@ -18,6 +18,69 @@ const array = (kind: FieldRule["kind"]): FieldRule => field(kind, { array: true 
 const text = (record: ContractRecord, name: string): string => record[name] as string;
 const integer = (record: ContractRecord, name: string): number => record[name] as number;
 
+export type CleanupLifecycle = "PENDING" | "ACTIVATING" | "ABORTING" | "COMPLETE";
+export type CleanupPublication = "NOT_PUBLISHED" | "PUBLISHING" | "PUBLISHED" | "CLEARED";
+
+const cleanupPairs = Object.freeze({
+  PENDING: Object.freeze(["NOT_PUBLISHED", "PUBLISHING", "PUBLISHED"] as const),
+  ACTIVATING: Object.freeze(["PUBLISHED"] as const),
+  ABORTING: Object.freeze(["NOT_PUBLISHED", "PUBLISHING", "PUBLISHED", "CLEARED"] as const),
+  COMPLETE: Object.freeze(["NOT_PUBLISHED", "CLEARED"] as const),
+}) satisfies Readonly<Record<CleanupLifecycle, readonly CleanupPublication[]>>;
+
+export function isCleanupLifecyclePublicationPair(
+  lifecycle: unknown,
+  publication: unknown,
+): lifecycle is CleanupLifecycle {
+  return (
+    typeof lifecycle === "string" &&
+    typeof publication === "string" &&
+    Object.hasOwn(cleanupPairs, lifecycle) &&
+    (cleanupPairs[lifecycle as CleanupLifecycle] as readonly string[]).includes(publication)
+  );
+}
+
+const cleanupPairTransitions = new Set([
+  "PENDING/NOT_PUBLISHED>PENDING/NOT_PUBLISHED",
+  "PENDING/NOT_PUBLISHED>PENDING/PUBLISHING",
+  "PENDING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
+  "PENDING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
+  "PENDING/PUBLISHING>PENDING/PUBLISHING",
+  "PENDING/PUBLISHING>PENDING/PUBLISHED",
+  "PENDING/PUBLISHING>ABORTING/PUBLISHING",
+  "PENDING/PUBLISHED>PENDING/PUBLISHED",
+  "PENDING/PUBLISHED>ACTIVATING/PUBLISHED",
+  "PENDING/PUBLISHED>ABORTING/PUBLISHED",
+  "ACTIVATING/PUBLISHED>ACTIVATING/PUBLISHED",
+  "ACTIVATING/PUBLISHED>COMPLETE/CLEARED",
+  "ABORTING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
+  "ABORTING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
+  "ABORTING/PUBLISHING>ABORTING/PUBLISHING",
+  "ABORTING/PUBLISHING>ABORTING/PUBLISHED",
+  "ABORTING/PUBLISHED>ABORTING/PUBLISHED",
+  "ABORTING/PUBLISHED>ABORTING/CLEARED",
+  "ABORTING/CLEARED>ABORTING/CLEARED",
+  "ABORTING/CLEARED>COMPLETE/CLEARED",
+  "COMPLETE/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
+  "COMPLETE/CLEARED>COMPLETE/CLEARED",
+]);
+
+export function isCleanupLifecyclePublicationTransition(
+  previousLifecycle: unknown,
+  previousPublication: unknown,
+  nextLifecycle: unknown,
+  nextPublication: unknown,
+): boolean {
+  if (
+    !isCleanupLifecyclePublicationPair(previousLifecycle, previousPublication) ||
+    !isCleanupLifecyclePublicationPair(nextLifecycle, nextPublication)
+  )
+    return false;
+  return cleanupPairTransitions.has(
+    `${previousLifecycle}/${previousPublication}>${nextLifecycle}/${nextPublication}`,
+  );
+}
+
 function define(
   schemaVersion: string,
   fields: Readonly<Record<string, FieldRule>>,
@@ -562,6 +625,8 @@ const definitions = [
     (record) => {
       const issues: string[] = [];
       const source = text(record, "source") as keyof typeof sourceToken;
+      if (!isCleanupLifecyclePublicationPair(record.gateLifecycle, record.gatePublication))
+        issues.push("gateAuthority:inadmissible-lifecycle-publication-pair");
       if (text(record, "sourcePathToken") !== sourceToken[source])
         issues.push("sourcePathToken:mismatch");
       if (
@@ -1030,6 +1095,8 @@ const definitions = [
         issues.push("ordinal:zero-must-be-pending-not-published");
       const lifecycle = text(record, "lifecycle");
       const publication = text(record, "publication");
+      if (!isCleanupLifecyclePublicationPair(lifecycle, publication))
+        issues.push("lifecyclePublication:inadmissible-pair");
       if (["PENDING", "ACTIVATING"].includes(lifecycle)) {
         if (record.abortRevocationReceiptDigest !== null)
           issues.push("abortRevocationReceiptDigest:premature");
@@ -1259,32 +1326,169 @@ export function validateImportReceiptAgainstPlan(
     .map((name) => `${name}:transaction-binding-mismatch`);
 }
 
+export interface RecoveryAuthorizationAttachmentInput {
+  readonly authorization: ContractRecord;
+  readonly current: ContractRecord;
+  readonly expectedArgvDigest: string;
+  readonly fenceCurrent: ContractRecord;
+  readonly fenceHead: ContractRecord;
+  readonly fenceHeadDigest: string;
+  readonly fenceRoot: ContractRecord;
+  readonly fenceRootDigest: string;
+  readonly gateCurrent: ContractRecord;
+  readonly gateHead: ContractRecord;
+  readonly gateHeadDigest: string;
+  readonly gateRoot: ContractRecord;
+  readonly gateRootDigest: string;
+  readonly live: ContractRecord;
+  readonly liveDigest: string;
+  readonly predecessorActiveRecord: ContractRecord;
+  readonly predecessorActiveRecordDigest: string;
+  readonly ready: ContractRecord;
+  readonly readyDigest: string;
+}
+
+const attachmentInputFields = Object.freeze([
+  "authorization",
+  "current",
+  "expectedArgvDigest",
+  "fenceCurrent",
+  "fenceHead",
+  "fenceHeadDigest",
+  "fenceRoot",
+  "fenceRootDigest",
+  "gateCurrent",
+  "gateHead",
+  "gateHeadDigest",
+  "gateRoot",
+  "gateRootDigest",
+  "live",
+  "liveDigest",
+  "predecessorActiveRecord",
+  "predecessorActiveRecordDigest",
+  "ready",
+  "readyDigest",
+] as const);
+
 export function validateRecoveryAuthorizationAttachment(
-  authorization: ContractRecord,
-  ready: ContractRecord,
-  live: ContractRecord,
-  current: ContractRecord,
-  readyDigest: string,
-  liveDigest: string,
+  input: RecoveryAuthorizationAttachmentInput,
 ): readonly string[] {
   const issues: string[] = [];
-  for (const [label, schemaVersion, record] of [
-    ["authorization", "recovery-authorization/v1", authorization],
-    ["readyRecord", "activation-recovery-launch/v1", ready],
-    ["liveRecord", "activation-recovery-launch/v1", live],
-    ["current", "activation-recovery-launch-current/v1", current],
-  ] as const) {
-    const parsed = validateAgainstSchema(schemaDefinitions[schemaVersion]!, record);
-    if (!parsed.ok) issues.push(...parsed.issues.map((issue) => `${label}:${issue}`));
-  }
+  let envelope: Readonly<Record<string, unknown>>;
   try {
-    if (canonicalDigest(ready as JsonValue) !== readyDigest)
-      issues.push("readyRecordDigest:content-mismatch");
-    if (canonicalDigest(live as JsonValue) !== liveDigest)
-      issues.push("liveRecordDigest:content-mismatch");
+    if (input === null || typeof input !== "object" || Array.isArray(input))
+      return ["attachmentInput:object-required"];
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Object.prototype && prototype !== null)
+      return ["attachmentInput:plain-object-required"];
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const observed = Reflect.ownKeys(descriptors);
+    if (observed.some((name) => typeof name !== "string"))
+      issues.push("attachmentInput:symbol-field-refused");
+    for (const name of attachmentInputFields) {
+      const descriptor = descriptors[name];
+      if (!descriptor) issues.push(`${name}:missing`);
+      else if (!Object.hasOwn(descriptor, "value")) issues.push(`${name}:accessor-refused`);
+    }
+    for (const name of observed) {
+      if (typeof name === "string" && !attachmentInputFields.includes(name as never))
+        issues.push(`${name}:unknown-field`);
+    }
+    if (issues.length > 0) return [...new Set(issues)].sort();
+    envelope = Object.freeze(
+      Object.fromEntries(attachmentInputFields.map((name) => [name, descriptors[name]!.value])),
+    );
   } catch {
-    issues.push("launchRecord:noncanonical");
+    return ["attachmentInput:unreadable"];
   }
+
+  const parsedRecords: Record<string, ContractRecord> = {};
+  for (const [label, schemaVersion] of [
+    ["authorization", "recovery-authorization/v1"],
+    ["ready", "activation-recovery-launch/v1"],
+    ["live", "activation-recovery-launch/v1"],
+    ["current", "activation-recovery-launch-current/v1"],
+    ["predecessorActiveRecord", "active-release/v1"],
+    ["gateRoot", "activation-cleanup-gate-root/v1"],
+    ["gateHead", "activation-cleanup-gate-head/v1"],
+    ["gateCurrent", "activation-cleanup-gate-current/v1"],
+    ["fenceRoot", "activation-recovery-fence-root/v1"],
+    ["fenceHead", "activation-recovery-fence-head/v1"],
+    ["fenceCurrent", "activation-recovery-fence-current/v1"],
+  ] as const) {
+    try {
+      const parsed = validateAgainstSchema(schemaDefinitions[schemaVersion]!, envelope[label]);
+      if (parsed.ok) parsedRecords[label] = parsed.value;
+      else issues.push(...parsed.issues.map((issue) => `${label}:${issue}`));
+    } catch {
+      issues.push(`${label}:unreadable`);
+    }
+  }
+  const digestNames = [
+    "expectedArgvDigest",
+    "fenceHeadDigest",
+    "fenceRootDigest",
+    "gateHeadDigest",
+    "gateRootDigest",
+    "liveDigest",
+    "predecessorActiveRecordDigest",
+    "readyDigest",
+  ] as const;
+  for (const name of digestNames) {
+    if (typeof envelope[name] !== "string" || !/^[0-9a-f]{64}$/.test(envelope[name]))
+      issues.push(`${name}:invalid-sha256`);
+  }
+  if (issues.length > 0) return [...new Set(issues)].sort();
+
+  const authorization = parsedRecords.authorization!;
+  const ready = parsedRecords.ready!;
+  const live = parsedRecords.live!;
+  const current = parsedRecords.current!;
+  const predecessorActiveRecord = parsedRecords.predecessorActiveRecord!;
+  const gateRoot = parsedRecords.gateRoot!;
+  const gateHead = parsedRecords.gateHead!;
+  const gateCurrent = parsedRecords.gateCurrent!;
+  const fenceRoot = parsedRecords.fenceRoot!;
+  const fenceHead = parsedRecords.fenceHead!;
+  const fenceCurrent = parsedRecords.fenceCurrent!;
+  const expectedArgvDigest = envelope.expectedArgvDigest as string;
+  const readyDigest = envelope.readyDigest as string;
+  const liveDigest = envelope.liveDigest as string;
+  const predecessorActiveRecordDigest = envelope.predecessorActiveRecordDigest as string;
+  const gateRootDigest = envelope.gateRootDigest as string;
+  const gateHeadDigest = envelope.gateHeadDigest as string;
+  const fenceRootDigest = envelope.fenceRootDigest as string;
+  const fenceHeadDigest = envelope.fenceHeadDigest as string;
+
+  for (const [label, record, observedDigest] of [
+    ["readyRecord", ready, readyDigest],
+    ["liveRecord", live, liveDigest],
+    ["predecessorActiveRecord", predecessorActiveRecord, predecessorActiveRecordDigest],
+    ["gateRoot", gateRoot, gateRootDigest],
+    ["gateHead", gateHead, gateHeadDigest],
+    ["fenceRoot", fenceRoot, fenceRootDigest],
+    ["fenceHead", fenceHead, fenceHeadDigest],
+  ] as const) {
+    if (canonicalDigest(record as JsonValue) !== observedDigest)
+      issues.push(`${label}Digest:content-mismatch`);
+  }
+
+  issues.push(
+    ...validateCleanupAuthorityBinding(
+      gateRoot,
+      gateHead,
+      gateCurrent,
+      gateRootDigest,
+      gateHeadDigest,
+    ).map((issue) => `gateAuthority:${issue}`),
+    ...validateFenceAuthorityBinding(
+      fenceRoot,
+      fenceHead,
+      fenceCurrent,
+      fenceRootDigest,
+      fenceHeadDigest,
+    ).map((issue) => `fenceAuthority:${issue}`),
+  );
   if (authorization.mode !== "successor" || authorization.lifecycle !== "CONSUMED_BOUND")
     issues.push("authorization:not-consumed-successor");
   for (const name of ["transactionId", "installationId", "stateRootDigest"]) {
@@ -1318,6 +1522,56 @@ export function validateRecoveryAuthorizationAttachment(
     if (authorization[authorizationName] !== ready[launchName])
       issues.push(`${authorizationName}:attachment-mismatch`);
   }
+  if (
+    gateRoot.transactionId !== fenceRoot.transactionId ||
+    fenceRoot.transactionId !== ready.transactionId
+  )
+    issues.push("transactionId:root-launch-mismatch");
+  for (const name of ["installationId", "projectId", "stateRootDigest"]) {
+    if (
+      gateRoot[name] !== fenceRoot[name] ||
+      fenceRoot[name] !== predecessorActiveRecord[name] ||
+      predecessorActiveRecord[name] !== ready[name]
+    )
+      issues.push(`${name}:root-active-launch-mismatch`);
+  }
+  for (const [rootName, launchName] of [
+    ["cycleId", "cycleId"],
+    ["oldActiveRecordDigest", "activeRecordDigest"],
+    ["predecessorExecutableDigest", "predecessorExecutableDigest"],
+    ["predecessorReleaseDigest", "predecessorReleaseDigest"],
+  ] as const) {
+    if (fenceRoot[rootName] !== ready[launchName]) issues.push(`${rootName}:fence-launch-mismatch`);
+  }
+  if (
+    predecessorActiveRecordDigest !== ready.activeRecordDigest ||
+    gateRoot.expectedActiveRecordDigest !== predecessorActiveRecordDigest ||
+    fenceRoot.oldActiveRecordDigest !== predecessorActiveRecordDigest
+  )
+    issues.push("activeRecordDigest:authority-mismatch");
+  if (
+    predecessorActiveRecord.executablePath !== ready.predecessorExecutablePath ||
+    predecessorActiveRecord.executableDigest !== ready.predecessorExecutableDigest ||
+    predecessorActiveRecord.releaseDigest !== ready.predecessorReleaseDigest
+  )
+    issues.push("predecessorExecutable:authority-mismatch");
+  if (ready.argvDigest !== expectedArgvDigest) issues.push("argvDigest:authority-mismatch");
+  if (
+    gateRoot.expectedFenceRootPath !== fenceRoot.recordPath ||
+    gateRoot.expectedFenceRootDigest !== fenceRootDigest
+  )
+    issues.push("fenceRoot:gate-binding-mismatch");
+  if (
+    !["PENDING", "ACTIVATING"].includes(gateHead.lifecycle as string) ||
+    gateHead.publication !== "PUBLISHED" ||
+    gateHead.activeRecordDigest !== predecessorActiveRecordDigest
+  )
+    issues.push("gateHead:not-attachment-authority");
+  if (
+    fenceHead.activeRecordDigest !== predecessorActiveRecordDigest ||
+    fenceHead.activeGeneration !== predecessorActiveRecord.activeGeneration
+  )
+    issues.push("fenceHead:not-predecessor-authority");
   if (ready.lifecycle !== "READY" || ready.ordinal !== 0)
     issues.push("readyRecord:not-generation-root");
   issues.push(
@@ -1380,6 +1634,20 @@ export function validateRecoveryAuthorizationAttachment(
       live[launchName] !== current[launchName]
     )
       issues.push(`${authorizationName}:root-mismatch`);
+  }
+  for (const launch of [ready, live, current]) {
+    if (
+      launch.gateRootDigest !== gateRootDigest ||
+      launch.gateHeadOrdinal !== gateHead.ordinal ||
+      launch.gateHeadDigest !== gateHeadDigest
+    )
+      issues.push("gateHead:launch-binding-mismatch");
+    if (
+      launch.fenceRootDigest !== fenceRootDigest ||
+      launch.fenceHeadOrdinal !== fenceHead.ordinal ||
+      launch.fenceHeadDigest !== fenceHeadDigest
+    )
+      issues.push("fenceHead:launch-binding-mismatch");
   }
   return [...new Set(issues)].sort();
 }
@@ -1623,27 +1891,15 @@ export function validateCleanupHeadTransition(
     ...(next.ordinal === (previous.ordinal as number) + 1 ? [] : ["ordinal:not-adjacent"]),
     ...(next.previousHeadDigest === previousDigest ? [] : ["previousHeadDigest:mismatch"]),
   ];
-  const allowed: Readonly<Record<string, readonly string[]>> = {
-    PENDING: ["PENDING", "ACTIVATING", "ABORTING"],
-    ACTIVATING: ["ACTIVATING", "COMPLETE"],
-    ABORTING: ["ABORTING", "COMPLETE"],
-    COMPLETE: [],
-  };
-  if (!allowed[previous.lifecycle as string]?.includes(next.lifecycle as string))
-    issues.push("lifecycle:transition-refused");
-  const publicationOrder = ["NOT_PUBLISHED", "PUBLISHING", "PUBLISHED", "CLEARED"];
-  const priorPublication = publicationOrder.indexOf(previous.publication as string);
-  const nextPublication = publicationOrder.indexOf(next.publication as string);
-  if (nextPublication < priorPublication || nextPublication > priorPublication + 1)
-    issues.push("publication:nonadjacent");
   if (
-    previous.lifecycle === "PENDING" &&
-    next.lifecycle === "ABORTING" &&
-    next.publication !== previous.publication
+    !isCleanupLifecyclePublicationTransition(
+      previous.lifecycle,
+      previous.publication,
+      next.lifecycle,
+      next.publication,
+    )
   )
-    issues.push("publication:abort-cas-must-retain-state");
-  if (next.lifecycle === "ACTIVATING" && next.publication !== "PUBLISHED")
-    issues.push("publication:activation-requires-published");
+    issues.push("lifecyclePublication:transition-refused");
   return [...new Set(issues)].sort();
 }
 

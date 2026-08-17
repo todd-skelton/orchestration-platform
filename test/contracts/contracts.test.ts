@@ -12,6 +12,8 @@ import {
   cleanupGateHeadPath,
   cleanupGateRootPath,
   cleanupHeadCurrentPath,
+  isCleanupLifecyclePublicationPair,
+  isCleanupLifecyclePublicationTransition,
   parseCanonicalContractBytes,
   parseContract,
   recoveryAuthorizationPath,
@@ -912,11 +914,184 @@ describe("activation, recovery, and cleanup authority", () => {
     }
   });
 
-  test("successor recovery attachment binds one exact READY to LIVE chain and current pointer", () => {
-    const ready = fixtureFor("activation-recovery-launch/v1");
+  test("cleanup lifecycle and publication form one exhaustive closed pair graph", () => {
+    const lifecycles = ["PENDING", "ACTIVATING", "ABORTING", "COMPLETE"] as const;
+    const publications = ["NOT_PUBLISHED", "PUBLISHING", "PUBLISHED", "CLEARED"] as const;
+    const validPairs = new Set([
+      "PENDING/NOT_PUBLISHED",
+      "PENDING/PUBLISHING",
+      "PENDING/PUBLISHED",
+      "ACTIVATING/PUBLISHED",
+      "ABORTING/NOT_PUBLISHED",
+      "ABORTING/PUBLISHING",
+      "ABORTING/PUBLISHED",
+      "ABORTING/CLEARED",
+      "COMPLETE/NOT_PUBLISHED",
+      "COMPLETE/CLEARED",
+    ]);
+    const acceptedTransitions = new Set([
+      "PENDING/NOT_PUBLISHED>PENDING/NOT_PUBLISHED",
+      "PENDING/NOT_PUBLISHED>PENDING/PUBLISHING",
+      "PENDING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
+      "PENDING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
+      "PENDING/PUBLISHING>PENDING/PUBLISHING",
+      "PENDING/PUBLISHING>PENDING/PUBLISHED",
+      "PENDING/PUBLISHING>ABORTING/PUBLISHING",
+      "PENDING/PUBLISHED>PENDING/PUBLISHED",
+      "PENDING/PUBLISHED>ACTIVATING/PUBLISHED",
+      "PENDING/PUBLISHED>ABORTING/PUBLISHED",
+      "ACTIVATING/PUBLISHED>ACTIVATING/PUBLISHED",
+      "ACTIVATING/PUBLISHED>COMPLETE/CLEARED",
+      "ABORTING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
+      "ABORTING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
+      "ABORTING/PUBLISHING>ABORTING/PUBLISHING",
+      "ABORTING/PUBLISHING>ABORTING/PUBLISHED",
+      "ABORTING/PUBLISHED>ABORTING/PUBLISHED",
+      "ABORTING/PUBLISHED>ABORTING/CLEARED",
+      "ABORTING/CLEARED>ABORTING/CLEARED",
+      "ABORTING/CLEARED>COMPLETE/CLEARED",
+      "COMPLETE/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
+      "COMPLETE/CLEARED>COMPLETE/CLEARED",
+    ]);
+    const head = (
+      lifecycle: (typeof lifecycles)[number],
+      publication: (typeof publications)[number],
+      ordinal: number,
+      previousHeadDigest: string,
+    ): ContractRecord =>
+      mutant("activation-cleanup-gate-head/v1", {
+        lifecycle,
+        publication,
+        ordinal,
+        previousHeadDigest,
+        recordPath: cleanupGateHeadPath(uuid, ordinal, lifecycle, publication),
+        fenceDigest: ["PUBLISHED", "CLEARED"].includes(publication) ? digest : null,
+        abortRevocationReceiptDigest: lifecycle === "ABORTING" ? digest2 : null,
+        terminalRevocationReceiptDigest: lifecycle === "COMPLETE" ? digest2 : null,
+      }) as ContractRecord;
+
+    const validHeads = new Map<string, ContractRecord>();
+    for (const lifecycle of lifecycles) {
+      for (const publication of publications) {
+        const key = `${lifecycle}/${publication}`;
+        const expected = validPairs.has(key);
+        expect(isCleanupLifecyclePublicationPair(lifecycle, publication), key).toBe(expected);
+        const record = head(lifecycle, publication, 3, digest);
+        expect(parseContract("activation-cleanup-gate-head/v1", record).ok, key).toBe(expected);
+        if (expected) validHeads.set(key, record);
+      }
+    }
+    expect(validHeads.size).toBe(10);
+
+    for (const [previousKey, previous] of validHeads) {
+      const [previousLifecycle, previousPublication] = previousKey.split("/");
+      const previousDigest = canonicalDigest(previous as JsonValue);
+      for (const [nextKey, template] of validHeads) {
+        const [nextLifecycle, nextPublication] = nextKey.split("/");
+        const transitionKey = `${previousKey}>${nextKey}`;
+        const expected = acceptedTransitions.has(transitionKey);
+        const next = {
+          ...template,
+          ordinal: 4,
+          previousHeadDigest: previousDigest,
+          recordPath: cleanupGateHeadPath(uuid, 4, nextLifecycle!, nextPublication!),
+        } as ContractRecord;
+        expect(
+          isCleanupLifecyclePublicationTransition(
+            previousLifecycle,
+            previousPublication,
+            nextLifecycle,
+            nextPublication,
+          ),
+          transitionKey,
+        ).toBe(expected);
+        expect(
+          validateCleanupHeadTransition(previous, next, previousDigest).length === 0,
+          transitionKey,
+        ).toBe(expected);
+      }
+    }
+    expect(acceptedTransitions.size).toBe(22);
+    for (const refused of [
+      ["PENDING", "PUBLISHED", "PENDING", "CLEARED"],
+      ["ACTIVATING", "PUBLISHED", "COMPLETE", "PUBLISHED"],
+      ["ABORTING", "PUBLISHED", "COMPLETE", "PUBLISHED"],
+    ] as const)
+      expect(
+        isCleanupLifecyclePublicationTransition(refused[0], refused[1], refused[2], refused[3]),
+      ).toBe(false);
+    for (const refused of [
+      ["PENDING", "CLEARED"],
+      ["ACTIVATING", "NOT_PUBLISHED"],
+      ["ACTIVATING", "PUBLISHING"],
+      ["ACTIVATING", "CLEARED"],
+      ["COMPLETE", "PUBLISHING"],
+      ["COMPLETE", "PUBLISHED"],
+    ] as const)
+      expect(isCleanupLifecyclePublicationPair(refused[0], refused[1])).toBe(false);
+  });
+
+  test("successor recovery attachment composes canonical launch, active, gate, and fence authority", () => {
+    const predecessorActiveRecord = fixtureFor("active-release/v1");
+    const predecessorActiveRecordDigest = canonicalDigest(predecessorActiveRecord as JsonValue);
+    const fenceRoot = mutant("activation-recovery-fence-root/v1", {
+      oldActiveRecordDigest: predecessorActiveRecordDigest,
+    }) as ContractRecord;
+    const fenceRootDigest = canonicalDigest(fenceRoot as JsonValue);
+    const fenceHead = mutant("activation-recovery-fence-head/v1", {
+      rootDigest: fenceRootDigest,
+      activeRecordDigest: predecessorActiveRecordDigest,
+    }) as ContractRecord;
+    const fenceHeadDigest = canonicalDigest(fenceHead as JsonValue);
+    const fenceCurrent = mutant("activation-recovery-fence-current/v1", {
+      rootDigest: fenceRootDigest,
+      headDigest: fenceHeadDigest,
+    }) as ContractRecord;
+    const gateRoot = mutant("activation-cleanup-gate-root/v1", {
+      mode: "PROMOTION",
+      expectedActiveGeneration: predecessorActiveRecord.activeGeneration,
+      expectedActiveRecordDigest: predecessorActiveRecordDigest,
+      expectedFenceRootPath: recoveryFenceRootPath(uuid),
+      expectedFenceRootDigest: fenceRootDigest,
+      priorCleanupHeadDigest: digest2,
+    }) as ContractRecord;
+    const gateRootDigest = canonicalDigest(gateRoot as JsonValue);
+    const gateHead = mutant("activation-cleanup-gate-head/v1", {
+      ordinal: 1,
+      previousHeadDigest: digest2,
+      recordPath: cleanupGateHeadPath(uuid, 1, "PENDING", "PUBLISHED"),
+      lifecycle: "PENDING",
+      publication: "PUBLISHED",
+      rootDigest: gateRootDigest,
+      activeRecordDigest: predecessorActiveRecordDigest,
+      fenceDigest: fenceRootDigest,
+    }) as ContractRecord;
+    const gateHeadDigest = canonicalDigest(gateHead as JsonValue);
+    const gateCurrent = mutant("activation-cleanup-gate-current/v1", {
+      expectedPointerDigest: digest2,
+      rootDigest: gateRootDigest,
+      headDigest: gateHeadDigest,
+      headOrdinal: 1,
+      headLifecycle: "PENDING",
+      headPublication: "PUBLISHED",
+      headPath: cleanupGateHeadPath(uuid, 1, "PENDING", "PUBLISHED"),
+    }) as ContractRecord;
+    const ready = mutant("activation-recovery-launch/v1", {
+      activeRecordDigest: predecessorActiveRecordDigest,
+      expectedFenceRootDigest: fenceRootDigest,
+      fenceRootDigest,
+      fenceHeadOrdinal: 0,
+      fenceHeadDigest,
+      gateRootDigest,
+      gateHeadOrdinal: 1,
+      gateHeadDigest,
+      gateLifecycle: "PENDING",
+      gatePublication: "PUBLISHED",
+    }) as ContractRecord;
     const readyDigest = canonicalDigest(ready as JsonValue);
     const priorPointerDigest = digest2;
-    const live = mutant("activation-recovery-launch/v1", {
+    const live = {
+      ...ready,
       ordinal: 1,
       previousStateRecordDigest: readyDigest,
       priorPointerDigest,
@@ -925,9 +1100,17 @@ describe("activation, recovery, and cleanup authority", () => {
       processTreeDigest: digest,
       startedAt: instant,
       heartbeatAt: instant,
-    }) as ContractRecord;
+    } as ContractRecord;
     const liveDigest = canonicalDigest(live as JsonValue);
     const current = mutant("activation-recovery-launch-current/v1", {
+      activeRecordDigest: predecessorActiveRecordDigest,
+      expectedFenceRootDigest: fenceRootDigest,
+      fenceRootDigest,
+      fenceHeadOrdinal: 0,
+      fenceHeadDigest,
+      gateRootDigest,
+      gateHeadOrdinal: 1,
+      gateHeadDigest,
       expectedPointerDigest: priorPointerDigest,
       launchDigest: liveDigest,
       launchLifecycle: "LIVE",
@@ -940,158 +1123,138 @@ describe("activation, recovery, and cleanup authority", () => {
       recoveryLaunchAttempt: 1,
       recoveryReadyRecordDigest: readyDigest,
       recoveryInitialLiveRecordDigest: liveDigest,
-      recoveryGateRootDigest: digest,
-      recoveryFenceRootDigest: digest,
+      expectedActiveRecordDigest: predecessorActiveRecordDigest,
+      fenceRootDigest,
+      gateRootDigest,
+      recoveryGateRootDigest: gateRootDigest,
+      recoveryFenceRootDigest: fenceRootDigest,
     }) as ContractRecord;
-    expect(parseContract("activation-recovery-launch/v1", live).ok).toBe(true);
-    expect(parseContract("activation-recovery-launch-current/v1", current).ok).toBe(true);
-    expect(parseContract("recovery-authorization/v1", authorization).ok).toBe(true);
-    expect(
-      validateRecoveryAuthorizationAttachment(
-        authorization,
-        ready,
-        live,
-        current,
-        readyDigest,
-        liveDigest,
-      ),
-    ).toEqual([]);
-    const refuses = (changes: {
-      authorization?: ContractRecord;
-      ready?: ContractRecord;
-      live?: ContractRecord;
-      current?: ContractRecord;
-    }) => {
+    const attachment = {
+      authorization,
+      current,
+      expectedArgvDigest: ready.argvDigest as string,
+      fenceCurrent,
+      fenceHead,
+      fenceHeadDigest,
+      fenceRoot,
+      fenceRootDigest,
+      gateCurrent,
+      gateHead,
+      gateHeadDigest,
+      gateRoot,
+      gateRootDigest,
+      live,
+      liveDigest,
+      predecessorActiveRecord,
+      predecessorActiveRecordDigest,
+      ready,
+      readyDigest,
+    };
+    expect(validateRecoveryAuthorizationAttachment(attachment)).toEqual([]);
+
+    const refuses = (changes: Record<string, unknown>) =>
       expect(
-        validateRecoveryAuthorizationAttachment(
-          changes.authorization ?? authorization,
-          changes.ready ?? ready,
-          changes.live ?? live,
-          changes.current ?? current,
-          readyDigest,
-          liveDigest,
-        ),
+        validateRecoveryAuthorizationAttachment({ ...attachment, ...changes } as never),
       ).not.toEqual([]);
-    };
-    for (const changed of [
-      { authorization: { ...authorization, recoveryLaunchGeneration: 1 } as ContractRecord },
-      { authorization: { ...authorization, recoveryLaunchAttempt: 2 } as ContractRecord },
-      { authorization: { ...authorization, promotionCycleId: uuid2 } as ContractRecord },
-      {
-        authorization: { ...authorization, expectedActiveRecordDigest: digest2 } as ContractRecord,
-      },
-      {
-        authorization: { ...authorization, predecessorExecutableDigest: digest2 } as ContractRecord,
-      },
-      { authorization: { ...authorization, predecessorReleaseDigest: digest2 } as ContractRecord },
-      { live: { ...live, attempt: 2 } as ContractRecord },
-      { current: { ...current, launchOrdinal: 2 } as ContractRecord },
-      { current: { ...current, gateRootDigest: digest2 } as ContractRecord },
-    ])
-      refuses(changed);
 
-    const immutableChanges: Readonly<Record<string, unknown>> = {
-      transactionId: uuid2,
-      source: "cleanup-gate-pre-fence/v1",
-      sourcePathToken: "cleanup-gate-pre-fence-v1",
-      cycleId: uuid2,
-      installationId: uuid2,
-      projectId: uuid2,
-      stateRootDigest: digest2,
-      predecessorReleaseDigest: digest2,
-      predecessorExecutablePath: "bin/other",
-      predecessorExecutableDigest: digest2,
-      activeRecordDigest: digest2,
-      argvDigest: digest2,
-      expectedFenceRootDigest: digest2,
-      fenceRootPath: recoveryFenceRootPath(uuid2),
-      fenceRootDigest: digest2,
-      gateRootPath: cleanupGateRootPath(uuid2),
-      gateRootDigest: digest2,
-    };
-    for (const [name, value] of Object.entries(immutableChanges)) {
-      refuses({ ready: { ...ready, [name]: value } as ContractRecord });
-      refuses({ live: { ...live, [name]: value } as ContractRecord });
-    }
-    for (const [name, value] of Object.entries({
-      processTreeDigest: digest2,
-      startedAt: later,
-      heartbeatAt: later,
-      terminalAt: later,
-      gateHeadOrdinal: 1,
-      gateHeadDigest: digest2,
-      fenceHeadOrdinal: 1,
-      fenceHeadDigest: digest,
-      generation: 1,
-      attempt: 2,
-    }))
-      refuses({ live: { ...live, [name]: value } as ContractRecord });
-
-    for (const [name, value] of Object.entries({
-      transactionId: uuid2,
-      source: "cleanup-gate-pre-fence/v1",
-      sourcePathToken: "cleanup-gate-pre-fence-v1",
-      cycleId: uuid2,
-      installationId: uuid2,
-      projectId: uuid2,
-      stateRootDigest: digest2,
-      predecessorExecutablePath: "bin/other",
-      predecessorExecutableDigest: digest2,
-      activeRecordDigest: digest2,
-      argvDigest: digest2,
-      expectedFenceRootDigest: digest2,
-      fenceRootDigest: digest2,
-      fenceHeadOrdinal: 1,
-      fenceHeadDigest: digest,
-      gateRootDigest: digest2,
-      gateHeadOrdinal: 1,
-      gateHeadDigest: digest2,
-      generation: 1,
-      attempt: 2,
-      launchDigest: digest2,
-      launchLifecycle: "TERMINAL_COMPLETE",
-      launchOrdinal: 2,
-      launchPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 2, "LIVE"),
-      expectedPointerDigest: digest,
-    }))
-      refuses({ current: { ...current, [name]: value } as ContractRecord });
-
-    for (const coordinated of [
-      { projectId: uuid2 },
-      { cycleId: uuid2 },
-      { activeRecordDigest: digest2 },
-      { argvDigest: digest2 },
-      {
-        source: "cleanup-gate-pre-fence/v1",
-        sourcePathToken: "cleanup-gate-pre-fence-v1",
-      },
-      {
-        expectedFenceRootDigest: digest2,
-        fenceRootDigest: digest2,
-        gateRootDigest: digest2,
-      },
-      {
-        predecessorExecutablePath: "bin/other",
-        predecessorExecutableDigest: digest2,
-      },
-      { gateHeadOrdinal: 1, gateHeadDigest: digest2 },
-      { fenceHeadOrdinal: 1, fenceHeadDigest: digest },
-      { generation: 1, attempt: 2 },
-    ]) {
-      refuses({
-        ready: { ...ready, ...coordinated } as ContractRecord,
-        live: { ...live, ...coordinated } as ContractRecord,
-        current: { ...current, ...coordinated } as ContractRecord,
-      });
-    }
-    refuses({
-      live: {
+    const coordinatedRefuses = (changes: Record<string, unknown>) => {
+      const changedReady = { ...ready, ...changes } as ContractRecord;
+      const changedReadyDigest = canonicalDigest(changedReady as JsonValue);
+      const changedLive = {
         ...live,
-        processTreeDigest: digest2,
-        startedAt: later,
-        heartbeatAt: later,
-      } as ContractRecord,
-    });
+        ...changes,
+        previousStateRecordDigest: changedReadyDigest,
+      } as ContractRecord;
+      const changedLiveDigest = canonicalDigest(changedLive as JsonValue);
+      refuses({
+        authorization: {
+          ...authorization,
+          recoveryReadyRecordDigest: changedReadyDigest,
+          recoveryInitialLiveRecordDigest: changedLiveDigest,
+        },
+        ready: changedReady,
+        readyDigest: changedReadyDigest,
+        live: changedLive,
+        liveDigest: changedLiveDigest,
+        current: { ...current, ...changes, launchDigest: changedLiveDigest },
+      });
+    };
+    for (const changes of [
+      { projectId: uuid2 },
+      { argvDigest: digest2 },
+      { predecessorExecutablePath: "bin/other" },
+      { gateHeadOrdinal: 2 },
+      { gateHeadDigest: "c".repeat(64) },
+      { fenceHeadOrdinal: 1 },
+      { fenceHeadDigest: "d".repeat(64) },
+    ])
+      coordinatedRefuses(changes);
+
+    for (const [name, value] of Object.entries({
+      expectedArgvDigest: digest2,
+      gateRootDigest: digest2,
+      gateHeadDigest: digest2,
+      fenceRootDigest: digest2,
+      fenceHeadDigest: digest2,
+      predecessorActiveRecordDigest: digest2,
+      readyDigest: digest2,
+      liveDigest: digest2,
+    }))
+      refuses({ [name]: value });
+
+    const recordInputs = [
+      "authorization",
+      "current",
+      "fenceCurrent",
+      "fenceHead",
+      "fenceRoot",
+      "gateCurrent",
+      "gateHead",
+      "gateRoot",
+      "live",
+      "predecessorActiveRecord",
+      "ready",
+    ] as const;
+    for (const name of recordInputs) {
+      const getPrototypeTrap = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error("hostile getPrototypeOf");
+          },
+        },
+      );
+      const descriptorTrap = new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor() {
+            throw new Error("hostile getOwnPropertyDescriptor");
+          },
+          ownKeys() {
+            return ["schemaVersion"];
+          },
+        },
+      );
+      const accessor = Object.defineProperty({}, "schemaVersion", {
+        enumerable: true,
+        get() {
+          throw new Error("hostile accessor");
+        },
+      });
+      for (const hostile of [getPrototypeTrap, descriptorTrap, accessor]) {
+        expect(() => refuses({ [name]: hostile })).not.toThrow();
+      }
+    }
+    const hostileEnvelope = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("hostile envelope");
+        },
+      },
+    );
+    expect(() => validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toThrow();
+    expect(validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toEqual([]);
   });
 
   test("cross-record transitions bind adjacent ordinals, prior digests, immutable roots, and one authority advance", () => {
@@ -1195,7 +1358,7 @@ describe("activation, recovery, and cleanup authority", () => {
         { ...cleanup1, lifecycle: "ACTIVATING" } as ContractRecord,
         cleanupDigest,
       ),
-    ).toContain("publication:activation-requires-published");
+    ).toContain("lifecyclePublication:transition-refused");
   });
 
   test("current pointers bind the exact immutable root and state-derived head", () => {
