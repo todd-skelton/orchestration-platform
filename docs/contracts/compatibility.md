@@ -291,31 +291,46 @@ The external bootstrap graph remains acyclic: selected owner/anchor lifecycle
 values do not embed the downstream successor-post or final consumption receipt.
 Composed validators instead recompute those receipts after their referenced
 owner/anchor tips exist and bind every value/proposal/tip readback. Owner
-retirement similarly selects from a pre-existing archive of the exact prior
-owner triple; no archive contains the successor value that names it.
+retirement first selects an anchor `RETIRED` value from an `ACTIVE` or
+`CONSUMED` predecessor and archives only that exact prior owner triple. The
+owner `RETIRED` value is selected afterward and binds the selected anchor
+`Dt/Dv/Dr` plus the owner archive. Neither anchor archive nor receipt contains
+a future owner value, so anchor retirement, owner retirement, and successor
+activation remain acyclic and crash-resumable.
 
 Physical destination identity accepts exactly one canonical leaf component.
-Separators, dot components, alternate streams, Windows reserved names/trailing
-dot-or-space aliases, noncanonical case, and mismatched Unicode/profile forms
-refuse before `Dphys` computation. Windows uses canonical lowercase NFC, macOS
-lowercase NFD, and Linux case-sensitive NFC; the selected profile must match
-the OS field.
+Separators, dot components, alternate streams, Windows reserved names
+(including `COM`/`LPT` superscript-digit aliases), trailing dot-or-space
+aliases, noncanonical case, and mismatched Unicode/profile forms refuse before
+`Dphys` computation. Windows uses Unicode lowercase NFC without an invalid
+upper/lower round-trip (so a canonical leaf such as `straße` remains valid),
+macOS lowercase NFD, and Linux case-sensitive NFC; the selected profile must
+match the OS field. Case or normalization-distinct Linux identities remain
+distinct rather than colliding.
 
 Authority membership recomputes each leaf epoch key and authenticates it
 against the exact selected current authority's `G`, nonempty history root, and
 count. Packet memberships are sorted by epoch key, deduplicated, and contain no
 unused proofs. Append receipts, update proofs, and prior/successor root
-kind/digest/count fields agree exactly. Sparse nodes use the canonical
-`.../<G>/nodes/<depth>/<node-digest>.json` census path.
+kind/digest/count fields agree exactly, and every leaf authority `Dp` equals
+the lifetime-stable authority `Dp` committed by `G`. Sparse nodes use the
+content-addressed canonical `installation/state-mutation-authority-history/nodes/<node-digest>.json`
+path. A single-update witness remains exactly 256 siblings; lifetime node
+inventory uses sorted cursor pages of at most 256 nodes, so validation has no
+lifetime rotation or node-count cap.
 
 Commit evidence includes a closed immutable intent. Every segment and core
 repeats and validates target kind/path/install/project/state/transaction/source
 identity, and run IDs are recomputed from the selected authority and prior
-checkpoint. Terminal SELECTED evidence names the exact target tip;
-LOST_CONFLICT recomputes the conflict receipt against the observed winner; and
-UNKNOWN_TERMINAL binds a closed unknown observation. A mutation packet's top
-authority equals its commit authority and its target equals the corresponding
-registry slot.
+checkpoint. The terminal evidence is a closed outcome union: `SELECTED`
+carries the selected target; `LOST_CONFLICT` carries the recomputed proposed
+loser value/receipt plus a real selected winner and conflict receipt, never a
+loser tip; and `UNKNOWN_TERMINAL` carries the recomputed proposal plus a bounded
+unknown observation and no selected target. A mutation packet's top authority
+equals its commit authority. Its registry slot equals the selected target for
+`SELECTED`, the real winner for `LOST_CONFLICT`, and is empty for an unknown
+target. Every checkpoint preserves the full kind/path/install/project/state/
+transaction/source/`Dp`/mutation/run identity tuple.
 
 ## Review attack surface
 

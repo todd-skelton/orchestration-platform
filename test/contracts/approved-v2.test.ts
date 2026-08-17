@@ -14,7 +14,9 @@ import {
   computeAuthorityUpdateProofDigest,
   computeSparseRoot,
   computeBootstrapAnchorDigest,
+  computeBootstrapAnchorLifecycleArchiveDigest,
   computeBootstrapAnchorProposalDigest,
+  computeBootstrapAnchorTeardownDigest,
   computeBootstrapAnchorTipDigest,
   computeBootstrapAnchorValueDigest,
   computeBootstrapGenesisCoreDigest,
@@ -22,7 +24,9 @@ import {
   computeCommitResolutionDigest,
   computeDestinationDigest,
   computeDestinationOwnerMutationId,
+  computeDestinationOwnerRetirementEvidenceDigest,
   computeDestinationOwnerProposalDigest,
+  computeDestinationOwnerTeardownArchiveDigest,
   computeDestinationOwnerTipDigest,
   computeDestinationOwnerValueDigest,
   computeGlobalIdentityDigest,
@@ -52,8 +56,8 @@ import {
   validateBootstrapAnchorTransition,
   validateBootstrapAnchorComposition,
   validateAuthorityMembership,
-  validateAuthorityHistoryNodeCensus,
-  validateAuthoritySparseUpdate,
+  validateAuthorityHistoryNodeInventoryPage,
+  validateAuthoritySingleUpdateWitness,
   validateAuthorityValueHistoryBinding,
   validateBootstrapGenesisGraph,
   validateCommitRunSequence,
@@ -88,7 +92,7 @@ describe("approved v2 authority contracts", () => {
           schemaVersion,
         })),
       ),
-    ).toBe("2c0484e3f82e40a90d9b9961008f773ac39183a75862b645c501a2cf97f72bd5");
+    ).toBe("00eb3a74c5cba63f6dea710438d4c66177101625a50d5320af81c2f577fcaf18");
   });
 
   test("closes bootstrap versus selected-epoch proposal producers", () => {
@@ -180,7 +184,28 @@ describe("approved v2 authority contracts", () => {
       canonicalLeafName: "alpha",
     };
     expect(parseContract("physical-destination-identity/v1", windowsIdentity).ok).toBe(true);
-    for (const canonicalLeafName of ["Alpha", "ß", "con", "com1.txt", "alpha.", "alpha ", "a:b"])
+    expect(
+      parseContract("physical-destination-identity/v1", {
+        ...windowsIdentity,
+        canonicalLeafName: "straße",
+      }).ok,
+    ).toBe(true);
+    expect(
+      computePhysicalDestinationDigest({ ...windowsIdentity, canonicalLeafName: "straße" }),
+    ).not.toBe(
+      computePhysicalDestinationDigest({ ...windowsIdentity, canonicalLeafName: "strasse" }),
+    );
+    for (const canonicalLeafName of [
+      "Alpha",
+      "con",
+      "com1.txt",
+      "com¹",
+      "lpt².log",
+      "lpt³",
+      "alpha.",
+      "alpha ",
+      "a:b",
+    ])
       expect(
         parseContract("physical-destination-identity/v1", {
           ...windowsIdentity,
@@ -198,6 +223,21 @@ describe("approved v2 authority contracts", () => {
       parseContract("physical-destination-identity/v1", {
         ...macosIdentity,
         canonicalLeafName: "é",
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("physical-destination-identity/v1", {
+        ...identity,
+        canonicalLeafName: "Alpha",
+      }).ok,
+    ).toBe(true);
+    expect(computePhysicalDestinationDigest({ ...identity, canonicalLeafName: "Alpha" })).not.toBe(
+      computePhysicalDestinationDigest({ ...identity, canonicalLeafName: "alpha" }),
+    );
+    expect(
+      parseContract("physical-destination-identity/v1", {
+        ...identity,
+        canonicalLeafName: "e\u0301",
       }).ok,
     ).toBe(false);
     expect(
@@ -228,6 +268,9 @@ describe("approved v2 authority contracts", () => {
       ownerOrdinal: "2",
       lifecycle: "RETIRED",
       teardownArchiveDigest: digest,
+      retirementAnchorTipDigest: digest,
+      retirementAnchorValueDigest: digest2,
+      retirementAnchorReceiptDigest: digest3,
     };
     const successor = {
       ...retired,
@@ -236,11 +279,32 @@ describe("approved v2 authority contracts", () => {
       installationId: uuid2,
       successorReviewCoreDigest: digest2,
       teardownArchiveDigest: null,
+      retirementAnchorTipDigest: null,
+      retirementAnchorValueDigest: null,
+      retirementAnchorReceiptDigest: null,
     };
     expect(validateDestinationOwnerTransition(null, genesis)).toEqual([]);
     expect(validateDestinationOwnerTransition(genesis, consumed)).toEqual([]);
     expect(validateDestinationOwnerTransition(consumed, retired)).toEqual([]);
     expect(validateDestinationOwnerTransition(retired, successor)).toEqual([]);
+    expect(
+      parseContract("state-mutation-destination-owner-value/v1", {
+        ...retired,
+        retirementAnchorTipDigest: null,
+        retirementAnchorValueDigest: null,
+        retirementAnchorReceiptDigest: null,
+      }).ok,
+    ).toBe(false);
+    const lifecycleArchive = fixtureFor("state-mutation-bootstrap-anchor-lifecycle-archive/v1");
+    expect(
+      parseContract("state-mutation-bootstrap-anchor-lifecycle-archive/v1", lifecycleArchive).ok,
+    ).toBe(true);
+    expect(
+      parseContract("state-mutation-bootstrap-anchor-lifecycle-archive/v1", {
+        ...lifecycleArchive,
+        ownerRetiredTipDigest: digest,
+      }).ok,
+    ).toBe(false);
     const activeAnchorValue = fixtureFor("state-mutation-bootstrap-anchor-lifecycle-value/v1");
     expect(
       parseContract("state-mutation-bootstrap-anchor-lifecycle-value/v1", {
@@ -304,7 +368,7 @@ describe("approved v2 authority contracts", () => {
       proposalReceiptDigest: dor,
     });
     expect(canonicalDigest({ dor, dot, dov, mutationId })).toBe(
-      "512a3dccca492b5f784b271947385dae12d2cda0acaebb63bb3c649641053db5",
+      "4a4d658d3d9974f15470af55a1324cc31b57bb6fa047dfc106af864df11d8191",
     );
   });
 
@@ -342,7 +406,7 @@ describe("approved v2 authority contracts", () => {
       ownerOrdinal: "0",
       transition: "ACTIVATE_GENESIS",
       successorValueDigest: dov,
-      installationId: ownerValue.installationId,
+      installationId: ownerValue.installationId as string,
       bootstrapAnchorDigest: dba,
       source: "reviewed-bootstrap",
       transitionEvidenceDigest: dobs,
@@ -426,7 +490,6 @@ describe("approved v2 authority contracts", () => {
         ownerConsumed: null,
         ownerObservation: observation,
         ownerPhysicalIdentity: physicalIdentity,
-        ownerRetired: null,
         previous: null,
         successorPost: null,
         successorReviewCore: null,
@@ -435,6 +498,168 @@ describe("approved v2 authority contracts", () => {
         useIntent: null,
       }),
     ).toEqual([]);
+    const activeAnchorSelection = {
+      value: anchorValue,
+      proposal: anchorProposal,
+      tip: anchorTip,
+    };
+    const dbat = computeBootstrapAnchorTipDigest(anchorTip);
+    const lifecycleArchive: ContractRecord = {
+      ...fixtureFor("state-mutation-bootstrap-anchor-lifecycle-archive/v1"),
+      bootstrapAnchorDigest: dba,
+      priorTipDigest: dbat,
+      priorValueDigest: dbav,
+      priorReceiptDigest: dbar,
+      ownerPredecessorTipDigest: dot,
+      ownerPredecessorValueDigest: dov,
+      ownerPredecessorReceiptDigest: dor,
+    };
+    const lifecycleArchiveDigest = computeBootstrapAnchorLifecycleArchiveDigest(lifecycleArchive);
+    const teardownReceipt: ContractRecord = {
+      ...fixtureFor("state-mutation-bootstrap-anchor-teardown-receipt/v1"),
+      bootstrapAnchorDigest: dba,
+      priorTipDigest: dbat,
+      priorValueDigest: dbav,
+      priorReceiptDigest: dbar,
+      destinationDigest: ddest,
+      ownerTipDigest: dot,
+      ownerValueDigest: dov,
+      ownerReceiptDigest: dor,
+      externalArchiveDigest: lifecycleArchiveDigest,
+    };
+    const teardownReceiptDigest = computeBootstrapAnchorTeardownDigest(teardownReceipt);
+    const retiredAnchorValue: ContractRecord = {
+      ...anchorValue,
+      lifecycle: "RETIRED",
+      teardownReceiptDigest,
+    };
+    const retiredAnchorValueDigest = computeBootstrapAnchorValueDigest(retiredAnchorValue);
+    const retiredAnchorProposal: ContractRecord = {
+      ...anchorProposal,
+      priorTipDigest: dbat,
+      priorValueDigest: dbav,
+      priorReceiptDigest: dbar,
+      successorValueDigest: retiredAnchorValueDigest,
+      transition: "RETIRE",
+    };
+    const retiredAnchorReceiptDigest = computeBootstrapAnchorProposalDigest(retiredAnchorProposal);
+    const retiredAnchorTip: ContractRecord = {
+      ...anchorTip,
+      valueDigest: retiredAnchorValueDigest,
+      proposalReceiptDigest: retiredAnchorReceiptDigest,
+    };
+    const retiredAnchorSelection = {
+      value: retiredAnchorValue,
+      proposal: retiredAnchorProposal,
+      tip: retiredAnchorTip,
+    };
+    expect(
+      validateBootstrapAnchorComposition({
+        anchor,
+        anchorRetired: retiredAnchorSelection,
+        consumptionReceipt: null,
+        current: retiredAnchorSelection,
+        genesisPost: null,
+        genesisGraph: null,
+        now: instant,
+        ownerActive: ownerSelection,
+        ownerConsumed: null,
+        ownerObservation: observation,
+        ownerPhysicalIdentity: physicalIdentity,
+        previous: activeAnchorSelection,
+        successorPost: null,
+        successorReviewCore: null,
+        teardownArchive: lifecycleArchive,
+        teardownReceipt,
+        useIntent: null,
+      }),
+    ).toEqual([]);
+    const retiredAnchorTipDigest = computeBootstrapAnchorTipDigest(retiredAnchorTip);
+    const ownerArchive: ContractRecord = {
+      ...fixtureFor("state-mutation-destination-owner-teardown-archive/v1"),
+      destinationDigest: ddest,
+      ownerTipDigest: dot,
+      ownerValueDigest: dov,
+      ownerReceiptDigest: dor,
+      installationId: ownerValue.installationId as string,
+      bootstrapAnchorDigest: dba,
+    };
+    const ownerArchiveDigest = computeDestinationOwnerTeardownArchiveDigest(ownerArchive);
+    const retiredOwnerValue: ContractRecord = {
+      ...ownerValue,
+      ownerOrdinal: "1",
+      lifecycle: "RETIRED",
+      teardownArchiveDigest: ownerArchiveDigest,
+      retirementAnchorTipDigest: retiredAnchorTipDigest,
+      retirementAnchorValueDigest: retiredAnchorValueDigest,
+      retirementAnchorReceiptDigest: retiredAnchorReceiptDigest,
+    };
+    const retiredOwnerValueDigest = computeDestinationOwnerValueDigest(retiredOwnerValue);
+    const retirementEvidenceDigest = computeDestinationOwnerRetirementEvidenceDigest({
+      teardownArchiveDigest: ownerArchiveDigest,
+      anchorTipDigest: retiredAnchorTipDigest,
+      anchorValueDigest: retiredAnchorValueDigest,
+      anchorReceiptDigest: retiredAnchorReceiptDigest,
+    });
+    const retiredOwnerMutationId = computeDestinationOwnerMutationId({
+      destinationDigest: ddest,
+      currentPath: externalAuthorityPaths.destinationOwnerCurrent(ddest),
+      priorTipDigest: dot,
+      priorValueDigest: dov,
+      priorReceiptDigest: dor,
+      ownerOrdinal: "1",
+      transition: "RETIRE_UNUSED",
+      successorValueDigest: retiredOwnerValueDigest,
+      installationId: ownerValue.installationId,
+      bootstrapAnchorDigest: dba,
+      source: "teardown",
+      transitionEvidenceDigest: retirementEvidenceDigest,
+    });
+    const retiredOwnerProposal: ContractRecord = {
+      ...ownerProposal,
+      mutationId: retiredOwnerMutationId,
+      priorTipDigest: dot,
+      priorValueDigest: dov,
+      priorReceiptDigest: dor,
+      successorValueDigest: retiredOwnerValueDigest,
+      transition: "RETIRE_UNUSED",
+      positionDigest: retirementEvidenceDigest,
+    };
+    const retiredOwnerReceiptDigest = computeDestinationOwnerProposalDigest(retiredOwnerProposal);
+    const retiredOwnerTip: ContractRecord = {
+      ...ownerTip,
+      valueDigest: retiredOwnerValueDigest,
+      proposalReceiptDigest: retiredOwnerReceiptDigest,
+    };
+    const retiredOwnerSelection = {
+      value: retiredOwnerValue,
+      proposal: retiredOwnerProposal,
+      tip: retiredOwnerTip,
+    };
+    const retiredOwnerComposition = {
+      ...ownerComposition,
+      anchorRetired: retiredAnchorSelection,
+      current: retiredOwnerSelection,
+      ownerRetired: retiredOwnerSelection,
+      previous: ownerSelection,
+      teardownArchive: ownerArchive,
+    };
+    expect(validateDestinationOwnerComposition(retiredOwnerComposition)).toEqual([]);
+    expect(
+      validateDestinationOwnerComposition({
+        ...retiredOwnerComposition,
+        anchorRetired: null,
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateDestinationOwnerComposition({
+        ...retiredOwnerComposition,
+        current: {
+          ...retiredOwnerSelection,
+          value: { ...retiredOwnerValue, retirementAnchorValueDigest: digest },
+        },
+      }),
+    ).not.toEqual([]);
   });
 
   test("keeps the external anchor to E0 graph acyclic and cross-bound", () => {
@@ -664,10 +889,12 @@ describe("approved v2 authority contracts", () => {
   });
 
   test("pins sparse primitives to raw global identity and exact 256 depth", () => {
+    const globalIdentity = fixtureFor("state-mutation-global-identity/v1");
+    const globalIdentityDigest = computeGlobalIdentityDigest(globalIdentity);
     const leaf: Record<string, JsonValue> = {
       ...fixtureFor("authority-history-leaf/v1"),
-      globalIdentityDigest: digest,
-      authorityPathInstanceDigest: digest2,
+      globalIdentityDigest,
+      authorityPathInstanceDigest: globalIdentity.authorityPathInstanceDigest as string,
       authorityTipDigest: digest3,
       authorityValueDigest: digest4,
       authorityReceiptDigest: digest,
@@ -685,33 +912,69 @@ describe("approved v2 authority contracts", () => {
     expect(computeAuthorityNodeDigest(0, de, digest)).not.toBe(
       computeAuthorityNodeDigest(0, digest, de),
     );
-    expect(externalAuthorityPaths.historyNode(digest, "0", digest2)).toBe(
-      `installation/state-mutation-authority-history/${digest}/nodes/0/${digest2}.json`,
+    expect(externalAuthorityPaths.historyNode(digest2)).toBe(
+      `installation/state-mutation-authority-history/nodes/${digest2}.json`,
     );
-    expect(() => externalAuthorityPaths.historyNode(digest, "01", digest2)).toThrow();
-    expect(() => externalAuthorityPaths.historyNode(digest, "256", digest2)).toThrow();
     const node = fixtureFor("authority-history-node/v1");
     expect(
-      validateAuthorityHistoryNodeCensus({ globalIdentityDigest: digest, nodes: [node] }),
-    ).toEqual([]);
-    expect(
-      validateAuthorityHistoryNodeCensus({
-        globalIdentityDigest: digest2,
+      validateAuthorityHistoryNodeInventoryPage({
+        afterPath: null,
+        complete: true,
+        nextAfterPath: null,
         nodes: [node],
       }),
-    ).not.toEqual([]);
+    ).toEqual([]);
+    const lifetimeNodes = Array.from({ length: 300 }, (_, index) => {
+      const leftChildDigest = index.toString(16).padStart(64, "0");
+      const depth = index % 256;
+      const nodeDigest = computeAuthorityNodeDigest(depth, leftChildDigest, digest2);
+      return {
+        ...fixtureFor("authority-history-node/v1"),
+        depth: String(depth),
+        leftChildDigest,
+        rightChildDigest: digest2,
+        nodeDigest,
+        recordPath: externalAuthorityPaths.historyNode(nodeDigest),
+      };
+    }).sort((left, right) => left.recordPath.localeCompare(right.recordPath));
+    const firstPage = lifetimeNodes.slice(0, 200);
+    const secondPage = lifetimeNodes.slice(200);
+    expect(
+      validateAuthorityHistoryNodeInventoryPage({
+        afterPath: null,
+        complete: false,
+        nextAfterPath: firstPage.at(-1)!.recordPath,
+        nodes: firstPage,
+      }),
+    ).toEqual([]);
+    expect(
+      validateAuthorityHistoryNodeInventoryPage({
+        afterPath: firstPage.at(-1)!.recordPath,
+        complete: true,
+        nextAfterPath: null,
+        nodes: secondPage,
+      }),
+    ).toEqual([]);
+    expect(
+      validateAuthorityHistoryNodeInventoryPage({
+        afterPath: null,
+        complete: false,
+        nextAfterPath: lifetimeNodes.at(-1)!.recordPath,
+        nodes: lifetimeNodes,
+      }),
+    ).toEqual(["nodes:invalid"]);
     const siblings = Array.from({ length: 256 }, (_, index) =>
       computeAuthorityEmptyDigest(256 - index),
     );
     const emptyRoot = {
       ...fixtureFor("authority-history-empty-root/v1"),
-      globalIdentityDigest: digest,
+      globalIdentityDigest,
       treeRootDigest: computeAuthorityEmptyDigest(0),
     };
     const dhe = computeAuthorityEmptyRootDigest(emptyRoot);
     const root = {
       ...fixtureFor("authority-history-root/v1"),
-      globalIdentityDigest: digest,
+      globalIdentityDigest,
       count: "1",
       latestIncludedOrdinal: leaf.authorityOrdinal,
       latestEpochKey: leaf.epochKey,
@@ -723,7 +986,7 @@ describe("approved v2 authority contracts", () => {
     const dh = computeAuthorityHistoryRootDigest(root);
     const proof = {
       ...fixtureFor("authority-history-update-proof/v1"),
-      globalIdentityDigest: digest,
+      globalIdentityDigest,
       epochKey: leaf.epochKey,
       leafDigest: de,
       priorRootKind: "EMPTY",
@@ -734,7 +997,13 @@ describe("approved v2 authority contracts", () => {
       siblingDigests: siblings,
     };
     expect(
-      validateAuthoritySparseUpdate({ leaf, priorRoot: emptyRoot, proof, successorRoot: root }),
+      validateAuthoritySingleUpdateWitness({
+        globalIdentity,
+        leaf,
+        priorRoot: emptyRoot,
+        proof,
+        successorRoot: root,
+      }),
     ).toEqual([]);
     expect(
       validateAuthorityMembership({
@@ -814,7 +1083,8 @@ describe("approved v2 authority contracts", () => {
       siblingDigests: siblings2,
     };
     expect(
-      validateAuthoritySparseUpdate({
+      validateAuthoritySingleUpdateWitness({
+        globalIdentity,
         leaf: leaf2,
         priorRoot: root,
         proof: proof2,
@@ -822,7 +1092,8 @@ describe("approved v2 authority contracts", () => {
       }),
     ).toEqual([]);
     expect(
-      validateAuthoritySparseUpdate({
+      validateAuthoritySingleUpdateWitness({
+        globalIdentity,
         leaf: leaf2,
         priorRoot: root,
         proof: { ...proof2, priorRootKind: "EMPTY" },
@@ -830,7 +1101,7 @@ describe("approved v2 authority contracts", () => {
       }),
     ).not.toEqual([]);
     expect(canonicalDigest({ de, dh, dhe, epochKey: leaf.epochKey })).toBe(
-      "fe7ac23e3bfc4e2982fb9054a024889623921f12a987873e0193ddc2223ca859",
+      "59cc1fa480b48b11598b2aab6f372bcf6d274a9d2b3bbbb2f55be5ee610b65b1",
     );
     expect(
       parseContract("authority-history-update-proof/v1", {
@@ -1211,6 +1482,24 @@ describe("approved v2 authority contracts", () => {
     }
     expect(validateCommitRunSequence(checkpoints)).toEqual([]);
     expect(validateCommitRunSequence([checkpoints[1]!, checkpoints[0]!])).not.toEqual([]);
+    for (const [fieldName, replacement] of Object.entries({
+      globalIdentityDigest: digest3,
+      pointerKind: "ACTIVATION_RECOVERY_LAUNCH",
+      canonicalPointerPath: "installation/changed.json",
+      installationId: uuid2,
+      projectId: uuid2,
+      stateRootDigest: digest3,
+      transactionId: uuid2,
+      sourceToken: "recovery-fence-v2",
+      targetPathInstanceDigest: digest3,
+      targetMutationId: digest3,
+      runOrdinal: "1",
+    })) {
+      const mutant = checkpoints.map((checkpoint, index) =>
+        index === 1 ? { ...checkpoint, [fieldName]: replacement } : checkpoint,
+      );
+      expect(validateCommitRunSequence(mutant), fieldName).not.toEqual([]);
+    }
     const coreDigest = computeRunCheckpointCoreDigest(checkpoints.at(-1));
     const postDigest = computeRunPostSelectionDigest({
       ...fixtureFor("pointer-mutation-run-selector-post-selection-observation/v1"),

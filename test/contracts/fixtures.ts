@@ -329,7 +329,7 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         leftChildDigest: digest,
         rightChildDigest: digest2,
         nodeDigest,
-        recordPath: `installation/state-mutation-authority-history/${digest}/nodes/0/${nodeDigest}.json`,
+        recordPath: `installation/state-mutation-authority-history/nodes/${nodeDigest}.json`,
       };
     case "pointer-mutation-commit-resolution/v1":
       return {
@@ -386,6 +386,14 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         lifecycle: "READY_ONLY",
         fenceRootDigest: digest,
         fenceHeadDigest: digest2,
+      };
+    case "pointer-mutation-commit-evidence/v1":
+      return {
+        outcome: "UNKNOWN_TERMINAL",
+        selectedTarget: null,
+        proposedTarget: {},
+        conflictEvidence: null,
+        unknownEvidence: {},
       };
     default:
       return {};

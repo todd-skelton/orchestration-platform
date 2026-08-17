@@ -809,11 +809,12 @@ describe("current and diagnostic schema registries", () => {
       "pointer-mutation-commit-evidence/v1",
       "pointer-mutation-conflict-evidence/v1",
       "pointer-mutation-unknown-evidence/v1",
+      "pointer-mutation-proposed-target-evidence/v1",
       "pointer-evidence-slot/v2",
       "authority-membership-evidence/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(99);
+    expect(schemaVersions).toHaveLength(100);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -3471,11 +3472,61 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       authoritySelection: authority.envelope,
       epochSequence,
       intent,
+      outcome: "SELECTED",
       conflictEvidence: null,
+      proposedTarget: null,
+      selectedTarget: target.envelope,
       unknownEvidence: null,
-      targetSelection: target.envelope,
       checkpoints,
     };
+    const proposedTarget = {
+      schemaVersion: "pointer-mutation-proposed-target-evidence/v1",
+      pointerKind: target.envelope.pointerKind,
+      canonicalPointerPath: target.envelope.canonicalPointerPath,
+      pathBindings: target.envelope.pathBindings,
+      installationId: target.envelope.installationId,
+      projectId: target.envelope.projectId,
+      stateRootDigest: target.envelope.stateRootDigest,
+      transactionId: target.envelope.transactionId,
+      sourceToken: target.envelope.sourceToken,
+      positionEvidence: target.envelope.positionEvidence,
+      value: target.envelope.value,
+      proposal: target.envelope.proposal,
+    };
+    expect(parseContract("pointer-mutation-proposed-target-evidence/v1", proposedTarget).ok).toBe(
+      true,
+    );
+    expect(
+      parseContract("pointer-mutation-proposed-target-evidence/v1", {
+        ...proposedTarget,
+        tip: target.envelope.tip,
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("pointer-mutation-commit-evidence/v1", {
+        ...commit,
+        outcome: "LOST_CONFLICT",
+        selectedTarget: null,
+        proposedTarget,
+        conflictEvidence: {},
+      }).ok,
+    ).toBe(true);
+    expect(
+      parseContract("pointer-mutation-commit-evidence/v1", {
+        ...commit,
+        outcome: "UNKNOWN_TERMINAL",
+        selectedTarget: null,
+        proposedTarget,
+        unknownEvidence: {},
+      }).ok,
+    ).toBe(true);
+    expect(
+      parseContract("pointer-mutation-commit-evidence/v1", {
+        ...commit,
+        outcome: "LOST_CONFLICT",
+        proposedTarget,
+      }).ok,
+    ).toBe(false);
     expect(validateCommitRunComposition(commit)).toEqual([]);
     expect(
       validateCommitRunComposition({
