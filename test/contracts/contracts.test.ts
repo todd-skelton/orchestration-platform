@@ -189,6 +189,9 @@ function pointerSelection(
     positionDigest,
     outcome,
     intent,
+    authorityEpochDt: epoch.tipDigest,
+    authorityEpochDv: epoch.valueDigest,
+    authorityEpochDr: epoch.proposalReceiptDigest,
     receipt: proposal,
   });
   const tip: ContractRecord = {
@@ -383,7 +386,11 @@ function tombstoneSelection(
     valueDigest: priorSelection.valueDigest,
     proposalReceiptDigest: priorSelection.proposalReceiptDigest,
   };
-  const authorityEpoch = { tipDigest: digest, valueDigest: digest, proposalReceiptDigest: digest };
+  const authorityEpoch = {
+    tipDigest: digest2,
+    valueDigest: digest2,
+    proposalReceiptDigest: digest2,
+  };
   const terminalProof: ContractRecord = {
     schemaVersion: "pointer-terminal-proof/v1",
     authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
@@ -859,6 +866,9 @@ describe("framed pointer digest graph", () => {
       positionDigest: activePositionDigest,
       intent: "VALUE_PROPOSED",
       outcome: "SELECT",
+      authorityEpochTipDigest: digest,
+      authorityEpochValueDigest: digest,
+      authorityEpochReceiptDigest: digest,
     };
     const dr = computeProposalReceiptDigest({
       pointerKind: "ACTIVE_RELEASE",
@@ -871,6 +881,9 @@ describe("framed pointer digest graph", () => {
       positionDigest: activePositionDigest,
       intent: "VALUE_PROPOSED",
       outcome: "SELECT",
+      authorityEpochDt: receipt.authorityEpochTipDigest,
+      authorityEpochDv: receipt.authorityEpochValueDigest,
+      authorityEpochDr: receipt.authorityEpochReceiptDigest,
       receipt,
     });
     const tip = {
@@ -931,9 +944,30 @@ describe("framed pointer digest graph", () => {
         positionDigest: digest2,
         intent: "VALUE_PROPOSED",
         outcome: "SELECT",
+        authorityEpochDt: receipt.authorityEpochTipDigest,
+        authorityEpochDv: receipt.authorityEpochValueDigest,
+        authorityEpochDr: receipt.authorityEpochReceiptDigest,
         receipt: { ...receipt, successorValueDigest: digest },
       }),
     ).toThrow(/binding-mismatch/);
+    expect(() =>
+      computeProposalReceiptDigest({
+        pointerKind: "ACTIVE_RELEASE",
+        pathInstanceDigest: digest,
+        mutationId,
+        priorDt: null,
+        priorDv: null,
+        priorDr: null,
+        successorDv: dv,
+        positionDigest: activePositionDigest,
+        intent: "VALUE_PROPOSED",
+        outcome: "SELECT",
+        authorityEpochDt: digest2,
+        authorityEpochDv: digest2,
+        authorityEpochDr: digest2,
+        receipt,
+      }),
+    ).toThrow(/authorityEpoch.*binding-mismatch/);
     expect(() =>
       computeCurrentTipDigest("ACTIVE_RELEASE", digest, dv, dr, {
         ...tip,
@@ -1150,6 +1184,11 @@ describe("framed pointer digest graph", () => {
               proposalReceiptDigest: selected.proposal.priorReceiptDigest as string,
             },
             tombstoneEvidence: selected.envelope.tombstoneEvidence as ContractRecord,
+            authorityEpoch: {
+              tipDigest: selected.proposal.authorityEpochTipDigest as string,
+              valueDigest: selected.proposal.authorityEpochValueDigest as string,
+              proposalReceiptDigest: selected.proposal.authorityEpochReceiptDigest as string,
+            },
             intent,
             outcome,
           });
@@ -1265,7 +1304,7 @@ describe("framed pointer digest graph", () => {
             sourceToken: terminalProof.sourceToken === "none" ? "recovery-fence-v2" : "none",
           },
         },
-        { ...evidence, terminalProof: { ...terminalProof, authorityEpochTipDigest: digest2 } },
+        { ...evidence, terminalProof: { ...terminalProof, authorityEpochTipDigest: digest } },
       ])
         expect(
           validateSelectedPointerEvidence({ ...selected.envelope, tombstoneEvidence: mutant }),
@@ -1286,8 +1325,45 @@ describe("framed pointer digest graph", () => {
       expect(() => computePointerPositionDigest(otherRow.kind, position)).toThrow();
     }
     expect(canonicalDigest(census)).toBe(
-      "87cbf77496b44eb987a0d15488f76bbdbb8217c60b48cd2406fbc990c894170d",
+      "53cbc1d23b42ded087c513004a26a53d4dad3034dbcac7f24776cb814ab00b50",
     );
+  });
+
+  test("accepts historical E1 selections followed by independently bound E2 selections", () => {
+    const kinds = [
+      "ACTIVATION_CLEANUP_GATE",
+      "ACTIVATION_RECOVERY_FENCE",
+      "ACTIVATION_RECOVERY_LAUNCH",
+      "RECOVERY_AUTHORIZATION_STATE",
+      "RECOVERY_AUTHORIZATION_ATTACHMENT",
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+    ] as const;
+    for (const kind of kinds) {
+      const row = pointerRegistry.find((candidate) => candidate.kind === kind)!;
+      const e1 = ordinarySelection(row);
+      const e2 = pointerSelection(kind, e1.envelope.value as ContractRecord, {
+        pathBindings: e1.envelope.pathBindings as Record<string, string>,
+        transactionId: e1.envelope.transactionId as string,
+        sourceToken: e1.envelope.sourceToken as string,
+        prior: e1,
+        authorityEpoch: {
+          tipDigest: digest2,
+          valueDigest: digest2,
+          proposalReceiptDigest: digest2,
+        },
+      });
+      expect(validateSelectedPointerEvidence(e1.envelope), `${kind}:E1`).toEqual([]);
+      expect(validateSelectedPointerEvidence(e2.envelope), `${kind}:E2`).toEqual([]);
+      expect(e1.proposal.authorityEpochTipDigest).toBe(digest);
+      expect(e2.proposal.authorityEpochTipDigest).toBe(digest2);
+      expect(
+        validateSelectedPointerEvidence({
+          ...e2.envelope,
+          proposal: { ...e2.proposal, authorityEpochValueDigest: digest },
+        }),
+        `${kind}:fabricated-epoch`,
+      ).not.toEqual([]);
+    }
   });
 
   test("pins reservation predecessor keys to transaction, source, tag, and ordered triple", () => {
@@ -2248,6 +2324,61 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         terminalSummary: null,
       }),
     ).toEqual([]);
+    const mixedEpochLaterReservationSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_RESERVATION",
+      laterReservation,
+      {
+        pathBindings: laterReservationSelection.envelope.pathBindings as Record<string, string>,
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: {
+          tipDigest: digest2,
+          valueDigest: digest2,
+          proposalReceiptDigest: digest2,
+        },
+      },
+    );
+    const mixedEpochLaterDescriptor = {
+      ...laterDescriptor,
+      reservationTipDigest: mixedEpochLaterReservationSelection.tipDigest,
+      reservationValueDigest: mixedEpochLaterReservationSelection.valueDigest,
+      reservationReceiptDigest: mixedEpochLaterReservationSelection.proposalReceiptDigest,
+    };
+    const mixedEpochLaterAccumulator = {
+      ...laterAccumulator,
+      descriptorDigest: canonicalDigest(mixedEpochLaterDescriptor),
+      reservationTipDigest: mixedEpochLaterReservationSelection.tipDigest,
+      reservationValueDigest: mixedEpochLaterReservationSelection.valueDigest,
+      reservationReceiptDigest: mixedEpochLaterReservationSelection.proposalReceiptDigest,
+    };
+    const mixedEpochLaterAccumulatorSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      mixedEpochLaterAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        prior: terminalAccumulatorSelection,
+        authorityEpoch: {
+          tipDigest: digest2,
+          valueDigest: digest2,
+          proposalReceiptDigest: digest2,
+        },
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: mixedEpochLaterAccumulator,
+        accumulatorSelection: mixedEpochLaterAccumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: terminalAccumulatorSelection.envelope,
+        descriptor: mixedEpochLaterDescriptor,
+        priorTerminalAccumulatorSelection: terminalAccumulatorSelection.envelope,
+        priorTerminalSummary: terminalSummary,
+        reservation: laterReservation,
+        reservationSelection: mixedEpochLaterReservationSelection.envelope,
+        terminalSummary: null,
+      }),
+    ).toEqual([]);
     const laterTerminalSummary = {
       ...terminalSummary,
       attemptId: uuid2,
@@ -2444,7 +2575,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         reservationSelection: reservationSelection.envelope,
         terminalSummary,
       }),
-    ).toContain("currentPredecessor:authority-epoch-mismatch");
+    ).toEqual([]);
     expect(
       validateRecoveryAccumulatorFormula({
         ...laterFormula,
@@ -2630,6 +2761,31 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       reservationSelection: reservationSelection.envelope,
     };
     expect(validateEvidencePacket(packet)).toEqual([]);
+    const authorityEpochE2 = pointerSelection(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      authorityEpoch.envelope.value as ContractRecord,
+      {
+        pathBindings: {},
+        transactionId: null,
+        sourceToken: "none",
+        prior: authorityEpoch,
+        authorityEpoch: selectedEpoch,
+      },
+    );
+    const epochSequenceE2 = ordinaryEpochSequence.map((step) => ({
+      step,
+      authorityEpochDigest: authorityEpochE2.valueDigest,
+      authorityEpochTipDigest: authorityEpochE2.tipDigest,
+      authorityEpochValueDigest: authorityEpochE2.valueDigest,
+      authorityEpochReceiptDigest: authorityEpochE2.proposalReceiptDigest,
+    }));
+    expect(
+      validateEvidencePacket({
+        ...packet,
+        authorityEpochSelection: authorityEpochE2.envelope,
+        epochSequence: epochSequenceE2,
+      }),
+    ).toEqual([]);
     expect(
       validateEvidencePacket({
         ...packet,

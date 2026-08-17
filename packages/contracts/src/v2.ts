@@ -1059,10 +1059,16 @@ export interface ProposalDigestInput {
   positionDigest: string;
   intent: "VALUE_PROPOSED" | "TOMBSTONE_PROPOSED";
   outcome: "SELECT" | "REMOVE";
+  authorityEpochDt: string;
+  authorityEpochDv: string;
+  authorityEpochDr: string;
   receipt: JsonValue;
 }
 export function computeProposalReceiptDigest(input: ProposalDigestInput): string {
   const closed = requireClosedInput(input, [
+    "authorityEpochDr",
+    "authorityEpochDt",
+    "authorityEpochDv",
     "intent",
     "mutationId",
     "outcome",
@@ -1076,7 +1082,15 @@ export function computeProposalReceiptDigest(input: ProposalDigestInput): string
     "successorDv",
   ]);
   const kind = requirePointerKind(closed.pointerKind);
-  for (const name of ["mutationId", "pathInstanceDigest", "positionDigest", "successorDv"])
+  for (const name of [
+    "authorityEpochDr",
+    "authorityEpochDt",
+    "authorityEpochDv",
+    "mutationId",
+    "pathInstanceDigest",
+    "positionDigest",
+    "successorDv",
+  ])
     safeDigest(String(closed[name]), name);
   for (const name of ["priorDr", "priorDt", "priorDv"])
     if (closed[name] !== null) safeDigest(String(closed[name]), name);
@@ -1096,6 +1110,9 @@ export function computeProposalReceiptDigest(input: ProposalDigestInput): string
     ["positionDigest", closed.positionDigest],
     ["intent", closed.intent],
     ["outcome", closed.outcome],
+    ["authorityEpochTipDigest", closed.authorityEpochDt],
+    ["authorityEpochValueDigest", closed.authorityEpochDv],
+    ["authorityEpochReceiptDigest", closed.authorityEpochDr],
   ] as const)
     requireEqualBinding(receipt, fieldName, expected as JsonValue);
   return hashFrame("pointer-receipt/v2", [
@@ -2666,6 +2683,9 @@ function resolveSelectedPointerEvidence(
       positionDigest,
       intent: mutationInput.intent as "VALUE_PROPOSED" | "TOMBSTONE_PROPOSED",
       outcome: mutationInput.outcome as "SELECT" | "REMOVE",
+      authorityEpochDt: proposal.authorityEpochTipDigest as string,
+      authorityEpochDv: proposal.authorityEpochValueDigest as string,
+      authorityEpochDr: proposal.authorityEpochReceiptDigest as string,
       receipt: proposal,
     });
     const tip = requireSchemaRecord("pointer-current-tip/v1", closed.value.tip);
@@ -3231,21 +3251,6 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
       return [name, selected];
     }),
   ) as Record<keyof typeof selectionInputs, ReturnType<typeof resolveSelectedPointerEvidence>>;
-  const accumulatorRoleInputs = {
-    currentAccumulatorPredecessor: closed.value.currentAccumulatorPredecessorSelection,
-    priorTerminalAccumulator: closed.value.priorTerminalAccumulatorSelection,
-  } as const;
-  const accumulatorRoles = Object.fromEntries(
-    Object.entries(accumulatorRoleInputs).map(([name, roleInput]) => {
-      if (roleInput === null) return [name, null];
-      const selected = resolveSelectedPointerEvidence(roleInput);
-      if (!selected.ok) issues.push(...selected.issues.map((issue) => `${name}:${issue}`));
-      return [name, selected];
-    }),
-  ) as Record<
-    keyof typeof accumulatorRoleInputs,
-    ReturnType<typeof resolveSelectedPointerEvidence> | null
-  >;
   const expectedKinds = {
     authorityEpoch: "STATE_MUTATION_AUTHORITY_ROTATION",
     accumulator: "RECOVERY_ATTEMPT_ACCUMULATOR",
@@ -3298,23 +3303,6 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
       for (const identity of ["installationId", "projectId", "stateRootDigest"] as const)
         if (selected.value[identity] !== selections.authorityEpoch.value[identity])
           issues.push(`${name}Selection:${identity}-epoch-mismatch`);
-      for (const [proposalName, digestName] of [
-        ["authorityEpochTipDigest", "tipDigest"],
-        ["authorityEpochValueDigest", "valueDigest"],
-        ["authorityEpochReceiptDigest", "proposalReceiptDigest"],
-      ] as const)
-        if (selected.value.proposal[proposalName] !== selections.authorityEpoch.value[digestName])
-          issues.push(`${name}Selection:${proposalName}-mismatch`);
-    }
-    for (const [name, selected] of Object.entries(accumulatorRoles)) {
-      if (!selected?.ok) continue;
-      for (const [proposalName, digestName] of [
-        ["authorityEpochTipDigest", "tipDigest"],
-        ["authorityEpochValueDigest", "valueDigest"],
-        ["authorityEpochReceiptDigest", "proposalReceiptDigest"],
-      ] as const)
-        if (selected.value.proposal[proposalName] !== selections.authorityEpoch.value[digestName])
-          issues.push(`${name}:${proposalName}-mismatch`);
     }
   }
   if (selections.reservation?.ok) {
@@ -3825,11 +3813,6 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
       : proposal.priorTipDigest === predecessor.tipDigest &&
         proposal.priorValueDigest === predecessor.valueDigest &&
         proposal.priorReceiptDigest === predecessor.proposalReceiptDigest;
-  const proposalEpochMatches = (left: ContractRecord, right: ContractRecord): boolean =>
-    left.authorityEpochTipDigest === right.authorityEpochTipDigest &&
-    left.authorityEpochValueDigest === right.authorityEpochValueDigest &&
-    left.authorityEpochReceiptDigest === right.authorityEpochReceiptDigest;
-
   if (currentAccumulator.ok) {
     const currentPredecessorValue = currentPredecessor?.ok ? currentPredecessor.value : null;
     if (!proposalMatches(currentAccumulator.value.proposal, currentPredecessorValue))
@@ -3838,24 +3821,13 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
       if (currentPredecessorValue.tip.pointerKind !== "RECOVERY_ATTEMPT_ACCUMULATOR")
         issues.push("currentPredecessor:pointer-kind-mismatch");
       samePointerIdentity("currentPredecessor", currentPredecessorValue, currentAccumulator.value);
-      if (
-        !proposalEpochMatches(currentPredecessorValue.proposal, currentAccumulator.value.proposal)
-      )
-        issues.push("currentPredecessor:authority-epoch-mismatch");
     }
     if (lineage?.ok) {
       if (lineage.value.tip.pointerKind !== "RECOVERY_ATTEMPT_ACCUMULATOR")
         issues.push("priorTerminal:pointer-kind-mismatch");
       if (lineage.value.value.lifecycle !== "TERMINAL") issues.push("priorTerminal:not-terminal");
       samePointerIdentity("priorTerminal", lineage.value, currentAccumulator.value);
-      if (!proposalEpochMatches(lineage.value.proposal, currentAccumulator.value.proposal))
-        issues.push("priorTerminal:authority-epoch-mismatch");
     }
-    if (
-      currentReservation.ok &&
-      !proposalEpochMatches(currentReservation.value.proposal, currentAccumulator.value.proposal)
-    )
-      issues.push("reservationSelection:authority-epoch-mismatch");
     const terminalCurrent = accumulator.value.lifecycle === "TERMINAL";
     if (!terminalCurrent && lineageAbsent) {
       if (currentPredecessorValue !== null) issues.push("case:r0-in-progress-current-not-null");

@@ -178,17 +178,22 @@ cost remains constant without accepting role swaps, stale siblings, or split
 claims. A selected IN_PROGRESS accumulator also proves its own proposal ancestry:
 null for R0 or the exact selected prior TERMINAL lineage for Rn. A TERMINAL value
 therefore proves both its immediate same-attempt IN_PROGRESS predecessor and
-that predecessor's ancestry. All participating proposals bind the same selected
-authority epoch. Each predecessor-key reservation is a distinct create-once
-pointer instance, so its selected RESERVED proposal must have a fully null prior
-triple; a TERMINAL-to-RESERVED replay is never an allowed transition.
+that predecessor's ancestry. Each historical proposal retains and digest-binds
+its own producer authority epoch; a valid E1 predecessor may be advanced by an
+E2 proposal. Epoch equality is required only among the lock observations and
+new proposal/readbacks of one commit. Each predecessor-key reservation is a
+distinct create-once pointer instance, so its selected RESERVED proposal must
+have a fully null prior triple; a TERMINAL-to-RESERVED replay is never an allowed
+transition.
 
 Every ordinary epoch-sequence observation carries the same selected authority
 epoch digest and Dt/Dv/Dr. The bounded packet carries selected value, proposal,
 and tip evidence for the epoch, gate, fence, launch, reservation, attachment,
-and accumulator. It recomputes each Dp/Dv/Dr/Dt, checks proposal epoch and
-current-family relationships, and refuses a consistent but unselected value
-set. Every packet epoch observation is also compared to the recomputed selected
+and accumulator. It recomputes each Dp/Dv/Dr/Dt and each proposal's own epoch
+fields plus current-family relationships, and refuses a consistent but
+unselected value set. Historical selected envelopes need not share the packet's
+current authority epoch. The observations within `epochSequence` must share one
+current authority digest/Dt/Dv/Dr and are compared to the recomputed current
 authority envelope rather than accepted as a parallel asserted quadruple.
 
 Retention distinguishes CURRENT_AUTHORITY from TERMINAL_ATTEMPT_HISTORY.
