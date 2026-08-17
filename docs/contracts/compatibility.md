@@ -75,6 +75,14 @@ pointer-instance, or release bindings used by that template; missing, null,
 aliased, case-shifted, and unused bindings refuse. Pure dispatch validators
 cover every root/archive row and its exact genesis rule.
 
+Each registry row also declares REQUIRED or NULL transaction policy, its exact
+source policy, and one row-specific position domain. Mutation IDs accept closed
+structured position evidence rather than caller-selected digest bytes; the
+position is rederived from the selected family value. Reservation predecessor
+keys are framed separately for tagged genesis versus an ordered prior Dt/Dv/Dr
+and bind transaction plus source, so no cross-transaction or reordered alias is
+accepted.
+
 Framing `F` is UTF-8 `orchestration-platform`, NUL, domain, NUL, U32 part count,
 then closed type tag, U64 byte length, and bytes for every part. Digests are raw
 32 bytes; nullable text/digests have distinct typed nulls; accumulator tags are
@@ -146,12 +154,20 @@ first summary or Rn from the selected predecessor accumulator Dv plus the raw
 summary. It also binds the selected reservation, descriptor, predecessor
 accumulator, and predecessor summary.
 
+The composed accumulator check receives selected current accumulator and
+reservation envelopes plus the selected current-pointer predecessor. Later
+attempts additionally supply one selected prior terminal accumulator and its
+summary. It recomputes their paths, predecessor key, positions, Dp/Dv/Dr/Dt,
+proposal predecessor, identities, and R0/Rn without adding a lifetime history
+array.
+
 Every ordinary epoch-sequence observation carries the same selected authority
 epoch digest and Dt/Dv/Dr. The bounded packet carries selected value, proposal,
 and tip evidence for the epoch, gate, fence, launch, reservation, attachment,
 and accumulator. It recomputes each Dp/Dv/Dr/Dt, checks proposal epoch and
 current-family relationships, and refuses a consistent but unselected value
-set.
+set. Every packet epoch observation is also compared to the recomputed selected
+authority envelope rather than accepted as a parallel asserted quadruple.
 
 Retention distinguishes CURRENT_AUTHORITY from TERMINAL_ATTEMPT_HISTORY.
 Compaction requires selected non-pending classification, checkpoint, plan, and
