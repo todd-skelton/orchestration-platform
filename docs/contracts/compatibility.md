@@ -24,6 +24,23 @@ exotics, and traps refuse without executing user code.
 
 ## Current and diagnostic registries
 
+The authority version dispatch is unified and exact:
+
+| Contract family | Current authority version | Diagnostic-only versions |
+| --- | --- | --- |
+| authority rotation identity | `state-mutation-authority-rotation-id/v2` | `v1` |
+| authority value | `state-mutation-authority-value/v3` | `v1`, `v2` |
+| history empty/nonempty root | `authority-history-empty-root/v2`, `authority-history-root/v2` | corresponding `v1` |
+| authority successor core / append receipt | `state-mutation-authority-successor-core/v2`, `authority-history-append-receipt/v2` | corresponding `v1` |
+| run intent / checkpoint core / current value | `pointer-mutation-run-intent/v2`, `pointer-mutation-run-checkpoint-core/v2`, `pointer-mutation-run-current-value/v2` | corresponding `v1` |
+| commit evidence | `pointer-mutation-commit-evidence/v3` | `v1`, `v2` |
+| evidence slot / packet | `pointer-evidence-slot/v3`, `pointer-evidence-packet/v3` | `v1` capped fixtures and `v2` twelve-slot records |
+| node inventory, coordinator, and census | the named `v1` schemas in `supervisor-contract.md` | none |
+
+Only current versions appear in ordinary exports/dispatch. Diagnostic versions
+are readable only through `diagnostic`, cannot migrate, and refuse at every
+current authority path.
+
 The current registry uses the approved authority contracts:
 
 - pointer graph: `pointer-current-tip/v1`,
@@ -57,7 +74,8 @@ The current registry uses the approved authority contracts:
   `pointer-mutation-run-selector-post-selection-observation/v1`, and
   `pointer-mutation-commit-resolution/v1`, with the composed
   `pointer-mutation-run-checkpoint-evidence/v1` and
-  `pointer-mutation-commit-evidence/v2` envelopes and closed
+  `pointer-mutation-run-intent/v2`,
+  `pointer-mutation-commit-evidence/v3` envelopes and closed
   `pointer-mutation-conflict-evidence/v1` / `pointer-mutation-unknown-evidence/v1`
   terminal unions;
 - external bootstrap: `physical-destination-identity/v1`,
@@ -91,8 +109,9 @@ The current registry uses the approved authority contracts:
 `authority-history-empty-root/v1`, `authority-history-root/v1`,
 `authority-history-append-receipt/v1`, the capped serialized authority-history
 table, `pointer-evidence-packet/v2`, `pointer-evidence-slot/v2`, run core/value
-v1, commit evidence v1, the twelve-slot packet, and the thirteen superseded
-active-release, gate, fence, launch, cleanup-head, and authorization v1 schemas
+v1, run intent v1, commit evidence v1/v2, rotation identity v1, the twelve-slot
+packet, and the thirteen superseded active-release, gate, fence, launch,
+cleanup-head, and authorization v1 schemas
 exist only under the frozen `diagnostic` namespace. `diagnostic.parseContract`
 may read their historical bytes. They are not ordinary/deep exports;
 `parseContract` and every canonical authority path refuse them. No migration

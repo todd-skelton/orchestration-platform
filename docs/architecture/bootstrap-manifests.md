@@ -217,11 +217,12 @@ projection of the same envelope and is not authority evidence.
 Current authority dispatch uses the exact versions selected by the architecture,
 including `state-mutation-authority-value/v3`,
 `authority-history-empty-root/v2`, `authority-history-root/v2`,
-`authority-history-append-receipt/v2`, the thirteen-kind registry, singleton
-node-materialization coordinator, node-inventory schemas, and authority-run
-epoch-handoff records. Earlier authority value/root/receipt versions and the
-twelve-slot packet are readable only through the explicit diagnostic API and
-are refused at current authority paths. No authority version is implicitly
+`authority-history-append-receipt/v2`, rotation identity v2, run intent/current
+value/core v2, commit evidence v3, evidence slot/packet v3, the thirteen-kind
+registry, singleton node-materialization coordinator, node-inventory schemas,
+and authority-run epoch-handoff records. Earlier corresponding versions and
+the twelve-slot packet are readable only through the explicit diagnostic API
+and are refused at current authority paths. No authority version is implicitly
 migrated and no old record may be selected by bootstrap.
 
 | Observed version | Disposition |

@@ -262,7 +262,7 @@ installation/state-mutation-authority-history/append-receipts/<rotation-id>.json
 ```
 
 The exact history domains are `state-mutation-global-identity/v1`,
-`state-mutation-authority-rotation-id/v1`, `authority-epoch-key/v1`,
+`state-mutation-authority-rotation-id/v2`, `authority-epoch-key/v1`,
 `authority-epoch-leaf/v1`, `authority-history-empty/v1`,
 `authority-history-node/v1`, `authority-history-empty-root/v2`,
 `authority-history-root/v2`,
@@ -270,6 +270,13 @@ The exact history domains are `state-mutation-global-identity/v1`,
 `authority-history-append-receipt/v2`. The successor authority core excludes
 the append-receipt digest and the append receipt excludes successor value/tip;
 the v3 value joins them without a cycle.
+
+Current authority dispatch is: rotation identity v2; authority value v3;
+history empty/nonempty roots, successor core, and append receipt v2; run intent,
+checkpoint core, and run-current value v2; commit evidence v3; evidence slot and
+packet v3; every node-inventory/coordinator/census schema named below v1.
+Corresponding earlier versions are diagnostic-only, never migratable or
+selectable at current paths.
 
 The sparse formulas and exclusions are exact:
 
@@ -316,18 +323,35 @@ installation/state-mutation-authority-history/node-inventory/empty-roots/<Dnir>.
 installation/state-mutation-authority-history/node-inventory/roots/<Dnir>.json
 installation/state-mutation-authority-history/node-inventory/leaves/<node-digest>.json
 installation/state-mutation-authority-history/node-inventory/plans/<rotation-id>/<Dplan>.json
+installation/state-mutation-authority-history/node-inventory/observations/<rotation-id>/<node-digest>-<Dnfo>.json
 installation/state-mutation-authority-history/node-inventory/materializations/<rotation-id>/<node-digest>.json
 installation/state-mutation-authority-history/node-inventory/updates/<rotation-id>.json
 installation/state-mutation-authority-history/node-inventory/coordinator/<authority-Dp>/current.json
 ```
 
-| Digest | Exact domain and framed parts |
-| --- | --- |
-| `Dnr` | `authority-history-node-record/v1`: node digest raw32, canonical node bytes |
-| `Dnil` | `authority-node-inventory-leaf/v1`: node digest raw32, canonical path text, `Dnr` raw32, canonical leaf bytes |
-| `Dnir` | `authority-node-inventory-root/v1`: `G` raw32, kind text, count `DECIMAL_ASCII`, tree-root raw32, canonical root bytes |
-| `Dplan` | `authority-node-materialization-plan/v1`: deterministic rotation ID, old authority `Dp/Dt/Dv/Dr`, prior history and inventory tuples, authority update proof, each sorted/deduped derived node-plan digest, precomputable successor history-tree and inventory tuples, reviewed successor subject/ordinal, active-release/review facts, `FINISH_ONLY`, canonical plan bytes |
-| `Dniu` | `authority-node-inventory-batch-update/v1`: `G`, rotation ID, `Dplan`, selected coordinator STARTED triple, authority update proof, prior inventory tuple, every ordered materialization/entry digest, successor inventory tuple, canonical batch bytes |
+The rotation and inventory identities are executable contracts. Every listed
+part is framed in the displayed order; tuples expand in kind, digest, count,
+then tree-root order, nullable parts use typed null, and no unlisted field is
+permitted.
+
+| Digest/schema | Exact domain and ordered framed parts | Path and exclusions |
+| --- | --- | --- |
+| rotation ID | `state-mutation-authority-rotation-id/v2`: `G` raw32, old authority `Dp/Dt/Dv/Dr` raw32, successor ordinal `DECIMAL_ASCII`, reviewed-successor-subject digest raw32, independent-review digest raw32, rotation-operation-identity digest raw32 | derived identity with no record path; excludes `Dplan`, filesystem facts, `Dniu`, successor `Dv/Dr/Dt`, and timestamps |
+| `Dnr` / `authority-history-node-record/v1` | `authority-history-node-record/v1`: node digest raw32, canonical `authority-history-node/v1` bytes | `.../nodes/<node-digest>.json`; excludes inventory proof and plan |
+| `Dnil` / `authority-node-inventory-leaf/v1` | `authority-node-inventory-leaf/v1`: node digest raw32, canonical node path text, `Dnr` raw32, canonical leaf bytes | `.../node-inventory/leaves/<node-digest>.json`; excludes membership proof and inventory root |
+| empty `Dnir` / `authority-node-inventory-empty-root/v1` | `authority-node-inventory-root/v1`: `G` raw32, `EMPTY` text, exact `DECIMAL_ASCII "0"`, deterministic depth-zero inventory-empty-tree digest raw32, canonical empty-root bytes | `.../node-inventory/empty-roots/<Dnir>.json`; FULL_REQUIRED; no latest/successor fields |
+| nonempty `Dnir` / `authority-node-inventory-root/v1` | `authority-node-inventory-root/v1`: `G` raw32, `NONEMPTY` text, count `DECIMAL_ASCII >=1`, inventory-tree root raw32, canonical root bytes | `.../node-inventory/roots/<Dnir>.json`; FULL_REQUIRED; selected successor authority excluded |
+
+The per-node records used to construct `Dplan` and `Dniu` are closed:
+
+| Digest/schema | Exact domain and ordered framed parts | Storage and exclusions |
+| --- | --- | --- |
+| plan-entry digest / `authority-node-materialization-plan-entry/v1` | `authority-node-materialization-plan-entry/v1`: node digest raw32, canonical node path text, `Dnr` raw32, `Dnil` raw32, membership action `INSERT_ABSENT|ALREADY_MEMBER`, prior intermediate tree-root raw32, prior intermediate count `DECIMAL_ASCII`, exactly 256 sibling raw32 parts, successor intermediate tree-root raw32, successor intermediate count `DECIMAL_ASCII`, canonical entry bytes | embedded in the plan, sorted by node digest; excludes filesystem observation, materialization receipt, `Dniu`, and successor authority |
+| `Dnfo` / `authority-node-filesystem-observation/v1` | `authority-node-filesystem-observation/v1`: `G`, rotation ID, `Dplan`, selected coordinator STARTED `Dt/Dv/Dr`, node digest, canonical node path, `Dnr`, `Dnil`, filesystem disposition, existed raw-fixed `00|01`, nullable observed-bytes digest, nullable readback digest, old epoch `Dt/Dv/Dr`, observation time, canonical observation bytes | `.../node-inventory/observations/<rotation-id>/<node-digest>-<Dnfo>.json`; excludes membership action/proof/root |
+| `Dnue` / `authority-node-inventory-update-entry/v1` | `authority-node-inventory-update-entry/v1`: `G`, rotation ID, `Dplan`, selected STARTED `Dt/Dv/Dr`, node digest, `Dnil`, membership action, `Dnfo`, prior inventory root/count, exactly 256 sibling raw32 parts, successor inventory root/count, canonical update-entry bytes | embedded in `Dniu`; excludes raw filesystem bytes and successor authority |
+| `Dnm` / `authority-node-materialization-receipt/v1` | `authority-node-materialization-receipt/v1`: `G`, rotation ID, `Dplan`, selected STARTED `Dt/Dv/Dr`, node digest, canonical node path, `Dnr`, `Dnil`, `Dnfo`, created/readback times, canonical receipt bytes | `.../node-inventory/materializations/<rotation-id>/<node-digest>.json`; excludes update entry, batch, and successor authority |
+| `Dplan` / `authority-node-materialization-plan/v1` | `authority-node-materialization-plan/v1`: `G`, rotation ID, old authority `Dp/Dt/Dv/Dr`, prior history tuple, predecessor leaf digest, authority-update-proof digest, prior inventory tuple, each sorted plan-entry digest, expected successor inventory tuple, expected successor authority-tree count/tree/latest tuple, reviewed-successor-subject digest, active-release `Dt/Dv/Dr`, independent-review digest, successor ordinal `DECIMAL_ASCII`, `FINISH_ONLY`, canonical plan bytes | `.../node-inventory/plans/<rotation-id>/<Dplan>.json`; excludes filesystem observations, `Dniu`, target mutation ID, successor authority value/proposal/tip, and timestamps |
+| `Dniu` / `authority-node-inventory-batch-update/v1` | `authority-node-inventory-batch-update/v1`: `G`, rotation ID, `Dplan`, selected STARTED `Dt/Dv/Dr`, authority-update-proof digest, prior inventory tuple, every ordered `Dnm` and `Dnue`, successor inventory tuple, canonical batch bytes | `.../node-inventory/updates/<rotation-id>.json`; excludes successor authority value/proposal/tip, append receipt, FINISHING, and TERMINAL |
 
 `Dplan` is computed before filesystem writes. It excludes filesystem
 observations, `Dniu`, target mutation ID, successor authority value/proposal/tip,
@@ -377,31 +401,74 @@ the successor authority CAS, E(n) has no capability. Fresh E(n+1) terminalizes
 the authority run, creates the downstream handoff, and alone selects
 FINISHING→TERMINAL.
 
+`authority-node-materialization-run-value/v1` is a closed tagged union. Its
+common fields are installation/project/state-root/global-identity digests,
+authority `Dp`, coordinator ordinal, lifecycle, selected-at time, and the
+following nullable fields. Their presence is exact:
+
+| Lifecycle | Required nullable-union members | Members that must be null |
+| --- | --- | --- |
+| `IDLE` | none; it is legal only at genesis ordinal `"0"` | rotation ID, `Dplan`, predecessor-cycle triple, phase evidence, `Dniu`, successor-authority `Dp/Dt/Dv/Dr`, authority-run terminal resolution/final-selector triple, `Drh`, `Dhand`, terminal receipt, census terminal |
+| `PREAUTHORIZED` | rotation ID, `Dplan`, selected predecessor-cycle `Dt/Dv/Dr`, phase evidence equal to `Dplan` | `Dniu`, successor-authority evidence, run terminal/final selector, `Drh`, `Dhand`, terminal receipt, census terminal |
+| `STARTED` | the PREAUTHORIZED identity plus `Dstart` as phase evidence | the same later fields as PREAUTHORIZED |
+| `REVOKED_BEFORE_START` | rotation ID, `Dplan`, selected predecessor-cycle triple, revocation-receipt digest as phase evidence | `Dniu`, successor-authority evidence, run terminal/final selector, `Drh`, `Dhand`, terminal receipt, census terminal |
+| `FINISHING` | rotation ID, `Dplan`, predecessor-cycle triple, finishing-evidence digest, `Dniu`, successor-authority `Dp/Dt/Dv/Dr`, authority-run terminal resolution and final-selector `Dt/Dv/Dr`, `Drh`, `Dhand` | terminal receipt and census terminal |
+| `TERMINAL` | every FINISHING member plus terminal-receipt digest; census-terminal digest is nullable until a selected authoritative census exists | none except the permitted nullable census-terminal digest |
+
+Every non-genesis value binds the exact selected predecessor coordinator
+triple. Its ordinal is predecessor ordinal plus one under arbitrary-precision
+`DECIMAL_ASCII`. The only edges are those enumerated above; no self-loop is a
+write.
+
+`authority-node-materialization-run-position/v1` is framed under the same
+domain from `[authority Dp raw32, coordinator ordinal DECIMAL_ASCII, lifecycle
+text, nullable rotation ID raw32, nullable Dplan raw32, nullable phase-evidence
+digest raw32, canonical position bytes]`. It binds the value and the registry
+path; a position from any other pointer family refuses.
+
+The thirteenth registry row is exact:
+
+| Kind | Instance scope/path | Transaction/source policy | Value/position | Genesis/retention/removal |
+| --- | --- | --- | --- | --- |
+| `AUTHORITY_NODE_MATERIALIZATION_RUN` | singleton `AUTHORITY_DP`; `installation/state-mutation-authority-history/node-inventory/coordinator/<authority-Dp>/current.json` | transaction `NULL`; source policy `NONE` with canonical token `none` | `authority-node-materialization-run-value/v1`; `authority-node-materialization-run-position/v1` | create-once ABSENT→IDLE; FULL_REQUIRED; root and archive template sets empty; tombstone position/value disabled |
+
+The coordinator is itself an ordinary generic pointer target journaled by the
+META_LEAF run-current exception. It is not a tombstone-enabled family and has
+no archive selector.
+
 #### Authenticated node-directory census
 
-`authority-node-inventory-census-entry/v1` binds a contiguous global decimal
-ordinal, canonical path/node bytes, `Dnr`, `Dnil`, and a 256-sibling membership
-proof against the selected `Dnir`. A page has at most 256 strictly path-sorted
-entries. Page zero has null prior page/cursor/cumulative digests and prior count
-`"0"`; later pages bind exact prior page, cursor, cumulative digest/count, and
-ordinal+1. Nonterminal pages are nonempty and end at their last path; terminal
-exhaustion has null successor cursor and cumulative count equal the selected
-inventory count.
+The census contracts are closed and executable:
 
-`Dpage` frames `G`, census ID, selected authority `Dp/Dt/Dv/Dr`, selected
-history root, selected inventory kind/digest/count/tree, page ordinal, nullable
-prior page/cursor/cumulative, prior count, every ordered entry digest, the
-ISS-004 directory-enumeration observation, successor cursor/count, exhausted
-byte, and canonical page-core bytes. The rolling `Dcensus` uses raw-fixed
-`00,Dpage,count,cursor` first and `01,prior-Dcensus,Dpage,count,cursor` later.
-`Dterminal` binds the unchanged selected tuple, first/last page, last
-`Dcensus`, page/cumulative counts, terminal enumeration observation, and
-canonical terminal bytes.
+| Digest/schema | Exact domain and ordered framed parts | Exclusions |
+| --- | --- | --- |
+| `Dentry` / `authority-node-inventory-census-entry/v1` | `authority-node-inventory-census-entry/v1`: global entry ordinal `DECIMAL_ASCII`, canonical node path text, node digest raw32, `Dnr` raw32, `Dnil` raw32, exactly 256 sibling raw32 parts, canonical entry bytes | page/cursor/census digests and caller-asserted roots |
+| page core / `authority-node-inventory-census-page-core/v1` | schema-only canonical record containing `G`, census ID UUIDv7, selected authority `Dp/Dt/Dv/Dr`, selected history-root digest, selected inventory kind/digest/count/tree, page ordinal, nullable prior `Dpage`, nullable prior cursor, nullable prior `Dcensus`, prior cumulative count, ordered `Dentry` values and digests, directory-enumeration-observation digest, nullable successor cursor, successor cumulative count, exhausted raw-fixed byte, and creation time | its own `Dpage`, outer record path, future pages, and terminal |
+| `Dpage` / `authority-node-inventory-census-page/v1` | `authority-node-inventory-census-page/v1`: `G`, census ID, selected authority `Dp/Dt/Dv/Dr`, selected history-root digest, selected inventory kind/digest/count/tree, page ordinal, nullable prior `Dpage`, nullable prior cursor, nullable prior `Dcensus`, prior cumulative count, every ordered `Dentry`, enumeration-observation digest, nullable successor cursor, successor cumulative count, exhausted raw-fixed `00|01`, canonical page-core bytes | outer page digest/path, future page, terminal, and mutation capability |
+| first/later `Dcensus` | `authority-node-inventory-census-chain/v1`: first `[raw-fixed 00, Dpage raw32, successor cumulative count DECIMAL_ASCII, nullable successor cursor]`; later `[raw-fixed 01, prior Dcensus raw32, Dpage raw32, successor cumulative count DECIMAL_ASCII, nullable successor cursor]` | no selected authority/root tuple because `Dpage` binds it; no future page |
+| `Dterminal` / `authority-node-inventory-census-terminal/v1` | `authority-node-inventory-census-terminal/v1`: `G`, census ID, unchanged selected authority `Dp/Dt/Dv/Dr`, selected history-root digest, selected inventory kind/digest/count/tree, nullable first `Dpage`, nullable last `Dpage`, nullable last `Dcensus`, page count `DECIMAL_ASCII`, cumulative count `DECIMAL_ASCII`, terminal enumeration-observation digest, completion time, canonical terminal bytes | future coordinator/authority, mutation capability, and unselected caller counts |
+
+The outer `authority-node-inventory-census-page/v1` record contains exactly the
+page core, `Dpage`, `Dcensus`, and canonical record path. The terminal record
+contains exactly the terminal core, `Dterminal`, and canonical record path.
 
 ```text
 installation/state-mutation-authority-history/node-inventory/censuses/<selected-authority-Dt>/<census-id>/pages/<page-ordinal>-<Dpage>.json
 installation/state-mutation-authority-history/node-inventory/censuses/<selected-authority-Dt>/<census-id>/terminal-<Dterminal>.json
 ```
+
+Page zero requires null prior page/cursor/cumulative digest and prior count
+`"0"`. A later page requires ordinal+1, exact prior `Dpage`, exact prior
+successor cursor, exact prior `Dcensus`, and unchanged selected tuples. Pages
+contain 1..256 strictly path-sorted, globally contiguous entries, except that a
+terminal census of a selected count-zero inventory has zero entries and null
+first/last page. A nonterminal page has exhausted byte `00`, is nonempty, and
+its successor cursor is its exact last canonical path. A terminal page has
+exhausted byte `01`, null successor cursor, and successor cumulative count
+equal to selected inventory count; the exact-boundary exhaustion probe may be
+an empty final page only when it follows a full 256-entry page. The terminal
+record requires the exact last chain digest and cumulative/page counts; it
+cannot truncate or extend the chain.
 
 ISS-004 supplies a fresh branded under-lock canonical-directory enumeration
 projection whose native cursor/readback and exhaustion bind each page. The
@@ -410,6 +477,9 @@ actual path plus final actual count equal to selected inventory count proves set
 equality: missing, injected, orphan, moved, duplicated, skipped, reordered, or
 truncated nodes refuse. Authoritative census pages used by bootstrap, rotation,
 certification, or audit are FULL_REQUIRED; advisory scans are call-scoped.
+Page cores/pages, chain digests, terminal records, observations, and all node
+inventory leaves/roots/plans/updates/materialization receipts remain retained;
+there is no compaction or degraded-authority mode.
 
 ## Pointer value, proposal, tip, and conflict graph
 
@@ -568,9 +638,25 @@ expected winner becomes `SELECTED`, a real different winner becomes
 `LOST_CONFLICT`, unchanged prior may retry under the same epoch, and malformed
 or impossible evidence becomes exact terminal unknown.
 
-`PROPOSED` is only a live branded in-memory ISS-004 view through stage five.
-After lock/process loss, the persisted stage-five checkpoint is
-`CRASH_PREFIX`; stage six is `CAS_AMBIGUOUS`. Durable resolution is only
+The checkpoint phase and producer epoch matrix is exact; `E` is the one
+selected authority epoch for a non-authority target:
+
+| Stage ordinal | Stage | Durable phase | Ordinary target epoch | `STATE_MUTATION_AUTHORITY_ROTATION` epoch |
+| ---: | --- | --- | --- | --- |
+| 0 | `CURRENT_AUTHORITY_READ` | `CRASH_PREFIX` | `E` | `E(n)` |
+| 1 | `TARGET_RECONCILED` | `CRASH_PREFIX` | `E` | `E(n)` |
+| 2 | `VALUE_READBACK` | `CRASH_PREFIX` | `E` | `E(n)` |
+| 3 | `PROPOSAL_READBACK` | `CRASH_PREFIX` | `E` | `E(n)` |
+| 4 | `CURRENT_AUTHORITY_PRE_CAS_READ` | `CRASH_PREFIX` | `E` | `E(n)` |
+| 5 | `CAS_ARMED` | `CAS_AMBIGUOUS` | `E` | `E(n)` |
+| 6 | `TARGET_POST_CAS_READBACK` | `CAS_AMBIGUOUS` | `E` | `E(n+1)` |
+| 7 | `PROPOSAL_CLASSIFIED` | `SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL` | `E` | `E(n+1)` |
+| 8 | `CURRENT_AUTHORITY_POST_CAS_READ` | the unchanged stage-7 terminal phase | `E` | `E(n+1)` |
+
+`PROPOSED` is only a live branded in-memory ISS-004 view before stage five.
+After lock/process loss, checkpoints zero through four are `CRASH_PREFIX` and
+the persisted stage-five and stage-six checkpoints are `CAS_AMBIGUOUS`.
+Durable resolution is only
 `SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL` and excludes the run-current graph
 that selects its terminal core.
 

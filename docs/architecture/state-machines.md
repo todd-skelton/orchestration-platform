@@ -25,9 +25,10 @@ The durable commit resolution states are exactly:
 | `LOST_CONFLICT` | complete run, real different winner, exact conflict receipt | retain loser; winner remains authority |
 | `UNKNOWN_TERMINAL` | fresh locked reconciliation, exact closed failure reason/evidence | refuse mutation/start |
 
-`PROPOSED` is only a live branded ISS-004 view through stage five. Persisted
-stage-five evidence after handle loss is `CRASH_PREFIX`; selected `CAS_ARMED`
-without target readback is `CAS_AMBIGUOUS`. Neither is a resolution. The nine
+`PROPOSED` is only a live branded ISS-004 view before stage five. Persisted
+stages zero through four after handle loss are `CRASH_PREFIX`; selected stage
+five `CAS_ARMED` and stage six without classification are `CAS_AMBIGUOUS`.
+Neither is a resolution. The nine
 stages are current-authority read, target reconciliation, value readback,
 proposal readback, pre-CAS authority read, CAS armed, post-CAS target readback,
 proposal classification, and post-CAS authority read.
