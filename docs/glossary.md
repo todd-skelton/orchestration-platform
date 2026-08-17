@@ -39,6 +39,9 @@
 - **Dispatch brief**: Complete bounded work description for a fresh worker.
 - **Discrepancy**: Correlated incumbent/shadow result whose authority meaning has
   not yet reached a terminal explanation.
+- **Deletion test**: Executable evidence bar for a simplification finding: the
+  named surface can be deleted or inlined with every stated acceptance
+  criterion still passing, proven by an executed probe.
 - **Exact revision**: Immutable source identity examined by a worker or reviewer.
 - **Exact model identity**: Provider-authenticated immutable snapshot/version
   reported for one attempt, distinct from a requested selector or alias.
@@ -84,6 +87,9 @@
   adapter facts through a terminal action, refusal, or no-work receipt.
 - **Session**: Bounded interval in which one controller identity owns runtime
   authority.
+- **Simplification finding**: Advisory review finding that names removable or
+  inlinable surface via the deletion test; it never alters disposition or round
+  accounting and routes forward as new work.
 - **Shadow mode**: Read-only execution compared against an incumbent authority.
 - **Self-hosting**: A stable released platform orchestrating implementation,
   review, and promotion of its successor.
