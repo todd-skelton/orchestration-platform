@@ -12,6 +12,7 @@ export type ScalarKind =
   | "decimal"
   | "file-url"
   | "integer"
+  | "json"
   | "opaque"
   | "positive-integer"
   | "relative-path"
@@ -273,6 +274,8 @@ function validScalar(kind: ScalarKind, value: unknown): boolean {
       return isCanonicalFileUrl(value);
     case "integer":
       return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    case "json":
+      return value !== undefined;
     case "opaque":
       return typeof value === "string" && opaque.test(value);
     case "positive-integer":

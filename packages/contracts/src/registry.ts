@@ -1,5 +1,6 @@
 import { legacySchemaDefinitions } from "./definitions.js";
 import { v2Definitions } from "./v2.js";
+import { approvedDefinitions, diagnosticAuthorityDefinitions } from "./approved.js";
 import type { SchemaDefinition } from "./runtime.js";
 
 export const supersededAuthorityVersions = Object.freeze([
@@ -16,18 +17,21 @@ export const supersededAuthorityVersions = Object.freeze([
   "activation-recovery-launch/v1",
   "active-release/v1",
   "recovery-authorization/v1",
+  "pointer-cas-proposal-receipt/v1",
+  "state-mutation-authority-value/v1",
 ] as const);
 
 const superseded = new Set<string>(supersededAuthorityVersions);
 
 export const diagnosticSchemaDefinitions: Readonly<Record<string, SchemaDefinition>> =
-  Object.freeze(
-    Object.fromEntries(
+  Object.freeze({
+    ...Object.fromEntries(
       Object.entries(legacySchemaDefinitions).filter(([schemaVersion]) =>
         superseded.has(schemaVersion),
       ),
     ),
-  );
+    ...diagnosticAuthorityDefinitions,
+  });
 
 export const schemaDefinitions: Readonly<Record<string, SchemaDefinition>> = Object.freeze({
   ...Object.fromEntries(
@@ -36,6 +40,7 @@ export const schemaDefinitions: Readonly<Record<string, SchemaDefinition>> = Obj
     ),
   ),
   ...v2Definitions,
+  ...approvedDefinitions,
 });
 
 export const schemaVersions = Object.freeze(Object.keys(schemaDefinitions).sort());

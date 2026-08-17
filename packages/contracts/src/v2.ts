@@ -64,6 +64,7 @@ export const pointerKinds = Object.freeze([
   "AUTHORITY_RETENTION",
   "RECOVERY_ATTEMPT_RESERVATION",
   "STATE_MUTATION_AUTHORITY_ROTATION",
+  "POINTER_MUTATION_RUN_CURRENT",
 ] as const);
 export type PointerKind = (typeof pointerKinds)[number];
 export const stateMutationLockPath = "installation/state-mutation.lock";
@@ -258,7 +259,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     pathTemplate: stateMutationAuthorityPath,
     sourceTokens: ["none"],
     retention: "FULL_REQUIRED",
-    valueSchemas: ["state-mutation-authority-value/v1"],
+    valueSchemas: ["state-mutation-authority-value/v2"],
     rootTemplates: ["installation/state-mutation.lock"],
     archiveTemplates: ["installation/state-mutation-authority-history/"],
     genesis: "REVIEWED_BOOTSTRAP",
@@ -266,6 +267,26 @@ const pointerRows: readonly PointerRegistryRow[] = [
     sourcePolicy: "NONE",
     positionDomain: "authority-rotation-position/v1",
     tombstonePositionDomain: null,
+  },
+  {
+    kind: "POINTER_MUTATION_RUN_CURRENT",
+    singleton: false,
+    pathTemplate:
+      "installation/pointer-cas/<pointer-instance-digest>/commits/<target-mutation-id>/current-run.json",
+    sourceTokens: ["none"],
+    retention: "FULL_REQUIRED",
+    valueSchemas: ["pointer-mutation-run-current-value/v1", "pointer-tombstone-value/v1"],
+    rootTemplates: [
+      "installation/pointer-cas/<pointer-instance-digest>/commits/<target-mutation-id>/",
+    ],
+    archiveTemplates: [
+      "installation/pointer-cas/<pointer-instance-digest>/commits/<target-mutation-id>/runs/",
+    ],
+    genesis: "PREDECESSOR_TRIPLE",
+    transactionPolicy: "NULL",
+    sourcePolicy: "NONE",
+    positionDomain: "pointer-mutation-run-current-position/v1",
+    tombstonePositionDomain: "pointer-mutation-run-current-position-tombstone/v1",
   },
 ];
 export const pointerRegistry: readonly PointerRegistryRow[] = Object.freeze(
@@ -314,6 +335,7 @@ export interface PointerPathBindings {
   readonly predecessorKey?: string;
   readonly pointerInstanceDigest?: string;
   readonly releaseDigest?: string;
+  readonly targetMutationId?: string;
 }
 
 const templateBindings = Object.freeze({
@@ -322,6 +344,7 @@ const templateBindings = Object.freeze({
   "<predecessor-key>": "predecessorKey",
   "<pointer-instance-digest>": "pointerInstanceDigest",
   "<release-digest>": "releaseDigest",
+  "<target-mutation-id>": "targetMutationId",
 } as const);
 
 function expectedTemplateBindings(templates: readonly string[]): readonly string[] {
@@ -445,6 +468,7 @@ export type FramePart =
   | { readonly type: "raw32"; readonly value: string }
   | { readonly type: "nullable-raw32"; readonly value: string | null }
   | { readonly type: "raw-fixed"; readonly value: string }
+  | { readonly type: "decimal-ascii"; readonly value: string }
   | { readonly type: "canonical"; readonly value: JsonValue };
 
 const encoder = new TextEncoder();
@@ -511,6 +535,11 @@ export function framedBytes(domainTag: string, parts: readonly FramePart[]): Uin
       if (typeof part.value !== "string" || !/^(?:[0-9a-f]{2}){1,64}$/.test(part.value))
         throw new TypeError("raw-fixed:invalid");
       bytes = Uint8Array.from(part.value.match(/../g)!.map((byte) => Number.parseInt(byte, 16)));
+    } else if (part.type === "decimal-ascii") {
+      tag = 9;
+      if (typeof part.value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(part.value))
+        throw new TypeError("decimal-ascii:invalid");
+      bytes = encoder.encode(part.value);
     } else if (part.type === "canonical") {
       tag = 5;
       bytes = canonicalBytes(part.value);
@@ -581,6 +610,8 @@ function isTerminalPointerValue(kind: PointerKind, record: ContractRecord): bool
     case "AUTHORITY_RETENTION":
     case "STATE_MUTATION_AUTHORITY_ROTATION":
       return false;
+    case "POINTER_MUTATION_RUN_CURRENT":
+      return ["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(String(record.phase));
   }
 }
 function requireEqualBinding(
@@ -677,6 +708,14 @@ const positionFields: Readonly<Record<PointerKind, readonly string[]>> = Object.
     "authorityDigest",
     "rotationKind",
   ],
+  POINTER_MUTATION_RUN_CURRENT: [
+    "checkpointCoreDigest",
+    "checkpointOrdinal",
+    "runOrdinal",
+    "phase",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+  ],
 });
 
 type PositionScalarRule =
@@ -684,6 +723,7 @@ type PositionScalarRule =
   | "NULLABLE_SHA256"
   | "UUID_V7"
   | "NON_NEGATIVE_INTEGER"
+  | "DECIMAL_ASCII"
   | { readonly enum: readonly string[] };
 
 const positionRules: Readonly<Record<PointerKind, Readonly<Record<string, PositionScalarRule>>>> =
@@ -759,6 +799,22 @@ const positionRules: Readonly<Record<PointerKind, Readonly<Record<string, Positi
       authorityDigest: "SHA256",
       rotationKind: { enum: Object.freeze(["GENESIS", "ROTATION"]) },
     }),
+    POINTER_MUTATION_RUN_CURRENT: Object.freeze({
+      checkpointCoreDigest: "SHA256",
+      checkpointOrdinal: "DECIMAL_ASCII",
+      runOrdinal: "DECIMAL_ASCII",
+      phase: {
+        enum: Object.freeze([
+          "CRASH_PREFIX",
+          "CAS_AMBIGUOUS",
+          "SELECTED",
+          "LOST_CONFLICT",
+          "UNKNOWN_TERMINAL",
+        ]),
+      },
+      targetMutationId: "SHA256",
+      targetPathInstanceDigest: "SHA256",
+    }),
   });
 
 const tombstonePositionRules = Object.freeze({
@@ -806,6 +862,8 @@ function validatePositionScalar(rule: PositionScalarRule, value: unknown): boole
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
     );
   if (rule === "NON_NEGATIVE_INTEGER") return Number.isSafeInteger(value) && Number(value) >= 0;
+  if (rule === "DECIMAL_ASCII")
+    return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
   return typeof value === "string" && rule.enum.includes(value);
 }
 
@@ -951,6 +1009,17 @@ export function derivePointerPositionEvidence(
         authorityDigest: digestValue,
         rotationKind: value.rotationKind!,
       });
+    case "POINTER_MUTATION_RUN_CURRENT":
+      return Object.freeze({
+        pointerKind: kind,
+        variant: "ORDINARY",
+        checkpointCoreDigest: value.checkpointCoreDigest!,
+        checkpointOrdinal: value.checkpointOrdinal!,
+        runOrdinal: value.runOrdinal!,
+        phase: value.phase!,
+        targetMutationId: value.targetMutationId!,
+        targetPathInstanceDigest: value.targetPathInstanceDigest!,
+      });
   }
 }
 
@@ -997,6 +1066,7 @@ export interface PointerInstanceDigestInput {
   sourceToken: string;
   predecessorKey?: string;
   retainedPointerInstanceDigest?: string;
+  targetMutationId?: string;
 }
 export function computePointerInstanceDigest(input: PointerInstanceDigestInput): string {
   const kindInput = requirePointerKind(input.pointerKind);
@@ -1010,6 +1080,7 @@ export function computePointerInstanceDigest(input: PointerInstanceDigestInput):
     ...(rowInput.pathTemplate.includes("<pointer-instance-digest>")
       ? ["retainedPointerInstanceDigest"]
       : []),
+    ...(rowInput.pathTemplate.includes("<target-mutation-id>") ? ["targetMutationId"] : []),
     "sourceToken",
     "stateRootDigest",
     "transactionId",
@@ -1024,6 +1095,8 @@ export function computePointerInstanceDigest(input: PointerInstanceDigestInput):
     safeDigest(String(closed.predecessorKey), "predecessorKey");
   if (row.pathTemplate.includes("<pointer-instance-digest>"))
     safeDigest(String(closed.retainedPointerInstanceDigest), "retainedPointerInstanceDigest");
+  if (row.pathTemplate.includes("<target-mutation-id>"))
+    safeDigest(String(closed.targetMutationId), "targetMutationId");
   const pathBindings: PointerPathBindings = {
     ...(row.pathTemplate.includes("<transaction>")
       ? { transactionId: closed.transactionId as string }
@@ -1034,6 +1107,9 @@ export function computePointerInstanceDigest(input: PointerInstanceDigestInput):
       : {}),
     ...(row.pathTemplate.includes("<pointer-instance-digest>")
       ? { pointerInstanceDigest: closed.retainedPointerInstanceDigest as string }
+      : {}),
+    ...(row.pathTemplate.includes("<target-mutation-id>")
+      ? { targetMutationId: closed.targetMutationId as string }
       : {}),
   };
   if (!pointerPathMatches(kind, closed.canonicalPointerPath, pathBindings))
@@ -1059,9 +1135,11 @@ export interface ProposalDigestInput {
   positionDigest: string;
   intent: "VALUE_PROPOSED" | "TOMBSTONE_PROPOSED";
   outcome: "SELECT" | "REMOVE";
-  authorityEpochDt: string;
-  authorityEpochDv: string;
-  authorityEpochDr: string;
+  producerKind: "REVIEWED_BOOTSTRAP_GENESIS" | "SELECTED_EPOCH";
+  producerDigest: string;
+  authorityEpochDt: string | null;
+  authorityEpochDv: string | null;
+  authorityEpochDr: string | null;
   receipt: JsonValue;
 }
 export function computeProposalReceiptDigest(input: ProposalDigestInput): string {
@@ -1075,6 +1153,8 @@ export function computeProposalReceiptDigest(input: ProposalDigestInput): string
     "pathInstanceDigest",
     "pointerKind",
     "positionDigest",
+    "producerDigest",
+    "producerKind",
     "priorDr",
     "priorDt",
     "priorDv",
@@ -1083,22 +1163,32 @@ export function computeProposalReceiptDigest(input: ProposalDigestInput): string
   ]);
   const kind = requirePointerKind(closed.pointerKind);
   for (const name of [
-    "authorityEpochDr",
-    "authorityEpochDt",
-    "authorityEpochDv",
     "mutationId",
     "pathInstanceDigest",
     "positionDigest",
+    "producerDigest",
     "successorDv",
   ])
     safeDigest(String(closed[name]), name);
+  for (const name of ["authorityEpochDr", "authorityEpochDt", "authorityEpochDv"])
+    if (closed[name] !== null) safeDigest(String(closed[name]), name);
   for (const name of ["priorDr", "priorDt", "priorDv"])
     if (closed[name] !== null) safeDigest(String(closed[name]), name);
   if (closed.intent !== "VALUE_PROPOSED" && closed.intent !== "TOMBSTONE_PROPOSED")
     throw new TypeError("intent:invalid");
   if (closed.outcome !== "SELECT" && closed.outcome !== "REMOVE")
     throw new TypeError("outcome:invalid");
-  const receipt = requireSchemaRecord("pointer-cas-proposal-receipt/v1", closed.receipt);
+  const bootstrap = closed.producerKind === "REVIEWED_BOOTSTRAP_GENESIS";
+  if (!bootstrap && closed.producerKind !== "SELECTED_EPOCH")
+    throw new TypeError("producerKind:invalid");
+  const epochParts = [closed.authorityEpochDt, closed.authorityEpochDv, closed.authorityEpochDr];
+  if (
+    bootstrap
+      ? !epochParts.every((part) => part === null)
+      : !epochParts.every((part) => part !== null)
+  )
+    throw new TypeError("producerKind:epoch-mismatch");
+  const receipt = requireSchemaRecord("pointer-cas-proposal-receipt/v2", closed.receipt);
   for (const [fieldName, expected] of [
     ["pointerKind", kind],
     ["pathInstanceDigest", closed.pathInstanceDigest],
@@ -1110,6 +1200,8 @@ export function computeProposalReceiptDigest(input: ProposalDigestInput): string
     ["positionDigest", closed.positionDigest],
     ["intent", closed.intent],
     ["outcome", closed.outcome],
+    ["producerKind", closed.producerKind],
+    ["producerDigest", closed.producerDigest],
     ["authorityEpochTipDigest", closed.authorityEpochDt],
     ["authorityEpochValueDigest", closed.authorityEpochDv],
     ["authorityEpochReceiptDigest", closed.authorityEpochDr],
@@ -1168,6 +1260,7 @@ export interface MutationDigestInput {
   intent: string;
   predecessorKey?: string;
   retainedPointerInstanceDigest?: string;
+  targetMutationId?: string;
 }
 export function computeMutationId(input: MutationDigestInput): string {
   const kindInput = requirePointerKind(input.pointerKind);
@@ -1186,6 +1279,7 @@ export function computeMutationId(input: MutationDigestInput): string {
     ...(rowInput.pathTemplate.includes("<pointer-instance-digest>")
       ? ["retainedPointerInstanceDigest"]
       : []),
+    ...(rowInput.pathTemplate.includes("<target-mutation-id>") ? ["targetMutationId"] : []),
     "sourceToken",
     "successorDv",
     "transactionId",
@@ -1196,6 +1290,8 @@ export function computeMutationId(input: MutationDigestInput): string {
     safeDigest(String(closed.predecessorKey), "predecessorKey");
   if (row.pathTemplate.includes("<pointer-instance-digest>"))
     safeDigest(String(closed.retainedPointerInstanceDigest), "retainedPointerInstanceDigest");
+  if (row.pathTemplate.includes("<target-mutation-id>"))
+    safeDigest(String(closed.targetMutationId), "targetMutationId");
   const pathBindings: PointerPathBindings = {
     ...(row.pathTemplate.includes("<transaction>")
       ? { transactionId: closed.transactionId as string }
@@ -1206,6 +1302,9 @@ export function computeMutationId(input: MutationDigestInput): string {
       : {}),
     ...(row.pathTemplate.includes("<pointer-instance-digest>")
       ? { pointerInstanceDigest: closed.retainedPointerInstanceDigest as string }
+      : {}),
+    ...(row.pathTemplate.includes("<target-mutation-id>")
+      ? { targetMutationId: closed.targetMutationId as string }
       : {}),
   };
   if (!pointerPathMatches(kind, closed.canonicalPointerPath, pathBindings))
@@ -1470,7 +1569,7 @@ export const v2Definitions = Object.freeze(
         proposalReceiptDigest: sha,
       }),
       define(
-        "pointer-cas-proposal-receipt/v1",
+        "pointer-cas-proposal-receipt/v2",
         {
           pointerKind: enumeration(...pointerKinds),
           pathInstanceDigest: sha,
@@ -1482,13 +1581,40 @@ export const v2Definitions = Object.freeze(
           positionDigest: sha,
           intent: enumeration("VALUE_PROPOSED", "TOMBSTONE_PROPOSED"),
           outcome: enumeration("SELECT", "REMOVE"),
-          authorityEpochTipDigest: sha,
-          authorityEpochValueDigest: sha,
-          authorityEpochReceiptDigest: sha,
+          producerKind: enumeration("REVIEWED_BOOTSTRAP_GENESIS", "SELECTED_EPOCH"),
+          producerDigest: sha,
+          authorityEpochTipDigest: nullableSha,
+          authorityEpochValueDigest: nullableSha,
+          authorityEpochReceiptDigest: nullableSha,
           proposedAt: timestamp,
         },
-        (record) =>
-          exactOptionalGroup(record, ["priorTipDigest", "priorValueDigest", "priorReceiptDigest"]),
+        (record) => {
+          const issues = [
+            ...exactOptionalGroup(record, [
+              "priorTipDigest",
+              "priorValueDigest",
+              "priorReceiptDigest",
+            ]),
+            ...exactOptionalGroup(record, [
+              "authorityEpochTipDigest",
+              "authorityEpochValueDigest",
+              "authorityEpochReceiptDigest",
+            ]),
+          ];
+          const bootstrap = value(record, "producerKind") === "REVIEWED_BOOTSTRAP_GENESIS";
+          const epochNull = nullGroup(record, [
+            "authorityEpochTipDigest",
+            "authorityEpochValueDigest",
+            "authorityEpochReceiptDigest",
+          ]);
+          if (bootstrap !== epochNull) issues.push("producerKind:epoch-mismatch");
+          if (
+            bootstrap &&
+            !nullGroup(record, ["priorTipDigest", "priorValueDigest", "priorReceiptDigest"])
+          )
+            issues.push("producerKind:genesis-prior-mismatch");
+          return issues;
+        },
       ),
       define("pointer-conflict-receipt/v1", {
         pathInstanceDigest: sha,
@@ -1522,7 +1648,7 @@ export const v2Definitions = Object.freeze(
           projectId: uuid,
           stateRootDigest: sha,
           pathInstanceDigest: sha,
-          transactionId: uuid,
+          transactionId: nullable("uuid-v7"),
           sourceToken: enumeration("none", "recovery-fence-v2", "cleanup-gate-pre-fence-v2"),
           authorityEpochTipDigest: sha,
           authorityEpochValueDigest: sha,
@@ -1551,7 +1677,7 @@ export const v2Definitions = Object.freeze(
           projectId: uuid,
           stateRootDigest: sha,
           pathInstanceDigest: sha,
-          transactionId: uuid,
+          transactionId: nullable("uuid-v7"),
           sourceToken: enumeration("none", "recovery-fence-v2", "cleanup-gate-pre-fence-v2"),
           authorityEpochTipDigest: sha,
           authorityEpochValueDigest: sha,
@@ -1636,23 +1762,33 @@ export const v2Definitions = Object.freeze(
         },
       ),
       define(
-        "state-mutation-authority-value/v1",
+        "state-mutation-authority-value/v2",
         {
           installationId: uuid,
           projectId: uuid,
           stateRootDigest: sha,
+          globalIdentityDigest: sha,
+          authorityOrdinal: field("decimal"),
           helperPath: path,
           helperDigest: sha,
           helperProfileDigest: sha,
           helperAbi: enumeration("portable-state-cas/v2"),
           lockPath: enumeration(stateMutationLockPath),
           lockProfileDigest: sha,
+          custodyInstanceDigest: sha,
           custodyPrincipalDigest: sha,
           custodyReceiptDigest: sha,
           handleInheritance: enumeration("DENY"),
           activeReleaseTipDigest: sha,
           activeReleaseValueDigest: sha,
           activeReleaseReceiptDigest: sha,
+          historyRootDigest: sha,
+          historyRootKind: enumeration("EMPTY", "NONEMPTY"),
+          historyCount: field("decimal"),
+          historyAppendReceiptDigest: nullableSha,
+          bootstrapGenesisCoreDigest: nullableSha,
+          successorCoreDigest: nullableSha,
+          rotationOperationId: nullableSha,
           priorAuthorityTipDigest: nullableSha,
           priorAuthorityValueDigest: nullableSha,
           priorAuthorityReceiptDigest: nullableSha,
@@ -1661,7 +1797,7 @@ export const v2Definitions = Object.freeze(
           priorHelperAbiDigest: nullableSha,
           priorCustodyReceiptDigest: nullableSha,
           rotationKind: enumeration("GENESIS", "ROTATION"),
-          producerKind: enumeration("REVIEWED_BOOTSTRAP", "SELECTED_STABLE"),
+          producerKind: enumeration("REVIEWED_BOOTSTRAP_GENESIS", "SELECTED_STABLE"),
           producerDigest: sha,
           producerExecutableDigest: sha,
           producerProfileDigest: sha,
@@ -1681,16 +1817,44 @@ export const v2Definitions = Object.freeze(
           ];
           const genesis = value(record, "rotationKind") === "GENESIS";
           if (genesis)
-            return value(record, "producerKind") === "REVIEWED_BOOTSTRAP" &&
-              nullGroup(record, predecessors)
+            return value(record, "producerKind") === "REVIEWED_BOOTSTRAP_GENESIS" &&
+              nullGroup(record, predecessors) &&
+              value(record, "authorityOrdinal") === "0" &&
+              value(record, "historyCount") === "0" &&
+              value(record, "historyRootKind") === "EMPTY" &&
+              value(record, "historyAppendReceiptDigest") === null &&
+              value(record, "bootstrapGenesisCoreDigest") !== null &&
+              value(record, "successorCoreDigest") === null &&
+              value(record, "rotationOperationId") === null
               ? []
               : ["rotation:genesis-authority-mismatch"];
           return value(record, "producerKind") === "SELECTED_STABLE" &&
-            presentGroup(record, predecessors)
+            presentGroup(record, predecessors) &&
+            value(record, "authorityOrdinal") !== "0" &&
+            value(record, "historyRootKind") === "NONEMPTY" &&
+            value(record, "historyCount") === value(record, "authorityOrdinal") &&
+            value(record, "historyAppendReceiptDigest") !== null &&
+            value(record, "bootstrapGenesisCoreDigest") === null &&
+            value(record, "successorCoreDigest") !== null &&
+            value(record, "rotationOperationId") !== null
             ? []
             : ["rotation:predecessor-authority-mismatch"];
         },
       ),
+      define("pointer-mutation-run-current-value/v1", {
+        targetPathInstanceDigest: sha,
+        targetMutationId: sha,
+        checkpointCoreDigest: sha,
+        runOrdinal: field("decimal"),
+        checkpointOrdinal: field("decimal"),
+        phase: enumeration(
+          "CRASH_PREFIX",
+          "CAS_AMBIGUOUS",
+          "SELECTED",
+          "LOST_CONFLICT",
+          "UNKNOWN_TERMINAL",
+        ),
+      }),
       define("active-release/v2", {
         installationId: uuid,
         projectId: uuid,
@@ -2301,6 +2465,8 @@ export const v2Definitions = Object.freeze(
           priorAttachmentValueDigest: nullableSha,
           priorAttachmentReceiptDigest: nullableSha,
           terminalSummaryDigest: nullableSha,
+          revocationProofDigest: nullableSha,
+          exitProofDigest: nullableSha,
           selectedAt: timestamp,
         },
         (record) => {
@@ -2331,18 +2497,32 @@ export const v2Definitions = Object.freeze(
             nullGroup(record, predecessor) || presentGroup(record, predecessor);
           switch (value(record, "lifecycle")) {
             case "UNATTACHED":
-              return nullGroup(record, [...attached, ...predecessor, "terminalSummaryDigest"])
+              return nullGroup(record, [
+                ...attached,
+                ...predecessor,
+                "terminalSummaryDigest",
+                "revocationProofDigest",
+                "exitProofDigest",
+              ])
                 ? []
                 : ["lifecycle:unattached-fields-mismatch"];
             case "ATTACHED":
               return presentGroup(record, attached) &&
                 predecessorExact &&
-                value(record, "terminalSummaryDigest") === null
+                nullGroup(record, [
+                  "terminalSummaryDigest",
+                  "revocationProofDigest",
+                  "exitProofDigest",
+                ])
                 ? []
                 : ["lifecycle:attached-fields-mismatch"];
             default:
-              return presentGroup(record, [...attached, "terminalSummaryDigest"]) &&
-                predecessorExact
+              return presentGroup(record, [
+                ...attached,
+                "terminalSummaryDigest",
+                "revocationProofDigest",
+                "exitProofDigest",
+              ]) && predecessorExact
                 ? []
                 : ["lifecycle:terminal-fields-mismatch"];
           }
@@ -2425,6 +2605,9 @@ function resolveSelectedPointerEvidence(
       ...(row.pathTemplate.includes("<pointer-instance-digest>")
         ? { retainedPointerInstanceDigest: bindings.value.pointerInstanceDigest as string }
         : {}),
+      ...(row.pathTemplate.includes("<target-mutation-id>")
+        ? { targetMutationId: bindings.value.targetMutationId as string }
+        : {}),
     };
     const pathInstanceDigest = computePointerInstanceDigest(pointerInput);
     const value = requirePointerValueRecord(kind, closed.value.value);
@@ -2474,7 +2657,7 @@ function resolveSelectedPointerEvidence(
     )
       return { ok: false, issues: ["positionEvidence:value-mismatch"] };
     const positionDigest = computePointerPositionDigest(kind, expectedPosition);
-    const proposal = requireSchemaRecord("pointer-cas-proposal-receipt/v1", closed.value.proposal);
+    const proposal = requireSchemaRecord("pointer-cas-proposal-receipt/v2", closed.value.proposal);
     if (
       (!isTombstone && (proposal.intent !== "VALUE_PROPOSED" || proposal.outcome !== "SELECT")) ||
       (isTombstone && (proposal.intent !== "TOMBSTONE_PROPOSED" || proposal.outcome !== "REMOVE"))
@@ -2666,6 +2849,9 @@ function resolveSelectedPointerEvidence(
       ...(row.pathTemplate.includes("<pointer-instance-digest>")
         ? { retainedPointerInstanceDigest: bindings.value.pointerInstanceDigest as string }
         : {}),
+      ...(row.pathTemplate.includes("<target-mutation-id>")
+        ? { targetMutationId: bindings.value.targetMutationId as string }
+        : {}),
     };
     const mutationId = computeMutationId(mutationInput);
     if (proposal.positionDigest !== positionDigest)
@@ -2683,9 +2869,11 @@ function resolveSelectedPointerEvidence(
       positionDigest,
       intent: mutationInput.intent as "VALUE_PROPOSED" | "TOMBSTONE_PROPOSED",
       outcome: mutationInput.outcome as "SELECT" | "REMOVE",
-      authorityEpochDt: proposal.authorityEpochTipDigest as string,
-      authorityEpochDv: proposal.authorityEpochValueDigest as string,
-      authorityEpochDr: proposal.authorityEpochReceiptDigest as string,
+      producerKind: proposal.producerKind as "REVIEWED_BOOTSTRAP_GENESIS" | "SELECTED_EPOCH",
+      producerDigest: proposal.producerDigest as string,
+      authorityEpochDt: proposal.authorityEpochTipDigest as string | null,
+      authorityEpochDv: proposal.authorityEpochValueDigest as string | null,
+      authorityEpochDr: proposal.authorityEpochReceiptDigest as string | null,
       receipt: proposal,
     });
     const tip = requireSchemaRecord("pointer-current-tip/v1", closed.value.tip);

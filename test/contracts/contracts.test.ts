@@ -16,7 +16,6 @@ import {
   computeReservationPredecessorKey,
   diagnostic,
   derivePointerPositionEvidence,
-  fixedEvidencePacketLimits,
   framedBytes,
   isCleanupLifecyclePublicationPair,
   isCleanupLifecyclePublicationTransition,
@@ -41,12 +40,9 @@ import {
   stateMutationLockPath,
   stateMutationRegistry,
   validateEpochSequence,
-  validateCurrentCommitEpochComposition,
-  validateHistoricalAuthorityAuthentication,
   validateAuthorizationReceiptChain,
   validateAuthorizationRevokeReceiptChain,
   validateGateAuthorizationBinding,
-  validateEvidencePacket,
   validateFenceHeadHistory,
   validatePointerDispatch,
   validatePointerGenesisDispatch,
@@ -64,6 +60,13 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { digest, digest2, fixtureFor, instant, uuid, uuid2 } from "./fixtures.js";
 
+const {
+  fixedEvidencePacketLimits,
+  validateCurrentCommitEpochComposition,
+  validateEvidencePacket,
+  validateHistoricalAuthorityAuthentication,
+} = diagnostic.legacyPacket;
+
 function invalidFor(rule: FieldRule): unknown {
   if (rule.array) return { no: "array" };
   if (rule.values) return "FUTURE";
@@ -79,6 +82,8 @@ function invalidFor(rule: FieldRule): unknown {
     case "integer":
     case "positive-integer":
       return Number.MAX_SAFE_INTEGER + 1;
+    case "json":
+      return 1n;
     case "opaque":
       return "contains spaces";
     case "relative-path":
@@ -129,6 +134,9 @@ function pointerSelection(
     ...(row.pathTemplate.includes("<pointer-instance-digest>")
       ? { retainedPointerInstanceDigest: options.pathBindings.pointerInstanceDigest }
       : {}),
+    ...(row.pathTemplate.includes("<target-mutation-id>")
+      ? { targetMutationId: options.pathBindings.targetMutationId }
+      : {}),
   };
   const pathInstanceDigest = computePointerInstanceDigest(pointerInput);
   const valueDigest = computePointerValueDigest(pointerKind, pathInstanceDigest, value);
@@ -157,6 +165,9 @@ function pointerSelection(
     ...(row.pathTemplate.includes("<pointer-instance-digest>")
       ? { retainedPointerInstanceDigest: options.pathBindings.pointerInstanceDigest }
       : {}),
+    ...(row.pathTemplate.includes("<target-mutation-id>")
+      ? { targetMutationId: options.pathBindings.targetMutationId }
+      : {}),
   };
   const mutationId = computeMutationId(mutationInput);
   const epoch = options.authorityEpoch ?? {
@@ -165,7 +176,7 @@ function pointerSelection(
     proposalReceiptDigest: digest,
   };
   const proposal: ContractRecord = {
-    ...fixtureFor("pointer-cas-proposal-receipt/v1"),
+    ...fixtureFor("pointer-cas-proposal-receipt/v2"),
     pointerKind,
     pathInstanceDigest,
     mutationId,
@@ -179,6 +190,8 @@ function pointerSelection(
     authorityEpochTipDigest: epoch.tipDigest,
     authorityEpochValueDigest: epoch.valueDigest,
     authorityEpochReceiptDigest: epoch.proposalReceiptDigest,
+    producerKind: "SELECTED_EPOCH",
+    producerDigest: digest,
   };
   const proposalReceiptDigest = computeProposalReceiptDigest({
     pointerKind,
@@ -191,6 +204,8 @@ function pointerSelection(
     positionDigest,
     outcome,
     intent,
+    producerKind: "SELECTED_EPOCH",
+    producerDigest: digest,
     authorityEpochDt: epoch.tipDigest,
     authorityEpochDv: epoch.valueDigest,
     authorityEpochDr: epoch.proposalReceiptDigest,
@@ -297,6 +312,8 @@ function terminalPointerValue(
         argvDigest: digest,
         processIdentityDigest: digest,
         terminalSummaryDigest: digest,
+        revocationProofDigest: digest,
+        exitProofDigest: digest,
       };
     case "RECOVERY_ATTEMPT_ACCUMULATOR":
       return {
@@ -312,6 +329,8 @@ function terminalPointerValue(
         consumedDescriptorDigest: digest,
         terminalSummaryDigest: digest,
       };
+    case "POINTER_MUTATION_RUN_CURRENT":
+      return { ...base, phase: "SELECTED" };
     default:
       return base;
   }
@@ -353,7 +372,10 @@ function ordinarySelection(
         }
       : {}),
     ...(row.pathTemplate.includes("<pointer-instance-digest>")
-      ? { pointerInstanceDigest: value.pathInstanceDigest as string }
+      ? { pointerInstanceDigest: (value.pathInstanceDigest as string) ?? digest }
+      : {}),
+    ...(row.pathTemplate.includes("<target-mutation-id>")
+      ? { targetMutationId: (value.targetMutationId as string) ?? digest }
       : {}),
   };
   return pointerSelection(row.kind, value, {
@@ -386,6 +408,7 @@ function tombstoneSelection(
       ? { pointerInstanceDigest: digest }
       : {}),
     ...(archiveTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+    ...(archiveTemplate.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
   };
   const archivePath = pointerArchivePaths(row.kind, archiveBindings)[0]!;
   const prior = {
@@ -479,10 +502,10 @@ function tombstoneSelection(
 }
 
 describe("current and diagnostic schema registries", () => {
-  test("pins eleven pointer kinds, one lock, and exact canonical paths", () => {
-    expect(pointerKinds).toHaveLength(11);
+  test("pins twelve pointer kinds, one lock, and exact canonical paths", () => {
+    expect(pointerKinds).toHaveLength(12);
     expect(pointerRegistry.map((row) => row.kind)).toEqual(pointerKinds);
-    expect(new Set(pointerKinds).size).toBe(11);
+    expect(new Set(pointerKinds).size).toBe(12);
     expect(stateMutationLockPath).toBe("installation/state-mutation.lock");
     expect(stateMutationAuthorityPath).toBe("installation/state-mutation-authority.json");
     expect(stateMutationRegistry.lock).toEqual({
@@ -492,10 +515,10 @@ describe("current and diagnostic schema registries", () => {
     });
     expect(pointerRegistry.filter((row) => row.singleton)).toHaveLength(5);
     expect(pointerRegistry.filter((row) => row.transactionPolicy === "REQUIRED")).toHaveLength(9);
-    expect(pointerRegistry.filter((row) => row.transactionPolicy === "NULL")).toHaveLength(2);
+    expect(pointerRegistry.filter((row) => row.transactionPolicy === "NULL")).toHaveLength(3);
     expect(pointerRegistry.filter((row) => row.sourcePolicy === "RECOVERY_SOURCE")).toHaveLength(3);
     expect(canonicalDigest(pointerPositionContracts)).toBe(
-      "a0cad57365d1a01363a9c14db1979fd1f76edefc2a120ef0a67446e132b3ba09",
+      "6d34346250c5c5803e9ed453e0442e1941d150a6123e4ade3e3ed1c7de3bf320",
     );
     const constructedPathCensus: JsonValue[] = [];
     for (const row of pointerRegistry) {
@@ -511,6 +534,7 @@ describe("current and diagnostic schema registries", () => {
           ? { pointerInstanceDigest: digest }
           : {}),
         ...(rootTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+        ...(rootTemplate.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
       };
       const roots = pointerRootPaths(row.kind, rootBindings);
       expect(validatePointerTemplateDispatch(row.kind, "ROOT", roots, rootBindings)).toEqual([]);
@@ -526,6 +550,7 @@ describe("current and diagnostic schema registries", () => {
           ? { pointerInstanceDigest: digest }
           : {}),
         ...(archiveTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+        ...(archiveTemplate.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
       };
       const archives = pointerArchivePaths(row.kind, archiveBindings);
       expect(
@@ -590,7 +615,7 @@ describe("current and diagnostic schema registries", () => {
       });
     }
     expect(canonicalDigest(constructedPathCensus)).toBe(
-      "065658021f5e54567429415c2fc80ac52487f5a68ac9402176ee456cd3319d60",
+      "68454fad63404190409184a5ae827c80fe433ea34dc0bb40a1b79fa61e0804f4",
     );
     const familyCensus = pointerRegistry.map((row) => ({
       archiveTemplates: row.archiveTemplates,
@@ -607,7 +632,7 @@ describe("current and diagnostic schema registries", () => {
       valueSchemas: row.valueSchemas,
     }));
     expect(canonicalDigest(familyCensus)).toBe(
-      "c6ccc196c809eb19e338a52baaf352b56cf210be90706b88061ec1e4e70b7b31",
+      "7602ffa1eb45885f23114a93258f15d410d3c781bc4ccc3ffa26adc8e4c487a9",
     );
     expect(pointerPath("ACTIVE_RELEASE")).toBe("installation/active-release.json");
     expect(pointerPath("RECOVERY_AUTHORIZATION_STATE", { transactionId: uuid })).toBe(
@@ -677,6 +702,12 @@ describe("current and diagnostic schema registries", () => {
   test("exports current surface and isolates every legacy symbol under diagnostic", () => {
     for (const name of [
       "legacySchemaDefinitions",
+      "diagnosticAuthorityDefinitions",
+      "approvedDefinitions",
+      "fixedEvidencePacketLimits",
+      "validateEvidencePacket",
+      "validateCurrentCommitEpochComposition",
+      "validateHistoricalAuthorityAuthentication",
       "recoveryFenceCurrentPath",
       "recoveryLaunchPath",
       "validateRecoveryAuthorizationAttachment",
@@ -685,7 +716,14 @@ describe("current and diagnostic schema registries", () => {
       expect(publicApi).not.toHaveProperty(name);
     expect(publicApi.diagnostic).toBe(diagnostic);
     expect(Object.keys(diagnostic).sort()).toEqual(
-      ["parseContract", "paths", "schemaDefinitions", "schemaVersions", "validators"].sort(),
+      [
+        "legacyPacket",
+        "parseContract",
+        "paths",
+        "schemaDefinitions",
+        "schemaVersions",
+        "validators",
+      ].sort(),
     );
     const manifest = JSON.parse(
       readFileSync(new URL("../../packages/contracts/package.json", import.meta.url), "utf8"),
@@ -695,7 +733,7 @@ describe("current and diagnostic schema registries", () => {
   });
 
   test("removes superseded authority v1 from current dispatch and retains diagnostic parsing", () => {
-    expect(diagnostic.schemaVersions).toHaveLength(13);
+    expect(diagnostic.schemaVersions).toHaveLength(15);
     for (const schemaVersion of diagnostic.schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
       expect(schemaDefinitions).not.toHaveProperty(schemaVersion);
@@ -714,13 +752,13 @@ describe("current and diagnostic schema registries", () => {
   test("pins the complete current schema census and exhaustive closed-field parsing", () => {
     const required = [
       "pointer-current-tip/v1",
-      "pointer-cas-proposal-receipt/v1",
+      "pointer-cas-proposal-receipt/v2",
       "pointer-conflict-receipt/v1",
       "pointer-tombstone-value/v1",
       "pointer-terminal-proof/v1",
       "pointer-archive-record/v1",
       "authority-retention/v1",
-      "state-mutation-authority-value/v1",
+      "state-mutation-authority-value/v2",
       "active-release/v2",
       "activation-cleanup-gate-root/v2",
       "activation-cleanup-gate-head/v2",
@@ -741,7 +779,7 @@ describe("current and diagnostic schema registries", () => {
       "recovery-authorization-attachment/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(51);
+    expect(schemaVersions).toHaveLength(83);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -858,7 +896,7 @@ describe("framed pointer digest graph", () => {
     const mutationId = computeMutationId(mutationInput);
     const dv = computePointerValueDigest("ACTIVE_RELEASE", digest, value);
     const receipt = {
-      ...fixtureFor("pointer-cas-proposal-receipt/v1"),
+      ...fixtureFor("pointer-cas-proposal-receipt/v2"),
       pointerKind: "ACTIVE_RELEASE",
       pathInstanceDigest: digest,
       mutationId,
@@ -872,6 +910,8 @@ describe("framed pointer digest graph", () => {
       authorityEpochTipDigest: digest,
       authorityEpochValueDigest: digest,
       authorityEpochReceiptDigest: digest,
+      producerKind: "SELECTED_EPOCH",
+      producerDigest: digest,
     };
     const dr = computeProposalReceiptDigest({
       pointerKind: "ACTIVE_RELEASE",
@@ -884,6 +924,8 @@ describe("framed pointer digest graph", () => {
       positionDigest: activePositionDigest,
       intent: "VALUE_PROPOSED",
       outcome: "SELECT",
+      producerKind: "SELECTED_EPOCH",
+      producerDigest: digest,
       authorityEpochDt: receipt.authorityEpochTipDigest,
       authorityEpochDv: receipt.authorityEpochValueDigest,
       authorityEpochDr: receipt.authorityEpochReceiptDigest,
@@ -931,9 +973,9 @@ describe("framed pointer digest graph", () => {
       dp: "89a284193336e4f6b301304ea99455dfec97eb958dd87f8377fc2fb0f9d40ef5",
       mutationId: "afb604950667cd9f27ad6bec7d495ca455a8e11f9368599108913df3c627d762",
       dv: "33a244faa7cb01fc8be0512b16abaa092eff6f382f3f07db3dbcafc114ce2473",
-      dr: "4a5c3dbe0e5dc177bcdc637e674edb9ac871d0cc95e601f65206f75ac3d5d6b7",
-      dt: "45570d8b34362bc9f95d6e6b124659d9ec5050ad183e14442170d92bf6189a38",
-      dc: "e48b2b83dfca3a2c8e3b3057dfff19a3d62d942c0f63d9f730b89bea18d6457a",
+      dr: "76a03c8f624742e8becf247cca46fc64917da5177974a4884c845adf9558da7f",
+      dt: "dde40a558de53f0464c11c9b2c1bbbde4eef9abb9fc769cf132ead145483e16c",
+      dc: "b429c8877a0d78bb12488fe2297a8efeb8198f69eeaead21c8ce83a40944c4f3",
     });
     expect(() =>
       computeProposalReceiptDigest({
@@ -947,6 +989,8 @@ describe("framed pointer digest graph", () => {
         positionDigest: digest2,
         intent: "VALUE_PROPOSED",
         outcome: "SELECT",
+        producerKind: "SELECTED_EPOCH",
+        producerDigest: digest,
         authorityEpochDt: receipt.authorityEpochTipDigest,
         authorityEpochDv: receipt.authorityEpochValueDigest,
         authorityEpochDr: receipt.authorityEpochReceiptDigest,
@@ -965,6 +1009,8 @@ describe("framed pointer digest graph", () => {
         positionDigest: activePositionDigest,
         intent: "VALUE_PROPOSED",
         outcome: "SELECT",
+        producerKind: "SELECTED_EPOCH",
+        producerDigest: digest,
         authorityEpochDt: digest2,
         authorityEpochDv: digest2,
         authorityEpochDr: digest2,
@@ -1020,13 +1066,13 @@ describe("framed pointer digest graph", () => {
     expect(Buffer.from(bytes).toString("hex")).toBe(
       "6f726368657374726174696f6e2d706c6174666f726d00706f696e7465722d76616c75652f763200000000080100000000000000014106000000000000000007000000000000000142020000000000000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa030000000000000000040000000000000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb08000000000000000200010500000000000000087b2261223a317d0a",
     );
-    expect(v2SchemaVersions).toHaveLength(26);
+    expect(v2SchemaVersions).toHaveLength(27);
     const schemaBytes = v2SchemaVersions.map((schemaVersion) => ({
       digest: canonicalDigest(fixtureFor(schemaVersion)),
       schemaVersion,
     }));
     expect(canonicalDigest(schemaBytes)).toBe(
-      "9759bad20bd258dfbfc6ee943fc626aae3c49b7c3e2495068c9410d29e589057",
+      "807be06713ef954f1197abd95657ec8d28d29539ed24cdd297134043dad8cb78",
     );
   });
 
@@ -1119,7 +1165,7 @@ describe("framed pointer digest graph", () => {
     const enabled = pointerRegistry.filter((row) =>
       row.valueSchemas.includes("pointer-tombstone-value/v1"),
     );
-    expect(enabled).toHaveLength(9);
+    expect(enabled).toHaveLength(10);
     const census: JsonValue[] = [];
     for (const row of enabled) {
       expect(row.tombstonePositionDomain).toBe(`${row.positionDomain.slice(0, -3)}-tombstone/v1`);
@@ -1140,6 +1186,10 @@ describe("framed pointer digest graph", () => {
               }),
             }
           : {}),
+        ...(row.pathTemplate.includes("<pointer-instance-digest>")
+          ? { pointerInstanceDigest: digest }
+          : {}),
+        ...(row.pathTemplate.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
       };
       for (const intent of ["VALUE_PROPOSED", "TOMBSTONE_PROPOSED"] as const)
         for (const outcome of ["SELECT", "REMOVE"] as const) {
@@ -1328,7 +1378,7 @@ describe("framed pointer digest graph", () => {
       expect(() => computePointerPositionDigest(otherRow.kind, position)).toThrow();
     }
     expect(canonicalDigest(census)).toBe(
-      "53cbc1d23b42ded087c513004a26a53d4dad3034dbcac7f24776cb814ab00b50",
+      "9e828b686df960ee1ee4687831ada92bd6991f99f449458656178af76543beb9",
     );
   });
 
@@ -1533,8 +1583,8 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       false,
     );
 
-    const genesis = fixtureFor("state-mutation-authority-value/v1");
-    expect(parseContract("state-mutation-authority-value/v1", genesis).ok).toBe(true);
+    const genesis = fixtureFor("state-mutation-authority-value/v2");
+    expect(parseContract("state-mutation-authority-value/v2", genesis).ok).toBe(true);
     const rotation = {
       ...genesis,
       rotationKind: "ROTATION",
@@ -1546,10 +1596,17 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       priorHelperProfileDigest: digest,
       priorHelperAbiDigest: digest,
       priorCustodyReceiptDigest: digest,
+      authorityOrdinal: "1",
+      historyCount: "1",
+      historyRootKind: "NONEMPTY",
+      historyAppendReceiptDigest: digest,
+      bootstrapGenesisCoreDigest: null,
+      successorCoreDigest: digest,
+      rotationOperationId: digest,
     };
-    expect(parseContract("state-mutation-authority-value/v1", rotation).ok).toBe(true);
+    expect(parseContract("state-mutation-authority-value/v2", rotation).ok).toBe(true);
     expect(
-      parseContract("state-mutation-authority-value/v1", {
+      parseContract("state-mutation-authority-value/v2", {
         ...rotation,
         priorHelperDigest: null,
       }).ok,
@@ -2040,7 +2097,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     );
     const authorityEpoch = pointerSelection(
       "STATE_MUTATION_AUTHORITY_ROTATION",
-      fixtureFor("state-mutation-authority-value/v1"),
+      fixtureFor("state-mutation-authority-value/v2"),
       { pathBindings: {}, transactionId: null, sourceToken: "none" },
     );
     const selectedEpoch = {
@@ -3006,7 +3063,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
           valueDigest: selection.valueDigest,
         })),
       ),
-    ).toBe("7627a4f27cf34b862b72220bbb6edbde70042f8ad7d207cfc0371b8a0deb7cb9");
+    ).toBe("470766f7bead161e9192001cdd166733f99c14252f9336e0a4e34fd1209f77e7");
     expect(validateSelectedPointerEvidence(reservationSelection.envelope)).toEqual([]);
     expect(
       validateEvidencePacket({
@@ -3118,7 +3175,13 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       priorTerminalAccumulatorReceiptDigest: digest2,
       priorTerminalSummaryDigest: digest2,
     };
-    const attachment2 = { ...attachment1, lifecycle: "TERMINAL", terminalSummaryDigest: digest2 };
+    const attachment2 = {
+      ...attachment1,
+      lifecycle: "TERMINAL",
+      terminalSummaryDigest: digest2,
+      revocationProofDigest: digest,
+      exitProofDigest: digest,
+    };
     const accumulator0 = fixtureFor("recovery-attempt-accumulator/v1");
     const accumulator1 = {
       ...accumulator0,
@@ -3164,7 +3227,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       }).ok,
     ).toBe(false);
     expect(canonicalDigest(sequenceDigests)).toBe(
-      "7e2f067ef6f97b5209682d510b8ac251cf9312c7ac92220110c7352cbc058784",
+      "37d4fbe56504fb3eca9a708da0dc6483bf0ec62c1e059c1eab6936ec384161d2",
     );
     expect(recoveryAccumulatorDigest(null, digest)).toBe(
       "53e8330f18608045b35f390a91f9a2dfd97fc43064ba10d79071aa18f25de511",

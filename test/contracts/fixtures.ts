@@ -42,6 +42,8 @@ function scalar(rule: FieldRule): JsonValue {
       return "file:///var/lib/orchestration/state";
     case "integer":
       return 0;
+    case "json":
+      return { kind: "fixture" };
     case "opaque":
       return "alpha";
     case "positive-integer":
@@ -254,6 +256,45 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         producerStartedAt: instant,
         issuedAt: later,
         expiresAt: "2026-08-16T12:36:56.789Z",
+      };
+    case "state-mutation-authority-value/v2":
+      return {
+        authorityOrdinal: "0",
+        historyRootKind: "EMPTY",
+        historyCount: "0",
+        rotationKind: "GENESIS",
+        producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
+        historyAppendReceiptDigest: null,
+        bootstrapGenesisCoreDigest: digest,
+        successorCoreDigest: null,
+        rotationOperationId: null,
+        priorAuthorityTipDigest: null,
+        priorAuthorityValueDigest: null,
+        priorAuthorityReceiptDigest: null,
+        priorHelperDigest: null,
+        priorHelperProfileDigest: null,
+        priorHelperAbiDigest: null,
+        priorCustodyReceiptDigest: null,
+      };
+    case "authority-history-update-proof/v1":
+      return {
+        priorRootKind: "EMPTY",
+        siblingDigests: Array.from({ length: 256 }, (_, index) =>
+          index.toString(16).padStart(64, "0"),
+        ),
+      };
+    case "authority-history-root/v1":
+      return { count: "1", latestIncludedOrdinal: "0" };
+    case "authority-history-append-receipt/v1":
+      return { priorRootKind: "EMPTY" };
+    case "pointer-evidence-packet/v2":
+      return {
+        purpose: "HISTORICAL_READ",
+        currentCommitDigest: null,
+        evidenceSlotDigests: Array.from({ length: 12 }, (_, index) =>
+          index.toString(16).padStart(64, "0"),
+        ),
+        producerMembershipDigests: [digest],
       };
     case "recovery-authorization-core/v1":
       return {

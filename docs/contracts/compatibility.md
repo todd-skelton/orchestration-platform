@@ -140,7 +140,7 @@ Values never contain the receipt/tip selecting them. Proposals are create-once
 `VALUE_PROPOSED|TOMBSTONE_PROPOSED` and classify only as PENDING, SELECTED,
 LOST_CONFLICT, COMPACTED, or UNKNOWN from exact winner evidence. Terminal
 authority selects `pointer-tombstone-value/v1`; the current tip is never deleted
-and bare absence never regains authority. The nine tombstone-enabled families
+and bare absence never regains authority. The ten tombstone-enabled families
 use distinct ordinary and tombstone position domains and closed per-kind field
 contracts. Ordinary values require
 `VALUE_PROPOSED/SELECT`; tombstones require `TOMBSTONE_PROPOSED/REMOVE`, an
