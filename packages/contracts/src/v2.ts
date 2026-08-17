@@ -3720,6 +3720,14 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
       issues.push("reservationSelection:pointer-kind-mismatch");
     if (canonicalDigest(currentReservation.value.value) !== canonicalDigest(reservation.value))
       issues.push("reservationSelection:value-mismatch");
+    if (
+      !nullGroup(currentReservation.value.proposal, [
+        "priorTipDigest",
+        "priorValueDigest",
+        "priorReceiptDigest",
+      ])
+    )
+      issues.push("reservationSelection:create-once-predecessor-not-null");
   }
   if (currentAccumulator.ok && currentReservation.ok)
     for (const name of [
@@ -3817,6 +3825,10 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
       : proposal.priorTipDigest === predecessor.tipDigest &&
         proposal.priorValueDigest === predecessor.valueDigest &&
         proposal.priorReceiptDigest === predecessor.proposalReceiptDigest;
+  const proposalEpochMatches = (left: ContractRecord, right: ContractRecord): boolean =>
+    left.authorityEpochTipDigest === right.authorityEpochTipDigest &&
+    left.authorityEpochValueDigest === right.authorityEpochValueDigest &&
+    left.authorityEpochReceiptDigest === right.authorityEpochReceiptDigest;
 
   if (currentAccumulator.ok) {
     const currentPredecessorValue = currentPredecessor?.ok ? currentPredecessor.value : null;
@@ -3826,13 +3838,24 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
       if (currentPredecessorValue.tip.pointerKind !== "RECOVERY_ATTEMPT_ACCUMULATOR")
         issues.push("currentPredecessor:pointer-kind-mismatch");
       samePointerIdentity("currentPredecessor", currentPredecessorValue, currentAccumulator.value);
+      if (
+        !proposalEpochMatches(currentPredecessorValue.proposal, currentAccumulator.value.proposal)
+      )
+        issues.push("currentPredecessor:authority-epoch-mismatch");
     }
     if (lineage?.ok) {
       if (lineage.value.tip.pointerKind !== "RECOVERY_ATTEMPT_ACCUMULATOR")
         issues.push("priorTerminal:pointer-kind-mismatch");
       if (lineage.value.value.lifecycle !== "TERMINAL") issues.push("priorTerminal:not-terminal");
       samePointerIdentity("priorTerminal", lineage.value, currentAccumulator.value);
+      if (!proposalEpochMatches(lineage.value.proposal, currentAccumulator.value.proposal))
+        issues.push("priorTerminal:authority-epoch-mismatch");
     }
+    if (
+      currentReservation.ok &&
+      !proposalEpochMatches(currentReservation.value.proposal, currentAccumulator.value.proposal)
+    )
+      issues.push("reservationSelection:authority-epoch-mismatch");
     const terminalCurrent = accumulator.value.lifecycle === "TERMINAL";
     if (!terminalCurrent && lineageAbsent) {
       if (currentPredecessorValue !== null) issues.push("case:r0-in-progress-current-not-null");
@@ -3856,6 +3879,12 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
       )
         issues.push("case:rn-terminal-roles-collapsed");
     }
+    if (
+      terminalCurrent &&
+      currentPredecessorValue?.value.lifecycle === "IN_PROGRESS" &&
+      !proposalMatches(currentPredecessorValue.proposal, lineage?.ok ? lineage.value : null)
+    )
+      issues.push("currentPredecessor:in-progress-ancestry-mismatch");
     if (currentPredecessorValue?.value.lifecycle === "IN_PROGRESS") {
       for (const name of [
         "attemptId",

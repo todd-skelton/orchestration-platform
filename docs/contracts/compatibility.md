@@ -175,7 +175,13 @@ digest bind only lineage. Both roles recompute the same canonical accumulator
 path/Dp and installation/project/state/transaction/source identities. The fixed
 packet carries at most those two envelopes and one prior summary, so verification
 cost remains constant without accepting role swaps, stale siblings, or split
-claims.
+claims. A selected IN_PROGRESS accumulator also proves its own proposal ancestry:
+null for R0 or the exact selected prior TERMINAL lineage for Rn. A TERMINAL value
+therefore proves both its immediate same-attempt IN_PROGRESS predecessor and
+that predecessor's ancestry. All participating proposals bind the same selected
+authority epoch. Each predecessor-key reservation is a distinct create-once
+pointer instance, so its selected RESERVED proposal must have a fully null prior
+triple; a TERMINAL-to-RESERVED replay is never an allowed transition.
 
 Every ordinary epoch-sequence observation carries the same selected authority
 epoch digest and Dt/Dv/Dr. The bounded packet carries selected value, proposal,

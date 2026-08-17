@@ -2038,6 +2038,70 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         terminalSummary: null,
       }),
     ).toEqual([]);
+    const terminalReservation = {
+      ...reservation,
+      lifecycle: "TERMINAL",
+      consumedDescriptorDigest: digest,
+      terminalSummaryDigest: digest,
+    };
+    const terminalReservationSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_RESERVATION",
+      terminalReservation,
+      {
+        pathBindings: reservationSelection.envelope.pathBindings as Record<string, string>,
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: reservationSelection,
+      },
+    );
+    const replayedReservationSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_RESERVATION",
+      reservation,
+      {
+        pathBindings: reservationSelection.envelope.pathBindings as Record<string, string>,
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: terminalReservationSelection,
+      },
+    );
+    const replayedDescriptor = {
+      ...liveDescriptor,
+      reservationTipDigest: replayedReservationSelection.tipDigest,
+      reservationValueDigest: replayedReservationSelection.valueDigest,
+      reservationReceiptDigest: replayedReservationSelection.proposalReceiptDigest,
+    };
+    const replayedAccumulator = {
+      ...accumulator,
+      descriptorDigest: canonicalDigest(replayedDescriptor),
+      reservationTipDigest: replayedReservationSelection.tipDigest,
+      reservationValueDigest: replayedReservationSelection.valueDigest,
+      reservationReceiptDigest: replayedReservationSelection.proposalReceiptDigest,
+    };
+    const replayedAccumulatorSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      replayedAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: replayedAccumulator,
+        accumulatorSelection: replayedAccumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: null,
+        descriptor: replayedDescriptor,
+        priorTerminalAccumulatorSelection: null,
+        priorTerminalSummary: null,
+        reservation,
+        reservationSelection: replayedReservationSelection.envelope,
+        terminalSummary: null,
+      }),
+    ).toContain("reservationSelection:create-once-predecessor-not-null");
     const terminalSummary = {
       ...fixtureFor("recovery-attempt-terminal-summary/v1"),
       descriptorDigest: canonicalDigest(liveDescriptor),
@@ -2240,6 +2304,147 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       reservationSelection: laterReservationSelection.envelope,
       terminalSummary: laterTerminalSummary,
     };
+    const rnNullSelection = pointerSelection("RECOVERY_ATTEMPT_ACCUMULATOR", laterAccumulator, {
+      pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      authorityEpoch: selectedEpoch,
+    });
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        accumulator: laterAccumulator,
+        accumulatorSelection: rnNullSelection.envelope,
+        currentAccumulatorPredecessorSelection: null,
+        terminalSummary: null,
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        accumulator: laterAccumulator,
+        accumulatorSelection: {
+          ...laterAccumulatorSelection.envelope,
+          proposal: {
+            ...laterAccumulatorSelection.proposal,
+            priorValueDigest: null,
+          },
+        },
+        currentAccumulatorPredecessorSelection: terminalAccumulatorSelection.envelope,
+        terminalSummary: null,
+      }),
+    ).not.toEqual([]);
+    const wrongAncestryInProgress = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      laterAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: accumulatorSelection,
+      },
+    );
+    const coordinatedWrongAncestryTerminal = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      laterTerminalAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: wrongAncestryInProgress,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        accumulatorSelection: coordinatedWrongAncestryTerminal.envelope,
+        currentAccumulatorPredecessorSelection: wrongAncestryInProgress.envelope,
+      }),
+    ).toContain("currentPredecessor:in-progress-ancestry-mismatch");
+    const siblingTerminalAccumulatorSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      { ...terminalAccumulator, updatedAt: "2026-08-16T12:35:56.789Z" },
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: accumulatorSelection,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        accumulator: laterAccumulator,
+        accumulatorSelection: laterAccumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: terminalAccumulatorSelection.envelope,
+        priorTerminalAccumulatorSelection: siblingTerminalAccumulatorSelection.envelope,
+        terminalSummary: null,
+      }),
+    ).not.toEqual([]);
+    const foreignR0InProgress = pointerSelection("RECOVERY_ATTEMPT_ACCUMULATOR", accumulator, {
+      pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      authorityEpoch: selectedEpoch,
+      prior: terminalAccumulatorSelection,
+    });
+    const foreignR0Terminal = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      terminalAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: foreignR0InProgress,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: terminalAccumulator,
+        accumulatorSelection: foreignR0Terminal.envelope,
+        currentAccumulatorPredecessorSelection: foreignR0InProgress.envelope,
+        descriptor: liveDescriptor,
+        priorTerminalAccumulatorSelection: null,
+        priorTerminalSummary: null,
+        reservation,
+        reservationSelection: reservationSelection.envelope,
+        terminalSummary,
+      }),
+    ).toContain("currentPredecessor:in-progress-ancestry-mismatch");
+    const foreignEpochInProgress = pointerSelection("RECOVERY_ATTEMPT_ACCUMULATOR", accumulator, {
+      pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      authorityEpoch: { tipDigest: digest2, valueDigest: digest2, proposalReceiptDigest: digest2 },
+    });
+    const foreignEpochTerminal = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      terminalAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: foreignEpochInProgress,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: terminalAccumulator,
+        accumulatorSelection: foreignEpochTerminal.envelope,
+        currentAccumulatorPredecessorSelection: foreignEpochInProgress.envelope,
+        descriptor: liveDescriptor,
+        priorTerminalAccumulatorSelection: null,
+        priorTerminalSummary: null,
+        reservation,
+        reservationSelection: reservationSelection.envelope,
+        terminalSummary,
+      }),
+    ).toContain("currentPredecessor:authority-epoch-mismatch");
     expect(
       validateRecoveryAccumulatorFormula({
         ...laterFormula,
@@ -2425,6 +2630,15 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       reservationSelection: reservationSelection.envelope,
     };
     expect(validateEvidencePacket(packet)).toEqual([]);
+    expect(
+      validateEvidencePacket({
+        ...packet,
+        accumulator: replayedAccumulator,
+        accumulatorSelection: replayedAccumulatorSelection.envelope,
+        descriptor: replayedDescriptor,
+        reservationSelection: replayedReservationSelection.envelope,
+      }),
+    ).toContain("accumulatorFormula:reservationSelection:create-once-predecessor-not-null");
     expect(
       validateEvidencePacket({
         ...packet,
