@@ -127,7 +127,7 @@ last-registration-wins behavior are forbidden.
 | `cycle` | `@orchestration-platform/engine` (`ISS-026`) |
 | `supervisor` | `@orchestration-platform/supervisor` (`ISS-030`) |
 | `credential` | `@orchestration-platform/credentials` (`ISS-032`) |
-| `status` | `@orchestration-platform/status` (`ISS-040`) |
+| `status` | `@orchestration-platform/status` (`ISS-042`) |
 
 ## CLI grammar
 

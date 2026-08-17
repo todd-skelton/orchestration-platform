@@ -82,7 +82,7 @@ describe("board contract", () => {
     [
       "drifted milestone",
       (board: BoardSnapshot) => {
-        item(board, "ISS-039").milestone = "Self-hosting release";
+        item(board, "ISS-041").milestone = "Chase Sets adoption";
       },
     ],
     [
@@ -96,8 +96,8 @@ describe("board contract", () => {
       (board: BoardSnapshot) => {
         const row = item(board, "ISS-019");
         row.body = row.body.replace(
-          "blocked_by: [ISS-020, ISS-030]",
-          "blocked_by: [ISS-006, ISS-020, ISS-030]",
+          "blocked_by: [ISS-020, ISS-030, ISS-039, ISS-040]",
+          "blocked_by: [ISS-006, ISS-020, ISS-030, ISS-039, ISS-040]",
         );
       },
     ],
@@ -111,7 +111,7 @@ describe("board contract", () => {
     [
       "wrong parent epic reference",
       (board: BoardSnapshot) => {
-        const row = item(board, "ISS-039");
+        const row = item(board, "ISS-041");
         row.body = row.body.replace("Parent epic: #2", "Parent epic: #4");
       },
     ],

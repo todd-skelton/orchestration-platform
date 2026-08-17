@@ -2,7 +2,7 @@
 key: EPIC-MODULES
 title: "Epic: Package portable planning, delivery, and routing modules"
 labels: ["type:epic", "area:modules"]
-children: [ISS-011, ISS-012]
+children: [ISS-011, ISS-012, ISS-039, ISS-040]
 ---
 
 ## Outcome
@@ -17,7 +17,9 @@ until a second consumer exists.
 
 - Direct-edge DAG (generated from `planning/roadmap.json`):
   `ISS-013 → ISS-011`;
-  `ISS-010, ISS-011, ISS-025 → ISS-012`.
+  `ISS-010, ISS-011, ISS-025 → ISS-012`;
+  `ISS-009, ISS-011 → ISS-039`;
+  `ISS-011 → ISS-040`.
 - Gate: modules consume engine contracts and project-adapter facts; they do not
   read a consumer repository's labels or file layout directly. Repository-local
   work-model templates are explicitly excluded from portable bundles.
@@ -29,3 +31,5 @@ until a second consumer exists.
 
 - `ISS-011` — Package portable planning, delivery, and review modules.
 - `ISS-012` — Implement provider-neutral model routing.
+- `ISS-039` — Carry non-blocking simplification findings through review and repair modules.
+- `ISS-040` — Enforce simplest-correct-solution and evidence-proportionality planning standards.

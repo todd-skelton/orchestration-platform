@@ -2,7 +2,7 @@
 key: EPIC-KERNEL
 title: "Epic: Build the orchestration control-plane kernel"
 labels: ["type:epic", "area:core"]
-children: [ISS-025, ISS-007, ISS-008, ISS-009, ISS-010, ISS-026, ISS-030, ISS-039, ISS-040, ISS-041]
+children: [ISS-025, ISS-007, ISS-008, ISS-009, ISS-010, ISS-026, ISS-030, ISS-041, ISS-042, ISS-043]
 ---
 
 ## Outcome
@@ -22,9 +22,9 @@ its independent review actually discriminates.
   `ISS-007 → ISS-010`;
   `ISS-012, ISS-014 → ISS-026`;
   `ISS-026, ISS-038 → ISS-030`;
-  `ISS-003 → ISS-039`;
-  `ISS-010 → ISS-040`;
-  `ISS-009, ISS-021 → ISS-041`.
+  `ISS-003 → ISS-041`;
+  `ISS-010 → ISS-042`;
+  `ISS-009, ISS-021 → ISS-043`.
 - Parallelism: review authority and the event journal may proceed in parallel
   once their gates are satisfied. The walking skeleton runs as soon as
   contracts and the CLI exist and blocks nothing; its divergence ledger is
@@ -50,6 +50,6 @@ its independent review actually discriminates.
 - `ISS-010` — Implement the event journal and deterministic reducers.
 - `ISS-026` — Implement the policy-neutral routine engine cycle.
 - `ISS-030` — Implement the installed supervisor and recovery runtime.
-- `ISS-039` — Run the walking-skeleton cycle end to end.
-- `ISS-040` — Implement the operator status projection.
-- `ISS-041` — Calibrate independent review discrimination.
+- `ISS-041` — Run the walking-skeleton cycle end to end.
+- `ISS-042` — Implement the operator status projection.
+- `ISS-043` — Calibrate independent review discrimination.

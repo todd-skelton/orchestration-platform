@@ -2,7 +2,7 @@
 key: EPIC-ADOPTION
 title: "Epic: Adopt the platform through a versioned project adapter"
 labels: ["type:epic", "area:integrations"]
-children: [ISS-013, ISS-028, ISS-016, ISS-024, ISS-017, ISS-018, ISS-042, ISS-043]
+children: [ISS-013, ISS-028, ISS-016, ISS-024, ISS-017, ISS-018, ISS-044, ISS-045]
 ---
 
 ## Outcome
@@ -15,7 +15,7 @@ The readiness slices (`ISS-028`, `ISS-016`, and `ISS-024`) run as soon as their
 native dependencies clear; they do not wait artificially for self-hosting.
 Only live shadow and cutover (`ISS-017`, `ISS-018`) require the self-host release.
 
-The second-host slices (`ISS-042`, `ISS-043`) restore the first consumer's
+The second-host slices (`ISS-044`, `ISS-045`) restore the first consumer's
 dual Codex/Claude lane routing surface under platform authority. They start
 after the first concrete host lands, reuse its proven probe pattern without
 inheriting any of its evidence, and sit off the self-host critical path.
@@ -29,8 +29,8 @@ inheriting any of its evidence, and sit off the self-host critical path.
   `ISS-016, ISS-028 → ISS-024`;
   `ISS-015, ISS-016, ISS-028 → ISS-017`;
   `ISS-017, ISS-024 → ISS-018`;
-  `ISS-021 → ISS-042`;
-  `ISS-042 → ISS-043`.
+  `ISS-021 → ISS-044`;
+  `ISS-044 → ISS-045`.
 - Gate: shadow comparison follows `docs/planning/first-consumer.md`,
   distinguishes authoritative decisions from advisory telemetry, and explains
   every authority difference.
@@ -46,5 +46,5 @@ inheriting any of its evidence, and sit off the self-host critical path.
 - `ISS-024` — Implement and fixture first-consumer state import recovery.
 - `ISS-017` — Run authoritative shadow comparison for the first consumer.
 - `ISS-018` — Cut over the first consumer with tested recovery.
-- `ISS-042` — Probe the Claude Code CLI worker-host authority contract.
-- `ISS-043` — Implement the second concrete Claude Code worker-host adapter.
+- `ISS-044` — Probe the Claude Code CLI worker-host authority contract.
+- `ISS-045` — Implement the second concrete Claude Code worker-host adapter.
