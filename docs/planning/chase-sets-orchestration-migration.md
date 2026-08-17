@@ -12,6 +12,23 @@ superseded controller repairs maps to one current platform contract or slice.
 Source issues keep their history and receive a destination link, but do not
 become duplicate executable work on the new board.
 
+## Completeness claim
+
+The claim is bounded to the 183 open source issues observed on 2026-08-17; it
+does not pretend to predict ideas filed after that census. Every observed issue
+appears exactly once in the manifest's `ownershipGroups` as `CAPTURED`,
+`PARKED`, or `COMPLETED_PROVENANCE`. Captured groups name their native platform
+owners. Parked groups name both their future owners and an evidence-based
+unpark condition. The planning checker rejects omissions, duplicate ownership,
+unknown destinations, overlapping exclusions, and parked work without an
+unpark condition.
+
+New generic orchestration proposals must update the manifest or be filed
+directly under a native platform epic. New Chase-specific proposals remain in
+the consumer adapter/product backlog. This is the executable boundary between
+"known future work is captured" and an unbounded promise about unknown future
+requests.
+
 ## Destination outcomes
 
 1. **Portable substrate** — contracts, CLI, state, filesystem, process, and

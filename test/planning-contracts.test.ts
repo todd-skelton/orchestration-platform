@@ -119,6 +119,34 @@ describe("planning contract", () => {
         });
       },
     ],
+    [
+      "migration source coverage gap",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.ownershipGroups[0].sourceIssueNumbers.pop();
+      },
+    ],
+    [
+      "migration duplicate ownership",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.ownershipGroups[1].sourceIssueNumbers.push(
+          snapshot.migration.ownershipGroups[0].sourceIssueNumbers[0],
+        );
+      },
+    ],
+    [
+      "migration unknown destination",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.ownershipGroups[0].destinationKeys = ["ISS-999"];
+      },
+    ],
+    [
+      "parked migration without unpark condition",
+      (snapshot: PlanningSnapshot) => {
+        delete snapshot.migration.ownershipGroups.find(
+          (group: Record<string, any>) => group.disposition === "PARKED",
+        ).unparkCondition;
+      },
+    ],
   ])("rejects the %s mutant", (_name, mutate) => {
     const snapshot = mutant();
     mutate(snapshot);

@@ -67,5 +67,93 @@
     "routine-cycle-and-supervision": ["ISS-026", "ISS-030"],
     "github-board-actions-and-protection": ["ISS-033", "ISS-036"],
     "portable-test-authority": ["ISS-006"]
-  }
+  },
+  "ownershipGroups": [
+    {
+      "key": "breaker-authority",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-025"],
+      "sourceIssueNumbers": [6232, 6274, 6318, 6579, 6588, 6591, 6592, 6593, 6598, 6599, 6600, 6601, 6604, 6606, 6609, 6610, 6621, 6622, 6623, 6624, 6630, 6631, 6633, 6634, 6647, 6649, 6651, 6653, 6694, 6695],
+      "coverageStatement": "Generic open, hold, scoped-impact, repair-admission, recovery, and deadlock behavior is owned by the policy-neutral breaker state machine; project thresholds and deploy policy remain adapter facts."
+    },
+    {
+      "key": "dispatch-test-and-host-authority",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-006", "ISS-008", "ISS-021", "ISS-023", "ISS-030"],
+      "sourceIssueNumbers": [6080, 6082, 6257, 6283, 6310, 6311, 6321, 6349, 6380, 6385, 6400, 6403, 6555, 6602, 6605, 6680, 6682, 6684, 6685, 6769, 6808, 6966, 6978],
+      "coverageStatement": "Portable harness evidence, worker ownership, host admission, dispatch briefs, process identity, and supervised recovery own these acceptance outcomes without importing repository policy."
+    },
+    {
+      "key": "github-board-and-provider-authority",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-033", "ISS-036"],
+      "sourceIssueNumbers": [5660, 5663, 5664, 6379, 6381, 6382, 6389, 6391, 6392, 6393, 6394, 6618, 6627, 6644, 6927, 6928, 6968],
+      "coverageStatement": "Complete pagination, ruleset/check reduction, native issue and project identity, Actions authority, and per-card mutation belong to the GitHub probe and self-host adapter."
+    },
+    {
+      "key": "journal-and-reducer-authority",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-010"],
+      "sourceIssueNumbers": [6617, 6619, 6620, 6625, 6626, 6628, 6629, 6642, 6643, 6645, 6646],
+      "coverageStatement": "Durable incarnation, append completeness, event lineage, impact reduction, migration boundaries, and replay-safe telemetry are one journal/reducer capability."
+    },
+    {
+      "key": "planning-routing-and-repair-modules",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-011", "ISS-012"],
+      "sourceIssueNumbers": [6162, 6174, 6182, 6322, 6342, 6356, 6357, 6763, 6767, 6828, 6883],
+      "coverageStatement": "Replan reconciliation, supersession, decomposition, repair, evidence-backed learning, and advisory routing belong to neutral modules and typed routing evidence."
+    },
+    {
+      "key": "review-authority",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-009", "ISS-037"],
+      "sourceIssueNumbers": [6255, 6312, 6317, 6320, 6328, 6329, 6337, 6398, 6408, 6409, 6424, 6425, 6518, 6586, 6587, 6589, 6590, 6594, 6595, 6596, 6597, 6603, 6766, 6809],
+      "coverageStatement": "Exact-subject readiness, immutable independent review, repair classification, bounded review packets, and stale-head refusal are owned by review authority and final N0 review."
+    },
+    {
+      "key": "release-installation-and-recovery",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-014", "ISS-020", "ISS-027"],
+      "sourceIssueNumbers": [6423, 6517, 6550, 6551, 6552, 6553, 6554, 6557, 6570, 6571, 6572, 6632, 6648, 6650, 6687, 6807, 6954],
+      "coverageStatement": "Version identity, retained-state compatibility, certified installation, self-modification boundaries, and rollback or forward repair are owned by stable promotion and bootstrap authorization."
+    },
+    {
+      "key": "session-and-supervision",
+      "disposition": "CAPTURED",
+      "destinationKeys": ["ISS-007", "ISS-026", "ISS-030"],
+      "sourceIssueNumbers": [6345, 6683, 6785, 6786],
+      "coverageStatement": "Lease freshness, bounded recovery work, atomic successor handoff, routine-cycle resume, and installed supervision form one portable recovery chain."
+    },
+    {
+      "key": "migration-governance-complete",
+      "disposition": "COMPLETED_PROVENANCE",
+      "destinationKeys": ["EPIC-KERNEL", "EPIC-MODULES", "EPIC-SELFHOST"],
+      "sourceIssueNumbers": [4129, 6863],
+      "coverageStatement": "The former wave roadmap and epic split are superseded by the five outcome milestones and native platform epic graph."
+    },
+    {
+      "key": "source-epic-provenance",
+      "disposition": "COMPLETED_PROVENANCE",
+      "destinationKeys": ["EPIC-KERNEL", "EPIC-MODULES", "EPIC-SELFHOST"],
+      "sourceIssueNumbers": [6903, 6904, 6905],
+      "coverageStatement": "The three source epics remain completed provenance only; their executable children are captured or parked in the other groups."
+    },
+    {
+      "key": "reporter-hardening-future-option",
+      "disposition": "PARKED",
+      "destinationKeys": ["ISS-006", "ISS-023"],
+      "sourceIssueNumbers": [6536, 6537, 6538, 6539, 6540, 6563, 6564, 6575, 6576, 6580, 6582, 6583, 6584],
+      "coverageStatement": "The detailed Vitest reporter and ambient-environment hardening chain is retained as optional harness/host evidence, not minimum-kernel scope.",
+      "unparkCondition": "A reproduced cross-platform admission, reporter-integrity, or launch-environment failure blocks required self-host evidence and the existing ISS-006/ISS-023 controls do not discriminate it."
+    },
+    {
+      "key": "optimization-and-autonomy-future-options",
+      "disposition": "PARKED",
+      "destinationKeys": ["ISS-010", "ISS-011", "ISS-012", "ISS-033", "ISS-036"],
+      "sourceIssueNumbers": [6185, 6209, 6210, 6211, 6212, 6213, 6214, 6560, 6561, 6562, 6574, 6848, 6849, 6850, 6851, 6852, 6853, 6888, 6889, 6890, 6891, 6892, 6916, 6993, 6994, 6995, 6996, 6997],
+      "coverageStatement": "Cost forecasting, step experiments, multi-model planning, decision autonomy, richer board projections, and advisory scope ratios remain future options rather than self-host prerequisites.",
+      "unparkCondition": "The self-hosting release is healthy and measured cycle-time, cost, decision-quality, or board-correctness evidence identifies one bounded option with a positive expected operational dividend."
+    }
+  ]
 }
