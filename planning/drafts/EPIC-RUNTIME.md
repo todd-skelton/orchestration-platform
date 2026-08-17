@@ -29,7 +29,9 @@ extends that foundation for cold-session self-hosting without ambient secrets.
   local Node runtime reaches parity.
 - Decisions: TypeScript, Node.js 24, pnpm, three equal operating-system targets.
   State authority additionally requires the ISS-022-proven fixed epoch lock;
-  ISS-004 owns selection and ISS-032 only requests typed broker transitions.
+  ISS-004 owns the thirteen-kind selection surface, singleton node-
+  materialization coordinator, authenticated node census, and authority-run
+  epoch handoff; ISS-032 only requests typed broker transitions.
 
 ## Child index
 

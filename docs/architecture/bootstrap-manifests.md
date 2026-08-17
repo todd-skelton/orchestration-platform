@@ -214,17 +214,29 @@ projection of the same envelope and is not authority evidence.
 
 ## Bootstrap compatibility
 
-All initial public records use version `v1` under their named schema family.
+Current authority dispatch uses the exact versions selected by the architecture,
+including `state-mutation-authority-value/v3`,
+`authority-history-empty-root/v2`, `authority-history-root/v2`,
+`authority-history-append-receipt/v2`, the thirteen-kind registry, singleton
+node-materialization coordinator, node-inventory schemas, and authority-run
+epoch-handoff records. Earlier authority value/root/receipt versions and the
+twelve-slot packet are readable only through the explicit diagnostic API and
+are refused at current authority paths. No authority version is implicitly
+migrated and no old record may be selected by bootstrap.
 
 | Observed version | Disposition |
 |---|---|
-| exact supported `v1` | readable |
-| explicit legacy fixture named by a contract test | migratable only through that named pure migration |
-| missing, malformed, unknown, or future version | refused |
+| exact current schema at its current path | readable/selectable |
+| explicitly named diagnostic authority version | diagnostic read only; never selectable/migratable |
+| explicit legacy non-authority fixture with a named pure migration | migratable only through that migration |
+| missing, malformed, unknown, future, or old authority at a current path | refused |
 | pre-platform incumbent state | imported only through the first-consumer adapter; never read as a platform record |
 
-No implicit migration exists. A future issue adding `v2` must publish a complete
-pairwise readable/migratable/refused matrix before any `v2` writer lands.
+ISS-002 owns schema/compatibility changes. ISS-004 owns node materialization,
+coordinator/run CAS, crash recovery, and branded census enumeration. ISS-020
+creates E0 empty history/inventory roots and coordinator IDLE. ISS-022 proves
+the lock, canonical directory cursor, readback, and custody semantics. No root
+wrapper or package manifest changes are required for this amendment.
 
 ## Bootstrap authority CLI
 

@@ -34,7 +34,9 @@ protocol. No candidate gains authority before promotion completes.
 - Decision registry: bootstrap root, release layout, and predecessor authority
   are settled in `docs/architecture/contract-decisions.md`.
   Reviewed bootstrap owns state-authority genesis/reinstall; later authority
-  rotation is a forward ISS-014 request selected by ISS-004 under the old epoch.
+  rotation is a forward ISS-014 request. ISS-004 preauthorizes/materializes
+  under E(n), selects E(n+1), terminalizes the exact epoch-split run, and then
+  finishes the singleton coordinator under E(n+1).
 
 ## Child index
 

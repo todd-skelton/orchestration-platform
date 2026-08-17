@@ -32,6 +32,9 @@ consumer-specific policy.
 - Recovery attempts are unlimited over installation lifetime but each operation
   verifies a bounded reservation/descriptor/summary/accumulator packet selected
   through ISS-004.
+- Authority rotations and retained node inventory are also lifetime-unbounded:
+  selected decimal counts and bounded sparse/page proofs replace capped tables;
+  missing or injected history blocks cold-host work.
 
 ## Child index
 

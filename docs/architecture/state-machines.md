@@ -21,7 +21,7 @@ The durable commit resolution states are exactly:
 
 | Resolution | Required evidence | Authority |
 | --- | --- | --- |
-| `SELECTED` | complete nine-stage run, target tip equals expected `Dt/Dv/Dr`, same epoch before/after | selected target result |
+| `SELECTED` | complete nine-stage run, target tip equals expected `Dt/Dv/Dr`; one epoch except the exact authority-rotation handoff | selected target result |
 | `LOST_CONFLICT` | complete run, real different winner, exact conflict receipt | retain loser; winner remains authority |
 | `UNKNOWN_TERMINAL` | fresh locked reconciliation, exact closed failure reason/evidence | refuse mutation/start |
 
@@ -43,7 +43,7 @@ does not recursively journal itself.
 
 An ordinary commit rereads the same selected authority before and after target
 selection. Rotation runs under the old private capability, resolves every
-other-kind pending proposal across the twelve-kind registry, requires a
+other-kind pending proposal across the thirteen-kind registry, requires a
 complete zero-unrelated-PENDING/zero-UNKNOWN census, and permits only its own
 exact selected `CAS_AMBIGUOUS` run-current tip. Authority CAS revokes the old
 context; a fresh new-epoch run terminalizes the rotation. Kernel owner death is
@@ -78,8 +78,8 @@ Exact reinstall reuses CONSUMED; RETIRED requires a new installation ID.
 ### State-authority history
 
 E0 has ordinal `"0"`, selected FULL_REQUIRED
-`authority-history-empty-root/v1` (`historyRootKind=EMPTY`, `Dhe`, count
-`"0"`), null predecessor, and a reviewed-bootstrap proposal producer rather
+`authority-history-empty-root/v2` (`historyRootKind=EMPTY`, `Dhe`, count
+`"0"`) plus selected empty `Dnir`/node count `"0"`, null predecessor, and a reviewed-bootstrap proposal producer rather
 than a self epoch. E1 proves the only `EMPTY→NONEMPTY` append; En for n>1
 proves `NONEMPTY→NONEMPTY`. A nonempty root has count `>=1`, latest ordinal
 exactly count minus one, and complete latest epoch key/triple. En appends the
@@ -91,6 +91,60 @@ projections must be memberships in that live current nonempty root; membership
 against `Dhe` refuses. `G` remains identical across rotations and excludes
 rotating helper/profile/ABI/lock/state-component facts. Projections revoke when
 the context/root changes.
+
+The selected history root v2 and authority value v3 also bind the FULL_REQUIRED
+node-inventory `Dnir` and decimal count. Each rotation derives the exact node
+plan, then classifies filesystem state independently from inventory membership:
+
+| Filesystem disposition | Membership action | Result |
+| --- | --- | --- |
+| `CREATED` | `INSERT_ABSENT` with exact nonmembership | insert once; count + 1 |
+| `READBACK_SAME` | `INSERT_ABSENT` during selected STARTED recovery | insert once; count + 1 |
+| `READBACK_SAME` | `ALREADY_MEMBER` with exact membership | root/count unchanged |
+| `MISSING_SELECTED` | none | `UNKNOWN`; block |
+| `BYTES_CONFLICT` | none | `UNKNOWN`; block |
+
+Every other pairing refuses. A batch covers exactly the sorted/deduped plan and
+chains all intermediate roots/counts. Selected historical nodes are never
+removed, including nodes no longer reachable from the latest authority tree.
+
+### Authority-node materialization coordinator
+
+| State | Required selected evidence | Only allowed write |
+| --- | --- | --- |
+| `IDLE` | singleton genesis, ordinal 0, no plan | first `PREAUTHORIZED` |
+| `PREAUTHORIZED` | one rotation ID/`Dplan`, current E(n), exact prior coordinator triple | `STARTED` or `REVOKED_BEFORE_START` |
+| `STARTED` | selected preauthorization/start receipt under E(n) | exact finish-only materialization and authority CAS |
+| `FINISHING` | selected E(n+1), terminal authority run, `Dniu`, `Drh`, `Dhand` | `TERMINAL` |
+| `TERMINAL` | final readbacks/receipt and optional census terminal | next distinct `PREAUTHORIZED` |
+| `REVOKED_BEFORE_START` | revocation won before node creation | next distinct `PREAUTHORIZED` |
+
+Every write increments the arbitrary-precision coordinator ordinal. No
+self-loop, rollback, STARTED revocation, deletion, tombstone, or compaction is
+legal. A competing plan from one prior tip has one real winner; multiple or
+malformed winners are UNKNOWN. STARTED survives later expiry/process death and
+must finish its exact plan.
+
+### Authority rotation epoch handoff
+
+Non-authority commit runs are single-epoch. Authority rotation alone uses
+E(n) for checkpoints 0–5, performs the target CAS, and uses fresh E(n+1) for
+checkpoints 6–8. Checkpoint 6 binds the prior E(n) CAS_ARMED selector,
+coordinator STARTED, selected E(n+1), target readbacks, lock/custody, and
+reproducible `Drh`. After checkpoint 8 terminalizes, E(n+1) creates `Dhand`;
+only then may the coordinator enter FINISHING. A split at any other stage,
+another epoch drift, or any post-CAS E(n) capability is UNKNOWN.
+
+### Node-inventory census
+
+Pages contain at most 256 strictly ordered actual node entries, each with exact
+selected-inventory membership. Page zero has null predecessor/cursor/cumulative
+and count zero; later pages bind the prior page/cursor/cumulative and ordinal.
+The terminal page requires the ISS-004/ISS-022 under-lock enumerator's exhausted
+observation and cumulative count equal to selected node count. Missing,
+injected, orphan, moved, duplicate, skipped, reordered, or truncated entries
+refuse. Counts/page ordinals are unbounded `DECIMAL_ASCII`; authoritative
+pages/terminal are FULL_REQUIRED.
 
 ### Evidence packet purpose
 

@@ -98,10 +98,10 @@ are exactly those in `supervisor-contract.md`.
   Handles are callback/lock-run scoped and revoke on release, process death,
   custody movement, or rotation. ISS-002 structural proof success alone is not
   authority.
-- Runtime pointer history uses selected `state-mutation-authority-value/v2`
+- Runtime pointer history uses selected `state-mutation-authority-value/v3`
   roots over a fixed-depth sparse tree. E0 selects a distinct FULL_REQUIRED
-  `authority-history-empty-root/v1` (`Dhe`, kind `EMPTY`, count `"0"`);
-  nonempty roots are `authority-history-root/v1` (`Dh`, kind `NONEMPTY`, count
+  `authority-history-empty-root/v2` (`Dhe`, kind `EMPTY`, count `"0"`);
+  nonempty roots are `authority-history-root/v2` (`Dh`, kind `NONEMPTY`, count
   `>=1`). The first proof is `EMPTY→NONEMPTY`, later proofs are
   `NONEMPTY→NONEMPTY`, and membership against `EMPTY` refuses. One proof has
   exactly 256 siblings; content-addressed history is FULL_REQUIRED. This bounds
@@ -111,6 +111,22 @@ are exactly those in `supervisor-contract.md`.
   Rotating helper/profile/ABI/lock/state-component facts are excluded from `G`
   and remain bound by each selected authority value; changing a `G` field is a
   different installation identity and rotation refuses.
+- Authority history also selects a second fixed-depth sparse set over every
+  retained content-addressed node. `Dnir`/node count are repeated by history
+  root v2 and authority value v3. Node materialization uses a precomputable
+  plan, split filesystem/membership evidence, and a FULL_REQUIRED batch; stale
+  historical nodes are never compacted. Bounded authenticated directory pages
+  prove exact set equality through an ISS-004 branded enumerator rooted in the
+  selected inventory, without a lifetime count cap.
+- The runtime pointer registry has thirteen kinds. The thirteenth is one
+  `AUTHORITY_DP`-scoped singleton materialization coordinator with lifecycle
+  `IDLE|PREAUTHORIZED|STARTED|FINISHING|TERMINAL|REVOKED_BEFORE_START`.
+  PREAUTHORIZED/STARTED use E(n); after authority CAS, fresh E(n+1) alone
+  terminalizes the authority run and advances FINISHING/TERMINAL.
+- Authority rotation is the sole commit-run epoch split: checkpoints 0–5 bind
+  E(n), checkpoint 6 binds reproducible `Drh` and begins E(n+1), and 7–8 remain
+  E(n+1). `Dhand` is created only after selected terminal checkpoint 8 and is
+  required for coordinator FINISHING. Every other mutation is single-epoch.
 - Worker launch uses native argument arrays without a shell. Exact launch
   identity, not PID alone, owns the process lifecycle.
 

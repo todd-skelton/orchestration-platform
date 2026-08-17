@@ -24,18 +24,18 @@ exotics, and traps refuse without executing user code.
 
 ## Current and diagnostic registries
 
-The current registry uses the approved v2 authority contracts:
+The current registry uses the approved authority contracts:
 
 - pointer graph: `pointer-current-tip/v1`,
   `pointer-cas-proposal-receipt/v2`, `pointer-conflict-receipt/v1`,
   `pointer-tombstone-value/v1`, and `authority-retention/v1`;
-- epoch/history: `state-mutation-authority-value/v2`,
-  `state-mutation-authority-successor-core/v1`,
+- epoch/history: `state-mutation-authority-value/v3`,
+  `state-mutation-authority-successor-core/v2`,
   `authority-history-leaf/v1`, `authority-history-node/v1`,
-  `authority-history-empty-root/v1`, `authority-history-root/v1`,
+  `authority-history-empty-root/v2`, `authority-history-root/v2`,
   `authority-history-update-proof/v1`,
-  `authority-history-append-receipt/v1`, `authority-membership-evidence/v1`,
-  `pointer-evidence-slot/v2`, and `pointer-evidence-packet/v2`;
+  `authority-history-append-receipt/v2`, `authority-membership-evidence/v1`,
+  `pointer-evidence-slot/v3`, and `pointer-evidence-packet/v3`;
 - release/cleanup:
   `active-release/v2`, `activation-cleanup-gate-root/v2`,
   `activation-cleanup-gate-head/v2`,
@@ -52,12 +52,12 @@ The current registry uses the approved v2 authority contracts:
   `native-removal-receipt/v1`,
   `recovery-authorization-revoke-receipt/v1`, and
   `recovery-authorization-attachment/v1`;
-- commit journal: `pointer-mutation-run-checkpoint-core/v1`,
-  `pointer-mutation-run-current-value/v1`,
+- commit journal: `pointer-mutation-run-checkpoint-core/v2`,
+  `pointer-mutation-run-current-value/v2`,
   `pointer-mutation-run-selector-post-selection-observation/v1`, and
   `pointer-mutation-commit-resolution/v1`, with the composed
   `pointer-mutation-run-checkpoint-evidence/v1` and
-  `pointer-mutation-commit-evidence/v1` envelopes and closed
+  `pointer-mutation-commit-evidence/v2` envelopes and closed
   `pointer-mutation-conflict-evidence/v1` / `pointer-mutation-unknown-evidence/v1`
   terminal unions;
 - external bootstrap: `physical-destination-identity/v1`,
@@ -87,8 +87,11 @@ The current registry uses the approved v2 authority contracts:
   `state-mutation-bootstrap-genesis-core/v1`, and
   `state-mutation-bootstrap-genesis-post-selection-receipt/v1`.
 
-`pointer-cas-proposal-receipt/v1`, `state-mutation-authority-value/v1`, the
-capped serialized authority-history table/packet, and the thirteen superseded
+`pointer-cas-proposal-receipt/v1`, `state-mutation-authority-value/v1|v2`,
+`authority-history-empty-root/v1`, `authority-history-root/v1`,
+`authority-history-append-receipt/v1`, the capped serialized authority-history
+table, `pointer-evidence-packet/v2`, `pointer-evidence-slot/v2`, run core/value
+v1, commit evidence v1, the twelve-slot packet, and the thirteen superseded
 active-release, gate, fence, launch, cleanup-head, and authorization v1 schemas
 exist only under the frozen `diagnostic` namespace. `diagnostic.parseContract`
 may read their historical bytes. They are not ordinary/deep exports;
@@ -101,7 +104,7 @@ other legacy, malformed, unknown, and future versions are refused.
 
 ## Pointer registry and framing
 
-The closed runtime pointer registry has exactly twelve kinds and, for each kind, exact
+The closed runtime pointer registry has exactly thirteen kinds and, for each kind, exact
 tip path, roots, archives, genesis mode, source tokens, retention class, and
 value schemas. Transaction path bindings are lowercase UUIDv7; unused/extra,
 wrong-family, alternate, or partial bindings refuse. The fixed singleton lock is
@@ -111,12 +114,13 @@ exactly `recovery-fence-v2` or `cleanup-gate-pre-fence-v2`; all other runtime
 kinds require `none`. Unknown, differently cased/encoded, cross-family, or
 colliding paths/tokens refuse.
 
-The twelve kinds are `ACTIVE_RELEASE`, `ACTIVATION_CLEANUP_GATE`,
+The thirteen kinds are `ACTIVE_RELEASE`, `ACTIVATION_CLEANUP_GATE`,
 `ACTIVATION_RECOVERY_FENCE`, `ACTIVATION_RECOVERY_LAUNCH`,
 `RECOVERY_AUTHORIZATION_STATE`, `RECOVERY_AUTHORIZATION_ATTACHMENT`,
 `RECOVERY_ATTEMPT_ACCUMULATOR`, `ACTIVATION_CLEANUP_ARCHIVE_HEAD`,
 `AUTHORITY_RETENTION`, `RECOVERY_ATTEMPT_RESERVATION`,
-`STATE_MUTATION_AUTHORITY_ROTATION`, and `POINTER_MUTATION_RUN_CURRENT`.
+`STATE_MUTATION_AUTHORITY_ROTATION`, `POINTER_MUTATION_RUN_CURRENT`, and
+`AUTHORITY_NODE_MATERIALIZATION_RUN`.
 
 Public tip, root, and archive constructors expand placeholders even inside a
 filename. They require the exact closed transaction, source, predecessor,
@@ -178,9 +182,9 @@ teardown, and exact reinstall without parallel genesis.
 
 State mutation validators pin the fixed lock sequence, revocable ISS-004
 context identity, exact E0 bootstrap producer versus selected-stable rotation,
-and the twelve-kind census. `state-mutation-authority-value/v2` binds
+and the thirteen-kind census. `state-mutation-authority-value/v3` binds
 `historyRootKind=EMPTY|NONEMPTY`: E0 selects FULL_REQUIRED
-`authority-history-empty-root/v1` (`Dhe`, count `"0"`), E1 proves
+`authority-history-empty-root/v2` (`Dhe`, count `"0"`) and empty `Dnir`, E1 proves
 EMPTY→NONEMPTY, and later En proves NONEMPTY→NONEMPTY. Nonempty `Dh` requires
 count `>=1` and latest ordinal `count-1`; membership against EMPTY refuses.
 Lifetime-stable `G` excludes rotating helper/profile/ABI/lock/state-component
@@ -259,7 +263,7 @@ distinct create-once pointer instance, so its selected RESERVED proposal must
 have a fully null prior triple; a TERMINAL-to-RESERVED replay is never an allowed
 transition.
 
-`pointer-evidence-packet/v2` is an exact purpose union. `HISTORICAL_READ`
+`pointer-evidence-packet/v3` is an exact purpose union. `HISTORICAL_READ`
 requires `currentCommit=null` and a scoped read handle; `MUTATION_COMMIT`
 requires exact intent/run/current selector plus a live mutation handle. The nine
 same-epoch commit observations and new proposal/readbacks bind the live current
@@ -271,7 +275,7 @@ both removal and selected prior producers. Authority history remains
 FULL_REQUIRED.
 
 The packet serializes the exact global identity, selected current authority,
-composed authority-history binding, twelve registry-ordered typed evidence
+composed authority-history binding, thirteen registry-ordered typed evidence
 slots, deduplicated membership envelopes, and (for `MUTATION_COMMIT`) the
 composed nine-checkpoint run. Digest-only bags, reordered/duplicate slots,
 unselected producer triples, and a mutation purpose without a current commit
@@ -331,6 +335,22 @@ equals its commit authority. Its registry slot equals the selected target for
 `SELECTED`, the real winner for `LOST_CONFLICT`, and is empty for an unknown
 target. Every checkpoint preserves the full kind/path/install/project/state/
 transaction/source/`Dp`/mutation/run identity tuple.
+
+Current authority history additionally requires selected
+`authority-node-inventory-empty-root/v1|authority-node-inventory-root/v1`,
+materialization plan/filesystem observation/membership entry/batch schemas, the
+singleton `authority-node-materialization-run-value/v1`, and authenticated
+census page/terminal records. Filesystem dispositions and membership actions
+are separate closed unions. Roots/counts are selected by history root v2 and
+authority value v3; page chains cannot assert their own completeness.
+
+The coordinator is one stable `AUTHORITY_DP`-scoped pointer whose ordinal never
+resets. Exact lifecycle edges enforce one active plan and finish-only recovery.
+Authority rotation alone uses the exact checkpoint-6 E(n)→E(n+1) handoff:
+fresh E(n+1) reproduces `Drh`, terminalizes checkpoint 8, then produces `Dhand`
+for coordinator FINISHING. All other commits remain single-epoch. Earlier
+authority root/value/append/core/run/packet versions and the twelve-kind census
+are diagnostic-only and refused at current paths.
 
 ## Review attack surface
 

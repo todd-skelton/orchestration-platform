@@ -52,12 +52,13 @@ mutation method and revokes its handles before lock release.
 
 Rotation holds the same lock under the old selected capability. It validates
 the reviewed successor active release/helper/profile/ABI/custody, settles all
-pending proposals among the other eleven pointer kinds in registry/`Dp`/
+pending proposals among the other twelve pointer kinds in registry/`Dp`/
 predecessor/mutation order, and requires zero unrelated `PENDING` or `UNKNOWN`.
 Its own selected run-current checkpoint may be exactly `CAS_AMBIGUOUS`. After
 authority CAS, every old handle is revoked. A fresh new-helper run validates the
-selected successor and terminalizes that exact rotation; no ordinary target
-may span epochs. Kernel owner death releases the lock. Before authority CAS the
+selected successor and terminalizes that exact rotation. Authority rotation is
+the sole commit-run epoch-split exception described below; every other target
+is single-epoch. Kernel owner death releases the lock. Before authority CAS the
 old epoch remains current; after it the new epoch does. Rollback is another
 independently reviewed forward rotation, never restored bytes or a stale
 capability.
@@ -168,7 +169,7 @@ context requires external anchor, selected owner CONSUMED, consumption receipt,
 immutable E0 core, selected runtime E0, and runtime post-selection receipt.
 
 The E0 graph is acyclic: external anchor → E0
-`state-mutation-authority-value/v2`/`Dv` → immutable
+`state-mutation-authority-value/v3`/`Dv` → immutable
 `state-mutation-bootstrap-genesis-core/v1` →
 `pointer-cas-proposal-receipt/v2`/`Dr` → tip/`Dt` → runtime post-selection
 receipt. The core binds anchor, destination/owner, absence, E0 `Dv`, and empty
@@ -222,13 +223,14 @@ schema; `Dba` does not reframe them as additional top-level parts.
 
 ### Authority history and epoch validation
 
-`state-mutation-authority-value/v2` binds the exact helper/profile/ABI/lock/
+`state-mutation-authority-value/v3` binds the exact helper/profile/ABI/lock/
 custody facts, reviewed active release, predecessor authority triple, authority
 ordinal, `historyRootKind=EMPTY|NONEMPTY`, and selected history root. Ordinals
 and counts are canonical nonnegative decimal strings. E0 has ordinal `"0"`,
 null predecessor/append receipt, `historyRootKind=EMPTY`, the selected
-`authority-history-empty-root/v1` digest `Dhe`, and count `"0"`. A nonempty
-`authority-history-root/v1` is not fabricated for E0.
+`authority-history-empty-root/v2` digest `Dhe`, count `"0"`, selected
+`authority-node-inventory-empty-root/v1` digest `Dnir`, and node count `"0"`.
+A nonempty `authority-history-root/v2` is not fabricated for E0.
 
 For En, the old selected capability appends E(n-1)'s exact selected epoch leaf.
 `authority-history-update-proof/v1` contains exactly 256 siblings and proves
@@ -262,12 +264,12 @@ installation/state-mutation-authority-history/append-receipts/<rotation-id>.json
 The exact history domains are `state-mutation-global-identity/v1`,
 `state-mutation-authority-rotation-id/v1`, `authority-epoch-key/v1`,
 `authority-epoch-leaf/v1`, `authority-history-empty/v1`,
-`authority-history-node/v1`, `authority-history-empty-root/v1`,
-`authority-history-root/v1`,
+`authority-history-node/v1`, `authority-history-empty-root/v2`,
+`authority-history-root/v2`,
 `authority-history-update-proof/v1`, and
-`authority-history-append-receipt/v1`. The successor authority core excludes
+`authority-history-append-receipt/v2`. The successor authority core excludes
 the append-receipt digest and the append receipt excludes successor value/tip;
-the v2 value joins them without a cycle.
+the v3 value joins them without a cycle.
 
 The sparse formulas and exclusions are exact:
 
@@ -278,17 +280,136 @@ The sparse formulas and exclusions are exact:
 | `De` | schema/domain `authority-history-leaf/v1` / `authority-epoch-leaf/v1`: `G` raw32, epoch key raw32, authority ordinal `DECIMAL_ASCII`, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32, canonical leaf bytes | immutable leaf; successor value/proposal/tip and append receipt excluded |
 | empty digest | `authority-history-empty/v1`: depth unsigned 16-bit | deterministic depth-specific constants for all 256 levels; no record path |
 | node digest | `authority-history-node/v1`: depth unsigned 16-bit, left digest raw32, right digest raw32 | `.../nodes/<node-digest>.json`; no leaf/value/proposal/tip parts |
-| `Dhe` | schema/domain `authority-history-empty-root/v1`: `G` raw32, tree profile text, count exact `DECIMAL_ASCII "0"`, deterministic depth-zero empty-tree digest raw32, canonical empty-root bytes | `.../empty-roots/<empty-root-digest>.json`; FULL_REQUIRED; latest-included fields are absent, not null/sentinel; selected authority/proposal/tip excluded |
-| `Dh` | schema/domain `authority-history-root/v1`: `G` raw32, tree profile text, count `DECIMAL_ASCII` constrained `>=1`, tree-root digest raw32, latest-included ordinal `DECIMAL_ASCII` constrained to `count-1`, latest epoch key raw32, latest `Dt` raw32, latest `Dv` raw32, latest `Dr` raw32, canonical root bytes | `.../roots/<root-digest>.json`; kind is `NONEMPTY`; selected successor value/proposal/tip excluded |
+| `Dhe` | schema/domain `authority-history-empty-root/v2`: `G` raw32, tree profile text, count exact `DECIMAL_ASCII "0"`, deterministic depth-zero empty-tree digest raw32, node-inventory kind/digest/count (`EMPTY`,`Dnir`,`"0"`), canonical empty-root bytes | `.../empty-roots/<empty-root-digest>.json`; FULL_REQUIRED; latest-included fields are absent; selected authority/proposal/tip excluded |
+| `Dh` | schema/domain `authority-history-root/v2`: `G` raw32, tree profile text, count `DECIMAL_ASCII` constrained `>=1`, tree-root digest raw32, latest-included ordinal `DECIMAL_ASCII` constrained to `count-1`, latest epoch key and `Dt/Dv/Dr`, selected node-inventory kind/digest/count/tree, canonical root bytes | `.../roots/<root-digest>.json`; kind is `NONEMPTY`; selected successor value/proposal/tip excluded |
 | `Dup` | schema/domain `authority-history-update-proof/v1`: `G` raw32, epoch key raw32, `De` raw32, prior-root-kind text `EMPTY|NONEMPTY`, prior root digest raw32 (`Dhe` for first append, `Dh` thereafter), successor `Dh` raw32, prior count `DECIMAL_ASCII`, successor count `DECIMAL_ASCII`, exactly 256 sibling raw32 parts, canonical proof bytes | `.../update-proofs/<rotation-id>.json`; first edge is `EMPTY→NONEMPTY`, later edges are `NONEMPTY→NONEMPTY`; prior leaf must be EMPTY and successor PRESENT |
-| `Dar` | schema/domain `authority-history-append-receipt/v1`: `G` raw32, rotation operation ID raw32, predecessor authority `Dp` raw32, predecessor `Dt` raw32, predecessor `Dv` raw32, predecessor `Dr` raw32, prior-root-kind text, prior root digest raw32 (`Dhe|Dh`), prior count `DECIMAL_ASCII`, appended epoch key raw32, `De` raw32, `Dup` raw32, successor `Dh` raw32, successor count `DECIMAL_ASCII`, successor-core digest raw32, created-at text, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip excluded |
+| `Dar` | schema/domain `authority-history-append-receipt/v2`: prior v1 parts plus `Dplan`, selected materialization STARTED `Dt/Dv/Dr`, node-inventory batch `Dniu`, successor `Dnir`/count/tree, successor-core digest, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip and FINISHING/TERMINAL excluded |
 
-`state-mutation-authority-successor-core/v1` excludes `Dar`; `Dar` binds the
-core digest, and `state-mutation-authority-value/v2` joins core plus `Dar`.
+`state-mutation-authority-successor-core/v2` excludes `Dar`; `Dar` binds the
+core digest, and `state-mutation-authority-value/v3` joins core plus `Dar` and
+repeats the selected node-inventory kind/digest/count exactly.
 Therefore neither append nor selection digest is cyclic. Membership recomputes
 `De` and all 256 nodes to the exact nonempty `Dh` bound by the live context.
 `historyRootKind=EMPTY` never authorizes a producer membership projection;
 membership against `Dhe` refuses.
+
+#### FULL_REQUIRED authority-node inventory
+
+The authority sparse tree and the retained content-addressed node-file set are
+separate authenticated sets. The selected history root and
+`state-mutation-authority-value/v3` bind the second set's
+`nodeInventoryRootKind`, `nodeInventoryRootDigest`, and arbitrary-precision
+`nodeInventoryCount`. E0 selects `authority-node-inventory-empty-root/v1`;
+every later rotation updates `authority-node-inventory-root/v1`. Historical
+nodes remain selected forever, including nodes no longer reachable from the
+latest authority-tree root. There is no compaction, deletion, or degraded mode.
+
+The inventory is another fixed-depth sparse set keyed by raw node digest.
+`Dnr` binds the exact `authority-history-node/v1` bytes; `Dnil` binds node
+digest, canonical `nodes/<node-digest>.json` path, `Dnr`, and leaf bytes.
+`Dnir` binds `G`, inventory root kind, `DECIMAL_ASCII` count, inventory tree
+root, and canonical root bytes. Empty constants use
+`authority-node-inventory-empty/v1`.
+
+```text
+installation/state-mutation-authority-history/node-inventory/empty-roots/<Dnir>.json
+installation/state-mutation-authority-history/node-inventory/roots/<Dnir>.json
+installation/state-mutation-authority-history/node-inventory/leaves/<node-digest>.json
+installation/state-mutation-authority-history/node-inventory/plans/<rotation-id>/<Dplan>.json
+installation/state-mutation-authority-history/node-inventory/materializations/<rotation-id>/<node-digest>.json
+installation/state-mutation-authority-history/node-inventory/updates/<rotation-id>.json
+installation/state-mutation-authority-history/node-inventory/coordinator/<authority-Dp>/current.json
+```
+
+| Digest | Exact domain and framed parts |
+| --- | --- |
+| `Dnr` | `authority-history-node-record/v1`: node digest raw32, canonical node bytes |
+| `Dnil` | `authority-node-inventory-leaf/v1`: node digest raw32, canonical path text, `Dnr` raw32, canonical leaf bytes |
+| `Dnir` | `authority-node-inventory-root/v1`: `G` raw32, kind text, count `DECIMAL_ASCII`, tree-root raw32, canonical root bytes |
+| `Dplan` | `authority-node-materialization-plan/v1`: deterministic rotation ID, old authority `Dp/Dt/Dv/Dr`, prior history and inventory tuples, authority update proof, each sorted/deduped derived node-plan digest, precomputable successor history-tree and inventory tuples, reviewed successor subject/ordinal, active-release/review facts, `FINISH_ONLY`, canonical plan bytes |
+| `Dniu` | `authority-node-inventory-batch-update/v1`: `G`, rotation ID, `Dplan`, selected coordinator STARTED triple, authority update proof, prior inventory tuple, every ordered materialization/entry digest, successor inventory tuple, canonical batch bytes |
+
+`Dplan` is computed before filesystem writes. It excludes filesystem
+observations, `Dniu`, target mutation ID, successor authority value/proposal/tip,
+and timestamps. Rotation ID v2 is deterministic from `G`, old epoch, successor
+ordinal, reviewed successor subject/review, and rotation operation identity; it
+also excludes `Dplan`, observations, `Dniu`, and successor selection. The
+ordinary 256-sibling authority update deterministically derives at most 256
+node records. The plan deduplicates identical digest+bytes, rejects a digest
+collision with different bytes, sorts by node digest, and precomputes each
+inventory membership action and intermediate root/count.
+
+Filesystem disposition and inventory membership are independent closed axes.
+`authority-node-filesystem-observation/v1` uses
+`CREATED|READBACK_SAME|MISSING_SELECTED|BYTES_CONFLICT`.
+`authority-node-inventory-update-entry/v1` uses
+`INSERT_ABSENT|ALREADY_MEMBER`. `INSERT_ABSENT` requires exact nonmembership
+and either CREATED or recovery READBACK_SAME, then increments count once.
+`ALREADY_MEMBER` requires READBACK_SAME and exact membership, leaving root/count
+unchanged. MISSING_SELECTED and BYTES_CONFLICT are terminal blockers and never
+update inputs. Every entry has exactly 256 siblings and chains its intermediate
+root/count; the batch must equal the exact planned node census.
+
+#### Singleton materialization coordinator
+
+`AUTHORITY_NODE_MATERIALIZATION_RUN` is the thirteenth pointer kind. It is one
+`AUTHORITY_DP`-scoped singleton, not one pointer per plan. Its stable current
+path is shown above, source is `none`, transaction is null, retention is
+FULL_REQUIRED, and tombstone/archive are disabled. The coordinator `Dp` binds
+the exact lifetime authority `Dp` but excludes rotation ID and `Dplan`.
+
+Its value lifecycle is exactly
+`IDLE|PREAUTHORIZED|STARTED|FINISHING|TERMINAL|REVOKED_BEFORE_START` with a
+monotonic arbitrary `DECIMAL_ASCII` coordinator ordinal. Writes are only
+ABSENT→IDLE, IDLE→PREAUTHORIZED, PREAUTHORIZED→STARTED,
+PREAUTHORIZED→REVOKED_BEFORE_START, STARTED→FINISHING,
+FINISHING→TERMINAL, and TERMINAL/REVOKED_BEFORE_START→next PREAUTHORIZED.
+The reset requires a distinct deterministic rotation ID/plan under the current
+epoch and exact selected prior coordinator triple. One current tip means one
+selected plan and no concurrent STARTED cycle. Same prior+bytes is idempotent;
+a competing plan is a real conflict; malformed or multiple current winners are
+UNKNOWN.
+
+PREAUTHORIZED and STARTED are selected under E(n). Revocation or expiry before
+STARTED blocks. Once STARTED wins, its exact plan is finish-only despite later
+expiry or process death: no abandon, deletion, adoption, or rebinding. After
+the successor authority CAS, E(n) has no capability. Fresh E(n+1) terminalizes
+the authority run, creates the downstream handoff, and alone selects
+FINISHING→TERMINAL.
+
+#### Authenticated node-directory census
+
+`authority-node-inventory-census-entry/v1` binds a contiguous global decimal
+ordinal, canonical path/node bytes, `Dnr`, `Dnil`, and a 256-sibling membership
+proof against the selected `Dnir`. A page has at most 256 strictly path-sorted
+entries. Page zero has null prior page/cursor/cumulative digests and prior count
+`"0"`; later pages bind exact prior page, cursor, cumulative digest/count, and
+ordinal+1. Nonterminal pages are nonempty and end at their last path; terminal
+exhaustion has null successor cursor and cumulative count equal the selected
+inventory count.
+
+`Dpage` frames `G`, census ID, selected authority `Dp/Dt/Dv/Dr`, selected
+history root, selected inventory kind/digest/count/tree, page ordinal, nullable
+prior page/cursor/cumulative, prior count, every ordered entry digest, the
+ISS-004 directory-enumeration observation, successor cursor/count, exhausted
+byte, and canonical page-core bytes. The rolling `Dcensus` uses raw-fixed
+`00,Dpage,count,cursor` first and `01,prior-Dcensus,Dpage,count,cursor` later.
+`Dterminal` binds the unchanged selected tuple, first/last page, last
+`Dcensus`, page/cumulative counts, terminal enumeration observation, and
+canonical terminal bytes.
+
+```text
+installation/state-mutation-authority-history/node-inventory/censuses/<selected-authority-Dt>/<census-id>/pages/<page-ordinal>-<Dpage>.json
+installation/state-mutation-authority-history/node-inventory/censuses/<selected-authority-Dt>/<census-id>/terminal-<Dterminal>.json
+```
+
+ISS-004 supplies a fresh branded under-lock canonical-directory enumeration
+projection whose native cursor/readback and exhaustion bind each page. The
+serialized page never grants authority. Distinct selected membership for every
+actual path plus final actual count equal to selected inventory count proves set
+equality: missing, injected, orphan, moved, duplicated, skipped, reordered, or
+truncated nodes refuse. Authoritative census pages used by bootstrap, rotation,
+certification, or audit are FULL_REQUIRED; advisory scans are call-scoped.
 
 ## Pointer value, proposal, tip, and conflict graph
 
@@ -337,9 +458,9 @@ The closed authority schemas include `pointer-current-tip/v1`,
 `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`,
 `recovery-attempt-terminal-summary/v1`, `recovery-attempt-accumulator/v1`,
 `activation-cleanup-archive-head/v2`, `authority-retention/v1`,
-`state-mutation-authority-value/v2`, the authority-history/bootstrap-owner
-schemas above, `pointer-mutation-run-checkpoint-core/v1`,
-`pointer-mutation-run-current-value/v1`, and
+`state-mutation-authority-value/v3`, the authority-history/bootstrap-owner
+schemas above, `pointer-mutation-run-checkpoint-core/v2`,
+`pointer-mutation-run-current-value/v2`, and
 `pointer-mutation-run-selector-post-selection-observation/v1`. Authorization
 schemas are closed in `credential-broker.md`. The old proposal receipt,
 authority value, capped history table, and packet are diagnostic only and
@@ -385,7 +506,8 @@ The closed runtime pointer kinds are exactly:
 9. authority retention;
 10. recovery attempt reservation;
 11. state mutation authority rotation;
-12. pointer mutation run current.
+12. pointer mutation run current;
+13. authority node materialization run.
 
 The registry maps every kind to one exact canonical path constructor, permitted
 value schemas, source tokens, roots, archives, and genesis rule. Unknown or
@@ -410,6 +532,7 @@ The canonical authority-path census is closed:
 | `RECOVERY_ATTEMPT_RESERVATION` | `installation/activation-recovery-launches/<transaction>/<source>/reservations/<predecessor-key>.json` |
 | `STATE_MUTATION_AUTHORITY_ROTATION` | `installation/state-mutation-authority.json` |
 | `POINTER_MUTATION_RUN_CURRENT` | `installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/current-run.json` |
+| `AUTHORITY_NODE_MATERIALIZATION_RUN` | `installation/state-mutation-authority-history/node-inventory/coordinator/<authority-Dp>/current.json` |
 
 Path components use the canonical contract path grammar and lowercase digest or
 UUID text where declared. `predecessor-key` is the framed digest of the exact
@@ -451,6 +574,48 @@ After lock/process loss, the persisted stage-five checkpoint is
 `SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL` and excludes the run-current graph
 that selects its terminal core.
 
+Commit intents declare `SINGLE_EPOCH|AUTHORITY_ROTATION_HANDOFF`. Every target
+except `STATE_MUTATION_AUTHORITY_ROTATION` is SINGLE_EPOCH and all nine
+checkpoint selectors bind one authority triple. Rotation checkpoints zero
+through five, ending in selected CAS_ARMED, bind E(n), `Dplan`, and the selected
+materialization STARTED triple. The target authority CAS selects E(n+1).
+Checkpoint six is the first selection by a fresh E(n+1) capability and binds
+the exact last E(n) CAS_ARMED selector/core, STARTED coordinator triple,
+selected E(n+1), target readbacks, lock/custody observation, and reproducible
+`Drh`. Checkpoints seven and eight remain E(n+1). Any earlier, later, or second
+epoch split refuses.
+
+`Drh` uses `authority-rotation-run-handoff-receipt/v1` over `G`, rotation ID,
+`Dplan`, target authority `Dp`, old E(n), persisted CAS_ARMED selector/core,
+coordinator STARTED, new E(n+1), target readbacks, lock profile, custody
+instance/observation, observed time, and canonical receipt. It excludes
+checkpoint six and all terminal/handoff evidence, so fresh E(n+1) can recreate
+it after process death without an E(n) nonce.
+
+Only after selected terminal checkpoint eight does E(n+1) create
+`authority-node-materialization-handoff-receipt/v1` (`Dhand`) over `Dplan`,
+STARTED, `Dniu`, E(n+1), `Drh`, terminal resolution, final authority-run
+selector/readbacks, and canonical receipt. `Dhand` is excluded from the
+authority run and is required for coordinator STARTED→FINISHING. FINISHING and
+TERMINAL are selected only by E(n+1). The one-way graph is E(n) plan/STARTED →
+materialization/`Dniu` → authority CAS E(n+1) → `Drh` → checkpoint 6–8 terminal
+→ `Dhand` → coordinator FINISHING/TERMINAL.
+
+The coordinator/handoff domains are exact:
+
+| Digest | Domain and ordered framed parts |
+| --- | --- |
+| `Dstart` | `authority-node-materialization-start-receipt/v1`: `G`, rotation ID, `Dplan`, selected PREAUTHORIZED coordinator `Dt/Dv/Dr`, E(n) `Dt/Dv/Dr`, start time, canonical receipt |
+| `Drh` | `authority-rotation-run-handoff-receipt/v1`: `G`, rotation ID, `Dplan`, target authority `Dp`, old E(n) `Dt/Dv/Dr`, persisted CAS_ARMED selector `Dt/Dv/Dr` and core digest, coordinator STARTED `Dt/Dv/Dr`, new E(n+1) `Dt/Dv/Dr`, target value/proposal/tip readbacks, lock-profile digest, custody-instance/observation digests, observed time, canonical receipt |
+| `Dhand` | `authority-node-materialization-handoff-receipt/v1`: `G`, rotation ID, `Dplan`, coordinator STARTED `Dt/Dv/Dr`, `Dniu`, E(n+1) `Dp/Dt/Dv/Dr`, `Drh`, selected terminal-resolution digest, final authority-run selector `Dt/Dv/Dr`, final readbacks, creation time, canonical receipt |
+| finishing evidence | `authority-node-materialization-finishing/v1`: `G`, rotation ID, `Dplan`, STARTED triple, `Dniu`, E(n+1), terminal resolution/final selector, `Drh`, `Dhand`, canonical evidence |
+| terminal receipt | `authority-node-materialization-terminal-receipt/v1`: FINISHING triple, E(n+1), final readbacks, nullable census terminal, completion time, canonical receipt |
+
+All named digest fields are raw32, ordinals/counts use `DECIMAL_ASCII`, times
+are text, and lifecycle/status tags are text. `Drh` excludes checkpoint six and
+terminal/handoff evidence. `Dhand` excludes coordinator FINISHING. Therefore a
+fresh E(n+1) process can reproduce each receipt without preserved E(n) memory.
+
 ```text
 installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/intent.json
 installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/runs/<run-ordinal>-<run-id>/segment.json
@@ -461,7 +626,7 @@ installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/resolution.jso
 
 The closed run domains are `pointer-mutation-run-id/v1`,
 `pointer-mutation-run-segment/v1`, `pointer-mutation-run-audit/v1`,
-`pointer-mutation-run-checkpoint-core/v1`,
+`pointer-mutation-run-checkpoint-core/v2`,
 `pointer-mutation-run-current-position/v1`,
 `pointer-mutation-run-selector-post-selection-observation/v1`, and
 `pointer-mutation-commit-resolution/v1`.
@@ -470,7 +635,7 @@ The closed run domains are `pointer-mutation-run-id/v1`,
 | --- | --- | --- |
 | run ID | `pointer-mutation-run-id/v1` | `G` raw32, target mutation ID raw32, run ordinal `DECIMAL_ASCII`, nullable prior checkpoint digest raw32, current authority `Dp` raw32, current authority `Dt` raw32, current authority `Dv` raw32, current authority `Dr` raw32; timestamps excluded |
 | segment/audit | `pointer-mutation-run-segment/v1`; first `H(F(pointer-mutation-run-audit/v1, 0x00, segment))`, later `H(F(...,0x01, prior audit, segment))` | exact run stages/readbacks; full immutable audit retained |
-| `Dcore` | `pointer-mutation-run-checkpoint-core/v1` | `G` raw32, target `Dp` raw32, target mutation ID raw32, run ordinal `DECIMAL_ASCII`, checkpoint ordinal `DECIMAL_ASCII`, segment digest raw32, audit digest raw32, nullable prior selector `Dt` raw32, nullable prior selector `Dv` raw32, nullable prior selector `Dr` raw32, nullable prior `Dpost` raw32, stage text, phase text, nullable terminal-resolution digest raw32, canonical checkpoint-core bytes |
+| `Dcore` | `pointer-mutation-run-checkpoint-core/v2` | v1 identity/audit/predecessor parts plus epoch policy, nullable authority-rotation Dplan/STARTED/Drh/new-epoch evidence, stage, phase, nullable terminal resolution, canonical core bytes |
 | selector `Dv/Dr/Dt` | ordinary `pointer-value/v2`, `pointer-receipt/v2`, `pointer-tip/v2` | value binds `Dcore`; proposal binds exact prior selector triple/genesis and META_LEAF position; tip selects them |
 | `Dpost` | `pointer-mutation-run-selector-post-selection-observation/v1` | `Dcore` raw32, selector `Dp` raw32, selector mutation ID raw32, selector `Dv` raw32, selector `Dr` raw32, selector `Dt` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, canonical observation bytes |
 | terminal resolution | `pointer-mutation-commit-resolution/v1` | target outcome/evidence and producer epoch; excludes selector value/`Dv`, proposal/`Dr`, tip/`Dt`, selector readbacks, and `Dpost` |
@@ -496,7 +661,7 @@ Only recursive journaling is excluded. Create-once retry, real-winner conflict,
 classification, tombstone, retention, path census, producer epoch, and exact
 selected tip rules are identical to every other runtime pointer.
 
-`pointer-evidence-packet/v2` is an exact union. `HISTORICAL_READ` requires
+`pointer-evidence-packet/v3` is an exact thirteen-slot union. `HISTORICAL_READ` requires
 `currentCommit=null` and exposes no mutation capability. `MUTATION_COMMIT`
 requires current intent/checkpoint/run evidence and a live mutation context.
 Both carry a fixed registry-derived evidence-slot census, not lifetime history;
