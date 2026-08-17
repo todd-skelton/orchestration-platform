@@ -27,6 +27,7 @@ import {
   pointerArchivePaths,
   pointerGenesisRule,
   pointerPath,
+  pointerPositionContracts,
   pointerRegistry,
   pointerRootPaths,
   recoveryAccumulatorDigest,
@@ -47,6 +48,7 @@ import {
   validateFenceHeadHistory,
   validatePointerDispatch,
   validatePointerGenesisDispatch,
+  validatePointerPositionEvidence,
   validatePointerTemplateDispatch,
   validateRecoveryAccumulatorFormula,
   validateSelectedPointerEvidence,
@@ -104,6 +106,9 @@ function pointerSelection(
     tombstoneEvidence?: ContractRecord;
     intent?: "VALUE_PROPOSED" | "TOMBSTONE_PROPOSED";
     outcome?: "SELECT" | "REMOVE";
+    installationId?: string;
+    projectId?: string;
+    stateRootDigest?: string;
   },
 ) {
   const canonicalPointerPath = pointerPath(pointerKind, options.pathBindings);
@@ -111,9 +116,9 @@ function pointerSelection(
   const pointerInput = {
     pointerKind,
     canonicalPointerPath,
-    installationId: uuid,
-    projectId: uuid,
-    stateRootDigest: digest,
+    installationId: options.installationId ?? uuid,
+    projectId: options.projectId ?? uuid,
+    stateRootDigest: options.stateRootDigest ?? digest,
     transactionId: options.transactionId,
     sourceToken: options.sourceToken,
     ...(row.pathTemplate.includes("<predecessor-key>")
@@ -203,9 +208,9 @@ function pointerSelection(
   const envelope = {
     pointerKind,
     canonicalPointerPath,
-    installationId: uuid,
-    projectId: uuid,
-    stateRootDigest: digest,
+    installationId: options.installationId ?? uuid,
+    projectId: options.projectId ?? uuid,
+    stateRootDigest: options.stateRootDigest ?? digest,
     transactionId: options.transactionId,
     sourceToken: options.sourceToken,
     pathBindings: options.pathBindings,
@@ -239,17 +244,128 @@ function authorizationSelection(
   });
 }
 
-function tombstoneSelection(row: (typeof pointerRegistry)[number]) {
+function terminalPointerValue(
+  kind: (typeof pointerKinds)[number],
+  base: ContractRecord,
+): ContractRecord {
+  switch (kind) {
+    case "ACTIVE_RELEASE":
+    case "ACTIVATION_CLEANUP_ARCHIVE_HEAD":
+      return base;
+    case "ACTIVATION_CLEANUP_GATE":
+      return {
+        ...base,
+        lifecycle: "COMPLETE",
+        publication: "CLEARED",
+        fenceDigest: null,
+        abortRevocationReceiptDigest: null,
+        terminalRevocationReceiptDigest: digest,
+        terminalProofDigest: digest,
+        archiveOutcomeDigest: digest,
+      };
+    case "ACTIVATION_RECOVERY_FENCE":
+      return { ...base, lifecycle: "POST_ACTIVATION" };
+    case "ACTIVATION_RECOVERY_LAUNCH":
+      return { ...base, lifecycle: "TERMINAL_COMPLETE", terminalProofDigest: digest };
+    case "RECOVERY_AUTHORIZATION_STATE":
+      return {
+        ...base,
+        lifecycle: "REVOKED",
+        gateRootDigest: digest,
+        nativeConsumeReceiptDigest: digest,
+        nativeRemovalReceiptDigest: digest,
+      };
+    case "RECOVERY_AUTHORIZATION_ATTACHMENT":
+      return {
+        ...base,
+        lifecycle: "TERMINAL",
+        reservationTipDigest: digest,
+        reservationValueDigest: digest,
+        reservationReceiptDigest: digest,
+        descriptorDigest: digest,
+        readyRecordDigest: digest,
+        initialLiveRecordDigest: digest,
+        gateHeadDigest: digest,
+        fenceHeadDigest: digest,
+        activeReleaseDigest: digest,
+        brokerClientDigest: digest,
+        argvDigest: digest,
+        processIdentityDigest: digest,
+        terminalSummaryDigest: digest,
+      };
+    case "RECOVERY_ATTEMPT_ACCUMULATOR":
+      return {
+        ...base,
+        lifecycle: "TERMINAL",
+        terminalSummaryDigest: digest,
+        rollingDigest: digest,
+      };
+    case "RECOVERY_ATTEMPT_RESERVATION":
+      return {
+        ...base,
+        lifecycle: "TERMINAL",
+        consumedDescriptorDigest: digest,
+        terminalSummaryDigest: digest,
+      };
+    default:
+      return base;
+  }
+}
+
+function ordinarySelection(
+  row: (typeof pointerRegistry)[number],
+  identities: { installationId?: string; projectId?: string; stateRootDigest?: string } = {},
+  terminal = false,
+) {
+  const rawValue = fixtureFor(row.valueSchemas[0]!);
+  const baseValue = terminal ? terminalPointerValue(row.kind, rawValue) : rawValue;
+  const value: ContractRecord = {
+    ...baseValue,
+    ...(Object.hasOwn(baseValue, "installationId") && identities.installationId
+      ? { installationId: identities.installationId }
+      : {}),
+    ...(Object.hasOwn(baseValue, "projectId") && identities.projectId
+      ? { projectId: identities.projectId }
+      : {}),
+    ...(Object.hasOwn(baseValue, "stateRootDigest") && identities.stateRootDigest
+      ? { stateRootDigest: identities.stateRootDigest }
+      : {}),
+  };
   const transactionId = row.transactionPolicy === "REQUIRED" ? uuid : null;
   const sourceToken = row.sourceTokens[0]!;
   const pathBindings: Record<string, string> = {
     ...(row.pathTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
     ...(row.pathTemplate.includes("<source>") ? { sourceToken } : {}),
-    ...(row.pathTemplate.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
+    ...(row.pathTemplate.includes("<predecessor-key>")
+      ? {
+          predecessorKey: computeReservationPredecessorKey({
+            transactionId: uuid,
+            sourceToken,
+            priorDt: value.predecessorAccumulatorTipDigest,
+            priorDv: value.predecessorAccumulatorValueDigest,
+            priorDr: value.predecessorAccumulatorReceiptDigest,
+          }),
+        }
+      : {}),
     ...(row.pathTemplate.includes("<pointer-instance-digest>")
-      ? { pointerInstanceDigest: digest }
+      ? { pointerInstanceDigest: value.pathInstanceDigest as string }
       : {}),
   };
+  return pointerSelection(row.kind, value, {
+    pathBindings,
+    transactionId,
+    sourceToken,
+    ...identities,
+  });
+}
+
+function tombstoneSelection(
+  row: (typeof pointerRegistry)[number],
+  priorSelection = ordinarySelection(row, {}, true),
+) {
+  const transactionId = priorSelection.envelope.transactionId as string;
+  const sourceToken = priorSelection.envelope.sourceToken as string;
+  const pathBindings = priorSelection.envelope.pathBindings as Record<string, string>;
   const canonicalPointerPath = pointerPath(row.kind, pathBindings);
   const archiveTemplate = row.archiveTemplates[0]!;
   const archiveBindings: Record<string, string> = {
@@ -262,32 +378,67 @@ function tombstoneSelection(row: (typeof pointerRegistry)[number]) {
     ...(archiveTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
   };
   const archivePath = pointerArchivePaths(row.kind, archiveBindings)[0]!;
-  const prior = { tipDigest: digest, valueDigest: digest2, proposalReceiptDigest: digest };
+  const prior = {
+    tipDigest: priorSelection.tipDigest,
+    valueDigest: priorSelection.valueDigest,
+    proposalReceiptDigest: priorSelection.proposalReceiptDigest,
+  };
   const authorityEpoch = { tipDigest: digest, valueDigest: digest, proposalReceiptDigest: digest };
   const terminalProof: ContractRecord = {
+    schemaVersion: "pointer-terminal-proof/v1",
     authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
     authorityEpochTipDigest: authorityEpoch.tipDigest,
     authorityEpochValueDigest: authorityEpoch.valueDigest,
+    priorAuthorityEpochReceiptDigest: (priorSelection.proposal as ContractRecord)
+      .authorityEpochReceiptDigest as string,
+    priorAuthorityEpochTipDigest: (priorSelection.proposal as ContractRecord)
+      .authorityEpochTipDigest as string,
+    priorAuthorityEpochValueDigest: (priorSelection.proposal as ContractRecord)
+      .authorityEpochValueDigest as string,
     canonicalPointerPath,
+    installationId: uuid,
+    pathInstanceDigest: priorSelection.pathInstanceDigest,
     pointerKind: row.kind,
+    projectId: uuid,
     sourceToken,
+    stateRootDigest: digest,
     terminalReceiptDigest: prior.proposalReceiptDigest,
     terminalTipDigest: prior.tipDigest,
     terminalValueDigest: prior.valueDigest,
+    terminalPositionDigest: computePointerPositionDigest(
+      row.kind,
+      priorSelection.envelope.positionEvidence,
+    ),
+    terminalValueSchemaVersion: (priorSelection.envelope.value as ContractRecord)
+      .schemaVersion as string,
     transactionId,
   };
   const terminalProofDigest = canonicalDigest(terminalProof);
   const archiveRecord: ContractRecord = {
+    schemaVersion: "pointer-archive-record/v1",
     archivePath,
+    archivedAt: instant,
     authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
     authorityEpochTipDigest: authorityEpoch.tipDigest,
     authorityEpochValueDigest: authorityEpoch.valueDigest,
+    priorAuthorityEpochReceiptDigest: (priorSelection.proposal as ContractRecord)
+      .authorityEpochReceiptDigest as string,
+    priorAuthorityEpochTipDigest: (priorSelection.proposal as ContractRecord)
+      .authorityEpochTipDigest as string,
+    priorAuthorityEpochValueDigest: (priorSelection.proposal as ContractRecord)
+      .authorityEpochValueDigest as string,
     canonicalPointerPath,
+    installationId: uuid,
+    pathInstanceDigest: priorSelection.pathInstanceDigest,
     pointerKind: row.kind,
     priorReceiptDigest: prior.proposalReceiptDigest,
     priorTipDigest: prior.tipDigest,
     priorValueDigest: prior.valueDigest,
+    priorPositionDigest: terminalProof.terminalPositionDigest as string,
+    priorValueSchemaVersion: terminalProof.terminalValueSchemaVersion as string,
+    projectId: uuid,
     sourceToken,
+    stateRootDigest: digest,
     terminalProofDigest,
     transactionId,
   };
@@ -304,6 +455,7 @@ function tombstoneSelection(row: (typeof pointerRegistry)[number]) {
     archiveBindings,
     archivePath,
     archiveRecord,
+    priorSelection: priorSelection.envelope,
     terminalProof,
   };
   return pointerSelection(row.kind, tombstone, {
@@ -332,6 +484,9 @@ describe("current and diagnostic schema registries", () => {
     expect(pointerRegistry.filter((row) => row.transactionPolicy === "REQUIRED")).toHaveLength(9);
     expect(pointerRegistry.filter((row) => row.transactionPolicy === "NULL")).toHaveLength(2);
     expect(pointerRegistry.filter((row) => row.sourcePolicy === "RECOVERY_SOURCE")).toHaveLength(3);
+    expect(canonicalDigest(pointerPositionContracts)).toBe(
+      "a0cad57365d1a01363a9c14db1979fd1f76edefc2a120ef0a67446e132b3ba09",
+    );
     const constructedPathCensus: JsonValue[] = [];
     for (const row of pointerRegistry) {
       expect(row.rootTemplates.length, `${row.kind}:roots`).toBeGreaterThan(0);
@@ -383,6 +538,34 @@ describe("current and diagnostic schema registries", () => {
           : {};
       const position = derivePointerPositionEvidence(row.kind, positionValue, positionBindings);
       const positionDigest = computePointerPositionDigest(row.kind, position);
+      expect(validatePointerPositionEvidence(row.kind, position)).toEqual([]);
+      for (const field of pointerPositionContracts[row.kind].ordinaryFields) {
+        const invalid = field === "previousArchiveHeadDigest" ? "invalid" : null;
+        expect(
+          validatePointerPositionEvidence(row.kind, { ...position, [field]: invalid }),
+          `${row.kind}:${field}`,
+        ).not.toEqual([]);
+        if (["lifecycle", "phase", "rotationKind", "sourceToken"].includes(field))
+          expect(
+            validatePointerPositionEvidence(row.kind, { ...position, [field]: "FUTURE" }),
+            `${row.kind}:${field}:future`,
+          ).not.toEqual([]);
+        if (field === "ordinal")
+          for (const ordinal of [-1, 1.5, "1"])
+            expect(
+              validatePointerPositionEvidence(row.kind, { ...position, ordinal }),
+              `${row.kind}:ordinal:${ordinal}`,
+            ).not.toEqual([]);
+        if (field.endsWith("Digest") || field === "predecessorKey")
+          for (const malformed of ["a", digest.toUpperCase(), 1])
+            expect(
+              validatePointerPositionEvidence(row.kind, { ...position, [field]: malformed }),
+              `${row.kind}:${field}:malformed`,
+            ).not.toEqual([]);
+      }
+      expect(
+        validatePointerPositionEvidence(row.kind, { ...position, variant: "FUTURE" }),
+      ).not.toEqual([]);
       expect(() => computePointerPositionDigest(row.kind, { ...position, extra: digest })).toThrow(
         /shape-invalid/,
       );
@@ -524,6 +707,8 @@ describe("current and diagnostic schema registries", () => {
       "pointer-cas-proposal-receipt/v1",
       "pointer-conflict-receipt/v1",
       "pointer-tombstone-value/v1",
+      "pointer-terminal-proof/v1",
+      "pointer-archive-record/v1",
       "authority-retention/v1",
       "state-mutation-authority-value/v1",
       "active-release/v2",
@@ -546,7 +731,7 @@ describe("current and diagnostic schema registries", () => {
       "recovery-authorization-attachment/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(49);
+    expect(schemaVersions).toHaveLength(51);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -784,7 +969,7 @@ describe("framed pointer digest graph", () => {
     );
   });
 
-  test("pins exact F bytes and all 24 canonical schema bytes", () => {
+  test("pins exact F bytes and all 26 canonical schema bytes", () => {
     const bytes = framedBytes("pointer-value/v2", [
       { type: "text", value: "A" },
       { type: "nullable-text", value: null },
@@ -798,13 +983,13 @@ describe("framed pointer digest graph", () => {
     expect(Buffer.from(bytes).toString("hex")).toBe(
       "6f726368657374726174696f6e2d706c6174666f726d00706f696e7465722d76616c75652f763200000000080100000000000000014106000000000000000007000000000000000142020000000000000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa030000000000000000040000000000000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb08000000000000000200010500000000000000087b2261223a317d0a",
     );
-    expect(v2SchemaVersions).toHaveLength(24);
+    expect(v2SchemaVersions).toHaveLength(26);
     const schemaBytes = v2SchemaVersions.map((schemaVersion) => ({
       digest: canonicalDigest(fixtureFor(schemaVersion)),
       schemaVersion,
     }));
     expect(canonicalDigest(schemaBytes)).toBe(
-      "9f692c57a2f8602c1f5cd587e0aba2e53c0f9a1bb481d78f38ee3fd17a026771",
+      "9759bad20bd258dfbfc6ee943fc626aae3c49b7c3e2495068c9410d29e589057",
     );
   });
 
@@ -938,6 +1123,13 @@ describe("framed pointer digest graph", () => {
       const tombstone = selected.envelope.value as ContractRecord;
       const position = selected.envelope.positionEvidence as ContractRecord;
       expect(position.variant).toBe("TOMBSTONE");
+      expect(validatePointerPositionEvidence(row.kind, position)).toEqual([]);
+      for (const field of pointerPositionContracts[row.kind].tombstoneFields ?? [])
+        for (const malformed of [null, "a", digest.toUpperCase(), 1])
+          expect(
+            validatePointerPositionEvidence(row.kind, { ...position, [field]: malformed }),
+            `${row.kind}:tombstone:${field}:${malformed}`,
+          ).not.toEqual([]);
       expect(() => computePointerPositionDigest(row.kind, position)).not.toThrow();
       census.push({
         kind: row.kind,
@@ -953,9 +1145,9 @@ describe("framed pointer digest graph", () => {
             transactionId: selected.envelope.transactionId as string,
             sourceToken: selected.envelope.sourceToken as string,
             prior: {
-              tipDigest: digest,
-              valueDigest: digest2,
-              proposalReceiptDigest: digest,
+              tipDigest: selected.proposal.priorTipDigest as string,
+              valueDigest: selected.proposal.priorValueDigest as string,
+              proposalReceiptDigest: selected.proposal.priorReceiptDigest as string,
             },
             tombstoneEvidence: selected.envelope.tombstoneEvidence as ContractRecord,
             intent,
@@ -984,6 +1176,41 @@ describe("framed pointer digest graph", () => {
       const evidence = selected.envelope.tombstoneEvidence as ContractRecord;
       const archiveRecord = evidence.archiveRecord as ContractRecord;
       const terminalProof = evidence.terminalProof as ContractRecord;
+      const priorSelection = evidence.priorSelection as ContractRecord;
+      if (!["ACTIVE_RELEASE", "ACTIVATION_CLEANUP_ARCHIVE_HEAD"].includes(row.kind))
+        expect(
+          validateSelectedPointerEvidence(tombstoneSelection(row, ordinarySelection(row)).envelope),
+          `${row.kind}:nonterminal-prior`,
+        ).not.toEqual([]);
+      for (const [field, replacement] of [
+        ["canonicalPointerPath", "alias.json"],
+        ["installationId", uuid2],
+        ["projectId", uuid2],
+        ["stateRootDigest", digest2],
+        ["transactionId", uuid2],
+        ["sourceToken", priorSelection.sourceToken === "none" ? "recovery-fence-v2" : "none"],
+      ] as const)
+        expect(
+          validateSelectedPointerEvidence({
+            ...selected.envelope,
+            tombstoneEvidence: {
+              ...evidence,
+              priorSelection: { ...priorSelection, [field]: replacement },
+            },
+          }),
+          `${row.kind}:prior:${field}`,
+        ).not.toEqual([]);
+      for (const identities of [
+        { installationId: uuid2 },
+        { projectId: uuid2 },
+        { stateRootDigest: digest2 },
+      ])
+        expect(
+          validateSelectedPointerEvidence(
+            tombstoneSelection(row, ordinarySelection(row, identities, true)).envelope,
+          ),
+          `${row.kind}:coordinated-prior-identity`,
+        ).not.toEqual([]);
       for (const mutant of [
         { ...evidence, archivePath: `${evidence.archivePath as string}alias` },
         ...(Object.keys(evidence.archiveBindings as ContractRecord).length > 0
@@ -1001,10 +1228,36 @@ describe("framed pointer digest graph", () => {
           },
         },
         { ...evidence, archiveRecord: { ...archiveRecord, priorValueDigest: digest } },
+        { ...evidence, archiveRecord: { ...archiveRecord, installationId: uuid2 } },
+        { ...evidence, archiveRecord: { ...archiveRecord, projectId: uuid2 } },
+        { ...evidence, archiveRecord: { ...archiveRecord, stateRootDigest: digest2 } },
+        { ...evidence, archiveRecord: { ...archiveRecord, pathInstanceDigest: digest2 } },
+        { ...evidence, archiveRecord: { ...archiveRecord, priorPositionDigest: digest2 } },
+        {
+          ...evidence,
+          archiveRecord: { ...archiveRecord, priorAuthorityEpochTipDigest: digest2 },
+        },
+        {
+          ...evidence,
+          archiveRecord: { ...archiveRecord, priorValueSchemaVersion: "future-value/v1" },
+        },
         { ...evidence, terminalProof: { ...terminalProof, terminalTipDigest: digest2 } },
         { ...evidence, terminalProof: { ...terminalProof, pointerKind: "AUTHORITY_RETENTION" } },
         { ...evidence, terminalProof: { ...terminalProof, canonicalPointerPath: "alias.json" } },
         { ...evidence, terminalProof: { ...terminalProof, transactionId: uuid2 } },
+        { ...evidence, terminalProof: { ...terminalProof, installationId: uuid2 } },
+        { ...evidence, terminalProof: { ...terminalProof, projectId: uuid2 } },
+        { ...evidence, terminalProof: { ...terminalProof, stateRootDigest: digest2 } },
+        { ...evidence, terminalProof: { ...terminalProof, pathInstanceDigest: digest2 } },
+        { ...evidence, terminalProof: { ...terminalProof, terminalPositionDigest: digest2 } },
+        {
+          ...evidence,
+          terminalProof: { ...terminalProof, priorAuthorityEpochReceiptDigest: digest2 },
+        },
+        {
+          ...evidence,
+          terminalProof: { ...terminalProof, terminalValueSchemaVersion: "future-value/v1" },
+        },
         {
           ...evidence,
           terminalProof: {
@@ -1033,7 +1286,7 @@ describe("framed pointer digest graph", () => {
       expect(() => computePointerPositionDigest(otherRow.kind, position)).toThrow();
     }
     expect(canonicalDigest(census)).toBe(
-      "d8a554b06daf8c89c895d2351eca19313cf3c09019b8399f89c91f47e0e3f29d",
+      "87cbf77496b44eb987a0d15488f76bbdbb8217c60b48cd2406fbc990c894170d",
     );
   });
 
@@ -1776,9 +2029,10 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       validateRecoveryAccumulatorFormula({
         accumulator,
         accumulatorSelection: accumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: null,
         descriptor: liveDescriptor,
-        predecessorAccumulatorSelection: null,
-        predecessorSummary: null,
+        priorTerminalAccumulatorSelection: null,
+        priorTerminalSummary: null,
         reservation,
         reservationSelection: reservationSelection.envelope,
         terminalSummary: null,
@@ -1808,15 +2062,17 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         transactionId: uuid,
         sourceToken: "recovery-fence-v2",
         authorityEpoch: selectedEpoch,
+        prior: accumulatorSelection,
       },
     );
     expect(
       validateRecoveryAccumulatorFormula({
         accumulator: terminalAccumulator,
         accumulatorSelection: terminalAccumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: accumulatorSelection.envelope,
         descriptor: liveDescriptor,
-        predecessorAccumulatorSelection: null,
-        predecessorSummary: null,
+        priorTerminalAccumulatorSelection: null,
+        priorTerminalSummary: null,
         reservation,
         reservationSelection: reservationSelection.envelope,
         terminalSummary,
@@ -1826,9 +2082,10 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       validateRecoveryAccumulatorFormula({
         accumulator: { ...terminalAccumulator, rollingDigest: digest },
         accumulatorSelection: terminalAccumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: accumulatorSelection.envelope,
         descriptor: liveDescriptor,
-        predecessorAccumulatorSelection: null,
-        predecessorSummary: null,
+        priorTerminalAccumulatorSelection: null,
+        priorTerminalSummary: null,
         reservation,
         reservationSelection: reservationSelection.envelope,
         terminalSummary,
@@ -1842,16 +2099,16 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         transactionId: uuid,
         sourceToken: "recovery-fence-v2",
         authorityEpoch: selectedEpoch,
-        prior: accumulatorSelection,
       },
     );
     expect(
       validateRecoveryAccumulatorFormula({
         accumulator: terminalAccumulator,
         accumulatorSelection: invalidR0Selection.envelope,
+        currentAccumulatorPredecessorSelection: null,
         descriptor: liveDescriptor,
-        predecessorAccumulatorSelection: null,
-        predecessorSummary: null,
+        priorTerminalAccumulatorSelection: null,
+        priorTerminalSummary: null,
         reservation,
         reservationSelection: reservationSelection.envelope,
         terminalSummary,
@@ -1918,9 +2175,10 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       validateRecoveryAccumulatorFormula({
         accumulator: laterAccumulator,
         accumulatorSelection: laterAccumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: terminalAccumulatorSelection.envelope,
         descriptor: laterDescriptor,
-        predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
-        predecessorSummary: terminalSummary,
+        priorTerminalAccumulatorSelection: terminalAccumulatorSelection.envelope,
+        priorTerminalSummary: terminalSummary,
         reservation: laterReservation,
         reservationSelection: laterReservationSelection.envelope,
         terminalSummary: null,
@@ -1955,16 +2213,17 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         transactionId: uuid,
         sourceToken: "recovery-fence-v2",
         authorityEpoch: selectedEpoch,
-        prior: terminalAccumulatorSelection,
+        prior: laterAccumulatorSelection,
       },
     );
     expect(
       validateRecoveryAccumulatorFormula({
         accumulator: laterTerminalAccumulator,
         accumulatorSelection: laterTerminalAccumulatorSelection.envelope,
+        currentAccumulatorPredecessorSelection: laterAccumulatorSelection.envelope,
         descriptor: laterDescriptor,
-        predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
-        predecessorSummary: terminalSummary,
+        priorTerminalAccumulatorSelection: terminalAccumulatorSelection.envelope,
+        priorTerminalSummary: terminalSummary,
         reservation: laterReservation,
         reservationSelection: laterReservationSelection.envelope,
         terminalSummary: laterTerminalSummary,
@@ -1973,13 +2232,38 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     const laterFormula = {
       accumulator: laterTerminalAccumulator,
       accumulatorSelection: laterTerminalAccumulatorSelection.envelope,
+      currentAccumulatorPredecessorSelection: laterAccumulatorSelection.envelope,
       descriptor: laterDescriptor,
-      predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
-      predecessorSummary: terminalSummary,
+      priorTerminalAccumulatorSelection: terminalAccumulatorSelection.envelope,
+      priorTerminalSummary: terminalSummary,
       reservation: laterReservation,
       reservationSelection: laterReservationSelection.envelope,
       terminalSummary: laterTerminalSummary,
     };
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        currentAccumulatorPredecessorSelection: terminalAccumulatorSelection.envelope,
+        priorTerminalAccumulatorSelection: laterAccumulatorSelection.envelope,
+      }),
+    ).not.toEqual([]);
+    const staleLaterAccumulatorSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      { ...laterAccumulator, updatedAt: "2026-08-16T12:35:56.789Z" },
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: terminalAccumulatorSelection,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        currentAccumulatorPredecessorSelection: staleLaterAccumulatorSelection.envelope,
+      }),
+    ).not.toEqual([]);
     for (const [field, replacement] of [
       ["installationId", uuid2],
       ["projectId", uuid2],
@@ -1991,13 +2275,32 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       expect(
         validateRecoveryAccumulatorFormula({
           ...laterFormula,
-          predecessorAccumulatorSelection: {
+          priorTerminalAccumulatorSelection: {
             ...terminalAccumulatorSelection.envelope,
             [field]: replacement,
           },
         }),
         `predecessor:${field}`,
       ).not.toEqual([]);
+    for (const role of [
+      "currentAccumulatorPredecessorSelection",
+      "priorTerminalAccumulatorSelection",
+    ] as const)
+      for (const [field, replacement] of [
+        ["installationId", uuid2],
+        ["projectId", uuid2],
+        ["stateRootDigest", digest2],
+        ["transactionId", uuid2],
+        ["sourceToken", "cleanup-gate-pre-fence-v2"],
+        ["canonicalPointerPath", "installation/alias/accumulator.json"],
+      ] as const)
+        expect(
+          validateRecoveryAccumulatorFormula({
+            ...laterFormula,
+            [role]: { ...(laterFormula[role] as ContractRecord), [field]: replacement },
+          }),
+          `${role}:${field}`,
+        ).not.toEqual([]);
     for (const field of [
       "priorTerminalAccumulatorTipDigest",
       "priorTerminalAccumulatorValueDigest",
@@ -2025,7 +2328,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     expect(
       validateRecoveryAccumulatorFormula({
         ...laterFormula,
-        currentPredecessorAccumulatorSelection: laterAccumulatorSelection.envelope,
+        predecessorAccumulatorSelection: laterAccumulatorSelection.envelope,
       }),
     ).not.toEqual([]);
     const splitCurrent = pointerSelection(
@@ -2036,7 +2339,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         transactionId: uuid,
         sourceToken: "recovery-fence-v2",
         authorityEpoch: selectedEpoch,
-        prior: laterAccumulatorSelection,
+        prior: terminalAccumulatorSelection,
       },
     );
     expect(
@@ -2048,7 +2351,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     expect(
       validateRecoveryAccumulatorFormula({
         ...laterFormula,
-        predecessorSummary: { ...terminalSummary, attemptId: uuid2 },
+        priorTerminalSummary: { ...terminalSummary, attemptId: uuid2 },
       }),
     ).not.toEqual([]);
     const postConsume = fixtureFor("recovery-authorization-consume-receipt/v1");
@@ -2115,12 +2418,19 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       launchHistory: [ready, live],
       launchSelection: launchSelection.envelope,
       postConsume,
-      predecessorAccumulatorSelection: null,
+      currentAccumulatorPredecessorSelection: null,
+      priorTerminalAccumulatorSelection: null,
       priorTerminalSummaries: [],
       reservation,
       reservationSelection: reservationSelection.envelope,
     };
     expect(validateEvidencePacket(packet)).toEqual([]);
+    expect(
+      validateEvidencePacket({
+        ...packet,
+        currentAccumulatorPredecessorSelection: accumulatorSelection.envelope,
+      }),
+    ).not.toEqual([]);
     expect(
       validateEvidencePacket({
         ...packet,

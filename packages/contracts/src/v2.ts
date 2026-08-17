@@ -558,6 +558,31 @@ function requirePointerValueRecord(kind: PointerKind, input: unknown): ContractR
   }
   throw new TypeError("value:wrong-pointer-family-or-invalid");
 }
+
+function isTerminalPointerValue(kind: PointerKind, record: ContractRecord): boolean {
+  switch (kind) {
+    case "ACTIVE_RELEASE":
+    case "ACTIVATION_CLEANUP_ARCHIVE_HEAD":
+      return true;
+    case "ACTIVATION_CLEANUP_GATE":
+      return record.lifecycle === "COMPLETE";
+    case "ACTIVATION_RECOVERY_FENCE":
+      return record.lifecycle === "POST_ACTIVATION";
+    case "ACTIVATION_RECOVERY_LAUNCH":
+      return typeof record.lifecycle === "string" && record.lifecycle.startsWith("TERMINAL_");
+    case "RECOVERY_AUTHORIZATION_STATE":
+      return record.lifecycle === "REVOKED" || record.lifecycle === "REMOVED";
+    case "RECOVERY_AUTHORIZATION_ATTACHMENT":
+      return record.lifecycle === "TERMINAL" || record.lifecycle === "REMOVED";
+    case "RECOVERY_ATTEMPT_ACCUMULATOR":
+      return record.lifecycle === "TERMINAL";
+    case "RECOVERY_ATTEMPT_RESERVATION":
+      return record.lifecycle === "TERMINAL" || record.lifecycle === "TOMBSTONE";
+    case "AUTHORITY_RETENTION":
+    case "STATE_MUTATION_AUTHORITY_ROTATION":
+      return false;
+  }
+}
 function requireEqualBinding(
   record: ContractRecord,
   recordField: string,
@@ -653,6 +678,169 @@ const positionFields: Readonly<Record<PointerKind, readonly string[]>> = Object.
     "rotationKind",
   ],
 });
+
+type PositionScalarRule =
+  | "SHA256"
+  | "NULLABLE_SHA256"
+  | "UUID_V7"
+  | "NON_NEGATIVE_INTEGER"
+  | { readonly enum: readonly string[] };
+
+const positionRules: Readonly<Record<PointerKind, Readonly<Record<string, PositionScalarRule>>>> =
+  Object.freeze({
+    ACTIVE_RELEASE: Object.freeze({
+      cleanupTransactionId: "UUID_V7",
+      releaseDigest: "SHA256",
+      valueDigest: "SHA256",
+    }),
+    ACTIVATION_CLEANUP_GATE: Object.freeze({
+      headDigest: "SHA256",
+      ordinal: "NON_NEGATIVE_INTEGER",
+      rootDigest: "SHA256",
+    }),
+    ACTIVATION_RECOVERY_FENCE: Object.freeze({
+      headDigest: "SHA256",
+      ordinal: "NON_NEGATIVE_INTEGER",
+      rootDigest: "SHA256",
+    }),
+    ACTIVATION_RECOVERY_LAUNCH: Object.freeze({
+      attemptId: "UUID_V7",
+      ordinal: "NON_NEGATIVE_INTEGER",
+      stateDigest: "SHA256",
+    }),
+    RECOVERY_AUTHORIZATION_STATE: Object.freeze({
+      lifecycle: { enum: Object.freeze(["CREATED", "CONSUMED", "REVOKED", "REMOVED"]) },
+      stateDigest: "SHA256",
+      transactionId: "UUID_V7",
+    }),
+    RECOVERY_AUTHORIZATION_ATTACHMENT: Object.freeze({
+      attachmentDigest: "SHA256",
+      lifecycle: { enum: Object.freeze(["UNATTACHED", "ATTACHED", "TERMINAL", "REMOVED"]) },
+      transactionId: "UUID_V7",
+    }),
+    RECOVERY_ATTEMPT_ACCUMULATOR: Object.freeze({
+      accumulatorDigest: "SHA256",
+      lifecycle: { enum: Object.freeze(["IN_PROGRESS", "TERMINAL"]) },
+      sourceToken: {
+        enum: Object.freeze(["recovery-fence-v2", "cleanup-gate-pre-fence-v2"]),
+      },
+      transactionId: "UUID_V7",
+    }),
+    ACTIVATION_CLEANUP_ARCHIVE_HEAD: Object.freeze({
+      archiveDigest: "SHA256",
+      previousArchiveHeadDigest: "NULLABLE_SHA256",
+      transactionId: "UUID_V7",
+    }),
+    AUTHORITY_RETENTION: Object.freeze({
+      pathInstanceDigest: "SHA256",
+      phase: {
+        enum: Object.freeze([
+          "CURRENT",
+          "CHECKPOINTED",
+          "COMPACTION_PLANNED",
+          "COMPACTED",
+          "AUDIT_DEGRADED",
+          "UNKNOWN",
+        ]),
+      },
+      retentionDigest: "SHA256",
+    }),
+    RECOVERY_ATTEMPT_RESERVATION: Object.freeze({
+      attemptId: "UUID_V7",
+      predecessorKey: "SHA256",
+      reservationDigest: "SHA256",
+      sourceToken: {
+        enum: Object.freeze(["recovery-fence-v2", "cleanup-gate-pre-fence-v2"]),
+      },
+      transactionId: "UUID_V7",
+    }),
+    STATE_MUTATION_AUTHORITY_ROTATION: Object.freeze({
+      activeReleaseValueDigest: "SHA256",
+      authorityDigest: "SHA256",
+      rotationKind: { enum: Object.freeze(["GENESIS", "ROTATION"]) },
+    }),
+  });
+
+const tombstonePositionRules = Object.freeze({
+  archiveDigest: "SHA256",
+  priorDr: "SHA256",
+  priorDt: "SHA256",
+  priorDv: "SHA256",
+  terminalProofDigest: "SHA256",
+} as const);
+
+export const pointerPositionContracts = Object.freeze(
+  Object.fromEntries(
+    pointerRegistry.map((row) => [
+      row.kind,
+      Object.freeze({
+        ordinaryDomain: row.positionDomain,
+        ordinaryFields: Object.freeze(positionFields[row.kind]),
+        tombstoneDomain: row.tombstonePositionDomain,
+        tombstoneFields:
+          row.tombstonePositionDomain === null
+            ? null
+            : Object.freeze(Object.keys(tombstonePositionRules).sort()),
+      }),
+    ]),
+  ) as Readonly<
+    Record<
+      PointerKind,
+      {
+        readonly ordinaryDomain: string;
+        readonly ordinaryFields: readonly string[];
+        readonly tombstoneDomain: string | null;
+        readonly tombstoneFields: readonly string[] | null;
+      }
+    >
+  >,
+);
+
+function validatePositionScalar(rule: PositionScalarRule, value: unknown): boolean {
+  if (rule === "SHA256") return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  if (rule === "NULLABLE_SHA256")
+    return value === null || (typeof value === "string" && /^[0-9a-f]{64}$/.test(value));
+  if (rule === "UUID_V7")
+    return (
+      typeof value === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    );
+  if (rule === "NON_NEGATIVE_INTEGER") return Number.isSafeInteger(value) && Number(value) >= 0;
+  return typeof value === "string" && rule.enum.includes(value);
+}
+
+export function validatePointerPositionEvidence(
+  kind: PointerKind,
+  evidence: unknown,
+): readonly string[] {
+  const row = pointerRegistry.find((candidate) => candidate.kind === kind);
+  if (!row) return Object.freeze(["pointerKind:invalid"]);
+  const ordinaryFields = ["pointerKind", "variant", ...positionFields[kind]];
+  const tombstoneFields = [
+    "archiveDigest",
+    "pointerKind",
+    "priorDr",
+    "priorDt",
+    "priorDv",
+    "terminalProofDigest",
+    "variant",
+  ];
+  const ordinary = snapshotClosedRecord(evidence, ordinaryFields);
+  const tombstone = snapshotClosedRecord(evidence, tombstoneFields);
+  if (!ordinary.ok && !tombstone.ok) return Object.freeze(["position:shape-invalid"]);
+  const isTombstone = !ordinary.ok;
+  if (isTombstone && row.tombstonePositionDomain === null)
+    return Object.freeze(["position:tombstone-disabled"]);
+  const record = ordinary.ok ? ordinary.value : tombstone.ok ? tombstone.value : undefined;
+  if (!record) return Object.freeze(["position:shape-invalid"]);
+  const issues: string[] = [];
+  if (record.pointerKind !== kind) issues.push("pointerKind:position-mismatch");
+  if (record.variant !== (isTombstone ? "TOMBSTONE" : "ORDINARY")) issues.push("variant:mismatch");
+  const rules = isTombstone ? tombstonePositionRules : positionRules[kind];
+  for (const [name, rule] of Object.entries(rules))
+    if (!validatePositionScalar(rule, record[name])) issues.push(`${name}:invalid`);
+  return Object.freeze(issues);
+}
 
 export function derivePointerPositionEvidence(
   kind: PointerKind,
@@ -769,6 +957,8 @@ export function derivePointerPositionEvidence(
 export function computePointerPositionDigest(kind: PointerKind, evidence: unknown): string {
   const row = pointerRegistry.find((candidate) => candidate.kind === kind);
   if (!row) throw new TypeError("pointerKind:invalid");
+  const issues = validatePointerPositionEvidence(kind, evidence);
+  if (issues.length > 0) throw new TypeError(issues.join(","));
   const ordinary = snapshotClosedRecord(evidence, [
     "pointerKind",
     "variant",
@@ -786,8 +976,6 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
   const tombstoneResult = snapshotClosedRecord(evidence, tombstoneFields);
   const tombstone = !ordinary.ok && tombstoneResult.ok;
   if (!ordinary.ok && !tombstoneResult.ok) throw new TypeError("position:shape-invalid");
-  if (tombstone && row.tombstonePositionDomain === null)
-    throw new TypeError("position:tombstone-disabled");
   const closed = ordinary.ok
     ? ordinary.value
     : tombstoneResult.ok
@@ -795,21 +983,6 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
       : (() => {
           throw new TypeError("position:shape-invalid");
         })();
-  if (closed.pointerKind !== kind) throw new TypeError("pointerKind:position-mismatch");
-  if (closed.variant !== (tombstone ? "TOMBSTONE" : "ORDINARY"))
-    throw new TypeError("variant:mismatch");
-  for (const [name, value] of Object.entries(closed)) {
-    if (name === "pointerKind" || name === "variant") continue;
-    if (name === "ordinal") {
-      if (!Number.isSafeInteger(value) || (value as number) < 0)
-        throw new TypeError(`${name}:invalid`);
-    } else if (name.endsWith("Digest") || name === "predecessorKey") {
-      if (value !== null) safeDigest(String(value), name);
-    } else if (name === "transactionId" || name === "attemptId" || name === "cleanupTransactionId")
-      safeUuid(String(value), name);
-    else if (typeof value !== "string" || value.length === 0)
-      throw new TypeError(`${name}:invalid`);
-  }
   return hashFrame(tombstone ? row.tombstonePositionDomain! : row.positionDomain, [
     canonicalPart(closed),
   ]);
@@ -1323,6 +1496,66 @@ export const v2Definitions = Object.freeze(
         terminalProofDigest: sha,
         tombstonedAt: timestamp,
       }),
+      define(
+        "pointer-terminal-proof/v1",
+        {
+          pointerKind: enumeration(...pointerKinds),
+          canonicalPointerPath: path,
+          installationId: uuid,
+          projectId: uuid,
+          stateRootDigest: sha,
+          pathInstanceDigest: sha,
+          transactionId: uuid,
+          sourceToken: enumeration("none", "recovery-fence-v2", "cleanup-gate-pre-fence-v2"),
+          authorityEpochTipDigest: sha,
+          authorityEpochValueDigest: sha,
+          authorityEpochReceiptDigest: sha,
+          priorAuthorityEpochTipDigest: sha,
+          priorAuthorityEpochValueDigest: sha,
+          priorAuthorityEpochReceiptDigest: sha,
+          terminalTipDigest: sha,
+          terminalValueDigest: sha,
+          terminalReceiptDigest: sha,
+          terminalPositionDigest: sha,
+          terminalValueSchemaVersion: field("schema-id"),
+        },
+        (record) =>
+          String(value(record, "terminalValueSchemaVersion")) === "pointer-tombstone-value/v1"
+            ? ["terminalValueSchemaVersion:tombstone-refused"]
+            : [],
+      ),
+      define(
+        "pointer-archive-record/v1",
+        {
+          pointerKind: enumeration(...pointerKinds),
+          canonicalPointerPath: path,
+          archivePath: field("bounded-string"),
+          installationId: uuid,
+          projectId: uuid,
+          stateRootDigest: sha,
+          pathInstanceDigest: sha,
+          transactionId: uuid,
+          sourceToken: enumeration("none", "recovery-fence-v2", "cleanup-gate-pre-fence-v2"),
+          authorityEpochTipDigest: sha,
+          authorityEpochValueDigest: sha,
+          authorityEpochReceiptDigest: sha,
+          priorAuthorityEpochTipDigest: sha,
+          priorAuthorityEpochValueDigest: sha,
+          priorAuthorityEpochReceiptDigest: sha,
+          priorTipDigest: sha,
+          priorValueDigest: sha,
+          priorReceiptDigest: sha,
+          priorPositionDigest: sha,
+          priorValueSchemaVersion: field("schema-id"),
+          terminalProofDigest: sha,
+          archivedAt: timestamp,
+        },
+        (record) => {
+          const archivePath = String(value(record, "archivePath"));
+          const normalized = archivePath.endsWith("/") ? archivePath.slice(0, -1) : archivePath;
+          return isContractRelativePath(normalized) ? [] : ["archivePath:invalid"];
+        },
+      ),
       define(
         "authority-retention/v1",
         {
@@ -2105,7 +2338,9 @@ export const v2Definitions = Object.freeze(
 export const v2SchemaVersions = Object.freeze(Object.keys(v2Definitions).sort());
 
 interface SelectedPointerEvidence {
+  readonly canonicalPointerPath: string;
   readonly pathInstanceDigest: string;
+  readonly positionDigest: string;
   readonly valueDigest: string;
   readonly proposalReceiptDigest: string;
   readonly tipDigest: string;
@@ -2242,6 +2477,7 @@ function resolveSelectedPointerEvidence(
         "archiveBindings",
         "archivePath",
         "archiveRecord",
+        "priorSelection",
         "terminalProof",
       ]);
       if (!tombstoneEvidence.ok) return { ok: false, issues: tombstoneEvidence.issues };
@@ -2254,33 +2490,39 @@ function resolveSelectedPointerEvidence(
         expectedArchives[0] !== tombstoneEvidence.value.archivePath
       )
         return { ok: false, issues: ["tombstone:archivePath-mismatch"] };
-      const terminalProof = snapshotClosedRecord(tombstoneEvidence.value.terminalProof, [
-        "authorityEpochReceiptDigest",
-        "authorityEpochTipDigest",
-        "authorityEpochValueDigest",
+      const priorEnvelope = snapshotClosedRecord(tombstoneEvidence.value.priorSelection, [
         "canonicalPointerPath",
+        "installationId",
+        "pathBindings",
         "pointerKind",
+        "positionEvidence",
+        "projectId",
+        "proposal",
         "sourceToken",
-        "terminalReceiptDigest",
-        "terminalTipDigest",
-        "terminalValueDigest",
+        "stateRootDigest",
+        "tip",
+        "tombstoneEvidence",
         "transactionId",
+        "value",
       ]);
+      if (!priorEnvelope.ok) return { ok: false, issues: priorEnvelope.issues };
+      const priorRawValue = requirePointerValueRecord(kind, priorEnvelope.value.value);
+      if (priorRawValue.schemaVersion === "pointer-tombstone-value/v1")
+        return { ok: false, issues: ["tombstone:prior-tombstone-refused"] };
+      const prior = resolveSelectedPointerEvidence(tombstoneEvidence.value.priorSelection);
+      if (!prior.ok)
+        return { ok: false, issues: prior.issues.map((issue) => `tombstone:prior:${issue}`) };
+      if (!isTerminalPointerValue(kind, prior.value.value))
+        return { ok: false, issues: ["tombstone:prior-not-terminal"] };
+      const terminalProof = validateAgainstSchema(
+        v2Definitions["pointer-terminal-proof/v1"]!,
+        tombstoneEvidence.value.terminalProof,
+      );
       if (!terminalProof.ok) return { ok: false, issues: terminalProof.issues };
-      const archiveRecord = snapshotClosedRecord(tombstoneEvidence.value.archiveRecord, [
-        "archivePath",
-        "authorityEpochReceiptDigest",
-        "authorityEpochTipDigest",
-        "authorityEpochValueDigest",
-        "canonicalPointerPath",
-        "pointerKind",
-        "priorReceiptDigest",
-        "priorTipDigest",
-        "priorValueDigest",
-        "sourceToken",
-        "terminalProofDigest",
-        "transactionId",
-      ]);
+      const archiveRecord = validateAgainstSchema(
+        v2Definitions["pointer-archive-record/v1"]!,
+        tombstoneEvidence.value.archiveRecord,
+      );
       if (!archiveRecord.ok) return { ok: false, issues: archiveRecord.issues };
       const terminalProofDigest = canonicalDigest(terminalProof.value);
       const archiveDigest = canonicalDigest(archiveRecord.value);
@@ -2290,9 +2532,19 @@ function resolveSelectedPointerEvidence(
       )
         return { ok: false, issues: ["tombstone:archive-proof-digest-mismatch"] };
       for (const record of [terminalProof.value, archiveRecord.value]) {
-        for (const name of ["pointerKind", "canonicalPointerPath", "transactionId", "sourceToken"])
+        for (const name of [
+          "pointerKind",
+          "canonicalPointerPath",
+          "installationId",
+          "projectId",
+          "stateRootDigest",
+          "transactionId",
+          "sourceToken",
+        ])
           if (record[name] !== closed.value[name])
             return { ok: false, issues: [`tombstone:${name}-mismatch`] };
+        if (record.pathInstanceDigest !== pathInstanceDigest)
+          return { ok: false, issues: ["tombstone:pathInstanceDigest-mismatch"] };
         for (const [recordName, proposalName] of [
           ["authorityEpochTipDigest", "authorityEpochTipDigest"],
           ["authorityEpochValueDigest", "authorityEpochValueDigest"],
@@ -2301,6 +2553,32 @@ function resolveSelectedPointerEvidence(
           if (record[recordName] !== proposal[proposalName])
             return { ok: false, issues: [`tombstone:${recordName}-mismatch`] };
       }
+      for (const name of [
+        "canonicalPointerPath",
+        "installationId",
+        "projectId",
+        "stateRootDigest",
+        "transactionId",
+        "sourceToken",
+        "pathInstanceDigest",
+      ] as const)
+        if (
+          prior.value[name] !==
+          (name === "canonicalPointerPath"
+            ? canonicalPointerPath
+            : name === "pathInstanceDigest"
+              ? pathInstanceDigest
+              : closed.value[name])
+        )
+          return { ok: false, issues: [`tombstone:prior:${name}-mismatch`] };
+      for (const record of [terminalProof.value, archiveRecord.value])
+        for (const [recordName, proposalName] of [
+          ["priorAuthorityEpochTipDigest", "authorityEpochTipDigest"],
+          ["priorAuthorityEpochValueDigest", "authorityEpochValueDigest"],
+          ["priorAuthorityEpochReceiptDigest", "authorityEpochReceiptDigest"],
+        ] as const)
+          if (record[recordName] !== prior.value.proposal[proposalName])
+            return { ok: false, issues: [`tombstone:${recordName}-prior-mismatch`] };
       if (
         archiveRecord.value.archivePath !== tombstoneEvidence.value.archivePath ||
         archiveRecord.value.terminalProofDigest !== terminalProofDigest
@@ -2313,6 +2591,11 @@ function resolveSelectedPointerEvidence(
       ] as const)
         if (archiveRecord.value[archiveName] !== proposal[proposalName])
           return { ok: false, issues: [`tombstone:${archiveName}-archive-mismatch`] };
+      if (
+        archiveRecord.value.priorPositionDigest !== prior.value.positionDigest ||
+        archiveRecord.value.priorValueSchemaVersion !== prior.value.value.schemaVersion
+      )
+        return { ok: false, issues: ["tombstone:archive-family-position-mismatch"] };
       for (const [proofName, proposalName] of [
         ["terminalTipDigest", "priorTipDigest"],
         ["terminalValueDigest", "priorValueDigest"],
@@ -2320,6 +2603,21 @@ function resolveSelectedPointerEvidence(
       ] as const)
         if (terminalProof.value[proofName] !== proposal[proposalName])
           return { ok: false, issues: [`tombstone:${proofName}-mismatch`] };
+      if (
+        terminalProof.value.terminalPositionDigest !== prior.value.positionDigest ||
+        terminalProof.value.terminalValueSchemaVersion !== prior.value.value.schemaVersion
+      )
+        return { ok: false, issues: ["tombstone:terminal-family-position-mismatch"] };
+      for (const [proposalName, digestName] of [
+        ["priorTipDigest", "tipDigest"],
+        ["priorValueDigest", "valueDigest"],
+        ["priorReceiptDigest", "proposalReceiptDigest"],
+      ] as const)
+        if (
+          proposal[proposalName] !== prior.value[digestName] ||
+          value[proposalName] !== prior.value[digestName]
+        )
+          return { ok: false, issues: [`tombstone:${proposalName}-selected-prior-mismatch`] };
       const archiveBindings = tombstoneEvidence.value.archiveBindings as ContractRecord;
       if (
         row.archiveTemplates.some((template) => template.includes("<transaction>")) &&
@@ -2381,7 +2679,9 @@ function resolveSelectedPointerEvidence(
     return {
       ok: true,
       value: Object.freeze({
+        canonicalPointerPath,
         pathInstanceDigest,
+        positionDigest,
         valueDigest,
         proposalReceiptDigest,
         tipDigest,
@@ -2907,7 +3207,8 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
     "launchHistory",
     "launchSelection",
     "postConsume",
-    "predecessorAccumulatorSelection",
+    "currentAccumulatorPredecessorSelection",
+    "priorTerminalAccumulatorSelection",
     "priorTerminalSummaries",
     "reservation",
     "reservationSelection",
@@ -2930,6 +3231,21 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
       return [name, selected];
     }),
   ) as Record<keyof typeof selectionInputs, ReturnType<typeof resolveSelectedPointerEvidence>>;
+  const accumulatorRoleInputs = {
+    currentAccumulatorPredecessor: closed.value.currentAccumulatorPredecessorSelection,
+    priorTerminalAccumulator: closed.value.priorTerminalAccumulatorSelection,
+  } as const;
+  const accumulatorRoles = Object.fromEntries(
+    Object.entries(accumulatorRoleInputs).map(([name, roleInput]) => {
+      if (roleInput === null) return [name, null];
+      const selected = resolveSelectedPointerEvidence(roleInput);
+      if (!selected.ok) issues.push(...selected.issues.map((issue) => `${name}:${issue}`));
+      return [name, selected];
+    }),
+  ) as Record<
+    keyof typeof accumulatorRoleInputs,
+    ReturnType<typeof resolveSelectedPointerEvidence> | null
+  >;
   const expectedKinds = {
     authorityEpoch: "STATE_MUTATION_AUTHORITY_ROTATION",
     accumulator: "RECOVERY_ATTEMPT_ACCUMULATOR",
@@ -2989,6 +3305,16 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
       ] as const)
         if (selected.value.proposal[proposalName] !== selections.authorityEpoch.value[digestName])
           issues.push(`${name}Selection:${proposalName}-mismatch`);
+    }
+    for (const [name, selected] of Object.entries(accumulatorRoles)) {
+      if (!selected?.ok) continue;
+      for (const [proposalName, digestName] of [
+        ["authorityEpochTipDigest", "tipDigest"],
+        ["authorityEpochValueDigest", "valueDigest"],
+        ["authorityEpochReceiptDigest", "proposalReceiptDigest"],
+      ] as const)
+        if (selected.value.proposal[proposalName] !== selections.authorityEpoch.value[digestName])
+          issues.push(`${name}:${proposalName}-mismatch`);
     }
   }
   if (selections.reservation?.ok) {
@@ -3081,15 +3407,17 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
     if (reservation.ok && descriptor.ok && accumulator.ok && attachment.ok && postConsume.ok) {
       if (accumulator.value.lifecycle !== "IN_PROGRESS")
         issues.push("accumulator:lifecycle-not-in-progress");
-      const predecessorSummary =
+      const priorTerminalSummary =
         summaries.ok && summaries.value.length === 1 ? summaries.value[0] : null;
       issues.push(
         ...validateRecoveryAccumulatorFormula({
           accumulator: accumulator.value,
           accumulatorSelection: closed.value.accumulatorSelection,
+          currentAccumulatorPredecessorSelection:
+            closed.value.currentAccumulatorPredecessorSelection,
           descriptor: descriptor.value,
-          predecessorAccumulatorSelection: closed.value.predecessorAccumulatorSelection,
-          predecessorSummary,
+          priorTerminalAccumulatorSelection: closed.value.priorTerminalAccumulatorSelection,
+          priorTerminalSummary,
           reservation: reservation.value,
           reservationSelection: closed.value.reservationSelection,
           terminalSummary: null,
@@ -3347,9 +3675,10 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
   const closed = snapshotClosedRecord(input, [
     "accumulator",
     "accumulatorSelection",
+    "currentAccumulatorPredecessorSelection",
     "descriptor",
-    "predecessorAccumulatorSelection",
-    "predecessorSummary",
+    "priorTerminalAccumulatorSelection",
+    "priorTerminalSummary",
     "reservation",
     "reservationSelection",
     "terminalSummary",
@@ -3414,81 +3743,162 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
     "reservationReceiptDigest",
   ] as const)
     if (accumulator.value[name] !== descriptor.value[name]) issues.push(`${name}:mismatch`);
+  if (currentReservation.ok)
+    for (const [name, digestName] of [
+      ["reservationTipDigest", "tipDigest"],
+      ["reservationValueDigest", "valueDigest"],
+      ["reservationReceiptDigest", "proposalReceiptDigest"],
+    ] as const)
+      if (
+        accumulator.value[name] !== currentReservation.value[digestName] ||
+        descriptor.value[name] !== currentReservation.value[digestName]
+      )
+        issues.push(`${name}:selected-reservation-mismatch`);
   if (accumulator.value.descriptorDigest !== canonicalDigest(descriptor.value))
     issues.push("descriptorDigest:mismatch");
   if (reservation.value.lifecycle !== "RESERVED") issues.push("reservation:lifecycle-not-reserved");
 
-  const predecessorAbsent =
-    closed.value.predecessorAccumulatorSelection === null &&
-    closed.value.predecessorSummary === null;
-  const predecessorPresent =
-    closed.value.predecessorAccumulatorSelection !== null &&
-    closed.value.predecessorSummary !== null;
-  if (!predecessorAbsent && !predecessorPresent) issues.push("predecessor:partial");
-  let priorValueDigest: string | null = null;
-  if (predecessorPresent) {
-    const selected = resolveSelectedPointerEvidence(closed.value.predecessorAccumulatorSelection);
-    const summary = validateAgainstSchema(
-      v2Definitions["recovery-attempt-terminal-summary/v1"]!,
-      closed.value.predecessorSummary,
-    );
-    if (!selected.ok) issues.push(...selected.issues.map((issue) => `predecessor:${issue}`));
-    if (!summary.ok) issues.push(...summary.issues.map((issue) => `predecessorSummary:${issue}`));
-    if (selected.ok && summary.ok) {
-      if (selected.value.tip.pointerKind !== "RECOVERY_ATTEMPT_ACCUMULATOR")
-        issues.push("predecessor:pointer-kind-mismatch");
-      if (selected.value.value.lifecycle !== "TERMINAL") issues.push("predecessor:not-terminal");
-      priorValueDigest = selected.value.valueDigest;
-      if (currentAccumulator.ok) {
-        if (selected.value.pathInstanceDigest !== currentAccumulator.value.pathInstanceDigest)
-          issues.push("predecessor:pathInstanceDigest-mismatch");
-        for (const name of [
-          "installationId",
-          "projectId",
-          "stateRootDigest",
-          "transactionId",
-          "sourceToken",
-        ] as const)
-          if (selected.value[name] !== currentAccumulator.value[name])
-            issues.push(`predecessor:${name}-mismatch`);
-        for (const [proposalName, digestName] of [
-          ["priorTipDigest", "tipDigest"],
-          ["priorValueDigest", "valueDigest"],
-          ["priorReceiptDigest", "proposalReceiptDigest"],
-        ] as const)
-          if (currentAccumulator.value.proposal[proposalName] !== selected.value[digestName])
-            issues.push(`${proposalName}:predecessor-mismatch`);
-      }
-      for (const [accumulatorName, digestName] of [
-        ["priorTerminalAccumulatorTipDigest", "tipDigest"],
-        ["priorTerminalAccumulatorValueDigest", "valueDigest"],
-        ["priorTerminalAccumulatorReceiptDigest", "proposalReceiptDigest"],
-      ] as const)
-        if (accumulator.value[accumulatorName] !== selected.value[digestName])
-          issues.push(`${accumulatorName}:predecessor-mismatch`);
-      for (const [reservationName, digestName] of [
-        ["predecessorAccumulatorTipDigest", "tipDigest"],
-        ["predecessorAccumulatorValueDigest", "valueDigest"],
-        ["predecessorAccumulatorReceiptDigest", "proposalReceiptDigest"],
-      ] as const)
-        if (reservation.value[reservationName] !== selected.value[digestName])
-          issues.push(`${reservationName}:reservation-predecessor-mismatch`);
-      const summaryDigest = canonicalDigest(summary.value);
-      if (accumulator.value.priorTerminalSummaryDigest !== summaryDigest)
-        issues.push("priorTerminalSummaryDigest:mismatch");
-      if (selected.value.value.terminalSummaryDigest !== summaryDigest)
-        issues.push("predecessor:terminal-summary-mismatch");
+  const lineageAbsent =
+    closed.value.priorTerminalAccumulatorSelection === null &&
+    closed.value.priorTerminalSummary === null;
+  const lineagePresent =
+    closed.value.priorTerminalAccumulatorSelection !== null &&
+    closed.value.priorTerminalSummary !== null;
+  if (!lineageAbsent && !lineagePresent) issues.push("lineage:partial");
+  const currentPredecessor =
+    closed.value.currentAccumulatorPredecessorSelection === null
+      ? null
+      : resolveSelectedPointerEvidence(closed.value.currentAccumulatorPredecessorSelection);
+  if (currentPredecessor && !currentPredecessor.ok)
+    issues.push(...currentPredecessor.issues.map((issue) => `currentPredecessor:${issue}`));
+  const lineage = lineagePresent
+    ? resolveSelectedPointerEvidence(closed.value.priorTerminalAccumulatorSelection)
+    : null;
+  const priorSummary = lineagePresent
+    ? validateAgainstSchema(
+        v2Definitions["recovery-attempt-terminal-summary/v1"]!,
+        closed.value.priorTerminalSummary,
+      )
+    : null;
+  if (lineage && !lineage.ok)
+    issues.push(...lineage.issues.map((issue) => `priorTerminal:${issue}`));
+  if (priorSummary && !priorSummary.ok)
+    issues.push(...priorSummary.issues.map((issue) => `priorTerminalSummary:${issue}`));
+
+  const samePointerIdentity = (
+    role: string,
+    selected: SelectedPointerEvidence,
+    current: SelectedPointerEvidence,
+  ): void => {
+    for (const name of [
+      "canonicalPointerPath",
+      "pathInstanceDigest",
+      "installationId",
+      "projectId",
+      "stateRootDigest",
+      "transactionId",
+      "sourceToken",
+    ] as const)
+      if (selected[name] !== current[name]) issues.push(`${role}:${name}-mismatch`);
+  };
+  const exactSelectedTriple = (
+    left: SelectedPointerEvidence,
+    right: SelectedPointerEvidence,
+  ): boolean =>
+    left.tipDigest === right.tipDigest &&
+    left.valueDigest === right.valueDigest &&
+    left.proposalReceiptDigest === right.proposalReceiptDigest;
+  const proposalMatches = (
+    proposal: ContractRecord,
+    predecessor: SelectedPointerEvidence | null,
+  ): boolean =>
+    predecessor === null
+      ? nullGroup(proposal, ["priorTipDigest", "priorValueDigest", "priorReceiptDigest"])
+      : proposal.priorTipDigest === predecessor.tipDigest &&
+        proposal.priorValueDigest === predecessor.valueDigest &&
+        proposal.priorReceiptDigest === predecessor.proposalReceiptDigest;
+
+  if (currentAccumulator.ok) {
+    const currentPredecessorValue = currentPredecessor?.ok ? currentPredecessor.value : null;
+    if (!proposalMatches(currentAccumulator.value.proposal, currentPredecessorValue))
+      issues.push("accumulatorSelection:current-predecessor-mismatch");
+    if (currentPredecessorValue) {
+      if (currentPredecessorValue.tip.pointerKind !== "RECOVERY_ATTEMPT_ACCUMULATOR")
+        issues.push("currentPredecessor:pointer-kind-mismatch");
+      samePointerIdentity("currentPredecessor", currentPredecessorValue, currentAccumulator.value);
     }
+    if (lineage?.ok) {
+      if (lineage.value.tip.pointerKind !== "RECOVERY_ATTEMPT_ACCUMULATOR")
+        issues.push("priorTerminal:pointer-kind-mismatch");
+      if (lineage.value.value.lifecycle !== "TERMINAL") issues.push("priorTerminal:not-terminal");
+      samePointerIdentity("priorTerminal", lineage.value, currentAccumulator.value);
+    }
+    const terminalCurrent = accumulator.value.lifecycle === "TERMINAL";
+    if (!terminalCurrent && lineageAbsent) {
+      if (currentPredecessorValue !== null) issues.push("case:r0-in-progress-current-not-null");
+    } else if (terminalCurrent && lineageAbsent) {
+      if (!currentPredecessorValue || currentPredecessorValue.value.lifecycle !== "IN_PROGRESS")
+        issues.push("case:r0-terminal-current-not-in-progress");
+    } else if (!terminalCurrent && lineagePresent) {
+      if (
+        !currentPredecessorValue ||
+        !lineage?.ok ||
+        !exactSelectedTriple(currentPredecessorValue, lineage.value)
+      )
+        issues.push("case:rn-in-progress-role-mismatch");
+    } else if (terminalCurrent && lineagePresent) {
+      if (!currentPredecessorValue || currentPredecessorValue.value.lifecycle !== "IN_PROGRESS")
+        issues.push("case:rn-terminal-current-not-in-progress");
+      if (
+        currentPredecessorValue &&
+        lineage?.ok &&
+        exactSelectedTriple(currentPredecessorValue, lineage.value)
+      )
+        issues.push("case:rn-terminal-roles-collapsed");
+    }
+    if (currentPredecessorValue?.value.lifecycle === "IN_PROGRESS") {
+      for (const name of [
+        "attemptId",
+        "transactionId",
+        "sourceToken",
+        "reservationTipDigest",
+        "reservationValueDigest",
+        "reservationReceiptDigest",
+        "descriptorDigest",
+        "attachmentDigest",
+        "priorTerminalAccumulatorTipDigest",
+        "priorTerminalAccumulatorValueDigest",
+        "priorTerminalAccumulatorReceiptDigest",
+        "priorTerminalSummaryDigest",
+      ] as const)
+        if (currentPredecessorValue.value[name] !== accumulator.value[name])
+          issues.push(`currentPredecessor:${name}-same-attempt-mismatch`);
+    }
+  }
+
+  let priorValueDigest: string | null = null;
+  if (lineage?.ok && priorSummary?.ok) {
+    priorValueDigest = lineage.value.valueDigest;
+    for (const [accumulatorName, digestName] of [
+      ["priorTerminalAccumulatorTipDigest", "tipDigest"],
+      ["priorTerminalAccumulatorValueDigest", "valueDigest"],
+      ["priorTerminalAccumulatorReceiptDigest", "proposalReceiptDigest"],
+    ] as const)
+      if (accumulator.value[accumulatorName] !== lineage.value[digestName])
+        issues.push(`${accumulatorName}:lineage-mismatch`);
+    for (const [reservationName, digestName] of [
+      ["predecessorAccumulatorTipDigest", "tipDigest"],
+      ["predecessorAccumulatorValueDigest", "valueDigest"],
+      ["predecessorAccumulatorReceiptDigest", "proposalReceiptDigest"],
+    ] as const)
+      if (reservation.value[reservationName] !== lineage.value[digestName])
+        issues.push(`${reservationName}:reservation-lineage-mismatch`);
+    const summaryDigest = canonicalDigest(priorSummary.value);
+    if (accumulator.value.priorTerminalSummaryDigest !== summaryDigest)
+      issues.push("priorTerminalSummaryDigest:mismatch");
+    if (lineage.value.value.terminalSummaryDigest !== summaryDigest)
+      issues.push("priorTerminal:summary-mismatch");
   } else {
-    if (
-      currentAccumulator.ok &&
-      !nullGroup(currentAccumulator.value.proposal, [
-        "priorTipDigest",
-        "priorValueDigest",
-        "priorReceiptDigest",
-      ])
-    )
-      issues.push("accumulatorSelection:genesis-predecessor-not-null");
     if (
       !nullGroup(accumulator.value, [
         "priorTerminalAccumulatorTipDigest",
@@ -3497,7 +3907,7 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
         "priorTerminalSummaryDigest",
       ])
     )
-      issues.push("predecessor:genesis-fields-not-null");
+      issues.push("lineage:genesis-fields-not-null");
     if (
       !nullGroup(reservation.value, [
         "predecessorAccumulatorTipDigest",
@@ -3505,7 +3915,7 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
         "predecessorAccumulatorReceiptDigest",
       ])
     )
-      issues.push("reservation:genesis-fields-not-null");
+      issues.push("reservation:genesis-lineage-not-null");
   }
 
   if (accumulator.value.lifecycle === "IN_PROGRESS") {
@@ -3537,6 +3947,13 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
       ] as const)
         if (summary.value[summaryName] !== accumulator.value[accumulatorName])
           issues.push(`${summaryName}:accumulator-mismatch`);
+      for (const name of [
+        "reservationTipDigest",
+        "reservationValueDigest",
+        "reservationReceiptDigest",
+      ] as const)
+        if (summary.value[name] !== accumulator.value[name])
+          issues.push(`summary:${name}-mismatch`);
     }
   }
   return Object.freeze(issues);
