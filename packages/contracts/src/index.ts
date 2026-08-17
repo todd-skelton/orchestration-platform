@@ -1,9 +1,5 @@
-import {
-  compatibilityDisposition,
-  diagnosticSchemaDefinitions,
-  schemaDefinitions,
-  schemaVersions,
-} from "./registry.js";
+import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
+import { diagnostic } from "./diagnostic.js";
 import {
   canonicalBytes,
   canonicalDigest,
@@ -17,14 +13,24 @@ import {
   type ParseResult,
 } from "./runtime.js";
 
-export * from "./definitions.js";
-export * from "./registry.js";
 export * from "./v2.js";
 export type * from "./runtime.js";
+export type {
+  CleanupHeadWriteDisposition,
+  CleanupLifecycle,
+  CleanupPublication,
+} from "./definitions.js";
+export {
+  isCleanupLifecyclePublicationPair,
+  isCleanupLifecyclePublicationTransition,
+  reduceCleanupHeadWrite,
+} from "./definitions.js";
 export {
   canonicalBytes,
   canonicalDigest,
   canonicalJson,
+  compatibilityDisposition,
+  diagnostic,
   schemaDefinitions,
   schemaVersions,
   snapshotClosedArray,
@@ -34,19 +40,6 @@ export {
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
   const definition = schemaDefinitions[expectedSchemaVersion];
   if (!definition) return { ok: false, issues: ["schemaVersion:unsupported"] };
-  try {
-    return validateAgainstSchema(definition, input);
-  } catch {
-    return { ok: false, issues: ["record:unreadable"] };
-  }
-}
-
-export function parseDiagnosticContract(
-  expectedSchemaVersion: string,
-  input: unknown,
-): ParseResult {
-  const definition = diagnosticSchemaDefinitions[expectedSchemaVersion];
-  if (!definition) return { ok: false, issues: ["schemaVersion:not-diagnostic"] };
   try {
     return validateAgainstSchema(definition, input);
   } catch {

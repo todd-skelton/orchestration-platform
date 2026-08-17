@@ -48,10 +48,11 @@ ISS-002 authority contracts:
   `recovery-authorization-attachment/v1`.
 
 The thirteen superseded active-release, gate, fence, launch, cleanup-head, and
-recovery-authorization v1 schemas exist only in
-`diagnosticSchemaDefinitions`. `parseDiagnosticContract` can read their exact
-historical bytes. `parseContract` and every canonical authority path refuse
-them. No migration exists because no v1 authority was deployed.
+recovery-authorization v1 schemas exist only under the frozen `diagnostic`
+namespace. `diagnostic.parseContract` can read their exact historical bytes;
+its legacy schemas, paths, and validators are not ordinary root exports and no
+package deep export exists. `parseContract` and every canonical authority path
+refuse them. No migration exists because no v1 authority was deployed.
 
 Exact current versions are readable. The named
 `platform-configuration/v0-fixture` alone is migratable. Missing, diagnostic,
@@ -59,8 +60,10 @@ other legacy, malformed, unknown, and future versions are refused.
 
 ## Pointer registry and framing
 
-The closed pointer registry has exactly eleven kinds and the canonical paths in
-`supervisor-contract.md`; the fixed singleton lock is
+The closed pointer registry has exactly eleven kinds and, for each kind, exact
+tip path, roots, archives, genesis mode, source tokens, retention class, and
+value schemas. Transaction path bindings are lowercase UUIDv7; unused/extra,
+wrong-family, alternate, or partial bindings refuse. The fixed singleton lock is
 `installation/state-mutation.lock`. Launch/accumulator/reservation sources are
 exactly `recovery-fence-v2` or `cleanup-gate-pre-fence-v2`; all other kinds use
 `none`. Unknown, differently cased/encoded, cross-family, or colliding paths and
@@ -68,7 +71,8 @@ tokens refuse.
 
 Framing `F` is UTF-8 `orchestration-platform`, NUL, domain, NUL, U32 part count,
 then closed type tag, U64 byte length, and bytes for every part. Digests are raw
-32 bytes and nullable digests have a distinct null type. Goldens pin:
+32 bytes; nullable text/digests have distinct typed nulls; accumulator tags are
+raw fixed bytes `00` and `01`, never text. Goldens pin:
 
 - Dp under `pointer-instance/v2`;
 - Dv under `pointer-value/v2`;
@@ -92,26 +96,40 @@ PREPARED then optional POST_ACTIVATION. Dense root/head histories bind ordinal,
 previous canonical digest, and exact edge.
 
 State mutation validators pin the fixed lock sequence, same authority epoch
-rereads, and a rotation census containing all other ten pointer kinds with zero
+rereads, exact reviewed-bootstrap genesis versus selected-stable rotation
+predecessor/producer fields, and a sorted dense rotation census keyed by every
+other kind plus Dp, classification, and selected digests with zero
 PENDING/UNKNOWN. They validate evidence only; ISS-004 owns the kernel lock,
 private capability, CAS, reconciliation, tombstones, and rotation writes.
 
 Recovery authorization core has closed BOOTSTRAP/SUCCESSOR unions. It excludes
 gate/lifecycle/consume/revoke/attachment and
 `candidateOperationManifestDigest`; every excluded-field insertion refuses.
-State validates CREATED, native-consume then CONSUMED plus post-consume receipt,
-native removal then REVOKED plus post-revoke receipt. Attachment binds a LIVE
-descriptor, not a future terminal summary.
+The core digest is recomputed with the framed
+`recovery-authorization-core/v1` domain. The cleanup gate binds the exact core
+path/digest, recomputed selected CREATED Dp/Dt/Dv/Dr, and prebound
+operation/native path. State validates CREATED, native-consume then
+CONSUMED, native removal then REVOKED; CONSUMED/REVOKED values deliberately do
+not contain later post receipts. External post-consume/revoke records bind the
+actual recomputed selected Dt/Dv/Dr plus exact capability/native custody, broker service/
+profile/client generation, and native/selected readbacks. Attachment binds that
+consume receipt, reservation triple, READY/LIVE records, and optional exact
+prior attachment/terminal accumulator triples; it never binds a future terminal
+summary.
 
 Reservations bind one UUIDv7 (uniqueness only) to a predecessor accumulator
-triple/genesis. Descriptor, terminal summary, and accumulator are separate.
+triple/genesis and have exact RESERVED/CONSUMED/TERMINAL/TOMBSTONE fields.
+Launch, descriptor, terminal summary, attachment, and accumulator separately
+bind transaction/source, roots/heads, reservation, argv/process, predecessor,
+failure/recovery/idempotency, and terminal proofs.
 First/later accumulator formulas use domain-separated raw digests. There is no
 lifetime attempt array or generation cap; a fixed packet verifies only current
 gate/fence/launch, reservation, descriptor, attachment, accumulator, initial
 records, and at most one previous terminal summary.
 
-Retention is FULL_REQUIRED except eligible terminal attempt history. Compaction
-requires checkpoint, plan, completion in order and never applies to PENDING.
+Retention distinguishes CURRENT_AUTHORITY from TERMINAL_ATTEMPT_HISTORY.
+Compaction requires selected non-pending classification, checkpoint, plan, and
+completion in order and never applies to PENDING/UNKNOWN.
 AUDIT_DEGRADED permits only existing recovery/retry/cleanup, selected attachment,
 and ordinary non-release ticks; it blocks new promotion/bootstrap/certification,
 unrelated authorization/attachment, compaction, and audit finalization.

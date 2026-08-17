@@ -1,4 +1,14 @@
 import {
+  diagnostic,
+  nativeConsumePath,
+  recoveryAuthorizationCorePath,
+  schemaDefinitions,
+  type ContractRecord,
+  type FieldRule,
+  type JsonValue,
+} from "../../packages/contracts/src/index.js";
+
+const {
   cleanupGateArchivePath,
   cleanupGateCurrentPath,
   cleanupGateHeadPath,
@@ -10,12 +20,7 @@ import {
   recoveryFenceRootPath,
   recoveryLaunchCurrentPath,
   recoveryLaunchPath,
-  diagnosticSchemaDefinitions,
-  schemaDefinitions,
-  type ContractRecord,
-  type FieldRule,
-  type JsonValue,
-} from "../../packages/contracts/src/index.js";
+} = diagnostic.paths;
 
 export const uuid = "018f0c24-7a3b-7cc1-8a2f-1234567890ab";
 export const uuid2 = "018f0c24-7a3b-7cc1-9a2f-1234567890ac";
@@ -58,7 +63,7 @@ function scalar(rule: FieldRule): JsonValue {
 
 function baseFixture(schemaVersion: string): Record<string, JsonValue> {
   const definition =
-    schemaDefinitions[schemaVersion] ?? diagnosticSchemaDefinitions[schemaVersion]!;
+    schemaDefinitions[schemaVersion] ?? diagnostic.schemaDefinitions[schemaVersion]!;
   return Object.fromEntries(
     Object.entries(definition.fields).map(([name, rule]) => {
       if (name === "schemaVersion") return [name, schemaVersion];
@@ -256,6 +261,30 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         grantDigest: digest,
         installerDigest: digest,
         destinationDigest: digest,
+        expiresAt: later,
+      };
+    case "recovery-authorization-state/v2":
+      return {
+        nativeConsumeReceiptPath: nativeConsumePath(uuid, uuid),
+      };
+    case "activation-cleanup-gate-root/v2":
+      return {
+        authorizationCorePath: recoveryAuthorizationCorePath(uuid),
+        nativeConsumeReceiptPath: nativeConsumePath(uuid, uuid),
+      };
+    case "activation-recovery-launch/v2":
+      return {
+        sourceToken: "recovery-fence-v2",
+        lifecycle: "READY",
+        fenceRootDigest: digest,
+        fenceHeadDigest: digest2,
+      };
+    case "recovery-attempt-descriptor/v1":
+      return {
+        sourceToken: "recovery-fence-v2",
+        lifecycle: "READY_ONLY",
+        fenceRootDigest: digest,
+        fenceHeadDigest: digest2,
       };
     default:
       return {};
