@@ -21,8 +21,11 @@ import {
   parseCanonicalContractBytes,
   parseContract,
   pointerKinds,
+  pointerArchivePaths,
+  pointerGenesisRule,
   pointerPath,
   pointerRegistry,
+  pointerRootPaths,
   recoveryAccumulatorDigest,
   retentionAllows,
   reduceCleanupHeadWrite,
@@ -40,12 +43,17 @@ import {
   validateEvidencePacket,
   validateFenceHeadHistory,
   validatePointerDispatch,
+  validatePointerGenesisDispatch,
+  validatePointerTemplateDispatch,
+  validateRecoveryAccumulatorFormula,
+  validateSelectedPointerEvidence,
   validateCleanupHeadHistory,
   validateRetentionTransition,
   validateRotationCensus,
   v2SchemaVersions,
   type ContractRecord,
   type FieldRule,
+  type JsonValue,
 } from "../../packages/contracts/src/index.js";
 import { digest, digest2, fixtureFor, instant, uuid, uuid2 } from "./fixtures.js";
 
@@ -81,34 +89,43 @@ function invalidFor(rule: FieldRule): unknown {
   }
 }
 
-function authorizationSelection(
-  core: ContractRecord,
-  state: ContractRecord,
-  prior: { tipDigest: string; valueDigest: string; proposalReceiptDigest: string } | null = null,
+function pointerSelection(
+  pointerKind: (typeof pointerKinds)[number],
+  value: ContractRecord,
+  options: {
+    pathBindings: Record<string, string>;
+    transactionId: string | null;
+    sourceToken: string;
+    prior?: { tipDigest: string; valueDigest: string; proposalReceiptDigest: string } | null;
+    authorityEpoch?: { tipDigest: string; valueDigest: string; proposalReceiptDigest: string };
+  },
 ) {
-  const canonicalPointerPath = pointerPath("RECOVERY_AUTHORIZATION_STATE", {
-    transactionId: core.transactionId as string,
-  });
-  const pathInstanceDigest = computePointerInstanceDigest({
-    pointerKind: "RECOVERY_AUTHORIZATION_STATE",
+  const canonicalPointerPath = pointerPath(pointerKind, options.pathBindings);
+  const row = pointerRegistry.find((candidate) => candidate.kind === pointerKind)!;
+  const pointerInput = {
+    pointerKind,
     canonicalPointerPath,
-    installationId: core.installationId as string,
-    projectId: core.projectId as string,
-    stateRootDigest: core.stateRootDigest as string,
-    transactionId: core.transactionId as string,
-    sourceToken: "none",
-  });
-  const valueDigest = computePointerValueDigest(
-    "RECOVERY_AUTHORIZATION_STATE",
-    pathInstanceDigest,
-    state,
-  );
+    installationId: uuid,
+    projectId: uuid,
+    stateRootDigest: digest,
+    transactionId: options.transactionId,
+    sourceToken: options.sourceToken,
+    ...(row.pathTemplate.includes("<predecessor-key>")
+      ? { predecessorKey: options.pathBindings.predecessorKey }
+      : {}),
+    ...(row.pathTemplate.includes("<pointer-instance-digest>")
+      ? { retainedPointerInstanceDigest: options.pathBindings.pointerInstanceDigest }
+      : {}),
+  };
+  const pathInstanceDigest = computePointerInstanceDigest(pointerInput);
+  const valueDigest = computePointerValueDigest(pointerKind, pathInstanceDigest, value);
+  const prior = options.prior ?? null;
   const mutationInput = {
-    pointerKind: "RECOVERY_AUTHORIZATION_STATE" as const,
+    pointerKind,
     canonicalPointerPath,
     pathInstanceDigest,
-    transactionId: core.transactionId as string,
-    sourceToken: "none",
+    transactionId: options.transactionId,
+    sourceToken: options.sourceToken,
     positionDigest: digest2,
     priorDt: prior?.tipDigest ?? null,
     priorDv: prior?.valueDigest ?? null,
@@ -116,11 +133,22 @@ function authorizationSelection(
     successorDv: valueDigest,
     outcome: "SELECT",
     intent: "VALUE_PROPOSED",
+    ...(row.pathTemplate.includes("<predecessor-key>")
+      ? { predecessorKey: options.pathBindings.predecessorKey }
+      : {}),
+    ...(row.pathTemplate.includes("<pointer-instance-digest>")
+      ? { retainedPointerInstanceDigest: options.pathBindings.pointerInstanceDigest }
+      : {}),
   };
   const mutationId = computeMutationId(mutationInput);
+  const epoch = options.authorityEpoch ?? {
+    tipDigest: digest,
+    valueDigest: digest,
+    proposalReceiptDigest: digest,
+  };
   const proposal: ContractRecord = {
     ...fixtureFor("pointer-cas-proposal-receipt/v1"),
-    pointerKind: "RECOVERY_AUTHORIZATION_STATE",
+    pointerKind,
     pathInstanceDigest,
     mutationId,
     priorTipDigest: mutationInput.priorDt,
@@ -130,9 +158,12 @@ function authorizationSelection(
     positionDigest: digest2,
     outcome: "SELECT",
     intent: "VALUE_PROPOSED",
+    authorityEpochTipDigest: epoch.tipDigest,
+    authorityEpochValueDigest: epoch.valueDigest,
+    authorityEpochReceiptDigest: epoch.proposalReceiptDigest,
   };
   const proposalReceiptDigest = computeProposalReceiptDigest({
-    pointerKind: mutationInput.pointerKind,
+    pointerKind,
     pathInstanceDigest,
     mutationId,
     priorDt: mutationInput.priorDt,
@@ -146,19 +177,53 @@ function authorizationSelection(
   });
   const tip: ContractRecord = {
     ...fixtureFor("pointer-current-tip/v1"),
-    pointerKind: "RECOVERY_AUTHORIZATION_STATE",
+    pointerKind,
     pathInstanceDigest,
     valueDigest,
     proposalReceiptDigest,
   };
   const tipDigest = computeCurrentTipDigest(
-    "RECOVERY_AUTHORIZATION_STATE",
+    pointerKind,
     pathInstanceDigest,
     valueDigest,
     proposalReceiptDigest,
     tip,
   );
-  return { pathInstanceDigest, proposal, proposalReceiptDigest, tip, tipDigest, valueDigest };
+  const envelope = {
+    pointerKind,
+    canonicalPointerPath,
+    installationId: uuid,
+    projectId: uuid,
+    stateRootDigest: digest,
+    transactionId: options.transactionId,
+    sourceToken: options.sourceToken,
+    pathBindings: options.pathBindings,
+    value,
+    proposal,
+    tip,
+  };
+  return {
+    envelope,
+    pathInstanceDigest,
+    proposal,
+    proposalReceiptDigest,
+    tip,
+    tipDigest,
+    valueDigest,
+  };
+}
+
+function authorizationSelection(
+  core: ContractRecord,
+  state: ContractRecord,
+  prior: { tipDigest: string; valueDigest: string; proposalReceiptDigest: string } | null = null,
+) {
+  return pointerSelection("RECOVERY_AUTHORIZATION_STATE", state, {
+    pathBindings: { transactionId: core.transactionId as string },
+    transactionId: core.transactionId as string,
+    sourceToken: "none",
+    prior,
+  });
 }
 
 describe("current and diagnostic schema registries", () => {
@@ -174,11 +239,52 @@ describe("current and diagnostic schema registries", () => {
       symlinkAllowed: false,
     });
     expect(pointerRegistry.filter((row) => row.singleton)).toHaveLength(5);
+    const constructedPathCensus: JsonValue[] = [];
     for (const row of pointerRegistry) {
       expect(row.rootTemplates.length, `${row.kind}:roots`).toBeGreaterThan(0);
       expect(row.archiveTemplates.length, `${row.kind}:archives`).toBeGreaterThan(0);
       expect(row.valueSchemas.length, `${row.kind}:schemas`).toBeGreaterThan(0);
+      const rootTemplate = row.rootTemplates[0]!;
+      const rootBindings = {
+        ...(rootTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
+        ...(rootTemplate.includes("<source>") ? { sourceToken: row.sourceTokens[0]! } : {}),
+        ...(rootTemplate.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
+        ...(rootTemplate.includes("<pointer-instance-digest>")
+          ? { pointerInstanceDigest: digest }
+          : {}),
+        ...(rootTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+      };
+      const roots = pointerRootPaths(row.kind, rootBindings);
+      expect(validatePointerTemplateDispatch(row.kind, "ROOT", roots, rootBindings)).toEqual([]);
+      expect(
+        validatePointerTemplateDispatch(row.kind, "ROOT", [`${roots[0]}alias`], rootBindings),
+      ).not.toEqual([]);
+      const archiveTemplate = row.archiveTemplates[0]!;
+      const archiveBindings = {
+        ...(archiveTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
+        ...(archiveTemplate.includes("<source>") ? { sourceToken: row.sourceTokens[0]! } : {}),
+        ...(archiveTemplate.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
+        ...(archiveTemplate.includes("<pointer-instance-digest>")
+          ? { pointerInstanceDigest: digest }
+          : {}),
+        ...(archiveTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+      };
+      const archives = pointerArchivePaths(row.kind, archiveBindings);
+      expect(
+        validatePointerTemplateDispatch(row.kind, "ARCHIVE", archives, archiveBindings),
+      ).toEqual([]);
+      expect(validatePointerGenesisDispatch(row.kind, pointerGenesisRule(row.kind))).toEqual([]);
+      expect(validatePointerGenesisDispatch(row.kind, "FUTURE")).not.toEqual([]);
+      constructedPathCensus.push({
+        archives,
+        genesis: pointerGenesisRule(row.kind),
+        kind: row.kind,
+        roots,
+      });
     }
+    expect(canonicalDigest(constructedPathCensus)).toBe(
+      "bf0a606346add973aa360c268af321c5c407904f52c404a2960eefc8d010e357",
+    );
     const familyCensus = pointerRegistry.map((row) => ({
       archiveTemplates: row.archiveTemplates,
       genesis: row.genesis,
@@ -211,6 +317,12 @@ describe("current and diagnostic schema registries", () => {
         sourceToken: "recovery-fence-v2",
         predecessorKey: digest,
       }),
+    ).toThrow();
+    expect(pointerPath("AUTHORITY_RETENTION", { pointerInstanceDigest: digest })).toBe(
+      `installation/authority-retention/${digest}.json`,
+    );
+    expect(() =>
+      pointerPath("AUTHORITY_RETENTION", { pointerInstanceDigest: null as never }),
     ).toThrow();
     expect(
       validatePointerDispatch(
@@ -559,7 +671,7 @@ describe("framed pointer digest graph", () => {
       schemaVersion,
     }));
     expect(canonicalDigest(schemaBytes)).toBe(
-      "839830bce348eb4b9c9b511261ba24aee27aeff10d0da2f2fcf697d37d9d2a11",
+      "9f692c57a2f8602c1f5cd587e0aba2e53c0f9a1bb481d78f38ee3fd17a026771",
     );
   });
 
@@ -623,6 +735,44 @@ describe("framed pointer digest graph", () => {
           ...bindings,
         }),
       ).toThrow(/canonicalPointerPath/);
+    const reservationPath = pointerPath("RECOVERY_ATTEMPT_RESERVATION", {
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      predecessorKey: digest,
+    });
+    const reservationDpInput = {
+      ...dpInput,
+      pointerKind: "RECOVERY_ATTEMPT_RESERVATION" as const,
+      canonicalPointerPath: reservationPath,
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      predecessorKey: digest,
+    };
+    expect(() => computePointerInstanceDigest(reservationDpInput)).not.toThrow();
+    const { predecessorKey: omittedPredecessor, ...withoutPredecessor } = reservationDpInput;
+    expect(omittedPredecessor).toBe(digest);
+    expect(() => computePointerInstanceDigest(withoutPredecessor as never)).toThrow(/missing/);
+    expect(() =>
+      computePointerInstanceDigest({ ...reservationDpInput, predecessorKey: null } as never),
+    ).toThrow(/predecessorKey/);
+  });
+
+  test("binds every tombstone value to its dispatched pointer kind", () => {
+    const enabled = pointerRegistry.filter((row) =>
+      row.valueSchemas.includes("pointer-tombstone-value/v1"),
+    );
+    expect(enabled).toHaveLength(9);
+    for (const row of enabled) {
+      const tombstone = {
+        ...fixtureFor("pointer-tombstone-value/v1"),
+        pointerKind: row.kind,
+      };
+      expect(() => computePointerValueDigest(row.kind, digest, tombstone)).not.toThrow();
+      for (const other of pointerKinds.filter((kind) => kind !== row.kind))
+        expect(() =>
+          computePointerValueDigest(row.kind, digest, { ...tombstone, pointerKind: other }),
+        ).toThrow(/tombstone-dispatch/);
+    }
   });
 });
 
@@ -696,8 +846,23 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
   });
 
   test("pins ordinary epoch ordering and complete other-kind rotation census", () => {
-    expect(validateEpochSequence([...ordinaryEpochSequence])).toBe(true);
-    expect(validateEpochSequence([...ordinaryEpochSequence].reverse())).toBe(false);
+    const epochSequence = ordinaryEpochSequence.map((step) => ({
+      step,
+      authorityEpochDigest: digest,
+      authorityEpochTipDigest: digest2,
+      authorityEpochValueDigest: digest,
+      authorityEpochReceiptDigest: digest2,
+    }));
+    expect(validateEpochSequence(epochSequence)).toBe(true);
+    expect(validateEpochSequence([...epochSequence].reverse())).toBe(false);
+    expect(
+      validateEpochSequence(
+        epochSequence.map((entry, index) =>
+          index === 5 ? { ...entry, authorityEpochTipDigest: digest } : entry,
+        ),
+      ),
+    ).toBe(false);
+    expect(validateEpochSequence([...ordinaryEpochSequence])).toBe(false);
     const entries = pointerKinds
       .filter((kind) => kind !== "STATE_MUTATION_AUTHORITY_ROTATION")
       .sort()
@@ -925,6 +1090,10 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     const consumedState = consumedStateBase;
     const consumeEnvelope = {
       core,
+      createdProposal: createdSelection.proposal,
+      createdState,
+      createdTip: createdSelection.tip,
+      gateRoot,
       nativeConsume,
       postConsume,
       selectedProposal: consumedSelection.proposal,
@@ -938,6 +1107,25 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         nativeConsume: {
           ...nativeConsume,
           operationId: "018f0c24-7a3b-7cc1-9a2f-1234567890ac",
+        },
+      }),
+    ).not.toEqual([]);
+    const wrongPredecessorSelection = authorizationSelection(core, consumedState, {
+      tipDigest: digest,
+      valueDigest: digest2,
+      proposalReceiptDigest: digest,
+    });
+    expect(
+      validateAuthorizationReceiptChain({
+        ...consumeEnvelope,
+        selectedProposal: wrongPredecessorSelection.proposal,
+        selectedTip: wrongPredecessorSelection.tip,
+        postConsume: {
+          ...postConsume,
+          authorizationTipDigest: wrongPredecessorSelection.tipDigest,
+          authorizationValueDigest: wrongPredecessorSelection.valueDigest,
+          authorizationReceiptDigest: wrongPredecessorSelection.proposalReceiptDigest,
+          selectedReadbackDigest: wrongPredecessorSelection.tipDigest,
         },
       }),
     ).not.toEqual([]);
@@ -978,6 +1166,43 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         gateRoot,
       }),
     ).toEqual([]);
+    const successorCoreDigest = computeRecoveryAuthorizationCoreDigest(successorCore);
+    const successorCreatedState = { ...state, coreDigest: successorCoreDigest };
+    const successorCreatedSelection = authorizationSelection(successorCore, successorCreatedState);
+    const successorGateRoot = {
+      ...gateRoot,
+      mode: "SUCCESSOR",
+      grantDigest: null,
+      installerDigest: null,
+      destinationDigest: null,
+      cycleId: successorCore.cycleId,
+      admissionDigest: successorCore.admissionDigest,
+      priorBrokerGeneration: successorCore.priorBrokerGeneration,
+      successorBrokerGeneration: successorCore.successorBrokerGeneration,
+      expectedActiveGeneration: successorCore.expectedActiveGeneration,
+      predecessorReleaseDigest: successorCore.predecessorReleaseDigest,
+      successorReleaseDigest: successorCore.successorReleaseDigest,
+      predecessorExecutableDigest: successorCore.predecessorExecutableDigest,
+      successorExecutableDigest: successorCore.successorExecutableDigest,
+      predecessorOperationManifestDigest: successorCore.predecessorOperationManifestDigest,
+      successorOperationManifestDigest: successorCore.successorOperationManifestDigest,
+      fencePath: successorCore.fencePath,
+      expectedFenceRootDigest: successorCore.fenceDigest,
+      expectedActiveReleaseDigest: successorCore.predecessorReleaseDigest,
+      authorizationCoreDigest: successorCoreDigest,
+      authorizationCreatedTipDigest: successorCreatedSelection.tipDigest,
+      authorizationCreatedValueDigest: successorCreatedSelection.valueDigest,
+      authorizationCreatedReceiptDigest: successorCreatedSelection.proposalReceiptDigest,
+    };
+    expect(
+      validateGateAuthorizationBinding({
+        core: successorCore,
+        createdProposal: successorCreatedSelection.proposal,
+        createdState: successorCreatedState,
+        createdTip: successorCreatedSelection.tip,
+        gateRoot: successorGateRoot,
+      }),
+    ).toEqual([]);
     expect(
       validateGateAuthorizationBinding({
         core,
@@ -987,6 +1212,49 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         gateRoot: { ...gateRoot, projectId: "018f0c24-7a3b-7cc1-9a2f-1234567890ac" },
       }),
     ).not.toEqual([]);
+    for (const name of [
+      "mode",
+      "candidateDigest",
+      "grantDigest",
+      "installerDigest",
+      "destinationDigest",
+      "cycleId",
+      "admissionDigest",
+      "priorBrokerGeneration",
+      "successorBrokerGeneration",
+      "expectedActiveGeneration",
+      "predecessorReleaseDigest",
+      "successorReleaseDigest",
+      "predecessorExecutableDigest",
+      "successorExecutableDigest",
+      "predecessorOperationManifestDigest",
+      "successorOperationManifestDigest",
+      "fencePath",
+      "expectedActiveReleaseDigest",
+      "expectedFenceRootDigest",
+    ] as const) {
+      const original = gateRoot[name];
+      const replacement =
+        name === "mode"
+          ? "SUCCESSOR"
+          : name === "cycleId"
+            ? uuid2
+            : name.includes("Generation")
+              ? 1
+              : original === null || original === digest2
+                ? digest
+                : digest2;
+      expect(
+        validateGateAuthorizationBinding({
+          core,
+          createdProposal: createdSelection.proposal,
+          createdState,
+          createdTip: createdSelection.tip,
+          gateRoot: { ...gateRoot, [name]: replacement },
+        }),
+        name,
+      ).not.toEqual([]);
+    }
     for (const name of [
       "authorizationCoreDigest",
       "authorizationCorePath",
@@ -1043,6 +1311,10 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         consumedState,
         consumedTip: consumedSelection.tip,
         core,
+        createdProposal: createdSelection.proposal,
+        createdState,
+        createdTip: createdSelection.tip,
+        gateRoot,
         nativeConsume,
         nativeRemoval,
         postConsume,
@@ -1058,12 +1330,42 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         consumedState,
         consumedTip: consumedSelection.tip,
         core,
+        createdProposal: createdSelection.proposal,
+        createdState,
+        createdTip: createdSelection.tip,
+        gateRoot,
         nativeConsume,
         nativeRemoval: { ...nativeRemoval, nativeAbsenceReadbackDigest: digest2 },
         postConsume,
         postRevoke,
         selectedProposal: revokedSelection.proposal,
         selectedTip: revokedSelection.tip,
+        state: revokedState,
+      }),
+    ).not.toEqual([]);
+    const wrongRevokedSelection = authorizationSelection(core, revokedState, createdSelection);
+    expect(
+      validateAuthorizationRevokeReceiptChain({
+        consumedProposal: consumedSelection.proposal,
+        consumedState,
+        consumedTip: consumedSelection.tip,
+        core,
+        createdProposal: createdSelection.proposal,
+        createdState,
+        createdTip: createdSelection.tip,
+        gateRoot,
+        nativeConsume,
+        nativeRemoval,
+        postConsume,
+        postRevoke: {
+          ...postRevoke,
+          authorizationTipDigest: wrongRevokedSelection.tipDigest,
+          authorizationValueDigest: wrongRevokedSelection.valueDigest,
+          authorizationReceiptDigest: wrongRevokedSelection.proposalReceiptDigest,
+          selectedReadbackDigest: wrongRevokedSelection.tipDigest,
+        },
+        selectedProposal: wrongRevokedSelection.proposal,
+        selectedTip: wrongRevokedSelection.tip,
         state: revokedState,
       }),
     ).not.toEqual([]);
@@ -1093,7 +1395,33 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     expect(recoveryAccumulatorDigest(null, digest)).not.toBe(
       recoveryAccumulatorDigest(digest2, digest),
     );
-    const ready = fixtureFor("activation-recovery-launch/v2");
+    const authorityEpoch = pointerSelection(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      fixtureFor("state-mutation-authority-value/v1"),
+      { pathBindings: {}, transactionId: null, sourceToken: "none" },
+    );
+    const selectedEpoch = {
+      tipDigest: authorityEpoch.tipDigest,
+      valueDigest: authorityEpoch.valueDigest,
+      proposalReceiptDigest: authorityEpoch.proposalReceiptDigest,
+    };
+    const reservationSelection = pointerSelection("RECOVERY_ATTEMPT_RESERVATION", reservation, {
+      pathBindings: {
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        predecessorKey: digest,
+      },
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      authorityEpoch: selectedEpoch,
+    });
+    const gateHistory = [fixtureFor("activation-cleanup-gate-head/v2")];
+    const fenceHistory = [fixtureFor("activation-recovery-fence-head/v2")];
+    const ready = {
+      ...fixtureFor("activation-recovery-launch/v2"),
+      gateHeadDigest: canonicalDigest(gateHistory[0]!),
+      fenceHeadDigest: canonicalDigest(fenceHistory[0]!),
+    };
     const live = {
       ...ready,
       lifecycle: "LIVE",
@@ -1108,16 +1436,162 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       initialLiveRecordDigest: canonicalDigest(live),
       processIdentityDigest: digest2,
       startedAt: instant,
-    };
-    const consumedReservation = {
-      ...reservation,
-      lifecycle: "CONSUMED",
-      consumedDescriptorDigest: canonicalDigest(liveDescriptor),
+      gateHeadDigest: ready.gateHeadDigest,
+      fenceHeadDigest: ready.fenceHeadDigest,
+      reservationTipDigest: reservationSelection.tipDigest,
+      reservationValueDigest: reservationSelection.valueDigest,
+      reservationReceiptDigest: reservationSelection.proposalReceiptDigest,
     };
     const accumulator = {
       ...fixtureFor("recovery-attempt-accumulator/v1"),
       descriptorDigest: canonicalDigest(liveDescriptor),
+      reservationTipDigest: reservationSelection.tipDigest,
+      reservationValueDigest: reservationSelection.valueDigest,
+      reservationReceiptDigest: reservationSelection.proposalReceiptDigest,
     };
+    const accumulatorSelection = pointerSelection("RECOVERY_ATTEMPT_ACCUMULATOR", accumulator, {
+      pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      authorityEpoch: selectedEpoch,
+    });
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator,
+        descriptor: liveDescriptor,
+        predecessorAccumulatorSelection: null,
+        predecessorSummary: null,
+        reservation,
+        terminalSummary: null,
+      }),
+    ).toEqual([]);
+    const terminalSummary = {
+      ...fixtureFor("recovery-attempt-terminal-summary/v1"),
+      descriptorDigest: canonicalDigest(liveDescriptor),
+      reservationTipDigest: reservationSelection.tipDigest,
+      reservationValueDigest: reservationSelection.valueDigest,
+      reservationReceiptDigest: reservationSelection.proposalReceiptDigest,
+      argvDigest: liveDescriptor.argvDigest,
+      processIdentityDigest: liveDescriptor.processIdentityDigest,
+    } as ContractRecord;
+    const terminalSummaryDigest = canonicalDigest(terminalSummary);
+    const terminalAccumulator = {
+      ...accumulator,
+      lifecycle: "TERMINAL",
+      terminalSummaryDigest,
+      rollingDigest: recoveryAccumulatorDigest(null, terminalSummaryDigest),
+    };
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: terminalAccumulator,
+        descriptor: liveDescriptor,
+        predecessorAccumulatorSelection: null,
+        predecessorSummary: null,
+        reservation,
+        terminalSummary,
+      }),
+    ).toEqual([]);
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: { ...terminalAccumulator, rollingDigest: digest },
+        descriptor: liveDescriptor,
+        predecessorAccumulatorSelection: null,
+        predecessorSummary: null,
+        reservation,
+        terminalSummary,
+      }),
+    ).not.toEqual([]);
+    const terminalAccumulatorSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      terminalAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: accumulatorSelection,
+      },
+    );
+    const laterReservation = {
+      ...reservation,
+      attemptId: uuid2,
+      predecessorAccumulatorTipDigest: terminalAccumulatorSelection.tipDigest,
+      predecessorAccumulatorValueDigest: terminalAccumulatorSelection.valueDigest,
+      predecessorAccumulatorReceiptDigest: terminalAccumulatorSelection.proposalReceiptDigest,
+    };
+    const laterReservationSelection = pointerSelection(
+      "RECOVERY_ATTEMPT_RESERVATION",
+      laterReservation,
+      {
+        pathBindings: {
+          transactionId: uuid,
+          sourceToken: "recovery-fence-v2",
+          predecessorKey: digest2,
+        },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+      },
+    );
+    const laterDescriptor = {
+      ...liveDescriptor,
+      attemptId: uuid2,
+      reservationTipDigest: laterReservationSelection.tipDigest,
+      reservationValueDigest: laterReservationSelection.valueDigest,
+      reservationReceiptDigest: laterReservationSelection.proposalReceiptDigest,
+    };
+    const laterAccumulator = {
+      ...accumulator,
+      attemptId: uuid2,
+      descriptorDigest: canonicalDigest(laterDescriptor),
+      reservationTipDigest: laterReservationSelection.tipDigest,
+      reservationValueDigest: laterReservationSelection.valueDigest,
+      reservationReceiptDigest: laterReservationSelection.proposalReceiptDigest,
+      priorTerminalAccumulatorTipDigest: terminalAccumulatorSelection.tipDigest,
+      priorTerminalAccumulatorValueDigest: terminalAccumulatorSelection.valueDigest,
+      priorTerminalAccumulatorReceiptDigest: terminalAccumulatorSelection.proposalReceiptDigest,
+      priorTerminalSummaryDigest: terminalSummaryDigest,
+    };
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: laterAccumulator,
+        descriptor: laterDescriptor,
+        predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
+        predecessorSummary: terminalSummary,
+        reservation: laterReservation,
+        terminalSummary: null,
+      }),
+    ).toEqual([]);
+    const laterTerminalSummary = {
+      ...terminalSummary,
+      attemptId: uuid2,
+      descriptorDigest: canonicalDigest(laterDescriptor),
+      reservationTipDigest: laterReservationSelection.tipDigest,
+      reservationValueDigest: laterReservationSelection.valueDigest,
+      reservationReceiptDigest: laterReservationSelection.proposalReceiptDigest,
+      priorAccumulatorTipDigest: terminalAccumulatorSelection.tipDigest,
+      priorAccumulatorValueDigest: terminalAccumulatorSelection.valueDigest,
+      priorAccumulatorReceiptDigest: terminalAccumulatorSelection.proposalReceiptDigest,
+    };
+    const laterTerminalSummaryDigest = canonicalDigest(laterTerminalSummary);
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: {
+          ...laterAccumulator,
+          lifecycle: "TERMINAL",
+          terminalSummaryDigest: laterTerminalSummaryDigest,
+          rollingDigest: recoveryAccumulatorDigest(
+            terminalAccumulatorSelection.valueDigest,
+            laterTerminalSummaryDigest,
+          ),
+        },
+        descriptor: laterDescriptor,
+        predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
+        predecessorSummary: terminalSummary,
+        reservation: laterReservation,
+        terminalSummary: laterTerminalSummary,
+      }),
+    ).toEqual([]);
     const postConsume = fixtureFor("recovery-authorization-consume-receipt/v1");
     const attached = {
       ...fixtureFor("recovery-authorization-attachment/v1"),
@@ -1127,7 +1601,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       brokerClientDigest: digest,
       descriptorDigest: canonicalDigest(liveDescriptor),
       fenceHeadDigest: liveDescriptor.fenceHeadDigest,
-      gateHeadDigest: digest,
+      gateHeadDigest: liveDescriptor.gateHeadDigest,
       initialLiveRecordDigest: liveDescriptor.initialLiveRecordDigest,
       processIdentityDigest: liveDescriptor.processIdentityDigest,
       readyRecordDigest: liveDescriptor.readyRecordDigest,
@@ -1135,19 +1609,108 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       reservationTipDigest: liveDescriptor.reservationTipDigest,
       reservationValueDigest: liveDescriptor.reservationValueDigest,
       consumeReceiptDigest: canonicalDigest(postConsume),
-    };
+    } as ContractRecord;
+    const gateSelection = pointerSelection("ACTIVATION_CLEANUP_GATE", gateHistory[0]!, {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      authorityEpoch: selectedEpoch,
+    });
+    const fenceSelection = pointerSelection("ACTIVATION_RECOVERY_FENCE", fenceHistory[0]!, {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      authorityEpoch: selectedEpoch,
+    });
+    const launchSelection = pointerSelection("ACTIVATION_RECOVERY_LAUNCH", live, {
+      pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+      transactionId: uuid,
+      sourceToken: "recovery-fence-v2",
+      authorityEpoch: selectedEpoch,
+    });
+    const attachmentSelection = pointerSelection("RECOVERY_AUTHORIZATION_ATTACHMENT", attached, {
+      pathBindings: { transactionId: uuid },
+      transactionId: uuid,
+      sourceToken: "none",
+      authorityEpoch: selectedEpoch,
+    });
     const packet = {
       accumulator,
+      accumulatorSelection: accumulatorSelection.envelope,
       attachment: attached,
+      attachmentSelection: attachmentSelection.envelope,
+      authorityEpochSelection: authorityEpoch.envelope,
       descriptor: liveDescriptor,
-      gateHistory: [fixtureFor("activation-cleanup-gate-head/v2")],
-      fenceHistory: [fixtureFor("activation-recovery-fence-head/v2")],
+      gateHistory,
+      gateSelection: gateSelection.envelope,
+      fenceHistory,
+      fenceSelection: fenceSelection.envelope,
       launchHistory: [ready, live],
+      launchSelection: launchSelection.envelope,
       postConsume,
       priorTerminalSummaries: [],
-      reservation: consumedReservation,
+      reservation,
+      reservationSelection: reservationSelection.envelope,
     };
     expect(validateEvidencePacket(packet)).toEqual([]);
+    expect(
+      canonicalDigest(
+        [
+          authorityEpoch,
+          gateSelection,
+          fenceSelection,
+          launchSelection,
+          reservationSelection,
+          attachmentSelection,
+          accumulatorSelection,
+        ].map((selection) => ({
+          pathInstanceDigest: selection.pathInstanceDigest,
+          proposalReceiptDigest: selection.proposalReceiptDigest,
+          tipDigest: selection.tipDigest,
+          valueDigest: selection.valueDigest,
+        })),
+      ),
+    ).toBe("29ba686613f385ff0c23c83301f45d3f2bf101ffd89c28b6a901009f44dcaebc");
+    expect(validateSelectedPointerEvidence(reservationSelection.envelope)).toEqual([]);
+    expect(
+      validateEvidencePacket({
+        ...packet,
+        reservationSelection: {
+          ...reservationSelection.envelope,
+          tip: { ...reservationSelection.tip, proposalReceiptDigest: digest },
+        },
+      }),
+    ).not.toEqual([]);
+    for (const [field, selection] of [
+      ["gateSelection", gateSelection],
+      ["fenceSelection", fenceSelection],
+      ["launchSelection", launchSelection],
+      ["reservationSelection", reservationSelection],
+      ["attachmentSelection", attachmentSelection],
+      ["accumulatorSelection", accumulatorSelection],
+    ] as const)
+      expect(
+        validateEvidencePacket({
+          ...packet,
+          [field]: {
+            ...selection.envelope,
+            tip: { ...selection.tip, proposalReceiptDigest: digest },
+          },
+        }),
+        field,
+      ).not.toEqual([]);
+    expect(
+      validateEvidencePacket({
+        ...packet,
+        launchSelection: {
+          ...launchSelection.envelope,
+          proposal: {
+            ...launchSelection.proposal,
+            authorityEpochTipDigest: digest,
+          },
+        },
+      }),
+    ).not.toEqual([]);
     expect(validateEvidencePacket({ ...packet, gateHistory: [1] })).not.toEqual([]);
     expect(validateEvidencePacket({ ...packet, descriptor: 1 })).not.toEqual([]);
     expect(validateEvidencePacket({ ...packet, launchHistory: [1] })).not.toEqual([]);

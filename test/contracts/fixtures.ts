@@ -271,6 +271,9 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
       return {
         authorizationCorePath: recoveryAuthorizationCorePath(uuid),
         nativeConsumeReceiptPath: nativeConsumePath(uuid, uuid),
+        grantDigest: digest,
+        installerDigest: digest,
+        destinationDigest: digest,
       };
     case "activation-recovery-launch/v2":
       return {
