@@ -712,9 +712,11 @@ const positionFields: Readonly<Record<PointerKind, readonly string[]>> = Object.
     "checkpointCoreDigest",
     "checkpointOrdinal",
     "runOrdinal",
+    "stage",
     "phase",
     "targetMutationId",
     "targetPathInstanceDigest",
+    "terminalResolutionDigest",
   ],
 });
 
@@ -803,6 +805,19 @@ const positionRules: Readonly<Record<PointerKind, Readonly<Record<string, Positi
       checkpointCoreDigest: "SHA256",
       checkpointOrdinal: "DECIMAL_ASCII",
       runOrdinal: "DECIMAL_ASCII",
+      stage: {
+        enum: Object.freeze([
+          "CURRENT_AUTHORITY_READ",
+          "TARGET_RECONCILED",
+          "VALUE_READBACK",
+          "PROPOSAL_READBACK",
+          "CURRENT_AUTHORITY_PRE_CAS_READ",
+          "CAS_ARMED",
+          "TARGET_POST_CAS_READBACK",
+          "PROPOSAL_CLASSIFIED",
+          "CURRENT_AUTHORITY_POST_CAS_READ",
+        ]),
+      },
       phase: {
         enum: Object.freeze([
           "CRASH_PREFIX",
@@ -814,6 +829,7 @@ const positionRules: Readonly<Record<PointerKind, Readonly<Record<string, Positi
       },
       targetMutationId: "SHA256",
       targetPathInstanceDigest: "SHA256",
+      terminalResolutionDigest: "NULLABLE_SHA256",
     }),
   });
 
@@ -1016,9 +1032,11 @@ export function derivePointerPositionEvidence(
         checkpointCoreDigest: value.checkpointCoreDigest!,
         checkpointOrdinal: value.checkpointOrdinal!,
         runOrdinal: value.runOrdinal!,
+        stage: value.stage!,
         phase: value.phase!,
         targetMutationId: value.targetMutationId!,
         targetPathInstanceDigest: value.targetPathInstanceDigest!,
+        terminalResolutionDigest: value.terminalResolutionDigest!,
       });
   }
 }
@@ -1188,6 +1206,14 @@ export function computeProposalReceiptDigest(input: ProposalDigestInput): string
       : !epochParts.every((part) => part !== null)
   )
     throw new TypeError("producerKind:epoch-mismatch");
+  if (
+    bootstrap &&
+    (kind !== "STATE_MUTATION_AUTHORITY_ROTATION" ||
+      closed.intent !== "VALUE_PROPOSED" ||
+      closed.outcome !== "SELECT" ||
+      ![closed.priorDt, closed.priorDv, closed.priorDr].every((part) => part === null))
+  )
+    throw new TypeError("producerKind:bootstrap-selection-mismatch");
   const receipt = requireSchemaRecord("pointer-cas-proposal-receipt/v2", closed.receipt);
   for (const [fieldName, expected] of [
     ["pointerKind", kind],
@@ -1613,6 +1639,13 @@ export const v2Definitions = Object.freeze(
             !nullGroup(record, ["priorTipDigest", "priorValueDigest", "priorReceiptDigest"])
           )
             issues.push("producerKind:genesis-prior-mismatch");
+          if (bootstrap && value(record, "pointerKind") !== "STATE_MUTATION_AUTHORITY_ROTATION")
+            issues.push("producerKind:bootstrap-pointer-kind-mismatch");
+          if (
+            bootstrap &&
+            (value(record, "intent") !== "VALUE_PROPOSED" || value(record, "outcome") !== "SELECT")
+          )
+            issues.push("producerKind:bootstrap-intent-outcome-mismatch");
           return issues;
         },
       ),
@@ -1786,7 +1819,6 @@ export const v2Definitions = Object.freeze(
           historyRootKind: enumeration("EMPTY", "NONEMPTY"),
           historyCount: field("decimal"),
           historyAppendReceiptDigest: nullableSha,
-          bootstrapGenesisCoreDigest: nullableSha,
           successorCoreDigest: nullableSha,
           rotationOperationId: nullableSha,
           priorAuthorityTipDigest: nullableSha,
@@ -1823,7 +1855,6 @@ export const v2Definitions = Object.freeze(
               value(record, "historyCount") === "0" &&
               value(record, "historyRootKind") === "EMPTY" &&
               value(record, "historyAppendReceiptDigest") === null &&
-              value(record, "bootstrapGenesisCoreDigest") !== null &&
               value(record, "successorCoreDigest") === null &&
               value(record, "rotationOperationId") === null
               ? []
@@ -1834,27 +1865,46 @@ export const v2Definitions = Object.freeze(
             value(record, "historyRootKind") === "NONEMPTY" &&
             value(record, "historyCount") === value(record, "authorityOrdinal") &&
             value(record, "historyAppendReceiptDigest") !== null &&
-            value(record, "bootstrapGenesisCoreDigest") === null &&
             value(record, "successorCoreDigest") !== null &&
             value(record, "rotationOperationId") !== null
             ? []
             : ["rotation:predecessor-authority-mismatch"];
         },
       ),
-      define("pointer-mutation-run-current-value/v1", {
-        targetPathInstanceDigest: sha,
-        targetMutationId: sha,
-        checkpointCoreDigest: sha,
-        runOrdinal: field("decimal"),
-        checkpointOrdinal: field("decimal"),
-        phase: enumeration(
-          "CRASH_PREFIX",
-          "CAS_AMBIGUOUS",
-          "SELECTED",
-          "LOST_CONFLICT",
-          "UNKNOWN_TERMINAL",
-        ),
-      }),
+      define(
+        "pointer-mutation-run-current-value/v1",
+        {
+          targetPathInstanceDigest: sha,
+          targetMutationId: sha,
+          checkpointCoreDigest: sha,
+          runOrdinal: field("decimal"),
+          checkpointOrdinal: field("decimal"),
+          stage: enumeration(
+            "CURRENT_AUTHORITY_READ",
+            "TARGET_RECONCILED",
+            "VALUE_READBACK",
+            "PROPOSAL_READBACK",
+            "CURRENT_AUTHORITY_PRE_CAS_READ",
+            "CAS_ARMED",
+            "TARGET_POST_CAS_READBACK",
+            "PROPOSAL_CLASSIFIED",
+            "CURRENT_AUTHORITY_POST_CAS_READ",
+          ),
+          phase: enumeration(
+            "CRASH_PREFIX",
+            "CAS_AMBIGUOUS",
+            "SELECTED",
+            "LOST_CONFLICT",
+            "UNKNOWN_TERMINAL",
+          ),
+          terminalResolutionDigest: nullableSha,
+        },
+        (record) =>
+          ["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(String(record.phase)) ===
+          (record.terminalResolutionDigest !== null)
+            ? []
+            : ["terminalResolutionDigest:phase-mismatch"],
+      ),
       define("active-release/v2", {
         installationId: uuid,
         projectId: uuid,
@@ -2534,7 +2584,7 @@ export const v2Definitions = Object.freeze(
 
 export const v2SchemaVersions = Object.freeze(Object.keys(v2Definitions).sort());
 
-interface SelectedPointerEvidence {
+export interface SelectedPointerEvidence {
   readonly canonicalPointerPath: string;
   readonly pathInstanceDigest: string;
   readonly positionDigest: string;
@@ -2551,7 +2601,7 @@ interface SelectedPointerEvidence {
   readonly sourceToken: string;
 }
 
-function resolveSelectedPointerEvidence(
+export function resolveSelectedPointerEvidence(
   input: unknown,
 ):
   | { readonly ok: true; readonly value: SelectedPointerEvidence }

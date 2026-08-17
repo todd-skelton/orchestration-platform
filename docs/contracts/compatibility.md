@@ -34,7 +34,8 @@ The current registry uses the approved v2 authority contracts:
   `authority-history-leaf/v1`, `authority-history-node/v1`,
   `authority-history-empty-root/v1`, `authority-history-root/v1`,
   `authority-history-update-proof/v1`,
-  `authority-history-append-receipt/v1`, and `pointer-evidence-packet/v2`;
+  `authority-history-append-receipt/v1`, `authority-membership-evidence/v1`,
+  `pointer-evidence-slot/v2`, and `pointer-evidence-packet/v2`;
 - release/cleanup:
   `active-release/v2`, `activation-cleanup-gate-root/v2`,
   `activation-cleanup-gate-head/v2`,
@@ -54,7 +55,9 @@ The current registry uses the approved v2 authority contracts:
 - commit journal: `pointer-mutation-run-checkpoint-core/v1`,
   `pointer-mutation-run-current-value/v1`,
   `pointer-mutation-run-selector-post-selection-observation/v1`, and
-  `pointer-mutation-commit-resolution/v1`;
+  `pointer-mutation-commit-resolution/v1`, with the composed
+  `pointer-mutation-run-checkpoint-evidence/v1` and
+  `pointer-mutation-commit-evidence/v1` envelopes;
 - external bootstrap: `physical-destination-identity/v1`,
   `physical-destination-locator-observation-receipt/v1`,
   `state-mutation-destination-owner-value/v1`,
@@ -63,11 +66,16 @@ The current registry uses the approved v2 authority contracts:
   `state-mutation-destination-owner-conflict-receipt/v1`,
   `state-mutation-destination-owner-teardown-archive/v1`,
   `state-mutation-destination-owner-successor-review-core/v1`,
+  `destination-owner-prior-installation/v1`,
+  `destination-owner-successor-authority/v1`,
+  `destination-owner-independent-review/v1`,
   `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`,
   `state-mutation-destination-owner-retention/v1`,
   `state-mutation-bootstrap-anchor/v1`,
   `state-mutation-bootstrap-anchor-lifecycle-value/v1`,
   `state-mutation-bootstrap-anchor-use-intent/v1`,
+  `bootstrap-proposed-genesis-input/v1`,
+  `bootstrap-reviewed-installer/v1`, `bootstrap-reviewed-helper/v1`,
   `state-mutation-bootstrap-anchor-cas-proposal/v1`,
   `state-mutation-bootstrap-anchor-current-tip/v1`,
   `state-mutation-bootstrap-anchor-conflict-receipt/v1`,
@@ -259,6 +267,14 @@ the closed evidence-slot census, not lifetime rotations. Tombstones authenticate
 both removal and selected prior producers. Authority history remains
 FULL_REQUIRED.
 
+The packet serializes the exact global identity, selected current authority,
+composed authority-history binding, twelve registry-ordered typed evidence
+slots, deduplicated membership envelopes, and (for `MUTATION_COMMIT`) the
+composed nine-checkpoint run. Digest-only bags, reordered/duplicate slots,
+unselected producer triples, and a mutation purpose without a current commit
+refuse. `ordinaryEpochSequence` and `validateEpochSequence` remain diagnostic
+helpers only and are absent from the current root export.
+
 Retention keeps destination/anchor lineage, physical identity/observations,
 authority history, and run audit FULL_REQUIRED. Terminal attempt history alone
 may use checkpoint compaction. Compaction requires selected non-pending
@@ -267,6 +283,13 @@ PENDING/UNKNOWN.
 AUDIT_DEGRADED permits only existing recovery/retry/cleanup, selected attachment,
 and ordinary non-release ticks; it blocks new promotion/bootstrap/certification,
 unrelated authorization/attachment, compaction, and audit finalization.
+
+The external bootstrap graph remains acyclic: selected owner/anchor lifecycle
+values do not embed the downstream successor-post or final consumption receipt.
+Composed validators instead recompute those receipts after their referenced
+owner/anchor tips exist and bind every value/proposal/tip readback. Owner
+retirement similarly selects from a pre-existing archive of the exact prior
+owner triple; no archive contains the successor value that names it.
 
 ## Review attack surface
 

@@ -23,9 +23,11 @@ import { diagnosticSchemaDefinitions, diagnosticSchemaVersions } from "./registr
 import { validateAgainstSchema, type ParseResult } from "./runtime.js";
 import {
   fixedEvidencePacketLimits,
+  ordinaryEpochSequence,
   validateCurrentCommitEpochComposition,
   validateEvidencePacket,
   validateHistoricalAuthorityAuthentication,
+  validateEpochSequence,
 } from "./v2.js";
 
 function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
@@ -44,9 +46,11 @@ export const diagnostic = Object.freeze({
   schemaVersions: diagnosticSchemaVersions,
   legacyPacket: Object.freeze({
     fixedEvidencePacketLimits,
+    ordinaryEpochSequence,
     validateCurrentCommitEpochComposition,
     validateEvidencePacket,
     validateHistoricalAuthorityAuthentication,
+    validateEpochSequence,
   }),
   paths: Object.freeze({
     cleanupGateArchivePath,

@@ -6,6 +6,7 @@ import {
   canonicalDigest,
   classifyProposal,
   computeConflictDigest,
+  computeAuthorityEpochKey,
   computeCurrentTipDigest,
   computeMutationId,
   computePointerInstanceDigest,
@@ -13,13 +14,17 @@ import {
   computePointerValueDigest,
   computeProposalReceiptDigest,
   computeRecoveryAuthorizationCoreDigest,
+  computeRunAuditDigest,
+  computeRunCheckpointCoreDigest,
+  computeRunPostSelectionDigest,
+  computeRunSegmentDigest,
+  computeCommitResolutionDigest,
   computeReservationPredecessorKey,
   diagnostic,
   derivePointerPositionEvidence,
   framedBytes,
   isCleanupLifecyclePublicationPair,
   isCleanupLifecyclePublicationTransition,
-  ordinaryEpochSequence,
   parseCanonicalContractBytes,
   parseContract,
   pointerKinds,
@@ -39,7 +44,6 @@ import {
   stateMutationAuthorityPath,
   stateMutationLockPath,
   stateMutationRegistry,
-  validateEpochSequence,
   validateAuthorizationReceiptChain,
   validateAuthorizationRevokeReceiptChain,
   validateGateAuthorizationBinding,
@@ -51,6 +55,7 @@ import {
   validateRecoveryAccumulatorFormula,
   validateSelectedPointerEvidence,
   validateCleanupHeadHistory,
+  validateCommitRunComposition,
   validateRetentionTransition,
   validateRotationCensus,
   v2SchemaVersions,
@@ -62,9 +67,11 @@ import { digest, digest2, fixtureFor, instant, uuid, uuid2 } from "./fixtures.js
 
 const {
   fixedEvidencePacketLimits,
+  ordinaryEpochSequence,
   validateCurrentCommitEpochComposition,
   validateEvidencePacket,
   validateHistoricalAuthorityAuthentication,
+  validateEpochSequence,
 } = diagnostic.legacyPacket;
 
 function invalidFor(rule: FieldRule): unknown {
@@ -330,7 +337,12 @@ function terminalPointerValue(
         terminalSummaryDigest: digest,
       };
     case "POINTER_MUTATION_RUN_CURRENT":
-      return { ...base, phase: "SELECTED" };
+      return {
+        ...base,
+        stage: "CURRENT_AUTHORITY_POST_CAS_READ",
+        phase: "SELECTED",
+        terminalResolutionDigest: digest,
+      };
     default:
       return base;
   }
@@ -518,7 +530,7 @@ describe("current and diagnostic schema registries", () => {
     expect(pointerRegistry.filter((row) => row.transactionPolicy === "NULL")).toHaveLength(3);
     expect(pointerRegistry.filter((row) => row.sourcePolicy === "RECOVERY_SOURCE")).toHaveLength(3);
     expect(canonicalDigest(pointerPositionContracts)).toBe(
-      "6d34346250c5c5803e9ed453e0442e1941d150a6123e4ade3e3ed1c7de3bf320",
+      "894fc993e7d88d1d7a794e22d8b18ef18118dac914363c42708708e57ef87461",
     );
     const constructedPathCensus: JsonValue[] = [];
     for (const row of pointerRegistry) {
@@ -575,7 +587,10 @@ describe("current and diagnostic schema registries", () => {
       const positionDigest = computePointerPositionDigest(row.kind, position);
       expect(validatePointerPositionEvidence(row.kind, position)).toEqual([]);
       for (const field of pointerPositionContracts[row.kind].ordinaryFields) {
-        const invalid = field === "previousArchiveHeadDigest" ? "invalid" : null;
+        const invalid =
+          field === "previousArchiveHeadDigest" || field === "terminalResolutionDigest"
+            ? "invalid"
+            : null;
         expect(
           validatePointerPositionEvidence(row.kind, { ...position, [field]: invalid }),
           `${row.kind}:${field}`,
@@ -615,7 +630,7 @@ describe("current and diagnostic schema registries", () => {
       });
     }
     expect(canonicalDigest(constructedPathCensus)).toBe(
-      "68454fad63404190409184a5ae827c80fe433ea34dc0bb40a1b79fa61e0804f4",
+      "78fcea836c3f6418a044e3c8367d66f4a19e514e9938ce7e5b1f0809cd0a10f2",
     );
     const familyCensus = pointerRegistry.map((row) => ({
       archiveTemplates: row.archiveTemplates,
@@ -632,7 +647,7 @@ describe("current and diagnostic schema registries", () => {
       valueSchemas: row.valueSchemas,
     }));
     expect(canonicalDigest(familyCensus)).toBe(
-      "7602ffa1eb45885f23114a93258f15d410d3c781bc4ccc3ffa26adc8e4c487a9",
+      "52920188587bf39f1bf5791ec7773f609c3277708e571acc49aa9ae7cfbb4ff4",
     );
     expect(pointerPath("ACTIVE_RELEASE")).toBe("installation/active-release.json");
     expect(pointerPath("RECOVERY_AUTHORIZATION_STATE", { transactionId: uuid })).toBe(
@@ -708,6 +723,8 @@ describe("current and diagnostic schema registries", () => {
       "validateEvidencePacket",
       "validateCurrentCommitEpochComposition",
       "validateHistoricalAuthorityAuthentication",
+      "ordinaryEpochSequence",
+      "validateEpochSequence",
       "recoveryFenceCurrentPath",
       "recoveryLaunchPath",
       "validateRecoveryAuthorizationAttachment",
@@ -777,9 +794,21 @@ describe("current and diagnostic schema registries", () => {
       "native-removal-receipt/v1",
       "recovery-authorization-revoke-receipt/v1",
       "recovery-authorization-attachment/v1",
+      "destination-owner-prior-installation/v1",
+      "destination-owner-successor-authority/v1",
+      "destination-owner-independent-review/v1",
+      "state-mutation-destination-owner-teardown-archive/v1",
+      "state-mutation-destination-owner-retention/v1",
+      "bootstrap-proposed-genesis-input/v1",
+      "bootstrap-reviewed-installer/v1",
+      "bootstrap-reviewed-helper/v1",
+      "pointer-mutation-run-checkpoint-evidence/v1",
+      "pointer-mutation-commit-evidence/v1",
+      "pointer-evidence-slot/v2",
+      "authority-membership-evidence/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(83);
+    expect(schemaVersions).toHaveLength(95);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -1072,7 +1101,7 @@ describe("framed pointer digest graph", () => {
       schemaVersion,
     }));
     expect(canonicalDigest(schemaBytes)).toBe(
-      "807be06713ef954f1197abd95657ec8d28d29539ed24cdd297134043dad8cb78",
+      "69171be3c96a8f58d2271ac99e701d15c4ee93ee0826a65bcba6f85c7fe0e068",
     );
   });
 
@@ -1378,7 +1407,7 @@ describe("framed pointer digest graph", () => {
       expect(() => computePointerPositionDigest(otherRow.kind, position)).toThrow();
     }
     expect(canonicalDigest(census)).toBe(
-      "9e828b686df960ee1ee4687831ada92bd6991f99f449458656178af76543beb9",
+      "f310c6e7a9bf064abf7cca87f4e9db9a89a214e39c53ca8a06f04e2537786c36",
     );
   });
 
@@ -1600,7 +1629,6 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       historyCount: "1",
       historyRootKind: "NONEMPTY",
       historyAppendReceiptDigest: digest,
-      bootstrapGenesisCoreDigest: null,
       successorCoreDigest: digest,
       rotationOperationId: digest,
     };
@@ -3063,7 +3091,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
           valueDigest: selection.valueDigest,
         })),
       ),
-    ).toBe("470766f7bead161e9192001cdd166733f99c14252f9336e0a4e34fd1209f77e7");
+    ).toBe("e9597ec60aea9986e6437d7d55acf54799a2491e6d58845553488851170da64b");
     expect(validateSelectedPointerEvidence(reservationSelection.envelope)).toEqual([]);
     expect(
       validateEvidencePacket({
@@ -3238,5 +3266,175 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     expect(recoveryAccumulatorDigest(null, digest)).not.toBe(
       computePointerValueDigest("RECOVERY_ATTEMPT_ACCUMULATOR", digest2, accumulator0),
     );
+  });
+
+  test("composes the fixed nine-stage run graph through selected META_LEAF evidence", () => {
+    const authorityValue: ContractRecord = {
+      ...fixtureFor("state-mutation-authority-value/v2"),
+      authorityOrdinal: "1",
+      historyRootKind: "NONEMPTY",
+      historyCount: "1",
+      historyAppendReceiptDigest: digest,
+      successorCoreDigest: digest,
+      rotationOperationId: digest,
+      priorAuthorityTipDigest: digest,
+      priorAuthorityValueDigest: digest,
+      priorAuthorityReceiptDigest: digest,
+      priorHelperDigest: digest,
+      priorHelperProfileDigest: digest,
+      priorHelperAbiDigest: digest,
+      priorCustodyReceiptDigest: digest,
+      rotationKind: "ROTATION",
+      producerKind: "SELECTED_STABLE",
+    };
+    const authority = pointerSelection("STATE_MUTATION_AUTHORITY_ROTATION", authorityValue, {
+      pathBindings: {},
+      transactionId: null,
+      sourceToken: "none",
+    });
+    const authorityEpoch = {
+      tipDigest: authority.tipDigest,
+      valueDigest: authority.valueDigest,
+      proposalReceiptDigest: authority.proposalReceiptDigest,
+    };
+    const target = pointerSelection("ACTIVE_RELEASE", fixtureFor("active-release/v2"), {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      authorityEpoch,
+    });
+    const epochSequence = ordinaryEpochSequence.map((step) => ({
+      step,
+      authorityEpochDigest: authority.valueDigest,
+      authorityEpochTipDigest: authority.tipDigest,
+      authorityEpochValueDigest: authority.valueDigest,
+      authorityEpochReceiptDigest: authority.proposalReceiptDigest,
+    }));
+    const producerEpochKey = computeAuthorityEpochKey({
+      globalIdentityDigest: authorityValue.globalIdentityDigest as string,
+      authorityPathInstanceDigest: authority.pathInstanceDigest,
+      authorityTipDigest: authority.tipDigest,
+      authorityValueDigest: authority.valueDigest,
+      authorityReceiptDigest: authority.proposalReceiptDigest,
+    });
+    let audit: string | null = null;
+    let priorSelector: ReturnType<typeof pointerSelection> | null = null;
+    let priorPostDigest: string | null = null;
+    const checkpoints: ContractRecord[] = [];
+    for (const [index, stage] of [
+      "CURRENT_AUTHORITY_READ",
+      "TARGET_RECONCILED",
+      "VALUE_READBACK",
+      "PROPOSAL_READBACK",
+      "CURRENT_AUTHORITY_PRE_CAS_READ",
+      "CAS_ARMED",
+      "TARGET_POST_CAS_READBACK",
+      "PROPOSAL_CLASSIFIED",
+      "CURRENT_AUTHORITY_POST_CAS_READ",
+    ].entries()) {
+      const terminal = index >= 7;
+      const resolution = terminal
+        ? {
+            ...fixtureFor("pointer-mutation-commit-resolution/v1"),
+            targetPathInstanceDigest: target.pathInstanceDigest,
+            targetMutationId: target.proposal.mutationId!,
+            outcome: "SELECTED",
+            producerEpochKey,
+          }
+        : null;
+      const segment: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-segment/v1"),
+        globalIdentityDigest: authorityValue.globalIdentityDigest!,
+        targetPathInstanceDigest: target.pathInstanceDigest,
+        targetMutationId: target.proposal.mutationId!,
+        runId: digest2,
+        runOrdinal: "0",
+        stage,
+      };
+      const segmentDigest = computeRunSegmentDigest(segment);
+      audit = computeRunAuditDigest(audit, segmentDigest);
+      const core: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-checkpoint-core/v1"),
+        globalIdentityDigest: authorityValue.globalIdentityDigest!,
+        targetPathInstanceDigest: target.pathInstanceDigest,
+        targetMutationId: target.proposal.mutationId!,
+        runOrdinal: "0",
+        checkpointOrdinal: String(index),
+        segmentDigest,
+        auditDigest: audit,
+        priorSelectorTipDigest: priorSelector?.tipDigest ?? null,
+        priorSelectorValueDigest: priorSelector?.valueDigest ?? null,
+        priorSelectorReceiptDigest: priorSelector?.proposalReceiptDigest ?? null,
+        priorPostSelectionObservationDigest: priorPostDigest,
+        stage,
+        phase: terminal ? "SELECTED" : index >= 5 ? "CAS_AMBIGUOUS" : "CRASH_PREFIX",
+        terminalResolutionDigest: resolution ? computeCommitResolutionDigest(resolution) : null,
+      };
+      const coreDigest = computeRunCheckpointCoreDigest(core);
+      const selectorValue: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-current-value/v1"),
+        targetPathInstanceDigest: target.pathInstanceDigest,
+        targetMutationId: target.proposal.mutationId!,
+        checkpointCoreDigest: coreDigest,
+        runOrdinal: "0",
+        checkpointOrdinal: String(index),
+        stage,
+        phase: core.phase!,
+        terminalResolutionDigest: core.terminalResolutionDigest!,
+      };
+      const selector = pointerSelection("POINTER_MUTATION_RUN_CURRENT", selectorValue, {
+        pathBindings: {
+          pointerInstanceDigest: target.pathInstanceDigest,
+          targetMutationId: target.proposal.mutationId as string,
+        },
+        transactionId: null,
+        sourceToken: "none",
+        prior: priorSelector,
+        authorityEpoch,
+      });
+      const post: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-selector-post-selection-observation/v1"),
+        checkpointCoreDigest: coreDigest,
+        selectorPathInstanceDigest: selector.pathInstanceDigest,
+        selectorMutationId: selector.proposal.mutationId!,
+        selectorValueDigest: selector.valueDigest,
+        selectorReceiptDigest: selector.proposalReceiptDigest,
+        selectorTipDigest: selector.tipDigest,
+        valueReadbackDigest: selector.valueDigest,
+        proposalReadbackDigest: selector.proposalReceiptDigest,
+        tipReadbackDigest: selector.tipDigest,
+      };
+      priorSelector = selector;
+      priorPostDigest = computeRunPostSelectionDigest(post);
+      checkpoints.push({
+        schemaVersion: "pointer-mutation-run-checkpoint-evidence/v1",
+        segment,
+        core,
+        selectorSelection: selector.envelope,
+        postSelectionObservation: post,
+        terminalResolution: resolution,
+      });
+    }
+    const commit = {
+      schemaVersion: "pointer-mutation-commit-evidence/v1",
+      authoritySelection: authority.envelope,
+      epochSequence,
+      targetSelection: target.envelope,
+      checkpoints,
+    };
+    expect(validateCommitRunComposition(commit)).toEqual([]);
+    expect(
+      validateCommitRunComposition({
+        ...commit,
+        checkpoints: checkpoints.map((entry, index) =>
+          index === 8
+            ? {
+                ...entry,
+                core: { ...(entry.core as ContractRecord), targetMutationId: digest },
+              }
+            : entry,
+        ),
+      }),
+    ).not.toEqual([]);
   });
 });

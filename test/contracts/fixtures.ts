@@ -265,7 +265,6 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         rotationKind: "GENESIS",
         producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
         historyAppendReceiptDigest: null,
-        bootstrapGenesisCoreDigest: digest,
         successorCoreDigest: null,
         rotationOperationId: null,
         priorAuthorityTipDigest: null,
@@ -275,6 +274,43 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         priorHelperProfileDigest: null,
         priorHelperAbiDigest: null,
         priorCustodyReceiptDigest: null,
+      };
+    case "pointer-cas-proposal-receipt/v2":
+      return {
+        producerKind: "SELECTED_EPOCH",
+        authorityEpochTipDigest: digest,
+        authorityEpochValueDigest: digest,
+        authorityEpochReceiptDigest: digest,
+      };
+    case "physical-destination-identity/v1":
+      return {
+        leafIdentityKind: "EXISTING_DIRECTORY",
+        existingLeafObjectDigest: digest,
+        canonicalLeafName: null,
+      };
+    case "state-mutation-destination-owner-successor-review-core/v1":
+      return {
+        priorInstallation: {
+          ...baseFixture("destination-owner-prior-installation/v1"),
+        },
+        successorAuthority: {
+          ...baseFixture("destination-owner-successor-authority/v1"),
+        },
+        independentReview: {
+          ...baseFixture("destination-owner-independent-review/v1"),
+        },
+      };
+    case "state-mutation-bootstrap-anchor-use-intent/v1":
+      return {
+        proposedGenesisInput: {
+          ...baseFixture("bootstrap-proposed-genesis-input/v1"),
+        },
+        reviewedInstaller: {
+          ...baseFixture("bootstrap-reviewed-installer/v1"),
+        },
+        reviewedHelper: {
+          ...baseFixture("bootstrap-reviewed-helper/v1"),
+        },
       };
     case "authority-history-update-proof/v1":
       return {
@@ -290,11 +326,12 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
     case "pointer-evidence-packet/v2":
       return {
         purpose: "HISTORICAL_READ",
-        currentCommitDigest: null,
-        evidenceSlotDigests: Array.from({ length: 12 }, (_, index) =>
-          index.toString(16).padStart(64, "0"),
-        ),
-        producerMembershipDigests: [digest],
+        globalIdentity: { kind: "fixture" },
+        currentAuthoritySelection: { kind: "fixture" },
+        authorityHistoryBinding: { kind: "fixture" },
+        currentCommit: null,
+        evidenceSlots: Array.from({ length: 12 }, (_, index) => ({ kind: `fixture-${index}` })),
+        producerMemberships: [],
       };
     case "recovery-authorization-core/v1":
       return {

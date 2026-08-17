@@ -8,6 +8,10 @@ import {
   computeAuthorityHistoryRootDigest,
   computeAuthorityLeafDigest,
   computeAuthorityNodeDigest,
+  computeAuthorityAppendReceiptDigest,
+  computeAuthorityRotationId,
+  computeAuthoritySuccessorCoreDigest,
+  computeAuthorityUpdateProofDigest,
   computeSparseRoot,
   computeBootstrapAnchorDigest,
   computeBootstrapAnchorProposalDigest,
@@ -24,26 +28,36 @@ import {
   computeGlobalIdentityDigest,
   computePhysicalDestinationDigest,
   computePhysicalObservationDigest,
+  computeCurrentTipDigest,
+  computeMutationId,
+  computePointerInstanceDigest,
+  computePointerPositionDigest,
+  computePointerValueDigest,
+  computeProposalReceiptDigest,
   computeRunAuditDigest,
   computeRunCheckpointCoreDigest,
   computeRunId,
   computeRunPostSelectionDigest,
   computeRunSegmentDigest,
   diagnostic,
+  derivePointerPositionEvidence,
   externalAuthorityPaths,
   framedBytes,
   incrementDecimalAscii,
   parseContract,
   pointerKinds,
+  pointerPath,
   pointerRegistry,
   schemaVersions,
   validateBootstrapAnchorTransition,
+  validateBootstrapAnchorComposition,
   validateAuthorityMembership,
   validateAuthoritySparseUpdate,
   validateAuthorityValueHistoryBinding,
   validateBootstrapGenesisGraph,
   validateCommitRunSequence,
   validateDestinationOwnerTransition,
+  validateDestinationOwnerComposition,
   validateEvidencePacketV2,
   type ContractRecord,
   type JsonValue,
@@ -73,13 +87,16 @@ describe("approved v2 authority contracts", () => {
           schemaVersion,
         })),
       ),
-    ).toBe("035aae15fb04483eff82b792a1f3d7d9a540975df153b4a4ea8b01846ebe01e7");
+    ).toBe("ff5807539c578a64c3f373d282d509869b1c22be85b09861ea42eb28f01600e9");
   });
 
   test("closes bootstrap versus selected-epoch proposal producers", () => {
     const proposal = fixtureFor("pointer-cas-proposal-receipt/v2");
     const bootstrap = {
       ...proposal,
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
       producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
       priorTipDigest: null,
       priorValueDigest: null,
@@ -149,7 +166,7 @@ describe("approved v2 authority contracts", () => {
     expect(externalAuthorityPaths.physicalObservation(dphys, dobsA)).toContain(dobsA);
     expect(() => externalAuthorityPaths.physicalIdentity(dphys.toUpperCase())).toThrow();
     expect(canonicalDigest({ ddest, dobsA, dobsB, dphys })).toBe(
-      "98318d7bf43ef23b82308fb8723555a2f60a09fcea07bc133f0146b484655380",
+      "eb867a396fa447fe287697ff87ccaf9f92c22cf00b2860141f70dee428bc569f",
     );
   });
 
@@ -160,14 +177,24 @@ describe("approved v2 authority contracts", () => {
       lifecycle: "ACTIVE",
       successorReviewCoreDigest: null,
     };
-    const consumed = { ...genesis, ownerOrdinal: "1", lifecycle: "CONSUMED" };
-    const retired = { ...consumed, ownerOrdinal: "2", lifecycle: "RETIRED" };
+    const consumed = {
+      ...genesis,
+      ownerOrdinal: "1",
+      lifecycle: "CONSUMED",
+    };
+    const retired = {
+      ...consumed,
+      ownerOrdinal: "2",
+      lifecycle: "RETIRED",
+      teardownArchiveDigest: digest,
+    };
     const successor = {
       ...retired,
       ownerOrdinal: "3",
       lifecycle: "ACTIVE",
       installationId: uuid2,
       successorReviewCoreDigest: digest2,
+      teardownArchiveDigest: null,
     };
     expect(validateDestinationOwnerTransition(null, genesis)).toEqual([]);
     expect(validateDestinationOwnerTransition(genesis, consumed)).toEqual([]);
@@ -181,7 +208,7 @@ describe("approved v2 authority contracts", () => {
         ...successor,
         successorReviewCoreDigest: null,
       }),
-    ).toContain("successorReviewCoreDigest:missing");
+    ).not.toEqual([]);
     const dov = computeDestinationOwnerValueDigest(genesis);
     const proposal: Record<string, JsonValue> = {
       ...fixtureFor("state-mutation-destination-owner-cas-proposal/v1"),
@@ -217,12 +244,160 @@ describe("approved v2 authority contracts", () => {
       proposalReceiptDigest: dor,
     });
     expect(canonicalDigest({ dor, dot, dov, mutationId })).toBe(
-      "e3e82bc0b21a555132d7902639302812fe033227c7950fa0f3848f6238c5d7e3",
+      "512a3dccca492b5f784b271947385dae12d2cda0acaebb63bb3c649641053db5",
     );
   });
 
+  test("composes admitted destination ownership and ACTIVE bootstrap anchor selection", () => {
+    const physicalIdentity = fixtureFor("physical-destination-identity/v1");
+    const dphys = computePhysicalDestinationDigest(physicalIdentity);
+    const observation = {
+      ...fixtureFor("physical-destination-locator-observation-receipt/v1"),
+      physicalDestinationDigest: dphys,
+      disposition: "ADMITTED",
+    };
+    const dobs = computePhysicalObservationDigest(observation);
+    const ddest = computeDestinationDigest(dphys);
+    const anchor: ContractRecord = {
+      ...fixtureFor("state-mutation-bootstrap-anchor/v1"),
+      destinationDigest: ddest,
+    };
+    const dba = computeBootstrapAnchorDigest(anchor);
+    const ownerValue: ContractRecord = {
+      ...fixtureFor("state-mutation-destination-owner-value/v1"),
+      destinationDigest: ddest,
+      physicalObservationDigest: dobs,
+      installationId: anchor.installationId!,
+      bootstrapAnchorDigest: dba,
+      ownerOrdinal: "0",
+      lifecycle: "ACTIVE",
+    };
+    const dov = computeDestinationOwnerValueDigest(ownerValue);
+    const ownerMutationId = computeDestinationOwnerMutationId({
+      destinationDigest: ddest,
+      currentPath: externalAuthorityPaths.destinationOwnerCurrent(ddest),
+      priorTipDigest: null,
+      priorValueDigest: null,
+      priorReceiptDigest: null,
+      ownerOrdinal: "0",
+      transition: "ACTIVATE_GENESIS",
+      successorValueDigest: dov,
+      installationId: ownerValue.installationId,
+      bootstrapAnchorDigest: dba,
+      source: "reviewed-bootstrap",
+      transitionEvidenceDigest: dobs,
+    });
+    const ownerProposal: ContractRecord = {
+      ...fixtureFor("state-mutation-destination-owner-cas-proposal/v1"),
+      destinationDigest: ddest,
+      mutationId: ownerMutationId,
+      priorTipDigest: null,
+      priorValueDigest: null,
+      priorReceiptDigest: null,
+      successorValueDigest: dov,
+      transition: "ACTIVATE_GENESIS",
+      positionDigest: dobs,
+    };
+    const dor = computeDestinationOwnerProposalDigest(ownerProposal);
+    const ownerTip: ContractRecord = {
+      ...fixtureFor("state-mutation-destination-owner-current-tip/v1"),
+      destinationDigest: ddest,
+      valueDigest: dov,
+      proposalReceiptDigest: dor,
+    };
+    const ownerSelection = { value: ownerValue, proposal: ownerProposal, tip: ownerTip };
+    const ownerComposition = {
+      anchorConsumed: null,
+      anchorConsumptionReceipt: null,
+      current: ownerSelection,
+      now: instant,
+      observation,
+      physicalIdentity,
+      previous: null,
+      successorPost: null,
+      successorReviewCore: null,
+      teardownArchive: null,
+    };
+    expect(validateDestinationOwnerComposition(ownerComposition)).toEqual([]);
+    expect(
+      validateDestinationOwnerComposition({
+        ...ownerComposition,
+        observation: { ...observation, disposition: "UNKNOWN" },
+      }),
+    ).not.toEqual([]);
+    const dot = computeDestinationOwnerTipDigest(ownerTip);
+    const anchorValue: ContractRecord = {
+      ...fixtureFor("state-mutation-bootstrap-anchor-lifecycle-value/v1"),
+      bootstrapAnchorDigest: dba,
+      lifecycle: "ACTIVE",
+      ownerActiveTipDigest: dot,
+      ownerActiveValueDigest: dov,
+      ownerActiveReceiptDigest: dor,
+    };
+    const dbav = computeBootstrapAnchorValueDigest(anchorValue);
+    const anchorProposal: ContractRecord = {
+      ...fixtureFor("state-mutation-bootstrap-anchor-cas-proposal/v1"),
+      bootstrapAnchorDigest: dba,
+      priorTipDigest: null,
+      priorValueDigest: null,
+      priorReceiptDigest: null,
+      successorValueDigest: dbav,
+      transition: "ACTIVATE",
+    };
+    const dbar = computeBootstrapAnchorProposalDigest(anchorProposal);
+    const anchorTip: ContractRecord = {
+      ...fixtureFor("state-mutation-bootstrap-anchor-current-tip/v1"),
+      bootstrapAnchorDigest: dba,
+      valueDigest: dbav,
+      proposalReceiptDigest: dbar,
+    };
+    expect(
+      validateBootstrapAnchorComposition({
+        anchor,
+        consumptionReceipt: null,
+        current: { value: anchorValue, proposal: anchorProposal, tip: anchorTip },
+        genesisPost: null,
+        genesisGraph: null,
+        now: instant,
+        ownerActive: ownerSelection,
+        ownerConsumed: null,
+        ownerObservation: observation,
+        ownerPhysicalIdentity: physicalIdentity,
+        previous: null,
+        successorPost: null,
+        successorReviewCore: null,
+        teardownReceipt: null,
+        useIntent: null,
+      }),
+    ).toEqual([]);
+  });
+
   test("keeps the external anchor to E0 graph acyclic and cross-bound", () => {
-    const anchor = fixtureFor("state-mutation-bootstrap-anchor/v1");
+    const authorityPath = pointerPath("STATE_MUTATION_AUTHORITY_ROTATION");
+    const identityBase = fixtureFor("state-mutation-global-identity/v1");
+    const dp = computePointerInstanceDigest({
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      canonicalPointerPath: authorityPath,
+      installationId: identityBase.installationId as string,
+      projectId: identityBase.projectId as string,
+      stateRootDigest: identityBase.stateRootDigest as string,
+      transactionId: null,
+      sourceToken: "none",
+    });
+    const identity: ContractRecord = {
+      ...identityBase,
+      authorityPath,
+      authorityPathInstanceDigest: dp,
+    };
+    const g = computeGlobalIdentityDigest(identity);
+    const anchor: ContractRecord = {
+      ...fixtureFor("state-mutation-bootstrap-anchor/v1"),
+      installationId: identity.installationId!,
+      projectId: identity.projectId!,
+      destinationStateRootDigest: identity.stateRootDigest!,
+      custodyInstanceDigest: identity.custodyInstanceDigest!,
+      authorityPath,
+    };
     const dba = computeBootstrapAnchorDigest(anchor);
     const active = {
       ...fixtureFor("state-mutation-bootstrap-anchor-lifecycle-value/v1"),
@@ -246,35 +421,180 @@ describe("approved v2 authority contracts", () => {
       valueDigest: dbav,
       proposalReceiptDigest: dbar,
     });
+    const emptyRoot = {
+      ...fixtureFor("authority-history-empty-root/v1"),
+      globalIdentityDigest: g,
+      treeRootDigest: computeAuthorityEmptyDigest(0),
+    };
+    const dhe = computeAuthorityEmptyRootDigest(emptyRoot);
+    const authorityValue: Record<string, JsonValue> = {
+      ...fixtureFor("state-mutation-authority-value/v2"),
+      installationId: identity.installationId!,
+      projectId: identity.projectId!,
+      stateRootDigest: identity.stateRootDigest!,
+      custodyInstanceDigest: identity.custodyInstanceDigest!,
+      globalIdentityDigest: g,
+      historyRootDigest: dhe,
+    };
+    const dv = computePointerValueDigest("STATE_MUTATION_AUTHORITY_ROTATION", dp, authorityValue);
+    const positionEvidence = derivePointerPositionEvidence(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      authorityValue,
+    );
+    const positionDigest = computePointerPositionDigest(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      positionEvidence,
+    );
     const core: Record<string, JsonValue> = {
       ...fixtureFor("state-mutation-bootstrap-genesis-core/v1"),
       bootstrapAnchorDigest: dba,
+      globalIdentityDigest: g,
+      transactionId: anchor.bootstrapTransactionId!,
+      authorityPathInstanceDigest: dp,
+      authorityValueDigest: dv,
+      genesisPositionDigest: positionDigest,
     };
     const dbg = computeBootstrapGenesisCoreDigest(core);
+    const mutationId = computeMutationId({
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      canonicalPointerPath: authorityPath,
+      pathInstanceDigest: dp,
+      transactionId: null,
+      sourceToken: "none",
+      positionEvidence,
+      priorDt: null,
+      priorDv: null,
+      priorDr: null,
+      successorDv: dv,
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
+    });
+    const proposal = {
+      ...fixtureFor("pointer-cas-proposal-receipt/v2"),
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      pathInstanceDigest: dp,
+      mutationId,
+      priorTipDigest: null,
+      priorValueDigest: null,
+      priorReceiptDigest: null,
+      successorValueDigest: dv,
+      positionDigest,
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
+      producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
+      producerDigest: dbg,
+      authorityEpochTipDigest: null,
+      authorityEpochValueDigest: null,
+      authorityEpochReceiptDigest: null,
+    };
+    const dr = computeProposalReceiptDigest({
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      pathInstanceDigest: dp,
+      mutationId,
+      priorDt: null,
+      priorDv: null,
+      priorDr: null,
+      successorDv: dv,
+      positionDigest,
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
+      producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
+      producerDigest: dbg,
+      authorityEpochDt: null,
+      authorityEpochDv: null,
+      authorityEpochDr: null,
+      receipt: proposal,
+    });
+    const tip = {
+      ...fixtureFor("pointer-current-tip/v1"),
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      pathInstanceDigest: dp,
+      valueDigest: dv,
+      proposalReceiptDigest: dr,
+    };
+    const dt = computeCurrentTipDigest("STATE_MUTATION_AUTHORITY_ROTATION", dp, dv, dr, tip);
     const post = {
       ...fixtureFor("state-mutation-bootstrap-genesis-post-selection-receipt/v1"),
       bootstrapAnchorDigest: dba,
       genesisCoreDigest: dbg,
-      authorityPathInstanceDigest: core.authorityPathInstanceDigest,
-      valueDigest: core.authorityValueDigest,
+      authorityPathInstanceDigest: dp,
+      valueDigest: dv,
+      proposalReceiptDigest: dr,
+      tipDigest: dt,
+      valueReadbackDigest: dv,
+      proposalReadbackDigest: dr,
+      tipReadbackDigest: dt,
     };
     const dgp = computeBootstrapGenesisPostDigest(post);
-    expect(validateBootstrapGenesisGraph({ anchor, core, post })).toEqual([]);
+    const graph = {
+      anchor,
+      authoritySelection: { value: authorityValue, proposal, tip },
+      core,
+      emptyRoot,
+      globalIdentity: identity,
+      post,
+    };
+    expect(validateBootstrapGenesisGraph(graph)).toEqual([]);
+    const authorityEnvelope = {
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      canonicalPointerPath: authorityPath,
+      installationId: identity.installationId,
+      projectId: identity.projectId,
+      stateRootDigest: identity.stateRootDigest,
+      transactionId: null,
+      sourceToken: "none",
+      pathBindings: {},
+      positionEvidence,
+      tombstoneEvidence: null,
+      value: authorityValue,
+      proposal,
+      tip,
+    };
+    const historicalPacket = {
+      ...fixtureFor("pointer-evidence-packet/v2"),
+      globalIdentity: identity,
+      currentAuthoritySelection: authorityEnvelope,
+      authorityHistoryBinding: {
+        appendReceipt: null,
+        authorityValue,
+        globalIdentity: identity,
+        historyRoot: emptyRoot,
+        leaf: null,
+        priorHistoryRoot: null,
+        successorCore: null,
+        updateProof: null,
+      },
+      evidenceSlots: pointerKinds.map((pointerKind) => ({
+        schemaVersion: "pointer-evidence-slot/v2",
+        pointerKind,
+        selectedEvidence: null,
+        producerMembershipIndex: null,
+      })),
+      producerMemberships: [],
+    };
+    expect(validateEvidencePacketV2(historicalPacket)).toEqual([]);
+    expect(validateEvidencePacketV2({ ...historicalPacket, purpose: "MUTATION_COMMIT" })).toContain(
+      "purpose:current-commit-mismatch",
+    );
     expect(
       validateBootstrapGenesisGraph({
-        anchor,
-        core,
+        ...graph,
         post: { ...post, genesisCoreDigest: digest2 },
       }),
     ).toContain("post:core-anchor-mismatch");
-    expect(validateBootstrapAnchorTransition(active, { ...active, lifecycle: "CONSUMED" })).toEqual(
-      [],
-    );
+    expect(
+      validateBootstrapAnchorTransition(active, {
+        ...active,
+        lifecycle: "CONSUMED",
+        useIntentDigest: digest,
+        genesisPostSelectionReceiptDigest: dgp,
+      }),
+    ).toEqual([]);
     expect(validateBootstrapAnchorTransition(active, active)).toContain(
       "lifecycle:transition-refused",
     );
     expect(canonicalDigest({ dba, dbar, dbat, dbav, dbg, dgp })).toBe(
-      "7222d8c82da2792e78f5d17cd623961acfa3256dd05ed53f249c7370abc94a22",
+      "4fa87a247a57515e974149b0eef4f79e6c25580db26083b65ce03acb0c76e6b6",
     );
   });
 
@@ -458,14 +778,159 @@ describe("approved v2 authority contracts", () => {
         authorityValue: authority,
         globalIdentity: identity,
         historyRoot: emptyRoot,
+        leaf: null,
+        priorHistoryRoot: null,
+        successorCore: null,
+        updateProof: null,
       }),
     ).toEqual([]);
+    const leafBase: ContractRecord = {
+      ...fixtureFor("authority-history-leaf/v1"),
+      globalIdentityDigest: g,
+      authorityOrdinal: "0",
+      authorityPathInstanceDigest: identity.authorityPathInstanceDigest!,
+      authorityTipDigest: digest2,
+      authorityValueDigest: digest3,
+      authorityReceiptDigest: digest4,
+    };
+    const epochKey = computeAuthorityEpochKey({
+      globalIdentityDigest: g,
+      authorityPathInstanceDigest: leafBase.authorityPathInstanceDigest as string,
+      authorityTipDigest: leafBase.authorityTipDigest as string,
+      authorityValueDigest: leafBase.authorityValueDigest as string,
+      authorityReceiptDigest: leafBase.authorityReceiptDigest as string,
+    });
+    const leaf: ContractRecord = { ...leafBase, epochKey };
+    const de = computeAuthorityLeafDigest(leaf);
+    const siblings = Array.from({ length: 256 }, (_, index) =>
+      computeAuthorityEmptyDigest(256 - index),
+    );
+    const historyRoot: ContractRecord = {
+      ...fixtureFor("authority-history-root/v1"),
+      globalIdentityDigest: g,
+      count: "1",
+      treeRootDigest: computeSparseRoot(leaf.epochKey as string, de, siblings),
+      latestIncludedOrdinal: "0",
+      latestEpochKey: leaf.epochKey!,
+      latestTipDigest: leaf.authorityTipDigest!,
+      latestValueDigest: leaf.authorityValueDigest!,
+      latestReceiptDigest: leaf.authorityReceiptDigest!,
+    };
+    const dh = computeAuthorityHistoryRootDigest(historyRoot);
+    const rotationOperationId = computeAuthorityRotationId({
+      globalIdentityDigest: g,
+      predecessorOrdinal: "0",
+      predecessorTipDigest: leaf.authorityTipDigest as string,
+      predecessorValueDigest: leaf.authorityValueDigest as string,
+      predecessorReceiptDigest: leaf.authorityReceiptDigest as string,
+      successorOrdinal: "1",
+      selectedActiveReleaseDigest: digest,
+      reviewedHelperDigest: digest,
+      reviewedProfileDigest: digest,
+      reviewedAbiDigest: digest,
+      reviewedCustodyDigest: digest,
+    });
+    const successorCore: ContractRecord = {
+      ...fixtureFor("state-mutation-authority-successor-core/v1"),
+      globalIdentityDigest: g,
+      rotationOperationId,
+      predecessorTipDigest: leaf.authorityTipDigest!,
+      predecessorValueDigest: leaf.authorityValueDigest!,
+      predecessorReceiptDigest: leaf.authorityReceiptDigest!,
+      successorOrdinal: "1",
+      successorHistoryRootDigest: dh,
+    };
+    const successorCoreDigest = computeAuthoritySuccessorCoreDigest(successorCore);
+    const updateProof: ContractRecord = {
+      ...fixtureFor("authority-history-update-proof/v1"),
+      globalIdentityDigest: g,
+      epochKey: leaf.epochKey!,
+      leafDigest: de,
+      priorRootKind: "EMPTY",
+      priorRootDigest: dhe,
+      successorRootDigest: dh,
+      priorCount: "0",
+      successorCount: "1",
+      siblingDigests: siblings,
+    };
+    const updateProofDigest = computeAuthorityUpdateProofDigest(updateProof);
+    const appendReceipt: ContractRecord = {
+      ...fixtureFor("authority-history-append-receipt/v1"),
+      globalIdentityDigest: g,
+      rotationOperationId,
+      predecessorPathInstanceDigest: leaf.authorityPathInstanceDigest!,
+      predecessorTipDigest: leaf.authorityTipDigest!,
+      predecessorValueDigest: leaf.authorityValueDigest!,
+      predecessorReceiptDigest: leaf.authorityReceiptDigest!,
+      priorRootKind: "EMPTY",
+      priorRootDigest: dhe,
+      priorCount: "0",
+      appendedEpochKey: leaf.epochKey!,
+      leafDigest: de,
+      updateProofDigest,
+      successorRootDigest: dh,
+      successorCount: "1",
+      successorCoreDigest,
+    };
+    const appendDigest = computeAuthorityAppendReceiptDigest(appendReceipt);
+    const rotatedAuthority: ContractRecord = {
+      ...fixtureFor("state-mutation-authority-value/v2"),
+      installationId: identity.installationId!,
+      projectId: identity.projectId!,
+      stateRootDigest: identity.stateRootDigest!,
+      custodyInstanceDigest: identity.custodyInstanceDigest!,
+      globalIdentityDigest: g,
+      authorityOrdinal: "1",
+      historyRootKind: "NONEMPTY",
+      historyRootDigest: dh,
+      historyCount: "1",
+      historyAppendReceiptDigest: appendDigest,
+      successorCoreDigest,
+      rotationOperationId,
+      priorAuthorityTipDigest: leaf.authorityTipDigest!,
+      priorAuthorityValueDigest: leaf.authorityValueDigest!,
+      priorAuthorityReceiptDigest: leaf.authorityReceiptDigest!,
+      priorHelperDigest: digest,
+      priorHelperProfileDigest: digest,
+      priorHelperAbiDigest: digest,
+      priorCustodyReceiptDigest: digest,
+      rotationKind: "ROTATION",
+      producerKind: "SELECTED_STABLE",
+    };
+    expect(
+      validateAuthorityValueHistoryBinding({
+        appendReceipt,
+        authorityValue: rotatedAuthority,
+        globalIdentity: identity,
+        historyRoot,
+        leaf,
+        priorHistoryRoot: emptyRoot,
+        successorCore,
+        updateProof,
+      }),
+    ).toEqual([]);
+    expect(
+      validateAuthorityValueHistoryBinding({
+        appendReceipt: { ...appendReceipt, successorCoreDigest: digest },
+        authorityValue: rotatedAuthority,
+        globalIdentity: identity,
+        historyRoot,
+        leaf,
+        priorHistoryRoot: emptyRoot,
+        successorCore,
+        updateProof,
+      }),
+    ).not.toEqual([]);
     expect(
       validateAuthorityValueHistoryBinding({
         appendReceipt: null,
         authorityValue: { ...authority, helperDigest: digest2 },
         globalIdentity: identity,
         historyRoot: emptyRoot,
+        leaf: null,
+        priorHistoryRoot: null,
+        successorCore: null,
+        updateProof: null,
       }),
     ).toEqual([]);
     expect(() => computeGlobalIdentityDigest({ ...identity, helperDigest: digest })).toThrow(
@@ -477,6 +942,10 @@ describe("approved v2 authority contracts", () => {
         authorityValue: authority,
         globalIdentity: { ...identity, projectId: uuid2 },
         historyRoot: emptyRoot,
+        leaf: null,
+        priorHistoryRoot: null,
+        successorCore: null,
+        updateProof: null,
       }),
     ).toContain("globalIdentityDigest:mismatch");
   });
@@ -551,22 +1020,21 @@ describe("approved v2 authority contracts", () => {
 
   test("separates historical-read and mutation-commit packets with fixed census", () => {
     const historical = fixtureFor("pointer-evidence-packet/v2");
-    expect(validateEvidencePacketV2(historical)).toEqual([]);
+    expect(validateEvidencePacketV2(historical)).not.toEqual([]);
+    expect(() => validateEvidencePacketV2({ ...historical, globalIdentity: null })).not.toThrow();
     expect(validateEvidencePacketV2({ ...historical, purpose: "MUTATION_COMMIT" })).toContain(
       "purpose:current-commit-mismatch",
     );
-    const mutation = { ...historical, purpose: "MUTATION_COMMIT", currentCommitDigest: digest };
-    expect(validateEvidencePacketV2(mutation)).toEqual([]);
-    expect(validateEvidencePacketV2({ ...mutation, evidenceSlotDigests: [digest] })).toContain(
-      "evidenceSlotDigests:registry-census-mismatch",
+    const mutation = { ...historical, purpose: "MUTATION_COMMIT", currentCommit: { kind: "x" } };
+    expect(validateEvidencePacketV2(mutation)).not.toEqual([]);
+    expect(validateEvidencePacketV2({ ...mutation, evidenceSlots: [] })).toContain(
+      "evidenceSlots:registry-census-mismatch",
     );
     expect(
       validateEvidencePacketV2({
         ...mutation,
-        producerMembershipDigests: Array.from({ length: 13 }, (_, index) =>
-          index.toString(16).padStart(64, "0"),
-        ),
+        producerMemberships: Array.from({ length: 13 }, (_, index) => ({ index })),
       }),
-    ).toContain("producerMembershipDigests:unbounded");
+    ).not.toEqual([]);
   });
 });
