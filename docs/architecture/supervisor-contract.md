@@ -113,18 +113,18 @@ transition, successor value, installation/anchor, and review/teardown evidence.
 Every named digest in the following public tables is
 `SHA256(F(domain, framed parts))`. The external identity/owner digests are exact:
 
-| Digest | Schema/domain | Framed parts | Canonical path |
-| --- | --- | --- | --- |
-| `Dphys` | `physical-destination-identity/v1` | stable host/custody namespace raw32, OS, physical volume raw32, filesystem raw32, nearest stable non-symlink ancestor object raw32, leaf identity kind, canonical physical leaf bytes, canonical schema bytes | `state-mutation-destination-identities/<Dphys>/identity.json` |
-| `Dobs` | `physical-destination-locator-observation-receipt/v1` | `Dphys` raw32, helper digest raw32, helper version text, logical-locator digest raw32, resolved-locator-readback digest raw32, case-comparison profile text, Unicode-normalization profile text, custody-instance digest raw32, custody-receipt digest raw32, native-identity-readback digest raw32, disposition text, canonical receipt bytes | `.../<Dphys>/observations/<Dobs>.json`; lock/time/validity remain fields inside canonical receipt bytes only |
-| `Ddest` | `bootstrap-destination-identity/v1` | `Dphys` raw32 only | `state-mutation-destination-owners/<Ddest>/` |
-| `Dov` | schema `state-mutation-destination-owner-value/v1`; domain `destination-owner-value/v1` | `Ddest` raw32, owner ordinal bounded decimal string, lifecycle, installation ID, anchor `Dba` raw32, canonical value bytes | `.../<Ddest>/values/<mutation-id>.json` |
-| `Dor` | schema `state-mutation-destination-owner-cas-proposal/v1`; domain `destination-owner-receipt/v1` | `Ddest` raw32, mutation ID raw32, nullable prior `Dot` raw32, nullable prior `Dov` raw32, nullable prior `Dor` raw32, successor `Dov` raw32, transition text, position digest raw32, canonical proposal bytes | `.../<Ddest>/proposals/<prior-tip-or-genesis>/<mutation-id>.json` |
-| `Dot` | schema `state-mutation-destination-owner-current-tip/v1`; domain `destination-owner-tip/v1` | `Ddest` raw32, `Dov` raw32, `Dor` raw32, canonical current-tip bytes | `.../<Ddest>/current.json` |
-| `Doc` | schema `state-mutation-destination-owner-conflict-receipt/v1`; domain `destination-owner-conflict/v1` | `Ddest` raw32, mutation ID raw32, losing `Dor` raw32, losing `Dov` raw32, winning `Dot` raw32, winning `Dov` raw32, winning `Dor` raw32, canonical conflict bytes | `.../<Ddest>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json` |
-| owner mutation ID | no record schema; domain `destination-owner-mutation-id/v1` | `Ddest` raw32, canonical current path text, nullable prior `Dot` raw32, nullable prior `Dov` raw32, nullable prior `Dor` raw32, owner ordinal bounded decimal string, transition text, successor `Dov` raw32, installation ID text, `Dba` raw32, source text, transition-evidence digest raw32 | selects the exact value/proposal path; timestamps/readbacks excluded |
-| `Dsrc` | schema `state-mutation-destination-owner-successor-review-core/v1`; domain `destination-owner-successor-review-core/v1` | `Ddest` raw32, prior RETIRED `Dot` raw32, prior RETIRED `Dov` raw32, prior RETIRED `Dor` raw32, teardown-archive digest raw32, prior-installation canonical bytes, successor installation ID text, successor-authority canonical bytes, independent-review canonical bytes, canonical review-core bytes | `.../<Ddest>/successor-review-cores/<prior-retired-tip>/<Dsrc>.json`; excludes successor `Dba`, `Dov`, `Dor`, `Dot`, their readbacks, and `Dsrp` |
-| `Dsrp` | schema `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`; domain `destination-owner-successor-review-post-selection-receipt/v1` | `Dsrc` raw32, successor `Dba` raw32, successor `Dov` raw32, successor `Dor` raw32, successor `Dot` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, destination-lock/custody-observation digest raw32, canonical post-selection bytes | `.../<Ddest>/successor-review-post-selection-receipts/<successor-owner-tip>.json`; downstream and excluded from review core, anchor, and owner selection graph |
+| Digest            | Schema/domain                                                                                                                                               | Framed parts                                                                                                                                                                                                                                                                                                                                   | Canonical path                                                                                                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dphys`           | `physical-destination-identity/v1`                                                                                                                          | stable host/custody namespace raw32, OS, physical volume raw32, filesystem raw32, nearest stable non-symlink ancestor object raw32, leaf identity kind, canonical physical leaf bytes, canonical schema bytes                                                                                                                                  | `state-mutation-destination-identities/<Dphys>/identity.json`                                                                                                  |
+| `Dobs`            | `physical-destination-locator-observation-receipt/v1`                                                                                                       | `Dphys` raw32, helper digest raw32, helper version text, logical-locator digest raw32, resolved-locator-readback digest raw32, case-comparison profile text, Unicode-normalization profile text, custody-instance digest raw32, custody-receipt digest raw32, native-identity-readback digest raw32, disposition text, canonical receipt bytes | `.../<Dphys>/observations/<Dobs>.json`; lock/time/validity remain fields inside canonical receipt bytes only                                                   |
+| `Ddest`           | `bootstrap-destination-identity/v1`                                                                                                                         | `Dphys` raw32 only                                                                                                                                                                                                                                                                                                                             | `state-mutation-destination-owners/<Ddest>/`                                                                                                                   |
+| `Dov`             | schema `state-mutation-destination-owner-value/v1`; domain `destination-owner-value/v1`                                                                     | `Ddest` raw32, owner ordinal bounded decimal string, lifecycle, installation ID, anchor `Dba` raw32, canonical value bytes                                                                                                                                                                                                                     | `.../<Ddest>/values/<mutation-id>.json`                                                                                                                        |
+| `Dor`             | schema `state-mutation-destination-owner-cas-proposal/v1`; domain `destination-owner-receipt/v1`                                                            | `Ddest` raw32, mutation ID raw32, nullable prior `Dot` raw32, nullable prior `Dov` raw32, nullable prior `Dor` raw32, successor `Dov` raw32, transition text, position digest raw32, canonical proposal bytes                                                                                                                                  | `.../<Ddest>/proposals/<prior-tip-or-genesis>/<mutation-id>.json`                                                                                              |
+| `Dot`             | schema `state-mutation-destination-owner-current-tip/v1`; domain `destination-owner-tip/v1`                                                                 | `Ddest` raw32, `Dov` raw32, `Dor` raw32, canonical current-tip bytes                                                                                                                                                                                                                                                                           | `.../<Ddest>/current.json`                                                                                                                                     |
+| `Doc`             | schema `state-mutation-destination-owner-conflict-receipt/v1`; domain `destination-owner-conflict/v1`                                                       | `Ddest` raw32, mutation ID raw32, losing `Dor` raw32, losing `Dov` raw32, winning `Dot` raw32, winning `Dov` raw32, winning `Dor` raw32, canonical conflict bytes                                                                                                                                                                              | `.../<Ddest>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json`                                                                                              |
+| owner mutation ID | no record schema; domain `destination-owner-mutation-id/v1`                                                                                                 | `Ddest` raw32, canonical current path text, nullable prior `Dot` raw32, nullable prior `Dov` raw32, nullable prior `Dor` raw32, owner ordinal bounded decimal string, transition text, successor `Dov` raw32, installation ID text, `Dba` raw32, source text, transition-evidence digest raw32                                                 | selects the exact value/proposal path; timestamps/readbacks excluded                                                                                           |
+| `Dsrc`            | schema `state-mutation-destination-owner-successor-review-core/v1`; domain `destination-owner-successor-review-core/v1`                                     | `Ddest` raw32, prior RETIRED `Dot` raw32, prior RETIRED `Dov` raw32, prior RETIRED `Dor` raw32, teardown-archive digest raw32, prior-installation canonical bytes, successor installation ID text, successor-authority canonical bytes, independent-review canonical bytes, canonical review-core bytes                                        | `.../<Ddest>/successor-review-cores/<prior-retired-tip>/<Dsrc>.json`; excludes successor `Dba`, `Dov`, `Dor`, `Dot`, their readbacks, and `Dsrp`               |
+| `Dsrp`            | schema `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`; domain `destination-owner-successor-review-post-selection-receipt/v1` | `Dsrc` raw32, successor `Dba` raw32, successor `Dov` raw32, successor `Dor` raw32, successor `Dot` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, destination-lock/custody-observation digest raw32, canonical post-selection bytes                                                            | `.../<Ddest>/successor-review-post-selection-receipts/<successor-owner-tip>.json`; downstream and excluded from review core, anchor, and owner selection graph |
 
 `physical-destination-identity/v1` excludes helper, path spelling, comparison
 profile, custody instance, receipt, time, and readback. `Ddest` has no part other
@@ -200,18 +200,18 @@ consumption/teardown receipts, and lifecycle archives. The closed domains are
 
 The public anchor/E0 graph is exact:
 
-| Digest | Schema/domain | Framed parts | Canonical path and exclusions |
-| --- | --- | --- | --- |
-| `Dba` | `state-mutation-bootstrap-anchor/v1` | `globalBootstrapIdentity` raw32, canonical anchor bytes | `state-mutation-authority-anchors/<installation>/anchor.json`; successor anchor binds review-core digest, never its post-selection receipt |
-| `Dbav` | schema `state-mutation-bootstrap-anchor-lifecycle-value/v1`; domain `bootstrap-anchor-value/v1` | `Dba` raw32, lifecycle text, canonical lifecycle-value bytes | `.../<installation>/values/<mutation-id>.json`; selected value excludes proposal/receipt/tip/conflict |
-| `Dbar` | schema `state-mutation-bootstrap-anchor-cas-proposal/v1`; domain `bootstrap-anchor-receipt/v1` | `Dba` raw32, mutation ID raw32, nullable prior `Dbat` raw32, nullable prior `Dbav` raw32, nullable prior `Dbar` raw32, successor `Dbav` raw32, transition text, canonical proposal bytes | `.../<installation>/proposals/<prior-tip-or-genesis>/<mutation-id>.json`; successor tip/readback excluded |
-| `Dbat` | schema `state-mutation-bootstrap-anchor-current-tip/v1`; domain `bootstrap-anchor-tip/v1` | `Dba` raw32, `Dbav` raw32, `Dbar` raw32, canonical current-tip bytes | `.../<installation>/current.json` |
-| `Dbac` | schema `state-mutation-bootstrap-anchor-conflict-receipt/v1`; domain `bootstrap-anchor-conflict/v1` | `Dba` raw32, mutation ID raw32, losing `Dbar` raw32, losing `Dbav` raw32, winning `Dbat` raw32, winning `Dbav` raw32, winning `Dbar` raw32, canonical conflict bytes | `.../<installation>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json`; requires an actual different selected winner |
-| anchor use intent | schema `state-mutation-bootstrap-anchor-use-intent/v1`; domain `bootstrap-anchor-use-intent/v1` | `Dba` raw32, selected ACTIVE `Dbat` raw32, selected ACTIVE `Dbav` raw32, selected ACTIVE `Dbar` raw32, bootstrap transaction text, destination-state-root digest raw32, custody-instance digest raw32, proposed-genesis-input canonical bytes, expected E0 `Dv` raw32, reviewed-installer/helper canonical bytes, started-at text, expires-at text, canonical use-intent bytes | `.../<installation>/use-intents/<transaction>.json`; E0 proposal/`Dr`/tip/`Dt`/readbacks excluded |
-| `Dbg` | `state-mutation-bootstrap-genesis-core/v1` | `Dba` raw32, global-identity digest raw32, transaction text, authority `Dp` raw32, E0 `Dv` raw32, genesis-position digest raw32, canonical core bytes | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/core.json`; excludes proposal bytes, `Dr`, tip bytes, `Dt`, readbacks, and both post-selection receipts |
-| `Dgp` | `state-mutation-bootstrap-genesis-post-selection-receipt/v1` | `Dba` raw32, `Dbg` raw32, authority `Dp` raw32, `Dv` raw32, `Dr` raw32, `Dt` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, canonical receipt bytes | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/post-selection-receipt.json`; downstream and excluded from E0 value/core/proposal/tip |
-| anchor consumption | schema `state-mutation-bootstrap-anchor-consumption-receipt/v1`; domain `bootstrap-anchor-consumption-receipt/v1` | `Dba` raw32, `Dbg` raw32, authority `Dp` raw32, `Dv` raw32, `Dr` raw32, `Dt` raw32, `Dgp` raw32, bootstrap transaction text, use-intent digest raw32, destination-state-root digest raw32, custody-instance digest raw32, runtime value-readback digest raw32, runtime proposal-readback digest raw32, runtime tip-readback digest raw32, runtime post-readback digest raw32, owner ACTIVE `Dot` raw32, owner ACTIVE `Dov` raw32, owner ACTIVE `Dor` raw32, owner CONSUMED `Dot` raw32, owner CONSUMED `Dov` raw32, owner CONSUMED `Dor` raw32, external anchor value-readback digest raw32, external anchor proposal-readback digest raw32, external anchor tip-readback digest raw32, external/runtime lock-helper-custody digest raw32, consumption-time text, canonical receipt bytes | `.../<installation>/consumption-receipts/<mutation-id>.json`; excluded from E0 and selected anchor CONSUMED graph |
-| anchor teardown | schema `state-mutation-bootstrap-anchor-teardown-receipt/v1`; domain `bootstrap-anchor-teardown-receipt/v1` | `Dba` raw32, selected prior `Dbat` raw32, selected prior `Dbav` raw32, selected prior `Dbar` raw32, retirement transition text, `Ddest` raw32, selected owner `Dot` raw32, selected owner `Dov` raw32, selected owner `Dor` raw32, teardown-evidence digest raw32, process/custody-proof digest raw32, external archive digest raw32, canonical teardown-receipt bytes | `.../<installation>/teardown-receipts/<mutation-id>.json`; cannot authorize ACTIVE or CONSUMED |
+| Digest             | Schema/domain                                                                                                     | Framed parts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Canonical path and exclusions                                                                                                                                                  |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Dba`              | `state-mutation-bootstrap-anchor/v1`                                                                              | `globalBootstrapIdentity` raw32, canonical anchor bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `state-mutation-authority-anchors/<installation>/anchor.json`; successor anchor binds review-core digest, never its post-selection receipt                                     |
+| `Dbav`             | schema `state-mutation-bootstrap-anchor-lifecycle-value/v1`; domain `bootstrap-anchor-value/v1`                   | `Dba` raw32, lifecycle text, canonical lifecycle-value bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `.../<installation>/values/<mutation-id>.json`; selected value excludes proposal/receipt/tip/conflict                                                                          |
+| `Dbar`             | schema `state-mutation-bootstrap-anchor-cas-proposal/v1`; domain `bootstrap-anchor-receipt/v1`                    | `Dba` raw32, mutation ID raw32, nullable prior `Dbat` raw32, nullable prior `Dbav` raw32, nullable prior `Dbar` raw32, successor `Dbav` raw32, transition text, canonical proposal bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `.../<installation>/proposals/<prior-tip-or-genesis>/<mutation-id>.json`; successor tip/readback excluded                                                                      |
+| `Dbat`             | schema `state-mutation-bootstrap-anchor-current-tip/v1`; domain `bootstrap-anchor-tip/v1`                         | `Dba` raw32, `Dbav` raw32, `Dbar` raw32, canonical current-tip bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `.../<installation>/current.json`                                                                                                                                              |
+| `Dbac`             | schema `state-mutation-bootstrap-anchor-conflict-receipt/v1`; domain `bootstrap-anchor-conflict/v1`               | `Dba` raw32, mutation ID raw32, losing `Dbar` raw32, losing `Dbav` raw32, winning `Dbat` raw32, winning `Dbav` raw32, winning `Dbar` raw32, canonical conflict bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `.../<installation>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json`; requires an actual different selected winner                                                         |
+| anchor use intent  | schema `state-mutation-bootstrap-anchor-use-intent/v1`; domain `bootstrap-anchor-use-intent/v1`                   | `Dba` raw32, selected ACTIVE `Dbat` raw32, selected ACTIVE `Dbav` raw32, selected ACTIVE `Dbar` raw32, bootstrap transaction text, destination-state-root digest raw32, custody-instance digest raw32, proposed-genesis-input canonical bytes, expected E0 `Dv` raw32, reviewed-installer/helper canonical bytes, started-at text, expires-at text, canonical use-intent bytes                                                                                                                                                                                                                                                                                                                                                                                                            | `.../<installation>/use-intents/<transaction>.json`; E0 proposal/`Dr`/tip/`Dt`/readbacks excluded                                                                              |
+| `Dbg`              | `state-mutation-bootstrap-genesis-core/v1`                                                                        | `Dba` raw32, global-identity digest raw32, transaction text, authority `Dp` raw32, E0 `Dv` raw32, genesis-position digest raw32, canonical core bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/core.json`; excludes proposal bytes, `Dr`, tip bytes, `Dt`, readbacks, and both post-selection receipts |
+| `Dgp`              | `state-mutation-bootstrap-genesis-post-selection-receipt/v1`                                                      | `Dba` raw32, `Dbg` raw32, authority `Dp` raw32, `Dv` raw32, `Dr` raw32, `Dt` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, canonical receipt bytes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/post-selection-receipt.json`; downstream and excluded from E0 value/core/proposal/tip                   |
+| anchor consumption | schema `state-mutation-bootstrap-anchor-consumption-receipt/v1`; domain `bootstrap-anchor-consumption-receipt/v1` | `Dba` raw32, `Dbg` raw32, authority `Dp` raw32, `Dv` raw32, `Dr` raw32, `Dt` raw32, `Dgp` raw32, bootstrap transaction text, use-intent digest raw32, destination-state-root digest raw32, custody-instance digest raw32, runtime value-readback digest raw32, runtime proposal-readback digest raw32, runtime tip-readback digest raw32, runtime post-readback digest raw32, owner ACTIVE `Dot` raw32, owner ACTIVE `Dov` raw32, owner ACTIVE `Dor` raw32, owner CONSUMED `Dot` raw32, owner CONSUMED `Dov` raw32, owner CONSUMED `Dor` raw32, external anchor value-readback digest raw32, external anchor proposal-readback digest raw32, external anchor tip-readback digest raw32, external/runtime lock-helper-custody digest raw32, consumption-time text, canonical receipt bytes | `.../<installation>/consumption-receipts/<mutation-id>.json`; excluded from E0 and selected anchor CONSUMED graph                                                              |
+| anchor teardown    | schema `state-mutation-bootstrap-anchor-teardown-receipt/v1`; domain `bootstrap-anchor-teardown-receipt/v1`       | `Dba` raw32, selected prior `Dbat` raw32, selected prior `Dbav` raw32, selected prior `Dbar` raw32, retirement transition text, `Ddest` raw32, selected owner `Dot` raw32, selected owner `Dov` raw32, selected owner `Dor` raw32, teardown-evidence digest raw32, process/custody-proof digest raw32, external archive digest raw32, canonical teardown-receipt bytes                                                                                                                                                                                                                                                                                                                                                                                                                    | `.../<installation>/teardown-receipts/<mutation-id>.json`; cannot authorize ACTIVE or CONSUMED                                                                                 |
 
 Thus `Dba→E0 value/Dv→Dbg→proposal/Dr→tip/Dt→Dgp→anchor CONSUMED→owner
 CONSUMED→external consumption receipt` is one-way. ACTIVE use intent is
@@ -235,21 +235,135 @@ lexicographic comparison prove the bound before conversion. A value above the
 bound refuses without reaching `Number`. E0 has ordinal `"0"`, a null authority
 predecessor, and the genesis chain record as its selected head.
 
-Runtime pointer history is one hash-chained, append-only `authority-history/v1`
-log whose record is a closed union:
+The shared closed `state-mutation-successor-authority-core/v1` record has
+exactly these fields, in this order for digest framing: `G`, authority `Dp`,
+successor authority ordinal, reviewed release manifest digest, reviewed
+installed-bytes digest, reviewed release-subject digest, independent-review
+receipt digest, reviewed-operation kind, reviewed-operation digest, successor
+helper digest, helper-profile digest, ABI digest, lock-profile digest,
+state-component-profile digest, custody-instance digest, and admitted custody-
+observation digest. `reviewed-operation kind` is the closed union
+`BOOTSTRAP_INSTALL|STABLE_PROMOTION`. Its digest `Dop` is derived, never
+caller-supplied:
 
-- `GENESIS` has ordinal `"0"`, the literal genesis predecessor, admitted
-  external-bootstrap facts and successor core facts, and no retiring epoch.
-- `ROTATION` has ordinal greater than zero, the exact preceding record digest,
-  retiring epoch `Dp/Dt/Dv/Dr`, deterministic independently reviewed rotation
-  identity, and successor core facts.
+```text
+BOOTSTRAP_INSTALL Dop = H(F(reviewed-authority-operation/v1,
+  0x00, bootstrap-transaction-id text, bootstrap-grant-digest raw32,
+  reviewed-installer-digest raw32, release-subject-digest raw32,
+  independent-review-receipt-digest raw32, release-manifest-digest raw32,
+  installed-bytes-digest raw32))
 
-Both branches exclude the successor authority value, proposal, tip, and
-selected head. For En, the old selected capability appends the `ROTATION`
-record before the authority CAS. Rotation identity excludes generated
-timestamps and binds global identity, predecessor triple/ordinal, successor
-ordinal, selected active release, and reviewed successor
-helper/profile/ABI/custody.
+STABLE_PROMOTION Dop = H(F(reviewed-authority-operation/v1,
+  0x01, promotion-transaction-id text,
+  predecessor-active-release Dp/Dt/Dv/Dr raw32,
+  successor-active-release Dp/Dt/Dv/Dr raw32,
+  release-subject-digest raw32, independent-review-receipt-digest raw32,
+  release-manifest-digest raw32, installed-bytes-digest raw32))
+```
+
+The successor-core digest is:
+
+```text
+Dsc = H(F(state-mutation-successor-authority-core/v1,
+  G raw32, authority Dp raw32, successor ordinal bounded-decimal,
+  release manifest raw32, installed bytes raw32, release subject raw32,
+  independent review raw32, operation-kind tag, Dop raw32, helper raw32,
+  helper profile raw32, ABI raw32, lock profile raw32,
+  state-component profile raw32, custody instance raw32,
+  custody observation raw32, canonical core bytes))
+```
+
+Both history arms use this exact schema and digest. It excludes predecessor
+authority, history predecessor/head, history record digest, successor authority
+value/`Dv`, proposal/`Dr`, tip/`Dt`, and every selector readback.
+The parser recomputes `Dop` and `Dsc`; every repeated `G`, authority `Dp`,
+ordinal, release, review, operation, helper/profile/ABI/lock/state-component,
+and custody field must equal its enclosing record, selected authority value,
+and admitted observation. A mismatch refuses rather than choosing one copy.
+
+`authority-history/v1` is one FULL_REQUIRED append-only chain of the closed
+`authority-history-record/v1` union:
+
+- `GENESIS` has exactly `recordKind=GENESIS`, `G`, ordinal `"0"`,
+  `predecessorKind=GENESIS_LITERAL`, `Dgb`, and `Dsc`; it has no predecessor
+  record digest, retiring authority, or `Drot`. `Dgb` is:
+
+  ```text
+  H(F(authority-history-genesis-bootstrap-input/v1,
+    Ddest raw32, selected owner ACTIVE Dot/Dov/Dor raw32, Dba raw32,
+    selected anchor ACTIVE Dbat/Dbav/Dbar raw32, use-intent digest raw32,
+    globalBootstrapIdentity raw32, bootstrap transaction ID text,
+    bootstrap grant digest raw32, Dsc raw32, canonical input bytes))
+  ```
+
+  The GENESIS record digest is:
+
+  ```text
+  Dh = H(F(authority-history/v1, 0x00, G raw32, "0" bounded-decimal,
+    GENESIS_LITERAL tag, Dgb raw32, Dsc raw32, canonical record bytes))
+  ```
+
+- `ROTATION` has exactly `recordKind=ROTATION`, `G`, ordinal greater than zero,
+  prior-head ordinal, prior-record digest, retiring authority `Dp/Dt/Dv/Dr`,
+  `Drot`, and `Dsc`. Its prior-head ordinal is exactly ordinal minus one and its
+  prior-record digest is both the chain predecessor and the head record digest
+  selected by the retiring authority value. `Drot` is derived as:
+
+  ```text
+  Drot = H(F(state-mutation-authority-rotation-id/v1,
+    G raw32, rotation-transaction-id text, retiring Dp/Dt/Dv/Dr raw32,
+    prior-head ordinal bounded-decimal, prior-record digest raw32,
+    successor ordinal bounded-decimal, Dop raw32, Dsc raw32))
+  ```
+
+  There is no separate or caller-selected rotation-operation identity. Target mutation ID and expected
+  successor authority `Dv` are cross-bound with `Drot` only downstream in the
+  CAS-armed commit intent/evidence and are excluded from `Drot` and the record, avoiding a
+  `Dh→Dv→Dh` cycle. The ROTATION record digest is:
+
+  ```text
+  Dh = H(F(authority-history/v1, 0x01, G raw32, ordinal bounded-decimal,
+    prior-head ordinal bounded-decimal, prior-record digest raw32,
+    retiring Dp/Dt/Dv/Dr raw32, Drot raw32, Dsc raw32,
+    canonical record bytes))
+  ```
+
+Both record arms exclude the successor authority value, proposal, tip,
+selected head, selector readbacks, and any downstream receipt. The selected
+successor authority value alone binds `headOrdinal=record.ordinal` and
+`headRecordDigest=Dh`.
+
+GENESIS admission additionally requires the downstream closed
+`authority-history-genesis-selection-evidence/v1` composition. Its digest is:
+
+```text
+Dgse = H(F(authority-history-genesis-selection-evidence/v1,
+  Dgb raw32, Dh raw32, Dsc raw32, Dbg raw32,
+  Ddest raw32, selected owner ACTIVE Dot/Dov/Dor raw32, Dba raw32,
+  selected anchor ACTIVE Dbat/Dbav/Dbar raw32, use-intent digest raw32,
+  globalBootstrapIdentity raw32, bootstrap transaction ID text,
+  bootstrap grant digest raw32,
+  selected E0 authority Dp/Dt/Dv/Dr raw32,
+  E0 value/proposal/tip readback digests raw32, Dgp raw32,
+  selected anchor CONSUMED Dbat/Dbav/Dbar raw32,
+  selected owner CONSUMED Dot/Dov/Dor raw32,
+  anchor-consumption receipt digest raw32,
+  anchor CONSUMED value/proposal/tip readback digest raw32 each,
+  owner CONSUMED value/proposal/tip readback digest raw32 each,
+  canonical evidence bytes))
+```
+
+This downstream digest
+is required to issue the live E0 context but is excluded from `Dgb`, `Dh`,
+`Dsc`, the E0 value, `Dbg`, proposal, and tip. ACTIVE facts therefore bind the
+upstream GENESIS record while CONSUMED/post-selection facts close admission
+without a digest cycle.
+`Dgse` is a pure composed-validation digest over existing selected/read-back
+records; it has no canonical storage path, selected pointer, or receipt file.
+Every repeated `Ddest`, ACTIVE triple, `Dba`, use intent, bootstrap identity/
+transaction/grant, and `Dsc` in `Dgse` must equal `Dgb`; its E0 `Dp/Dv` and
+`Dh` must equal the selected authority value, and every readback digest must
+match the bytes parsed for that named record.
 
 History uses FULL_REQUIRED content-addressed records at canonical
 ordinal-derived paths beneath
@@ -276,13 +390,21 @@ Chain-record set completeness is proven by the walk alone; records are
 ordinary content-addressed files and no materialization coordinator exists.
 
 The exact history domains are `state-mutation-global-identity/v1`,
+`reviewed-authority-operation/v1`,
+`state-mutation-successor-authority-core/v1`,
+`authority-history-genesis-bootstrap-input/v1`,
+`authority-history-genesis-selection-evidence/v1`,
 `state-mutation-authority-rotation-id/v1`, and `authority-history/v1`:
 
-| Digest | Domain and framed parts | Canonical path/exclusion |
-| --- | --- | --- |
-| `G` | `state-mutation-global-identity/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, canonical authority path text, authority `Dp` raw32 | lifetime-stable for one installation; helper digest/profile, lock profile, state-component profile, and ABI are deliberately excluded and remain rotation-bound authority-value facts; cross-install roots refuse |
-| rotation ID | `state-mutation-authority-rotation-id/v1`: `G` raw32, old authority `Dp/Dt/Dv/Dr` raw32, successor ordinal bounded decimal string, reviewed-successor-subject digest raw32, independent-review digest raw32, rotation-operation-identity digest raw32 | derived identity with no record path; excludes successor `Dv/Dr/Dt` and timestamps |
-| record digest | `authority-history/v1`: closed `GENESIS|ROTATION` discriminator, `G` raw32, bounded decimal ordinal, literal genesis predecessor plus external-bootstrap facts and no retiring epoch for `GENESIS`; exact prior record raw32 plus retiring `Dp/Dt/Dv/Dr` and reviewed rotation identity for `ROTATION`; successor core facts and canonical record bytes for both | `.../records/<ordinal>.json`; successor value/proposal/tip and selected head excluded |
+| Digest | Domain and framed parts                                                                                                                                                                 | Canonical path/exclusion                                                                                                                                                                                          |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `G`    | `state-mutation-global-identity/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, canonical authority path text, authority `Dp` raw32 | lifetime-stable for one installation; helper digest/profile, lock profile, state-component profile, and ABI are deliberately excluded and remain rotation-bound authority-value facts; cross-install roots refuse |
+| `Dop`  | closed formula above under `reviewed-authority-operation/v1`                                                                                                                            | deterministic reviewed bootstrap/promotion operation; no caller-selected digest                                                                                                                                   |
+| `Dsc`  | exact successor-core fields/formula above                                                                                                                                               | shared by both record arms; excludes history and successor selection graph                                                                                                                                        |
+| `Dgb`  | `authority-history-genesis-bootstrap-input/v1`: exact selected owner/anchor ACTIVE, use intent, bootstrap identity/transaction/grant, and `Dsc`                                         | GENESIS-only upstream bootstrap input; excludes E0 and every CONSUMED/post-selection fact                                                                                                                         |
+| `Drot` | exact `state-mutation-authority-rotation-id/v1` formula above                                                                                                                           | ROTATION-only deterministic operation identity; excludes successor `Dv/Dr/Dt`, record digest, and timestamps                                                                                                      |
+| `Dh`   | exact branch-specific `authority-history/v1` formula above                                                                                                                              | `.../records/<ordinal>.json`; selector graph and downstream evidence excluded                                                                                                                                     |
+| `Dgse` | exact `authority-history-genesis-selection-evidence/v1` formula above                                                                                                                   | downstream admission only; never a history-record or authority-value part                                                                                                                                         |
 
 `state-mutation-authority-value/v1` binds the head ordinal and record digest
 without containing the record's selecting proposal or tip, so neither append
@@ -312,16 +434,16 @@ never contain the proposal or tip that selects them.
 
 The digest domains are closed and exact:
 
-| Digest | Domain tag | Framed identifying parts |
-| --- | --- | --- |
-| `Dv` | `pointer-value/v1` | pointer-kind text, path-instance digest raw32, canonical value bytes |
-| `Dr` | `pointer-receipt/v1` | pointer-kind text, path-instance digest raw32, mutation ID raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, position digest raw32, intent/outcome text, canonical `pointer-cas-proposal-receipt/v1` bytes |
-| `Dt` | `pointer-tip/v1` | pointer-kind text, path-instance digest raw32, `Dv` raw32, `Dr` raw32, canonical `pointer-current-tip/v1` bytes |
-| `Dp` | `pointer-instance/v1` | kind, canonical path, installation/project/state, transaction, source |
-| mutation ID | `pointer-mutation-id/v1` | pointer kind, canonical path, `Dp` raw32, transaction ID/null, source token, position digest raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, outcome/intent |
-| `Dc` | `pointer-conflict-receipt/v1` | `Dp` raw32, mutation ID raw32, losing `Dr/Dv`, observed winning `Dt/Dv/Dr`, conflict kind, selected authority epoch triple, conflict time, canonical create-once conflict bytes |
-| attempt-log genesis | `attempt-log/v1` + byte `0x00` | record ordinal `"0"`, canonical record bytes |
-| attempt-log later | `attempt-log/v1` + byte `0x01` | raw predecessor record digest, record ordinal, canonical record bytes |
+| Digest              | Domain tag                     | Framed identifying parts                                                                                                                                                                                         |
+| ------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dv`                | `pointer-value/v1`             | pointer-kind text, path-instance digest raw32, canonical value bytes                                                                                                                                             |
+| `Dr`                | `pointer-receipt/v1`           | pointer-kind text, path-instance digest raw32, mutation ID raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, position digest raw32, intent/outcome text, canonical `pointer-cas-proposal-receipt/v1` bytes |
+| `Dt`                | `pointer-tip/v1`               | pointer-kind text, path-instance digest raw32, `Dv` raw32, `Dr` raw32, canonical `pointer-current-tip/v1` bytes                                                                                                  |
+| `Dp`                | `pointer-instance/v1`          | kind, canonical path, installation/project/state, transaction, source                                                                                                                                            |
+| mutation ID         | `pointer-mutation-id/v1`       | pointer kind, canonical path, `Dp` raw32, transaction ID/null, source token, position digest raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, outcome/intent                                              |
+| `Dc`                | `pointer-conflict-receipt/v1`  | `Dp` raw32, mutation ID raw32, losing `Dr/Dv`, observed winning `Dt/Dv/Dr`, conflict kind, selected authority epoch triple, conflict time, canonical create-once conflict bytes                                  |
+| attempt-log genesis | `attempt-log/v1` + byte `0x00` | record ordinal `"0"`, canonical record bytes                                                                                                                                                                     |
+| attempt-log later   | `attempt-log/v1` + byte `0x01` | raw predecessor record digest, record ordinal, canonical record bytes                                                                                                                                            |
 
 `F` additionally has a bounded decimal-string part for canonical nonnegative
 decimal strings (`"0"|[1-9][0-9]*`) bounded by the JavaScript safe-integer
@@ -398,20 +520,20 @@ refuse. `ACTIVATION_RECOVERY_LAUNCH`, `RECOVERY_ATTEMPT_LOG`, and
 
 The canonical authority-path census is closed:
 
-| Pointer kind | Canonical tip path family |
-| --- | --- |
-| `ACTIVE_RELEASE` | `installation/active-release.json` |
-| `ACTIVATION_CLEANUP_GATE` | `installation/activation-cleanup-gate.json` |
-| `ACTIVATION_RECOVERY_FENCE` | `installation/activation-recovery-fence.json` |
-| `ACTIVATION_RECOVERY_LAUNCH` | `installation/activation-recovery-launches/<transaction>/<source>/current.json` |
-| `RECOVERY_AUTHORIZATION_STATE` | `installation/recovery-authorizations/<transaction>/state.json` |
-| `RECOVERY_AUTHORIZATION_ATTACHMENT` | `installation/recovery-authorizations/<transaction>/attachment.json` |
-| `RECOVERY_ATTEMPT_LOG` | `installation/activation-recovery-launches/<transaction>/<source>/attempt-log.json` |
-| `ACTIVATION_CLEANUP_ARCHIVE_HEAD` | `installation/activation-cleanup/archive-head.json` |
-| `AUTHORITY_RETENTION` | `installation/authority-retention/<pointer-instance-digest>.json` |
-| `RECOVERY_ATTEMPT_RESERVATION` | `installation/activation-recovery-launches/<transaction>/<source>/reservations/<predecessor-key>.json` |
-| `STATE_MUTATION_AUTHORITY_ROTATION` | `installation/state-mutation-authority.json` |
-| `POINTER_MUTATION_RUN_CURRENT` | `installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/current-run.json` |
+| Pointer kind                        | Canonical tip path family                                                                              |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `ACTIVE_RELEASE`                    | `installation/active-release.json`                                                                     |
+| `ACTIVATION_CLEANUP_GATE`           | `installation/activation-cleanup-gate.json`                                                            |
+| `ACTIVATION_RECOVERY_FENCE`         | `installation/activation-recovery-fence.json`                                                          |
+| `ACTIVATION_RECOVERY_LAUNCH`        | `installation/activation-recovery-launches/<transaction>/<source>/current.json`                        |
+| `RECOVERY_AUTHORIZATION_STATE`      | `installation/recovery-authorizations/<transaction>/state.json`                                        |
+| `RECOVERY_AUTHORIZATION_ATTACHMENT` | `installation/recovery-authorizations/<transaction>/attachment.json`                                   |
+| `RECOVERY_ATTEMPT_LOG`              | `installation/activation-recovery-launches/<transaction>/<source>/attempt-log.json`                    |
+| `ACTIVATION_CLEANUP_ARCHIVE_HEAD`   | `installation/activation-cleanup/archive-head.json`                                                    |
+| `AUTHORITY_RETENTION`               | `installation/authority-retention/<pointer-instance-digest>.json`                                      |
+| `RECOVERY_ATTEMPT_RESERVATION`      | `installation/activation-recovery-launches/<transaction>/<source>/reservations/<predecessor-key>.json` |
+| `STATE_MUTATION_AUTHORITY_ROTATION` | `installation/state-mutation-authority.json`                                                           |
+| `POINTER_MUTATION_RUN_CURRENT`      | `installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/current-run.json`      |
 
 Path components use the canonical contract path grammar and lowercase digest or
 UUID text where declared. `predecessor-key` is the framed digest of the exact
@@ -438,7 +560,8 @@ tombstone, retention, and census rules, but does not recursively create a run
 selector for itself. A one-use ISS-004 capability binds it to the exact parent
 target/`Dp`/mutation/core/prior/epoch. Run audit is FULL_REQUIRED.
 
-Stages are `CURRENT_AUTHORITY_READ`, `TARGET_RECONCILED`, `VALUE_READBACK`,
+The `ORDINARY` commit arm alone uses all nine stages:
+`CURRENT_AUTHORITY_READ`, `TARGET_RECONCILED`, `VALUE_READBACK`,
 `PROPOSAL_READBACK`, `CURRENT_AUTHORITY_PRE_CAS_READ`, `CAS_ARMED`,
 `TARGET_POST_CAS_READBACK`, `PROPOSAL_CLASSIFIED`, and
 `CURRENT_AUTHORITY_POST_CAS_READ`. `CAS_ARMED` is selected before issuing target
@@ -447,42 +570,78 @@ expected winner becomes `SELECTED`, a real different winner becomes
 `LOST_CONFLICT`, unchanged prior may retry under the same epoch, and malformed
 or impossible evidence becomes exact terminal unknown.
 
-The checkpoint phase matrix is exact; `E` is the one selected authority epoch
-for the run:
+The ordinary checkpoint phase matrix is exact; `E` is the one selected
+authority epoch for the run:
 
-| Stage ordinal | Stage | Durable phase | Producer epoch |
-| ---: | --- | --- | --- |
-| 0 | `CURRENT_AUTHORITY_READ` | `CRASH_PREFIX` | `E` |
-| 1 | `TARGET_RECONCILED` | `CRASH_PREFIX` | `E` |
-| 2 | `VALUE_READBACK` | `CRASH_PREFIX` | `E` |
-| 3 | `PROPOSAL_READBACK` | `CRASH_PREFIX` | `E` |
-| 4 | `CURRENT_AUTHORITY_PRE_CAS_READ` | `CRASH_PREFIX` | `E` |
-| 5 | `CAS_ARMED` | `CAS_AMBIGUOUS` | `E` |
-| 6 | `TARGET_POST_CAS_READBACK` | `CAS_AMBIGUOUS` | `E` |
-| 7 | `PROPOSAL_CLASSIFIED` | `SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL` | `E` |
-| 8 | `CURRENT_AUTHORITY_POST_CAS_READ` | the unchanged stage-7 terminal phase | `E` |
+| Stage ordinal | Stage                             | Durable phase                                      | Producer epoch |
+| ------------: | --------------------------------- | -------------------------------------------------- | -------------- |
+|             0 | `CURRENT_AUTHORITY_READ`          | `CRASH_PREFIX`                                     | `E`            |
+|             1 | `TARGET_RECONCILED`               | `CRASH_PREFIX`                                     | `E`            |
+|             2 | `VALUE_READBACK`                  | `CRASH_PREFIX`                                     | `E`            |
+|             3 | `PROPOSAL_READBACK`               | `CRASH_PREFIX`                                     | `E`            |
+|             4 | `CURRENT_AUTHORITY_PRE_CAS_READ`  | `CRASH_PREFIX`                                     | `E`            |
+|             5 | `CAS_ARMED`                       | `CAS_AMBIGUOUS`                                    | `E`            |
+|             6 | `TARGET_POST_CAS_READBACK`        | `CAS_AMBIGUOUS`                                    | `E`            |
+|             7 | `PROPOSAL_CLASSIFIED`             | `SELECTED`, `LOST_CONFLICT`, or `UNKNOWN_TERMINAL` | `E`            |
+|             8 | `CURRENT_AUTHORITY_POST_CAS_READ` | the unchanged stage-7 terminal phase               | `E`            |
 
-`PROPOSED` is only a live branded in-memory ISS-004 view before stage five.
+For an ordinary run, `PROPOSED` is only a live branded in-memory ISS-004 view before stage five.
 After lock/process loss, checkpoints zero through four are `CRASH_PREFIX` and
 the persisted stage-five and stage-six checkpoints are `CAS_AMBIGUOUS`.
-Durable resolution is only
+Its durable resolution is only
 `SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL` and excludes the run-current graph
 that selects its terminal core.
 
-Every commit intent is `SINGLE_EPOCH` and all nine checkpoint selectors bind
-one authority triple. For the `STATE_MUTATION_AUTHORITY_ROTATION` target, the
+Every commit intent is `SINGLE_EPOCH`. Every ordinary run's nine checkpoint
+selectors bind one authority triple. For the `STATE_MUTATION_AUTHORITY_ROTATION` target, the
 rotation run under the old capability executes checkpoints zero through five,
 appends the exact `authority-history/v1` chain record, and then performs the
 authority CAS as its final action. It executes no checkpoint after that CAS
 under either epoch; its run-current journal legitimately rests at the selected
 `CAS_ARMED` checkpoint across the selection. Terminal truth is a pure derived
-union: prior authority selected plus the exact head-plus-one chain record
-matching the CAS-armed transaction is resumable under the old epoch; successor
-authority selected plus the exact selected chain record and the old CAS-armed
-checkpoint is `SELECTED`; every other observation is `UNKNOWN`. No post-CAS
-write occurs under the successor epoch. No separate rotation receipt, handoff
-pair, terminal-resolution write, or materialization machinery exists, and
-every commit run remains single-epoch.
+union. The closed `pointer-mutation-commit-evidence/v1` schema has common
+identity fields `commitKind`, target kind/path/`Dp`/mutation ID, intent digest,
+run ID, run ordinal, old authority `Dp/Dt/Dv/Dr`, and packet authority
+as the closed `KNOWN(Dp/Dt/Dv/Dr)|UNKNOWN(null)` union; it then admits exactly
+one arm. ORDINARY requires KNOWN E. Rotation requires KNOWN old/successor for
+RESUMABLE/SELECTED and UNKNOWN for UNKNOWN:
+
+- `ORDINARY` requires target kind other than
+  `STATE_MUTATION_AUTHORITY_ROTATION`, the composed checkpoints 0–8 and their
+  selected selector graphs/readbacks, and one ordinary resolution
+  `SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL`. `SELECTED` binds the expected
+  selected target `Dp/Dt/Dv/Dr`; `LOST_CONFLICT` binds the proposed loser plus
+  actual winner and conflict receipt; `UNKNOWN_TERMINAL` binds the fixed-size
+  unknown union and no selected target. The ordinary rules above are unchanged.
+- `AUTHORITY_ROTATION` requires that exact target kind and binds the old E(n)
+  selected `CAS_ARMED` intent, checkpoint-5 `Dcore`, its selected META_LEAF
+  selector `Dp/Dt/Dv/Dr`, its selector readbacks and `Dpost`, expected successor
+  authority `Dv`, target mutation ID, expected successor head ordinal and
+  record digest, `Drot`, and `Dsc`. It admits exactly
+  `RESUMABLE|SELECTED|UNKNOWN`:
+  - `RESUMABLE` binds the still-selected old authority `Dp/Dt/Dv/Dr`, its exact
+    selected prior head ordinal/record digest, the exact canonical head-plus-one
+    ROTATION record whose `Drot`, `Dsc`, ordinal, and predecessor match the
+    expected record bound by the armed intent/target mutation/successor `Dv`,
+    an absent head-plus-two observation,
+    and the authority registry slot equal to that old selected triple. It
+    exposes only the live old-epoch capability for the same transaction to
+    re-drive the same authority CAS.
+  - `SELECTED` binds the exact selected successor authority `Dp/Dt/Dv/Dr`,
+    requires its `Dv` to equal expected successor `Dv`, requires its selected
+    value's head ordinal/digest to equal the expected ROTATION record, verifies
+    the canonical record readback against `Drot` and `Dsc`, and binds the
+    authority registry slot to that successor triple. The old capability is
+    revoked; this is derived terminal truth, not a stored resolution.
+  - `UNKNOWN` binds the fixed-size closed unknown evidence and an empty
+    authority registry slot; it exposes no capability.
+
+For `AUTHORITY_ROTATION`, fields or files for checkpoint 6, 7, or 8, an
+ordinary commit resolution, a selector observation after checkpoint 5, or any
+successor-epoch write are forbidden rather than ignored. The closed union
+therefore derives rotation truth without a post-CAS artifact. No separate
+rotation receipt, handoff pair, terminal-resolution write, or materialization
+machinery exists, and every commit run remains single-epoch.
 
 Rotation is forward-only once appended. A crash between chain append and
 authority CAS is resumable only by the same transaction under the old
@@ -504,29 +663,71 @@ installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/selector-obser
 installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/resolution.json
 ```
 
+`resolution.json` and selector observations after checkpoint 5 exist only for
+`ORDINARY`. Their presence for `AUTHORITY_ROTATION` is contradictory evidence
+and reduces to `UNKNOWN`; it is never treated as harmless residue.
+
 The closed run domains are `pointer-mutation-run-id/v1`,
 `pointer-mutation-run-segment/v1`, `pointer-mutation-run-audit/v1`,
 `pointer-mutation-run-checkpoint-core/v1`,
 `pointer-mutation-run-current-position/v1`,
 `pointer-mutation-run-selector-post-selection-observation/v1`, and
-`pointer-mutation-commit-resolution/v1`.
+`pointer-mutation-commit-resolution/v1`, composed by the closed
+`pointer-mutation-commit-evidence/v1` union.
 
-| Digest/value | Domain/formula | Required parts and exclusions |
-| --- | --- | --- |
-| run ID | `pointer-mutation-run-id/v1` | `G` raw32, target mutation ID raw32, run ordinal bounded decimal string, nullable prior checkpoint digest raw32, current authority `Dp` raw32, current authority `Dt` raw32, current authority `Dv` raw32, current authority `Dr` raw32; timestamps excluded |
-| segment/audit | `pointer-mutation-run-segment/v1`; first `H(F(pointer-mutation-run-audit/v1, 0x00, segment))`, later `H(F(...,0x01, prior audit, segment))` | exact run stages/readbacks; full immutable audit retained |
-| `Dcore` | `pointer-mutation-run-checkpoint-core/v1` | identity/audit/predecessor parts, stage, phase, nullable terminal resolution, canonical core bytes |
-| selector `Dv/Dr/Dt` | ordinary `pointer-value/v1`, `pointer-receipt/v1`, `pointer-tip/v1` | value binds `Dcore`; proposal binds exact prior selector triple/genesis and META_LEAF position; tip selects them |
-| `Dpost` | `pointer-mutation-run-selector-post-selection-observation/v1` | `Dcore` raw32, selector `Dp` raw32, selector mutation ID raw32, selector `Dv` raw32, selector `Dr` raw32, selector `Dt` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, canonical observation bytes |
-| terminal resolution | `pointer-mutation-commit-resolution/v1` | target outcome/evidence and producer epoch; excludes selector value/`Dv`, proposal/`Dr`, tip/`Dt`, selector readbacks, and `Dpost` |
+`Dcommit` is always:
+
+```text
+Dcommit = H(F(pointer-mutation-commit-evidence/v1,
+  branch-tag, target-kind text, target-path text, target-Dp raw32,
+  target-mutation-id raw32, intent-digest raw32, run-id raw32,
+  run-ordinal bounded-decimal, old-authority Dp/Dt/Dv/Dr raw32,
+  packet-authority-tag, nullable packet-authority Dp/Dt/Dv/Dr raw32,
+  branch-parts, canonical union bytes))
+```
+
+`branch-tag` is `0x00` ORDINARY or
+`0x01` AUTHORITY_ROTATION; `packet-authority-tag` is `0x00` UNKNOWN or `0x01`
+KNOWN and the four authority parts must be all absent or all present.
+
+ORDINARY `branch-parts` are, in order, the digest of closed
+`pointer-mutation-run-checkpoint-evidence/v1` over the nine ordered stage
+ordinals/names, each `Dcore`, selected selector `Dp/Dt/Dv/Dr`, selector
+value/proposal/tip readback digests, and `Dpost`; ordinary resolution digest;
+outcome tag; and target-slot union containing exact selected target
+`Dp/Dt/Dv/Dr`, exact real winner `Dp/Dt/Dv/Dr` plus conflict digest, or null.
+AUTHORITY_ROTATION `branch-parts` are selected checkpoint-5 `Dcore`, selector
+`Dp/Dt/Dv/Dr`, its three readback digests and `Dpost`; expected successor `Dv`;
+expected head ordinal and record digest; `Drot`; `Dsc`; rotation outcome tag;
+then the exact RESUMABLE old authority/prior head/pending-record readback/head+2
+absence/old slot, SELECTED successor authority/value readback/record readback/
+successor slot, or UNKNOWN evidence/empty slot fields declared above. Closed
+record parsing rejects every omitted, extra, duplicated, reordered, or
+wrong-arm field before hashing.
+`Dcommit` is a pure composed-validation digest embedded with its canonical
+union bytes in `pointer-evidence-packet/v1`; it creates no additional commit
+file. The underlying ordinary artifacts or rotation checkpoint-5/readback
+evidence remain the only inputs.
+
+| Digest/value                 | Domain/formula                                                                                                                              | Required parts and exclusions                                                                                                                                                                                                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| run ID                       | `pointer-mutation-run-id/v1`                                                                                                                | `G` raw32, target mutation ID raw32, run ordinal bounded decimal string, nullable prior checkpoint digest raw32, current authority `Dp` raw32, current authority `Dt` raw32, current authority `Dv` raw32, current authority `Dr` raw32; timestamps excluded                                              |
+| segment/audit                | `pointer-mutation-run-segment/v1`; first `H(F(pointer-mutation-run-audit/v1, 0x00, segment))`, later `H(F(...,0x01, prior audit, segment))` | exact run stages/readbacks; full immutable audit retained                                                                                                                                                                                                                                                 |
+| `Dcore`                      | `pointer-mutation-run-checkpoint-core/v1`                                                                                                   | identity/audit/predecessor parts, stage, phase, nullable ordinary terminal resolution, canonical core bytes; rotation permits only stage 0–5 and requires null resolution                                                                                                                                 |
+| selector `Dv/Dr/Dt`          | ordinary `pointer-value/v1`, `pointer-receipt/v1`, `pointer-tip/v1`                                                                         | value binds `Dcore`; proposal binds exact prior selector triple/genesis and META_LEAF position; tip selects them                                                                                                                                                                                          |
+| `Dpost`                      | `pointer-mutation-run-selector-post-selection-observation/v1`                                                                               | `Dcore` raw32, selector `Dp` raw32, selector mutation ID raw32, selector `Dv` raw32, selector `Dr` raw32, selector `Dt` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, canonical observation bytes                                                        |
+| ordinary terminal resolution | `pointer-mutation-commit-resolution/v1`                                                                                                     | ordinary target outcome/evidence and producer epoch; excludes selector value/`Dv`, proposal/`Dr`, tip/`Dt`, selector readbacks, and `Dpost`; forbidden for rotation                                                                                                                                       |
+| `Dcommit`                    | `pointer-mutation-commit-evidence/v1`                                                                                                       | branch tag; common target/intent/run/old-authority/packet-authority fields; for ORDINARY, checkpoints 0–8 plus ordinary resolution; for AUTHORITY_ROTATION, checkpoint 5 plus expected successor/record/`Drot`/`Dsc`, outcome tag, and exact RESUMABLE/SELECTED/UNKNOWN arm fields; canonical union bytes |
 
 `Dcore` excludes its selector value/`Dv`, proposal/`Dr`, tip/`Dt`, their
 readbacks, and its own `Dpost`. `Dpost` is downstream and only the next core may
 bind it; `Dpost` excludes that next core and every later selector graph. Terminal
-resolution excludes `Dcore`'s selector value/`Dv`, proposal/`Dr`, tip/`Dt`, all
+ordinary resolution excludes `Dcore`'s selector value/`Dv`, proposal/`Dr`, tip/`Dt`, all
 selector readbacks, and `Dpost`. The acyclic order is segment/optional terminal
 resolution → `Dcore` → selector value/`Dv` → proposal/`Dr` → tip/`Dt` → `Dpost`
-→ next core.
+→ next core. Rotation `Dcommit` composes already selected/read-back evidence;
+it is not selected into the old run-current graph and grants no authority by
+itself.
 
 META_LEAF uses the generic selector-instance storage exactly:
 
@@ -543,13 +744,23 @@ selected tip rules are identical to every other runtime pointer.
 
 `pointer-evidence-packet/v1` is an exact twelve-slot union. `HISTORICAL_READ`
 requires `currentCommit=null` and exposes no mutation capability.
-`MUTATION_COMMIT` requires current intent/checkpoint/run evidence and a live
-mutation context. Its closed outcome binds the target registry slot exactly:
-`SELECTED` carries the exact selected target, `LOST_CONFLICT` carries the exact
-observed real winner, and packet `UNKNOWN` carries an empty slot. Packet-level
-authority and the complete kind/path/install/project/state/transaction/source/
-`Dp`/mutation/run identity tuple must equal the commit and selected-slot facts;
-any cross-field mismatch refuses.
+`MUTATION_COMMIT` requires exact `Dcommit`, the corresponding closed commit
+union bytes, and a purpose-compatible live context. For `ORDINARY`, packet
+authority equals the run's E and the target slot is the exact selected target,
+real winner, or empty for `SELECTED`, `LOST_CONFLICT`, or `UNKNOWN_TERMINAL`.
+For `AUTHORITY_ROTATION`, packet authority/authority-registry slot are the old
+triple/old triple for `RESUMABLE`, successor triple/successor triple for
+`SELECTED`, and null/empty for `UNKNOWN`. RESUMABLE exposes only the same old-
+epoch transaction's CAS method; SELECTED is evidence usable by a separately
+created successor-epoch context; UNKNOWN exposes none. A rotation packet that
+contains ordinary checkpoints 6–8, ordinary resolution, post-checkpoint-5
+selector artifacts, or a successor-epoch write refuses.
+
+Packet authority and the complete kind/path/install/project/state/transaction/
+source/`Dp`/mutation/run identity tuple must equal `Dcommit` and selected-slot
+facts; any cross-field mismatch refuses. The remaining eleven registry slots
+retain their exact registry-ordered current evidence and may not duplicate or
+substitute the target slot.
 
 Packet `UNKNOWN` evidence is a fixed-size closed union with category
 `UNREADABLE|MALFORMED|IMPOSSIBLE`, a category-specific closed reason enum, one

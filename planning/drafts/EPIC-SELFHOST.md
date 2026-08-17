@@ -2,7 +2,21 @@
 key: EPIC-SELFHOST
 title: "Epic: Release the platform through its stable predecessor"
 labels: ["type:epic", "area:release"]
-children: [ISS-014, ISS-029, ISS-020, ISS-023, ISS-021, ISS-036, ISS-033, ISS-019, ISS-037, ISS-034, ISS-027, ISS-015]
+children:
+  [
+    ISS-014,
+    ISS-029,
+    ISS-020,
+    ISS-023,
+    ISS-021,
+    ISS-036,
+    ISS-033,
+    ISS-019,
+    ISS-037,
+    ISS-034,
+    ISS-027,
+    ISS-015,
+  ]
 ---
 
 ## Outcome
@@ -41,8 +55,9 @@ post-self-host improvements unless a measured blocker promotes them.
   run under E(n) that appends the `authority-history/v1` record and performs
   the authority CAS as its final action, legitimately resting CAS-armed.
   Prior-selected/exact-pending evidence is resumable under E(n), while
-  successor-selected/exact-record/old-CAS-armed evidence derives `SELECTED`;
-  otherwise truth is `UNKNOWN`. No E(n+1) write terminalizes the old run.
+  successor-selected/exact-`Drot`/`Dsc`-record/old-checkpoint-5 evidence derives
+  `SELECTED`; otherwise truth is `UNKNOWN`. Rotation stage6–8, ordinary
+  resolution, later selector evidence, and E(n+1) writes refuse.
 
 ## Child index
 

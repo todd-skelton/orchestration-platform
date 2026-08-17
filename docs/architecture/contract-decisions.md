@@ -54,7 +54,7 @@ explicit bytes part.
 `pointer-cas-proposal-receipt/v1` that binds the prior `Dt/Dv/Dr`, successor
 `Dv`, and closed bootstrap/selected producer union, and `Dt` hashes a tip
 containing `Dv+Dr`. Values do not contain their selecting proposal or tip.
-Checkpoint cores and terminal resolutions likewise exclude the run-current
+Checkpoint cores and ordinary terminal resolutions likewise exclude the run-current
 value/proposal/tip that selects them; only a downstream post-selection
 observation may feed a later core. Pointer path, instance digest,
 proposal/conflict paths, mutation ID, tombstone, archive, and retention behavior
@@ -103,14 +103,20 @@ are exactly those in `supervisor-contract.md`.
   authority.
 - Runtime pointer history is one hash-chained, append-only
   `authority-history/v1` log selected by `state-mutation-authority-value/v1`.
-  Records form a closed `GENESIS|ROTATION` union. `GENESIS` is ordinal `"0"`,
-  binds the genesis predecessor literal and admitted external-bootstrap facts,
-  and has no retiring epoch. `ROTATION` is ordinal greater than zero and binds
-  the exact prior record digest, retiring epoch `Dp/Dt/Dv/Dr`, deterministic
-  independently reviewed rotation identity, and successor core facts. Both
-  branches exclude the successor authority value, proposal, tip, and selected
-  head so the selected authority value can bind the head ordinal and record
-  digest without a cycle.
+  Records form the exact closed `GENESIS|ROTATION` union in
+  `supervisor-contract.md`. Both bind shared successor core `Dsc`, whose closed
+  census is `G`, authority `Dp`, successor ordinal, reviewed release manifest/
+  installed bytes/subject/review, derived BOOTSTRAP_INSTALL or STABLE_PROMOTION
+  operation `Dop`, helper/profile/ABI/lock/state-component, and custody
+  instance/observation. GENESIS binds ordinal zero, genesis literal, and `Dgb`;
+  `Dgb` binds selected owner/anchor ACTIVE, use intent, and bootstrap identity/
+  transaction/grant. Downstream genesis-selection evidence binds E0 core/
+  selection/readbacks/post receipt and owner/anchor CONSUMED without entering
+  the record. ROTATION binds exact prior head, retiring `Dp/Dt/Dv/Dr`, and
+  `Drot`, deterministically recomputed from rotation transaction, retiring
+  authority/head, successor ordinal, `Dop`, and `Dsc`. No caller-
+  supplied rotation-operation identity exists. Both branches exclude successor
+  value/proposal/tip/head and downstream artifacts.
   Records live at canonical ordinal-derived paths: the walk constructs the
   path of record `n+1` from `n` and never enumerates a directory.
   Verification walks the complete chain from genesis and compares the selected
@@ -131,7 +137,7 @@ are exactly those in `supervisor-contract.md`.
   coordinator; authority-history records are ordinary content-addressed files
   whose set completeness is proven by the chain walk alone.
 - Every commit run is single-epoch. Authority rotation is an ordinary
-  single-epoch commit run under the old capability that appends the chain
+  single-epoch mutation under the old capability that appends the chain
   record and then performs the authority CAS as its final action; it executes
   no checkpoint after that CAS under either epoch, and its run-current journal
   legitimately rests at CAS-armed across the selection. Rotation terminal
@@ -139,7 +145,12 @@ are exactly those in `supervisor-contract.md`.
   an exact head-plus-one record matching the CAS-armed transaction is resumable
   under the old epoch; successor authority selected plus its exact selected
   chain record and the old CAS-armed checkpoint is `SELECTED`; every other
-  combination is `UNKNOWN`. No post-CAS write occurs under the new epoch, no
+  combination is `UNKNOWN`. The commit evidence contract is the closed
+  `ORDINARY|AUTHORITY_ROTATION` union: ordinary evidence retains stages 0–8 and
+  resolution, while rotation binds only selected old checkpoint 5, expected
+  successor/history/registry slot, and RESUMABLE/SELECTED/UNKNOWN. Rotation
+  stages 6–8, ordinary resolution, later selector artifacts, and successor-
+  epoch writes refuse. No post-CAS write occurs under the new epoch, no
   separate rotation receipt or coordinator exists, and no run crosses epochs.
 - Rotation is forward-only once appended. A crash between chain append and
   authority CAS is resumable only by the same transaction under the old
@@ -272,7 +283,7 @@ are exactly those in `supervisor-contract.md`.
   all new install/promotion mutation. From N0 onward, stable predecessor N owns
   the otherwise identical promotion protocol.
 - Bootstrap cancellation is only canonical `orchestration-bootstrap abort
-  --input <bootstrap-install-input/v1>` before first destination mutation. It
+--input <bootstrap-install-input/v1>` before first destination mutation. It
   derives and reads back the deterministic transaction state rather than
   accepting a hand-authored abort envelope, then either refuses when no
   authorization exists, revokes pre-gate unconsumed authority, or persists/

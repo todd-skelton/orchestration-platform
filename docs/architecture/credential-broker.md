@@ -19,11 +19,11 @@ The private broker is statically composed, has no package export, dynamic
 operation registration, CLI surface, or network listener, and admits only the
 exact topology selected by ISS-031:
 
-| OS | Custody/native lifecycle | IPC proof target |
-| --- | --- | --- |
-| Windows x64 | no-login virtual service account; SCM service hosted by pinned WinSW with wrapper/Node/broker/config/release digests | local named pipe with frozen SDDL and verified client process/token |
-| macOS | dedicated no-login account; root-owned LaunchDaemon | root-owned Unix socket with peer credentials and verified client executable |
-| Linux | dedicated no-login account; hardened systemd service/private runtime directory | AF_UNIX socket with peer credentials and verified client executable |
+| OS          | Custody/native lifecycle                                                                                             | IPC proof target                                                            |
+| ----------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Windows x64 | no-login virtual service account; SCM service hosted by pinned WinSW with wrapper/Node/broker/config/release digests | local named pipe with frozen SDDL and verified client process/token         |
+| macOS       | dedicated no-login account; root-owned LaunchDaemon                                                                  | root-owned Unix socket with peer credentials and verified client executable |
+| Linux       | dedicated no-login account; hardened systemd service/private runtime directory                                       | AF_UNIX socket with peer credentials and verified client executable         |
 
 The passed ISS-031 artifact freezes exact identities, fields, confinement,
 assets, architecture support, restart/teardown, endpoint ownership, and client
@@ -40,14 +40,14 @@ receipts. Unattended pre-login access is not promised.
 
 ## Credential reference lifecycle
 
-| State | Authority/evidence | Next operation |
-| --- | --- | --- |
-| `UNBOUND` | exact operator bind transaction and no durable reference | bind through admitted provisioning flow |
-| `BOUND_AVAILABLE` | broker lookup plus exact custody/fingerprint/capability/role match | execute one bounded operation |
-| `BOUND_LOCKED` | native item exists but declared user session cannot unlock it | later tick rechecks without mutation |
-| `REVOKED` | selected generation/revocation and native absence/disable receipt | refuse; provision a new identity |
-| `EXPIRED` | bounded expiry reached | revoke and replace |
-| `UNKNOWN` | moved/conflicting identity, wrong user, malformed or extra capability | external diagnosis; refuse all access |
+| State             | Authority/evidence                                                    | Next operation                          |
+| ----------------- | --------------------------------------------------------------------- | --------------------------------------- |
+| `UNBOUND`         | exact operator bind transaction and no durable reference              | bind through admitted provisioning flow |
+| `BOUND_AVAILABLE` | broker lookup plus exact custody/fingerprint/capability/role match    | execute one bounded operation           |
+| `BOUND_LOCKED`    | native item exists but declared user session cannot unlock it         | later tick rechecks without mutation    |
+| `REVOKED`         | selected generation/revocation and native absence/disable receipt     | refuse; provision a new identity        |
+| `EXPIRED`         | bounded expiry reached                                                | revoke and replace                      |
+| `UNKNOWN`         | moved/conflicting identity, wrong user, malformed or extra capability | external diagnosis; refuse all access   |
 
 Provisioning accepts no secret flag/file/stdin payload. One-use recovery
 capability creation is internal to the reviewed bootstrap/release client: the OS
@@ -143,13 +143,14 @@ Its value and archive schemas are
 
 The first attempt may bind explicit attempt-log genesis. Every later attachment
 binds the predecessor selected `TERMINAL` attempt-log record. A
-`MUTATION_COMMIT` packet proves the current descriptor/attachment and latest
+`MUTATION_COMMIT` `ORDINARY` packet proves the current descriptor/attachment and latest
 predecessor `TERMINAL` attempt-log record plus the exact selected run-current
 checkpoint. Its top authority and complete identity tuple cross-bind to the
 exact registry slot: selected target, observed real winner, or empty for
 `SELECTED`, `LOST_CONFLICT`, or `UNKNOWN`. Broker paths never accept packet
 UNKNOWN details beyond the fixed-size closed category/reason/digest/safe-length
-union. Historical
+union. An `AUTHORITY_ROTATION` commit arm is not a broker state-transition
+packet and refuses at this boundary. Historical
 producer epochs are verified by the full authority-history chain walk in the
 live current authority context; the attempt log stays small and is verified in
 full.

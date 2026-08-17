@@ -42,6 +42,10 @@ The current registry uses the approved authority contracts:
   `pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`,
   `pointer-tombstone-value/v1`, and `authority-retention/v1`;
 - epoch/history: `state-mutation-authority-value/v1`,
+  `reviewed-authority-operation/v1`,
+  `state-mutation-successor-authority-core/v1`,
+  `authority-history-genesis-bootstrap-input/v1`,
+  `authority-history-genesis-selection-evidence/v1`,
   `state-mutation-authority-rotation-id/v1`,
   `authority-history/v1` chain records,
   `pointer-evidence-slot/v1`, and `pointer-evidence-packet/v1`;
@@ -185,28 +189,50 @@ teardown, and exact reinstall without parallel genesis.
 State mutation validators pin the fixed lock sequence, revocable ISS-004
 context identity, exact E0 bootstrap producer versus selected-stable rotation,
 and the twelve-kind census. `state-mutation-authority-value/v1` binds the
-selected `authority-history/v1` head ordinal and record digest. `GENESIS`
-binds ordinal zero, the genesis predecessor, admitted external-bootstrap facts,
-and no retiring epoch; `ROTATION` binds ordinal greater than zero, exact prior
-record digest, retiring `Dp/Dt/Dv/Dr`, reviewed rotation identity, and successor
-core facts. Both exclude successor value/proposal/tip/head. Verification
+selected `authority-history/v1` head ordinal and record digest. Both record
+arms bind the exact shared successor core `Dsc`: `G`, authority `Dp`, successor
+ordinal, release manifest/installed bytes/subject/review, derived reviewed-
+operation `Dop`, helper/profile/ABI/lock/state-component, and custody instance/
+observation. `Dop` is the closed BOOTSTRAP_INSTALL/STABLE_PROMOTION formula in
+`supervisor-contract.md`, not caller input.
+
+`GENESIS` binds ordinal zero, the genesis predecessor, and `Dgb`; `Dgb` binds
+the selected destination-owner and anchor ACTIVE triples, use intent,
+bootstrap identity/transaction/grant, and `Dsc`, with no retiring epoch. The
+required downstream genesis-selection evidence binds the record, `Dbg`, exact
+selected E0/readbacks/`Dgp`, owner/anchor ACTIVE and CONSUMED triples,
+consumption receipt, and consumed readbacks without entering the record or E0
+selection digest. `ROTATION` binds ordinal greater than zero, exact prior head
+ordinal/record digest, retiring `Dp/Dt/Dv/Dr`, derived `Drot`, and `Dsc`.
+`Drot` is recomputed from rotation transaction, retiring authority/head,
+successor ordinal, `Dop`, and `Dsc`; the operation identity is fully derived
+rather than supplied as an input. Both records exclude successor value/proposal/tip/head and
+downstream artifacts. Verification
 walks the complete chain from genesis against the selected head: a missing
 record at or below the head, a head-ordinal or digest mismatch, or a fork,
 gap, reorder, or truncation refuses; the path at head plus one must be absent
 or match the armed rotation intent and the path at head plus two must be
 absent. Lifetime-stable `G` excludes rotating
-helper/profile/ABI/lock/state-component facts. En validates the deterministic
-rotation identity and the exact chain append. ISS-004 owns
+helper/profile/ABI/lock/state-component facts. En validates derived `Drot` and
+the exact chain append. ISS-004 owns
 locks, live handles, CAS, reconciliation, tombstones, history writes, and
 context revocation.
 
-Commit validators compose immutable segment→checkpoint core→selected
-`POINTER_MUTATION_RUN_CURRENT` value/proposal/tip→post-selection observation.
-Cores and terminal resolutions exclude their selecting selector graph.
-`PROPOSED` is a live branded view only; persisted recovery is `CRASH_PREFIX` or
-`CAS_AMBIGUOUS`, and final resolution is exactly
-`SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL`. META_LEAF follows generic storage/
-classification/retention but does not recursively journal itself.
+Commit validators parse the closed `ORDINARY|AUTHORITY_ROTATION`
+`pointer-mutation-commit-evidence/v1` union. ORDINARY composes immutable
+segment→checkpoint core→selected `POINTER_MUTATION_RUN_CURRENT` graph→post-
+selection observation for all nine stages and ends in exactly
+`SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL`. Cores and ordinary terminal
+resolutions exclude their selecting selector graph. `PROPOSED` is live-only;
+persisted ordinary recovery remains `CRASH_PREFIX|CAS_AMBIGUOUS`.
+
+AUTHORITY_ROTATION composes the old E(n) intent and selected checkpoint 5,
+expected successor `Dv`/target mutation/head/record/`Drot`/`Dsc`, then exactly
+RESUMABLE old authority plus matching pending record, SELECTED exact successor
+authority plus record, or bounded UNKNOWN. Checkpoints 6–8, an ordinary
+resolution, selector evidence after checkpoint 5, or a successor-epoch write
+are schema errors. META_LEAF follows generic storage/classification/retention
+but does not recursively journal itself.
 
 Recovery authorization core has closed BOOTSTRAP/SUCCESSOR unions. It excludes
 gate/lifecycle/consume/revoke/attachment and
@@ -265,12 +291,14 @@ replay is never an allowed transition.
 
 `pointer-evidence-packet/v1` is an exact purpose union. `HISTORICAL_READ`
 requires `currentCommit=null` and a scoped read handle; `MUTATION_COMMIT`
-requires exact intent/run/current selector plus a live mutation handle. The
-nine same-epoch commit observations and new proposal/readbacks bind the live
-current selection. Its outcome cross-binds top authority and the complete
-identity tuple to the exact target registry slot: selected target for
-`SELECTED`, observed real winner for `LOST_CONFLICT`, and empty for packet
-`UNKNOWN`. Unknown evidence is a fixed-size closed
+requires exact `Dcommit`, closed commit-union bytes, and a purpose-compatible
+live handle. ORDINARY carries the nine same-epoch checkpoints and binds packet
+authority to E; its target slot is selected target, real winner, or empty.
+AUTHORITY_ROTATION carries only old E(n) checkpoint 5 plus exact expected
+successor/history evidence. Its packet authority and authority slot are old/
+old for RESUMABLE, successor/successor for SELECTED, and null/empty for UNKNOWN.
+Rotation checkpoints 6–8, resolution, later selector artifacts, and new-epoch
+writes refuse. Every arm cross-binds the complete identity tuple. Unknown evidence is a fixed-size closed
 `UNREADABLE|MALFORMED|IMPOSSIBLE` union with a category-specific closed reason,
 observation digest, and safe decimal byte length; arbitrary JSON, native text,
 paths, and arrays refuse. Historical envelopes keep their producer epoch and are
@@ -282,7 +310,8 @@ remains FULL_REQUIRED.
 
 The packet serializes the exact global identity, selected current authority,
 composed authority-history binding, twelve registry-ordered typed evidence
-slots, and (for `MUTATION_COMMIT`) the composed nine-checkpoint run.
+slots, and (for `MUTATION_COMMIT`) the exact `Dcommit` arm: nine-checkpoint
+ordinary evidence or checkpoint-5-only rotation evidence.
 Digest-only bags, reordered/duplicate slots, unselected producer triples, and
 a mutation purpose without a current commit refuse.
 
@@ -318,13 +347,12 @@ distinct rather than colliding.
 
 Authority-history verification recomputes each record digest and authenticates
 the chain against the exact selected current authority's `G`, `headOrdinal`,
-and `headRecordDigest`. The closed record union is `GENESIS|ROTATION`:
-`GENESIS` is ordinal zero with the genesis predecessor, admitted external
-bootstrap facts, successor core facts, and no retiring epoch; `ROTATION` is
-ordinal greater than zero with the exact prior record digest, retiring
-`Dp/Dt/Dv/Dr`, deterministic independently reviewed rotation identity, and
-successor core facts. Both exclude successor value/proposal/tip and selected
-head. Every authority `Dp` equals the lifetime-stable `Dp` committed by `G`. Records use the
+and `headRecordDigest`. It recomputes the exact `Dop`, `Dsc`, `Dgb`, `Drot`,
+and branch-specific `Dh` formulas above. GENESIS admission additionally
+recomputes the downstream ACTIVE→E0→CONSUMED selection-evidence digest; ROTATION
+checks exact prior selected head and retiring authority. Both exclude successor
+selection and downstream artifacts. Every authority `Dp` equals the lifetime-
+stable `Dp` committed by `G`. Records use the
 content-addressed canonical
 `installation/state-mutation-authority-history/records/<ordinal>.json` path;
 the walk constructs the path of record `n+1` from `n` and never enumerates a
@@ -332,31 +360,28 @@ directory. The walk is deliberately O(n); `ISS-006` proves 1,000 records within
 five seconds per supported OS. Checkpointing remains parked until that measured
 gate fails.
 
-Commit evidence includes a closed immutable intent. Every segment and core
-repeats and validates target kind/path/install/project/state/transaction/source
-identity, and run IDs are recomputed from the selected authority and prior
-checkpoint. The terminal evidence is a closed outcome union: `SELECTED`
-carries the selected target; `LOST_CONFLICT` carries the recomputed proposed
-loser value/receipt plus a real selected winner and conflict receipt, never a
-loser tip; and `UNKNOWN_TERMINAL` carries the recomputed proposal plus a bounded
-unknown observation and no selected target. Packet `UNKNOWN` is a fixed-size
+Commit evidence includes a closed immutable intent. Every arm repeats and
+validates target kind/path/install/project/state/transaction/source identity,
+and run IDs are recomputed from selected authority and prior checkpoint.
+ORDINARY retains all nine stages and its selected/lost/unknown resolution.
+AUTHORITY_ROTATION retains only the selected old checkpoint 5, expected
+successor/history, and its resumable/selected/unknown derived arm; ordinary
+post-CAS artifacts refuse. Packet `UNKNOWN` is a fixed-size
 closed `UNREADABLE|MALFORMED|IMPOSSIBLE` union containing only a category-
 specific closed reason, observation digest, and safe decimal byte length; it
-admits no arbitrary JSON, native error text, host path, or array. A mutation packet's top authority
-equals its commit authority. Its registry slot equals the selected target for
-`SELECTED`, the real winner for `LOST_CONFLICT`, and is empty for an unknown
-target. Every checkpoint preserves the full kind/path/install/project/state/
+admits no arbitrary JSON, native error text, host path, or array. Packet
+authority and registry slot follow the exact ordinary/rotation arm mapping
+above. Every checkpoint preserves the full kind/path/install/project/state/
 transaction/source/`Dp`/mutation/run identity tuple.
 
 Every commit run is single-epoch. The rotation run appends the exact chain
 record and performs the authority CAS as its final action; it executes no
 checkpoint after that CAS under either epoch, and its run-current journal
 legitimately rests at the selected CAS-armed checkpoint across the selection.
-Terminal truth is derived: prior authority plus exact head-plus-one record
-matching the CAS-armed transaction is resumable under the old epoch; successor
-authority plus its exact selected chain record and the old CAS-armed checkpoint
-is `SELECTED`; every other combination is `UNKNOWN`. No post-CAS new-epoch write
-exists. Rotation is forward-only once appended: the pending record is the
+Its `Dcommit` derives RESUMABLE from prior authority plus exact head-plus-one
+record matching the CAS-armed transaction, SELECTED from exact successor
+authority/history/old checkpoint 5, and UNKNOWN otherwise. No post-CAS new-
+epoch write or ordinary post-CAS artifact exists. Rotation is forward-only once appended: the pending record is the
 single permitted head-plus-one excess, and any other excess, gap, fork, or
 mismatch refuses.
 
