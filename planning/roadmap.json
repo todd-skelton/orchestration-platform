@@ -47,6 +47,7 @@
     { "key": "ISS-011", "file": "planning/drafts/ISS-011.md", "milestone": "M2", "parent": "EPIC-MODULES", "blockedBy": ["ISS-002", "ISS-006", "ISS-013"] },
     { "key": "ISS-012", "file": "planning/drafts/ISS-012.md", "milestone": "M2", "parent": "EPIC-MODULES", "blockedBy": ["ISS-010", "ISS-011", "ISS-025"] },
     { "key": "ISS-039", "file": "planning/drafts/ISS-039.md", "milestone": "M2", "parent": "EPIC-MODULES", "blockedBy": ["ISS-009", "ISS-011", "ISS-013"] },
+    { "key": "ISS-040", "file": "planning/drafts/ISS-040.md", "milestone": "M2", "parent": "EPIC-MODULES", "blockedBy": ["ISS-011"] },
     { "key": "ISS-014", "file": "planning/drafts/ISS-014.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-004", "ISS-009", "ISS-010", "ISS-032"] },
     { "key": "ISS-029", "file": "planning/drafts/ISS-029.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-000", "ISS-006", "ISS-038"] },
     { "key": "ISS-020", "file": "planning/drafts/ISS-020.md", "milestone": "M2", "parent": "EPIC-SELFHOST", "blockedBy": ["ISS-006", "ISS-014", "ISS-021", "ISS-029", "ISS-032", "ISS-033", "ISS-038"] },

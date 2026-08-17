@@ -42,6 +42,9 @@
 - **Deletion test**: Executable evidence bar for a simplification finding: the
   named surface can be deleted or inlined with every stated acceptance
   criterion still passing, proven by an executed probe.
+- **Evidence proportionality**: Standard that every mandated evidence artifact
+  names the defect class it discriminates and uses the cheapest discriminating
+  check for the property it proves.
 - **Exact revision**: Immutable source identity examined by a worker or reviewer.
 - **Exact model identity**: Provider-authenticated immutable snapshot/version
   reported for one attempt, distinct from a requested selector or alias.
