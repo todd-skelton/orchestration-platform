@@ -3209,6 +3209,8 @@ export const fixedEvidencePacketLimits = Object.freeze({
   maximumLaunchRecords: 64,
   maximumPriorTerminalSummaries: 1,
   maximumPointerProposalsPerBucket: 16,
+  maximumAuthorityHistorySelections: 16,
+  maximumHistoricalSelections: 16,
 });
 
 export function validateEvidencePacket(input: unknown): readonly string[] {
@@ -3217,9 +3219,9 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
     "accumulatorSelection",
     "attachment",
     "attachmentSelection",
-    "authorityEpochSelection",
+    "authorityHistory",
+    "currentCommit",
     "descriptor",
-    "epochSequence",
     "fenceHistory",
     "fenceSelection",
     "gateHistory",
@@ -3236,7 +3238,6 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
   if (!closed.ok) return closed.issues;
   const issues: string[] = [];
   const selectionInputs = {
-    authorityEpoch: closed.value.authorityEpochSelection,
     accumulator: closed.value.accumulatorSelection,
     attachment: closed.value.attachmentSelection,
     fence: closed.value.fenceSelection,
@@ -3252,7 +3253,6 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
     }),
   ) as Record<keyof typeof selectionInputs, ReturnType<typeof resolveSelectedPointerEvidence>>;
   const expectedKinds = {
-    authorityEpoch: "STATE_MUTATION_AUTHORITY_ROTATION",
     accumulator: "RECOVERY_ATTEMPT_ACCUMULATOR",
     attachment: "RECOVERY_AUTHORIZATION_ATTACHMENT",
     fence: "ACTIVATION_RECOVERY_FENCE",
@@ -3265,46 +3265,27 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
     if (selected?.ok && selected.value.tip.pointerKind !== expectedKinds[name])
       issues.push(`${name}Selection:pointer-kind-mismatch`);
   }
-  if (selections.authorityEpoch?.ok) {
-    if (!validateEpochSequence(closed.value.epochSequence)) issues.push("epochSequence:invalid");
-    else {
-      const epochSequence = snapshotClosedArray(closed.value.epochSequence);
-      if (epochSequence.ok)
-        for (const entry of epochSequence.value) {
-          const observed = snapshotClosedRecord(entry, [
-            "authorityEpochDigest",
-            "authorityEpochReceiptDigest",
-            "authorityEpochTipDigest",
-            "authorityEpochValueDigest",
-            "step",
-          ]);
-          if (
-            !observed.ok ||
-            observed.value.authorityEpochDigest !== selections.authorityEpoch.value.valueDigest ||
-            observed.value.authorityEpochTipDigest !== selections.authorityEpoch.value.tipDigest ||
-            observed.value.authorityEpochValueDigest !==
-              selections.authorityEpoch.value.valueDigest ||
-            observed.value.authorityEpochReceiptDigest !==
-              selections.authorityEpoch.value.proposalReceiptDigest
-          )
-            issues.push("epochSequence:authority-selection-mismatch");
-        }
-    }
-    for (const name of [
-      "accumulator",
-      "attachment",
-      "fence",
-      "gate",
-      "launch",
-      "reservation",
-    ] as const) {
-      const selected = selections[name];
-      if (!selected?.ok) continue;
-      for (const identity of ["installationId", "projectId", "stateRootDigest"] as const)
-        if (selected.value[identity] !== selections.authorityEpoch.value[identity])
-          issues.push(`${name}Selection:${identity}-epoch-mismatch`);
-    }
-  }
+  if (closed.value.currentCommit !== null)
+    issues.push(
+      ...validateCurrentCommitEpochComposition(closed.value.currentCommit).map(
+        (issue) => `currentCommit:${issue}`,
+      ),
+    );
+  const historicalSelectionInputs = [
+    ...Object.values(selectionInputs),
+    ...(closed.value.currentAccumulatorPredecessorSelection === null
+      ? []
+      : [closed.value.currentAccumulatorPredecessorSelection]),
+    ...(closed.value.priorTerminalAccumulatorSelection === null
+      ? []
+      : [closed.value.priorTerminalAccumulatorSelection]),
+  ];
+  issues.push(
+    ...validateHistoricalAuthorityAuthentication({
+      authorityHistory: closed.value.authorityHistory,
+      historicalSelections: historicalSelectionInputs,
+    }).map((issue) => `authorityHistory:${issue}`),
+  );
   if (selections.reservation?.ok) {
     for (const name of ["accumulator", "attachment", "fence", "gate", "launch"] as const) {
       const selected = selections[name];
@@ -3619,6 +3600,181 @@ export function validateEpochSequence(input: unknown): boolean {
   }
   return true;
 }
+
+export function validateCurrentCommitEpochComposition(input: unknown): readonly string[] {
+  const closed = snapshotClosedRecord(input, [
+    "authorityEpochSelection",
+    "epochSequence",
+    "mutation",
+  ]);
+  if (!closed.ok) return closed.issues;
+  const issues: string[] = [];
+  const authority = resolveSelectedPointerEvidence(closed.value.authorityEpochSelection);
+  if (!authority.ok)
+    issues.push(...authority.issues.map((issue) => `authorityEpochSelection:${issue}`));
+  else if (authority.value.tip.pointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION")
+    issues.push("authorityEpochSelection:pointer-kind-mismatch");
+  if (!validateEpochSequence(closed.value.epochSequence)) issues.push("epochSequence:invalid");
+  const mutation = snapshotClosedRecord(closed.value.mutation, [
+    "disposition",
+    "evidence",
+    "readbackTipDigest",
+  ]);
+  if (!mutation.ok) return Object.freeze([...issues, ...mutation.issues]);
+  if (mutation.value.disposition !== "PROPOSED" && mutation.value.disposition !== "SELECTED")
+    issues.push("mutation:disposition-invalid");
+  const selectedMutation = resolveSelectedPointerEvidence(mutation.value.evidence);
+  if (!selectedMutation.ok)
+    issues.push(...selectedMutation.issues.map((issue) => `mutation:${issue}`));
+  if (authority.ok) {
+    const sequence = snapshotClosedArray(closed.value.epochSequence);
+    if (sequence.ok)
+      for (const entryInput of sequence.value) {
+        const entry = snapshotClosedRecord(entryInput, [
+          "authorityEpochDigest",
+          "authorityEpochReceiptDigest",
+          "authorityEpochTipDigest",
+          "authorityEpochValueDigest",
+          "step",
+        ]);
+        if (
+          !entry.ok ||
+          entry.value.authorityEpochDigest !== authority.value.valueDigest ||
+          entry.value.authorityEpochTipDigest !== authority.value.tipDigest ||
+          entry.value.authorityEpochValueDigest !== authority.value.valueDigest ||
+          entry.value.authorityEpochReceiptDigest !== authority.value.proposalReceiptDigest
+        )
+          issues.push("epochSequence:authority-selection-mismatch");
+      }
+    if (selectedMutation.ok) {
+      for (const identity of ["installationId", "projectId", "stateRootDigest"] as const)
+        if (selectedMutation.value[identity] !== authority.value[identity])
+          issues.push(`mutation:${identity}-authority-mismatch`);
+      for (const [proposalName, digestName] of [
+        ["authorityEpochTipDigest", "tipDigest"],
+        ["authorityEpochValueDigest", "valueDigest"],
+        ["authorityEpochReceiptDigest", "proposalReceiptDigest"],
+      ] as const)
+        if (selectedMutation.value.proposal[proposalName] !== authority.value[digestName])
+          issues.push(`mutation:${proposalName}-mismatch`);
+    }
+  }
+  if (selectedMutation.ok) {
+    if (mutation.value.disposition === "PROPOSED" && mutation.value.readbackTipDigest !== null)
+      issues.push("mutation:proposed-readback-present");
+    if (
+      mutation.value.disposition === "SELECTED" &&
+      mutation.value.readbackTipDigest !== selectedMutation.value.tipDigest
+    )
+      issues.push("mutation:selected-readback-mismatch");
+  }
+  return Object.freeze(issues);
+}
+
+export function validateHistoricalAuthorityAuthentication(input: unknown): readonly string[] {
+  const closed = snapshotClosedRecord(input, ["authorityHistory", "historicalSelections"]);
+  if (!closed.ok) return closed.issues;
+  const authorityHistory = snapshotClosedArray(closed.value.authorityHistory);
+  const historicalSelections = snapshotClosedArray(closed.value.historicalSelections);
+  if (!authorityHistory.ok || !historicalSelections.ok)
+    return Object.freeze([
+      ...(!authorityHistory.ok
+        ? authorityHistory.issues.map((issue) => `authorityHistory:${issue}`)
+        : []),
+      ...(!historicalSelections.ok
+        ? historicalSelections.issues.map((issue) => `historicalSelections:${issue}`)
+        : []),
+    ]);
+  const issues: string[] = [];
+  if (authorityHistory.value.length > fixedEvidencePacketLimits.maximumAuthorityHistorySelections)
+    issues.push("authorityHistory:limit-exceeded");
+  if (historicalSelections.value.length > fixedEvidencePacketLimits.maximumHistoricalSelections)
+    issues.push("historicalSelections:limit-exceeded");
+  const authorityByTriple = new Map<string, SelectedPointerEvidence>();
+  let priorAuthorityKey = "";
+  for (const authorityInput of authorityHistory.value) {
+    const authority = resolveSelectedPointerEvidence(authorityInput);
+    if (!authority.ok) {
+      issues.push(...authority.issues.map((issue) => `authority:${issue}`));
+      continue;
+    }
+    if (authority.value.tip.pointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION") {
+      issues.push("authority:pointer-kind-mismatch");
+      continue;
+    }
+    const key = `${authority.value.tipDigest}/${authority.value.valueDigest}/${authority.value.proposalReceiptDigest}`;
+    if (key <= priorAuthorityKey) issues.push("authorityHistory:not-strictly-sorted");
+    if (authorityByTriple.has(key)) issues.push("authorityHistory:duplicate");
+    priorAuthorityKey = key;
+    authorityByTriple.set(key, authority.value);
+  }
+  const requiredKeys = new Set<string>();
+  const pendingHistorical = [...historicalSelections.value];
+  const observedHistorical = new Set<string>();
+  let expandedHistoricalCount = 0;
+  while (pendingHistorical.length > 0) {
+    const historicalInput = pendingHistorical.shift();
+    const historical = resolveSelectedPointerEvidence(historicalInput);
+    if (!historical.ok) {
+      issues.push(...historical.issues.map((issue) => `historical:${issue}`));
+      continue;
+    }
+    const historicalKey = `${historical.value.tipDigest}/${historical.value.valueDigest}/${historical.value.proposalReceiptDigest}`;
+    if (observedHistorical.has(historicalKey)) continue;
+    observedHistorical.add(historicalKey);
+    expandedHistoricalCount += 1;
+    if (expandedHistoricalCount > fixedEvidencePacketLimits.maximumHistoricalSelections) {
+      issues.push("historicalSelections:expanded-limit-exceeded");
+      break;
+    }
+    if (historical.value.tip.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION") {
+      issues.push("historical:authority-row-must-use-history-table");
+      continue;
+    }
+    const key = `${historical.value.proposal.authorityEpochTipDigest}/${historical.value.proposal.authorityEpochValueDigest}/${historical.value.proposal.authorityEpochReceiptDigest}`;
+    requiredKeys.add(key);
+    const authority = authorityByTriple.get(key);
+    if (!authority) {
+      issues.push("historical:producer-authority-missing");
+      continue;
+    }
+    for (const identity of ["installationId", "projectId", "stateRootDigest"] as const)
+      if (historical.value[identity] !== authority[identity])
+        issues.push(`historical:${identity}-authority-mismatch`);
+    if (historical.value.value.schemaVersion === "pointer-tombstone-value/v1") {
+      const envelope = snapshotClosedRecord(historicalInput, [
+        "canonicalPointerPath",
+        "installationId",
+        "pathBindings",
+        "pointerKind",
+        "positionEvidence",
+        "projectId",
+        "proposal",
+        "sourceToken",
+        "stateRootDigest",
+        "tip",
+        "tombstoneEvidence",
+        "transactionId",
+        "value",
+      ]);
+      const tombstoneEvidence = envelope.ok
+        ? snapshotClosedRecord(envelope.value.tombstoneEvidence, [
+            "archiveBindings",
+            "archivePath",
+            "archiveRecord",
+            "priorSelection",
+            "terminalProof",
+          ])
+        : null;
+      if (!tombstoneEvidence?.ok) issues.push("historical:tombstone-prior-missing");
+      else pendingHistorical.push(tombstoneEvidence.value.priorSelection as JsonValue);
+    }
+  }
+  for (const key of authorityByTriple.keys())
+    if (!requiredKeys.has(key)) issues.push("authorityHistory:unused-entry");
+  return Object.freeze(issues);
+}
+
 export function validateRotationCensus(input: unknown): boolean {
   const snapshot = snapshotClosedRecord(input, ["authorityEpochDigest", "entries"]);
   if (!snapshot.ok || !/^[0-9a-f]{64}$/.test(String(snapshot.value.authorityEpochDigest)))

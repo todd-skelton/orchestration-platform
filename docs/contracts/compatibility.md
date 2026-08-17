@@ -194,7 +194,21 @@ fields plus current-family relationships, and refuses a consistent but
 unselected value set. Historical selected envelopes need not share the packet's
 current authority epoch. The observations within `epochSequence` must share one
 current authority digest/Dt/Dv/Dr and are compared to the recomputed current
-authority envelope rather than accepted as a parallel asserted quadruple.
+authority envelope rather than accepted as a parallel asserted quadruple. A
+packet that validates a mutation carries a closed `currentCommit`: the selected
+authority envelope, the exact sequence, and PROPOSED or SELECTED mutation
+evidence. The proposal's epoch triple must equal that authority selection; Dr,
+expected tip, and selected readback are recomputed. A historical-only packet
+sets `currentCommit` to null.
+
+Historical producer epochs are authenticated through a bounded, strictly
+deduplicated authority-history table containing selected
+`STATE_MUTATION_AUTHORITY_ROTATION` envelopes, never caller-only digest triples.
+Every distinct producer triple used by a historical proposal must resolve to one
+exact table row with matching installation/project/state identity, and every row
+must be used. Tombstone authentication includes both its removal producer and
+its embedded selected prior producer. Rotation history remains FULL_REQUIRED;
+the bounded table is the packet's relevant-epoch projection, not a retention cap.
 
 Retention distinguishes CURRENT_AUTHORITY from TERMINAL_ATTEMPT_HISTORY.
 Compaction requires selected non-pending classification, checkpoint, plan, and

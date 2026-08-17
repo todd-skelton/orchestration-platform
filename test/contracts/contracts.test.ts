@@ -41,6 +41,8 @@ import {
   stateMutationLockPath,
   stateMutationRegistry,
   validateEpochSequence,
+  validateCurrentCommitEpochComposition,
+  validateHistoricalAuthorityAuthentication,
   validateAuthorizationReceiptChain,
   validateAuthorizationRevokeReceiptChain,
   validateGateAuthorizationBinding,
@@ -365,6 +367,11 @@ function ordinarySelection(
 function tombstoneSelection(
   row: (typeof pointerRegistry)[number],
   priorSelection = ordinarySelection(row, {}, true),
+  removalAuthorityEpoch = {
+    tipDigest: digest2,
+    valueDigest: digest2,
+    proposalReceiptDigest: digest2,
+  },
 ) {
   const transactionId = priorSelection.envelope.transactionId as string;
   const sourceToken = priorSelection.envelope.sourceToken as string;
@@ -386,11 +393,7 @@ function tombstoneSelection(
     valueDigest: priorSelection.valueDigest,
     proposalReceiptDigest: priorSelection.proposalReceiptDigest,
   };
-  const authorityEpoch = {
-    tipDigest: digest2,
-    valueDigest: digest2,
-    proposalReceiptDigest: digest2,
-  };
+  const authorityEpoch = removalAuthorityEpoch;
   const terminalProof: ContractRecord = {
     schemaVersion: "pointer-terminal-proof/v1",
     authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
@@ -2732,21 +2735,14 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       sourceToken: "none",
       authorityEpoch: selectedEpoch,
     });
-    const epochSequence = ordinaryEpochSequence.map((step) => ({
-      step,
-      authorityEpochDigest: authorityEpoch.valueDigest,
-      authorityEpochTipDigest: authorityEpoch.tipDigest,
-      authorityEpochValueDigest: authorityEpoch.valueDigest,
-      authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
-    }));
     const packet = {
       accumulator,
       accumulatorSelection: accumulatorSelection.envelope,
       attachment: attached,
       attachmentSelection: attachmentSelection.envelope,
-      authorityEpochSelection: authorityEpoch.envelope,
+      authorityHistory: [authorityEpoch.envelope],
+      currentCommit: null,
       descriptor: liveDescriptor,
-      epochSequence,
       gateHistory,
       gateSelection: gateSelection.envelope,
       fenceHistory,
@@ -2779,11 +2775,192 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       authorityEpochValueDigest: authorityEpochE2.valueDigest,
       authorityEpochReceiptDigest: authorityEpochE2.proposalReceiptDigest,
     }));
+    const gateSelectionE2 = pointerSelection("ACTIVATION_CLEANUP_GATE", gateHistory[0]!, {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      prior: gateSelection,
+      authorityEpoch: {
+        tipDigest: authorityEpochE2.tipDigest,
+        valueDigest: authorityEpochE2.valueDigest,
+        proposalReceiptDigest: authorityEpochE2.proposalReceiptDigest,
+      },
+    });
+    const selectedCurrentCommit = {
+      authorityEpochSelection: authorityEpochE2.envelope,
+      epochSequence: epochSequenceE2,
+      mutation: {
+        disposition: "SELECTED",
+        evidence: gateSelectionE2.envelope,
+        readbackTipDigest: gateSelectionE2.tipDigest,
+      },
+    };
+    expect(validateCurrentCommitEpochComposition(selectedCurrentCommit)).toEqual([]);
+    expect(
+      validateCurrentCommitEpochComposition({
+        ...selectedCurrentCommit,
+        mutation: {
+          ...selectedCurrentCommit.mutation,
+          disposition: "PROPOSED",
+          readbackTipDigest: null,
+        },
+      }),
+    ).toEqual([]);
+    const epochSequenceE1 = ordinaryEpochSequence.map((step) => ({
+      step,
+      authorityEpochDigest: authorityEpoch.valueDigest,
+      authorityEpochTipDigest: authorityEpoch.tipDigest,
+      authorityEpochValueDigest: authorityEpoch.valueDigest,
+      authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
+    }));
+    const pendingE1AfterE2 = {
+      ...selectedCurrentCommit,
+      mutation: {
+        disposition: "PROPOSED",
+        evidence: gateSelection.envelope,
+        readbackTipDigest: null,
+      },
+    };
+    expect(validateCurrentCommitEpochComposition(pendingE1AfterE2)).not.toEqual([]);
+    expect(
+      validateCurrentCommitEpochComposition({
+        ...selectedCurrentCommit,
+        authorityEpochSelection: authorityEpoch.envelope,
+        epochSequence: epochSequenceE1,
+      }),
+    ).not.toEqual([]);
+    for (const field of [
+      "authorityEpochTipDigest",
+      "authorityEpochValueDigest",
+      "authorityEpochReceiptDigest",
+    ])
+      expect(
+        validateCurrentCommitEpochComposition({
+          ...selectedCurrentCommit,
+          mutation: {
+            ...selectedCurrentCommit.mutation,
+            evidence: {
+              ...gateSelectionE2.envelope,
+              proposal: { ...gateSelectionE2.proposal, [field]: digest },
+            },
+          },
+        }),
+        `currentCommit:${field}`,
+      ).not.toEqual([]);
+    expect(
+      validateCurrentCommitEpochComposition({
+        ...selectedCurrentCommit,
+        mutation: { ...selectedCurrentCommit.mutation, readbackTipDigest: digest },
+      }),
+    ).not.toEqual([]);
+    const historicalAuthorization = pointerSelection(
+      "RECOVERY_AUTHORIZATION_STATE",
+      fixtureFor("recovery-authorization-state/v2"),
+      {
+        pathBindings: { transactionId: uuid },
+        transactionId: uuid,
+        sourceToken: "none",
+        authorityEpoch: selectedEpoch,
+      },
+    );
+    const historicalSelections = [
+      gateSelection.envelope,
+      fenceSelection.envelope,
+      launchSelection.envelope,
+      historicalAuthorization.envelope,
+      attachmentSelection.envelope,
+      accumulatorSelection.envelope,
+      reservationSelection.envelope,
+    ];
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: [authorityEpoch.envelope],
+        historicalSelections,
+      }),
+    ).toEqual([]);
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: [],
+        historicalSelections,
+      }),
+    ).toContain("historical:producer-authority-missing");
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: [digest],
+        historicalSelections,
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: Array(
+          fixedEvidencePacketLimits.maximumAuthorityHistorySelections + 1,
+        ).fill(authorityEpoch.envelope),
+        historicalSelections,
+      }),
+    ).toContain("authorityHistory:limit-exceeded");
+    const activeReleaseRow = pointerRegistry.find(
+      (candidate) => candidate.kind === "ACTIVE_RELEASE",
+    )!;
+    const activeReleaseE1 = pointerSelection("ACTIVE_RELEASE", fixtureFor("active-release/v2"), {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      authorityEpoch: selectedEpoch,
+    });
+    const activeReleaseRemovalE2 = tombstoneSelection(activeReleaseRow, activeReleaseE1, {
+      tipDigest: authorityEpochE2.tipDigest,
+      valueDigest: authorityEpochE2.valueDigest,
+      proposalReceiptDigest: authorityEpochE2.proposalReceiptDigest,
+    });
+    const twoEpochHistory = [authorityEpoch, authorityEpochE2]
+      .sort((left, right) =>
+        `${left.tipDigest}/${left.valueDigest}/${left.proposalReceiptDigest}`.localeCompare(
+          `${right.tipDigest}/${right.valueDigest}/${right.proposalReceiptDigest}`,
+        ),
+      )
+      .map((selection) => selection.envelope);
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: twoEpochHistory,
+        historicalSelections: [activeReleaseRemovalE2.envelope],
+      }),
+    ).toEqual([]);
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: [authorityEpochE2.envelope],
+        historicalSelections: [activeReleaseRemovalE2.envelope],
+      }),
+    ).toContain("historical:producer-authority-missing");
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: [authorityEpoch.envelope, authorityEpoch.envelope],
+        historicalSelections,
+      }),
+    ).not.toEqual([]);
+    const fabricatedHistoricalAuthorization = pointerSelection(
+      "RECOVERY_AUTHORIZATION_STATE",
+      fixtureFor("recovery-authorization-state/v2"),
+      {
+        pathBindings: { transactionId: uuid },
+        transactionId: uuid,
+        sourceToken: "none",
+        authorityEpoch: {
+          tipDigest: digest2,
+          valueDigest: digest2,
+          proposalReceiptDigest: digest2,
+        },
+      },
+    );
+    expect(
+      validateHistoricalAuthorityAuthentication({
+        authorityHistory: [authorityEpoch.envelope],
+        historicalSelections: [fabricatedHistoricalAuthorization.envelope],
+      }),
+    ).toContain("historical:producer-authority-missing");
     expect(
       validateEvidencePacket({
         ...packet,
-        authorityEpochSelection: authorityEpochE2.envelope,
-        epochSequence: epochSequenceE2,
+        currentCommit: selectedCurrentCommit,
       }),
     ).toEqual([]);
     expect(
@@ -2804,15 +2981,14 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     expect(
       validateEvidencePacket({
         ...packet,
-        epochSequence: epochSequence.map((entry) => ({
-          ...entry,
-          authorityEpochDigest: digest,
-          authorityEpochTipDigest: digest2,
-          authorityEpochValueDigest: digest,
-          authorityEpochReceiptDigest: digest2,
-        })),
+        currentCommit: {
+          ...selectedCurrentCommit,
+          epochSequence: epochSequenceE2.map((entry, index) =>
+            index === 5 ? { ...entry, authorityEpochTipDigest: digest } : entry,
+          ),
+        },
       }),
-    ).toContain("epochSequence:authority-selection-mismatch");
+    ).toContain("currentCommit:epochSequence:invalid");
     expect(
       canonicalDigest(
         [
