@@ -515,10 +515,10 @@ function tombstoneSelection(
 }
 
 describe("current and diagnostic schema registries", () => {
-  test("pins twelve pointer kinds, one lock, and exact canonical paths", () => {
-    expect(pointerKinds).toHaveLength(12);
+  test("pins thirteen pointer kinds, one lock, and exact canonical paths", () => {
+    expect(pointerKinds).toHaveLength(13);
     expect(pointerRegistry.map((row) => row.kind)).toEqual(pointerKinds);
-    expect(new Set(pointerKinds).size).toBe(12);
+    expect(new Set(pointerKinds).size).toBe(13);
     expect(stateMutationLockPath).toBe("installation/state-mutation.lock");
     expect(stateMutationAuthorityPath).toBe("installation/state-mutation-authority.json");
     expect(stateMutationRegistry.lock).toEqual({
@@ -526,44 +526,50 @@ describe("current and diagnostic schema registries", () => {
       singleton: true,
       symlinkAllowed: false,
     });
-    expect(pointerRegistry.filter((row) => row.singleton)).toHaveLength(5);
+    expect(pointerRegistry.filter((row) => row.singleton)).toHaveLength(6);
     expect(pointerRegistry.filter((row) => row.transactionPolicy === "REQUIRED")).toHaveLength(9);
-    expect(pointerRegistry.filter((row) => row.transactionPolicy === "NULL")).toHaveLength(3);
+    expect(pointerRegistry.filter((row) => row.transactionPolicy === "NULL")).toHaveLength(4);
     expect(pointerRegistry.filter((row) => row.sourcePolicy === "RECOVERY_SOURCE")).toHaveLength(3);
     expect(canonicalDigest(pointerPositionContracts)).toBe(
-      "894fc993e7d88d1d7a794e22d8b18ef18118dac914363c42708708e57ef87461",
+      "0fea2a31878e0a5be4029b90496da7cebed376b81eba7129da34261c3f69d91b",
     );
     const constructedPathCensus: JsonValue[] = [];
     for (const row of pointerRegistry) {
-      expect(row.rootTemplates.length, `${row.kind}:roots`).toBeGreaterThan(0);
-      expect(row.archiveTemplates.length, `${row.kind}:archives`).toBeGreaterThan(0);
+      if (row.kind === "AUTHORITY_NODE_MATERIALIZATION_RUN") {
+        expect(row.rootTemplates).toEqual([]);
+        expect(row.archiveTemplates).toEqual([]);
+      } else {
+        expect(row.rootTemplates.length, `${row.kind}:roots`).toBeGreaterThan(0);
+        expect(row.archiveTemplates.length, `${row.kind}:archives`).toBeGreaterThan(0);
+      }
       expect(row.valueSchemas.length, `${row.kind}:schemas`).toBeGreaterThan(0);
-      const rootTemplate = row.rootTemplates[0]!;
+      const rootTemplate = row.rootTemplates[0];
       const rootBindings = {
-        ...(rootTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
-        ...(rootTemplate.includes("<source>") ? { sourceToken: row.sourceTokens[0]! } : {}),
-        ...(rootTemplate.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
-        ...(rootTemplate.includes("<pointer-instance-digest>")
+        ...(rootTemplate?.includes("<transaction>") ? { transactionId: uuid } : {}),
+        ...(rootTemplate?.includes("<source>") ? { sourceToken: row.sourceTokens[0]! } : {}),
+        ...(rootTemplate?.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
+        ...(rootTemplate?.includes("<pointer-instance-digest>")
           ? { pointerInstanceDigest: digest }
           : {}),
-        ...(rootTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
-        ...(rootTemplate.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
+        ...(rootTemplate?.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+        ...(rootTemplate?.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
       };
       const roots = pointerRootPaths(row.kind, rootBindings);
       expect(validatePointerTemplateDispatch(row.kind, "ROOT", roots, rootBindings)).toEqual([]);
-      expect(
-        validatePointerTemplateDispatch(row.kind, "ROOT", [`${roots[0]}alias`], rootBindings),
-      ).not.toEqual([]);
-      const archiveTemplate = row.archiveTemplates[0]!;
+      if (roots.length > 0)
+        expect(
+          validatePointerTemplateDispatch(row.kind, "ROOT", [`${roots[0]}alias`], rootBindings),
+        ).not.toEqual([]);
+      const archiveTemplate = row.archiveTemplates[0];
       const archiveBindings = {
-        ...(archiveTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
-        ...(archiveTemplate.includes("<source>") ? { sourceToken: row.sourceTokens[0]! } : {}),
-        ...(archiveTemplate.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
-        ...(archiveTemplate.includes("<pointer-instance-digest>")
+        ...(archiveTemplate?.includes("<transaction>") ? { transactionId: uuid } : {}),
+        ...(archiveTemplate?.includes("<source>") ? { sourceToken: row.sourceTokens[0]! } : {}),
+        ...(archiveTemplate?.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
+        ...(archiveTemplate?.includes("<pointer-instance-digest>")
           ? { pointerInstanceDigest: digest }
           : {}),
-        ...(archiveTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
-        ...(archiveTemplate.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
+        ...(archiveTemplate?.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+        ...(archiveTemplate?.includes("<target-mutation-id>") ? { targetMutationId: digest } : {}),
       };
       const archives = pointerArchivePaths(row.kind, archiveBindings);
       expect(
@@ -588,10 +594,15 @@ describe("current and diagnostic schema registries", () => {
       const positionDigest = computePointerPositionDigest(row.kind, position);
       expect(validatePointerPositionEvidence(row.kind, position)).toEqual([]);
       for (const field of pointerPositionContracts[row.kind].ordinaryFields) {
-        const invalid =
-          field === "previousArchiveHeadDigest" || field === "terminalResolutionDigest"
-            ? "invalid"
-            : null;
+        const invalid = [
+          "previousArchiveHeadDigest",
+          "terminalResolutionDigest",
+          "rotationId",
+          "materializationPlanDigest",
+          "phaseEvidenceDigest",
+        ].includes(field)
+          ? "invalid"
+          : null;
         expect(
           validatePointerPositionEvidence(row.kind, { ...position, [field]: invalid }),
           `${row.kind}:${field}`,
@@ -631,7 +642,7 @@ describe("current and diagnostic schema registries", () => {
       });
     }
     expect(canonicalDigest(constructedPathCensus)).toBe(
-      "78fcea836c3f6418a044e3c8367d66f4a19e514e9938ce7e5b1f0809cd0a10f2",
+      "1f9b6e0f22149479ec152d1e0b45259de09726c1cdc25111f97e460db0b67b89",
     );
     const familyCensus = pointerRegistry.map((row) => ({
       archiveTemplates: row.archiveTemplates,
@@ -648,7 +659,7 @@ describe("current and diagnostic schema registries", () => {
       valueSchemas: row.valueSchemas,
     }));
     expect(canonicalDigest(familyCensus)).toBe(
-      "52920188587bf39f1bf5791ec7773f609c3277708e571acc49aa9ae7cfbb4ff4",
+      "e9ea4319b2c32149c5d77f3dcf84e520bfedc12a2e3b4a8bd4c28c2daa44b517",
     );
     expect(pointerPath("ACTIVE_RELEASE")).toBe("installation/active-release.json");
     expect(pointerPath("RECOVERY_AUTHORIZATION_STATE", { transactionId: uuid })).toBe(
@@ -751,7 +762,7 @@ describe("current and diagnostic schema registries", () => {
   });
 
   test("removes superseded authority v1 from current dispatch and retains diagnostic parsing", () => {
-    expect(diagnostic.schemaVersions).toHaveLength(15);
+    expect(diagnostic.schemaVersions).toHaveLength(26);
     for (const schemaVersion of diagnostic.schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
       expect(schemaDefinitions).not.toHaveProperty(schemaVersion);
@@ -776,7 +787,7 @@ describe("current and diagnostic schema registries", () => {
       "pointer-terminal-proof/v1",
       "pointer-archive-record/v1",
       "authority-retention/v1",
-      "state-mutation-authority-value/v2",
+      "state-mutation-authority-value/v3",
       "authority-history-node/v1",
       "active-release/v2",
       "activation-cleanup-gate-root/v2",
@@ -806,15 +817,15 @@ describe("current and diagnostic schema registries", () => {
       "bootstrap-reviewed-helper/v1",
       "state-mutation-bootstrap-anchor-lifecycle-archive/v1",
       "pointer-mutation-run-checkpoint-evidence/v1",
-      "pointer-mutation-commit-evidence/v1",
+      "pointer-mutation-commit-evidence/v3",
       "pointer-mutation-conflict-evidence/v1",
       "pointer-mutation-unknown-evidence/v1",
       "pointer-mutation-proposed-target-evidence/v1",
-      "pointer-evidence-slot/v2",
+      "pointer-evidence-slot/v3",
       "authority-membership-evidence/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(100);
+    expect(schemaVersions).toHaveLength(121);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -1087,7 +1098,7 @@ describe("framed pointer digest graph", () => {
     );
   });
 
-  test("pins exact F bytes and all 26 canonical schema bytes", () => {
+  test("pins exact F bytes and all current v2 canonical schema bytes", () => {
     const bytes = framedBytes("pointer-value/v2", [
       { type: "text", value: "A" },
       { type: "nullable-text", value: null },
@@ -1101,13 +1112,13 @@ describe("framed pointer digest graph", () => {
     expect(Buffer.from(bytes).toString("hex")).toBe(
       "6f726368657374726174696f6e2d706c6174666f726d00706f696e7465722d76616c75652f763200000000080100000000000000014106000000000000000007000000000000000142020000000000000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa030000000000000000040000000000000020bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb08000000000000000200010500000000000000087b2261223a317d0a",
     );
-    expect(v2SchemaVersions).toHaveLength(27);
+    expect(v2SchemaVersions).toHaveLength(30);
     const schemaBytes = v2SchemaVersions.map((schemaVersion) => ({
       digest: canonicalDigest(fixtureFor(schemaVersion)),
       schemaVersion,
     }));
     expect(canonicalDigest(schemaBytes)).toBe(
-      "69171be3c96a8f58d2271ac99e701d15c4ee93ee0826a65bcba6f85c7fe0e068",
+      "a1c7cbf37b0479829c3b74a6d82ead21e8678f05e2f47428e346b0ea9418e2b2",
     );
   });
 
@@ -1413,7 +1424,7 @@ describe("framed pointer digest graph", () => {
       expect(() => computePointerPositionDigest(otherRow.kind, position)).toThrow();
     }
     expect(canonicalDigest(census)).toBe(
-      "f310c6e7a9bf064abf7cca87f4e9db9a89a214e39c53ca8a06f04e2537786c36",
+      "e2038c7778b9e0ee8c760079cac9c2bf513e727e602df85ed36396cfaf35cf1c",
     );
   });
 
@@ -1618,8 +1629,13 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       false,
     );
 
-    const genesis = fixtureFor("state-mutation-authority-value/v2");
-    expect(parseContract("state-mutation-authority-value/v2", genesis).ok).toBe(true);
+    const legacyGenesis = fixtureFor("state-mutation-authority-value/v2");
+    expect(parseContract("state-mutation-authority-value/v2", legacyGenesis).ok).toBe(false);
+    expect(diagnostic.parseContract("state-mutation-authority-value/v2", legacyGenesis).ok).toBe(
+      true,
+    );
+    const genesis = fixtureFor("state-mutation-authority-value/v3");
+    expect(parseContract("state-mutation-authority-value/v3", genesis).ok).toBe(true);
     const rotation = {
       ...genesis,
       rotationKind: "ROTATION",
@@ -1634,13 +1650,15 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       authorityOrdinal: "1",
       historyCount: "1",
       historyRootKind: "NONEMPTY",
+      nodeInventoryRootKind: "NONEMPTY",
+      nodeInventoryCount: "1",
       historyAppendReceiptDigest: digest,
       successorCoreDigest: digest,
-      rotationOperationId: digest,
+      rotationId: digest,
     };
-    expect(parseContract("state-mutation-authority-value/v2", rotation).ok).toBe(true);
+    expect(parseContract("state-mutation-authority-value/v3", rotation).ok).toBe(true);
     expect(
-      parseContract("state-mutation-authority-value/v2", {
+      parseContract("state-mutation-authority-value/v3", {
         ...rotation,
         priorHelperDigest: null,
       }).ok,
@@ -3503,7 +3521,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       }).ok,
     ).toBe(false);
     expect(
-      parseContract("pointer-mutation-commit-evidence/v1", {
+      diagnostic.parseContract("pointer-mutation-commit-evidence/v1", {
         ...commit,
         outcome: "LOST_CONFLICT",
         selectedTarget: null,
@@ -3512,7 +3530,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       }).ok,
     ).toBe(true);
     expect(
-      parseContract("pointer-mutation-commit-evidence/v1", {
+      diagnostic.parseContract("pointer-mutation-commit-evidence/v1", {
         ...commit,
         outcome: "UNKNOWN_TERMINAL",
         selectedTarget: null,
@@ -3521,7 +3539,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       }).ok,
     ).toBe(true);
     expect(
-      parseContract("pointer-mutation-commit-evidence/v1", {
+      diagnostic.parseContract("pointer-mutation-commit-evidence/v1", {
         ...commit,
         outcome: "LOST_CONFLICT",
         proposedTarget,

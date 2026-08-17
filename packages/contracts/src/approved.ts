@@ -26,6 +26,7 @@ import {
   v2Definitions,
   type FramePart,
 } from "./v2.js";
+import { inventoryDefinitions, validateAuthorityCommitRunV3 } from "./inventory.js";
 
 const field = (kind: FieldRule["kind"], options: Omit<FieldRule, "kind"> = {}): FieldRule =>
   Object.freeze({ kind, ...options });
@@ -123,8 +124,8 @@ const exactTriple = (record: ContractRecord, prefix: string): readonly string[] 
   optionalTriple(record, [`${prefix}TipDigest`, `${prefix}ValueDigest`, `${prefix}ReceiptDigest`]);
 
 export const approvedDefinitions: Readonly<Record<string, SchemaDefinition>> = Object.freeze(
-  Object.fromEntries(
-    [
+  Object.fromEntries([
+    ...[
       define(
         "physical-destination-identity/v1",
         {
@@ -939,7 +940,8 @@ export const approvedDefinitions: Readonly<Record<string, SchemaDefinition>> = O
             : ["purpose:current-commit-mismatch"],
       ),
     ].map((definition) => [definition.schemaVersion, definition]),
-  ),
+    ...Object.entries(inventoryDefinitions),
+  ]),
 );
 
 export const diagnosticAuthorityDefinitions: Readonly<Record<string, SchemaDefinition>> =
@@ -1407,12 +1409,30 @@ export function validateDestinationOwnerTransition(
       issues.push("ownerOrdinal:not-adjacent");
     if (prior.lifecycle !== "RETIRED" && prior.installationId !== successor.installationId)
       issues.push("installationId:changed-before-retired");
+    if (prior.lifecycle !== "RETIRED") {
+      for (const name of [
+        "bootstrapAnchorDigest",
+        "physicalObservationDigest",
+        "successorReviewCoreDigest",
+        "expiresAt",
+      ])
+        if (prior[name] !== successor[name]) issues.push(`${name}:changed-before-retired`);
+    }
     if (
       prior.lifecycle === "RETIRED" &&
       successor.lifecycle === "ACTIVE" &&
       successor.successorReviewCoreDigest === null
     )
       issues.push("successorReviewCoreDigest:missing");
+    if (prior.lifecycle === "RETIRED" && successor.lifecycle === "ACTIVE") {
+      if (prior.installationId === successor.installationId)
+        issues.push("installationId:successor-must-differ");
+      if (prior.bootstrapAnchorDigest === successor.bootstrapAnchorDigest)
+        issues.push("bootstrapAnchorDigest:successor-must-differ");
+      if (prior.successorReviewCoreDigest === successor.successorReviewCoreDigest)
+        issues.push("successorReviewCoreDigest:successor-must-be-new");
+    }
+    if (String(prior.selectedAt) > String(successor.selectedAt)) issues.push("selectedAt:reversed");
   } else if (successor.ownerOrdinal !== "0" || successor.successorReviewCoreDigest !== null) {
     issues.push("genesis:mismatch");
   }
@@ -3114,7 +3134,7 @@ type ProposedTargetEvidence = Readonly<{
   sourceToken: string;
 }>;
 
-function resolveProposedTargetEvidence(
+export function resolveProposedTargetEvidence(
   input: unknown,
 ):
   | { readonly ok: true; readonly value: ProposedTargetEvidence }
@@ -3132,6 +3152,9 @@ function resolveProposedTargetEvidence(
     if (canonicalPointerPath !== record.canonicalPointerPath)
       return { ok: false, issues: ["canonicalPointerPath:mismatch"] };
     const digestExtras = {
+      ...(Object.hasOwn(bindings, "authorityPathInstanceDigest")
+        ? { authorityPathInstanceDigest: bindings.authorityPathInstanceDigest as string }
+        : {}),
       ...(Object.hasOwn(bindings, "predecessorKey")
         ? { predecessorKey: bindings.predecessorKey as string }
         : {}),
@@ -3588,6 +3611,83 @@ export function validateCommitRunComposition(input: unknown): readonly string[] 
     }
   }
   issues.push(...validateCommitRunSequence(cores));
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+export function validateCommitEvidenceV3(input: unknown): readonly string[] {
+  const parsed = validateAgainstSchema(
+    inventoryDefinitions["pointer-mutation-commit-evidence/v3"]!,
+    input,
+  );
+  if (!parsed.ok) return parsed.issues;
+  const proposed = resolveProposedTargetEvidence(parsed.value.proposedTarget);
+  if (!proposed.ok) return proposed.issues.map((issue) => `proposedTarget:${issue}`);
+  const issues = [...validateAuthorityCommitRunV3(input)];
+  if (parsed.value.outcome === "SELECTED") {
+    if (
+      parsed.value.selectedTarget === null ||
+      parsed.value.conflictEvidence !== null ||
+      parsed.value.unknownEvidence !== null
+    )
+      issues.push("outcome:selected-union-mismatch");
+    else {
+      const selected = resolveSelectedPointerEvidence(parsed.value.selectedTarget);
+      if (!selected.ok) issues.push(...selected.issues.map((issue) => `selectedTarget:${issue}`));
+      else if (
+        selected.value.canonicalPointerPath !== proposed.value.canonicalPointerPath ||
+        selected.value.pathInstanceDigest !== proposed.value.pathInstanceDigest ||
+        selected.value.positionDigest !== proposed.value.positionDigest ||
+        selected.value.valueDigest !== proposed.value.valueDigest ||
+        selected.value.proposalReceiptDigest !== proposed.value.proposalReceiptDigest
+      )
+        issues.push("selectedTarget:proposed-binding-mismatch");
+    }
+  } else if (parsed.value.outcome === "LOST_CONFLICT") {
+    if (
+      parsed.value.selectedTarget !== null ||
+      parsed.value.conflictEvidence === null ||
+      parsed.value.unknownEvidence !== null
+    )
+      issues.push("outcome:lost-union-mismatch");
+  } else if (
+    parsed.value.selectedTarget !== null ||
+    parsed.value.conflictEvidence !== null ||
+    parsed.value.unknownEvidence === null
+  ) {
+    issues.push("outcome:unknown-union-mismatch");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+export function validateEvidencePacketV3(input: unknown): readonly string[] {
+  const parsed = validateAgainstSchema(inventoryDefinitions["pointer-evidence-packet/v3"]!, input);
+  if (!parsed.ok) return parsed.issues;
+  const slotsResult = snapshotClosedArray(parsed.value.evidenceSlots);
+  const membershipsResult = snapshotClosedArray(parsed.value.producerMemberships);
+  if (!slotsResult.ok || !membershipsResult.ok) return ["packet:arrays-invalid"];
+  const issues: string[] = [];
+  if (slotsResult.value.length !== pointerKinds.length) issues.push("evidenceSlots:length");
+  for (const [index, slotInput] of slotsResult.value.entries()) {
+    const slot = validateAgainstSchema(
+      inventoryDefinitions["pointer-evidence-slot/v3"]!,
+      slotInput,
+    );
+    if (!slot.ok) {
+      issues.push(`${index}:slot-invalid`);
+      continue;
+    }
+    if (slot.value.pointerKind !== pointerKinds[index]) issues.push(`${index}:pointer-kind-order`);
+    if ((slot.value.selectedEvidence === null) !== (slot.value.producerMembership === null))
+      issues.push(`${index}:selection-membership-partial`);
+  }
+  const authority = resolveSelectedPointerEvidence(parsed.value.currentAuthoritySelection);
+  if (!authority.ok) issues.push(...authority.issues.map((issue) => `currentAuthority:${issue}`));
+  else if (authority.value.value.schemaVersion !== "state-mutation-authority-value/v3")
+    issues.push("currentAuthority:not-v3");
+  if (parsed.value.purpose === "MUTATION_COMMIT")
+    issues.push(
+      ...validateCommitEvidenceV3(parsed.value.currentCommit).map((issue) => `commit:${issue}`),
+    );
   return Object.freeze([...new Set(issues)].sort());
 }
 

@@ -22,6 +22,19 @@ export const supersededAuthorityVersions = Object.freeze([
 ] as const);
 
 const superseded = new Set<string>(supersededAuthorityVersions);
+const supersededApprovedVersions = new Set<string>([
+  "authority-history-empty-root/v1",
+  "authority-history-root/v1",
+  "authority-history-append-receipt/v1",
+  "state-mutation-authority-successor-core/v1",
+  "state-mutation-authority-value/v2",
+  "pointer-mutation-run-intent/v1",
+  "pointer-mutation-run-checkpoint-core/v1",
+  "pointer-mutation-run-current-value/v1",
+  "pointer-mutation-commit-evidence/v1",
+  "pointer-evidence-slot/v2",
+  "pointer-evidence-packet/v2",
+]);
 
 export const diagnosticSchemaDefinitions: Readonly<Record<string, SchemaDefinition>> =
   Object.freeze({
@@ -31,6 +44,16 @@ export const diagnosticSchemaDefinitions: Readonly<Record<string, SchemaDefiniti
       ),
     ),
     ...diagnosticAuthorityDefinitions,
+    ...Object.fromEntries(
+      Object.entries(v2Definitions).filter(([schemaVersion]) =>
+        supersededApprovedVersions.has(schemaVersion),
+      ),
+    ),
+    ...Object.fromEntries(
+      Object.entries(approvedDefinitions).filter(([schemaVersion]) =>
+        supersededApprovedVersions.has(schemaVersion),
+      ),
+    ),
   });
 
 export const schemaDefinitions: Readonly<Record<string, SchemaDefinition>> = Object.freeze({
@@ -39,8 +62,16 @@ export const schemaDefinitions: Readonly<Record<string, SchemaDefinition>> = Obj
       ([schemaVersion]) => !superseded.has(schemaVersion),
     ),
   ),
-  ...v2Definitions,
-  ...approvedDefinitions,
+  ...Object.fromEntries(
+    Object.entries(v2Definitions).filter(
+      ([schemaVersion]) => !supersededApprovedVersions.has(schemaVersion),
+    ),
+  ),
+  ...Object.fromEntries(
+    Object.entries(approvedDefinitions).filter(
+      ([schemaVersion]) => !supersededApprovedVersions.has(schemaVersion),
+    ),
+  ),
 });
 
 export const schemaVersions = Object.freeze(Object.keys(schemaDefinitions).sort());

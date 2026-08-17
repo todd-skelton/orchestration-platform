@@ -73,18 +73,20 @@ const digest3 = "c".repeat(64);
 const digest4 = "d".repeat(64);
 
 describe("approved v2 authority contracts", () => {
-  test("pins the twelve-kind registry and diagnostic-only superseded authority", () => {
-    expect(pointerKinds).toHaveLength(12);
-    expect(pointerKinds.at(-1)).toBe("POINTER_MUTATION_RUN_CURRENT");
+  test("pins the thirteen-kind registry and diagnostic-only superseded authority", () => {
+    expect(pointerKinds).toHaveLength(13);
+    expect(pointerKinds.at(-1)).toBe("AUTHORITY_NODE_MATERIALIZATION_RUN");
     expect(
       pointerRegistry.find((row) => row.kind === "STATE_MUTATION_AUTHORITY_ROTATION")?.valueSchemas,
-    ).toEqual(["state-mutation-authority-value/v2"]);
+    ).toEqual(["state-mutation-authority-value/v3"]);
     expect(schemaVersions).toContain("pointer-cas-proposal-receipt/v2");
     expect(schemaVersions).not.toContain("pointer-cas-proposal-receipt/v1");
-    expect(schemaVersions).toContain("state-mutation-authority-value/v2");
+    expect(schemaVersions).toContain("state-mutation-authority-value/v3");
+    expect(schemaVersions).not.toContain("state-mutation-authority-value/v2");
     expect(schemaVersions).not.toContain("state-mutation-authority-value/v1");
     expect(diagnostic.schemaVersions).toContain("pointer-cas-proposal-receipt/v1");
     expect(diagnostic.schemaVersions).toContain("state-mutation-authority-value/v1");
+    expect(diagnostic.schemaVersions).toContain("state-mutation-authority-value/v2");
     expect(
       canonicalDigest(
         schemaVersions.map((schemaVersion) => ({
@@ -92,7 +94,7 @@ describe("approved v2 authority contracts", () => {
           schemaVersion,
         })),
       ),
-    ).toBe("00eb3a74c5cba63f6dea710438d4c66177101625a50d5320af81c2f577fcaf18");
+    ).toBe("04a15ef3ec0b0877ddfea20232d9fe7540c7392cfe2b9038876399dcfb3c2c56");
   });
 
   test("closes bootstrap versus selected-epoch proposal producers", () => {
@@ -277,6 +279,7 @@ describe("approved v2 authority contracts", () => {
       ownerOrdinal: "3",
       lifecycle: "ACTIVE",
       installationId: uuid2,
+      bootstrapAnchorDigest: digest4,
       successorReviewCoreDigest: digest2,
       teardownArchiveDigest: null,
       retirementAnchorTipDigest: null,

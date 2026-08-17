@@ -276,6 +276,26 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         priorHelperAbiDigest: null,
         priorCustodyReceiptDigest: null,
       };
+    case "state-mutation-authority-value/v3":
+      return {
+        authorityOrdinal: "0",
+        historyRootKind: "EMPTY",
+        historyCount: "0",
+        nodeInventoryRootKind: "EMPTY",
+        nodeInventoryCount: "0",
+        rotationKind: "GENESIS",
+        producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
+        historyAppendReceiptDigest: null,
+        successorCoreDigest: null,
+        rotationId: null,
+        priorAuthorityTipDigest: null,
+        priorAuthorityValueDigest: null,
+        priorAuthorityReceiptDigest: null,
+        priorHelperDigest: null,
+        priorHelperProfileDigest: null,
+        priorHelperAbiDigest: null,
+        priorCustodyReceiptDigest: null,
+      };
     case "pointer-cas-proposal-receipt/v2":
       return {
         producerKind: "SELECTED_EPOCH",
@@ -321,6 +341,57 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         siblingDigests: Array.from({ length: 256 }, (_, index) =>
           index.toString(16).padStart(64, "0"),
         ),
+      };
+    case "authority-node-materialization-plan-entry/v1":
+    case "authority-node-inventory-update-entry/v1":
+      return {
+        priorCount: "0",
+        successorCount: "1",
+        siblingDigests: Array.from({ length: 256 }, (_, index) =>
+          index.toString(16).padStart(64, "0"),
+        ),
+      };
+    case "authority-node-inventory-census-entry/v1":
+      return {
+        siblingDigests: Array.from({ length: 256 }, (_, index) =>
+          index.toString(16).padStart(64, "0"),
+        ),
+      };
+    case "authority-node-filesystem-observation/v1":
+      return {
+        filesystemDisposition: "CREATED",
+        existed: false,
+        observedBytesDigest: null,
+        readbackDigest: digest,
+        nodeRecordDigest: digest,
+      };
+    case "authority-node-inventory-empty-root/v1":
+      return { count: "0", kind: "EMPTY" };
+    case "authority-node-inventory-root/v1":
+      return { count: "1", kind: "NONEMPTY" };
+    case "authority-node-materialization-run-value/v1":
+      return { coordinatorOrdinal: "0", lifecycle: "IDLE" };
+    case "authority-history-empty-root/v2":
+      return {
+        count: "0",
+        nodeInventoryRootKind: "EMPTY",
+        nodeInventoryCount: "0",
+      };
+    case "authority-history-root/v2":
+      return {
+        count: "1",
+        latestIncludedOrdinal: "0",
+        nodeInventoryRootKind: "NONEMPTY",
+        nodeInventoryCount: "1",
+      };
+    case "authority-history-append-receipt/v2":
+      return { priorRootKind: "EMPTY" };
+    case "pointer-evidence-packet/v3":
+      return {
+        purpose: "HISTORICAL_READ",
+        currentCommit: null,
+        evidenceSlots: [],
+        producerMemberships: [],
       };
     case "authority-history-node/v1":
       const nodeDigest = computeAuthorityNodeDigest(0, digest, digest2);

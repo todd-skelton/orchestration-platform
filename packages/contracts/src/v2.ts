@@ -65,6 +65,7 @@ export const pointerKinds = Object.freeze([
   "RECOVERY_ATTEMPT_RESERVATION",
   "STATE_MUTATION_AUTHORITY_ROTATION",
   "POINTER_MUTATION_RUN_CURRENT",
+  "AUTHORITY_NODE_MATERIALIZATION_RUN",
 ] as const);
 export type PointerKind = (typeof pointerKinds)[number];
 export const stateMutationLockPath = "installation/state-mutation.lock";
@@ -259,7 +260,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     pathTemplate: stateMutationAuthorityPath,
     sourceTokens: ["none"],
     retention: "FULL_REQUIRED",
-    valueSchemas: ["state-mutation-authority-value/v2"],
+    valueSchemas: ["state-mutation-authority-value/v3"],
     rootTemplates: ["installation/state-mutation.lock"],
     archiveTemplates: ["installation/state-mutation-authority-history/"],
     genesis: "REVIEWED_BOOTSTRAP",
@@ -275,7 +276,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
       "installation/pointer-cas/<pointer-instance-digest>/commits/<target-mutation-id>/current-run.json",
     sourceTokens: ["none"],
     retention: "FULL_REQUIRED",
-    valueSchemas: ["pointer-mutation-run-current-value/v1", "pointer-tombstone-value/v1"],
+    valueSchemas: ["pointer-mutation-run-current-value/v2", "pointer-tombstone-value/v1"],
     rootTemplates: [
       "installation/pointer-cas/<pointer-instance-digest>/commits/<target-mutation-id>/",
     ],
@@ -287,6 +288,22 @@ const pointerRows: readonly PointerRegistryRow[] = [
     sourcePolicy: "NONE",
     positionDomain: "pointer-mutation-run-current-position/v1",
     tombstonePositionDomain: "pointer-mutation-run-current-position-tombstone/v1",
+  },
+  {
+    kind: "AUTHORITY_NODE_MATERIALIZATION_RUN",
+    singleton: true,
+    pathTemplate:
+      "installation/state-mutation-authority-history/node-inventory/coordinator/<authority-dp>/current.json",
+    sourceTokens: ["none"],
+    retention: "FULL_REQUIRED",
+    valueSchemas: ["authority-node-materialization-run-value/v1"],
+    rootTemplates: [],
+    archiveTemplates: [],
+    genesis: "REVIEWED_BOOTSTRAP",
+    transactionPolicy: "NULL",
+    sourcePolicy: "NONE",
+    positionDomain: "authority-node-materialization-run-position/v1",
+    tombstonePositionDomain: null,
   },
 ];
 export const pointerRegistry: readonly PointerRegistryRow[] = Object.freeze(
@@ -330,6 +347,7 @@ export function nativeConsumePath(transactionId: string, operationId: string): s
 }
 
 export interface PointerPathBindings {
+  readonly authorityPathInstanceDigest?: string;
   readonly transactionId?: string;
   readonly sourceToken?: string;
   readonly predecessorKey?: string;
@@ -339,6 +357,7 @@ export interface PointerPathBindings {
 }
 
 const templateBindings = Object.freeze({
+  "<authority-dp>": "authorityPathInstanceDigest",
   "<transaction>": "transactionId",
   "<source>": "sourceToken",
   "<predecessor-key>": "predecessorKey",
@@ -577,7 +596,13 @@ function requireSchemaRecord(schemaVersion: string, input: unknown): ContractRec
 }
 function requirePointerValueRecord(kind: PointerKind, input: unknown): ContractRecord {
   const row = pointerRegistry.find((candidate) => candidate.kind === kind)!;
-  for (const schemaVersion of row.valueSchemas) {
+  const diagnosticCompatibility =
+    kind === "STATE_MUTATION_AUTHORITY_ROTATION"
+      ? ["state-mutation-authority-value/v2"]
+      : kind === "POINTER_MUTATION_RUN_CURRENT"
+        ? ["pointer-mutation-run-current-value/v1"]
+        : [];
+  for (const schemaVersion of [...row.valueSchemas, ...diagnosticCompatibility]) {
     const parsed = validateAgainstSchema(v2Definitions[schemaVersion]!, input);
     if (parsed.ok) {
       if (schemaVersion === "pointer-tombstone-value/v1" && parsed.value.pointerKind !== kind)
@@ -612,6 +637,8 @@ function isTerminalPointerValue(kind: PointerKind, record: ContractRecord): bool
       return false;
     case "POINTER_MUTATION_RUN_CURRENT":
       return ["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(String(record.phase));
+    case "AUTHORITY_NODE_MATERIALIZATION_RUN":
+      return ["TERMINAL", "REVOKED_BEFORE_START"].includes(String(record.lifecycle));
   }
 }
 function requireEqualBinding(
@@ -717,6 +744,14 @@ const positionFields: Readonly<Record<PointerKind, readonly string[]>> = Object.
     "targetMutationId",
     "targetPathInstanceDigest",
     "terminalResolutionDigest",
+  ],
+  AUTHORITY_NODE_MATERIALIZATION_RUN: [
+    "authorityPathInstanceDigest",
+    "coordinatorOrdinal",
+    "lifecycle",
+    "rotationId",
+    "materializationPlanDigest",
+    "phaseEvidenceDigest",
   ],
 });
 
@@ -830,6 +865,23 @@ const positionRules: Readonly<Record<PointerKind, Readonly<Record<string, Positi
       targetMutationId: "SHA256",
       targetPathInstanceDigest: "SHA256",
       terminalResolutionDigest: "NULLABLE_SHA256",
+    }),
+    AUTHORITY_NODE_MATERIALIZATION_RUN: Object.freeze({
+      authorityPathInstanceDigest: "SHA256",
+      coordinatorOrdinal: "DECIMAL_ASCII",
+      lifecycle: {
+        enum: Object.freeze([
+          "IDLE",
+          "PREAUTHORIZED",
+          "STARTED",
+          "FINISHING",
+          "TERMINAL",
+          "REVOKED_BEFORE_START",
+        ]),
+      },
+      rotationId: "NULLABLE_SHA256",
+      materializationPlanDigest: "NULLABLE_SHA256",
+      phaseEvidenceDigest: "NULLABLE_SHA256",
     }),
   });
 
@@ -1038,6 +1090,17 @@ export function derivePointerPositionEvidence(
         targetPathInstanceDigest: value.targetPathInstanceDigest!,
         terminalResolutionDigest: value.terminalResolutionDigest!,
       });
+    case "AUTHORITY_NODE_MATERIALIZATION_RUN":
+      return Object.freeze({
+        pointerKind: kind,
+        variant: "ORDINARY",
+        authorityPathInstanceDigest: value.authorityPathInstanceDigest!,
+        coordinatorOrdinal: value.coordinatorOrdinal!,
+        lifecycle: value.lifecycle!,
+        rotationId: value.rotationId!,
+        materializationPlanDigest: value.materializationPlanDigest!,
+        phaseEvidenceDigest: value.phaseEvidenceDigest!,
+      });
   }
 }
 
@@ -1085,12 +1148,14 @@ export interface PointerInstanceDigestInput {
   predecessorKey?: string;
   retainedPointerInstanceDigest?: string;
   targetMutationId?: string;
+  authorityPathInstanceDigest?: string;
 }
 export function computePointerInstanceDigest(input: PointerInstanceDigestInput): string {
   const kindInput = requirePointerKind(input.pointerKind);
   const rowInput = pointerRegistry.find((candidate) => candidate.kind === kindInput)!;
   const closed = requireClosedInput(input, [
     "canonicalPointerPath",
+    ...(rowInput.pathTemplate.includes("<authority-dp>") ? ["authorityPathInstanceDigest"] : []),
     "installationId",
     "pointerKind",
     ...(rowInput.pathTemplate.includes("<predecessor-key>") ? ["predecessorKey"] : []),
@@ -1115,7 +1180,12 @@ export function computePointerInstanceDigest(input: PointerInstanceDigestInput):
     safeDigest(String(closed.retainedPointerInstanceDigest), "retainedPointerInstanceDigest");
   if (row.pathTemplate.includes("<target-mutation-id>"))
     safeDigest(String(closed.targetMutationId), "targetMutationId");
+  if (row.pathTemplate.includes("<authority-dp>"))
+    safeDigest(String(closed.authorityPathInstanceDigest), "authorityPathInstanceDigest");
   const pathBindings: PointerPathBindings = {
+    ...(row.pathTemplate.includes("<authority-dp>")
+      ? { authorityPathInstanceDigest: closed.authorityPathInstanceDigest as string }
+      : {}),
     ...(row.pathTemplate.includes("<transaction>")
       ? { transactionId: closed.transactionId as string }
       : {}),
@@ -1287,6 +1357,7 @@ export interface MutationDigestInput {
   predecessorKey?: string;
   retainedPointerInstanceDigest?: string;
   targetMutationId?: string;
+  authorityPathInstanceDigest?: string;
 }
 export function computeMutationId(input: MutationDigestInput): string {
   const kindInput = requirePointerKind(input.pointerKind);
@@ -1297,6 +1368,7 @@ export function computeMutationId(input: MutationDigestInput): string {
     "outcome",
     "pathInstanceDigest",
     "pointerKind",
+    ...(rowInput.pathTemplate.includes("<authority-dp>") ? ["authorityPathInstanceDigest"] : []),
     ...(rowInput.pathTemplate.includes("<predecessor-key>") ? ["predecessorKey"] : []),
     "positionEvidence",
     "priorDr",
@@ -1318,7 +1390,12 @@ export function computeMutationId(input: MutationDigestInput): string {
     safeDigest(String(closed.retainedPointerInstanceDigest), "retainedPointerInstanceDigest");
   if (row.pathTemplate.includes("<target-mutation-id>"))
     safeDigest(String(closed.targetMutationId), "targetMutationId");
+  if (row.pathTemplate.includes("<authority-dp>"))
+    safeDigest(String(closed.authorityPathInstanceDigest), "authorityPathInstanceDigest");
   const pathBindings: PointerPathBindings = {
+    ...(row.pathTemplate.includes("<authority-dp>")
+      ? { authorityPathInstanceDigest: closed.authorityPathInstanceDigest as string }
+      : {}),
     ...(row.pathTemplate.includes("<transaction>")
       ? { transactionId: closed.transactionId as string }
       : {}),
@@ -1872,6 +1949,91 @@ export const v2Definitions = Object.freeze(
         },
       ),
       define(
+        "state-mutation-authority-value/v3",
+        {
+          installationId: uuid,
+          projectId: uuid,
+          stateRootDigest: sha,
+          globalIdentityDigest: sha,
+          authorityOrdinal: field("decimal"),
+          helperPath: path,
+          helperDigest: sha,
+          helperProfileDigest: sha,
+          helperAbi: enumeration("portable-state-cas/v2"),
+          lockPath: enumeration(stateMutationLockPath),
+          lockProfileDigest: sha,
+          custodyInstanceDigest: sha,
+          custodyPrincipalDigest: sha,
+          custodyReceiptDigest: sha,
+          handleInheritance: enumeration("DENY"),
+          activeReleaseTipDigest: sha,
+          activeReleaseValueDigest: sha,
+          activeReleaseReceiptDigest: sha,
+          historyRootDigest: sha,
+          historyRootKind: enumeration("EMPTY", "NONEMPTY"),
+          historyCount: field("decimal"),
+          nodeInventoryRootDigest: sha,
+          nodeInventoryRootKind: enumeration("EMPTY", "NONEMPTY"),
+          nodeInventoryCount: field("decimal"),
+          nodeInventoryTreeRootDigest: sha,
+          historyAppendReceiptDigest: nullableSha,
+          successorCoreDigest: nullableSha,
+          rotationId: nullableSha,
+          priorAuthorityTipDigest: nullableSha,
+          priorAuthorityValueDigest: nullableSha,
+          priorAuthorityReceiptDigest: nullableSha,
+          priorHelperDigest: nullableSha,
+          priorHelperProfileDigest: nullableSha,
+          priorHelperAbiDigest: nullableSha,
+          priorCustodyReceiptDigest: nullableSha,
+          rotationKind: enumeration("GENESIS", "ROTATION"),
+          producerKind: enumeration("REVIEWED_BOOTSTRAP_GENESIS", "SELECTED_STABLE"),
+          producerDigest: sha,
+          producerExecutableDigest: sha,
+          producerProfileDigest: sha,
+          producerAbiDigest: sha,
+          producerCustodyDigest: sha,
+          selectedAt: timestamp,
+        },
+        (record) => {
+          const predecessors = [
+            record.priorAuthorityTipDigest,
+            record.priorAuthorityValueDigest,
+            record.priorAuthorityReceiptDigest,
+            record.priorHelperDigest,
+            record.priorHelperProfileDigest,
+            record.priorHelperAbiDigest,
+            record.priorCustodyReceiptDigest,
+          ];
+          const genesis = record.rotationKind === "GENESIS";
+          if (genesis)
+            return record.producerKind === "REVIEWED_BOOTSTRAP_GENESIS" &&
+              record.authorityOrdinal === "0" &&
+              record.historyRootKind === "EMPTY" &&
+              record.historyCount === "0" &&
+              record.nodeInventoryRootKind === "EMPTY" &&
+              record.nodeInventoryCount === "0" &&
+              predecessors.every((value) => value === null) &&
+              record.historyAppendReceiptDigest === null &&
+              record.successorCoreDigest === null &&
+              record.rotationId === null
+              ? []
+              : ["rotation:genesis-authority-mismatch"];
+          return record.producerKind === "SELECTED_STABLE" &&
+            record.authorityOrdinal !== "0" &&
+            record.historyRootKind === "NONEMPTY" &&
+            record.historyCount === record.authorityOrdinal &&
+            record.nodeInventoryRootKind === "NONEMPTY" &&
+            record.nodeInventoryCount !== "0" &&
+            predecessors.every((value) => value !== null) &&
+            record.historyAppendReceiptDigest !== null &&
+            record.successorCoreDigest !== null &&
+            record.rotationId !== null
+            ? []
+            : ["rotation:successor-authority-mismatch"];
+        },
+      ),
+      define(
         "pointer-mutation-run-current-value/v1",
         {
           targetPathInstanceDigest: sha,
@@ -1904,6 +2066,167 @@ export const v2Definitions = Object.freeze(
           (record.terminalResolutionDigest !== null)
             ? []
             : ["terminalResolutionDigest:phase-mismatch"],
+      ),
+      define(
+        "pointer-mutation-run-current-value/v2",
+        {
+          globalIdentityDigest: sha,
+          targetPathInstanceDigest: sha,
+          targetMutationId: sha,
+          checkpointCoreDigest: sha,
+          runOrdinal: field("decimal"),
+          checkpointOrdinal: field("decimal"),
+          stage: enumeration(
+            "CURRENT_AUTHORITY_READ",
+            "TARGET_RECONCILED",
+            "VALUE_READBACK",
+            "PROPOSAL_READBACK",
+            "CURRENT_AUTHORITY_PRE_CAS_READ",
+            "CAS_ARMED",
+            "TARGET_POST_CAS_READBACK",
+            "PROPOSAL_CLASSIFIED",
+            "CURRENT_AUTHORITY_POST_CAS_READ",
+          ),
+          phase: enumeration(
+            "CRASH_PREFIX",
+            "CAS_AMBIGUOUS",
+            "SELECTED",
+            "LOST_CONFLICT",
+            "UNKNOWN_TERMINAL",
+          ),
+          epochPolicy: enumeration("SINGLE_EPOCH", "AUTHORITY_ROTATION_HANDOFF"),
+          producerAuthorityTipDigest: sha,
+          producerAuthorityValueDigest: sha,
+          producerAuthorityReceiptDigest: sha,
+          materializationPlanDigest: nullableSha,
+          materializationStartedTipDigest: nullableSha,
+          materializationStartedValueDigest: nullableSha,
+          materializationStartedReceiptDigest: nullableSha,
+          rotationHandoffReceiptDigest: nullableSha,
+          terminalResolutionDigest: nullableSha,
+        },
+        (record) => {
+          const terminal = ["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(
+            String(record.phase),
+          );
+          const rotation = record.epochPolicy === "AUTHORITY_ROTATION_HANDOFF";
+          const rotationFields = [
+            record.materializationPlanDigest,
+            record.materializationStartedTipDigest,
+            record.materializationStartedValueDigest,
+            record.materializationStartedReceiptDigest,
+          ];
+          const issues: string[] = [];
+          if (terminal !== (record.terminalResolutionDigest !== null))
+            issues.push("terminalResolutionDigest:phase-mismatch");
+          if (rotation !== rotationFields.every((value) => value !== null))
+            issues.push("epochPolicy:materialization-fields-mismatch");
+          if (!rotation && record.rotationHandoffReceiptDigest !== null)
+            issues.push("rotationHandoffReceiptDigest:unexpected");
+          return issues;
+        },
+      ),
+      define(
+        "authority-node-materialization-run-value/v1",
+        {
+          installationId: uuid,
+          projectId: uuid,
+          stateRootDigest: sha,
+          globalIdentityDigest: sha,
+          authorityPathInstanceDigest: sha,
+          coordinatorOrdinal: field("decimal"),
+          lifecycle: enumeration(
+            "IDLE",
+            "PREAUTHORIZED",
+            "STARTED",
+            "FINISHING",
+            "TERMINAL",
+            "REVOKED_BEFORE_START",
+          ),
+          rotationId: nullableSha,
+          materializationPlanDigest: nullableSha,
+          predecessorTipDigest: nullableSha,
+          predecessorValueDigest: nullableSha,
+          predecessorReceiptDigest: nullableSha,
+          phaseEvidenceDigest: nullableSha,
+          inventoryBatchDigest: nullableSha,
+          successorAuthorityPathInstanceDigest: nullableSha,
+          successorAuthorityTipDigest: nullableSha,
+          successorAuthorityValueDigest: nullableSha,
+          successorAuthorityReceiptDigest: nullableSha,
+          authorityRunTerminalResolutionDigest: nullableSha,
+          authorityRunFinalSelectorTipDigest: nullableSha,
+          authorityRunFinalSelectorValueDigest: nullableSha,
+          authorityRunFinalSelectorReceiptDigest: nullableSha,
+          rotationHandoffReceiptDigest: nullableSha,
+          materializationHandoffReceiptDigest: nullableSha,
+          terminalReceiptDigest: nullableSha,
+          censusTerminalDigest: nullableSha,
+          selectedAt: timestamp,
+        },
+        (record) => {
+          const predecessor = [
+            record.predecessorTipDigest,
+            record.predecessorValueDigest,
+            record.predecessorReceiptDigest,
+          ];
+          if (
+            !predecessor.every((value) => value === null) &&
+            !predecessor.every((value) => value !== null)
+          )
+            return ["predecessor:partial-group"];
+          const early = [
+            record.rotationId,
+            record.materializationPlanDigest,
+            record.phaseEvidenceDigest,
+          ];
+          const successor = [
+            record.inventoryBatchDigest,
+            record.successorAuthorityPathInstanceDigest,
+            record.successorAuthorityTipDigest,
+            record.successorAuthorityValueDigest,
+            record.successorAuthorityReceiptDigest,
+            record.authorityRunTerminalResolutionDigest,
+            record.authorityRunFinalSelectorTipDigest,
+            record.authorityRunFinalSelectorValueDigest,
+            record.authorityRunFinalSelectorReceiptDigest,
+            record.rotationHandoffReceiptDigest,
+            record.materializationHandoffReceiptDigest,
+          ];
+          const issues: string[] = [];
+          if (record.lifecycle === "IDLE") {
+            if (
+              record.coordinatorOrdinal !== "0" ||
+              !early.every((value) => value === null) ||
+              !predecessor.every((value) => value === null) ||
+              !successor.every((value) => value === null) ||
+              record.terminalReceiptDigest !== null ||
+              record.censusTerminalDigest !== null
+            )
+              issues.push("lifecycle:idle-fields-mismatch");
+          } else if (
+            ["PREAUTHORIZED", "STARTED", "REVOKED_BEFORE_START"].includes(String(record.lifecycle))
+          ) {
+            if (
+              !early.every((value) => value !== null) ||
+              !predecessor.every((value) => value !== null) ||
+              !successor.every((value) => value === null) ||
+              record.terminalReceiptDigest !== null ||
+              record.censusTerminalDigest !== null
+            )
+              issues.push("lifecycle:early-fields-mismatch");
+          } else {
+            if (
+              !early.every((value) => value !== null) ||
+              !predecessor.every((value) => value !== null) ||
+              !successor.every((value) => value !== null)
+            )
+              issues.push("lifecycle:finishing-fields-mismatch");
+            if ((record.lifecycle === "TERMINAL") !== (record.terminalReceiptDigest !== null))
+              issues.push("terminalReceiptDigest:lifecycle-mismatch");
+          }
+          return issues;
+        },
       ),
       define("active-release/v2", {
         installationId: uuid,
@@ -2649,6 +2972,9 @@ export function resolveSelectedPointerEvidence(
       stateRootDigest: closed.value.stateRootDigest as string,
       transactionId: closed.value.transactionId as string | null,
       sourceToken: closed.value.sourceToken as string,
+      ...(row.pathTemplate.includes("<authority-dp>")
+        ? { authorityPathInstanceDigest: bindings.value.authorityPathInstanceDigest as string }
+        : {}),
       ...(row.pathTemplate.includes("<predecessor-key>")
         ? { predecessorKey: bindings.value.predecessorKey as string }
         : {}),
@@ -2893,6 +3219,9 @@ export function resolveSelectedPointerEvidence(
       successorDv: valueDigest,
       outcome: proposal.outcome as string,
       intent: proposal.intent as string,
+      ...(row.pathTemplate.includes("<authority-dp>")
+        ? { authorityPathInstanceDigest: bindings.value.authorityPathInstanceDigest as string }
+        : {}),
       ...(row.pathTemplate.includes("<predecessor-key>")
         ? { predecessorKey: bindings.value.predecessorKey as string }
         : {}),
