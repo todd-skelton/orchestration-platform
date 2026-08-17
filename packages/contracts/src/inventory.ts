@@ -9,7 +9,14 @@ import {
   type JsonValue,
   type SchemaDefinition,
 } from "./runtime.js";
-import { framedBytes, v2Definitions, type FramePart } from "./v2.js";
+import {
+  framedBytes,
+  pointerKinds,
+  resolveSelectedPointerEvidence,
+  v2Definitions,
+  type FramePart,
+  type SelectedPointerEvidence,
+} from "./v2.js";
 
 const field = (kind: FieldRule["kind"], options: Omit<FieldRule, "kind"> = {}): FieldRule =>
   Object.freeze({ kind, ...options });
@@ -56,6 +63,120 @@ const decimalComponent = (value: string): string => {
   return value;
 };
 const incrementDecimal = (value: string): string => (BigInt(value) + 1n).toString();
+
+const runPostSelectionObservationDefinition = define(
+  "pointer-mutation-run-selector-post-selection-observation/v1",
+  {
+    checkpointCoreDigest: sha,
+    selectorPathInstanceDigest: sha,
+    selectorMutationId: sha,
+    selectorValueDigest: sha,
+    selectorReceiptDigest: sha,
+    selectorTipDigest: sha,
+    valueReadbackDigest: sha,
+    proposalReadbackDigest: sha,
+    tipReadbackDigest: sha,
+    observedAt: timestamp,
+  },
+);
+
+export function computeAuthorityInventoryEmptyDigest(depth: number): string {
+  if (!Number.isInteger(depth) || depth < 0 || depth > 256)
+    throw new TypeError("inventory-depth:invalid");
+  return digest("authority-node-inventory-empty/v1", [fixed(depth.toString(16).padStart(4, "0"))]);
+}
+
+function digestBits(value: string): readonly number[] {
+  if (!/^[0-9a-f]{64}$/.test(value)) throw new TypeError("inventory-key:invalid");
+  return [...Buffer.from(value, "hex")].flatMap((byte) =>
+    Array.from({ length: 8 }, (_, index) => (byte >> (7 - index)) & 1),
+  );
+}
+
+export function computeAuthorityInventorySparseRoot(
+  nodeDigest: string,
+  leafDigest: string,
+  siblingDigests: readonly string[],
+): string {
+  const siblings = snapshotClosedArray(siblingDigests);
+  if (!siblings.ok || siblings.value.length !== 256)
+    throw new TypeError("inventory-siblings:invalid");
+  const bits = digestBits(nodeDigest);
+  let current = leafDigest;
+  for (let index = 0; index < 256; index += 1) {
+    const sibling = siblings.value[index] as string;
+    const depth = 255 - index;
+    current =
+      bits[depth] === 0
+        ? digest("authority-node-inventory-node/v1", [
+            fixed(depth.toString(16).padStart(4, "0")),
+            raw(current),
+            raw(sibling),
+          ])
+        : digest("authority-node-inventory-node/v1", [
+            fixed(depth.toString(16).padStart(4, "0")),
+            raw(sibling),
+            raw(current),
+          ]);
+  }
+  return current;
+}
+
+export function computeAuthorityInventorySparseAbsentRoot(
+  nodeDigest: string,
+  siblingDigests: readonly string[],
+): string {
+  const siblings = snapshotClosedArray(siblingDigests);
+  if (!siblings.ok || siblings.value.length !== 256)
+    throw new TypeError("inventory-siblings:invalid");
+  const bits = digestBits(nodeDigest);
+  let current = computeAuthorityInventoryEmptyDigest(256);
+  for (let index = 0; index < 256; index += 1) {
+    const sibling = siblings.value[index] as string;
+    const depth = 255 - index;
+    if (
+      current === computeAuthorityInventoryEmptyDigest(depth + 1) &&
+      sibling === computeAuthorityInventoryEmptyDigest(depth + 1)
+    )
+      current = computeAuthorityInventoryEmptyDigest(depth);
+    else
+      current =
+        bits[depth] === 0
+          ? digest("authority-node-inventory-node/v1", [
+              fixed(depth.toString(16).padStart(4, "0")),
+              raw(current),
+              raw(sibling),
+            ])
+          : digest("authority-node-inventory-node/v1", [
+              fixed(depth.toString(16).padStart(4, "0")),
+              raw(sibling),
+              raw(current),
+            ]);
+  }
+  return current;
+}
+
+function inventoryEntryProofIssues(record: ContractRecord): readonly string[] {
+  const siblings = record.siblingDigests as readonly string[];
+  const priorRoot =
+    record.membershipAction === "INSERT_ABSENT"
+      ? computeAuthorityInventorySparseAbsentRoot(record.nodeDigest as string, siblings)
+      : computeAuthorityInventorySparseRoot(
+          record.nodeDigest as string,
+          record.inventoryLeafDigest as string,
+          siblings,
+        );
+  const successorRoot = computeAuthorityInventorySparseRoot(
+    record.nodeDigest as string,
+    record.inventoryLeafDigest as string,
+    siblings,
+  );
+  const issues: string[] = [];
+  if (record.priorTreeRootDigest !== priorRoot) issues.push("priorTreeRootDigest:not-derived");
+  if (record.successorTreeRootDigest !== successorRoot)
+    issues.push("successorTreeRootDigest:not-derived");
+  return issues;
+}
 
 function digest(domain: string, parts: readonly FramePart[]): string {
   return createHash("sha256").update(framedBytes(domain, parts)).digest("hex");
@@ -126,12 +247,19 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         independentReviewDigest: sha,
         rotationOperationIdentityDigest: sha,
       }),
-      define("authority-node-inventory-empty-root/v1", {
-        globalIdentityDigest: sha,
-        kind: enumeration("EMPTY"),
-        count: enumeration("0"),
-        treeRootDigest: sha,
-      }),
+      define(
+        "authority-node-inventory-empty-root/v1",
+        {
+          globalIdentityDigest: sha,
+          kind: enumeration("EMPTY"),
+          count: enumeration("0"),
+          treeRootDigest: sha,
+        },
+        (record) =>
+          record.treeRootDigest === computeAuthorityInventoryEmptyDigest(0)
+            ? []
+            : ["treeRootDigest:not-empty-root"],
+      ),
       define(
         "authority-node-inventory-root/v1",
         {
@@ -171,6 +299,7 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
           const issues: string[] = [];
           if (!Array.isArray(record.siblingDigests) || record.siblingDigests.length !== 256)
             issues.push("siblingDigests:length");
+          else issues.push(...inventoryEntryProofIssues(record));
           if (record.membershipAction === "INSERT_ABSENT") {
             if (incrementDecimal(record.priorCount as string) !== record.successorCount)
               issues.push("count:insert-not-adjacent");
@@ -252,6 +381,7 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
           const issues: string[] = [];
           if (!Array.isArray(record.siblingDigests) || record.siblingDigests.length !== 256)
             issues.push("siblingDigests:length");
+          else issues.push(...inventoryEntryProofIssues(record));
           if (record.membershipAction === "INSERT_ABSENT") {
             if (incrementDecimal(record.priorCount as string) !== record.successorCount)
               issues.push("count:insert-not-adjacent");
@@ -418,6 +548,51 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         finalTipReadbackDigest: sha,
         createdAt: timestamp,
       }),
+      define("authority-node-materialization-finishing/v1", {
+        globalIdentityDigest: sha,
+        rotationId: sha,
+        materializationPlanDigest: sha,
+        startedTipDigest: sha,
+        startedValueDigest: sha,
+        startedReceiptDigest: sha,
+        inventoryBatchDigest: sha,
+        newAuthorityPathInstanceDigest: sha,
+        newAuthorityTipDigest: sha,
+        newAuthorityValueDigest: sha,
+        newAuthorityReceiptDigest: sha,
+        terminalResolutionDigest: sha,
+        finalSelectorTipDigest: sha,
+        finalSelectorValueDigest: sha,
+        finalSelectorReceiptDigest: sha,
+        rotationHandoffReceiptDigest: sha,
+        materializationHandoffReceiptDigest: sha,
+      }),
+      define("authority-node-materialization-terminal-receipt/v1", {
+        globalIdentityDigest: sha,
+        rotationId: sha,
+        materializationPlanDigest: sha,
+        finishingTipDigest: sha,
+        finishingValueDigest: sha,
+        finishingReceiptDigest: sha,
+        newAuthorityTipDigest: sha,
+        newAuthorityValueDigest: sha,
+        newAuthorityReceiptDigest: sha,
+        finalValueReadbackDigest: sha,
+        finalProposalReadbackDigest: sha,
+        finalTipReadbackDigest: sha,
+        censusTerminalDigest: nullableSha,
+        completedAt: timestamp,
+      }),
+      define("authority-node-materialization-revocation-receipt/v1", {
+        globalIdentityDigest: sha,
+        rotationId: sha,
+        materializationPlanDigest: sha,
+        preauthorizedTipDigest: sha,
+        preauthorizedValueDigest: sha,
+        preauthorizedReceiptDigest: sha,
+        revocationEvidenceDigest: sha,
+        revokedAt: timestamp,
+      }),
       define(
         "authority-node-inventory-census-entry/v1",
         {
@@ -499,21 +674,34 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         nodeInventoryRootDigest: sha,
         nodeInventoryCount: enumeration("0"),
       }),
-      define("authority-history-root/v2", {
-        globalIdentityDigest: sha,
-        treeProfile: enumeration("SPARSE_SHA256_256_V1"),
-        count: decimal,
-        treeRootDigest: sha,
-        latestIncludedOrdinal: decimal,
-        latestEpochKey: sha,
-        latestTipDigest: sha,
-        latestValueDigest: sha,
-        latestReceiptDigest: sha,
-        nodeInventoryRootKind: enumeration("NONEMPTY"),
-        nodeInventoryRootDigest: sha,
-        nodeInventoryCount: decimal,
-        nodeInventoryTreeRootDigest: sha,
-      }),
+      define(
+        "authority-history-root/v2",
+        {
+          globalIdentityDigest: sha,
+          treeProfile: enumeration("SPARSE_SHA256_256_V1"),
+          count: decimal,
+          treeRootDigest: sha,
+          latestIncludedOrdinal: decimal,
+          latestEpochKey: sha,
+          latestTipDigest: sha,
+          latestValueDigest: sha,
+          latestReceiptDigest: sha,
+          nodeInventoryRootKind: enumeration("NONEMPTY"),
+          nodeInventoryRootDigest: sha,
+          nodeInventoryCount: decimal,
+          nodeInventoryTreeRootDigest: sha,
+        },
+        (record) => {
+          const issues: string[] = [];
+          if (
+            record.count === "0" ||
+            incrementDecimal(record.latestIncludedOrdinal as string) !== record.count
+          )
+            issues.push("count:latest-ordinal-mismatch");
+          if (record.nodeInventoryCount === "0") issues.push("nodeInventoryCount:must-be-positive");
+          return issues;
+        },
+      ),
       define("authority-history-append-receipt/v2", {
         globalIdentityDigest: sha,
         rotationId: sha,
@@ -561,7 +749,7 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         "pointer-mutation-run-intent/v2",
         {
           globalIdentityDigest: sha,
-          pointerKind: field("opaque"),
+          pointerKind: enumeration(...pointerKinds),
           canonicalPointerPath: path,
           installationId: uuid,
           projectId: uuid,
@@ -591,7 +779,7 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         "pointer-mutation-run-checkpoint-core/v2",
         {
           globalIdentityDigest: sha,
-          pointerKind: field("opaque"),
+          pointerKind: enumeration(...pointerKinds),
           canonicalPointerPath: path,
           targetPathInstanceDigest: sha,
           targetMutationId: sha,
@@ -649,11 +837,25 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         unknownEvidence: nullableJson,
         rotationHandoffReceipt: nullableJson,
         materializationHandoffReceipt: nullableJson,
+        materializationFinishingSelection: nullableJson,
+      }),
+      define("pointer-mutation-run-checkpoint-evidence/v2", {
+        core: json,
+        selectorSelection: json,
+        postSelectionObservation: json,
       }),
       define("pointer-evidence-slot/v3", {
-        pointerKind: field("opaque"),
+        pointerKind: enumeration(...pointerKinds),
         selectedEvidence: field("json", { nullable: true }),
         producerMembership: field("json", { nullable: true }),
+      }),
+      define("authority-membership-evidence/v2", {
+        currentAuthoritySelection: json,
+        globalIdentity: json,
+        leaf: json,
+        root: json,
+        rootKind: enumeration("NONEMPTY"),
+        siblingDigests: array("sha256"),
       }),
       define(
         "pointer-evidence-packet/v3",
@@ -869,7 +1071,9 @@ export function validateAuthorityValueV3Composition(input: unknown): readonly st
       issues.push("nodeInventoryRoot:binding-mismatch");
     if (
       history.nodeInventoryRootDigest !== inventoryDigest ||
-      history.nodeInventoryCount !== inventory.count
+      history.nodeInventoryCount !== inventory.count ||
+      (history.schemaVersion === "authority-history-root/v2" &&
+        history.nodeInventoryTreeRootDigest !== inventory.treeRootDigest)
     )
       issues.push("historyRoot:inventory-binding-mismatch");
     if (value.rotationKind === "GENESIS") {
@@ -1083,11 +1287,40 @@ export function computeAuthorityInventoryBatchDigest(input: unknown): string {
 }
 
 export function computeAuthorityCoordinatorPositionDigest(input: unknown): string {
+  const record = requireRecord("authority-node-materialization-run-position/v1", input);
   return digestRecord(
     "authority-node-materialization-run-position/v1",
     "authority-node-materialization-run-position/v1",
-    input,
-    [],
+    record,
+    [
+      raw(record.authorityPathInstanceDigest as string),
+      decimalPart(record.coordinatorOrdinal as string),
+      text(record.lifecycle as string),
+      nullableRaw(record.rotationId as string | null),
+      nullableRaw(record.materializationPlanDigest as string | null),
+      nullableRaw(record.phaseEvidenceDigest as string | null),
+    ],
+  );
+}
+
+export function computeAuthorityMaterializationStartDigest(input: unknown): string {
+  const record = requireRecord("authority-node-materialization-start-receipt/v1", input);
+  return digestRecord(
+    "authority-node-materialization-start-receipt/v1",
+    "authority-node-materialization-start-receipt/v1",
+    record,
+    [
+      raw(record.globalIdentityDigest as string),
+      raw(record.rotationId as string),
+      raw(record.materializationPlanDigest as string),
+      raw(record.preauthorizedTipDigest as string),
+      raw(record.preauthorizedValueDigest as string),
+      raw(record.preauthorizedReceiptDigest as string),
+      raw(record.oldAuthorityTipDigest as string),
+      raw(record.oldAuthorityValueDigest as string),
+      raw(record.oldAuthorityReceiptDigest as string),
+      text(record.startedAt as string),
+    ],
   );
 }
 
@@ -1153,6 +1386,78 @@ export function computeAuthorityMaterializationHandoffDigest(input: unknown): st
       raw(record.finalProposalReadbackDigest as string),
       raw(record.finalTipReadbackDigest as string),
       text(record.createdAt as string),
+    ],
+  );
+}
+
+export function computeAuthorityMaterializationFinishingDigest(input: unknown): string {
+  const record = requireRecord("authority-node-materialization-finishing/v1", input);
+  return digestRecord(
+    "authority-node-materialization-finishing/v1",
+    "authority-node-materialization-finishing/v1",
+    record,
+    [
+      raw(record.globalIdentityDigest as string),
+      raw(record.rotationId as string),
+      raw(record.materializationPlanDigest as string),
+      raw(record.startedTipDigest as string),
+      raw(record.startedValueDigest as string),
+      raw(record.startedReceiptDigest as string),
+      raw(record.inventoryBatchDigest as string),
+      raw(record.newAuthorityPathInstanceDigest as string),
+      raw(record.newAuthorityTipDigest as string),
+      raw(record.newAuthorityValueDigest as string),
+      raw(record.newAuthorityReceiptDigest as string),
+      raw(record.terminalResolutionDigest as string),
+      raw(record.finalSelectorTipDigest as string),
+      raw(record.finalSelectorValueDigest as string),
+      raw(record.finalSelectorReceiptDigest as string),
+      raw(record.rotationHandoffReceiptDigest as string),
+      raw(record.materializationHandoffReceiptDigest as string),
+    ],
+  );
+}
+
+export function computeAuthorityMaterializationTerminalDigest(input: unknown): string {
+  const record = requireRecord("authority-node-materialization-terminal-receipt/v1", input);
+  return digestRecord(
+    "authority-node-materialization-terminal-receipt/v1",
+    "authority-node-materialization-terminal-receipt/v1",
+    record,
+    [
+      raw(record.globalIdentityDigest as string),
+      raw(record.rotationId as string),
+      raw(record.materializationPlanDigest as string),
+      raw(record.finishingTipDigest as string),
+      raw(record.finishingValueDigest as string),
+      raw(record.finishingReceiptDigest as string),
+      raw(record.newAuthorityTipDigest as string),
+      raw(record.newAuthorityValueDigest as string),
+      raw(record.newAuthorityReceiptDigest as string),
+      raw(record.finalValueReadbackDigest as string),
+      raw(record.finalProposalReadbackDigest as string),
+      raw(record.finalTipReadbackDigest as string),
+      nullableRaw(record.censusTerminalDigest as string | null),
+      text(record.completedAt as string),
+    ],
+  );
+}
+
+export function computeAuthorityMaterializationRevocationDigest(input: unknown): string {
+  const record = requireRecord("authority-node-materialization-revocation-receipt/v1", input);
+  return digestRecord(
+    "authority-node-materialization-revocation-receipt/v1",
+    "authority-node-materialization-revocation-receipt/v1",
+    record,
+    [
+      raw(record.globalIdentityDigest as string),
+      raw(record.rotationId as string),
+      raw(record.materializationPlanDigest as string),
+      raw(record.preauthorizedTipDigest as string),
+      raw(record.preauthorizedValueDigest as string),
+      raw(record.preauthorizedReceiptDigest as string),
+      raw(record.revocationEvidenceDigest as string),
+      text(record.revokedAt as string),
     ],
   );
 }
@@ -1334,6 +1639,55 @@ export function validateAuthorityMaterializationComposition(input: unknown): rea
         .join("\0")
     )
       issues.push("plan:entries-not-sorted");
+    if (
+      planEntries.length === 0 ||
+      planEntries.length !== observations.length ||
+      planEntries.length !== updates.length ||
+      planEntries.length !== receipts.length
+    )
+      issues.push("plan:row-count-mismatch");
+    let intermediateRoot = plan.priorInventoryTreeRootDigest as string;
+    let intermediateCount = plan.priorInventoryCount as string;
+    for (const [index, entry] of planEntries.entries()) {
+      if (
+        entry.nodePath !==
+        `installation/state-mutation-authority-history/nodes/${String(entry.nodeDigest)}.json`
+      )
+        issues.push(`${index}:node-path-not-canonical`);
+      if (entry.priorTreeRootDigest !== intermediateRoot || entry.priorCount !== intermediateCount)
+        issues.push(`${index}:intermediate-predecessor-mismatch`);
+      intermediateRoot = entry.successorTreeRootDigest as string;
+      intermediateCount = entry.successorCount as string;
+    }
+    if (
+      intermediateRoot !== plan.successorInventoryTreeRootDigest ||
+      intermediateCount !== plan.successorInventoryCount
+    )
+      issues.push("plan:terminal-inventory-tuple-mismatch");
+    const priorInventoryRecord: ContractRecord = {
+      schemaVersion:
+        plan.priorInventoryKind === "EMPTY"
+          ? "authority-node-inventory-empty-root/v1"
+          : "authority-node-inventory-root/v1",
+      globalIdentityDigest: plan.globalIdentityDigest!,
+      kind: plan.priorInventoryKind!,
+      count: plan.priorInventoryCount!,
+      treeRootDigest: plan.priorInventoryTreeRootDigest!,
+    };
+    const successorInventoryRecord: ContractRecord = {
+      schemaVersion: "authority-node-inventory-root/v1",
+      globalIdentityDigest: plan.globalIdentityDigest!,
+      kind: "NONEMPTY",
+      count: plan.successorInventoryCount!,
+      treeRootDigest: plan.successorInventoryTreeRootDigest!,
+    };
+    if (plan.priorInventoryRootDigest !== computeAuthorityInventoryRootDigest(priorInventoryRecord))
+      issues.push("plan:prior-inventory-root-not-derived");
+    if (
+      plan.successorInventoryRootDigest !==
+      computeAuthorityInventoryRootDigest(successorInventoryRecord)
+    )
+      issues.push("plan:successor-inventory-root-not-derived");
     const identityFields = [
       "globalIdentityDigest",
       "rotationId",
@@ -1418,9 +1772,131 @@ export function validateAuthorityMaterializationComposition(input: unknown): rea
       batch.authorityUpdateProofDigest !== plan.authorityUpdateProofDigest
     )
       issues.push("batch:plan-proof-mismatch");
+    if (batch.recordPath !== authorityInventoryPaths.update(plan.rotationId as string))
+      issues.push("batch:record-path-mismatch");
+    for (const name of [
+      "globalIdentityDigest",
+      "rotationId",
+      "priorInventoryKind",
+      "priorInventoryRootDigest",
+      "priorInventoryCount",
+      "priorInventoryTreeRootDigest",
+      "successorInventoryKind",
+      "successorInventoryRootDigest",
+      "successorInventoryCount",
+      "successorInventoryTreeRootDigest",
+    ])
+      if (batch[name] !== plan[name]) issues.push(`batch:${name}:plan-mismatch`);
     return Object.freeze([...new Set(issues)].sort());
   } catch {
     return ["materialization:invalid"];
+  }
+}
+
+export function validateAuthorityMaterializationAuthorityComposition(
+  input: unknown,
+): readonly string[] {
+  const closed = snapshotClosedRecord(input, [
+    "appendReceipt",
+    "authorityValue",
+    "historyRoot",
+    "inventoryRoot",
+    "materialization",
+    "successorCore",
+  ]);
+  if (!closed.ok) return closed.issues;
+  const issues = [...validateAuthorityMaterializationComposition(closed.value.materialization)];
+  try {
+    const materialization = snapshotClosedRecord(closed.value.materialization, [
+      "batch",
+      "observations",
+      "plan",
+      "planEntries",
+      "receipts",
+      "updateEntries",
+    ]);
+    if (!materialization.ok) return materialization.issues;
+    const plan = requireRecord(
+      "authority-node-materialization-plan/v1",
+      materialization.value.plan,
+    );
+    const batch = requireRecord(
+      "authority-node-inventory-batch-update/v1",
+      materialization.value.batch,
+    );
+    const append = requireRecord("authority-history-append-receipt/v2", closed.value.appendReceipt);
+    const history = requireRecord("authority-history-root/v2", closed.value.historyRoot);
+    const inventory = requireRecord("authority-node-inventory-root/v1", closed.value.inventoryRoot);
+    const authority = validateAgainstSchema(
+      v2Definitions["state-mutation-authority-value/v3"]!,
+      closed.value.authorityValue,
+    );
+    const core = requireRecord(
+      "state-mutation-authority-successor-core/v2",
+      closed.value.successorCore,
+    );
+    if (!authority.ok) return authority.issues;
+    issues.push(
+      ...validateAuthorityValueV3Composition({
+        appendReceipt: append,
+        authorityValue: authority.value,
+        historyRoot: history,
+        inventoryRoot: inventory,
+        successorCore: core,
+      }),
+    );
+    const planDigest = computeAuthorityMaterializationPlanDigest(plan);
+    const batchDigest = computeAuthorityInventoryBatchDigest(batch);
+    const historyDigest = computeAuthorityHistoryRootDigestV2(history);
+    const inventoryDigest = computeAuthorityInventoryRootDigest(inventory);
+    if (
+      plan.globalIdentityDigest !== append.globalIdentityDigest ||
+      plan.globalIdentityDigest !== core.globalIdentityDigest ||
+      plan.globalIdentityDigest !== authority.value.globalIdentityDigest ||
+      plan.oldAuthorityPathInstanceDigest !== append.predecessorPathInstanceDigest ||
+      plan.oldAuthorityTipDigest !== append.predecessorTipDigest ||
+      plan.oldAuthorityValueDigest !== append.predecessorValueDigest ||
+      plan.oldAuthorityReceiptDigest !== append.predecessorReceiptDigest ||
+      plan.oldAuthorityTipDigest !== core.predecessorTipDigest ||
+      plan.oldAuthorityValueDigest !== core.predecessorValueDigest ||
+      plan.oldAuthorityReceiptDigest !== core.predecessorReceiptDigest ||
+      plan.oldAuthorityTipDigest !== authority.value.priorAuthorityTipDigest ||
+      plan.oldAuthorityValueDigest !== authority.value.priorAuthorityValueDigest ||
+      plan.oldAuthorityReceiptDigest !== authority.value.priorAuthorityReceiptDigest ||
+      plan.priorHistoryKind !== append.priorRootKind ||
+      plan.priorHistoryRootDigest !== append.priorRootDigest ||
+      plan.priorHistoryCount !== append.priorCount ||
+      plan.predecessorLeafDigest !== append.leafDigest ||
+      plan.authorityUpdateProofDigest !== append.updateProofDigest ||
+      append.materializationPlanDigest !== planDigest ||
+      append.inventoryBatchDigest !== batchDigest ||
+      append.materializationStartedTipDigest !== batch.startedTipDigest ||
+      append.materializationStartedValueDigest !== batch.startedValueDigest ||
+      append.materializationStartedReceiptDigest !== batch.startedReceiptDigest ||
+      append.successorRootDigest !== historyDigest ||
+      append.successorInventoryRootDigest !== inventoryDigest ||
+      plan.successorHistoryCount !== history.count ||
+      plan.successorHistoryTreeRootDigest !== history.treeRootDigest ||
+      plan.successorLatestEpochKey !== history.latestEpochKey ||
+      plan.successorLatestTipDigest !== history.latestTipDigest ||
+      plan.successorLatestValueDigest !== history.latestValueDigest ||
+      plan.successorLatestReceiptDigest !== history.latestReceiptDigest ||
+      plan.successorHistoryCount !== append.successorCount ||
+      plan.successorInventoryRootDigest !== inventoryDigest ||
+      plan.successorInventoryCount !== inventory.count ||
+      plan.successorInventoryTreeRootDigest !== inventory.treeRootDigest ||
+      authority.value.rotationId !== plan.rotationId ||
+      core.rotationId !== plan.rotationId ||
+      authority.value.authorityOrdinal !== plan.successorOrdinal ||
+      core.successorOrdinal !== plan.successorOrdinal ||
+      plan.activeReleaseTipDigest !== core.selectedActiveReleaseTipDigest ||
+      plan.activeReleaseValueDigest !== core.selectedActiveReleaseValueDigest ||
+      plan.activeReleaseReceiptDigest !== core.selectedActiveReleaseReceiptDigest
+    )
+      issues.push("materialization-authority:cross-binding-mismatch");
+    return Object.freeze([...new Set(issues)].sort());
+  } catch {
+    return ["materialization-authority:invalid"];
   }
 }
 
@@ -1466,10 +1942,210 @@ export function validateAuthorityCoordinatorTransition(
         p.rotationId !== n.rotationId
       )
         issues.push("rotationId:changed-mid-cycle");
+      if (["PREAUTHORIZED", "STARTED", "FINISHING"].includes(String(p.lifecycle))) {
+        for (const name of [
+          "materializationPlanDigest",
+          "predecessorTipDigest",
+          "predecessorValueDigest",
+          "predecessorReceiptDigest",
+        ])
+          if (p[name] !== n[name]) issues.push(`${name}:changed-mid-cycle`);
+      }
+      if (
+        ["TERMINAL", "REVOKED_BEFORE_START"].includes(String(p.lifecycle)) &&
+        n.lifecycle === "PREAUTHORIZED"
+      ) {
+        if (
+          p.rotationId === n.rotationId ||
+          p.materializationPlanDigest === n.materializationPlanDigest
+        )
+          issues.push("reset:plan-not-distinct");
+      }
     }
     return Object.freeze(issues.sort());
   } catch {
     return ["coordinator:invalid"];
+  }
+}
+
+export function validateAuthorityCoordinatorComposition(input: unknown): readonly string[] {
+  const closed = snapshotClosedRecord(input, [
+    "currentSelection",
+    "finishingEvidence",
+    "materializationPlan",
+    "previousSelection",
+    "revocationReceipt",
+    "startReceipt",
+    "terminalReceipt",
+  ]);
+  if (!closed.ok) return closed.issues;
+  try {
+    const current = resolveSelectedPointerEvidence(closed.value.currentSelection);
+    if (!current.ok) return current.issues.map((issue) => `current:${issue}`);
+    if (current.value.tip.pointerKind !== "AUTHORITY_NODE_MATERIALIZATION_RUN")
+      return ["current:pointer-kind"];
+    const previous =
+      closed.value.previousSelection === null
+        ? null
+        : resolveSelectedPointerEvidence(closed.value.previousSelection);
+    if (previous && !previous.ok) return previous.issues.map((issue) => `previous:${issue}`);
+    const p = previous?.ok ? previous.value : null;
+    const value = current.value.value;
+    const issues = [...validateAuthorityCoordinatorTransition(p?.value ?? null, value)];
+    if (p) {
+      if (
+        current.value.proposal.priorTipDigest !== p.tipDigest ||
+        current.value.proposal.priorValueDigest !== p.valueDigest ||
+        current.value.proposal.priorReceiptDigest !== p.proposalReceiptDigest
+      )
+        issues.push("selected-predecessor:mismatch");
+      const resetting =
+        value.lifecycle === "PREAUTHORIZED" &&
+        ["IDLE", "TERMINAL", "REVOKED_BEFORE_START"].includes(String(p.value.lifecycle));
+      const expectedPredecessor = resetting
+        ? [p.tipDigest, p.valueDigest, p.proposalReceiptDigest]
+        : [
+            p.value.predecessorTipDigest,
+            p.value.predecessorValueDigest,
+            p.value.predecessorReceiptDigest,
+          ];
+      if (
+        value.predecessorTipDigest !== expectedPredecessor[0] ||
+        value.predecessorValueDigest !== expectedPredecessor[1] ||
+        value.predecessorReceiptDigest !== expectedPredecessor[2]
+      )
+        issues.push("value-predecessor:mismatch");
+    } else if (
+      current.value.proposal.priorTipDigest !== null ||
+      current.value.proposal.priorValueDigest !== null ||
+      current.value.proposal.priorReceiptDigest !== null
+    )
+      issues.push("genesis:non-null-prior");
+    const plan =
+      closed.value.materializationPlan === null
+        ? null
+        : requireRecord("authority-node-materialization-plan/v1", closed.value.materializationPlan);
+    const planDigest = plan ? computeAuthorityMaterializationPlanDigest(plan) : null;
+    if (value.lifecycle === "IDLE") {
+      if (
+        plan !== null ||
+        closed.value.startReceipt !== null ||
+        closed.value.finishingEvidence !== null ||
+        closed.value.terminalReceipt !== null ||
+        closed.value.revocationReceipt !== null
+      )
+        issues.push("idle:evidence-unexpected");
+    } else {
+      if (
+        !plan ||
+        value.materializationPlanDigest !== planDigest ||
+        value.rotationId !== plan.rotationId ||
+        value.globalIdentityDigest !== plan.globalIdentityDigest
+      )
+        issues.push("plan:value-binding-mismatch");
+    }
+    if (value.lifecycle === "PREAUTHORIZED" && value.phaseEvidenceDigest !== planDigest)
+      issues.push("preauthorized:phase-evidence-mismatch");
+    if (value.lifecycle === "STARTED") {
+      const start = requireRecord(
+        "authority-node-materialization-start-receipt/v1",
+        closed.value.startReceipt,
+      );
+      const startDigest = computeAuthorityMaterializationStartDigest(start);
+      if (
+        !p ||
+        start.globalIdentityDigest !== value.globalIdentityDigest ||
+        start.preauthorizedTipDigest !== p.tipDigest ||
+        start.preauthorizedValueDigest !== p.valueDigest ||
+        start.preauthorizedReceiptDigest !== p.proposalReceiptDigest ||
+        start.materializationPlanDigest !== planDigest ||
+        start.rotationId !== value.rotationId ||
+        start.oldAuthorityTipDigest !== plan?.oldAuthorityTipDigest ||
+        start.oldAuthorityValueDigest !== plan?.oldAuthorityValueDigest ||
+        start.oldAuthorityReceiptDigest !== plan?.oldAuthorityReceiptDigest ||
+        value.phaseEvidenceDigest !== startDigest
+      )
+        issues.push("started:evidence-binding-mismatch");
+    } else if (closed.value.startReceipt !== null) issues.push("startReceipt:unexpected");
+    if (["FINISHING", "TERMINAL"].includes(String(value.lifecycle))) {
+      const finishing = requireRecord(
+        "authority-node-materialization-finishing/v1",
+        closed.value.finishingEvidence,
+      );
+      const finishingDigest = computeAuthorityMaterializationFinishingDigest(finishing);
+      if (
+        !p ||
+        finishing.globalIdentityDigest !== value.globalIdentityDigest ||
+        finishing.rotationId !== value.rotationId ||
+        finishing.materializationPlanDigest !== planDigest ||
+        (value.lifecycle === "FINISHING" &&
+          (finishing.startedTipDigest !== p.tipDigest ||
+            finishing.startedValueDigest !== p.valueDigest ||
+            finishing.startedReceiptDigest !== p.proposalReceiptDigest)) ||
+        (value.lifecycle === "TERMINAL" && finishingDigest !== p.value.phaseEvidenceDigest) ||
+        value.phaseEvidenceDigest !== finishingDigest ||
+        value.inventoryBatchDigest !== finishing.inventoryBatchDigest ||
+        value.successorAuthorityPathInstanceDigest !== finishing.newAuthorityPathInstanceDigest ||
+        value.successorAuthorityTipDigest !== finishing.newAuthorityTipDigest ||
+        value.successorAuthorityValueDigest !== finishing.newAuthorityValueDigest ||
+        value.successorAuthorityReceiptDigest !== finishing.newAuthorityReceiptDigest ||
+        value.authorityRunTerminalResolutionDigest !== finishing.terminalResolutionDigest ||
+        value.authorityRunFinalSelectorTipDigest !== finishing.finalSelectorTipDigest ||
+        value.authorityRunFinalSelectorValueDigest !== finishing.finalSelectorValueDigest ||
+        value.authorityRunFinalSelectorReceiptDigest !== finishing.finalSelectorReceiptDigest ||
+        value.materializationHandoffReceiptDigest !==
+          finishing.materializationHandoffReceiptDigest ||
+        value.rotationHandoffReceiptDigest !== finishing.rotationHandoffReceiptDigest
+      )
+        issues.push("finishing:evidence-binding-mismatch");
+      if (value.lifecycle === "TERMINAL") {
+        const terminal = requireRecord(
+          "authority-node-materialization-terminal-receipt/v1",
+          closed.value.terminalReceipt,
+        );
+        const terminalDigest = computeAuthorityMaterializationTerminalDigest(terminal);
+        if (
+          !p ||
+          terminal.globalIdentityDigest !== value.globalIdentityDigest ||
+          terminal.finishingTipDigest !== p.tipDigest ||
+          terminal.finishingValueDigest !== p.valueDigest ||
+          terminal.finishingReceiptDigest !== p.proposalReceiptDigest ||
+          value.terminalReceiptDigest !== terminalDigest ||
+          terminal.rotationId !== value.rotationId ||
+          terminal.materializationPlanDigest !== planDigest ||
+          terminal.newAuthorityTipDigest !== value.successorAuthorityTipDigest ||
+          terminal.newAuthorityValueDigest !== value.successorAuthorityValueDigest ||
+          terminal.newAuthorityReceiptDigest !== value.successorAuthorityReceiptDigest ||
+          terminal.finalValueReadbackDigest !== value.successorAuthorityValueDigest ||
+          terminal.finalProposalReadbackDigest !== value.successorAuthorityReceiptDigest ||
+          terminal.finalTipReadbackDigest !== value.successorAuthorityTipDigest ||
+          terminal.censusTerminalDigest !== value.censusTerminalDigest
+        )
+          issues.push("terminal:evidence-binding-mismatch");
+      }
+    } else if (closed.value.finishingEvidence !== null || closed.value.terminalReceipt !== null)
+      issues.push("finishing-terminal:evidence-unexpected");
+    if (value.lifecycle === "REVOKED_BEFORE_START") {
+      const revocation = requireRecord(
+        "authority-node-materialization-revocation-receipt/v1",
+        closed.value.revocationReceipt,
+      );
+      const revocationDigest = computeAuthorityMaterializationRevocationDigest(revocation);
+      if (
+        !p ||
+        revocation.globalIdentityDigest !== value.globalIdentityDigest ||
+        revocation.rotationId !== value.rotationId ||
+        revocation.materializationPlanDigest !== planDigest ||
+        revocation.preauthorizedTipDigest !== p.tipDigest ||
+        revocation.preauthorizedValueDigest !== p.valueDigest ||
+        revocation.preauthorizedReceiptDigest !== p.proposalReceiptDigest ||
+        value.phaseEvidenceDigest !== revocationDigest
+      )
+        issues.push("revocation:evidence-binding-mismatch");
+    } else if (closed.value.revocationReceipt !== null) issues.push("revocationReceipt:unexpected");
+    return Object.freeze([...new Set(issues)].sort());
+  } catch {
+    return ["coordinator-composition:invalid"];
   }
 }
 
@@ -1496,8 +2172,21 @@ export function validateAuthorityInventoryCensus(input: unknown): readonly strin
     let priorCursor: string | null = null;
     let count = "0";
     let firstPage: string | null = null;
+    let selectedTuple: ContractRecord | null = null;
     for (const [index, page] of pages.entries()) {
       const core = requireRecord("authority-node-inventory-census-page-core/v1", page.core);
+      const selectedInventoryRoot: ContractRecord = {
+        schemaVersion:
+          core.inventoryKind === "EMPTY"
+            ? "authority-node-inventory-empty-root/v1"
+            : "authority-node-inventory-root/v1",
+        globalIdentityDigest: core.globalIdentityDigest!,
+        kind: core.inventoryKind!,
+        count: core.inventoryCount!,
+        treeRootDigest: core.inventoryTreeRootDigest!,
+      };
+      if (core.inventoryRootDigest !== computeAuthorityInventoryRootDigest(selectedInventoryRoot))
+        issues.push(`${index}:inventory-root-digest-mismatch`);
       const entries = snapshotClosedArray(core.entries);
       const entryDigests = snapshotClosedArray(core.entryDigests);
       if (!entries.ok || !entryDigests.ok) {
@@ -1532,6 +2221,27 @@ export function validateAuthorityInventoryCensus(input: unknown): readonly strin
           entry.inventoryLeafDigest !== leafDigest
         )
           issues.push(`${index}:${entryIndex}:node-binding-mismatch`);
+        if (
+          computeAuthorityInventorySparseRoot(
+            recomputed.digest,
+            leafDigest,
+            entry.siblingDigests as readonly string[],
+          ) !== core.inventoryTreeRootDigest
+        )
+          issues.push(`${index}:${entryIndex}:membership-root-mismatch`);
+        if (
+          entry.globalEntryOrdinal !==
+          (BigInt(core.priorCumulativeCount as string) + BigInt(entryIndex)).toString()
+        )
+          issues.push(`${index}:${entryIndex}:global-ordinal-mismatch`);
+        if (entryIndex > 0) {
+          const priorEntry = requireRecord(
+            "authority-node-inventory-census-entry/v1",
+            entries.value[entryIndex - 1],
+          );
+          if (String(priorEntry.nodePath) >= String(entry.nodePath))
+            issues.push(`${index}:${entryIndex}:path-order-mismatch`);
+        }
       }
       const pageDigest = computeAuthorityCensusPageDigest(core);
       const censusDigest = computeAuthorityCensusChainDigest(
@@ -1560,9 +2270,30 @@ export function validateAuthorityInventoryCensus(input: unknown): readonly strin
         core.priorCumulativeCount !== count
       )
         issues.push(`${index}:predecessor-mismatch`);
+      const tupleFields = [
+        "globalIdentityDigest",
+        "censusId",
+        "authorityPathInstanceDigest",
+        "authorityTipDigest",
+        "authorityValueDigest",
+        "authorityReceiptDigest",
+        "historyRootDigest",
+        "inventoryKind",
+        "inventoryRootDigest",
+        "inventoryCount",
+        "inventoryTreeRootDigest",
+      ];
+      if (selectedTuple === null) selectedTuple = core;
+      else if (!same(core, selectedTuple, tupleFields))
+        issues.push(`${index}:selected-tuple-changed`);
+      if (
+        core.successorCumulativeCount !==
+        (BigInt(core.priorCumulativeCount as string) + BigInt(entries.value.length)).toString()
+      )
+        issues.push(`${index}:successor-count-mismatch`);
       if (
         index < pages.length - 1 &&
-        (core.exhausted !== false || entries.value.length === 0 || core.successorCursor === null)
+        (core.exhausted !== false || entries.value.length !== 256 || core.successorCursor === null)
       )
         issues.push(`${index}:nonterminal-shape`);
       if (index === pages.length - 1 && (core.exhausted !== true || core.successorCursor !== null))
@@ -1576,6 +2307,23 @@ export function validateAuthorityInventoryCensus(input: unknown): readonly strin
       )
         issues.push("zero-count:page0-mismatch");
       if (entries.value.length > 256) issues.push(`${index}:page-too-large`);
+      if (entries.value.length > 0 && core.successorCursor !== null) {
+        const lastEntry = requireRecord(
+          "authority-node-inventory-census-entry/v1",
+          entries.value.at(-1),
+        );
+        if (core.successorCursor !== lastEntry.nodePath)
+          issues.push(`${index}:successor-cursor-mismatch`);
+      }
+      if (entries.value.length === 0 && index > 0) {
+        const priorCore = requireRecord(
+          "authority-node-inventory-census-page-core/v1",
+          pages[index - 1]!.core,
+        );
+        const priorEntries = snapshotClosedArray(priorCore.entries);
+        if (!priorEntries.ok || priorEntries.value.length !== 256 || !core.exhausted)
+          issues.push(`${index}:empty-boundary-page-refused`);
+      }
       firstPage ??= pageDigest;
       priorPage = pageDigest;
       priorCensus = censusDigest;
@@ -1637,6 +2385,60 @@ const RUN_STAGES = Object.freeze([
   "CURRENT_AUTHORITY_POST_CAS_READ",
 ]);
 
+export function computeRunCheckpointCoreDigestV2(input: unknown): string {
+  const record = requireRecord("pointer-mutation-run-checkpoint-core/v2", input);
+  return digestRecord(
+    "pointer-mutation-run-checkpoint-core/v2",
+    "pointer-mutation-run-checkpoint-core/v2",
+    record,
+    [
+      raw(record.globalIdentityDigest as string),
+      text(record.pointerKind as string),
+      text(record.canonicalPointerPath as string),
+      raw(record.targetPathInstanceDigest as string),
+      raw(record.targetMutationId as string),
+      decimalPart(record.runOrdinal as string),
+      decimalPart(record.checkpointOrdinal as string),
+      raw(record.segmentDigest as string),
+      raw(record.auditDigest as string),
+      nullableRaw(record.priorSelectorTipDigest as string | null),
+      nullableRaw(record.priorSelectorValueDigest as string | null),
+      nullableRaw(record.priorSelectorReceiptDigest as string | null),
+      nullableRaw(record.priorPostSelectionObservationDigest as string | null),
+      text(record.epochPolicy as string),
+      raw(record.producerAuthorityTipDigest as string),
+      raw(record.producerAuthorityValueDigest as string),
+      raw(record.producerAuthorityReceiptDigest as string),
+      nullableRaw(record.materializationPlanDigest as string | null),
+      nullableRaw(record.materializationStartedTipDigest as string | null),
+      nullableRaw(record.materializationStartedValueDigest as string | null),
+      nullableRaw(record.materializationStartedReceiptDigest as string | null),
+      nullableRaw(record.rotationHandoffReceiptDigest as string | null),
+      text(record.stage as string),
+      text(record.phase as string),
+      nullableRaw(record.terminalResolutionDigest as string | null),
+    ],
+  );
+}
+
+export function computeRunPostSelectionDigestV1(input: unknown): string {
+  const parsed = validateAgainstSchema(runPostSelectionObservationDefinition, input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  return digest("pointer-mutation-run-selector-post-selection-observation/v1", [
+    raw(record.checkpointCoreDigest as string),
+    raw(record.selectorPathInstanceDigest as string),
+    raw(record.selectorMutationId as string),
+    raw(record.selectorValueDigest as string),
+    raw(record.selectorReceiptDigest as string),
+    raw(record.selectorTipDigest as string),
+    raw(record.valueReadbackDigest as string),
+    raw(record.proposalReadbackDigest as string),
+    raw(record.tipReadbackDigest as string),
+    canonical(record),
+  ]);
+}
+
 export function validateAuthorityCommitRunV3(input: unknown): readonly string[] {
   const parsed = validateAgainstSchema(
     inventoryDefinitions["pointer-mutation-commit-evidence/v3"]!,
@@ -1646,8 +2448,11 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
   const checkpointsResult = snapshotClosedArray(parsed.value.checkpoints);
   if (!checkpointsResult.ok || checkpointsResult.value.length !== 9) return ["checkpoints:length"];
   try {
-    const checkpoints = checkpointsResult.value.map((value) =>
-      requireRecord("pointer-mutation-run-checkpoint-core/v2", value),
+    const checkpointEvidence = checkpointsResult.value.map((value) =>
+      requireRecord("pointer-mutation-run-checkpoint-evidence/v2", value),
+    );
+    const checkpoints = checkpointEvidence.map((value) =>
+      requireRecord("pointer-mutation-run-checkpoint-core/v2", value.core),
     );
     const intent = requireRecord("pointer-mutation-run-intent/v2", parsed.value.intent);
     const issues: string[] = [];
@@ -1660,16 +2465,66 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
       "runOrdinal",
       "epochPolicy",
     ];
+    let priorSelector: SelectedPointerEvidence | null = null;
+    let priorPostDigest: string | null = null;
     for (let index = 0; index < checkpoints.length; index += 1) {
       const current = checkpoints[index]!;
+      const envelope = checkpointEvidence[index]!;
+      const selector = resolveSelectedPointerEvidence(envelope.selectorSelection);
+      if (!selector.ok) {
+        issues.push(`${index}:selector-invalid`);
+        continue;
+      }
+      if (
+        selector.value.tip.pointerKind !== "POINTER_MUTATION_RUN_CURRENT" ||
+        selector.value.value.schemaVersion !== "pointer-mutation-run-current-value/v2"
+      )
+        issues.push(`${index}:selector-family-version-mismatch`);
+      const coreDigest = computeRunCheckpointCoreDigestV2(current);
+      if (
+        selector.value.value.checkpointCoreDigest !== coreDigest ||
+        selector.value.value.checkpointOrdinal !== current.checkpointOrdinal ||
+        selector.value.value.runOrdinal !== current.runOrdinal ||
+        selector.value.value.stage !== current.stage ||
+        selector.value.value.phase !== current.phase ||
+        selector.value.value.targetPathInstanceDigest !== current.targetPathInstanceDigest ||
+        selector.value.value.targetMutationId !== current.targetMutationId
+      )
+        issues.push(`${index}:selector-core-binding-mismatch`);
+      if (
+        current.priorSelectorTipDigest !== (priorSelector?.tipDigest ?? null) ||
+        current.priorSelectorValueDigest !== (priorSelector?.valueDigest ?? null) ||
+        current.priorSelectorReceiptDigest !== (priorSelector?.proposalReceiptDigest ?? null) ||
+        current.priorPostSelectionObservationDigest !== priorPostDigest
+      )
+        issues.push(`${index}:selector-predecessor-mismatch`);
+      const post = validateAgainstSchema(
+        runPostSelectionObservationDefinition,
+        envelope.postSelectionObservation,
+      );
+      if (!post.ok) issues.push(`${index}:post-invalid`);
+      else {
+        if (
+          post.value.checkpointCoreDigest !== coreDigest ||
+          post.value.selectorPathInstanceDigest !== selector.value.pathInstanceDigest ||
+          post.value.selectorMutationId !== selector.value.proposal.mutationId ||
+          post.value.selectorValueDigest !== selector.value.valueDigest ||
+          post.value.selectorReceiptDigest !== selector.value.proposalReceiptDigest ||
+          post.value.selectorTipDigest !== selector.value.tipDigest ||
+          post.value.valueReadbackDigest !== selector.value.valueDigest ||
+          post.value.proposalReadbackDigest !== selector.value.proposalReceiptDigest ||
+          post.value.tipReadbackDigest !== selector.value.tipDigest
+        )
+          issues.push(`${index}:post-selector-binding-mismatch`);
+        priorPostDigest = computeRunPostSelectionDigestV1(post.value);
+      }
+      priorSelector = selector.value;
       if (current.stage !== RUN_STAGES[index] || current.checkpointOrdinal !== String(index))
         issues.push(`${index}:stage-ordinal-mismatch`);
       const expectedPhase =
         index < 5 ? "CRASH_PREFIX" : index < 7 ? "CAS_AMBIGUOUS" : parsed.value.outcome;
       if (current.phase !== expectedPhase) issues.push(`${index}:phase-mismatch`);
       if (!same(current, checkpoints[0]!, identityFields)) issues.push(`${index}:identity-changed`);
-      if (index > 0 && current.priorSelectorTipDigest === null)
-        issues.push(`${index}:prior-selector-missing`);
     }
     const first = checkpoints[0]!;
     if (
@@ -1688,6 +2543,19 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
       issues.push("epochPolicy:pointer-kind-mismatch");
     if (rotation) {
       const oldEpoch = checkpoints[0]!;
+      for (let index = 0; index <= 5; index += 1) {
+        const checkpoint = checkpoints[index]!;
+        if (
+          checkpoint.materializationPlanDigest !== intent.materializationPlanDigest ||
+          checkpoint.materializationStartedTipDigest !== intent.materializationStartedTipDigest ||
+          checkpoint.materializationStartedValueDigest !==
+            intent.materializationStartedValueDigest ||
+          checkpoint.materializationStartedReceiptDigest !==
+            intent.materializationStartedReceiptDigest ||
+          checkpoint.rotationHandoffReceiptDigest !== null
+        )
+          issues.push(`${index}:rotation-pre-cas-evidence-mismatch`);
+      }
       for (let index = 1; index <= 5; index += 1)
         if (
           !same(checkpoints[index]!, oldEpoch, [
@@ -1724,6 +2592,12 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
         parsed.value.materializationHandoffReceipt,
       );
       const drh = computeAuthorityRotationHandoffDigest(handoff);
+      const casArmedSelector = resolveSelectedPointerEvidence(
+        checkpointEvidence[5]!.selectorSelection,
+      );
+      const finalSelector = resolveSelectedPointerEvidence(
+        checkpointEvidence[8]!.selectorSelection,
+      );
       if (
         handoff.materializationPlanDigest !== intent.materializationPlanDigest ||
         handoff.oldAuthorityTipDigest !== oldEpoch.producerAuthorityTipDigest ||
@@ -1732,18 +2606,46 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
         handoff.newAuthorityTipDigest !== newEpoch.producerAuthorityTipDigest ||
         handoff.newAuthorityValueDigest !== newEpoch.producerAuthorityValueDigest ||
         handoff.newAuthorityReceiptDigest !== newEpoch.producerAuthorityReceiptDigest ||
-        checkpoints[6]!.rotationHandoffReceiptDigest !== drh
+        checkpoints
+          .slice(6)
+          .some((checkpoint) => checkpoint.rotationHandoffReceiptDigest !== drh) ||
+        !casArmedSelector.ok ||
+        handoff.casArmedSelectorTipDigest !== casArmedSelector.value.tipDigest ||
+        handoff.casArmedSelectorValueDigest !== casArmedSelector.value.valueDigest ||
+        handoff.casArmedSelectorReceiptDigest !== casArmedSelector.value.proposalReceiptDigest ||
+        handoff.casArmedCoreDigest !== computeRunCheckpointCoreDigestV2(checkpoints[5]!) ||
+        handoff.startedTipDigest !== intent.materializationStartedTipDigest ||
+        handoff.startedValueDigest !== intent.materializationStartedValueDigest ||
+        handoff.startedReceiptDigest !== intent.materializationStartedReceiptDigest
       )
         issues.push("rotationHandoff:binding-mismatch");
       if (
         materialization.rotationHandoffReceiptDigest !== drh ||
         materialization.materializationPlanDigest !== intent.materializationPlanDigest ||
-        materialization.terminalResolutionDigest !== checkpoints[8]!.terminalResolutionDigest
+        materialization.terminalResolutionDigest !== checkpoints[8]!.terminalResolutionDigest ||
+        !finalSelector.ok ||
+        materialization.finalSelectorTipDigest !== finalSelector.value.tipDigest ||
+        materialization.finalSelectorValueDigest !== finalSelector.value.valueDigest ||
+        materialization.finalSelectorReceiptDigest !== finalSelector.value.proposalReceiptDigest
       )
         issues.push("materializationHandoff:binding-mismatch");
+      const finishing = resolveSelectedPointerEvidence(
+        parsed.value.materializationFinishingSelection,
+      );
+      if (!finishing.ok) issues.push("materializationFinishingSelection:invalid");
+      else if (
+        finishing.value.tip.pointerKind !== "AUTHORITY_NODE_MATERIALIZATION_RUN" ||
+        finishing.value.value.lifecycle !== "FINISHING" ||
+        finishing.value.value.materializationHandoffReceiptDigest !==
+          computeAuthorityMaterializationHandoffDigest(materialization) ||
+        finishing.value.value.rotationHandoffReceiptDigest !== drh ||
+        finishing.value.value.phaseEvidenceDigest === null
+      )
+        issues.push("materializationFinishingSelection:binding-mismatch");
     } else if (
       parsed.value.rotationHandoffReceipt !== null ||
-      parsed.value.materializationHandoffReceipt !== null
+      parsed.value.materializationHandoffReceipt !== null ||
+      parsed.value.materializationFinishingSelection !== null
     )
       issues.push("handoff:unexpected");
     return Object.freeze([...new Set(issues)].sort());

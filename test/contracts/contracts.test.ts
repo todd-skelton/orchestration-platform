@@ -7,6 +7,15 @@ import {
   classifyProposal,
   computeConflictDigest,
   computeAuthorityEpochKey,
+  computeAuthorityEmptyDigest,
+  computeAuthorityLeafDigest,
+  computeAuthorityHistoryRootDigestV2,
+  computeGlobalIdentityDigest,
+  computeAuthorityMaterializationPlanDigest,
+  computeAuthorityMaterializationStartDigest,
+  computeAuthorityHistoryEmptyRootDigestV2,
+  computeAuthorityInventoryEmptyDigest,
+  computeAuthorityInventoryRootDigest,
   computeCurrentTipDigest,
   computeMutationId,
   computePointerInstanceDigest,
@@ -17,8 +26,11 @@ import {
   computeRunAuditDigest,
   computeRunId,
   computeRunCheckpointCoreDigest,
+  computeRunCheckpointCoreDigestV2,
   computeRunPostSelectionDigest,
+  computeRunPostSelectionDigestV1,
   computeRunSegmentDigest,
+  computeSparseRoot,
   computeCommitResolutionDigest,
   computeReservationPredecessorKey,
   diagnostic,
@@ -38,6 +50,7 @@ import {
   recoveryAccumulatorDigest,
   retentionAllows,
   reduceCleanupHeadWrite,
+  resolveProposedTargetEvidence,
   schemaDefinitions,
   schemaVersions,
   serializeContract,
@@ -46,6 +59,10 @@ import {
   stateMutationLockPath,
   stateMutationRegistry,
   validateAuthorizationReceiptChain,
+  validateAuthorityCoordinatorComposition,
+  validateAuthorityMembershipV2,
+  validateCommitEvidenceV3,
+  validateEvidencePacketV3,
   validateAuthorizationRevokeReceiptChain,
   validateGateAuthorizationBinding,
   validateFenceHeadHistory,
@@ -136,6 +153,9 @@ function pointerSelection(
     stateRootDigest: options.stateRootDigest ?? digest,
     transactionId: options.transactionId,
     sourceToken: options.sourceToken,
+    ...(row.pathTemplate.includes("<authority-dp>")
+      ? { authorityPathInstanceDigest: options.pathBindings.authorityPathInstanceDigest }
+      : {}),
     ...(row.pathTemplate.includes("<predecessor-key>")
       ? { predecessorKey: options.pathBindings.predecessorKey }
       : {}),
@@ -167,6 +187,9 @@ function pointerSelection(
     successorDv: valueDigest,
     outcome,
     intent,
+    ...(row.pathTemplate.includes("<authority-dp>")
+      ? { authorityPathInstanceDigest: options.pathBindings.authorityPathInstanceDigest }
+      : {}),
     ...(row.pathTemplate.includes("<predecessor-key>")
       ? { predecessorKey: options.pathBindings.predecessorKey }
       : {}),
@@ -762,7 +785,7 @@ describe("current and diagnostic schema registries", () => {
   });
 
   test("removes superseded authority v1 from current dispatch and retains diagnostic parsing", () => {
-    expect(diagnostic.schemaVersions).toHaveLength(26);
+    expect(diagnostic.schemaVersions).toHaveLength(27);
     for (const schemaVersion of diagnostic.schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
       expect(schemaDefinitions).not.toHaveProperty(schemaVersion);
@@ -820,12 +843,12 @@ describe("current and diagnostic schema registries", () => {
       "pointer-mutation-commit-evidence/v3",
       "pointer-mutation-conflict-evidence/v1",
       "pointer-mutation-unknown-evidence/v1",
-      "pointer-mutation-proposed-target-evidence/v1",
+      "pointer-mutation-proposed-target-evidence/v2",
       "pointer-evidence-slot/v3",
       "authority-membership-evidence/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(121);
+    expect(schemaVersions).toHaveLength(126);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -1247,12 +1270,32 @@ describe("framed pointer digest graph", () => {
             outcome,
           });
           const issues = validateSelectedPointerEvidence(ordinary.envelope);
-          if (intent === "VALUE_PROPOSED" && outcome === "SELECT")
+          if (intent === "VALUE_PROPOSED" && outcome === "SELECT") {
             expect(issues, `${row.kind}:ordinary:${intent}:${outcome}`).toEqual([]);
-          else expect(issues, `${row.kind}:ordinary:${intent}:${outcome}`).not.toEqual([]);
+            const { tip: _ordinaryTip, ...ordinaryWithoutTip } = ordinary.envelope;
+            expect(
+              resolveProposedTargetEvidence({
+                schemaVersion: "pointer-mutation-proposed-target-evidence/v2",
+                ...ordinaryWithoutTip,
+              }).ok,
+              `${row.kind}:ordinary-proposed`,
+            ).toBe(true);
+          } else expect(issues, `${row.kind}:ordinary:${intent}:${outcome}`).not.toEqual([]);
         }
       const selected = tombstoneSelection(row);
       expect(validateSelectedPointerEvidence(selected.envelope), row.kind).toEqual([]);
+      const { tip: _selectedTip, ...selectedWithoutTip } = selected.envelope;
+      const proposedTombstone = {
+        schemaVersion: "pointer-mutation-proposed-target-evidence/v2",
+        ...selectedWithoutTip,
+      };
+      expect(resolveProposedTargetEvidence(proposedTombstone).ok, `${row.kind}:proposed`).toBe(
+        true,
+      );
+      expect(
+        resolveProposedTargetEvidence({ ...proposedTombstone, tombstoneEvidence: null }).ok,
+        `${row.kind}:proposed-missing-evidence`,
+      ).toBe(false);
       const tombstone = selected.envelope.value as ContractRecord;
       const position = selected.envelope.positionEvidence as ContractRecord;
       expect(position.variant).toBe("TOMBSTONE");
@@ -1582,6 +1625,101 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         expect(reduceCleanupHeadWrite(lifecycle, publication, lifecycle, publication)).toBe(
           "NO_APPEND",
         );
+  });
+
+  test("composes the singleton materialization coordinator from its selected predecessor", () => {
+    const authorityDp = digest2;
+    const pathBindings = { authorityPathInstanceDigest: authorityDp };
+    const idle = pointerSelection(
+      "AUTHORITY_NODE_MATERIALIZATION_RUN",
+      fixtureFor("authority-node-materialization-run-value/v1"),
+      { pathBindings, transactionId: null, sourceToken: "none" },
+    );
+    const plan = fixtureFor("authority-node-materialization-plan/v1");
+    const planDigest = computeAuthorityMaterializationPlanDigest(plan);
+    const preauthorizedValue: ContractRecord = {
+      ...fixtureFor("authority-node-materialization-run-value/v1"),
+      coordinatorOrdinal: "1",
+      lifecycle: "PREAUTHORIZED",
+      rotationId: plan.rotationId!,
+      materializationPlanDigest: planDigest,
+      predecessorTipDigest: idle.tipDigest,
+      predecessorValueDigest: idle.valueDigest,
+      predecessorReceiptDigest: idle.proposalReceiptDigest,
+      phaseEvidenceDigest: planDigest,
+    };
+    const preauthorized = pointerSelection(
+      "AUTHORITY_NODE_MATERIALIZATION_RUN",
+      preauthorizedValue,
+      {
+        pathBindings,
+        transactionId: null,
+        sourceToken: "none",
+        prior: idle,
+      },
+    );
+    const composition = {
+      currentSelection: preauthorized.envelope,
+      finishingEvidence: null,
+      materializationPlan: plan,
+      previousSelection: idle.envelope,
+      revocationReceipt: null,
+      startReceipt: null,
+      terminalReceipt: null,
+    };
+    expect(validateAuthorityCoordinatorComposition(composition)).toEqual([]);
+    expect(
+      validateAuthorityCoordinatorComposition({
+        ...composition,
+        currentSelection: {
+          ...preauthorized.envelope,
+          value: { ...preauthorizedValue, predecessorTipDigest: digest },
+        },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateAuthorityCoordinatorComposition({
+        ...composition,
+        materializationPlan: { ...plan, successorOrdinal: "2" },
+      }),
+    ).toContain("plan:value-binding-mismatch");
+    const startReceipt: ContractRecord = {
+      ...fixtureFor("authority-node-materialization-start-receipt/v1"),
+      globalIdentityDigest: preauthorizedValue.globalIdentityDigest!,
+      rotationId: plan.rotationId!,
+      materializationPlanDigest: planDigest,
+      preauthorizedTipDigest: preauthorized.tipDigest,
+      preauthorizedValueDigest: preauthorized.valueDigest,
+      preauthorizedReceiptDigest: preauthorized.proposalReceiptDigest,
+      oldAuthorityTipDigest: plan.oldAuthorityTipDigest!,
+      oldAuthorityValueDigest: plan.oldAuthorityValueDigest!,
+      oldAuthorityReceiptDigest: plan.oldAuthorityReceiptDigest!,
+    };
+    const startedValue: ContractRecord = {
+      ...preauthorizedValue,
+      coordinatorOrdinal: "2",
+      lifecycle: "STARTED",
+      phaseEvidenceDigest: computeAuthorityMaterializationStartDigest(startReceipt),
+    };
+    const started = pointerSelection("AUTHORITY_NODE_MATERIALIZATION_RUN", startedValue, {
+      pathBindings,
+      transactionId: null,
+      sourceToken: "none",
+      prior: preauthorized,
+    });
+    const startedComposition = {
+      ...composition,
+      currentSelection: started.envelope,
+      previousSelection: preauthorized.envelope,
+      startReceipt,
+    };
+    expect(validateAuthorityCoordinatorComposition(startedComposition)).toEqual([]);
+    expect(
+      validateAuthorityCoordinatorComposition({
+        ...startedComposition,
+        startReceipt: { ...startReceipt, oldAuthorityTipDigest: digest2 },
+      }),
+    ).not.toEqual([]);
   });
 
   test("pins ordinary epoch ordering and complete other-kind rotation census", () => {
@@ -3292,6 +3430,427 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     );
   });
 
+  test("composes current v3 commit checkpoints and packet roots through selected META_LEAF evidence", () => {
+    const identityBase = fixtureFor("state-mutation-global-identity/v1");
+    const globalIdentity = {
+      ...identityBase,
+      authorityPathInstanceDigest: computePointerInstanceDigest({
+        pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+        canonicalPointerPath: stateMutationAuthorityPath,
+        installationId: identityBase.installationId as string,
+        projectId: identityBase.projectId as string,
+        stateRootDigest: identityBase.stateRootDigest as string,
+        transactionId: null,
+        sourceToken: "none",
+      }),
+    };
+    const g = computeGlobalIdentityDigest(globalIdentity);
+    const emptyInventoryTree = computeAuthorityInventoryEmptyDigest(0);
+    const inventoryRoot: ContractRecord = {
+      ...fixtureFor("authority-node-inventory-empty-root/v1"),
+      globalIdentityDigest: g,
+      kind: "EMPTY",
+      count: "0",
+      treeRootDigest: emptyInventoryTree,
+    };
+    const inventoryRootDigest = computeAuthorityInventoryRootDigest(inventoryRoot);
+    const historyRoot: ContractRecord = {
+      ...fixtureFor("authority-history-empty-root/v2"),
+      globalIdentityDigest: g,
+      nodeInventoryRootKind: "EMPTY",
+      nodeInventoryRootDigest: inventoryRootDigest,
+      nodeInventoryCount: "0",
+    };
+    const historyRootDigest = computeAuthorityHistoryEmptyRootDigestV2(historyRoot);
+    const authorityValue: ContractRecord = {
+      ...fixtureFor("state-mutation-authority-value/v3"),
+      globalIdentityDigest: g,
+      historyRootDigest,
+      historyRootKind: "EMPTY",
+      historyCount: "0",
+      nodeInventoryRootDigest: inventoryRootDigest,
+      nodeInventoryRootKind: "EMPTY",
+      nodeInventoryCount: "0",
+      nodeInventoryTreeRootDigest: emptyInventoryTree,
+    };
+    const authority = pointerSelection("STATE_MUTATION_AUTHORITY_ROTATION", authorityValue, {
+      pathBindings: {},
+      transactionId: null,
+      sourceToken: "none",
+    });
+    const authorityEpoch = {
+      tipDigest: authority.tipDigest,
+      valueDigest: authority.valueDigest,
+      proposalReceiptDigest: authority.proposalReceiptDigest,
+    };
+    const target = pointerSelection("ACTIVE_RELEASE", fixtureFor("active-release/v2"), {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      authorityEpoch,
+    });
+    const { tip: _targetTip, ...targetWithoutTip } = target.envelope;
+    const proposedTarget = {
+      schemaVersion: "pointer-mutation-proposed-target-evidence/v2",
+      ...targetWithoutTip,
+    };
+    const intent: ContractRecord = {
+      ...fixtureFor("pointer-mutation-run-intent/v2"),
+      globalIdentityDigest: g,
+      pointerKind: "ACTIVE_RELEASE",
+      canonicalPointerPath: target.envelope.canonicalPointerPath,
+      installationId: target.envelope.installationId,
+      projectId: target.envelope.projectId,
+      stateRootDigest: target.envelope.stateRootDigest,
+      transactionId: target.envelope.transactionId,
+      sourceToken: target.envelope.sourceToken,
+      targetPathInstanceDigest: target.pathInstanceDigest,
+      targetMutationId: target.proposal.mutationId!,
+      expectedPriorTipDigest: target.proposal.priorTipDigest!,
+      expectedPriorValueDigest: target.proposal.priorValueDigest!,
+      expectedPriorReceiptDigest: target.proposal.priorReceiptDigest!,
+      expectedSuccessorValueDigest: target.valueDigest,
+      epochPolicy: "SINGLE_EPOCH",
+      materializationPlanDigest: null,
+      materializationStartedTipDigest: null,
+      materializationStartedValueDigest: null,
+      materializationStartedReceiptDigest: null,
+      priorCheckpointDigest: null,
+    };
+    let priorSelector: ReturnType<typeof pointerSelection> | null = null;
+    let priorPostDigest: string | null = null;
+    const checkpoints: ContractRecord[] = [];
+    for (const [index, stage] of [
+      "CURRENT_AUTHORITY_READ",
+      "TARGET_RECONCILED",
+      "VALUE_READBACK",
+      "PROPOSAL_READBACK",
+      "CURRENT_AUTHORITY_PRE_CAS_READ",
+      "CAS_ARMED",
+      "TARGET_POST_CAS_READBACK",
+      "PROPOSAL_CLASSIFIED",
+      "CURRENT_AUTHORITY_POST_CAS_READ",
+    ].entries()) {
+      const terminal = index >= 7;
+      const core: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-checkpoint-core/v2"),
+        globalIdentityDigest: g,
+        pointerKind: "ACTIVE_RELEASE",
+        canonicalPointerPath: target.envelope.canonicalPointerPath,
+        targetPathInstanceDigest: target.pathInstanceDigest,
+        targetMutationId: target.proposal.mutationId!,
+        runOrdinal: "0",
+        checkpointOrdinal: String(index),
+        priorSelectorTipDigest: priorSelector?.tipDigest ?? null,
+        priorSelectorValueDigest: priorSelector?.valueDigest ?? null,
+        priorSelectorReceiptDigest: priorSelector?.proposalReceiptDigest ?? null,
+        priorPostSelectionObservationDigest: priorPostDigest,
+        epochPolicy: "SINGLE_EPOCH",
+        producerAuthorityTipDigest: authority.tipDigest,
+        producerAuthorityValueDigest: authority.valueDigest,
+        producerAuthorityReceiptDigest: authority.proposalReceiptDigest,
+        materializationPlanDigest: null,
+        materializationStartedTipDigest: null,
+        materializationStartedValueDigest: null,
+        materializationStartedReceiptDigest: null,
+        rotationHandoffReceiptDigest: null,
+        stage,
+        phase: terminal ? "SELECTED" : index >= 5 ? "CAS_AMBIGUOUS" : "CRASH_PREFIX",
+        terminalResolutionDigest: terminal ? digest2 : null,
+      };
+      const coreDigest = computeRunCheckpointCoreDigestV2(core);
+      const selectorValue: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-current-value/v2"),
+        globalIdentityDigest: g,
+        targetPathInstanceDigest: target.pathInstanceDigest,
+        targetMutationId: target.proposal.mutationId!,
+        checkpointCoreDigest: coreDigest,
+        runOrdinal: "0",
+        checkpointOrdinal: String(index),
+        stage,
+        phase: core.phase!,
+        epochPolicy: "SINGLE_EPOCH",
+        producerAuthorityTipDigest: authority.tipDigest,
+        producerAuthorityValueDigest: authority.valueDigest,
+        producerAuthorityReceiptDigest: authority.proposalReceiptDigest,
+        materializationPlanDigest: null,
+        materializationStartedTipDigest: null,
+        materializationStartedValueDigest: null,
+        materializationStartedReceiptDigest: null,
+        rotationHandoffReceiptDigest: null,
+        terminalResolutionDigest: core.terminalResolutionDigest!,
+      };
+      const selector = pointerSelection("POINTER_MUTATION_RUN_CURRENT", selectorValue, {
+        pathBindings: {
+          pointerInstanceDigest: target.pathInstanceDigest,
+          targetMutationId: target.proposal.mutationId as string,
+        },
+        transactionId: null,
+        sourceToken: "none",
+        prior: priorSelector,
+        authorityEpoch,
+      });
+      const post: ContractRecord = {
+        ...fixtureFor("pointer-mutation-run-selector-post-selection-observation/v1"),
+        checkpointCoreDigest: coreDigest,
+        selectorPathInstanceDigest: selector.pathInstanceDigest,
+        selectorMutationId: selector.proposal.mutationId!,
+        selectorValueDigest: selector.valueDigest,
+        selectorReceiptDigest: selector.proposalReceiptDigest,
+        selectorTipDigest: selector.tipDigest,
+        valueReadbackDigest: selector.valueDigest,
+        proposalReadbackDigest: selector.proposalReceiptDigest,
+        tipReadbackDigest: selector.tipDigest,
+      };
+      priorPostDigest = computeRunPostSelectionDigestV1(post);
+      priorSelector = selector;
+      checkpoints.push({
+        schemaVersion: "pointer-mutation-run-checkpoint-evidence/v2",
+        core,
+        selectorSelection: selector.envelope,
+        postSelectionObservation: post,
+      });
+    }
+    const commit = {
+      ...fixtureFor("pointer-mutation-commit-evidence/v3"),
+      purpose: "MUTATION_COMMIT",
+      authoritySelection: authority.envelope,
+      intent,
+      checkpoints,
+      outcome: "SELECTED",
+      proposedTarget,
+      selectedTarget: target.envelope,
+      conflictEvidence: null,
+      unknownEvidence: null,
+      rotationHandoffReceipt: null,
+      materializationHandoffReceipt: null,
+      materializationFinishingSelection: null,
+    };
+    expect(validateCommitEvidenceV3(commit)).toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...commit,
+        checkpoints: checkpoints.map((checkpoint, index) =>
+          index === 5
+            ? {
+                ...checkpoint,
+                core: { ...(checkpoint.core as ContractRecord), phase: "CRASH_PREFIX" },
+              }
+            : checkpoint,
+        ),
+      }),
+    ).not.toEqual([]);
+    const evidenceSlots = pointerKinds.map((pointerKind) => ({
+      schemaVersion: "pointer-evidence-slot/v3",
+      pointerKind,
+      selectedEvidence: null,
+      producerMembership: null,
+    }));
+    const packet = {
+      ...fixtureFor("pointer-evidence-packet/v3"),
+      purpose: "HISTORICAL_READ",
+      globalIdentity,
+      currentAuthoritySelection: authority.envelope,
+      currentAuthorityHistoryRoot: historyRoot,
+      currentNodeInventoryRoot: inventoryRoot,
+      currentCommit: null,
+      evidenceSlots,
+      producerMemberships: [],
+    };
+    expect(validateEvidencePacketV3(packet)).toEqual([]);
+    expect(
+      validateEvidencePacketV3({
+        ...packet,
+        currentNodeInventoryRoot: { ...inventoryRoot, globalIdentityDigest: digest2 },
+      }),
+    ).not.toEqual([]);
+  });
+
+  test("authenticates v3 packet slots against the selected nonempty authority history", () => {
+    const identityBase = fixtureFor("state-mutation-global-identity/v1");
+    const authorityPathInstanceDigest = computePointerInstanceDigest({
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      canonicalPointerPath: stateMutationAuthorityPath,
+      installationId: identityBase.installationId as string,
+      projectId: identityBase.projectId as string,
+      stateRootDigest: identityBase.stateRootDigest as string,
+      transactionId: null,
+      sourceToken: "none",
+    });
+    const globalIdentity: ContractRecord = {
+      ...identityBase,
+      authorityPathInstanceDigest,
+    };
+    const g = computeGlobalIdentityDigest(globalIdentity);
+    const emptyInventory: ContractRecord = {
+      ...fixtureFor("authority-node-inventory-empty-root/v1"),
+      globalIdentityDigest: g,
+      kind: "EMPTY",
+      count: "0",
+      treeRootDigest: computeAuthorityInventoryEmptyDigest(0),
+    };
+    const emptyInventoryDigest = computeAuthorityInventoryRootDigest(emptyInventory);
+    const emptyHistory: ContractRecord = {
+      ...fixtureFor("authority-history-empty-root/v2"),
+      globalIdentityDigest: g,
+      nodeInventoryRootKind: "EMPTY",
+      nodeInventoryRootDigest: emptyInventoryDigest,
+      nodeInventoryCount: "0",
+    };
+    const predecessorValue: ContractRecord = {
+      ...fixtureFor("state-mutation-authority-value/v3"),
+      globalIdentityDigest: g,
+      historyRootDigest: computeAuthorityHistoryEmptyRootDigestV2(emptyHistory),
+      historyRootKind: "EMPTY",
+      historyCount: "0",
+      nodeInventoryRootKind: "EMPTY",
+      nodeInventoryRootDigest: emptyInventoryDigest,
+      nodeInventoryCount: "0",
+      nodeInventoryTreeRootDigest: emptyInventory.treeRootDigest!,
+    };
+    const predecessor = pointerSelection("STATE_MUTATION_AUTHORITY_ROTATION", predecessorValue, {
+      pathBindings: {},
+      transactionId: null,
+      sourceToken: "none",
+    });
+    const leafBase: ContractRecord = {
+      ...fixtureFor("authority-history-leaf/v1"),
+      globalIdentityDigest: g,
+      authorityOrdinal: "0",
+      authorityPathInstanceDigest,
+      authorityTipDigest: predecessor.tipDigest,
+      authorityValueDigest: predecessor.valueDigest,
+      authorityReceiptDigest: predecessor.proposalReceiptDigest,
+    };
+    const epochKey = computeAuthorityEpochKey({
+      globalIdentityDigest: g,
+      authorityPathInstanceDigest,
+      authorityTipDigest: predecessor.tipDigest,
+      authorityValueDigest: predecessor.valueDigest,
+      authorityReceiptDigest: predecessor.proposalReceiptDigest,
+    });
+    const leaf = { ...leafBase, epochKey };
+    const historySiblings = Array.from({ length: 256 }, (_, index) =>
+      computeAuthorityEmptyDigest(256 - index),
+    );
+    const inventoryRoot: ContractRecord = {
+      ...fixtureFor("authority-node-inventory-root/v1"),
+      globalIdentityDigest: g,
+      kind: "NONEMPTY",
+      count: "1",
+      treeRootDigest: digest2,
+    };
+    const inventoryRootDigest = computeAuthorityInventoryRootDigest(inventoryRoot);
+    const historyRoot: ContractRecord = {
+      ...fixtureFor("authority-history-root/v2"),
+      globalIdentityDigest: g,
+      count: "1",
+      treeRootDigest: computeSparseRoot(
+        epochKey,
+        computeAuthorityLeafDigest(leaf),
+        historySiblings,
+      ),
+      latestIncludedOrdinal: "0",
+      latestEpochKey: epochKey,
+      latestTipDigest: predecessor.tipDigest,
+      latestValueDigest: predecessor.valueDigest,
+      latestReceiptDigest: predecessor.proposalReceiptDigest,
+      nodeInventoryRootKind: "NONEMPTY",
+      nodeInventoryRootDigest: inventoryRootDigest,
+      nodeInventoryCount: "1",
+      nodeInventoryTreeRootDigest: inventoryRoot.treeRootDigest!,
+    };
+    const currentValue: ContractRecord = {
+      ...fixtureFor("state-mutation-authority-value/v3"),
+      globalIdentityDigest: g,
+      authorityOrdinal: "1",
+      historyRootKind: "NONEMPTY",
+      historyRootDigest: computeAuthorityHistoryRootDigestV2(historyRoot),
+      historyCount: "1",
+      nodeInventoryRootKind: "NONEMPTY",
+      nodeInventoryRootDigest: inventoryRootDigest,
+      nodeInventoryCount: "1",
+      nodeInventoryTreeRootDigest: inventoryRoot.treeRootDigest!,
+      historyAppendReceiptDigest: digest,
+      successorCoreDigest: digest,
+      rotationId: digest,
+      priorAuthorityTipDigest: predecessor.tipDigest,
+      priorAuthorityValueDigest: predecessor.valueDigest,
+      priorAuthorityReceiptDigest: predecessor.proposalReceiptDigest,
+      priorHelperDigest: predecessorValue.helperDigest!,
+      priorHelperProfileDigest: predecessorValue.helperProfileDigest!,
+      priorHelperAbiDigest: digest,
+      priorCustodyReceiptDigest: predecessorValue.custodyReceiptDigest!,
+      rotationKind: "ROTATION",
+      producerKind: "SELECTED_STABLE",
+    };
+    const current = pointerSelection("STATE_MUTATION_AUTHORITY_ROTATION", currentValue, {
+      pathBindings: {},
+      transactionId: null,
+      sourceToken: "none",
+      prior: predecessor,
+      authorityEpoch: {
+        tipDigest: predecessor.tipDigest,
+        valueDigest: predecessor.valueDigest,
+        proposalReceiptDigest: predecessor.proposalReceiptDigest,
+      },
+    });
+    const membership = {
+      schemaVersion: "authority-membership-evidence/v2",
+      currentAuthoritySelection: current.envelope,
+      globalIdentity,
+      leaf,
+      root: historyRoot,
+      rootKind: "NONEMPTY",
+      siblingDigests: historySiblings,
+    };
+    expect(validateAuthorityMembershipV2(membership)).toEqual([]);
+    const historicalTarget = pointerSelection("ACTIVE_RELEASE", fixtureFor("active-release/v2"), {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      authorityEpoch: {
+        tipDigest: predecessor.tipDigest,
+        valueDigest: predecessor.valueDigest,
+        proposalReceiptDigest: predecessor.proposalReceiptDigest,
+      },
+    });
+    const slots = pointerKinds.map((pointerKind) => ({
+      schemaVersion: "pointer-evidence-slot/v3",
+      pointerKind,
+      selectedEvidence: pointerKind === "ACTIVE_RELEASE" ? historicalTarget.envelope : null,
+      producerMembership: pointerKind === "ACTIVE_RELEASE" ? membership : null,
+    }));
+    const packet = {
+      schemaVersion: "pointer-evidence-packet/v3",
+      purpose: "HISTORICAL_READ",
+      globalIdentity,
+      currentAuthoritySelection: current.envelope,
+      currentAuthorityHistoryRoot: historyRoot,
+      currentNodeInventoryRoot: inventoryRoot,
+      currentCommit: null,
+      evidenceSlots: slots,
+      producerMemberships: [membership],
+    };
+    expect(validateEvidencePacketV3(packet)).toEqual([]);
+    expect(
+      validateEvidencePacketV3({
+        ...packet,
+        evidenceSlots: slots.map((slot) =>
+          slot.pointerKind === "ACTIVE_RELEASE"
+            ? {
+                ...slot,
+                producerMembership: {
+                  ...membership,
+                  leaf: { ...leaf, authorityTipDigest: digest2 },
+                },
+              }
+            : slot,
+        ),
+      }),
+    ).not.toEqual([]);
+  });
+
   test("composes the fixed nine-stage run graph through selected META_LEAF evidence", () => {
     const authorityValue: ContractRecord = {
       ...fixtureFor("state-mutation-authority-value/v2"),
@@ -3511,11 +4070,11 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       value: target.envelope.value,
       proposal: target.envelope.proposal,
     };
-    expect(parseContract("pointer-mutation-proposed-target-evidence/v1", proposedTarget).ok).toBe(
-      true,
-    );
     expect(
-      parseContract("pointer-mutation-proposed-target-evidence/v1", {
+      diagnostic.parseContract("pointer-mutation-proposed-target-evidence/v1", proposedTarget).ok,
+    ).toBe(true);
+    expect(
+      diagnostic.parseContract("pointer-mutation-proposed-target-evidence/v1", {
         ...proposedTarget,
         tip: target.envelope.tip,
       }).ok,

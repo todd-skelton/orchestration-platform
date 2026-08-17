@@ -1,5 +1,8 @@
 import {
   diagnostic,
+  computeAuthorityInventoryEmptyDigest,
+  computeAuthorityInventorySparseRoot,
+  computeAuthorityInventorySparseAbsentRoot,
   computeAuthorityNodeDigest,
   nativeConsumePath,
   recoveryAuthorizationCorePath,
@@ -344,12 +347,19 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
       };
     case "authority-node-materialization-plan-entry/v1":
     case "authority-node-inventory-update-entry/v1":
+      const inventorySiblings = Array.from({ length: 256 }, (_, index) =>
+        computeAuthorityInventoryEmptyDigest(256 - index),
+      );
       return {
         priorCount: "0",
         successorCount: "1",
-        siblingDigests: Array.from({ length: 256 }, (_, index) =>
-          index.toString(16).padStart(64, "0"),
+        priorTreeRootDigest: computeAuthorityInventorySparseAbsentRoot(digest, inventorySiblings),
+        successorTreeRootDigest: computeAuthorityInventorySparseRoot(
+          digest,
+          digest,
+          inventorySiblings,
         ),
+        siblingDigests: inventorySiblings,
       };
     case "authority-node-inventory-census-entry/v1":
       return {
@@ -366,7 +376,11 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         nodeRecordDigest: digest,
       };
     case "authority-node-inventory-empty-root/v1":
-      return { count: "0", kind: "EMPTY" };
+      return {
+        count: "0",
+        kind: "EMPTY",
+        treeRootDigest: computeAuthorityInventoryEmptyDigest(0),
+      };
     case "authority-node-inventory-root/v1":
       return { count: "1", kind: "NONEMPTY" };
     case "authority-node-materialization-run-value/v1":

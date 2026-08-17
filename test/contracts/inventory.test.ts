@@ -9,8 +9,11 @@ import {
   computeAuthorityCensusTerminalDigest,
   computeAuthorityFilesystemObservationDigest,
   computeAuthorityInventoryBatchDigest,
+  computeAuthorityInventoryEmptyDigest,
   computeAuthorityInventoryLeafDigest,
   computeAuthorityInventoryRootDigest,
+  computeAuthorityInventorySparseRoot,
+  computeAuthorityInventorySparseAbsentRoot,
   computeAuthorityInventoryUpdateEntryDigest,
   computeAuthorityMaterializationPlanDigest,
   computeAuthorityMaterializationPlanEntryDigest,
@@ -32,7 +35,7 @@ import { digest, digest2, fixtureFor, instant, later, uuid } from "./fixtures.js
 
 const d = (character: string): string => character.repeat(64);
 const siblings = Object.freeze(
-  Array.from({ length: 256 }, (_, index) => index.toString(16).padStart(64, "0")),
+  Array.from({ length: 256 }, (_, index) => computeAuthorityInventoryEmptyDigest(256 - index)),
 );
 const v = (record: ContractRecord, name: string) => record[name]!;
 
@@ -94,13 +97,27 @@ describe("approved authority node inventory contracts", () => {
       nodeRecordDigest: d("2"),
       inventoryLeafDigest: d("3"),
       membershipAction: "INSERT_ABSENT",
-      priorTreeRootDigest: d("4"),
+      priorTreeRootDigest: computeAuthorityInventorySparseAbsentRoot(d("1"), siblings),
       priorCount: "0",
       siblingDigests: siblings,
-      successorTreeRootDigest: d("5"),
+      successorTreeRootDigest: computeAuthorityInventorySparseRoot(d("1"), d("3"), siblings),
       successorCount: "1",
     };
     const planEntryDigest = computeAuthorityMaterializationPlanEntryDigest(planEntry);
+    const priorInventoryRootDigest = computeAuthorityInventoryRootDigest({
+      schemaVersion: "authority-node-inventory-empty-root/v1",
+      globalIdentityDigest: d("6"),
+      kind: "EMPTY",
+      count: "0",
+      treeRootDigest: v(planEntry, "priorTreeRootDigest"),
+    });
+    const successorInventoryRootDigest = computeAuthorityInventoryRootDigest({
+      schemaVersion: "authority-node-inventory-root/v1",
+      globalIdentityDigest: d("6"),
+      kind: "NONEMPTY",
+      count: "1",
+      treeRootDigest: v(planEntry, "successorTreeRootDigest"),
+    });
     const plan: ContractRecord = {
       ...fixtureFor("authority-node-materialization-plan/v1"),
       globalIdentityDigest: d("6"),
@@ -116,14 +133,14 @@ describe("approved authority node inventory contracts", () => {
       predecessorLeafDigest: d("e"),
       authorityUpdateProofDigest: d("f"),
       priorInventoryKind: "EMPTY",
-      priorInventoryRootDigest: d("0"),
+      priorInventoryRootDigest,
       priorInventoryCount: "0",
-      priorInventoryTreeRootDigest: d("1"),
+      priorInventoryTreeRootDigest: v(planEntry, "priorTreeRootDigest"),
       planEntryDigests: [planEntryDigest],
       successorInventoryKind: "NONEMPTY",
-      successorInventoryRootDigest: d("2"),
+      successorInventoryRootDigest,
       successorInventoryCount: "1",
-      successorInventoryTreeRootDigest: d("5"),
+      successorInventoryTreeRootDigest: v(planEntry, "successorTreeRootDigest"),
       successorHistoryCount: "1",
       successorHistoryTreeRootDigest: d("3"),
       successorOrdinal: "1",
@@ -221,7 +238,7 @@ describe("approved authority node inventory contracts", () => {
         receipt: receiptDigest,
         update: updateDigest,
       }),
-    ).toBe("6d3bf40e384fcab78f4da89196dc72293cb2a8c75358944038bf7d8ffafcd1a1");
+    ).toBe("7de42a228bc0e4e205e4c4befd87f596dd650a0c4a58686ce330218d53f334a0");
     expect(
       validateAuthorityMaterializationComposition({
         ...composition,
@@ -290,12 +307,22 @@ describe("approved authority node inventory contracts", () => {
   });
 
   test("proves a real deterministic zero-count page and rejects null/truncated branches", () => {
+    const emptyInventoryTreeRoot = computeAuthorityInventoryEmptyDigest(0);
+    const emptyInventoryRoot = computeAuthorityInventoryRootDigest({
+      schemaVersion: "authority-node-inventory-empty-root/v1",
+      globalIdentityDigest: digest,
+      kind: "EMPTY",
+      count: "0",
+      treeRootDigest: emptyInventoryTreeRoot,
+    });
     const core: ContractRecord = {
       ...fixtureFor("authority-node-inventory-census-page-core/v1"),
       censusId: uuid,
       authorityTipDigest: digest,
       inventoryKind: "EMPTY",
       inventoryCount: "0",
+      inventoryRootDigest: emptyInventoryRoot,
+      inventoryTreeRootDigest: emptyInventoryTreeRoot,
       pageOrdinal: "0",
       priorPageDigest: null,
       priorCursor: null,
@@ -344,7 +371,7 @@ describe("approved authority node inventory contracts", () => {
     };
     expect(validateAuthorityInventoryCensus({ pages: [page], terminal })).toEqual([]);
     expect(canonicalDigest({ censusDigest, pageDigest, terminalDigest })).toBe(
-      "3d5e91618255d83d93580499fed4746fcc497df209596bbdd2db75d172ac87fe",
+      "632297556f374c78cb0686dbf95751b79b738a1c9a1de6032c00ac8d81d39a8e",
     );
     expect(validateAuthorityInventoryCensus({ pages: [], terminal })).toContain("pages:required");
     expect(
@@ -359,6 +386,121 @@ describe("approved authority node inventory contracts", () => {
         terminal: { ...terminal, core: { ...terminalCore, firstPageDigest: digest2 } },
       }),
     ).toContain("terminal:chain-mismatch");
+  });
+
+  test("recomputes nonempty census membership, ordinals, counts, paths, and selected tuple", () => {
+    const nodeDigest = computeAuthorityNodeDigest(0, digest, digest2);
+    const node: ContractRecord = {
+      ...fixtureFor("authority-history-node/v1"),
+      depth: "0",
+      leftChildDigest: digest,
+      rightChildDigest: digest2,
+      nodeDigest,
+      recordPath: `installation/state-mutation-authority-history/nodes/${nodeDigest}.json`,
+    };
+    const nodeRecordDigest = computeAuthorityNodeRecordDigest({
+      schemaVersion: "authority-history-node-record/v1",
+      nodeDigest,
+      node,
+      recordPath: node.recordPath!,
+    });
+    const inventoryLeafDigest = computeAuthorityInventoryLeafDigest({
+      schemaVersion: "authority-node-inventory-leaf/v1",
+      nodeDigest,
+      nodePath: node.recordPath!,
+      nodeRecordDigest,
+      recordPath: authorityInventoryPaths.leaf(nodeDigest),
+    });
+    const entry: ContractRecord = {
+      schemaVersion: "authority-node-inventory-census-entry/v1",
+      globalEntryOrdinal: "0",
+      nodePath: node.recordPath!,
+      node,
+      nodeDigest,
+      nodeRecordDigest,
+      inventoryLeafDigest,
+      siblingDigests: siblings,
+    };
+    const entryDigest = computeAuthorityCensusEntryDigest(entry);
+    const inventoryTreeRootDigest = computeAuthorityInventorySparseRoot(
+      nodeDigest,
+      inventoryLeafDigest,
+      siblings,
+    );
+    const inventoryRootDigest = computeAuthorityInventoryRootDigest({
+      schemaVersion: "authority-node-inventory-root/v1",
+      globalIdentityDigest: digest,
+      kind: "NONEMPTY",
+      count: "1",
+      treeRootDigest: inventoryTreeRootDigest,
+    });
+    const core: ContractRecord = {
+      ...fixtureFor("authority-node-inventory-census-page-core/v1"),
+      censusId: uuid,
+      authorityTipDigest: digest,
+      inventoryKind: "NONEMPTY",
+      inventoryCount: "1",
+      inventoryRootDigest,
+      inventoryTreeRootDigest,
+      pageOrdinal: "0",
+      priorPageDigest: null,
+      priorCursor: null,
+      priorCensusDigest: null,
+      priorCumulativeCount: "0",
+      entries: [entry],
+      entryDigests: [entryDigest],
+      successorCursor: null,
+      successorCumulativeCount: "1",
+      exhausted: true,
+    };
+    const pageDigest = computeAuthorityCensusPageDigest(core);
+    const censusDigest = computeAuthorityCensusChainDigest(pageDigest, "1", null, null);
+    const page: ContractRecord = {
+      schemaVersion: "authority-node-inventory-census-page/v1",
+      core,
+      pageDigest,
+      censusDigest,
+      recordPath: authorityInventoryPaths.censusPage(digest, uuid, "0", pageDigest),
+    };
+    const terminalCore: ContractRecord = {
+      ...fixtureFor("authority-node-inventory-census-terminal-core/v1"),
+      globalIdentityDigest: core.globalIdentityDigest!,
+      censusId: uuid,
+      authorityPathInstanceDigest: core.authorityPathInstanceDigest!,
+      authorityTipDigest: digest,
+      authorityValueDigest: core.authorityValueDigest!,
+      authorityReceiptDigest: core.authorityReceiptDigest!,
+      historyRootDigest: core.historyRootDigest!,
+      inventoryKind: "NONEMPTY",
+      inventoryRootDigest: core.inventoryRootDigest!,
+      inventoryCount: "1",
+      inventoryTreeRootDigest,
+      firstPageDigest: pageDigest,
+      lastPageDigest: pageDigest,
+      lastCensusDigest: censusDigest,
+      pageCount: "1",
+      cumulativeCount: "1",
+    };
+    const terminalDigest = computeAuthorityCensusTerminalDigest(terminalCore);
+    const terminal = {
+      schemaVersion: "authority-node-inventory-census-terminal/v1",
+      core: terminalCore,
+      terminalDigest,
+      recordPath: authorityInventoryPaths.censusTerminal(digest, uuid, terminalDigest),
+    };
+    expect(validateAuthorityInventoryCensus({ pages: [page], terminal })).toEqual([]);
+    expect(
+      validateAuthorityInventoryCensus({
+        pages: [{ ...page, core: { ...core, inventoryTreeRootDigest: digest2 } }],
+        terminal,
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateAuthorityInventoryCensus({
+        pages: [{ ...page, core: { ...core, entries: [{ ...entry, globalEntryOrdinal: "1" }] } }],
+        terminal,
+      }),
+    ).not.toEqual([]);
   });
 
   test("census entries recompute node, node-record, and inventory-leaf identities", () => {
@@ -411,7 +553,7 @@ describe("approved authority node inventory contracts", () => {
         nodeRecordDigest,
         root: computeAuthorityInventoryRootDigest(root),
       }),
-    ).toBe("015458c6c885a623c1b71e17bd96f00d2674744606c29133e5038d633bd8a133");
+    ).toBe("78eeca98ac6e8e60999386277ce83fec94cd479a115497e1f2c902dafb04801e");
   });
 
   test("binds E0 authority v3 to selected empty history and inventory roots", () => {
@@ -420,7 +562,7 @@ describe("approved authority node inventory contracts", () => {
       globalIdentityDigest: digest,
       kind: "EMPTY",
       count: "0",
-      treeRootDigest: digest2,
+      treeRootDigest: computeAuthorityInventoryEmptyDigest(0),
     };
     const inventoryRootDigest = computeAuthorityInventoryRootDigest(inventoryRoot);
     const historyRoot: ContractRecord = {
@@ -442,7 +584,7 @@ describe("approved authority node inventory contracts", () => {
       nodeInventoryRootKind: "EMPTY",
       nodeInventoryRootDigest: inventoryRootDigest,
       nodeInventoryCount: "0",
-      nodeInventoryTreeRootDigest: digest2,
+      nodeInventoryTreeRootDigest: computeAuthorityInventoryEmptyDigest(0),
     };
     expect(
       validateAuthorityValueV3Composition({
@@ -454,7 +596,7 @@ describe("approved authority node inventory contracts", () => {
       }),
     ).toEqual([]);
     expect(canonicalDigest({ historyRootDigest, inventoryRootDigest, authorityValue })).toBe(
-      "79830cd0a874c36a365b978129601b9fee7ed7236da301c6ab6a906d3498c7e2",
+      "2d75eb57c82fc1d424a0de340207f7fb191b2729c41db042aa0ab7de2dd33d00",
     );
     expect(
       validateAuthorityValueV3Composition({

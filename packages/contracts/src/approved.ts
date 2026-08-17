@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   canonicalBytes,
+  canonicalDigest,
   snapshotClosedArray,
   snapshotClosedRecord,
   validateAgainstSchema,
@@ -26,7 +27,13 @@ import {
   v2Definitions,
   type FramePart,
 } from "./v2.js";
-import { inventoryDefinitions, validateAuthorityCommitRunV3 } from "./inventory.js";
+import {
+  computeAuthorityHistoryEmptyRootDigestV2,
+  computeAuthorityHistoryRootDigestV2,
+  computeAuthorityInventoryRootDigest,
+  inventoryDefinitions,
+  validateAuthorityCommitRunV3,
+} from "./inventory.js";
 
 const field = (kind: FieldRule["kind"], options: Omit<FieldRule, "kind"> = {}): FieldRule =>
   Object.freeze({ kind, ...options });
@@ -866,6 +873,20 @@ export const approvedDefinitions: Readonly<Record<string, SchemaDefinition>> = O
         positionEvidence: field("json"),
         value: field("json"),
         proposal: field("json"),
+      }),
+      define("pointer-mutation-proposed-target-evidence/v2", {
+        pointerKind: enumeration(...pointerKinds),
+        canonicalPointerPath: path,
+        pathBindings: field("json"),
+        installationId: uuid,
+        projectId: uuid,
+        stateRootDigest: sha,
+        transactionId: field("uuid-v7", { nullable: true }),
+        sourceToken: opaque,
+        positionEvidence: field("json"),
+        value: field("json"),
+        proposal: field("json"),
+        tombstoneEvidence: field("json", { nullable: true }),
       }),
       define(
         "pointer-mutation-commit-evidence/v1",
@@ -2685,6 +2706,63 @@ export function validateAuthorityMembership(input: unknown): readonly string[] {
   }
 }
 
+export function validateAuthorityMembershipV2(input: unknown): readonly string[] {
+  const parsed = validateAgainstSchema(
+    inventoryDefinitions["authority-membership-evidence/v2"]!,
+    input,
+  );
+  if (!parsed.ok) return parsed.issues;
+  try {
+    const leaf = requireRecord("authority-history-leaf/v1", parsed.value.leaf);
+    const root = requireRecord("authority-history-root/v2", parsed.value.root);
+    const identity = requireRecord(
+      "state-mutation-global-identity/v1",
+      parsed.value.globalIdentity,
+    );
+    const authority = resolveSelectedPointerEvidence(parsed.value.currentAuthoritySelection);
+    if (!authority.ok) return authority.issues.map((issue) => `authority:${issue}`);
+    const siblings = snapshotClosedArray(parsed.value.siblingDigests);
+    if (!siblings.ok || siblings.value.length !== 256) return ["siblingDigests:invalid"];
+    const g = computeGlobalIdentityDigest(identity);
+    const rootDigest = computeAuthorityHistoryRootDigestV2(root);
+    const expectedEpochKey = computeAuthorityEpochKey({
+      globalIdentityDigest: leaf.globalIdentityDigest as string,
+      authorityPathInstanceDigest: leaf.authorityPathInstanceDigest as string,
+      authorityTipDigest: leaf.authorityTipDigest as string,
+      authorityValueDigest: leaf.authorityValueDigest as string,
+      authorityReceiptDigest: leaf.authorityReceiptDigest as string,
+    });
+    const issues: string[] = [];
+    if (
+      leaf.globalIdentityDigest !== g ||
+      root.globalIdentityDigest !== g ||
+      leaf.authorityPathInstanceDigest !== identity.authorityPathInstanceDigest ||
+      authority.value.tip.pointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION" ||
+      authority.value.value.schemaVersion !== "state-mutation-authority-value/v3" ||
+      authority.value.value.globalIdentityDigest !== g ||
+      authority.value.value.historyRootKind !== "NONEMPTY" ||
+      authority.value.value.historyRootDigest !== rootDigest ||
+      authority.value.value.historyCount !== root.count ||
+      authority.value.value.nodeInventoryRootDigest !== root.nodeInventoryRootDigest ||
+      authority.value.value.nodeInventoryCount !== root.nodeInventoryCount ||
+      authority.value.value.nodeInventoryTreeRootDigest !== root.nodeInventoryTreeRootDigest
+    )
+      issues.push("authority-root:binding-mismatch");
+    if (leaf.epochKey !== expectedEpochKey) issues.push("epochKey:not-derived");
+    if (
+      computeSparseRoot(
+        leaf.epochKey as string,
+        computeAuthorityLeafDigest(leaf),
+        siblings.value as readonly string[],
+      ) !== root.treeRootDigest
+    )
+      issues.push("membership:root-mismatch");
+    return Object.freeze([...new Set(issues)].sort());
+  } catch {
+    return ["membership-v2:invalid"];
+  }
+}
+
 export function validateAuthorityHistoryNodeInventoryPage(input: unknown): readonly string[] {
   const closed = snapshotClosedRecord(input, ["afterPath", "complete", "nextAfterPath", "nodes"]);
   if (!closed.ok) return closed.issues;
@@ -3139,13 +3217,21 @@ export function resolveProposedTargetEvidence(
 ):
   | { readonly ok: true; readonly value: ProposedTargetEvidence }
   | { readonly ok: false; readonly issues: readonly string[] } {
-  const parsed = validateAgainstSchema(
-    approvedDefinitions["pointer-mutation-proposed-target-evidence/v1"]!,
+  const current = validateAgainstSchema(
+    approvedDefinitions["pointer-mutation-proposed-target-evidence/v2"]!,
     input,
   );
-  if (!parsed.ok) return { ok: false, issues: parsed.issues };
+  const diagnostic = current.ok
+    ? null
+    : validateAgainstSchema(
+        approvedDefinitions["pointer-mutation-proposed-target-evidence/v1"]!,
+        input,
+      );
+  if (!current.ok && (!diagnostic || !diagnostic.ok)) return { ok: false, issues: current.issues };
   try {
-    const record = parsed.value;
+    const record = current.ok
+      ? current.value
+      : (diagnostic as { readonly ok: true; readonly value: ContractRecord }).value;
     const kind = record.pointerKind as (typeof pointerKinds)[number];
     const bindings = record.pathBindings as NonNullable<Parameters<typeof pointerPath>[1]>;
     const canonicalPointerPath = pointerPath(kind, bindings);
@@ -3228,6 +3314,46 @@ export function resolveProposedTargetEvidence(
       authorityEpochDr: proposal.authorityEpochReceiptDigest as string | null,
       receipt: proposal,
     });
+    if (record.schemaVersion === "pointer-mutation-proposed-target-evidence/v2") {
+      const isTombstone = (value as ContractRecord).schemaVersion === "pointer-tombstone-value/v1";
+      if (
+        (!isTombstone &&
+          (proposal.intent !== "VALUE_PROPOSED" ||
+            proposal.outcome !== "SELECT" ||
+            record.tombstoneEvidence !== null)) ||
+        (isTombstone &&
+          (proposal.intent !== "TOMBSTONE_PROPOSED" ||
+            proposal.outcome !== "REMOVE" ||
+            record.tombstoneEvidence === null))
+      )
+        return { ok: false, issues: ["proposal:intent-outcome-evidence-mismatch"] };
+      const selectedProof = resolveSelectedPointerEvidence({
+        canonicalPointerPath: record.canonicalPointerPath,
+        installationId: record.installationId,
+        pathBindings: record.pathBindings,
+        pointerKind: record.pointerKind,
+        positionEvidence: record.positionEvidence,
+        projectId: record.projectId,
+        proposal: record.proposal,
+        sourceToken: record.sourceToken,
+        stateRootDigest: record.stateRootDigest,
+        tip: {
+          schemaVersion: "pointer-current-tip/v1",
+          pointerKind: kind,
+          pathInstanceDigest,
+          valueDigest,
+          proposalReceiptDigest,
+        },
+        tombstoneEvidence: record.tombstoneEvidence,
+        transactionId: record.transactionId,
+        value: record.value,
+      });
+      if (!selectedProof.ok)
+        return {
+          ok: false,
+          issues: selectedProof.issues.map((issue) => `proposal:${issue}`),
+        };
+    }
     return {
       ok: true,
       value: Object.freeze({
@@ -3620,9 +3746,79 @@ export function validateCommitEvidenceV3(input: unknown): readonly string[] {
     input,
   );
   if (!parsed.ok) return parsed.issues;
-  const proposed = resolveProposedTargetEvidence(parsed.value.proposedTarget);
+  const proposedSchema = validateAgainstSchema(
+    approvedDefinitions["pointer-mutation-proposed-target-evidence/v2"]!,
+    parsed.value.proposedTarget,
+  );
+  if (!proposedSchema.ok) return proposedSchema.issues.map((issue) => `proposedTarget:${issue}`);
+  const proposed = resolveProposedTargetEvidence(proposedSchema.value);
   if (!proposed.ok) return proposed.issues.map((issue) => `proposedTarget:${issue}`);
   const issues = [...validateAuthorityCommitRunV3(input)];
+  const authority = resolveSelectedPointerEvidence(parsed.value.authoritySelection);
+  if (!authority.ok) issues.push(...authority.issues.map((issue) => `authority:${issue}`));
+  else {
+    if (
+      authority.value.tip.pointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION" ||
+      authority.value.value.schemaVersion !== "state-mutation-authority-value/v3"
+    )
+      issues.push("authority:not-current-v3");
+    let intent: ContractRecord | null = null;
+    let firstCore: ContractRecord | null = null;
+    let lastCore: ContractRecord | null = null;
+    try {
+      intent = requireRecord("pointer-mutation-run-intent/v2", parsed.value.intent);
+      const checkpoints = snapshotClosedArray(parsed.value.checkpoints);
+      if (!checkpoints.ok || checkpoints.value.length !== 9) throw new TypeError("checkpoints");
+      firstCore = requireRecord(
+        "pointer-mutation-run-checkpoint-core/v2",
+        requireRecord("pointer-mutation-run-checkpoint-evidence/v2", checkpoints.value[0]).core,
+      );
+      lastCore = requireRecord(
+        "pointer-mutation-run-checkpoint-core/v2",
+        requireRecord("pointer-mutation-run-checkpoint-evidence/v2", checkpoints.value[8]).core,
+      );
+    } catch {
+      issues.push("authority:run-context-invalid");
+    }
+    if (intent && firstCore && lastCore) {
+      const rotation = intent.epochPolicy === "AUTHORITY_ROTATION_HANDOFF";
+      const expectedProposalEpoch = rotation
+        ? {
+            tip: firstCore.producerAuthorityTipDigest,
+            value: firstCore.producerAuthorityValueDigest,
+            receipt: firstCore.producerAuthorityReceiptDigest,
+          }
+        : {
+            tip: authority.value.tipDigest,
+            value: authority.value.valueDigest,
+            receipt: authority.value.proposalReceiptDigest,
+          };
+      if (
+        lastCore.producerAuthorityTipDigest !== authority.value.tipDigest ||
+        lastCore.producerAuthorityValueDigest !== authority.value.valueDigest ||
+        lastCore.producerAuthorityReceiptDigest !== authority.value.proposalReceiptDigest
+      )
+        issues.push("authority:final-checkpoint-mismatch");
+      if (
+        proposed.value.proposal.authorityEpochTipDigest !== expectedProposalEpoch.tip ||
+        proposed.value.proposal.authorityEpochValueDigest !== expectedProposalEpoch.value ||
+        proposed.value.proposal.authorityEpochReceiptDigest !== expectedProposalEpoch.receipt
+      )
+        issues.push("authority:proposal-epoch-mismatch");
+      for (const name of ["installationId", "projectId", "stateRootDigest"] as const)
+        if (
+          proposed.value[name] !== authority.value[name] ||
+          intent[name] !== authority.value[name]
+        )
+          issues.push(`authority:${name}-mismatch`);
+      if (
+        intent.globalIdentityDigest !== authority.value.value.globalIdentityDigest ||
+        firstCore.globalIdentityDigest !== authority.value.value.globalIdentityDigest ||
+        lastCore.globalIdentityDigest !== authority.value.value.globalIdentityDigest
+      )
+        issues.push("authority:global-identity-mismatch");
+    }
+  }
   if (parsed.value.outcome === "SELECTED") {
     if (
       parsed.value.selectedTarget === null ||
@@ -3641,6 +3837,14 @@ export function validateCommitEvidenceV3(input: unknown): readonly string[] {
         selected.value.proposalReceiptDigest !== proposed.value.proposalReceiptDigest
       )
         issues.push("selectedTarget:proposed-binding-mismatch");
+      else if (
+        authority.ok &&
+        proposed.value.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION" &&
+        (selected.value.tipDigest !== authority.value.tipDigest ||
+          selected.value.valueDigest !== authority.value.valueDigest ||
+          selected.value.proposalReceiptDigest !== authority.value.proposalReceiptDigest)
+      )
+        issues.push("selectedTarget:current-authority-mismatch");
     }
   } else if (parsed.value.outcome === "LOST_CONFLICT") {
     if (
@@ -3666,6 +3870,17 @@ export function validateEvidencePacketV3(input: unknown): readonly string[] {
   const membershipsResult = snapshotClosedArray(parsed.value.producerMemberships);
   if (!slotsResult.ok || !membershipsResult.ok) return ["packet:arrays-invalid"];
   const issues: string[] = [];
+  let globalIdentity: ContractRecord | null = null;
+  let globalIdentityDigest: string | null = null;
+  try {
+    globalIdentity = requireRecord(
+      "state-mutation-global-identity/v1",
+      parsed.value.globalIdentity,
+    );
+    globalIdentityDigest = computeGlobalIdentityDigest(globalIdentity);
+  } catch {
+    issues.push("globalIdentity:invalid");
+  }
   if (slotsResult.value.length !== pointerKinds.length) issues.push("evidenceSlots:length");
   for (const [index, slotInput] of slotsResult.value.entries()) {
     const slot = validateAgainstSchema(
@@ -3684,10 +3899,146 @@ export function validateEvidencePacketV3(input: unknown): readonly string[] {
   if (!authority.ok) issues.push(...authority.issues.map((issue) => `currentAuthority:${issue}`));
   else if (authority.value.value.schemaVersion !== "state-mutation-authority-value/v3")
     issues.push("currentAuthority:not-v3");
-  if (parsed.value.purpose === "MUTATION_COMMIT")
+  else {
+    if (
+      !globalIdentity ||
+      authority.value.value.globalIdentityDigest !== globalIdentityDigest ||
+      authority.value.installationId !== globalIdentity.installationId ||
+      authority.value.projectId !== globalIdentity.projectId ||
+      authority.value.stateRootDigest !== globalIdentity.stateRootDigest ||
+      authority.value.pathInstanceDigest !== globalIdentity.authorityPathInstanceDigest
+    )
+      issues.push("currentAuthority:global-identity-mismatch");
+    const historyVersion =
+      authority.value.value.historyRootKind === "EMPTY"
+        ? "authority-history-empty-root/v2"
+        : "authority-history-root/v2";
+    const history = validateAgainstSchema(
+      inventoryDefinitions[historyVersion]!,
+      parsed.value.currentAuthorityHistoryRoot,
+    );
+    const inventoryVersion =
+      authority.value.value.nodeInventoryRootKind === "EMPTY"
+        ? "authority-node-inventory-empty-root/v1"
+        : "authority-node-inventory-root/v1";
+    const inventory = validateAgainstSchema(
+      inventoryDefinitions[inventoryVersion]!,
+      parsed.value.currentNodeInventoryRoot,
+    );
+    if (!history.ok || !inventory.ok) issues.push("currentAuthority:root-invalid");
+    else {
+      const historyDigest = historyVersion.endsWith("empty-root/v2")
+        ? computeAuthorityHistoryEmptyRootDigestV2(history.value)
+        : computeAuthorityHistoryRootDigestV2(history.value);
+      const inventoryDigest = computeAuthorityInventoryRootDigest(inventory.value);
+      if (
+        authority.value.value.historyRootDigest !== historyDigest ||
+        authority.value.value.nodeInventoryRootDigest !== inventoryDigest ||
+        authority.value.value.historyCount !== history.value.count ||
+        authority.value.value.nodeInventoryCount !== inventory.value.count ||
+        history.value.nodeInventoryRootDigest !== inventoryDigest ||
+        history.value.nodeInventoryCount !== inventory.value.count
+      )
+        issues.push("currentAuthority:root-binding-mismatch");
+    }
+  }
+  const membershipDigests = new Set<string>();
+  const membershipEpochKeys: string[] = [];
+  const usedMembershipDigests = new Set<string>();
+  for (const [index, membership] of membershipsResult.value.entries()) {
+    const membershipIssues = validateAuthorityMembershipV2(membership);
+    if (membershipIssues.length > 0)
+      issues.push(...membershipIssues.map((issue) => `membership:${index}:${issue}`));
+    else {
+      const membershipDigest = canonicalDigest(membership);
+      const membershipRecord = requireRecord("authority-membership-evidence/v2", membership);
+      const leaf = requireRecord("authority-history-leaf/v1", membershipRecord.leaf);
+      if (membershipDigests.has(membershipDigest)) issues.push(`membership:${index}:duplicate`);
+      membershipDigests.add(membershipDigest);
+      membershipEpochKeys.push(leaf.epochKey as string);
+      if (
+        authority.ok &&
+        Buffer.compare(
+          Buffer.from(canonicalBytes(membershipRecord.currentAuthoritySelection as JsonValue)),
+          Buffer.from(canonicalBytes(parsed.value.currentAuthoritySelection as JsonValue)),
+        ) !== 0
+      )
+        issues.push(`membership:${index}:current-authority-mismatch`);
+      if (
+        Buffer.compare(
+          Buffer.from(canonicalBytes(membershipRecord.root as JsonValue)),
+          Buffer.from(canonicalBytes(parsed.value.currentAuthorityHistoryRoot as JsonValue)),
+        ) !== 0
+      )
+        issues.push(`membership:${index}:current-root-mismatch`);
+    }
+  }
+  if (membershipEpochKeys.join("\0") !== [...membershipEpochKeys].sort().join("\0"))
+    issues.push("memberships:not-sorted");
+  for (const [index, slotInput] of slotsResult.value.entries()) {
+    const slot = validateAgainstSchema(
+      inventoryDefinitions["pointer-evidence-slot/v3"]!,
+      slotInput,
+    );
+    if (!slot.ok || slot.value.selectedEvidence === null) continue;
+    const selected = resolveSelectedPointerEvidence(slot.value.selectedEvidence);
+    if (!selected.ok) issues.push(`${index}:selected-evidence-invalid`);
+    else {
+      if (selected.value.tip.pointerKind !== slot.value.pointerKind)
+        issues.push(`${index}:selected-kind-mismatch`);
+      const membershipParsed = validateAgainstSchema(
+        inventoryDefinitions["authority-membership-evidence/v2"]!,
+        slot.value.producerMembership,
+      );
+      if (!membershipParsed.ok) {
+        issues.push(`${index}:producer-membership-invalid`);
+        continue;
+      }
+      const membership = membershipParsed.value;
+      const leafParsed = validateAgainstSchema(
+        approvedDefinitions["authority-history-leaf/v1"]!,
+        membership.leaf,
+      );
+      if (!leafParsed.ok) {
+        issues.push(`${index}:producer-membership-leaf-invalid`);
+        continue;
+      }
+      const leaf = leafParsed.value;
+      if (
+        leaf.authorityTipDigest !== selected.value.proposal.authorityEpochTipDigest ||
+        leaf.authorityValueDigest !== selected.value.proposal.authorityEpochValueDigest ||
+        leaf.authorityReceiptDigest !== selected.value.proposal.authorityEpochReceiptDigest ||
+        leaf.globalIdentityDigest !== globalIdentityDigest
+      )
+        issues.push(`${index}:producer-membership-selection-mismatch`);
+      for (const name of ["installationId", "projectId", "stateRootDigest"] as const)
+        if (globalIdentity && selected.value[name] !== globalIdentity[name])
+          issues.push(`${index}:selected-global-identity-mismatch`);
+    }
+    const slotMembershipDigest = canonicalDigest(slot.value.producerMembership as JsonValue);
+    if (!membershipDigests.has(slotMembershipDigest))
+      issues.push(`${index}:producer-membership-unlisted`);
+    else usedMembershipDigests.add(slotMembershipDigest);
+  }
+  if (usedMembershipDigests.size !== membershipDigests.size)
+    issues.push("memberships:unused-or-unresolved");
+  if (parsed.value.purpose === "MUTATION_COMMIT") {
     issues.push(
       ...validateCommitEvidenceV3(parsed.value.currentCommit).map((issue) => `commit:${issue}`),
     );
+    const commitParsed = validateAgainstSchema(
+      inventoryDefinitions["pointer-mutation-commit-evidence/v3"]!,
+      parsed.value.currentCommit,
+    );
+    if (
+      commitParsed.ok &&
+      Buffer.compare(
+        Buffer.from(canonicalBytes(commitParsed.value.authoritySelection as JsonValue)),
+        Buffer.from(canonicalBytes(parsed.value.currentAuthoritySelection as JsonValue)),
+      ) !== 0
+    )
+      issues.push("commit:current-authority-selection-mismatch");
+  }
   return Object.freeze([...new Set(issues)].sort());
 }
 
