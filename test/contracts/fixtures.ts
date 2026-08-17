@@ -1,5 +1,6 @@
 import {
   diagnostic,
+  computeAuthorityNodeDigest,
   nativeConsumePath,
   recoveryAuthorizationCorePath,
   schemaDefinitions,
@@ -284,9 +285,11 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
       };
     case "physical-destination-identity/v1":
       return {
+        os: "linux",
         leafIdentityKind: "EXISTING_DIRECTORY",
         existingLeafObjectDigest: digest,
-        canonicalLeafName: null,
+        canonicalLeafName: "alpha",
+        leafNameProfile: "POSIX_NFC_CASE_SENSITIVE_V1",
       };
     case "state-mutation-destination-owner-successor-review-core/v1":
       return {
@@ -318,6 +321,23 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         siblingDigests: Array.from({ length: 256 }, (_, index) =>
           index.toString(16).padStart(64, "0"),
         ),
+      };
+    case "authority-history-node/v1":
+      const nodeDigest = computeAuthorityNodeDigest(0, digest, digest2);
+      return {
+        depth: "0",
+        leftChildDigest: digest,
+        rightChildDigest: digest2,
+        nodeDigest,
+        recordPath: `installation/state-mutation-authority-history/${digest}/nodes/0/${nodeDigest}.json`,
+      };
+    case "pointer-mutation-commit-resolution/v1":
+      return {
+        outcome: "SELECTED",
+        outcomeEvidenceDigest: digest,
+        selectedTargetTipDigest: digest,
+        conflictReceiptDigest: null,
+        unknownEvidenceDigest: null,
       };
     case "authority-history-root/v1":
       return { count: "1", latestIncludedOrdinal: "0" };

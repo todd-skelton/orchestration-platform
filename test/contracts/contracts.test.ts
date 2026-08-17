@@ -15,6 +15,7 @@ import {
   computeProposalReceiptDigest,
   computeRecoveryAuthorizationCoreDigest,
   computeRunAuditDigest,
+  computeRunId,
   computeRunCheckpointCoreDigest,
   computeRunPostSelectionDigest,
   computeRunSegmentDigest,
@@ -776,6 +777,7 @@ describe("current and diagnostic schema registries", () => {
       "pointer-archive-record/v1",
       "authority-retention/v1",
       "state-mutation-authority-value/v2",
+      "authority-history-node/v1",
       "active-release/v2",
       "activation-cleanup-gate-root/v2",
       "activation-cleanup-gate-head/v2",
@@ -802,13 +804,16 @@ describe("current and diagnostic schema registries", () => {
       "bootstrap-proposed-genesis-input/v1",
       "bootstrap-reviewed-installer/v1",
       "bootstrap-reviewed-helper/v1",
+      "state-mutation-bootstrap-anchor-lifecycle-archive/v1",
       "pointer-mutation-run-checkpoint-evidence/v1",
       "pointer-mutation-commit-evidence/v1",
+      "pointer-mutation-conflict-evidence/v1",
+      "pointer-mutation-unknown-evidence/v1",
       "pointer-evidence-slot/v2",
       "authority-membership-evidence/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(95);
+    expect(schemaVersions).toHaveLength(99);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
@@ -3317,6 +3322,34 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       authorityValueDigest: authority.valueDigest,
       authorityReceiptDigest: authority.proposalReceiptDigest,
     });
+    const intent: ContractRecord = {
+      ...fixtureFor("pointer-mutation-run-intent/v1"),
+      globalIdentityDigest: authorityValue.globalIdentityDigest!,
+      pointerKind: "ACTIVE_RELEASE",
+      canonicalPointerPath: target.envelope.canonicalPointerPath,
+      installationId: target.envelope.installationId,
+      projectId: target.envelope.projectId,
+      stateRootDigest: target.envelope.stateRootDigest,
+      transactionId: target.envelope.transactionId,
+      sourceToken: target.envelope.sourceToken,
+      targetPathInstanceDigest: target.pathInstanceDigest,
+      targetMutationId: target.proposal.mutationId!,
+      expectedPriorTipDigest: target.proposal.priorTipDigest!,
+      expectedPriorValueDigest: target.proposal.priorValueDigest!,
+      expectedPriorReceiptDigest: target.proposal.priorReceiptDigest!,
+      expectedSuccessorValueDigest: target.valueDigest,
+      priorCheckpointDigest: null,
+    };
+    const runId = computeRunId({
+      globalIdentityDigest: authorityValue.globalIdentityDigest as string,
+      targetMutationId: target.proposal.mutationId as string,
+      runOrdinal: "0",
+      priorCheckpointDigest: null,
+      authorityPathInstanceDigest: authority.pathInstanceDigest,
+      authorityTipDigest: authority.tipDigest,
+      authorityValueDigest: authority.valueDigest,
+      authorityReceiptDigest: authority.proposalReceiptDigest,
+    });
     let audit: string | null = null;
     let priorSelector: ReturnType<typeof pointerSelection> | null = null;
     let priorPostDigest: string | null = null;
@@ -3339,15 +3372,26 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
             targetPathInstanceDigest: target.pathInstanceDigest,
             targetMutationId: target.proposal.mutationId!,
             outcome: "SELECTED",
+            outcomeEvidenceDigest: target.tipDigest,
+            selectedTargetTipDigest: target.tipDigest,
+            conflictReceiptDigest: null,
+            unknownEvidenceDigest: null,
             producerEpochKey,
           }
         : null;
       const segment: ContractRecord = {
         ...fixtureFor("pointer-mutation-run-segment/v1"),
         globalIdentityDigest: authorityValue.globalIdentityDigest!,
+        pointerKind: "ACTIVE_RELEASE",
+        canonicalPointerPath: target.envelope.canonicalPointerPath,
+        installationId: target.envelope.installationId,
+        projectId: target.envelope.projectId,
+        stateRootDigest: target.envelope.stateRootDigest,
+        transactionId: target.envelope.transactionId,
+        sourceToken: target.envelope.sourceToken,
         targetPathInstanceDigest: target.pathInstanceDigest,
         targetMutationId: target.proposal.mutationId!,
-        runId: digest2,
+        runId,
         runOrdinal: "0",
         stage,
       };
@@ -3356,6 +3400,13 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       const core: ContractRecord = {
         ...fixtureFor("pointer-mutation-run-checkpoint-core/v1"),
         globalIdentityDigest: authorityValue.globalIdentityDigest!,
+        pointerKind: "ACTIVE_RELEASE",
+        canonicalPointerPath: target.envelope.canonicalPointerPath,
+        installationId: target.envelope.installationId,
+        projectId: target.envelope.projectId,
+        stateRootDigest: target.envelope.stateRootDigest,
+        transactionId: target.envelope.transactionId,
+        sourceToken: target.envelope.sourceToken,
         targetPathInstanceDigest: target.pathInstanceDigest,
         targetMutationId: target.proposal.mutationId!,
         runOrdinal: "0",
@@ -3419,6 +3470,9 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       schemaVersion: "pointer-mutation-commit-evidence/v1",
       authoritySelection: authority.envelope,
       epochSequence,
+      intent,
+      conflictEvidence: null,
+      unknownEvidence: null,
       targetSelection: target.envelope,
       checkpoints,
     };
@@ -3431,6 +3485,42 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
             ? {
                 ...entry,
                 core: { ...(entry.core as ContractRecord), targetMutationId: digest },
+              }
+            : entry,
+        ),
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitRunComposition({
+        ...commit,
+        intent: { ...intent, expectedSuccessorValueDigest: digest },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitRunComposition({
+        ...commit,
+        checkpoints: checkpoints.map((entry, index) =>
+          index === 0
+            ? {
+                ...entry,
+                segment: { ...(entry.segment as ContractRecord), runId: digest },
+              }
+            : entry,
+        ),
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitRunComposition({
+        ...commit,
+        checkpoints: checkpoints.map((entry, index) =>
+          index === 7
+            ? {
+                ...entry,
+                terminalResolution: {
+                  ...(entry.terminalResolution as ContractRecord),
+                  selectedTargetTipDigest: digest,
+                  outcomeEvidenceDigest: digest,
+                },
               }
             : entry,
         ),

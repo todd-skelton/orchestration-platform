@@ -52,6 +52,7 @@ import {
   validateBootstrapAnchorTransition,
   validateBootstrapAnchorComposition,
   validateAuthorityMembership,
+  validateAuthorityHistoryNodeCensus,
   validateAuthoritySparseUpdate,
   validateAuthorityValueHistoryBinding,
   validateBootstrapGenesisGraph,
@@ -87,7 +88,7 @@ describe("approved v2 authority contracts", () => {
           schemaVersion,
         })),
       ),
-    ).toBe("ff5807539c578a64c3f373d282d509869b1c22be85b09861ea42eb28f01600e9");
+    ).toBe("2c0484e3f82e40a90d9b9961008f773ac39183a75862b645c501a2cf97f72bd5");
   });
 
   test("closes bootstrap versus selected-epoch proposal producers", () => {
@@ -165,8 +166,48 @@ describe("approved v2 authority contracts", () => {
     );
     expect(externalAuthorityPaths.physicalObservation(dphys, dobsA)).toContain(dobsA);
     expect(() => externalAuthorityPaths.physicalIdentity(dphys.toUpperCase())).toThrow();
+    for (const canonicalLeafName of [".", "..", "a/b", "a\\b"])
+      expect(
+        parseContract("physical-destination-identity/v1", {
+          ...identity,
+          canonicalLeafName,
+        }).ok,
+      ).toBe(false);
+    const windowsIdentity = {
+      ...identity,
+      os: "windows",
+      leafNameProfile: "WINDOWS_NFC_CASE_INSENSITIVE_V1",
+      canonicalLeafName: "alpha",
+    };
+    expect(parseContract("physical-destination-identity/v1", windowsIdentity).ok).toBe(true);
+    for (const canonicalLeafName of ["Alpha", "ß", "con", "com1.txt", "alpha.", "alpha ", "a:b"])
+      expect(
+        parseContract("physical-destination-identity/v1", {
+          ...windowsIdentity,
+          canonicalLeafName,
+        }).ok,
+      ).toBe(false);
+    const macosIdentity = {
+      ...identity,
+      os: "macos",
+      leafNameProfile: "MACOS_NFD_CASE_INSENSITIVE_V1",
+      canonicalLeafName: "e\u0301",
+    };
+    expect(parseContract("physical-destination-identity/v1", macosIdentity).ok).toBe(true);
+    expect(
+      parseContract("physical-destination-identity/v1", {
+        ...macosIdentity,
+        canonicalLeafName: "é",
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("physical-destination-identity/v1", {
+        ...identity,
+        leafNameProfile: "WINDOWS_NFC_CASE_INSENSITIVE_V1",
+      }).ok,
+    ).toBe(false);
     expect(canonicalDigest({ ddest, dobsA, dobsB, dphys })).toBe(
-      "eb867a396fa447fe287697ff87ccaf9f92c22cf00b2860141f70dee428bc569f",
+      "e1c6ac271b02dbfd73f0bbfdd92cb25f3a81b5ee64c087a0b6e1e025dd301018",
     );
   });
 
@@ -200,6 +241,25 @@ describe("approved v2 authority contracts", () => {
     expect(validateDestinationOwnerTransition(genesis, consumed)).toEqual([]);
     expect(validateDestinationOwnerTransition(consumed, retired)).toEqual([]);
     expect(validateDestinationOwnerTransition(retired, successor)).toEqual([]);
+    const activeAnchorValue = fixtureFor("state-mutation-bootstrap-anchor-lifecycle-value/v1");
+    expect(
+      parseContract("state-mutation-bootstrap-anchor-lifecycle-value/v1", {
+        ...activeAnchorValue,
+        useIntentDigest: digest,
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("state-mutation-bootstrap-anchor-lifecycle-value/v1", {
+        ...activeAnchorValue,
+        lifecycle: "CONSUMED",
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseContract("state-mutation-bootstrap-anchor-lifecycle-value/v1", {
+        ...activeAnchorValue,
+        lifecycle: "RETIRED",
+      }).ok,
+    ).toBe(false);
     expect(validateDestinationOwnerTransition(genesis, successor)).toContain(
       "lifecycle:transition-refused",
     );
@@ -308,10 +368,12 @@ describe("approved v2 authority contracts", () => {
     const ownerSelection = { value: ownerValue, proposal: ownerProposal, tip: ownerTip };
     const ownerComposition = {
       anchorConsumed: null,
+      anchorRetired: null,
       anchorConsumptionReceipt: null,
       current: ownerSelection,
       now: instant,
       observation,
+      ownerRetired: null,
       physicalIdentity,
       previous: null,
       successorPost: null,
@@ -354,6 +416,7 @@ describe("approved v2 authority contracts", () => {
     expect(
       validateBootstrapAnchorComposition({
         anchor,
+        anchorRetired: null,
         consumptionReceipt: null,
         current: { value: anchorValue, proposal: anchorProposal, tip: anchorTip },
         genesisPost: null,
@@ -363,9 +426,11 @@ describe("approved v2 authority contracts", () => {
         ownerConsumed: null,
         ownerObservation: observation,
         ownerPhysicalIdentity: physicalIdentity,
+        ownerRetired: null,
         previous: null,
         successorPost: null,
         successorReviewCore: null,
+        teardownArchive: null,
         teardownReceipt: null,
         useIntent: null,
       }),
@@ -620,6 +685,21 @@ describe("approved v2 authority contracts", () => {
     expect(computeAuthorityNodeDigest(0, de, digest)).not.toBe(
       computeAuthorityNodeDigest(0, digest, de),
     );
+    expect(externalAuthorityPaths.historyNode(digest, "0", digest2)).toBe(
+      `installation/state-mutation-authority-history/${digest}/nodes/0/${digest2}.json`,
+    );
+    expect(() => externalAuthorityPaths.historyNode(digest, "01", digest2)).toThrow();
+    expect(() => externalAuthorityPaths.historyNode(digest, "256", digest2)).toThrow();
+    const node = fixtureFor("authority-history-node/v1");
+    expect(
+      validateAuthorityHistoryNodeCensus({ globalIdentityDigest: digest, nodes: [node] }),
+    ).toEqual([]);
+    expect(
+      validateAuthorityHistoryNodeCensus({
+        globalIdentityDigest: digest2,
+        nodes: [node],
+      }),
+    ).not.toEqual([]);
     const siblings = Array.from({ length: 256 }, (_, index) =>
       computeAuthorityEmptyDigest(256 - index),
     );
@@ -658,6 +738,8 @@ describe("approved v2 authority contracts", () => {
     ).toEqual([]);
     expect(
       validateAuthorityMembership({
+        currentAuthoritySelection: {},
+        globalIdentity: {},
         leaf,
         root: emptyRoot,
         rootKind: "EMPTY",
@@ -665,8 +747,15 @@ describe("approved v2 authority contracts", () => {
       }),
     ).toEqual(["membership:empty-root-refused"]);
     expect(
-      validateAuthorityMembership({ leaf, root, rootKind: "NONEMPTY", siblingDigests: siblings }),
-    ).toEqual([]);
+      validateAuthorityMembership({
+        currentAuthoritySelection: {},
+        globalIdentity: {},
+        leaf,
+        root,
+        rootKind: "NONEMPTY",
+        siblingDigests: siblings,
+      }),
+    ).not.toEqual([]);
     const leaf2: Record<string, JsonValue> = {
       ...leaf,
       authorityOrdinal: "1",
@@ -752,7 +841,22 @@ describe("approved v2 authority contracts", () => {
   });
 
   test("keeps G stable across rotating helper facts and binds E0 to Dhe", () => {
-    const identity = fixtureFor("state-mutation-global-identity/v1");
+    const identityBase = fixtureFor("state-mutation-global-identity/v1");
+    const authorityPath = pointerPath("STATE_MUTATION_AUTHORITY_ROTATION");
+    const authorityDp = computePointerInstanceDigest({
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      canonicalPointerPath: authorityPath,
+      installationId: identityBase.installationId as string,
+      projectId: identityBase.projectId as string,
+      stateRootDigest: identityBase.stateRootDigest as string,
+      transactionId: null,
+      sourceToken: "none",
+    });
+    const identity: ContractRecord = {
+      ...identityBase,
+      authorityPath,
+      authorityPathInstanceDigest: authorityDp,
+    };
     const g = computeGlobalIdentityDigest(identity);
     const emptyRoot = {
       ...fixtureFor("authority-history-empty-root/v1"),
@@ -909,6 +1013,111 @@ describe("approved v2 authority contracts", () => {
         updateProof,
       }),
     ).toEqual([]);
+    const rotatedDv = computePointerValueDigest(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      authorityDp,
+      rotatedAuthority,
+    );
+    const rotatedPosition = derivePointerPositionEvidence(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      rotatedAuthority,
+    );
+    const rotatedPositionDigest = computePointerPositionDigest(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      rotatedPosition,
+    );
+    const rotatedMutationId = computeMutationId({
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      canonicalPointerPath: authorityPath,
+      pathInstanceDigest: authorityDp,
+      transactionId: null,
+      sourceToken: "none",
+      positionEvidence: rotatedPosition,
+      priorDt: leaf.authorityTipDigest as string,
+      priorDv: leaf.authorityValueDigest as string,
+      priorDr: leaf.authorityReceiptDigest as string,
+      successorDv: rotatedDv,
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
+    });
+    const rotatedProposal: ContractRecord = {
+      ...fixtureFor("pointer-cas-proposal-receipt/v2"),
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      pathInstanceDigest: authorityDp,
+      mutationId: rotatedMutationId,
+      priorTipDigest: leaf.authorityTipDigest!,
+      priorValueDigest: leaf.authorityValueDigest!,
+      priorReceiptDigest: leaf.authorityReceiptDigest!,
+      successorValueDigest: rotatedDv,
+      positionDigest: rotatedPositionDigest,
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
+      producerKind: "SELECTED_EPOCH",
+      producerDigest: digest,
+      authorityEpochTipDigest: leaf.authorityTipDigest!,
+      authorityEpochValueDigest: leaf.authorityValueDigest!,
+      authorityEpochReceiptDigest: leaf.authorityReceiptDigest!,
+    };
+    const rotatedDr = computeProposalReceiptDigest({
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      pathInstanceDigest: authorityDp,
+      mutationId: rotatedMutationId,
+      priorDt: leaf.authorityTipDigest as string,
+      priorDv: leaf.authorityValueDigest as string,
+      priorDr: leaf.authorityReceiptDigest as string,
+      successorDv: rotatedDv,
+      positionDigest: rotatedPositionDigest,
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
+      producerKind: "SELECTED_EPOCH",
+      producerDigest: digest,
+      authorityEpochDt: leaf.authorityTipDigest as string,
+      authorityEpochDv: leaf.authorityValueDigest as string,
+      authorityEpochDr: leaf.authorityReceiptDigest as string,
+      receipt: rotatedProposal,
+    });
+    const rotatedTip: ContractRecord = {
+      ...fixtureFor("pointer-current-tip/v1"),
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      pathInstanceDigest: authorityDp,
+      valueDigest: rotatedDv,
+      proposalReceiptDigest: rotatedDr,
+    };
+    const rotatedEnvelope = {
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      canonicalPointerPath: authorityPath,
+      installationId: identity.installationId,
+      projectId: identity.projectId,
+      stateRootDigest: identity.stateRootDigest,
+      transactionId: null,
+      sourceToken: "none",
+      pathBindings: {},
+      positionEvidence: rotatedPosition,
+      tombstoneEvidence: null,
+      value: rotatedAuthority,
+      proposal: rotatedProposal,
+      tip: rotatedTip,
+    };
+    expect(
+      validateAuthorityMembership({
+        currentAuthoritySelection: rotatedEnvelope,
+        globalIdentity: identity,
+        leaf,
+        root: historyRoot,
+        rootKind: "NONEMPTY",
+        siblingDigests: siblings,
+      }),
+    ).toEqual([]);
+    expect(
+      validateAuthorityMembership({
+        currentAuthoritySelection: rotatedEnvelope,
+        globalIdentity: identity,
+        leaf: { ...leaf, epochKey: digest },
+        root: historyRoot,
+        rootKind: "NONEMPTY",
+        siblingDigests: siblings,
+      }),
+    ).not.toEqual([]);
     expect(
       validateAuthorityValueHistoryBinding({
         appendReceipt: { ...appendReceipt, successorCoreDigest: digest },
@@ -1014,7 +1223,7 @@ describe("approved v2 authority contracts", () => {
       outcome: "SELECTED",
     });
     expect(canonicalDigest({ audit, coreDigest, postDigest, resolutionDigest, runId })).toBe(
-      "bc44798e884d951d2739a299a2288a257894f94e72bf487e83c162272867982b",
+      "a516e543265d6f25f2bd6e75b69069189691cd05b2c3020638539f8804e43631",
     );
   });
 

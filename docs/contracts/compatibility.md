@@ -57,7 +57,9 @@ The current registry uses the approved v2 authority contracts:
   `pointer-mutation-run-selector-post-selection-observation/v1`, and
   `pointer-mutation-commit-resolution/v1`, with the composed
   `pointer-mutation-run-checkpoint-evidence/v1` and
-  `pointer-mutation-commit-evidence/v1` envelopes;
+  `pointer-mutation-commit-evidence/v1` envelopes and closed
+  `pointer-mutation-conflict-evidence/v1` / `pointer-mutation-unknown-evidence/v1`
+  terminal unions;
 - external bootstrap: `physical-destination-identity/v1`,
   `physical-destination-locator-observation-receipt/v1`,
   `state-mutation-destination-owner-value/v1`,
@@ -81,6 +83,7 @@ The current registry uses the approved v2 authority contracts:
   `state-mutation-bootstrap-anchor-conflict-receipt/v1`,
   `state-mutation-bootstrap-anchor-consumption-receipt/v1`,
   `state-mutation-bootstrap-anchor-teardown-receipt/v1`,
+  `state-mutation-bootstrap-anchor-lifecycle-archive/v1`,
   `state-mutation-bootstrap-genesis-core/v1`, and
   `state-mutation-bootstrap-genesis-post-selection-receipt/v1`.
 
@@ -290,6 +293,29 @@ Composed validators instead recompute those receipts after their referenced
 owner/anchor tips exist and bind every value/proposal/tip readback. Owner
 retirement similarly selects from a pre-existing archive of the exact prior
 owner triple; no archive contains the successor value that names it.
+
+Physical destination identity accepts exactly one canonical leaf component.
+Separators, dot components, alternate streams, Windows reserved names/trailing
+dot-or-space aliases, noncanonical case, and mismatched Unicode/profile forms
+refuse before `Dphys` computation. Windows uses canonical lowercase NFC, macOS
+lowercase NFD, and Linux case-sensitive NFC; the selected profile must match
+the OS field.
+
+Authority membership recomputes each leaf epoch key and authenticates it
+against the exact selected current authority's `G`, nonempty history root, and
+count. Packet memberships are sorted by epoch key, deduplicated, and contain no
+unused proofs. Append receipts, update proofs, and prior/successor root
+kind/digest/count fields agree exactly. Sparse nodes use the canonical
+`.../<G>/nodes/<depth>/<node-digest>.json` census path.
+
+Commit evidence includes a closed immutable intent. Every segment and core
+repeats and validates target kind/path/install/project/state/transaction/source
+identity, and run IDs are recomputed from the selected authority and prior
+checkpoint. Terminal SELECTED evidence names the exact target tip;
+LOST_CONFLICT recomputes the conflict receipt against the observed winner; and
+UNKNOWN_TERMINAL binds a closed unknown observation. A mutation packet's top
+authority equals its commit authority and its target equals the corresponding
+registry slot.
 
 ## Review attack surface
 
