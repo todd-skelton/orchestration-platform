@@ -136,6 +136,87 @@ function computeAuthorityUpdateProofDigestLocal(record: ContractRecord): string 
   ]);
 }
 
+export function deriveAuthorityUpdateNodeCensus(input: unknown): readonly ContractRecord[] {
+  const closed = snapshotClosedRecord(input, ["leaf", "updateProof"]);
+  if (!closed.ok) throw new TypeError(closed.issues.join(","));
+  const leafParsed = validateAgainstSchema(authorityHistoryLeafDefinition, closed.value.leaf);
+  const proofParsed = validateAgainstSchema(
+    authorityHistoryUpdateProofDefinition,
+    closed.value.updateProof,
+  );
+  if (!leafParsed.ok || !proofParsed.ok) throw new TypeError("authority-update-witness:invalid");
+  const leaf = leafParsed.value;
+  const proof = proofParsed.value;
+  const leafDigest = computeHistoryLeafDigest(leaf);
+  if (proof.epochKey !== leaf.epochKey || proof.leafDigest !== leafDigest)
+    throw new TypeError("authority-update-witness:leaf-mismatch");
+  const siblings = proof.siblingDigests as readonly string[];
+  const bits = [...Buffer.from(leaf.epochKey as string, "hex")].flatMap((byte) =>
+    Array.from({ length: 8 }, (_, index) => (byte >> (7 - index)) & 1),
+  );
+  let successor = leafDigest;
+  const byDigest = new Map<string, ContractRecord>();
+  const addNode = (depth: number, current: string, sibling: string, bit: number): string => {
+    if (
+      current === computeHistoryEmptyDigest(depth + 1) &&
+      sibling === computeHistoryEmptyDigest(depth + 1)
+    )
+      return computeHistoryEmptyDigest(depth);
+    const left = bit === 0 ? current : sibling;
+    const right = bit === 0 ? sibling : current;
+    const nodeDigest = computeHistoryNodeDigest(depth, left, right);
+    const recordPath = `installation/state-mutation-authority-history/nodes/${nodeDigest}.json`;
+    const node: ContractRecord = Object.freeze({
+      schemaVersion: "authority-history-node/v1",
+      depth: String(depth),
+      leftChildDigest: left,
+      rightChildDigest: right,
+      nodeDigest,
+      recordPath,
+    });
+    const existing = byDigest.get(nodeDigest);
+    if (
+      existing &&
+      Buffer.compare(Buffer.from(canonicalBytes(existing)), Buffer.from(canonicalBytes(node))) !== 0
+    )
+      throw new TypeError("authority-update-witness:node-digest-collision");
+    byDigest.set(nodeDigest, node);
+    return nodeDigest;
+  };
+  for (let level = 0; level < 256; level += 1) {
+    const depth = 255 - level;
+    const sibling = siblings[level]!;
+    successor = addNode(depth, successor, sibling, bits[depth]!);
+  }
+  return Object.freeze(
+    [...byDigest.values()]
+      .sort((left, right) => String(left.nodeDigest).localeCompare(String(right.nodeDigest)))
+      .map((node) => {
+        const nodeRecord: ContractRecord = {
+          schemaVersion: "authority-history-node-record/v1",
+          nodeDigest: node.nodeDigest!,
+          node,
+          recordPath: node.recordPath!,
+        };
+        const nodeRecordDigest = computeAuthorityNodeRecordDigest(nodeRecord);
+        const inventoryLeaf: ContractRecord = {
+          schemaVersion: "authority-node-inventory-leaf/v1",
+          nodeDigest: node.nodeDigest!,
+          nodePath: node.recordPath!,
+          nodeRecordDigest,
+          recordPath: authorityInventoryPaths.leaf(node.nodeDigest as string),
+        };
+        return Object.freeze({
+          node,
+          nodeDigest: node.nodeDigest!,
+          nodePath: node.recordPath!,
+          nodeRecordDigest,
+          inventoryLeafDigest: computeAuthorityInventoryLeafDigest(inventoryLeaf),
+        });
+      }),
+  );
+}
+
 const runPostSelectionObservationDefinition = define(
   "pointer-mutation-run-selector-post-selection-observation/v1",
   {
@@ -2052,10 +2133,43 @@ export function validateAuthorityMaterializationAuthorityComposition(
       raw(leaf.authorityReceiptDigest as string),
     ]);
     const leafDigest = computeHistoryLeafDigest(leaf);
+    const derivedNodes = deriveAuthorityUpdateNodeCensus({
+      leaf,
+      updateProof: proof,
+    });
+    const actualPlanEntriesSnapshot = snapshotClosedArray(materialization.value.planEntries);
+    if (!actualPlanEntriesSnapshot.ok)
+      return ["materialization-authority:plan-entry-array-invalid"];
+    const actualPlanEntries = actualPlanEntriesSnapshot.value.map((entry) =>
+      requireRecord("authority-node-materialization-plan-entry/v1", entry),
+    );
     const reviewedSubjectDigest = canonicalDigest(reviewedSubject.value);
     const proofSiblings = proof.siblingDigests as readonly string[];
     if (
       leaf.epochKey !== epochKey ||
+      leaf.globalIdentityDigest !== plan.globalIdentityDigest ||
+      leaf.authorityPathInstanceDigest !== plan.oldAuthorityPathInstanceDigest ||
+      leaf.authorityTipDigest !== plan.oldAuthorityTipDigest ||
+      leaf.authorityValueDigest !== plan.oldAuthorityValueDigest ||
+      leaf.authorityReceiptDigest !== plan.oldAuthorityReceiptDigest ||
+      rotationIdRecord.globalIdentityDigest !== plan.globalIdentityDigest ||
+      rotationIdRecord.oldAuthorityPathInstanceDigest !== plan.oldAuthorityPathInstanceDigest ||
+      rotationIdRecord.oldAuthorityTipDigest !== plan.oldAuthorityTipDigest ||
+      rotationIdRecord.oldAuthorityValueDigest !== plan.oldAuthorityValueDigest ||
+      rotationIdRecord.oldAuthorityReceiptDigest !== plan.oldAuthorityReceiptDigest ||
+      rotationIdRecord.successorOrdinal !== plan.successorOrdinal ||
+      rotationIdRecord.independentReviewDigest !== plan.independentReviewDigest ||
+      derivedNodes.length !== actualPlanEntries.length ||
+      derivedNodes.some((derived, index) => {
+        const actual = actualPlanEntries[index];
+        return (
+          !actual ||
+          derived.nodeDigest !== actual.nodeDigest ||
+          derived.nodePath !== actual.nodePath ||
+          derived.nodeRecordDigest !== actual.nodeRecordDigest ||
+          derived.inventoryLeafDigest !== actual.inventoryLeafDigest
+        );
+      }) ||
       computeAuthorityRotationIdV2(rotationIdRecord) !== plan.rotationId ||
       rotationIdRecord.reviewedSuccessorSubjectDigest !== reviewedSubjectDigest ||
       plan.reviewedSuccessorSubjectDigest !== reviewedSubjectDigest ||
@@ -2076,6 +2190,7 @@ export function validateAuthorityMaterializationAuthorityComposition(
       proof.successorCount !== history.count ||
       incrementDecimal(proof.priorCount as string) !== proof.successorCount ||
       leaf.authorityOrdinal !== proof.priorCount ||
+      plan.successorOrdinal !== proof.successorCount ||
       history.latestIncludedOrdinal !== leaf.authorityOrdinal ||
       history.latestEpochKey !== leaf.epochKey ||
       history.latestTipDigest !== leaf.authorityTipDigest ||

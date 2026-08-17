@@ -141,6 +141,7 @@ export {
   computeAuthorityCensusPageDigest,
   computeAuthorityCensusTerminalDigest,
   computeAuthorityCoordinatorPositionDigest,
+  deriveAuthorityUpdateNodeCensus,
   computeAuthorityFilesystemObservationDigest,
   computeAuthorityInventoryBatchDigest,
   computeAuthorityInventoryEmptyDigest,

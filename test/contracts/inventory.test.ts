@@ -3,6 +3,8 @@ import {
   authorityInventoryPaths,
   canonicalDigest,
   computeAuthorityHistoryEmptyRootDigestV2,
+  computeAuthorityEmptyDigest,
+  computeAuthorityLeafDigest,
   computeAuthorityCensusChainDigest,
   computeAuthorityCensusEntryDigest,
   computeAuthorityCensusPageDigest,
@@ -23,6 +25,7 @@ import {
   computeAuthorityNodeRecordDigest,
   diagnostic,
   derivePointerPositionEvidence,
+  deriveAuthorityUpdateNodeCensus,
   pointerKinds,
   computePointerPositionDigest,
   parseContract,
@@ -132,6 +135,44 @@ describe("approved authority node inventory contracts", () => {
       // The current parser is reached through the public inventory composition helper.
       () => computeAuthorityMaterializationPlanDigest(duplicatedPlan),
     ).toThrow(/duplicate-array-entry/);
+  });
+
+  test("derives the exact canonical first and later authority update node censuses", () => {
+    const leaf = fixtureFor("authority-history-leaf/v1");
+    const emptySiblings = Array.from({ length: 256 }, (_, index) =>
+      computeAuthorityEmptyDigest(256 - index),
+    );
+    const proof = {
+      ...fixtureFor("authority-history-update-proof/v1"),
+      epochKey: leaf.epochKey,
+      leafDigest: computeAuthorityLeafDigest(leaf),
+      siblingDigests: emptySiblings,
+    };
+    const first = deriveAuthorityUpdateNodeCensus({ leaf, updateProof: proof });
+    expect(first).toHaveLength(256);
+    expect(first.map((row) => row.nodeDigest)).toEqual(
+      [...first.map((row) => row.nodeDigest)].sort(),
+    );
+    const laterSiblings = [...emptySiblings];
+    laterSiblings[0] = digest2;
+    const later = deriveAuthorityUpdateNodeCensus({
+      leaf,
+      updateProof: { ...proof, priorRootKind: "NONEMPTY", siblingDigests: laterSiblings },
+    });
+    expect(later).toHaveLength(256);
+    expect(new Set(later.map((row) => row.nodeDigest)).size).toBe(later.length);
+    expect(() =>
+      deriveAuthorityUpdateNodeCensus({
+        leaf: { ...leaf, authorityTipDigest: digest2 },
+        updateProof: proof,
+      }),
+    ).toThrow(/leaf-mismatch/);
+    expect(() =>
+      deriveAuthorityUpdateNodeCensus({
+        leaf,
+        updateProof: { ...proof, siblingDigests: emptySiblings.slice(1) },
+      }),
+    ).toThrow();
   });
 
   test("composes one exact planned node through filesystem, membership, receipt, and batch", () => {
