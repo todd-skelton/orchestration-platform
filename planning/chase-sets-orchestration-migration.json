@@ -61,6 +61,7 @@
     "independent-review": ["ISS-009", "ISS-037"],
     "journal-telemetry-and-reducers": ["ISS-010"],
     "planning-delivery-and-review-skill": ["ISS-011"],
+    "simplification-and-evidence-proportionality": ["ISS-039", "ISS-040"],
     "routing-and-advisory-cost": ["ISS-012"],
     "release-installation-and-recovery": ["ISS-014", "ISS-020", "ISS-027"],
     "circuit-breaker-authority": ["ISS-025"],
@@ -155,5 +156,31 @@
       "coverageStatement": "Cost forecasting, step experiments, multi-model planning, decision autonomy, richer board projections, and advisory scope ratios remain future options rather than self-host prerequisites.",
       "unparkCondition": "The self-hosting release is healthy and measured cycle-time, cost, decision-quality, or board-correctness evidence identifies one bounded option with a positive expected operational dividend."
     }
-  ]
+  ],
+  "postCensusAddendum": {
+    "observedAt": "2026-08-17",
+    "baseSnapshotRecordCount": 183,
+    "addendumRecordCount": 2,
+    "totalProvenanceRecordCount": 185,
+    "records": [
+      {
+        "sourceIssueNumber": 6999,
+        "destinationKey": "ISS-039",
+        "sourceState": "CLOSED",
+        "sourceStateReason": "NOT_PLANNED",
+        "sourceBoardPresence": "PRESENT",
+        "sourceBoardRole": "PROVENANCE_ONLY",
+        "provenanceStatement": "The closed source registration remains non-executable Chase Sets Delivery provenance for the portable simplification-finding owner."
+      },
+      {
+        "sourceIssueNumber": 7000,
+        "destinationKey": "ISS-040",
+        "sourceState": "OPEN",
+        "sourceStateReason": null,
+        "sourceBoardPresence": "PRESENT",
+        "sourceBoardRole": "PENDING_CLEANUP",
+        "provenanceStatement": "The open source registration is superseded by the portable evidence-proportionality owner and remains pending source-board cleanup."
+      }
+    ]
+  }
 }

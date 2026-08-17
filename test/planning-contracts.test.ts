@@ -175,6 +175,66 @@ describe("planning contract", () => {
         ).unparkCondition;
       },
     ],
+    [
+      "post-census addendum total",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.totalProvenanceRecordCount = 183;
+      },
+    ],
+    [
+      "post-census addendum duplicate identity",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[1].sourceIssueNumber = 6999;
+      },
+    ],
+    [
+      "post-census addendum overlap with the historical base",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].sourceIssueNumber =
+          snapshot.migration.sourceIssueNumbers[0];
+      },
+    ],
+    [
+      "post-census addendum noncanonical destination",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].destinationKey = "ISS-040";
+      },
+    ],
+    [
+      "post-census addendum destination absent from the canonical table",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.canonicalDestinations["simplification-and-evidence-proportionality"] = [
+          "ISS-040",
+        ];
+      },
+    ],
+    [
+      "post-census addendum source state",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].sourceState = "OPEN";
+      },
+    ],
+    [
+      "post-census addendum provenance",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].provenanceStatement = "";
+      },
+    ],
+    [
+      "post-census addendum board role",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[1].sourceBoardRole = "PROVENANCE_ONLY";
+      },
+    ],
+    [
+      "duplicate verification capability owner",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.issueDrafts["ISS-040"] = snapshot.issueDrafts["ISS-040"]!.replace(
+          "test:planning-module-proportionality",
+          "test:module-simplification-findings",
+        );
+      },
+    ],
   ])("rejects the %s mutant", (_name, mutate) => {
     const snapshot = mutant();
     mutate(snapshot);

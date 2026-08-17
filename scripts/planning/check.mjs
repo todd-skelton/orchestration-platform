@@ -146,14 +146,93 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
   ) {
     fail("migration exclusions overlap or are malformed");
   }
+  const canonicalDestinationKeys = new Set();
   for (const destinations of Object.values(migration.canonicalDestinations ?? {})) {
     if (
       !Array.isArray(destinations) ||
       destinations.length === 0 ||
+      new Set(destinations).size !== destinations.length ||
       destinations.some((key) => !issueKeys.has(key))
     ) {
       fail("migration canonical destination table contains an unknown issue");
     }
+    for (const destination of destinations) canonicalDestinationKeys.add(destination);
+  }
+
+  const addendum = migration.postCensusAddendum;
+  const records = addendum?.records;
+  if (
+    addendum?.observedAt !== migration.observedAt ||
+    addendum?.baseSnapshotRecordCount !== 183 ||
+    addendum.baseSnapshotRecordCount !== source.length ||
+    addendum?.addendumRecordCount !== 2 ||
+    !Array.isArray(records) ||
+    addendum.addendumRecordCount !== records.length ||
+    addendum?.totalProvenanceRecordCount !== source.length + records.length
+  ) {
+    fail("migration post-census addendum count mismatch");
+  }
+  const expectedAddendum = new Map([
+    [
+      6999,
+      {
+        destinationKey: "ISS-039",
+        sourceState: "CLOSED",
+        sourceStateReason: "NOT_PLANNED",
+        sourceBoardPresence: "PRESENT",
+        sourceBoardRole: "PROVENANCE_ONLY",
+      },
+    ],
+    [
+      7000,
+      {
+        destinationKey: "ISS-040",
+        sourceState: "OPEN",
+        sourceStateReason: null,
+        sourceBoardPresence: "PRESENT",
+        sourceBoardRole: "PENDING_CLEANUP",
+      },
+    ],
+  ]);
+  const seenAddendumIssues = new Set();
+  for (const record of records) {
+    const number = record.sourceIssueNumber;
+    if (
+      !Number.isSafeInteger(number) ||
+      number <= 0 ||
+      seenAddendumIssues.has(number) ||
+      source.includes(number) ||
+      exclusions.includes(number)
+    ) {
+      fail("migration post-census addendum identities overlap or are malformed");
+    }
+    seenAddendumIssues.add(number);
+    const expected = expectedAddendum.get(number);
+    if (!expected) fail(`migration post-census addendum contains unknown issue ${number}`);
+    if (
+      record.destinationKey !== expected.destinationKey ||
+      !issueKeys.has(record.destinationKey) ||
+      !canonicalDestinationKeys.has(record.destinationKey)
+    ) {
+      fail(`migration post-census addendum issue ${number} has noncanonical destination`);
+    }
+    if (
+      record.sourceState !== expected.sourceState ||
+      record.sourceStateReason !== expected.sourceStateReason
+    ) {
+      fail(`migration post-census addendum issue ${number} has invalid source state`);
+    }
+    if (
+      record.sourceBoardPresence !== expected.sourceBoardPresence ||
+      record.sourceBoardRole !== expected.sourceBoardRole ||
+      typeof record.provenanceStatement !== "string" ||
+      record.provenanceStatement.trim() === ""
+    ) {
+      fail(`migration post-census addendum issue ${number} has invalid provenance`);
+    }
+  }
+  if (seenAddendumIssues.size !== expectedAddendum.size) {
+    fail("migration post-census addendum is incomplete");
   }
 }
 

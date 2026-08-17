@@ -92,12 +92,13 @@ dispatch + modules + routing + project adapter + host probe + credential broker 
 CLI + journal ─> operator status projection
 review authority + Codex host ─> review-discrimination calibration (advisory)
 state + review + journal ─> release promotion
+review simplification + planning proportionality ─────────────────┐
 sessions + dispatch + review + journal + modules + routing + release + credential broker ─> engine cycle
 engine cycle + OS harness + credential broker ─> cross-platform supervisor ─> repeated/cold-host cycles
 runtime + engine + Codex host + credential broker + GitHub probe ─> concrete self-host adapter
 repository bootstrap + OS harness + host custody ─> authenticated bootstrap-authority probe
 release promotion + passed authority probe ─> frozen bootstrap root
-all shipped capabilities + engine + supervisor + self-host adapter + frozen bootstrap root ─> final N0 certification
+all shipped capabilities + engine + supervisor + self-host adapter + frozen bootstrap root ┼─> final N0 certification
 final N0 certification ─> independent exact-candidate review ─> production credential binding ─> authorized installed N0
 installed N0 ─> N0-to-N1 self-hosting
 
@@ -118,6 +119,7 @@ project adapter + self-hosting + certified release ─> shadow mode ─> cutover
   `docs/architecture/contract-decisions.md`.
 - Treat `docs/planning/work-model.md` as repository-local policy excluded from
   portable packages.
-- Reserve `ISS-039` and `ISS-040` for PR49's Self-hosting release work under
-  `EPIC-MODULES`; this replan starts its new kernel evidence slices at
-  `ISS-041` and does not alter PR49's post-census migration addendum.
+- Ship `ISS-039` and `ISS-040` as Self-hosting release module slices under
+  `EPIC-MODULES`. `ISS-019` directly consumes both before freezing the N0
+  certification census; this is the smallest edge set that prevents module
+  bytes from landing after certification.
