@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue =
@@ -46,10 +47,58 @@ const schemaId = /^[a-z][a-z0-9-]*\/v[1-9][0-9]*$/;
 const semver = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/;
 const drivePrefix = /^[a-z]:/i;
 
+export type ClosedRecordSnapshotResult =
+  | { readonly ok: true; readonly value: ContractRecord }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export function snapshotClosedRecord(
+  input: unknown,
+  expectedFields: readonly string[],
+): ClosedRecordSnapshotResult {
+  try {
+    if (input === null || typeof input !== "object" || Array.isArray(input))
+      return { ok: false, issues: ["record:object-required"] };
+    if (nodeTypes.isProxy(input)) return { ok: false, issues: ["record:proxy-refused"] };
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Object.prototype && prototype !== null)
+      return { ok: false, issues: ["record:plain-object-required"] };
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Reflect.ownKeys(descriptors);
+    const issues: string[] = [];
+    if (keys.some((name) => typeof name !== "string")) issues.push("record:symbol-field-refused");
+    const observed = keys.filter((name): name is string => typeof name === "string").sort();
+    const expected = [...expectedFields].sort();
+    for (const name of expected) {
+      if (!Object.hasOwn(descriptors, name)) issues.push(`${name}:missing`);
+    }
+    for (const name of observed) {
+      if (!expected.includes(name)) issues.push(`${name}:unknown-field`);
+      const descriptor = descriptors[name]!;
+      if (!Object.hasOwn(descriptor, "value")) issues.push(`${name}:accessor-refused`);
+      if (descriptor.enumerable !== true) issues.push(`${name}:non-enumerable-refused`);
+    }
+    if (issues.length > 0) return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+    const snapshot = Object.fromEntries(
+      observed.map((name) => {
+        const value = descriptors[name]!.value;
+        return [name, Array.isArray(value) ? Object.freeze([...value]) : value];
+      }),
+    ) as ContractRecord;
+    return { ok: true, value: Object.freeze(snapshot) };
+  } catch {
+    return { ok: false, issues: ["record:unreadable"] };
+  }
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    if (nodeTypes.isProxy(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
 }
 
 function validUnicode(value: string): boolean {
@@ -161,26 +210,11 @@ function validateField(name: string, rule: FieldRule, value: unknown): readonly 
 }
 
 export function validateAgainstSchema(definition: SchemaDefinition, input: unknown): ParseResult {
-  if (!isPlainRecord(input)) return { ok: false, issues: ["record:object-required"] };
   const expected = Object.keys(definition.fields).sort();
-  const descriptors = Object.getOwnPropertyDescriptors(input);
-  const observed = Object.keys(descriptors).sort();
+  const closed = snapshotClosedRecord(input, expected);
+  if (!closed.ok) return closed;
+  const snapshot = closed.value;
   const issues: string[] = [];
-  for (const name of expected) {
-    if (!Object.hasOwn(descriptors, name)) issues.push(`${name}:missing`);
-  }
-  for (const name of observed) {
-    if (!Object.hasOwn(definition.fields, name)) issues.push(`${name}:unknown-field`);
-    if (!Object.hasOwn(descriptors[name]!, "value")) issues.push(`${name}:accessor-refused`);
-  }
-  const snapshot = Object.fromEntries(
-    observed.flatMap((name) => {
-      const descriptor = descriptors[name]!;
-      if (!Object.hasOwn(descriptor, "value")) return [];
-      const value = descriptor.value;
-      return [[name, Array.isArray(value) ? Object.freeze([...value]) : value]];
-    }),
-  );
   for (const name of expected) {
     if (Object.hasOwn(snapshot, name))
       issues.push(...validateField(name, definition.fields[name]!, snapshot[name]));

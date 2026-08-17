@@ -94,10 +94,23 @@ describe("contract compatibility matrix", () => {
       stateRoot: "file:///var/lib/orchestration/state",
       [Symbol("hidden")]: true,
     };
+    const validLegacy = {
+      adapterId: "alpha",
+      projectId: uuid,
+      schemaVersion: "platform-configuration/v0-fixture",
+      stateRoot: "file:///var/lib/orchestration/state",
+    };
+    const nonEnumerable = Object.defineProperty({ ...validLegacy }, "schemaVersion", {
+      enumerable: false,
+      value: validLegacy.schemaVersion,
+    });
+    const inherited = Object.create(validLegacy) as Record<string, unknown>;
     for (const value of [
       accessor,
       transparentProxy,
       symbolBearing,
+      nonEnumerable,
+      inherited,
       new LegacyRecord(),
       new Map(),
       new Date(),

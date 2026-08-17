@@ -1,5 +1,6 @@
 import {
   canonicalDigest,
+  snapshotClosedRecord,
   validateAgainstSchema,
   type ContractRecord,
   type FieldRule,
@@ -41,28 +42,18 @@ export function isCleanupLifecyclePublicationPair(
 }
 
 const cleanupPairTransitions = new Set([
-  "PENDING/NOT_PUBLISHED>PENDING/NOT_PUBLISHED",
   "PENDING/NOT_PUBLISHED>PENDING/PUBLISHING",
   "PENDING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
   "PENDING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-  "PENDING/PUBLISHING>PENDING/PUBLISHING",
   "PENDING/PUBLISHING>PENDING/PUBLISHED",
   "PENDING/PUBLISHING>ABORTING/PUBLISHING",
-  "PENDING/PUBLISHED>PENDING/PUBLISHED",
   "PENDING/PUBLISHED>ACTIVATING/PUBLISHED",
   "PENDING/PUBLISHED>ABORTING/PUBLISHED",
-  "ACTIVATING/PUBLISHED>ACTIVATING/PUBLISHED",
   "ACTIVATING/PUBLISHED>COMPLETE/CLEARED",
-  "ABORTING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
   "ABORTING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-  "ABORTING/PUBLISHING>ABORTING/PUBLISHING",
   "ABORTING/PUBLISHING>ABORTING/PUBLISHED",
-  "ABORTING/PUBLISHED>ABORTING/PUBLISHED",
   "ABORTING/PUBLISHED>ABORTING/CLEARED",
-  "ABORTING/CLEARED>ABORTING/CLEARED",
   "ABORTING/CLEARED>COMPLETE/CLEARED",
-  "COMPLETE/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-  "COMPLETE/CLEARED>COMPLETE/CLEARED",
 ]);
 
 export function isCleanupLifecyclePublicationTransition(
@@ -79,6 +70,31 @@ export function isCleanupLifecyclePublicationTransition(
   return cleanupPairTransitions.has(
     `${previousLifecycle}/${previousPublication}>${nextLifecycle}/${nextPublication}`,
   );
+}
+
+export type CleanupHeadWriteDisposition = "APPEND" | "NO_APPEND" | "REFUSED";
+
+export function reduceCleanupHeadWrite(
+  previousLifecycle: unknown,
+  previousPublication: unknown,
+  requestedLifecycle: unknown,
+  requestedPublication: unknown,
+): CleanupHeadWriteDisposition {
+  if (
+    !isCleanupLifecyclePublicationPair(previousLifecycle, previousPublication) ||
+    !isCleanupLifecyclePublicationPair(requestedLifecycle, requestedPublication)
+  )
+    return "REFUSED";
+  if (previousLifecycle === requestedLifecycle && previousPublication === requestedPublication)
+    return "NO_APPEND";
+  return isCleanupLifecyclePublicationTransition(
+    previousLifecycle,
+    previousPublication,
+    requestedLifecycle,
+    requestedPublication,
+  )
+    ? "APPEND"
+    : "REFUSED";
 }
 
 function define(
@@ -1328,44 +1344,54 @@ export function validateImportReceiptAgainstPlan(
 
 export interface RecoveryAuthorizationAttachmentInput {
   readonly authorization: ContractRecord;
+  readonly authorizationDigest: string;
   readonly current: ContractRecord;
   readonly expectedArgvDigest: string;
   readonly fenceCurrent: ContractRecord;
-  readonly fenceHead: ContractRecord;
-  readonly fenceHeadDigest: string;
+  readonly fenceHistory: readonly ContractRecord[];
+  readonly fenceHistoryDigests: readonly string[];
+  readonly fencePriorCurrentDigest: string | null;
   readonly fenceRoot: ContractRecord;
   readonly fenceRootDigest: string;
   readonly gateCurrent: ContractRecord;
-  readonly gateHead: ContractRecord;
-  readonly gateHeadDigest: string;
+  readonly gateHistory: readonly ContractRecord[];
+  readonly gateHistoryDigests: readonly string[];
+  readonly gatePriorCurrentDigest: string | null;
   readonly gateRoot: ContractRecord;
   readonly gateRootDigest: string;
   readonly live: ContractRecord;
   readonly liveDigest: string;
   readonly predecessorActiveRecord: ContractRecord;
   readonly predecessorActiveRecordDigest: string;
+  readonly priorAttemptHistory: readonly ContractRecord[];
+  readonly priorAttemptHistoryDigests: readonly string[];
   readonly ready: ContractRecord;
   readonly readyDigest: string;
 }
 
 const attachmentInputFields = Object.freeze([
   "authorization",
+  "authorizationDigest",
   "current",
   "expectedArgvDigest",
   "fenceCurrent",
-  "fenceHead",
-  "fenceHeadDigest",
+  "fenceHistory",
+  "fenceHistoryDigests",
+  "fencePriorCurrentDigest",
   "fenceRoot",
   "fenceRootDigest",
   "gateCurrent",
-  "gateHead",
-  "gateHeadDigest",
+  "gateHistory",
+  "gateHistoryDigests",
+  "gatePriorCurrentDigest",
   "gateRoot",
   "gateRootDigest",
   "live",
   "liveDigest",
   "predecessorActiveRecord",
   "predecessorActiveRecordDigest",
+  "priorAttemptHistory",
+  "priorAttemptHistoryDigests",
   "ready",
   "readyDigest",
 ] as const);
@@ -1374,33 +1400,9 @@ export function validateRecoveryAuthorizationAttachment(
   input: RecoveryAuthorizationAttachmentInput,
 ): readonly string[] {
   const issues: string[] = [];
-  let envelope: Readonly<Record<string, unknown>>;
-  try {
-    if (input === null || typeof input !== "object" || Array.isArray(input))
-      return ["attachmentInput:object-required"];
-    const prototype = Object.getPrototypeOf(input);
-    if (prototype !== Object.prototype && prototype !== null)
-      return ["attachmentInput:plain-object-required"];
-    const descriptors = Object.getOwnPropertyDescriptors(input);
-    const observed = Reflect.ownKeys(descriptors);
-    if (observed.some((name) => typeof name !== "string"))
-      issues.push("attachmentInput:symbol-field-refused");
-    for (const name of attachmentInputFields) {
-      const descriptor = descriptors[name];
-      if (!descriptor) issues.push(`${name}:missing`);
-      else if (!Object.hasOwn(descriptor, "value")) issues.push(`${name}:accessor-refused`);
-    }
-    for (const name of observed) {
-      if (typeof name === "string" && !attachmentInputFields.includes(name as never))
-        issues.push(`${name}:unknown-field`);
-    }
-    if (issues.length > 0) return [...new Set(issues)].sort();
-    envelope = Object.freeze(
-      Object.fromEntries(attachmentInputFields.map((name) => [name, descriptors[name]!.value])),
-    );
-  } catch {
-    return ["attachmentInput:unreadable"];
-  }
+  const closedEnvelope = snapshotClosedRecord(input, attachmentInputFields);
+  if (!closedEnvelope.ok) return closedEnvelope.issues.map((issue) => `attachmentInput:${issue}`);
+  const envelope = closedEnvelope.value;
 
   const parsedRecords: Record<string, ContractRecord> = {};
   for (const [label, schemaVersion] of [
@@ -1410,10 +1412,8 @@ export function validateRecoveryAuthorizationAttachment(
     ["current", "activation-recovery-launch-current/v1"],
     ["predecessorActiveRecord", "active-release/v1"],
     ["gateRoot", "activation-cleanup-gate-root/v1"],
-    ["gateHead", "activation-cleanup-gate-head/v1"],
     ["gateCurrent", "activation-cleanup-gate-current/v1"],
     ["fenceRoot", "activation-recovery-fence-root/v1"],
-    ["fenceHead", "activation-recovery-fence-head/v1"],
     ["fenceCurrent", "activation-recovery-fence-current/v1"],
   ] as const) {
     try {
@@ -1424,11 +1424,33 @@ export function validateRecoveryAuthorizationAttachment(
       issues.push(`${label}:unreadable`);
     }
   }
+  const parsedHistories: Record<string, readonly ContractRecord[]> = {};
+  for (const [label, schemaVersion] of [
+    ["gateHistory", "activation-cleanup-gate-head/v1"],
+    ["fenceHistory", "activation-recovery-fence-head/v1"],
+    ["priorAttemptHistory", "activation-recovery-launch/v1"],
+  ] as const) {
+    const history = envelope[label];
+    if (!Array.isArray(history) || history.length > 256) {
+      issues.push(`${label}:bounded-array-required`);
+      continue;
+    }
+    const parsed: ContractRecord[] = [];
+    for (const [index, record] of history.entries()) {
+      try {
+        const result = validateAgainstSchema(schemaDefinitions[schemaVersion]!, record);
+        if (result.ok) parsed.push(result.value);
+        else issues.push(...result.issues.map((issue) => `${label}[${index}]:${issue}`));
+      } catch {
+        issues.push(`${label}[${index}]:unreadable`);
+      }
+    }
+    parsedHistories[label] = Object.freeze(parsed);
+  }
   const digestNames = [
+    "authorizationDigest",
     "expectedArgvDigest",
-    "fenceHeadDigest",
     "fenceRootDigest",
-    "gateHeadDigest",
     "gateRootDigest",
     "liveDigest",
     "predecessorActiveRecordDigest",
@@ -1438,6 +1460,30 @@ export function validateRecoveryAuthorizationAttachment(
     if (typeof envelope[name] !== "string" || !/^[0-9a-f]{64}$/.test(envelope[name]))
       issues.push(`${name}:invalid-sha256`);
   }
+  for (const name of ["gatePriorCurrentDigest", "fencePriorCurrentDigest"] as const) {
+    if (
+      envelope[name] !== null &&
+      (typeof envelope[name] !== "string" || !/^[0-9a-f]{64}$/.test(envelope[name]))
+    )
+      issues.push(`${name}:invalid-nullable-sha256`);
+  }
+  for (const [historyName, digestName] of [
+    ["gateHistory", "gateHistoryDigests"],
+    ["fenceHistory", "fenceHistoryDigests"],
+    ["priorAttemptHistory", "priorAttemptHistoryDigests"],
+  ] as const) {
+    const history = envelope[historyName];
+    const digests = envelope[digestName];
+    if (
+      !Array.isArray(digests) ||
+      !Array.isArray(history) ||
+      digests.length !== history.length ||
+      digests.some((digest) => typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest))
+    )
+      issues.push(`${digestName}:history-census-mismatch`);
+  }
+  if ((envelope.gateHistory as readonly unknown[]).length === 0) issues.push("gateHistory:empty");
+  if ((envelope.fenceHistory as readonly unknown[]).length === 0) issues.push("fenceHistory:empty");
   if (issues.length > 0) return [...new Set(issues)].sort();
 
   const authorization = parsedRecords.authorization!;
@@ -1446,31 +1492,149 @@ export function validateRecoveryAuthorizationAttachment(
   const current = parsedRecords.current!;
   const predecessorActiveRecord = parsedRecords.predecessorActiveRecord!;
   const gateRoot = parsedRecords.gateRoot!;
-  const gateHead = parsedRecords.gateHead!;
   const gateCurrent = parsedRecords.gateCurrent!;
   const fenceRoot = parsedRecords.fenceRoot!;
-  const fenceHead = parsedRecords.fenceHead!;
   const fenceCurrent = parsedRecords.fenceCurrent!;
+  const gateHistory = parsedHistories.gateHistory!;
+  const gateHead = gateHistory.at(-1)!;
+  const fenceHistory = parsedHistories.fenceHistory!;
+  const fenceHead = fenceHistory.at(-1)!;
+  const priorAttemptHistory = parsedHistories.priorAttemptHistory!;
+  const authorizationDigest = envelope.authorizationDigest as string;
   const expectedArgvDigest = envelope.expectedArgvDigest as string;
   const readyDigest = envelope.readyDigest as string;
   const liveDigest = envelope.liveDigest as string;
   const predecessorActiveRecordDigest = envelope.predecessorActiveRecordDigest as string;
   const gateRootDigest = envelope.gateRootDigest as string;
-  const gateHeadDigest = envelope.gateHeadDigest as string;
+  const gateHistoryDigests = envelope.gateHistoryDigests as readonly string[];
+  const gateHeadDigest = gateHistoryDigests.at(-1)!;
   const fenceRootDigest = envelope.fenceRootDigest as string;
-  const fenceHeadDigest = envelope.fenceHeadDigest as string;
+  const fenceHistoryDigests = envelope.fenceHistoryDigests as readonly string[];
+  const fenceHeadDigest = fenceHistoryDigests.at(-1)!;
+  const priorAttemptHistoryDigests = envelope.priorAttemptHistoryDigests as readonly string[];
 
   for (const [label, record, observedDigest] of [
+    ["authorization", authorization, authorizationDigest],
     ["readyRecord", ready, readyDigest],
     ["liveRecord", live, liveDigest],
     ["predecessorActiveRecord", predecessorActiveRecord, predecessorActiveRecordDigest],
     ["gateRoot", gateRoot, gateRootDigest],
-    ["gateHead", gateHead, gateHeadDigest],
     ["fenceRoot", fenceRoot, fenceRootDigest],
-    ["fenceHead", fenceHead, fenceHeadDigest],
   ] as const) {
     if (canonicalDigest(record as JsonValue) !== observedDigest)
       issues.push(`${label}Digest:content-mismatch`);
+  }
+
+  for (const [index, head] of gateHistory.entries()) {
+    const observedDigest = gateHistoryDigests[index]!;
+    if (canonicalDigest(head as JsonValue) !== observedDigest)
+      issues.push(`gateHistory[${index}]:digest-mismatch`);
+    if (
+      head.ordinal !== index ||
+      head.rootDigest !== gateRootDigest ||
+      head.transactionId !== gateRoot.transactionId
+    )
+      issues.push(`gateHistory[${index}]:identity-mismatch`);
+    if (index === 0) {
+      if (
+        head.previousHeadDigest !== null ||
+        head.lifecycle !== "PENDING" ||
+        head.publication !== "NOT_PUBLISHED"
+      )
+        issues.push("gateHistory[0]:invalid-initial-head");
+    } else {
+      if (head.previousHeadDigest !== gateHistoryDigests[index - 1])
+        issues.push(`gateHistory[${index}]:previous-digest-mismatch`);
+      if (
+        !isCleanupLifecyclePublicationTransition(
+          gateHistory[index - 1]!.lifecycle,
+          gateHistory[index - 1]!.publication,
+          head.lifecycle,
+          head.publication,
+        )
+      )
+        issues.push(`gateHistory[${index}]:transition-refused`);
+    }
+  }
+  if (
+    gateCurrent.headOrdinal !== gateHistory.length - 1 ||
+    gateCurrent.headDigest !== gateHeadDigest ||
+    gateCurrent.expectedPointerDigest !== envelope.gatePriorCurrentDigest
+  )
+    issues.push("gateHistory:current-tail-mismatch");
+  if ((gateHistory.length === 1) !== (envelope.gatePriorCurrentDigest === null))
+    issues.push("gatePriorCurrentDigest:initiality-mismatch");
+
+  for (const [index, head] of fenceHistory.entries()) {
+    const observedDigest = fenceHistoryDigests[index]!;
+    if (canonicalDigest(head as JsonValue) !== observedDigest)
+      issues.push(`fenceHistory[${index}]:digest-mismatch`);
+    if (
+      head.ordinal !== index ||
+      head.rootDigest !== fenceRootDigest ||
+      head.transactionId !== fenceRoot.transactionId
+    )
+      issues.push(`fenceHistory[${index}]:identity-mismatch`);
+    if (index === 0) {
+      if (head.previousHeadDigest !== null || head.lifecycle !== "PREPARED")
+        issues.push("fenceHistory[0]:invalid-initial-head");
+    } else {
+      if (head.previousHeadDigest !== fenceHistoryDigests[index - 1])
+        issues.push(`fenceHistory[${index}]:previous-digest-mismatch`);
+      if (fenceHistory[index - 1]!.lifecycle !== "PREPARED" || head.lifecycle !== "POST_ACTIVATION")
+        issues.push(`fenceHistory[${index}]:transition-refused`);
+    }
+  }
+  if (
+    fenceCurrent.headOrdinal !== fenceHistory.length - 1 ||
+    fenceCurrent.headDigest !== fenceHeadDigest ||
+    fenceCurrent.expectedPointerDigest !== envelope.fencePriorCurrentDigest
+  )
+    issues.push("fenceHistory:current-tail-mismatch");
+  if ((fenceHistory.length === 1) !== (envelope.fencePriorCurrentDigest === null))
+    issues.push("fencePriorCurrentDigest:initiality-mismatch");
+
+  for (const [index, record] of priorAttemptHistory.entries()) {
+    if (canonicalDigest(record as JsonValue) !== priorAttemptHistoryDigests[index])
+      issues.push(`priorAttemptHistory[${index}]:digest-mismatch`);
+    if (index === 0) {
+      if (record.generation !== 0 || record.ordinal !== 0 || record.lifecycle !== "READY")
+        issues.push("priorAttemptHistory[0]:invalid-initial-record");
+    } else {
+      const previous = priorAttemptHistory[index - 1]!;
+      if (record.previousStateRecordDigest !== priorAttemptHistoryDigests[index - 1])
+        issues.push(`priorAttemptHistory[${index}]:previous-digest-mismatch`);
+      issues.push(
+        ...validateRecoveryLaunchTransition(
+          previous,
+          record,
+          priorAttemptHistoryDigests[index - 1]!,
+          record.priorPointerDigest as string,
+        ).map((issue) => `priorAttemptHistory[${index}]:${issue}`),
+      );
+    }
+  }
+  if (ready.generation === 0) {
+    if (priorAttemptHistory.length !== 0)
+      issues.push("priorAttemptHistory:generation-zero-must-empty");
+  } else {
+    const priorTail = priorAttemptHistory.at(-1);
+    if (
+      !priorTail ||
+      priorTail.lifecycle !== "TERMINAL_RETRYABLE" ||
+      priorTail.generation !== (ready.generation as number) - 1 ||
+      ready.previousStateRecordDigest !== priorAttemptHistoryDigests.at(-1)
+    )
+      issues.push("priorAttemptHistory:not-complete-terminal-retryable-prefix");
+    else
+      issues.push(
+        ...validateRecoveryLaunchTransition(
+          priorTail,
+          ready,
+          priorAttemptHistoryDigests.at(-1)!,
+          ready.priorPointerDigest as string,
+        ).map((issue) => `priorAttemptHistory:ready-successor:${issue}`),
+      );
   }
 
   issues.push(
@@ -1555,12 +1719,44 @@ export function validateRecoveryAuthorizationAttachment(
     predecessorActiveRecord.releaseDigest !== ready.predecessorReleaseDigest
   )
     issues.push("predecessorExecutable:authority-mismatch");
+  if (
+    predecessorActiveRecord.operationManifestDigest !== fenceRoot.predecessorOperationManifestDigest
+  )
+    issues.push("predecessorOperationManifestDigest:authority-mismatch");
   if (ready.argvDigest !== expectedArgvDigest) issues.push("argvDigest:authority-mismatch");
   if (
     gateRoot.expectedFenceRootPath !== fenceRoot.recordPath ||
     gateRoot.expectedFenceRootDigest !== fenceRootDigest
   )
     issues.push("fenceRoot:gate-binding-mismatch");
+  if (
+    gateHead.publication === "PUBLISHED" &&
+    (gateHead.fenceDigest !== gateRoot.expectedFenceRootDigest ||
+      gateHead.fenceDigest !== fenceRootDigest)
+  )
+    issues.push("fenceDigest:published-authority-mismatch");
+  for (const [authorizationName, fenceName] of [
+    ["pendingAdmissionDigest", "pendingAdmissionDigest"],
+    ["successorExecutableDigest", "successorExecutableDigest"],
+    ["successorReleaseDigest", "successorReleaseDigest"],
+    ["operationManifestDigest", "successorOperationManifestDigest"],
+  ] as const) {
+    if (authorization[authorizationName] !== fenceRoot[fenceName])
+      issues.push(`${authorizationName}:fence-authority-mismatch`);
+  }
+  if (
+    gateRoot.releaseDigest !== fenceRoot.successorReleaseDigest ||
+    gateRoot.releaseDigest !== authorization.successorReleaseDigest
+  )
+    issues.push("releaseDigest:successor-authority-mismatch");
+  if (gateRoot.expectedActiveGeneration !== predecessorActiveRecord.activeGeneration)
+    issues.push("expectedActiveGeneration:predecessor-mismatch");
+  if (
+    gateRoot.recoveryAuthorizationId !== authorization.transactionId ||
+    gateRoot.recoveryAuthorizationPath !== authorization.recordPath ||
+    gateRoot.expectedConsumedAuthorizationDigest !== authorization.capabilityDigest
+  )
+    issues.push("recoveryAuthorization:consumed-identity-mismatch");
   if (
     !["PENDING", "ACTIVATING"].includes(gateHead.lifecycle as string) ||
     gateHead.publication !== "PUBLISHED" ||

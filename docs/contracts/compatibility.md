@@ -123,20 +123,34 @@ retained by the canonical cleanup head.
 
 Recovery authorization attachment validates the complete canonical READY to
 LIVE transition against a parsed `active-release/v1`, cleanup gate
-root/head/current chain, recovery fence root/head/current chain, and the
-caller's canonical argv digest. It recomputes every supplied immutable record
-digest and requires every shared current-pointer authority field to equal the
-LIVE record. Invalid, accessor-backed, reflective, or unreadable evidence
-refuses before semantic fields or canonical digests are read.
+complete ordered root/history/current cleanup-gate and recovery-fence chains,
+the caller's canonical argv digest, and for generations above zero the complete
+ordered prior terminal-retryable launch prefix. It recomputes every supplied
+immutable record digest and requires every shared current-pointer authority
+field to equal the LIVE record. The authorization's singular
+`operationManifestDigest` is the successor manifest and binds the fence root's
+`successorOperationManifestDigest`; the predecessor active record separately
+binds `predecessorOperationManifestDigest`. The gate's expected-consumed
+authorization digest binds the authorization's canonical `capabilityDigest`
+together with its transaction-derived path and identifier, avoiding mutable
+attachment fields as identity. Invalid, accessor-backed,
+reflective, or unreadable evidence refuses before semantic fields or canonical
+digests are read.
 
 Cleanup lifecycle and publication are one closed state pair. The only pairs are
 `PENDING` with `NOT_PUBLISHED`, `PUBLISHING`, or `PUBLISHED`; `ACTIVATING` with
 `PUBLISHED`; `ABORTING` with any of the four publication states; and `COMPLETE`
-with `NOT_PUBLISHED` or `CLEARED`. The transition matrix admits crash-resume at
-each pair plus only the publication, activation, abort, fence-clear, and
-completion edges declared by the activation cleanup state machine. Cleanup
-heads carry no fence or revocation proof at `PENDING`/`NOT_PUBLISHED`; later
-heads admit only the proofs authorized by their exact pair.
+with `NOT_PUBLISHED` or `CLEARED`. Exactly twelve mutation edges are admitted:
+`PN→PI`, `PN→BN`, `PN→CN`, `PI→PP`, `PI→BI`, `PP→AP`, `PP→BP`, `AP→CC`,
+`BN→CN`, `BI→BP`, `BP→BC`, and `BC→CC`. Crash resume at the already-current
+pair is `NO_APPEND`, never a self-loop history write. Cleanup heads carry no
+fence or revocation proof at `PENDING`/`NOT_PUBLISHED`; later heads admit only
+the proofs authorized by their exact pair.
+
+All public schema parsing, serialization, named migration, and attachment
+evidence use one closed-record snapshot boundary. Proxies, symbols,
+non-enumerable or accessor properties, inherited/exotic records, and reflective
+traps refuse before contract semantics run.
 
 Repository-protection authority pins API version `2022-11-28`, protected
 environment `host-custody-bootstrap-root`, and verifier version `2.93.0`. The

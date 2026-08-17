@@ -22,6 +22,7 @@ import {
   recoveryFenceRootPath,
   recoveryLaunchCurrentPath,
   recoveryLaunchPath,
+  reduceCleanupHeadWrite,
   reduceInitializationCensus,
   schemaDefinitions,
   schemaVersions,
@@ -216,6 +217,45 @@ describe("closed contract registry", () => {
       for (const input of hostile) {
         expect(() => parseContract(schemaVersion, input)).not.toThrow();
         expect(parseContract(schemaVersion, input).ok).toBe(false);
+      }
+    }
+  });
+
+  test("parse and serialize share one closed-record snapshot boundary", () => {
+    for (const schemaVersion of schemaVersions) {
+      const fixture = fixtureFor(schemaVersion);
+      const symbolRecord = { ...fixture, [Symbol("authority")]: digest };
+      const nonEnumerable = Object.defineProperty({ ...fixture }, "schemaVersion", {
+        enumerable: false,
+        value: schemaVersion,
+      });
+      const accessor = Object.defineProperty({ ...fixture }, "schemaVersion", {
+        enumerable: true,
+        get() {
+          throw new Error("hostile accessor");
+        },
+      });
+      class ExoticRecord {
+        schemaVersion = schemaVersion;
+      }
+      const inherited = Object.create(fixture) as Record<string, unknown>;
+      for (const hostile of [
+        new Proxy(fixture, {}),
+        symbolRecord,
+        nonEnumerable,
+        accessor,
+        new ExoticRecord(),
+        inherited,
+      ]) {
+        expect(() => parseContract(schemaVersion, hostile), `${schemaVersion} parse`).not.toThrow();
+        expect(parseContract(schemaVersion, hostile).ok, `${schemaVersion} parse`).toBe(false);
+        expect(
+          () => serializeContract(schemaVersion, hostile),
+          `${schemaVersion} serialize`,
+        ).not.toThrow();
+        expect(serializeContract(schemaVersion, hostile).ok, `${schemaVersion} serialize`).toBe(
+          false,
+        );
       }
     }
   });
@@ -930,28 +970,18 @@ describe("activation, recovery, and cleanup authority", () => {
       "COMPLETE/CLEARED",
     ]);
     const acceptedTransitions = new Set([
-      "PENDING/NOT_PUBLISHED>PENDING/NOT_PUBLISHED",
       "PENDING/NOT_PUBLISHED>PENDING/PUBLISHING",
       "PENDING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
       "PENDING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-      "PENDING/PUBLISHING>PENDING/PUBLISHING",
       "PENDING/PUBLISHING>PENDING/PUBLISHED",
       "PENDING/PUBLISHING>ABORTING/PUBLISHING",
-      "PENDING/PUBLISHED>PENDING/PUBLISHED",
       "PENDING/PUBLISHED>ACTIVATING/PUBLISHED",
       "PENDING/PUBLISHED>ABORTING/PUBLISHED",
-      "ACTIVATING/PUBLISHED>ACTIVATING/PUBLISHED",
       "ACTIVATING/PUBLISHED>COMPLETE/CLEARED",
-      "ABORTING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
       "ABORTING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-      "ABORTING/PUBLISHING>ABORTING/PUBLISHING",
       "ABORTING/PUBLISHING>ABORTING/PUBLISHED",
-      "ABORTING/PUBLISHED>ABORTING/PUBLISHED",
       "ABORTING/PUBLISHED>ABORTING/CLEARED",
-      "ABORTING/CLEARED>ABORTING/CLEARED",
       "ABORTING/CLEARED>COMPLETE/CLEARED",
-      "COMPLETE/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-      "COMPLETE/CLEARED>COMPLETE/CLEARED",
     ]);
     const head = (
       lifecycle: (typeof lifecycles)[number],
@@ -1009,9 +1039,18 @@ describe("activation, recovery, and cleanup authority", () => {
           validateCleanupHeadTransition(previous, next, previousDigest).length === 0,
           transitionKey,
         ).toBe(expected);
+        expect(
+          reduceCleanupHeadWrite(
+            previousLifecycle,
+            previousPublication,
+            nextLifecycle,
+            nextPublication,
+          ),
+          `write ${transitionKey}`,
+        ).toBe(previousKey === nextKey ? "NO_APPEND" : expected ? "APPEND" : "REFUSED");
       }
     }
-    expect(acceptedTransitions.size).toBe(22);
+    expect(acceptedTransitions.size).toBe(12);
     for (const refused of [
       ["PENDING", "PUBLISHED", "PENDING", "CLEARED"],
       ["ACTIVATING", "PUBLISHED", "COMPLETE", "PUBLISHED"],
@@ -1056,10 +1095,24 @@ describe("activation, recovery, and cleanup authority", () => {
       priorCleanupHeadDigest: digest2,
     }) as ContractRecord;
     const gateRootDigest = canonicalDigest(gateRoot as JsonValue);
-    const gateHead = mutant("activation-cleanup-gate-head/v1", {
+    const gateHead0 = mutant("activation-cleanup-gate-head/v1", {
+      rootDigest: gateRootDigest,
+    }) as ContractRecord;
+    const gateHead0Digest = canonicalDigest(gateHead0 as JsonValue);
+    const gatePublishing = mutant("activation-cleanup-gate-head/v1", {
       ordinal: 1,
-      previousHeadDigest: digest2,
-      recordPath: cleanupGateHeadPath(uuid, 1, "PENDING", "PUBLISHED"),
+      previousHeadDigest: gateHead0Digest,
+      recordPath: cleanupGateHeadPath(uuid, 1, "PENDING", "PUBLISHING"),
+      lifecycle: "PENDING",
+      publication: "PUBLISHING",
+      rootDigest: gateRootDigest,
+      fenceDigest: null,
+    }) as ContractRecord;
+    const gatePublishingDigest = canonicalDigest(gatePublishing as JsonValue);
+    const gateHead = mutant("activation-cleanup-gate-head/v1", {
+      ordinal: 2,
+      previousHeadDigest: gatePublishingDigest,
+      recordPath: cleanupGateHeadPath(uuid, 2, "PENDING", "PUBLISHED"),
       lifecycle: "PENDING",
       publication: "PUBLISHED",
       rootDigest: gateRootDigest,
@@ -1071,10 +1124,10 @@ describe("activation, recovery, and cleanup authority", () => {
       expectedPointerDigest: digest2,
       rootDigest: gateRootDigest,
       headDigest: gateHeadDigest,
-      headOrdinal: 1,
+      headOrdinal: 2,
       headLifecycle: "PENDING",
       headPublication: "PUBLISHED",
-      headPath: cleanupGateHeadPath(uuid, 1, "PENDING", "PUBLISHED"),
+      headPath: cleanupGateHeadPath(uuid, 2, "PENDING", "PUBLISHED"),
     }) as ContractRecord;
     const ready = mutant("activation-recovery-launch/v1", {
       activeRecordDigest: predecessorActiveRecordDigest,
@@ -1083,7 +1136,7 @@ describe("activation, recovery, and cleanup authority", () => {
       fenceHeadOrdinal: 0,
       fenceHeadDigest,
       gateRootDigest,
-      gateHeadOrdinal: 1,
+      gateHeadOrdinal: 2,
       gateHeadDigest,
       gateLifecycle: "PENDING",
       gatePublication: "PUBLISHED",
@@ -1109,7 +1162,7 @@ describe("activation, recovery, and cleanup authority", () => {
       fenceHeadOrdinal: 0,
       fenceHeadDigest,
       gateRootDigest,
-      gateHeadOrdinal: 1,
+      gateHeadOrdinal: 2,
       gateHeadDigest,
       expectedPointerDigest: priorPointerDigest,
       launchDigest: liveDigest,
@@ -1129,24 +1182,30 @@ describe("activation, recovery, and cleanup authority", () => {
       recoveryGateRootDigest: gateRootDigest,
       recoveryFenceRootDigest: fenceRootDigest,
     }) as ContractRecord;
+    const authorizationDigest = canonicalDigest(authorization as JsonValue);
     const attachment = {
       authorization,
+      authorizationDigest,
       current,
       expectedArgvDigest: ready.argvDigest as string,
       fenceCurrent,
-      fenceHead,
-      fenceHeadDigest,
+      fenceHistory: [fenceHead],
+      fenceHistoryDigests: [fenceHeadDigest],
+      fencePriorCurrentDigest: null,
       fenceRoot,
       fenceRootDigest,
       gateCurrent,
-      gateHead,
-      gateHeadDigest,
+      gateHistory: [gateHead0, gatePublishing, gateHead],
+      gateHistoryDigests: [gateHead0Digest, gatePublishingDigest, gateHeadDigest],
+      gatePriorCurrentDigest: digest2,
       gateRoot,
       gateRootDigest,
       live,
       liveDigest,
       predecessorActiveRecord,
       predecessorActiveRecordDigest,
+      priorAttemptHistory: [],
+      priorAttemptHistoryDigests: [],
       ready,
       readyDigest,
     };
@@ -1166,12 +1225,14 @@ describe("activation, recovery, and cleanup authority", () => {
         previousStateRecordDigest: changedReadyDigest,
       } as ContractRecord;
       const changedLiveDigest = canonicalDigest(changedLive as JsonValue);
+      const changedAuthorization = {
+        ...authorization,
+        recoveryReadyRecordDigest: changedReadyDigest,
+        recoveryInitialLiveRecordDigest: changedLiveDigest,
+      } as ContractRecord;
       refuses({
-        authorization: {
-          ...authorization,
-          recoveryReadyRecordDigest: changedReadyDigest,
-          recoveryInitialLiveRecordDigest: changedLiveDigest,
-        },
+        authorization: changedAuthorization,
+        authorizationDigest: canonicalDigest(changedAuthorization as JsonValue),
         ready: changedReady,
         readyDigest: changedReadyDigest,
         live: changedLive,
@@ -1183,7 +1244,7 @@ describe("activation, recovery, and cleanup authority", () => {
       { projectId: uuid2 },
       { argvDigest: digest2 },
       { predecessorExecutablePath: "bin/other" },
-      { gateHeadOrdinal: 2 },
+      { gateHeadOrdinal: 3 },
       { gateHeadDigest: "c".repeat(64) },
       { fenceHeadOrdinal: 1 },
       { fenceHeadDigest: "d".repeat(64) },
@@ -1191,31 +1252,173 @@ describe("activation, recovery, and cleanup authority", () => {
       coordinatedRefuses(changes);
 
     for (const [name, value] of Object.entries({
+      authorizationDigest: digest2,
       expectedArgvDigest: digest2,
       gateRootDigest: digest2,
-      gateHeadDigest: digest2,
       fenceRootDigest: digest2,
-      fenceHeadDigest: digest2,
       predecessorActiveRecordDigest: digest2,
       readyDigest: digest2,
       liveDigest: digest2,
     }))
       refuses({ [name]: value });
 
+    for (const changes of [
+      { gateHistory: [gateHead0, gateHead], gateHistoryDigests: [gateHead0Digest, gateHeadDigest] },
+      {
+        gateHistory: [gatePublishing, gateHead0, gateHead],
+        gateHistoryDigests: [gatePublishingDigest, gateHead0Digest, gateHeadDigest],
+      },
+      {
+        gateHistory: [gateHead0, gatePublishing, gateHead, gateHead],
+        gateHistoryDigests: [gateHead0Digest, gatePublishingDigest, gateHeadDigest, gateHeadDigest],
+      },
+      {
+        gateHistoryDigests: [gateHead0Digest, digest2, gateHeadDigest],
+      },
+      { gatePriorCurrentDigest: null },
+      { fenceHistory: [], fenceHistoryDigests: [] },
+      {
+        fenceHistory: [fenceHead, fenceHead],
+        fenceHistoryDigests: [fenceHeadDigest, fenceHeadDigest],
+      },
+      { fenceHistoryDigests: [digest2] },
+      { fencePriorCurrentDigest: digest2 },
+    ])
+      refuses(changes);
+
+    for (const [name, value] of Object.entries({
+      pendingAdmissionDigest: digest2,
+      successorExecutableDigest: digest2,
+      successorReleaseDigest: digest2,
+      operationManifestDigest: digest2,
+    })) {
+      const changedAuthorization = { ...authorization, [name]: value } as ContractRecord;
+      refuses({
+        authorization: changedAuthorization,
+        authorizationDigest: canonicalDigest(changedAuthorization as JsonValue),
+      });
+    }
+    for (const changes of [
+      { releaseDigest: digest2 },
+      { expectedActiveGeneration: 1 },
+      { recoveryAuthorizationId: uuid2 },
+      { expectedConsumedAuthorizationDigest: digest2 },
+    ]) {
+      const changedGateRoot = { ...gateRoot, ...changes } as ContractRecord;
+      refuses({
+        gateRoot: changedGateRoot,
+        gateRootDigest: canonicalDigest(changedGateRoot as JsonValue),
+      });
+    }
+    const changedActiveRecord = {
+      ...predecessorActiveRecord,
+      operationManifestDigest: digest2,
+    } as ContractRecord;
+    refuses({
+      predecessorActiveRecord: changedActiveRecord,
+      predecessorActiveRecordDigest: canonicalDigest(changedActiveRecord as JsonValue),
+    });
+    const changedPublishedGateHead = { ...gateHead, fenceDigest: digest2 } as ContractRecord;
+    refuses({
+      gateHistory: [gateHead0, gatePublishing, changedPublishedGateHead],
+      gateHistoryDigests: [
+        gateHead0Digest,
+        gatePublishingDigest,
+        canonicalDigest(changedPublishedGateHead as JsonValue),
+      ],
+    });
+
+    const retryable = {
+      ...live,
+      ordinal: 2,
+      previousStateRecordDigest: liveDigest,
+      priorPointerDigest: "c".repeat(64),
+      lifecycle: "TERMINAL_RETRYABLE",
+      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 2, "TERMINAL_RETRYABLE"),
+      terminalAt: later,
+    } as ContractRecord;
+    const retryableDigest = canonicalDigest(retryable as JsonValue);
+    const ready1 = {
+      ...ready,
+      generation: 1,
+      attempt: 2,
+      ordinal: 0,
+      previousStateRecordDigest: retryableDigest,
+      priorPointerDigest: "d".repeat(64),
+      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 1, 0, "READY"),
+    } as ContractRecord;
+    const ready1Digest = canonicalDigest(ready1 as JsonValue);
+    const live1 = {
+      ...live,
+      generation: 1,
+      attempt: 2,
+      previousStateRecordDigest: ready1Digest,
+      priorPointerDigest: "e".repeat(64),
+      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 1, 1, "LIVE"),
+    } as ContractRecord;
+    const live1Digest = canonicalDigest(live1 as JsonValue);
+    const current1 = {
+      ...current,
+      generation: 1,
+      attempt: 2,
+      expectedPointerDigest: live1.priorPointerDigest,
+      launchDigest: live1Digest,
+      launchPath: live1.recordPath,
+    } as ContractRecord;
+    const authorization1 = {
+      ...authorization,
+      recoveryLaunchGeneration: 1,
+      recoveryLaunchAttempt: 2,
+      recoveryReadyRecordDigest: ready1Digest,
+      recoveryInitialLiveRecordDigest: live1Digest,
+    } as ContractRecord;
+    const generationOneAttachment = {
+      ...attachment,
+      authorization: authorization1,
+      authorizationDigest: canonicalDigest(authorization1 as JsonValue),
+      current: current1,
+      ready: ready1,
+      readyDigest: ready1Digest,
+      live: live1,
+      liveDigest: live1Digest,
+      priorAttemptHistory: [ready, live, retryable],
+      priorAttemptHistoryDigests: [readyDigest, liveDigest, retryableDigest],
+    };
+    expect(validateRecoveryAuthorizationAttachment(generationOneAttachment)).toEqual([]);
+    for (const changes of [
+      { priorAttemptHistory: [], priorAttemptHistoryDigests: [] },
+      {
+        priorAttemptHistory: [live, ready, retryable],
+        priorAttemptHistoryDigests: [liveDigest, readyDigest, retryableDigest],
+      },
+      {
+        priorAttemptHistory: [ready, retryable],
+        priorAttemptHistoryDigests: [readyDigest, retryableDigest],
+      },
+      {
+        priorAttemptHistoryDigests: [readyDigest, digest2, retryableDigest],
+      },
+    ])
+      expect(
+        validateRecoveryAuthorizationAttachment({
+          ...generationOneAttachment,
+          ...changes,
+        } as never),
+      ).not.toEqual([]);
+
     const recordInputs = [
       "authorization",
       "current",
       "fenceCurrent",
-      "fenceHead",
       "fenceRoot",
       "gateCurrent",
-      "gateHead",
       "gateRoot",
       "live",
       "predecessorActiveRecord",
       "ready",
     ] as const;
     for (const name of recordInputs) {
+      const original = attachment[name] as ContractRecord;
       const getPrototypeTrap = new Proxy(
         {},
         {
@@ -1241,11 +1444,43 @@ describe("activation, recovery, and cleanup authority", () => {
           throw new Error("hostile accessor");
         },
       });
-      for (const hostile of [getPrototypeTrap, descriptorTrap, accessor]) {
+      const transparentProxy = new Proxy(original, {});
+      const symbolRecord = { ...original, [Symbol("authority")]: digest };
+      const nonEnumerable = Object.defineProperty({ ...original }, "schemaVersion", {
+        enumerable: false,
+        value: original.schemaVersion,
+      });
+      class ExoticRecord {
+        schemaVersion = original.schemaVersion;
+      }
+      for (const hostile of [
+        getPrototypeTrap,
+        descriptorTrap,
+        transparentProxy,
+        symbolRecord,
+        nonEnumerable,
+        accessor,
+        new ExoticRecord(),
+      ]) {
         expect(() => refuses({ [name]: hostile })).not.toThrow();
       }
     }
-    const hostileEnvelope = new Proxy(
+    for (const [name, original] of [
+      ["gateHistory", gateHead0],
+      ["fenceHistory", fenceHead],
+      ["priorAttemptHistory", ready],
+    ] as const) {
+      for (const hostile of [
+        new Proxy(original, {}),
+        { ...original, [Symbol("authority")]: digest },
+        Object.defineProperty({ ...original }, "schemaVersion", {
+          enumerable: false,
+          value: original.schemaVersion,
+        }),
+      ])
+        expect(() => refuses({ [name]: [hostile] })).not.toThrow();
+    }
+    const throwingEnvelope = new Proxy(
       {},
       {
         getPrototypeOf() {
@@ -1253,8 +1488,43 @@ describe("activation, recovery, and cleanup authority", () => {
         },
       },
     );
-    expect(() => validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toThrow();
-    expect(validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toEqual([]);
+    const descriptorEnvelope = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("hostile descriptor envelope");
+        },
+        ownKeys() {
+          return ["authorization"];
+        },
+      },
+    );
+    const symbolEnvelope = { ...attachment, [Symbol("authority")]: digest };
+    const nonEnumerableEnvelope = Object.defineProperty({ ...attachment }, "authorization", {
+      enumerable: false,
+      value: authorization,
+    });
+    const accessorEnvelope = Object.defineProperty({ ...attachment }, "authorization", {
+      enumerable: true,
+      get() {
+        throw new Error("hostile envelope accessor");
+      },
+    });
+    class ExoticEnvelope {
+      authorization = attachment.authorization;
+    }
+    for (const hostileEnvelope of [
+      throwingEnvelope,
+      descriptorEnvelope,
+      new Proxy(attachment, {}),
+      symbolEnvelope,
+      nonEnumerableEnvelope,
+      accessorEnvelope,
+      new ExoticEnvelope(),
+    ]) {
+      expect(() => validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toThrow();
+      expect(validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toEqual([]);
+    }
   });
 
   test("cross-record transitions bind adjacent ordinals, prior digests, immutable roots, and one authority advance", () => {
