@@ -3801,7 +3801,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     const unknownEvidence = {
       schemaVersion: "pointer-mutation-unknown-evidence/v1",
       targetPathInstanceDigest: target.pathInstanceDigest,
-      targetMutationId: target.proposal.mutationId,
+      targetMutationId: target.proposal.mutationId as string,
       reason: "UNREADABLE",
       observation,
       observationDigest: canonicalDigest(observation),
@@ -3848,7 +3848,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
           priorSelectorValueDigest: rewrittenPrior?.valueDigest ?? null,
           priorSelectorReceiptDigest: rewrittenPrior?.proposalReceiptDigest ?? null,
           priorPostSelectionObservationDigest: rewrittenPostDigest,
-          phase: terminal ? outcome : sourceCore.phase,
+          phase: terminal ? outcome : (sourceCore.phase as string),
           terminalResolutionDigest: terminal
             ? computeCommitResolutionDigest(terminalResolution!)
             : null,
