@@ -94,7 +94,7 @@ describe("approved v2 authority contracts", () => {
           schemaVersion,
         })),
       ),
-    ).toBe("457feac245fce1270aa80dbf9547343f4e752035be1f3708ec3ceaf70ba5c2ef");
+    ).toBe("3715a5c479a83bc3c51e52745432067d4654b592149c68bd037a0408b82dbbd8");
   });
 
   test("closes bootstrap versus selected-epoch proposal producers", () => {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   canonicalBytes,
+  canonicalDigest,
   snapshotClosedArray,
   snapshotClosedRecord,
   validateAgainstSchema,
@@ -1957,6 +1958,8 @@ export function validateAuthorityMaterializationAuthorityComposition(
     "inventoryRoot",
     "materialization",
     "priorHistoryRoot",
+    "reviewedSuccessorSubject",
+    "rotationIdRecord",
     "successorCore",
   ]);
   if (!closed.ok) return closed.issues;
@@ -2008,6 +2011,21 @@ export function validateAuthorityMaterializationAuthorityComposition(
       "state-mutation-authority-successor-core/v2",
       closed.value.successorCore,
     );
+    const rotationIdRecord = requireRecord(
+      "state-mutation-authority-rotation-id/v2",
+      closed.value.rotationIdRecord,
+    );
+    const reviewedSubject = snapshotClosedRecord(closed.value.reviewedSuccessorSubject, [
+      "activeReleaseReceiptDigest",
+      "activeReleaseTipDigest",
+      "activeReleaseValueDigest",
+      "independentReviewDigest",
+      "reviewedAbiDigest",
+      "reviewedCustodyDigest",
+      "reviewedHelperDigest",
+      "reviewedProfileDigest",
+    ]);
+    if (!reviewedSubject.ok) return reviewedSubject.issues;
     if (!authority.ok) return authority.issues;
     issues.push(
       ...validateAuthorityValueV3Composition({
@@ -2034,9 +2052,21 @@ export function validateAuthorityMaterializationAuthorityComposition(
       raw(leaf.authorityReceiptDigest as string),
     ]);
     const leafDigest = computeHistoryLeafDigest(leaf);
+    const reviewedSubjectDigest = canonicalDigest(reviewedSubject.value);
     const proofSiblings = proof.siblingDigests as readonly string[];
     if (
       leaf.epochKey !== epochKey ||
+      computeAuthorityRotationIdV2(rotationIdRecord) !== plan.rotationId ||
+      rotationIdRecord.reviewedSuccessorSubjectDigest !== reviewedSubjectDigest ||
+      plan.reviewedSuccessorSubjectDigest !== reviewedSubjectDigest ||
+      plan.independentReviewDigest !== reviewedSubject.value.independentReviewDigest ||
+      plan.activeReleaseTipDigest !== reviewedSubject.value.activeReleaseTipDigest ||
+      plan.activeReleaseValueDigest !== reviewedSubject.value.activeReleaseValueDigest ||
+      plan.activeReleaseReceiptDigest !== reviewedSubject.value.activeReleaseReceiptDigest ||
+      core.reviewedHelperDigest !== reviewedSubject.value.reviewedHelperDigest ||
+      core.reviewedProfileDigest !== reviewedSubject.value.reviewedProfileDigest ||
+      core.reviewedAbiDigest !== reviewedSubject.value.reviewedAbiDigest ||
+      core.reviewedCustodyDigest !== reviewedSubject.value.reviewedCustodyDigest ||
       proof.globalIdentityDigest !== leaf.globalIdentityDigest ||
       proof.epochKey !== epochKey ||
       proof.leafDigest !== leafDigest ||
@@ -2044,6 +2074,13 @@ export function validateAuthorityMaterializationAuthorityComposition(
       proof.successorRootDigest !== historyDigest ||
       proof.priorCount !== priorHistory.count ||
       proof.successorCount !== history.count ||
+      incrementDecimal(proof.priorCount as string) !== proof.successorCount ||
+      leaf.authorityOrdinal !== proof.priorCount ||
+      history.latestIncludedOrdinal !== leaf.authorityOrdinal ||
+      history.latestEpochKey !== leaf.epochKey ||
+      history.latestTipDigest !== leaf.authorityTipDigest ||
+      history.latestValueDigest !== leaf.authorityValueDigest ||
+      history.latestReceiptDigest !== leaf.authorityReceiptDigest ||
       computeHistorySparseRoot(epochKey, null, proofSiblings) !== priorHistory.treeRootDigest ||
       computeHistorySparseRoot(epochKey, leafDigest, proofSiblings) !== history.treeRootDigest ||
       append.appendedEpochKey !== epochKey ||
@@ -2066,6 +2103,11 @@ export function validateAuthorityMaterializationAuthorityComposition(
       plan.priorHistoryRootDigest !== append.priorRootDigest ||
       plan.priorHistoryCount !== append.priorCount ||
       plan.priorHistoryTreeRootDigest !== priorHistory.treeRootDigest ||
+      plan.priorInventoryKind !== priorHistory.nodeInventoryRootKind ||
+      plan.priorInventoryRootDigest !== priorHistory.nodeInventoryRootDigest ||
+      plan.priorInventoryCount !== priorHistory.nodeInventoryCount ||
+      (priorHistory.schemaVersion === "authority-history-root/v2" &&
+        plan.priorInventoryTreeRootDigest !== priorHistory.nodeInventoryTreeRootDigest) ||
       plan.predecessorLeafDigest !== append.leafDigest ||
       plan.authorityUpdateProofDigest !== append.updateProofDigest ||
       append.materializationPlanDigest !== planDigest ||
@@ -2704,6 +2746,7 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
     let priorPostDigest: string | null = null;
     let priorAuditDigest: string | null = null;
     let runId: string | null = null;
+    let terminalResolutionBytes: Uint8Array | null = null;
     for (let index = 0; index < checkpoints.length; index += 1) {
       const current = checkpoints[index]!;
       const envelope = checkpointEvidence[index]!;
@@ -2756,6 +2799,13 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
         );
         if (!resolution.ok) issues.push(`${index}:terminal-resolution-invalid`);
         else {
+          const resolutionBytes = canonicalBytes(resolution.value);
+          if (
+            terminalResolutionBytes !== null &&
+            Buffer.compare(Buffer.from(terminalResolutionBytes), Buffer.from(resolutionBytes)) !== 0
+          )
+            issues.push(`${index}:terminal-resolution-changed`);
+          terminalResolutionBytes ??= resolutionBytes;
           const producerEpochKey = digest("authority-epoch-key/v1", [
             raw(intent.globalIdentityDigest as string),
             raw(authority.value.pathInstanceDigest),
@@ -2826,7 +2876,24 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
         selector.value.value.stage !== current.stage ||
         selector.value.value.phase !== current.phase ||
         selector.value.value.targetPathInstanceDigest !== current.targetPathInstanceDigest ||
-        selector.value.value.targetMutationId !== current.targetMutationId
+        selector.value.value.targetMutationId !== current.targetMutationId ||
+        selector.value.value.globalIdentityDigest !== current.globalIdentityDigest ||
+        selector.value.value.epochPolicy !== current.epochPolicy ||
+        selector.value.value.producerAuthorityTipDigest !== current.producerAuthorityTipDigest ||
+        selector.value.value.producerAuthorityValueDigest !==
+          current.producerAuthorityValueDigest ||
+        selector.value.value.producerAuthorityReceiptDigest !==
+          current.producerAuthorityReceiptDigest ||
+        selector.value.value.materializationPlanDigest !== current.materializationPlanDigest ||
+        selector.value.value.materializationStartedTipDigest !==
+          current.materializationStartedTipDigest ||
+        selector.value.value.materializationStartedValueDigest !==
+          current.materializationStartedValueDigest ||
+        selector.value.value.materializationStartedReceiptDigest !==
+          current.materializationStartedReceiptDigest ||
+        selector.value.value.rotationHandoffReceiptDigest !==
+          current.rotationHandoffReceiptDigest ||
+        selector.value.value.terminalResolutionDigest !== current.terminalResolutionDigest
       )
         issues.push(`${index}:selector-core-binding-mismatch`);
       if (
@@ -2937,6 +3004,9 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
         checkpointEvidence[8]!.selectorSelection,
       );
       if (
+        handoff.globalIdentityDigest !== intent.globalIdentityDigest ||
+        handoff.rotationId !== materialization.rotationId ||
+        handoff.targetAuthorityPathInstanceDigest !== authority.value.pathInstanceDigest ||
         handoff.materializationPlanDigest !== intent.materializationPlanDigest ||
         handoff.oldAuthorityTipDigest !== oldEpoch.producerAuthorityTipDigest ||
         handoff.oldAuthorityValueDigest !== oldEpoch.producerAuthorityValueDigest ||
@@ -2954,17 +3024,32 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
         handoff.casArmedCoreDigest !== computeRunCheckpointCoreDigestV2(checkpoints[5]!) ||
         handoff.startedTipDigest !== intent.materializationStartedTipDigest ||
         handoff.startedValueDigest !== intent.materializationStartedValueDigest ||
-        handoff.startedReceiptDigest !== intent.materializationStartedReceiptDigest
+        handoff.startedReceiptDigest !== intent.materializationStartedReceiptDigest ||
+        handoff.targetValueReadbackDigest !== handoff.newAuthorityValueDigest ||
+        handoff.targetProposalReadbackDigest !== handoff.newAuthorityReceiptDigest ||
+        handoff.targetTipReadbackDigest !== handoff.newAuthorityTipDigest
       )
         issues.push("rotationHandoff:binding-mismatch");
       if (
+        materialization.globalIdentityDigest !== intent.globalIdentityDigest ||
+        materialization.rotationId !== handoff.rotationId ||
         materialization.rotationHandoffReceiptDigest !== drh ||
         materialization.materializationPlanDigest !== intent.materializationPlanDigest ||
+        materialization.startedTipDigest !== intent.materializationStartedTipDigest ||
+        materialization.startedValueDigest !== intent.materializationStartedValueDigest ||
+        materialization.startedReceiptDigest !== intent.materializationStartedReceiptDigest ||
+        materialization.newAuthorityPathInstanceDigest !== authority.value.pathInstanceDigest ||
+        materialization.newAuthorityTipDigest !== newEpoch.producerAuthorityTipDigest ||
+        materialization.newAuthorityValueDigest !== newEpoch.producerAuthorityValueDigest ||
+        materialization.newAuthorityReceiptDigest !== newEpoch.producerAuthorityReceiptDigest ||
         materialization.terminalResolutionDigest !== checkpoints[8]!.terminalResolutionDigest ||
         !finalSelector.ok ||
         materialization.finalSelectorTipDigest !== finalSelector.value.tipDigest ||
         materialization.finalSelectorValueDigest !== finalSelector.value.valueDigest ||
-        materialization.finalSelectorReceiptDigest !== finalSelector.value.proposalReceiptDigest
+        materialization.finalSelectorReceiptDigest !== finalSelector.value.proposalReceiptDigest ||
+        materialization.finalValueReadbackDigest !== finalSelector.value.valueDigest ||
+        materialization.finalProposalReadbackDigest !== finalSelector.value.proposalReceiptDigest ||
+        materialization.finalTipReadbackDigest !== finalSelector.value.tipDigest
       )
         issues.push("materializationHandoff:binding-mismatch");
       const finishing = resolveSelectedPointerEvidence(
@@ -2974,6 +3059,30 @@ export function validateAuthorityCommitRunV3(input: unknown): readonly string[] 
       else if (
         finishing.value.tip.pointerKind !== "AUTHORITY_NODE_MATERIALIZATION_RUN" ||
         finishing.value.value.lifecycle !== "FINISHING" ||
+        finishing.value.proposal.priorTipDigest !== intent.materializationStartedTipDigest ||
+        finishing.value.proposal.priorValueDigest !== intent.materializationStartedValueDigest ||
+        finishing.value.proposal.priorReceiptDigest !==
+          intent.materializationStartedReceiptDigest ||
+        finishing.value.value.globalIdentityDigest !== intent.globalIdentityDigest ||
+        finishing.value.value.rotationId !== handoff.rotationId ||
+        finishing.value.value.materializationPlanDigest !== intent.materializationPlanDigest ||
+        finishing.value.value.inventoryBatchDigest !== materialization.inventoryBatchDigest ||
+        finishing.value.value.successorAuthorityPathInstanceDigest !==
+          materialization.newAuthorityPathInstanceDigest ||
+        finishing.value.value.successorAuthorityTipDigest !==
+          materialization.newAuthorityTipDigest ||
+        finishing.value.value.successorAuthorityValueDigest !==
+          materialization.newAuthorityValueDigest ||
+        finishing.value.value.successorAuthorityReceiptDigest !==
+          materialization.newAuthorityReceiptDigest ||
+        finishing.value.value.authorityRunTerminalResolutionDigest !==
+          materialization.terminalResolutionDigest ||
+        finishing.value.value.authorityRunFinalSelectorTipDigest !==
+          materialization.finalSelectorTipDigest ||
+        finishing.value.value.authorityRunFinalSelectorValueDigest !==
+          materialization.finalSelectorValueDigest ||
+        finishing.value.value.authorityRunFinalSelectorReceiptDigest !==
+          materialization.finalSelectorReceiptDigest ||
         finishing.value.value.materializationHandoffReceiptDigest !==
           computeAuthorityMaterializationHandoffDigest(materialization) ||
         finishing.value.value.rotationHandoffReceiptDigest !== drh ||

@@ -667,7 +667,7 @@ describe("current and diagnostic schema registries", () => {
       });
     }
     expect(canonicalDigest(constructedPathCensus)).toBe(
-      "d69dda9caddb8e82c9ff8fedfe9009a136d9996e39deeba5a821e2e904f82ee2",
+      "c64aa75c48090202e8cad6196d0451fd8ee21f307a85a736a7f985aeb465ebe1",
     );
     const familyCensus = pointerRegistry.map((row) => ({
       archiveTemplates: row.archiveTemplates,
@@ -787,7 +787,7 @@ describe("current and diagnostic schema registries", () => {
   });
 
   test("removes superseded authority v1 from current dispatch and retains diagnostic parsing", () => {
-    expect(diagnostic.schemaVersions).toHaveLength(28);
+    expect(diagnostic.schemaVersions).toHaveLength(29);
     for (const schemaVersion of diagnostic.schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
       expect(schemaDefinitions).not.toHaveProperty(schemaVersion);
@@ -841,7 +841,7 @@ describe("current and diagnostic schema registries", () => {
       "bootstrap-reviewed-installer/v1",
       "bootstrap-reviewed-helper/v1",
       "state-mutation-bootstrap-anchor-lifecycle-archive/v1",
-      "pointer-mutation-run-checkpoint-evidence/v1",
+      "pointer-mutation-run-checkpoint-evidence/v2",
       "pointer-mutation-commit-evidence/v3",
       "pointer-mutation-conflict-evidence/v1",
       "pointer-mutation-unknown-evidence/v1",
@@ -850,7 +850,7 @@ describe("current and diagnostic schema registries", () => {
       "authority-membership-evidence/v1",
     ];
     for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
-    expect(schemaVersions).toHaveLength(125);
+    expect(schemaVersions).toHaveLength(124);
     expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
     for (const schemaVersion of schemaVersions) {
       const fixture = fixtureFor(schemaVersion);

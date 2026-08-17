@@ -73,7 +73,7 @@ The current registry uses the approved authority contracts:
   `pointer-mutation-run-current-value/v2`,
   `pointer-mutation-run-selector-post-selection-observation/v1`, and
   `pointer-mutation-commit-resolution/v1`, with the composed
-  `pointer-mutation-run-checkpoint-evidence/v1` and
+  `pointer-mutation-run-checkpoint-evidence/v2` and
   `pointer-mutation-run-intent/v2`,
   `pointer-mutation-commit-evidence/v3` envelopes and closed
   `pointer-mutation-conflict-evidence/v1` / `pointer-mutation-unknown-evidence/v1`

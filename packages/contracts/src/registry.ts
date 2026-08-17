@@ -31,6 +31,7 @@ const supersededApprovedVersions = new Set<string>([
   "pointer-mutation-run-intent/v1",
   "pointer-mutation-run-checkpoint-core/v1",
   "pointer-mutation-run-current-value/v1",
+  "pointer-mutation-run-checkpoint-evidence/v1",
   "pointer-mutation-commit-evidence/v1",
   "pointer-mutation-proposed-target-evidence/v1",
   "pointer-evidence-slot/v2",

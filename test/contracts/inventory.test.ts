@@ -7,6 +7,7 @@ import {
   computeAuthorityCensusEntryDigest,
   computeAuthorityCensusPageDigest,
   computeAuthorityCensusTerminalDigest,
+  computeAuthorityCoordinatorPositionDigest,
   computeAuthorityFilesystemObservationDigest,
   computeAuthorityInventoryBatchDigest,
   computeAuthorityInventoryEmptyDigest,
@@ -21,7 +22,9 @@ import {
   computeAuthorityNodeDigest,
   computeAuthorityNodeRecordDigest,
   diagnostic,
+  derivePointerPositionEvidence,
   pointerKinds,
+  computePointerPositionDigest,
   parseContract,
   pointerPath,
   pointerRegistry,
@@ -66,6 +69,24 @@ describe("approved authority node inventory contracts", () => {
         authorityPathInstanceDigest: "../escape",
       }),
     ).toThrow();
+    const coordinatorValue = fixtureFor("authority-node-materialization-run-value/v1");
+    const genericPosition = derivePointerPositionEvidence(
+      "AUTHORITY_NODE_MATERIALIZATION_RUN",
+      coordinatorValue,
+      { authorityPathInstanceDigest: coordinatorValue.authorityPathInstanceDigest as string },
+    );
+    const dedicatedPosition = {
+      schemaVersion: "authority-node-materialization-run-position/v1",
+      authorityPathInstanceDigest: genericPosition.authorityPathInstanceDigest!,
+      coordinatorOrdinal: genericPosition.coordinatorOrdinal!,
+      lifecycle: genericPosition.lifecycle!,
+      rotationId: genericPosition.rotationId!,
+      materializationPlanDigest: genericPosition.materializationPlanDigest!,
+      phaseEvidenceDigest: genericPosition.phaseEvidenceDigest!,
+    };
+    expect(
+      computePointerPositionDigest("AUTHORITY_NODE_MATERIALIZATION_RUN", genericPosition),
+    ).toBe(computeAuthorityCoordinatorPositionDigest(dedicatedPosition));
     for (const current of [
       "state-mutation-authority-value/v3",
       "authority-history-empty-root/v2",

@@ -1143,16 +1143,26 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
       : (() => {
           throw new TypeError("position:shape-invalid");
         })();
-  if (kind === "AUTHORITY_NODE_MATERIALIZATION_RUN" && !tombstone)
+  if (kind === "AUTHORITY_NODE_MATERIALIZATION_RUN" && !tombstone) {
+    const dedicated = Object.freeze({
+      schemaVersion: "authority-node-materialization-run-position/v1",
+      authorityPathInstanceDigest: closed.authorityPathInstanceDigest!,
+      coordinatorOrdinal: closed.coordinatorOrdinal!,
+      lifecycle: closed.lifecycle!,
+      rotationId: closed.rotationId!,
+      materializationPlanDigest: closed.materializationPlanDigest!,
+      phaseEvidenceDigest: closed.phaseEvidenceDigest!,
+    });
     return hashFrame(row.positionDomain, [
-      rawPart(closed.authorityPathInstanceDigest as string),
-      { type: "decimal-ascii", value: closed.coordinatorOrdinal as string },
-      textPart(closed.lifecycle as string),
-      nullableRawPart(closed.rotationId as string | null),
-      nullableRawPart(closed.materializationPlanDigest as string | null),
-      nullableRawPart(closed.phaseEvidenceDigest as string | null),
-      canonicalPart(closed),
+      rawPart(dedicated.authorityPathInstanceDigest as string),
+      { type: "decimal-ascii", value: dedicated.coordinatorOrdinal as string },
+      textPart(dedicated.lifecycle as string),
+      nullableRawPart(dedicated.rotationId as string | null),
+      nullableRawPart(dedicated.materializationPlanDigest as string | null),
+      nullableRawPart(dedicated.phaseEvidenceDigest as string | null),
+      canonicalPart(dedicated),
     ]);
+  }
   return hashFrame(tombstone ? row.tombstonePositionDomain! : row.positionDomain, [
     canonicalPart(closed),
   ]);
