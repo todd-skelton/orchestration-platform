@@ -11,10 +11,10 @@ until the prior step has one terminal output.
 | 1 `session.verify` | session | `cycle-request/v1` | `session-health/v1` | immediately before cycle journal start | healthy → 2; stale/unknown → `FAILED_KNOWN`/`UNKNOWN` |
 | 2 `project.snapshot` | adapter SDK | adapter configuration | `project-facts/v1` | live, paginated observation now | complete → 3; unavailable → named terminal |
 | 3 `breaker.reduce` | breaker | facts + breaker history | breaker holds/receipt | same facts/policy version | permitted capabilities → 4; all held → 14 no-work; unknown → `UNKNOWN` |
-| 4 `module.plan` | portable module | eligible opaque facts/capabilities | `module-action-plan/v1` | exact snapshot digest | action → 5; no eligible action → 14 no-work; invalid → `FAILED_KNOWN` |
+| 4 `module.plan` | portable module | eligible opaque facts/capabilities | `module-action-plan/v1` + `dispatch-brief/v1` | exact snapshot digest | action → 5; no eligible action → 14 no-work; invalid → `FAILED_KNOWN` |
 | 5 `route.select` | routing | action capability + evidence snapshot | `route-selection/v1` | immediately before dispatch plan | route → 6; no supported route → `FAILED_KNOWN`; identity unknown → `UNKNOWN` |
 | 6 `project.preflight` | adapter SDK | action + route + subject | `project-preflight/v1` | immediately before ownership publication | eligible unchanged subject → 7; refused/moved → `FAILED_KNOWN` |
-| 7 `dispatch.plan` | dispatch | action + route + unchanged preflight + role/credential references + optional immutable review target | `dispatch-plan/v1` | immediately before ownership publication | plan → 8; refused/moved → typed skips through 14 then 15; unknown → `UNKNOWN` |
+| 7 `dispatch.plan` | dispatch | action + route + unchanged preflight + role/credential references + digest-bound host-rendered `dispatch-brief/v1` bytes + optional immutable review target | `dispatch-plan/v1` | immediately before ownership publication | plan → 8; refused/moved → typed skips through 14 then 15; unknown → `UNKNOWN` |
 | 8 `worker.dispatch` | dispatch/host | exact `dispatch-plan/v1` from step 7 | launch/ownership receipt | preflight and credential generation still current | live → 9; start refused → typed failure then 11 |
 | 9 `worker.observe` | process/dispatch | launch identity | terminal receipt + immutable `worker-result-subject/v1` for implementation/observer, or `review-attempt-result/v1` for review | exact process tree observation and result materialization | implementation result requiring review → 11 follow-up only; review result → 10; known failure → 11; identity conflict → `UNKNOWN` |
 | 10 `review.reduce` | review | `review-request/v1` binding immutable `review-subject/v1` + exact `review-attempt-result/v1` | `review-authority/v1` binding the target subject digest | target and attempt bytes unchanged | accepted/rejected → 11; unknown → `UNKNOWN` |
@@ -23,6 +23,11 @@ until the prior step has one terminal output.
 | 13 `action.apply` | same adapter/release owner that issued step 12 | exact plan/digest + same action-subject digest + review required by operation kind | project apply, release candidate/certification, promotion, or refusal receipt binding the subject digest; successful promotion also emits mandatory successor-verification `follow-up-cycle-request/v1` | revalidate subject, plan, and every external authority immediately before first mutation | terminal → 14; interrupted known transaction → resume 13; stale/moved/substituted input → refuse then 14; unknown → `UNKNOWN` |
 | 14 `resource.reclaim` | dispatch coordinating exact adapter and host resource owners | all allocation, launch/process, terminal, disposition, and apply receipts | `resource-reclaim-receipt/v1` or retained-capacity refusal | exact process tree dead before owner-specific reclaim | reclaimed/no allocation → 15; live/unknown resource → retain capacity and `FAILED_KNOWN`/`UNKNOWN` |
 | 15 `cycle.terminal` | engine/journal, with supervisor monitor for a recovery launch | all step/skip receipts + resource state + optional promotion fence/follow-up/recovery-launch pointer | `cycle-receipt/v1`; exact recovery-launch-terminal and fence-clear receipts are monitor outputs when a launch is attached | journal prefix, resource census, promotion/broker read-back | complete/failure/no-work → current tick exits after its applicable fence handshake, then supervisor may schedule next tick; contradiction or uncleared required fence → `UNKNOWN` |
+
+The host adapter renders the step-4 module-emitted `dispatch-brief/v1` into
+the brief bytes during step-7 dispatch-plan construction, before ownership
+publication; the rendered bytes are digest-bound in the dispatch plan and
+launch identity.
 
 The complete steps 7–10 block is skipped only for a typed action that requires
 no worker or review; the module manifest must declare that capability and step

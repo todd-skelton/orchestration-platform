@@ -14,7 +14,7 @@ are RFC 3339 UTC with milliseconds; durable IDs are lowercase UUIDv7 and
 digests lowercase SHA-256. Relative paths use `/` and refuse absolute/drive/URI
 prefixes, alternate separators, empty/dot segments, NUL, and all C0/C1 controls.
 
-Every public parser, serializer, migration, and evidence validator takes a
+Every public parser, serializer, and evidence validator takes a
 detached snapshot before semantic reads. Records allow only Object.prototype or
 null prototype, own enumerable data properties, and exact fields. Arrays must
 be same-realm exact Array.prototype values with dense indices plus `length`;
@@ -22,60 +22,49 @@ mutable, sealed, and frozen descriptors are accepted. Proxies, symbols, holes,
 extras, accessors, custom iterators/prototypes, subclasses, cross-realm arrays,
 exotics, and traps refuse without executing user code.
 
-## Current and diagnostic registries
+## Current registry
 
-The authority version dispatch is unified and exact:
-
-| Contract family | Current authority version | Diagnostic-only versions |
-| --- | --- | --- |
-| authority rotation identity | `state-mutation-authority-rotation-id/v2` | `v1` |
-| authority value | `state-mutation-authority-value/v3` | `v1`, `v2` |
-| history empty/nonempty root | `authority-history-empty-root/v2`, `authority-history-root/v2` | corresponding `v1` |
-| authority successor core / append receipt | `state-mutation-authority-successor-core/v2`, `authority-history-append-receipt/v2` | corresponding `v1` |
-| run intent / checkpoint core / current value | `pointer-mutation-run-intent/v2`, `pointer-mutation-run-checkpoint-core/v2`, `pointer-mutation-run-current-value/v2` | corresponding `v1` |
-| commit evidence | `pointer-mutation-commit-evidence/v3` | `v1`, `v2` |
-| evidence slot / packet | `pointer-evidence-slot/v3`, `pointer-evidence-packet/v3` | `v1` capped fixtures and `v2` twelve-slot records |
-| node inventory, coordinator, and census | the named `v1` schemas in `supervisor-contract.md` | none |
-
-Only current versions appear in ordinary exports/dispatch. Diagnostic versions
-are readable only through `diagnostic`, cannot migrate, and refuse at every
-current authority path.
+The current census is `v1` for every contract family. Before the first
+deployed release, a superseded schema generation is deleted from the package
+and its tests; no diagnostic or archive namespace exists, and no superseded
+symbol is exported or reachable. After first deployment, superseded schemas
+are refused at authority paths and become readable only through an explicitly
+versioned migration decision. Unknown and future versions refuse; there is no
+forward compatibility.
 
 The current registry uses the approved authority contracts:
 
 - pointer graph: `pointer-current-tip/v1`,
-  `pointer-cas-proposal-receipt/v2`, `pointer-conflict-receipt/v1`,
-  `pointer-tombstone-value/v1`, and `authority-retention/v1`;
-- epoch/history: `state-mutation-authority-value/v3`,
-  `state-mutation-authority-successor-core/v2`,
-  `authority-history-leaf/v1`, `authority-history-node/v1`,
-  `authority-history-empty-root/v2`, `authority-history-root/v2`,
-  `authority-history-update-proof/v1`,
-  `authority-history-append-receipt/v2`, `authority-membership-evidence/v1`,
-  `pointer-evidence-slot/v3`, and `pointer-evidence-packet/v3`;
+  `pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`, and
+  `pointer-tombstone-value/v1`;
+- epoch/history: `state-mutation-authority-value/v1`,
+  `state-mutation-authority-rotation-id/v1`,
+  `authority-history/v1` chain records,
+  `pointer-evidence-slot/v1`, and `pointer-evidence-packet/v1`;
 - release/cleanup:
-  `active-release/v2`, `activation-cleanup-gate-root/v2`,
-  `activation-cleanup-gate-head/v2`,
-  `activation-cleanup-archive-head/v2`,
-  `activation-recovery-fence-root/v2`, and
-  `activation-recovery-fence-head/v2`;
-- attempts: `activation-recovery-launch/v2`,
-  `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`,
-  `recovery-attempt-terminal-summary/v1`, and
-  `recovery-attempt-accumulator/v1`;
+  `active-release/v1`, `activation-cleanup-gate-root/v1`,
+  `activation-cleanup-gate-head/v1`,
+  `activation-cleanup-archive-head/v1`,
+  `activation-recovery-fence-root/v1`, and
+  `activation-recovery-fence-head/v1`;
+- attempts: `activation-recovery-launch/v1`,
+  `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`, and
+  `attempt-log/v1`;
 - authorization: `recovery-authorization-core/v1`,
-  `recovery-authorization-state/v2`, `native-consume-receipt/v1`,
+  `recovery-authorization-state/v1`, `native-consume-receipt/v1`,
   `recovery-authorization-consume-receipt/v1`,
   `native-removal-receipt/v1`,
-  `recovery-authorization-revoke-receipt/v1`, and
-  `recovery-authorization-attachment/v1`;
-- commit journal: `pointer-mutation-run-checkpoint-core/v2`,
-  `pointer-mutation-run-current-value/v2`,
+  `recovery-authorization-revoke-receipt/v1`,
+  `recovery-authorization-attachment/v1`,
+  `recovery-authorization-archive/v1`, and
+  `recovery-authorization-attachment-archive/v1`;
+- commit journal: `pointer-mutation-run-checkpoint-core/v1`,
+  `pointer-mutation-run-current-value/v1`,
   `pointer-mutation-run-selector-post-selection-observation/v1`, and
   `pointer-mutation-commit-resolution/v1`, with the composed
-  `pointer-mutation-run-checkpoint-evidence/v2` and
-  `pointer-mutation-run-intent/v2`,
-  `pointer-mutation-commit-evidence/v3` envelopes and closed
+  `pointer-mutation-run-checkpoint-evidence/v1` and
+  `pointer-mutation-run-intent/v1`,
+  `pointer-mutation-commit-evidence/v1` envelopes and closed
   `pointer-mutation-conflict-evidence/v1` / `pointer-mutation-unknown-evidence/v1`
   terminal unions;
 - external bootstrap: `physical-destination-identity/v1`,
@@ -90,7 +79,6 @@ The current registry uses the approved authority contracts:
   `destination-owner-successor-authority/v1`,
   `destination-owner-independent-review/v1`,
   `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`,
-  `state-mutation-destination-owner-retention/v1`,
   `state-mutation-bootstrap-anchor/v1`,
   `state-mutation-bootstrap-anchor-lifecycle-value/v1`,
   `state-mutation-bootstrap-anchor-use-intent/v1`,
@@ -105,41 +93,28 @@ The current registry uses the approved authority contracts:
   `state-mutation-bootstrap-genesis-core/v1`, and
   `state-mutation-bootstrap-genesis-post-selection-receipt/v1`.
 
-`pointer-cas-proposal-receipt/v1`, `state-mutation-authority-value/v1|v2`,
-`authority-history-empty-root/v1`, `authority-history-root/v1`,
-`authority-history-append-receipt/v1`, the capped serialized authority-history
-table, `pointer-evidence-packet/v2`, `pointer-evidence-slot/v2`, run core/value
-v1, run intent v1, commit evidence v1/v2, rotation identity v1, the twelve-slot
-packet, and the thirteen superseded active-release, gate, fence, launch,
-cleanup-head, and authorization v1 schemas
-exist only under the frozen `diagnostic` namespace. `diagnostic.parseContract`
-may read their historical bytes. They are not ordinary/deep exports;
-`parseContract` and every canonical authority path refuse them. No migration
-exists because no v1 authority was deployed.
-
-Exact current versions are readable. The named
-`platform-configuration/v0-fixture` alone is migratable. Missing, diagnostic,
-other legacy, malformed, unknown, and future versions are refused.
+Exact current versions are readable. Missing, legacy, malformed, unknown,
+and future versions are refused; a v0 record refuses like any unknown
+version.
 
 ## Pointer registry and framing
 
-The closed runtime pointer registry has exactly thirteen kinds and, for each kind, exact
-tip path, roots, archives, genesis mode, source tokens, retention class, and
-value schemas. Transaction path bindings are lowercase UUIDv7; unused/extra,
+The closed runtime pointer registry has exactly eleven kinds and, for each kind, exact
+tip path, roots, archives, genesis mode, source tokens, and value schemas.
+Transaction path bindings are lowercase UUIDv7; unused/extra,
 wrong-family, alternate, or partial bindings refuse. The fixed singleton lock is
 `installation/state-mutation.lock`. `ACTIVATION_RECOVERY_LAUNCH`,
-`RECOVERY_ATTEMPT_ACCUMULATOR`, and `RECOVERY_ATTEMPT_RESERVATION` each accept
-exactly `recovery-fence-v2` or `cleanup-gate-pre-fence-v2`; all other runtime
+`RECOVERY_ATTEMPT_LOG`, and `RECOVERY_ATTEMPT_RESERVATION` each accept
+exactly `recovery-fence` or `cleanup-gate-pre-fence`; all other runtime
 kinds require `none`. Unknown, differently cased/encoded, cross-family, or
 colliding paths/tokens refuse.
 
-The thirteen kinds are `ACTIVE_RELEASE`, `ACTIVATION_CLEANUP_GATE`,
+The eleven kinds are `ACTIVE_RELEASE`, `ACTIVATION_CLEANUP_GATE`,
 `ACTIVATION_RECOVERY_FENCE`, `ACTIVATION_RECOVERY_LAUNCH`,
 `RECOVERY_AUTHORIZATION_STATE`, `RECOVERY_AUTHORIZATION_ATTACHMENT`,
-`RECOVERY_ATTEMPT_ACCUMULATOR`, `ACTIVATION_CLEANUP_ARCHIVE_HEAD`,
-`AUTHORITY_RETENTION`, `RECOVERY_ATTEMPT_RESERVATION`,
-`STATE_MUTATION_AUTHORITY_ROTATION`, `POINTER_MUTATION_RUN_CURRENT`, and
-`AUTHORITY_NODE_MATERIALIZATION_RUN`.
+`RECOVERY_ATTEMPT_LOG`, `ACTIVATION_CLEANUP_ARCHIVE_HEAD`,
+`RECOVERY_ATTEMPT_RESERVATION`,
+`STATE_MUTATION_AUTHORITY_ROTATION`, and `POINTER_MUTATION_RUN_CURRENT`.
 
 Public tip, root, and archive constructors expand placeholders even inside a
 filename. They require the exact closed transaction, source, predecessor,
@@ -157,24 +132,27 @@ accepted.
 
 Framing `F` is UTF-8 `orchestration-platform`, NUL, domain, NUL, U32 part count,
 then closed type tag, U64 byte length, and bytes for every part. Digests are raw
-32 bytes; nullable text/digests have distinct typed nulls; accumulator tags are
+32 bytes; nullable text/digests have distinct typed nulls; attempt-log tags are
 raw fixed bytes `00` and `01`, never text. Authority/history/run ordinals and
-counts use `DECIMAL_ASCII` (`"0"|[1-9][0-9]*`), decimal carry, and no numeric
-lifetime cap. Goldens pin:
+counts are canonical decimal strings (`"0"|[1-9][0-9]*`) bounded by the
+JavaScript safe-integer range; a value above `2^53 - 1` refuses, and no
+arbitrary-precision numeric type exists. Goldens pin:
 
-- Dp under `pointer-instance/v2`;
-- Dv under `pointer-value/v2`;
-- Dr under `pointer-receipt/v2` over
-  `pointer-cas-proposal-receipt/v2`;
-- Dt under `pointer-tip/v2` over `pointer-current-tip/v1`;
-- mutation ID under `pointer-mutation-id/v2`;
+- Dp under `pointer-instance/v1`;
+- Dv under `pointer-value/v1`;
+- Dr under `pointer-receipt/v1` over
+  `pointer-cas-proposal-receipt/v1`;
+- Dt under `pointer-tip/v1` over `pointer-current-tip/v1`;
+- mutation ID under `pointer-mutation-id/v1`;
 - Dc under `pointer-conflict-receipt/v1`.
 
 Values never contain the receipt/tip selecting them. Proposals are create-once
 `VALUE_PROPOSED|TOMBSTONE_PROPOSED` and classify only as PENDING, SELECTED,
-LOST_CONFLICT, COMPACTED, or UNKNOWN from exact winner evidence. Terminal
+LOST_CONFLICT, or UNKNOWN from exact winner evidence. Terminal
 authority selects `pointer-tombstone-value/v1`; the current tip is never deleted
 and bare absence never regains authority. The ten tombstone-enabled families
+— every registry kind except `STATE_MUTATION_AUTHORITY_ROTATION`, whose
+authority pointer is never removed —
 use distinct ordinary and tombstone position domains and closed per-kind field
 contracts. Ordinary values require
 `VALUE_PROPOSED/SELECT`; tombstones require `TOMBSTONE_PROPOSED/REMOVE`, an
@@ -201,15 +179,18 @@ teardown, and exact reinstall without parallel genesis.
 
 State mutation validators pin the fixed lock sequence, revocable ISS-004
 context identity, exact E0 bootstrap producer versus selected-stable rotation,
-and the thirteen-kind census. `state-mutation-authority-value/v3` binds
-`historyRootKind=EMPTY|NONEMPTY`: E0 selects FULL_REQUIRED
-`authority-history-empty-root/v2` (`Dhe`, count `"0"`) and empty `Dnir`, E1 proves
-EMPTY→NONEMPTY, and later En proves NONEMPTY→NONEMPTY. Nonempty `Dh` requires
-count `>=1` and latest ordinal `count-1`; membership against EMPTY refuses.
-Lifetime-stable `G` excludes rotating helper/profile/ABI/lock/state-component
-facts. En validates deterministic rotation, exact 256-sibling EMPTY→PRESENT
-update, append receipt, successor root/count, and historical membership against
-the live current root. Serialized tables are diagnostic only. ISS-004 owns
+and the eleven-kind census. `state-mutation-authority-value/v1` binds the
+selected `authority-history/v1` head ordinal and record digest. Record `n`
+binds ordinal `n`, the digest of record `n-1` (record `0` binds the genesis
+literal), the retiring epoch, and the successor authority facts. Verification
+walks the complete chain from genesis against the selected head: a missing
+record at or below the head, a head-ordinal or digest mismatch, or a fork,
+gap, reorder, or truncation refuses; the path at head plus one must be absent
+or match the armed rotation intent defined below (when no armed rotation
+intent is selected, any file at head plus one refuses) and the path at head
+plus two must be absent. Lifetime-stable `G` excludes rotating
+helper/profile/ABI/lock/state-component facts. En validates the deterministic
+rotation identity and the exact chain append. ISS-004 owns
 locks, live handles, CAS, reconciliation, tombstones, history writes, and
 context revocation.
 
@@ -218,8 +199,8 @@ Commit validators compose immutable segment→checkpoint core→selected
 Cores and terminal resolutions exclude their selecting selector graph.
 `PROPOSED` is a live branded view only; persisted recovery is `CRASH_PREFIX` or
 `CAS_AMBIGUOUS`, and final resolution is exactly
-`SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL`. META_LEAF follows generic storage/
-classification/retention but does not recursively journal itself.
+`SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL`. META_LEAF follows generic storage
+and classification but does not recursively journal itself.
 
 Recovery authorization core has closed BOOTSTRAP/SUCCESSOR unions. It excludes
 gate/lifecycle/consume/revoke/attachment and
@@ -232,9 +213,9 @@ CONSUMED, native removal then REVOKED; CONSUMED/REVOKED values deliberately do
 not contain later post receipts. External post-consume/revoke records bind the
 actual recomputed selected Dt/Dv/Dr plus exact capability/native custody, broker service/
 profile/client generation, and native/selected readbacks. Attachment binds that
-consume receipt, reservation triple, READY/LIVE records, and optional exact
-prior attachment/terminal accumulator triples; it never binds a future terminal
-summary.
+consume receipt, reservation triple, the LIVE descriptor record, and optional
+exact prior attachment/terminal attempt-log triples; it never binds a future
+terminal record.
 
 CREATED selects only from a null predecessor triple. CONSUMED selects from the
 exact gate-bound CREATED triple, and REVOKED selects from the exact CONSUMED
@@ -243,72 +224,59 @@ facts cannot change across those selections. Bootstrap and successor gate/core
 mode unions compare their candidate, active/fence, admission, broker, release,
 executable, and operation-manifest facts field for field.
 
-Reservations bind one UUIDv7 (uniqueness only) to a predecessor accumulator
-triple/genesis and have exact RESERVED/CONSUMED/TERMINAL/TOMBSTONE fields.
-Launch, descriptor, terminal summary, attachment, and accumulator separately
-bind transaction/source, roots/heads, reservation, argv/process, predecessor,
-failure/recovery/idempotency, and terminal proofs.
-First/later accumulator formulas use domain-separated raw digests. There is no
-lifetime attempt array or generation cap; a fixed packet verifies only current
-gate/fence/launch, reservation, descriptor, attachment, accumulator, initial
-records, and at most one previous terminal summary.
+Reservations bind one UUIDv7 (uniqueness only) to a predecessor terminal
+attempt-log triple/genesis and have exact
+RESERVED/CONSUMED/TERMINAL/TOMBSTONE fields. Launch, descriptor, attachment,
+and attempt-log records separately bind transaction/source, roots/heads,
+reservation, argv/process, predecessor, failure/recovery/idempotency, and
+terminal proofs. Genesis/later attempt-log records use domain-separated raw
+tags. A fixed packet verifies current gate/fence/launch, reservation,
+descriptor, attachment, and the attempt log, whose chain is verified in full
+and stays small because attempts are rare.
 
-IN_PROGRESS accumulator values have no terminal summary or rolling digest.
-TERMINAL values require both; a composed validator recomputes R0 from the raw
-first summary or Rn from the selected predecessor accumulator Dv plus the raw
-summary. It also binds the selected reservation, descriptor, predecessor
-accumulator, and predecessor summary.
+IN_PROGRESS attempt-log records have no folded terminal fields. TERMINAL
+records fold the terminal-summary fields — descriptor, optional attachment,
+terminal lineage, exit/absence, channel-denial, and revocation evidence — so
+no separate terminal-summary document exists and summary-as-launch-authority
+is structurally impossible.
 
-The composed accumulator check receives selected current accumulator and
-reservation envelopes plus two named roles: the current pointer predecessor and
-the prior terminal lineage. R0 IN_PROGRESS has neither; R0 TERMINAL advances
-from its same-attempt selected IN_PROGRESS value and has no lineage. Rn
-IN_PROGRESS advances directly from the same selected prior TERMINAL value used
-as lineage; Rn TERMINAL advances from its same-attempt selected IN_PROGRESS
-value while retaining the prior TERMINAL lineage. The current proposal binds
-only the current role; accumulator, reservation, prior summary, and rolling
-digest bind only lineage. Both roles recompute the same canonical accumulator
-path/Dp and installation/project/state/transaction/source identities. The fixed
-packet carries at most those two envelopes and one prior summary, so verification
-cost remains constant without accepting role swaps, stale siblings, or split
-claims. A selected IN_PROGRESS accumulator also proves its own proposal ancestry:
-null for R0 or the exact selected prior TERMINAL lineage for Rn. A TERMINAL value
-therefore proves both its immediate same-attempt IN_PROGRESS predecessor and
-that predecessor's ancestry. Each historical proposal retains and digest-binds
-its own producer authority epoch; a valid E1 predecessor may be advanced by an
-E2 proposal. Epoch equality is required only among the lock observations and
-new proposal/readbacks of one commit. Each predecessor-key reservation is a
-distinct create-once pointer instance, so its selected RESERVED proposal must
-have a fully null prior triple; a TERMINAL-to-RESERVED replay is never an allowed
-transition.
+The composed attempt-log check walks the full chain from its tagged genesis:
+record `n` binds the digest of record `n-1` and ordinal `n`, ordinals are
+contiguous safe integers that refuse above `2^53 - 1`, and the selected
+reservation, descriptor, and predecessor TERMINAL record bind exactly. R0
+IN_PROGRESS has a tagged genesis predecessor; Rn IN_PROGRESS advances from the
+selected prior TERMINAL record; each TERMINAL record advances from its
+same-attempt IN_PROGRESS record. Current and predecessor roles recompute the
+same canonical attempt-log path/Dp and
+installation/project/state/transaction/source identities, so no role swap,
+stale sibling, or split claim is accepted. Each historical record retains and
+digest-binds its own producer authority epoch; a valid E1 predecessor may be
+advanced by an E2 proposal. Epoch equality is required only among the lock
+observations and new proposal/readbacks of one commit. Each predecessor-key
+reservation is a distinct create-once pointer instance, so its selected
+RESERVED proposal must have a fully null prior triple; a TERMINAL-to-RESERVED
+replay is never an allowed transition.
 
-`pointer-evidence-packet/v3` is an exact purpose union. `HISTORICAL_READ`
+`pointer-evidence-packet/v1` is an exact purpose union. `HISTORICAL_READ`
 requires `currentCommit=null` and a scoped read handle; `MUTATION_COMMIT`
-requires exact intent/run/current selector plus a live mutation handle. The nine
-same-epoch commit observations and new proposal/readbacks bind the live current
-selection. Historical envelopes keep their producer epoch and use deduplicated
-256-sibling membership projections rooted in that live selection; no caller-
-chosen root or unsigned row authenticates them. Packet proof count is bounded by
-the closed evidence-slot census, not lifetime rotations. Tombstones authenticate
-both removal and selected prior producers. Authority history remains
-FULL_REQUIRED.
+requires exact intent/run/current selector plus a live mutation handle. The
+nine same-epoch commit observations and new proposal/readbacks bind the live
+current selection. Historical envelopes keep their producer epoch and are
+verified by the full authority-history chain walk in the live current
+selection; no caller-chosen head or unsigned record authenticates them. Packet
+evidence is bounded by the closed evidence-slot census. Tombstones
+authenticate both removal and selected prior producers.
 
 The packet serializes the exact global identity, selected current authority,
-composed authority-history binding, thirteen registry-ordered typed evidence
-slots, deduplicated membership envelopes, and (for `MUTATION_COMMIT`) the
-composed nine-checkpoint run. Digest-only bags, reordered/duplicate slots,
-unselected producer triples, and a mutation purpose without a current commit
-refuse. `ordinaryEpochSequence` and `validateEpochSequence` remain diagnostic
-helpers only and are absent from the current root export.
+composed authority-history binding, eleven registry-ordered typed evidence
+slots, and (for `MUTATION_COMMIT`) the composed nine-checkpoint run.
+Digest-only bags, reordered/duplicate slots, unselected producer triples, and
+a mutation purpose without a current commit refuse.
 
-Retention keeps destination/anchor lineage, physical identity/observations,
-authority history, and run audit FULL_REQUIRED. Terminal attempt history alone
-may use checkpoint compaction. Compaction requires selected non-pending
-classification, checkpoint, plan, and completion in order and never applies to
-PENDING/UNKNOWN.
-AUDIT_DEGRADED permits only existing recovery/retry/cleanup, selected attachment,
-and ordinary non-release ticks; it blocks new promotion/bootstrap/certification,
-unrelated authorization/attachment, compaction, and audit finalization.
+Every record class is FULL_REQUIRED: destination/anchor lineage, physical
+identity/observations, authority history, run audit, and terminal attempt
+history alike. No compaction, retention pointer, or degraded-audit mode
+exists; loss of any required record is UNKNOWN and blocks mutation.
 
 The external bootstrap graph remains acyclic: selected owner/anchor lifecycle
 values do not embed the downstream successor-post or final consumption receipt.
@@ -331,16 +299,15 @@ macOS lowercase NFD, and Linux case-sensitive NFC; the selected profile must
 match the OS field. Case or normalization-distinct Linux identities remain
 distinct rather than colliding.
 
-Authority membership recomputes each leaf epoch key and authenticates it
-against the exact selected current authority's `G`, nonempty history root, and
-count. Packet memberships are sorted by epoch key, deduplicated, and contain no
-unused proofs. Append receipts, update proofs, and prior/successor root
-kind/digest/count fields agree exactly, and every leaf authority `Dp` equals
-the lifetime-stable authority `Dp` committed by `G`. Sparse nodes use the
-content-addressed canonical `installation/state-mutation-authority-history/nodes/<node-digest>.json`
-path. A single-update witness remains exactly 256 siblings; lifetime node
-inventory uses sorted cursor pages of at most 256 nodes, so validation has no
-lifetime rotation or node-count cap.
+Authority-history verification recomputes each record digest and authenticates
+the chain against the exact selected current authority's `G`, head ordinal,
+and head record digest. Every record's authority `Dp` equals the
+lifetime-stable authority `Dp` committed by `G`. Records use the
+content-addressed canonical
+`installation/state-mutation-authority-history/records/<ordinal>.json` path;
+the walk constructs the path of record `n+1` from `n` and never enumerates a
+directory. Rotation occurs at most a few times per release, so the full walk
+is bounded in practice.
 
 Commit evidence includes a closed immutable intent. Every segment and core
 repeats and validates target kind/path/install/project/state/transaction/source
@@ -355,21 +322,25 @@ equals its commit authority. Its registry slot equals the selected target for
 target. Every checkpoint preserves the full kind/path/install/project/state/
 transaction/source/`Dp`/mutation/run identity tuple.
 
-Current authority history additionally requires selected
-`authority-node-inventory-empty-root/v1|authority-node-inventory-root/v1`,
-materialization plan/filesystem observation/membership entry/batch schemas, the
-singleton `authority-node-materialization-run-value/v1`, and authenticated
-census page/terminal records. Filesystem dispositions and membership actions
-are separate closed unions. Roots/counts are selected by history root v2 and
-authority value v3; page chains cannot assert their own completeness.
-
-The coordinator is one stable `AUTHORITY_DP`-scoped pointer whose ordinal never
-resets. Exact lifecycle edges enforce one active plan and finish-only recovery.
-Authority rotation alone uses the exact checkpoint-6 E(n)→E(n+1) handoff:
-fresh E(n+1) reproduces `Drh`, terminalizes checkpoint 8, then produces `Dhand`
-for coordinator FINISHING. All other commits remain single-epoch. Earlier
-authority root/value/append/core/run/packet versions and the twelve-kind census
-are diagnostic-only and refused at current paths.
+Every commit run is single-epoch. The rotation run appends the exact chain
+record and performs the authority CAS as its final action; it executes no
+checkpoint after that CAS under either epoch, and its run-current journal
+legitimately rests at the selected CAS-armed checkpoint across the selection.
+Each fresh new-epoch run, until the rotation run's terminal resolution is
+selected, performs its lock-held full chain walk and, on success, writes that
+terminal resolution before any other mutation; the write is idempotent
+create-once under the ordinary run-current protocol. The rotation run reaches
+SELECTED through this named exception alone: its checkpoints bind the old
+epoch, its terminal resolution binds the successor epoch, and the run remains
+single-epoch because nothing executes after its CAS. The armed rotation
+intent is the selected CAS-armed run-current journal for the rotation target
+together with its create-once intent record; a head-plus-one chain record is
+accepted only when its ordinal is head plus one, its predecessor digest
+equals the head record digest, and its rotation identity and successor
+authority facts equal that armed intent. Rotation is forward-only once
+appended: the pending record is the
+single permitted head-plus-one excess, and any other excess, gap, fork, or
+mismatch refuses.
 
 ## Review attack surface
 
@@ -377,8 +348,9 @@ Executable mutants cover missing/extra/partial fields, coordinated digest
 substitution, domain/order/type/null framing changes, source/path collisions,
 fake lost conflicts, pointer deletion/bare absence, invalid cleanup cells/edges,
 mixed epochs, incomplete rotation census, candidate core fields, reordered
-native/post receipts, attachment-to-summary confusion, reservation forks,
-lifetime caps, sparse-root/table substitution, run-current recursion, packet
-purpose overflow, compaction ordering, v1 at authority paths, and all hostile
+native/post receipts, attachment-to-terminal-record confusion, reservation
+forks, ordinal overflow, chain-record forgery and head substitution,
+run-current recursion, packet purpose overflow,
+superseded symbols reachable after deletion, and all hostile
 reflective shapes. Cross-OS conformance reuses the same canonical goldens
 without changing authority.

@@ -110,13 +110,16 @@ record binds the accepted review receipt, service profile
 host/user/state identity, and current read-back. `retain-for-n0` removes the
 test collector, challenge, uploader, and test scheduler but preserves exactly
 the reviewed reduced service/principal/store and host-key public reference/
-generation for the N0 upgrade. `remove` is predecessor-specific: from `PLANNED`
+generation — usable only through its closed profile — for the N0 upgrade.
+`remove` is predecessor-specific: from `PLANNED`
 it cancels the exact plan and proves service/key absence; from
 `INSTALLED_REDUCED` it removes the exact service/principal/endpoint after
 proving no key exists; from `ENROLLED`, `CHALLENGE_ARMED`, or
-`REENTRY_VERIFIED` it first revokes the exact key, proves signing denial, then
+`REENTRY_VERIFIED` it first revokes the exact key through broker
+`revokeHostEvidenceKey`, proves signing denial, then
 removes all service/principal/endpoint/test definitions after exact absence
-read-back. Each path retains a state-bound signed removal receipt. Missing
+read-back. Each path retains its distinct signed retention or state-bound
+removal receipt. Missing
 or extra residue, references from another installation, or unknown process/key
 state blocks terminalization.
 
@@ -155,15 +158,6 @@ only that signed non-secret receipt by exact run/artifact target; upload success
 is not part of local authority. Operator collection from the explicit path is
 the fallback. Receipt verification checks signature, nonce, boot movement,
 identities, exact installed bytes, and lifecycle timestamps.
-
-Teardown evidence is disposition-specific. `retain-for-n0` proves the test
-collector/process/challenge/uploader/scheduler resources absent while the exact
-reviewed reduced service/principal/store and host-key reference/public key/
-generation remain present and usable only through its closed profile. `remove`
-cancels/proves absence from `PLANNED`, removes the service with key-absence proof
-from `INSTALLED_REDUCED`, and only from key-bearing states calls broker
-`revokeHostEvidenceKey` before removal and signing-denial/key-absence proof.
-Each retains its distinct signed retention or state-bound removal receipt.
 Moved/cloned key, unchanged boot identity, wrong user/state root,
 manual collector start, unsigned output, upload-only evidence, receipt replay,
-or evidence from the opposite disposition is unknown/refused.
+or evidence from the opposite teardown disposition is unknown/refused.

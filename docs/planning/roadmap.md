@@ -81,6 +81,7 @@ repository bootstrap + adapter contracts ─> live GitHub/Actions + protection p
 OS harness + capability + credential backend ─> host-custody probe
 host-custody probe + credential broker + GitHub protection receipt ─> host-custody package
 
+contracts + CLI ─> walking skeleton (evidence only; blocks nothing)
 state ─> sessions ───────────────────────────────┐
 contracts + state + project adapter ─> circuit breaker ─┐
 process + sessions + project adapter + credential broker ─> dispatch ─> review authority
@@ -88,6 +89,8 @@ state + sessions ─> event journal ──────────────�
 contracts + project adapter ─> modules ─> routing
 trusted OS harness + CLI contract ─> Codex host probe
 dispatch + modules + routing + project adapter + host probe + credential broker ─> Codex host adapter
+CLI + journal ─> operator status projection
+review authority + Codex host ─> review-discrimination calibration (advisory)
 state + review + journal ─> release promotion
 sessions + dispatch + review + journal + modules + routing + release + credential broker ─> engine cycle
 engine cycle + OS harness + credential broker ─> cross-platform supervisor ─> repeated/cold-host cycles

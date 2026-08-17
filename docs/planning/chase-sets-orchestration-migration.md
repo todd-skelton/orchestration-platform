@@ -87,7 +87,7 @@ Explicit exclusions stay on the Chase Sets delivery board:
 | dispatch briefs, lane ownership, admission, worker launch | `ISS-008`, `ISS-021`, `ISS-023` |
 | exact-head independent review and replan breaker | `ISS-009`, `ISS-037` |
 | durable ledger, reducers, telemetry, decision records | `ISS-010` |
-| portable planning/delivery/review skill | `ISS-011` |
+| portable planning/delivery/review modules | `ISS-011` |
 | provider-neutral routing and advisory cost evidence | `ISS-012` |
 | release installation, predecessor authority, rollback/recovery | `ISS-014`, `ISS-020`, `ISS-027` |
 | circuit breakers and repair admission | `ISS-025` |

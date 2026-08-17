@@ -91,10 +91,10 @@ The canonical pointer is transaction-scoped beneath
 states are `CREATED`, `CONSUMED`, `REVOKED`, and `REMOVED`.
 
 Its closed schemas are `recovery-authorization-core/v1`,
-`recovery-authorization-state/v2`, `native-consume-receipt/v1`,
+`recovery-authorization-state/v1`, `native-consume-receipt/v1`,
 `recovery-authorization-consume-receipt/v1`, `native-removal-receipt/v1`,
 `recovery-authorization-revoke-receipt/v1`, and
-`recovery-authorization-archive/v2`. Native and post-selection receipts use
+`recovery-authorization-archive/v1`. Native and post-selection receipts use
 deterministic canonical paths beneath
 `installation/recovery-authorizations/<transaction>/native/<operation-id>.json`
 and `.../receipts/<operation-id>.json`; their schema discriminator prevents a
@@ -131,20 +131,24 @@ Authorization attachment is a separate
 `TERMINAL`, and `REMOVED` values. `ATTACHED` binds a selected LIVE attempt
 descriptor and its reservation, launch, gate, fence, active-release, broker,
 argv, process, and current authority triples. It never binds a future terminal
-summary. `TERMINAL` later binds the selected attempt terminal summary and exact
-revocation/exit evidence.
+record. `TERMINAL` later binds the selected `TERMINAL` attempt-log record —
+which folds in the terminal state/lineage, exit/absence, and channel-denial
+fields — and exact revocation/exit evidence; no separate terminal-summary
+document exists.
 
 Its value and archive schemas are
 `recovery-authorization-attachment/v1` and
 `recovery-authorization-attachment-archive/v1`; the canonical tip is exactly
 `installation/recovery-authorizations/<transaction>/attachment.json`.
 
-The first attempt may bind explicit accumulator genesis. Every later attachment
-binds the predecessor selected terminal accumulator/summary triple. A
+The first attempt may bind explicit attempt-log genesis. Every later attachment
+binds the predecessor selected `TERMINAL` attempt-log record. A
 `MUTATION_COMMIT` packet proves the current descriptor/attachment and latest
-predecessor summary plus the exact selected run-current checkpoint. Historical
-producer epochs use scoped sparse-tree projections rooted in the live current
-authority context; lifetime history remains linked but is not replayed.
+predecessor `TERMINAL` attempt-log record plus the exact selected run-current
+checkpoint. Historical
+producer epochs are verified by the full authority-history chain walk in the
+live current authority context; the attempt log stays small and is verified in
+full.
 
 Pre-fence recovery may consume the narrowed capability and publish the
 precomputed fence, but cannot attach. It must terminalize and tombstone before a
@@ -176,15 +180,16 @@ whose cross-bindings must be selected/read back before use.
 service, run-current selection, pointer mutation, and private capabilities.
 `ISS-014` supplies release/gate/fence facts. `ISS-020` owns destination-owner,
 anchor, reviewed-bootstrap genesis, and reinstall. `ISS-030` supplies selected
-reservation, descriptor, summary, and accumulator facts. `ISS-031` selects and
+reservation, descriptor, and attempt-log facts. `ISS-031` selects and
 proves custody topology. `ISS-032` produces core/state/native receipts,
 attachment, revocation, and active-client transitions. `ISS-022` proves the
 physical locator and cross-process lock/custody prerequisites.
 
 Compatibility tests must attack the complete core field census, both mode
 unions, the consume/revoke ordering, wrong native receipt, coordinated digest
-substitution, cyclic/self-selected authority, attachment-to-summary confusion,
-unbounded-attempt assumptions, and every malformed closed record/array.
+substitution, cyclic/self-selected authority, attachment-to-terminal-record
+confusion, ordinal-overflow assumptions, and every malformed closed
+record/array.
 The negative census inserts every excluded lifecycle, gate, consume, revoke,
 attachment, and candidate-operation-manifest field individually and in
 coordinated groups; every insertion must fail as unknown before digest use.

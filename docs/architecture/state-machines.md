@@ -14,14 +14,13 @@ and tips form the acyclic `Dv/Dr/Dt` graph in `supervisor-contract.md`.
 | `PENDING` | create-once value and proposal, no selected winner yet | under the same epoch lock perform the real CAS/read-back |
 | `SELECTED` | canonical tip equals the proposed `Dv/Dr` | idempotent read; never reapply |
 | `LOST_CONFLICT` | a different selected winner and exact conflict receipt | retain for census/audit |
-| `COMPACTED` | selected retention plan and completion receipt | retain the compacted classification proof |
 | `UNKNOWN` | malformed, contradictory, missing, fake-lost, or mixed epoch | external diagnosis; refuse mutation/start |
 
 The durable commit resolution states are exactly:
 
 | Resolution | Required evidence | Authority |
 | --- | --- | --- |
-| `SELECTED` | complete nine-stage run, target tip equals expected `Dt/Dv/Dr`; one epoch except the exact authority-rotation handoff | selected target result |
+| `SELECTED` | complete nine-stage run, target tip equals expected `Dt/Dv/Dr`, one epoch; rotation runs excepted (see `Authority rotation`) | selected target result |
 | `LOST_CONFLICT` | complete run, real different winner, exact conflict receipt | retain loser; winner remains authority |
 | `UNKNOWN_TERMINAL` | fresh locked reconciliation, exact closed failure reason/evidence | refuse mutation/start |
 
@@ -44,10 +43,10 @@ does not recursively journal itself.
 
 An ordinary commit rereads the same selected authority before and after target
 selection. Rotation runs under the old private capability, resolves every
-other-kind pending proposal across the thirteen-kind registry, requires a
-complete zero-unrelated-PENDING/zero-UNKNOWN census, and permits only its own
-exact selected `CAS_AMBIGUOUS` run-current tip. Authority CAS revokes the old
-context; a fresh new-epoch run terminalizes the rotation. Kernel owner death is
+pending proposal among the other ten kinds of the eleven-kind registry,
+requires a complete zero-unrelated-PENDING/zero-UNKNOWN census, and follows
+the single canonical protocol in `Authority rotation` below. Authority CAS
+revokes the old context. Kernel owner death is
 the only lock-loss recovery; PID, age, lease, and timeout are never authority.
 
 ### External destination owner and anchor
@@ -78,74 +77,54 @@ Exact reinstall reuses CONSUMED; RETIRED requires a new installation ID.
 
 ### State-authority history
 
-E0 has ordinal `"0"`, selected FULL_REQUIRED
-`authority-history-empty-root/v2` (`historyRootKind=EMPTY`, `Dhe`, count
-`"0"`) plus selected empty `Dnir`/node count `"0"`, null predecessor, and a reviewed-bootstrap proposal producer rather
-than a self epoch. E1 proves the only `EMPTY→NONEMPTY` append; En for n>1
-proves `NONEMPTY→NONEMPTY`. A nonempty root has count `>=1`, latest ordinal
-exactly count minus one, and complete latest epoch key/triple. En appends the
-selected E(n-1) leaf using an exact 256-sibling EMPTY→PRESENT proof and
-deterministic rotation identity. The selected successor binds the new history
-root and append receipt. Current context validates either the complete E0
-external/runtime graph or the immediate append transition. Historical producer
-projections must be memberships in that live current nonempty root; membership
-against `Dhe` refuses. `G` remains identical across rotations and excludes
-rotating helper/profile/ABI/lock/state-component facts. Projections revoke when
-the context/root changes.
+E0 has ordinal `"0"`, a null predecessor, the genesis `authority-history/v1`
+record as its selected head, and a reviewed-bootstrap proposal producer rather
+than a self epoch. En appends record `n` binding ordinal `n`, the SHA-256 of
+record `n-1` (record `0` binds the genesis literal), the retiring epoch, and
+the successor authority facts, using the deterministic rotation identity. The
+selected successor value binds the new head ordinal and record digest. Current
+context validates either the complete E0 external/runtime graph or the
+immediate append transition. Records live at canonical ordinal-derived paths;
+the walk constructs the path of record `n+1` from `n` and never enumerates a
+directory. Verification walks the complete chain from genesis and compares the
+selected head ordinal and digest: a missing record at or below the head
+refuses, the path at head plus one must be absent or match the armed rotation
+intent defined in `Authority rotation`, the path at head plus two must
+be absent, and a file outside the
+canonical ordinal paths carries no authority. Ordinals are canonical decimal
+strings bounded by the safe-integer range and refuse above `2^53 - 1`.
+Historical producer projections derive from the selected authority value and
+the fully walked chain. `G` remains identical across rotations and excludes
+rotating helper/profile/ABI/lock/state-component facts. Projections revoke
+when the context/head changes.
 
-The selected history root v2 and authority value v3 also bind the FULL_REQUIRED
-node-inventory `Dnir` and decimal count. Each rotation derives the exact node
-plan, then classifies filesystem state independently from inventory membership:
+### Authority rotation
 
-| Filesystem disposition | Membership action | Result |
-| --- | --- | --- |
-| `CREATED` | `INSERT_ABSENT` with exact nonmembership | insert once; count + 1 |
-| `READBACK_SAME` | `INSERT_ABSENT` during selected STARTED recovery | insert once; count + 1 |
-| `READBACK_SAME` | `ALREADY_MEMBER` with exact membership | root/count unchanged |
-| `MISSING_SELECTED` | none | `UNKNOWN`; block |
-| `BYTES_CONFLICT` | none | `UNKNOWN`; block |
+Every commit run is single-epoch, including authority rotation. The rotation
+run under E(n) executes checkpoints 0–5, appends the chain record, and
+performs the target authority CAS as its final action; it executes no
+checkpoint after that CAS under either epoch, and its run-current journal
+legitimately rests at the selected `CAS_ARMED` checkpoint across the
+selection. Each fresh E(n+1) run, until the rotation run's terminal
+resolution is selected, performs its lock-held full chain walk and, on
+success, writes that terminal resolution before any other mutation; the write
+is idempotent create-once under the ordinary run-current protocol, and this
+is not a two-epoch run because the rotation run executes nothing after its
+CAS. The rotation run reaches `SELECTED` through this named exception alone:
+its checkpoints bind E(n), its terminal resolution binds E(n+1), and the run
+remains single-epoch.
 
-Every other pairing refuses. A batch covers exactly the sorted/deduped plan and
-chains all intermediate roots/counts. Selected historical nodes are never
-removed, including nodes no longer reachable from the latest authority tree.
-
-### Authority-node materialization coordinator
-
-| State | Required selected evidence | Only allowed write |
-| --- | --- | --- |
-| `IDLE` | singleton genesis, ordinal 0, no plan | first `PREAUTHORIZED` |
-| `PREAUTHORIZED` | one rotation ID/`Dplan`, current E(n), exact prior coordinator triple | `STARTED` or `REVOKED_BEFORE_START` |
-| `STARTED` | selected preauthorization/start receipt under E(n) | exact finish-only materialization and authority CAS |
-| `FINISHING` | selected E(n+1), terminal authority run, `Dniu`, `Drh`, `Dhand` | `TERMINAL` |
-| `TERMINAL` | final readbacks/receipt and optional census terminal | next distinct `PREAUTHORIZED` |
-| `REVOKED_BEFORE_START` | revocation won before node creation | next distinct `PREAUTHORIZED` |
-
-Every write increments the arbitrary-precision coordinator ordinal. No
-self-loop, rollback, STARTED revocation, deletion, tombstone, or compaction is
-legal. A competing plan from one prior tip has one real winner; multiple or
-malformed winners are UNKNOWN. STARTED survives later expiry/process death and
-must finish its exact plan.
-
-### Authority rotation epoch handoff
-
-Non-authority commit runs are single-epoch. Authority rotation alone uses
-E(n) for checkpoints 0–5, performs the target CAS, and uses fresh E(n+1) for
-checkpoints 6–8. Checkpoint 6 binds the prior E(n) CAS_ARMED selector,
-coordinator STARTED, selected E(n+1), target readbacks, lock/custody, and
-reproducible `Drh`. After checkpoint 8 terminalizes, E(n+1) creates `Dhand`;
-only then may the coordinator enter FINISHING. A split at any other stage,
-another epoch drift, or any post-CAS E(n) capability is UNKNOWN.
-
-### Node-inventory census
-
-Pages contain at most 256 strictly ordered actual node entries, each with exact
-selected-inventory membership. Page zero has null predecessor/cursor/cumulative
-and count zero; later pages bind the prior page/cursor/cumulative and ordinal.
-The terminal page requires the ISS-004/ISS-022 under-lock enumerator's exhausted
-observation and cumulative count equal to selected node count. Missing,
-injected, orphan, moved, duplicate, skipped, reordered, or truncated entries
-refuse. Counts/page ordinals are unbounded `DECIMAL_ASCII`; authoritative
-pages/terminal are FULL_REQUIRED.
+The armed rotation intent is the selected CAS-armed run-current journal for
+the rotation target together with its create-once intent record. A
+head-plus-one chain record is accepted only when its ordinal is head plus
+one, its predecessor digest equals the head record digest, and its rotation
+identity and successor authority facts equal that armed intent; when no armed
+rotation intent is selected, any file at head plus one refuses. Rotation is
+forward-only once
+appended: a crash between chain append and authority CAS is resumable only by
+the same transaction under the old capability re-driving the same CAS, and the
+pending record is the single permitted head-plus-one excess. Any other excess,
+gap, fork, mismatch, or post-CAS E(n) capability is UNKNOWN.
 
 ### Evidence packet purpose
 
@@ -278,7 +257,7 @@ either path.
 | `AUTHORIZED` | human operator grant over exact digest, validated by reviewed bootstrap installer | installed stable predecessor preflight | fresh authority plus one-use recovery digest; for N0 exact `Dphys/Ddest`, owner/anchor review inputs | abort only before first mutation | apply |
 | `BOOTSTRAP_APPLYING` | reviewed bootstrap installer, same transaction | n/a | selected owner/anchor ACTIVE, pre-expiry use intent, first N0 destination mutation | forward recovery of the same owner/anchor/transaction only | install/verify N0 |
 | `BOOTSTRAP_ACTIVE` | installed N0 | n/a | selected owner/anchor CONSUMED, acyclic E0 core/proposal/tip and both post-selection receipts, genesis active-release, broker client, shim read-back, bootstrap receipt, authorization revoked, cleanup archive/tombstone | ordinary recovery rules | first N0 no-work tick |
-| `SUCCESSOR_STAGED_PRE_ACTIVATION` | n/a | installed stable predecessor | verified N+1 bytes, pending broker admission, selected `recovery-authorization-state/v2` `CONSUMED` with exact native-consume and post-selection consume receipts, and published recovery fence; gate `PENDING`, active pointer N | activation CASes gate `ACTIVATING`; abort CASes gate `ABORTING`; exactly one wins | `SUCCESSOR_ACTIVATING_PRE_POINTER` or abort |
+| `SUCCESSOR_STAGED_PRE_ACTIVATION` | n/a | installed stable predecessor | verified N+1 bytes, pending broker admission, selected `recovery-authorization-state/v1` `CONSUMED` with exact native-consume and post-selection consume receipts, and published recovery fence; gate `PENDING`, active pointer N | activation CASes gate `ACTIVATING`; abort CASes gate `ABORTING`; exactly one wins | `SUCCESSOR_ACTIVATING_PRE_POINTER` or abort |
 | `SUCCESSOR_ACTIVATING_PRE_POINTER` | n/a | exact predecessor/fence-backed recovery transaction | gate `ACTIVATING`; active pointer still N; exact expected N+1 record | forward-only active-release CAS; abort refuses; mismatch becomes unknown | `SUCCESSOR_ACTIVE_HANDOFF` |
 | `SUCCESSOR_ACTIVE_HANDOFF` | n/a | same live or shim-relaunched predecessor recovery transaction | atomic active pointer names N+1 while broker still names N | forward recovery only; ordinary ticks fenced | activate broker N+1, record follow-up, terminalize N cycle |
 | `SUCCESSOR_ACTIVE` | n/a | installed N+1 successor | selected active-release, activated broker-client generation, shim read-back, cleared fence, terminal predecessor cycle receipt, recovery authorization revoked, and cleanup archive/tombstones selected | ordinary recovery rules | next scheduler tick runs successor verification follow-up |
@@ -286,44 +265,41 @@ either path.
 | `SUCCESSOR_ABORTING_PRE_ACTIVATION` | n/a | exact predecessor transaction/shim + broker internal reconciler | gate `ABORTING`; active pointer N; shim-proven staging absence; publication discriminator frozen; any exact fence retained | no authorization attachment or broker client; terminalize/archive any pre-fence child, broker compare-removes bound pending admission and revokes, then shim clears an exact fence and completes gate | `ABORTED_PRE_ACTIVATION` |
 | `ABORTED_PRE_MUTATION` | bootstrap installer or granting operator for exact transaction | installed stable predecessor for exact transaction | authoritative destination absence, recovery authorization revocation, selected cleanup-gate archive head, and durable tombstone before first mutation | no resume | start new candidate transaction |
 | `ABORTED_PRE_ACTIVATION` | n/a | installed stable predecessor for exact transaction | staged bytes/pending admission terminalized, authorization `REVOKED`, cleanup/fence archives and tombstones selected while active pointer remains N | no resume | start new candidate transaction |
-| `BOOTSTRAP_RECOVERY_REQUIRED` | reviewed bootstrap installer, same transaction and selected `recovery-authorization-state/v2` `CONSUMED` plus exact native-consume and post-selection consume receipts | n/a | interrupted N0 post-mutation state | prove/reuse exact pre-bound authorization; never consume again; resume forward | reach `BOOTSTRAP_ACTIVE` |
+| `BOOTSTRAP_RECOVERY_REQUIRED` | reviewed bootstrap installer, same transaction and selected `recovery-authorization-state/v1` `CONSUMED` plus exact native-consume and post-selection consume receipts | n/a | interrupted N0 post-mutation state | prove/reuse exact pre-bound authorization; never consume again; resume forward | reach `BOOTSTRAP_ACTIVE` |
 | `SUCCESSOR_RECOVERY_PRE_ACTIVATION` | n/a | exact predecessor/shim transaction; narrowed consume only while gate `PENDING` | interrupted pre-fence work while active pointer remains N | `PENDING` uses closed pre-fence handoff; `ABORTING` uses clientless shim staging cleanup plus broker-internal admission removal/revoke | staged or `ABORTED_PRE_ACTIVATION` |
 | `SUCCESSOR_RECOVERY_POST_ACTIVATION` | n/a | shim-launched exact predecessor recovery transaction/capability | pointer names N+1 and fence remains | forward recovery only | reach `SUCCESSOR_ACTIVE` |
 | `UNKNOWN` | none | none | candidate/evidence movement or third state | external diagnosis | refuse install/start |
 
-## Activation recovery v2
-
-The current authority uses selected pointers; the v1 tables retained below are
-diagnostic-only and are refused at authority paths.
+## Activation recovery
 
 ### Attempt reservation
 
 | State | Permitted authority | Required evidence | Next state |
 | --- | --- | --- | --- |
-| `RESERVED` | selected old-epoch proposal winner | transaction/source and predecessor accumulator triple or tagged genesis select one prebound UUIDv7 and descriptor inputs | `CONSUMED` |
-| `CONSUMED` | exact launch transaction | accumulator `IN_PROGRESS` binds reservation `Dt/Dv/Dr` | `TERMINAL` |
-| `TERMINAL` | exact terminal reducer | selected summary and accumulator `TERMINAL` | `TOMBSTONE` |
+| `RESERVED` | selected old-epoch proposal winner | transaction/source and predecessor terminal attempt-log triple or tagged genesis select one prebound UUIDv7 and descriptor inputs | `CONSUMED` |
+| `CONSUMED` | exact launch transaction | attempt-log `IN_PROGRESS` record binds reservation `Dt/Dv/Dr` | `TERMINAL` |
+| `TERMINAL` | exact terminal reducer | selected `TERMINAL` attempt-log record | `TOMBSTONE` |
 | `TOMBSTONE` | readers/later transaction | selected archive/tombstone proof | no transition |
 | `UNKNOWN` | none | collision, fork, malformed or wrong predecessor | refuse launch/start |
 
 The same predecessor and bytes reuse the selected reservation. A competing
 UUID proposal is classified lost. UUIDv7 supplies uniqueness only.
 
-### Attempt and accumulator
+### Attempt and attempt log
 
 | State | Required evidence | Next operation |
 | --- | --- | --- |
-| `READY_ONLY` descriptor | selected reservation and exact READY launch | start or prove absence |
-| `LIVE` descriptor | READY plus initial LIVE and exact process identity | attach or monitor |
-| `IN_PROGRESS` accumulator | current reservation/descriptor; first has no prior summary, later binds previous selected terminal triple | produce one terminal summary |
-| `TERMINAL` accumulator | same descriptor, selected terminal summary, tagged rolling digest | reserve from this terminal triple or tombstone |
+| `LIVE` descriptor | CAS-selected durable reservation and exact process identity | attach or monitor |
+| `IN_PROGRESS` attempt-log record | current reservation/descriptor; first has ordinal `"0"` and tagged genesis predecessor, later binds the previous selected `TERMINAL` record digest and ordinal plus one | produce one `TERMINAL` record |
+| `TERMINAL` attempt-log record | same descriptor plus folded terminal state/lineage, exit/absence, and channel-denial fields | reserve from this terminal triple or tombstone |
 | `UNKNOWN` | malformed, duplicate ID, moved process, stale pointer, or mixed transaction | refuse launch/start |
 
-Attachment binds a selected LIVE descriptor, never a future summary. Terminal
-summary binds descriptor, optional attachment, terminal chain, exit/absence,
-channel-denial, and revocation evidence. Verification is bounded to current
-authority, reservation, descriptor, attachment, accumulator, READY/initial
-LIVE, and latest prior summary. There is no lifetime attempt cap.
+Attachment binds a selected LIVE descriptor, never a future terminal record.
+The `TERMINAL` attempt-log record folds in descriptor, optional attachment,
+terminal lineage, exit/absence, channel-denial, and revocation evidence; no
+separate terminal-summary document exists. Each operation verifies the full
+attempt-log chain, which stays small because attempts are rare; chained
+ordinals refuse above `2^53 - 1`.
 
 ### Cleanup gate
 
@@ -341,60 +317,14 @@ self-loop write is allowed. Root/head histories are complete, dense,
 digest-linked arrays validated with the shared closed-array snapshot. Their
 canonical selected pointers never CAS from bare absence after genesis.
 
-### Retention and degraded audit
+### Retention
 
-Destination owner/anchor, physical identity/observations, state-authority
-history, and run-current audit are FULL_REQUIRED and may not be discarded.
-Terminal attempt history may compact only after a selected checkpoint, selected
-plan, exact deletion, verified receipt, and completion selection. Pending
-proposals never compact.
-Unexpected old terminal loss may select `AUDIT_DEGRADED` only after an eligible
-checkpoint/tombstone. That state permits existing forward recovery, retry,
-cleanup, selected attachment, and ordinary non-release ticks; it blocks new
-promotion/bootstrap/certification, unrelated authorization/attachment,
-compaction, and audit finalization. Any earlier or full-required loss is
-`UNKNOWN` and blocks all mutation/start.
-
-## Activation recovery launch v1 (diagnostic only)
-
-This table governs one canonical current pointer plus immutable transition
-records per active promotion; the terminal archive permits the pointer path to
-be reused by a later transaction.
-
-| State | Permitted authority | Trigger and durable evidence | Interruption/recovery | Next operation |
-| --- | --- | --- | --- | --- |
-| `ABSENT` | scheduler-authenticated shim | no current pointer; either matching `NOT_PUBLISHED`/`PUBLISHING` pending gate plus proven original-owner absence, or matching published recovery fence | create source-specific generation-zero immutable record then pointer; live original owner waits and ambiguity refuses | generation-zero `READY` |
-| `READY` | same shim/next scheduler shim | pointer names create-once source/attempt/argv/bindings before native child creation | write successor record then CAS pointer: adopt one exact matching child; prove owner+child absence; ambiguity → `UNKNOWN` | `LIVE` or `TERMINAL_RETRYABLE` |
-| `LIVE` | owning/adopting shim monitor | pointer names exact immutable source, OS start token, and process tree | pre-fence: consume if required, CAS `PUBLISHING`, create/read back fence, CAS `PUBLISHED`, then handoff; abort → client denial/exit; fence-backed: observe until terminal cycle/broker/resource proof; known premature exit before source terminal proof → retryable; ambiguity → unknown | wait, `TERMINAL_HANDOFF`, `TERMINAL_ABORTED`, `TERMINAL_COMPLETE`, or `TERMINAL_RETRYABLE` |
-| `HEAD_REBIND_REQUIRED` | owning/adopting shim monitor; child paused | gate or fence current head is exactly one immutable-history ordinal ahead of the launch's observed head under unchanged roots | write same-source `AUTHORITY_REBIND` record retaining lifecycle/attempt/process, CAS launch pointer, acknowledge child; no launch, attach, or broker/project call | prior `READY`/`LIVE`/terminal lifecycle with adjacent heads |
-| `TERMINAL_RETRYABLE` | next scheduler-authenticated shim | exact exit/absence proof and terminal attempt-channel denial | create adjacent generation record then CAS pointer retaining all transaction bindings | generation N+1 `READY` |
-| `TERMINAL_HANDOFF` | exact pre-fence transaction/shim cleanup | `cleanup-gate-pre-fence/v1`; exact gate/fence publication proof or unambiguous post-publication child absence | prove child exit; archive/verify only the pre-fence source chain; CAS-remove pointer | fresh fence-backed generation-zero `READY` |
-| `TERMINAL_ABORTED` | exact pre-activation transaction/shim cleanup | either source; gate `ABORTING`; active record N; broker channel denied; exact exit/absence proof | archive/verify the source-specific chain; CAS-remove pointer before final gate cleanup | continue broker-internal abort reconciliation |
-| `TERMINAL_COMPLETE` | exact transaction/shim cleanup | terminal cycle/broker/resource proof was recorded before fence clear; child may still be waiting | clear fence; observe child exit; wait for broker-internal recovery-authorization revocation; archive/verify complete immutable chain; CAS-remove current pointer | `ABSENT` for a later transaction |
-| `UNKNOWN` | none | multiple/ambiguous process, moved binding, malformed record, or fence mismatch | external diagnosis only | refuse launch/start |
-
-## Authority root/head initialization v1 (diagnostic only)
-
-This reducer applies independently to cleanup-gate and recovery-fence roots.
-
-| Prefix | Required evidence | Permitted recovery | Next prefix |
-| --- | --- | --- | --- |
-| `ABSENT` | root, ordinal-zero history head, and canonical current pointer all authoritatively absent for the exact transaction | same authorized transaction creates/read-backs deterministic root | `ROOT_ONLY` |
-| `ROOT_ONLY` | exact immutable root; head/current absent | create/read back ordinal-zero head with canonical-null predecessor | `ROOT_AND_HEAD` |
-| `ROOT_AND_HEAD` | exact root and unique ordinal-zero head; current absent | CAS current pointer from absence and read back | `CURRENT` |
-| `CURRENT` | exact root/head/current chain | enter the authority-specific state machine | gate `PENDING` or fence `PREPARED` |
-| `UNKNOWN` | head without root, current without both, malformed/moved/multiple/extra/mixed bytes, or non-null ordinal-zero predecessor | external diagnosis only | refuse mutation/start |
-
-## Activation cleanup gate v1 (diagnostic only)
-
-| State | Permitted authority | Trigger and durable evidence | Interruption/recovery | Next operation |
-| --- | --- | --- | --- | --- |
-| `ABSENT` | exact installer/stable predecessor | no canonical gate and no active activation transaction | create-once before irreversible boundary | `PENDING` |
-| `PENDING` | exact installer/predecessor transaction | mode/transaction/authorization/expected active identity; fence publication `NOT_PUBLISHED`, `PUBLISHING`, or `PUBLISHED` | ordinary ticks refuse; consumed successor CASes `PUBLISHING` before fence create/read-back then `PUBLISHED`; successor activation and abort race one CAS | `ACTIVATING`, `ABORTING`, or observe terminal `REVOKED` |
-| `ACTIVATING` | exact successor fence-backed transaction | gate binds exact N active record, expected N+1 record, published fence, pending admission, and recovery launch binding | forward-only active-release CAS and post-pointer recovery; abort refuses even before pointer CAS | `COMPLETE` after terminal activation cleanup |
-| `ABORTING` | broker internal reconciler plus exact installer/shim cleanup | durable absence plan and observed publication state | no broker client/attachment; `PUBLISHING` deterministically completes exact fence then `PUBLISHED`; terminalize pre-fence child, prove staged-byte absence, broker compare-removes exact pending admission and revokes, then shim clears any published fence/marks `CLEARED` | `COMPLETE` |
-| `COMPLETE` | exact installer/shim cleanup | authorization `REVOKED` plus matching abort/terminal proofs | archive/read-back then CAS-remove | `ABSENT` |
-| `UNKNOWN` | none | mismatched/malformed/moved gate or contradictory authorization | external diagnosis | refuse ordinary start and new activation |
+Every record class — destination owner/anchor, physical
+identity/observations, state-authority history, run-current audit, and
+terminal launch/attempt history alike — is FULL_REQUIRED and may not be
+discarded. No compaction, retention pointer, or degraded-audit state exists;
+terminal attempt history grows only with rare attempts. Loss of any required
+record is `UNKNOWN` and blocks all mutation/start.
 
 ## Shadow discrepancy
 

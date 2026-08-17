@@ -1,5 +1,6 @@
 node_modules/
 .pnpm-store/
+.codex-worktrees/
 .artifacts/
 .orchestration-state/
 coverage/
