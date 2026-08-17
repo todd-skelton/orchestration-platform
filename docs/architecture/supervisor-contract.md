@@ -113,12 +113,15 @@ Every named digest in the following public tables is
 | Digest | Schema/domain | Framed parts | Canonical path |
 | --- | --- | --- | --- |
 | `Dphys` | `physical-destination-identity/v1` | stable host/custody namespace raw32, OS, physical volume raw32, filesystem raw32, nearest stable non-symlink ancestor object raw32, leaf identity kind, canonical physical leaf bytes, canonical schema bytes | `state-mutation-destination-identities/<Dphys>/identity.json` |
-| `Dobs` | `physical-destination-locator-observation-receipt/v1` | `Dphys` raw32, helper digest/version, logical locator and resolved-readback digests, case/Unicode profiles, custody instance/receipt, native identity and destination-lock readbacks, observation time/validity, disposition, canonical receipt bytes | `.../<Dphys>/observations/<Dobs>.json` |
+| `Dobs` | `physical-destination-locator-observation-receipt/v1` | `Dphys` raw32, helper digest raw32, helper version text, logical-locator digest raw32, resolved-locator-readback digest raw32, case-comparison profile text, Unicode-normalization profile text, custody-instance digest raw32, custody-receipt digest raw32, native-identity-readback digest raw32, disposition text, canonical receipt bytes | `.../<Dphys>/observations/<Dobs>.json`; lock/time/validity remain fields inside canonical receipt bytes only |
 | `Ddest` | `bootstrap-destination-identity/v2` | `Dphys` raw32 only | `state-mutation-destination-owners/<Ddest>/` |
 | `Dov` | schema `state-mutation-destination-owner-value/v1`; domain `destination-owner-value/v1` | `Ddest` raw32, owner ordinal `DECIMAL_ASCII`, lifecycle, installation ID, anchor `Dba` raw32, canonical value bytes | `.../<Ddest>/values/<mutation-id>.json` |
-| `Dor` | schema `state-mutation-destination-owner-cas-proposal/v1`; domain `destination-owner-receipt/v1` | `Ddest` raw32, mutation ID raw32, nullable prior `Dot/Dov/Dor`, successor `Dov` raw32, transition, position digest raw32, canonical proposal bytes | `.../<Ddest>/proposals/<prior-tip-or-genesis>/<mutation-id>.json` |
-| `Dot` | schema `state-mutation-destination-owner-current-tip/v1`; domain `destination-owner-tip/v1` | `Ddest`, `Dov`, `Dor` raw32, canonical current-tip bytes | `.../<Ddest>/current.json` |
-| `Doc` | schema `state-mutation-destination-owner-conflict-receipt/v1`; domain `destination-owner-conflict/v1` | `Ddest`, mutation ID, losing `Dor/Dov`, observed winner `Dot/Dov/Dor`, canonical conflict bytes | `.../<Ddest>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json` |
+| `Dor` | schema `state-mutation-destination-owner-cas-proposal/v1`; domain `destination-owner-receipt/v1` | `Ddest` raw32, mutation ID raw32, nullable prior `Dot` raw32, nullable prior `Dov` raw32, nullable prior `Dor` raw32, successor `Dov` raw32, transition text, position digest raw32, canonical proposal bytes | `.../<Ddest>/proposals/<prior-tip-or-genesis>/<mutation-id>.json` |
+| `Dot` | schema `state-mutation-destination-owner-current-tip/v1`; domain `destination-owner-tip/v1` | `Ddest` raw32, `Dov` raw32, `Dor` raw32, canonical current-tip bytes | `.../<Ddest>/current.json` |
+| `Doc` | schema `state-mutation-destination-owner-conflict-receipt/v1`; domain `destination-owner-conflict/v1` | `Ddest` raw32, mutation ID raw32, losing `Dor` raw32, losing `Dov` raw32, winning `Dot` raw32, winning `Dov` raw32, winning `Dor` raw32, canonical conflict bytes | `.../<Ddest>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json` |
+| owner mutation ID | no record schema; domain `destination-owner-mutation-id/v1` | `Ddest` raw32, canonical current path text, nullable prior `Dot` raw32, nullable prior `Dov` raw32, nullable prior `Dor` raw32, owner ordinal `DECIMAL_ASCII`, transition text, successor `Dov` raw32, installation ID text, `Dba` raw32, source text, transition-evidence digest raw32 | selects the exact value/proposal path; timestamps/readbacks excluded |
+| `Dsrc` | schema `state-mutation-destination-owner-successor-review-core/v1`; domain `destination-owner-successor-review-core/v1` | `Ddest` raw32, prior RETIRED `Dot` raw32, prior RETIRED `Dov` raw32, prior RETIRED `Dor` raw32, teardown-archive digest raw32, prior-installation canonical bytes, successor installation ID text, successor-authority canonical bytes, independent-review canonical bytes, canonical review-core bytes | `.../<Ddest>/successor-review-cores/<prior-retired-tip>/<Dsrc>.json`; excludes successor `Dba`, `Dov`, `Dor`, `Dot`, their readbacks, and `Dsrp` |
+| `Dsrp` | schema `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`; domain `destination-owner-successor-review-post-selection-receipt/v1` | `Dsrc` raw32, successor `Dba` raw32, successor `Dov` raw32, successor `Dor` raw32, successor `Dot` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, destination-lock/custody-observation digest raw32, canonical post-selection bytes | `.../<Ddest>/successor-review-post-selection-receipts/<successor-owner-tip>.json`; downstream and excluded from review core, anchor, and owner selection graph |
 
 `physical-destination-identity/v1` excludes helper, path spelling, comparison
 profile, custody instance, receipt, time, and readback. `Ddest` has no part other
@@ -164,11 +167,12 @@ owner triples, both custody instances, transaction, and all readbacks. E0
 context requires external anchor, selected owner CONSUMED, consumption receipt,
 immutable E0 core, selected runtime E0, and runtime post-selection receipt.
 
-The E0 graph is acyclic: external anchor → immutable
+The E0 graph is acyclic: external anchor → E0
+`state-mutation-authority-value/v2`/`Dv` → immutable
 `state-mutation-bootstrap-genesis-core/v1` →
-`pointer-cas-proposal-receipt/v2` → `Dr` → tip/`Dt` → runtime post-selection
-receipt. The core binds anchor, destination/owner, absence, E0 value/`Dv`, and
-empty history but excludes proposal/`Dr`/tip/`Dt`. E0's proposal producer is
+`pointer-cas-proposal-receipt/v2`/`Dr` → tip/`Dt` → runtime post-selection
+receipt. The core binds anchor, destination/owner, absence, E0 `Dv`, and empty
+history but excludes proposal/`Dr`/tip/`Dt`. E0's proposal producer is
 `REVIEWED_BOOTSTRAP_GENESIS` with null selected epoch; every ordinary proposal
 uses `SELECTED_EPOCH`. Anchor consumption occurs downstream of the runtime
 post-selection receipt and introduces no cycle.
@@ -194,13 +198,18 @@ The public anchor/E0 graph is exact:
 
 | Digest | Schema/domain | Framed parts | Canonical path and exclusions |
 | --- | --- | --- | --- |
-| `Dba` | `state-mutation-bootstrap-anchor/v1` | installation ID, project ID, `Dphys/Ddest`, destination state-root/custody-instance digests, bootstrap transaction, reviewed installer/review/operator-grant digests, authority `Dp`, lock/state profiles, helper digest, ABI, custody receipt, canonical anchor bytes | `state-mutation-authority-anchors/<installation>/anchor.json`; successor anchor binds review-core digest, never its post-selection receipt |
-| `Dbav/Dbar/Dbat/Dbac` | schemas `state-mutation-bootstrap-anchor-lifecycle-value/v1`, `state-mutation-bootstrap-anchor-cas-proposal/v1`, `state-mutation-bootstrap-anchor-current-tip/v1`, `state-mutation-bootstrap-anchor-conflict-receipt/v1`; domains `bootstrap-anchor-value/v1`, `bootstrap-anchor-receipt/v1`, `bootstrap-anchor-tip/v1`, `bootstrap-anchor-conflict/v1` | `Dba`, lifecycle or mutation/prior/successor/transition, selected value/receipt, canonical bytes | generic anchor values, prior/genesis proposals/conflicts, and `current.json` |
-| `Dbg` | `state-mutation-bootstrap-genesis-core/v1` | `Dba`, global identity, transaction, authority `Dp`, E0 `Dv`, genesis position digest, canonical core bytes | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/core.json`; excludes proposal bytes, `Dr`, tip bytes, `Dt`, readbacks, and both post-selection receipts |
-| `Dgp` | `state-mutation-bootstrap-genesis-post-selection-receipt/v1` | `Dba`, `Dbg`, authority `Dp/Dv/Dr/Dt`, value/proposal/tip readback digests, canonical receipt bytes | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/post-selection-receipt.json`; downstream and excluded from E0 value/core/proposal/tip |
-| anchor consumption | schema `state-mutation-bootstrap-anchor-consumption-receipt/v1`; domain `bootstrap-anchor-consumption-receipt/v1` | `Dba/Dbg/Dv/Dr/Dt/Dgp`, selected owner ACTIVE/CONSUMED triples, transaction, custody instances, runtime/external readbacks, canonical receipt | `state-mutation-authority-anchors/<installation>/consumption-receipts/<mutation-id>.json`; excluded from E0 and selected anchor CONSUMED graph |
+| `Dba` | `state-mutation-bootstrap-anchor/v1` | installation ID text, project ID text, `Dphys` raw32, `Ddest` raw32, destination-state-root digest raw32, custody-instance digest raw32, bootstrap transaction text, reviewed-installer digest raw32, independent-review digest raw32, operator-grant digest raw32, authority `Dp` raw32, lock profile text, state-component profile text, helper digest raw32, ABI text, custody-receipt digest raw32, canonical anchor bytes | `state-mutation-authority-anchors/<installation>/anchor.json`; successor anchor binds review-core digest, never its post-selection receipt |
+| `Dbav` | schema `state-mutation-bootstrap-anchor-lifecycle-value/v1`; domain `bootstrap-anchor-value/v1` | `Dba` raw32, lifecycle text, canonical lifecycle-value bytes | `.../<installation>/values/<mutation-id>.json`; selected value excludes proposal/receipt/tip/conflict |
+| `Dbar` | schema `state-mutation-bootstrap-anchor-cas-proposal/v1`; domain `bootstrap-anchor-receipt/v1` | `Dba` raw32, mutation ID raw32, nullable prior `Dbat` raw32, nullable prior `Dbav` raw32, nullable prior `Dbar` raw32, successor `Dbav` raw32, transition text, canonical proposal bytes | `.../<installation>/proposals/<prior-tip-or-genesis>/<mutation-id>.json`; successor tip/readback excluded |
+| `Dbat` | schema `state-mutation-bootstrap-anchor-current-tip/v1`; domain `bootstrap-anchor-tip/v1` | `Dba` raw32, `Dbav` raw32, `Dbar` raw32, canonical current-tip bytes | `.../<installation>/current.json` |
+| `Dbac` | schema `state-mutation-bootstrap-anchor-conflict-receipt/v1`; domain `bootstrap-anchor-conflict/v1` | `Dba` raw32, mutation ID raw32, losing `Dbar` raw32, losing `Dbav` raw32, winning `Dbat` raw32, winning `Dbav` raw32, winning `Dbar` raw32, canonical conflict bytes | `.../<installation>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json`; requires an actual different selected winner |
+| anchor use intent | schema `state-mutation-bootstrap-anchor-use-intent/v1`; domain `bootstrap-anchor-use-intent/v1` | `Dba` raw32, selected ACTIVE `Dbat` raw32, selected ACTIVE `Dbav` raw32, selected ACTIVE `Dbar` raw32, bootstrap transaction text, destination-state-root digest raw32, custody-instance digest raw32, proposed-genesis-input canonical bytes, expected E0 `Dv` raw32, reviewed-installer/helper canonical bytes, started-at text, expires-at text, canonical use-intent bytes | `.../<installation>/use-intents/<transaction>.json`; E0 proposal/`Dr`/tip/`Dt`/readbacks excluded |
+| `Dbg` | `state-mutation-bootstrap-genesis-core/v1` | `Dba` raw32, global-identity digest raw32, transaction text, authority `Dp` raw32, E0 `Dv` raw32, genesis-position digest raw32, canonical core bytes | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/core.json`; excludes proposal bytes, `Dr`, tip bytes, `Dt`, readbacks, and both post-selection receipts |
+| `Dgp` | `state-mutation-bootstrap-genesis-post-selection-receipt/v1` | `Dba` raw32, `Dbg` raw32, authority `Dp` raw32, `Dv` raw32, `Dr` raw32, `Dt` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, canonical receipt bytes | `installation/bootstrap/state-mutation-authority-genesis/<transaction>/post-selection-receipt.json`; downstream and excluded from E0 value/core/proposal/tip |
+| anchor consumption | schema `state-mutation-bootstrap-anchor-consumption-receipt/v1`; domain `bootstrap-anchor-consumption-receipt/v1` | `Dba` raw32, `Dbg` raw32, authority `Dp` raw32, `Dv` raw32, `Dr` raw32, `Dt` raw32, `Dgp` raw32, bootstrap transaction text, use-intent digest raw32, destination-state-root digest raw32, custody-instance digest raw32, runtime value-readback digest raw32, runtime proposal-readback digest raw32, runtime tip-readback digest raw32, runtime post-readback digest raw32, owner ACTIVE `Dot` raw32, owner ACTIVE `Dov` raw32, owner ACTIVE `Dor` raw32, owner CONSUMED `Dot` raw32, owner CONSUMED `Dov` raw32, owner CONSUMED `Dor` raw32, external anchor value-readback digest raw32, external anchor proposal-readback digest raw32, external anchor tip-readback digest raw32, external/runtime lock-helper-custody digest raw32, consumption-time text, canonical receipt bytes | `.../<installation>/consumption-receipts/<mutation-id>.json`; excluded from E0 and selected anchor CONSUMED graph |
+| anchor teardown | schema `state-mutation-bootstrap-anchor-teardown-receipt/v1`; domain `bootstrap-anchor-teardown-receipt/v1` | `Dba` raw32, selected prior `Dbat` raw32, selected prior `Dbav` raw32, selected prior `Dbar` raw32, retirement transition text, `Ddest` raw32, selected owner `Dot` raw32, selected owner `Dov` raw32, selected owner `Dor` raw32, teardown-evidence digest raw32, process/custody-proof digest raw32, external archive digest raw32, canonical teardown-receipt bytes | `.../<installation>/teardown-receipts/<mutation-id>.json`; cannot authorize ACTIVE or CONSUMED |
 
-Thus `Dba→Dbg→Dv→proposal/Dr→tip/Dt→Dgp→anchor CONSUMED→owner
+Thus `Dba→E0 value/Dv→Dbg→proposal/Dr→tip/Dt→Dgp→anchor CONSUMED→owner
 CONSUMED→external consumption receipt` is one-way. ACTIVE use intent is
 create-once, binds selected owner/anchor ACTIVE and expiry, and contains no E0
 selection result.
@@ -252,13 +261,14 @@ The sparse formulas and exclusions are exact:
 
 | Digest | Domain and framed parts | Canonical path/exclusion |
 | --- | --- | --- |
-| `G` | `state-mutation-global-identity/v1`: installation, project, state-root/custody identity, authority path/`Dp`, lock/profile/ABI | embedded in every history value/proof; cross-install roots refuse |
-| epoch key | `authority-epoch-key/v1`: `G`, authority `Dp/Dt/Dv/Dr` raw32 | `.../leaves/<epoch-key>.json`; key collision with different leaf is unknown |
-| `De` | `authority-epoch-leaf/v1`: epoch key, identities, authority ordinal `DECIMAL_ASCII`, `Dp/Dt/Dv/Dr`, canonical leaf bytes | immutable leaf; current successor value/tip excluded |
-| empty/node | `authority-history-empty/v1` and `authority-history-node/v1`: depth plus left/right raw32 | `.../nodes/<node-digest>.json`; depth-specific empty constants and exact 256 levels |
-| `Dh` | `authority-history-root/v1`: `G`, profile, count `DECIMAL_ASCII`, tree root, latest included ordinal/key/triple, canonical root bytes | `.../roots/<root-digest>.json` |
-| `Dup` | `authority-history-update-proof/v1`: `G`, epoch key/leaf, prior/successor roots and counts, exactly 256 sibling raw32 parts, canonical proof bytes | `.../update-proofs/<rotation-id>.json`; prior leaf must be EMPTY and successor PRESENT |
-| `Dar` | `authority-history-append-receipt/v1`: rotation ID, predecessor authority/root/count, `De`, `Dup`, successor root/count, successor-core digest, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip excluded |
+| `G` | `state-mutation-global-identity/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, canonical authority path text, authority `Dp` raw32, lock profile text, state-component profile text, ABI text | embedded in every history value/proof; cross-install roots refuse |
+| epoch key | `authority-epoch-key/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32 | `.../leaves/<epoch-key>.json`; key collision with different leaf is unknown |
+| `De` | schema/domain `authority-history-leaf/v1` / `authority-epoch-leaf/v1`: epoch key raw32, installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, authority ordinal `DECIMAL_ASCII`, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32, canonical leaf bytes | immutable leaf; successor value/proposal/tip and append receipt excluded |
+| empty digest | `authority-history-empty/v1`: depth unsigned 16-bit | deterministic depth-specific constants for all 256 levels; no record path |
+| node digest | `authority-history-node/v1`: depth unsigned 16-bit, left digest raw32, right digest raw32 | `.../nodes/<node-digest>.json`; no leaf/value/proposal/tip parts |
+| `Dh` | schema/domain `authority-history-root/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, tree profile text, count `DECIMAL_ASCII`, tree-root digest raw32, latest-included ordinal `DECIMAL_ASCII`, latest epoch key raw32, latest `Dt` raw32, latest `Dv` raw32, latest `Dr` raw32, canonical root bytes | `.../roots/<root-digest>.json`; selected successor value/proposal/tip excluded |
+| `Dup` | schema/domain `authority-history-update-proof/v1`: `G` raw32, epoch key raw32, `De` raw32, prior `Dh` raw32, successor `Dh` raw32, prior count `DECIMAL_ASCII`, successor count `DECIMAL_ASCII`, exactly 256 sibling raw32 parts, canonical proof bytes | `.../update-proofs/<rotation-id>.json`; prior leaf must be EMPTY and successor PRESENT |
+| `Dar` | schema/domain `authority-history-append-receipt/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, rotation operation ID raw32, predecessor authority `Dp` raw32, predecessor `Dt` raw32, predecessor `Dv` raw32, predecessor `Dr` raw32, prior `Dh` raw32, prior count `DECIMAL_ASCII`, appended epoch key raw32, `De` raw32, `Dup` raw32, successor `Dh` raw32, successor count `DECIMAL_ASCII`, successor-core digest raw32, created-at text, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip excluded |
 
 `state-mutation-authority-successor-core/v1` excludes `Dar`; `Dar` binds the
 core digest, and `state-mutation-authority-value/v2` joins core plus `Dar`.
@@ -443,17 +453,20 @@ The closed run domains are `pointer-mutation-run-id/v1`,
 
 | Digest/value | Domain/formula | Required parts and exclusions |
 | --- | --- | --- |
-| run ID | `pointer-mutation-run-id/v1` | `G`, target mutation ID, run ordinal `DECIMAL_ASCII`, prior core/selector triple, current producer epoch; timestamps excluded |
+| run ID | `pointer-mutation-run-id/v1` | `G` raw32, target mutation ID raw32, run ordinal `DECIMAL_ASCII`, nullable prior checkpoint digest raw32, current authority `Dp` raw32, current authority `Dt` raw32, current authority `Dv` raw32, current authority `Dr` raw32; timestamps excluded |
 | segment/audit | `pointer-mutation-run-segment/v1`; first `H(F(pointer-mutation-run-audit/v1, 0x00, segment))`, later `H(F(...,0x01, prior audit, segment))` | exact run stages/readbacks; full immutable audit retained |
-| `Dcore` | `pointer-mutation-run-checkpoint-core/v1` | `G`, target `Dp`/mutation, run/checkpoint ordinals, segment/audit, prior selector triple, prior `Dpost`, stage/phase, target triples, optional terminal-resolution digest, canonical core bytes |
+| `Dcore` | `pointer-mutation-run-checkpoint-core/v1` | `G` raw32, target `Dp` raw32, target mutation ID raw32, run ordinal `DECIMAL_ASCII`, checkpoint ordinal `DECIMAL_ASCII`, segment digest raw32, audit digest raw32, nullable prior selector `Dt` raw32, nullable prior selector `Dv` raw32, nullable prior selector `Dr` raw32, nullable prior `Dpost` raw32, stage text, phase text, nullable terminal-resolution digest raw32, canonical checkpoint-core bytes |
 | selector `Dv/Dr/Dt` | ordinary `pointer-value/v2`, `pointer-receipt/v2`, `pointer-tip/v2` | value binds `Dcore`; proposal binds exact prior selector triple/genesis and META_LEAF position; tip selects them |
-| `Dpost` | `pointer-mutation-run-selector-post-selection-observation/v1` | `Dcore`, selector `Dp`/mutation/`Dv/Dr/Dt`, all selector readbacks, producer epoch, canonical observation bytes |
+| `Dpost` | `pointer-mutation-run-selector-post-selection-observation/v1` | `Dcore` raw32, selector `Dp` raw32, selector mutation ID raw32, selector `Dv` raw32, selector `Dr` raw32, selector `Dt` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, canonical observation bytes |
 | terminal resolution | `pointer-mutation-commit-resolution/v1` | target outcome/evidence and producer epoch; excludes selector value/`Dv`, proposal/`Dr`, tip/`Dt`, selector readbacks, and `Dpost` |
 
 `Dcore` excludes its selector value/`Dv`, proposal/`Dr`, tip/`Dt`, their
 readbacks, and its own `Dpost`. `Dpost` is downstream and only the next core may
-bind it. The acyclic order is segment/optional terminal resolution → `Dcore` →
-selector value/`Dv` → proposal/`Dr` → tip/`Dt` → `Dpost` → next core.
+bind it; `Dpost` excludes that next core and every later selector graph. Terminal
+resolution excludes `Dcore`'s selector value/`Dv`, proposal/`Dr`, tip/`Dt`, all
+selector readbacks, and `Dpost`. The acyclic order is segment/optional terminal
+resolution → `Dcore` → selector value/`Dv` → proposal/`Dr` → tip/`Dt` → `Dpost`
+→ next core.
 
 META_LEAF uses the generic selector-instance storage exactly:
 
