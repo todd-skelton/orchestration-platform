@@ -12,18 +12,33 @@ function fail(message) {
 function parseArray(value) {
   const body = value.trim().slice(1, -1).trim();
   if (!body) return [];
-  return body.split(",").map((item) => item.trim().replace(/^['"]|['"]$/g, ""));
+  return body
+    .split(",")
+    .map((item) => item.trim().replace(/^['"]|['"]$/g, ""))
+    .filter(Boolean);
 }
 
 export function parseFrontmatter(source, file) {
   const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
   if (!match) fail(`${file} has no closed frontmatter`);
   const result = {};
-  for (const line of match[1].split(/\r?\n/)) {
+  const lines = match[1].split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const separator = line.indexOf(":");
     if (separator < 1) fail(`${file} has malformed frontmatter line`);
     const key = line.slice(0, separator).trim();
-    const raw = line.slice(separator + 1).trim();
+    let raw = line.slice(separator + 1).trim();
+    if (!raw && lines[index + 1]?.trim().startsWith("[")) {
+      const parts = [];
+      do {
+        index += 1;
+        if (index >= lines.length) fail(`${file} has unterminated frontmatter array ${key}`);
+        parts.push(lines[index].trim());
+      } while (!lines[index].trim().endsWith("]"));
+      raw = parts.join(" ");
+    }
+    if (!raw) fail(`${file} has empty frontmatter field ${key}`);
     if (Object.hasOwn(result, key)) fail(`${file} repeats frontmatter field ${key}`);
     result[key] = raw.startsWith("[") ? parseArray(raw) : raw.replace(/^['"]|['"]$/g, "");
   }
@@ -138,6 +153,32 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
       destinations.some((key) => !issueKeys.has(key))
     ) {
       fail("migration canonical destination table contains an unknown issue");
+    }
+  }
+}
+
+function validateReducedEdges(issues) {
+  const byKey = new Map(issues.map((issue) => [issue.key, issue]));
+  function reaches(start, target, skipDirect) {
+    const stack = byKey.get(start).blockedBy.filter((dep) => !(skipDirect && dep === target));
+    const seen = new Set(stack);
+    while (stack.length) {
+      const current = stack.pop();
+      if (current === target) return true;
+      for (const dep of byKey.get(current)?.blockedBy ?? []) {
+        if (!seen.has(dep)) {
+          seen.add(dep);
+          stack.push(dep);
+        }
+      }
+    }
+    return false;
+  }
+  for (const issue of issues) {
+    for (const dep of issue.blockedBy) {
+      if (reaches(issue.key, dep, true)) {
+        fail(`${issue.key} direct edge to ${dep} is transitively implied`);
+      }
     }
   }
 }
@@ -330,6 +371,7 @@ export function validatePlanningSnapshot(snapshot) {
     }
   }
   validateAcyclic(roadmap.issues);
+  validateReducedEdges(roadmap.issues);
 
   for (const epic of roadmap.epics) {
     const source = snapshot.epicDrafts[epic.key];

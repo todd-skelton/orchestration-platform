@@ -11,10 +11,13 @@ it may not silently choose another equally plausible contract.
   bytes.
 - Timestamps use RFC 3339 UTC with exactly millisecond precision. Durations use
   integer milliseconds. Authority/history/run ordinals and counts use canonical
-  arbitrary-precision decimal strings (`"0"|[1-9][0-9]*`) and the framed
-  `DECIMAL_ASCII` type. They are compared by digit length then ASCII order and
-  incremented by decimal carry; they never pass through JavaScript `Number` and
-  have no semantic lifetime maximum.
+  decimal strings (`"0"|[1-9][0-9]*`) bounded by the JavaScript safe-integer
+  range. Parsers validate grammar and compare the decimal string against
+  `Number.MAX_SAFE_INTEGER` by length and lexicographic order before any
+  numeric conversion; an out-of-range value refuses rather than wrapping or
+  truncating. At the supervisor cadence that bound exceeds any plausible
+  installation lifetime by many orders of magnitude. No arbitrary-precision
+  numeric type exists in authority contracts.
 - Durable identities use lowercase UUIDv7 text. Content identities use
   lowercase SHA-256 hex.
 - Contract-relative paths use `/` separators and may not contain `..`, an
@@ -48,10 +51,10 @@ bytes. Digests embedded as parts are raw 32-byte values. Canonical JSON is an
 explicit bytes part.
 
 `Dv` hashes a family value, `Dr` hashes the create-once
-`pointer-cas-proposal-receipt/v2` that binds the prior `Dt/Dv/Dr`, successor
+`pointer-cas-proposal-receipt/v1` that binds the prior `Dt/Dv/Dr`, successor
 `Dv`, and closed bootstrap/selected producer union, and `Dt` hashes a tip
 containing `Dv+Dr`. Values do not contain their selecting proposal or tip.
-Checkpoint cores and terminal resolutions likewise exclude the run-current
+Checkpoint cores and ordinary terminal resolutions likewise exclude the run-current
 value/proposal/tip that selects them; only a downstream post-selection
 observation may feed a later core. Pointer path, instance digest,
 proposal/conflict paths, mutation ID, tombstone, archive, and retention behavior
@@ -98,35 +101,66 @@ are exactly those in `supervisor-contract.md`.
   Handles are callback/lock-run scoped and revoke on release, process death,
   custody movement, or rotation. ISS-002 structural proof success alone is not
   authority.
-- Runtime pointer history uses selected `state-mutation-authority-value/v3`
-  roots over a fixed-depth sparse tree. E0 selects a distinct FULL_REQUIRED
-  `authority-history-empty-root/v2` (`Dhe`, kind `EMPTY`, count `"0"`);
-  nonempty roots are `authority-history-root/v2` (`Dh`, kind `NONEMPTY`, count
-  `>=1`). The first proof is `EMPTY→NONEMPTY`, later proofs are
-  `NONEMPTY→NONEMPTY`, and membership against `EMPTY` refuses. One proof has
-  exactly 256 siblings; content-addressed history is FULL_REQUIRED. This bounds
-  each call without a lifetime rotation cap or self-authenticating table.
-- Sparse global identity `G` is lifetime-stable: installation, project,
-  state-root, custody-instance, canonical authority path, and authority `Dp`.
-  Rotating helper/profile/ABI/lock/state-component facts are excluded from `G`
-  and remain bound by each selected authority value; changing a `G` field is a
+- Runtime pointer history is one hash-chained, append-only
+  `authority-history/v1` log selected by `state-mutation-authority-value/v1`.
+  Records form the exact closed `GENESIS|ROTATION` union in
+  `supervisor-contract.md`. Both bind shared successor core `Dsc`, whose closed
+  census is `G`, authority `Dp`, successor ordinal, reviewed release manifest/
+  installed bytes/subject/review, derived BOOTSTRAP_INSTALL or STABLE_PROMOTION
+  operation `Dop`, helper/profile/ABI/lock/state-component, and custody
+  instance/observation. GENESIS binds ordinal zero, genesis literal, and `Dgb`;
+  `Dgb` binds selected owner/anchor ACTIVE, use intent, and bootstrap identity/
+  transaction/grant. Downstream genesis-selection evidence binds E0 core/
+  selection/readbacks/post receipt and owner/anchor CONSUMED without entering
+  the record. ROTATION binds exact prior head, retiring `Dp/Dt/Dv/Dr`, and
+  `Drot`, deterministically recomputed from rotation transaction, retiring
+  authority/head, successor ordinal, `Dop`, and `Dsc`. No caller-
+  supplied rotation-operation identity exists. Both branches exclude successor
+  value/proposal/tip/head and downstream artifacts.
+  Records live at canonical ordinal-derived paths: the walk constructs the
+  path of record `n+1` from `n` and never enumerates a directory.
+  Verification walks the complete chain from genesis and compares the selected
+  head ordinal and digest. A missing record at or below the head refuses; the
+  path at head plus one must be absent or match the armed rotation intent; the
+  path at head plus two must be absent; a file outside the canonical ordinal
+  paths carries no authority. Rotation occurs at most a few times per release,
+  so the deliberately O(n) full walk is bounded in practice; no membership proof, sparse tree,
+  secondary node inventory, or authenticated directory census exists. Missing,
+  forked, reordered, or truncated chains refuse; history is FULL_REQUIRED and
+  never compacted.
+- Global identity `G` is lifetime-stable: installation, project, state-root,
+  custody-instance, canonical authority path, and authority `Dp`. Rotating
+  helper/profile/ABI/lock/state-component facts are excluded from `G` and
+  remain bound by each selected authority value; changing a `G` field is a
   different installation identity and rotation refuses.
-- Authority history also selects a second fixed-depth sparse set over every
-  retained content-addressed node. `Dnir`/node count are repeated by history
-  root v2 and authority value v3. Node materialization uses a precomputable
-  plan, split filesystem/membership evidence, and a FULL_REQUIRED batch; stale
-  historical nodes are never compacted. Bounded authenticated directory pages
-  prove exact set equality through an ISS-004 branded enumerator rooted in the
-  selected inventory, without a lifetime count cap.
-- The runtime pointer registry has thirteen kinds. The thirteenth is one
-  `AUTHORITY_DP`-scoped singleton materialization coordinator with lifecycle
-  `IDLE|PREAUTHORIZED|STARTED|FINISHING|TERMINAL|REVOKED_BEFORE_START`.
-  PREAUTHORIZED/STARTED use E(n); after authority CAS, fresh E(n+1) alone
-  terminalizes the authority run and advances FINISHING/TERMINAL.
-- Authority rotation is the sole commit-run epoch split: checkpoints 0–5 bind
-  E(n), checkpoint 6 binds reproducible `Drh` and begins E(n+1), and 7–8 remain
-  E(n+1). `Dhand` is created only after selected terminal checkpoint 8 and is
-  required for coordinator FINISHING. Every other mutation is single-epoch.
+- The runtime pointer registry has twelve kinds. There is no materialization
+  coordinator; authority-history records are ordinary content-addressed files
+  whose set completeness is proven by the chain walk alone.
+- Every commit run is single-epoch. Authority rotation is an ordinary
+  single-epoch mutation under the old capability that appends the chain
+  record and then performs the authority CAS as its final action; it executes
+  no checkpoint after that CAS under either epoch, and its run-current journal
+  legitimately rests at CAS-armed across the selection. Rotation terminal
+  truth is derived without another write: prior authority still selected plus
+  an exact head-plus-one record matching the CAS-armed transaction is resumable
+  under the old epoch; successor authority selected plus its exact selected
+  chain record and the old CAS-armed checkpoint is `SELECTED`; every other
+  combination is `UNKNOWN`. The commit evidence contract is the closed
+  `ORDINARY|AUTHORITY_ROTATION` union: ordinary evidence retains stages 0–8 and
+  resolution, while rotation binds only selected old checkpoint 5, expected
+  successor/history/registry slot, and RESUMABLE/SELECTED/UNKNOWN. Rotation
+  stages 6–8, ordinary resolution, later selector artifacts, and successor-
+  epoch writes refuse. No post-CAS write occurs under the new epoch, no
+  separate rotation receipt or coordinator exists, and no run crosses epochs.
+- Rotation is forward-only once appended. A crash between chain append and
+  authority CAS is resumable only by the same transaction under the old
+  capability re-driving the same CAS to completion; the pending record is the
+  single permitted head-plus-one excess and any other excess, gap, fork, or
+  mismatch refuses.
+- Full-chain validation remains O(n). `ISS-006` must prove a 1,000-record walk
+  completes within five seconds independently on macOS, Windows, and Linux.
+  Checkpointing stays parked until that measured gate fails on a supported OS;
+  a speculative checkpoint is not part of the current authority surface.
 - Worker launch uses native argument arrays without a shell. Exact launch
   identity, not PID alone, owns the process lifecycle.
 
@@ -151,6 +185,31 @@ are exactly those in `supervisor-contract.md`.
 - Circuit-breaker lifecycle is engine mechanism; trip thresholds, affected
   project capabilities, and recovery policy are adapter facts. Unknown or stale
   breaker authority blocks the affected capability and cannot silently clear.
+- A dispatch brief is closed `dispatch-brief/v1` structure emitted by a
+  planning module and rendered into worker input by the host adapter through a
+  deterministic, versioned template. No free-form operator or module prose
+  field exists; every human-readable section derives from typed fields. The
+  rendered bytes are digest-bound in the dispatch plan and launch identity.
+- Engine contract field names and closed enum values are linted against the
+  generated adapter-vocabulary denylist; branch, worktree, label, milestone,
+  queue, deployment, and consumer product terms fail the contracts build.
+
+## Proportionality and schema lifecycle
+
+- State-mutation contracts defend exactly two boundaries: the single-writer,
+  kernel-exclusive-lock topology this architecture mandates, and the one real
+  multi-writer boundary where two installation IDs target one physical
+  destination. Machinery justified only by Byzantine or multi-writer threats
+  the architecture already excludes is out of contract; a proposal to add such
+  machinery requires an observed platform need and a replacement decision.
+- Before the first deployed release, a superseded schema is deleted from the
+  contracts package and its tests. No diagnostic or archive namespace ships;
+  the current census is `v1` for every family at N0. After first deployment,
+  superseded schemas are refused at authority paths and become readable only
+  through an explicitly versioned migration decision.
+- There is no forward compatibility: unknown or future schema versions refuse,
+  and every schema change is a release event mediated by the stable-predecessor
+  promotion protocol. This is a deliberate decision, not an omission.
 
 ## Release layout and root of trust
 
@@ -173,9 +232,10 @@ are exactly those in `supervisor-contract.md`.
   receipts. Exact reinstall reuses selected CONSUMED evidence; it never creates
   parallel genesis.
 
-- A release is an immutable bundle containing npm tarballs, skill/module files,
+- A release is an immutable bundle containing npm tarballs, module files,
   contract schemas, stable test-bundle digest, source revision, build
-  provenance, and manifest hashes.
+  provenance, and manifest hashes. No skill artifact kind exists; prose skills
+  were replaced by typed `orchestration-module/v1` modules.
 - Installed releases live under `<state-root>/releases/<release-digest>/`.
   Canonical `<state-root>/installation/active-release.json` is the sole
   `ACTIVE_RELEASE` tip; its selected value binds the active-release family
@@ -223,7 +283,7 @@ are exactly those in `supervisor-contract.md`.
   all new install/promotion mutation. From N0 onward, stable predecessor N owns
   the otherwise identical promotion protocol.
 - Bootstrap cancellation is only canonical `orchestration-bootstrap abort
-  --input <bootstrap-install-input/v1>` before first destination mutation. It
+--input <bootstrap-install-input/v1>` before first destination mutation. It
   derives and reads back the deterministic transaction state rather than
   accepting a hand-authored abort envelope, then either refuses when no
   authorization exists, revokes pre-gate unconsumed authority, or persists/
@@ -231,7 +291,7 @@ are exactly those in `supervisor-contract.md`.
   alternate cleanup command exists.
 - The installation-scoped supervisor shim and native scheduler definition do
   not change during N0→N1. Stable N stages/verifies N+1 and pending broker-client
-  admission, then requests selection of canonical `active-release/v2` through
+  admission, then requests selection of canonical `active-release/v1` through
   the epoch-fenced pointer protocol; this is the sole activation point. N1+
   staging bytes and pending admission are explicitly
   non-authoritative and may be removed by `ABORTED_PRE_ACTIVATION` until the
