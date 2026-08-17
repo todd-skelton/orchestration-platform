@@ -132,3 +132,8 @@ Explicit exclusions stay on the Chase Sets delivery board:
 The new board's executable frontier is always derived from native issue
 dependencies and milestones. Imported source provenance never competes with a
 platform slice for dispatch.
+
+Destination keys `ISS-039` and `ISS-040` are reserved for PR49's post-census
+simplification and evidence-proportionality issues. This note does not amend
+the immutable 183-source snapshot or import PR49's `#6999/#7000` addendum; new
+issues in this replan begin at `ISS-041`.

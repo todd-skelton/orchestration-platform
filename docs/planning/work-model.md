@@ -44,3 +44,28 @@ path without turning historical repairs into permanent platform machinery.
 Chain DAG block is a generated, direct-edge mirror—not a transitive summary.
 `pnpm run planning:check` rejects missing drafts, mismatched keys, parents or
 milestones, dependency cycles, unlisted direct edges, and hand-edited DAG drift.
+
+Shared scaffold owned by `ISS-000` (root wrappers, command registries, census
+tables, build configuration) is amended only through a single reviewed change
+that edits the registration and every census table restating it together, with
+the owning issue named in the change. Frozen scaffold is not immutable
+scaffold; an amendment without its census updates fails verification.
+
+Every replan and independent review includes one proportionality check. For
+each retained or proposed mechanism, it records the concrete in-scope threat,
+the deletion test, the smallest credible alternative, and why the selected
+shape is smaller or better evidenced. A finding may delete machinery or adopt
+a strictly smaller replacement in the same repair. No protocol requires
+repeated "clean removal" rounds: the repaired packet returns to the ordinary
+independent review gate. Complexity that only defends against threats the
+architecture excludes is a finding, not a safeguard.
+
+Registered blocked-by edges are the transitive reduction of correctness
+dependencies; the checker treats a transitively implied direct edge as drift.
+A draft's prose may name any consumed contract regardless of whether its edge
+is direct.
+
+Reduction audits classify lifecycle timing and external-authority admission as
+correctness dependencies before removing edges. A direct edge is retained when
+the alternate path does not itself establish that timing or authority; closure
+alone is insufficient evidence to erase a semantically distinct gate.

@@ -142,6 +142,32 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
   }
 }
 
+function validateReducedEdges(issues) {
+  const byKey = new Map(issues.map((issue) => [issue.key, issue]));
+  function reaches(start, target, skipDirect) {
+    const stack = byKey.get(start).blockedBy.filter((dep) => !(skipDirect && dep === target));
+    const seen = new Set(stack);
+    while (stack.length) {
+      const current = stack.pop();
+      if (current === target) return true;
+      for (const dep of byKey.get(current)?.blockedBy ?? []) {
+        if (!seen.has(dep)) {
+          seen.add(dep);
+          stack.push(dep);
+        }
+      }
+    }
+    return false;
+  }
+  for (const issue of issues) {
+    for (const dep of issue.blockedBy) {
+      if (reaches(issue.key, dep, true)) {
+        fail(`${issue.key} direct edge to ${dep} is transitively implied`);
+      }
+    }
+  }
+}
+
 function validateAcyclic(issues) {
   const issueKeys = new Set(issues.map(({ key }) => key));
   const visiting = new Set();
@@ -330,6 +356,7 @@ export function validatePlanningSnapshot(snapshot) {
     }
   }
   validateAcyclic(roadmap.issues);
+  validateReducedEdges(roadmap.issues);
 
   for (const epic of roadmap.epics) {
     const source = snapshot.epicDrafts[epic.key];

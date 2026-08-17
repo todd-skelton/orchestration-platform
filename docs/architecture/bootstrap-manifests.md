@@ -34,6 +34,10 @@ artifacts rather than npm library exports. Their exact static entrypoints,
 execution ABI, registry, and admission rules are defined in
 `docs/architecture/module-abi.md`.
 
+The shared native-store attack-suite fixture is `ISS-031`-owned at the
+canonical path `probes/credentials/attack-suite/`; its digest binding is
+recorded in its manifest row.
+
 `ISS-000` creates every package manifest, empty public entrypoint, and root
 script. It also creates an empty `modules/manifest.json`, a deterministic
 placeholder `modules/build/generate-registry.mjs`, and placeholder composition
@@ -123,6 +127,7 @@ last-registration-wins behavior are forbidden.
 | `cycle` | `@orchestration-platform/engine` (`ISS-026`) |
 | `supervisor` | `@orchestration-platform/supervisor` (`ISS-030`) |
 | `credential` | `@orchestration-platform/credentials` (`ISS-032`) |
+| `status` | `@orchestration-platform/status` (`ISS-042`) |
 
 ## CLI grammar
 
@@ -175,6 +180,7 @@ and result schema families are exhaustive:
 | `credential bind --request <file>` | `credential-bind-request/v1` containing reference/capabilities, never a secret | `credential-reference-receipt/v1` |
 | `credential inspect --credential <id>` | identity | `credential-health/v1` |
 | `credential revoke --credential <id>` | identity | `credential-revocation-receipt/v1` |
+| `status show` | none | `operator-status/v1` |
 
 Duplicate flags, positional substitutes, missing values, unknown commands, or
 unknown flags are invalid input. Project discovery walks from the
@@ -214,30 +220,28 @@ projection of the same envelope and is not authority evidence.
 
 ## Bootstrap compatibility
 
-Current authority dispatch uses the exact versions selected by the architecture,
-including `state-mutation-authority-value/v3`,
-`authority-history-empty-root/v2`, `authority-history-root/v2`,
-`authority-history-append-receipt/v2`, rotation identity v2, run intent/current
-value/core v2, commit evidence v3, evidence slot/packet v3, the thirteen-kind
-registry, singleton node-materialization coordinator, node-inventory schemas,
-and authority-run epoch-handoff records. Earlier corresponding versions and
-the twelve-slot packet are readable only through the explicit diagnostic API
-and are refused at current authority paths. No authority version is implicitly
-migrated and no old record may be selected by bootstrap.
+Current authority dispatch uses the exact versions selected by the architecture
+as amended by the `Proportionality and schema lifecycle` decisions: every
+family is `v1`, including `state-mutation-authority-value/v1`, the
+`authority-history/v1` chain, rotation identity, run intent/current
+value/core, commit evidence, evidence slot/packet, and the twelve-kind
+registry. Superseded
+pre-deployment generations are deleted, not archived; no diagnostic API
+exists. No authority version is implicitly migrated and no old record may be
+selected by bootstrap.
 
 | Observed version | Disposition |
 |---|---|
 | exact current schema at its current path | readable/selectable |
-| explicitly named diagnostic authority version | diagnostic read only; never selectable/migratable |
 | explicit legacy non-authority fixture with a named pure migration | migratable only through that migration |
 | missing, malformed, unknown, future, or old authority at a current path | refused |
 | pre-platform incumbent state | imported only through the first-consumer adapter; never read as a platform record |
 
-ISS-002 owns schema/compatibility changes. ISS-004 owns node materialization,
-coordinator/run CAS, crash recovery, and branded census enumeration. ISS-020
-creates E0 empty history/inventory roots and coordinator IDLE. ISS-022 proves
-the lock, canonical directory cursor, readback, and custody semantics. No root
-wrapper or package manifest changes are required for this amendment.
+ISS-002 owns schema/compatibility changes. ISS-004 owns chain appends, run
+CAS, crash recovery, and full-chain verification. ISS-020 creates the E0
+genesis record. ISS-022 proves the lock, create-once/readback existence
+semantics at constructed paths, and custody semantics. No root wrapper or
+package manifest changes are required for this amendment.
 
 ## Bootstrap authority CLI
 
