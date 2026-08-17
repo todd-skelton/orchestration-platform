@@ -10,6 +10,7 @@ import {
   recoveryFenceRootPath,
   recoveryLaunchCurrentPath,
   recoveryLaunchPath,
+  diagnosticSchemaDefinitions,
   schemaDefinitions,
   type ContractRecord,
   type FieldRule,
@@ -56,7 +57,8 @@ function scalar(rule: FieldRule): JsonValue {
 }
 
 function baseFixture(schemaVersion: string): Record<string, JsonValue> {
-  const definition = schemaDefinitions[schemaVersion]!;
+  const definition =
+    schemaDefinitions[schemaVersion] ?? diagnosticSchemaDefinitions[schemaVersion]!;
   return Object.fromEntries(
     Object.entries(definition.fields).map(([name, rule]) => {
       if (name === "schemaVersion") return [name, schemaVersion];
@@ -247,6 +249,13 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         producerStartedAt: instant,
         issuedAt: later,
         expiresAt: "2026-08-16T12:36:56.789Z",
+      };
+    case "recovery-authorization-core/v1":
+      return {
+        mode: "BOOTSTRAP",
+        grantDigest: digest,
+        installerDigest: digest,
+        destinationDigest: digest,
       };
     default:
       return {};

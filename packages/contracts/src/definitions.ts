@@ -1310,19 +1310,18 @@ const definitions = [
   }),
 ] as const;
 
-export const schemaDefinitions: Readonly<Record<string, SchemaDefinition>> = Object.freeze(
+export const legacySchemaDefinitions: Readonly<Record<string, SchemaDefinition>> = Object.freeze(
   Object.fromEntries(definitions.map((definition) => [definition.schemaVersion, definition])),
 );
 
-export const schemaVersions = Object.freeze(Object.keys(schemaDefinitions).sort());
+export const legacySchemaVersions = Object.freeze(Object.keys(legacySchemaDefinitions).sort());
 
-export type CompatibilityDisposition = "readable" | "migratable" | "refused";
+export type LegacyCompatibilityDisposition = "readable" | "migratable" | "refused";
 
-export function compatibilityDisposition(
+export function legacyCompatibilityDisposition(
   expectedSchemaVersion: string,
   observedSchemaVersion: unknown,
-): CompatibilityDisposition {
-  if (!Object.hasOwn(schemaDefinitions, expectedSchemaVersion)) return "refused";
+): LegacyCompatibilityDisposition {
   if (observedSchemaVersion === expectedSchemaVersion) return "readable";
   if (
     expectedSchemaVersion === "platform-configuration/v1" &&
@@ -1417,7 +1416,10 @@ export function validateRecoveryAuthorizationAttachment(
     ["fenceCurrent", "activation-recovery-fence-current/v1"],
   ] as const) {
     try {
-      const parsed = validateAgainstSchema(schemaDefinitions[schemaVersion]!, envelope[label]);
+      const parsed = validateAgainstSchema(
+        legacySchemaDefinitions[schemaVersion]!,
+        envelope[label],
+      );
       if (parsed.ok) parsedRecords[label] = parsed.value;
       else issues.push(...parsed.issues.map((issue) => `${label}:${issue}`));
     } catch {
@@ -1438,7 +1440,7 @@ export function validateRecoveryAuthorizationAttachment(
     const parsed: ContractRecord[] = [];
     for (const [index, record] of history.entries()) {
       try {
-        const result = validateAgainstSchema(schemaDefinitions[schemaVersion]!, record);
+        const result = validateAgainstSchema(legacySchemaDefinitions[schemaVersion]!, record);
         if (result.ok) parsed.push(result.value);
         else issues.push(...result.issues.map((issue) => `${label}[${index}]:${issue}`));
       } catch {

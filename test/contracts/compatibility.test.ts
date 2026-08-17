@@ -14,7 +14,7 @@ describe("contract compatibility matrix", () => {
     for (const expected of schemaVersions) {
       const family = expected.slice(0, expected.lastIndexOf("/"));
       expect(compatibilityDisposition(expected, expected)).toBe("readable");
-      expect(compatibilityDisposition(expected, `${family}/v2`)).toBe("refused");
+      expect(compatibilityDisposition(expected, `${family}/v999`)).toBe("refused");
       expect(compatibilityDisposition(expected, `${family}/future`)).toBe("refused");
       expect(compatibilityDisposition(expected, null)).toBe("refused");
       expect(compatibilityDisposition(expected, `${family}/v0-fixture`)).toBe(
@@ -48,7 +48,9 @@ describe("contract compatibility matrix", () => {
     for (const expected of schemaVersions) {
       const fixture = fixtureFor(expected);
       const family = expected.slice(0, expected.lastIndexOf("/"));
-      expect(parseContract(expected, { ...fixture, schemaVersion: `${family}/v2` }).ok).toBe(false);
+      expect(parseContract(expected, { ...fixture, schemaVersion: `${family}/v999` }).ok).toBe(
+        false,
+      );
     }
   });
 

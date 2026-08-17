@@ -1,173 +1,128 @@
 # Public contract compatibility
 
-This document describes the executable compatibility boundary exported by
-`@orchestration-platform/contracts`. The implementation is provider-neutral and
-uses no repository-local path or project policy as authority.
+`@orchestration-platform/contracts` is a provider-neutral, pure contract
+package. It parses, snapshots, serializes, frames, hashes, and validates
+authority evidence; it does not acquire locks, mutate files, issue private
+capabilities, contact a broker, or launch a process.
 
-## Canonical authority bytes
+## Canonical values and reflective closure
 
-Every authority record is a closed JSON object with an exact `schemaVersion`.
-Its only valid durable encoding is UTF-8 without a byte-order mark,
-lexicographically sorted object keys at every depth, no insignificant
-whitespace, JSON array order preserved, and one trailing LF. SHA-256 identities
-cover those exact bytes. Parsers refuse malformed UTF-8, noncanonical JSON,
-unknown or missing fields, unsafe numbers, invalid Unicode scalar sequences,
-and unknown schema versions.
+Authority JSON is UTF-8 without BOM, lexicographically sorted at every object,
+has no insignificant whitespace, preserves array order, and ends with LF.
+Numbers are non-negative safe integers unless declared decimal strings. Times
+are RFC 3339 UTC with milliseconds; durable IDs are lowercase UUIDv7 and
+digests lowercase SHA-256. Relative paths use `/` and refuse absolute/drive/URI
+prefixes, alternate separators, empty/dot segments, NUL, and all C0/C1 controls.
 
-Numbers are non-negative JavaScript safe integers unless a field is explicitly
-a decimal string. Numeric external identities use canonical decimal strings so
-they remain exact outside the safe-integer range. Times are RFC 3339 UTC with
-exactly millisecond precision. Durable IDs are lowercase UUIDv7 and content
-IDs are lowercase SHA-256 hex.
+Every public parser, serializer, migration, and evidence validator takes a
+detached snapshot before semantic reads. Records allow only Object.prototype or
+null prototype, own enumerable data properties, and exact fields. Arrays must
+be same-realm exact Array.prototype values with dense indices plus `length`;
+mutable, sealed, and frozen descriptors are accepted. Proxies, symbols, holes,
+extras, accessors, custom iterators/prototypes, subclasses, cross-realm arrays,
+exotics, and traps refuse without executing user code.
 
-Contract-relative paths use `/`, are never absolute, and refuse empty, `.`,
-`..`, drive-designator, URI, alternate-separator, NUL, and every C0/C1 control
-character. A host path may cross the configuration boundary only as a canonical
-`file:` URL. Runtime state remains outside source checkouts.
+## Current and diagnostic registries
 
-## Closed schema census
+The current registry retains unaffected generic v1 contracts and adds these
+ISS-002 authority contracts:
 
-The registry contains 38 authority families:
+- pointer graph: `pointer-current-tip/v1`,
+  `pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`,
+  `pointer-tombstone-value/v1`, and `authority-retention/v1`;
+- epoch/release/cleanup: `state-mutation-authority-value/v1`,
+  `active-release/v2`, `activation-cleanup-gate-root/v2`,
+  `activation-cleanup-gate-head/v2`,
+  `activation-cleanup-archive-head/v2`,
+  `activation-recovery-fence-root/v2`, and
+  `activation-recovery-fence-head/v2`;
+- attempts: `activation-recovery-launch/v2`,
+  `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`,
+  `recovery-attempt-terminal-summary/v1`, and
+  `recovery-attempt-accumulator/v1`;
+- authorization: `recovery-authorization-core/v1`,
+  `recovery-authorization-state/v2`, `native-consume-receipt/v1`,
+  `recovery-authorization-consume-receipt/v1`,
+  `native-removal-receipt/v1`,
+  `recovery-authorization-revoke-receipt/v1`, and
+  `recovery-authorization-attachment/v1`.
 
-| Area                            | Schema versions                                                                                                                                                                                                                                                  |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Configuration and base state    | `platform-configuration/v1`, `adapter-declaration/v1`, `installed-release/v1`, `session-lease/v1`, `worker-ownership/v1`, `journal-event/v1`                                                                                                                     |
-| Review, promotion, and dispatch | `review-receipt/v1`, `promotion-receipt/v1`, `dispatch-plan/v1`, `breaker-authority/v1`, `owned-resource/v1`                                                                                                                                                     |
-| Portability transactions        | `export-manifest/v1`, `import-plan/v1`, `import-receipt/v1`                                                                                                                                                                                                      |
-| Module ABI                      | `module-descriptor/v1`, `module-plan-input/v1`, `module-plan-result/v1`, `module-action-plan/v1`, `module-no-action/v1`                                                                                                                                          |
-| Installed successor identity    | `supervisor-shim/v1`, `active-release/v1`, `broker-active-client/v1`, `pending-successor/v1`, `successor-admission/v1`                                                                                                                                           |
-| Recovery fence and launch       | `activation-recovery-fence-root/v1`, `activation-recovery-fence-head/v1`, `activation-recovery-fence-current/v1`, `activation-recovery-launch/v1`, `activation-recovery-launch-current/v1`, `activation-recovery-launch-archive/v1`, `recovery-authorization/v1` |
-| Activation cleanup              | `activation-cleanup-gate-root/v1`, `activation-cleanup-gate-head/v1`, `activation-cleanup-gate-current/v1`, `activation-cleanup-gate-archive/v1`, `activation-cleanup-head/v1`                                                                                   |
-| External protection root        | `repository-protection-receipt/v1`, `bootstrap-verifier-anchor/v1`                                                                                                                                                                                               |
+The thirteen superseded active-release, gate, fence, launch, cleanup-head, and
+recovery-authorization v1 schemas exist only in
+`diagnosticSchemaDefinitions`. `parseDiagnosticContract` can read their exact
+historical bytes. `parseContract` and every canonical authority path refuse
+them. No migration exists because no v1 authority was deployed.
 
-All enums are closed. In particular, a dispatch role is exactly
-`implementation`, `review`, or `observer`; an absent or unknown role refuses
-before resource ownership. Module inputs contain canonical fact and policy
-digests rather than ambient host, clock, process, network, credential, or
-mutation access.
+Exact current versions are readable. The named
+`platform-configuration/v0-fixture` alone is migratable. Missing, diagnostic,
+other legacy, malformed, unknown, and future versions are refused.
 
-## Compatibility matrix
+## Pointer registry and framing
 
-| Observed version                               | Disposition                                      |
-| ---------------------------------------------- | ------------------------------------------------ |
-| Exact supported family `v1`                    | `readable`                                       |
-| Named `platform-configuration/v0-fixture`      | `migratable` through the exported pure migration |
-| Any other legacy spelling                      | `refused`                                        |
-| Missing, malformed, unknown, or future version | `refused`                                        |
+The closed pointer registry has exactly eleven kinds and the canonical paths in
+`supervisor-contract.md`; the fixed singleton lock is
+`installation/state-mutation.lock`. Launch/accumulator/reservation sources are
+exactly `recovery-fence-v2` or `cleanup-gate-pre-fence-v2`; all other kinds use
+`none`. Unknown, differently cased/encoded, cross-family, or colliding paths and
+tokens refuse.
 
-The named fixture migration is deterministic, does not mutate its input, and
-accepts only a plain own-data-property snapshot. Accessors, proxies, class
-instances, and exotic objects refuse. Its result must pass the current closed
-parser. No other implicit migration exists. A later writer must add the complete
-pairwise matrix before emitting another version.
+Framing `F` is UTF-8 `orchestration-platform`, NUL, domain, NUL, U32 part count,
+then closed type tag, U64 byte length, and bytes for every part. Digests are raw
+32 bytes and nullable digests have a distinct null type. Goldens pin:
 
-## Recovery and cleanup paths
+- Dp under `pointer-instance/v2`;
+- Dv under `pointer-value/v2`;
+- Dr under `pointer-receipt/v2` over
+  `pointer-cas-proposal-receipt/v1`;
+- Dt under `pointer-tip/v2` over `pointer-current-tip/v1`;
+- mutation ID under `pointer-mutation-id/v2`;
+- Dc under `pointer-conflict-receipt/v1`.
 
-Canonical current pointers are unique:
+Values never contain the receipt/tip selecting them. Proposals are create-once
+`VALUE_PROPOSED|TOMBSTONE_PROPOSED` and classify only as PENDING, SELECTED,
+LOST_CONFLICT, COMPACTED, or UNKNOWN from exact winner evidence. Terminal
+authority selects `pointer-tombstone-value/v1`; the current tip is never deleted
+and bare absence never regains authority.
 
-| Record                        | Contract-relative path                         |
-| ----------------------------- | ---------------------------------------------- |
-| Recovery fence current        | `installation/activation-recovery-fence.json`  |
-| Recovery launch current       | `installation/activation-recovery-launch.json` |
-| Cleanup gate current          | `installation/activation-cleanup-gate.json`    |
-| Verified cleanup archive head | `installation/activation-cleanup-head.json`    |
+## Pure semantic validators
 
-Create-once transaction evidence is equally exact:
+Cleanup admits exactly ten lifecycle/publication pairs and twelve mutation
+edges; an already-selected pair reduces to NO_APPEND. Fence history is exactly
+PREPARED then optional POST_ACTIVATION. Dense root/head histories bind ordinal,
+previous canonical digest, and exact edge.
 
-| Record family           | Contract-relative path template                                                                                  |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Recovery fence root     | `installation/activation-recovery-fence-roots/<transaction>.json`                                                |
-| Recovery fence history  | `installation/activation-recovery-fence-history/<transaction>/<ordinal>-<state>.json`                            |
-| Recovery launch state   | `installation/activation-recovery-launches/<transaction>/<source-token>/<generation>/<ordinal>-<lifecycle>.json` |
-| Recovery launch archive | `installation/activation-recovery-launches/<transaction>/<source-token>/archive.json`                            |
-| Cleanup gate root       | `installation/activation-cleanup-gate-roots/<transaction>.json`                                                  |
-| Cleanup gate history    | `installation/activation-cleanup-gate-history/<transaction>/<ordinal>-<lifecycle>-<publication>.json`            |
-| Cleanup gate archive    | `installation/activation-cleanup-gates/<transaction>.json`                                                       |
-| Recovery authorization  | `installation/recovery-authorizations/<transaction>.json`                                                        |
+State mutation validators pin the fixed lock sequence, same authority epoch
+rereads, and a rotation census containing all other ten pointer kinds with zero
+PENDING/UNKNOWN. They validate evidence only; ISS-004 owns the kernel lock,
+private capability, CAS, reconciliation, tombstones, and rotation writes.
 
-Immutable roots, heads, launch transitions, authorizations, and archives use
-the exported transaction-derived path functions. Launch source tokens are an
-exhaustive mapping: `recovery-fence/v1` maps to `recovery-fence-v1`, while
-`cleanup-gate-pre-fence/v1` maps to `cleanup-gate-pre-fence-v1`. Source/token,
-transaction, generation, ordinal, or path mismatch refuses.
+Recovery authorization core has closed BOOTSTRAP/SUCCESSOR unions. It excludes
+gate/lifecycle/consume/revoke/attachment and
+`candidateOperationManifestDigest`; every excluded-field insertion refuses.
+State validates CREATED, native-consume then CONSUMED plus post-consume receipt,
+native removal then REVOKED plus post-revoke receipt. Attachment binds a LIVE
+descriptor, not a future terminal summary.
 
-Ordinal-zero heads have canonical-null predecessors. Each new cleanup/fence
-transaction creates its ordinal-zero current pointer by CAS from absence,
-regardless of active generation; later head ordinals require an exact prior
-pointer digest. Recovery-launch CAS from absence is narrower: only generation
-zero ordinal zero. The initialization reducer recognizes only
-all-absent, root-only, root-plus-initial-head, and fully-current prefixes; mixed,
-extra, or reordered histories reduce to `UNKNOWN`.
+Reservations bind one UUIDv7 (uniqueness only) to a predecessor accumulator
+triple/genesis. Descriptor, terminal summary, and accumulator are separate.
+First/later accumulator formulas use domain-separated raw digests. There is no
+lifetime attempt array or generation cap; a fixed packet verifies only current
+gate/fence/launch, reservation, descriptor, attachment, accumulator, initial
+records, and at most one previous terminal summary.
 
-Fence state is exactly `PREPARED` or `POST_ACTIVATION`. Launch records bind both
-the prior immutable state-record digest and the prior current-pointer digest;
-generation-zero ordinal-zero is only `READY` and both predecessors are `null`.
-Every later transition requires both nonzero digests. A retry advances one
-generation and resets the ordinal, while an authority rebind retains process and
-lifecycle identity and advances exactly one adjacent gate or fence head.
-Observed authority compares both the digest and ordinal of each gate/fence head.
-A pre-fence handoff requires gate `PENDING` plus `PUBLISHED`; `ABORTING` can
-terminalize only as `TERMINAL_ABORTED`. Recovery fence roots separately bind the
-predecessor and successor operation-manifest digests.
-
-Recovery authorization is a closed union on `bootstrap-n0` or `successor`.
-Mode-inapplicable bindings are canonical `null`; successor launch attachment is
-either entirely absent or a complete fence-backed READY/LIVE identity. Its
-broker generations are adjacent, duplicated gate/fence authority roots must be
-equal, attachment generation and attempt match the exact launch/current chain,
-and consumed authority has no expiry. Cleanup ordinal zero is exactly
-`PENDING`/`NOT_PUBLISHED`; promotion roots require their predecessor cleanup
-head. Cleanup archives bind the root, ordered head-chain digest, revocation
-proof, one exclusive activated/aborted proof union, and the active record
-retained by the canonical cleanup head.
-
-Recovery authorization attachment validates the complete canonical READY to
-LIVE transition against a parsed `active-release/v1`, cleanup gate
-complete ordered root/history/current cleanup-gate and recovery-fence chains,
-the caller's canonical argv digest, and for generations above zero the complete
-ordered prior terminal-retryable launch prefix. It recomputes every supplied
-immutable record digest and requires every shared current-pointer authority
-field to equal the LIVE record. The authorization's singular
-`operationManifestDigest` is the successor manifest and binds the fence root's
-`successorOperationManifestDigest`; the predecessor active record separately
-binds `predecessorOperationManifestDigest`. The gate's expected-consumed
-authorization digest binds the authorization's canonical `capabilityDigest`
-together with its transaction-derived path and identifier, avoiding mutable
-attachment fields as identity. Invalid, accessor-backed,
-reflective, or unreadable evidence refuses before semantic fields or canonical
-digests are read.
-
-Cleanup lifecycle and publication are one closed state pair. The only pairs are
-`PENDING` with `NOT_PUBLISHED`, `PUBLISHING`, or `PUBLISHED`; `ACTIVATING` with
-`PUBLISHED`; `ABORTING` with any of the four publication states; and `COMPLETE`
-with `NOT_PUBLISHED` or `CLEARED`. Exactly twelve mutation edges are admitted:
-`PN→PI`, `PN→BN`, `PN→CN`, `PI→PP`, `PI→BI`, `PP→AP`, `PP→BP`, `AP→CC`,
-`BN→CN`, `BI→BP`, `BP→BC`, and `BC→CC`. Crash resume at the already-current
-pair is `NO_APPEND`, never a self-loop history write. Cleanup heads carry no
-fence or revocation proof at `PENDING`/`NOT_PUBLISHED`; later heads admit only
-the proofs authorized by their exact pair.
-
-All public schema parsing, serialization, named migration, and attachment
-evidence use one closed-record snapshot boundary. Proxies, symbols,
-non-enumerable or accessor properties, inherited/exotic records, and reflective
-traps refuse before contract semantics run.
-
-Repository-protection authority pins API version `2022-11-28`, protected
-environment `host-custody-bootstrap-root`, and verifier version `2.93.0`. The
-anchor digest equals the protected variable value, whose API update is at or
-strictly before producer start; producer start is strictly before receipt issue.
+Retention is FULL_REQUIRED except eligible terminal attempt history. Compaction
+requires checkpoint, plan, completion in order and never applies to PENDING.
+AUDIT_DEGRADED permits only existing recovery/retry/cleanup, selected attachment,
+and ordinary non-release ticks; it blocks new promotion/bootstrap/certification,
+unrelated authorization/attachment, compaction, and audit finalization.
 
 ## Review attack surface
 
-Compatibility tests attack missing and extra fields, future/legacy confusion,
-role widening, noncanonical bytes, unsafe integer and timestamp forms, absolute
-or alternate paths, transaction substitution, stale and skipped generations,
-source-token mismatch, partial lifecycle authority, absent predecessor/CAS
-digests, cleanup publication without fence evidence, anchor provenance changes,
-and custom or candidate-provided verifier roots. These checks are local; later
-cross-OS conformance executes the same canonical byte goldens without changing
-their authority.
-
-The exact serialized fixture bytes for all 38 families are pinned by one
-ordered SHA-256 golden root. Changing any fixture byte, schema family order, or
-canonical serializer rule requires an intentional compatibility update.
+Executable mutants cover missing/extra/partial fields, coordinated digest
+substitution, domain/order/type/null framing changes, source/path collisions,
+fake lost conflicts, pointer deletion/bare absence, invalid cleanup cells/edges,
+mixed epochs, incomplete rotation census, candidate core fields, reordered
+native/post receipts, attachment-to-summary confusion, reservation forks,
+lifetime caps, packet overflow, compaction ordering, v1 at authority paths, and
+all hostile reflective shapes. Cross-OS conformance reuses the same canonical
+goldens without changing authority.

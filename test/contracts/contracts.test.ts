@@ -1,90 +1,53 @@
-import { createHash } from "node:crypto";
-import { resolve } from "node:path";
-import { TextEncoder } from "node:util";
 import { describe, expect, test } from "vitest";
-import { regularCapabilitySlot } from "../../scripts/capability-slots.mjs";
 import {
   canonicalBytes,
   canonicalDigest,
-  canonicalJson,
-  cleanupGateArchivePath,
-  cleanupGateCurrentPath,
-  cleanupGateHeadPath,
-  cleanupGateRootPath,
-  cleanupHeadCurrentPath,
+  classifyProposal,
+  computeConflictDigest,
+  computeCurrentTipDigest,
+  computeMutationId,
+  computePointerInstanceDigest,
+  computePointerValueDigest,
+  computeProposalReceiptDigest,
+  diagnosticSchemaDefinitions,
+  diagnosticSchemaVersions,
+  fixedEvidencePacketLimits,
+  framedBytes,
   isCleanupLifecyclePublicationPair,
   isCleanupLifecyclePublicationTransition,
+  ordinaryEpochSequence,
   parseCanonicalContractBytes,
   parseContract,
-  recoveryAuthorizationPath,
-  recoveryFenceCurrentPath,
-  recoveryFenceHeadPath,
-  recoveryFenceRootPath,
-  recoveryLaunchCurrentPath,
-  recoveryLaunchPath,
+  parseDiagnosticContract,
+  pointerKinds,
+  pointerPath,
+  pointerRegistry,
+  recoveryAccumulatorDigest,
+  retentionAllows,
   reduceCleanupHeadWrite,
-  reduceInitializationCensus,
   schemaDefinitions,
   schemaVersions,
   serializeContract,
-  validateCleanupAuthorityBinding,
-  validateCleanupHeadTransition,
-  validateFenceAuthorityBinding,
-  validateFenceHeadTransition,
-  validateImportReceiptAgainstPlan,
-  validateRecoveryAuthorizationAttachment,
-  validateRecoveryAuthorityAlignment,
-  validateRecoveryLaunchTransition,
-  type ContractRecord,
+  snapshotClosedArray,
+  stateMutationAuthorityPath,
+  stateMutationLockPath,
+  stateMutationRegistry,
+  supersededAuthorityVersions,
+  validateEpochSequence,
+  validateAuthorizationReceiptChain,
+  validateEvidencePacket,
+  validateFenceHeadHistory,
+  validatePointerDispatch,
+  validateCleanupHeadHistory,
+  validateRetentionTransition,
+  validateRotationCensus,
   type FieldRule,
-  type JsonValue,
 } from "../../packages/contracts/src/index.js";
-import {
-  digest,
-  digest2,
-  fixtureFor,
-  instant,
-  later,
-  uuid,
-  uuid2,
-  validFixtures,
-} from "./fixtures.js";
-
-function mutant(schemaVersion: string, changes: Record<string, unknown>): Record<string, unknown> {
-  return { ...fixtureFor(schemaVersion), ...changes };
-}
-
-function successorAuthorizationFixture(
-  changes: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return mutant("recovery-authorization/v1", {
-    mode: "successor",
-    bootstrapGrantDigest: null,
-    bootstrapInstallerDigest: null,
-    candidateDigest: null,
-    destinationStateRootDigest: null,
-    expectedActiveRecordDigest: digest,
-    fenceRootDigest: digest,
-    gateRootDigest: digest,
-    operationManifestDigest: digest,
-    pendingAdmissionDigest: digest,
-    predecessorExecutableDigest: digest,
-    predecessorReleaseDigest: digest,
-    priorBrokerGeneration: 0,
-    promotionCycleId: uuid,
-    successorBrokerGeneration: 1,
-    successorExecutableDigest: digest,
-    successorReleaseDigest: digest,
-    lifecycle: "CONSUMED_BOUND",
-    consumedAt: instant,
-    expiresAt: null,
-    ...changes,
-  });
-}
+import { digest, digest2, fixtureFor, instant, uuid } from "./fixtures.js";
 
 function invalidFor(rule: FieldRule): unknown {
-  if (rule.array) return { not: "array" };
-  if (rule.values) return "future-enum";
+  if (rule.array) return { no: "array" };
+  if (rule.values) return "FUTURE";
   switch (rule.kind) {
     case "boolean":
       return "false";
@@ -93,7 +56,7 @@ function invalidFor(rule: FieldRule): unknown {
     case "decimal":
       return "01";
     case "file-url":
-      return "/host/path";
+      return "/absolute";
     case "integer":
     case "positive-integer":
       return Number.MAX_SAFE_INTEGER + 1;
@@ -102,1832 +65,485 @@ function invalidFor(rule: FieldRule): unknown {
     case "relative-path":
       return "../escape";
     case "schema-id":
-      return "facts/latest";
+      return "schema/latest";
     case "semver":
-      return "1.0";
+      return "1";
     case "sha256":
-      return "A".repeat(64);
+      return digest.toUpperCase();
     case "timestamp":
-      return "2026-08-16T12:34:56Z";
+      return "2026-08-16";
     case "uuid-v7":
-      return "018f0c24-7a3b-6cc1-8a2f-1234567890ab";
+      return "not-a-uuid";
   }
 }
 
-describe("closed contract registry", () => {
-  test("pins the exhaustive ISS-002 schema census", () => {
-    expect(schemaVersions).toEqual([
-      "activation-cleanup-gate-archive/v1",
-      "activation-cleanup-gate-current/v1",
-      "activation-cleanup-gate-head/v1",
-      "activation-cleanup-gate-root/v1",
-      "activation-cleanup-head/v1",
-      "activation-recovery-fence-current/v1",
-      "activation-recovery-fence-head/v1",
-      "activation-recovery-fence-root/v1",
-      "activation-recovery-launch-archive/v1",
-      "activation-recovery-launch-current/v1",
-      "activation-recovery-launch/v1",
-      "active-release/v1",
-      "adapter-declaration/v1",
-      "bootstrap-verifier-anchor/v1",
-      "breaker-authority/v1",
-      "broker-active-client/v1",
-      "dispatch-plan/v1",
-      "export-manifest/v1",
-      "import-plan/v1",
-      "import-receipt/v1",
-      "installed-release/v1",
-      "journal-event/v1",
-      "module-action-plan/v1",
-      "module-descriptor/v1",
-      "module-no-action/v1",
-      "module-plan-input/v1",
-      "module-plan-result/v1",
-      "owned-resource/v1",
-      "pending-successor/v1",
-      "platform-configuration/v1",
-      "promotion-receipt/v1",
-      "recovery-authorization/v1",
-      "repository-protection-receipt/v1",
-      "review-receipt/v1",
-      "session-lease/v1",
-      "successor-admission/v1",
-      "supervisor-shim/v1",
-      "worker-ownership/v1",
-    ]);
-    expect(new Set(schemaVersions).size).toBe(38);
+describe("current and diagnostic schema registries", () => {
+  test("pins eleven pointer kinds, one lock, and exact canonical paths", () => {
+    expect(pointerKinds).toHaveLength(11);
+    expect(pointerRegistry.map((row) => row.kind)).toEqual(pointerKinds);
+    expect(new Set(pointerKinds).size).toBe(11);
+    expect(stateMutationLockPath).toBe("installation/state-mutation.lock");
+    expect(stateMutationAuthorityPath).toBe("installation/state-mutation-authority.json");
+    expect(stateMutationRegistry.lock).toEqual({
+      path: stateMutationLockPath,
+      singleton: true,
+      symlinkAllowed: false,
+    });
+    expect(pointerRegistry.filter((row) => row.singleton)).toHaveLength(5);
+    expect(pointerPath("ACTIVE_RELEASE")).toBe("installation/active-release.json");
+    expect(pointerPath("RECOVERY_AUTHORIZATION_STATE", { transactionId: "transaction-1" })).toBe(
+      "installation/recovery-authorizations/transaction-1/state.json",
+    );
+    expect(
+      pointerPath("RECOVERY_ATTEMPT_RESERVATION", {
+        transactionId: "transaction-1",
+        sourceToken: "recovery-fence-v2",
+        predecessorKey: digest,
+      }),
+    ).toBe(
+      `installation/activation-recovery-launches/transaction-1/recovery-fence-v2/reservations/${digest}.json`,
+    );
+    expect(() =>
+      pointerPath("RECOVERY_ATTEMPT_RESERVATION", {
+        transactionId: "../bad",
+        sourceToken: "recovery-fence-v2",
+        predecessorKey: digest,
+      }),
+    ).toThrow();
+    expect(
+      validatePointerDispatch(
+        "ACTIVE_RELEASE",
+        "installation/active-release.json",
+        "active-release/v2",
+      ),
+    ).toEqual([]);
+    expect(
+      validatePointerDispatch(
+        "ACTIVE_RELEASE",
+        "installation/active-release.json",
+        "active-release/v1",
+      ),
+    ).toContain("schemaVersion:wrong-pointer-family");
+    expect(
+      validatePointerDispatch("ACTIVE_RELEASE", "installation/other.json", "active-release/v2"),
+    ).toContain("pointerPath:mismatch");
+    expect(() =>
+      pointerPath("ACTIVATION_RECOVERY_LAUNCH", {
+        transactionId: "transaction-1",
+        sourceToken: "recovery-fence/v1",
+      }),
+    ).toThrow();
   });
 
-  test("every authority schema accepts its golden and refuses every missing, extra, malformed, and future field mutant", () => {
-    for (const schemaVersion of schemaVersions) {
-      const definition = schemaDefinitions[schemaVersion]!;
+  test("removes superseded authority v1 from current dispatch and retains diagnostic parsing", () => {
+    expect(diagnosticSchemaVersions).toEqual([...supersededAuthorityVersions].sort());
+    for (const schemaVersion of supersededAuthorityVersions) {
       const fixture = fixtureFor(schemaVersion);
-      expect(parseContract(schemaVersion, fixture), schemaVersion).toEqual({
-        ok: true,
-        value: fixture,
+      expect(schemaDefinitions).not.toHaveProperty(schemaVersion);
+      expect(parseContract(schemaVersion, fixture)).toEqual({
+        ok: false,
+        issues: ["schemaVersion:unsupported"],
       });
+      expect(parseDiagnosticContract(schemaVersion, fixture).ok, schemaVersion).toBe(true);
+    }
+    expect(parseDiagnosticContract("active-release/v2", fixtureFor("active-release/v2"))).toEqual({
+      ok: false,
+      issues: ["schemaVersion:not-diagnostic"],
+    });
+  });
 
-      for (const [name, rule] of Object.entries(definition.fields)) {
+  test("pins the complete current schema census and exhaustive closed-field parsing", () => {
+    const required = [
+      "pointer-current-tip/v1",
+      "pointer-cas-proposal-receipt/v1",
+      "pointer-conflict-receipt/v1",
+      "pointer-tombstone-value/v1",
+      "authority-retention/v1",
+      "state-mutation-authority-value/v1",
+      "active-release/v2",
+      "activation-cleanup-gate-root/v2",
+      "activation-cleanup-gate-head/v2",
+      "activation-recovery-fence-root/v2",
+      "activation-recovery-fence-head/v2",
+      "activation-recovery-launch/v2",
+      "recovery-attempt-reservation/v1",
+      "recovery-attempt-descriptor/v1",
+      "recovery-attempt-terminal-summary/v1",
+      "recovery-attempt-accumulator/v1",
+      "activation-cleanup-archive-head/v2",
+      "recovery-authorization-core/v1",
+      "recovery-authorization-state/v2",
+      "native-consume-receipt/v1",
+      "recovery-authorization-consume-receipt/v1",
+      "native-removal-receipt/v1",
+      "recovery-authorization-revoke-receipt/v1",
+      "recovery-authorization-attachment/v1",
+    ];
+    for (const schemaVersion of required) expect(schemaVersions).toContain(schemaVersion);
+    expect(schemaVersions).toHaveLength(49);
+    expect(new Set(schemaVersions).size).toBe(schemaVersions.length);
+    for (const schemaVersion of schemaVersions) {
+      const fixture = fixtureFor(schemaVersion);
+      expect(parseContract(schemaVersion, fixture).ok, schemaVersion).toBe(true);
+      for (const [name, rule] of Object.entries(schemaDefinitions[schemaVersion]!.fields)) {
         const missing = { ...fixture } as Record<string, unknown>;
         delete missing[name];
-        expect(parseContract(schemaVersion, missing).ok, `${schemaVersion} missing ${name}`).toBe(
+        expect(parseContract(schemaVersion, missing).ok, `${schemaVersion}:${name}:missing`).toBe(
           false,
         );
         expect(
           parseContract(schemaVersion, { ...fixture, [name]: invalidFor(rule) }).ok,
-          `${schemaVersion} malformed ${name}`,
+          `${schemaVersion}:${name}:invalid`,
         ).toBe(false);
       }
       expect(parseContract(schemaVersion, { ...fixture, extraAuthority: digest }).ok).toBe(false);
-      expect(
-        parseContract(schemaVersion, { ...fixture, schemaVersion: `${schemaVersion}-future` }).ok,
-      ).toBe(false);
+    }
+  });
+});
+
+describe("closed snapshots and canonical bytes", () => {
+  test("accepts exact mutable, sealed, and frozen arrays", () => {
+    for (const input of [["a"], Object.seal(["a"]), Object.freeze(["a"])]) {
+      const result = snapshotClosedArray(input);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(Object.isFrozen(result.value)).toBe(true);
     }
   });
 
-  test("total parsers refuse hostile non-record inputs without throwing", () => {
-    const throwingGetter = Object.defineProperty({}, "schemaVersion", {
+  test("refuses reflective array and record mutants without invoking user code", () => {
+    const accessor = ["a"];
+    Object.defineProperty(accessor, "0", {
       enumerable: true,
       get() {
-        throw new Error("hostile getter");
+        throw new Error("must not run");
       },
     });
-    const throwingProxy = new Proxy(
-      {},
-      {
-        getPrototypeOf() {
-          throw new Error("hostile proxy");
-        },
-      },
-    );
-    const hostile: unknown[] = [
-      undefined,
-      null,
-      true,
-      1,
-      "{}",
-      [],
-      new Date(),
-      Object.create({ inherited: true }),
-      throwingGetter,
-      throwingProxy,
-    ];
-    for (const schemaVersion of [...schemaVersions, "unknown/v1"]) {
-      for (const input of hostile) {
-        expect(() => parseContract(schemaVersion, input)).not.toThrow();
-        expect(parseContract(schemaVersion, input).ok).toBe(false);
-      }
-    }
+    const extra = ["a"] as unknown[] & { extra?: string };
+    extra.extra = "x";
+    const symbol = ["a"];
+    Object.defineProperty(symbol, Symbol("x"), { value: true });
+    const hole = new Array(1);
+    const subclass = new (class extends Array<string> {})("a");
+    const proxy = new Proxy(["a"], {});
+    const cyclic: unknown[] = [];
+    cyclic.push(cyclic);
+    for (const input of [
+      accessor,
+      extra,
+      symbol,
+      hole,
+      subclass,
+      proxy,
+      cyclic,
+      Object.create(null),
+    ])
+      expect(snapshotClosedArray(input).ok).toBe(false);
+    const fixture = fixtureFor("pointer-current-tip/v1");
+    for (const input of [
+      new Proxy(fixture, {}),
+      Object.assign(Object.create({ x: 1 }), fixture),
+      Object.defineProperty({ ...fixture }, "hidden", { value: 1 }),
+    ])
+      expect(parseContract("pointer-current-tip/v1", input).ok).toBe(false);
+    const nullPrototype = Object.assign(Object.create(null), fixture);
+    expect(parseContract("pointer-current-tip/v1", nullPrototype).ok).toBe(true);
   });
 
-  test("parse and serialize share one closed-record snapshot boundary", () => {
-    for (const schemaVersion of schemaVersions) {
-      const fixture = fixtureFor(schemaVersion);
-      const symbolRecord = { ...fixture, [Symbol("authority")]: digest };
-      const nonEnumerable = Object.defineProperty({ ...fixture }, "schemaVersion", {
-        enumerable: false,
-        value: schemaVersion,
-      });
-      const accessor = Object.defineProperty({ ...fixture }, "schemaVersion", {
-        enumerable: true,
-        get() {
-          throw new Error("hostile accessor");
-        },
-      });
-      class ExoticRecord {
-        schemaVersion = schemaVersion;
-      }
-      const inherited = Object.create(fixture) as Record<string, unknown>;
-      for (const hostile of [
-        new Proxy(fixture, {}),
-        symbolRecord,
-        nonEnumerable,
-        accessor,
-        new ExoticRecord(),
-        inherited,
-      ]) {
-        expect(() => parseContract(schemaVersion, hostile), `${schemaVersion} parse`).not.toThrow();
-        expect(parseContract(schemaVersion, hostile).ok, `${schemaVersion} parse`).toBe(false);
-        expect(
-          () => serializeContract(schemaVersion, hostile),
-          `${schemaVersion} serialize`,
-        ).not.toThrow();
-        expect(serializeContract(schemaVersion, hostile).ok, `${schemaVersion} serialize`).toBe(
-          false,
-        );
-      }
-    }
-  });
-
-  test("published schema definitions and enum sets are runtime immutable", () => {
-    const dispatch = schemaDefinitions["dispatch-plan/v1"]!;
-    expect(Object.isFrozen(dispatch)).toBe(true);
-    expect(Object.isFrozen(dispatch.fields)).toBe(true);
-    expect(Object.isFrozen(dispatch.fields.role)).toBe(true);
-    expect(Object.isFrozen(dispatch.fields.role!.values)).toBe(true);
-    expect(() => (dispatch.fields.role!.values as string[]).push("admin")).toThrow();
-    expect(
-      parseContract("dispatch-plan/v1", mutant("dispatch-plan/v1", { role: "admin" })).ok,
-    ).toBe(false);
-  });
-});
-
-describe("canonical exact-byte serialization", () => {
-  test("matches the fixed platform-configuration golden bytes", () => {
-    const fixture = fixtureFor("platform-configuration/v1");
-    const golden =
-      '{"adapterId":"alpha","capabilityNames":["read","write"],"leaseFreshnessMs":3600000,"maximumSessionMs":86400000,"projectId":"018f0c24-7a3b-7cc1-8a2f-1234567890ab","schemaVersion":"platform-configuration/v1","stateRoot":"file:///var/lib/orchestration/state","wallClockSkewMs":300000}\n';
-    expect(canonicalJson(fixture as JsonValue)).toBe(golden);
-    expect(canonicalBytes(fixture as JsonValue)).toEqual(new TextEncoder().encode(golden));
-    expect(canonicalDigest(fixture as JsonValue)).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  test("canonical arrays preserve authority order rather than silently sorting it", () => {
-    const fixture = mutant("platform-configuration/v1", {
-      capabilityNames: ["write", "read"],
-    });
-    const serialized = serializeContract("platform-configuration/v1", fixture);
+  test("canonical parse is exact-byte and total", () => {
+    const fixture = fixtureFor("pointer-current-tip/v1");
+    const serialized = serializeContract("pointer-current-tip/v1", fixture);
     expect(serialized.ok).toBe(true);
-    if (serialized.ok) {
-      expect(new TextDecoder().decode(serialized.bytes)).toContain(
-        '"capabilityNames":["write","read"]',
-      );
-    }
-  });
-
-  test("all schemas serialize deterministically and accept only their exact canonical bytes", () => {
-    for (const schemaVersion of schemaVersions) {
-      const fixture = fixtureFor(schemaVersion);
-      const serialized = serializeContract(schemaVersion, fixture);
-      expect(serialized.ok, schemaVersion).toBe(true);
-      if (!serialized.ok) continue;
-      expect(parseCanonicalContractBytes(schemaVersion, serialized.bytes).ok).toBe(true);
-      const text = new TextDecoder().decode(serialized.bytes);
-      for (const changed of [
-        ` ${text}`,
-        text.slice(0, -1),
-        text.replace(/\n$/, "\r\n"),
-        `\ufeff${text}`,
-      ]) {
-        expect(
-          parseCanonicalContractBytes(schemaVersion, new TextEncoder().encode(changed)).ok,
-        ).toBe(false);
-      }
-    }
+    if (!serialized.ok) return;
+    expect(parseCanonicalContractBytes("pointer-current-tip/v1", serialized.bytes).ok).toBe(true);
     expect(
-      parseCanonicalContractBytes("platform-configuration/v1", Uint8Array.from([0xff])).ok,
+      parseCanonicalContractBytes(
+        "pointer-current-tip/v1",
+        new TextEncoder().encode(JSON.stringify(fixture)),
+      ).ok,
     ).toBe(false);
-  });
-
-  test("pins one exact golden-byte root over every schema fixture", () => {
-    const root = createHash("sha256");
-    for (const schemaVersion of schemaVersions) {
-      const serialized = serializeContract(schemaVersion, fixtureFor(schemaVersion));
-      expect(serialized.ok, schemaVersion).toBe(true);
-      if (!serialized.ok) continue;
-      root.update(schemaVersion);
-      root.update(Uint8Array.of(0));
-      root.update(serialized.bytes);
-    }
-    expect(root.digest("hex")).toBe(
-      "cfb4c4e6fcb77e9685d79a86c143df001c2d6e01b2312c62c922d61c0d4371f1",
-    );
-  });
-
-  test("canonical JSON rejects unsafe numeric, cyclic, exotic, and invalid-unicode values", () => {
-    const cyclic: Record<string, unknown> = {};
-    cyclic.self = cyclic;
-    for (const value of [1.5, -0, Number.MAX_SAFE_INTEGER + 1, cyclic, new Date(), "\ud800"]) {
-      expect(() => canonicalJson(value as JsonValue)).toThrow();
-    }
-  });
-
-  test("byte parsers fail closed on hostile views and parsed arrays are detached immutable snapshots", () => {
-    const hostileBytes = new Proxy(new Uint8Array([0x7b]), {
-      get() {
-        throw new Error("hostile byte view");
-      },
-    });
-    expect(() =>
-      parseCanonicalContractBytes("platform-configuration/v1", hostileBytes),
-    ).not.toThrow();
-    expect(parseCanonicalContractBytes("platform-configuration/v1", hostileBytes).ok).toBe(false);
-
-    const input = mutant("platform-configuration/v1", {
-      capabilityNames: ["read", "write"],
-    });
-    const parsed = parseContract("platform-configuration/v1", input);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    (input.capabilityNames as string[])[0] = "changed";
-    expect(parsed.value.capabilityNames).toEqual(["read", "write"]);
-    expect(Object.isFrozen(parsed.value.capabilityNames)).toBe(true);
+    expect(() => canonicalBytes(new Proxy(fixture, {}) as never)).toThrow();
   });
 });
 
-describe("portable authority guards", () => {
-  test("dispatch requires exactly one closed role before ownership", () => {
-    for (const role of ["implementation", "review", "observer"]) {
-      expect(parseContract("dispatch-plan/v1", mutant("dispatch-plan/v1", { role })).ok).toBe(true);
-    }
-    for (const role of [undefined, "", "implementer", "admin", ["review", "observer"]]) {
-      const value = mutant("dispatch-plan/v1", { role });
-      if (role === undefined) delete value.role;
-      expect(parseContract("dispatch-plan/v1", value).ok).toBe(false);
-    }
+describe("framed pointer digest graph", () => {
+  const value = fixtureFor("active-release/v2");
+  const tip = fixtureFor("pointer-current-tip/v1");
+  const receipt = fixtureFor("pointer-cas-proposal-receipt/v1");
+  const mutationInput = {
+    pointerKind: "ACTIVE_RELEASE" as const,
+    canonicalPointerPath: "installation/active-release.json",
+    pathInstanceDigest: digest,
+    transactionId: uuid,
+    sourceToken: "none",
+    positionDigest: digest2,
+    priorDt: null,
+    priorDv: null,
+    priorDr: null,
+    successorDv: digest2,
+    outcome: "SELECT",
+    intent: "VALUE_PROPOSED",
+  };
+
+  test("pins exact domain-separated golden digests", () => {
+    const dp = computePointerInstanceDigest({
+      pointerKind: "ACTIVE_RELEASE",
+      canonicalPointerPath: "installation/active-release.json",
+      installationId: uuid,
+      projectId: uuid,
+      stateRootDigest: digest,
+      transactionId: uuid,
+      sourceToken: "none",
+    });
+    const mutationId = computeMutationId(mutationInput);
+    const dv = computePointerValueDigest("ACTIVE_RELEASE", digest, value);
+    const dr = computeProposalReceiptDigest({
+      pointerKind: "ACTIVE_RELEASE",
+      pathInstanceDigest: digest,
+      mutationId,
+      priorDt: null,
+      priorDv: null,
+      priorDr: null,
+      successorDv: dv,
+      positionDigest: digest2,
+      intent: "VALUE_PROPOSED",
+      outcome: "SELECT",
+      receipt,
+    });
+    const dt = computeCurrentTipDigest("ACTIVE_RELEASE", digest, dv, dr, tip);
+    const dc = computeConflictDigest({
+      pathInstanceDigest: digest,
+      mutationId,
+      losingDr: dr,
+      losingDv: dv,
+      winningDt: digest2,
+      winningDv: digest2,
+      winningDr: digest2,
+      conflictKind: "VALUE_CONFLICT",
+      authorityEpochDt: digest,
+      authorityEpochDv: digest,
+      authorityEpochDr: digest,
+      conflictAt: instant,
+      receipt: fixtureFor("pointer-conflict-receipt/v1"),
+    });
+    expect({ dp, mutationId, dv, dr, dt, dc }).toEqual({
+      dp: "5873e24c9a4b0db10a95ad208b5a8fc6b61ee156341cc5c097015a86a938262e",
+      mutationId: "9a70c6fd543ce16263608376bfba2b94f827e61d7a8c7c6e54255818f679b1e6",
+      dv: "33a244faa7cb01fc8be0512b16abaa092eff6f382f3f07db3dbcafc114ce2473",
+      dr: "b42379aeafb64a9a2f3bbd3ae966f7d864c7d3490f6183d1131c4117ac1f6e98",
+      dt: "3da038356af2c27564753dbb157d626f8000ee4341c2ce75101c220f56008cde",
+      dc: "d5a58def0d121aebdeb7e3e4c14f597943e94b1950bf3a809104c80c3d5ac252",
+    });
   });
 
-  test("contract-relative paths refuse host, drive, traversal, alternate-separator, and URI encodings", () => {
-    const pathSchemas = schemaVersions.filter((schemaVersion) =>
-      Object.values(schemaDefinitions[schemaVersion]!.fields).some(
-        (rule) => rule.kind === "relative-path",
-      ),
-    );
-    for (const schemaVersion of pathSchemas) {
-      const [pathName] = Object.entries(schemaDefinitions[schemaVersion]!.fields).find(
-        ([, rule]) => rule.kind === "relative-path" && !rule.nullable,
-      )!;
-      for (const path of [
-        "/var/state",
-        "C:/state",
-        "../state",
-        "state\\item",
-        "file:///state",
-        "state//item",
-      ])
-        expect(parseContract(schemaVersion, mutant(schemaVersion, { [pathName]: path })).ok).toBe(
-          false,
-        );
-    }
-  });
-
-  test("contract-relative paths refuse every C0/C1 control character", () => {
-    const controls = [
-      ...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)),
-      ...Array.from({ length: 33 }, (_, offset) => String.fromCharCode(0x7f + offset)),
-    ];
-    for (const control of controls) {
-      expect(
-        parseContract(
-          "installed-release/v1",
-          mutant("installed-release/v1", { releasePath: `release${control}item` }),
-        ).ok,
-        `control U+${control.charCodeAt(0).toString(16).padStart(4, "0")}`,
-      ).toBe(false);
-    }
-  });
-
-  test("schema and fixture surfaces contain no consumer-policy or secret-bearing vocabulary", () => {
-    const surface = JSON.stringify({ schemaDefinitions, validFixtures }).toLowerCase();
-    for (const forbidden of [
-      "worktree",
-      "milestone",
-      "pullrequest",
-      "deployment",
-      "branchname",
-      "labelname",
-      "password",
-      "privatekey",
-      "accesstoken",
-      "clientsecret",
-    ]) {
-      expect(surface).not.toContain(forbidden);
-    }
-  });
-
-  test("module ABI schemas reject host, provider, policy, and ambient effect fields", () => {
-    for (const schemaVersion of [
-      "module-descriptor/v1",
-      "module-plan-input/v1",
-      "module-plan-result/v1",
-      "module-action-plan/v1",
-      "module-no-action/v1",
-    ]) {
-      for (const field of [
-        "hostPath",
-        "providerName",
-        "policyDocument",
-        "networkClient",
-        "clock",
-        "credential",
-      ])
-        expect(parseContract(schemaVersion, mutant(schemaVersion, { [field]: "alpha" })).ok).toBe(
-          false,
-        );
-    }
-  });
-
-  test("import receipts bind the exact plan transaction identities", () => {
-    const plan = fixtureFor("import-plan/v1");
-    const receipt = mutant("import-receipt/v1", {
-      transactionId: plan.transactionId,
-      exportDigest: plan.exportDigest,
-      planDigest: plan.planDigest,
-      targetProjectId: plan.targetProjectId,
-    }) as ContractRecord;
-    expect(validateImportReceiptAgainstPlan(plan, receipt)).toEqual([]);
-    for (const name of ["transactionId", "exportDigest", "planDigest", "targetProjectId"]) {
-      const changed = name === "transactionId" || name === "targetProjectId" ? uuid2 : digest2;
-      expect(
-        validateImportReceiptAgainstPlan(plan, { ...receipt, [name]: changed } as ContractRecord),
-      ).toContain(`${name}:transaction-binding-mismatch`);
-    }
-  });
-});
-
-describe("activation, recovery, and cleanup authority", () => {
-  test("every recovery and cleanup family uses the authoritative transaction/state-derived path", () => {
-    expect(recoveryFenceRootPath(uuid)).toBe(
-      `installation/activation-recovery-fence-roots/${uuid}.json`,
-    );
-    expect(recoveryFenceHeadPath(uuid, 3, "POST_ACTIVATION")).toBe(
-      `installation/activation-recovery-fence-history/${uuid}/3-POST_ACTIVATION.json`,
-    );
-    expect(recoveryLaunchPath(uuid, "recovery-fence-v1", 2, 4, "LIVE")).toBe(
-      `installation/activation-recovery-launches/${uuid}/recovery-fence-v1/2/4-LIVE.json`,
-    );
-    expect(cleanupGateRootPath(uuid)).toBe(
-      `installation/activation-cleanup-gate-roots/${uuid}.json`,
-    );
-    expect(cleanupGateHeadPath(uuid, 5, "ABORTING", "PUBLISHED")).toBe(
-      `installation/activation-cleanup-gate-history/${uuid}/5-ABORTING-PUBLISHED.json`,
-    );
-    expect(cleanupGateArchivePath(uuid)).toBe(`installation/activation-cleanup-gates/${uuid}.json`);
-    expect(recoveryAuthorizationPath(uuid)).toBe(
-      `installation/recovery-authorizations/${uuid}.json`,
-    );
-    expect(recoveryFenceCurrentPath).toBe("installation/activation-recovery-fence.json");
-    expect(recoveryLaunchCurrentPath).toBe("installation/activation-recovery-launch.json");
-    expect(cleanupGateCurrentPath).toBe("installation/activation-cleanup-gate.json");
-    expect(cleanupHeadCurrentPath).toBe("installation/activation-cleanup-head.json");
-
-    for (const schemaVersion of [
-      "activation-recovery-fence-root/v1",
-      "activation-recovery-fence-head/v1",
-      "activation-recovery-fence-current/v1",
-      "activation-recovery-launch/v1",
-      "activation-recovery-launch-current/v1",
-      "activation-recovery-launch-archive/v1",
-      "recovery-authorization/v1",
-      "activation-cleanup-gate-root/v1",
-      "activation-cleanup-gate-head/v1",
-      "activation-cleanup-gate-current/v1",
-      "activation-cleanup-gate-archive/v1",
-      "activation-cleanup-head/v1",
-    ]) {
-      expect(
-        parseContract(
-          schemaVersion,
-          mutant(schemaVersion, { recordPath: "installation/moved.json" }),
-        ).ok,
-        `${schemaVersion} moved path`,
-      ).toBe(false);
-    }
-
-    for (const [schemaVersion, changes] of [
-      ["activation-recovery-fence-head/v1", { lifecycle: "POST_ACTIVATION" }],
-      ["activation-recovery-fence-current/v1", { headLifecycle: "POST_ACTIVATION" }],
-      ["activation-recovery-launch/v1", { lifecycle: "LIVE" }],
-      ["activation-recovery-launch-current/v1", { launchLifecycle: "LIVE" }],
-      ["activation-cleanup-gate-head/v1", { publication: "PUBLISHING" }],
-      ["activation-cleanup-gate-current/v1", { headPublication: "PUBLISHING" }],
-    ] as const) {
-      expect(parseContract(schemaVersion, mutant(schemaVersion, changes)).ok).toBe(false);
-    }
-  });
-
-  test("successor and fence generations are adjacent and immutable paths are exact", () => {
-    expect(
-      parseContract(
-        "pending-successor/v1",
-        mutant("pending-successor/v1", { successorGeneration: 2 }),
-      ).ok,
-    ).toBe(false);
-    expect(
-      parseContract(
-        "activation-recovery-fence-root/v1",
-        mutant("activation-recovery-fence-root/v1", { recordPath: "installation/other/root.json" }),
-      ).ok,
-    ).toBe(false);
-    expect(
-      parseContract(
-        "activation-recovery-fence-head/v1",
-        mutant("activation-recovery-fence-head/v1", {
-          ordinal: 1,
-          recordPath: recoveryFenceHeadPath(uuid, 1, "PREPARED"),
-          previousHeadDigest: null,
-        }),
-      ).ok,
-    ).toBe(false);
-
-    expect(Object.keys(schemaDefinitions["activation-recovery-fence-root/v1"]!.fields)).toEqual(
-      expect.arrayContaining([
-        "predecessorOperationManifestDigest",
-        "successorOperationManifestDigest",
+  test("framing distinguishes null, text, raw, canonical, order, and domain", () => {
+    const base = framedBytes("pointer-value/v2", [
+      { type: "text", value: "x" },
+      { type: "raw32", value: digest },
+    ]);
+    expect(base).not.toEqual(
+      framedBytes("pointer-value/v2", [
+        { type: "raw32", value: digest },
+        { type: "text", value: "x" },
       ]),
     );
-    expect(schemaDefinitions["activation-recovery-fence-root/v1"]!.fields).not.toHaveProperty(
-      "operationManifestDigest",
+    expect(base).not.toEqual(
+      framedBytes("pointer-tip/v2", [
+        { type: "text", value: "x" },
+        { type: "raw32", value: digest },
+      ]),
+    );
+    expect(framedBytes("pointer-value/v2", [{ type: "nullable-raw32", value: null }])).not.toEqual(
+      framedBytes("pointer-value/v2", [{ type: "text", value: "null" }]),
+    );
+  });
+});
+
+describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => {
+  test("classifies proposals only from exact evidence", () => {
+    const base = {
+      compacted: false,
+      conflictMatchesWinner: false,
+      malformed: false,
+      selectedTipMatches: false,
+    };
+    expect(classifyProposal(base)).toBe("PENDING");
+    expect(classifyProposal({ ...base, selectedTipMatches: true })).toBe("SELECTED");
+    expect(classifyProposal({ ...base, conflictMatchesWinner: true })).toBe("LOST_CONFLICT");
+    expect(classifyProposal({ ...base, compacted: true })).toBe("COMPACTED");
+    expect(classifyProposal({ ...base, malformed: true })).toBe("UNKNOWN");
+    expect(classifyProposal({ ...base, extra: true })).toBe("UNKNOWN");
+  });
+
+  test("pins ten cleanup pairs, twelve edges, and no append self loops", () => {
+    const lifecycles = ["PENDING", "ACTIVATING", "ABORTING", "COMPLETE"];
+    const publications = ["NOT_PUBLISHED", "PUBLISHING", "PUBLISHED", "CLEARED"];
+    const pairs = lifecycles.flatMap((lifecycle) =>
+      publications.map((publication) => [lifecycle, publication] as const),
     );
     expect(
-      parseContract(
-        "activation-recovery-fence-root/v1",
-        mutant("activation-recovery-fence-root/v1", {
-          operationManifestDigest: digest,
-          predecessorOperationManifestDigest: digest,
-          successorOperationManifestDigest: digest2,
-        }),
-      ).ok,
-    ).toBe(false);
-  });
-
-  test("each fence transaction creates ordinal-zero current authority by CAS from absence", () => {
-    const laterGenerationInitial = mutant("activation-recovery-fence-current/v1", {
-      generation: 7,
-      headOrdinal: 0,
-      expectedPointerDigest: null,
-    });
-    expect(parseContract("activation-recovery-fence-current/v1", laterGenerationInitial).ok).toBe(
-      true,
-    );
-    expect(
-      parseContract("activation-recovery-fence-current/v1", {
-        ...laterGenerationInitial,
-        expectedPointerDigest: digest,
-      }).ok,
-    ).toBe(false);
-    expect(
-      parseContract(
-        "activation-recovery-fence-current/v1",
-        mutant("activation-recovery-fence-current/v1", {
-          generation: 7,
-          headOrdinal: 1,
-          headPath: recoveryFenceHeadPath(uuid, 1, "PREPARED"),
-          expectedPointerDigest: null,
-        }),
-      ).ok,
-    ).toBe(false);
-  });
-
-  test("recovery launch source/token/path and conditional authority are closed", () => {
-    for (const changes of [
-      { sourcePathToken: "cleanup-gate-pre-fence-v1" },
-      { recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 1, "READY") },
-      { fenceHeadDigest: null },
-      { gateRootDigest: null },
-      { lifecycle: "LIVE", processTreeDigest: null },
-      { lifecycle: "TERMINAL_COMPLETE", terminalAt: null },
-      { lifecycle: "TERMINAL_HANDOFF" },
-      { transitionKind: "AUTHORITY_REBIND", authorityAdvance: null },
-    ]) {
-      expect(
-        parseContract(
-          "activation-recovery-launch/v1",
-          mutant("activation-recovery-launch/v1", changes),
-        ).ok,
-      ).toBe(false);
-    }
-    const preFence = mutant("activation-recovery-launch/v1", {
-      source: "cleanup-gate-pre-fence/v1",
-      sourcePathToken: "cleanup-gate-pre-fence-v1",
-      ordinal: 1,
-      previousStateRecordDigest: digest2,
-      priorPointerDigest: digest2,
-      recordPath: recoveryLaunchPath(uuid, "cleanup-gate-pre-fence-v1", 0, 1, "TERMINAL_HANDOFF"),
-      fenceRootPath: recoveryFenceRootPath(uuid),
-      fenceRootDigest: null,
-      fenceHeadOrdinal: null,
-      fenceHeadDigest: null,
-      gateRootPath: cleanupGateRootPath(uuid),
-      gateRootDigest: digest,
-      gateHeadOrdinal: 0,
-      gateHeadDigest: digest,
-      gateLifecycle: "PENDING",
-      gatePublication: "PUBLISHED",
-      lifecycle: "TERMINAL_HANDOFF",
-      terminalAt: later,
-    });
-    expect(parseContract("activation-recovery-launch/v1", preFence).ok).toBe(true);
-    expect(
-      parseContract("activation-recovery-launch/v1", {
-        ...preFence,
-        gateLifecycle: "ABORTING",
-      }).ok,
-    ).toBe(false);
-    expect(
-      parseContract("activation-recovery-launch/v1", {
-        ...preFence,
-        lifecycle: "TERMINAL_ABORTED",
-        recordPath: recoveryLaunchPath(uuid, "cleanup-gate-pre-fence-v1", 0, 1, "TERMINAL_ABORTED"),
-        gateLifecycle: "ABORTING",
-      }).ok,
-    ).toBe(true);
-  });
-
-  test("authorization and cleanup discriminators refuse partial authority", () => {
-    expect(
-      parseContract(
-        "recovery-authorization/v1",
-        mutant("recovery-authorization/v1", { lifecycle: "CONSUMED_BOUND" }),
-      ).ok,
-    ).toBe(false);
-    expect(
-      parseContract(
-        "activation-cleanup-gate-head/v1",
-        mutant("activation-cleanup-gate-head/v1", { lifecycle: "ABORTING" }),
-      ).ok,
-    ).toBe(false);
-    expect(
-      parseContract(
-        "activation-cleanup-gate-head/v1",
-        mutant("activation-cleanup-gate-head/v1", { publication: "PUBLISHED" }),
-      ).ok,
-    ).toBe(false);
-
-    const successorAuthorization = successorAuthorizationFixture();
-    expect(parseContract("recovery-authorization/v1", successorAuthorization).ok).toBe(true);
-    for (const changes of [
-      { successorBrokerGeneration: 2 },
-      { expiresAt: later },
-      { gateRootDigest: null },
-      { fenceRootDigest: null },
-      { bootstrapGrantDigest: digest },
-    ]) {
-      expect(
-        parseContract("recovery-authorization/v1", {
-          ...successorAuthorization,
-          ...changes,
-        }).ok,
-      ).toBe(false);
-    }
-    expect(
-      parseContract("recovery-authorization/v1", {
-        ...successorAuthorization,
-        recoveryLaunchSource: "recovery-fence/v1",
-      }).ok,
-    ).toBe(false);
-    expect(
-      parseContract("recovery-authorization/v1", {
-        ...successorAuthorization,
-        recoveryLaunchSource: "recovery-fence/v1",
-        recoveryLaunchGeneration: 0,
-        recoveryLaunchAttempt: 1,
-        recoveryReadyRecordDigest: digest,
-        recoveryInitialLiveRecordDigest: digest,
-        recoveryGateRootDigest: digest,
-        recoveryFenceRootDigest: digest2,
-      }).ok,
-    ).toBe(false);
-    expect(
-      parseContract("recovery-authorization/v1", {
-        ...successorAuthorization,
-        recoveryLaunchSource: "recovery-fence/v1",
-        recoveryLaunchGeneration: 0,
-        recoveryLaunchAttempt: 1,
-        recoveryReadyRecordDigest: digest,
-        recoveryInitialLiveRecordDigest: digest,
-        recoveryGateRootDigest: digest,
-        recoveryFenceRootDigest: digest,
-      }).ok,
-    ).toBe(true);
-
-    const promotionGate = mutant("activation-cleanup-gate-root/v1", {
-      mode: "PROMOTION",
-      expectedActiveGeneration: 1,
-      expectedActiveRecordDigest: digest,
-      expectedFenceRootPath: recoveryFenceRootPath(uuid),
-      expectedFenceRootDigest: digest,
-      priorCleanupHeadDigest: digest,
-    });
-    expect(parseContract("activation-cleanup-gate-root/v1", promotionGate).ok).toBe(true);
-    expect(
-      parseContract("activation-cleanup-gate-root/v1", {
-        ...promotionGate,
-        expectedFenceRootPath: recoveryFenceRootPath(uuid2),
-      }).ok,
-    ).toBe(false);
-    expect(
-      parseContract("activation-cleanup-gate-root/v1", {
-        ...promotionGate,
-        priorCleanupHeadDigest: null,
-      }).ok,
-    ).toBe(false);
-  });
-
-  test("launch archives bind one ordered source-specific state chain and its exact terminal", () => {
-    const fixture = fixtureFor("activation-recovery-launch-archive/v1");
-    for (const changes of [
-      { launchCount: 2 },
-      { generationCount: 2 },
-      { transitionCount: 1 },
-      { terminalLaunchDigest: digest2 },
-      { terminalLifecycle: "TERMINAL_ABORTED" },
-      {
-        stateRecordPaths: [
-          recoveryLaunchPath(uuid, "recovery-fence-v1", 1, 0, "TERMINAL_COMPLETE"),
-        ],
-      },
-      {
-        stateRecordPaths: [
-          recoveryLaunchPath(uuid2, "recovery-fence-v1", 0, 0, "TERMINAL_COMPLETE"),
-        ],
-      },
-    ]) {
-      expect(
-        parseContract("activation-recovery-launch-archive/v1", { ...fixture, ...changes }).ok,
-      ).toBe(false);
-    }
-
-    const twoRecordChain = {
-      ...fixture,
-      launchCount: 2,
-      transitionCount: 1,
-      stateRecordPaths: [
-        recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 0, "LIVE"),
-        recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 1, "TERMINAL_COMPLETE"),
-      ],
-      stateRecordDigests: [digest2, digest],
-    };
-    expect(parseContract("activation-recovery-launch-archive/v1", twoRecordChain).ok).toBe(true);
-    expect(
-      parseContract("activation-recovery-launch-archive/v1", {
-        ...twoRecordChain,
-        stateRecordPaths: [...twoRecordChain.stateRecordPaths].reverse(),
-      }).ok,
-    ).toBe(false);
-  });
-
-  test("cleanup initialization and archive outcomes are exact closed unions", () => {
-    const cleanup0 = fixtureFor("activation-cleanup-gate-head/v1");
-    for (const changes of [
-      { fenceDigest: digest },
-      { abortRevocationReceiptDigest: digest },
-      { terminalRevocationReceiptDigest: digest },
-    ])
-      expect(parseContract("activation-cleanup-gate-head/v1", { ...cleanup0, ...changes }).ok).toBe(
-        false,
-      );
-    expect(
-      parseContract(
-        "activation-cleanup-gate-head/v1",
-        mutant("activation-cleanup-gate-head/v1", {
-          lifecycle: "ACTIVATING",
-          publication: "PUBLISHED",
-          fenceDigest: digest,
-          recordPath: cleanupGateHeadPath(uuid, 0, "ACTIVATING", "PUBLISHED"),
-        }),
-      ).ok,
-    ).toBe(false);
-
-    const laterHeadCases = [
-      {
-        lifecycle: "PENDING",
-        publication: "PUBLISHING",
-        fenceDigest: null,
-        abortRevocationReceiptDigest: null,
-        terminalRevocationReceiptDigest: null,
-      },
-      {
-        lifecycle: "PENDING",
-        publication: "PUBLISHING",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: null,
-        terminalRevocationReceiptDigest: null,
-      },
-      {
-        lifecycle: "ACTIVATING",
-        publication: "PUBLISHED",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: null,
-        terminalRevocationReceiptDigest: null,
-      },
-      {
-        lifecycle: "ABORTING",
-        publication: "PUBLISHED",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: digest2,
-        terminalRevocationReceiptDigest: null,
-      },
-      {
-        lifecycle: "COMPLETE",
-        publication: "CLEARED",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: null,
-        terminalRevocationReceiptDigest: digest2,
-      },
-      {
-        lifecycle: "COMPLETE",
-        publication: "CLEARED",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: digest2,
-        terminalRevocationReceiptDigest: digest,
-      },
-    ] as const;
-    for (const [index, state] of laterHeadCases.entries()) {
-      const record = mutant("activation-cleanup-gate-head/v1", {
-        ...state,
-        ordinal: index + 1,
-        previousHeadDigest: digest,
-        recordPath: cleanupGateHeadPath(uuid, index + 1, state.lifecycle, state.publication),
-      });
-      expect(parseContract("activation-cleanup-gate-head/v1", record).ok).toBe(true);
-    }
-    for (const changes of [
-      { lifecycle: "PENDING", publication: "NOT_PUBLISHED", fenceDigest: digest },
-      {
-        lifecycle: "PENDING",
-        publication: "PUBLISHING",
-        abortRevocationReceiptDigest: digest,
-      },
-      {
-        lifecycle: "PENDING",
-        publication: "PUBLISHING",
-        terminalRevocationReceiptDigest: digest,
-      },
-      {
-        lifecycle: "ACTIVATING",
-        publication: "PUBLISHED",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: digest,
-      },
-      {
-        lifecycle: "ACTIVATING",
-        publication: "PUBLISHED",
-        fenceDigest: digest,
-        terminalRevocationReceiptDigest: digest,
-      },
-      {
-        lifecycle: "ABORTING",
-        publication: "PUBLISHED",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: null,
-      },
-      {
-        lifecycle: "ABORTING",
-        publication: "PUBLISHED",
-        fenceDigest: digest,
-        abortRevocationReceiptDigest: digest,
-        terminalRevocationReceiptDigest: digest2,
-      },
-      {
-        lifecycle: "COMPLETE",
-        publication: "CLEARED",
-        fenceDigest: digest,
-        terminalRevocationReceiptDigest: null,
-      },
-      { lifecycle: "COMPLETE", publication: "CLEARED", fenceDigest: null },
-    ] as const) {
-      const ordinal = 9;
-      expect(
-        parseContract(
-          "activation-cleanup-gate-head/v1",
-          mutant("activation-cleanup-gate-head/v1", {
-            ordinal,
-            previousHeadDigest: digest,
-            recordPath: cleanupGateHeadPath(uuid, ordinal, changes.lifecycle, changes.publication),
-            ...changes,
-          }),
-        ).ok,
-      ).toBe(false);
-    }
-
-    const activated = fixtureFor("activation-cleanup-gate-archive/v1");
-    expect(parseContract("activation-cleanup-gate-archive/v1", activated).ok).toBe(true);
-    expect(
-      parseContract("activation-cleanup-gate-archive/v1", {
-        ...activated,
-        abortProofDigest: digest,
-      }).ok,
-    ).toBe(false);
-    const aborted = {
-      ...activated,
-      outcome: "ABORTED",
-      terminalProofDigest: null,
-      abortProofDigest: digest,
-    };
-    expect(parseContract("activation-cleanup-gate-archive/v1", aborted).ok).toBe(true);
-    for (const changes of [{ terminalProofDigest: digest }, { abortProofDigest: null }]) {
-      expect(
-        parseContract("activation-cleanup-gate-archive/v1", { ...aborted, ...changes }).ok,
-      ).toBe(false);
-    }
-  });
-
-  test("cleanup lifecycle and publication form one exhaustive closed pair graph", () => {
-    const lifecycles = ["PENDING", "ACTIVATING", "ABORTING", "COMPLETE"] as const;
-    const publications = ["NOT_PUBLISHED", "PUBLISHING", "PUBLISHED", "CLEARED"] as const;
-    const validPairs = new Set([
-      "PENDING/NOT_PUBLISHED",
-      "PENDING/PUBLISHING",
-      "PENDING/PUBLISHED",
-      "ACTIVATING/PUBLISHED",
-      "ABORTING/NOT_PUBLISHED",
-      "ABORTING/PUBLISHING",
-      "ABORTING/PUBLISHED",
-      "ABORTING/CLEARED",
-      "COMPLETE/NOT_PUBLISHED",
-      "COMPLETE/CLEARED",
-    ]);
-    const acceptedTransitions = new Set([
-      "PENDING/NOT_PUBLISHED>PENDING/PUBLISHING",
-      "PENDING/NOT_PUBLISHED>ABORTING/NOT_PUBLISHED",
-      "PENDING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-      "PENDING/PUBLISHING>PENDING/PUBLISHED",
-      "PENDING/PUBLISHING>ABORTING/PUBLISHING",
-      "PENDING/PUBLISHED>ACTIVATING/PUBLISHED",
-      "PENDING/PUBLISHED>ABORTING/PUBLISHED",
-      "ACTIVATING/PUBLISHED>COMPLETE/CLEARED",
-      "ABORTING/NOT_PUBLISHED>COMPLETE/NOT_PUBLISHED",
-      "ABORTING/PUBLISHING>ABORTING/PUBLISHED",
-      "ABORTING/PUBLISHED>ABORTING/CLEARED",
-      "ABORTING/CLEARED>COMPLETE/CLEARED",
-    ]);
-    const head = (
-      lifecycle: (typeof lifecycles)[number],
-      publication: (typeof publications)[number],
-      ordinal: number,
-      previousHeadDigest: string,
-    ): ContractRecord =>
-      mutant("activation-cleanup-gate-head/v1", {
-        lifecycle,
-        publication,
-        ordinal,
-        previousHeadDigest,
-        recordPath: cleanupGateHeadPath(uuid, ordinal, lifecycle, publication),
-        fenceDigest: ["PUBLISHED", "CLEARED"].includes(publication) ? digest : null,
-        abortRevocationReceiptDigest: lifecycle === "ABORTING" ? digest2 : null,
-        terminalRevocationReceiptDigest: lifecycle === "COMPLETE" ? digest2 : null,
-      }) as ContractRecord;
-
-    const validHeads = new Map<string, ContractRecord>();
-    for (const lifecycle of lifecycles) {
-      for (const publication of publications) {
-        const key = `${lifecycle}/${publication}`;
-        const expected = validPairs.has(key);
-        expect(isCleanupLifecyclePublicationPair(lifecycle, publication), key).toBe(expected);
-        const record = head(lifecycle, publication, 3, digest);
-        expect(parseContract("activation-cleanup-gate-head/v1", record).ok, key).toBe(expected);
-        if (expected) validHeads.set(key, record);
-      }
-    }
-    expect(validHeads.size).toBe(10);
-
-    for (const [previousKey, previous] of validHeads) {
-      const [previousLifecycle, previousPublication] = previousKey.split("/");
-      const previousDigest = canonicalDigest(previous as JsonValue);
-      for (const [nextKey, template] of validHeads) {
-        const [nextLifecycle, nextPublication] = nextKey.split("/");
-        const transitionKey = `${previousKey}>${nextKey}`;
-        const expected = acceptedTransitions.has(transitionKey);
-        const next = {
-          ...template,
-          ordinal: 4,
-          previousHeadDigest: previousDigest,
-          recordPath: cleanupGateHeadPath(uuid, 4, nextLifecycle!, nextPublication!),
-        } as ContractRecord;
-        expect(
-          isCleanupLifecyclePublicationTransition(
-            previousLifecycle,
-            previousPublication,
-            nextLifecycle,
-            nextPublication,
-          ),
-          transitionKey,
-        ).toBe(expected);
-        expect(
-          validateCleanupHeadTransition(previous, next, previousDigest).length === 0,
-          transitionKey,
-        ).toBe(expected);
-        expect(
-          reduceCleanupHeadWrite(
-            previousLifecycle,
-            previousPublication,
-            nextLifecycle,
-            nextPublication,
-          ),
-          `write ${transitionKey}`,
-        ).toBe(previousKey === nextKey ? "NO_APPEND" : expected ? "APPEND" : "REFUSED");
-      }
-    }
-    expect(acceptedTransitions.size).toBe(12);
-    for (const refused of [
-      ["PENDING", "PUBLISHED", "PENDING", "CLEARED"],
-      ["ACTIVATING", "PUBLISHED", "COMPLETE", "PUBLISHED"],
-      ["ABORTING", "PUBLISHED", "COMPLETE", "PUBLISHED"],
-    ] as const)
-      expect(
-        isCleanupLifecyclePublicationTransition(refused[0], refused[1], refused[2], refused[3]),
-      ).toBe(false);
-    for (const refused of [
-      ["PENDING", "CLEARED"],
-      ["ACTIVATING", "NOT_PUBLISHED"],
-      ["ACTIVATING", "PUBLISHING"],
-      ["ACTIVATING", "CLEARED"],
-      ["COMPLETE", "PUBLISHING"],
-      ["COMPLETE", "PUBLISHED"],
-    ] as const)
-      expect(isCleanupLifecyclePublicationPair(refused[0], refused[1])).toBe(false);
-  });
-
-  test("successor recovery attachment composes canonical launch, active, gate, and fence authority", () => {
-    const predecessorActiveRecord = fixtureFor("active-release/v1");
-    const predecessorActiveRecordDigest = canonicalDigest(predecessorActiveRecord as JsonValue);
-    const fenceRoot = mutant("activation-recovery-fence-root/v1", {
-      oldActiveRecordDigest: predecessorActiveRecordDigest,
-    }) as ContractRecord;
-    const fenceRootDigest = canonicalDigest(fenceRoot as JsonValue);
-    const fenceHead = mutant("activation-recovery-fence-head/v1", {
-      rootDigest: fenceRootDigest,
-      activeRecordDigest: predecessorActiveRecordDigest,
-    }) as ContractRecord;
-    const fenceHeadDigest = canonicalDigest(fenceHead as JsonValue);
-    const fenceCurrent = mutant("activation-recovery-fence-current/v1", {
-      rootDigest: fenceRootDigest,
-      headDigest: fenceHeadDigest,
-    }) as ContractRecord;
-    const gateRoot = mutant("activation-cleanup-gate-root/v1", {
-      mode: "PROMOTION",
-      expectedActiveGeneration: predecessorActiveRecord.activeGeneration,
-      expectedActiveRecordDigest: predecessorActiveRecordDigest,
-      expectedFenceRootPath: recoveryFenceRootPath(uuid),
-      expectedFenceRootDigest: fenceRootDigest,
-      priorCleanupHeadDigest: digest2,
-    }) as ContractRecord;
-    const gateRootDigest = canonicalDigest(gateRoot as JsonValue);
-    const gateHead0 = mutant("activation-cleanup-gate-head/v1", {
-      rootDigest: gateRootDigest,
-    }) as ContractRecord;
-    const gateHead0Digest = canonicalDigest(gateHead0 as JsonValue);
-    const gatePublishing = mutant("activation-cleanup-gate-head/v1", {
-      ordinal: 1,
-      previousHeadDigest: gateHead0Digest,
-      recordPath: cleanupGateHeadPath(uuid, 1, "PENDING", "PUBLISHING"),
-      lifecycle: "PENDING",
-      publication: "PUBLISHING",
-      rootDigest: gateRootDigest,
-      fenceDigest: null,
-    }) as ContractRecord;
-    const gatePublishingDigest = canonicalDigest(gatePublishing as JsonValue);
-    const gateHead = mutant("activation-cleanup-gate-head/v1", {
-      ordinal: 2,
-      previousHeadDigest: gatePublishingDigest,
-      recordPath: cleanupGateHeadPath(uuid, 2, "PENDING", "PUBLISHED"),
-      lifecycle: "PENDING",
-      publication: "PUBLISHED",
-      rootDigest: gateRootDigest,
-      activeRecordDigest: predecessorActiveRecordDigest,
-      fenceDigest: fenceRootDigest,
-    }) as ContractRecord;
-    const gateHeadDigest = canonicalDigest(gateHead as JsonValue);
-    const gateCurrent = mutant("activation-cleanup-gate-current/v1", {
-      expectedPointerDigest: digest2,
-      rootDigest: gateRootDigest,
-      headDigest: gateHeadDigest,
-      headOrdinal: 2,
-      headLifecycle: "PENDING",
-      headPublication: "PUBLISHED",
-      headPath: cleanupGateHeadPath(uuid, 2, "PENDING", "PUBLISHED"),
-    }) as ContractRecord;
-    const ready = mutant("activation-recovery-launch/v1", {
-      activeRecordDigest: predecessorActiveRecordDigest,
-      expectedFenceRootDigest: fenceRootDigest,
-      fenceRootDigest,
-      fenceHeadOrdinal: 0,
-      fenceHeadDigest,
-      gateRootDigest,
-      gateHeadOrdinal: 2,
-      gateHeadDigest,
-      gateLifecycle: "PENDING",
-      gatePublication: "PUBLISHED",
-    }) as ContractRecord;
-    const readyDigest = canonicalDigest(ready as JsonValue);
-    const priorPointerDigest = digest2;
-    const live = {
-      ...ready,
-      ordinal: 1,
-      previousStateRecordDigest: readyDigest,
-      priorPointerDigest,
-      lifecycle: "LIVE",
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 1, "LIVE"),
-      processTreeDigest: digest,
-      startedAt: instant,
-      heartbeatAt: instant,
-    } as ContractRecord;
-    const liveDigest = canonicalDigest(live as JsonValue);
-    const current = mutant("activation-recovery-launch-current/v1", {
-      activeRecordDigest: predecessorActiveRecordDigest,
-      expectedFenceRootDigest: fenceRootDigest,
-      fenceRootDigest,
-      fenceHeadOrdinal: 0,
-      fenceHeadDigest,
-      gateRootDigest,
-      gateHeadOrdinal: 2,
-      gateHeadDigest,
-      expectedPointerDigest: priorPointerDigest,
-      launchDigest: liveDigest,
-      launchLifecycle: "LIVE",
-      launchOrdinal: 1,
-      launchPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 1, "LIVE"),
-    }) as ContractRecord;
-    const authorization = successorAuthorizationFixture({
-      recoveryLaunchSource: "recovery-fence/v1",
-      recoveryLaunchGeneration: 0,
-      recoveryLaunchAttempt: 1,
-      recoveryReadyRecordDigest: readyDigest,
-      recoveryInitialLiveRecordDigest: liveDigest,
-      expectedActiveRecordDigest: predecessorActiveRecordDigest,
-      fenceRootDigest,
-      gateRootDigest,
-      recoveryGateRootDigest: gateRootDigest,
-      recoveryFenceRootDigest: fenceRootDigest,
-    }) as ContractRecord;
-    const authorizationDigest = canonicalDigest(authorization as JsonValue);
-    const attachment = {
-      authorization,
-      authorizationDigest,
-      current,
-      expectedArgvDigest: ready.argvDigest as string,
-      fenceCurrent,
-      fenceHistory: [fenceHead],
-      fenceHistoryDigests: [fenceHeadDigest],
-      fencePriorCurrentDigest: null,
-      fenceRoot,
-      fenceRootDigest,
-      gateCurrent,
-      gateHistory: [gateHead0, gatePublishing, gateHead],
-      gateHistoryDigests: [gateHead0Digest, gatePublishingDigest, gateHeadDigest],
-      gatePriorCurrentDigest: digest2,
-      gateRoot,
-      gateRootDigest,
-      live,
-      liveDigest,
-      predecessorActiveRecord,
-      predecessorActiveRecordDigest,
-      priorAttemptHistory: [],
-      priorAttemptHistoryDigests: [],
-      ready,
-      readyDigest,
-    };
-    expect(validateRecoveryAuthorizationAttachment(attachment)).toEqual([]);
-
-    const refuses = (changes: Record<string, unknown>) =>
-      expect(
-        validateRecoveryAuthorizationAttachment({ ...attachment, ...changes } as never),
-      ).not.toEqual([]);
-
-    const coordinatedRefuses = (changes: Record<string, unknown>) => {
-      const changedReady = { ...ready, ...changes } as ContractRecord;
-      const changedReadyDigest = canonicalDigest(changedReady as JsonValue);
-      const changedLive = {
-        ...live,
-        ...changes,
-        previousStateRecordDigest: changedReadyDigest,
-      } as ContractRecord;
-      const changedLiveDigest = canonicalDigest(changedLive as JsonValue);
-      const changedAuthorization = {
-        ...authorization,
-        recoveryReadyRecordDigest: changedReadyDigest,
-        recoveryInitialLiveRecordDigest: changedLiveDigest,
-      } as ContractRecord;
-      refuses({
-        authorization: changedAuthorization,
-        authorizationDigest: canonicalDigest(changedAuthorization as JsonValue),
-        ready: changedReady,
-        readyDigest: changedReadyDigest,
-        live: changedLive,
-        liveDigest: changedLiveDigest,
-        current: { ...current, ...changes, launchDigest: changedLiveDigest },
-      });
-    };
-    for (const changes of [
-      { projectId: uuid2 },
-      { argvDigest: digest2 },
-      { predecessorExecutablePath: "bin/other" },
-      { gateHeadOrdinal: 3 },
-      { gateHeadDigest: "c".repeat(64) },
-      { fenceHeadOrdinal: 1 },
-      { fenceHeadDigest: "d".repeat(64) },
-    ])
-      coordinatedRefuses(changes);
-
-    for (const [name, value] of Object.entries({
-      authorizationDigest: digest2,
-      expectedArgvDigest: digest2,
-      gateRootDigest: digest2,
-      fenceRootDigest: digest2,
-      predecessorActiveRecordDigest: digest2,
-      readyDigest: digest2,
-      liveDigest: digest2,
-    }))
-      refuses({ [name]: value });
-
-    for (const changes of [
-      { gateHistory: [gateHead0, gateHead], gateHistoryDigests: [gateHead0Digest, gateHeadDigest] },
-      {
-        gateHistory: [gatePublishing, gateHead0, gateHead],
-        gateHistoryDigests: [gatePublishingDigest, gateHead0Digest, gateHeadDigest],
-      },
-      {
-        gateHistory: [gateHead0, gatePublishing, gateHead, gateHead],
-        gateHistoryDigests: [gateHead0Digest, gatePublishingDigest, gateHeadDigest, gateHeadDigest],
-      },
-      {
-        gateHistoryDigests: [gateHead0Digest, digest2, gateHeadDigest],
-      },
-      { gatePriorCurrentDigest: null },
-      { fenceHistory: [], fenceHistoryDigests: [] },
-      {
-        fenceHistory: [fenceHead, fenceHead],
-        fenceHistoryDigests: [fenceHeadDigest, fenceHeadDigest],
-      },
-      { fenceHistoryDigests: [digest2] },
-      { fencePriorCurrentDigest: digest2 },
-    ])
-      refuses(changes);
-
-    for (const [name, value] of Object.entries({
-      pendingAdmissionDigest: digest2,
-      successorExecutableDigest: digest2,
-      successorReleaseDigest: digest2,
-      operationManifestDigest: digest2,
-    })) {
-      const changedAuthorization = { ...authorization, [name]: value } as ContractRecord;
-      refuses({
-        authorization: changedAuthorization,
-        authorizationDigest: canonicalDigest(changedAuthorization as JsonValue),
-      });
-    }
-    for (const changes of [
-      { releaseDigest: digest2 },
-      { expectedActiveGeneration: 1 },
-      { recoveryAuthorizationId: uuid2 },
-      { expectedConsumedAuthorizationDigest: digest2 },
-    ]) {
-      const changedGateRoot = { ...gateRoot, ...changes } as ContractRecord;
-      refuses({
-        gateRoot: changedGateRoot,
-        gateRootDigest: canonicalDigest(changedGateRoot as JsonValue),
-      });
-    }
-    const changedActiveRecord = {
-      ...predecessorActiveRecord,
-      operationManifestDigest: digest2,
-    } as ContractRecord;
-    refuses({
-      predecessorActiveRecord: changedActiveRecord,
-      predecessorActiveRecordDigest: canonicalDigest(changedActiveRecord as JsonValue),
-    });
-    const changedPublishedGateHead = { ...gateHead, fenceDigest: digest2 } as ContractRecord;
-    refuses({
-      gateHistory: [gateHead0, gatePublishing, changedPublishedGateHead],
-      gateHistoryDigests: [
-        gateHead0Digest,
-        gatePublishingDigest,
-        canonicalDigest(changedPublishedGateHead as JsonValue),
-      ],
-    });
-
-    const retryable = {
-      ...live,
-      ordinal: 2,
-      previousStateRecordDigest: liveDigest,
-      priorPointerDigest: "c".repeat(64),
-      lifecycle: "TERMINAL_RETRYABLE",
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 2, "TERMINAL_RETRYABLE"),
-      terminalAt: later,
-    } as ContractRecord;
-    const retryableDigest = canonicalDigest(retryable as JsonValue);
-    const ready1 = {
-      ...ready,
-      generation: 1,
-      attempt: 2,
-      ordinal: 0,
-      previousStateRecordDigest: retryableDigest,
-      priorPointerDigest: "d".repeat(64),
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 1, 0, "READY"),
-    } as ContractRecord;
-    const ready1Digest = canonicalDigest(ready1 as JsonValue);
-    const live1 = {
-      ...live,
-      generation: 1,
-      attempt: 2,
-      previousStateRecordDigest: ready1Digest,
-      priorPointerDigest: "e".repeat(64),
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 1, 1, "LIVE"),
-    } as ContractRecord;
-    const live1Digest = canonicalDigest(live1 as JsonValue);
-    const current1 = {
-      ...current,
-      generation: 1,
-      attempt: 2,
-      expectedPointerDigest: live1.priorPointerDigest,
-      launchDigest: live1Digest,
-      launchPath: live1.recordPath,
-    } as ContractRecord;
-    const authorization1 = {
-      ...authorization,
-      recoveryLaunchGeneration: 1,
-      recoveryLaunchAttempt: 2,
-      recoveryReadyRecordDigest: ready1Digest,
-      recoveryInitialLiveRecordDigest: live1Digest,
-    } as ContractRecord;
-    const generationOneAttachment = {
-      ...attachment,
-      authorization: authorization1,
-      authorizationDigest: canonicalDigest(authorization1 as JsonValue),
-      current: current1,
-      ready: ready1,
-      readyDigest: ready1Digest,
-      live: live1,
-      liveDigest: live1Digest,
-      priorAttemptHistory: [ready, live, retryable],
-      priorAttemptHistoryDigests: [readyDigest, liveDigest, retryableDigest],
-    };
-    expect(validateRecoveryAuthorizationAttachment(generationOneAttachment)).toEqual([]);
-    for (const changes of [
-      { priorAttemptHistory: [], priorAttemptHistoryDigests: [] },
-      {
-        priorAttemptHistory: [live, ready, retryable],
-        priorAttemptHistoryDigests: [liveDigest, readyDigest, retryableDigest],
-      },
-      {
-        priorAttemptHistory: [ready, retryable],
-        priorAttemptHistoryDigests: [readyDigest, retryableDigest],
-      },
-      {
-        priorAttemptHistoryDigests: [readyDigest, digest2, retryableDigest],
-      },
-    ])
-      expect(
-        validateRecoveryAuthorizationAttachment({
-          ...generationOneAttachment,
-          ...changes,
-        } as never),
-      ).not.toEqual([]);
-
-    const recordInputs = [
-      "authorization",
-      "current",
-      "fenceCurrent",
-      "fenceRoot",
-      "gateCurrent",
-      "gateRoot",
-      "live",
-      "predecessorActiveRecord",
-      "ready",
-    ] as const;
-    for (const name of recordInputs) {
-      const original = attachment[name] as ContractRecord;
-      const getPrototypeTrap = new Proxy(
-        {},
-        {
-          getPrototypeOf() {
-            throw new Error("hostile getPrototypeOf");
-          },
-        },
-      );
-      const descriptorTrap = new Proxy(
-        {},
-        {
-          getOwnPropertyDescriptor() {
-            throw new Error("hostile getOwnPropertyDescriptor");
-          },
-          ownKeys() {
-            return ["schemaVersion"];
-          },
-        },
-      );
-      const accessor = Object.defineProperty({}, "schemaVersion", {
-        enumerable: true,
-        get() {
-          throw new Error("hostile accessor");
-        },
-      });
-      const transparentProxy = new Proxy(original, {});
-      const symbolRecord = { ...original, [Symbol("authority")]: digest };
-      const nonEnumerable = Object.defineProperty({ ...original }, "schemaVersion", {
-        enumerable: false,
-        value: original.schemaVersion,
-      });
-      class ExoticRecord {
-        schemaVersion = original.schemaVersion;
-      }
-      for (const hostile of [
-        getPrototypeTrap,
-        descriptorTrap,
-        transparentProxy,
-        symbolRecord,
-        nonEnumerable,
-        accessor,
-        new ExoticRecord(),
-      ]) {
-        expect(() => refuses({ [name]: hostile })).not.toThrow();
-      }
-    }
-    for (const [name, original] of [
-      ["gateHistory", gateHead0],
-      ["fenceHistory", fenceHead],
-      ["priorAttemptHistory", ready],
-    ] as const) {
-      for (const hostile of [
-        new Proxy(original, {}),
-        { ...original, [Symbol("authority")]: digest },
-        Object.defineProperty({ ...original }, "schemaVersion", {
-          enumerable: false,
-          value: original.schemaVersion,
-        }),
-      ])
-        expect(() => refuses({ [name]: [hostile] })).not.toThrow();
-    }
-    const throwingEnvelope = new Proxy(
-      {},
-      {
-        getPrototypeOf() {
-          throw new Error("hostile envelope");
-        },
-      },
-    );
-    const descriptorEnvelope = new Proxy(
-      {},
-      {
-        getOwnPropertyDescriptor() {
-          throw new Error("hostile descriptor envelope");
-        },
-        ownKeys() {
-          return ["authorization"];
-        },
-      },
-    );
-    const symbolEnvelope = { ...attachment, [Symbol("authority")]: digest };
-    const nonEnumerableEnvelope = Object.defineProperty({ ...attachment }, "authorization", {
-      enumerable: false,
-      value: authorization,
-    });
-    const accessorEnvelope = Object.defineProperty({ ...attachment }, "authorization", {
-      enumerable: true,
-      get() {
-        throw new Error("hostile envelope accessor");
-      },
-    });
-    class ExoticEnvelope {
-      authorization = attachment.authorization;
-    }
-    for (const hostileEnvelope of [
-      throwingEnvelope,
-      descriptorEnvelope,
-      new Proxy(attachment, {}),
-      symbolEnvelope,
-      nonEnumerableEnvelope,
-      accessorEnvelope,
-      new ExoticEnvelope(),
-    ]) {
-      expect(() => validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toThrow();
-      expect(validateRecoveryAuthorizationAttachment(hostileEnvelope as never)).not.toEqual([]);
-    }
-  });
-
-  test("cross-record transitions bind adjacent ordinals, prior digests, immutable roots, and one authority advance", () => {
-    const ready = fixtureFor("activation-recovery-launch/v1");
-    const readyDigest = canonicalDigest(ready as JsonValue);
-    const live = mutant("activation-recovery-launch/v1", {
-      ordinal: 1,
-      previousStateRecordDigest: readyDigest,
-      priorPointerDigest: digest2,
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 1, "LIVE"),
-      lifecycle: "LIVE",
-      processTreeDigest: digest,
-      startedAt: instant,
-      heartbeatAt: instant,
-    }) as ContractRecord;
-    expect(parseContract("activation-recovery-launch/v1", live).ok).toBe(true);
-    expect(validateRecoveryLaunchTransition(ready, live, readyDigest, digest2)).toEqual([]);
-
-    const liveDigest = canonicalDigest(live as JsonValue);
-    const livePointerDigest = "c".repeat(64);
-    const rebound = {
-      ...live,
-      ordinal: 2,
-      previousStateRecordDigest: liveDigest,
-      priorPointerDigest: livePointerDigest,
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 2, "LIVE"),
-      transitionKind: "AUTHORITY_REBIND",
-      authorityAdvance: "FENCE",
-      fenceHeadOrdinal: 1,
-      fenceHeadDigest: "d".repeat(64),
-    } as ContractRecord;
-    expect(validateRecoveryLaunchTransition(live, rebound, liveDigest, livePointerDigest)).toEqual(
-      [],
-    );
-    expect(
-      validateRecoveryLaunchTransition(
-        live,
-        { ...rebound, gateHeadDigest: "e".repeat(64) } as ContractRecord,
-        liveDigest,
-        livePointerDigest,
+      pairs.filter(([lifecycle, publication]) =>
+        isCleanupLifecyclePublicationPair(lifecycle, publication),
       ),
-    ).toContain("gateHeadDigest:also-advanced");
-    expect(
-      validateRecoveryAuthorityAlignment(rebound, {
-        gateHeadDigest: digest,
-        gateHeadOrdinal: 0,
-        fenceHeadDigest: "e".repeat(64),
-        fenceHeadOrdinal: 1,
-      }),
-    ).toContain("fenceHeadDigest:launch-behind");
-    expect(
-      validateRecoveryAuthorityAlignment(rebound, {
-        gateHeadDigest: digest,
-        gateHeadOrdinal: 1,
-        fenceHeadDigest: "d".repeat(64),
-        fenceHeadOrdinal: 2,
-      }),
-    ).toEqual(
-      expect.arrayContaining(["gateHeadOrdinal:launch-behind", "fenceHeadOrdinal:launch-behind"]),
-    );
+    ).toHaveLength(10);
+    let edges = 0;
+    for (const [a, b] of pairs)
+      for (const [c, d] of pairs)
+        if (isCleanupLifecyclePublicationTransition(a, b, c, d)) edges += 1;
+    expect(edges).toBe(12);
+    for (const [lifecycle, publication] of pairs)
+      if (isCleanupLifecyclePublicationPair(lifecycle, publication))
+        expect(reduceCleanupHeadWrite(lifecycle, publication, lifecycle, publication)).toBe(
+          "NO_APPEND",
+        );
+  });
 
-    const fence0 = fixtureFor("activation-recovery-fence-head/v1");
-    const fenceDigest = canonicalDigest(fence0 as JsonValue);
-    const fence1 = mutant("activation-recovery-fence-head/v1", {
+  test("pins ordinary epoch ordering and complete other-kind rotation census", () => {
+    expect(validateEpochSequence([...ordinaryEpochSequence])).toBe(true);
+    expect(validateEpochSequence([...ordinaryEpochSequence].reverse())).toBe(false);
+    const census = {
+      authorityEpochDigest: digest,
+      otherPointerKinds: pointerKinds.filter(
+        (kind) => kind !== "STATE_MUTATION_AUTHORITY_ROTATION",
+      ),
+      pendingCount: 0,
+      unknownCount: 0,
+    };
+    expect(validateRotationCensus(census)).toBe(true);
+    expect(validateRotationCensus({ ...census, pendingCount: 1 })).toBe(false);
+    expect(
+      validateRotationCensus({ ...census, otherPointerKinds: census.otherPointerKinds.slice(1) }),
+    ).toBe(false);
+  });
+
+  test("validates ordered cleanup/fence histories and retention policy", () => {
+    const gate0 = fixtureFor("activation-cleanup-gate-head/v2");
+    const gate1 = {
+      ...gate0,
+      ordinal: 1,
+      previousHeadDigest: serializeContract("activation-cleanup-gate-head/v2", gate0).ok
+        ? (
+            serializeContract("activation-cleanup-gate-head/v2", gate0) as {
+              ok: true;
+              digest: string;
+            }
+          ).digest
+        : digest,
+      publication: "PUBLISHING",
+    };
+    expect(validateCleanupHeadHistory([gate0, gate1])).toEqual([]);
+    expect(validateCleanupHeadHistory([gate1, gate0])).not.toEqual([]);
+    const fence0 = fixtureFor("activation-recovery-fence-head/v2");
+    const fenceDigest = (
+      serializeContract("activation-recovery-fence-head/v2", fence0) as { ok: true; digest: string }
+    ).digest;
+    const fence1 = {
+      ...fence0,
       ordinal: 1,
       previousHeadDigest: fenceDigest,
-      recordPath: recoveryFenceHeadPath(uuid, 1, "POST_ACTIVATION"),
       lifecycle: "POST_ACTIVATION",
-      activeGeneration: 1,
-    }) as ContractRecord;
-    expect(validateFenceHeadTransition(fence0, fence1, fenceDigest)).toEqual([]);
-    expect(
-      validateFenceHeadTransition(fence0, { ...fence1, ordinal: 2 } as ContractRecord, fenceDigest),
-    ).toContain("ordinal:not-adjacent");
-
-    const cleanup0 = fixtureFor("activation-cleanup-gate-head/v1");
-    const cleanupDigest = canonicalDigest(cleanup0 as JsonValue);
-    const cleanup1 = mutant("activation-cleanup-gate-head/v1", {
-      ordinal: 1,
-      previousHeadDigest: cleanupDigest,
-      recordPath: cleanupGateHeadPath(uuid, 1, "PENDING", "PUBLISHING"),
-      lifecycle: "PENDING",
-      publication: "PUBLISHING",
-    }) as ContractRecord;
-    expect(parseContract("activation-cleanup-gate-head/v1", cleanup1).ok).toBe(true);
-    expect(validateCleanupHeadTransition(cleanup0, cleanup1, cleanupDigest)).toEqual([]);
-    const cleanup1Digest = canonicalDigest(cleanup1 as JsonValue);
-    const aborting = {
-      ...cleanup1,
-      ordinal: 2,
-      previousHeadDigest: cleanup1Digest,
-      recordPath: cleanupGateHeadPath(uuid, 2, "ABORTING", "PUBLISHING"),
-      lifecycle: "ABORTING",
-      abortRevocationReceiptDigest: digest,
-    } as ContractRecord;
-    expect(parseContract("activation-cleanup-gate-head/v1", aborting).ok).toBe(true);
-    expect(validateCleanupHeadTransition(cleanup1, aborting, cleanup1Digest)).toEqual([]);
-    expect(
-      validateCleanupHeadTransition(
-        cleanup0,
-        { ...cleanup1, lifecycle: "ACTIVATING" } as ContractRecord,
-        cleanupDigest,
-      ),
-    ).toContain("lifecyclePublication:transition-refused");
+    };
+    expect(validateFenceHeadHistory([fence0, fence1])).toEqual([]);
+    expect(validateFenceHeadHistory([fence1])).not.toEqual([]);
+    expect(validateRetentionTransition("CURRENT", "CHECKPOINTED")).toBe(true);
+    expect(validateRetentionTransition("CURRENT", "COMPACTED")).toBe(false);
+    expect(retentionAllows("AUDIT_DEGRADED", "EXISTING_RECOVERY")).toBe(true);
+    expect(retentionAllows("AUDIT_DEGRADED", "NEW_PROMOTION")).toBe(false);
+    expect(retentionAllows("UNKNOWN", "EXISTING_RECOVERY")).toBe(false);
   });
 
-  test("current pointers bind the exact immutable root and state-derived head", () => {
-    const fenceRoot = fixtureFor("activation-recovery-fence-root/v1");
-    const fenceRootDigest = canonicalDigest(fenceRoot as JsonValue);
-    const fenceHead = mutant("activation-recovery-fence-head/v1", {
-      rootDigest: fenceRootDigest,
-    }) as ContractRecord;
-    const fenceHeadDigest = canonicalDigest(fenceHead as JsonValue);
-    const fenceCurrent = mutant("activation-recovery-fence-current/v1", {
-      rootDigest: fenceRootDigest,
-      headDigest: fenceHeadDigest,
-    }) as ContractRecord;
+  test("auth core forbids candidate manifest and pins mode/state evidence", () => {
+    const core = fixtureFor("recovery-authorization-core/v1");
+    expect(parseContract("recovery-authorization-core/v1", core).ok).toBe(true);
     expect(
-      validateFenceAuthorityBinding(
-        fenceRoot,
-        fenceHead,
-        fenceCurrent,
-        fenceRootDigest,
-        fenceHeadDigest,
-      ),
-    ).toEqual([]);
-    expect(
-      validateFenceAuthorityBinding(
-        fenceRoot,
-        fenceHead,
-        { ...fenceCurrent, headDigest: digest2 } as ContractRecord,
-        fenceRootDigest,
-        fenceHeadDigest,
-      ),
-    ).toContain("headDigest:binding-mismatch");
-
-    const gateRoot = fixtureFor("activation-cleanup-gate-root/v1");
-    const gateRootDigest = canonicalDigest(gateRoot as JsonValue);
-    const gateHead = mutant("activation-cleanup-gate-head/v1", {
-      rootDigest: gateRootDigest,
-    }) as ContractRecord;
-    const gateHeadDigest = canonicalDigest(gateHead as JsonValue);
-    const gateCurrent = mutant("activation-cleanup-gate-current/v1", {
-      rootDigest: gateRootDigest,
-      headDigest: gateHeadDigest,
-    }) as ContractRecord;
-    expect(
-      validateCleanupAuthorityBinding(
-        gateRoot,
-        gateHead,
-        gateCurrent,
-        gateRootDigest,
-        gateHeadDigest,
-      ),
-    ).toEqual([]);
-    expect(
-      validateCleanupAuthorityBinding(
-        gateRoot,
-        { ...gateHead, activeRecordDigest: digest2 } as ContractRecord,
-        gateCurrent,
-        gateRootDigest,
-        gateHeadDigest,
-      ),
-    ).toContain("activeRecordDigest:root-mismatch");
-  });
-
-  test("retry advances exactly one generation, resets its ordinal, and retains both prior digests", () => {
-    const retryable = mutant("activation-recovery-launch/v1", {
-      lifecycle: "TERMINAL_RETRYABLE",
-      ordinal: 2,
-      previousStateRecordDigest: digest2,
-      priorPointerDigest: digest2,
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 0, 2, "TERMINAL_RETRYABLE"),
-      terminalAt: later,
-    }) as ContractRecord;
-    const retryableDigest = canonicalDigest(retryable as JsonValue);
-    const pointerDigest = "c".repeat(64);
-    const nextReady = mutant("activation-recovery-launch/v1", {
-      attempt: 2,
-      generation: 1,
-      ordinal: 0,
-      previousStateRecordDigest: retryableDigest,
-      priorPointerDigest: pointerDigest,
-      recordPath: recoveryLaunchPath(uuid, "recovery-fence-v1", 1, 0, "READY"),
-    }) as ContractRecord;
-    expect(parseContract("activation-recovery-launch/v1", retryable).ok).toBe(true);
-    expect(parseContract("activation-recovery-launch/v1", nextReady).ok).toBe(true);
-    expect(
-      validateRecoveryLaunchTransition(retryable, nextReady, retryableDigest, pointerDigest),
-    ).toEqual([]);
-    expect(
-      validateRecoveryLaunchTransition(
-        retryable,
-        { ...nextReady, generation: 2 } as ContractRecord,
-        retryableDigest,
-        pointerDigest,
-      ),
-    ).toContain("generation:retry-not-adjacent");
-    expect(
-      validateRecoveryLaunchTransition(
-        retryable,
-        { ...nextReady, ordinal: 1 } as ContractRecord,
-        retryableDigest,
-        pointerDigest,
-      ),
-    ).toContain("ordinal:retry-must-reset");
-  });
-
-  test("a published pre-fence LIVE chain may hand off, while process identity cannot move", () => {
-    const live = mutant("activation-recovery-launch/v1", {
-      source: "cleanup-gate-pre-fence/v1",
-      sourcePathToken: "cleanup-gate-pre-fence-v1",
-      generation: 0,
-      ordinal: 1,
-      previousStateRecordDigest: digest2,
-      priorPointerDigest: digest2,
-      recordPath: recoveryLaunchPath(uuid, "cleanup-gate-pre-fence-v1", 0, 1, "LIVE"),
-      fenceRootDigest: null,
-      fenceHeadOrdinal: null,
-      fenceHeadDigest: null,
-      gatePublication: "PUBLISHED",
-      lifecycle: "LIVE",
-      processTreeDigest: digest,
-      startedAt: instant,
-      heartbeatAt: instant,
-    }) as ContractRecord;
-    const liveDigest = canonicalDigest(live as JsonValue);
-    const pointerDigest = "c".repeat(64);
-    const handoff = {
-      ...live,
-      ordinal: 2,
-      previousStateRecordDigest: liveDigest,
-      priorPointerDigest: pointerDigest,
-      recordPath: recoveryLaunchPath(uuid, "cleanup-gate-pre-fence-v1", 0, 2, "TERMINAL_HANDOFF"),
-      lifecycle: "TERMINAL_HANDOFF",
-      terminalAt: later,
-    } as ContractRecord;
-    expect(parseContract("activation-recovery-launch/v1", live).ok).toBe(true);
-    expect(parseContract("activation-recovery-launch/v1", handoff).ok).toBe(true);
-    expect(validateRecoveryLaunchTransition(live, handoff, liveDigest, pointerDigest)).toEqual([]);
-    expect(
-      validateRecoveryLaunchTransition(
-        live,
-        { ...handoff, processTreeDigest: digest2 } as ContractRecord,
-        liveDigest,
-        pointerDigest,
-      ),
-    ).toContain("processTreeDigest:changed");
-  });
-
-  test("initialization reducer accepts only resumable exact prefixes", () => {
-    expect(
-      reduceInitializationCensus({ root: false, heads: [], current: false, extraHistory: false }),
-    ).toBe("ALL_ABSENT");
-    expect(
-      reduceInitializationCensus({ root: true, heads: [], current: false, extraHistory: false }),
-    ).toBe("ROOT_ONLY");
-    expect(
-      reduceInitializationCensus({
-        root: true,
-        heads: [{ ordinal: 0, previousHeadDigest: null }],
-        current: false,
-        extraHistory: false,
-      }),
-    ).toBe("ROOT_AND_INITIAL_HEAD");
-    expect(
-      reduceInitializationCensus({
-        root: true,
-        heads: [{ ordinal: 0, previousHeadDigest: null }],
-        current: true,
-        extraHistory: false,
-      }),
-    ).toBe("FULLY_CURRENT");
-    for (const census of [
-      {
-        root: false,
-        heads: [{ ordinal: 0, previousHeadDigest: null }],
-        current: false,
-        extraHistory: false,
-      },
-      { root: true, heads: [], current: true, extraHistory: false },
-      {
-        root: true,
-        heads: [{ ordinal: 0, previousHeadDigest: digest }],
-        current: false,
-        extraHistory: false,
-      },
-      {
-        root: true,
-        heads: [{ ordinal: 0, previousHeadDigest: null }],
-        current: false,
-        extraHistory: true,
-      },
-    ])
-      expect(reduceInitializationCensus(census)).toBe("UNKNOWN");
-  });
-});
-
-describe("protection and verifier roots", () => {
-  test("protection receipt binds pre-run anchor provenance and seven-day freshness", () => {
-    for (const changes of [
-      { verifierAnchorVariableName: "OTHER" },
-      { expiresAt: "2026-08-24T12:34:56.789Z" },
-      { repositoryId: 1 },
-      { rulesetId: "01" },
-      { producerRunId: Number.MAX_SAFE_INTEGER + 1 },
-      { verifierAnchorDigest: digest2 },
-      { verifierAnchorVariableUpdatedAt: later },
-      { producerStartedAt: later },
-      { verifierVersion: "2.94.0" },
-      { apiVersion: "latest" },
-      { protectedEnvironmentName: "other" },
-    ])
-      expect(
-        parseContract(
-          "repository-protection-receipt/v1",
-          mutant("repository-protection-receipt/v1", changes),
-        ).ok,
-      ).toBe(false);
-    for (const forbiddenField of ["artifactId", "archiveDigest"])
-      expect(
-        parseContract(
-          "repository-protection-receipt/v1",
-          mutant("repository-protection-receipt/v1", { [forbiddenField]: digest }),
-        ).ok,
-      ).toBe(false);
-    expect(
-      parseContract(
-        "repository-protection-receipt/v1",
-        mutant("repository-protection-receipt/v1", { apiPageCount: 2 }),
-      ).ok,
+      parseContract("recovery-authorization-core/v1", {
+        ...core,
+        candidateOperationManifestDigest: digest,
+      }).ok,
     ).toBe(false);
-    const receipt = fixtureFor("repository-protection-receipt/v1");
-    const updatedAt = receipt.verifierAnchorVariableUpdatedAt;
-    const startedAt = receipt.producerStartedAt;
-    const issuedAt = receipt.issuedAt;
-    for (const changes of [
-      { verifierAnchorVariableUpdatedAt: startedAt },
-      { verifierAnchorVariableUpdatedAt: issuedAt },
-      { producerStartedAt: updatedAt },
-      { producerStartedAt: issuedAt },
-      { producerStartedAt: "2026-08-16T12:36:56.789Z" },
-    ])
-      expect(parseContract("repository-protection-receipt/v1", { ...receipt, ...changes }).ok).toBe(
-        false,
-      );
-  });
-
-  test("verifier anchor refuses candidate/custom-root authority", () => {
-    for (const field of ["customRootDigest", "candidateTrustDigest", "combinedBundleDigest"])
-      expect(
-        parseContract(
-          "bootstrap-verifier-anchor/v1",
-          mutant("bootstrap-verifier-anchor/v1", { [field]: digest }),
-        ).ok,
-      ).toBe(false);
+    expect(parseContract("recovery-authorization-core/v1", { ...core, grantDigest: null }).ok).toBe(
+      false,
+    );
+    const state = fixtureFor("recovery-authorization-state/v2");
+    expect(parseContract("recovery-authorization-state/v2", state).ok).toBe(true);
     expect(
-      parseContract(
-        "bootstrap-verifier-anchor/v1",
-        mutant("bootstrap-verifier-anchor/v1", { verifierVersion: "2.94.0" }),
-      ).ok,
-    ).toBe(false);
-  });
-
-  test("timestamp and numeric authority are exact", () => {
-    expect(
-      parseContract(
-        "session-lease/v1",
-        mutant("session-lease/v1", { acquiredAt: instant, expiresAt: instant }),
-      ).ok,
+      parseContract("recovery-authorization-state/v2", { ...state, lifecycle: "CONSUMED" }).ok,
     ).toBe(false);
     expect(
-      parseContract(
-        "repository-protection-receipt/v1",
-        mutant("repository-protection-receipt/v1", {
-          producerRunId: "9007199254740993",
-          issuedAt: later,
-          expiresAt: "2026-08-16T12:36:56.789Z",
-        }),
-      ).ok,
+      parseContract("recovery-authorization-state/v2", {
+        ...state,
+        lifecycle: "CONSUMED",
+        gateRootDigest: digest,
+        nativeConsumeReceiptDigest: digest,
+        postConsumeReceiptDigest: digest2,
+      }).ok,
     ).toBe(true);
+
+    const nativeConsume = fixtureFor("native-consume-receipt/v1");
+    const postConsume = {
+      ...fixtureFor("recovery-authorization-consume-receipt/v1"),
+      nativeConsumeReceiptDigest: canonicalDigest(nativeConsume),
+    };
+    const consumedState = {
+      ...state,
+      lifecycle: "CONSUMED",
+      gateRootDigest: digest,
+      nativeConsumeReceiptDigest: canonicalDigest(nativeConsume),
+      postConsumeReceiptDigest: canonicalDigest(postConsume),
+    };
+    expect(
+      validateAuthorizationReceiptChain({
+        nativeConsume,
+        postConsume,
+        state: consumedState,
+      }),
+    ).toEqual([]);
+    expect(
+      validateAuthorizationReceiptChain({
+        nativeConsume: { ...nativeConsume, operationId: "018f0c24-7a3b-7cc1-9a2f-1234567890ac" },
+        postConsume,
+        state: consumedState,
+      }),
+    ).not.toEqual([]);
+
+    const attachment = fixtureFor("recovery-authorization-attachment/v1");
+    expect(parseContract("recovery-authorization-attachment/v1", attachment).ok).toBe(true);
+    expect(
+      parseContract("recovery-authorization-attachment/v1", {
+        ...attachment,
+        lifecycle: "ATTACHED",
+      }).ok,
+    ).toBe(false);
   });
-});
 
-describe("declared capability ownership", () => {
-  const root = resolve(import.meta.dirname, "../..");
-
-  test("the two exact ISS-002 slots own only the declared commands", async () => {
-    await expect(
-      regularCapabilitySlot(root, "ISS-002", "@orchestration-platform/contracts:test"),
-    ).resolves.toBe(
-      resolve(
-        root,
-        "test/capability-slots/ISS-002/%40orchestration-platform%2Fcontracts%3Atest.mjs",
-      ),
+  test("attempt groups, bounded packets, and rolling formulas fail closed", () => {
+    const reservation = fixtureFor("recovery-attempt-reservation/v1");
+    expect(
+      parseContract("recovery-attempt-reservation/v1", {
+        ...reservation,
+        predecessorAccumulatorTipDigest: digest,
+      }).ok,
+    ).toBe(false);
+    const descriptor = fixtureFor("recovery-attempt-descriptor/v1");
+    expect(
+      parseContract("recovery-attempt-descriptor/v1", { ...descriptor, lifecycle: "LIVE" }).ok,
+    ).toBe(false);
+    expect(recoveryAccumulatorDigest(null, digest)).not.toBe(
+      recoveryAccumulatorDigest(digest2, digest),
     );
-    await expect(
-      regularCapabilitySlot(root, "ISS-002", "contracts:compatibility-check"),
-    ).resolves.toBe(
-      resolve(root, "test/capability-slots/ISS-002/contracts%3Acompatibility-check.mjs"),
-    );
-    await expect(
-      regularCapabilitySlot(root, "ISS-002", "contracts:extra"),
-    ).resolves.toBeUndefined();
+    const packet = {
+      gateHistory: [],
+      fenceHistory: [],
+      launchHistory: [],
+      priorTerminalSummaries: [],
+    };
+    expect(validateEvidencePacket(packet)).toEqual([]);
+    expect(
+      validateEvidencePacket({
+        ...packet,
+        priorTerminalSummaries: Array(
+          fixedEvidencePacketLimits.maximumPriorTerminalSummaries + 1,
+        ).fill(digest),
+      }),
+    ).toContain("priorTerminalSummaries:limit-exceeded");
   });
 });

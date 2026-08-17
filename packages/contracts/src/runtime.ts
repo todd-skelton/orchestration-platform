@@ -51,6 +51,109 @@ export type ClosedRecordSnapshotResult =
   | { readonly ok: true; readonly value: ContractRecord }
   | { readonly ok: false; readonly issues: readonly string[] };
 
+export type ClosedArraySnapshotResult =
+  | { readonly ok: true; readonly value: readonly JsonValue[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export function snapshotClosedArray(input: unknown): ClosedArraySnapshotResult {
+  return snapshotClosedArrayInternal(input, new Set(), 0);
+}
+
+function snapshotClosedArrayInternal(
+  input: unknown,
+  seen: Set<object>,
+  depth: number,
+): ClosedArraySnapshotResult {
+  try {
+    if (input === null || typeof input !== "object" || nodeTypes.isProxy(input))
+      return { ok: false, issues: ["array:array-required"] };
+    if (depth > 64) return { ok: false, issues: ["array:maximum-depth"] };
+    if (seen.has(input)) return { ok: false, issues: ["array:cycle-refused"] };
+    if (!Array.isArray(input) || Object.getPrototypeOf(input) !== Array.prototype)
+      return { ok: false, issues: ["array:exact-prototype-required"] };
+    seen.add(input);
+    const descriptors = Object.getOwnPropertyDescriptors(input) as unknown as Record<
+      PropertyKey,
+      PropertyDescriptor
+    >;
+    const keys = Reflect.ownKeys(descriptors);
+    const lengthDescriptor = descriptors.length;
+    if (
+      !lengthDescriptor ||
+      !Object.hasOwn(lengthDescriptor, "value") ||
+      lengthDescriptor.enumerable !== false ||
+      lengthDescriptor.configurable !== false ||
+      (lengthDescriptor.writable !== true && lengthDescriptor.writable !== false)
+    )
+      return { ok: false, issues: ["array:length-descriptor-refused"] };
+    const length = lengthDescriptor.value;
+    if (!Number.isSafeInteger(length) || length < 0 || length > 4096)
+      return { ok: false, issues: ["array:length-refused"] };
+    const expectedKeys = new Set<PropertyKey>([
+      ...Array.from({ length }, (_, index) => String(index)),
+      "length",
+    ]);
+    if (keys.length !== expectedKeys.size || keys.some((key) => !expectedKeys.has(key)))
+      return { ok: false, issues: ["array:keys-refused"] };
+    const copy: JsonValue[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || descriptor.enumerable !== true)
+        return { ok: false, issues: [`array:${index}:descriptor-refused`] };
+      const value = snapshotJsonValue(descriptor.value, seen, depth + 1);
+      if (!value.ok)
+        return { ok: false, issues: value.issues.map((issue) => `array:${index}:${issue}`) };
+      copy.push(value.value);
+    }
+    seen.delete(input);
+    return { ok: true, value: Object.freeze(copy) };
+  } catch {
+    return { ok: false, issues: ["array:unreadable"] };
+  }
+}
+
+type JsonSnapshotResult =
+  | { readonly ok: true; readonly value: JsonValue }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+function snapshotJsonValue(
+  input: unknown,
+  seen: Set<object> = new Set(),
+  depth = 0,
+): JsonSnapshotResult {
+  if (
+    input === null ||
+    typeof input === "boolean" ||
+    typeof input === "string" ||
+    (typeof input === "number" && Number.isSafeInteger(input) && !Object.is(input, -0))
+  )
+    return { ok: true, value: input as JsonPrimitive };
+  if (typeof input !== "object") return { ok: false, issues: ["non-json-value"] };
+  if (depth > 64) return { ok: false, issues: ["maximum-depth"] };
+  if (nodeTypes.isProxy(input)) return { ok: false, issues: ["proxy-refused"] };
+  if (Array.isArray(input)) return snapshotClosedArrayInternal(input, seen, depth);
+  if (seen.has(input)) return { ok: false, issues: ["cycle-refused"] };
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null)
+    return { ok: false, issues: ["plain-object-required"] };
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string"))
+    return { ok: false, issues: ["symbol-field-refused"] };
+  const copy: Record<string, JsonValue> = {};
+  seen.add(input);
+  for (const key of keys as string[]) {
+    const descriptor = descriptors[key]!;
+    if (!Object.hasOwn(descriptor, "value") || descriptor.enumerable !== true)
+      return { ok: false, issues: [`${key}:descriptor-refused`] };
+    const value = snapshotJsonValue(descriptor.value, seen, depth + 1);
+    if (!value.ok) return { ok: false, issues: value.issues.map((issue) => `${key}:${issue}`) };
+    copy[key] = value.value;
+  }
+  seen.delete(input);
+  return { ok: true, value: Object.freeze(copy) };
+}
+
 export function snapshotClosedRecord(
   input: unknown,
   expectedFields: readonly string[],
@@ -80,8 +183,9 @@ export function snapshotClosedRecord(
     if (issues.length > 0) return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
     const snapshot = Object.fromEntries(
       observed.map((name) => {
-        const value = descriptors[name]!.value;
-        return [name, Array.isArray(value) ? Object.freeze([...value]) : value];
+        const value = snapshotJsonValue(descriptors[name]!.value);
+        if (!value.ok) throw new TypeError(value.issues.join(","));
+        return [name, value.value];
       }),
     ) as ContractRecord;
     return { ok: true, value: Object.freeze(snapshot) };
@@ -244,11 +348,17 @@ function canonicalValue(value: unknown, seen: Set<object>): string {
   seen.add(value);
   let result: string;
   if (Array.isArray(value)) {
-    result = `[${value.map((entry) => canonicalValue(entry, seen)).join(",")}]`;
+    const snapshot = snapshotClosedArray(value);
+    if (!snapshot.ok) throw new TypeError(snapshot.issues.join(","));
+    result = `[${snapshot.value.map((entry) => canonicalValue(entry, seen)).join(",")}]`;
   } else if (isPlainRecord(value)) {
-    result = `{${Object.keys(value)
+    const snapshot = snapshotJsonValue(value);
+    if (!snapshot.ok || snapshot.value === null || Array.isArray(snapshot.value))
+      throw new TypeError("noncanonical record");
+    const recordSnapshot = snapshot.value as { readonly [key: string]: JsonValue };
+    result = `{${Object.keys(recordSnapshot)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalValue(value[key], seen)}`)
+      .map((key) => `${JSON.stringify(key)}:${canonicalValue(recordSnapshot[key], seen)}`)
       .join(",")}}`;
   } else {
     throw new TypeError("non-plain JSON object");

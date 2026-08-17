@@ -1,9 +1,15 @@
-import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./definitions.js";
+import {
+  compatibilityDisposition,
+  diagnosticSchemaDefinitions,
+  schemaDefinitions,
+  schemaVersions,
+} from "./registry.js";
 import {
   canonicalBytes,
   canonicalDigest,
   canonicalJson,
   parseCanonicalBytes as parseBytes,
+  snapshotClosedArray,
   snapshotClosedRecord,
   validateAgainstSchema,
   type ContractRecord,
@@ -12,12 +18,35 @@ import {
 } from "./runtime.js";
 
 export * from "./definitions.js";
+export * from "./registry.js";
+export * from "./v2.js";
 export type * from "./runtime.js";
-export { canonicalBytes, canonicalDigest, canonicalJson, schemaDefinitions, schemaVersions };
+export {
+  canonicalBytes,
+  canonicalDigest,
+  canonicalJson,
+  schemaDefinitions,
+  schemaVersions,
+  snapshotClosedArray,
+  snapshotClosedRecord,
+};
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
   const definition = schemaDefinitions[expectedSchemaVersion];
   if (!definition) return { ok: false, issues: ["schemaVersion:unsupported"] };
+  try {
+    return validateAgainstSchema(definition, input);
+  } catch {
+    return { ok: false, issues: ["record:unreadable"] };
+  }
+}
+
+export function parseDiagnosticContract(
+  expectedSchemaVersion: string,
+  input: unknown,
+): ParseResult {
+  const definition = diagnosticSchemaDefinitions[expectedSchemaVersion];
+  if (!definition) return { ok: false, issues: ["schemaVersion:not-diagnostic"] };
   try {
     return validateAgainstSchema(definition, input);
   } catch {
@@ -64,7 +93,7 @@ export const compatibilityMatrix: readonly CompatibilityRow[] = Object.freeze(
     const observations = [
       expectedSchemaVersion,
       `${family}/v0-fixture`,
-      `${family}/v2`,
+      `${family}/v999`,
       `${family}/future`,
       "",
     ];
