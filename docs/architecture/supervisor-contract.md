@@ -198,7 +198,7 @@ The public anchor/E0 graph is exact:
 
 | Digest | Schema/domain | Framed parts | Canonical path and exclusions |
 | --- | --- | --- | --- |
-| `Dba` | `state-mutation-bootstrap-anchor/v1` | installation ID text, project ID text, `Dphys` raw32, `Ddest` raw32, destination-state-root digest raw32, custody-instance digest raw32, bootstrap transaction text, reviewed-installer digest raw32, independent-review digest raw32, operator-grant digest raw32, authority `Dp` raw32, lock profile text, state-component profile text, helper digest raw32, ABI text, custody-receipt digest raw32, canonical anchor bytes | `state-mutation-authority-anchors/<installation>/anchor.json`; successor anchor binds review-core digest, never its post-selection receipt |
+| `Dba` | `state-mutation-bootstrap-anchor/v1` | `globalBootstrapIdentity` raw32, canonical anchor bytes | `state-mutation-authority-anchors/<installation>/anchor.json`; successor anchor binds review-core digest, never its post-selection receipt |
 | `Dbav` | schema `state-mutation-bootstrap-anchor-lifecycle-value/v1`; domain `bootstrap-anchor-value/v1` | `Dba` raw32, lifecycle text, canonical lifecycle-value bytes | `.../<installation>/values/<mutation-id>.json`; selected value excludes proposal/receipt/tip/conflict |
 | `Dbar` | schema `state-mutation-bootstrap-anchor-cas-proposal/v1`; domain `bootstrap-anchor-receipt/v1` | `Dba` raw32, mutation ID raw32, nullable prior `Dbat` raw32, nullable prior `Dbav` raw32, nullable prior `Dbar` raw32, successor `Dbav` raw32, transition text, canonical proposal bytes | `.../<installation>/proposals/<prior-tip-or-genesis>/<mutation-id>.json`; successor tip/readback excluded |
 | `Dbat` | schema `state-mutation-bootstrap-anchor-current-tip/v1`; domain `bootstrap-anchor-tip/v1` | `Dba` raw32, `Dbav` raw32, `Dbar` raw32, canonical current-tip bytes | `.../<installation>/current.json` |
@@ -213,6 +213,12 @@ Thus `Dba→E0 value/Dv→Dbg→proposal/Dr→tip/Dt→Dgp→anchor CONSUMED→o
 CONSUMED→external consumption receipt` is one-way. ACTIVE use intent is
 create-once, binds selected owner/anchor ACTIVE and expiry, and contains no E0
 selection result.
+
+`globalBootstrapIdentity` is the exact raw32 projection selected by the external
+reviewed-bootstrap anchor over its installation/project/destination/custody,
+transaction, installer/review/grant, authority-path, lock/profile/helper/ABI,
+and custody-receipt fields. Those fields remain closed in the canonical anchor
+schema; `Dba` does not reframe them as additional top-level parts.
 
 ### Authority history and epoch validation
 
@@ -262,13 +268,13 @@ The sparse formulas and exclusions are exact:
 | Digest | Domain and framed parts | Canonical path/exclusion |
 | --- | --- | --- |
 | `G` | `state-mutation-global-identity/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, canonical authority path text, authority `Dp` raw32, lock profile text, state-component profile text, ABI text | embedded in every history value/proof; cross-install roots refuse |
-| epoch key | `authority-epoch-key/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32 | `.../leaves/<epoch-key>.json`; key collision with different leaf is unknown |
-| `De` | schema/domain `authority-history-leaf/v1` / `authority-epoch-leaf/v1`: epoch key raw32, installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, authority ordinal `DECIMAL_ASCII`, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32, canonical leaf bytes | immutable leaf; successor value/proposal/tip and append receipt excluded |
+| epoch key | `authority-epoch-key/v1`: `G` raw32, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32 | `.../leaves/<epoch-key>.json`; key collision with different leaf is unknown |
+| `De` | schema/domain `authority-history-leaf/v1` / `authority-epoch-leaf/v1`: `G` raw32, epoch key raw32, authority ordinal `DECIMAL_ASCII`, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32, canonical leaf bytes | immutable leaf; successor value/proposal/tip and append receipt excluded |
 | empty digest | `authority-history-empty/v1`: depth unsigned 16-bit | deterministic depth-specific constants for all 256 levels; no record path |
 | node digest | `authority-history-node/v1`: depth unsigned 16-bit, left digest raw32, right digest raw32 | `.../nodes/<node-digest>.json`; no leaf/value/proposal/tip parts |
-| `Dh` | schema/domain `authority-history-root/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, tree profile text, count `DECIMAL_ASCII`, tree-root digest raw32, latest-included ordinal `DECIMAL_ASCII`, latest epoch key raw32, latest `Dt` raw32, latest `Dv` raw32, latest `Dr` raw32, canonical root bytes | `.../roots/<root-digest>.json`; selected successor value/proposal/tip excluded |
+| `Dh` | schema/domain `authority-history-root/v1`: `G` raw32, tree profile text, count `DECIMAL_ASCII`, tree-root digest raw32, latest-included ordinal `DECIMAL_ASCII`, latest epoch key raw32, latest `Dt` raw32, latest `Dv` raw32, latest `Dr` raw32, canonical root bytes | `.../roots/<root-digest>.json`; selected successor value/proposal/tip excluded |
 | `Dup` | schema/domain `authority-history-update-proof/v1`: `G` raw32, epoch key raw32, `De` raw32, prior `Dh` raw32, successor `Dh` raw32, prior count `DECIMAL_ASCII`, successor count `DECIMAL_ASCII`, exactly 256 sibling raw32 parts, canonical proof bytes | `.../update-proofs/<rotation-id>.json`; prior leaf must be EMPTY and successor PRESENT |
-| `Dar` | schema/domain `authority-history-append-receipt/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, rotation operation ID raw32, predecessor authority `Dp` raw32, predecessor `Dt` raw32, predecessor `Dv` raw32, predecessor `Dr` raw32, prior `Dh` raw32, prior count `DECIMAL_ASCII`, appended epoch key raw32, `De` raw32, `Dup` raw32, successor `Dh` raw32, successor count `DECIMAL_ASCII`, successor-core digest raw32, created-at text, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip excluded |
+| `Dar` | schema/domain `authority-history-append-receipt/v1`: `G` raw32, rotation operation ID raw32, predecessor authority `Dp` raw32, predecessor `Dt` raw32, predecessor `Dv` raw32, predecessor `Dr` raw32, prior `Dh` raw32, prior count `DECIMAL_ASCII`, appended epoch key raw32, `De` raw32, `Dup` raw32, successor `Dh` raw32, successor count `DECIMAL_ASCII`, successor-core digest raw32, created-at text, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip excluded |
 
 `state-mutation-authority-successor-core/v1` excludes `Dar`; `Dar` binds the
 core digest, and `state-mutation-authority-value/v2` joins core plus `Dar`.
