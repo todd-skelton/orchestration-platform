@@ -119,7 +119,10 @@ never restores authority.
 Partial, mixed-lifecycle, null-at-required, duplicate, wrong-principal,
 wrong-generation, wrong-core, wrong-gate, reordered, or self-asserted receipts
 refuse. Receipt files do not grant mutation authority; the selected state
-mutation epoch and private capability do.
+mutation epoch and live ISS-004 mutation handle do. Every authorization-state
+selection also advances the exact `POINTER_MUTATION_RUN_CURRENT` meta pointer;
+the terminal resolution excludes that selector graph and the downstream
+post-selection observation completes it.
 
 ## Attachment pointer
 
@@ -137,9 +140,11 @@ Its value and archive schemas are
 `installation/recovery-authorizations/<transaction>/attachment.json`.
 
 The first attempt may bind explicit accumulator genesis. Every later attachment
-binds the predecessor selected terminal accumulator/summary triple. A bounded
-verification packet proves only the current descriptor/attachment and latest
-predecessor summary; lifetime history remains linked but is not replayed.
+binds the predecessor selected terminal accumulator/summary triple. A
+`MUTATION_COMMIT` packet proves the current descriptor/attachment and latest
+predecessor summary plus the exact selected run-current checkpoint. Historical
+producer epochs use scoped sparse-tree projections rooted in the live current
+authority context; lifetime history remains linked but is not replayed.
 
 Pre-fence recovery may consume the narrowed capability and publish the
 precomputed fence, but cannot attach. It must terminalize and tombstone before a
@@ -157,21 +162,24 @@ non-active N+1 admission. The selected activation transaction may activate it
 only after active-release selection and exact recovery/gate/fence validation.
 Candidate N+1 never activates itself.
 
-Every broker mutation verifies the selected state-mutation authority epoch,
-kernel lock custody, proposal/value/tip graph, and current release identity.
-Authority rotation does not rotate broker authority implicitly; it is a
-separate reviewed transition whose cross-bindings must be selected and
-read-back before use.
+Every broker mutation executes through the ISS-004 state service with a live
+`MUTATION_COMMIT` handle and verifies the selected state-mutation authority
+epoch, kernel lock custody, run-current and target graphs, and current release
+identity. A historical-only handle exposes no broker mutation. Authority
+rotation revokes all old handles/projections and does not rotate broker
+authority implicitly; broker rotation remains a separate reviewed transition
+whose cross-bindings must be selected/read back before use.
 
 ## Ownership and verification
 
-`ISS-002` owns schemas and pure validators. `ISS-004` owns pointer mutation and
-private capabilities. `ISS-014` supplies release/gate/fence facts. `ISS-020`
-owns reviewed-bootstrap genesis/reinstall. `ISS-030` supplies selected
+`ISS-002` owns schemas and pure validators. `ISS-004` owns the revocable state
+service, run-current selection, pointer mutation, and private capabilities.
+`ISS-014` supplies release/gate/fence facts. `ISS-020` owns destination-owner,
+anchor, reviewed-bootstrap genesis, and reinstall. `ISS-030` supplies selected
 reservation, descriptor, summary, and accumulator facts. `ISS-031` selects and
 proves custody topology. `ISS-032` produces core/state/native receipts,
 attachment, revocation, and active-client transitions. `ISS-022` proves the
-cross-process lock/custody prerequisite.
+physical locator and cross-process lock/custody prerequisites.
 
 Compatibility tests must attack the complete core field census, both mode
 unions, the consume/revoke ordering, wrong native receipt, coordinated digest

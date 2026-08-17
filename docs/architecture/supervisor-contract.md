@@ -12,55 +12,207 @@ state-mutation protocol below is the final overlap and mutation authority.
 
 ## State mutation trust and epoch fence
 
-All authority-bearing pointer writes use the fixed non-symlink regular file
-`<state-root>/installation/state-mutation.lock`. Its bytes, timestamps, PID,
-age, and owner-written metadata grant no authority. A writer must hold the
-kernel-exclusive handle under the exact OS lock profile/helper/custody bound by
-the selected `STATE_MUTATION_AUTHORITY_ROTATION` pointer at
-`installation/state-mutation-authority.json`.
+All authority-bearing runtime pointer writes use the fixed non-symlink regular
+file `<state-root>/installation/state-mutation.lock`. Its bytes, timestamps,
+PID, age, and owner-written metadata grant no authority. A writer must hold the
+kernel-exclusive handle under the exact OS lock/helper/custody facts bound by
+the selected `STATE_MUTATION_AUTHORITY_ROTATION` tip at
+`installation/state-mutation-authority.json`. If `ISS-022` cannot prove that
+profile on a target, mutation is unsupported; timeout, PID, lease, stale age,
+or unsigned lock bytes are never a fallback.
 
-The selected authority value binds installation/project/state identities,
-helper executable/path/digest, state-component profile, ABI
-`portable-state-cas/v2`, lock profile/helper, custody principal/ACL receipt,
-handle-inheritance policy, the reviewed active-release `Dt/Dv/Dr`, and its
-predecessor authority triple. Bootstrap genesis and exact-byte reinstall belong
-only to the independently reviewed
-bootstrap path. A selected stable predecessor performs forward rotation after
-the new active release and independent review are selected; candidate or new
-helper bytes never authorize themselves. The old helper holds the lock through
-rotation selection/read-back and releases it before the new helper may use its
-private capability.
+Receipts authenticate relationships, not writers. Runtime authority is the
+combination of canonical state-root custody, the selected exact authority tip,
+the kernel lock, and an ISS-004 private non-serializable capability. ISS-004 is
+the sole in-process state service. It keeps current contexts, historical-read
+handles, mutation-run handles, and producer projections in module-private
+`WeakMap`s with live nonces. Constructors and nonces are not exported or
+serialized. JSON, structured clone, worker/IPC transfer, proxying, copied
+symbols, foreign service instances, lock release, process death, custody
+movement, or authority rotation invalidate a handle. Consumers call the
+in-process service; no filesystem/CAS primitive or generic capability is a
+public API.
 
-Rollback is another independently reviewed forward rotation from the currently
-selected epoch; restoring an old tip or capability refuses. Reinstall accepts
-only exact selected bytes/custody under the reviewed-bootstrap transaction and
-cannot create a parallel genesis.
+The service issues `VerifiedCurrentAuthorityContext` only while holding the
+lock after it recomputes the canonical authority `Dp/Dv/Dr/Dt`, validates the
+exact global installation/project/state/custody identity and either the E0
+bootstrap branch or the En append branch described below, and reads back the
+same selected bytes. It issues `VerifiedProducerEpochProjection` only from that
+live context and a sparse-tree membership proof rooted in the context's exact
+current history root. Serialized rows and proofs remain relative structural
+evidence; ISS-002 never labels them authority.
 
-Only the private, non-serializable state-mutation capability issued for the
-selected authority epoch may write pointer values, proposals, conflicts, tips,
-tombstones, or retention state. Receipts do not authenticate writers by
-themselves; authority is canonical state-root custody, the private capability,
-kernel exclusion, and selected exact bytes. If the required OS guarantee is not
-proven by `ISS-022`, mutation is unsupported and no timeout, PID, lease, stale
-age, or unsigned lock fallback is permitted.
+An ordinary mutation callback acquires the lock, creates a live context,
+reconciles the deterministic proposal bucket, writes/read-backs value and
+proposal, selects the run-current checkpoints below, rereads the same authority
+before and after target CAS, resolves the proposal, revokes every handle, and
+releases. `lockOperationId` is diagnostic only and excluded from every digest
+and decision. Historical reads use a distinct bounded callback that exposes no
+mutation method and revokes its handles before lock release.
 
-An ordinary commit acquires the lock before observing authority, validates the
-selected authority/capability/custody, reconciles the target proposal bucket,
-writes/read-backs the deterministic value and proposal, re-reads the same
-authority, CASes/read-backs the target tip, resolves proposal classification,
-re-reads the same authority, then releases. `lockOperationId` is advisory only
-and is excluded from every digest and decision.
+Rotation holds the same lock under the old selected capability. It validates
+the reviewed successor active release/helper/profile/ABI/custody, settles all
+pending proposals among the other eleven pointer kinds in registry/`Dp`/
+predecessor/mutation order, and requires zero unrelated `PENDING` or `UNKNOWN`.
+Its own selected run-current checkpoint may be exactly `CAS_AMBIGUOUS`. After
+authority CAS, every old handle is revoked. A fresh new-helper run validates the
+selected successor and terminalizes that exact rotation; no ordinary target
+may span epochs. Kernel owner death releases the lock. Before authority CAS the
+old epoch remains current; after it the new epoch does. Rollback is another
+independently reviewed forward rotation, never restored bytes or a stale
+capability.
 
-Rotation acquires the same lock before observation. Under the old selected
-capability it validates the selected new active release/review/helper/custody,
-then performs a complete census of all other pointer kinds. Pending proposals
-are deterministically completed under the old authority in registry/Dp/
-predecessor/mutation order; a proposal becomes lost only after an actual
-different winner is selected. Rotation requires zero `PENDING` and zero
-`UNKNOWN`, selects/read-backs the new authority, and releases. Kernel owner
-death releases the lock. A crash before authority selection resumes the old
-epoch; a crash after selection resumes the new epoch. No target transition may
-span both.
+### External destination and E0 authority
+
+Bootstrap ownership is selected outside the runtime root under the
+ISS-022-admitted bootstrap-custody namespace. A stable
+`physical-destination-identity/v1` binds only host/custody-root namespace, OS,
+physical volume/filesystem, nearest stable existing non-symlink ancestor object,
+and canonical physical leaf identity. It excludes helper/version, logical path,
+case/Unicode profile, custody instance, receipt, and readback facts.
+
+```text
+Dphys = H(F("physical-destination-identity/v1", stable physical identity))
+Ddest = H(F("bootstrap-destination-identity/v2", Dphys raw32))
+```
+
+The immutable identity is
+`state-mutation-destination-identities/<Dphys>/identity.json`. Versioned
+`physical-destination-locator-observation-receipt/v1` records live under
+`.../<Dphys>/observations/<Dobs>.json` and bind `Dphys` to the admitted helper,
+logical/resolved locator, case/Unicode profile, custody, native readbacks,
+validity, and `ADMITTED|UNSUPPORTED|UNKNOWN` disposition. Multiple helpers or
+profiles may produce different `Dobs` values for the same `Dphys`; the owner
+key and lock do not move. Every owner transition requires a current admitted
+observation under its lock.
+
+```text
+<bootstrap-custody-root>/state-mutation-destination-identities/<Dphys>/identity.json
+<bootstrap-custody-root>/state-mutation-destination-identities/<Dphys>/observations/<Dobs>.json
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/destination-owner.lock
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/current.json
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/values/<mutation-id>.json
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/proposals/<prior-tip-or-genesis>/<mutation-id>.json
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/teardown-archives/<owner-tip>.json
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/successor-review-cores/<retired-tip>/<review-core-digest>.json
+<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/successor-review-post-selection-receipts/<successor-tip>.json
+```
+
+`Dobs` uses `physical-destination-locator-observation-receipt/v1`; owner value,
+proposal, tip, conflict, and mutation ID use the closed
+`destination-owner-value/v1`, `destination-owner-receipt/v1`,
+`destination-owner-tip/v1`, `destination-owner-conflict/v1`, and
+`destination-owner-mutation-id/v1` domains. Their framed parts bind `Ddest`,
+canonical path, prior triple/genesis, arbitrary-precision owner ordinal,
+transition, successor value, installation/anchor, and review/teardown evidence.
+
+Exactly one FULL_REQUIRED destination-owner pointer and non-symlink
+`destination-owner.lock` exist at
+`<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/`. Its
+generic value/proposal/conflict/retention storage and `current.json` use
+`destination-owner-value/v1`, receipt, tip, and conflict domains. The owner
+lifecycle is exactly `ACTIVE|CONSUMED|RETIRED` with edges
+`ACTIVATE_GENESIS`, `CONSUME`, `RETIRE_UNUSED`, `RETIRE_CONSUMED`, and
+`ACTIVATE_SUCCESSOR` (`RETIRED→ACTIVE`). The owner ordinal is a canonical
+arbitrary-precision decimal string. There is no bare absence after genesis and
+no deletion or degraded compaction of owner lineage.
+
+A successor review is acyclic. The independently reviewed
+`destination-owner-successor-review-core/v1` binds the prior selected RETIRED
+triple/archive and intended successor facts but excludes the new anchor digest
+and successor owner graph. The new anchor binds that review-core digest; the
+successor ACTIVE owner value binds both. Only after selected owner-tip readback
+does the installer create the non-embedded
+`destination-owner-successor-review-post-selection-receipt/v1`. Anchor ACTIVE,
+use intent, E0, and context issuance all refuse until that receipt is read back.
+Crash after owner selection resumes the receipt without repeating owner CAS.
+
+Lock order is destination-owner lock, installation-anchor lock, then runtime
+state-mutation lock; release is reverse. Two installation IDs targeting one
+physical destination therefore have one real winner. The loser retains an exact
+`LOST_CONFLICT` proposal and cannot replay its grant or intent. A new owner is
+legal only from the exact prior RETIRED triple, teardown archive, fresh anchor,
+and independent successor review.
+
+The per-installation external anchor has selected `ACTIVE|CONSUMED|RETIRED`
+state. A create-once use intent, made while ACTIVE and unexpired, binds the
+selected owner ACTIVE triple and exact bootstrap transaction before the first
+runtime mutation. It permits only that transaction to finish after expiry.
+Anchor CONSUMED binds the selected E0 graph; the destination owner then selects
+CONSUMED; a downstream consumption receipt binds `Dba/Dbg/Dv/Dr/Dt/Dgp`, both
+owner triples, both custody instances, transaction, and all readbacks. E0
+context requires external anchor, selected owner CONSUMED, consumption receipt,
+immutable E0 core, selected runtime E0, and runtime post-selection receipt.
+
+The E0 graph is acyclic: external anchor → immutable
+`state-mutation-bootstrap-genesis-core/v1` →
+`pointer-cas-proposal-receipt/v2` → `Dr` → tip/`Dt` → runtime post-selection
+receipt. The core binds anchor, destination/owner, absence, E0 value/`Dv`, and
+empty history but excludes proposal/`Dr`/tip/`Dt`. E0's proposal producer is
+`REVIEWED_BOOTSTRAP_GENESIS` with null selected epoch; every ordinary proposal
+uses `SELECTED_EPOCH`. Anchor consumption occurs downstream of the runtime
+post-selection receipt and introduces no cycle.
+
+An expired ACTIVE anchor without a pre-expiry intent can only retire after
+destination-absence proof. Partial mutation must reconcile the same intent.
+Exact reinstall reuses selected owner/anchor CONSUMED and the original E0 graph;
+it creates no genesis or new intent. RETIRED requires a new installation ID and
+reviewed successor.
+
+Anchor storage is canonical beneath
+`<bootstrap-custody-root>/state-mutation-authority-anchors/<installation-id>/`:
+`anchor.json`, `anchor.lock`, `current.json`, `use-intents/<transaction>.json`,
+generic mutation-ID values and prior/genesis proposal/conflict buckets,
+consumption/teardown receipts, and lifecycle archives. The closed domains are
+`state-mutation-bootstrap-anchor/v1`, `bootstrap-anchor-value/v1`,
+`bootstrap-anchor-receipt/v1`, `bootstrap-anchor-tip/v1`,
+`bootstrap-anchor-conflict/v1`, `bootstrap-anchor-use-intent/v1`,
+`bootstrap-anchor-consumption-receipt/v1`, and
+`bootstrap-anchor-teardown-receipt/v1`.
+
+### Authority history and epoch validation
+
+`state-mutation-authority-value/v2` binds the exact helper/profile/ABI/lock/
+custody facts, reviewed active release, predecessor authority triple, authority
+ordinal, and selected history root. Ordinals and counts are canonical
+nonnegative decimal strings. E0 has ordinal `"0"`, null predecessor/append
+receipt, and the deterministic empty 256-depth sparse-tree root/count `"0"`.
+
+For En, the old selected capability appends E(n-1)'s exact selected epoch leaf.
+`authority-history-update-proof/v1` contains exactly 256 siblings and proves
+`EMPTY→PRESENT`, prior root/count, successor root/count+1, and membership in the
+successor root. Rotation identity is deterministic from global identity,
+predecessor triple/ordinal, successor ordinal, selected active release, and
+reviewed successor helper/profile/ABI/custody; generated roots and timestamps
+are excluded. Append receipt binds the update proof and successor core without
+containing the successor value/tip, so the graph is acyclic.
+
+History uses FULL_REQUIRED content-addressed leaves, nodes, roots, update proofs,
+and append receipts beneath
+`installation/state-mutation-authority-history/`. No history deletion or
+`AUDIT_DEGRADED` authority exists. One producer proof always uses one leaf and
+exactly 256 siblings regardless of lifetime rotations. The current selected
+authority is trusted only through the live custody context; historical
+projections are membership proofs against that context's exact current root and
+global identity. A stale root or projection refuses after rotation.
+
+```text
+installation/state-mutation-authority-history/leaves/<epoch-key>.json
+installation/state-mutation-authority-history/nodes/<node-digest>.json
+installation/state-mutation-authority-history/roots/<root-digest>.json
+installation/state-mutation-authority-history/update-proofs/<rotation-id>.json
+installation/state-mutation-authority-history/append-receipts/<rotation-id>.json
+```
+
+The exact history domains are `state-mutation-global-identity/v1`,
+`state-mutation-authority-rotation-id/v1`, `authority-epoch-key/v1`,
+`authority-epoch-leaf/v1`, `authority-history-empty/v1`,
+`authority-history-node/v1`, `authority-history-root/v1`,
+`authority-history-update-proof/v1`, and
+`authority-history-append-receipt/v1`. The successor authority core excludes
+the append-receipt digest and the append receipt excludes successor value/tip;
+the v2 value joins them without a cycle.
 
 ## Pointer value, proposal, tip, and conflict graph
 
@@ -73,7 +225,8 @@ All pointers use an acyclic framed digest graph:
 
 - `Dv` hashes the immutable family value under `pointer-value/v2`;
 - `Dr` uses domain `pointer-receipt/v2` over the canonical pre-CAS
-  `pointer-cas-proposal-receipt/v1` and its bound parts;
+  `pointer-cas-proposal-receipt/v2` and its closed bootstrap/selected producer
+  union;
 - `Dt` uses domain `pointer-tip/v2` over canonical
   `pointer-current-tip/v1` and its selected `Dv+Dr`.
 
@@ -86,7 +239,7 @@ The digest domains are closed and exact:
 | Digest | Domain tag | Framed identifying parts |
 | --- | --- | --- |
 | `Dv` | `pointer-value/v2` | pointer-kind text, path-instance digest raw32, canonical value bytes |
-| `Dr` | `pointer-receipt/v2` | pointer-kind text, path-instance digest raw32, mutation ID raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, position digest raw32, intent/outcome text, canonical `pointer-cas-proposal-receipt/v1` bytes |
+| `Dr` | `pointer-receipt/v2` | pointer-kind text, path-instance digest raw32, mutation ID raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, position digest raw32, intent/outcome text, canonical `pointer-cas-proposal-receipt/v2` bytes |
 | `Dt` | `pointer-tip/v2` | pointer-kind text, path-instance digest raw32, `Dv` raw32, `Dr` raw32, canonical `pointer-current-tip/v1` bytes |
 | `Dp` | `pointer-instance/v2` | kind, canonical path, installation/project/state, transaction, source |
 | mutation ID | `pointer-mutation-id/v2` | pointer kind, canonical path, `Dp` raw32, transaction ID/null, source token, position digest raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, outcome/intent |
@@ -94,17 +247,27 @@ The digest domains are closed and exact:
 | accumulator first | `recovery-attempt-accumulator/v1` + byte `0x00` | raw terminal-summary digest |
 | accumulator later | `recovery-attempt-accumulator/v1` + byte `0x01` | raw prior accumulator-value digest, raw terminal-summary digest |
 
-The closed authority schemas are `pointer-current-tip/v1`,
-`pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`,
+`F` additionally has a `DECIMAL_ASCII` part for canonical nonnegative decimal
+strings (`"0"|[1-9][0-9]*`). Comparison is digit-length then ASCII lexical;
+increment is decimal carry. Authority/history/run ordinals and counts never use
+JSON numbers or JavaScript `Number` and have no semantic lifetime maximum.
+
+The closed authority schemas include `pointer-current-tip/v1`,
+`pointer-cas-proposal-receipt/v2`, `pointer-conflict-receipt/v1`,
 `pointer-tombstone-value/v1`,
 `active-release/v2`, `activation-cleanup-gate-root/v2`,
 `activation-cleanup-gate-head/v2`, `activation-recovery-fence-root/v2`,
 `activation-recovery-fence-head/v2`, `activation-recovery-launch/v2`,
 `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`,
 `recovery-attempt-terminal-summary/v1`, `recovery-attempt-accumulator/v1`,
-`activation-cleanup-archive-head/v2`, `authority-retention/v1`, and
-`state-mutation-authority-value/v1`. Authorization schemas are closed in
-`credential-broker.md`. Any old affected v1 authority schema is diagnostic only.
+`activation-cleanup-archive-head/v2`, `authority-retention/v1`,
+`state-mutation-authority-value/v2`, the authority-history/bootstrap-owner
+schemas above, `pointer-mutation-run-checkpoint-core/v1`,
+`pointer-mutation-run-current-value/v1`, and
+`pointer-mutation-run-selector-post-selection-observation/v1`. Authorization
+schemas are closed in `credential-broker.md`. The old proposal receipt,
+authority value, capped history table, and packet are diagnostic only and
+refused at current authority paths.
 
 The pointer-instance digest binds kind, canonical pointer path, installation,
 project, state-root digest, transaction, and the closed source token. The
@@ -133,7 +296,7 @@ record; an orphan value is retained until its proposal is classified, and an
 orphan/malformed proposal is `UNKNOWN`. Selected and lost evidence is retained
 until an authorized retention transition classifies it `COMPACTED`.
 
-The closed pointer kinds are:
+The closed runtime pointer kinds are exactly:
 
 1. active release;
 2. activation cleanup gate;
@@ -145,7 +308,8 @@ The closed pointer kinds are:
 8. activation cleanup archive head;
 9. authority retention;
 10. recovery attempt reservation;
-11. state mutation authority rotation.
+11. state mutation authority rotation;
+12. pointer mutation run current.
 
 The registry maps every kind to one exact canonical path constructor, permitted
 value schemas, source tokens, roots, archives, and genesis rule. Unknown or
@@ -168,13 +332,70 @@ The canonical authority-path census is closed:
 | `AUTHORITY_RETENTION` | `installation/authority-retention/<pointer-instance-digest>.json` |
 | `RECOVERY_ATTEMPT_RESERVATION` | `installation/activation-recovery-launches/<transaction>/<source>/reservations/<predecessor-key>.json` |
 | `STATE_MUTATION_AUTHORITY_ROTATION` | `installation/state-mutation-authority.json` |
+| `POINTER_MUTATION_RUN_CURRENT` | `installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/current-run.json` |
 
 Path components use the canonical contract path grammar and lowercase digest or
 UUID text where declared. `predecessor-key` is the framed digest of the exact
 predecessor accumulator `Dt/Dv/Dr`, or the tagged genesis value. The path census
 walks every authority family and proposal bucket; uncatalogued files, duplicate
-instances, missing selected tips, and old v1 records at current paths are
-`UNKNOWN`. v1 remains readable only as historical diagnostic evidence.
+instances, missing selected tips, and old records at current paths are
+`UNKNOWN`. Diagnostic versions are readable only through their explicit
+diagnostic namespace.
+
+### Commit runs and evidence packets
+
+Every target mutation has immutable segments and acyclic checkpoint cores. A
+core binds the target, segment/audit digest, prior selected run-current triple,
+prior post-selection observation, stage, phase, and optional terminal
+resolution. It excludes the selector value/`Dv`, proposal/`Dr`, tip/`Dt`, and
+their readbacks. The selected `POINTER_MUTATION_RUN_CURRENT` value binds the
+core and uses the generic value/proposal/tip protocol. A downstream
+post-selection observation binds core plus selected selector graph/readbacks;
+only the next core may bind that observation.
+
+`POINTER_MUTATION_RUN_CURRENT` is `META_LEAF`: it uses the exact generic
+`values/<mutation-id>`, prior/genesis proposal/conflict buckets, classification,
+tombstone, retention, and census rules, but does not recursively create a run
+selector for itself. A one-use ISS-004 capability binds it to the exact parent
+target/`Dp`/mutation/core/prior/epoch. Run audit is FULL_REQUIRED.
+
+Stages are `CURRENT_AUTHORITY_READ`, `TARGET_RECONCILED`, `VALUE_READBACK`,
+`PROPOSAL_READBACK`, `CURRENT_AUTHORITY_PRE_CAS_READ`, `CAS_ARMED`,
+`TARGET_POST_CAS_READBACK`, `PROPOSAL_CLASSIFIED`, and
+`CURRENT_AUTHORITY_POST_CAS_READ`. `CAS_ARMED` is selected before issuing target
+CAS, so a crash is explicitly ambiguous. Fresh recovery reads the target:
+expected winner becomes `SELECTED`, a real different winner becomes
+`LOST_CONFLICT`, unchanged prior may retry under the same epoch, and malformed
+or impossible evidence becomes exact terminal unknown.
+
+`PROPOSED` is only a live branded in-memory ISS-004 view through stage five.
+After lock/process loss, the persisted stage-five checkpoint is
+`CRASH_PREFIX`; stage six is `CAS_AMBIGUOUS`. Durable resolution is only
+`SELECTED|LOST_CONFLICT|UNKNOWN_TERMINAL` and excludes the run-current graph
+that selects its terminal core.
+
+```text
+installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/intent.json
+installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/runs/<run-ordinal>-<run-id>/segment.json
+installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/checkpoints/<core-digest>.json
+installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/selector-observations/<selector-mutation-id>.json
+installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/resolution.json
+```
+
+The closed run domains are `pointer-mutation-run-id/v1`,
+`pointer-mutation-run-segment/v1`, `pointer-mutation-run-audit/v1`,
+`pointer-mutation-run-checkpoint-core/v1`,
+`pointer-mutation-run-current-position/v1`,
+`pointer-mutation-run-selector-post-selection-observation/v1`, and
+`pointer-mutation-commit-resolution/v1`.
+
+`pointer-evidence-packet/v2` is an exact union. `HISTORICAL_READ` requires
+`currentCommit=null` and exposes no mutation capability. `MUTATION_COMMIT`
+requires current intent/checkpoint/run evidence and a live mutation context.
+Both carry a fixed registry-derived evidence-slot census, not lifetime history;
+producer proofs are deduplicated sparse-tree memberships against the live
+current root. A null current commit is illegal for mutation, and serialized
+packet success alone grants no authority.
 
 ## Tombstones and archives
 
@@ -243,11 +464,12 @@ TERMINAL binds the same descriptor and new terminal summary. The rolling digest
 uses the tagged first-summary formula or tagged prior-accumulator-`Dv` plus
 summary formula. It contains no lifetime array or numeric generation cap.
 
-Every broker/supervisor call verifies a bounded packet: selected authority and
-lock facts, gate/fence tip/value/proposal, launch tip/value/proposal, reservation,
-descriptor, attachment, accumulator, READY/initial LIVE, and at most the latest
-terminal summary. Older history remains linked for audit but is not rescanned
-for mutation authority.
+Every broker/supervisor call uses the purpose-specific packet and an ISS-004
+live handle. The fixed slots cover current authority, gate/fence, launch,
+reservation, descriptor, attachment, accumulator, READY/initial LIVE, and at
+most the latest terminal summary. Historical producer epochs use sparse-tree
+projections against the live root. Older attempt evidence remains linked for
+audit but is not rescanned for mutation authority.
 
 Pre-fence source may consume the narrowed recovery capability and publish the
 precomputed fence, but never attaches authorization. It terminalizes, archives,
@@ -258,12 +480,13 @@ clear, then archives/tombstones after child exit and authorization revoke.
 
 ## Retention and degraded audit
 
-Active release, cleanup head/gate, fence, authorization records, authority
-rotation, current tips, and current proposals are `FULL_REQUIRED`. Only terminal
-launch/attempt history may use `TERMINAL_CHECKPOINT_ALLOWED`. Authorized
-compaction selects checkpoint, exact deletion plan, verified deletion receipt,
-and completion through the retention pointer. Pending proposals are never
-compacted.
+Destination owner/anchor lineage, physical identity/observations, state
+authority/history, run-current audit, active release, cleanup head/gate, fence,
+authorization records, current tips, and current proposals are
+`FULL_REQUIRED`. Only terminal launch/attempt history may use
+`TERMINAL_CHECKPOINT_ALLOWED`. Authorized compaction selects checkpoint, exact
+deletion plan, verified deletion receipt, and completion through the retention
+pointer. Pending proposals are never compacted.
 
 Unexpected old loss is forward-nonblocking only after a selected terminal
 checkpoint/tombstone and only as durable `AUDIT_DEGRADED`. Existing transaction
@@ -331,10 +554,14 @@ pending/unknown proposals, or unknown process state refuse overwrite/removal.
 
 ## Ownership
 
-`ISS-002` owns schemas and pure validators. `ISS-022` proves lock/custody/CAS
-guarantees. `ISS-004` owns the private mutation capability and pointer protocol.
-`ISS-014` produces active-release/gate/fence/cleanup transitions and requests
-authority rotation. `ISS-030` owns reservation/launch/descriptor/summary/
-accumulator behavior. `ISS-032` owns authorization and attachment production.
-`ISS-020` owns reviewed-bootstrap genesis/reinstall. No worker, candidate,
-adapter, or provider policy owns these mechanisms.
+`ISS-002` owns schemas, canonical framing, sparse-tree and state-machine pure
+validators. `ISS-022` proves physical locator/custody and kernel lock/CAS
+guarantees. `ISS-004` owns the revocable in-process state service, private
+capabilities, runtime pointer protocol, run-current selection, and history
+updates. `ISS-014` produces active-release/gate/fence/cleanup transitions and
+reviewed rotation requests. `ISS-030` owns reservation/launch/descriptor/
+summary/accumulator behavior. `ISS-032` owns authorization and attachment
+production. `ISS-020` owns destination-owner/anchor lifecycle, externally
+reviewed E0 genesis, exact reinstall, and teardown; `ISS-027` executes the
+production transcript. No worker, candidate, adapter, or provider policy owns
+these mechanisms.

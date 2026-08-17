@@ -17,11 +17,85 @@ and tips form the acyclic `Dv/Dr/Dt` graph in `supervisor-contract.md`.
 | `COMPACTED` | selected retention plan and completion receipt | retain the compacted classification proof |
 | `UNKNOWN` | malformed, contradictory, missing, fake-lost, or mixed epoch | external diagnosis; refuse mutation/start |
 
+The durable commit resolution states are exactly:
+
+| Resolution | Required evidence | Authority |
+| --- | --- | --- |
+| `SELECTED` | complete nine-stage run, target tip equals expected `Dt/Dv/Dr`, same epoch before/after | selected target result |
+| `LOST_CONFLICT` | complete run, real different winner, exact conflict receipt | retain loser; winner remains authority |
+| `UNKNOWN_TERMINAL` | fresh locked reconciliation, exact closed failure reason/evidence | refuse mutation/start |
+
+`PROPOSED` is only a live branded ISS-004 view through stage five. Persisted
+stage-five evidence after handle loss is `CRASH_PREFIX`; selected `CAS_ARMED`
+without target readback is `CAS_AMBIGUOUS`. Neither is a resolution. The nine
+stages are current-authority read, target reconciliation, value readback,
+proposal readback, pre-CAS authority read, CAS armed, post-CAS target readback,
+proposal classification, and post-CAS authority read.
+
+Every progress update selects `POINTER_MUTATION_RUN_CURRENT` through the generic
+pointer graph. Immutable checkpoint cores exclude their selecting
+value/proposal/tip; a downstream post-selection observation feeds only the next
+core. Crash recovery always acquires a fresh lock/context and reads the selected
+run-current tip. Expected target is selected, a real different winner is lost,
+unchanged prior may retry under the same epoch, and malformed/impossible state
+is terminal unknown. The meta pointer follows all generic rules except that it
+does not recursively journal itself.
+
 An ordinary commit rereads the same selected authority before and after target
 selection. Rotation runs under the old private capability, resolves every
-other-kind pending proposal, requires a complete zero-PENDING/zero-UNKNOWN
-census, selects/read-backs the new epoch, and releases. Kernel owner death is
+other-kind pending proposal across the twelve-kind registry, requires a
+complete zero-unrelated-PENDING/zero-UNKNOWN census, and permits only its own
+exact selected `CAS_AMBIGUOUS` run-current tip. Authority CAS revokes the old
+context; a fresh new-epoch run terminalizes the rotation. Kernel owner death is
 the only lock-loss recovery; PID, age, lease, and timeout are never authority.
+
+### External destination owner and anchor
+
+| Owner state | Required selected evidence | Allowed transition |
+| --- | --- | --- |
+| `ACTIVE` | one destination winner, admitted current physical observation, anchor digest, owner post-selection review receipt for a successor | `CONSUME` or `RETIRE_UNUSED` |
+| `CONSUMED` | selected anchor CONSUMED, E0 graph/readbacks, exact transaction | `RETIRE_CONSUMED` or exact reinstall/no transition |
+| `RETIRED` | selected anchor RETIRED and teardown archive | `ACTIVATE_SUCCESSOR` for a different installation and reviewed successor only |
+
+Genesis is `ACTIVATE_GENESIS` from exact destination-owner absence. The owner
+key is `Ddest(Dphys)` and remains the same across project, installation,
+custody-instance, helper, and profile changes. A successor review core excludes
+the new anchor; the anchor binds the core; owner ACTIVE binds both; its
+post-selection receipt is required before anchor work. Competing installation
+IDs serialize on one destination lock and only an observed winner makes the
+loser `LOST_CONFLICT`.
+
+| Anchor state | Required evidence | Allowed transition |
+| --- | --- | --- |
+| `ACTIVE` | selected owner ACTIVE and downstream successor receipt where applicable | pre-expiry use intent, `CONSUMED`, or absence-proven `RETIRED` |
+| `CONSUMED` | selected E0 and runtime/external post-selection receipts plus owner CONSUMED | exact reinstall/no transition or teardown to `RETIRED` |
+| `RETIRED` | exact teardown archive and selected owner RETIRED | no reuse |
+
+An ACTIVE use intent created before expiry may complete only its exact
+transaction after expiry. Partial E0 cannot retire or start another install.
+Exact reinstall reuses CONSUMED; RETIRED requires a new installation ID.
+
+### State-authority history
+
+E0 has ordinal `"0"`, empty sparse root/count `"0"`, null predecessor and a
+reviewed-bootstrap proposal producer rather than a self epoch. En appends the
+selected E(n-1) leaf using an exact 256-sibling EMPTY→PRESENT proof and
+deterministic rotation identity. The selected successor binds the new history
+root and append receipt. Current context validates either the complete E0
+external/runtime graph or the immediate append transition. Historical producer
+projections must be memberships in that live current root and revoke when the
+context/root changes.
+
+### Evidence packet purpose
+
+| Purpose | Current commit | Capability |
+| --- | --- | --- |
+| `HISTORICAL_READ` | exactly null | scoped read/projection methods only |
+| `MUTATION_COMMIT` | exact intent, selected run-current checkpoint, and current run | mutation methods for that target/meta selector only |
+
+Packet arrays are bounded by the closed evidence-slot census, not lifetime
+history. A structurally valid serialized packet without the corresponding live
+ISS-004 handle grants no authority.
 
 ## Worker process and ownership
 
@@ -140,9 +214,9 @@ either path.
 | `ASSEMBLED` | pinned bootstrap build workflow | installed stable predecessor build path | immutable candidate manifest | rebuild new identity if changed | certify |
 | `CONFORMED` | pinned bootstrap aggregator workflow | installed stable predecessor aggregator | all OS receipts bind candidate/test bundle | rerun failed environment | independent review |
 | `REVIEWED` | distinct independent reviewer | distinct independent reviewer | exact-candidate acceptance | re-observe unchanged evidence | authorize |
-| `AUTHORIZED` | human operator grant over exact digest, validated by reviewed bootstrap installer | installed stable predecessor preflight | fresh authority plus one-use recovery digest | abort only before first mutation | apply |
-| `BOOTSTRAP_APPLYING` | reviewed bootstrap installer, same transaction | n/a | first N0 destination mutation | forward recovery only | install/verify N0 |
-| `BOOTSTRAP_ACTIVE` | installed N0 | n/a | genesis active-release selected + broker client + shim read-back + bootstrap receipt + recovery authorization revoked + cleanup archive and gate tombstone selected | ordinary recovery rules | first N0 no-work tick |
+| `AUTHORIZED` | human operator grant over exact digest, validated by reviewed bootstrap installer | installed stable predecessor preflight | fresh authority plus one-use recovery digest; for N0 exact `Dphys/Ddest`, owner/anchor review inputs | abort only before first mutation | apply |
+| `BOOTSTRAP_APPLYING` | reviewed bootstrap installer, same transaction | n/a | selected owner/anchor ACTIVE, pre-expiry use intent, first N0 destination mutation | forward recovery of the same owner/anchor/transaction only | install/verify N0 |
+| `BOOTSTRAP_ACTIVE` | installed N0 | n/a | selected owner/anchor CONSUMED, acyclic E0 core/proposal/tip and both post-selection receipts, genesis active-release, broker client, shim read-back, bootstrap receipt, authorization revoked, cleanup archive/tombstone | ordinary recovery rules | first N0 no-work tick |
 | `SUCCESSOR_STAGED_PRE_ACTIVATION` | n/a | installed stable predecessor | verified N+1 bytes, pending broker admission, selected `recovery-authorization-state/v2` `CONSUMED` with exact native-consume and post-selection consume receipts, and published recovery fence; gate `PENDING`, active pointer N | activation CASes gate `ACTIVATING`; abort CASes gate `ABORTING`; exactly one wins | `SUCCESSOR_ACTIVATING_PRE_POINTER` or abort |
 | `SUCCESSOR_ACTIVATING_PRE_POINTER` | n/a | exact predecessor/fence-backed recovery transaction | gate `ACTIVATING`; active pointer still N; exact expected N+1 record | forward-only active-release CAS; abort refuses; mismatch becomes unknown | `SUCCESSOR_ACTIVE_HANDOFF` |
 | `SUCCESSOR_ACTIVE_HANDOFF` | n/a | same live or shim-relaunched predecessor recovery transaction | atomic active pointer names N+1 while broker still names N | forward recovery only; ordinary ticks fenced | activate broker N+1, record follow-up, terminalize N cycle |
@@ -208,9 +282,11 @@ canonical selected pointers never CAS from bare absence after genesis.
 
 ### Retention and degraded audit
 
-Full-required current authority may not be discarded. Terminal attempt history
-may compact only after a selected checkpoint, selected plan, exact deletion,
-verified receipt, and completion selection. Pending proposals never compact.
+Destination owner/anchor, physical identity/observations, state-authority
+history, and run-current audit are FULL_REQUIRED and may not be discarded.
+Terminal attempt history may compact only after a selected checkpoint, selected
+plan, exact deletion, verified receipt, and completion selection. Pending
+proposals never compact.
 Unexpected old terminal loss may select `AUDIT_DEGRADED` only after an eligible
 checkpoint/tombstone. That state permits existing forward recovery, retry,
 cleanup, selected attachment, and ordinary non-release ticks; it blocks new

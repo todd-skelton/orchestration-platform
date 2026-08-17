@@ -10,8 +10,11 @@ it may not silently choose another equally plausible contract.
   no insignificant whitespace, LF termination, and SHA-256 over the exact
   bytes.
 - Timestamps use RFC 3339 UTC with exactly millisecond precision. Durations use
-  integer milliseconds. Values outside JavaScript's safe integer range are
-  decimal strings validated by schema.
+  integer milliseconds. Authority/history/run ordinals and counts use canonical
+  arbitrary-precision decimal strings (`"0"|[1-9][0-9]*`) and the framed
+  `DECIMAL_ASCII` type. They are compared by digit length then ASCII order and
+  incremented by decimal carry; they never pass through JavaScript `Number` and
+  have no semantic lifetime maximum.
 - Durable identities use lowercase UUIDv7 text. Content identities use
   lowercase SHA-256 hex.
 - Contract-relative paths use `/` separators and may not contain `..`, an
@@ -44,11 +47,15 @@ part a closed one-byte type tag, big-endian unsigned 64-bit byte length, and
 bytes. Digests embedded as parts are raw 32-byte values. Canonical JSON is an
 explicit bytes part.
 
-`Dv` hashes a family value, `Dr` hashes the create-once pre-CAS proposal that
-binds the prior `Dt/Dv/Dr` and successor `Dv`, and `Dt` hashes a tip containing
-`Dv+Dr`. Values do not contain their selecting proposal or tip. Pointer path,
-instance digest, proposal/conflict paths, mutation ID, tombstone, archive, and
-retention behavior are exactly those in `supervisor-contract.md`.
+`Dv` hashes a family value, `Dr` hashes the create-once
+`pointer-cas-proposal-receipt/v2` that binds the prior `Dt/Dv/Dr`, successor
+`Dv`, and closed bootstrap/selected producer union, and `Dt` hashes a tip
+containing `Dv+Dr`. Values do not contain their selecting proposal or tip.
+Checkpoint cores and terminal resolutions likewise exclude the run-current
+value/proposal/tip that selects them; only a downstream post-selection
+observation may feed a later core. Pointer path, instance digest,
+proposal/conflict paths, mutation ID, tombstone, archive, and retention behavior
+are exactly those in `supervisor-contract.md`.
 
 ## Configuration and state roots
 
@@ -85,6 +92,16 @@ retention behavior are exactly those in `supervisor-contract.md`.
   read-back, the selected state-mutation epoch, its private capability, and the
   kernel-exclusive `installation/state-mutation.lock`; directory age, PID,
   timeout, lease, or unsigned lock bytes never grant authority.
+- ISS-004 is a singleton in-process state service. It owns module-private
+  WeakMap/nonces for current, historical-read, mutation-run, and producer
+  projection handles; no generic CAS API or serializable capability exists.
+  Handles are callback/lock-run scoped and revoke on release, process death,
+  custody movement, or rotation. ISS-002 structural proof success alone is not
+  authority.
+- Runtime pointer history uses selected `state-mutation-authority-value/v2`
+  roots over a fixed-depth sparse tree. One proof has exactly 256 siblings;
+  content-addressed history is FULL_REQUIRED. This bounds each call without a
+  lifetime rotation cap or self-authenticating serialized table.
 - Worker launch uses native argument arrays without a shell. Exact launch
   identity, not PID alone, owns the process lifecycle.
 
@@ -111,6 +128,25 @@ retention behavior are exactly those in `supervisor-contract.md`.
   breaker authority blocks the affected capability and cannot silently clear.
 
 ## Release layout and root of trust
+
+- Before runtime state exists, ISS-022 derives immutable
+  `physical-destination-identity/v1` from stable host/custody-root namespace and
+  physical ancestor/leaf identity. Helper, path, case/Unicode, custody, and
+  readback facts live in versioned admitted observation receipts, so helper or
+  profile rotation cannot create another destination key. `Ddest` is framed
+  from raw `Dphys` alone.
+- A FULL_REQUIRED custody-root destination-owner pointer and one destination
+  lock serialize all installation IDs for that physical destination. Its exact
+  states are `ACTIVE|CONSUMED|RETIRED`; a successor requires the selected prior
+  RETIRED triple/archive and an independent acyclic review core. The successor
+  anchor binds that core, owner ACTIVE binds both, and a downstream
+  post-selection receipt must exist before anchor/E0 work begins.
+- Each installation anchor has selected `ACTIVE|CONSUMED|RETIRED` state. A
+  pre-expiry use intent preserves recovery of only that transaction. E0 uses an
+  immutable core that excludes its proposal/receipt/tip, a bootstrap-producer
+  proposal with no selected epoch, and downstream runtime/external consumption
+  receipts. Exact reinstall reuses selected CONSUMED evidence; it never creates
+  parallel genesis.
 
 - A release is an immutable bundle containing npm tarballs, skill/module files,
   contract schemas, stable test-bundle digest, source revision, build
