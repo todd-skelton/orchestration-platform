@@ -77,14 +77,20 @@ Exact reinstall reuses CONSUMED; RETIRED requires a new installation ID.
 
 ### State-authority history
 
-E0 has ordinal `"0"`, empty sparse root/count `"0"`, null predecessor and a
-reviewed-bootstrap proposal producer rather than a self epoch. En appends the
+E0 has ordinal `"0"`, selected FULL_REQUIRED
+`authority-history-empty-root/v1` (`historyRootKind=EMPTY`, `Dhe`, count
+`"0"`), null predecessor, and a reviewed-bootstrap proposal producer rather
+than a self epoch. E1 proves the only `EMPTY→NONEMPTY` append; En for n>1
+proves `NONEMPTY→NONEMPTY`. A nonempty root has count `>=1`, latest ordinal
+exactly count minus one, and complete latest epoch key/triple. En appends the
 selected E(n-1) leaf using an exact 256-sibling EMPTY→PRESENT proof and
 deterministic rotation identity. The selected successor binds the new history
 root and append receipt. Current context validates either the complete E0
 external/runtime graph or the immediate append transition. Historical producer
-projections must be memberships in that live current root and revoke when the
-context/root changes.
+projections must be memberships in that live current nonempty root; membership
+against `Dhe` refuses. `G` remains identical across rotations and excludes
+rotating helper/profile/ABI/lock/state-component facts. Projections revoke when
+the context/root changes.
 
 ### Evidence packet purpose
 

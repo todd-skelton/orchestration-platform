@@ -32,7 +32,8 @@ The current registry uses the approved v2 authority contracts:
 - epoch/history: `state-mutation-authority-value/v2`,
   `state-mutation-authority-successor-core/v1`,
   `authority-history-leaf/v1`, `authority-history-node/v1`,
-  `authority-history-root/v1`, `authority-history-update-proof/v1`,
+  `authority-history-empty-root/v1`, `authority-history-root/v1`,
+  `authority-history-update-proof/v1`,
   `authority-history-append-receipt/v1`, and `pointer-evidence-packet/v2`;
 - release/cleanup:
   `active-release/v2`, `activation-cleanup-gate-root/v2`,
@@ -166,12 +167,17 @@ teardown, and exact reinstall without parallel genesis.
 
 State mutation validators pin the fixed lock sequence, revocable ISS-004
 context identity, exact E0 bootstrap producer versus selected-stable rotation,
-and the twelve-kind census. `state-mutation-authority-value/v2` binds a
-FULL_REQUIRED 256-depth sparse root. En validates deterministic rotation,
-exact 256-sibling EMPTY→PRESENT update, append receipt, successor root/count,
-and historical membership against the live current root. Serialized tables are
-diagnostic only. ISS-004 owns locks, live handles, CAS, reconciliation,
-tombstones, history writes, and context revocation.
+and the twelve-kind census. `state-mutation-authority-value/v2` binds
+`historyRootKind=EMPTY|NONEMPTY`: E0 selects FULL_REQUIRED
+`authority-history-empty-root/v1` (`Dhe`, count `"0"`), E1 proves
+EMPTY→NONEMPTY, and later En proves NONEMPTY→NONEMPTY. Nonempty `Dh` requires
+count `>=1` and latest ordinal `count-1`; membership against EMPTY refuses.
+Lifetime-stable `G` excludes rotating helper/profile/ABI/lock/state-component
+facts. En validates deterministic rotation, exact 256-sibling EMPTY→PRESENT
+update, append receipt, successor root/count, and historical membership against
+the live current root. Serialized tables are diagnostic only. ISS-004 owns
+locks, live handles, CAS, reconciliation, tombstones, history writes, and
+context revocation.
 
 Commit validators compose immutable segment→checkpoint core→selected
 `POINTER_MUTATION_RUN_CURRENT` value/proposal/tip→post-selection observation.

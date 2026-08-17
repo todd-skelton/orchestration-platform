@@ -99,9 +99,18 @@ are exactly those in `supervisor-contract.md`.
   custody movement, or rotation. ISS-002 structural proof success alone is not
   authority.
 - Runtime pointer history uses selected `state-mutation-authority-value/v2`
-  roots over a fixed-depth sparse tree. One proof has exactly 256 siblings;
-  content-addressed history is FULL_REQUIRED. This bounds each call without a
-  lifetime rotation cap or self-authenticating serialized table.
+  roots over a fixed-depth sparse tree. E0 selects a distinct FULL_REQUIRED
+  `authority-history-empty-root/v1` (`Dhe`, kind `EMPTY`, count `"0"`);
+  nonempty roots are `authority-history-root/v1` (`Dh`, kind `NONEMPTY`, count
+  `>=1`). The first proof is `EMPTY→NONEMPTY`, later proofs are
+  `NONEMPTY→NONEMPTY`, and membership against `EMPTY` refuses. One proof has
+  exactly 256 siblings; content-addressed history is FULL_REQUIRED. This bounds
+  each call without a lifetime rotation cap or self-authenticating table.
+- Sparse global identity `G` is lifetime-stable: installation, project,
+  state-root, custody-instance, canonical authority path, and authority `Dp`.
+  Rotating helper/profile/ABI/lock/state-component facts are excluded from `G`
+  and remain bound by each selected authority value; changing a `G` field is a
+  different installation identity and rotation refuses.
 - Worker launch uses native argument arrays without a shell. Exact launch
   identity, not PID alone, owns the process lifecycle.
 

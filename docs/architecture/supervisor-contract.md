@@ -224,14 +224,18 @@ schema; `Dba` does not reframe them as additional top-level parts.
 
 `state-mutation-authority-value/v2` binds the exact helper/profile/ABI/lock/
 custody facts, reviewed active release, predecessor authority triple, authority
-ordinal, and selected history root. Ordinals and counts are canonical
-nonnegative decimal strings. E0 has ordinal `"0"`, null predecessor/append
-receipt, and the deterministic empty 256-depth sparse-tree root/count `"0"`.
+ordinal, `historyRootKind=EMPTY|NONEMPTY`, and selected history root. Ordinals
+and counts are canonical nonnegative decimal strings. E0 has ordinal `"0"`,
+null predecessor/append receipt, `historyRootKind=EMPTY`, the selected
+`authority-history-empty-root/v1` digest `Dhe`, and count `"0"`. A nonempty
+`authority-history-root/v1` is not fabricated for E0.
 
 For En, the old selected capability appends E(n-1)'s exact selected epoch leaf.
 `authority-history-update-proof/v1` contains exactly 256 siblings and proves
 `EMPTY→PRESENT`, prior root/count, successor root/count+1, and membership in the
-successor root. Rotation identity is deterministic from global identity,
+successor root. The first append consumes selected `Dhe` with prior root kind
+`EMPTY` and produces `Dh` with kind `NONEMPTY`; every later append consumes and
+produces `NONEMPTY`. Rotation identity is deterministic from global identity,
 predecessor triple/ordinal, successor ordinal, selected active release, and
 reviewed successor helper/profile/ABI/custody; generated roots and timestamps
 are excluded. Append receipt binds the update proof and successor core without
@@ -249,6 +253,7 @@ global identity. A stale root or projection refuses after rotation.
 ```text
 installation/state-mutation-authority-history/leaves/<epoch-key>.json
 installation/state-mutation-authority-history/nodes/<node-digest>.json
+installation/state-mutation-authority-history/empty-roots/<empty-root-digest>.json
 installation/state-mutation-authority-history/roots/<root-digest>.json
 installation/state-mutation-authority-history/update-proofs/<rotation-id>.json
 installation/state-mutation-authority-history/append-receipts/<rotation-id>.json
@@ -257,7 +262,8 @@ installation/state-mutation-authority-history/append-receipts/<rotation-id>.json
 The exact history domains are `state-mutation-global-identity/v1`,
 `state-mutation-authority-rotation-id/v1`, `authority-epoch-key/v1`,
 `authority-epoch-leaf/v1`, `authority-history-empty/v1`,
-`authority-history-node/v1`, `authority-history-root/v1`,
+`authority-history-node/v1`, `authority-history-empty-root/v1`,
+`authority-history-root/v1`,
 `authority-history-update-proof/v1`, and
 `authority-history-append-receipt/v1`. The successor authority core excludes
 the append-receipt digest and the append receipt excludes successor value/tip;
@@ -267,19 +273,22 @@ The sparse formulas and exclusions are exact:
 
 | Digest | Domain and framed parts | Canonical path/exclusion |
 | --- | --- | --- |
-| `G` | `state-mutation-global-identity/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, canonical authority path text, authority `Dp` raw32, lock profile text, state-component profile text, ABI text | embedded in every history value/proof; cross-install roots refuse |
+| `G` | `state-mutation-global-identity/v1`: installation ID text, project ID text, state-root digest raw32, custody-instance digest raw32, canonical authority path text, authority `Dp` raw32 | lifetime-stable for one installation; helper digest/profile, lock profile, state-component profile, and ABI are deliberately excluded and remain rotation-bound authority-value facts; cross-install roots refuse |
 | epoch key | `authority-epoch-key/v1`: `G` raw32, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32 | `.../leaves/<epoch-key>.json`; key collision with different leaf is unknown |
 | `De` | schema/domain `authority-history-leaf/v1` / `authority-epoch-leaf/v1`: `G` raw32, epoch key raw32, authority ordinal `DECIMAL_ASCII`, authority `Dp` raw32, authority `Dt` raw32, authority `Dv` raw32, authority `Dr` raw32, canonical leaf bytes | immutable leaf; successor value/proposal/tip and append receipt excluded |
 | empty digest | `authority-history-empty/v1`: depth unsigned 16-bit | deterministic depth-specific constants for all 256 levels; no record path |
 | node digest | `authority-history-node/v1`: depth unsigned 16-bit, left digest raw32, right digest raw32 | `.../nodes/<node-digest>.json`; no leaf/value/proposal/tip parts |
-| `Dh` | schema/domain `authority-history-root/v1`: `G` raw32, tree profile text, count `DECIMAL_ASCII`, tree-root digest raw32, latest-included ordinal `DECIMAL_ASCII`, latest epoch key raw32, latest `Dt` raw32, latest `Dv` raw32, latest `Dr` raw32, canonical root bytes | `.../roots/<root-digest>.json`; selected successor value/proposal/tip excluded |
-| `Dup` | schema/domain `authority-history-update-proof/v1`: `G` raw32, epoch key raw32, `De` raw32, prior `Dh` raw32, successor `Dh` raw32, prior count `DECIMAL_ASCII`, successor count `DECIMAL_ASCII`, exactly 256 sibling raw32 parts, canonical proof bytes | `.../update-proofs/<rotation-id>.json`; prior leaf must be EMPTY and successor PRESENT |
-| `Dar` | schema/domain `authority-history-append-receipt/v1`: `G` raw32, rotation operation ID raw32, predecessor authority `Dp` raw32, predecessor `Dt` raw32, predecessor `Dv` raw32, predecessor `Dr` raw32, prior `Dh` raw32, prior count `DECIMAL_ASCII`, appended epoch key raw32, `De` raw32, `Dup` raw32, successor `Dh` raw32, successor count `DECIMAL_ASCII`, successor-core digest raw32, created-at text, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip excluded |
+| `Dhe` | schema/domain `authority-history-empty-root/v1`: `G` raw32, tree profile text, count exact `DECIMAL_ASCII "0"`, deterministic depth-zero empty-tree digest raw32, canonical empty-root bytes | `.../empty-roots/<empty-root-digest>.json`; FULL_REQUIRED; latest-included fields are absent, not null/sentinel; selected authority/proposal/tip excluded |
+| `Dh` | schema/domain `authority-history-root/v1`: `G` raw32, tree profile text, count `DECIMAL_ASCII` constrained `>=1`, tree-root digest raw32, latest-included ordinal `DECIMAL_ASCII` constrained to `count-1`, latest epoch key raw32, latest `Dt` raw32, latest `Dv` raw32, latest `Dr` raw32, canonical root bytes | `.../roots/<root-digest>.json`; kind is `NONEMPTY`; selected successor value/proposal/tip excluded |
+| `Dup` | schema/domain `authority-history-update-proof/v1`: `G` raw32, epoch key raw32, `De` raw32, prior-root-kind text `EMPTY|NONEMPTY`, prior root digest raw32 (`Dhe` for first append, `Dh` thereafter), successor `Dh` raw32, prior count `DECIMAL_ASCII`, successor count `DECIMAL_ASCII`, exactly 256 sibling raw32 parts, canonical proof bytes | `.../update-proofs/<rotation-id>.json`; first edge is `EMPTY→NONEMPTY`, later edges are `NONEMPTY→NONEMPTY`; prior leaf must be EMPTY and successor PRESENT |
+| `Dar` | schema/domain `authority-history-append-receipt/v1`: `G` raw32, rotation operation ID raw32, predecessor authority `Dp` raw32, predecessor `Dt` raw32, predecessor `Dv` raw32, predecessor `Dr` raw32, prior-root-kind text, prior root digest raw32 (`Dhe|Dh`), prior count `DECIMAL_ASCII`, appended epoch key raw32, `De` raw32, `Dup` raw32, successor `Dh` raw32, successor count `DECIMAL_ASCII`, successor-core digest raw32, created-at text, canonical receipt bytes | `.../append-receipts/<rotation-id>.json`; successor value/proposal/tip excluded |
 
 `state-mutation-authority-successor-core/v1` excludes `Dar`; `Dar` binds the
 core digest, and `state-mutation-authority-value/v2` joins core plus `Dar`.
 Therefore neither append nor selection digest is cyclic. Membership recomputes
-`De` and all 256 nodes to the exact `Dh` bound by the live context.
+`De` and all 256 nodes to the exact nonempty `Dh` bound by the live context.
+`historyRootKind=EMPTY` never authorizes a producer membership projection;
+membership against `Dhe` refuses.
 
 ## Pointer value, proposal, tip, and conflict graph
 
