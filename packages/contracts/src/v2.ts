@@ -86,6 +86,7 @@ export interface PointerRegistryRow {
   readonly transactionPolicy: "REQUIRED" | "NULL";
   readonly sourcePolicy: "NONE" | "RECOVERY_SOURCE";
   readonly positionDomain: string;
+  readonly tombstonePositionDomain: string | null;
 }
 
 const pointerRows: readonly PointerRegistryRow[] = [
@@ -102,6 +103,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "NONE",
     positionDomain: "active-release-position/v1",
+    tombstonePositionDomain: "active-release-position-tombstone/v1",
   },
   {
     kind: "ACTIVATION_CLEANUP_GATE",
@@ -116,6 +118,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "NONE",
     positionDomain: "cleanup-gate-position/v1",
+    tombstonePositionDomain: "cleanup-gate-position-tombstone/v1",
   },
   {
     kind: "ACTIVATION_RECOVERY_FENCE",
@@ -130,6 +133,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "NONE",
     positionDomain: "recovery-fence-position/v1",
+    tombstonePositionDomain: "recovery-fence-position-tombstone/v1",
   },
   {
     kind: "ACTIVATION_RECOVERY_LAUNCH",
@@ -146,6 +150,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "RECOVERY_SOURCE",
     positionDomain: "recovery-launch-position/v1",
+    tombstonePositionDomain: "recovery-launch-position-tombstone/v1",
   },
   {
     kind: "RECOVERY_AUTHORIZATION_STATE",
@@ -160,6 +165,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "NONE",
     positionDomain: "authorization-state-position/v1",
+    tombstonePositionDomain: "authorization-state-position-tombstone/v1",
   },
   {
     kind: "RECOVERY_AUTHORIZATION_ATTACHMENT",
@@ -176,6 +182,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "NONE",
     positionDomain: "authorization-attachment-position/v1",
+    tombstonePositionDomain: "authorization-attachment-position-tombstone/v1",
   },
   {
     kind: "RECOVERY_ATTEMPT_ACCUMULATOR",
@@ -193,6 +200,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "RECOVERY_SOURCE",
     positionDomain: "attempt-accumulator-position/v1",
+    tombstonePositionDomain: "attempt-accumulator-position-tombstone/v1",
   },
   {
     kind: "ACTIVATION_CLEANUP_ARCHIVE_HEAD",
@@ -207,6 +215,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "NONE",
     positionDomain: "cleanup-archive-position/v1",
+    tombstonePositionDomain: "cleanup-archive-position-tombstone/v1",
   },
   {
     kind: "AUTHORITY_RETENTION",
@@ -221,6 +230,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "NULL",
     sourcePolicy: "NONE",
     positionDomain: "authority-retention-position/v1",
+    tombstonePositionDomain: null,
   },
   {
     kind: "RECOVERY_ATTEMPT_RESERVATION",
@@ -240,6 +250,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "REQUIRED",
     sourcePolicy: "RECOVERY_SOURCE",
     positionDomain: "attempt-reservation-position/v1",
+    tombstonePositionDomain: "attempt-reservation-position-tombstone/v1",
   },
   {
     kind: "STATE_MUTATION_AUTHORITY_ROTATION",
@@ -254,6 +265,7 @@ const pointerRows: readonly PointerRegistryRow[] = [
     transactionPolicy: "NULL",
     sourcePolicy: "NONE",
     positionDomain: "authority-rotation-position/v1",
+    tombstonePositionDomain: null,
   },
 ];
 export const pointerRegistry: readonly PointerRegistryRow[] = Object.freeze(
@@ -649,10 +661,21 @@ export function derivePointerPositionEvidence(
 ): ContractRecord {
   const value = requirePointerValueRecord(kind, valueInput);
   const digestValue = canonicalDigest(value);
+  if (value.schemaVersion === "pointer-tombstone-value/v1")
+    return Object.freeze({
+      pointerKind: kind,
+      variant: "TOMBSTONE",
+      archiveDigest: value.archiveDigest!,
+      priorDr: value.priorReceiptDigest!,
+      priorDt: value.priorTipDigest!,
+      priorDv: value.priorValueDigest!,
+      terminalProofDigest: value.terminalProofDigest!,
+    });
   switch (kind) {
     case "ACTIVE_RELEASE":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         cleanupTransactionId: value.cleanupTransactionId!,
         releaseDigest: value.releaseDigest!,
         valueDigest: digestValue,
@@ -660,6 +683,7 @@ export function derivePointerPositionEvidence(
     case "ACTIVATION_CLEANUP_GATE":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         headDigest: digestValue,
         ordinal: value.ordinal!,
         rootDigest: value.rootDigest!,
@@ -667,6 +691,7 @@ export function derivePointerPositionEvidence(
     case "ACTIVATION_RECOVERY_FENCE":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         headDigest: digestValue,
         ordinal: value.ordinal!,
         rootDigest: value.rootDigest!,
@@ -674,6 +699,7 @@ export function derivePointerPositionEvidence(
     case "ACTIVATION_RECOVERY_LAUNCH":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         attemptId: value.attemptId!,
         ordinal: value.ordinal!,
         stateDigest: digestValue,
@@ -681,6 +707,7 @@ export function derivePointerPositionEvidence(
     case "RECOVERY_AUTHORIZATION_STATE":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         lifecycle: value.lifecycle!,
         stateDigest: digestValue,
         transactionId: value.transactionId!,
@@ -688,6 +715,7 @@ export function derivePointerPositionEvidence(
     case "RECOVERY_AUTHORIZATION_ATTACHMENT":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         attachmentDigest: digestValue,
         lifecycle: value.lifecycle!,
         transactionId: value.transactionId!,
@@ -695,6 +723,7 @@ export function derivePointerPositionEvidence(
     case "RECOVERY_ATTEMPT_ACCUMULATOR":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         accumulatorDigest: digestValue,
         lifecycle: value.lifecycle!,
         sourceToken: value.sourceToken!,
@@ -703,6 +732,7 @@ export function derivePointerPositionEvidence(
     case "ACTIVATION_CLEANUP_ARCHIVE_HEAD":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         archiveDigest: value.archiveDigest!,
         previousArchiveHeadDigest: value.previousArchiveHeadDigest!,
         transactionId: value.transactionId!,
@@ -710,6 +740,7 @@ export function derivePointerPositionEvidence(
     case "AUTHORITY_RETENTION":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         pathInstanceDigest: value.pathInstanceDigest!,
         phase: value.phase!,
         retentionDigest: digestValue,
@@ -717,6 +748,7 @@ export function derivePointerPositionEvidence(
     case "RECOVERY_ATTEMPT_RESERVATION":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         attemptId: value.attemptId!,
         predecessorKey: pathBindings.predecessorKey!,
         reservationDigest: digestValue,
@@ -726,6 +758,7 @@ export function derivePointerPositionEvidence(
     case "STATE_MUTATION_AUTHORITY_ROTATION":
       return Object.freeze({
         pointerKind: kind,
+        variant: "ORDINARY",
         activeReleaseValueDigest: value.activeReleaseValueDigest!,
         authorityDigest: digestValue,
         rotationKind: value.rotationKind!,
@@ -736,10 +769,37 @@ export function derivePointerPositionEvidence(
 export function computePointerPositionDigest(kind: PointerKind, evidence: unknown): string {
   const row = pointerRegistry.find((candidate) => candidate.kind === kind);
   if (!row) throw new TypeError("pointerKind:invalid");
-  const closed = requireClosedInput(evidence, ["pointerKind", ...positionFields[kind]]);
+  const ordinary = snapshotClosedRecord(evidence, [
+    "pointerKind",
+    "variant",
+    ...positionFields[kind],
+  ]);
+  const tombstoneFields = [
+    "archiveDigest",
+    "pointerKind",
+    "priorDr",
+    "priorDt",
+    "priorDv",
+    "terminalProofDigest",
+    "variant",
+  ];
+  const tombstoneResult = snapshotClosedRecord(evidence, tombstoneFields);
+  const tombstone = !ordinary.ok && tombstoneResult.ok;
+  if (!ordinary.ok && !tombstoneResult.ok) throw new TypeError("position:shape-invalid");
+  if (tombstone && row.tombstonePositionDomain === null)
+    throw new TypeError("position:tombstone-disabled");
+  const closed = ordinary.ok
+    ? ordinary.value
+    : tombstoneResult.ok
+      ? tombstoneResult.value
+      : (() => {
+          throw new TypeError("position:shape-invalid");
+        })();
   if (closed.pointerKind !== kind) throw new TypeError("pointerKind:position-mismatch");
+  if (closed.variant !== (tombstone ? "TOMBSTONE" : "ORDINARY"))
+    throw new TypeError("variant:mismatch");
   for (const [name, value] of Object.entries(closed)) {
-    if (name === "pointerKind") continue;
+    if (name === "pointerKind" || name === "variant") continue;
     if (name === "ordinal") {
       if (!Number.isSafeInteger(value) || (value as number) < 0)
         throw new TypeError(`${name}:invalid`);
@@ -750,7 +810,9 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
     else if (typeof value !== "string" || value.length === 0)
       throw new TypeError(`${name}:invalid`);
   }
-  return hashFrame(row.positionDomain, [canonicalPart(closed)]);
+  return hashFrame(tombstone ? row.tombstonePositionDomain! : row.positionDomain, [
+    canonicalPart(closed),
+  ]);
 }
 export interface PointerInstanceDigestInput {
   pointerKind: PointerKind;
@@ -2073,6 +2135,7 @@ function resolveSelectedPointerEvidence(
     "sourceToken",
     "stateRootDigest",
     "tip",
+    "tombstoneEvidence",
     "transactionId",
     "value",
   ]);
@@ -2113,6 +2176,9 @@ function resolveSelectedPointerEvidence(
     };
     const pathInstanceDigest = computePointerInstanceDigest(pointerInput);
     const value = requirePointerValueRecord(kind, closed.value.value);
+    const isTombstone = value.schemaVersion === "pointer-tombstone-value/v1";
+    if (!isTombstone && closed.value.tombstoneEvidence !== null)
+      return { ok: false, issues: ["tombstoneEvidence:ordinary-present"] };
     for (const name of [
       "installationId",
       "projectId",
@@ -2122,14 +2188,18 @@ function resolveSelectedPointerEvidence(
     ] as const)
       if (Object.hasOwn(value, name) && value[name] !== closed.value[name])
         return { ok: false, issues: [`value:${name}-mismatch`] };
-    if (kind === "ACTIVE_RELEASE" && value.cleanupTransactionId !== closed.value.transactionId)
+    if (
+      kind === "ACTIVE_RELEASE" &&
+      !isTombstone &&
+      value.cleanupTransactionId !== closed.value.transactionId
+    )
       return { ok: false, issues: ["value:cleanupTransactionId-mismatch"] };
     if (
       kind === "AUTHORITY_RETENTION" &&
       bindings.value.pointerInstanceDigest !== value.pathInstanceDigest
     )
       return { ok: false, issues: ["value:pathInstanceDigest-mismatch"] };
-    if (kind === "RECOVERY_ATTEMPT_RESERVATION") {
+    if (kind === "RECOVERY_ATTEMPT_RESERVATION" && !isTombstone) {
       const expectedPredecessorKey = computeReservationPredecessorKey({
         transactionId: value.transactionId,
         sourceToken: value.sourceToken,
@@ -2153,6 +2223,115 @@ function resolveSelectedPointerEvidence(
       return { ok: false, issues: ["positionEvidence:value-mismatch"] };
     const positionDigest = computePointerPositionDigest(kind, expectedPosition);
     const proposal = requireSchemaRecord("pointer-cas-proposal-receipt/v1", closed.value.proposal);
+    if (
+      (!isTombstone && (proposal.intent !== "VALUE_PROPOSED" || proposal.outcome !== "SELECT")) ||
+      (isTombstone && (proposal.intent !== "TOMBSTONE_PROPOSED" || proposal.outcome !== "REMOVE"))
+    )
+      return { ok: false, issues: ["proposal:intent-outcome-value-mismatch"] };
+    if (isTombstone) {
+      if (!presentGroup(proposal, ["priorTipDigest", "priorValueDigest", "priorReceiptDigest"]))
+        return { ok: false, issues: ["tombstone:genesis-refused"] };
+      for (const [valueName, proposalName] of [
+        ["priorTipDigest", "priorTipDigest"],
+        ["priorValueDigest", "priorValueDigest"],
+        ["priorReceiptDigest", "priorReceiptDigest"],
+      ] as const)
+        if (value[valueName] !== proposal[proposalName])
+          return { ok: false, issues: [`tombstone:${valueName}-mismatch`] };
+      const tombstoneEvidence = snapshotClosedRecord(closed.value.tombstoneEvidence, [
+        "archiveBindings",
+        "archivePath",
+        "archiveRecord",
+        "terminalProof",
+      ]);
+      if (!tombstoneEvidence.ok) return { ok: false, issues: tombstoneEvidence.issues };
+      const expectedArchives = pointerArchivePaths(
+        kind,
+        tombstoneEvidence.value.archiveBindings as PointerPathBindings,
+      );
+      if (
+        expectedArchives.length !== 1 ||
+        expectedArchives[0] !== tombstoneEvidence.value.archivePath
+      )
+        return { ok: false, issues: ["tombstone:archivePath-mismatch"] };
+      const terminalProof = snapshotClosedRecord(tombstoneEvidence.value.terminalProof, [
+        "authorityEpochReceiptDigest",
+        "authorityEpochTipDigest",
+        "authorityEpochValueDigest",
+        "canonicalPointerPath",
+        "pointerKind",
+        "sourceToken",
+        "terminalReceiptDigest",
+        "terminalTipDigest",
+        "terminalValueDigest",
+        "transactionId",
+      ]);
+      if (!terminalProof.ok) return { ok: false, issues: terminalProof.issues };
+      const archiveRecord = snapshotClosedRecord(tombstoneEvidence.value.archiveRecord, [
+        "archivePath",
+        "authorityEpochReceiptDigest",
+        "authorityEpochTipDigest",
+        "authorityEpochValueDigest",
+        "canonicalPointerPath",
+        "pointerKind",
+        "priorReceiptDigest",
+        "priorTipDigest",
+        "priorValueDigest",
+        "sourceToken",
+        "terminalProofDigest",
+        "transactionId",
+      ]);
+      if (!archiveRecord.ok) return { ok: false, issues: archiveRecord.issues };
+      const terminalProofDigest = canonicalDigest(terminalProof.value);
+      const archiveDigest = canonicalDigest(archiveRecord.value);
+      if (
+        archiveDigest !== value.archiveDigest ||
+        terminalProofDigest !== value.terminalProofDigest
+      )
+        return { ok: false, issues: ["tombstone:archive-proof-digest-mismatch"] };
+      for (const record of [terminalProof.value, archiveRecord.value]) {
+        for (const name of ["pointerKind", "canonicalPointerPath", "transactionId", "sourceToken"])
+          if (record[name] !== closed.value[name])
+            return { ok: false, issues: [`tombstone:${name}-mismatch`] };
+        for (const [recordName, proposalName] of [
+          ["authorityEpochTipDigest", "authorityEpochTipDigest"],
+          ["authorityEpochValueDigest", "authorityEpochValueDigest"],
+          ["authorityEpochReceiptDigest", "authorityEpochReceiptDigest"],
+        ] as const)
+          if (record[recordName] !== proposal[proposalName])
+            return { ok: false, issues: [`tombstone:${recordName}-mismatch`] };
+      }
+      if (
+        archiveRecord.value.archivePath !== tombstoneEvidence.value.archivePath ||
+        archiveRecord.value.terminalProofDigest !== terminalProofDigest
+      )
+        return { ok: false, issues: ["tombstone:archive-record-mismatch"] };
+      for (const [archiveName, proposalName] of [
+        ["priorTipDigest", "priorTipDigest"],
+        ["priorValueDigest", "priorValueDigest"],
+        ["priorReceiptDigest", "priorReceiptDigest"],
+      ] as const)
+        if (archiveRecord.value[archiveName] !== proposal[proposalName])
+          return { ok: false, issues: [`tombstone:${archiveName}-archive-mismatch`] };
+      for (const [proofName, proposalName] of [
+        ["terminalTipDigest", "priorTipDigest"],
+        ["terminalValueDigest", "priorValueDigest"],
+        ["terminalReceiptDigest", "priorReceiptDigest"],
+      ] as const)
+        if (terminalProof.value[proofName] !== proposal[proposalName])
+          return { ok: false, issues: [`tombstone:${proofName}-mismatch`] };
+      const archiveBindings = tombstoneEvidence.value.archiveBindings as ContractRecord;
+      if (
+        row.archiveTemplates.some((template) => template.includes("<transaction>")) &&
+        archiveBindings.transactionId !== closed.value.transactionId
+      )
+        return { ok: false, issues: ["tombstone:archive-transaction-mismatch"] };
+      if (
+        row.archiveTemplates.some((template) => template.includes("<source>")) &&
+        archiveBindings.sourceToken !== closed.value.sourceToken
+      )
+        return { ok: false, issues: ["tombstone:archive-source-mismatch"] };
+    }
     const mutationInput: MutationDigestInput = {
       pointerKind: kind,
       canonicalPointerPath,
@@ -2257,6 +2436,7 @@ function selectedAuthorizationEvidence(
     value: state,
     proposal: proposalInput,
     tip: tipInput,
+    tombstoneEvidence: null,
   });
 }
 
@@ -2907,7 +3087,6 @@ export function validateEvidencePacket(input: unknown): readonly string[] {
         ...validateRecoveryAccumulatorFormula({
           accumulator: accumulator.value,
           accumulatorSelection: closed.value.accumulatorSelection,
-          currentPredecessorAccumulatorSelection: closed.value.predecessorAccumulatorSelection,
           descriptor: descriptor.value,
           predecessorAccumulatorSelection: closed.value.predecessorAccumulatorSelection,
           predecessorSummary,
@@ -3168,7 +3347,6 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
   const closed = snapshotClosedRecord(input, [
     "accumulator",
     "accumulatorSelection",
-    "currentPredecessorAccumulatorSelection",
     "descriptor",
     "predecessorAccumulatorSelection",
     "predecessorSummary",
@@ -3224,33 +3402,6 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
     ] as const)
       if (currentAccumulator.value[name] !== currentReservation.value[name])
         issues.push(`${name}:selected-identity-mismatch`);
-  const currentPredecessorInput = closed.value.currentPredecessorAccumulatorSelection;
-  if (currentAccumulator.ok) {
-    if (currentPredecessorInput === null) {
-      if (
-        !nullGroup(currentAccumulator.value.proposal, [
-          "priorTipDigest",
-          "priorValueDigest",
-          "priorReceiptDigest",
-        ])
-      )
-        issues.push("accumulatorSelection:current-predecessor-not-null");
-    } else {
-      const currentPredecessor = resolveSelectedPointerEvidence(currentPredecessorInput);
-      if (!currentPredecessor.ok)
-        issues.push(...currentPredecessor.issues.map((issue) => `currentPredecessor:${issue}`));
-      else
-        for (const [proposalName, digestName] of [
-          ["priorTipDigest", "tipDigest"],
-          ["priorValueDigest", "valueDigest"],
-          ["priorReceiptDigest", "proposalReceiptDigest"],
-        ] as const)
-          if (
-            currentAccumulator.value.proposal[proposalName] !== currentPredecessor.value[digestName]
-          )
-            issues.push(`${proposalName}:current-predecessor-mismatch`);
-    }
-  }
   for (const name of ["attemptId", "transactionId", "sourceToken"] as const)
     if (
       accumulator.value[name] !== descriptor.value[name] ||
@@ -3288,6 +3439,26 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
         issues.push("predecessor:pointer-kind-mismatch");
       if (selected.value.value.lifecycle !== "TERMINAL") issues.push("predecessor:not-terminal");
       priorValueDigest = selected.value.valueDigest;
+      if (currentAccumulator.ok) {
+        if (selected.value.pathInstanceDigest !== currentAccumulator.value.pathInstanceDigest)
+          issues.push("predecessor:pathInstanceDigest-mismatch");
+        for (const name of [
+          "installationId",
+          "projectId",
+          "stateRootDigest",
+          "transactionId",
+          "sourceToken",
+        ] as const)
+          if (selected.value[name] !== currentAccumulator.value[name])
+            issues.push(`predecessor:${name}-mismatch`);
+        for (const [proposalName, digestName] of [
+          ["priorTipDigest", "tipDigest"],
+          ["priorValueDigest", "valueDigest"],
+          ["priorReceiptDigest", "proposalReceiptDigest"],
+        ] as const)
+          if (currentAccumulator.value.proposal[proposalName] !== selected.value[digestName])
+            issues.push(`${proposalName}:predecessor-mismatch`);
+      }
       for (const [accumulatorName, digestName] of [
         ["priorTerminalAccumulatorTipDigest", "tipDigest"],
         ["priorTerminalAccumulatorValueDigest", "valueDigest"],
@@ -3309,6 +3480,15 @@ export function validateRecoveryAccumulatorFormula(input: unknown): readonly str
         issues.push("predecessor:terminal-summary-mismatch");
     }
   } else {
+    if (
+      currentAccumulator.ok &&
+      !nullGroup(currentAccumulator.value.proposal, [
+        "priorTipDigest",
+        "priorValueDigest",
+        "priorReceiptDigest",
+      ])
+    )
+      issues.push("accumulatorSelection:genesis-predecessor-not-null");
     if (
       !nullGroup(accumulator.value, [
         "priorTerminalAccumulatorTipDigest",

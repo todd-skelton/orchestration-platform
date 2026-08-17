@@ -100,7 +100,13 @@ Values never contain the receipt/tip selecting them. Proposals are create-once
 `VALUE_PROPOSED|TOMBSTONE_PROPOSED` and classify only as PENDING, SELECTED,
 LOST_CONFLICT, COMPACTED, or UNKNOWN from exact winner evidence. Terminal
 authority selects `pointer-tombstone-value/v1`; the current tip is never deleted
-and bare absence never regains authority.
+and bare absence never regains authority. The nine tombstone-enabled families
+use distinct ordinary and tombstone position domains. Ordinary values require
+`VALUE_PROPOSED/SELECT`; tombstones require `TOMBSTONE_PROPOSED/REMOVE`, an
+exact non-genesis prior triple, and closed terminal-proof/archive evidence. The
+validator recomputes the archive path and both evidence digests and binds their
+pointer kind, canonical path, transaction, source, selected authority epoch,
+and terminal prior triple.
 
 ## Pure semantic validators
 
@@ -155,11 +161,13 @@ summary. It also binds the selected reservation, descriptor, predecessor
 accumulator, and predecessor summary.
 
 The composed accumulator check receives selected current accumulator and
-reservation envelopes plus the selected current-pointer predecessor. Later
-attempts additionally supply one selected prior terminal accumulator and its
-summary. It recomputes their paths, predecessor key, positions, Dp/Dv/Dr/Dt,
-proposal predecessor, identities, and R0/Rn without adding a lifetime history
-array.
+reservation envelopes. R0 has no predecessor. Rn receives exactly one selected
+prior terminal accumulator and its summary; that same envelope is the current
+proposal predecessor, accumulator-record predecessor, reservation predecessor,
+and rolling-digest input. It recomputes their paths, predecessor key, positions,
+Dp/Dv/Dr/Dt, installation/project/state/transaction/source identities, summary,
+and R0/Rn without adding a lifetime history array or accepting split predecessor
+claims.
 
 Every ordinary epoch-sequence observation carries the same selected authority
 epoch digest and Dt/Dv/Dr. The bounded packet carries selected value, proposal,

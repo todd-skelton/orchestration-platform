@@ -101,6 +101,9 @@ function pointerSelection(
     sourceToken: string;
     prior?: { tipDigest: string; valueDigest: string; proposalReceiptDigest: string } | null;
     authorityEpoch?: { tipDigest: string; valueDigest: string; proposalReceiptDigest: string };
+    tombstoneEvidence?: ContractRecord;
+    intent?: "VALUE_PROPOSED" | "TOMBSTONE_PROPOSED";
+    outcome?: "SELECT" | "REMOVE";
   },
 ) {
   const canonicalPointerPath = pointerPath(pointerKind, options.pathBindings);
@@ -125,6 +128,9 @@ function pointerSelection(
   const positionEvidence = derivePointerPositionEvidence(pointerKind, value, options.pathBindings);
   const positionDigest = computePointerPositionDigest(pointerKind, positionEvidence);
   const prior = options.prior ?? null;
+  const tombstone = value.schemaVersion === "pointer-tombstone-value/v1";
+  const intent = options.intent ?? (tombstone ? "TOMBSTONE_PROPOSED" : "VALUE_PROPOSED");
+  const outcome = options.outcome ?? (tombstone ? "REMOVE" : "SELECT");
   const mutationInput = {
     pointerKind,
     canonicalPointerPath,
@@ -136,8 +142,8 @@ function pointerSelection(
     priorDv: prior?.valueDigest ?? null,
     priorDr: prior?.proposalReceiptDigest ?? null,
     successorDv: valueDigest,
-    outcome: "SELECT",
-    intent: "VALUE_PROPOSED",
+    outcome,
+    intent,
     ...(row.pathTemplate.includes("<predecessor-key>")
       ? { predecessorKey: options.pathBindings.predecessorKey }
       : {}),
@@ -161,8 +167,8 @@ function pointerSelection(
     priorReceiptDigest: mutationInput.priorDr,
     successorValueDigest: valueDigest,
     positionDigest,
-    outcome: "SELECT",
-    intent: "VALUE_PROPOSED",
+    outcome,
+    intent,
     authorityEpochTipDigest: epoch.tipDigest,
     authorityEpochValueDigest: epoch.valueDigest,
     authorityEpochReceiptDigest: epoch.proposalReceiptDigest,
@@ -176,8 +182,8 @@ function pointerSelection(
     priorDr: mutationInput.priorDr,
     successorDv: valueDigest,
     positionDigest,
-    outcome: "SELECT",
-    intent: "VALUE_PROPOSED",
+    outcome,
+    intent,
     receipt: proposal,
   });
   const tip: ContractRecord = {
@@ -204,6 +210,7 @@ function pointerSelection(
     sourceToken: options.sourceToken,
     pathBindings: options.pathBindings,
     positionEvidence,
+    tombstoneEvidence: options.tombstoneEvidence ?? null,
     value,
     proposal,
     tip,
@@ -229,6 +236,83 @@ function authorizationSelection(
     transactionId: core.transactionId as string,
     sourceToken: "none",
     prior,
+  });
+}
+
+function tombstoneSelection(row: (typeof pointerRegistry)[number]) {
+  const transactionId = row.transactionPolicy === "REQUIRED" ? uuid : null;
+  const sourceToken = row.sourceTokens[0]!;
+  const pathBindings: Record<string, string> = {
+    ...(row.pathTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
+    ...(row.pathTemplate.includes("<source>") ? { sourceToken } : {}),
+    ...(row.pathTemplate.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
+    ...(row.pathTemplate.includes("<pointer-instance-digest>")
+      ? { pointerInstanceDigest: digest }
+      : {}),
+  };
+  const canonicalPointerPath = pointerPath(row.kind, pathBindings);
+  const archiveTemplate = row.archiveTemplates[0]!;
+  const archiveBindings: Record<string, string> = {
+    ...(archiveTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
+    ...(archiveTemplate.includes("<source>") ? { sourceToken } : {}),
+    ...(archiveTemplate.includes("<predecessor-key>") ? { predecessorKey: digest } : {}),
+    ...(archiveTemplate.includes("<pointer-instance-digest>")
+      ? { pointerInstanceDigest: digest }
+      : {}),
+    ...(archiveTemplate.includes("<release-digest>") ? { releaseDigest: digest } : {}),
+  };
+  const archivePath = pointerArchivePaths(row.kind, archiveBindings)[0]!;
+  const prior = { tipDigest: digest, valueDigest: digest2, proposalReceiptDigest: digest };
+  const authorityEpoch = { tipDigest: digest, valueDigest: digest, proposalReceiptDigest: digest };
+  const terminalProof: ContractRecord = {
+    authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
+    authorityEpochTipDigest: authorityEpoch.tipDigest,
+    authorityEpochValueDigest: authorityEpoch.valueDigest,
+    canonicalPointerPath,
+    pointerKind: row.kind,
+    sourceToken,
+    terminalReceiptDigest: prior.proposalReceiptDigest,
+    terminalTipDigest: prior.tipDigest,
+    terminalValueDigest: prior.valueDigest,
+    transactionId,
+  };
+  const terminalProofDigest = canonicalDigest(terminalProof);
+  const archiveRecord: ContractRecord = {
+    archivePath,
+    authorityEpochReceiptDigest: authorityEpoch.proposalReceiptDigest,
+    authorityEpochTipDigest: authorityEpoch.tipDigest,
+    authorityEpochValueDigest: authorityEpoch.valueDigest,
+    canonicalPointerPath,
+    pointerKind: row.kind,
+    priorReceiptDigest: prior.proposalReceiptDigest,
+    priorTipDigest: prior.tipDigest,
+    priorValueDigest: prior.valueDigest,
+    sourceToken,
+    terminalProofDigest,
+    transactionId,
+  };
+  const tombstone: ContractRecord = {
+    ...fixtureFor("pointer-tombstone-value/v1"),
+    pointerKind: row.kind,
+    priorTipDigest: prior.tipDigest,
+    priorValueDigest: prior.valueDigest,
+    priorReceiptDigest: prior.proposalReceiptDigest,
+    archiveDigest: canonicalDigest(archiveRecord),
+    terminalProofDigest,
+  };
+  const tombstoneEvidence: ContractRecord = {
+    archiveBindings,
+    archivePath,
+    archiveRecord,
+    terminalProof,
+  };
+  return pointerSelection(row.kind, tombstone, {
+    pathBindings,
+    transactionId,
+    sourceToken,
+    prior,
+    authorityEpoch,
+    tombstoneEvidence,
   });
 }
 
@@ -300,7 +384,7 @@ describe("current and diagnostic schema registries", () => {
       const position = derivePointerPositionEvidence(row.kind, positionValue, positionBindings);
       const positionDigest = computePointerPositionDigest(row.kind, position);
       expect(() => computePointerPositionDigest(row.kind, { ...position, extra: digest })).toThrow(
-        /unknown-field/,
+        /shape-invalid/,
       );
       const otherKind = pointerKinds.find((kind) => kind !== row.kind)!;
       expect(() => computePointerPositionDigest(otherKind, position)).toThrow();
@@ -313,7 +397,7 @@ describe("current and diagnostic schema registries", () => {
       });
     }
     expect(canonicalDigest(constructedPathCensus)).toBe(
-      "c6145c30b916252397581f47c7f7e654b6483f773c755a704c1525c82ee451f1",
+      "065658021f5e54567429415c2fc80ac52487f5a68ac9402176ee456cd3319d60",
     );
     const familyCensus = pointerRegistry.map((row) => ({
       archiveTemplates: row.archiveTemplates,
@@ -322,6 +406,7 @@ describe("current and diagnostic schema registries", () => {
       positionDomain: row.positionDomain,
       rootTemplates: row.rootTemplates,
       sourcePolicy: row.sourcePolicy,
+      tombstonePositionDomain: row.tombstonePositionDomain,
       transactionPolicy: row.transactionPolicy,
       valueDigests: row.valueSchemas.map((schemaVersion) =>
         canonicalDigest(fixtureFor(schemaVersion)),
@@ -329,7 +414,7 @@ describe("current and diagnostic schema registries", () => {
       valueSchemas: row.valueSchemas,
     }));
     expect(canonicalDigest(familyCensus)).toBe(
-      "913620707f95a8705ba30e74553aacce86d23a3853ba8288b79494ea419eb5b1",
+      "c6ccc196c809eb19e338a52baaf352b56cf210be90706b88061ec1e4e70b7b31",
     );
     expect(pointerPath("ACTIVE_RELEASE")).toBe("installation/active-release.json");
     expect(pointerPath("RECOVERY_AUTHORIZATION_STATE", { transactionId: uuid })).toBe(
@@ -643,11 +728,11 @@ describe("framed pointer digest graph", () => {
     });
     expect({ dp, mutationId, dv, dr, dt, dc }).toEqual({
       dp: "89a284193336e4f6b301304ea99455dfec97eb958dd87f8377fc2fb0f9d40ef5",
-      mutationId: "68c499643bc600a8093d27e95f7a74e0f84527624dbec2a39634464e4dc2468f",
+      mutationId: "afb604950667cd9f27ad6bec7d495ca455a8e11f9368599108913df3c627d762",
       dv: "33a244faa7cb01fc8be0512b16abaa092eff6f382f3f07db3dbcafc114ce2473",
-      dr: "b5c647dc1480c6a54397037a1056ce37ca51ed305d2ea5f4435a2ab3db69e95a",
-      dt: "8bbd6311e29a0f8cf9819656c80cc8ba07b768b8c876455252e45f3e5dab44c4",
-      dc: "1140bf0439d541e3430ee5e6fee249dfbb4bd3684e862a4eee9694fdff5916b6",
+      dr: "4a5c3dbe0e5dc177bcdc637e674edb9ac871d0cc95e601f65206f75ac3d5d6b7",
+      dt: "45570d8b34362bc9f95d6e6b124659d9ec5050ad183e14442170d92bf6189a38",
+      dc: "e48b2b83dfca3a2c8e3b3057dfff19a3d62d942c0f63d9f730b89bea18d6457a",
     });
     expect(() =>
       computeProposalReceiptDigest({
@@ -808,22 +893,148 @@ describe("framed pointer digest graph", () => {
     ).toThrow(/predecessorKey/);
   });
 
-  test("binds every tombstone value to its dispatched pointer kind", () => {
+  test("binds every tombstone selection to its family, archive, proof, and non-genesis prior", () => {
     const enabled = pointerRegistry.filter((row) =>
       row.valueSchemas.includes("pointer-tombstone-value/v1"),
     );
     expect(enabled).toHaveLength(9);
+    const census: JsonValue[] = [];
     for (const row of enabled) {
-      const tombstone = {
-        ...fixtureFor("pointer-tombstone-value/v1"),
-        pointerKind: row.kind,
+      expect(row.tombstonePositionDomain).toBe(`${row.positionDomain.slice(0, -3)}-tombstone/v1`);
+      const ordinaryValue = fixtureFor(row.valueSchemas[0]!);
+      const ordinaryTransactionId = row.transactionPolicy === "REQUIRED" ? uuid : null;
+      const ordinarySourceToken = row.sourceTokens[0]!;
+      const ordinaryPathBindings: Record<string, string> = {
+        ...(row.pathTemplate.includes("<transaction>") ? { transactionId: uuid } : {}),
+        ...(row.pathTemplate.includes("<source>") ? { sourceToken: ordinarySourceToken } : {}),
+        ...(row.pathTemplate.includes("<predecessor-key>")
+          ? {
+              predecessorKey: computeReservationPredecessorKey({
+                transactionId: uuid,
+                sourceToken: ordinarySourceToken,
+                priorDt: ordinaryValue.predecessorAccumulatorTipDigest,
+                priorDv: ordinaryValue.predecessorAccumulatorValueDigest,
+                priorDr: ordinaryValue.predecessorAccumulatorReceiptDigest,
+              }),
+            }
+          : {}),
       };
-      expect(() => computePointerValueDigest(row.kind, digest, tombstone)).not.toThrow();
+      for (const intent of ["VALUE_PROPOSED", "TOMBSTONE_PROPOSED"] as const)
+        for (const outcome of ["SELECT", "REMOVE"] as const) {
+          const ordinary = pointerSelection(row.kind, ordinaryValue, {
+            pathBindings: ordinaryPathBindings,
+            transactionId: ordinaryTransactionId,
+            sourceToken: ordinarySourceToken,
+            intent,
+            outcome,
+          });
+          const issues = validateSelectedPointerEvidence(ordinary.envelope);
+          if (intent === "VALUE_PROPOSED" && outcome === "SELECT")
+            expect(issues, `${row.kind}:ordinary:${intent}:${outcome}`).toEqual([]);
+          else expect(issues, `${row.kind}:ordinary:${intent}:${outcome}`).not.toEqual([]);
+        }
+      const selected = tombstoneSelection(row);
+      expect(validateSelectedPointerEvidence(selected.envelope), row.kind).toEqual([]);
+      const tombstone = selected.envelope.value as ContractRecord;
+      const position = selected.envelope.positionEvidence as ContractRecord;
+      expect(position.variant).toBe("TOMBSTONE");
+      expect(() => computePointerPositionDigest(row.kind, position)).not.toThrow();
+      census.push({
+        kind: row.kind,
+        positionDigest: computePointerPositionDigest(row.kind, position),
+        proposalReceiptDigest: selected.proposalReceiptDigest,
+        tipDigest: selected.tipDigest,
+        valueDigest: selected.valueDigest,
+      });
+      for (const intent of ["VALUE_PROPOSED", "TOMBSTONE_PROPOSED"] as const)
+        for (const outcome of ["SELECT", "REMOVE"] as const) {
+          const coordinated = pointerSelection(row.kind, tombstone, {
+            pathBindings: selected.envelope.pathBindings as Record<string, string>,
+            transactionId: selected.envelope.transactionId as string,
+            sourceToken: selected.envelope.sourceToken as string,
+            prior: {
+              tipDigest: digest,
+              valueDigest: digest2,
+              proposalReceiptDigest: digest,
+            },
+            tombstoneEvidence: selected.envelope.tombstoneEvidence as ContractRecord,
+            intent,
+            outcome,
+          });
+          const issues = validateSelectedPointerEvidence(coordinated.envelope);
+          if (intent === "TOMBSTONE_PROPOSED" && outcome === "REMOVE")
+            expect(issues, `${row.kind}:${intent}:${outcome}`).toEqual([]);
+          else expect(issues, `${row.kind}:${intent}:${outcome}`).not.toEqual([]);
+        }
       for (const other of pointerKinds.filter((kind) => kind !== row.kind))
         expect(() =>
           computePointerValueDigest(row.kind, digest, { ...tombstone, pointerKind: other }),
         ).toThrow(/tombstone-dispatch/);
+      for (const priorField of ["priorTipDigest", "priorValueDigest", "priorReceiptDigest"])
+        expect(
+          validateSelectedPointerEvidence({
+            ...selected.envelope,
+            value: {
+              ...tombstone,
+              [priorField]: tombstone[priorField] === digest ? digest2 : digest,
+            },
+          }),
+          `${row.kind}:${priorField}`,
+        ).not.toEqual([]);
+      const evidence = selected.envelope.tombstoneEvidence as ContractRecord;
+      const archiveRecord = evidence.archiveRecord as ContractRecord;
+      const terminalProof = evidence.terminalProof as ContractRecord;
+      for (const mutant of [
+        { ...evidence, archivePath: `${evidence.archivePath as string}alias` },
+        ...(Object.keys(evidence.archiveBindings as ContractRecord).length > 0
+          ? [{ ...evidence, archiveBindings: {} }]
+          : []),
+        { ...evidence, archiveRecord: { ...archiveRecord, archivePath: "archive/alias.json" } },
+        { ...evidence, archiveRecord: { ...archiveRecord, terminalProofDigest: digest } },
+        { ...evidence, archiveRecord: { ...archiveRecord, canonicalPointerPath: "alias.json" } },
+        { ...evidence, archiveRecord: { ...archiveRecord, transactionId: uuid2 } },
+        {
+          ...evidence,
+          archiveRecord: {
+            ...archiveRecord,
+            sourceToken: archiveRecord.sourceToken === "none" ? "recovery-fence-v2" : "none",
+          },
+        },
+        { ...evidence, archiveRecord: { ...archiveRecord, priorValueDigest: digest } },
+        { ...evidence, terminalProof: { ...terminalProof, terminalTipDigest: digest2 } },
+        { ...evidence, terminalProof: { ...terminalProof, pointerKind: "AUTHORITY_RETENTION" } },
+        { ...evidence, terminalProof: { ...terminalProof, canonicalPointerPath: "alias.json" } },
+        { ...evidence, terminalProof: { ...terminalProof, transactionId: uuid2 } },
+        {
+          ...evidence,
+          terminalProof: {
+            ...terminalProof,
+            sourceToken: terminalProof.sourceToken === "none" ? "recovery-fence-v2" : "none",
+          },
+        },
+        { ...evidence, terminalProof: { ...terminalProof, authorityEpochTipDigest: digest2 } },
+      ])
+        expect(
+          validateSelectedPointerEvidence({ ...selected.envelope, tombstoneEvidence: mutant }),
+          row.kind,
+        ).not.toEqual([]);
+      expect(
+        validateSelectedPointerEvidence({
+          ...selected.envelope,
+          proposal: {
+            ...selected.proposal,
+            priorTipDigest: null,
+            priorValueDigest: null,
+            priorReceiptDigest: null,
+          },
+        }),
+      ).not.toEqual([]);
+      const otherRow = enabled.find((candidate) => candidate.kind !== row.kind)!;
+      expect(() => computePointerPositionDigest(otherRow.kind, position)).toThrow();
     }
+    expect(canonicalDigest(census)).toBe(
+      "d8a554b06daf8c89c895d2351eca19313cf3c09019b8399f89c91f47e0e3f29d",
+    );
   });
 
   test("pins reservation predecessor keys to transaction, source, tag, and ordered triple", () => {
@@ -1565,7 +1776,6 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       validateRecoveryAccumulatorFormula({
         accumulator,
         accumulatorSelection: accumulatorSelection.envelope,
-        currentPredecessorAccumulatorSelection: null,
         descriptor: liveDescriptor,
         predecessorAccumulatorSelection: null,
         predecessorSummary: null,
@@ -1598,14 +1808,12 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         transactionId: uuid,
         sourceToken: "recovery-fence-v2",
         authorityEpoch: selectedEpoch,
-        prior: accumulatorSelection,
       },
     );
     expect(
       validateRecoveryAccumulatorFormula({
         accumulator: terminalAccumulator,
         accumulatorSelection: terminalAccumulatorSelection.envelope,
-        currentPredecessorAccumulatorSelection: accumulatorSelection.envelope,
         descriptor: liveDescriptor,
         predecessorAccumulatorSelection: null,
         predecessorSummary: null,
@@ -1618,7 +1826,29 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       validateRecoveryAccumulatorFormula({
         accumulator: { ...terminalAccumulator, rollingDigest: digest },
         accumulatorSelection: terminalAccumulatorSelection.envelope,
-        currentPredecessorAccumulatorSelection: accumulatorSelection.envelope,
+        descriptor: liveDescriptor,
+        predecessorAccumulatorSelection: null,
+        predecessorSummary: null,
+        reservation,
+        reservationSelection: reservationSelection.envelope,
+        terminalSummary,
+      }),
+    ).not.toEqual([]);
+    const invalidR0Selection = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      terminalAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: accumulatorSelection,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        accumulator: terminalAccumulator,
+        accumulatorSelection: invalidR0Selection.envelope,
         descriptor: liveDescriptor,
         predecessorAccumulatorSelection: null,
         predecessorSummary: null,
@@ -1688,7 +1918,6 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       validateRecoveryAccumulatorFormula({
         accumulator: laterAccumulator,
         accumulatorSelection: laterAccumulatorSelection.envelope,
-        currentPredecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
         descriptor: laterDescriptor,
         predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
         predecessorSummary: terminalSummary,
@@ -1726,14 +1955,13 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         transactionId: uuid,
         sourceToken: "recovery-fence-v2",
         authorityEpoch: selectedEpoch,
-        prior: laterAccumulatorSelection,
+        prior: terminalAccumulatorSelection,
       },
     );
     expect(
       validateRecoveryAccumulatorFormula({
         accumulator: laterTerminalAccumulator,
         accumulatorSelection: laterTerminalAccumulatorSelection.envelope,
-        currentPredecessorAccumulatorSelection: laterAccumulatorSelection.envelope,
         descriptor: laterDescriptor,
         predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
         predecessorSummary: terminalSummary,
@@ -1742,6 +1970,87 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         terminalSummary: laterTerminalSummary,
       }),
     ).toEqual([]);
+    const laterFormula = {
+      accumulator: laterTerminalAccumulator,
+      accumulatorSelection: laterTerminalAccumulatorSelection.envelope,
+      descriptor: laterDescriptor,
+      predecessorAccumulatorSelection: terminalAccumulatorSelection.envelope,
+      predecessorSummary: terminalSummary,
+      reservation: laterReservation,
+      reservationSelection: laterReservationSelection.envelope,
+      terminalSummary: laterTerminalSummary,
+    };
+    for (const [field, replacement] of [
+      ["installationId", uuid2],
+      ["projectId", uuid2],
+      ["stateRootDigest", digest2],
+      ["transactionId", uuid2],
+      ["sourceToken", "cleanup-gate-pre-fence-v2"],
+      ["canonicalPointerPath", "installation/activation-recovery-launches/alias/accumulator.json"],
+    ] as const)
+      expect(
+        validateRecoveryAccumulatorFormula({
+          ...laterFormula,
+          predecessorAccumulatorSelection: {
+            ...terminalAccumulatorSelection.envelope,
+            [field]: replacement,
+          },
+        }),
+        `predecessor:${field}`,
+      ).not.toEqual([]);
+    for (const field of [
+      "priorTerminalAccumulatorTipDigest",
+      "priorTerminalAccumulatorValueDigest",
+      "priorTerminalAccumulatorReceiptDigest",
+    ])
+      expect(
+        validateRecoveryAccumulatorFormula({
+          ...laterFormula,
+          accumulator: { ...laterTerminalAccumulator, [field]: digest },
+        }),
+        `accumulator:${field}`,
+      ).not.toEqual([]);
+    for (const field of [
+      "predecessorAccumulatorTipDigest",
+      "predecessorAccumulatorValueDigest",
+      "predecessorAccumulatorReceiptDigest",
+    ])
+      expect(
+        validateRecoveryAccumulatorFormula({
+          ...laterFormula,
+          reservation: { ...laterReservation, [field]: digest },
+        }),
+        `reservation:${field}`,
+      ).not.toEqual([]);
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        currentPredecessorAccumulatorSelection: laterAccumulatorSelection.envelope,
+      }),
+    ).not.toEqual([]);
+    const splitCurrent = pointerSelection(
+      "RECOVERY_ATTEMPT_ACCUMULATOR",
+      laterTerminalAccumulator,
+      {
+        pathBindings: { transactionId: uuid, sourceToken: "recovery-fence-v2" },
+        transactionId: uuid,
+        sourceToken: "recovery-fence-v2",
+        authorityEpoch: selectedEpoch,
+        prior: laterAccumulatorSelection,
+      },
+    );
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        accumulatorSelection: splitCurrent.envelope,
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateRecoveryAccumulatorFormula({
+        ...laterFormula,
+        predecessorSummary: { ...terminalSummary, attemptId: uuid2 },
+      }),
+    ).not.toEqual([]);
     const postConsume = fixtureFor("recovery-authorization-consume-receipt/v1");
     const attached = {
       ...fixtureFor("recovery-authorization-attachment/v1"),
@@ -1841,7 +2150,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
           valueDigest: selection.valueDigest,
         })),
       ),
-    ).toBe("22fd2aabaa78d932fe874f5cd8bbe4bd144df10eeff8d95d0e02d9ba8c73fcef");
+    ).toBe("7627a4f27cf34b862b72220bbb6edbde70042f8ad7d207cfc0371b8a0deb7cb9");
     expect(validateSelectedPointerEvidence(reservationSelection.envelope)).toEqual([]);
     expect(
       validateEvidencePacket({
