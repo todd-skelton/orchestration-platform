@@ -4,6 +4,7 @@ import {
   canonicalDigest,
   isCanonicalTimestamp,
   isContractRelativePath,
+  isUnicodeScalarSequence,
   snapshotClosedArray,
   snapshotClosedRecord,
   validateAgainstSchema,
@@ -540,12 +541,16 @@ export function framedBytes(domainTag: string, parts: readonly FramePart[]): Uin
     let tag: number;
     let bytes: Uint8Array;
     if (part.type === "text") {
-      if (typeof part.value !== "string") throw new TypeError("text:invalid");
+      if (typeof part.value !== "string" || !isUnicodeScalarSequence(part.value))
+        throw new TypeError("text:invalid-unicode-scalar-sequence");
       tag = 1;
       bytes = encoder.encode(part.value);
     } else if (part.type === "nullable-text") {
-      if (part.value !== null && typeof part.value !== "string")
-        throw new TypeError("nullable-text:invalid");
+      if (
+        part.value !== null &&
+        (typeof part.value !== "string" || !isUnicodeScalarSequence(part.value))
+      )
+        throw new TypeError("nullable-text:invalid-unicode-scalar-sequence");
       tag = part.value === null ? 6 : 7;
       bytes = part.value === null ? new Uint8Array() : encoder.encode(part.value);
     } else if (part.type === "raw32") {
@@ -604,13 +609,7 @@ function requireSchemaRecord(schemaVersion: string, input: unknown): ContractRec
 }
 function requirePointerValueRecord(kind: PointerKind, input: unknown): ContractRecord {
   const row = pointerRegistry.find((candidate) => candidate.kind === kind)!;
-  const diagnosticCompatibility =
-    kind === "STATE_MUTATION_AUTHORITY_ROTATION"
-      ? ["state-mutation-authority-value/v2"]
-      : kind === "POINTER_MUTATION_RUN_CURRENT"
-        ? ["pointer-mutation-run-current-value/v1"]
-        : [];
-  for (const schemaVersion of [...row.valueSchemas, ...diagnosticCompatibility]) {
+  for (const schemaVersion of row.valueSchemas) {
     const parsed = validateAgainstSchema(v2Definitions[schemaVersion]!, input);
     if (parsed.ok) {
       if (schemaVersion === "pointer-tombstone-value/v1" && parsed.value.pointerKind !== kind)

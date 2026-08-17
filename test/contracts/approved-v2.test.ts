@@ -3,14 +3,12 @@ import {
   canonicalDigest,
   compareDecimalAscii,
   computeAuthorityEmptyDigest,
-  computeAuthorityEmptyRootDigest,
   computeAuthorityEpochKey,
-  computeAuthorityHistoryRootDigest,
+  computeAuthorityHistoryEmptyRootDigestV2,
+  computeAuthorityInventoryEmptyDigest,
+  computeAuthorityInventoryRootDigest,
   computeAuthorityLeafDigest,
   computeAuthorityNodeDigest,
-  computeAuthorityAppendReceiptDigest,
-  computeAuthorityRotationId,
-  computeAuthoritySuccessorCoreDigest,
   computeAuthorityUpdateProofDigest,
   computeSparseRoot,
   computeBootstrapAnchorDigest,
@@ -38,11 +36,6 @@ import {
   computePointerPositionDigest,
   computePointerValueDigest,
   computeProposalReceiptDigest,
-  computeRunAuditDigest,
-  computeRunCheckpointCoreDigest,
-  computeRunId,
-  computeRunPostSelectionDigest,
-  computeRunSegmentDigest,
   diagnostic,
   derivePointerPositionEvidence,
   externalAuthorityPaths,
@@ -55,19 +48,32 @@ import {
   schemaVersions,
   validateBootstrapAnchorTransition,
   validateBootstrapAnchorComposition,
-  validateAuthorityMembership,
   validateAuthorityHistoryNodeInventoryPage,
-  validateAuthoritySingleUpdateWitness,
-  validateAuthorityValueHistoryBinding,
   validateBootstrapGenesisGraph,
-  validateCommitRunSequence,
   validateDestinationOwnerTransition,
   validateDestinationOwnerComposition,
-  validateEvidencePacketV2,
   type ContractRecord,
   type JsonValue,
 } from "../../packages/contracts/src/index.js";
 import { digest, digest2, fixtureFor, instant, uuid, uuid2 } from "./fixtures.js";
+
+const {
+  computeAuthorityAppendReceiptDigest,
+  computeAuthorityEmptyRootDigest,
+  computeAuthorityHistoryRootDigest,
+  computeAuthorityRotationId,
+  computeAuthoritySuccessorCoreDigest,
+  computeRunAuditDigest,
+  computeRunCheckpointCoreDigest,
+  computeRunId,
+  computeRunPostSelectionDigest,
+  computeRunSegmentDigest,
+  validateAuthorityMembership,
+  validateAuthoritySingleUpdateWitness,
+  validateAuthorityValueHistoryBinding,
+  validateCommitRunSequence,
+  validateEvidencePacketV2,
+} = diagnostic.legacyPacket;
 
 const digest3 = "c".repeat(64);
 const digest4 = "d".repeat(64);
@@ -94,7 +100,7 @@ describe("approved v2 authority contracts", () => {
           schemaVersion,
         })),
       ),
-    ).toBe("3715a5c479a83bc3c51e52745432067d4654b592149c68bd037a0408b82dbbd8");
+    ).toBe("a005b3766117d4f4df63cc748500c8007248262c41c494275b374c14a9646f40");
   });
 
   test("closes bootstrap versus selected-epoch proposal producers", () => {
@@ -714,20 +720,29 @@ describe("approved v2 authority contracts", () => {
       valueDigest: dbav,
       proposalReceiptDigest: dbar,
     });
-    const emptyRoot = {
-      ...fixtureFor("authority-history-empty-root/v1"),
+    const inventoryRoot = {
+      ...fixtureFor("authority-node-inventory-empty-root/v1"),
+      globalIdentityDigest: g,
+      treeRootDigest: computeAuthorityInventoryEmptyDigest(0),
+    };
+    const dnir = computeAuthorityInventoryRootDigest(inventoryRoot);
+    const historyRoot = {
+      ...fixtureFor("authority-history-empty-root/v2"),
       globalIdentityDigest: g,
       treeRootDigest: computeAuthorityEmptyDigest(0),
+      nodeInventoryRootDigest: dnir,
     };
-    const dhe = computeAuthorityEmptyRootDigest(emptyRoot);
+    const dhe = computeAuthorityHistoryEmptyRootDigestV2(historyRoot);
     const authorityValue: Record<string, JsonValue> = {
-      ...fixtureFor("state-mutation-authority-value/v2"),
+      ...fixtureFor("state-mutation-authority-value/v3"),
       installationId: identity.installationId!,
       projectId: identity.projectId!,
       stateRootDigest: identity.stateRootDigest!,
       custodyInstanceDigest: identity.custodyInstanceDigest!,
       globalIdentityDigest: g,
       historyRootDigest: dhe,
+      nodeInventoryRootDigest: dnir,
+      nodeInventoryTreeRootDigest: computeAuthorityInventoryEmptyDigest(0),
     };
     const dv = computePointerValueDigest("STATE_MUTATION_AUTHORITY_ROTATION", dp, authorityValue);
     const positionEvidence = derivePointerPositionEvidence(
@@ -823,58 +838,41 @@ describe("approved v2 authority contracts", () => {
       anchor,
       authoritySelection: { value: authorityValue, proposal, tip },
       core,
-      emptyRoot,
       globalIdentity: identity,
+      historyRoot,
+      inventoryRoot,
       post,
     };
     expect(validateBootstrapGenesisGraph(graph)).toEqual([]);
-    const authorityEnvelope = {
-      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
-      canonicalPointerPath: authorityPath,
-      installationId: identity.installationId,
-      projectId: identity.projectId,
-      stateRootDigest: identity.stateRootDigest,
-      transactionId: null,
-      sourceToken: "none",
-      pathBindings: {},
-      positionEvidence,
-      tombstoneEvidence: null,
-      value: authorityValue,
-      proposal,
-      tip,
-    };
-    const historicalPacket = {
-      ...fixtureFor("pointer-evidence-packet/v2"),
-      globalIdentity: identity,
-      currentAuthoritySelection: authorityEnvelope,
-      authorityHistoryBinding: {
-        appendReceipt: null,
-        authorityValue,
-        globalIdentity: identity,
-        historyRoot: emptyRoot,
-        leaf: null,
-        priorHistoryRoot: null,
-        successorCore: null,
-        updateProof: null,
-      },
-      evidenceSlots: pointerKinds.map((pointerKind) => ({
-        schemaVersion: "pointer-evidence-slot/v2",
-        pointerKind,
-        selectedEvidence: null,
-        producerMembershipIndex: null,
-      })),
-      producerMemberships: [],
-    };
-    expect(validateEvidencePacketV2(historicalPacket)).toEqual([]);
-    expect(validateEvidencePacketV2({ ...historicalPacket, purpose: "MUTATION_COMMIT" })).toContain(
-      "purpose:current-commit-mismatch",
-    );
     expect(
       validateBootstrapGenesisGraph({
         ...graph,
         post: { ...post, genesisCoreDigest: digest2 },
       }),
     ).toContain("post:core-anchor-mismatch");
+    expect(
+      validateBootstrapGenesisGraph({
+        ...graph,
+        historyRoot: { ...historyRoot, treeRootDigest: digest2 },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateBootstrapGenesisGraph({
+        ...graph,
+        inventoryRoot: { ...inventoryRoot, treeRootDigest: digest2 },
+      }),
+    ).not.toEqual([]);
+    const oldGraph = {
+      ...graph,
+      emptyRoot: fixtureFor("authority-history-empty-root/v1"),
+      authoritySelection: {
+        ...graph.authoritySelection,
+        value: fixtureFor("state-mutation-authority-value/v2"),
+      },
+    };
+    delete (oldGraph as Record<string, unknown>).historyRoot;
+    delete (oldGraph as Record<string, unknown>).inventoryRoot;
+    expect(validateBootstrapGenesisGraph(oldGraph)).not.toEqual([]);
     expect(
       validateBootstrapAnchorTransition(active, {
         ...active,
@@ -887,7 +885,7 @@ describe("approved v2 authority contracts", () => {
       "lifecycle:transition-refused",
     );
     expect(canonicalDigest({ dba, dbar, dbat, dbav, dbg, dgp })).toBe(
-      "4fa87a247a57515e974149b0eef4f79e6c25580db26083b65ce03acb0c76e6b6",
+      "a036c1857a35bfd9c4c35db9d80171de2a9bac1164bb7c96bfb1a1e6298b8954",
     );
   });
 
@@ -1289,113 +1287,9 @@ describe("approved v2 authority contracts", () => {
         updateProof,
       }),
     ).toEqual([]);
-    const rotatedDv = computePointerValueDigest(
-      "STATE_MUTATION_AUTHORITY_ROTATION",
-      authorityDp,
-      rotatedAuthority,
-    );
-    const rotatedPosition = derivePointerPositionEvidence(
-      "STATE_MUTATION_AUTHORITY_ROTATION",
-      rotatedAuthority,
-    );
-    const rotatedPositionDigest = computePointerPositionDigest(
-      "STATE_MUTATION_AUTHORITY_ROTATION",
-      rotatedPosition,
-    );
-    const rotatedMutationId = computeMutationId({
-      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
-      canonicalPointerPath: authorityPath,
-      pathInstanceDigest: authorityDp,
-      transactionId: null,
-      sourceToken: "none",
-      positionEvidence: rotatedPosition,
-      priorDt: leaf.authorityTipDigest as string,
-      priorDv: leaf.authorityValueDigest as string,
-      priorDr: leaf.authorityReceiptDigest as string,
-      successorDv: rotatedDv,
-      intent: "VALUE_PROPOSED",
-      outcome: "SELECT",
-    });
-    const rotatedProposal: ContractRecord = {
-      ...fixtureFor("pointer-cas-proposal-receipt/v2"),
-      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
-      pathInstanceDigest: authorityDp,
-      mutationId: rotatedMutationId,
-      priorTipDigest: leaf.authorityTipDigest!,
-      priorValueDigest: leaf.authorityValueDigest!,
-      priorReceiptDigest: leaf.authorityReceiptDigest!,
-      successorValueDigest: rotatedDv,
-      positionDigest: rotatedPositionDigest,
-      intent: "VALUE_PROPOSED",
-      outcome: "SELECT",
-      producerKind: "SELECTED_EPOCH",
-      producerDigest: digest,
-      authorityEpochTipDigest: leaf.authorityTipDigest!,
-      authorityEpochValueDigest: leaf.authorityValueDigest!,
-      authorityEpochReceiptDigest: leaf.authorityReceiptDigest!,
-    };
-    const rotatedDr = computeProposalReceiptDigest({
-      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
-      pathInstanceDigest: authorityDp,
-      mutationId: rotatedMutationId,
-      priorDt: leaf.authorityTipDigest as string,
-      priorDv: leaf.authorityValueDigest as string,
-      priorDr: leaf.authorityReceiptDigest as string,
-      successorDv: rotatedDv,
-      positionDigest: rotatedPositionDigest,
-      intent: "VALUE_PROPOSED",
-      outcome: "SELECT",
-      producerKind: "SELECTED_EPOCH",
-      producerDigest: digest,
-      authorityEpochDt: leaf.authorityTipDigest as string,
-      authorityEpochDv: leaf.authorityValueDigest as string,
-      authorityEpochDr: leaf.authorityReceiptDigest as string,
-      receipt: rotatedProposal,
-    });
-    const rotatedTip: ContractRecord = {
-      ...fixtureFor("pointer-current-tip/v1"),
-      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
-      pathInstanceDigest: authorityDp,
-      valueDigest: rotatedDv,
-      proposalReceiptDigest: rotatedDr,
-    };
-    const rotatedEnvelope = {
-      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
-      canonicalPointerPath: authorityPath,
-      installationId: identity.installationId,
-      projectId: identity.projectId,
-      stateRootDigest: identity.stateRootDigest,
-      transactionId: null,
-      sourceToken: "none",
-      pathBindings: {},
-      positionEvidence: rotatedPosition,
-      tombstoneEvidence: null,
-      value: rotatedAuthority,
-      proposal: rotatedProposal,
-      tip: rotatedTip,
-    };
-    expect(
-      validateAuthorityMembership({
-        schemaVersion: "authority-membership-evidence/v1",
-        currentAuthoritySelection: rotatedEnvelope,
-        globalIdentity: identity,
-        leaf,
-        root: historyRoot,
-        rootKind: "NONEMPTY",
-        siblingDigests: siblings,
-      }),
-    ).not.toEqual([]);
-    expect(
-      validateAuthorityMembership({
-        schemaVersion: "authority-membership-evidence/v1",
-        currentAuthoritySelection: rotatedEnvelope,
-        globalIdentity: identity,
-        leaf: { ...leaf, epochKey: digest },
-        root: historyRoot,
-        rootKind: "NONEMPTY",
-        siblingDigests: siblings,
-      }),
-    ).not.toEqual([]);
+    expect(() =>
+      computePointerValueDigest("STATE_MUTATION_AUTHORITY_ROTATION", authorityDp, rotatedAuthority),
+    ).toThrow(/wrong-pointer-family/);
     expect(
       validateAuthorityValueHistoryBinding({
         appendReceipt: { ...appendReceipt, successorCoreDigest: digest },

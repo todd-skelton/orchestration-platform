@@ -878,15 +878,22 @@ export const inventoryDefinitions: Readonly<Record<string, SchemaDefinition>> = 
         terminalDigest: sha,
         recordPath: path,
       }),
-      define("authority-history-empty-root/v2", {
-        globalIdentityDigest: sha,
-        treeProfile: enumeration("SPARSE_SHA256_256_V1"),
-        count: enumeration("0"),
-        treeRootDigest: sha,
-        nodeInventoryRootKind: enumeration("EMPTY"),
-        nodeInventoryRootDigest: sha,
-        nodeInventoryCount: enumeration("0"),
-      }),
+      define(
+        "authority-history-empty-root/v2",
+        {
+          globalIdentityDigest: sha,
+          treeProfile: enumeration("SPARSE_SHA256_256_V1"),
+          count: enumeration("0"),
+          treeRootDigest: sha,
+          nodeInventoryRootKind: enumeration("EMPTY"),
+          nodeInventoryRootDigest: sha,
+          nodeInventoryCount: enumeration("0"),
+        },
+        (record) =>
+          record.treeRootDigest === computeHistoryEmptyDigest(0)
+            ? []
+            : ["treeRootDigest:empty-root-mismatch"],
+      ),
       define(
         "authority-history-root/v2",
         {
@@ -2809,17 +2816,41 @@ export function computeRunPostSelectionDigestV1(input: unknown): string {
   ]);
 }
 
-function computeRunSegmentDigestV1(input: unknown): string {
+export function computeRunSegmentDigestV1(input: unknown): string {
   const parsed = validateAgainstSchema(runSegmentDefinition, input);
   if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
   return digest("pointer-mutation-run-segment/v1", [canonical(parsed.value)]);
 }
 
-function computeRunAuditDigestV1(prior: string | null, segment: string): string {
+export function computeRunAuditDigestV1(prior: string | null, segment: string): string {
   return digest("pointer-mutation-run-audit/v1", [
     fixed(prior === null ? "00" : "01"),
     ...(prior === null ? [] : [raw(prior)]),
     raw(segment),
+  ]);
+}
+
+export function computeRunIdV2(input: unknown): string {
+  const closed = snapshotClosedRecord(input, [
+    "authorityPathInstanceDigest",
+    "authorityReceiptDigest",
+    "authorityTipDigest",
+    "authorityValueDigest",
+    "globalIdentityDigest",
+    "priorCheckpointDigest",
+    "runOrdinal",
+    "targetMutationId",
+  ]);
+  if (!closed.ok) throw new TypeError(closed.issues.join(","));
+  return digest("pointer-mutation-run-id/v1", [
+    raw(closed.value.globalIdentityDigest as string),
+    raw(closed.value.targetMutationId as string),
+    decimalPart(closed.value.runOrdinal as string),
+    nullableRaw(closed.value.priorCheckpointDigest as string | null),
+    raw(closed.value.authorityPathInstanceDigest as string),
+    raw(closed.value.authorityTipDigest as string),
+    raw(closed.value.authorityValueDigest as string),
+    raw(closed.value.authorityReceiptDigest as string),
   ]);
 }
 

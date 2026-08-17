@@ -655,7 +655,7 @@ describe("approved authority node inventory contracts", () => {
       ...fixtureFor("authority-history-empty-root/v2"),
       globalIdentityDigest: digest,
       count: "0",
-      treeRootDigest: d("3"),
+      treeRootDigest: computeAuthorityEmptyDigest(0),
       nodeInventoryRootKind: "EMPTY",
       nodeInventoryRootDigest: inventoryRootDigest,
       nodeInventoryCount: "0",
@@ -682,7 +682,7 @@ describe("approved authority node inventory contracts", () => {
       }),
     ).toEqual([]);
     expect(canonicalDigest({ historyRootDigest, inventoryRootDigest, authorityValue })).toBe(
-      "2d75eb57c82fc1d424a0de340207f7fb191b2729c41db042aa0ab7de2dd33d00",
+      "180620e7aa23f108b0dba64590eb3f4593061b1b13b7d8b40f40d5554d1cf10d",
     );
     expect(
       validateAuthorityValueV3Composition({
@@ -693,5 +693,23 @@ describe("approved authority node inventory contracts", () => {
         successorCore: null,
       }),
     ).toContain("nodeInventoryRoot:binding-mismatch");
+    expect(
+      validateAuthorityValueV3Composition({
+        appendReceipt: null,
+        authorityValue,
+        historyRoot: { ...historyRoot, treeRootDigest: d("3") },
+        inventoryRoot,
+        successorCore: null,
+      }),
+    ).toContain("authority-value-v3:invalid");
+    expect(
+      validateAuthorityValueV3Composition({
+        appendReceipt: null,
+        authorityValue,
+        historyRoot,
+        inventoryRoot: { ...inventoryRoot, treeRootDigest: d("3") },
+        successorCore: null,
+      }),
+    ).toContain("authority-value-v3:invalid");
   });
 });

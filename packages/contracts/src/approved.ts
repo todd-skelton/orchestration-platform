@@ -33,6 +33,7 @@ import {
   computeAuthorityInventoryRootDigest,
   inventoryDefinitions,
   validateAuthorityCommitRunV3,
+  validateAuthorityValueV3Composition,
 } from "./inventory.js";
 
 const field = (kind: FieldRule["kind"], options: Omit<FieldRule, "kind"> = {}): FieldRule =>
@@ -858,8 +859,22 @@ export const approvedDefinitions: Readonly<Record<string, SchemaDefinition>> = O
         targetPathInstanceDigest: sha,
         targetMutationId: sha,
         reason: enumeration("MALFORMED", "IMPOSSIBLE", "UNREADABLE"),
+        observation: field("json"),
         observationDigest: sha,
         observedAt: timestamp,
+      }),
+      define("state-mutation-authority-rotation-id/v1", {
+        globalIdentityDigest: sha,
+        predecessorOrdinal: decimal,
+        predecessorTipDigest: sha,
+        predecessorValueDigest: sha,
+        predecessorReceiptDigest: sha,
+        successorOrdinal: decimal,
+        selectedActiveReleaseDigest: sha,
+        reviewedHelperDigest: sha,
+        reviewedProfileDigest: sha,
+        reviewedAbiDigest: sha,
+        reviewedCustodyDigest: sha,
       }),
       define("pointer-mutation-proposed-target-evidence/v1", {
         pointerKind: enumeration(...pointerKinds),
@@ -924,6 +939,17 @@ export const approvedDefinitions: Readonly<Record<string, SchemaDefinition>> = O
             : ["outcome:evidence-union-mismatch"];
         },
       ),
+      define("pointer-mutation-commit-evidence/v2", {
+        purpose: enumeration("MUTATION_COMMIT"),
+        authoritySelection: field("json"),
+        intent: field("json"),
+        checkpoints: array("json"),
+        outcome: enumeration("SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"),
+        proposedTarget: field("json"),
+        selectedTarget: field("json", { nullable: true }),
+        conflictEvidence: field("json", { nullable: true }),
+        unknownEvidence: field("json", { nullable: true }),
+      }),
       define(
         "pointer-evidence-slot/v2",
         {
@@ -1993,8 +2019,9 @@ export function validateBootstrapAnchorComposition(input: unknown): readonly str
         "anchor",
         "authoritySelection",
         "core",
-        "emptyRoot",
         "globalIdentity",
+        "historyRoot",
+        "inventoryRoot",
         "post",
       ]);
       if (!genesisGraph.ok) issues.push("genesisGraph:invalid");
@@ -2036,9 +2063,9 @@ export function validateBootstrapAnchorComposition(input: unknown): readonly str
             "state-mutation-bootstrap-genesis-core/v1",
             genesisGraph.value.core,
           );
-          const graphEmptyRoot = requireRecord(
-            "authority-history-empty-root/v1",
-            genesisGraph.value.emptyRoot,
+          const graphHistoryRoot = requireRecord(
+            "authority-history-empty-root/v2",
+            genesisGraph.value.historyRoot,
           );
           const graphAuthority = snapshotClosedRecord(genesisGraph.value.authoritySelection, [
             "proposal",
@@ -2048,12 +2075,13 @@ export function validateBootstrapAnchorComposition(input: unknown): readonly str
           if (!graphAuthority.ok) issues.push("useIntent:authority-selection-invalid");
           else {
             const graphAuthorityValue = requireRecord(
-              "state-mutation-authority-value/v2",
+              "state-mutation-authority-value/v3",
               graphAuthority.value.value,
             );
             if (
               proposed.globalIdentityDigest !== computeGlobalIdentityDigest(graphIdentity) ||
-              proposed.historyEmptyRootDigest !== computeAuthorityEmptyRootDigest(graphEmptyRoot) ||
+              proposed.historyEmptyRootDigest !==
+                computeAuthorityHistoryEmptyRootDigestV2(graphHistoryRoot) ||
               proposed.authorityPathInstanceDigest !== graphCore.authorityPathInstanceDigest ||
               proposed.authorityValueDigest !== graphCore.authorityValueDigest ||
               proposed.genesisPositionDigest !== graphCore.genesisPositionDigest ||
@@ -2190,8 +2218,9 @@ export function validateBootstrapGenesisGraph(input: unknown): readonly string[]
     "anchor",
     "authoritySelection",
     "core",
-    "emptyRoot",
     "globalIdentity",
+    "historyRoot",
+    "inventoryRoot",
     "post",
   ]);
   if (!closed.ok) return closed.issues;
@@ -2209,7 +2238,7 @@ export function validateBootstrapGenesisGraph(input: unknown): readonly string[]
     ]);
     if (!authority.ok) throw new TypeError(authority.issues.join(","));
     const authorityValue = requireRecord(
-      "state-mutation-authority-value/v2",
+      "state-mutation-authority-value/v3",
       authority.value.value,
     );
     const proposal = v2Definitions["pointer-cas-proposal-receipt/v2"]!;
@@ -2319,15 +2348,12 @@ export function validateBootstrapGenesisGraph(input: unknown): readonly string[]
     )
       issues.push("post:authority-mismatch");
     issues.push(
-      ...validateAuthorityValueHistoryBinding({
+      ...validateAuthorityValueV3Composition({
         appendReceipt: null,
         authorityValue,
-        globalIdentity: identity,
-        historyRoot: closed.value.emptyRoot,
-        leaf: null,
-        priorHistoryRoot: null,
+        historyRoot: closed.value.historyRoot,
+        inventoryRoot: closed.value.inventoryRoot,
         successorCore: null,
-        updateProof: null,
       }),
     );
     return Object.freeze(issues.sort());
@@ -3882,12 +3908,108 @@ export function validateCommitEvidenceV3(input: unknown): readonly string[] {
       parsed.value.unknownEvidence !== null
     )
       issues.push("outcome:lost-union-mismatch");
+    try {
+      const conflict = requireRecord(
+        "pointer-mutation-conflict-evidence/v1",
+        parsed.value.conflictEvidence,
+      );
+      const receipt = requireRecord("pointer-conflict-receipt/v1", conflict.receipt);
+      const winner = resolveSelectedPointerEvidence(conflict.winningSelection);
+      if (!winner.ok || !authority.ok) throw new TypeError("conflict-context-invalid");
+      const intent = requireRecord("pointer-mutation-run-intent/v2", parsed.value.intent);
+      const checkpoints = snapshotClosedArray(parsed.value.checkpoints);
+      if (!checkpoints.ok || checkpoints.value.length !== 9) throw new TypeError("checkpoints");
+      const finalResolution = requireRecord(
+        "pointer-mutation-commit-resolution/v1",
+        requireRecord("pointer-mutation-run-checkpoint-evidence/v2", checkpoints.value[8])
+          .terminalResolution,
+      );
+      if (
+        winner.value.canonicalPointerPath !== proposed.value.canonicalPointerPath ||
+        winner.value.pathInstanceDigest !== proposed.value.pathInstanceDigest ||
+        winner.value.installationId !== proposed.value.installationId ||
+        winner.value.projectId !== proposed.value.projectId ||
+        winner.value.stateRootDigest !== proposed.value.stateRootDigest ||
+        winner.value.transactionId !== proposed.value.transactionId ||
+        winner.value.sourceToken !== proposed.value.sourceToken ||
+        receipt.pathInstanceDigest !== proposed.value.pathInstanceDigest ||
+        receipt.mutationId !== proposed.value.proposal.mutationId ||
+        receipt.losingProposalReceiptDigest !== proposed.value.proposalReceiptDigest ||
+        receipt.losingSuccessorValueDigest !== proposed.value.valueDigest ||
+        receipt.winningTipDigest !== winner.value.tipDigest ||
+        receipt.winningValueDigest !== winner.value.valueDigest ||
+        receipt.winningReceiptDigest !== winner.value.proposalReceiptDigest ||
+        (winner.value.valueDigest === proposed.value.valueDigest &&
+          winner.value.proposalReceiptDigest === proposed.value.proposalReceiptDigest) ||
+        receipt.authorityEpochTipDigest !== authority.value.tipDigest ||
+        receipt.authorityEpochValueDigest !== authority.value.valueDigest ||
+        receipt.authorityEpochReceiptDigest !== authority.value.proposalReceiptDigest ||
+        String(receipt.conflictAt) < String(intent.createdAt)
+      )
+        throw new TypeError("conflict-cross-binding-mismatch");
+      const conflictDigest = computeConflictDigest({
+        pathInstanceDigest: proposed.value.pathInstanceDigest,
+        mutationId: proposed.value.proposal.mutationId as string,
+        losingDr: proposed.value.proposalReceiptDigest,
+        losingDv: proposed.value.valueDigest,
+        winningDt: winner.value.tipDigest,
+        winningDv: winner.value.valueDigest,
+        winningDr: winner.value.proposalReceiptDigest,
+        conflictKind: receipt.conflictKind as string,
+        authorityEpochDt: authority.value.tipDigest,
+        authorityEpochDv: authority.value.valueDigest,
+        authorityEpochDr: authority.value.proposalReceiptDigest,
+        conflictAt: receipt.conflictAt as string,
+        receipt,
+      });
+      if (
+        finalResolution.outcome !== "LOST_CONFLICT" ||
+        finalResolution.outcomeEvidenceDigest !== conflictDigest ||
+        finalResolution.conflictReceiptDigest !== conflictDigest ||
+        finalResolution.unknownEvidenceDigest !== null ||
+        finalResolution.selectedTargetTipDigest !== null
+      )
+        issues.push("outcome:lost-resolution-binding-mismatch");
+    } catch {
+      issues.push("outcome:lost-evidence-invalid");
+    }
   } else if (
     parsed.value.selectedTarget !== null ||
     parsed.value.conflictEvidence !== null ||
     parsed.value.unknownEvidence === null
   ) {
     issues.push("outcome:unknown-union-mismatch");
+  } else {
+    try {
+      const unknown = requireRecord(
+        "pointer-mutation-unknown-evidence/v1",
+        parsed.value.unknownEvidence,
+      );
+      const intent = requireRecord("pointer-mutation-run-intent/v2", parsed.value.intent);
+      const checkpoints = snapshotClosedArray(parsed.value.checkpoints);
+      if (!checkpoints.ok || checkpoints.value.length !== 9) throw new TypeError("checkpoints");
+      const finalResolution = requireRecord(
+        "pointer-mutation-commit-resolution/v1",
+        requireRecord("pointer-mutation-run-checkpoint-evidence/v2", checkpoints.value[8])
+          .terminalResolution,
+      );
+      const observationDigest = canonicalDigest(unknown.observation as JsonValue);
+      const unknownDigest = digest("pointer-mutation-unknown-evidence/v1", [canonical(unknown)]);
+      if (
+        unknown.targetPathInstanceDigest !== proposed.value.pathInstanceDigest ||
+        unknown.targetMutationId !== proposed.value.proposal.mutationId ||
+        unknown.observationDigest !== observationDigest ||
+        String(unknown.observedAt) < String(intent.createdAt) ||
+        finalResolution.outcome !== "UNKNOWN_TERMINAL" ||
+        finalResolution.outcomeEvidenceDigest !== unknownDigest ||
+        finalResolution.unknownEvidenceDigest !== unknownDigest ||
+        finalResolution.conflictReceiptDigest !== null ||
+        finalResolution.selectedTargetTipDigest !== null
+      )
+        issues.push("outcome:unknown-evidence-binding-mismatch");
+    } catch {
+      issues.push("outcome:unknown-evidence-invalid");
+    }
   }
   return Object.freeze([...new Set(issues)].sort());
 }

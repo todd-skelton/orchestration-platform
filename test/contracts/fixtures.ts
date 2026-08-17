@@ -1,5 +1,6 @@
 import {
   diagnostic,
+  computeAuthorityEmptyDigest,
   computeAuthorityInventoryEmptyDigest,
   computeAuthorityInventorySparseRoot,
   computeAuthorityInventorySparseAbsentRoot,
@@ -390,6 +391,7 @@ function overrides(schemaVersion: string): Record<string, JsonValue> {
         count: "0",
         nodeInventoryRootKind: "EMPTY",
         nodeInventoryCount: "0",
+        treeRootDigest: computeAuthorityEmptyDigest(0),
       };
     case "authority-history-root/v2":
       return {

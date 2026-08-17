@@ -140,6 +140,34 @@ describe("planning contract", () => {
       },
     ],
     [
+      "migration exclusion with a non-issue identity",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.explicitExclusions.issueNumbers = ["not-an-issue"];
+      },
+    ],
+    [
+      "migration exclusion outside the safe integer domain",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.explicitExclusions.issueNumbers = [Number.MAX_SAFE_INTEGER + 1];
+      },
+    ],
+    [
+      "captured migration owned only by an epic",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.ownershipGroups.find(
+          (group: Record<string, any>) => group.disposition === "CAPTURED",
+        ).destinationKeys = ["EPIC-KERNEL"];
+      },
+    ],
+    [
+      "parked migration owned only by an epic",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.ownershipGroups.find(
+          (group: Record<string, any>) => group.disposition === "PARKED",
+        ).destinationKeys = ["EPIC-KERNEL"];
+      },
+    ],
+    [
       "parked migration without unpark condition",
       (snapshot: PlanningSnapshot) => {
         delete snapshot.migration.ownershipGroups.find(

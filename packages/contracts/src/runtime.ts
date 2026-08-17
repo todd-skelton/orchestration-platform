@@ -123,10 +123,13 @@ function snapshotJsonValue(
   seen: Set<object> = new Set(),
   depth = 0,
 ): JsonSnapshotResult {
+  if (typeof input === "string")
+    return validUnicode(input)
+      ? { ok: true, value: input }
+      : { ok: false, issues: ["invalid-unicode-scalar-sequence"] };
   if (
     input === null ||
     typeof input === "boolean" ||
-    typeof input === "string" ||
     (typeof input === "number" && Number.isSafeInteger(input) && !Object.is(input, -0))
   )
     return { ok: true, value: input as JsonPrimitive };
@@ -142,6 +145,8 @@ function snapshotJsonValue(
   const keys = Reflect.ownKeys(descriptors);
   if (keys.some((key) => typeof key !== "string"))
     return { ok: false, issues: ["symbol-field-refused"] };
+  if ((keys as string[]).some((key) => !validUnicode(key)))
+    return { ok: false, issues: ["invalid-unicode-field-name"] };
   const copy: Record<string, JsonValue> = {};
   seen.add(input);
   for (const key of keys as string[]) {
@@ -207,7 +212,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   }
 }
 
-function validUnicode(value: string): boolean {
+export function isUnicodeScalarSequence(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code >= 0xd800 && code <= 0xdbff) {
@@ -220,6 +225,8 @@ function validUnicode(value: string): boolean {
   }
   return true;
 }
+
+const validUnicode = isUnicodeScalarSequence;
 
 export function isCanonicalTimestamp(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value))

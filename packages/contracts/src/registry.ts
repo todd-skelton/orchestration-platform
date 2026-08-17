@@ -23,6 +23,7 @@ export const supersededAuthorityVersions = Object.freeze([
 
 const superseded = new Set<string>(supersededAuthorityVersions);
 const supersededApprovedVersions = new Set<string>([
+  "state-mutation-authority-rotation-id/v1",
   "authority-history-empty-root/v1",
   "authority-history-root/v1",
   "authority-history-append-receipt/v1",
@@ -33,6 +34,7 @@ const supersededApprovedVersions = new Set<string>([
   "pointer-mutation-run-current-value/v1",
   "pointer-mutation-run-checkpoint-evidence/v1",
   "pointer-mutation-commit-evidence/v1",
+  "pointer-mutation-commit-evidence/v2",
   "pointer-mutation-proposed-target-evidence/v1",
   "pointer-evidence-slot/v2",
   "pointer-evidence-packet/v2",

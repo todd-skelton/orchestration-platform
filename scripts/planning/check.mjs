@@ -62,6 +62,7 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
   const absent = migration.sourceIssuesNotOnSourceBoard;
   if (
     !Array.isArray(absent) ||
+    absent.some((number) => !Number.isSafeInteger(number) || number <= 0) ||
     absent.some((number) => !source.includes(number)) ||
     new Set(absent).size !== absent.length ||
     migration.sourceBoardItemCount + absent.length !== source.length
@@ -86,6 +87,12 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
       group.destinationKeys.some((key) => !allowedDestinations.has(key))
     ) {
       fail(`migration group ${group.key} has duplicate or unknown destination owner`);
+    }
+    if (
+      (group.disposition === "CAPTURED" || group.disposition === "PARKED") &&
+      group.destinationKeys.some((key) => !issueKeys.has(key))
+    ) {
+      fail(`migration group ${group.key} must use issue destination owners`);
     }
     if (typeof group.coverageStatement !== "string" || group.coverageStatement.trim() === "") {
       fail(`migration group ${group.key} has no coverage statement`);
@@ -118,6 +125,7 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
   const exclusions = migration.explicitExclusions?.issueNumbers;
   if (
     !Array.isArray(exclusions) ||
+    exclusions.some((number) => !Number.isSafeInteger(number) || number <= 0) ||
     exclusions.some((number) => source.includes(number)) ||
     new Set(exclusions).size !== exclusions.length
   ) {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import * as publicApi from "../../packages/contracts/src/index.js";
 import {
   canonicalBytes,
@@ -23,13 +24,11 @@ import {
   computePointerValueDigest,
   computeProposalReceiptDigest,
   computeRecoveryAuthorizationCoreDigest,
-  computeRunAuditDigest,
-  computeRunId,
-  computeRunCheckpointCoreDigest,
+  computeRunAuditDigestV1,
+  computeRunIdV2,
   computeRunCheckpointCoreDigestV2,
-  computeRunPostSelectionDigest,
   computeRunPostSelectionDigestV1,
-  computeRunSegmentDigest,
+  computeRunSegmentDigestV1,
   computeSparseRoot,
   computeCommitResolutionDigest,
   computeReservationPredecessorKey,
@@ -73,7 +72,6 @@ import {
   validateRecoveryAccumulatorFormula,
   validateSelectedPointerEvidence,
   validateCleanupHeadHistory,
-  validateCommitRunComposition,
   validateRetentionTransition,
   validateRotationCensus,
   v2SchemaVersions,
@@ -84,9 +82,15 @@ import {
 import { digest, digest2, fixtureFor, instant, uuid, uuid2 } from "./fixtures.js";
 
 const {
+  computeRunAuditDigest,
+  computeRunCheckpointCoreDigest,
+  computeRunId,
+  computeRunPostSelectionDigest,
+  computeRunSegmentDigest,
   fixedEvidencePacketLimits,
   ordinaryEpochSequence,
   validateCurrentCommitEpochComposition,
+  validateCommitRunComposition,
   validateEvidencePacket,
   validateHistoricalAuthorityAuthentication,
   validateEpochSequence,
@@ -766,6 +770,22 @@ describe("current and diagnostic schema registries", () => {
       "recoveryLaunchPath",
       "validateRecoveryAuthorizationAttachment",
       "validateRecoveryLaunchTransition",
+      "computeAuthorityAppendReceiptDigest",
+      "computeAuthorityEmptyRootDigest",
+      "computeAuthorityHistoryRootDigest",
+      "computeAuthorityRotationId",
+      "computeAuthoritySuccessorCoreDigest",
+      "computeRunAuditDigest",
+      "computeRunCheckpointCoreDigest",
+      "computeRunId",
+      "computeRunIntentDigest",
+      "computeRunPostSelectionDigest",
+      "computeRunSegmentDigest",
+      "validateAuthoritySingleUpdateWitness",
+      "validateAuthorityValueHistoryBinding",
+      "validateCommitRunComposition",
+      "validateCommitRunSequence",
+      "validateEvidencePacketV2",
     ])
       expect(publicApi).not.toHaveProperty(name);
     expect(publicApi.diagnostic).toBe(diagnostic);
@@ -787,7 +807,9 @@ describe("current and diagnostic schema registries", () => {
   });
 
   test("removes superseded authority v1 from current dispatch and retains diagnostic parsing", () => {
-    expect(diagnostic.schemaVersions).toHaveLength(29);
+    expect(diagnostic.schemaVersions).toHaveLength(31);
+    expect(diagnostic.schemaVersions).toContain("state-mutation-authority-rotation-id/v1");
+    expect(diagnostic.schemaVersions).toContain("pointer-mutation-commit-evidence/v2");
     for (const schemaVersion of diagnostic.schemaVersions) {
       const fixture = fixtureFor(schemaVersion);
       expect(schemaDefinitions).not.toHaveProperty(schemaVersion);
@@ -801,6 +823,20 @@ describe("current and diagnostic schema registries", () => {
       ok: false,
       issues: ["schemaVersion:not-diagnostic"],
     });
+    expect(() =>
+      computePointerValueDigest(
+        "STATE_MUTATION_AUTHORITY_ROTATION",
+        digest,
+        fixtureFor("state-mutation-authority-value/v2"),
+      ),
+    ).toThrow(/wrong-pointer-family/);
+    expect(() =>
+      computePointerValueDigest(
+        "POINTER_MUTATION_RUN_CURRENT",
+        digest,
+        fixtureFor("pointer-mutation-run-current-value/v1"),
+      ),
+    ).toThrow(/wrong-pointer-family/);
   });
 
   test("pins the complete current schema census and exhaustive closed-field parsing", () => {
@@ -1174,6 +1210,34 @@ describe("framed pointer digest graph", () => {
     expect(() => framedBytes("pointer-value/v2", [{ type: "text", value: 1 } as never])).toThrow(
       /text/,
     );
+    expect(() => framedBytes("pointer-value/v2", [{ type: "text", value: "\ud800" }])).toThrow(
+      /unicode-scalar/,
+    );
+    expect(() =>
+      framedBytes("pointer-value/v2", [{ type: "nullable-text", value: "\udfff" }]),
+    ).toThrow(/unicode-scalar/);
+    expect(framedBytes("pointer-value/v2", [{ type: "text", value: "\ud83d\ude80" }])).not.toEqual(
+      framedBytes("pointer-value/v2", [{ type: "text", value: "\ufffd" }]),
+    );
+    const nestedUnicode = {
+      ...fixtureFor("pointer-mutation-run-checkpoint-evidence/v2"),
+      core: { note: "\ud800" },
+    };
+    expect(parseContract("pointer-mutation-run-checkpoint-evidence/v2", nestedUnicode).ok).toBe(
+      false,
+    );
+    expect(() =>
+      serializeContract("pointer-mutation-run-checkpoint-evidence/v2", nestedUnicode),
+    ).not.toThrow();
+    expect(serializeContract("pointer-mutation-run-checkpoint-evidence/v2", nestedUnicode).ok).toBe(
+      false,
+    );
+    expect(
+      parseContract("pointer-mutation-run-checkpoint-evidence/v2", {
+        ...nestedUnicode,
+        core: { note: "\ud83d\ude80" },
+      }).ok,
+    ).toBe(true);
     const dpInput = {
       pointerKind: "ACTIVE_RELEASE" as const,
       canonicalPointerPath: "installation/active-release.json",
@@ -2293,7 +2357,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
     );
     const authorityEpoch = pointerSelection(
       "STATE_MUTATION_AUTHORITY_ROTATION",
-      fixtureFor("state-mutation-authority-value/v2"),
+      fixtureFor("state-mutation-authority-value/v3"),
       { pathBindings: {}, transactionId: null, sourceToken: "none" },
     );
     const selectedEpoch = {
@@ -3259,7 +3323,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
           valueDigest: selection.valueDigest,
         })),
       ),
-    ).toBe("e9597ec60aea9986e6437d7d55acf54799a2491e6d58845553488851170da64b");
+    ).toBe("57a0107a5fcabb1d1a3c793973c9b04640665f5821300b9c957d8de57d3754b5");
     expect(validateSelectedPointerEvidence(reservationSelection.envelope)).toEqual([]);
     expect(
       validateEvidencePacket({
@@ -3539,7 +3603,7 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       "CURRENT_AUTHORITY_POST_CAS_READ",
     ].entries()) {
       const terminal = index >= 7;
-      const runId = computeRunId({
+      const runId = computeRunIdV2({
         globalIdentityDigest: g,
         targetMutationId: target.proposal.mutationId!,
         runOrdinal: "0",
@@ -3565,8 +3629,8 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
         runOrdinal: "0",
         stage,
       };
-      const segmentDigest = computeRunSegmentDigest(segment);
-      const auditDigest = computeRunAuditDigest(priorAuditDigest, segmentDigest);
+      const segmentDigest = computeRunSegmentDigestV1(segment);
+      const auditDigest = computeRunAuditDigestV1(priorAuditDigest, segmentDigest);
       priorAuditDigest = auditDigest;
       const terminalResolution: ContractRecord | null = terminal
         ? {
@@ -3688,6 +3752,213 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
       materializationFinishingSelection: null,
     };
     expect(validateCommitEvidenceV3(commit)).toEqual([]);
+    const winnerValue = {
+      ...fixtureFor("active-release/v2"),
+      releaseDigest: digest2,
+    };
+    const winner = pointerSelection("ACTIVE_RELEASE", winnerValue, {
+      pathBindings: {},
+      transactionId: uuid,
+      sourceToken: "none",
+      prior: target,
+      authorityEpoch,
+    });
+    const conflictReceipt: ContractRecord = {
+      ...fixtureFor("pointer-conflict-receipt/v1"),
+      pathInstanceDigest: target.pathInstanceDigest,
+      mutationId: target.proposal.mutationId!,
+      losingProposalReceiptDigest: target.proposalReceiptDigest,
+      losingSuccessorValueDigest: target.valueDigest,
+      winningTipDigest: winner.tipDigest,
+      winningValueDigest: winner.valueDigest,
+      winningReceiptDigest: winner.proposalReceiptDigest,
+      conflictKind: "VALUE_CONFLICT",
+      authorityEpochTipDigest: authority.tipDigest,
+      authorityEpochValueDigest: authority.valueDigest,
+      authorityEpochReceiptDigest: authority.proposalReceiptDigest,
+    };
+    const conflictEvidence = {
+      schemaVersion: "pointer-mutation-conflict-evidence/v1",
+      receipt: conflictReceipt,
+      winningSelection: winner.envelope,
+    };
+    const conflictDigest = computeConflictDigest({
+      pathInstanceDigest: target.pathInstanceDigest,
+      mutationId: target.proposal.mutationId as string,
+      losingDr: target.proposalReceiptDigest,
+      losingDv: target.valueDigest,
+      winningDt: winner.tipDigest,
+      winningDv: winner.valueDigest,
+      winningDr: winner.proposalReceiptDigest,
+      conflictKind: conflictReceipt.conflictKind as string,
+      authorityEpochDt: authority.tipDigest,
+      authorityEpochDv: authority.valueDigest,
+      authorityEpochDr: authority.proposalReceiptDigest,
+      conflictAt: conflictReceipt.conflictAt as string,
+      receipt: conflictReceipt,
+    });
+    const observation = { disposition: "unreadable", retryable: false };
+    const unknownEvidence = {
+      schemaVersion: "pointer-mutation-unknown-evidence/v1",
+      targetPathInstanceDigest: target.pathInstanceDigest,
+      targetMutationId: target.proposal.mutationId,
+      reason: "UNREADABLE",
+      observation,
+      observationDigest: canonicalDigest(observation),
+      observedAt: instant,
+    };
+    const unknownDigest = createHash("sha256")
+      .update(
+        framedBytes("pointer-mutation-unknown-evidence/v1", [
+          { type: "canonical", value: unknownEvidence },
+        ]),
+      )
+      .digest("hex");
+    const rewriteTerminal = (
+      outcome: "SELECTED" | "LOST_CONFLICT" | "UNKNOWN_TERMINAL",
+      outcomeEvidenceDigest: string,
+    ) => {
+      let rewrittenPrior: ReturnType<typeof pointerSelection> | null = null;
+      let rewrittenPostDigest: string | null = null;
+      const rewritten = checkpoints.map((checkpoint, index) => {
+        const terminal = index >= 7;
+        const terminalResolution: ContractRecord | null = terminal
+          ? {
+              ...fixtureFor("pointer-mutation-commit-resolution/v1"),
+              targetPathInstanceDigest: target.pathInstanceDigest,
+              targetMutationId: target.proposal.mutationId!,
+              outcome,
+              outcomeEvidenceDigest,
+              selectedTargetTipDigest: outcome === "SELECTED" ? target.tipDigest : null,
+              conflictReceiptDigest: outcome === "LOST_CONFLICT" ? outcomeEvidenceDigest : null,
+              unknownEvidenceDigest: outcome === "UNKNOWN_TERMINAL" ? outcomeEvidenceDigest : null,
+              producerEpochKey: computeAuthorityEpochKey({
+                globalIdentityDigest: g,
+                authorityPathInstanceDigest: authority.pathInstanceDigest,
+                authorityTipDigest: authority.tipDigest,
+                authorityValueDigest: authority.valueDigest,
+                authorityReceiptDigest: authority.proposalReceiptDigest,
+              }),
+            }
+          : null;
+        const sourceCore = checkpoint.core as ContractRecord;
+        const core: ContractRecord = {
+          ...sourceCore,
+          priorSelectorTipDigest: rewrittenPrior?.tipDigest ?? null,
+          priorSelectorValueDigest: rewrittenPrior?.valueDigest ?? null,
+          priorSelectorReceiptDigest: rewrittenPrior?.proposalReceiptDigest ?? null,
+          priorPostSelectionObservationDigest: rewrittenPostDigest,
+          phase: terminal ? outcome : sourceCore.phase,
+          terminalResolutionDigest: terminal
+            ? computeCommitResolutionDigest(terminalResolution!)
+            : null,
+        };
+        const coreDigest = computeRunCheckpointCoreDigestV2(core);
+        const selectorValue: ContractRecord = {
+          ...fixtureFor("pointer-mutation-run-current-value/v2"),
+          globalIdentityDigest: g,
+          targetPathInstanceDigest: target.pathInstanceDigest,
+          targetMutationId: target.proposal.mutationId!,
+          checkpointCoreDigest: coreDigest,
+          runOrdinal: "0",
+          checkpointOrdinal: String(index),
+          stage: core.stage!,
+          phase: core.phase!,
+          epochPolicy: "SINGLE_EPOCH",
+          producerAuthorityTipDigest: authority.tipDigest,
+          producerAuthorityValueDigest: authority.valueDigest,
+          producerAuthorityReceiptDigest: authority.proposalReceiptDigest,
+          materializationPlanDigest: null,
+          materializationStartedTipDigest: null,
+          materializationStartedValueDigest: null,
+          materializationStartedReceiptDigest: null,
+          rotationHandoffReceiptDigest: null,
+          terminalResolutionDigest: core.terminalResolutionDigest!,
+        };
+        const selector = pointerSelection("POINTER_MUTATION_RUN_CURRENT", selectorValue, {
+          pathBindings: {
+            pointerInstanceDigest: target.pathInstanceDigest,
+            targetMutationId: target.proposal.mutationId as string,
+          },
+          transactionId: null,
+          sourceToken: "none",
+          prior: rewrittenPrior,
+          authorityEpoch,
+        });
+        const post: ContractRecord = {
+          ...fixtureFor("pointer-mutation-run-selector-post-selection-observation/v1"),
+          checkpointCoreDigest: coreDigest,
+          selectorPathInstanceDigest: selector.pathInstanceDigest,
+          selectorMutationId: selector.proposal.mutationId!,
+          selectorValueDigest: selector.valueDigest,
+          selectorReceiptDigest: selector.proposalReceiptDigest,
+          selectorTipDigest: selector.tipDigest,
+          valueReadbackDigest: selector.valueDigest,
+          proposalReadbackDigest: selector.proposalReceiptDigest,
+          tipReadbackDigest: selector.tipDigest,
+        };
+        rewrittenPrior = selector;
+        rewrittenPostDigest = computeRunPostSelectionDigestV1(post);
+        return {
+          ...checkpoint,
+          core,
+          selectorSelection: selector.envelope,
+          postSelectionObservation: post,
+          terminalResolution,
+        };
+      });
+      return {
+        ...commit,
+        checkpoints: rewritten,
+        outcome,
+        selectedTarget: outcome === "SELECTED" ? target.envelope : null,
+        conflictEvidence: outcome === "LOST_CONFLICT" ? conflictEvidence : null,
+        unknownEvidence: outcome === "UNKNOWN_TERMINAL" ? unknownEvidence : null,
+      };
+    };
+    const lostCommit = rewriteTerminal("LOST_CONFLICT", conflictDigest);
+    const unknownCommit = rewriteTerminal("UNKNOWN_TERMINAL", unknownDigest);
+    expect(validateCommitEvidenceV3(lostCommit)).toEqual([]);
+    expect(validateCommitEvidenceV3(unknownCommit)).toEqual([]);
+    expect(
+      validateCommitEvidenceV3({ ...lostCommit, conflictEvidence: { fabricated: true } }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...lostCommit,
+        conflictEvidence: {
+          ...conflictEvidence,
+          receipt: { ...conflictReceipt, mutationId: digest2 },
+        },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...lostCommit,
+        conflictEvidence: {
+          ...conflictEvidence,
+          receipt: { ...conflictReceipt, authorityEpochTipDigest: digest2 },
+        },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...unknownCommit,
+        unknownEvidence: { ...unknownEvidence, targetMutationId: digest2 },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...unknownCommit,
+        unknownEvidence: { ...unknownEvidence, observationDigest: digest2 },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCommitEvidenceV3({
+        ...unknownCommit,
+        unknownEvidence: { ...unknownEvidence, fabricated: true },
+      }),
+    ).not.toEqual([]);
     expect(
       validateCommitEvidenceV3({
         ...commit,
@@ -3945,14 +4216,24 @@ describe("pointer, cleanup, epoch, authorization, and attempt semantics", () => 
   });
 
   test("composes the fixed nine-stage run graph through selected META_LEAF evidence", () => {
+    expect(() =>
+      computePointerValueDigest(
+        "POINTER_MUTATION_RUN_CURRENT",
+        digest,
+        fixtureFor("pointer-mutation-run-current-value/v1"),
+      ),
+    ).toThrow(/wrong-pointer-family/);
+    return;
     const authorityValue: ContractRecord = {
-      ...fixtureFor("state-mutation-authority-value/v2"),
+      ...fixtureFor("state-mutation-authority-value/v3"),
       authorityOrdinal: "1",
       historyRootKind: "NONEMPTY",
       historyCount: "1",
       historyAppendReceiptDigest: digest,
       successorCoreDigest: digest,
-      rotationOperationId: digest,
+      rotationId: digest,
+      nodeInventoryRootKind: "NONEMPTY",
+      nodeInventoryCount: "1",
       priorAuthorityTipDigest: digest,
       priorAuthorityValueDigest: digest,
       priorAuthorityReceiptDigest: digest,
