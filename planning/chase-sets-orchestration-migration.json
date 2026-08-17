@@ -22,25 +22,18 @@
     "sourceEpicsRetainedAsProvenance": [6903, 6904, 6905]
   },
   "sourceIssueNumbers": [
-    4129, 5660, 5663, 5664, 6080, 6082, 6162, 6174, 6182, 6185,
-    6209, 6210, 6211, 6212, 6213, 6214, 6232, 6255, 6257, 6274,
-    6283, 6310, 6311, 6312, 6317, 6318, 6320, 6321, 6322, 6328,
-    6329, 6337, 6342, 6345, 6349, 6356, 6357, 6379, 6380, 6381,
-    6382, 6385, 6389, 6391, 6392, 6393, 6394, 6398, 6400, 6403,
-    6408, 6409, 6423, 6424, 6425, 6517, 6518, 6536, 6537, 6538,
-    6539, 6540, 6550, 6551, 6552, 6553, 6554, 6555, 6557, 6560,
-    6561, 6562, 6563, 6564, 6570, 6571, 6572, 6574, 6575, 6576,
-    6579, 6580, 6582, 6583, 6584, 6586, 6587, 6588, 6589, 6590,
-    6591, 6592, 6593, 6594, 6595, 6596, 6597, 6598, 6599, 6600,
-    6601, 6602, 6603, 6604, 6605, 6606, 6609, 6610, 6617, 6618,
-    6619, 6620, 6621, 6622, 6623, 6624, 6625, 6626, 6627, 6628,
-    6629, 6630, 6631, 6632, 6633, 6634, 6642, 6643, 6644, 6645,
-    6646, 6647, 6648, 6649, 6650, 6651, 6653, 6680, 6682, 6683,
-    6684, 6685, 6687, 6694, 6695, 6763, 6766, 6767, 6769, 6785,
-    6786, 6807, 6808, 6809, 6828, 6848, 6849, 6850, 6851, 6852,
-    6853, 6863, 6883, 6888, 6889, 6890, 6891, 6892, 6903, 6904,
-    6905, 6916, 6927, 6928, 6954, 6966, 6968, 6978, 6993, 6994,
-    6995, 6996, 6997
+    4129, 5660, 5663, 5664, 6080, 6082, 6162, 6174, 6182, 6185, 6209, 6210, 6211, 6212, 6213, 6214,
+    6232, 6255, 6257, 6274, 6283, 6310, 6311, 6312, 6317, 6318, 6320, 6321, 6322, 6328, 6329, 6337,
+    6342, 6345, 6349, 6356, 6357, 6379, 6380, 6381, 6382, 6385, 6389, 6391, 6392, 6393, 6394, 6398,
+    6400, 6403, 6408, 6409, 6423, 6424, 6425, 6517, 6518, 6536, 6537, 6538, 6539, 6540, 6550, 6551,
+    6552, 6553, 6554, 6555, 6557, 6560, 6561, 6562, 6563, 6564, 6570, 6571, 6572, 6574, 6575, 6576,
+    6579, 6580, 6582, 6583, 6584, 6586, 6587, 6588, 6589, 6590, 6591, 6592, 6593, 6594, 6595, 6596,
+    6597, 6598, 6599, 6600, 6601, 6602, 6603, 6604, 6605, 6606, 6609, 6610, 6617, 6618, 6619, 6620,
+    6621, 6622, 6623, 6624, 6625, 6626, 6627, 6628, 6629, 6630, 6631, 6632, 6633, 6634, 6642, 6643,
+    6644, 6645, 6646, 6647, 6648, 6649, 6650, 6651, 6653, 6680, 6682, 6683, 6684, 6685, 6687, 6694,
+    6695, 6763, 6766, 6767, 6769, 6785, 6786, 6807, 6808, 6809, 6828, 6848, 6849, 6850, 6851, 6852,
+    6853, 6863, 6883, 6888, 6889, 6890, 6891, 6892, 6903, 6904, 6905, 6916, 6927, 6928, 6954, 6966,
+    6968, 6978, 6993, 6994, 6995, 6996, 6997
   ],
   "sourceBoardItemCount": 182,
   "sourceIssuesNotOnSourceBoard": [6162],
@@ -74,21 +67,30 @@
       "key": "breaker-authority",
       "disposition": "CAPTURED",
       "destinationKeys": ["ISS-025"],
-      "sourceIssueNumbers": [6232, 6274, 6318, 6579, 6588, 6591, 6592, 6593, 6598, 6599, 6600, 6601, 6604, 6606, 6609, 6610, 6621, 6622, 6623, 6624, 6630, 6631, 6633, 6634, 6647, 6649, 6651, 6653, 6694, 6695],
+      "sourceIssueNumbers": [
+        6232, 6274, 6318, 6579, 6588, 6591, 6592, 6593, 6598, 6599, 6600, 6601, 6604, 6606, 6609,
+        6610, 6621, 6622, 6623, 6624, 6630, 6631, 6633, 6634, 6647, 6649, 6651, 6653, 6694, 6695
+      ],
       "coverageStatement": "Generic open, hold, scoped-impact, repair-admission, recovery, and deadlock behavior is owned by the policy-neutral breaker state machine; project thresholds and deploy policy remain adapter facts."
     },
     {
       "key": "dispatch-test-and-host-authority",
       "disposition": "CAPTURED",
       "destinationKeys": ["ISS-006", "ISS-008", "ISS-021", "ISS-023", "ISS-030"],
-      "sourceIssueNumbers": [6080, 6082, 6257, 6283, 6310, 6311, 6321, 6349, 6380, 6385, 6400, 6403, 6555, 6602, 6605, 6680, 6682, 6684, 6685, 6769, 6808, 6966, 6978],
+      "sourceIssueNumbers": [
+        6080, 6082, 6257, 6283, 6310, 6311, 6321, 6349, 6380, 6385, 6400, 6403, 6555, 6602, 6605,
+        6680, 6682, 6684, 6685, 6769, 6808, 6966, 6978
+      ],
       "coverageStatement": "Portable harness evidence, worker ownership, host admission, dispatch briefs, process identity, and supervised recovery own these acceptance outcomes without importing repository policy."
     },
     {
       "key": "github-board-and-provider-authority",
       "disposition": "CAPTURED",
       "destinationKeys": ["ISS-033", "ISS-036"],
-      "sourceIssueNumbers": [5660, 5663, 5664, 6379, 6381, 6382, 6389, 6391, 6392, 6393, 6394, 6618, 6627, 6644, 6927, 6928, 6968],
+      "sourceIssueNumbers": [
+        5660, 5663, 5664, 6379, 6381, 6382, 6389, 6391, 6392, 6393, 6394, 6618, 6627, 6644, 6927,
+        6928, 6968
+      ],
       "coverageStatement": "Complete pagination, ruleset/check reduction, native issue and project identity, Actions authority, and per-card mutation belong to the GitHub probe and self-host adapter."
     },
     {
@@ -109,14 +111,20 @@
       "key": "review-authority",
       "disposition": "CAPTURED",
       "destinationKeys": ["ISS-009", "ISS-037"],
-      "sourceIssueNumbers": [6255, 6312, 6317, 6320, 6328, 6329, 6337, 6398, 6408, 6409, 6424, 6425, 6518, 6586, 6587, 6589, 6590, 6594, 6595, 6596, 6597, 6603, 6766, 6809],
+      "sourceIssueNumbers": [
+        6255, 6312, 6317, 6320, 6328, 6329, 6337, 6398, 6408, 6409, 6424, 6425, 6518, 6586, 6587,
+        6589, 6590, 6594, 6595, 6596, 6597, 6603, 6766, 6809
+      ],
       "coverageStatement": "Exact-subject readiness, immutable independent review, repair classification, bounded review packets, and stale-head refusal are owned by review authority and final N0 review."
     },
     {
       "key": "release-installation-and-recovery",
       "disposition": "CAPTURED",
       "destinationKeys": ["ISS-014", "ISS-020", "ISS-027"],
-      "sourceIssueNumbers": [6423, 6517, 6550, 6551, 6552, 6553, 6554, 6557, 6570, 6571, 6572, 6632, 6648, 6650, 6687, 6807, 6954],
+      "sourceIssueNumbers": [
+        6423, 6517, 6550, 6551, 6552, 6553, 6554, 6557, 6570, 6571, 6572, 6632, 6648, 6650, 6687,
+        6807, 6954
+      ],
       "coverageStatement": "Version identity, retained-state compatibility, certified installation, self-modification boundaries, and rollback or forward repair are owned by stable promotion and bootstrap authorization."
     },
     {
@@ -144,7 +152,9 @@
       "key": "reporter-hardening-future-option",
       "disposition": "PARKED",
       "destinationKeys": ["ISS-006", "ISS-023"],
-      "sourceIssueNumbers": [6536, 6537, 6538, 6539, 6540, 6563, 6564, 6575, 6576, 6580, 6582, 6583, 6584],
+      "sourceIssueNumbers": [
+        6536, 6537, 6538, 6539, 6540, 6563, 6564, 6575, 6576, 6580, 6582, 6583, 6584
+      ],
       "coverageStatement": "The detailed Vitest reporter and ambient-environment hardening chain is retained as optional harness/host evidence, not minimum-kernel scope.",
       "unparkCondition": "A reproduced cross-platform admission, reporter-integrity, or launch-environment failure blocks required self-host evidence and the existing ISS-006/ISS-023 controls do not discriminate it."
     },
@@ -152,13 +162,17 @@
       "key": "optimization-and-autonomy-future-options",
       "disposition": "PARKED",
       "destinationKeys": ["ISS-010", "ISS-011", "ISS-012", "ISS-033", "ISS-036"],
-      "sourceIssueNumbers": [6185, 6209, 6210, 6211, 6212, 6213, 6214, 6560, 6561, 6562, 6574, 6848, 6849, 6850, 6851, 6852, 6853, 6888, 6889, 6890, 6891, 6892, 6916, 6993, 6994, 6995, 6996, 6997],
+      "sourceIssueNumbers": [
+        6185, 6209, 6210, 6211, 6212, 6213, 6214, 6560, 6561, 6562, 6574, 6848, 6849, 6850, 6851,
+        6852, 6853, 6888, 6889, 6890, 6891, 6892, 6916, 6993, 6994, 6995, 6996, 6997
+      ],
       "coverageStatement": "Cost forecasting, step experiments, multi-model planning, decision autonomy, richer board projections, and advisory scope ratios remain future options rather than self-host prerequisites.",
       "unparkCondition": "The self-hosting release is healthy and measured cycle-time, cost, decision-quality, or board-correctness evidence identifies one bounded option with a positive expected operational dividend."
     }
   ],
   "postCensusAddendum": {
     "observedAt": "2026-08-17",
+    "liveAuditRecordedAt": "2026-08-17T18:23:17.2990398-05:00",
     "baseSnapshotRecordCount": 183,
     "addendumRecordCount": 2,
     "totalProvenanceRecordCount": 185,
@@ -166,11 +180,15 @@
       {
         "sourceIssueNumber": 6999,
         "destinationKey": "ISS-039",
-        "sourceState": "CLOSED",
-        "sourceStateReason": "NOT_PLANNED",
+        "sourceState": "OPEN",
+        "sourceStateReason": "REOPENED",
         "sourceBoardPresence": "PRESENT",
-        "sourceBoardRole": "PROVENANCE_ONLY",
-        "provenanceStatement": "The closed source registration remains non-executable Chase Sets Delivery provenance for the portable simplification-finding owner."
+        "sourceBoardRole": "PENDING_CLEANUP",
+        "requiredSourceState": "CLOSED",
+        "requiredSourceStateReason": "NOT_PLANNED",
+        "requiredSourceBoardPresence": "ABSENT",
+        "requiredSourceBoardRole": "SUPERSEDED_REMOVED",
+        "provenanceStatement": "Live audit records this source registration reopened and still present; the required terminal state closes it as superseded/NOT_PLANNED and removes it from Chase Sets Delivery, with ISS-039 as sole executable owner."
       },
       {
         "sourceIssueNumber": 7000,
@@ -179,7 +197,11 @@
         "sourceStateReason": null,
         "sourceBoardPresence": "PRESENT",
         "sourceBoardRole": "PENDING_CLEANUP",
-        "provenanceStatement": "The open source registration is superseded by the portable evidence-proportionality owner and remains pending source-board cleanup."
+        "requiredSourceState": "CLOSED",
+        "requiredSourceStateReason": "NOT_PLANNED",
+        "requiredSourceBoardPresence": "ABSENT",
+        "requiredSourceBoardRole": "SUPERSEDED_REMOVED",
+        "provenanceStatement": "Live audit records this source registration open and still present; the required terminal state closes it as superseded/NOT_PLANNED and removes it from Chase Sets Delivery, with ISS-040 as sole executable owner."
       }
     ]
   }

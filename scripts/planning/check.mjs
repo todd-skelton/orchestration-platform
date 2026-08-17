@@ -1,4 +1,5 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { capabilitySlotName, capabilitySlotRoot } from "../capability-slots.mjs";
@@ -62,6 +63,27 @@ function uniqueRows(rows, kind) {
 
 function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
   const migration = snapshot.migration;
+  const historicalBase = {
+    observedAt: migration.observedAt,
+    sourceRepository: migration.sourceRepository,
+    sourceProject: migration.sourceProject,
+    destinationRepository: migration.destinationRepository,
+    destinationProject: migration.destinationProject,
+    migrationPolicy: migration.migrationPolicy,
+    sourceIssueNumbers: migration.sourceIssueNumbers,
+    sourceBoardItemCount: migration.sourceBoardItemCount,
+    sourceIssuesNotOnSourceBoard: migration.sourceIssuesNotOnSourceBoard,
+    explicitExclusions: migration.explicitExclusions,
+    ownershipGroups: migration.ownershipGroups,
+  };
+  const historicalBaseBytes = Buffer.from(JSON.stringify(historicalBase), "utf8");
+  const historicalBaseDigest = createHash("sha256").update(historicalBaseBytes).digest("hex");
+  if (
+    historicalBaseBytes.byteLength !== 7126 ||
+    historicalBaseDigest !== "a8d168d55fdb2ee12da28988009d8e93c25675117e0f2b903c3c1f8edc832b7a"
+  ) {
+    fail("migration historical 183-record base moved");
+  }
   if (migration.schemaVersion !== "orchestration-migration/v1") {
     fail("unknown orchestration migration schema");
   }
@@ -163,6 +185,8 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
   const records = addendum?.records;
   if (
     addendum?.observedAt !== migration.observedAt ||
+    typeof addendum?.liveAuditRecordedAt !== "string" ||
+    Number.isNaN(Date.parse(addendum.liveAuditRecordedAt)) ||
     addendum?.baseSnapshotRecordCount !== 183 ||
     addendum.baseSnapshotRecordCount !== source.length ||
     addendum?.addendumRecordCount !== 2 ||
@@ -177,10 +201,10 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
       6999,
       {
         destinationKey: "ISS-039",
-        sourceState: "CLOSED",
-        sourceStateReason: "NOT_PLANNED",
+        sourceState: "OPEN",
+        sourceStateReason: "REOPENED",
         sourceBoardPresence: "PRESENT",
-        sourceBoardRole: "PROVENANCE_ONLY",
+        sourceBoardRole: "PENDING_CLEANUP",
       },
     ],
     [
@@ -225,6 +249,10 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
     if (
       record.sourceBoardPresence !== expected.sourceBoardPresence ||
       record.sourceBoardRole !== expected.sourceBoardRole ||
+      record.requiredSourceState !== "CLOSED" ||
+      record.requiredSourceStateReason !== "NOT_PLANNED" ||
+      record.requiredSourceBoardPresence !== "ABSENT" ||
+      record.requiredSourceBoardRole !== "SUPERSEDED_REMOVED" ||
       typeof record.provenanceStatement !== "string" ||
       record.provenanceStatement.trim() === ""
     ) {
@@ -327,6 +355,7 @@ function validateCommandCensus(snapshot) {
     "test",
     "verify:bootstrap",
     "planning:check",
+    "planning:board-check",
     "bootstrap",
     "host-custody:bootstrap",
   ]);

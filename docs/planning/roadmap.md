@@ -91,6 +91,7 @@ trusted OS harness + CLI contract ─> Codex host probe
 dispatch + modules + routing + project adapter + host probe + credential broker ─> Codex host adapter
 CLI + journal ─> operator status projection
 review authority + Codex host ─> review-discrimination calibration (advisory)
+Codex host ─> Claude Code authority probe ─> Claude Code host adapter
 state + review + journal ─> release promotion
 review simplification + planning proportionality ─────────────────┐
 sessions + dispatch + review + journal + modules + routing + release + credential broker ─> engine cycle
@@ -123,3 +124,6 @@ project adapter + self-hosting + certified release ─> shadow mode ─> cutover
   `EPIC-MODULES`. `ISS-019` directly consumes both before freezing the N0
   certification census; this is the smallest edge set that prevents module
   bytes from landing after certification.
+- Keep `ISS-044`/`ISS-045` in Chase Sets integration-ready, off the self-host
+  critical path; unsupported OS/capability rows narrow or replan and never pass
+  by absence.

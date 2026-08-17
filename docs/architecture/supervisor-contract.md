@@ -52,7 +52,7 @@ mutation method and revokes its handles before lock release.
 
 Rotation holds the same lock under the old selected capability. It validates
 the reviewed successor active release/helper/profile/ABI/custody, settles all
-pending proposals among the other eleven pointer kinds in registry/`Dp`/
+pending proposals among the other ten pointer kinds in registry/`Dp`/
 predecessor/mutation order, and requires zero unrelated `PENDING` or `UNKNOWN`.
 It is an ordinary single-epoch commit run: it appends the exact
 `authority-history-record/v1` record (with `Dh` under `authority-history/v1`)
@@ -136,7 +136,7 @@ successor owner graph; only its downstream post-selection receipt may bind them.
 Exactly one FULL_REQUIRED destination-owner pointer and non-symlink
 `destination-owner.lock` exist at
 `<bootstrap-custody-root>/state-mutation-destination-owners/<Ddest>/`. Its
-generic value/proposal/conflict/retention storage and `current.json` use
+generic value/proposal/conflict storage and `current.json` use
 `destination-owner-value/v1`, receipt, tip, and conflict domains. The owner
 lifecycle is exactly `ACTIVE|CONSUMED|RETIRED` with edges
 `ACTIVATE_GENESIS`, `CONSUME`, `RETIRE_UNUSED`, `RETIRE_CONSUMED`, and
@@ -657,7 +657,7 @@ match the bytes parsed for that named record.
 History uses FULL_REQUIRED content-addressed records at canonical
 ordinal-derived paths beneath
 `installation/state-mutation-authority-history/`. No history deletion,
-compaction, or `AUDIT_DEGRADED` authority exists. The current selected
+compaction, or degraded-audit mode exists. The current selected
 authority is trusted only through the live custody context; historical
 producer projections derive from the selected authority value and the fully
 walked chain. A stale head or projection refuses after rotation.
@@ -669,8 +669,11 @@ installation/state-mutation-authority-history/records/<ordinal>.json
 The walk constructs the path of record `n+1` from `n` and never enumerates a
 directory. Verification walks the complete chain from genesis and compares the
 selected head ordinal and record digest. A missing record at or below the head
-refuses; the path at head plus one must be absent or match the armed rotation
-intent; the path at head plus two must be absent; a file outside the canonical
+refuses. A head-plus-one record is accepted only when its ordinal is head plus
+one, its predecessor digest equals the selected head record digest, and its
+`Drot`, `Dsc`, and successor facts equal the selected CAS-armed journal and its
+create-once intent record. With no selected armed intent, any head-plus-one
+file refuses. The path at head plus two must be absent; a file outside the canonical
 ordinal paths carries no authority. Missing, forked, reordered, truncated, or
 digest-mismatched chains refuse. Rotation occurs at most a few times per
 release, so the deliberately O(n) full walk is bounded in practice; no membership proof, sparse
@@ -749,7 +752,7 @@ The closed authority schemas include `pointer-current-tip/v1`,
 `activation-recovery-fence-head/v1`, `activation-recovery-launch/v1`,
 `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`,
 `attempt-log/v1`,
-`activation-cleanup-archive-head/v1`, `authority-retention/v1`,
+`activation-cleanup-archive-head/v1`,
 `state-mutation-authority-value/v1`, the authority-history/bootstrap-owner
 schemas above, `pointer-mutation-run-checkpoint-core/v1`,
 `pointer-mutation-run-current-value/v1`, and
@@ -767,12 +770,11 @@ deterministic mutation ID additionally binds position, prior triple, successor
 installation/pointer-cas/<instance-digest>/values/<mutation-id>.json
 installation/pointer-cas/<instance-digest>/proposals/<prior-tip-or-genesis>/<mutation-id>.json
 installation/pointer-cas/<instance-digest>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json
-installation/pointer-cas/<instance-digest>/retention.json
 ```
 
 Proposal intent is `VALUE_PROPOSED` or `TOMBSTONE_PROPOSED`. Its create-once
 timestamp is reused byte-for-byte on retry. Classification is exactly
-`PENDING`, `SELECTED`, `LOST_CONFLICT`, `COMPACTED`, or `UNKNOWN`. A conflict
+`PENDING`, `SELECTED`, `LOST_CONFLICT`, or `UNKNOWN`. A conflict
 receipt is valid only after it binds an actually observed winning canonical
 triple. Malformed, contradictory, skipped, or fake-lost evidence is `UNKNOWN`.
 
@@ -780,10 +782,9 @@ A crash may leave a durable value/proposal before tip selection. It remains
 `PENDING`; the next lock holder enumerates the deterministic predecessor bucket,
 revalidates identical create-once bytes, and performs the real CAS or observes a
 real winner. It never infers loss from age or manufactures a conflict. Census
-includes every value, proposal, conflict, tip, archive, tombstone, and retention
-record; an orphan value is retained until its proposal is classified, and an
-orphan/malformed proposal is `UNKNOWN`. Selected and lost evidence is retained
-until an authorized retention transition classifies it `COMPACTED`.
+includes every value, proposal, conflict, tip, archive, and tombstone record;
+an orphan value is retained until its proposal is classified, and an
+orphan/malformed proposal is `UNKNOWN`. Every record class is FULL_REQUIRED.
 
 The closed runtime pointer kinds are exactly:
 
@@ -795,10 +796,9 @@ The closed runtime pointer kinds are exactly:
 6. recovery authorization attachment;
 7. recovery attempt log;
 8. activation cleanup archive head;
-9. authority retention;
-10. recovery attempt reservation;
-11. state mutation authority rotation;
-12. pointer mutation run current.
+9. recovery attempt reservation;
+10. state mutation authority rotation;
+11. pointer mutation run current.
 
 The registry maps every kind to one exact canonical path constructor, permitted
 value schemas, source tokens, roots, archives, and genesis rule. Unknown or
@@ -819,7 +819,6 @@ The canonical authority-path census is closed:
 | `RECOVERY_AUTHORIZATION_ATTACHMENT` | `installation/recovery-authorizations/<transaction>/attachment.json`                                   |
 | `RECOVERY_ATTEMPT_LOG`              | `installation/activation-recovery-launches/<transaction>/<source>/attempt-log.json`                    |
 | `ACTIVATION_CLEANUP_ARCHIVE_HEAD`   | `installation/activation-cleanup/archive-head.json`                                                    |
-| `AUTHORITY_RETENTION`               | `installation/authority-retention/<pointer-instance-digest>.json`                                      |
 | `RECOVERY_ATTEMPT_RESERVATION`      | `installation/activation-recovery-launches/<transaction>/<source>/reservations/<predecessor-key>.json` |
 | `STATE_MUTATION_AUTHORITY_ROTATION` | `installation/state-mutation-authority.json`                                                           |
 | `POINTER_MUTATION_RUN_CURRENT`      | `installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/current-run.json`      |
@@ -845,7 +844,7 @@ only the next core may bind that observation.
 
 `POINTER_MUTATION_RUN_CURRENT` is `META_LEAF`: it uses the exact generic
 `values/<mutation-id>`, prior/genesis proposal/conflict buckets, classification,
-tombstone, retention, and census rules, but does not recursively create a run
+tombstone and census rules, but does not recursively create a run
 selector for itself. A one-use ISS-004 capability binds it to the exact parent
 target/`Dp`/mutation/core/prior/epoch. Run audit is FULL_REQUIRED.
 
@@ -1000,7 +999,7 @@ Both branches first carry this exact common census (canonical member order):
 | `schemaVersion`                     | literal `pointer-mutation-commit-evidence/v1` |
 | `targetMutationId`                  | `sha256`                                      |
 | `targetPathInstanceDigest`          | `sha256`                                      |
-| `targetPointerKind`                 | one of the exact twelve registry kinds        |
+| `targetPointerKind`                 | one of the exact eleven registry kinds        |
 
 For either branch, canonical JSON order is the single ascending UTF-16 merge
 of this common table, its branch table, and its one applicable outcome table;
@@ -1155,14 +1154,13 @@ META_LEAF uses the generic selector-instance storage exactly:
 installation/pointer-cas/<selector-Dp>/values/<selector-mutation-id>.json
 installation/pointer-cas/<selector-Dp>/proposals/<prior-tip-or-genesis>/<selector-mutation-id>.json
 installation/pointer-cas/<selector-Dp>/conflicts/<prior-tip-or-genesis>/<selector-mutation-id>.json
-installation/pointer-cas/<selector-Dp>/retention.json
 ```
 
 Only recursive journaling is excluded. Create-once retry, real-winner conflict,
-classification, tombstone, retention, path census, producer epoch, and exact
+classification, tombstone, path census, producer epoch, and exact
 selected tip rules are identical to every other runtime pointer.
 
-`pointer-evidence-packet/v1` is an exact twelve-slot union. `HISTORICAL_READ`
+`pointer-evidence-packet/v1` is an exact eleven-slot union. `HISTORICAL_READ`
 requires `currentCommit=null` and exposes no mutation capability.
 `MUTATION_COMMIT` requires exact `Dcommit`, the corresponding closed commit
 union bytes, and a purpose-compatible live context. For `ORDINARY`, packet
@@ -1282,22 +1280,15 @@ Abort admits no broker client and terminalizes the exact source before broker
 revocation. Fence-backed completion selects terminal launch state before fence
 clear, then archives/tombstones after child exit and authorization revoke.
 
-## Retention and degraded audit
+## Required record retention
 
-Destination owner/anchor lineage, physical identity/observations, state
-authority/history, run-current audit, active release, cleanup head/gate, fence,
-authorization records, current tips, and current proposals are
-`FULL_REQUIRED`. Only terminal launch/attempt history may use
-`TERMINAL_CHECKPOINT_ALLOWED`. Authorized compaction selects checkpoint, exact
-deletion plan, verified deletion receipt, and completion through the retention
-pointer. Pending proposals are never compacted.
-
-Unexpected old loss is forward-nonblocking only after a selected terminal
-checkpoint/tombstone and only as durable `AUDIT_DEGRADED`. Existing transaction
-recovery/retry/cleanup, selected attachment calls, and ordinary non-release
-ticks may continue. New bootstrap/promotion, certification, unrelated
-authorization/attachment, compaction, and audit finalization refuse.
-Loss under `FULL_REQUIRED` or before checkpoint is `UNKNOWN` and blocks all
+Every record class is `FULL_REQUIRED`: destination owner/anchor lineage,
+physical identity/observations, state authority/history, run-current audit,
+active release, cleanup head/gate, fence, authorization records, terminal
+launch/attempt history, current tips, and current proposals alike. No
+compaction protocol, retention pointer, or degraded-audit mode exists;
+terminal attempt history grows only with rare attempts and is never compacted.
+Unexpected loss of any required record is `UNKNOWN` and blocks all
 mutation/start.
 
 ## Native scheduler definitions

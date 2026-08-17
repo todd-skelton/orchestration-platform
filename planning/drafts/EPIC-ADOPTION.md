@@ -2,7 +2,7 @@
 key: EPIC-ADOPTION
 title: "Epic: Adopt the platform through a versioned project adapter"
 labels: ["type:epic", "area:integrations"]
-children: [ISS-013, ISS-028, ISS-016, ISS-024, ISS-017, ISS-018]
+children: [ISS-013, ISS-028, ISS-016, ISS-024, ISS-017, ISS-018, ISS-044, ISS-045]
 ---
 
 ## Outcome
@@ -15,6 +15,11 @@ The readiness slices (`ISS-028`, `ISS-016`, and `ISS-024`) run as soon as their
 native dependencies clear; they do not wait artificially for self-hosting.
 Only live shadow and cutover (`ISS-017`, `ISS-018`) require the self-host release.
 
+The second-host slices (`ISS-044`, `ISS-045`) restore the first consumer's
+dual Codex/Claude lane routing surface under platform authority. They start
+after the first concrete host lands, reuse its proven probe pattern without
+inheriting any of its evidence, and sit off the self-host critical path.
+
 ## Orchestrator handoff
 
 - Direct-edge DAG (generated from `planning/roadmap.json`):
@@ -23,7 +28,9 @@ Only live shadow and cutover (`ISS-017`, `ISS-018`) require the self-host releas
   `ISS-025 → ISS-016`;
   `ISS-016, ISS-028 → ISS-024`;
   `ISS-015, ISS-016, ISS-028 → ISS-017`;
-  `ISS-017, ISS-024 → ISS-018`.
+  `ISS-017, ISS-024 → ISS-018`;
+  `ISS-021 → ISS-044`;
+  `ISS-044 → ISS-045`.
 - Gate: shadow comparison follows `docs/planning/first-consumer.md`,
   distinguishes authoritative decisions from advisory telemetry, and explains
   every authority difference.
@@ -39,3 +46,5 @@ Only live shadow and cutover (`ISS-017`, `ISS-018`) require the self-host releas
 - `ISS-024` — Implement and fixture first-consumer state import recovery.
 - `ISS-017` — Run authoritative shadow comparison for the first consumer.
 - `ISS-018` — Cut over the first consumer with tested recovery.
+- `ISS-044` — Probe the Claude Code CLI worker-host authority contract.
+- `ISS-045` — Implement the second concrete Claude Code worker-host adapter.

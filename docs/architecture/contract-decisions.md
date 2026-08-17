@@ -28,7 +28,7 @@ it may not silently choose another equally plausible contract.
 
 ### Closed records and arrays
 
-Public parse, serialize, migrate, and nested-evidence entry points first take a
+Public parse, serialize, and nested-evidence entry points first take a
 detached closed-record snapshot. They reject proxies (including transparent
 proxies), symbols, inherited or non-enumerable fields, accessors, exotic/class
 instances, and descriptor/prototype traps. Null-prototype records are allowed
@@ -57,7 +57,7 @@ containing `Dv+Dr`. Values do not contain their selecting proposal or tip.
 Checkpoint cores and ordinary terminal resolutions likewise exclude the run-current
 value/proposal/tip that selects them; only a downstream post-selection
 observation may feed a later core. Pointer path, instance digest,
-proposal/conflict paths, mutation ID, tombstone, archive, and retention behavior
+proposal/conflict paths, mutation ID, tombstone, archive, and FULL_REQUIRED preservation
 are exactly those in `supervisor-contract.md`.
 
 ## Configuration and state roots
@@ -133,9 +133,10 @@ are exactly those in `supervisor-contract.md`.
   helper/profile/ABI/lock/state-component facts are excluded from `G` and
   remain bound by each selected authority value; changing a `G` field is a
   different installation identity and rotation refuses.
-- The runtime pointer registry has twelve kinds. There is no materialization
-  coordinator; authority-history records are ordinary content-addressed files
-  whose set completeness is proven by the chain walk alone.
+- The runtime pointer registry has eleven kinds. There is no materialization
+  coordinator or retention/compaction kind; authority-history records are
+  ordinary content-addressed files whose set completeness is proven by the
+  chain walk alone.
 - Every commit run is single-epoch. Authority rotation is an ordinary
   single-epoch mutation under the old capability that appends the chain
   record and then performs the authority CAS as its final action; it executes

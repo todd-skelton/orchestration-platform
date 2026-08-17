@@ -85,16 +85,20 @@ named successor series below, observed before the post-census registrations on
 The addendum is intentionally not folded into the 183-record base or its
 182-item source-board count:
 
-- `chase-sets/chase-sets#6999` maps to `ISS-039`. The source issue is
-  `CLOSED` with state reason `NOT_PLANNED` and remains present on Chase Sets
-  Delivery only as non-executable provenance.
-- `chase-sets/chase-sets#7000` maps to `ISS-040`. The source issue remains
-  `OPEN` and present on Chase Sets Delivery pending cleanup; the platform issue
-  is its sole executable owner.
+- `chase-sets/chase-sets#6999` maps to `ISS-039`. The recorded live observation
+  is `OPEN`/`REOPENED` and present on Chase Sets Delivery.
+- `chase-sets/chase-sets#7000` maps to `ISS-040`. The recorded live observation
+  is `OPEN` with no state reason and present on Chase Sets Delivery.
 
-Thus the current manifest proves 185 provenance identities, while the current
-addendum board cleanup is one provenance-only item plus one pending-cleanup
-item. Neither status changes the already reconciled historical base counts.
+Both required terminal states are `CLOSED`/`NOT_PLANNED`, absent from Chase
+Sets Delivery, with board role `SUPERSEDED_REMOVED`. The platform issues are
+their sole executable owners. These are pending cleanup targets until exact
+provider readback proves them; the manifest does not coerce the observation
+into the desired state.
+
+Thus the current manifest proves 185 provenance identities and separately
+records observed versus required addendum state. The pending cleanup does not
+change the already reconciled historical base counts.
 
 Explicit exclusions stay on the Chase Sets delivery board:
 
@@ -155,8 +159,8 @@ Explicit exclusions stay on the Chase Sets delivery board:
    numbers from complete paginated project and issue collections against the
    checked-in migration manifest.
 6. Record issues created after the historical census in
-   `postCensusAddendum`; preserve their observed source state and board role,
-   and never rewrite the 183-record base count to absorb them.
+   `postCensusAddendum`; preserve their source identity and terminal cleanup
+   disposition, and never rewrite the 183-record base count to absorb them.
 
 The new board's executable frontier is always derived from native issue
 dependencies and milestones. Imported source provenance never competes with a
