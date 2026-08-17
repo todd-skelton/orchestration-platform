@@ -29,8 +29,8 @@ A stable release orchestrates implementation and independent review of its
 successor, then promotes the unchanged candidate through a crash-recoverable
 protocol without granting the candidate pre-promotion authority.
 
-Preparatory M2 slices may start when their own dependencies clear. N0
-authorization is gated by the complete Portable foundation exit evidence at
+Preparatory self-host slices may start when their own dependencies clear. N0
+authorization is gated by the complete Portable substrate exit evidence at
 `ISS-019`, rather than by a blanket milestone entry gate.
 
 Exit evidence: stable N produces and promotes N+1 in an isolated fixture, with
