@@ -64,12 +64,18 @@ span both.
 
 ## Pointer value, proposal, tip, and conflict graph
 
+All pointers use the exact framing function `F`: UTF-8 platform domain, NUL,
+domain tag, NUL, unsigned 32-bit part count, then for each part its closed type
+tag, unsigned 64-bit length, and bytes. Embedded digests are raw 32 bytes;
+nullable raw digests use the closed null-part tag rather than text.
+
 All pointers use an acyclic framed digest graph:
 
 - `Dv` hashes the immutable family value under `pointer-value/v2`;
-- `Dr` hashes a pre-CAS `pointer-cas-proposal-receipt/v1` containing the prior
-  `Dt/Dv/Dr` triple and successor `Dv`;
-- `Dt` hashes the canonical tip containing `Dv+Dr`.
+- `Dr` uses domain `pointer-receipt/v2` over the canonical pre-CAS
+  `pointer-cas-proposal-receipt/v1` and its bound parts;
+- `Dt` uses domain `pointer-tip/v2` over canonical
+  `pointer-current-tip/v1` and its selected `Dv+Dr`.
 
 Framing uses the platform domain, NUL-delimited tag, part count, typed
 length-prefixed parts, raw 32-byte digests, and canonical JSON bytes. Values
@@ -79,26 +85,25 @@ The digest domains are closed and exact:
 
 | Digest | Domain tag | Framed identifying parts |
 | --- | --- | --- |
-| `Dv` | `pointer-value/v2` | pointer kind, value schema, canonical value bytes |
-| `Dr` | `pointer-cas-proposal-receipt/v1` | instance, mutation, intent, position, prior triple/genesis, successor `Dv`, outcome, create-once timestamp |
-| `Dt` | `pointer-tip/v2` | instance, selected `Dv`, selected `Dr` |
+| `Dv` | `pointer-value/v2` | pointer-kind text, path-instance digest raw32, canonical value bytes |
+| `Dr` | `pointer-receipt/v2` | pointer-kind text, path-instance digest raw32, mutation ID raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, position digest raw32, intent/outcome text, canonical `pointer-cas-proposal-receipt/v1` bytes |
+| `Dt` | `pointer-tip/v2` | pointer-kind text, path-instance digest raw32, `Dv` raw32, `Dr` raw32, canonical `pointer-current-tip/v1` bytes |
 | `Dp` | `pointer-instance/v2` | kind, canonical path, installation/project/state, transaction, source |
-| mutation ID | `pointer-mutation/v2` | `Dp`, position, prior triple/genesis, successor `Dv`, outcome |
-| conflict | `pointer-conflict-receipt/v1` | loser proposal, actual selected winner triple, classification time |
-| removal | `pointer-removal-receipt/v1` | pre-removal triple, selected archive/tombstone, exact delete/read-back evidence |
+| mutation ID | `pointer-mutation-id/v2` | pointer kind, canonical path, `Dp` raw32, transaction ID/null, source token, position digest raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, outcome/intent |
+| `Dc` | `pointer-conflict-receipt/v1` | `Dp` raw32, mutation ID raw32, losing `Dr/Dv`, observed winning `Dt/Dv/Dr`, conflict kind, selected authority epoch triple, conflict time, canonical create-once conflict bytes |
 | accumulator first | `recovery-attempt-accumulator/v1` + byte `0x00` | raw terminal-summary digest |
 | accumulator later | `recovery-attempt-accumulator/v1` + byte `0x01` | raw prior accumulator-value digest, raw terminal-summary digest |
 
-The closed authority schemas are `pointer-tip/v2`,
+The closed authority schemas are `pointer-current-tip/v1`,
 `pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`,
-`pointer-tombstone/v1`, `pointer-removal-receipt/v1`,
+`pointer-tombstone-value/v1`,
 `active-release/v2`, `activation-cleanup-gate-root/v2`,
 `activation-cleanup-gate-head/v2`, `activation-recovery-fence-root/v2`,
 `activation-recovery-fence-head/v2`, `activation-recovery-launch/v2`,
 `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`,
 `recovery-attempt-terminal-summary/v1`, `recovery-attempt-accumulator/v1`,
 `activation-cleanup-archive-head/v2`, `authority-retention/v1`, and
-`state-mutation-authority/v1`. Authorization schemas are closed in
+`state-mutation-authority-value/v1`. Authorization schemas are closed in
 `credential-broker.md`. Any old affected v1 authority schema is diagnostic only.
 
 The pointer-instance digest binds kind, canonical pointer path, installation,

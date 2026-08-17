@@ -65,9 +65,13 @@ The `BOOTSTRAP` mode union additionally contains grant, installer, candidate,
 and destination identities. The `SUCCESSOR` union additionally contains
 candidate/cycle/admission identities, prior and successor broker generations,
 expected active generation, predecessor and successor release/executable
-digests, distinct predecessor/candidate/successor operation-manifest digests,
+digests, distinct predecessor and successor operation-manifest digests,
 and the precomputable recovery-fence path and digest. The core excludes cleanup
 gate digest, lifecycle, consumption/revocation evidence, and attachment.
+
+`candidateOperationManifestDigest` is not a core field. Its presence, including
+a value coordinated with other candidate fields, is an unknown-field failure;
+candidate identity is already bound by the reviewed candidate/release evidence.
 
 The core digest is:
 
@@ -173,3 +177,6 @@ Compatibility tests must attack the complete core field census, both mode
 unions, the consume/revoke ordering, wrong native receipt, coordinated digest
 substitution, cyclic/self-selected authority, attachment-to-summary confusion,
 unbounded-attempt assumptions, and every malformed closed record/array.
+The negative census inserts every excluded lifecycle, gate, consume, revoke,
+attachment, and candidate-operation-manifest field individually and in
+coordinated groups; every insertion must fail as unknown before digest use.
