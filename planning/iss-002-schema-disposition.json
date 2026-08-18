@@ -2,9 +2,9 @@
   "schemaVersion": "iss-002-schema-disposition/v1",
   "subjectHead": "332d8345bdc964ccbe654b22e88b30b99fe770dc",
   "exactBase": {
-    "commit": "2527ef6457e4a65b7c54ffd521f8c4c0bbe34905",
+    "commit": "332d8345bdc964ccbe654b22e88b30b99fe770dc",
     "fixturePath": "test/contracts/fixtures.ts",
-    "fixtureBlob": "3435d78637057ba7d9238efc734bc411cd72bf41",
+    "fixtureBlob": "f8953cc6cfb9bc22f438a9ff64c6bcfd93ff274f",
     "newPublicSchemaCount": 17,
     "publicSchemaCensusDigest": "2a569ffc440bd6c3226b44cb78d909c6c77487a2abe908faecc5f672a75c3b61",
     "publicSchemaCount": 155,
@@ -177,151 +177,221 @@
     ]
   },
   "inheritedExact": [
-    [
-      "bootstrap-reviewed-helper/v1",
-      "approved",
-      "f520fc53b8fad770470f84b95e5707abd01eaff2afa48272f219abdff6e97e67",
-      "f72be69c21d279fdbab8c639e6ae8ba0c0cf48a465ff4bfab348b31d649874d0"
-    ],
-    [
-      "bootstrap-reviewed-installer/v1",
-      "approved",
-      "c67105963467f344ad0dbddd3d43acc59fd974e7aa2b94be4304cc50571ea72b",
-      "bed1e011c498e9e9203e7a9c3c2845ebc867aa4296e171fa1f784460385c09f9"
-    ],
-    [
-      "destination-owner-independent-review/v1",
-      "approved",
-      "1211a0451ec77dd01bf923e83314a241c66094c7a103989e7de1a5114a92ec59",
-      "ef838565f3ec2ecc1e53a042737947cbac40e94c82e50633ee338ed8cf0cc557"
-    ],
-    [
-      "destination-owner-prior-installation/v1",
-      "approved",
-      "c7c1e8f5bed7eb08fc7881b021c3e2553be01fffb3e2f708e9486c091fe677e2",
-      "fdfb1635ad0edd7707924d81bee5e6b518425ff28c8dcbc2d45dd55089906ec9"
-    ],
-    [
-      "destination-owner-successor-authority/v1",
-      "approved",
-      "7f6072999f441d67813e490f43c31a1981ca4a64aba434db1dd56a8eb54908f5",
-      "0085c72aba948bf772f87986775b3b34ffff85bb60e9eaf8bf0edf18a539bc19"
-    ],
-    [
-      "native-consume-receipt/v1",
-      "v2",
-      "b28e7c9c1020b49be121b54631254cc57fefa617a1b56d7288f5402a7864f8be",
-      "44476763181cd12041d1b30b2a8f9c767ab5e6cb881e5379ed7c22c296c3e1cc"
-    ],
-    [
-      "native-removal-receipt/v1",
-      "v2",
-      "121a77b5a7853549160f4be64fff36a0d9ea9c9e8637102c26594ce72992041c",
-      "98e65b279f5a34b1b4bfbe0e4a78facee7201361063f63ec0d4001bc0adfff18"
-    ],
-    [
-      "physical-destination-identity/v1",
-      "approved",
-      "00e128f4aaa7d09722c0e1afeb5edd0fc3ed9d25593f2143d0803e37e9fc5f0f",
-      "6f51b6cf058538a0b27b933900ddaf96595d50b559fccd80dda870ecda2664ce"
-    ],
-    [
-      "physical-destination-locator-observation-receipt/v1",
-      "approved",
-      "eeea06926210f295cd7ec9ea4c0b56becd56e27e1410ab35e720fedabc56d94a",
-      "d0a32662892ecdc62c56e67b877679d60110fa69bf94c7cc4ce1a990e505a2b8"
-    ],
-    [
-      "pointer-mutation-conflict-evidence/v1",
-      "approved",
-      "56631c6b3340a379738b3cbd1e27efa95dede50ac2676158315bbea4b4d5f3d8",
-      "dd78c172056e26b71b489a757b4177971d2092b42a356ffe94c086f5746610da"
-    ],
-    [
-      "pointer-mutation-run-selector-post-selection-observation/v1",
-      "approved",
-      "f3b322080ee3742618ad80fb4e72f3c702b12a9f465313f473702730bc8ca9f0",
-      "9e49a95bf62556d91784a002fdd6a1fdc8175efbaf891a8b0be71f8c1737864b"
-    ],
-    [
-      "recovery-authorization-consume-receipt/v1",
-      "v2",
-      "ba068eb2ba9b46f00999a59bf7a3f3f35b419566c71dd073378c57a615a1dcef",
-      "60a71567db0bd6d7b5620a20e015c7b2e89a6d4fa3d44ca6845f08a04af0b8c2"
-    ],
-    [
-      "recovery-authorization-core/v1",
-      "v2",
-      "4c32df41156738118ed29d640b01f56444ba5259b65eb315617069925ab05f28",
-      "17f856b21251898c144234a37a1718482337f068dab78cbf7e6aee87475c42d4"
-    ],
-    [
-      "recovery-authorization-revoke-receipt/v1",
-      "v2",
-      "e5996b0b8b853ac4d3075ca91e40a349d66274388af4be8aab7ae87f0ceca352",
-      "243f3d57a91eedfe4a9049ca5afd927242c3822870f5065182754fd5b4a646ca"
-    ],
-    [
-      "state-mutation-bootstrap-anchor-conflict-receipt/v1",
-      "approved",
-      "d504a134f3ab726ca41c7293040cac803f75f7df63a291c10449dfa35e257b22",
-      "52ee3ffa8ab19d12091b93a83fb9380a451b75f60f40cb72e1aaa8dd6ac8994a"
-    ],
-    [
-      "state-mutation-bootstrap-anchor-consumption-receipt/v1",
-      "approved",
-      "306cc7055546dcc82f17598f066c895ffa2bc0e13774c807d0e35156f5dbf632",
-      "634e6ae8373de1b911cafbdcb879aeeb40e617492f4989eb34a2c0445ef9b6f2"
-    ],
-    [
-      "state-mutation-bootstrap-anchor-teardown-receipt/v1",
-      "approved",
-      "ca1e27a5c129cefb5e7a85d725a58306ec51119084e1145efecb1e1d82a6169f",
-      "9ba4821847e925493b049c09ad2a94070c2b0bb08dc5551e80c74348ca5b5be7"
-    ],
-    [
-      "state-mutation-bootstrap-genesis-core/v1",
-      "approved",
-      "1a675e29d1cf9a124680f04a6a7e1a1739011b647bcaa39441aa8a5d4fb93554",
-      "ac0d24d929583f7625de0a53a9fb2b02b54c76e62d965873383a21e91c920e2f"
-    ],
-    [
-      "state-mutation-bootstrap-genesis-post-selection-receipt/v1",
-      "approved",
-      "8d4b553f8982d2a29c97c04cc7feffc42a39fb041472c6a01d644dac7802f658",
-      "18579c490af3266b6d8ca8fb90f28bf4e8d6baf27a158cf343d2d575452e686a"
-    ],
-    [
-      "state-mutation-destination-owner-conflict-receipt/v1",
-      "approved",
-      "8df53c96f33df21b7303f810ce86e9e8c030388795c87e50bfb3f2335a9fc39d",
-      "35baa27ccd221c463f2cf0e809fe48d0eac65ab261eaa9f7f366ce0b7694ee77"
-    ],
-    [
-      "state-mutation-destination-owner-successor-review-core/v1",
-      "approved",
-      "81ba8c0342fff302876107713d3faaaea4ebb3beb56d5f272d1830986313ceb1",
-      "8835a155434d92d09794a7594bd9e3a77551a439e495209467570101fe269f6b"
-    ],
-    [
-      "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
-      "approved",
-      "c6d13892844db2d60588ad425b30f19d79cd0c2647de9eef7c1e75d690a9a0ce",
-      "b574f227d3e54d406fe414cf3f6b0fbf51e835bf05baa3cfc18f34616120edc9"
-    ],
-    [
-      "state-mutation-destination-owner-teardown-archive/v1",
-      "approved",
-      "91d5a2b00026cd0250c54e2230a496c44b184b64787fe9f95adf78aa7b83096e",
-      "1992bd29d539c66db53c4e82a287ee0e20bccde5496350ae3b9190d8424f348e"
-    ],
-    [
-      "state-mutation-global-identity/v1",
-      "approved",
-      "6b948cbd014599a8debcbbfeb4ad61d50faea276d221f7a48d49b71eabf64a96",
-      "96bbf011590972b3bc3588e6dc977af6fff618ec9ba7f9b2a97df0e3bf264888"
-    ]
+    {
+      "fields": "abiDigest:sha256|custodyDigest:sha256|helperDigest:sha256|profileDigest:sha256|schemaVersion:literal(bootstrap-reviewed-helper/v1)",
+      "goldenCanonicalJson": "{\"abiDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"helperDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"profileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"bootstrap-reviewed-helper/v1\"}",
+      "nestedRecords": {},
+      "schemaVersion": "bootstrap-reviewed-helper/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "abiDigest:sha256|installerDigest:sha256|profileDigest:sha256|reviewReceiptDigest:sha256|schemaVersion:literal(bootstrap-reviewed-installer/v1)",
+      "goldenCanonicalJson": "{\"abiDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installerDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"profileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"bootstrap-reviewed-installer/v1\"}",
+      "nestedRecords": {},
+      "schemaVersion": "bootstrap-reviewed-installer/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "reviewReceiptDigest:sha256|reviewedAt:timestamp|reviewerIdentityDigest:sha256|schemaVersion:literal(destination-owner-independent-review/v1)|subjectDigest:sha256",
+      "goldenCanonicalJson": "{\"reviewReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedAt\":\"2026-08-16T12:34:56.789Z\",\"reviewerIdentityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"destination-owner-independent-review/v1\",\"subjectDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "destination-owner-independent-review/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "bootstrapAnchorDigest:sha256|installationId:uuid-v7|retiredOwnerReceiptDigest:sha256|retiredOwnerTipDigest:sha256|retiredOwnerValueDigest:sha256|schemaVersion:literal(destination-owner-prior-installation/v1)|teardownArchiveDigest:sha256",
+      "goldenCanonicalJson": "{\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"retiredOwnerReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"retiredOwnerTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"retiredOwnerValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"destination-owner-prior-installation/v1\",\"teardownArchiveDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "destination-owner-prior-installation/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "custodyInstanceDigest:sha256|destinationStateRootDigest:sha256|installationId:uuid-v7|projectId:uuid-v7|reviewedAbiDigest:sha256|reviewedHelperDigest:sha256|reviewedInstallerDigest:sha256|reviewedProfileDigest:sha256|schemaVersion:literal(destination-owner-successor-authority/v1)",
+      "goldenCanonicalJson": "{\"custodyInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"destinationStateRootDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"projectId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"reviewedAbiDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedHelperDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedInstallerDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedProfileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"destination-owner-successor-authority/v1\"}",
+      "nestedRecords": {},
+      "schemaVersion": "destination-owner-successor-authority/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "brokerClientGeneration:integer|brokerProfileDigest:sha256|brokerServiceDigest:sha256|capabilityDigest:sha256|capabilityReferenceDigest:sha256|consumedAt:timestamp|coreDigest:sha256|custodyPrincipalDigest:sha256|nativeGeneration:integer|nativeReadbackDigest:sha256|operationId:uuid-v7|schemaVersion:literal(native-consume-receipt/v1)|transactionId:uuid-v7",
+      "goldenCanonicalJson": "{\"brokerClientGeneration\":0,\"brokerProfileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"brokerServiceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityReferenceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"consumedAt\":\"2026-08-16T12:34:56.789Z\",\"coreDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyPrincipalDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeGeneration\":0,\"nativeReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"operationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"schemaVersion\":\"native-consume-receipt/v1\",\"transactionId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\"}",
+      "nestedRecords": {},
+      "schemaVersion": "native-consume-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "v2"
+    },
+    {
+      "fields": "brokerClientGeneration:integer|brokerProfileDigest:sha256|brokerServiceDigest:sha256|capabilityDigest:sha256|capabilityReferenceDigest:sha256|custodyPrincipalDigest:sha256|nativeAbsenceReadbackDigest:sha256|nativeConsumeReceiptDigest:sha256|nativeGeneration:integer|operationId:uuid-v7|removedAt:timestamp|schemaVersion:literal(native-removal-receipt/v1)|transactionId:uuid-v7",
+      "goldenCanonicalJson": "{\"brokerClientGeneration\":0,\"brokerProfileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"brokerServiceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityReferenceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyPrincipalDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeAbsenceReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeConsumeReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeGeneration\":0,\"operationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"removedAt\":\"2026-08-16T12:34:56.789Z\",\"schemaVersion\":\"native-removal-receipt/v1\",\"transactionId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\"}",
+      "nestedRecords": {},
+      "schemaVersion": "native-removal-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "v2"
+    },
+    {
+      "fields": "ancestorObjectDigest:sha256|canonicalLeafName:bounded-string|existingLeafObjectDigest:nullable(sha256)|filesystemDigest:sha256|leafIdentityKind:enum(EXISTING_DIRECTORY,NONEXISTENT_DIRECTORY_LEAF)|leafNameProfile:enum(WINDOWS_NFC_CASE_INSENSITIVE_V1,MACOS_NFD_CASE_INSENSITIVE_V1,POSIX_NFC_CASE_SENSITIVE_V1)|os:enum(windows,macos,linux)|physicalVolumeDigest:sha256|schemaVersion:literal(physical-destination-identity/v1)|stableNamespaceDigest:sha256",
+      "goldenCanonicalJson": "{\"ancestorObjectDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canonicalLeafName\":\"alpha\",\"existingLeafObjectDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"filesystemDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"leafIdentityKind\":\"EXISTING_DIRECTORY\",\"leafNameProfile\":\"POSIX_NFC_CASE_SENSITIVE_V1\",\"os\":\"linux\",\"physicalVolumeDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"physical-destination-identity/v1\",\"stableNamespaceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "physical-destination-identity/v1",
+      "semanticRuleId": "PHYSICAL_DESTINATION_IDENTITY_V1",
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "caseComparisonProfile:opaque|custodyInstanceDigest:sha256|custodyReceiptDigest:sha256|disposition:enum(ADMITTED,UNSUPPORTED,UNKNOWN)|helperDigest:sha256|helperVersion:semver|logicalLocatorDigest:sha256|nativeIdentityReadbackDigest:sha256|observedAt:timestamp|physicalDestinationDigest:sha256|resolvedLocatorReadbackDigest:sha256|schemaVersion:literal(physical-destination-locator-observation-receipt/v1)|unicodeNormalizationProfile:opaque|validUntil:timestamp",
+      "goldenCanonicalJson": "{\"caseComparisonProfile\":\"alpha\",\"custodyInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"disposition\":\"ADMITTED\",\"helperDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"helperVersion\":\"1.0.0\",\"logicalLocatorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeIdentityReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"observedAt\":\"2026-08-16T12:34:56.789Z\",\"physicalDestinationDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"resolvedLocatorReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"physical-destination-locator-observation-receipt/v1\",\"unicodeNormalizationProfile\":\"alpha\",\"validUntil\":\"2026-08-16T12:34:56.789Z\"}",
+      "nestedRecords": {},
+      "schemaVersion": "physical-destination-locator-observation-receipt/v1",
+      "semanticRuleId": "OBSERVED_AT_LE_VALID_UNTIL",
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "receipt:json|schemaVersion:literal(pointer-mutation-conflict-evidence/v1)|winningSelection:json",
+      "goldenCanonicalJson": "{\"receipt\":{\"kind\":\"fixture\"},\"schemaVersion\":\"pointer-mutation-conflict-evidence/v1\",\"winningSelection\":{\"kind\":\"fixture\"}}",
+      "nestedRecords": {},
+      "schemaVersion": "pointer-mutation-conflict-evidence/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "checkpointCoreDigest:sha256|observedAt:timestamp|proposalReadbackDigest:sha256|schemaVersion:literal(pointer-mutation-run-selector-post-selection-observation/v1)|selectorMutationId:sha256|selectorPathInstanceDigest:sha256|selectorReceiptDigest:sha256|selectorTipDigest:sha256|selectorValueDigest:sha256|tipReadbackDigest:sha256|valueReadbackDigest:sha256",
+      "goldenCanonicalJson": "{\"checkpointCoreDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"observedAt\":\"2026-08-16T12:34:56.789Z\",\"proposalReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"pointer-mutation-run-selector-post-selection-observation/v1\",\"selectorMutationId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"selectorPathInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"selectorReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"selectorTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"selectorValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tipReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"valueReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "pointer-mutation-run-selector-post-selection-observation/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "authorizationReceiptDigest:sha256|authorizationTipDigest:sha256|authorizationValueDigest:sha256|brokerClientGeneration:integer|brokerProfileDigest:sha256|brokerServiceDigest:sha256|capabilityDigest:sha256|capabilityReferenceDigest:sha256|consumedAt:timestamp|coreDigest:sha256|custodyPrincipalDigest:sha256|gateRootDigest:sha256|nativeConsumeReceiptDigest:sha256|nativeGeneration:integer|nativeReadbackDigest:sha256|operationId:uuid-v7|schemaVersion:literal(recovery-authorization-consume-receipt/v1)|selectedReadbackDigest:sha256|transactionId:uuid-v7",
+      "goldenCanonicalJson": "{\"authorizationReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"authorizationTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"authorizationValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"brokerClientGeneration\":0,\"brokerProfileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"brokerServiceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityReferenceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"consumedAt\":\"2026-08-16T12:34:56.789Z\",\"coreDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyPrincipalDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"gateRootDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeConsumeReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeGeneration\":0,\"nativeReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"operationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"schemaVersion\":\"recovery-authorization-consume-receipt/v1\",\"selectedReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"transactionId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\"}",
+      "nestedRecords": {},
+      "schemaVersion": "recovery-authorization-consume-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "v2"
+    },
+    {
+      "fields": "admissionDigest:nullable(sha256)|candidateDigest:sha256|capabilityDigest:sha256|capabilityReferenceDigest:sha256|cycleId:nullable(uuid-v7)|destinationDigest:nullable(sha256)|expectedActiveGeneration:nullable(integer)|expiresAt:timestamp|fenceDigest:nullable(sha256)|fencePath:nullable(relative-path)|grantDigest:nullable(sha256)|hostDigest:sha256|installationId:uuid-v7|installerDigest:nullable(sha256)|issuedAt:timestamp|mode:enum(BOOTSTRAP,SUCCESSOR)|nativeGeneration:integer|predecessorExecutableDigest:nullable(sha256)|predecessorOperationManifestDigest:nullable(sha256)|predecessorReleaseDigest:nullable(sha256)|priorBrokerGeneration:nullable(integer)|producerDigest:sha256|projectId:uuid-v7|schemaVersion:literal(recovery-authorization-core/v1)|stateRootDigest:sha256|successorBrokerGeneration:nullable(integer)|successorExecutableDigest:nullable(sha256)|successorOperationManifestDigest:nullable(sha256)|successorReleaseDigest:nullable(sha256)|transactionId:uuid-v7|userDigest:sha256",
+      "goldenCanonicalJson": "{\"admissionDigest\":null,\"candidateDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityReferenceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"cycleId\":null,\"destinationDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedActiveGeneration\":null,\"expiresAt\":\"2026-08-16T12:35:56.789Z\",\"fenceDigest\":null,\"fencePath\":null,\"grantDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"hostDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"installerDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issuedAt\":\"2026-08-16T12:34:56.789Z\",\"mode\":\"BOOTSTRAP\",\"nativeGeneration\":0,\"predecessorExecutableDigest\":null,\"predecessorOperationManifestDigest\":null,\"predecessorReleaseDigest\":null,\"priorBrokerGeneration\":null,\"producerDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"projectId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"schemaVersion\":\"recovery-authorization-core/v1\",\"stateRootDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"successorBrokerGeneration\":null,\"successorExecutableDigest\":null,\"successorOperationManifestDigest\":null,\"successorReleaseDigest\":null,\"transactionId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"userDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "recovery-authorization-core/v1",
+      "semanticRuleId": "RECOVERY_AUTHORIZATION_MODE_UNION_V1",
+      "sourceKey": "v2"
+    },
+    {
+      "fields": "authorizationReceiptDigest:sha256|authorizationTipDigest:sha256|authorizationValueDigest:sha256|brokerClientGeneration:integer|brokerProfileDigest:sha256|brokerServiceDigest:sha256|capabilityDigest:sha256|capabilityReferenceDigest:sha256|coreDigest:sha256|custodyPrincipalDigest:sha256|gateRootDigest:sha256|nativeAbsenceReadbackDigest:sha256|nativeGeneration:integer|nativeRemovalReceiptDigest:sha256|operationId:uuid-v7|revokedAt:timestamp|schemaVersion:literal(recovery-authorization-revoke-receipt/v1)|selectedReadbackDigest:sha256|transactionId:uuid-v7",
+      "goldenCanonicalJson": "{\"authorizationReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"authorizationTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"authorizationValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"brokerClientGeneration\":0,\"brokerProfileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"brokerServiceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"capabilityReferenceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"coreDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyPrincipalDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"gateRootDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeAbsenceReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"nativeGeneration\":0,\"nativeRemovalReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"operationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"revokedAt\":\"2026-08-16T12:34:56.789Z\",\"schemaVersion\":\"recovery-authorization-revoke-receipt/v1\",\"selectedReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"transactionId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\"}",
+      "nestedRecords": {},
+      "schemaVersion": "recovery-authorization-revoke-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "v2"
+    },
+    {
+      "fields": "bootstrapAnchorDigest:sha256|conflictAt:timestamp|losingReceiptDigest:sha256|losingValueDigest:sha256|mutationId:sha256|schemaVersion:literal(state-mutation-bootstrap-anchor-conflict-receipt/v1)|winningReceiptDigest:sha256|winningTipDigest:sha256|winningValueDigest:sha256",
+      "goldenCanonicalJson": "{\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"conflictAt\":\"2026-08-16T12:34:56.789Z\",\"losingReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"losingValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"mutationId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-bootstrap-anchor-conflict-receipt/v1\",\"winningReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"winningTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"winningValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-bootstrap-anchor-conflict-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "authorityPathInstanceDigest:sha256|bootstrapAnchorDigest:sha256|bootstrapTransactionId:uuid-v7|consumedAt:timestamp|custodyInstanceDigest:sha256|destinationStateRootDigest:sha256|externalAnchorProposalReadbackDigest:sha256|externalAnchorTipReadbackDigest:sha256|externalAnchorValueReadbackDigest:sha256|externalRuntimeLockHelperCustodyDigest:sha256|genesisCoreDigest:sha256|genesisPostSelectionReceiptDigest:sha256|ownerActiveReceiptDigest:sha256|ownerActiveTipDigest:sha256|ownerActiveValueDigest:sha256|ownerConsumedReceiptDigest:sha256|ownerConsumedTipDigest:sha256|ownerConsumedValueDigest:sha256|proposalReceiptDigest:sha256|runtimePostReadbackDigest:sha256|runtimeProposalReadbackDigest:sha256|runtimeTipReadbackDigest:sha256|runtimeValueReadbackDigest:sha256|schemaVersion:literal(state-mutation-bootstrap-anchor-consumption-receipt/v1)|tipDigest:sha256|useIntentDigest:sha256|valueDigest:sha256",
+      "goldenCanonicalJson": "{\"authorityPathInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bootstrapTransactionId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"consumedAt\":\"2026-08-16T12:34:56.789Z\",\"custodyInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"destinationStateRootDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"externalAnchorProposalReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"externalAnchorTipReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"externalAnchorValueReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"externalRuntimeLockHelperCustodyDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"genesisCoreDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"genesisPostSelectionReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerActiveReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerActiveTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerActiveValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerConsumedReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerConsumedTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerConsumedValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"proposalReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimePostReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeProposalReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeTipReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeValueReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-bootstrap-anchor-consumption-receipt/v1\",\"tipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"useIntentDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"valueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-bootstrap-anchor-consumption-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "bootstrapAnchorDigest:sha256|destinationDigest:sha256|externalArchiveDigest:sha256|ownerReceiptDigest:sha256|ownerTipDigest:sha256|ownerValueDigest:sha256|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|processCustodyProofDigest:sha256|retiredAt:timestamp|schemaVersion:literal(state-mutation-bootstrap-anchor-teardown-receipt/v1)|teardownEvidenceDigest:sha256|transition:enum(RETIRE)",
+      "goldenCanonicalJson": "{\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"destinationDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"externalArchiveDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"priorReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"priorTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"priorValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"processCustodyProofDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"retiredAt\":\"2026-08-16T12:34:56.789Z\",\"schemaVersion\":\"state-mutation-bootstrap-anchor-teardown-receipt/v1\",\"teardownEvidenceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"transition\":\"RETIRE\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-bootstrap-anchor-teardown-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "authorityPathInstanceDigest:sha256|authorityValueDigest:sha256|bootstrapAnchorDigest:sha256|genesisPositionDigest:sha256|globalIdentityDigest:sha256|schemaVersion:literal(state-mutation-bootstrap-genesis-core/v1)|transactionId:uuid-v7",
+      "goldenCanonicalJson": "{\"authorityPathInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"authorityValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"genesisPositionDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"globalIdentityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-bootstrap-genesis-core/v1\",\"transactionId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-bootstrap-genesis-core/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "authorityPathInstanceDigest:sha256|bootstrapAnchorDigest:sha256|genesisCoreDigest:sha256|observedAt:timestamp|proposalReadbackDigest:sha256|proposalReceiptDigest:sha256|schemaVersion:literal(state-mutation-bootstrap-genesis-post-selection-receipt/v1)|tipDigest:sha256|tipReadbackDigest:sha256|valueDigest:sha256|valueReadbackDigest:sha256",
+      "goldenCanonicalJson": "{\"authorityPathInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"genesisCoreDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"observedAt\":\"2026-08-16T12:34:56.789Z\",\"proposalReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"proposalReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-bootstrap-genesis-post-selection-receipt/v1\",\"tipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tipReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"valueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"valueReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-bootstrap-genesis-post-selection-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "conflictAt:timestamp|destinationDigest:sha256|losingReceiptDigest:sha256|losingValueDigest:sha256|mutationId:sha256|schemaVersion:literal(state-mutation-destination-owner-conflict-receipt/v1)|winningReceiptDigest:sha256|winningTipDigest:sha256|winningValueDigest:sha256",
+      "goldenCanonicalJson": "{\"conflictAt\":\"2026-08-16T12:34:56.789Z\",\"destinationDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"losingReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"losingValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"mutationId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-destination-owner-conflict-receipt/v1\",\"winningReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"winningTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"winningValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-destination-owner-conflict-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "destinationDigest:sha256|independentReview:json|priorInstallation:json|priorRetiredReceiptDigest:sha256|priorRetiredTipDigest:sha256|priorRetiredValueDigest:sha256|schemaVersion:literal(state-mutation-destination-owner-successor-review-core/v1)|successorAuthority:json|successorInstallationId:uuid-v7|teardownArchiveDigest:sha256",
+      "goldenCanonicalJson": "{\"destinationDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"independentReview\":{\"reviewReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedAt\":\"2026-08-16T12:34:56.789Z\",\"reviewerIdentityDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"destination-owner-independent-review/v1\",\"subjectDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"priorInstallation\":{\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"retiredOwnerReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"retiredOwnerTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"retiredOwnerValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"destination-owner-prior-installation/v1\",\"teardownArchiveDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"priorRetiredReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"priorRetiredTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"priorRetiredValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-destination-owner-successor-review-core/v1\",\"successorAuthority\":{\"custodyInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"destinationStateRootDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"projectId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"reviewedAbiDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedHelperDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedInstallerDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewedProfileDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"destination-owner-successor-authority/v1\"},\"successorInstallationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"teardownArchiveDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {
+        "independentReview": "destination-owner-independent-review/v1",
+        "priorInstallation": "destination-owner-prior-installation/v1",
+        "successorAuthority": "destination-owner-successor-authority/v1"
+      },
+      "schemaVersion": "state-mutation-destination-owner-successor-review-core/v1",
+      "semanticRuleId": "NESTED_SUCCESSOR_REVIEW_CORE_V1",
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "lockCustodyObservationDigest:sha256|observedAt:timestamp|proposalReadbackDigest:sha256|reviewCoreDigest:sha256|schemaVersion:literal(state-mutation-destination-owner-successor-review-post-selection-receipt/v1)|successorBootstrapAnchorDigest:sha256|successorReceiptDigest:sha256|successorTipDigest:sha256|successorValueDigest:sha256|tipReadbackDigest:sha256|valueReadbackDigest:sha256",
+      "goldenCanonicalJson": "{\"lockCustodyObservationDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"observedAt\":\"2026-08-16T12:34:56.789Z\",\"proposalReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewCoreDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-destination-owner-successor-review-post-selection-receipt/v1\",\"successorBootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"successorReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"successorTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"successorValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tipReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"valueReadbackDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "archivedAt:timestamp|bootstrapAnchorDigest:sha256|custodyProofDigest:sha256|destinationDigest:sha256|installationId:uuid-v7|ownerReceiptDigest:sha256|ownerTipDigest:sha256|ownerValueDigest:sha256|schemaVersion:literal(state-mutation-destination-owner-teardown-archive/v1)|teardownEvidenceDigest:sha256",
+      "goldenCanonicalJson": "{\"archivedAt\":\"2026-08-16T12:34:56.789Z\",\"bootstrapAnchorDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyProofDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"destinationDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"ownerReceiptDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerTipDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ownerValueDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"state-mutation-destination-owner-teardown-archive/v1\",\"teardownEvidenceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-destination-owner-teardown-archive/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    },
+    {
+      "fields": "authorityPath:relative-path|authorityPathInstanceDigest:sha256|custodyInstanceDigest:sha256|installationId:uuid-v7|projectId:uuid-v7|schemaVersion:literal(state-mutation-global-identity/v1)|stateRootDigest:sha256",
+      "goldenCanonicalJson": "{\"authorityPath\":\"state/item.json\",\"authorityPathInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"custodyInstanceDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"projectId\":\"018f0c24-7a3b-7cc1-8a2f-1234567890ab\",\"schemaVersion\":\"state-mutation-global-identity/v1\",\"stateRootDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "nestedRecords": {},
+      "schemaVersion": "state-mutation-global-identity/v1",
+      "semanticRuleId": null,
+      "sourceKey": "approved"
+    }
   ],
+  "inheritedFieldLanguage": {
+    "array": "array=false is one scalar; array=true is an exact same-realm closed array of at most 256 elements; unique=true compares canonical JSON encodings",
+    "canonicalOrder": "definition.fields is an array in ascending UTF-16 name order and is the exact closed-record member order",
+    "kinds": {
+      "bounded-string": "Unicode scalar string with 1..512 UTF-16 code units",
+      "integer": "nonnegative JavaScript safe integer",
+      "json": "closed JSON value snapshot; nestedRecords replaces this broad kind with the named schema where required",
+      "opaque": "ASCII 1..128 matching [a-z0-9](?:[a-z0-9._:@+-]{0,126}[a-z0-9])?",
+      "relative-path": "platform canonical relative path",
+      "schema-id": "[a-z][a-z0-9-]*/v[1-9][0-9]*",
+      "semver": "canonical numeric major.minor.patch",
+      "sha256": "64 lowercase hexadecimal ASCII bytes",
+      "timestamp": "canonical UTC RFC3339 with exactly three fractional digits",
+      "uuid-v7": "lowercase canonical RFC9562 UUIDv7"
+    },
+    "nullable": "nullable=false rejects null; nullable=true accepts exactly null or the declared kind",
+    "values": "null uses the kind rule; a nonempty unique array is the complete closed enum and every golden value must be a member"
+  },
   "newlyPinned": {
     "activation-cleanup-archive-head/v1": "activeReleaseDigest:sha256|archiveDigest:sha256|archivePath:relative-path|installationId:uuid-v7|previousArchiveHeadDigest:nullable(sha256)|projectId:uuid-v7|schemaVersion:literal(activation-cleanup-archive-head/v1)|selectedAt:timestamp|stateRootDigest:sha256|transactionId:uuid-v7",
     "activation-cleanup-gate-head/v1": "abortRevocationReceiptDigest:nullable(sha256)|archiveOutcomeDigest:nullable(sha256)|fenceDigest:nullable(sha256)|lifecycle:enum(ABORTING,ACTIVATING,COMPLETE,PENDING)|ordinal:safe-decimal|previousHeadDigest:nullable(sha256)|publication:enum(CLEARED,NOT_PUBLISHED,PUBLISHED,PUBLISHING)|recordedAt:timestamp|rootDigest:sha256|schemaVersion:literal(activation-cleanup-gate-head/v1)|terminalProofDigest:nullable(sha256)|terminalRevocationReceiptDigest:nullable(sha256)",
@@ -333,14 +403,14 @@
     "activation-recovery-launch/v1": "activeReleaseDigest:sha256|argvDigest:sha256|attemptId:uuid-v7|failureProofDigest:nullable(sha256)|fenceHeadDigest:nullable(sha256)|fenceRootDigest:nullable(sha256)|gateHeadDigest:sha256|gateRootDigest:sha256|idempotencyKeyDigest:sha256|installationId:uuid-v7|lifecycle:enum(LIVE,READY,TERMINAL_ABORTED,TERMINAL_COMPLETE,TERMINAL_HANDOFF,TERMINAL_RETRYABLE,UNKNOWN)|ordinal:safe-decimal|previousRecordDigest:nullable(sha256)|processIdentityDigest:nullable(sha256)|projectId:uuid-v7|recordedAt:timestamp|schemaVersion:literal(activation-recovery-launch/v1)|sourceToken:enum(cleanup-gate-pre-fence,recovery-fence)|stateRootDigest:sha256|terminalProofDigest:nullable(sha256)|transactionId:uuid-v7",
     "activation-recovery-launch-archive/v1": "archivedAt:timestamp|attemptLogReceiptDigest:sha256|attemptLogTipDigest:sha256|attemptLogValueDigest:sha256|childExitProofDigest:sha256|descriptorDigest:sha256|fenceClearReceiptDigest:nullable(sha256)|pointerRemovalDigest:sha256|recordPath:relative-path|reservationReceiptDigest:sha256|reservationTipDigest:sha256|reservationValueDigest:sha256|schemaVersion:literal(activation-recovery-launch-archive/v1)|sourceToken:enum(cleanup-gate-pre-fence,recovery-fence)|terminalLaunchDigest:sha256|terminalProofDigest:sha256|transactionId:uuid-v7",
     "active-release/v1": "activatedAt:timestamp|cleanupArchiveDigest:nullable(sha256)|cleanupArchivePath:relative-path|cleanupTransactionId:uuid-v7|executableDigest:sha256|executablePath:relative-path|installationId:uuid-v7|operationManifestDigest:sha256|projectId:uuid-v7|releaseDigest:sha256|schemaVersion:literal(active-release/v1)|stateRootDigest:sha256",
-    "attempt-log/v1": "attachmentReceiptDigest:nullable(sha256)|attachmentTipDigest:nullable(sha256)|attachmentValueDigest:nullable(sha256)|attemptId:uuid-v7|channelDenialProofDigest:nullable(sha256)|descriptorDigest:sha256|exitProofDigest:nullable(sha256)|installationId:uuid-v7|ordinal:safe-decimal|predecessorKind:enum(GENESIS,RECORD)|previousRecordDigest:nullable(sha256)|processAbsenceProofDigest:nullable(sha256)|producerAuthorityReceiptDigest:sha256|producerAuthorityTipDigest:sha256|producerAuthorityValueDigest:sha256|projectId:uuid-v7|recordKind:enum(IN_PROGRESS,TERMINAL)|recordedAt:timestamp|reservationReceiptDigest:sha256|reservationTipDigest:sha256|reservationValueDigest:sha256|revocationProofDigest:nullable(sha256)|schemaVersion:literal(attempt-log/v1)|sourceToken:enum(cleanup-gate-pre-fence,recovery-fence)|stateRootDigest:sha256|terminalLineageDigest:nullable(sha256)|terminalState:nullable(enum(ABORTED,COMPLETE,HANDOFF,RETRYABLE))|transactionId:uuid-v7",
-    "bootstrap-proposed-genesis-input/v1": "authorityPathInstanceDigest:sha256|authorityValueDigest:sha256|genesisBootstrapInputDigest:sha256|genesisPositionDigest:sha256|globalIdentityDigest:sha256|schemaVersion:literal(bootstrap-proposed-genesis-input/v1)|successorCoreDigest:sha256",
-    "dispatch-brief/v1": "acceptanceContractDigest:sha256|allowedCapabilityNames:array(token)|briefId:sha256|nonGoalCodes:array(token)|objectiveCode:token|role:enum(implementation,observer,review)|schemaVersion:literal(dispatch-brief/v1)|scopeCodes:array(token)|subjectDigest:sha256|verificationCommandIds:array(token)",
+    "attempt-log/v1": "attachmentReceiptDigest:nullable(sha256)|attachmentTipDigest:nullable(sha256)|attachmentValueDigest:nullable(sha256)|attemptId:uuid-v7|channelDenialProofDigest:nullable(sha256)|descriptorDigest:sha256|exitProofDigest:nullable(sha256)|installationId:uuid-v7|ordinal:safe-decimal|predecessorKind:enum(GENESIS,RECORD)|previousRecordDigest:nullable(sha256)|processAbsenceProofDigest:nullable(sha256)|producerAuthorityReceiptDigest:sha256|producerAuthorityTipDigest:sha256|producerAuthorityValueDigest:sha256|projectId:uuid-v7|recordKind:enum(IN_PROGRESS,TERMINAL)|recordedAt:timestamp|reservationReceiptDigest:sha256|reservationTipDigest:sha256|reservationValueDigest:sha256|revocationProofDigest:nullable(sha256)|schemaVersion:literal(attempt-log/v1)|sourceToken:source-token|stateRootDigest:sha256|terminalLineageDigest:nullable(sha256)|terminalState:nullable(enum(ABORTED,COMPLETE,HANDOFF,RETRYABLE))|transactionId:uuid-v7",
+    "bootstrap-proposed-genesis-input/v1": "authorityPathInstanceDigest:sha256|genesisPositionDigest:sha256|globalIdentityDigest:sha256|schemaVersion:literal(bootstrap-proposed-genesis-input/v1)|successorCoreDigest:sha256",
+    "dispatch-brief/v1": "acceptanceContractDigest:sha256|allowedCapabilityIds:array(sha256,min=0,max=32,unique=true,order=LEXICOGRAPHIC)|briefId:sha256|nonGoalIds:array(sha256,min=0,max=32,unique=true,order=LEXICOGRAPHIC)|objectiveId:sha256|role:enum(implementation,observer,review)|schemaVersion:literal(dispatch-brief/v1)|scopeIds:array(sha256,min=1,max=32,unique=true,order=LEXICOGRAPHIC)|subjectDigest:sha256|verificationCommandIds:array(sha256,min=1,max=32,unique=true,order=LEXICOGRAPHIC)",
     "pointer-archive-record/v1": "archivePath:relative-path|archivedAt:timestamp|authorityEpochReceiptDigest:sha256|authorityEpochTipDigest:sha256|authorityEpochValueDigest:sha256|canonicalPointerPath:relative-path|installationId:uuid-v7|pathInstanceDigest:sha256|pointerKind:pointer-kind|priorAuthorityEpochReceiptDigest:sha256|priorAuthorityEpochTipDigest:sha256|priorAuthorityEpochValueDigest:sha256|priorPositionDigest:sha256|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|priorValueSchemaVersion:schema-id|projectId:uuid-v7|schemaVersion:literal(pointer-archive-record/v1)|sourceToken:source-token|stateRootDigest:sha256|terminalProofDigest:sha256|transactionId:nullable(uuid-v7)",
     "pointer-cas-proposal-receipt/v1": "authorityEpochReceiptDigest:nullable(sha256)|authorityEpochTipDigest:nullable(sha256)|authorityEpochValueDigest:nullable(sha256)|intent:enum(TOMBSTONE_PROPOSED,VALUE_PROPOSED)|mutationId:sha256|outcome:enum(REMOVE,SELECT)|pathInstanceDigest:sha256|pointerKind:pointer-kind|positionDigest:sha256|priorReceiptDigest:nullable(sha256)|priorTipDigest:nullable(sha256)|priorValueDigest:nullable(sha256)|producerDigest:sha256|producerKind:enum(REVIEWED_BOOTSTRAP_GENESIS,SELECTED_EPOCH)|proposedAt:timestamp|schemaVersion:literal(pointer-cas-proposal-receipt/v1)|successorValueDigest:sha256",
     "pointer-conflict-receipt/v1": "authorityEpochReceiptDigest:sha256|authorityEpochTipDigest:sha256|authorityEpochValueDigest:sha256|conflictAt:timestamp|conflictKind:enum(EPOCH_CONFLICT,TOMBSTONE_CONFLICT,VALUE_CONFLICT)|losingProposalReceiptDigest:sha256|losingSuccessorValueDigest:sha256|mutationId:sha256|pathInstanceDigest:sha256|schemaVersion:literal(pointer-conflict-receipt/v1)|winningReceiptDigest:sha256|winningTipDigest:sha256|winningValueDigest:sha256",
     "pointer-current-tip/v1": "pathInstanceDigest:sha256|pointerKind:pointer-kind|proposalReceiptDigest:sha256|schemaVersion:literal(pointer-current-tip/v1)|valueDigest:sha256",
-    "pointer-evidence-packet/v1": "authorityHistoryBinding:closed(authority-history-binding)|currentAuthoritySelection:closed(selected-evidence)|currentCommit:nullable(record(pointer-mutation-commit-evidence/v1))|evidenceSlots:array(record(pointer-evidence-slot/v1),length=11)|globalIdentity:record(state-mutation-global-identity/v1)|purpose:enum(HISTORICAL_READ,MUTATION_COMMIT)|schemaVersion:literal(pointer-evidence-packet/v1)",
+    "pointer-evidence-packet/v1": "authorityHistoryBinding:closed(authority-history-binding)|currentAuthoritySelection:closed(selected-evidence)|currentCommit:nullable(record(pointer-mutation-commit-evidence/v1))|evidenceSlots:array(record(pointer-evidence-slot/v1),length=11,unique=true,order=REGISTRY)|globalIdentity:record(state-mutation-global-identity/v1)|purpose:enum(HISTORICAL_READ,MUTATION_COMMIT)|schemaVersion:literal(pointer-evidence-packet/v1)",
     "pointer-evidence-slot/v1": "pointerKind:pointer-kind|schemaVersion:literal(pointer-evidence-slot/v1)|selectedEvidence:nullable(closed(selected-evidence))",
     "pointer-instance-input/v1": "canonicalPointerPath:relative-path|installationId:uuid-v7|pointerKind:pointer-kind|projectId:uuid-v7|schemaVersion:literal(pointer-instance-input/v1)|sourceToken:source-token|stateRootDigest:sha256|transactionId:nullable(uuid-v7)",
     "pointer-mutation-commit-resolution/v1": "conflictEvidence:nullable(record(pointer-mutation-conflict-evidence/v1))|outcome:enum(LOST_CONFLICT,SELECTED,UNKNOWN_TERMINAL)|producerAuthorityReceiptDigest:sha256|producerAuthorityTipDigest:sha256|producerAuthorityValueDigest:sha256|schemaVersion:literal(pointer-mutation-commit-resolution/v1)|selectedTargetEvidence:nullable(closed(selected-evidence))|targetMutationId:sha256|targetPathInstanceDigest:sha256|unknownEvidence:nullable(record(pointer-mutation-unknown-evidence/v1))",
@@ -354,16 +424,16 @@
     "pointer-terminal-proof/v1": "authorityEpochReceiptDigest:sha256|authorityEpochTipDigest:sha256|authorityEpochValueDigest:sha256|canonicalPointerPath:relative-path|installationId:uuid-v7|pathInstanceDigest:sha256|pointerKind:pointer-kind|priorAuthorityEpochReceiptDigest:sha256|priorAuthorityEpochTipDigest:sha256|priorAuthorityEpochValueDigest:sha256|projectId:uuid-v7|schemaVersion:literal(pointer-terminal-proof/v1)|sourceToken:source-token|stateRootDigest:sha256|terminalPositionDigest:sha256|terminalReceiptDigest:sha256|terminalTipDigest:sha256|terminalValueDigest:sha256|terminalValueSchemaVersion:schema-id|transactionId:nullable(uuid-v7)",
     "pointer-tombstone-value/v1": "archiveDigest:sha256|pointerKind:pointer-kind|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|schemaVersion:literal(pointer-tombstone-value/v1)|terminalProofDigest:sha256|tombstonedAt:timestamp",
     "recovery-attempt-descriptor/v1": "activeReleaseDigest:sha256|argvDigest:sha256|attemptId:uuid-v7|fenceHeadDigest:nullable(sha256)|fenceRootDigest:nullable(sha256)|gateHeadDigest:sha256|gateRootDigest:sha256|initialLiveRecordDigest:sha256|lifecycle:literal(LIVE)|processIdentityDigest:sha256|reservationReceiptDigest:sha256|reservationTipDigest:sha256|reservationValueDigest:sha256|schemaVersion:literal(recovery-attempt-descriptor/v1)|sourceToken:enum(cleanup-gate-pre-fence,recovery-fence)|startedAt:timestamp|transactionId:uuid-v7",
-    "recovery-attempt-reservation/v1": "attemptId:uuid-v7|consumedDescriptorDigest:nullable(sha256)|descriptorInputsDigest:sha256|installationId:uuid-v7|lifecycle:enum(CONSUMED,RESERVED,TERMINAL,TOMBSTONE)|predecessorAttemptLogReceiptDigest:nullable(sha256)|predecessorAttemptLogTipDigest:nullable(sha256)|predecessorAttemptLogValueDigest:nullable(sha256)|projectId:uuid-v7|schemaVersion:literal(recovery-attempt-reservation/v1)|selectedAt:timestamp|sourceToken:enum(cleanup-gate-pre-fence,recovery-fence)|stateRootDigest:sha256|terminalAttemptLogDigest:nullable(sha256)|tombstoneArchiveDigest:nullable(sha256)|transactionId:uuid-v7",
+    "recovery-attempt-reservation/v1": "attemptId:uuid-v7|consumedDescriptorDigest:nullable(sha256)|descriptorInputsDigest:sha256|installationId:uuid-v7|lifecycle:enum(CONSUMED,RESERVED,TERMINAL)|predecessorAttemptLogReceiptDigest:nullable(sha256)|predecessorAttemptLogTipDigest:nullable(sha256)|predecessorAttemptLogValueDigest:nullable(sha256)|projectId:uuid-v7|schemaVersion:literal(recovery-attempt-reservation/v1)|selectedAt:timestamp|sourceToken:source-token|stateRootDigest:sha256|terminalAttemptLogDigest:nullable(sha256)|transactionId:uuid-v7",
     "recovery-authorization-archive/v1": "archivedAt:timestamp|authorizationReceiptDigest:sha256|authorizationTipDigest:sha256|authorizationValueDigest:sha256|nativeRemovalReceiptDigest:sha256|schemaVersion:literal(recovery-authorization-archive/v1)|transactionId:uuid-v7",
     "recovery-authorization-attachment-archive/v1": "archivedAt:timestamp|attachmentReceiptDigest:sha256|attachmentTipDigest:sha256|attachmentValueDigest:sha256|schemaVersion:literal(recovery-authorization-attachment-archive/v1)|transactionId:uuid-v7",
-    "recovery-authorization-attachment/v1": "activeReleaseDigest:sha256|argvDigest:sha256|authorizationReceiptDigest:sha256|authorizationTipDigest:sha256|authorizationValueDigest:sha256|brokerClientDigest:sha256|consumeReceiptDigest:sha256|descriptorDigest:sha256|fenceHeadDigest:nullable(sha256)|gateHeadDigest:sha256|lifecycle:enum(ATTACHED,REMOVED,TERMINAL,UNATTACHED)|priorAttachmentReceiptDigest:nullable(sha256)|priorAttachmentTipDigest:nullable(sha256)|priorAttachmentValueDigest:nullable(sha256)|priorTerminalAttemptLogReceiptDigest:nullable(sha256)|priorTerminalAttemptLogTipDigest:nullable(sha256)|priorTerminalAttemptLogValueDigest:nullable(sha256)|processIdentityDigest:sha256|reservationReceiptDigest:sha256|reservationTipDigest:sha256|reservationValueDigest:sha256|schemaVersion:literal(recovery-authorization-attachment/v1)|selectedAt:timestamp|transactionId:uuid-v7",
-    "recovery-authorization-state/v1": "consumeOperationId:uuid-v7|coreDigest:sha256|gateRootDigest:nullable(sha256)|lifecycle:enum(CONSUMED,CREATED,REMOVED,REVOKED)|nativeConsumeReceiptDigest:nullable(sha256)|nativeConsumeReceiptPath:relative-path|nativeRemovalReceiptDigest:nullable(sha256)|schemaVersion:literal(recovery-authorization-state/v1)|selectedAt:timestamp|transactionId:uuid-v7",
+    "recovery-authorization-attachment/v1": "activeReleaseDigest:nullable(sha256)|argvDigest:nullable(sha256)|authorizationReceiptDigest:sha256|authorizationTipDigest:sha256|authorizationValueDigest:sha256|brokerClientDigest:nullable(sha256)|consumeReceiptDigest:sha256|descriptorDigest:nullable(sha256)|exitProofDigest:nullable(sha256)|fenceHeadDigest:nullable(sha256)|gateHeadDigest:nullable(sha256)|lifecycle:enum(ATTACHED,TERMINAL,UNATTACHED)|priorAttachmentReceiptDigest:nullable(sha256)|priorAttachmentTipDigest:nullable(sha256)|priorAttachmentValueDigest:nullable(sha256)|priorTerminalAttemptLogReceiptDigest:nullable(sha256)|priorTerminalAttemptLogTipDigest:nullable(sha256)|priorTerminalAttemptLogValueDigest:nullable(sha256)|processIdentityDigest:nullable(sha256)|reservationReceiptDigest:nullable(sha256)|reservationTipDigest:nullable(sha256)|reservationValueDigest:nullable(sha256)|revocationProofDigest:nullable(sha256)|schemaVersion:literal(recovery-authorization-attachment/v1)|selectedAt:timestamp|terminalAttemptLogDigest:nullable(sha256)|terminalAttemptLogReceiptDigest:nullable(sha256)|terminalAttemptLogTipDigest:nullable(sha256)|terminalAttemptLogValueDigest:nullable(sha256)|transactionId:uuid-v7",
+    "recovery-authorization-state/v1": "consumeOperationId:uuid-v7|coreDigest:sha256|gateRootDigest:nullable(sha256)|lifecycle:enum(CONSUMED,CREATED,REVOKED)|nativeConsumeReceiptDigest:nullable(sha256)|nativeConsumeReceiptPath:relative-path|nativeRemovalReceiptDigest:nullable(sha256)|schemaVersion:literal(recovery-authorization-state/v1)|selectedAt:timestamp|transactionId:uuid-v7",
     "state-mutation-bootstrap-anchor-cas-proposal/v1": "bootstrapAnchorDigest:sha256|mutationId:sha256|priorReceiptDigest:nullable(sha256)|priorTipDigest:nullable(sha256)|priorValueDigest:nullable(sha256)|proposedAt:timestamp|schemaVersion:literal(state-mutation-bootstrap-anchor-cas-proposal/v1)|successorValueDigest:sha256|transition:enum(ACTIVATE,CONSUME,RETIRE)",
     "state-mutation-bootstrap-anchor-current-tip/v1": "bootstrapAnchorDigest:sha256|proposalReceiptDigest:sha256|schemaVersion:literal(state-mutation-bootstrap-anchor-current-tip/v1)|valueDigest:sha256",
     "state-mutation-bootstrap-anchor-lifecycle-archive/v1": "archivedAt:timestamp|bootstrapAnchorDigest:sha256|ownerPredecessorReceiptDigest:sha256|ownerPredecessorTipDigest:sha256|ownerPredecessorValueDigest:sha256|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|schemaVersion:literal(state-mutation-bootstrap-anchor-lifecycle-archive/v1)",
     "state-mutation-bootstrap-anchor-lifecycle-value/v1": "bootstrapAnchorDigest:sha256|expiresAt:timestamp|genesisPostSelectionReceiptDigest:nullable(sha256)|lifecycle:enum(ACTIVE,CONSUMED,RETIRED)|ownerActiveReceiptDigest:sha256|ownerActiveTipDigest:sha256|ownerActiveValueDigest:sha256|schemaVersion:literal(state-mutation-bootstrap-anchor-lifecycle-value/v1)|selectedAt:timestamp|teardownReceiptDigest:nullable(sha256)|useIntentDigest:nullable(sha256)",
-    "state-mutation-bootstrap-anchor-use-intent/v1": "activeReceiptDigest:sha256|activeTipDigest:sha256|activeValueDigest:sha256|bootstrapAnchorDigest:sha256|bootstrapTransactionId:uuid-v7|custodyInstanceDigest:sha256|destinationStateRootDigest:sha256|expectedAuthorityValueDigest:sha256|expiresAt:timestamp|proposedGenesisInput:record(bootstrap-proposed-genesis-input/v1)|reviewedHelper:record(bootstrap-reviewed-helper/v1)|reviewedInstaller:record(bootstrap-reviewed-installer/v1)|schemaVersion:literal(state-mutation-bootstrap-anchor-use-intent/v1)|startedAt:timestamp",
+    "state-mutation-bootstrap-anchor-use-intent/v1": "activeReceiptDigest:sha256|activeTipDigest:sha256|activeValueDigest:sha256|bootstrapAnchorDigest:sha256|bootstrapTransactionId:uuid-v7|custodyInstanceDigest:sha256|destinationStateRootDigest:sha256|expiresAt:timestamp|proposedGenesisInput:record(bootstrap-proposed-genesis-input/v1)|reviewedHelper:record(bootstrap-reviewed-helper/v1)|reviewedInstaller:record(bootstrap-reviewed-installer/v1)|schemaVersion:literal(state-mutation-bootstrap-anchor-use-intent/v1)|startedAt:timestamp",
     "state-mutation-bootstrap-anchor/v1": "authorityPath:relative-path|bootstrapTransactionId:uuid-v7|custodyInstanceDigest:sha256|custodyReceiptDigest:sha256|destinationDigest:sha256|destinationStateRootDigest:sha256|globalBootstrapIdentityDigest:sha256|helperAbi:token|helperDigest:sha256|independentReviewDigest:sha256|installationId:uuid-v7|lockProfileDigest:sha256|operatorGrantDigest:sha256|projectId:uuid-v7|reviewedInstallerDigest:sha256|schemaVersion:literal(state-mutation-bootstrap-anchor/v1)|stateComponentProfileDigest:sha256|successorReviewCoreDigest:nullable(sha256)",
     "state-mutation-destination-owner-cas-proposal/v1": "destinationDigest:sha256|mutationId:sha256|positionDigest:sha256|priorReceiptDigest:nullable(sha256)|priorTipDigest:nullable(sha256)|priorValueDigest:nullable(sha256)|proposedAt:timestamp|schemaVersion:literal(state-mutation-destination-owner-cas-proposal/v1)|successorValueDigest:sha256|transition:enum(ACTIVATE_GENESIS,ACTIVATE_SUCCESSOR,CONSUME,RETIRE_CONSUMED,RETIRE_UNUSED)",
     "state-mutation-destination-owner-current-tip/v1": "destinationDigest:sha256|proposalReceiptDigest:sha256|schemaVersion:literal(state-mutation-destination-owner-current-tip/v1)|valueDigest:sha256",
@@ -376,6 +446,635 @@
     "goldenIdentityPrefix": "ISS-002/current-v1/",
     "unknownFields": "REFUSE",
     "unicode": "VALID_SCALAR_SEQUENCE_ONLY"
+  },
+  "descriptorLanguage": {
+    "array": "array(<descriptor>,length=<positive-safe-decimal>,unique=<true|false>,order=<LEXICOGRAPHIC|PRESERVE|REGISTRY>) or array(<descriptor>,min=<safe-decimal>,max=<safe-decimal>,unique=<true|false>,order=<LEXICOGRAPHIC|PRESERVE|REGISTRY>); min<=max; no omitted bound, uniqueness, or order",
+    "closed": "closed(<named-record-id>) recursively resolves one member of nestedDefinitions and forbids unknown members",
+    "enum": "enum(<UPPER_OR_LOWER_TOKEN>[,<UPPER_OR_LOWER_TOKEN>...]); at least one distinct UTF-8 token, each 1..64 bytes, listed in lexicographic order",
+    "fieldList": "<lowerCamelField>:<descriptor>(|<lowerCamelField>:<descriptor>)* in ascending UTF-16 field-name order with no duplicate",
+    "literal": "literal(<schema-id-or-enum-token>) with one 1..128-byte ASCII value",
+    "nullable": "nullable(<descriptor>); null is otherwise forbidden",
+    "record": "record(<public-schema-version>) recursively resolves one current public schema and requires its exact schemaVersion literal",
+    "recursion": "descriptors form a finite acyclic reference graph; recursive descent has maximum depth 32",
+    "syntax": "primitive | named-descriptor | literal(...) | enum(...) | nullable(...) | record(...) | closed(...) | array(...)"
+  },
+  "primitiveDescriptors": {
+    "relative-path": "UTF-8 1..1024 bytes; NFC; slash-separated relative path; no empty/dot/dot-dot segment, backslash, control, drive, URI, or absolute prefix",
+    "safe-decimal": "0|[1-9][0-9]*; compare length then lexicographically with 9007199254740991 before any Number conversion",
+    "schema-id": "ASCII 3..128 bytes matching [a-z0-9][a-z0-9-]*/v[1-9][0-9]*",
+    "sha256": "exactly 64 lowercase hexadecimal ASCII bytes",
+    "timestamp": "canonical UTC RFC3339 with exactly three fractional digits",
+    "token": "UTF-8 1..128 bytes; NFC; matching [A-Za-z0-9][A-Za-z0-9._:@+/-]*; never rendered as free-form prose",
+    "uuid-v7": "lowercase canonical RFC9562 UUIDv7"
+  },
+  "namedDescriptors": {
+    "checkpoint-stage": "enum(CAS_ARMED,CURRENT_AUTHORITY_POST_CAS_READ,CURRENT_AUTHORITY_PRE_CAS_READ,CURRENT_AUTHORITY_READ,PROPOSAL_CLASSIFIED,PROPOSAL_READBACK,TARGET_POST_CAS_READBACK,TARGET_RECONCILED,VALUE_READBACK)",
+    "pointer-kind": "enum(ACTIVATION_CLEANUP_ARCHIVE_HEAD,ACTIVATION_CLEANUP_GATE,ACTIVATION_RECOVERY_FENCE,ACTIVATION_RECOVERY_LAUNCH,ACTIVE_RELEASE,POINTER_MUTATION_RUN_CURRENT,RECOVERY_ATTEMPT_LOG,RECOVERY_ATTEMPT_RESERVATION,RECOVERY_AUTHORIZATION_ATTACHMENT,RECOVERY_AUTHORIZATION_STATE,STATE_MUTATION_AUTHORITY_ROTATION)",
+    "position-union": "closed(position-union)",
+    "source-token": "enum(cleanup-gate-pre-fence,recovery-fence)"
+  },
+  "positionDefinitions": {
+    "active-release-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(ACTIVE_RELEASE)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "active-release-position/v1": "cleanupTransactionId:uuid-v7|pointerKind:literal(ACTIVE_RELEASE)|releaseDigest:sha256|valueDigest:sha256|variant:literal(ORDINARY)",
+    "attempt-log-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(RECOVERY_ATTEMPT_LOG)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "attempt-log-position/v1": "attemptId:uuid-v7|ordinal:safe-decimal|pointerKind:literal(RECOVERY_ATTEMPT_LOG)|recordDigest:sha256|recordKind:enum(IN_PROGRESS,TERMINAL)|sourceToken:source-token|transactionId:uuid-v7|variant:literal(ORDINARY)",
+    "attempt-reservation-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(RECOVERY_ATTEMPT_RESERVATION)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "attempt-reservation-position/v1": "attemptId:uuid-v7|pointerKind:literal(RECOVERY_ATTEMPT_RESERVATION)|predecessorKey:sha256|reservationDigest:sha256|sourceToken:source-token|transactionId:uuid-v7|variant:literal(ORDINARY)",
+    "authority-rotation-position/v1": "activeReleaseValueDigest:sha256|authorityDigest:sha256|pointerKind:literal(STATE_MUTATION_AUTHORITY_ROTATION)|rotationKind:enum(GENESIS,ROTATION)|variant:literal(ORDINARY)",
+    "authorization-attachment-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(RECOVERY_AUTHORIZATION_ATTACHMENT)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "authorization-attachment-position/v1": "attachmentDigest:sha256|lifecycle:enum(ATTACHED,TERMINAL,UNATTACHED)|pointerKind:literal(RECOVERY_AUTHORIZATION_ATTACHMENT)|transactionId:uuid-v7|variant:literal(ORDINARY)",
+    "authorization-state-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(RECOVERY_AUTHORIZATION_STATE)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "authorization-state-position/v1": "lifecycle:enum(CONSUMED,CREATED,REVOKED)|pointerKind:literal(RECOVERY_AUTHORIZATION_STATE)|stateDigest:sha256|transactionId:uuid-v7|variant:literal(ORDINARY)",
+    "cleanup-archive-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(ACTIVATION_CLEANUP_ARCHIVE_HEAD)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "cleanup-archive-position/v1": "archiveDigest:sha256|pointerKind:literal(ACTIVATION_CLEANUP_ARCHIVE_HEAD)|previousArchiveHeadDigest:nullable(sha256)|transactionId:uuid-v7|variant:literal(ORDINARY)",
+    "cleanup-gate-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(ACTIVATION_CLEANUP_GATE)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "cleanup-gate-position/v1": "headDigest:sha256|ordinal:safe-decimal|pointerKind:literal(ACTIVATION_CLEANUP_GATE)|rootDigest:sha256|variant:literal(ORDINARY)",
+    "pointer-mutation-run-current-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(POINTER_MUTATION_RUN_CURRENT)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "pointer-mutation-run-current-position/v1": "checkpointCoreDigest:sha256|phase:enum(CAS_AMBIGUOUS,CRASH_PREFIX,LOST_CONFLICT,SELECTED,UNKNOWN_TERMINAL)|pointerKind:literal(POINTER_MUTATION_RUN_CURRENT)|runId:sha256|runOrdinal:safe-decimal|stage:checkpoint-stage|targetMutationId:sha256|targetPathInstanceDigest:sha256|variant:literal(ORDINARY)",
+    "recovery-fence-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(ACTIVATION_RECOVERY_FENCE)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "recovery-fence-position/v1": "headDigest:sha256|ordinal:safe-decimal|pointerKind:literal(ACTIVATION_RECOVERY_FENCE)|rootDigest:sha256|variant:literal(ORDINARY)",
+    "recovery-launch-position-tombstone/v1": "archiveDigest:sha256|pointerKind:literal(ACTIVATION_RECOVERY_LAUNCH)|priorReceiptDigest:sha256|priorTipDigest:sha256|priorValueDigest:sha256|terminalProofDigest:sha256|variant:literal(TOMBSTONE)",
+    "recovery-launch-position/v1": "attemptId:uuid-v7|ordinal:safe-decimal|pointerKind:literal(ACTIVATION_RECOVERY_LAUNCH)|stateDigest:sha256|variant:literal(ORDINARY)"
+  },
+  "conditionalPresence": {
+    "activation-recovery-launch/v1": {
+      "conditionalFields": [
+        "failureProofDigest",
+        "processIdentityDigest",
+        "terminalProofDigest"
+      ],
+      "discriminator": "lifecycle",
+      "states": {
+        "LIVE": {
+          "allOrNone": [],
+          "null": [
+            "failureProofDigest",
+            "terminalProofDigest"
+          ],
+          "present": [
+            "processIdentityDigest"
+          ]
+        },
+        "READY": {
+          "allOrNone": [],
+          "null": [
+            "failureProofDigest",
+            "processIdentityDigest",
+            "terminalProofDigest"
+          ],
+          "present": []
+        },
+        "TERMINAL_ABORTED": {
+          "allOrNone": [],
+          "null": [
+            "failureProofDigest"
+          ],
+          "present": [
+            "processIdentityDigest",
+            "terminalProofDigest"
+          ]
+        },
+        "TERMINAL_COMPLETE": {
+          "allOrNone": [],
+          "null": [
+            "failureProofDigest"
+          ],
+          "present": [
+            "processIdentityDigest",
+            "terminalProofDigest"
+          ]
+        },
+        "TERMINAL_HANDOFF": {
+          "allOrNone": [],
+          "null": [
+            "failureProofDigest"
+          ],
+          "present": [
+            "processIdentityDigest",
+            "terminalProofDigest"
+          ]
+        },
+        "TERMINAL_RETRYABLE": {
+          "allOrNone": [],
+          "null": [],
+          "present": [
+            "failureProofDigest",
+            "processIdentityDigest",
+            "terminalProofDigest"
+          ]
+        },
+        "UNKNOWN": {
+          "allOrNone": [],
+          "null": [],
+          "present": [
+            "failureProofDigest"
+          ],
+          "presentOrNull": [
+            "processIdentityDigest",
+            "terminalProofDigest"
+          ]
+        }
+      }
+    },
+    "attempt-log/v1": {
+      "conditionalFields": [
+        "attachmentReceiptDigest",
+        "attachmentTipDigest",
+        "attachmentValueDigest",
+        "channelDenialProofDigest",
+        "exitProofDigest",
+        "processAbsenceProofDigest",
+        "revocationProofDigest",
+        "terminalLineageDigest",
+        "terminalState"
+      ],
+      "discriminator": "recordKind",
+      "states": {
+        "IN_PROGRESS": {
+          "allOrNone": [
+            "attachmentReceiptDigest",
+            "attachmentTipDigest",
+            "attachmentValueDigest"
+          ],
+          "null": [
+            "channelDenialProofDigest",
+            "exitProofDigest",
+            "processAbsenceProofDigest",
+            "revocationProofDigest",
+            "terminalLineageDigest",
+            "terminalState"
+          ],
+          "present": []
+        },
+        "TERMINAL": {
+          "allOrNone": [
+            "attachmentReceiptDigest",
+            "attachmentTipDigest",
+            "attachmentValueDigest"
+          ],
+          "null": [],
+          "present": [
+            "channelDenialProofDigest",
+            "exitProofDigest",
+            "processAbsenceProofDigest",
+            "revocationProofDigest",
+            "terminalLineageDigest",
+            "terminalState"
+          ]
+        }
+      }
+    },
+    "pointer-cas-proposal-receipt/v1": {
+      "conditionalFields": [
+        "authorityEpochReceiptDigest",
+        "authorityEpochTipDigest",
+        "authorityEpochValueDigest",
+        "priorReceiptDigest",
+        "priorTipDigest",
+        "priorValueDigest"
+      ],
+      "discriminator": "producerKind",
+      "states": {
+        "REVIEWED_BOOTSTRAP_GENESIS": {
+          "allOrNone": [],
+          "null": [
+            "authorityEpochReceiptDigest",
+            "authorityEpochTipDigest",
+            "authorityEpochValueDigest",
+            "priorReceiptDigest",
+            "priorTipDigest",
+            "priorValueDigest"
+          ],
+          "present": []
+        },
+        "SELECTED_EPOCH": {
+          "allOrNone": [
+            "priorReceiptDigest",
+            "priorTipDigest",
+            "priorValueDigest"
+          ],
+          "null": [],
+          "present": [
+            "authorityEpochReceiptDigest",
+            "authorityEpochTipDigest",
+            "authorityEpochValueDigest"
+          ]
+        }
+      }
+    },
+    "pointer-evidence-packet/v1": {
+      "conditionalFields": [
+        "currentCommit"
+      ],
+      "discriminator": "purpose",
+      "states": {
+        "HISTORICAL_READ": {
+          "allOrNone": [],
+          "null": [
+            "currentCommit"
+          ],
+          "present": []
+        },
+        "MUTATION_COMMIT": {
+          "allOrNone": [],
+          "null": [],
+          "present": [
+            "currentCommit"
+          ]
+        }
+      }
+    },
+    "pointer-mutation-run-checkpoint-core/v1": {
+      "conditionalFields": [
+        "ordinaryTerminalResolution"
+      ],
+      "discriminator": "phase",
+      "states": {
+        "CAS_AMBIGUOUS": {
+          "allOrNone": [],
+          "null": [
+            "ordinaryTerminalResolution"
+          ],
+          "present": []
+        },
+        "CRASH_PREFIX": {
+          "allOrNone": [],
+          "null": [
+            "ordinaryTerminalResolution"
+          ],
+          "present": []
+        },
+        "LOST_CONFLICT": {
+          "allOrNone": [],
+          "null": [],
+          "present": [
+            "ordinaryTerminalResolution"
+          ]
+        },
+        "SELECTED": {
+          "allOrNone": [],
+          "null": [],
+          "present": [
+            "ordinaryTerminalResolution"
+          ]
+        },
+        "UNKNOWN_TERMINAL": {
+          "allOrNone": [],
+          "null": [],
+          "present": [
+            "ordinaryTerminalResolution"
+          ]
+        }
+      }
+    },
+    "recovery-attempt-reservation/v1": {
+      "conditionalFields": [
+        "consumedDescriptorDigest",
+        "predecessorAttemptLogReceiptDigest",
+        "predecessorAttemptLogTipDigest",
+        "predecessorAttemptLogValueDigest",
+        "terminalAttemptLogDigest"
+      ],
+      "discriminator": "lifecycle",
+      "states": {
+        "CONSUMED": {
+          "allOrNone": [
+            "predecessorAttemptLogReceiptDigest",
+            "predecessorAttemptLogTipDigest",
+            "predecessorAttemptLogValueDigest"
+          ],
+          "null": [
+            "terminalAttemptLogDigest"
+          ],
+          "present": [
+            "consumedDescriptorDigest"
+          ]
+        },
+        "RESERVED": {
+          "allOrNone": [
+            "predecessorAttemptLogReceiptDigest",
+            "predecessorAttemptLogTipDigest",
+            "predecessorAttemptLogValueDigest"
+          ],
+          "null": [
+            "consumedDescriptorDigest",
+            "terminalAttemptLogDigest"
+          ],
+          "present": []
+        },
+        "TERMINAL": {
+          "allOrNone": [
+            "predecessorAttemptLogReceiptDigest",
+            "predecessorAttemptLogTipDigest",
+            "predecessorAttemptLogValueDigest"
+          ],
+          "null": [],
+          "present": [
+            "consumedDescriptorDigest",
+            "terminalAttemptLogDigest"
+          ]
+        }
+      }
+    },
+    "recovery-authorization-attachment/v1": {
+      "conditionalFields": [
+        "activeReleaseDigest",
+        "argvDigest",
+        "brokerClientDigest",
+        "descriptorDigest",
+        "exitProofDigest",
+        "fenceHeadDigest",
+        "gateHeadDigest",
+        "priorAttachmentReceiptDigest",
+        "priorAttachmentTipDigest",
+        "priorAttachmentValueDigest",
+        "priorTerminalAttemptLogReceiptDigest",
+        "priorTerminalAttemptLogTipDigest",
+        "priorTerminalAttemptLogValueDigest",
+        "processIdentityDigest",
+        "reservationReceiptDigest",
+        "reservationTipDigest",
+        "reservationValueDigest",
+        "revocationProofDigest",
+        "terminalAttemptLogDigest",
+        "terminalAttemptLogReceiptDigest",
+        "terminalAttemptLogTipDigest",
+        "terminalAttemptLogValueDigest"
+      ],
+      "discriminator": "lifecycle",
+      "states": {
+        "ATTACHED": {
+          "allOrNone": [
+            "priorAttachmentReceiptDigest",
+            "priorAttachmentTipDigest",
+            "priorAttachmentValueDigest",
+            "priorTerminalAttemptLogReceiptDigest",
+            "priorTerminalAttemptLogTipDigest",
+            "priorTerminalAttemptLogValueDigest"
+          ],
+          "null": [
+            "exitProofDigest",
+            "revocationProofDigest",
+            "terminalAttemptLogDigest",
+            "terminalAttemptLogReceiptDigest",
+            "terminalAttemptLogTipDigest",
+            "terminalAttemptLogValueDigest"
+          ],
+          "present": [
+            "activeReleaseDigest",
+            "argvDigest",
+            "brokerClientDigest",
+            "descriptorDigest",
+            "gateHeadDigest",
+            "processIdentityDigest",
+            "reservationReceiptDigest",
+            "reservationTipDigest",
+            "reservationValueDigest"
+          ],
+          "presentOrNull": [
+            "fenceHeadDigest"
+          ]
+        },
+        "TERMINAL": {
+          "allOrNone": [
+            "priorAttachmentReceiptDigest",
+            "priorAttachmentTipDigest",
+            "priorAttachmentValueDigest",
+            "priorTerminalAttemptLogReceiptDigest",
+            "priorTerminalAttemptLogTipDigest",
+            "priorTerminalAttemptLogValueDigest"
+          ],
+          "null": [],
+          "present": [
+            "activeReleaseDigest",
+            "argvDigest",
+            "brokerClientDigest",
+            "descriptorDigest",
+            "exitProofDigest",
+            "gateHeadDigest",
+            "processIdentityDigest",
+            "reservationReceiptDigest",
+            "reservationTipDigest",
+            "reservationValueDigest",
+            "revocationProofDigest",
+            "terminalAttemptLogDigest",
+            "terminalAttemptLogReceiptDigest",
+            "terminalAttemptLogTipDigest",
+            "terminalAttemptLogValueDigest"
+          ],
+          "presentOrNull": [
+            "fenceHeadDigest"
+          ]
+        },
+        "UNATTACHED": {
+          "allOrNone": [],
+          "null": [
+            "activeReleaseDigest",
+            "argvDigest",
+            "brokerClientDigest",
+            "descriptorDigest",
+            "exitProofDigest",
+            "fenceHeadDigest",
+            "gateHeadDigest",
+            "priorAttachmentReceiptDigest",
+            "priorAttachmentTipDigest",
+            "priorAttachmentValueDigest",
+            "priorTerminalAttemptLogReceiptDigest",
+            "priorTerminalAttemptLogTipDigest",
+            "priorTerminalAttemptLogValueDigest",
+            "processIdentityDigest",
+            "reservationReceiptDigest",
+            "reservationTipDigest",
+            "reservationValueDigest",
+            "revocationProofDigest",
+            "terminalAttemptLogDigest",
+            "terminalAttemptLogReceiptDigest",
+            "terminalAttemptLogTipDigest",
+            "terminalAttemptLogValueDigest"
+          ],
+          "present": []
+        }
+      }
+    },
+    "recovery-authorization-state/v1": {
+      "conditionalFields": [
+        "gateRootDigest",
+        "nativeConsumeReceiptDigest",
+        "nativeRemovalReceiptDigest"
+      ],
+      "discriminator": "lifecycle",
+      "states": {
+        "CONSUMED": {
+          "allOrNone": [],
+          "null": [
+            "nativeRemovalReceiptDigest"
+          ],
+          "present": [
+            "gateRootDigest",
+            "nativeConsumeReceiptDigest"
+          ]
+        },
+        "CREATED": {
+          "allOrNone": [],
+          "null": [
+            "nativeConsumeReceiptDigest",
+            "nativeRemovalReceiptDigest"
+          ],
+          "present": [],
+          "presentOrNull": [
+            "gateRootDigest"
+          ]
+        },
+        "REVOKED": {
+          "allOrNone": [],
+          "null": [],
+          "present": [
+            "gateRootDigest",
+            "nativeConsumeReceiptDigest",
+            "nativeRemovalReceiptDigest"
+          ]
+        }
+      }
+    }
+  },
+  "runPhaseStages": {
+    "CAS_AMBIGUOUS": [
+      "CAS_ARMED",
+      "TARGET_POST_CAS_READBACK"
+    ],
+    "CRASH_PREFIX": [
+      "CURRENT_AUTHORITY_PRE_CAS_READ",
+      "CURRENT_AUTHORITY_READ",
+      "PROPOSAL_READBACK",
+      "TARGET_RECONCILED",
+      "VALUE_READBACK"
+    ],
+    "LOST_CONFLICT": [
+      "CURRENT_AUTHORITY_POST_CAS_READ",
+      "PROPOSAL_CLASSIFIED"
+    ],
+    "SELECTED": [
+      "CURRENT_AUTHORITY_POST_CAS_READ",
+      "PROPOSAL_CLASSIFIED"
+    ],
+    "UNKNOWN_TERMINAL": [
+      "CURRENT_AUTHORITY_POST_CAS_READ",
+      "PROPOSAL_CLASSIFIED"
+    ]
+  },
+  "dependencyGraphs": {
+    "bootstrapE0": {
+      "edges": [
+        [
+          "anchorActive",
+          "Dgb"
+        ],
+        [
+          "authorityValue",
+          "Dv"
+        ],
+        [
+          "Dba",
+          "useIntent"
+        ],
+        [
+          "Dbg",
+          "Dgse"
+        ],
+        [
+          "Dgb",
+          "Dh"
+        ],
+        [
+          "Dh",
+          "authorityValue"
+        ],
+        [
+          "Dh",
+          "Dgse"
+        ],
+        [
+          "Dp",
+          "proposedGenesisInput"
+        ],
+        [
+          "Dsc",
+          "Dgb"
+        ],
+        [
+          "Dsc",
+          "Dh"
+        ],
+        [
+          "Dsc",
+          "proposedGenesisInput"
+        ],
+        [
+          "Dv",
+          "Dbg"
+        ],
+        [
+          "ownerActive",
+          "Dgb"
+        ],
+        [
+          "proposedGenesisInput",
+          "useIntent"
+        ],
+        [
+          "useIntent",
+          "Dgb"
+        ]
+      ],
+      "nodes": [
+        "Dba",
+        "Dbg",
+        "Dgb",
+        "Dgse",
+        "Dh",
+        "Dp",
+        "Dsc",
+        "Dv",
+        "anchorActive",
+        "authorityValue",
+        "ownerActive",
+        "proposedGenesisInput",
+        "useIntent"
+      ],
+      "preUseIntentAllowedFacts": [
+        "Dba",
+        "Dp",
+        "Dsc",
+        "anchorActive",
+        "bootstrapGrant",
+        "bootstrapTransaction",
+        "custodyInstance",
+        "destinationStateRoot",
+        "globalIdentity",
+        "ownerActive",
+        "reviewedHelper",
+        "reviewedInstaller"
+      ],
+      "preUseIntentForbiddenFacts": [
+        "Dbg",
+        "Dgb",
+        "Dgse",
+        "Dh",
+        "Dv",
+        "authorityReceipt",
+        "authorityTip",
+        "authorityValue",
+        "consumedAnchor",
+        "consumedOwner",
+        "selectionReadbacks"
+      ]
+    }
+  },
+  "attemptLogStorage": {
+    "construction": "validate ordinal as safe-decimal before conversion; path = installation/activation-recovery-launches/<transaction>/<source>/attempt-log/<ordinal>.json; construct ordinal n+1 from n; never enumerate",
+    "recordPath": "installation/activation-recovery-launches/<transaction>/<source>/attempt-log/<ordinal>.json",
+    "selectedTipPath": "installation/activation-recovery-launches/<transaction>/<source>/attempt-log.json",
+    "soleRecordPerOrdinal": true
   },
   "operationalBindings": {
     "digestProfiles": {
@@ -392,8 +1091,15 @@
       "TIP": "pointer-tip/v1|pointer-kind,path-instance-digest,value-digest,proposal-receipt-digest,canonical-record-bytes"
     },
     "exclusions": {
-      "attempt-log/v1": ["future-record-digest", "separate-terminal-summary"],
-      "dispatch-brief/v1": ["free-form-prose", "host-rendered-bytes", "prompt"],
+      "attempt-log/v1": [
+        "future-record-digest",
+        "separate-terminal-summary"
+      ],
+      "dispatch-brief/v1": [
+        "free-form-prose",
+        "host-rendered-bytes",
+        "prompt"
+      ],
       "pointer-evidence-packet/v1": [
         "diagnostic-membership",
         "inventory-root",
@@ -407,9 +1113,21 @@
         "selector-tip",
         "selector-value"
       ],
-      "pointer-mutation-unknown-evidence/v1": ["array", "json", "message", "native-error", "path"],
-      "recovery-attempt-descriptor/v1": ["READY_ONLY", "terminal-facts"],
-      "recovery-authorization-attachment/v1": ["future-terminal-attempt-log", "terminal-summary"],
+      "pointer-mutation-unknown-evidence/v1": [
+        "array",
+        "json",
+        "message",
+        "native-error",
+        "path"
+      ],
+      "recovery-attempt-descriptor/v1": [
+        "READY_ONLY",
+        "terminal-facts"
+      ],
+      "recovery-authorization-attachment/v1": [
+        "future-terminal-attempt-log",
+        "terminal-summary"
+      ],
       "state-mutation-destination-owner-value/v1": [
         "destination-owner-retention",
         "unbounded-ordinal"
@@ -426,7 +1144,7 @@
       "activation-recovery-launch-archive/v1": "installation/activation-recovery-launches/<transaction>/<source>/archive.json",
       "activation-recovery-launch/v1": "GENERIC_POINTER_VALUE",
       "active-release/v1": "GENERIC_POINTER_VALUE",
-      "attempt-log/v1": "GENERIC_POINTER_VALUE_AND_FULL_CHAIN_RECORD",
+      "attempt-log/v1": "installation/activation-recovery-launches/<transaction>/<source>/attempt-log/<ordinal>.json",
       "bootstrap-proposed-genesis-input/v1": "NON_PERSISTED_COMPOSED",
       "dispatch-brief/v1": "NON_PERSISTED_COMPOSED",
       "pointer-archive-record/v1": "REGISTRY_ARCHIVE_PATH",
@@ -452,12 +1170,12 @@
       "recovery-authorization-attachment-archive/v1": "installation/recovery-authorizations/<transaction>/attachment-archive.json",
       "recovery-authorization-attachment/v1": "GENERIC_POINTER_VALUE",
       "recovery-authorization-state/v1": "GENERIC_POINTER_VALUE",
-      "state-mutation-bootstrap-anchor-cas-proposal/v1": "state-mutation-bootstrap-anchors/<anchor-Dp>/proposals/<prior-or-genesis>/<mutation-id>.json",
-      "state-mutation-bootstrap-anchor-current-tip/v1": "state-mutation-bootstrap-anchors/<anchor-Dp>/current.json",
-      "state-mutation-bootstrap-anchor-lifecycle-archive/v1": "state-mutation-bootstrap-anchors/<anchor-Dp>/archive.json",
-      "state-mutation-bootstrap-anchor-lifecycle-value/v1": "state-mutation-bootstrap-anchors/<anchor-Dp>/values/<mutation-id>.json",
-      "state-mutation-bootstrap-anchor-use-intent/v1": "state-mutation-bootstrap-anchors/<anchor-Dp>/use-intents/<transaction>.json",
-      "state-mutation-bootstrap-anchor/v1": "state-mutation-bootstrap-anchors/<anchor-Dp>/anchor.json",
+      "state-mutation-bootstrap-anchor-cas-proposal/v1": "state-mutation-authority-anchors/<installation-id>/proposals/<prior-tip-or-genesis>/<mutation-id>.json",
+      "state-mutation-bootstrap-anchor-current-tip/v1": "state-mutation-authority-anchors/<installation-id>/current.json",
+      "state-mutation-bootstrap-anchor-lifecycle-archive/v1": "state-mutation-authority-anchors/<installation-id>/archive.json",
+      "state-mutation-bootstrap-anchor-lifecycle-value/v1": "state-mutation-authority-anchors/<installation-id>/values/<mutation-id>.json",
+      "state-mutation-bootstrap-anchor-use-intent/v1": "state-mutation-authority-anchors/<installation-id>/use-intents/<transaction>.json",
+      "state-mutation-bootstrap-anchor/v1": "state-mutation-authority-anchors/<installation-id>/anchor.json",
       "state-mutation-destination-owner-cas-proposal/v1": "state-mutation-destination-owners/<destination-digest>/proposals/<prior-or-genesis>/<mutation-id>.json",
       "state-mutation-destination-owner-current-tip/v1": "state-mutation-destination-owners/<destination-digest>/current.json",
       "state-mutation-destination-owner-value/v1": "state-mutation-destination-owners/<destination-digest>/values/<mutation-id>.json"
@@ -511,7 +1229,7 @@
     }
   },
   "nestedDefinitions": {
-    "authority-history-binding": "headOrdinal:safe-decimal|headRecordDigest:sha256|records:array(record(authority-history-record/v1))|selectedAuthorityReceiptDigest:sha256|selectedAuthorityTipDigest:sha256|selectedAuthorityValueDigest:sha256",
+    "authority-history-binding": "headOrdinal:safe-decimal|headRecordDigest:sha256|records:array(record(authority-history-record/v1),min=1,max=9007199254740991,unique=true,order=PRESERVE)|selectedAuthorityReceiptDigest:sha256|selectedAuthorityTipDigest:sha256|selectedAuthorityValueDigest:sha256",
     "selected-evidence": "canonicalPointerPath:relative-path|pathInstanceDigest:sha256|pointerKind:pointer-kind|producerAuthorityReceiptDigest:sha256|producerAuthorityTipDigest:sha256|producerAuthorityValueDigest:sha256|proposalReceiptDigest:sha256|sourceToken:source-token|transactionId:nullable(uuid-v7)|valueDigest:sha256"
   },
   "pointerRegistry": [
@@ -522,9 +1240,15 @@
       "REVIEWED_BOOTSTRAP",
       "REQUIRED",
       "NONE",
-      ["none"],
-      ["releases/<release-digest>/"],
-      ["installation/active-release-archives/<transaction>.json"],
+      [
+        "none"
+      ],
+      [
+        "releases/<release-digest>/"
+      ],
+      [
+        "installation/active-release-archives/<transaction>.json"
+      ],
       "active-release-position/v1",
       "active-release-position-tombstone/v1"
     ],
@@ -535,12 +1259,16 @@
       "TRANSACTION_CREATE_ONCE",
       "REQUIRED",
       "NONE",
-      ["none"],
+      [
+        "none"
+      ],
       [
         "installation/activation-cleanup-gate-roots/<transaction>.json",
         "installation/activation-cleanup-gate-history/<transaction>/<ordinal>-<lifecycle>-<publication>.json"
       ],
-      ["installation/activation-cleanup-gates/<transaction>.json"],
+      [
+        "installation/activation-cleanup-gates/<transaction>.json"
+      ],
       "cleanup-gate-position/v1",
       "cleanup-gate-position-tombstone/v1"
     ],
@@ -551,12 +1279,16 @@
       "TRANSACTION_CREATE_ONCE",
       "REQUIRED",
       "NONE",
-      ["none"],
+      [
+        "none"
+      ],
       [
         "installation/activation-recovery-fence-roots/<transaction>.json",
         "installation/activation-recovery-fence-history/<transaction>/<ordinal>-<lifecycle>.json"
       ],
-      ["installation/activation-recovery-fences/<transaction>.json"],
+      [
+        "installation/activation-recovery-fences/<transaction>.json"
+      ],
       "recovery-fence-position/v1",
       "recovery-fence-position-tombstone/v1"
     ],
@@ -567,9 +1299,16 @@
       "PREDECESSOR_TRIPLE",
       "REQUIRED",
       "RECOVERY_SOURCE",
-      ["cleanup-gate-pre-fence", "recovery-fence"],
-      ["installation/activation-recovery-launches/<transaction>/<source>/attempts/"],
-      ["installation/activation-recovery-launches/<transaction>/<source>/archive.json"],
+      [
+        "cleanup-gate-pre-fence",
+        "recovery-fence"
+      ],
+      [
+        "installation/activation-recovery-launches/<transaction>/<source>/attempts/"
+      ],
+      [
+        "installation/activation-recovery-launches/<transaction>/<source>/archive.json"
+      ],
       "recovery-launch-position/v1",
       "recovery-launch-position-tombstone/v1"
     ],
@@ -580,9 +1319,15 @@
       "TRANSACTION_CREATE_ONCE",
       "REQUIRED",
       "NONE",
-      ["none"],
-      ["installation/recovery-authorizations/<transaction>/core.json"],
-      ["installation/recovery-authorizations/<transaction>/archive.json"],
+      [
+        "none"
+      ],
+      [
+        "installation/recovery-authorizations/<transaction>/core.json"
+      ],
+      [
+        "installation/recovery-authorizations/<transaction>/archive.json"
+      ],
       "authorization-state-position/v1",
       "authorization-state-position-tombstone/v1"
     ],
@@ -593,9 +1338,15 @@
       "TRANSACTION_CREATE_ONCE",
       "REQUIRED",
       "NONE",
-      ["none"],
-      ["installation/recovery-authorizations/<transaction>/state.json"],
-      ["installation/recovery-authorizations/<transaction>/attachment-archive.json"],
+      [
+        "none"
+      ],
+      [
+        "installation/recovery-authorizations/<transaction>/state.json"
+      ],
+      [
+        "installation/recovery-authorizations/<transaction>/attachment-archive.json"
+      ],
       "authorization-attachment-position/v1",
       "authorization-attachment-position-tombstone/v1"
     ],
@@ -606,9 +1357,16 @@
       "PREDECESSOR_TRIPLE",
       "REQUIRED",
       "RECOVERY_SOURCE",
-      ["cleanup-gate-pre-fence", "recovery-fence"],
-      ["installation/activation-recovery-launches/<transaction>/<source>/attempts/"],
-      ["installation/activation-recovery-launches/<transaction>/<source>/attempt-log-archive.json"],
+      [
+        "cleanup-gate-pre-fence",
+        "recovery-fence"
+      ],
+      [
+        "installation/activation-recovery-launches/<transaction>/<source>/attempts/"
+      ],
+      [
+        "installation/activation-recovery-launches/<transaction>/<source>/attempt-log-archive.json"
+      ],
       "attempt-log-position/v1",
       "attempt-log-position-tombstone/v1"
     ],
@@ -619,9 +1377,15 @@
       "REVIEWED_BOOTSTRAP",
       "REQUIRED",
       "NONE",
-      ["none"],
-      ["installation/activation-cleanup-gates/"],
-      ["installation/activation-cleanup/archive-head-history/"],
+      [
+        "none"
+      ],
+      [
+        "installation/activation-cleanup-gates/"
+      ],
+      [
+        "installation/activation-cleanup/archive-head-history/"
+      ],
       "cleanup-archive-position/v1",
       "cleanup-archive-position-tombstone/v1"
     ],
@@ -632,9 +1396,16 @@
       "PREDECESSOR_TRIPLE",
       "REQUIRED",
       "RECOVERY_SOURCE",
-      ["cleanup-gate-pre-fence", "recovery-fence"],
-      ["installation/activation-recovery-launches/<transaction>/<source>/reservations/"],
-      ["installation/activation-recovery-launches/<transaction>/<source>/reservation-archives/"],
+      [
+        "cleanup-gate-pre-fence",
+        "recovery-fence"
+      ],
+      [
+        "installation/activation-recovery-launches/<transaction>/<source>/reservations/"
+      ],
+      [
+        "installation/activation-recovery-launches/<transaction>/<source>/reservation-archives/"
+      ],
       "attempt-reservation-position/v1",
       "attempt-reservation-position-tombstone/v1"
     ],
@@ -645,9 +1416,15 @@
       "REVIEWED_BOOTSTRAP",
       "NULL",
       "NONE",
-      ["none"],
-      ["installation/state-mutation.lock"],
-      ["installation/state-mutation-authority-history/"],
+      [
+        "none"
+      ],
+      [
+        "installation/state-mutation.lock"
+      ],
+      [
+        "installation/state-mutation-authority-history/"
+      ],
       "authority-rotation-position/v1",
       null
     ],
@@ -658,9 +1435,15 @@
       "PREDECESSOR_TRIPLE",
       "NULL",
       "NONE",
-      ["none"],
-      ["installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/"],
-      ["installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/runs/"],
+      [
+        "none"
+      ],
+      [
+        "installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/"
+      ],
+      [
+        "installation/pointer-cas/<target-instance-digest>/commits/<target-mutation-id>/runs/"
+      ],
       "pointer-mutation-run-current-position/v1",
       "pointer-mutation-run-current-position-tombstone/v1"
     ]
@@ -675,9 +1458,239 @@
     "tombstonePositionCount": 10
   },
   "unknownEvidenceReasons": {
-    "IMPOSSIBLE": ["EPOCH_MISMATCH", "IDENTITY_MISMATCH", "STATE_CONTRADICTION"],
-    "MALFORMED": ["DIGEST_MISMATCH", "NON_CANONICAL", "SCHEMA_INVALID"],
-    "UNREADABLE": ["IO_ERROR", "MISSING", "PERMISSION_DENIED"]
+    "IMPOSSIBLE": [
+      "EPOCH_MISMATCH",
+      "IDENTITY_MISMATCH",
+      "STATE_CONTRADICTION"
+    ],
+    "MALFORMED": [
+      "DIGEST_MISMATCH",
+      "NON_CANONICAL",
+      "SCHEMA_INVALID"
+    ],
+    "UNREADABLE": [
+      "IO_ERROR",
+      "MISSING",
+      "PERMISSION_DENIED"
+    ]
+  },
+  "publicExports": {
+    "added": [
+      "closedArray",
+      "closedRecord",
+      "compareCanonicalDecimal",
+      "computeAuthorityHistoryRecordDigest",
+      "computeAuthorityRotationId",
+      "computeGenesisBootstrapInputDigest",
+      "computeGenesisSelectionEvidenceDigest",
+      "computeReviewedAuthorityOperationDigest",
+      "computeSuccessorAuthorityCoreDigest",
+      "frame",
+      "framedDigest",
+      "incrementCanonicalDecimal",
+      "isCanonicalDecimal",
+      "isCanonicalFileUrl",
+      "isCanonicalTimestamp",
+      "isContractRelativePath",
+      "isSha256",
+      "isUnicodeScalarSequence",
+      "isUuidV7",
+      "parseCanonicalBytes",
+      "parseCanonicalDecimal",
+      "snapshotJson",
+      "validateAuthorityHistory",
+      "validateCommitEvidence",
+      "validateAgainstSchema",
+      "validateDefinition",
+      "validateDispatchBrief",
+      "validateEvidencePacket"
+    ],
+    "base": {
+      "commit": "332d8345bdc964ccbe654b22e88b30b99fe770dc",
+      "exportCount": 173,
+      "indexBlob": "736727f67fedb3a8e666f82cf33cb589a4aee1d3",
+      "indexPath": "packages/contracts/src/index.ts",
+      "runtimeBlob": "7f65113db1267d02b7ab0eb795ad05a73e48b1ad",
+      "runtimePath": "packages/contracts/src/runtime.ts"
+    },
+    "deleted": [
+      "authorityInventoryPaths",
+      "compareDecimalAscii",
+      "computeAuthorityAppendReceiptDigestV2",
+      "computeAuthorityCensusChainDigest",
+      "computeAuthorityCensusEntryDigest",
+      "computeAuthorityCensusPageDigest",
+      "computeAuthorityCensusTerminalDigest",
+      "computeAuthorityCoordinatorPositionDigest",
+      "computeAuthorityEmptyDigest",
+      "computeAuthorityFilesystemObservationDigest",
+      "computeAuthorityHistoryEmptyRootDigestV2",
+      "computeAuthorityHistoryRootDigestV2",
+      "computeAuthorityInventoryBatchDigest",
+      "computeAuthorityInventoryEmptyDigest",
+      "computeAuthorityInventoryLeafDigest",
+      "computeAuthorityInventoryRootDigest",
+      "computeAuthorityInventorySparseAbsentRoot",
+      "computeAuthorityInventorySparseRoot",
+      "computeAuthorityInventoryUpdateEntryDigest",
+      "computeAuthorityLeafDigest",
+      "computeAuthorityMaterializationFinishingDigest",
+      "computeAuthorityMaterializationHandoffDigest",
+      "computeAuthorityMaterializationPlanDigest",
+      "computeAuthorityMaterializationPlanEntryDigest",
+      "computeAuthorityMaterializationReceiptDigest",
+      "computeAuthorityMaterializationRevocationDigest",
+      "computeAuthorityMaterializationStartDigest",
+      "computeAuthorityMaterializationTerminalDigest",
+      "computeAuthorityNodeDigest",
+      "computeAuthorityNodeRecordDigest",
+      "computeAuthorityRotationHandoffDigest",
+      "computeAuthorityRotationIdV2",
+      "computeAuthoritySuccessorCoreDigestV2",
+      "computeAuthorityUpdateProofDigest",
+      "computeDestinationOwnerRetentionDigest",
+      "computeRunAuditDigestV1",
+      "computeRunCheckpointCoreDigestV2",
+      "computeRunIdV2",
+      "computeRunPostSelectionDigestV1",
+      "computeRunSegmentDigestV1",
+      "computeSparseAbsentRoot",
+      "computeSparseRoot",
+      "deriveAuthorityUpdateNodeCensus",
+      "diagnostic",
+      "EpochSequenceStep",
+      "incrementDecimalAscii",
+      "migrateNamedLegacyFixture",
+      "MigrationResult",
+      "recoveryAccumulatorDigest",
+      "resolveProposedTargetEvidence",
+      "retentionAllows",
+      "RetentionOperation",
+      "v2SchemaVersions",
+      "validateAuthorityCommitRunV3",
+      "validateAuthorityCoordinatorComposition",
+      "validateAuthorityCoordinatorTransition",
+      "validateAuthorityHistoryNodeInventoryPage",
+      "validateAuthorityInventoryCensus",
+      "validateAuthorityMaterializationAuthorityComposition",
+      "validateAuthorityMaterializationComposition",
+      "validateAuthorityMembership",
+      "validateAuthorityValueV3Composition",
+      "validateCommitEvidenceV3",
+      "validateEvidencePacketV3",
+      "validateRecoveryAccumulatorFormula",
+      "validateRetentionTransition",
+      "validateRotationCensus"
+    ],
+    "extractor": "public-export-census/v1: parse named export clauses and direct exported declarations in index.ts; expand only the exact export-type-star runtime.ts clause; reject any other export-star, alias, duplicate, or unsupported syntax",
+    "retained": [
+      "canonicalBytes",
+      "canonicalContractGolden",
+      "canonicalDigest",
+      "canonicalJson",
+      "classifyProposal",
+      "CleanupHeadWriteDisposition",
+      "CleanupLifecycle",
+      "CleanupPublication",
+      "ClosedArraySnapshotResult",
+      "ClosedRecordSnapshotResult",
+      "commitRunStages",
+      "compatibilityDisposition",
+      "compatibilityMatrix",
+      "CompatibilityRow",
+      "computeAuthorityEpochKey",
+      "computeBootstrapAnchorConflictDigest",
+      "computeBootstrapAnchorConsumptionDigest",
+      "computeBootstrapAnchorDigest",
+      "computeBootstrapAnchorLifecycleArchiveDigest",
+      "computeBootstrapAnchorProposalDigest",
+      "computeBootstrapAnchorTeardownDigest",
+      "computeBootstrapAnchorTipDigest",
+      "computeBootstrapAnchorUseIntentDigest",
+      "computeBootstrapAnchorValueDigest",
+      "computeBootstrapGenesisCoreDigest",
+      "computeBootstrapGenesisPostDigest",
+      "computeCommitResolutionDigest",
+      "computeConflictDigest",
+      "computeCurrentTipDigest",
+      "computeDestinationDigest",
+      "computeDestinationOwnerConflictDigest",
+      "computeDestinationOwnerMutationId",
+      "computeDestinationOwnerProposalDigest",
+      "computeDestinationOwnerRetirementEvidenceDigest",
+      "computeDestinationOwnerTeardownArchiveDigest",
+      "computeDestinationOwnerTipDigest",
+      "computeDestinationOwnerValueDigest",
+      "computeDestinationSuccessorPostDigest",
+      "computeDestinationSuccessorReviewCoreDigest",
+      "computeGlobalIdentityDigest",
+      "computeMutationId",
+      "computePhysicalDestinationDigest",
+      "computePhysicalObservationDigest",
+      "computePointerInstanceDigest",
+      "computePointerPositionDigest",
+      "computePointerValueDigest",
+      "computeProposalReceiptDigest",
+      "computeRecoveryAuthorizationCoreDigest",
+      "computeReservationPredecessorKey",
+      "ConflictDigestInput",
+      "ContractRecord",
+      "derivePointerPositionEvidence",
+      "externalAuthorityPaths",
+      "FieldRule",
+      "framedBytes",
+      "FramePart",
+      "isCleanupLifecyclePublicationPair",
+      "isCleanupLifecyclePublicationTransition",
+      "JsonPrimitive",
+      "JsonValue",
+      "MutationDigestInput",
+      "nativeConsumePath",
+      "parseCanonicalContractBytes",
+      "parseContract",
+      "ParseResult",
+      "pointerArchivePaths",
+      "pointerGenesisRule",
+      "PointerInstanceDigestInput",
+      "PointerKind",
+      "pointerKinds",
+      "pointerPath",
+      "PointerPathBindings",
+      "pointerPositionContracts",
+      "pointerRegistry",
+      "PointerRegistryRow",
+      "pointerRootPaths",
+      "ProposalClassification",
+      "ProposalDigestInput",
+      "recoveryAuthorizationCorePath",
+      "reduceCleanupHeadWrite",
+      "ScalarKind",
+      "SchemaDefinition",
+      "schemaDefinitions",
+      "schemaVersions",
+      "SerializationResult",
+      "serializeContract",
+      "snapshotClosedArray",
+      "snapshotClosedRecord",
+      "stateMutationAuthorityPath",
+      "stateMutationLockPath",
+      "stateMutationRegistry",
+      "validateAuthorizationReceiptChain",
+      "validateAuthorizationRevokeReceiptChain",
+      "validateBootstrapAnchorComposition",
+      "validateBootstrapAnchorTransition",
+      "validateBootstrapGenesisGraph",
+      "validateCleanupHeadHistory",
+      "validateDestinationOwnerComposition",
+      "validateDestinationOwnerTransition",
+      "validateFenceHeadHistory",
+      "validateGateAuthorizationBinding",
+      "validatePointerDispatch",
+      "validatePointerGenesisDispatch",
+      "validatePointerPositionEvidence",
+      "validatePointerTemplateDispatch",
+      "validateSelectedPointerEvidence"
+    ]
   },
   "deletedSchemaVersions": [
     "activation-cleanup-archive-head/v2",
@@ -751,7 +1764,7 @@
     "state-mutation-authority-value/v3",
     "state-mutation-destination-owner-retention/v1"
   ],
-  "deletedPublicSymbols": [
+  "deletedContractSymbols": [
     "AUTHORITY_NODE_MATERIALIZATION_RUN",
     "AUTHORITY_RETENTION",
     "AUDIT_DEGRADED",

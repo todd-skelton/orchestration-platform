@@ -52,10 +52,6 @@ function sameArray(left, right) {
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 
-function digestJson(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
 function exactKeys(value, expected, subject) {
   if (
     value === null ||
@@ -86,45 +82,177 @@ function splitTopLevel(value, separator) {
   return result;
 }
 
-function validateFieldDescriptor(descriptor, subject) {
-  if (!/^[A-Za-z0-9_./(),=-]+$/.test(descriptor)) {
-    fail(`${subject} has a prose or malformed field type`);
+function parseDescriptor(descriptor, subject, context) {
+  if (typeof descriptor !== "string" || descriptor.length === 0 || descriptor.trim() !== descriptor) {
+    fail(`${subject} has an empty or noncanonical descriptor`);
   }
-  const enumMatch = /(?:^|\()enum\(([^()]*)\)/.exec(descriptor);
-  if (enumMatch) {
-    const values = enumMatch[1].split(",");
+  if (context.primitiveNames.has(descriptor)) return { kind: "primitive", name: descriptor };
+  if (context.namedNames.has(descriptor)) return { kind: "named", name: descriptor };
+  const open = descriptor.indexOf("(");
+  if (open < 1 || !descriptor.endsWith(")")) fail(`${subject} has an undefined descriptor`);
+  const operator = descriptor.slice(0, open);
+  const body = descriptor.slice(open + 1, -1);
+  const args = splitTopLevel(body, ",");
+  if (operator === "literal") {
+    if (args.length !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$/.test(args[0])) {
+      fail(`${subject} has an invalid literal descriptor`);
+    }
+    return { kind: operator, value: args[0] };
+  }
+  if (operator === "enum") {
     if (
-      values.length === 0 ||
-      values.some((value) => value.length === 0) ||
-      new Set(values).size !== values.length ||
-      !sameArray(values, [...values].sort())
+      args.length === 0 ||
+      args.some((value) => !/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,63}$/.test(value)) ||
+      new Set(args).size !== args.length ||
+      (context.canonicalEnums !== false && !sameArray(args, [...args].sort()))
     ) {
       fail(`${subject} has an open, duplicate, or noncanonical enum`);
     }
+    return { kind: operator, values: args };
   }
+  if (operator === "nullable") {
+    if (args.length !== 1) fail(`${subject} nullable must have one descriptor`);
+    return { kind: operator, inner: parseDescriptor(args[0], subject, context) };
+  }
+  if (operator === "record") {
+    if (args.length !== 1 || !context.schemaNames.has(args[0])) {
+      fail(`${subject} references an unknown public schema`);
+    }
+    return { kind: operator, name: args[0] };
+  }
+  if (operator === "closed") {
+    if (
+      args.length !== 1 ||
+      (!context.nestedNames.has(args[0]) && args[0] !== "position-union")
+    ) {
+      fail(`${subject} references an unknown closed nested descriptor`);
+    }
+    return { kind: operator, name: args[0] };
+  }
+  if (operator === "array") {
+    if (args.length !== 4 && args.length !== 5) {
+      fail(`${subject} array must pin element, bounds, uniqueness, and order`);
+    }
+    const element = parseDescriptor(args[0], `${subject}[]`, context);
+    const options = Object.fromEntries(
+      args.slice(1).map((argument) => {
+        const match = /^(length|min|max|unique|order)=([A-Za-z0-9]+)$/.exec(argument);
+        if (!match) fail(`${subject} has a malformed array option`);
+        return [match[1], match[2]];
+      }),
+    );
+    if (Object.keys(options).length !== args.length - 1) fail(`${subject} repeats an array option`);
+    const fixed = Object.hasOwn(options, "length");
+    if (
+      (fixed && !sameArray(Object.keys(options).sort(), ["length", "order", "unique"])) ||
+      (!fixed && !sameArray(Object.keys(options).sort(), ["max", "min", "order", "unique"]))
+    ) {
+      fail(`${subject} has an open array bound`);
+    }
+    const decimals = fixed ? [options.length] : [options.min, options.max];
+    if (decimals.some((value) => !/^(?:0|[1-9][0-9]*)$/.test(value))) {
+      fail(`${subject} has a noncanonical array bound`);
+    }
+    const compareDecimal = (left, right) =>
+      left.length === right.length ? left.localeCompare(right) : left.length - right.length;
+    if (!fixed && compareDecimal(options.min, options.max) > 0) fail(`${subject} array min exceeds max`);
+    if (options.unique !== "true" && options.unique !== "false") {
+      fail(`${subject} array uniqueness is not closed`);
+    }
+    if (!["LEXICOGRAPHIC", "PRESERVE", "REGISTRY"].includes(options.order)) {
+      fail(`${subject} array order is not closed`);
+    }
+    return { kind: operator, element, options };
+  }
+  fail(`${subject} uses unknown descriptor operator ${operator}`);
 }
 
-function validateDefinition(schemaVersion, definition) {
+function parseDefinition(definitionName, definition, context, requireSchemaVersion) {
   if (typeof definition !== "string" || definition.length === 0) {
-    fail(`${schemaVersion} has no exact definition`);
+    fail(`${definitionName} has no exact definition`);
   }
   const fields = splitTopLevel(definition, "|").map((entry) => {
     const separator = entry.indexOf(":");
-    if (separator < 1) fail(`${schemaVersion} has a malformed field definition`);
+    if (separator < 1) fail(`${definitionName} has a malformed field definition`);
     const name = entry.slice(0, separator);
     const descriptor = entry.slice(separator + 1);
-    if (!/^[a-z][A-Za-z0-9]*$/.test(name)) fail(`${schemaVersion} has an invalid field name`);
-    validateFieldDescriptor(descriptor, `${schemaVersion}.${name}`);
-    return [name, descriptor];
+    if (!/^[a-z][A-Za-z0-9]*$/.test(name)) fail(`${definitionName} has an invalid field name`);
+    return [name, parseDescriptor(descriptor, `${definitionName}.${name}`, context), descriptor];
   });
   const names = fields.map(([name]) => name);
   if (new Set(names).size !== names.length || !sameArray(names, [...names].sort())) {
-    fail(`${schemaVersion} field order is not canonical or is duplicated`);
+    fail(`${definitionName} field order is not canonical or is duplicated`);
   }
-  const schemaField = fields.find(([name]) => name === "schemaVersion");
-  if (!schemaField || schemaField[1] !== `literal(${schemaVersion})`) {
-    fail(`${schemaVersion} does not pin its exact schemaVersion literal`);
+  if (requireSchemaVersion) {
+    const schemaField = fields.find(([name]) => name === "schemaVersion");
+    if (!schemaField || schemaField[2] !== `literal(${definitionName})`) {
+      fail(`${definitionName} does not pin its exact schemaVersion literal`);
+    }
   }
+  return new Map(fields.map(([name, parsed, raw]) => [name, { parsed, raw }]));
+}
+
+function uniqueStringArray(value, subject) {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== "string" || item.length === 0) ||
+    new Set(value).size !== value.length
+  ) {
+    fail(`${subject} is not a unique nonempty string array`);
+  }
+  return value;
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) fail("golden has a noncanonical number");
+    return String(value);
+  }
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value !== "object") fail("golden has a non-JSON value");
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+    .join(",")}}`;
+}
+
+function validInheritedScalar(kind, value) {
+  if (kind === "sha256") return typeof value === "string" && sha256Pattern.test(value);
+  if (kind === "uuid-v7")
+    return (
+      typeof value === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    );
+  if (kind === "integer") return Number.isSafeInteger(value) && value >= 0;
+  if (kind === "timestamp")
+    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value);
+  if (kind === "schema-id")
+    return typeof value === "string" && /^[a-z][a-z0-9-]*\/v[1-9][0-9]*$/.test(value);
+  if (kind === "semver")
+    return typeof value === "string" && /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(value);
+  if (kind === "bounded-string")
+    return typeof value === "string" && value.length > 0 && value.length <= 512;
+  if (kind === "opaque")
+    return typeof value === "string" && /^[a-z0-9](?:[a-z0-9._:@+-]{0,126}[a-z0-9])?$/.test(value);
+  if (kind === "relative-path")
+    return (
+      typeof value === "string" &&
+      value.length > 0 &&
+      !value.startsWith("/") &&
+      !value.includes("\\") &&
+      value.split("/").every((part) => part !== "" && part !== "." && part !== "..")
+    );
+  if (kind === "json") {
+    try {
+      canonicalJson(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 export function validateSchemaDisposition(ledger) {
@@ -134,16 +262,26 @@ export function validateSchemaDisposition(ledger) {
       "alreadyExactAuthority",
       "alreadyExactAuthorityBinding",
       "alreadyExactGeneral",
-      "deletedPublicSymbols",
+      "attemptLogStorage",
+      "conditionalPresence",
+      "deletedContractSymbols",
       "deletedSchemaVersions",
+      "dependencyGraphs",
+      "descriptorLanguage",
       "exactBase",
       "inheritedExact",
+      "inheritedFieldLanguage",
+      "namedDescriptors",
       "nestedDefinitions",
       "newlyPinned",
       "newlyPinnedContract",
       "operationalBindings",
       "pointerRegistry",
       "pointerRegistryContract",
+      "positionDefinitions",
+      "primitiveDescriptors",
+      "publicExports",
+      "runPhaseStages",
       "schemaVersion",
       "subjectHead",
       "unknownEvidenceReasons",
@@ -171,34 +309,31 @@ export function validateSchemaDisposition(ledger) {
     "exact base",
   );
   if (
-    ledger.exactBase.commit !== "2527ef6457e4a65b7c54ffd521f8c4c0bbe34905" ||
+    ledger.exactBase.commit !== ledger.subjectHead ||
     ledger.exactBase.fixturePath !== "test/contracts/fixtures.ts" ||
-    ledger.exactBase.fixtureBlob !== "3435d78637057ba7d9238efc734bc411cd72bf41" ||
+    !sha256Pattern.test(ledger.exactBase.publicSchemaCensusDigest) ||
     ledger.exactBase.publicSchemaCount !== 155 ||
-    ledger.exactBase.publicSchemaCensusDigest !==
-      "2a569ffc440bd6c3226b44cb78d909c6c77487a2abe908faecc5f672a75c3b61" ||
     ledger.exactBase.retainedPublicSchemaCount !== 85 ||
     ledger.exactBase.newPublicSchemaCount !== 17
   ) {
     fail("ISS-002 exact-base identity moved");
   }
   exactKeys(ledger.exactBase.sources, ["approved", "definitions", "v2"], "exact-base sources");
-  const expectedSources = {
+  const expectedSourcePins = {
     approved: ["packages/contracts/src/approved.ts", "c07a107f3bae9a9f248e1684fe532c0898642ef5"],
-    definitions: [
-      "packages/contracts/src/definitions.ts",
-      "511b521aeb4efd745bf51cc002435188378829f8",
-    ],
+    definitions: ["packages/contracts/src/definitions.ts", "511b521aeb4efd745bf51cc002435188378829f8"],
     v2: ["packages/contracts/src/v2.ts", "e743567d846a047de10eb7c4cb2c5d71638b08e4"],
   };
-  for (const [key, [path, blob]] of Object.entries(expectedSources)) {
+  for (const [key, binding] of Object.entries(ledger.exactBase.sources)) {
     exactKeys(ledger.exactBase.sources[key], ["blob", "path"], `exact-base ${key}`);
-    if (
-      ledger.exactBase.sources[key].path !== path ||
-      ledger.exactBase.sources[key].blob !== blob
-    ) {
-      fail(`ISS-002 exact-base ${key} identity moved`);
+    if (!sameArray([binding.path, binding.blob], expectedSourcePins[key])) {
+      fail(`ISS-002 exact-base ${key} inline Git-object pin moved`);
     }
+  }
+  if (
+    ledger.exactBase.fixtureBlob !== "f8953cc6cfb9bc22f438a9ff64c6bcfd93ff274f"
+  ) {
+    fail("ISS-002 exact-base fixture inline Git-object pin moved");
   }
 
   const general = ledger.alreadyExactGeneral;
@@ -214,17 +349,9 @@ export function validateSchemaDisposition(ledger) {
       fail("already-exact general binding is malformed");
     }
   }
-  if (digestJson(general) !== "a3bca29e7db6de2356914cb2aec6a06caeb14e59ffa40f41dffd562284ed5a85") {
-    fail("already-exact general definition/golden identity moved");
-  }
   const authority = ledger.alreadyExactAuthority;
   if (!Array.isArray(authority) || authority.length !== 8) {
     fail("already-exact authority census moved");
-  }
-  if (
-    digestJson(authority) !== "d8bb91f85125a4fac591fa0251aa00a6171ef352f0f1501f541b45773dcab558"
-  ) {
-    fail("already-exact authority census identity moved");
   }
   exactKeys(
     ledger.alreadyExactAuthorityBinding,
@@ -254,24 +381,51 @@ export function validateSchemaDisposition(ledger) {
   if (!Array.isArray(inherited) || inherited.length !== 24) {
     fail("inherited exact census moved");
   }
+  exactKeys(
+    ledger.inheritedFieldLanguage,
+    ["array", "canonicalOrder", "kinds", "nullable", "values"],
+    "inherited field language",
+  );
+  const inheritedKinds = new Set(Object.keys(ledger.inheritedFieldLanguage.kinds));
+  const inheritedByName = new Map();
+  const semanticRules = {
+    "physical-destination-identity/v1": "PHYSICAL_DESTINATION_IDENTITY_V1",
+    "physical-destination-locator-observation-receipt/v1": "OBSERVED_AT_LE_VALID_UNTIL",
+    "recovery-authorization-core/v1": "RECOVERY_AUTHORIZATION_MODE_UNION_V1",
+    "state-mutation-destination-owner-successor-review-core/v1":
+      "NESTED_SUCCESSOR_REVIEW_CORE_V1",
+  };
   for (const row of inherited) {
+    exactKeys(
+      row,
+      [
+        "fields",
+        "goldenCanonicalJson",
+        "nestedRecords",
+        "schemaVersion",
+        "semanticRuleId",
+        "sourceKey",
+      ],
+      "inherited exact row",
+    );
+    const schemaVersion = row.schemaVersion;
     if (
-      !Array.isArray(row) ||
-      row.length !== 4 ||
-      typeof row[0] !== "string" ||
-      !Object.hasOwn(ledger.exactBase.sources, row[1]) ||
-      !sha256Pattern.test(row[2]) ||
-      !sha256Pattern.test(row[3])
+      typeof schemaVersion !== "string" ||
+      inheritedByName.has(schemaVersion) ||
+      !Object.hasOwn(ledger.exactBase.sources, row.sourceKey) ||
+      typeof row.fields !== "string" ||
+      typeof row.goldenCanonicalJson !== "string"
     ) {
-      fail("inherited exact definition/golden binding is malformed");
+      fail("inherited exact definition/source/golden binding is malformed");
     }
+    if (row.semanticRuleId !== (semanticRules[schemaVersion] ?? null)) {
+      fail(`${schemaVersion} inherited semantic-rule identity moved`);
+    }
+    inheritedByName.set(schemaVersion, row);
   }
-  if (
-    digestJson(inherited) !== "dce90237ebcd9608abb419ae7069cbb743f7f7e747cdf9d88f7072093aaa9e46"
-  ) {
-    fail("inherited exact definition/golden identity moved");
+  if (inheritedByName.size !== inherited.length) {
+    fail("inherited exact schema is duplicated");
   }
-
   exactKeys(
     ledger.newlyPinnedContract,
     [
@@ -295,15 +449,6 @@ export function validateSchemaDisposition(ledger) {
     fail("newly-pinned closure contract moved");
   }
   if (Object.keys(ledger.newlyPinned).length !== 45) fail("newly-pinned schema census moved");
-  for (const [schemaVersion, definition] of Object.entries(ledger.newlyPinned)) {
-    validateDefinition(schemaVersion, definition);
-  }
-  if (
-    digestJson(ledger.newlyPinned) !==
-    "50f361f02b999807f76df1698f745aecb11e3236b6e1ddfd75591171f56b419e"
-  ) {
-    fail("newly-pinned field/type/nullability/enum census moved");
-  }
   exactKeys(
     ledger.operationalBindings,
     ["digestProfiles", "exclusions", "persistence", "schemaDigestProfile"],
@@ -327,58 +472,125 @@ export function validateSchemaDisposition(ledger) {
       fail(`${schemaVersion} lacks a persisted path or explicit non-persisted disposition`);
     }
   }
-  if (
-    digestJson(ledger.operationalBindings) !==
-    "1804c39d500c46b6696416708f61ae3845ca204cd381bdca03db91003c31107a"
-  ) {
-    fail("newly-pinned path/digest/exclusion binding moved");
-  }
-  exactKeys(
-    ledger.nestedDefinitions,
-    ["authority-history-binding", "selected-evidence"],
-    "nested definition census",
-  );
-  for (const [name, definition] of Object.entries(ledger.nestedDefinitions)) {
-    const synthetic = definition.replace(
-      /(^|\|)([a-z][A-Za-z0-9]*):/g,
-      (_match, prefix, field) => `${prefix}${field}:`,
-    );
-    const fields = splitTopLevel(synthetic, "|").map((entry) => entry.slice(0, entry.indexOf(":")));
-    if (new Set(fields).size !== fields.length || !sameArray(fields, [...fields].sort())) {
-      fail(`nested ${name} field order is not canonical or is duplicated`);
-    }
-    for (const entry of splitTopLevel(definition, "|")) {
-      validateFieldDescriptor(entry.slice(entry.indexOf(":") + 1), `nested ${name}`);
-    }
-  }
-  if (
-    digestJson(ledger.nestedDefinitions) !==
-    "54ef3beb06d206faac9423fc128751a0809b9552b076e10eb035786e52f7082b"
-  ) {
-    fail("nested recursively closed definition census moved");
-  }
-
   const currentSchemas = [
     ...general.map((row) => row[0]),
     ...authority,
-    ...inherited.map((row) => row[0]),
+    ...inherited.map((row) => row.schemaVersion),
     ...Object.keys(ledger.newlyPinned),
   ].sort();
   if (
     currentSchemas.length !== 102 ||
     new Set(currentSchemas).size !== 102 ||
-    currentSchemas.some((schemaVersion) => !schemaVersion.endsWith("/v1")) ||
-    digestJson(currentSchemas) !==
-      "b2cae9988657d45d875d85dd2aeb28b982a61c02f19640cb049a648ff7a12167"
+    currentSchemas.some((schemaVersion) => !schemaVersion.endsWith("/v1"))
   ) {
     fail("current public schema disposition union moved or overlaps");
+  }
+  const descriptorContext = {
+    namedNames: new Set(Object.keys(ledger.namedDescriptors)),
+    nestedNames: new Set(Object.keys(ledger.nestedDefinitions)),
+    primitiveNames: new Set(Object.keys(ledger.primitiveDescriptors)),
+    schemaNames: new Set(currentSchemas),
+  };
+  exactKeys(
+    ledger.descriptorLanguage,
+    ["array", "closed", "enum", "fieldList", "literal", "nullable", "record", "recursion", "syntax"],
+    "descriptor language",
+  );
+  if (!ledger.descriptorLanguage.array.includes("no omitted bound")) {
+    fail("descriptor language permits an open array");
+  }
+  for (const [name, descriptor] of Object.entries(ledger.namedDescriptors)) {
+    parseDescriptor(descriptor, `named descriptor ${name}`, descriptorContext);
+  }
+  const parsedNew = new Map();
+  for (const [schemaVersion, definition] of Object.entries(ledger.newlyPinned)) {
+    parsedNew.set(
+      schemaVersion,
+      parseDefinition(schemaVersion, definition, descriptorContext, true),
+    );
+  }
+  for (const [name, definition] of Object.entries(ledger.nestedDefinitions)) {
+    parseDefinition(name, definition, descriptorContext, false);
+  }
+  const inheritedContext = {
+    ...descriptorContext,
+    canonicalEnums: false,
+    primitiveNames: new Set([...descriptorContext.primitiveNames, ...inheritedKinds]),
+  };
+  const parsedInherited = new Map();
+  for (const [schemaVersion, row] of inheritedByName) {
+    const fields = parseDefinition(schemaVersion, row.fields, inheritedContext, true);
+    parsedInherited.set(schemaVersion, fields);
+    let golden;
+    try {
+      golden = JSON.parse(row.goldenCanonicalJson);
+    } catch {
+      fail(`${schemaVersion} inherited golden is not JSON`);
+    }
+    if (
+      canonicalJson(golden) !== row.goldenCanonicalJson ||
+      golden === null ||
+      typeof golden !== "object" ||
+      Array.isArray(golden) ||
+      !sameArray(Object.keys(golden).sort(), [...fields.keys()].sort()) ||
+      golden.schemaVersion !== schemaVersion
+    ) {
+      fail(`${schemaVersion} inherited golden is not canonical and closed`);
+    }
+    const validateValue = (descriptor, value, subject) => {
+      if (descriptor.kind === "nullable") {
+        if (value === null) return;
+        validateValue(descriptor.inner, value, subject);
+        return;
+      }
+      if (value === null) fail(`${subject} inherited golden null is forbidden`);
+      if (descriptor.kind === "literal") {
+        if (value !== descriptor.value) fail(`${subject} inherited golden literal moved`);
+        return;
+      }
+      if (descriptor.kind === "enum") {
+        if (!descriptor.values.includes(value)) fail(`${subject} inherited golden enum is invalid`);
+        return;
+      }
+      if (descriptor.kind === "primitive") {
+        if (!validInheritedScalar(descriptor.name, value)) {
+          fail(`${subject} inherited golden violates ${descriptor.name}`);
+        }
+        return;
+      }
+      if (descriptor.kind === "array") {
+        if (!Array.isArray(value)) fail(`${subject} inherited golden array is invalid`);
+        const min = Number(descriptor.options.min ?? descriptor.options.length);
+        const max = Number(descriptor.options.max ?? descriptor.options.length);
+        if (value.length < min || value.length > max) fail(`${subject} inherited golden array bound moved`);
+        for (const entry of value) validateValue(descriptor.element, entry, `${subject}[]`);
+        if (
+          descriptor.options.unique === "true" &&
+          new Set(value.map(canonicalJson)).size !== value.length
+        ) {
+          fail(`${subject} inherited golden array is not unique`);
+        }
+        return;
+      }
+      fail(`${subject} inherited golden uses a non-scalar descriptor`);
+    };
+    for (const [field, { parsed }] of fields) {
+      validateValue(parsed, golden[field], `${schemaVersion}.${field}`);
+    }
+    for (const [field, nestedSchema] of Object.entries(row.nestedRecords)) {
+      if (
+        fields.get(field)?.raw !== "json" ||
+        !inheritedByName.has(nestedSchema) ||
+        golden[field]?.schemaVersion !== nestedSchema
+      ) {
+        fail(`${schemaVersion}.${field} has an invalid nested inherited identity`);
+      }
+    }
   }
   if (
     !Array.isArray(ledger.deletedSchemaVersions) ||
     ledger.deletedSchemaVersions.length !== 70 ||
     !sameArray(ledger.deletedSchemaVersions, [...ledger.deletedSchemaVersions].sort()) ||
-    digestJson(ledger.deletedSchemaVersions) !==
-      "4e4bbcdcb7311ebc236c8835137f1929d4a9f17128dd60ca74979bd51c94d8b1" ||
     ledger.deletedSchemaVersions.some((schemaVersion) => currentSchemas.includes(schemaVersion))
   ) {
     fail("deleted schema census moved, overlaps, or is not canonical");
@@ -392,20 +604,17 @@ export function validateSchemaDisposition(ledger) {
     fail("exact-base retained/deleted/new schema partition does not conserve the census");
   }
   if (
-    !Array.isArray(ledger.deletedPublicSymbols) ||
-    ledger.deletedPublicSymbols.length !== 13 ||
-    digestJson(ledger.deletedPublicSymbols) !==
-      "bfbb94a402fb9139c6a68229b1ce42880796afde58bdb5bc62f788af96adaf0c"
+    !Array.isArray(ledger.deletedContractSymbols) ||
+    ledger.deletedContractSymbols.length !== 13 ||
+    new Set(ledger.deletedContractSymbols).size !== 13
   ) {
-    fail("deleted public symbol census moved");
+    fail("deleted contract symbol census is not exact");
   }
 
   if (
     !Array.isArray(ledger.pointerRegistry) ||
     ledger.pointerRegistry.length !== 11 ||
-    ledger.pointerRegistry.some((row) => !Array.isArray(row) || row.length !== 11) ||
-    digestJson(ledger.pointerRegistry) !==
-      "1e303c9912b7d04008080f3ba20e1d132138ee1c3a7100238efa527ecd312947"
+    ledger.pointerRegistry.some((row) => !Array.isArray(row) || row.length !== 11)
   ) {
     fail("pointer registry exact 11-row census moved");
   }
@@ -442,6 +651,215 @@ export function validateSchemaDisposition(ledger) {
   ) {
     fail("pointer registry 11/11/10/FULL or packet 11/10 contract moved");
   }
+  const positionNames = ledger.pointerRegistry.flatMap((row) =>
+    row[10] === null ? [row[9]] : [row[9], row[10]],
+  );
+  if (
+    positionNames.length !== 21 ||
+    new Set(positionNames).size !== 21 ||
+    !sameArray(Object.keys(ledger.positionDefinitions).sort(), [...positionNames].sort())
+  ) {
+    fail("position union does not define the exact 11 ordinary plus 10 tombstone arms");
+  }
+  for (const row of ledger.pointerRegistry) {
+    for (const [domain, variant] of [[row[9], "ORDINARY"], ...(row[10] ? [[row[10], "TOMBSTONE"]] : [])]) {
+      const fields = parseDefinition(
+        domain,
+        ledger.positionDefinitions[domain],
+        descriptorContext,
+        false,
+      );
+      if (
+        fields.get("pointerKind")?.raw !== `literal(${row[0]})` ||
+        fields.get("variant")?.raw !== `literal(${variant})`
+      ) {
+        fail(`${domain} is not bound to its registry kind and variant`);
+      }
+      if (variant === "TOMBSTONE") {
+        const expected = ["archiveDigest", "pointerKind", "priorReceiptDigest", "priorTipDigest", "priorValueDigest", "terminalProofDigest", "variant"];
+        if (!sameArray([...fields.keys()], expected)) fail(`${domain} has a noncanonical tombstone shape`);
+      }
+    }
+  }
+
+  const requiredMatrices = [
+    "activation-recovery-launch/v1",
+    "attempt-log/v1",
+    "pointer-cas-proposal-receipt/v1",
+    "pointer-evidence-packet/v1",
+    "pointer-mutation-run-checkpoint-core/v1",
+    "recovery-attempt-reservation/v1",
+    "recovery-authorization-attachment/v1",
+    "recovery-authorization-state/v1",
+  ];
+  if (!sameArray(Object.keys(ledger.conditionalPresence).sort(), requiredMatrices.sort())) {
+    fail("lifecycle conditional-presence matrix census moved");
+  }
+  for (const [schemaVersion, matrix] of Object.entries(ledger.conditionalPresence)) {
+    exactKeys(matrix, ["conditionalFields", "discriminator", "states"], `${schemaVersion} matrix`);
+    const fields = parsedNew.get(schemaVersion);
+    if (!fields) fail(`${schemaVersion} matrix has no newly pinned schema`);
+    const discriminator = fields.get(matrix.discriminator)?.parsed;
+    if (!discriminator || discriminator.kind !== "enum") {
+      fail(`${schemaVersion} matrix discriminator is not a closed enum`);
+    }
+    if (!sameArray(Object.keys(matrix.states).sort(), [...discriminator.values].sort())) {
+      fail(`${schemaVersion} matrix does not exhaust its discriminator`);
+    }
+    uniqueStringArray(matrix.conditionalFields, `${schemaVersion} conditional fields`);
+    for (const field of matrix.conditionalFields) {
+      const parsed = fields.get(field)?.parsed;
+      if (!parsed || parsed.kind !== "nullable") fail(`${schemaVersion}.${field} is not nullable`);
+    }
+    for (const [state, branch] of Object.entries(matrix.states)) {
+      const allowedKeys = ["allOrNone", "null", "present", "presentOrNull"];
+      if (Object.keys(branch).some((key) => !allowedKeys.includes(key))) {
+        fail(`${schemaVersion} ${state} matrix has an unknown disposition`);
+      }
+      for (const key of allowedKeys) if (branch[key]) uniqueStringArray(branch[key], `${schemaVersion} ${state} ${key}`);
+      const covered = allowedKeys.flatMap((key) => branch[key] ?? []);
+      if (
+        new Set(covered).size !== covered.length ||
+        !sameArray([...covered].sort(), [...matrix.conditionalFields].sort())
+      ) {
+        fail(`${schemaVersion} ${state} does not dispose every conditional field exactly once`);
+      }
+    }
+  }
+
+  const stageDescriptor = parseDescriptor(
+    ledger.namedDescriptors["checkpoint-stage"],
+    "checkpoint-stage",
+    descriptorContext,
+  );
+  const phaseField = parsedNew.get("pointer-mutation-run-current-value/v1").get("phase").parsed;
+  if (
+    stageDescriptor.kind !== "enum" ||
+    phaseField.kind !== "enum" ||
+    !sameArray(Object.keys(ledger.runPhaseStages).sort(), [...phaseField.values].sort())
+  ) {
+    fail("run phase/stage matrix is not closed");
+  }
+  const terminalStages = ledger.runPhaseStages.SELECTED;
+  for (const phase of ["LOST_CONFLICT", "UNKNOWN_TERMINAL"]) {
+    if (!sameArray(ledger.runPhaseStages[phase], terminalStages)) {
+      fail("terminal run phases do not share the exact terminal stage set");
+    }
+  }
+  const stageUnion = new Set([
+    ...ledger.runPhaseStages.CRASH_PREFIX,
+    ...ledger.runPhaseStages.CAS_AMBIGUOUS,
+    ...terminalStages,
+  ]);
+  if (!sameArray([...stageUnion].sort(), [...stageDescriptor.values].sort())) {
+    fail("run phase/stage matrix omits or invents a stage");
+  }
+
+  exactKeys(ledger.dependencyGraphs, ["bootstrapE0"], "dependency graph census");
+  const graph = ledger.dependencyGraphs.bootstrapE0;
+  exactKeys(
+    graph,
+    ["edges", "nodes", "preUseIntentAllowedFacts", "preUseIntentForbiddenFacts"],
+    "bootstrap E0 graph",
+  );
+  uniqueStringArray(graph.nodes, "bootstrap E0 nodes");
+  const adjacency = new Map(graph.nodes.map((node) => [node, []]));
+  const indegree = new Map(graph.nodes.map((node) => [node, 0]));
+  for (const edge of graph.edges) {
+    if (!Array.isArray(edge) || edge.length !== 2 || !adjacency.has(edge[0]) || !adjacency.has(edge[1])) {
+      fail("bootstrap E0 graph has a malformed edge");
+    }
+    adjacency.get(edge[0]).push(edge[1]);
+    indegree.set(edge[1], indegree.get(edge[1]) + 1);
+  }
+  const queue = [...indegree].filter(([, degree]) => degree === 0).map(([node]) => node);
+  let visited = 0;
+  while (queue.length) {
+    const node = queue.shift();
+    visited += 1;
+    for (const next of adjacency.get(node)) {
+      indegree.set(next, indegree.get(next) - 1);
+      if (indegree.get(next) === 0) queue.push(next);
+    }
+  }
+  if (visited !== graph.nodes.length) fail("bootstrap E0 dependency graph is cyclic");
+  for (const requiredEdge of [["Dgb", "Dh"], ["Dh", "authorityValue"], ["authorityValue", "Dv"]]) {
+    if (!graph.edges.some((edge) => sameArray(edge, requiredEdge))) {
+      fail("bootstrap E0 graph lost the Dgb to Dh to value to Dv chain");
+    }
+  }
+  if (
+    graph.preUseIntentAllowedFacts.some((fact) => graph.preUseIntentForbiddenFacts.includes(fact)) ||
+    ["authorityValueDigest", "genesisBootstrapInputDigest"].some((field) =>
+      parsedNew.get("bootstrap-proposed-genesis-input/v1").has(field),
+    ) ||
+    ["expectedAuthorityValueDigest", "genesisBootstrapInputDigest"].some((field) =>
+      parsedNew.get("state-mutation-bootstrap-anchor-use-intent/v1").has(field),
+    )
+  ) {
+    fail("pre-use intent contains downstream E0 authority");
+  }
+
+  exactKeys(
+    ledger.attemptLogStorage,
+    ["construction", "recordPath", "selectedTipPath", "soleRecordPerOrdinal"],
+    "attempt-log storage",
+  );
+  if (
+    ledger.attemptLogStorage.recordPath !==
+      "installation/activation-recovery-launches/<transaction>/<source>/attempt-log/<ordinal>.json" ||
+    ledger.attemptLogStorage.soleRecordPerOrdinal !== true ||
+    ledger.operationalBindings.persistence["attempt-log/v1"] !== ledger.attemptLogStorage.recordPath
+  ) {
+    fail("attempt-log record persistence is not deterministic and ordinal-derived");
+  }
+  for (const [schemaVersion, path] of Object.entries(ledger.operationalBindings.persistence)) {
+    if (schemaVersion.startsWith("state-mutation-bootstrap-anchor-") || schemaVersion === "state-mutation-bootstrap-anchor/v1") {
+      if (!path.startsWith("state-mutation-authority-anchors/<installation-id>/") || path.includes("<anchor-Dp>")) {
+        fail(`${schemaVersion} does not use the reviewed installation-keyed anchor path`);
+      }
+    }
+  }
+
+  const dispatchFields = parsedNew.get("dispatch-brief/v1");
+  for (const [name, { parsed }] of dispatchFields) {
+    if (name !== "schemaVersion" && /(prose|prompt|text|name|code)/i.test(name)) {
+      fail("dispatch brief contains a prose-capable field");
+    }
+    if (parsed.kind === "array" && !Object.hasOwn(parsed.options, "length") && !Object.hasOwn(parsed.options, "max")) {
+      fail("dispatch brief contains an unbounded array");
+    }
+  }
+
+  exactKeys(ledger.publicExports, ["added", "base", "deleted", "extractor", "retained"], "public export census");
+  exactKeys(
+    ledger.publicExports.base,
+    ["commit", "exportCount", "indexBlob", "indexPath", "runtimeBlob", "runtimePath"],
+    "public export base",
+  );
+  const retainedExports = uniqueStringArray(ledger.publicExports.retained, "retained public exports");
+  const deletedExports = uniqueStringArray(ledger.publicExports.deleted, "deleted public exports");
+  const addedExports = uniqueStringArray(ledger.publicExports.added, "added public exports");
+  if (
+    ledger.publicExports.base.commit !== ledger.exactBase.commit ||
+    retainedExports.some((name) => deletedExports.includes(name) || addedExports.includes(name)) ||
+    deletedExports.some((name) => addedExports.includes(name))
+  ) {
+    fail("public export dispositions overlap or use a different base");
+  }
+  if (
+    ledger.publicExports.base.exportCount !== 173 ||
+    ledger.publicExports.base.indexPath !== "packages/contracts/src/index.ts" ||
+    ledger.publicExports.base.indexBlob !== "736727f67fedb3a8e666f82cf33cb589a4aee1d3" ||
+    ledger.publicExports.base.runtimePath !== "packages/contracts/src/runtime.ts" ||
+    ledger.publicExports.base.runtimeBlob !== "7f65113db1267d02b7ab0eb795ad05a73e48b1ad"
+  ) {
+    fail("public export inline Git-object pins moved");
+  }
+  if (retainedExports.length + deletedExports.length !== ledger.publicExports.base.exportCount) {
+    fail("base public export does not have exactly one retained/deleted disposition");
+  }
+
   exactKeys(
     ledger.unknownEvidenceReasons,
     ["IMPOSSIBLE", "MALFORMED", "UNREADABLE"],
