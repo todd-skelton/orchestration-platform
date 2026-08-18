@@ -57,4 +57,21 @@ export function engineVocabularyFindings(
   return Object.freeze(findings.sort());
 }
 
+export function engineVocabularyValueFindings(
+  values: readonly string[],
+  forbiddenDigests: readonly string[] = [],
+): readonly string[] {
+  const hashes = new Set(forbiddenDigests);
+  const findings: string[] = [];
+  for (const value of values) {
+    const adapter = adapterTerms.find((term) => candidates(value).has(term));
+    const consumer = [...candidates(value)].find((candidate) =>
+      hashes.has(forbiddenDigest(candidate)),
+    );
+    if (adapter) findings.push(`value:${value}:adapter:${adapter}`);
+    else if (consumer) findings.push(`value:${value}:consumer`);
+  }
+  return Object.freeze(findings.sort());
+}
+
 export const engineAdapterVocabulary = adapterTerms;

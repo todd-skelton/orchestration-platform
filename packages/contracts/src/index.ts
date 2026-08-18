@@ -8,10 +8,12 @@ import {
   type ParseResult,
 } from "./runtime.js";
 import { parseSimplifiedAuthorityContract } from "./authority.js";
+import { parseDispatchContract } from "./dispatch.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
 export * from "./authority.js";
 export * from "./definitions.js";
+export * from "./dispatch.js";
 export * from "./pointer.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
@@ -47,6 +49,8 @@ export {
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
   const authority = parseSimplifiedAuthorityContract(expectedSchemaVersion, input);
   if (authority) return authority;
+  const dispatch = parseDispatchContract(expectedSchemaVersion, input);
+  if (dispatch) return dispatch;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);
   if (pointer) return pointer;
   const definition = schemaDefinitions[expectedSchemaVersion];

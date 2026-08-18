@@ -1,5 +1,13 @@
 import { isUuidV7, type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { simplifiedAuthoritySchemaFields, simplifiedAuthoritySchemaVersions } from "./authority.js";
+import {
+  dispatchDirectiveKinds,
+  dispatchPlanAccessors,
+  dispatchResourceAccess,
+  dispatchRoles,
+  dispatchSchemaFields,
+  dispatchSchemaVersions,
+} from "./dispatch.js";
 import { pointerGraphSchemaFields, pointerGraphSchemaVersions } from "./pointer.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
@@ -116,12 +124,50 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "pointer-current-tip/v1",
       fields: pointerGraphSchemaFields.currentTip,
     }),
+    "dispatch-action-core/v1": Object.freeze({
+      schemaVersion: "dispatch-action-core/v1",
+      fields: dispatchSchemaFields.actionCore,
+      closedValues: dispatchRoles,
+    }),
+    "dispatch-brief-action/v1": Object.freeze({
+      schemaVersion: "dispatch-brief-action/v1",
+      fields: dispatchSchemaFields.briefAction,
+    }),
+    "dispatch-brief-directive/v1": Object.freeze({
+      schemaVersion: "dispatch-brief-directive/v1",
+      fields: dispatchSchemaFields.directive,
+      closedValues: Object.freeze([...dispatchDirectiveKinds, "PRESENT", "ABSENT"]),
+    }),
+    "dispatch-brief-resource/v1": Object.freeze({
+      schemaVersion: "dispatch-brief-resource/v1",
+      fields: dispatchSchemaFields.resource,
+      closedValues: dispatchResourceAccess,
+    }),
+    "dispatch-brief/v1": Object.freeze({
+      schemaVersion: "dispatch-brief/v1",
+      fields: dispatchSchemaFields.brief,
+      closedValues: dispatchRoles,
+    }),
+    "dispatch-catalog-entry/v1#nested": Object.freeze({
+      schemaVersion: "dispatch-catalog-entry/v1",
+      fields: dispatchSchemaFields.catalog,
+      closedValues: Object.freeze([...dispatchDirectiveKinds, ...dispatchPlanAccessors]),
+    }),
+    "worker-host-identity/v1": Object.freeze({
+      schemaVersion: "worker-host-identity/v1",
+      fields: dispatchSchemaFields.hostIdentity,
+    }),
+    "worker-host-renderer-artifact/v1": Object.freeze({
+      schemaVersion: "worker-host-renderer-artifact/v1",
+      fields: dispatchSchemaFields.hostArtifact,
+    }),
   });
 export const schemaVersions = Object.freeze(
   [
     ...Object.keys(schemaDefinitions),
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
+    ...dispatchSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
