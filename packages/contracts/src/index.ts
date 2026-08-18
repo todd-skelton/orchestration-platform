@@ -8,11 +8,13 @@ import {
   type ParseResult,
 } from "./runtime.js";
 import { parseSimplifiedAuthorityContract } from "./authority.js";
+import { parseCommitContract } from "./commit.js";
 import { parseDispatchContract } from "./dispatch.js";
 import { parseEvidenceContract } from "./evidence.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
 export * from "./authority.js";
+export * from "./commit.js";
 export * from "./definitions.js";
 export * from "./dispatch.js";
 export * from "./evidence.js";
@@ -51,6 +53,8 @@ export {
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
   const authority = parseSimplifiedAuthorityContract(expectedSchemaVersion, input);
   if (authority) return authority;
+  const commit = parseCommitContract(expectedSchemaVersion, input);
+  if (commit) return commit;
   const dispatch = parseDispatchContract(expectedSchemaVersion, input);
   if (dispatch) return dispatch;
   const evidence = parseEvidenceContract(expectedSchemaVersion, input);

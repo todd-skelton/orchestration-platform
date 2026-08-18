@@ -1,6 +1,12 @@
 import { isUuidV7, type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { simplifiedAuthoritySchemaFields, simplifiedAuthoritySchemaVersions } from "./authority.js";
 import {
+  commitRunPhases,
+  commitRunStages,
+  commitSchemaFields,
+  commitSchemaVersions,
+} from "./commit.js";
+import {
   dispatchDirectiveKinds,
   dispatchPlanAccessors,
   dispatchResourceAccess,
@@ -108,6 +114,20 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "state-mutation-authority-value/v1",
       fields: simplifiedAuthoritySchemaFields.selectedAuthorityValue,
     }),
+    "pointer-mutation-run-checkpoint-core/v1": Object.freeze({
+      schemaVersion: "pointer-mutation-run-checkpoint-core/v1",
+      fields: commitSchemaFields.checkpointCore,
+      closedValues: Object.freeze([...pointerKinds, ...commitRunStages, ...commitRunPhases]),
+    }),
+    "pointer-mutation-run-current-value/v1": Object.freeze({
+      schemaVersion: "pointer-mutation-run-current-value/v1",
+      fields: commitSchemaFields.runCurrentValue,
+      closedValues: Object.freeze([...commitRunStages, ...commitRunPhases]),
+    }),
+    "pointer-mutation-run-selector-post-selection-observation/v1": Object.freeze({
+      schemaVersion: "pointer-mutation-run-selector-post-selection-observation/v1",
+      fields: commitSchemaFields.postSelectionObservation,
+    }),
     "pointer-cas-proposal-receipt/v1": Object.freeze({
       schemaVersion: "pointer-cas-proposal-receipt/v1",
       fields: pointerGraphSchemaFields.proposal,
@@ -189,6 +209,7 @@ export const schemaVersions = Object.freeze(
     ...Object.keys(schemaDefinitions),
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
+    ...commitSchemaVersions,
     ...dispatchSchemaVersions,
     ...evidenceSchemaVersions,
   ].sort(),
