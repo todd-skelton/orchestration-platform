@@ -14,10 +14,12 @@ import {
   type ParseResult,
 } from "./runtime.js";
 import {
+  computeConflictDigest,
   computeCurrentTipDigest,
   computePointerValueDigest,
   computeProposalReceiptDigest,
   parsePointerCurrentTip,
+  parsePointerConflict,
   parsePointerProposal,
   pointerKinds,
   pointerRegistry,
@@ -29,6 +31,7 @@ import {
   computeRotationInputDigest,
   parseRotationInput,
 } from "./authority.js";
+import { parsePointerEvidenceSlot, parsePointerMutationConflictEvidence } from "./evidence.js";
 
 export const commitRunStages = Object.freeze([
   "CURRENT_AUTHORITY_READ",
@@ -176,10 +179,35 @@ const runIntentRotationFields = Object.freeze([
   "targetPathInstanceDigest",
   "targetPointerKind",
 ] as const);
+const ordinaryCommitEvidenceFields = Object.freeze([
+  "canonicalPointerPath",
+  "checkpoints",
+  "commitKind",
+  "intentDigest",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "ordinaryResolution",
+  "outcome",
+  "packetAuthorityKind",
+  "packetAuthorityPathInstanceDigest",
+  "packetAuthorityReceiptDigest",
+  "packetAuthorityTipDigest",
+  "packetAuthorityValueDigest",
+  "runId",
+  "runOrdinal",
+  "schemaVersion",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+  "targetRegistrySlot",
+] as const);
 
 export const commitSchemaFields = Object.freeze({
   commitResolution: commitResolutionFields,
   checkpointEvidence: checkpointEvidenceFields,
+  commitEvidenceOrdinary: ordinaryCommitEvidenceFields,
   checkpointCore: checkpointCoreFields,
   runSegment: runSegmentFields,
   runCurrentValue: runCurrentValueFields,
@@ -1146,6 +1174,166 @@ export function validateCommitCheckpointEvidenceSequence(
       issues.push("commitKind:pointerKind-mismatch");
   }
   return Object.freeze([...new Set(issues)].sort());
+}
+
+export function parseOrdinaryCommitEvidence(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, ordinaryCommitEvidenceFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const resolution = parseCommitResolution(record.ordinaryResolution);
+  const slot = parsePointerEvidenceSlot(record.targetRegistrySlot);
+  const checkpoints = snapshotClosedArray(record.checkpoints);
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-commit-evidence/v1")
+    issues.push("schemaVersion:mismatch");
+  if (record.commitKind !== "ORDINARY") issues.push("commitKind:mismatch");
+  if (!isContractRelativePath(record.canonicalPointerPath))
+    issues.push("canonicalPointerPath:invalid");
+  if (
+    !pointerKinds.includes(record.targetPointerKind as PointerKind) ||
+    record.targetPointerKind === "STATE_MUTATION_AUTHORITY_ROTATION"
+  )
+    issues.push("targetPointerKind:invalid");
+  if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "intentDigest",
+      "oldAuthorityPathInstanceDigest",
+      "oldAuthorityReceiptDigest",
+      "oldAuthorityTipDigest",
+      "oldAuthorityValueDigest",
+      "packetAuthorityPathInstanceDigest",
+      "packetAuthorityReceiptDigest",
+      "packetAuthorityTipDigest",
+      "packetAuthorityValueDigest",
+      "runId",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+  );
+  if (record.packetAuthorityKind !== "KNOWN") issues.push("packetAuthorityKind:not-known");
+  for (const [oldField, packetField] of [
+    ["oldAuthorityPathInstanceDigest", "packetAuthorityPathInstanceDigest"],
+    ["oldAuthorityReceiptDigest", "packetAuthorityReceiptDigest"],
+    ["oldAuthorityTipDigest", "packetAuthorityTipDigest"],
+    ["oldAuthorityValueDigest", "packetAuthorityValueDigest"],
+  ] as const)
+    if (record[oldField] !== record[packetField])
+      issues.push(`${packetField}:old-authority-mismatch`);
+  if (!resolution.ok)
+    issues.push(...resolution.issues.map((issue) => `ordinaryResolution:${issue}`));
+  if (!slot.ok) issues.push(...slot.issues.map((issue) => `targetRegistrySlot:${issue}`));
+  if (!checkpoints.ok) issues.push(...checkpoints.issues.map((issue) => `checkpoints:${issue}`));
+  if (!resolution.ok || !slot.ok || !checkpoints.ok) return invalid(...issues);
+  issues.push(
+    ...validateCommitCheckpointEvidenceSequence(checkpoints.value, "ORDINARY").map(
+      (issue) => `checkpoints:${issue}`,
+    ),
+  );
+  if (resolution.value.outcome !== record.outcome) issues.push("outcome:resolution-mismatch");
+  for (const field of ["targetMutationId", "targetPathInstanceDigest"] as const)
+    if (resolution.value[field] !== record[field]) issues.push(`${field}:resolution-mismatch`);
+  for (const [resolutionField, commitField] of [
+    ["producerAuthorityPathInstanceDigest", "oldAuthorityPathInstanceDigest"],
+    ["producerAuthorityReceiptDigest", "oldAuthorityReceiptDigest"],
+    ["producerAuthorityTipDigest", "oldAuthorityTipDigest"],
+    ["producerAuthorityValueDigest", "oldAuthorityValueDigest"],
+  ] as const)
+    if (resolution.value[resolutionField] !== record[commitField])
+      issues.push(`${resolutionField}:old-authority-mismatch`);
+  if (slot.value.pointerKind !== record.targetPointerKind)
+    issues.push("targetRegistrySlot:pointerKind:mismatch");
+
+  const firstCheckpoint = parseRunCheckpointEvidence(checkpoints.value[0]);
+  if (firstCheckpoint.ok) {
+    const core = parseRunCheckpointCore(firstCheckpoint.value.core);
+    const segment = parseRunSegment(firstCheckpoint.value.segment);
+    const selection = snapshotClosedRecord(firstCheckpoint.value.selectorSelection, [
+      "proposal",
+      "tip",
+      "value",
+    ]);
+    const proposal = selection.ok ? parsePointerProposal(selection.value.proposal) : selection;
+    if (core.ok && segment.ok && proposal.ok) {
+      for (const [commitField, actual] of [
+        ["canonicalPointerPath", core.value.canonicalPointerPath],
+        ["runId", segment.value.runId],
+        ["runOrdinal", core.value.runOrdinal],
+        ["targetMutationId", core.value.targetMutationId],
+        ["targetPathInstanceDigest", core.value.targetPathInstanceDigest],
+        ["targetPointerKind", core.value.pointerKind],
+      ] as const)
+        if (record[commitField] !== actual) issues.push(`${commitField}:checkpoint-mismatch`);
+      for (const [proposalField, commitField] of [
+        ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+        ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+        ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+      ] as const)
+        if (proposal.value[proposalField] !== record[commitField])
+          issues.push(`${proposalField}:checkpoint-epoch-mismatch`);
+    }
+  }
+
+  const selectedEvidence = slot.value.selectedEvidence;
+  if (record.outcome === "UNKNOWN_TERMINAL") {
+    if (selectedEvidence !== null) issues.push("targetRegistrySlot:unknown-must-be-empty");
+  } else if (record.outcome === "SELECTED") {
+    if (selectedEvidence === null) {
+      issues.push("targetRegistrySlot:selected-must-be-present");
+    } else {
+      const selected = snapshotClosedRecord(selectedEvidence, ["proposal", "tip", "value"]);
+      const proposal = selected.ok ? parsePointerProposal(selected.value.proposal) : selected;
+      const tip = selected.ok ? parsePointerCurrentTip(selected.value.tip) : selected;
+      if (!selected.ok || !proposal.ok || !tip.ok) {
+        issues.push("targetRegistrySlot:selected-invalid");
+      } else {
+        if (proposal.value.mutationId !== record.targetMutationId)
+          issues.push("targetRegistrySlot:mutationId:mismatch");
+        if (proposal.value.pathInstanceDigest !== record.targetPathInstanceDigest)
+          issues.push("targetRegistrySlot:pathInstanceDigest:mismatch");
+        if (computeCurrentTipDigest(tip.value) !== resolution.value.selectedTargetTipDigest)
+          issues.push("targetRegistrySlot:selectedTargetTipDigest:mismatch");
+        for (const [proposalField, commitField] of [
+          ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+          ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+          ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+        ] as const)
+          if (proposal.value[proposalField] !== record[commitField])
+            issues.push(`targetRegistrySlot:${proposalField}:mismatch`);
+      }
+    }
+  } else if (record.outcome === "LOST_CONFLICT") {
+    const conflict = parsePointerMutationConflictEvidence(selectedEvidence);
+    if (!conflict.ok) {
+      issues.push(...conflict.issues.map((issue) => `targetRegistrySlot:${issue}`));
+    } else {
+      const receipt = parsePointerConflict(conflict.value.conflictReceipt);
+      const loser = parsePointerProposal(conflict.value.losingProposal);
+      if (!receipt.ok || !loser.ok) {
+        issues.push("targetRegistrySlot:conflict-invalid");
+      } else {
+        if (conflict.value.targetMutationId !== record.targetMutationId)
+          issues.push("targetRegistrySlot:mutationId:mismatch");
+        if (conflict.value.targetPathInstanceDigest !== record.targetPathInstanceDigest)
+          issues.push("targetRegistrySlot:pathInstanceDigest:mismatch");
+        if (computeConflictDigest(receipt.value) !== resolution.value.conflictReceiptDigest)
+          issues.push("targetRegistrySlot:conflictReceiptDigest:mismatch");
+        for (const [epochField, commitField] of [
+          ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+          ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+          ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+        ] as const) {
+          if (loser.value[epochField] !== record[commitField])
+            issues.push(`targetRegistrySlot:losingProposal:${epochField}:mismatch`);
+          if (receipt.value[epochField] !== record[commitField])
+            issues.push(`targetRegistrySlot:conflictReceipt:${epochField}:mismatch`);
+        }
+      }
+    }
+  } else {
+    issues.push("outcome:invalid");
+  }
+  return issues.length === 0 ? parsed : invalid(...issues);
 }
 
 export function parseCommitContract(

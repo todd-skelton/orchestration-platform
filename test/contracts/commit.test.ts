@@ -4,6 +4,7 @@ import {
   commitRunStages,
   commitJournalPaths,
   computeCommitResolutionDigest,
+  computeConflictDigest,
   computeAuthorityHistoryRecordDigest,
   computeCurrentTipDigest,
   computePointerInstanceDigest,
@@ -20,6 +21,7 @@ import {
   computeRotationInputDigest,
   parseContract,
   parseCommitResolution,
+  parseOrdinaryCommitEvidence,
   parseRunCheckpointCore,
   parseRunCheckpointEvidence,
   parseRunCurrentValue,
@@ -307,7 +309,10 @@ function rotationIntent() {
   };
 }
 
-function checkpointEvidenceSequence(commitKind: "ORDINARY" | "AUTHORITY_ROTATION") {
+function checkpointEvidenceSequence(
+  commitKind: "ORDINARY" | "AUTHORITY_ROTATION",
+  suppliedResolution = resolution(),
+) {
   const length = commitKind === "ORDINARY" ? 9 : 6;
   const targetPointerKind =
     commitKind === "ORDINARY" ? "ACTIVE_RELEASE" : "STATE_MUTATION_AUTHORITY_ROTATION";
@@ -330,7 +335,7 @@ function checkpointEvidenceSequence(commitKind: "ORDINARY" | "AUTHORITY_ROTATION
     sourceToken: "none",
     positionEvidence,
   });
-  const terminalResolution = resolution();
+  const terminalResolution = suppliedResolution;
   const rows: Array<{
     core: Record<string, unknown>;
     postSelectionObservation: Record<string, unknown>;
@@ -349,7 +354,12 @@ function checkpointEvidenceSequence(commitKind: "ORDINARY" | "AUTHORITY_ROTATION
   let priorPostSelectionObservationDigest: string | null = null;
   for (let index = 0; index < length; index += 1) {
     const stage = commitRunStages[index]!;
-    const phase = index <= 4 ? "CRASH_PREFIX" : index <= 6 ? "CAS_AMBIGUOUS" : "SELECTED";
+    const phase =
+      index <= 4
+        ? "CRASH_PREFIX"
+        : index <= 6
+          ? "CAS_AMBIGUOUS"
+          : String(terminalResolution.outcome);
     const segment = {
       canonicalPointerPath,
       globalIdentityDigest: d("3"),
@@ -460,6 +470,157 @@ function checkpointEvidenceSequence(commitKind: "ORDINARY" | "AUTHORITY_ROTATION
     priorPostSelectionObservationDigest = computeRunPostSelectionObservationDigest(observation);
   }
   return rows;
+}
+
+function ordinaryCommitEvidence(outcome = "SELECTED") {
+  const targetPathInstanceDigest = d("b");
+  const targetMutationId = d("a");
+  let selectedEvidence: null | {
+    proposal: Record<string, unknown>;
+    tip: Record<string, unknown>;
+    value: Record<string, unknown>;
+  } = null;
+  let selectedTargetTipDigest: string | null = null;
+  if (outcome === "SELECTED") {
+    const value = { releaseDigest: d("8"), schemaVersion: "active-release/v1" };
+    const valueDigest = computePointerValueDigest(
+      "ACTIVE_RELEASE",
+      targetPathInstanceDigest,
+      value,
+    );
+    const proposal = {
+      authorityEpochReceiptDigest: d("1"),
+      authorityEpochTipDigest: d("2"),
+      authorityEpochValueDigest: d("3"),
+      intent: "VALUE_PROPOSED",
+      mutationId: targetMutationId,
+      outcome: "SELECT",
+      pathInstanceDigest: targetPathInstanceDigest,
+      pointerKind: "ACTIVE_RELEASE",
+      positionDigest: d("9"),
+      priorReceiptDigest: null,
+      priorTipDigest: null,
+      priorValueDigest: null,
+      producerDigest: d("e"),
+      producerKind: "SELECTED_EPOCH",
+      proposedAt: "2026-08-18T16:10:00.000Z",
+      schemaVersion: "pointer-cas-proposal-receipt/v1",
+      successorValueDigest: valueDigest,
+    };
+    const tip = {
+      pathInstanceDigest: targetPathInstanceDigest,
+      pointerKind: "ACTIVE_RELEASE",
+      proposalReceiptDigest: computeProposalReceiptDigest(proposal),
+      schemaVersion: "pointer-current-tip/v1",
+      valueDigest,
+    };
+    selectedEvidence = { proposal, tip, value };
+    selectedTargetTipDigest = computeCurrentTipDigest(tip);
+  }
+  const evidenceDigest = outcome === "SELECTED" ? selectedTargetTipDigest! : d("c");
+  const ordinaryResolution = {
+    conflictReceiptDigest: outcome === "LOST_CONFLICT" ? evidenceDigest : null,
+    outcome,
+    outcomeEvidenceDigest: evidenceDigest,
+    producerAuthorityPathInstanceDigest: d("4"),
+    producerAuthorityReceiptDigest: d("1"),
+    producerAuthorityTipDigest: d("2"),
+    producerAuthorityValueDigest: d("3"),
+    resolvedAt: "2026-08-18T16:11:00.000Z",
+    schemaVersion: "pointer-mutation-commit-resolution/v1",
+    selectedTargetTipDigest,
+    targetMutationId,
+    targetPathInstanceDigest,
+    unknownEvidenceDigest: outcome === "UNKNOWN_TERMINAL" ? evidenceDigest : null,
+  };
+  return {
+    canonicalPointerPath: "installation/active-release.json",
+    checkpoints: checkpointEvidenceSequence("ORDINARY", ordinaryResolution),
+    commitKind: "ORDINARY",
+    intentDigest: d("f"),
+    oldAuthorityPathInstanceDigest: d("4"),
+    oldAuthorityReceiptDigest: d("1"),
+    oldAuthorityTipDigest: d("2"),
+    oldAuthorityValueDigest: d("3"),
+    ordinaryResolution,
+    outcome,
+    packetAuthorityKind: "KNOWN",
+    packetAuthorityPathInstanceDigest: d("4"),
+    packetAuthorityReceiptDigest: d("1"),
+    packetAuthorityTipDigest: d("2"),
+    packetAuthorityValueDigest: d("3"),
+    runId: d("d"),
+    runOrdinal: "0",
+    schemaVersion: "pointer-mutation-commit-evidence/v1",
+    targetMutationId,
+    targetPathInstanceDigest,
+    targetPointerKind: "ACTIVE_RELEASE",
+    targetRegistrySlot: {
+      pointerKind: "ACTIVE_RELEASE",
+      schemaVersion: "pointer-evidence-slot/v1",
+      selectedEvidence,
+    },
+  };
+}
+
+function lostOrdinaryCommitEvidence() {
+  const selected = ordinaryCommitEvidence();
+  const selectedGraph = selected.targetRegistrySlot.selectedEvidence as {
+    proposal: Record<string, unknown>;
+    tip: Record<string, unknown>;
+    value: Record<string, unknown>;
+  };
+  const losingProposal = selectedGraph.proposal;
+  const winnerProposal = { ...losingProposal, mutationId: d("8") };
+  const winningReceiptDigest = computeProposalReceiptDigest(winnerProposal);
+  const winnerTip = {
+    ...selectedGraph.tip,
+    proposalReceiptDigest: winningReceiptDigest,
+  };
+  const conflictReceipt = {
+    authorityEpochReceiptDigest: d("1"),
+    authorityEpochTipDigest: d("2"),
+    authorityEpochValueDigest: d("3"),
+    conflictAt: "2026-08-18T16:12:00.000Z",
+    conflictKind: "VALUE_CONFLICT",
+    losingProposalReceiptDigest: computeProposalReceiptDigest(losingProposal),
+    losingSuccessorValueDigest: losingProposal.successorValueDigest,
+    mutationId: selected.targetMutationId,
+    pathInstanceDigest: selected.targetPathInstanceDigest,
+    schemaVersion: "pointer-conflict-receipt/v1",
+    winningReceiptDigest,
+    winningTipDigest: computeCurrentTipDigest(winnerTip),
+    winningValueDigest: selectedGraph.tip.valueDigest,
+  };
+  const conflictReceiptDigest = computeConflictDigest(conflictReceipt);
+  const ordinaryResolution = {
+    ...selected.ordinaryResolution,
+    conflictReceiptDigest,
+    outcome: "LOST_CONFLICT",
+    outcomeEvidenceDigest: conflictReceiptDigest,
+    selectedTargetTipDigest: null,
+  };
+  return {
+    ...selected,
+    checkpoints: checkpointEvidenceSequence("ORDINARY", ordinaryResolution),
+    ordinaryResolution,
+    outcome: "LOST_CONFLICT",
+    targetRegistrySlot: {
+      ...selected.targetRegistrySlot,
+      selectedEvidence: {
+        conflictReceipt,
+        losingProposal,
+        schemaVersion: "pointer-mutation-conflict-evidence/v1",
+        selectedWinner: {
+          proposal: winnerProposal,
+          tip: winnerTip,
+          value: selectedGraph.value,
+        },
+        targetMutationId: selected.targetMutationId,
+        targetPathInstanceDigest: selected.targetPathInstanceDigest,
+      },
+    },
+  };
 }
 
 describe("single-epoch commit journal atoms", () => {
@@ -780,6 +941,80 @@ describe("single-epoch commit journal atoms", () => {
         "ORDINARY",
       ),
     ).not.toEqual([]);
+  });
+
+  test("closes the ordinary commit arm and outcome-to-slot equalities", () => {
+    const selected = ordinaryCommitEvidence();
+    expect(parseOrdinaryCommitEvidence(selected).ok).toBe(true);
+    const unknown = ordinaryCommitEvidence("UNKNOWN_TERMINAL");
+    expect(parseOrdinaryCommitEvidence(unknown).ok).toBe(true);
+    const lost = lostOrdinaryCommitEvidence();
+    expect(parseOrdinaryCommitEvidence(lost).ok).toBe(true);
+    expect(
+      parseOrdinaryCommitEvidence({
+        ...selected,
+        packetAuthorityPathInstanceDigest: d("0"),
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseOrdinaryCommitEvidence({
+        ...selected,
+        ordinaryResolution: {
+          ...selected.ordinaryResolution,
+          selectedTargetTipDigest: d("0"),
+          outcomeEvidenceDigest: d("0"),
+        },
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseOrdinaryCommitEvidence({
+        ...selected,
+        targetRegistrySlot: {
+          ...selected.targetRegistrySlot,
+          selectedEvidence: {
+            ...(selected.targetRegistrySlot.selectedEvidence as {
+              proposal: Record<string, unknown>;
+              tip: Record<string, unknown>;
+              value: Record<string, unknown>;
+            }),
+            proposal: {
+              ...(
+                selected.targetRegistrySlot.selectedEvidence as {
+                  proposal: Record<string, unknown>;
+                }
+              ).proposal,
+              authorityEpochTipDigest: d("0"),
+            },
+          },
+        },
+      }).ok,
+    ).toBe(false);
+    expect(parseOrdinaryCommitEvidence({ ...selected, outcomeTag: "00" }).ok).toBe(false);
+    expect(
+      parseOrdinaryCommitEvidence({
+        ...lost,
+        ordinaryResolution: {
+          ...lost.ordinaryResolution,
+          conflictReceiptDigest: d("0"),
+          outcomeEvidenceDigest: d("0"),
+        },
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseOrdinaryCommitEvidence({
+        ...lost,
+        targetRegistrySlot: {
+          ...lost.targetRegistrySlot,
+          selectedEvidence: {
+            ...lost.targetRegistrySlot.selectedEvidence,
+            conflictReceipt: {
+              ...lost.targetRegistrySlot.selectedEvidence.conflictReceipt,
+              authorityEpochTipDigest: d("0"),
+            },
+          },
+        },
+      }).ok,
+    ).toBe(false);
   });
 
   test("fails closed for partial predecessor triples, unsafe ordinals, wrong phases, and extras", () => {
