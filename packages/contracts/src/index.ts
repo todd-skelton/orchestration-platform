@@ -1,195 +1,47 @@
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
-import { diagnostic } from "./diagnostic.js";
 import {
   canonicalBytes,
   canonicalDigest,
-  canonicalJson,
-  parseCanonicalBytes as parseBytes,
-  snapshotClosedArray,
+  parseCanonicalBytes,
   snapshotClosedRecord,
-  validateAgainstSchema,
+  validateDefinition,
   type ContractRecord,
-  type JsonValue,
   type ParseResult,
 } from "./runtime.js";
 
-export {
-  classifyProposal,
-  computeConflictDigest,
-  computeCurrentTipDigest,
-  computeMutationId,
-  computePointerInstanceDigest,
-  computePointerPositionDigest,
-  computePointerValueDigest,
-  computeProposalReceiptDigest,
-  computeRecoveryAuthorizationCoreDigest,
-  computeReservationPredecessorKey,
-  derivePointerPositionEvidence,
-  framedBytes,
-  nativeConsumePath,
-  pointerArchivePaths,
-  pointerGenesisRule,
-  pointerKinds,
-  pointerPath,
-  pointerPositionContracts,
-  pointerRegistry,
-  pointerRootPaths,
-  recoveryAccumulatorDigest,
-  recoveryAuthorizationCorePath,
-  retentionAllows,
-  stateMutationAuthorityPath,
-  stateMutationLockPath,
-  stateMutationRegistry,
-  v2SchemaVersions,
-  validateAuthorizationReceiptChain,
-  validateAuthorizationRevokeReceiptChain,
-  validateCleanupHeadHistory,
-  validateFenceHeadHistory,
-  validateGateAuthorizationBinding,
-  validatePointerDispatch,
-  validatePointerGenesisDispatch,
-  validatePointerPositionEvidence,
-  validatePointerTemplateDispatch,
-  validateRecoveryAccumulatorFormula,
-  validateRetentionTransition,
-  validateRotationCensus,
-  validateSelectedPointerEvidence,
-} from "./v2.js";
-export type {
-  ConflictDigestInput,
-  EpochSequenceStep,
-  FramePart,
-  MutationDigestInput,
-  PointerInstanceDigestInput,
-  PointerKind,
-  PointerPathBindings,
-  PointerRegistryRow,
-  ProposalClassification,
-  ProposalDigestInput,
-  RetentionOperation,
-} from "./v2.js";
-export {
-  canonicalContractGolden,
-  commitRunStages,
-  compareDecimalAscii,
-  computeAuthorityEmptyDigest,
-  computeAuthorityEpochKey,
-  computeAuthorityLeafDigest,
-  computeAuthorityNodeDigest,
-  computeAuthorityUpdateProofDigest,
-  computeBootstrapAnchorDigest,
-  computeBootstrapAnchorLifecycleArchiveDigest,
-  computeBootstrapAnchorConflictDigest,
-  computeBootstrapAnchorConsumptionDigest,
-  computeBootstrapAnchorProposalDigest,
-  computeBootstrapAnchorTipDigest,
-  computeBootstrapAnchorTeardownDigest,
-  computeBootstrapAnchorUseIntentDigest,
-  computeBootstrapAnchorValueDigest,
-  computeBootstrapGenesisCoreDigest,
-  computeBootstrapGenesisPostDigest,
-  computeCommitResolutionDigest,
-  computeDestinationDigest,
-  computeDestinationOwnerConflictDigest,
-  computeDestinationOwnerRetentionDigest,
-  computeDestinationOwnerRetirementEvidenceDigest,
-  computeDestinationOwnerTeardownArchiveDigest,
-  computeDestinationOwnerMutationId,
-  computeDestinationOwnerProposalDigest,
-  computeDestinationOwnerTipDigest,
-  computeDestinationOwnerValueDigest,
-  computeDestinationSuccessorPostDigest,
-  computeDestinationSuccessorReviewCoreDigest,
-  computeGlobalIdentityDigest,
-  computePhysicalDestinationDigest,
-  computePhysicalObservationDigest,
-  computeSparseAbsentRoot,
-  computeSparseRoot,
-  externalAuthorityPaths,
-  incrementDecimalAscii,
-  validateAuthorityMembership,
-  validateAuthorityHistoryNodeInventoryPage,
-  validateBootstrapAnchorTransition,
-  validateBootstrapAnchorComposition,
-  validateBootstrapGenesisGraph,
-  validateCommitEvidenceV3,
-  validateDestinationOwnerTransition,
-  validateDestinationOwnerComposition,
-  validateEvidencePacketV3,
-  resolveProposedTargetEvidence,
-} from "./approved.js";
-export {
-  authorityInventoryPaths,
-  computeAuthorityCensusChainDigest,
-  computeAuthorityCensusEntryDigest,
-  computeAuthorityCensusPageDigest,
-  computeAuthorityCensusTerminalDigest,
-  computeAuthorityCoordinatorPositionDigest,
-  deriveAuthorityUpdateNodeCensus,
-  computeAuthorityFilesystemObservationDigest,
-  computeAuthorityInventoryBatchDigest,
-  computeAuthorityInventoryEmptyDigest,
-  computeAuthorityInventoryLeafDigest,
-  computeAuthorityInventoryRootDigest,
-  computeAuthorityInventorySparseRoot,
-  computeAuthorityInventorySparseAbsentRoot,
-  computeAuthorityInventoryUpdateEntryDigest,
-  computeAuthorityHistoryEmptyRootDigestV2,
-  computeAuthorityHistoryRootDigestV2,
-  computeAuthorityAppendReceiptDigestV2,
-  computeAuthoritySuccessorCoreDigestV2,
-  computeAuthorityMaterializationHandoffDigest,
-  computeAuthorityMaterializationFinishingDigest,
-  computeAuthorityMaterializationPlanDigest,
-  computeAuthorityMaterializationPlanEntryDigest,
-  computeAuthorityMaterializationReceiptDigest,
-  computeAuthorityMaterializationRevocationDigest,
-  computeAuthorityMaterializationStartDigest,
-  computeAuthorityMaterializationTerminalDigest,
-  computeAuthorityNodeRecordDigest,
-  computeAuthorityRotationHandoffDigest,
-  computeAuthorityRotationIdV2,
-  computeRunCheckpointCoreDigestV2,
-  computeRunAuditDigestV1,
-  computeRunIdV2,
-  computeRunPostSelectionDigestV1,
-  computeRunSegmentDigestV1,
-  validateAuthorityCoordinatorComposition,
-  validateAuthorityCoordinatorTransition,
-  validateAuthorityCommitRunV3,
-  validateAuthorityInventoryCensus,
-  validateAuthorityMaterializationComposition,
-  validateAuthorityMaterializationAuthorityComposition,
-  validateAuthorityValueV3Composition,
-} from "./inventory.js";
+export * from "./definitions.js";
+export * from "./pointer.js";
+export * from "./vocabulary.js";
 export type * from "./runtime.js";
-export type {
-  CleanupHeadWriteDisposition,
-  CleanupLifecycle,
-  CleanupPublication,
-} from "./definitions.js";
-export {
-  isCleanupLifecyclePublicationPair,
-  isCleanupLifecyclePublicationTransition,
-  reduceCleanupHeadWrite,
-} from "./definitions.js";
 export {
   canonicalBytes,
   canonicalDigest,
   canonicalJson,
-  compatibilityDisposition,
-  diagnostic,
-  schemaDefinitions,
-  schemaVersions,
+  closedArray,
+  closedRecord,
+  compareCanonicalDecimal,
+  frame,
+  framedBytes,
+  framedDigest,
+  incrementCanonicalDecimal,
+  isCanonicalDecimal,
+  isCanonicalTimestamp,
+  isContractRelativePath,
+  isSha256,
+  isUnicodeScalarSequence,
+  isUuidV7,
+  parseCanonicalDecimal,
   snapshotClosedArray,
   snapshotClosedRecord,
-};
+  snapshotJson,
+} from "./runtime.js";
+export { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
   const definition = schemaDefinitions[expectedSchemaVersion];
   if (!definition) return { ok: false, issues: ["schemaVersion:unsupported"] };
   try {
-    return validateAgainstSchema(definition, input);
+    return validateDefinition(definition, input);
   } catch {
     return { ok: false, issues: ["record:unreadable"] };
   }
@@ -202,7 +54,7 @@ export function parseCanonicalContractBytes(
   const definition = schemaDefinitions[expectedSchemaVersion];
   if (!definition) return { ok: false, issues: ["schemaVersion:unsupported"] };
   try {
-    return parseBytes(definition, bytes);
+    return parseCanonicalBytes(definition, bytes);
   } catch {
     return { ok: false, issues: ["record:unreadable"] };
   }
@@ -211,15 +63,13 @@ export function parseCanonicalContractBytes(
 export type SerializationResult =
   | { readonly ok: true; readonly bytes: Uint8Array; readonly digest: string }
   | { readonly ok: false; readonly issues: readonly string[] };
-
 export function serializeContract(
   expectedSchemaVersion: string,
   input: unknown,
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
-  const value = parsed.value as JsonValue;
-  return { ok: true, bytes: canonicalBytes(value), digest: canonicalDigest(value) };
+  return { ok: true, bytes: canonicalBytes(parsed.value), digest: canonicalDigest(parsed.value) };
 }
 
 export interface CompatibilityRow {
@@ -227,23 +77,16 @@ export interface CompatibilityRow {
   readonly observedSchemaVersion: string | null;
   readonly disposition: "readable" | "migratable" | "refused";
 }
-
 export const compatibilityMatrix: readonly CompatibilityRow[] = Object.freeze(
   schemaVersions.flatMap((expectedSchemaVersion) => {
     const family = expectedSchemaVersion.slice(0, expectedSchemaVersion.lastIndexOf("/"));
-    const observations = [
-      expectedSchemaVersion,
-      `${family}/v0-fixture`,
-      `${family}/v999`,
-      `${family}/future`,
-      "",
-    ];
-    return observations.map((observedSchemaVersion) =>
-      Object.freeze({
-        expectedSchemaVersion,
-        observedSchemaVersion: observedSchemaVersion || null,
-        disposition: compatibilityDisposition(expectedSchemaVersion, observedSchemaVersion || null),
-      }),
+    return [expectedSchemaVersion, `${family}/v0-fixture`, `${family}/v999`, null].map(
+      (observedSchemaVersion) =>
+        Object.freeze({
+          expectedSchemaVersion,
+          observedSchemaVersion,
+          disposition: compatibilityDisposition(expectedSchemaVersion, observedSchemaVersion),
+        }),
     );
   }),
 );
@@ -251,32 +94,30 @@ export const compatibilityMatrix: readonly CompatibilityRow[] = Object.freeze(
 export type MigrationResult =
   | { readonly ok: true; readonly value: ContractRecord }
   | { readonly ok: false; readonly issues: readonly string[] };
-
 export function migrateNamedLegacyFixture(input: unknown): MigrationResult {
   try {
-    return migrateNamedLegacyFixtureUnchecked(input);
+    const closed = snapshotClosedRecord(input, [
+      "schemaVersion",
+      "adapterId",
+      "projectId",
+      "stateRoot",
+    ]);
+    if (!closed.ok) return { ok: false, issues: closed.issues.map((issue) => `legacy:${issue}`) };
+    if (closed.value.schemaVersion !== "platform-configuration/v0-fixture")
+      return { ok: false, issues: ["legacy:not-named-fixture"] };
+    const migrated = {
+      schemaVersion: "platform-configuration/v1",
+      adapterId: closed.value.adapterId,
+      capabilityNames: [],
+      leaseFreshnessMs: 3_600_000,
+      maximumSessionMs: 86_400_000,
+      projectId: closed.value.projectId,
+      stateRoot: closed.value.stateRoot,
+      wallClockSkewMs: 300_000,
+    };
+    const parsed = parseContract("platform-configuration/v1", migrated);
+    return parsed.ok ? parsed : { ok: false, issues: parsed.issues };
   } catch {
     return { ok: false, issues: ["legacy:unreadable"] };
   }
-}
-
-function migrateNamedLegacyFixtureUnchecked(input: unknown): MigrationResult {
-  const expected = ["adapterId", "projectId", "schemaVersion", "stateRoot"];
-  const closed = snapshotClosedRecord(input, expected);
-  if (!closed.ok) return { ok: false, issues: closed.issues.map((issue) => `legacy:${issue}`) };
-  const record = closed.value;
-  if (record.schemaVersion !== "platform-configuration/v0-fixture")
-    return { ok: false, issues: ["legacy:not-named-fixture"] };
-  const migrated = {
-    schemaVersion: "platform-configuration/v1",
-    adapterId: record.adapterId,
-    capabilityNames: [],
-    leaseFreshnessMs: 3_600_000,
-    maximumSessionMs: 86_400_000,
-    projectId: record.projectId,
-    stateRoot: record.stateRoot,
-    wallClockSkewMs: 300_000,
-  };
-  const parsed = parseContract("platform-configuration/v1", migrated);
-  return parsed.ok ? parsed : { ok: false, issues: parsed.issues };
 }
