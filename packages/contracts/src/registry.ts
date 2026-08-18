@@ -232,6 +232,15 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
         ...Object.values(unknownEvidenceReasons).flat(),
       ]),
     }),
+    "pointer-mutation-conflict-evidence/v1": Object.freeze({
+      schemaVersion: "pointer-mutation-conflict-evidence/v1",
+      fields: evidenceSchemaFields.conflictEvidence,
+    }),
+    "pointer-evidence-slot/v1": Object.freeze({
+      schemaVersion: "pointer-evidence-slot/v1",
+      fields: evidenceSchemaFields.evidenceSlot,
+      closedValues: pointerKinds,
+    }),
   });
 export const schemaVersions = Object.freeze(
   [

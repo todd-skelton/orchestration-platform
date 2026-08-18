@@ -1,8 +1,14 @@
 import { describe, expect, test } from "vitest";
 import {
+  computeCurrentTipDigest,
+  computePointerMutationConflictEvidenceDigest,
   computePointerMutationUnknownEvidenceDigest,
+  computePointerValueDigest,
+  computeProposalReceiptDigest,
   computeStateMutationGlobalIdentityDigest,
   parseContract,
+  parsePointerEvidenceSlot,
+  parsePointerMutationConflictEvidence,
   parsePointerMutationUnknownEvidence,
   parseStateMutationGlobalIdentity,
 } from "../../packages/contracts/src/index.js";
@@ -31,6 +37,78 @@ const unknownEvidence = Object.freeze({
   targetMutationId: d("5"),
   targetPathInstanceDigest: d("6"),
 });
+
+function conflictEvidence() {
+  const targetPathInstanceDigest = d("7");
+  const winnerValue = { releaseDigest: d("8"), schemaVersion: "active-release/v1" };
+  const winnerValueDigest = computePointerValueDigest(
+    "ACTIVE_RELEASE",
+    targetPathInstanceDigest,
+    winnerValue,
+  );
+  const winnerProposal = {
+    authorityEpochReceiptDigest: d("a"),
+    authorityEpochTipDigest: d("b"),
+    authorityEpochValueDigest: d("c"),
+    intent: "VALUE_PROPOSED",
+    mutationId: d("d"),
+    outcome: "SELECT",
+    pathInstanceDigest: targetPathInstanceDigest,
+    pointerKind: "ACTIVE_RELEASE",
+    positionDigest: d("e"),
+    priorReceiptDigest: null,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    producerDigest: d("f"),
+    producerKind: "SELECTED_EPOCH",
+    proposedAt: "2026-08-18T13:10:00.000Z",
+    schemaVersion: "pointer-cas-proposal-receipt/v1",
+    successorValueDigest: winnerValueDigest,
+  };
+  const winnerReceiptDigest = computeProposalReceiptDigest(winnerProposal);
+  const winnerTip = {
+    pathInstanceDigest: targetPathInstanceDigest,
+    pointerKind: "ACTIVE_RELEASE",
+    proposalReceiptDigest: winnerReceiptDigest,
+    schemaVersion: "pointer-current-tip/v1",
+    valueDigest: winnerValueDigest,
+  };
+  const losingValue = { releaseDigest: d("0"), schemaVersion: "active-release/v1" };
+  const losingValueDigest = computePointerValueDigest(
+    "ACTIVE_RELEASE",
+    targetPathInstanceDigest,
+    losingValue,
+  );
+  const losingProposal = {
+    ...winnerProposal,
+    mutationId: d("1"),
+    proposedAt: "2026-08-18T13:11:00.000Z",
+    successorValueDigest: losingValueDigest,
+  };
+  const conflictReceipt = {
+    authorityEpochReceiptDigest: losingProposal.authorityEpochReceiptDigest,
+    authorityEpochTipDigest: losingProposal.authorityEpochTipDigest,
+    authorityEpochValueDigest: losingProposal.authorityEpochValueDigest,
+    conflictAt: "2026-08-18T13:12:00.000Z",
+    conflictKind: "VALUE_CONFLICT",
+    losingProposalReceiptDigest: computeProposalReceiptDigest(losingProposal),
+    losingSuccessorValueDigest: losingValueDigest,
+    mutationId: losingProposal.mutationId,
+    pathInstanceDigest: targetPathInstanceDigest,
+    schemaVersion: "pointer-conflict-receipt/v1",
+    winningReceiptDigest: winnerReceiptDigest,
+    winningTipDigest: computeCurrentTipDigest(winnerTip),
+    winningValueDigest: winnerValueDigest,
+  };
+  return {
+    conflictReceipt,
+    losingProposal,
+    schemaVersion: "pointer-mutation-conflict-evidence/v1",
+    selectedWinner: { proposal: winnerProposal, tip: winnerTip, value: winnerValue },
+    targetMutationId: losingProposal.mutationId,
+    targetPathInstanceDigest,
+  };
+}
 
 describe("global identity", () => {
   test("pins the lifetime-stable closed identity and digest", () => {
@@ -103,5 +181,50 @@ describe("fixed unknown mutation evidence", () => {
     );
     expect(() => parsePointerMutationUnknownEvidence(proxy)).not.toThrow();
     expect(parsePointerMutationUnknownEvidence(proxy).ok).toBe(false);
+  });
+});
+
+describe("closed conflict composition and evidence slot", () => {
+  test("recomputes the loser, real winner, receipt, and composed digest", () => {
+    const evidence = conflictEvidence();
+    expect(parsePointerMutationConflictEvidence(evidence).ok).toBe(true);
+    expect(parseContract("pointer-mutation-conflict-evidence/v1", evidence).ok).toBe(true);
+    expect(computePointerMutationConflictEvidenceDigest(evidence)).toBe(
+      "ceda5d3beffcab20869d91abfc27329a6989a7e221762b4106c8990c9e4c02a3",
+    );
+    expect(
+      parsePointerMutationConflictEvidence({
+        ...evidence,
+        conflictReceipt: { ...evidence.conflictReceipt, winningTipDigest: d("2") },
+      }).ok,
+    ).toBe(false);
+    expect(
+      parsePointerMutationConflictEvidence({
+        ...evidence,
+        losingProposal: { ...evidence.losingProposal, authorityEpochTipDigest: d("2") },
+      }).ok,
+    ).toBe(false);
+  });
+
+  test("admits only null, same-kind generic selection, or same-kind conflict evidence", () => {
+    const evidence = conflictEvidence();
+    const conflictSlot = {
+      pointerKind: "ACTIVE_RELEASE",
+      schemaVersion: "pointer-evidence-slot/v1",
+      selectedEvidence: evidence,
+    };
+    expect(parsePointerEvidenceSlot(conflictSlot).ok).toBe(true);
+    expect(parseContract("pointer-evidence-slot/v1", conflictSlot).ok).toBe(true);
+    expect(
+      parsePointerEvidenceSlot({
+        ...conflictSlot,
+        selectedEvidence: evidence.selectedWinner,
+      }).ok,
+    ).toBe(true);
+    expect(parsePointerEvidenceSlot({ ...conflictSlot, selectedEvidence: null }).ok).toBe(true);
+    expect(
+      parsePointerEvidenceSlot({ ...conflictSlot, pointerKind: "ACTIVATION_CLEANUP_GATE" }).ok,
+    ).toBe(false);
+    expect(parsePointerEvidenceSlot({ ...conflictSlot, outcome: "LOST_CONFLICT" }).ok).toBe(false);
   });
 });
