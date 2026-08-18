@@ -10,6 +10,47 @@ import {
 export type CleanupLifecycle = "PENDING" | "ACTIVATING" | "ABORTING" | "COMPLETE";
 export type CleanupPublication = "NOT_PUBLISHED" | "PUBLISHING" | "PUBLISHED" | "CLEARED";
 export type CleanupHeadWriteDisposition = "APPEND" | "NO_APPEND" | "REFUSED";
+export type DestinationOwnerLifecycle = "ACTIVE" | "CONSUMED" | "RETIRED";
+export type DestinationOwnerTransition =
+  "ACTIVATE_GENESIS" | "CONSUME" | "RETIRE_UNUSED" | "RETIRE_CONSUMED" | "ACTIVATE_SUCCESSOR";
+export type RecoveryAttemptReservationLifecycle =
+  "RESERVED" | "CONSUMED" | "TERMINAL" | "TOMBSTONE";
+
+export const destinationOwnerLifecycles = Object.freeze(["ACTIVE", "CONSUMED", "RETIRED"] as const);
+export const destinationOwnerTransitions = Object.freeze([
+  Object.freeze({ previous: null, next: "ACTIVE", transition: "ACTIVATE_GENESIS" }),
+  Object.freeze({ previous: "ACTIVE", next: "CONSUMED", transition: "CONSUME" }),
+  Object.freeze({ previous: "ACTIVE", next: "RETIRED", transition: "RETIRE_UNUSED" }),
+  Object.freeze({ previous: "CONSUMED", next: "RETIRED", transition: "RETIRE_CONSUMED" }),
+  Object.freeze({ previous: "RETIRED", next: "ACTIVE", transition: "ACTIVATE_SUCCESSOR" }),
+] as const);
+export const recoveryAttemptReservationLifecycles = Object.freeze([
+  "RESERVED",
+  "CONSUMED",
+  "TERMINAL",
+  "TOMBSTONE",
+] as const);
+
+export function validateDestinationOwnerTransition(
+  previous: unknown,
+  next: unknown,
+  transition: unknown,
+): boolean {
+  return destinationOwnerTransitions.some(
+    (edge) => edge.previous === previous && edge.next === next && edge.transition === transition,
+  );
+}
+
+export function validateRecoveryAttemptReservationTransition(
+  previous: unknown,
+  next: unknown,
+): boolean {
+  return (
+    (previous === "RESERVED" && next === "CONSUMED") ||
+    (previous === "CONSUMED" && next === "TERMINAL") ||
+    (previous === "TERMINAL" && next === "TOMBSTONE")
+  );
+}
 
 const cleanupPairs = Object.freeze({
   PENDING: Object.freeze(["NOT_PUBLISHED", "PUBLISHING", "PUBLISHED"] as const),

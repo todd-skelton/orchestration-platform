@@ -7,6 +7,7 @@ import {
   computeProposalReceiptDigest,
   parseContract,
   parsePointerTombstoneValue,
+  pointerStoragePaths,
   pointerKinds,
   pointerPath,
   pointerRegistry,
@@ -22,6 +23,20 @@ const projectId = "018f0f4d-7b2d-7a11-9a2b-123456789abc";
 const createdAt = "2026-08-17T12:00:00.000Z";
 
 describe("eleven-kind pointer registry", () => {
+  test("constructs generic value, proposal, and conflict storage from Dp and mutation identity", () => {
+    expect(pointerStoragePaths.value(d("1"), d("2"))).toBe(
+      `installation/pointer-cas/${d("1")}/values/${d("2")}.json`,
+    );
+    expect(pointerStoragePaths.proposal(d("1"), null, d("2"))).toBe(
+      `installation/pointer-cas/${d("1")}/proposals/genesis/${d("2")}.json`,
+    );
+    expect(pointerStoragePaths.conflict(d("1"), d("3"), d("2"))).toBe(
+      `installation/pointer-cas/${d("1")}/conflicts/${d("3")}/${d("2")}.json`,
+    );
+    expect(() => pointerStoragePaths.value(d("z"), d("2"))).toThrow();
+    expect(() => pointerStoragePaths.proposal(d("1"), d("Z"), d("2"))).toThrow();
+  });
+
   test("is exact, v1-only, FULL_REQUIRED, collision-free, and contains no deleted surface", () => {
     expect(pointerKinds).toEqual([
       "ACTIVE_RELEASE",

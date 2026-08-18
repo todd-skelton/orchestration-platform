@@ -517,6 +517,32 @@ function pointerParseFailure(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
 
+function storageDigest(value: string, name: string): string {
+  if (!isSha256(value)) throw new TypeError(`${name}:invalid`);
+  return value;
+}
+
+function pointerPriorBucket(priorTipDigest: string | null): string {
+  return priorTipDigest === null ? "genesis" : storageDigest(priorTipDigest, "priorTipDigest");
+}
+
+export const pointerStoragePaths = Object.freeze({
+  value: (pathInstanceDigest: string, mutationId: string): string =>
+    `installation/pointer-cas/${storageDigest(pathInstanceDigest, "pathInstanceDigest")}/values/${storageDigest(mutationId, "mutationId")}.json`,
+  proposal: (
+    pathInstanceDigest: string,
+    priorTipDigest: string | null,
+    mutationId: string,
+  ): string =>
+    `installation/pointer-cas/${storageDigest(pathInstanceDigest, "pathInstanceDigest")}/proposals/${pointerPriorBucket(priorTipDigest)}/${storageDigest(mutationId, "mutationId")}.json`,
+  conflict: (
+    pathInstanceDigest: string,
+    priorTipDigest: string | null,
+    mutationId: string,
+  ): string =>
+    `installation/pointer-cas/${storageDigest(pathInstanceDigest, "pathInstanceDigest")}/conflicts/${pointerPriorBucket(priorTipDigest)}/${storageDigest(mutationId, "mutationId")}.json`,
+});
+
 export function parsePointerProposal(input: unknown): ParseResult {
   try {
     return { ok: true, value: requireProposal(input) };
