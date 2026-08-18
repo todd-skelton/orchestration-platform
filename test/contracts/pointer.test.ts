@@ -167,6 +167,108 @@ describe("eleven-kind pointer registry", () => {
       }),
     ).toThrow();
   });
+
+  test("rejects every registry-path substitution and canonical-path alias", () => {
+    const identities = pointerRegistry.map((row) => {
+      const bindings: Record<string, string> = {};
+      if (row.pathTemplate.includes("<transaction>")) bindings.transactionId = installationId;
+      if (row.pathTemplate.includes("<source>")) bindings.sourceToken = row.sourceTokens[0]!;
+      if (row.pathTemplate.includes("<predecessor-key>")) bindings.predecessorKey = d("1");
+      if (row.pathTemplate.includes("<pointer-instance-digest>"))
+        bindings.pointerInstanceDigest = d("2");
+      if (row.pathTemplate.includes("<target-instance-digest>"))
+        bindings.targetInstanceDigest = d("3");
+      if (row.pathTemplate.includes("<release-digest>")) bindings.releaseDigest = d("4");
+      if (row.pathTemplate.includes("<target-mutation-id>")) bindings.targetMutationId = d("5");
+      return {
+        pointerKind: row.kind,
+        canonicalPointerPath: pointerPath(row.kind, bindings),
+        installationId,
+        projectId,
+        stateRootDigest: d("b"),
+        transactionId: row.transactionPolicy === "REQUIRED" ? installationId : null,
+        sourceToken: row.sourceTokens[0]!,
+      } as const;
+    });
+
+    for (const [index, identity] of identities.entries()) {
+      expect(
+        () =>
+          computePointerInstanceDigestFromCanonicalPath({
+            ...identity,
+            canonicalPointerPath: identity.canonicalPointerPath.replace(
+              "installation/",
+              "Installation/",
+            ),
+          }),
+        `${index}:${identity.pointerKind}:fixed-segment`,
+      ).toThrow();
+      expect(
+        () =>
+          computePointerInstanceDigestFromCanonicalPath({
+            ...identity,
+            pointerKind: identities[(index + 1) % identities.length]!.pointerKind,
+          }),
+        `${index}:${identity.pointerKind}:kind-path`,
+      ).toThrow();
+    }
+
+    const reservation = identities.find(
+      ({ pointerKind }) => pointerKind === "RECOVERY_ATTEMPT_RESERVATION",
+    )!;
+    const alternateTransactionId = "018f0f4d-7b2d-7a11-aa2b-123456789abc";
+    const reservationAliases = [
+      reservation.canonicalPointerPath.replace(`/${d("1")}.json`, `/${d("1")}json`),
+      reservation.canonicalPointerPath.replace(`/${d("1")}.json`, `/x${d("1")}.json`),
+      `${reservation.canonicalPointerPath}.extra`,
+      reservation.canonicalPointerPath.replace(`/${d("1")}.json`, "/.json"),
+      reservation.canonicalPointerPath.replace("reservations/", "reservations//"),
+      reservation.canonicalPointerPath.replace("installation/", "installation/./"),
+      reservation.canonicalPointerPath.replaceAll("/", "\\"),
+      `C:/${reservation.canonicalPointerPath}`,
+      `file://${reservation.canonicalPointerPath}`,
+      reservation.canonicalPointerPath.replace("recovery-fence", "recovery%2Dfence"),
+      reservation.canonicalPointerPath.replace("recovery-fence", "recovery‐fence"),
+      reservation.canonicalPointerPath.replace(d("1"), d("A")),
+    ];
+    for (const [index, canonicalPointerPath] of reservationAliases.entries())
+      expect(
+        () =>
+          computePointerInstanceDigestFromCanonicalPath({
+            ...reservation,
+            canonicalPointerPath,
+          }),
+        `reservation-alias:${index}`,
+      ).toThrow();
+
+    expect(() =>
+      computePointerInstanceDigestFromCanonicalPath({
+        ...reservation,
+        transactionId: alternateTransactionId,
+      }),
+    ).toThrow("transactionId:path-mismatch");
+    expect(() =>
+      computePointerInstanceDigestFromCanonicalPath({
+        ...reservation,
+        sourceToken: "cleanup-gate-pre-fence",
+      }),
+    ).toThrow("sourceToken:path-mismatch");
+    expect(() =>
+      computePointerInstanceDigestFromCanonicalPath({
+        ...reservation,
+        pointerKind: "UNREGISTERED" as never,
+      }),
+    ).toThrow();
+    expect(() =>
+      computePointerInstanceDigestFromCanonicalPath(
+        new Proxy(reservation, {
+          get() {
+            throw new Error("hostile getter");
+          },
+        }),
+      ),
+    ).toThrow("hostile getter");
+  });
 });
 
 describe("acyclic pointer graph", () => {

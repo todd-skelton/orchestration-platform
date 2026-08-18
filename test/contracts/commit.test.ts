@@ -287,8 +287,12 @@ function checkpointEvidenceSequence(
   selectorPathInstanceDigestOverride?: string,
   targetIdentityOverride?: {
     canonicalPointerPath: string;
+    installationId?: string;
     pointerKind: (typeof pointerKinds)[number];
+    projectId?: string;
     sourceToken: string;
+    stateRootDigest?: string;
+    targetMutationId?: string;
     targetPathInstanceDigest: string;
     transactionId: string | null;
   },
@@ -308,6 +312,10 @@ function checkpointEvidenceSequence(
       ? installationId
       : null;
   const sourceToken = targetIdentityOverride?.sourceToken ?? "none";
+  const targetInstallationId = targetIdentityOverride?.installationId ?? installationId;
+  const targetProjectId = targetIdentityOverride?.projectId ?? projectId;
+  const targetStateRootDigest = targetIdentityOverride?.stateRootDigest ?? stateRootDigest;
+  const targetMutationId = targetIdentityOverride?.targetMutationId ?? d("a");
   const targetPathInstanceDigest =
     targetPathInstanceDigestOverride ??
     targetIdentityOverride?.targetPathInstanceDigest ??
@@ -316,17 +324,17 @@ function checkpointEvidenceSequence(
       : authorityTargetPathInstanceDigest);
   const positionEvidence = {
     mode: "VALUE",
-    parts: { targetInstanceDigest: targetPathInstanceDigest, targetMutationId: d("a") },
+    parts: { targetInstanceDigest: targetPathInstanceDigest, targetMutationId },
   } as const;
-  const selectorPath = `installation/pointer-cas/${targetPathInstanceDigest}/commits/${d("a")}/current-run.json`;
+  const selectorPath = `installation/pointer-cas/${targetPathInstanceDigest}/commits/${targetMutationId}/current-run.json`;
   const selectorPathInstanceDigest =
     selectorPathInstanceDigestOverride ??
     computePointerInstanceDigest({
       pointerKind: "POINTER_MUTATION_RUN_CURRENT",
       canonicalPointerPath: selectorPath,
-      installationId,
-      projectId,
-      stateRootDigest,
+      installationId: targetInstallationId,
+      projectId: targetProjectId,
+      stateRootDigest: targetStateRootDigest,
       transactionId: null,
       sourceToken: "none",
       positionEvidence,
@@ -363,7 +371,7 @@ function checkpointEvidenceSequence(
           ? null
           : computeRunCheckpointCoreDigest(priorCheckpointEvidence.core),
       runOrdinal,
-      targetMutationId: d("a"),
+      targetMutationId,
     });
   for (let index = 0; index < length; index += 1) {
     const stage = commitRunStages[index]!;
@@ -376,9 +384,9 @@ function checkpointEvidenceSequence(
     const segment = {
       canonicalPointerPath,
       globalIdentityDigest,
-      installationId,
+      installationId: targetInstallationId,
       pointerKind: targetPointerKind,
-      projectId,
+      projectId: targetProjectId,
       recordedAt: `2026-08-18T16:00:0${index}.000Z`,
       runId,
       runOrdinal,
@@ -386,8 +394,8 @@ function checkpointEvidenceSequence(
       sourceToken,
       stage,
       stageEvidenceDigest: d("e"),
-      stateRootDigest,
-      targetMutationId: d("a"),
+      stateRootDigest: targetStateRootDigest,
+      targetMutationId,
       targetPathInstanceDigest,
       transactionId,
     };
@@ -400,14 +408,18 @@ function checkpointEvidenceSequence(
       auditDigest,
       canonicalPointerPath,
       globalIdentityDigest,
+      installationId: targetInstallationId,
       priorPostSelectionObservationDigest,
       priorSelectorReceiptDigest,
       priorSelectorTipDigest,
       priorSelectorValueDigest,
+      projectId: targetProjectId,
       runOrdinal,
       segmentDigest,
       sourceToken,
       stage,
+      stateRootDigest: targetStateRootDigest,
+      targetMutationId,
       targetPathInstanceDigest,
       transactionId,
       terminalResolutionDigest:
@@ -421,7 +433,7 @@ function checkpointEvidenceSequence(
       runOrdinal,
       schemaVersion: "pointer-mutation-run-current-value/v1",
       stage,
-      targetMutationId: d("a"),
+      targetMutationId,
       targetPathInstanceDigest,
       terminalResolutionDigest: core.terminalResolutionDigest,
     };
@@ -499,12 +511,29 @@ function ordinaryCommitEvidence(
     runOrdinal?: string;
     runIdOverride?: string;
     selectorPathInstanceDigestOverride?: string;
+    targetIdentity?: {
+      canonicalPointerPath: string;
+      installationId?: string;
+      pointerKind: (typeof pointerKinds)[number];
+      projectId?: string;
+      sourceToken: string;
+      stateRootDigest?: string;
+      targetMutationId?: string;
+      targetPathInstanceDigest: string;
+      transactionId: string | null;
+    };
     targetPathInstanceDigestOverride?: string;
   } = {},
 ) {
+  const targetIdentity = options.targetIdentity;
   const targetPathInstanceDigest =
-    options.targetPathInstanceDigestOverride ?? activeReleaseTargetPathInstanceDigest;
-  const targetMutationId = d("a");
+    options.targetPathInstanceDigestOverride ??
+    targetIdentity?.targetPathInstanceDigest ??
+    activeReleaseTargetPathInstanceDigest;
+  const targetPointerKind = targetIdentity?.pointerKind ?? "ACTIVE_RELEASE";
+  const canonicalPointerPath =
+    targetIdentity?.canonicalPointerPath ?? "installation/active-release.json";
+  const targetMutationId = targetIdentity?.targetMutationId ?? d("a");
   const authority = options.authority ?? {
     path: authorityTargetPathInstanceDigest,
     receipt: d("1"),
@@ -523,7 +552,7 @@ function ordinaryCommitEvidence(
   if (outcome === "SELECTED") {
     const value = { releaseDigest: d("8"), schemaVersion: "active-release/v1" };
     const valueDigest = computePointerValueDigest(
-      "ACTIVE_RELEASE",
+      targetPointerKind,
       targetPathInstanceDigest,
       value,
     );
@@ -535,7 +564,7 @@ function ordinaryCommitEvidence(
       mutationId: targetMutationId,
       outcome: "SELECT",
       pathInstanceDigest: targetPathInstanceDigest,
-      pointerKind: "ACTIVE_RELEASE",
+      pointerKind: targetPointerKind,
       positionDigest: d("9"),
       priorReceiptDigest: null,
       priorTipDigest: null,
@@ -582,9 +611,10 @@ function ordinaryCommitEvidence(
     options.targetPathInstanceDigestOverride,
     options.runIdOverride,
     options.selectorPathInstanceDigestOverride,
+    targetIdentity,
   );
   return {
-    canonicalPointerPath: "installation/active-release.json",
+    canonicalPointerPath,
     checkpoints,
     commitKind: "ORDINARY",
     intentDigest: d("f"),
@@ -605,9 +635,9 @@ function ordinaryCommitEvidence(
     schemaVersion: "pointer-mutation-commit-evidence/v1",
     targetMutationId,
     targetPathInstanceDigest,
-    targetPointerKind: "ACTIVE_RELEASE",
+    targetPointerKind,
     targetRegistrySlot: {
-      pointerKind: "ACTIVE_RELEASE",
+      pointerKind: targetPointerKind,
       schemaVersion: "pointer-evidence-slot/v1",
       selectedEvidence,
     },
@@ -1364,7 +1394,233 @@ describe("single-epoch commit journal atoms", () => {
       expect(validateCommitCheckpointEvidenceSequence(checkpoints, "ORDINARY"), row.kind).toEqual(
         [],
       );
+      const copiedTargetDigest = checkpointEvidenceSequence(
+        "ORDINARY",
+        { ...resolution(), targetPathInstanceDigest: d("0") },
+        undefined,
+        undefined,
+        undefined,
+        null,
+        d("0"),
+        undefined,
+        undefined,
+        { ...identity, targetPathInstanceDigest: derivedTargetPathInstanceDigest },
+      );
+      expect(
+        validateCommitCheckpointEvidenceSequence(copiedTargetDigest, "ORDINARY"),
+        `${row.kind}:copied-target-digest`,
+      ).toContain("0:targetPathInstanceDigest:derived-mismatch");
     }
+  });
+
+  test("refuses copied target digests for reservation and nested run-current commits", () => {
+    for (const pointerKind of [
+      "RECOVERY_ATTEMPT_RESERVATION",
+      "POINTER_MUTATION_RUN_CURRENT",
+    ] as const) {
+      const row = pointerRegistry.find(({ kind }) => kind === pointerKind)!;
+      const canonicalPointerPath = pointerPath(row.kind, registryPathBindings(row));
+      const identity = {
+        pointerKind,
+        canonicalPointerPath,
+        installationId,
+        projectId,
+        stateRootDigest,
+        transactionId: row.transactionPolicy === "REQUIRED" ? installationId : null,
+        sourceToken: row.sourceTokens[0]!,
+      } as const;
+      const targetPathInstanceDigest = computePointerInstanceDigestFromCanonicalPath(identity);
+      const targetIdentity = { ...identity, targetPathInstanceDigest };
+      expect(
+        parseOrdinaryCommitEvidence(ordinaryCommitEvidence("UNKNOWN_TERMINAL", { targetIdentity }))
+          .ok,
+        `${pointerKind}:valid`,
+      ).toBe(true);
+      const copiedDigest = ordinaryCommitEvidence("UNKNOWN_TERMINAL", {
+        targetIdentity,
+        targetPathInstanceDigestOverride: d("0"),
+      });
+      const result = parseOrdinaryCommitEvidence(copiedDigest);
+      expect(result.ok, `${pointerKind}:copied-target-digest`).toBe(false);
+      if (!result.ok)
+        expect(result.issues).toContain("checkpoints:0:targetPathInstanceDigest:derived-mismatch");
+    }
+  });
+
+  test("rejects coordinated positive-lineage predecessor substitutions", () => {
+    const defaultAuthority = {
+      path: authorityTargetPathInstanceDigest,
+      receipt: d("1"),
+      tip: d("2"),
+      value: d("3"),
+    };
+    const priorFor = (
+      authority = defaultAuthority,
+      globalIdentityDigest = d("3"),
+      targetIdentity?: Parameters<typeof checkpointEvidenceSequence>[9],
+    ) =>
+      checkpointEvidenceSequence(
+        "ORDINARY",
+        resolution(),
+        authority,
+        globalIdentityDigest,
+        "0",
+        null,
+        undefined,
+        undefined,
+        undefined,
+        targetIdentity,
+      )[6]!;
+    const expectRetryIssue = (
+      priorCheckpointEvidence: CheckpointEvidenceFixture,
+      issue: string,
+    ) => {
+      const result = parseOrdinaryCommitEvidence(
+        ordinaryCommitEvidence("SELECTED", { priorCheckpointEvidence, runOrdinal: "1" }),
+      );
+      expect(result.ok, issue).toBe(false);
+      if (!result.ok) expect(result.issues).toContain(issue);
+    };
+
+    for (const [field, issue] of [
+      ["receipt", "priorCheckpointEvidence:authorityEpochReceiptDigest:old-authority-mismatch"],
+      ["tip", "priorCheckpointEvidence:authorityEpochTipDigest:old-authority-mismatch"],
+      ["value", "priorCheckpointEvidence:authorityEpochValueDigest:old-authority-mismatch"],
+    ] as const)
+      expectRetryIssue(priorFor({ ...defaultAuthority, [field]: d("f") }), issue);
+
+    const prior = priorFor();
+    const retry = ordinaryCommitEvidence("SELECTED", {
+      priorCheckpointEvidence: prior,
+      runOrdinal: "1",
+    });
+    const alteredObservationPrior = {
+      ...prior,
+      postSelectionObservation: {
+        ...prior.postSelectionObservation,
+        observedAt: "2026-08-18T16:22:06.000Z",
+      },
+    };
+    const postSelectionResult = parseOrdinaryCommitEvidence({
+      ...retry,
+      priorCheckpointEvidence: alteredObservationPrior,
+    });
+    expect(postSelectionResult.ok).toBe(false);
+    if (!postSelectionResult.ok)
+      expect(postSelectionResult.issues).toContain(
+        "checkpoints:0:priorPostSelectionObservationDigest",
+      );
+
+    const identityFor = (
+      pointerKind: (typeof pointerKinds)[number],
+      overrides: Partial<{
+        installationId: string;
+        projectId: string;
+        stateRootDigest: string;
+        targetMutationId: string;
+        transactionId: string | null;
+      }> = {},
+    ) => {
+      const row = pointerRegistry.find(({ kind }) => kind === pointerKind)!;
+      const identity = {
+        pointerKind,
+        canonicalPointerPath: pointerPath(pointerKind, registryPathBindings(row)),
+        installationId: overrides.installationId ?? installationId,
+        projectId: overrides.projectId ?? projectId,
+        stateRootDigest: overrides.stateRootDigest ?? stateRootDigest,
+        transactionId:
+          overrides.transactionId ?? (row.transactionPolicy === "REQUIRED" ? installationId : null),
+        sourceToken: row.sourceTokens[0]!,
+      } as const;
+      return {
+        ...identity,
+        ...(overrides.targetMutationId === undefined
+          ? {}
+          : { targetMutationId: overrides.targetMutationId }),
+        targetPathInstanceDigest: computePointerInstanceDigestFromCanonicalPath(identity),
+      };
+    };
+    const alternateInstallationId = "018f0f4d-7b2d-7a11-aa2b-123456789abc";
+    const alternateProjectId = "018f0f4d-7b2d-7a11-ba2b-123456789abc";
+    const lineageCases = [
+      [priorFor(undefined, d("f")), "priorCheckpointEvidence:globalIdentityDigest:mismatch"],
+      [
+        priorFor(undefined, undefined, identityFor("ACTIVATION_CLEANUP_GATE")),
+        "priorCheckpointEvidence:canonicalPointerPath:mismatch",
+      ],
+      [
+        priorFor(undefined, undefined, identityFor("ACTIVATION_CLEANUP_GATE")),
+        "priorCheckpointEvidence:pointerKind:mismatch",
+      ],
+      [
+        priorFor(
+          undefined,
+          undefined,
+          identityFor("ACTIVE_RELEASE", { installationId: alternateInstallationId }),
+        ),
+        "priorCheckpointEvidence:installationId:mismatch",
+      ],
+      [
+        priorFor(
+          undefined,
+          undefined,
+          identityFor("ACTIVE_RELEASE", { projectId: alternateProjectId }),
+        ),
+        "priorCheckpointEvidence:projectId:mismatch",
+      ],
+      [
+        priorFor(undefined, undefined, identityFor("ACTIVE_RELEASE", { stateRootDigest: d("8") })),
+        "priorCheckpointEvidence:stateRootDigest:mismatch",
+      ],
+      [
+        priorFor(
+          undefined,
+          undefined,
+          identityFor("ACTIVE_RELEASE", { transactionId: alternateInstallationId }),
+        ),
+        "priorCheckpointEvidence:transactionId:mismatch",
+      ],
+      [
+        priorFor(undefined, undefined, identityFor("ACTIVATION_RECOVERY_LAUNCH")),
+        "priorCheckpointEvidence:sourceToken:mismatch",
+      ],
+      [
+        priorFor(undefined, undefined, identityFor("ACTIVE_RELEASE", { targetMutationId: d("b") })),
+        "priorCheckpointEvidence:targetMutationId:mismatch",
+      ],
+      [
+        priorFor(undefined, undefined, identityFor("ACTIVATION_CLEANUP_GATE")),
+        "priorCheckpointEvidence:targetPathInstanceDigest:mismatch",
+      ],
+    ] as const;
+    for (const [substitutedPrior, issue] of lineageCases) expectRetryIssue(substitutedPrior, issue);
+  });
+
+  test("fails closed on hostile positive-lineage runtime input", () => {
+    const retry = ordinaryCommitEvidence("SELECTED", {
+      priorCheckpointEvidence: ordinaryCommitEvidence().checkpoints[6]!,
+      runOrdinal: "1",
+    });
+    const hostile = new Proxy(retry, {
+      ownKeys() {
+        throw new Error("hostile ownKeys");
+      },
+    });
+    expect(() => parseOrdinaryCommitEvidence(hostile)).not.toThrow();
+    expect(parseOrdinaryCommitEvidence(hostile)).toEqual({
+      issues: ["value:proxy-refused"],
+      ok: false,
+    });
+    const nestedHostile = {
+      ...retry,
+      priorCheckpointEvidence: new Proxy(retry.priorCheckpointEvidence!, {
+        getOwnPropertyDescriptor() {
+          throw new Error("hostile descriptor");
+        },
+      }),
+    };
+    expect(() => parseOrdinaryCommitEvidence(nestedHostile)).not.toThrow();
+    expect(parseOrdinaryCommitEvidence(nestedHostile).ok).toBe(false);
   });
 
   test("closes the ordinary commit arm and outcome-to-slot equalities", () => {
