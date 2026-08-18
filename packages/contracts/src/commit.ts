@@ -9,6 +9,7 @@ import {
   isUuidV7,
   snapshotClosedArray,
   snapshotClosedRecord,
+  snapshotJson,
   type ContractRecord,
   type ParseResult,
 } from "./runtime.js";
@@ -23,6 +24,11 @@ import {
   validateSelectedPointerEvidence,
   type PointerKind,
 } from "./pointer.js";
+import {
+  computeAuthorityHistoryRecordDigest,
+  computeRotationInputDigest,
+  parseRotationInput,
+} from "./authority.js";
 
 export const commitRunStages = Object.freeze([
   "CURRENT_AUTHORITY_READ",
@@ -134,6 +140,42 @@ const checkpointEvidenceFields = Object.freeze([
   "selectorSelection",
   "terminalResolution",
 ] as const);
+const runIntentCommonFields = Object.freeze([
+  "canonicalPointerPath",
+  "commitKind",
+  "createdAt",
+  "globalIdentityDigest",
+  "intentKind",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "schemaVersion",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+] as const);
+const runIntentRotationFields = Object.freeze([
+  "canonicalPointerPath",
+  "commitKind",
+  "createdAt",
+  "expectedHeadOrdinal",
+  "expectedRecordDigest",
+  "expectedSuccessorValueDigest",
+  "globalIdentityDigest",
+  "intentKind",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "rotationInput",
+  "rotationInputDigest",
+  "schemaVersion",
+  "successorCoreDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+] as const);
 
 export const commitSchemaFields = Object.freeze({
   commitResolution: commitResolutionFields,
@@ -142,12 +184,15 @@ export const commitSchemaFields = Object.freeze({
   runSegment: runSegmentFields,
   runCurrentValue: runCurrentValueFields,
   postSelectionObservation: postSelectionObservationFields,
+  runIntentOrdinary: runIntentCommonFields,
+  runIntentRotation: runIntentRotationFields,
 });
 export const commitSchemaVersions = Object.freeze([
   "pointer-mutation-commit-resolution/v1",
   "pointer-mutation-run-checkpoint-evidence/v1",
   "pointer-mutation-run-checkpoint-core/v1",
   "pointer-mutation-run-current-value/v1",
+  "pointer-mutation-run-intent/v1",
   "pointer-mutation-run-segment/v1",
   "pointer-mutation-run-selector-post-selection-observation/v1",
 ] as const);
@@ -739,6 +784,136 @@ export function computeRunCheckpointEvidenceDigest(input: unknown): string {
   ]);
 }
 
+export function parseRunIntent(input: unknown): ParseResult {
+  const snapshot = snapshotJson(input);
+  if (!snapshot.ok) return snapshot as ParseResult;
+  if (
+    snapshot.value === null ||
+    Array.isArray(snapshot.value) ||
+    typeof snapshot.value !== "object"
+  )
+    return invalid("record:object-required");
+  const detached = snapshot.value as ContractRecord;
+  const fields =
+    detached.commitKind === "ORDINARY"
+      ? runIntentCommonFields
+      : detached.commitKind === "AUTHORITY_ROTATION"
+        ? runIntentRotationFields
+        : null;
+  if (fields === null) return invalid("commitKind:invalid");
+  const parsed = snapshotClosedRecord(detached, fields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-run-intent/v1")
+    issues.push("schemaVersion:mismatch");
+  if (record.intentKind !== "SINGLE_EPOCH") issues.push("intentKind:mismatch");
+  if (!isCanonicalTimestamp(record.createdAt)) issues.push("createdAt:invalid");
+  if (!isContractRelativePath(record.canonicalPointerPath))
+    issues.push("canonicalPointerPath:invalid");
+  if (!pointerKinds.includes(record.targetPointerKind as PointerKind))
+    issues.push("targetPointerKind:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "globalIdentityDigest",
+      "oldAuthorityPathInstanceDigest",
+      "oldAuthorityReceiptDigest",
+      "oldAuthorityTipDigest",
+      "oldAuthorityValueDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+  );
+  if (record.commitKind === "ORDINARY") {
+    if (record.targetPointerKind === "STATE_MUTATION_AUTHORITY_ROTATION")
+      issues.push("targetPointerKind:rotation-arm-mismatch");
+    return issues.length === 0 ? parsed : invalid(...issues);
+  }
+
+  if (record.targetPointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION")
+    issues.push("targetPointerKind:rotation-required");
+  issues.push(
+    ...digestIssues(record, [
+      "expectedRecordDigest",
+      "expectedSuccessorValueDigest",
+      "rotationInputDigest",
+      "successorCoreDigest",
+    ]),
+  );
+  if (!isCanonicalDecimal(record.expectedHeadOrdinal) || record.expectedHeadOrdinal === "0")
+    issues.push("expectedHeadOrdinal:invalid");
+  const rotation = parseRotationInput(record.rotationInput);
+  if (!rotation.ok) {
+    issues.push(...rotation.issues.map((issue) => `rotationInput:${issue}`));
+    return invalid(...issues);
+  }
+  const rotationDigest = computeRotationInputDigest(rotation.value);
+  if (record.rotationInputDigest !== rotationDigest) issues.push("rotationInputDigest:mismatch");
+  const equalities = [
+    ["globalIdentityDigest", "globalIdentityDigest"],
+    ["oldAuthorityPathInstanceDigest", "retiringAuthorityPathInstanceDigest"],
+    ["oldAuthorityReceiptDigest", "retiringAuthorityReceiptDigest"],
+    ["oldAuthorityTipDigest", "retiringAuthorityTipDigest"],
+    ["oldAuthorityValueDigest", "retiringAuthorityValueDigest"],
+    ["successorCoreDigest", "successorCoreDigest"],
+  ] as const;
+  for (const [intentField, rotationField] of equalities)
+    if (record[intentField] !== rotation.value[rotationField])
+      issues.push(`${intentField}:rotation-input-mismatch`);
+  if (record.expectedHeadOrdinal !== rotation.value.successorAuthorityOrdinal)
+    issues.push("expectedHeadOrdinal:rotation-input-mismatch");
+  try {
+    const expectedRecordDigest = computeAuthorityHistoryRecordDigest({
+      globalIdentityDigest: rotation.value.globalIdentityDigest,
+      ordinal: rotation.value.successorAuthorityOrdinal,
+      predecessorKind: "RECORD",
+      priorHeadOrdinal: rotation.value.priorHeadOrdinal,
+      priorRecordDigest: rotation.value.priorRecordDigest,
+      recordKind: "ROTATION",
+      retiringAuthorityPathInstanceDigest: rotation.value.retiringAuthorityPathInstanceDigest,
+      retiringAuthorityReceiptDigest: rotation.value.retiringAuthorityReceiptDigest,
+      retiringAuthorityTipDigest: rotation.value.retiringAuthorityTipDigest,
+      retiringAuthorityValueDigest: rotation.value.retiringAuthorityValueDigest,
+      rotationInputDigest: rotationDigest,
+      schemaVersion: "authority-history-record/v1",
+      successorCoreDigest: rotation.value.successorCoreDigest,
+    });
+    if (record.expectedRecordDigest !== expectedRecordDigest)
+      issues.push("expectedRecordDigest:mismatch");
+  } catch {
+    issues.push("expectedRecordDigest:inputs-invalid");
+  }
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeRunIntentDigest(input: unknown): string {
+  const parsed = parseRunIntent(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  return framedDigest("pointer-mutation-run-intent/v1", [
+    frame.fixed(record.commitKind === "ORDINARY" ? "00" : "01"),
+    frame.raw32(String(record.globalIdentityDigest)),
+    frame.text(String(record.targetPointerKind)),
+    frame.text(String(record.canonicalPointerPath)),
+    frame.raw32(String(record.targetPathInstanceDigest)),
+    frame.raw32(String(record.targetMutationId)),
+    frame.raw32(String(record.oldAuthorityPathInstanceDigest)),
+    frame.raw32(String(record.oldAuthorityTipDigest)),
+    frame.raw32(String(record.oldAuthorityValueDigest)),
+    frame.raw32(String(record.oldAuthorityReceiptDigest)),
+    ...(record.commitKind === "AUTHORITY_ROTATION"
+      ? [
+          frame.raw32(String(record.rotationInputDigest)),
+          frame.raw32(String(record.expectedSuccessorValueDigest)),
+          frame.boundedDecimal(String(record.expectedHeadOrdinal)),
+          frame.raw32(String(record.expectedRecordDigest)),
+          frame.raw32(String(record.successorCoreDigest)),
+        ]
+      : []),
+    frame.canonical(record),
+  ]);
+}
+
 export function computeRunId(input: unknown): string {
   const parsed = snapshotClosedRecord(input, [
     "authorityPathInstanceDigest",
@@ -876,6 +1051,8 @@ export function parseCommitContract(
       return parseRunCheckpointEvidence(input);
     case "pointer-mutation-run-current-value/v1":
       return parseRunCurrentValue(input);
+    case "pointer-mutation-run-intent/v1":
+      return parseRunIntent(input);
     case "pointer-mutation-run-segment/v1":
       return parseRunSegment(input);
     case "pointer-mutation-run-selector-post-selection-observation/v1":

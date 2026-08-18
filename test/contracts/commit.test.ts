@@ -4,6 +4,7 @@ import {
   commitRunStages,
   commitJournalPaths,
   computeCommitResolutionDigest,
+  computeAuthorityHistoryRecordDigest,
   computeCurrentTipDigest,
   computePointerInstanceDigest,
   computePointerPositionDigest,
@@ -13,13 +14,16 @@ import {
   computeRunCheckpointEvidenceDigest,
   computeRunCheckpointCoreDigest,
   computeRunId,
+  computeRunIntentDigest,
   computeRunPostSelectionObservationDigest,
   computeRunSegmentDigest,
+  computeRotationInputDigest,
   parseContract,
   parseCommitResolution,
   parseRunCheckpointCore,
   parseRunCheckpointEvidence,
   parseRunCurrentValue,
+  parseRunIntent,
   parseRunPostSelectionObservation,
   parseRunSegment,
   validateCommitCheckpointSequence,
@@ -230,7 +234,104 @@ function checkpointEvidence() {
   };
 }
 
+function ordinaryIntent() {
+  return {
+    canonicalPointerPath: "installation/active-release.json",
+    commitKind: "ORDINARY",
+    createdAt: "2026-08-18T15:00:00.000Z",
+    globalIdentityDigest: d("1"),
+    intentKind: "SINGLE_EPOCH",
+    oldAuthorityPathInstanceDigest: d("2"),
+    oldAuthorityReceiptDigest: d("3"),
+    oldAuthorityTipDigest: d("4"),
+    oldAuthorityValueDigest: d("5"),
+    schemaVersion: "pointer-mutation-run-intent/v1",
+    targetMutationId: d("6"),
+    targetPathInstanceDigest: d("7"),
+    targetPointerKind: "ACTIVE_RELEASE",
+  };
+}
+
+function rotationIntent() {
+  const rotationInput = {
+    globalIdentityDigest: d("1"),
+    priorHeadOrdinal: "0",
+    priorRecordDigest: d("8"),
+    retiringAuthorityPathInstanceDigest: d("2"),
+    retiringAuthorityReceiptDigest: d("3"),
+    retiringAuthorityTipDigest: d("4"),
+    retiringAuthorityValueDigest: d("5"),
+    reviewedOperationDigest: d("9"),
+    rotationTransactionId: installationId,
+    schemaVersion: "state-mutation-authority-rotation-id/v1",
+    successorAuthorityOrdinal: "1",
+    successorCoreDigest: d("a"),
+  };
+  const rotationInputDigest = computeRotationInputDigest(rotationInput);
+  const expectedRecordDigest = computeAuthorityHistoryRecordDigest({
+    globalIdentityDigest: rotationInput.globalIdentityDigest,
+    ordinal: rotationInput.successorAuthorityOrdinal,
+    predecessorKind: "RECORD",
+    priorHeadOrdinal: rotationInput.priorHeadOrdinal,
+    priorRecordDigest: rotationInput.priorRecordDigest,
+    recordKind: "ROTATION",
+    retiringAuthorityPathInstanceDigest: rotationInput.retiringAuthorityPathInstanceDigest,
+    retiringAuthorityReceiptDigest: rotationInput.retiringAuthorityReceiptDigest,
+    retiringAuthorityTipDigest: rotationInput.retiringAuthorityTipDigest,
+    retiringAuthorityValueDigest: rotationInput.retiringAuthorityValueDigest,
+    rotationInputDigest,
+    schemaVersion: "authority-history-record/v1",
+    successorCoreDigest: rotationInput.successorCoreDigest,
+  });
+  return {
+    canonicalPointerPath: "installation/state-mutation-authority.json",
+    commitKind: "AUTHORITY_ROTATION",
+    createdAt: "2026-08-18T15:01:00.000Z",
+    expectedHeadOrdinal: "1",
+    expectedRecordDigest,
+    expectedSuccessorValueDigest: d("b"),
+    globalIdentityDigest: rotationInput.globalIdentityDigest,
+    intentKind: "SINGLE_EPOCH",
+    oldAuthorityPathInstanceDigest: rotationInput.retiringAuthorityPathInstanceDigest,
+    oldAuthorityReceiptDigest: rotationInput.retiringAuthorityReceiptDigest,
+    oldAuthorityTipDigest: rotationInput.retiringAuthorityTipDigest,
+    oldAuthorityValueDigest: rotationInput.retiringAuthorityValueDigest,
+    rotationInput,
+    rotationInputDigest,
+    schemaVersion: "pointer-mutation-run-intent/v1",
+    successorCoreDigest: rotationInput.successorCoreDigest,
+    targetMutationId: d("c"),
+    targetPathInstanceDigest: d("d"),
+    targetPointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+  };
+}
+
 describe("single-epoch commit journal atoms", () => {
+  test("closes create-once ordinary and armed rotation intents", () => {
+    const ordinary = ordinaryIntent();
+    expect(parseRunIntent(ordinary).ok).toBe(true);
+    expect(parseContract("pointer-mutation-run-intent/v1", ordinary).ok).toBe(true);
+    expect(computeRunIntentDigest(ordinary)).toBe(
+      "298527b9b388e337e80e15b263bda138a0021aeebb57de97eb95b7514e90c4a0",
+    );
+
+    const rotation = rotationIntent();
+    expect(parseRunIntent(rotation).ok).toBe(true);
+    expect(computeRunIntentDigest(rotation)).toBe(
+      "590bdd7fa4ecde5e5e6981fea727e6116601efae15e80e8a4a9575d4f2fbd272",
+    );
+    expect(parseRunIntent({ ...ordinary, rotationInputDigest: d("f") }).ok).toBe(false);
+    expect(
+      parseRunIntent({
+        ...ordinary,
+        targetPointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      }).ok,
+    ).toBe(false);
+    expect(parseRunIntent({ ...rotation, expectedRecordDigest: d("f") }).ok).toBe(false);
+    expect(parseRunIntent({ ...rotation, oldAuthorityTipDigest: d("f") }).ok).toBe(false);
+    expect(parseRunIntent({ ...rotation, epochKey: d("f") }).ok).toBe(false);
+  });
+
   test("closes ordinary resolution arms and binds the selected producer epoch", () => {
     const selected = resolution();
     expect(parseCommitResolution(selected).ok).toBe(true);

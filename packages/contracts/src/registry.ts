@@ -134,6 +134,20 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: commitSchemaFields.runCurrentValue,
       closedValues: Object.freeze([...commitRunStages, ...commitRunPhases]),
     }),
+    "pointer-mutation-run-intent/v1#ORDINARY": Object.freeze({
+      schemaVersion: "pointer-mutation-run-intent/v1",
+      fields: commitSchemaFields.runIntentOrdinary,
+      closedValues: Object.freeze(["ORDINARY", "SINGLE_EPOCH", ...pointerKinds]),
+    }),
+    "pointer-mutation-run-intent/v1#AUTHORITY_ROTATION": Object.freeze({
+      schemaVersion: "pointer-mutation-run-intent/v1",
+      fields: commitSchemaFields.runIntentRotation,
+      closedValues: Object.freeze([
+        "AUTHORITY_ROTATION",
+        "SINGLE_EPOCH",
+        "STATE_MUTATION_AUTHORITY_ROTATION",
+      ]),
+    }),
     "pointer-mutation-run-segment/v1": Object.freeze({
       schemaVersion: "pointer-mutation-run-segment/v1",
       fields: commitSchemaFields.runSegment,
