@@ -244,6 +244,16 @@ selection observation for all nine stages and ends in exactly
 resolutions exclude their selecting selector graph. `PROPOSED` is live-only;
 persisted ordinary recovery remains `CRASH_PREFIX|CAS_AMBIGUOUS`.
 
+The create-once `pointer-mutation-run-intent/v1` union is exact. Both arms bind
+`SINGLE_EPOCH`, target kind/path/`Dp`/mutation, `G`, old authority
+`Dp/Dt/Dv/Dr`, and creation time. AUTHORITY_ROTATION alone additionally binds
+the closed rotation-input record and recomputed `Drot`, expected successor
+`Dv`, expected head ordinal/record digest, and `Dsc`; ORDINARY forbids those
+members. Compatibility refuses a missing/extra/renamed member, wrong target
+arm, stale authority tuple, partial tuple, caller-selected epoch key, supplied
+rotation identity not equal to the recomputed input, or expected record not
+equal to the exact head-plus-one ROTATION record.
+
 `pointer-mutation-commit-evidence/v1` has no persistence path or selecting
 pointer. The ledger's exact common members and branch-only members are embedded
 in `pointer-evidence-packet/v1`; missing, null-for-absent, extra, or wrong-arm
@@ -349,6 +359,25 @@ slots, and (for `MUTATION_COMMIT`) the exact `Dcommit` arm: nine-checkpoint
 ordinary evidence or checkpoint-5-only rotation evidence.
 Digest-only bags, reordered/duplicate slots, unselected producer triples, and
 a mutation purpose without a current commit refuse.
+
+The composed `pointer-mutation-conflict-evidence/v1` has exactly
+`conflictReceipt`, `losingProposal`, `schemaVersion`, `selectedWinner`,
+`targetMutationId`, and `targetPathInstanceDigest`. It recomputes the losing
+`Dr/Dv`, winner `Dt/Dv/Dr`, and conflict receipt under one target identity.
+`pointer-evidence-slot/v1` has exactly `pointerKind`, `schemaVersion`, and
+nullable `selectedEvidence`; the nested arm is null, generic selected
+value/proposal/tip, or that conflict composition. LOST_CONFLICT requires the
+conflict arm, positive non-conflict outcomes require generic selected evidence,
+and unknown outcomes require null. Wrong-kind, caller-asserted winner, stale
+receipt, mixed arm, or an extra conflict field refuses.
+
+`authority-history-binding/v1` has exactly `genesisSelectionEvidence`,
+`globalIdentityDigest`, `headOrdinal`, `headRecordDigest`, `records`, and
+`schemaVersion`. The dense array is the complete ordinal-ordered linear chain
+from GENESIS zero through the named head; every record and predecessor digest
+is recomputed, genesis selection is revalidated, and the final head/`G` equals
+the packet's selected current authority value. The binding is non-persisted and
+has no compacted, proof, inventory, tree, directory-census, or capability arm.
 
 Every record class is FULL_REQUIRED, including destination/anchor lineage,
 physical identity/observations, authority history, run audit, and terminal

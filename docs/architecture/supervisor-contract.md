@@ -944,6 +944,61 @@ Windows, and Linux. Checkpointing remains parked until that gate fails on a
 supported OS; no speculative checkpoint contract is part of the current
 surface.
 
+The create-once `pointer-mutation-run-intent/v1` record is a closed two-arm
+union. Both arms have this exact common census:
+
+| JSON member                      | Type / literal                           |
+| -------------------------------- | ---------------------------------------- |
+| `canonicalPointerPath`           | `relative-path`                          |
+| `commitKind`                     | enum `ORDINARY`, `AUTHORITY_ROTATION`    |
+| `createdAt`                      | `timestamp`                              |
+| `globalIdentityDigest`           | `sha256`                                 |
+| `intentKind`                     | literal `SINGLE_EPOCH`                   |
+| `oldAuthorityPathInstanceDigest` | `sha256`                                 |
+| `oldAuthorityReceiptDigest`      | `sha256`                                 |
+| `oldAuthorityTipDigest`          | `sha256`                                 |
+| `oldAuthorityValueDigest`        | `sha256`                                 |
+| `schemaVersion`                  | literal `pointer-mutation-run-intent/v1` |
+| `targetMutationId`               | `sha256`                                 |
+| `targetPathInstanceDigest`       | `sha256`                                 |
+| `targetPointerKind`              | one of the exact eleven registry kinds   |
+
+ORDINARY requires a target kind other than
+`STATE_MUTATION_AUTHORITY_ROTATION` and has no branch-only members.
+AUTHORITY_ROTATION requires that target kind and adds exactly:
+
+| JSON member                    | Type / literal                                    |
+| ------------------------------ | ------------------------------------------------- |
+| `expectedHeadOrdinal`          | positive `safe-decimal`                           |
+| `expectedRecordDigest`         | `sha256`                                          |
+| `expectedSuccessorValueDigest` | `sha256`                                          |
+| `rotationInput`                | `record<state-mutation-authority-rotation-id/v1>` |
+| `rotationInputDigest`          | `sha256` (`Drot`)                                 |
+| `successorCoreDigest`          | `sha256` (`Dsc`)                                  |
+
+`rotationInputDigest` is recomputed from `rotationInput`; its `G`, retiring
+authority tuple, successor ordinal, and `Dsc` equal the common fields and the
+expected head-plus-one operation. `expectedHeadOrdinal` equals the rotation
+input successor ordinal and `expectedRecordDigest` is the digest of the exact
+ROTATION record that those fields determine. The expected successor `Dv` is
+cross-bound downstream to the target proposal and rotation commit. No caller-
+selected epoch key or rotation-operation digest is accepted.
+
+The intent digest is:
+
+```text
+H(F(pointer-mutation-run-intent/v1,
+  branch-tag, G raw32, target-kind text, target-path text, target-Dp raw32,
+  target-mutation-id raw32, old-authority Dp/Dt/Dv/Dr raw32,
+  Drot/expected-successor-Dv/expected-head/expected-record/Dsc
+    when AUTHORITY_ROTATION,
+  canonical union bytes))
+```
+
+The branch tag is `0x00` ORDINARY or `0x01` AUTHORITY_ROTATION. Creation time
+is bound only through canonical union bytes. The intent has the existing
+`intent.json` path below and grants no authority by itself.
+
 ```text
 installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/intent.json
 installation/pointer-cas/<target-Dp>/commits/<target-mutation-id>/runs/<run-ordinal>-<run-id>/segment.json
@@ -1192,6 +1247,79 @@ installation/pointer-cas/<selector-Dp>/conflicts/<prior-tip-or-genesis>/<selecto
 Only recursive journaling is excluded. Create-once retry, real-winner conflict,
 classification, tombstone, path census, producer epoch, and exact
 selected tip rules are identical to every other runtime pointer.
+
+`pointer-mutation-conflict-evidence/v1` is non-persisted composed evidence with
+this exact canonical member census:
+
+| JSON member                | Type / literal                                      |
+| -------------------------- | --------------------------------------------------- |
+| `conflictReceipt`          | `record<pointer-conflict-receipt/v1>`               |
+| `losingProposal`           | `record<pointer-cas-proposal-receipt/v1>`           |
+| `schemaVersion`            | literal `pointer-mutation-conflict-evidence/v1`     |
+| `selectedWinner`           | closed `{ proposal, tip, value }` selected evidence |
+| `targetMutationId`         | `sha256`                                            |
+| `targetPathInstanceDigest` | `sha256`                                            |
+
+The losing proposal has the target `Dp` and mutation ID. `selectedWinner` is
+the exact generic selected value/proposal/tip graph for the same pointer
+instance. The conflict receipt recomputes from the losing `Dr/Dv`, selected
+winner `Dt/Dv/Dr`, target identity, producer epoch, kind, and timestamp. Its
+composed digest is:
+
+```text
+H(F(pointer-mutation-conflict-evidence/v1,
+  target-Dp raw32, target-mutation-id raw32,
+  losing Dr raw32, losing Dv raw32,
+  winner Dt raw32, winner Dv raw32, winner Dr raw32,
+  conflict-receipt digest raw32, canonical evidence bytes))
+```
+
+It creates no path or capability and cannot substitute a caller-asserted
+winner or conflict.
+
+`pointer-evidence-slot/v1` has exactly `pointerKind`, `schemaVersion`, and
+nullable `selectedEvidence` in canonical order. `schemaVersion` is literal
+`pointer-evidence-slot/v1`; `pointerKind` is one exact registry kind.
+`selectedEvidence` is either null, a closed generic `{ proposal, tip, value }`
+selection of that kind, or a closed
+`pointer-mutation-conflict-evidence/v1` whose loser and winner have that kind.
+For ORDINARY SELECTED, rotation RESUMABLE, and rotation SELECTED, the applicable
+slot requires the generic selection. ORDINARY LOST_CONFLICT requires the
+conflict composition. ORDINARY UNKNOWN_TERMINAL and rotation UNKNOWN require
+null. Historical-read slots admit only null or the generic selection.
+
+The packet's `authorityHistoryBinding` is the non-persisted closed
+`authority-history-binding/v1` record with exactly:
+
+| JSON member                | Type / literal                                            |
+| -------------------------- | --------------------------------------------------------- |
+| `genesisSelectionEvidence` | `record<authority-history-genesis-selection-evidence/v1>` |
+| `globalIdentityDigest`     | `sha256` (`G`)                                            |
+| `headOrdinal`              | `safe-decimal`                                            |
+| `headRecordDigest`         | `sha256`                                                  |
+| `records`                  | dense array of `record<authority-history-record/v1>`      |
+| `schemaVersion`            | literal `authority-history-binding/v1`                    |
+
+`records` has exactly `headOrdinal + 1` entries in ordinal order beginning at
+GENESIS zero. Each record digest, predecessor, `G`, branch, ordinal, `Dsc`, and
+when applicable `Drot` is recomputed by the full linear walk. The final digest
+equals `headRecordDigest`; the genesis record and
+`genesisSelectionEvidence` cross-bind `Dgb`, `Dh`, `Dsc`, E0 selection and
+external ACTIVE/CONSUMED evidence. The packet's selected current authority
+value must carry the same `G`, `headOrdinal`, and `headRecordDigest`.
+
+Its composed digest is:
+
+```text
+H(F(authority-history-binding/v1,
+  G raw32, head ordinal bounded-decimal, head record digest raw32,
+  each recomputed record digest raw32 in ordinal order,
+  recomputed genesis-selection-evidence digest raw32,
+  canonical binding bytes))
+```
+
+The binding has no storage path, selecting pointer, checkpoint, compacted arm,
+membership proof, inventory, or mutation authority.
 
 `pointer-evidence-packet/v1` is an exact eleven-slot union. `HISTORICAL_READ`
 requires `currentCommit=null` and exposes no mutation capability.

@@ -168,6 +168,57 @@ are exactly those in `supervisor-contract.md`.
   `pointer-mutation-commit-resolution/v1` over canonical record bytes only.
   There is no `producerEpochKey`, membership index/proof, sparse-root fact, or
   rotation arm.
+- `pointer-mutation-run-intent/v1` is one create-once closed
+  `ORDINARY|AUTHORITY_ROTATION` union. Its exact common canonical member order is
+  `canonicalPointerPath`, `commitKind`, `createdAt`, `globalIdentityDigest`,
+  `intentKind`, `oldAuthorityPathInstanceDigest`,
+  `oldAuthorityReceiptDigest`, `oldAuthorityTipDigest`,
+  `oldAuthorityValueDigest`, `schemaVersion`, `targetMutationId`,
+  `targetPathInstanceDigest`, and `targetPointerKind`. `schemaVersion` is the
+  named v1 literal; `intentKind` is `SINGLE_EPOCH`; the target kind is one of
+  the eleven registry kinds; path, timestamp, and all digests use the closed
+  platform scalar rules. ORDINARY requires a non-rotation target and no extra
+  members. AUTHORITY_ROTATION requires that target and additionally has
+  `expectedHeadOrdinal`, `expectedRecordDigest`,
+  `expectedSuccessorValueDigest`, `rotationInput`, `rotationInputDigest`, and
+  `successorCoreDigest` in the single merged canonical order. `rotationInput`
+  is the exact closed `state-mutation-authority-rotation-id/v1` record;
+  `rotationInputDigest` is its recomputed `Drot`; and its `G`, retiring tuple,
+  successor ordinal, and `Dsc` equal the common/expected fields. The intent
+  digest frames, in order, branch tag; `G`; target kind/path/`Dp`/mutation; old
+  authority `Dp/Dt/Dv/Dr`; for rotation `Drot`, expected successor `Dv`,
+  expected head ordinal/record digest, and `Dsc`; then
+  canonical union bytes, all under domain `pointer-mutation-run-intent/v1`.
+  Creation time is bound only by the canonical bytes. A caller-selected epoch
+  key or rotation identity is forbidden.
+- `pointer-mutation-conflict-evidence/v1` is a non-persisted closed composition
+  with exact canonical members `conflictReceipt`, `losingProposal`,
+  `schemaVersion`, `selectedWinner`, `targetMutationId`, and
+  `targetPathInstanceDigest`. The three nested values are respectively a closed
+  `pointer-conflict-receipt/v1`, a closed
+  `pointer-cas-proposal-receipt/v1`, and a closed generic
+  `{ proposal, tip, value }` selected graph for one target `Dp` and mutation ID.
+  Its digest frames target `Dp`/mutation, losing `Dr/Dv`, winner `Dt/Dv/Dr`,
+  recomputed conflict digest, and canonical evidence bytes under domain
+  `pointer-mutation-conflict-evidence/v1`. A `pointer-evidence-slot/v1` has
+  exactly `pointerKind`, `schemaVersion`, and nullable `selectedEvidence` in
+  canonical order:
+  `selectedEvidence` is either the generic closed value/proposal/tip selection
+  or this conflict composition. LOST_CONFLICT requires the latter; positive
+  non-conflict outcomes require the former; unknown/empty outcomes require
+  null.
+- The packet's `authorityHistoryBinding` is the closed non-persisted
+  `authority-history-binding/v1` record with exactly
+  `genesisSelectionEvidence`, `globalIdentityDigest`, `headOrdinal`,
+  `headRecordDigest`, `records`, and `schemaVersion` in canonical order. The
+  first member is the closed genesis-selection record; `records` is the dense
+  complete ordinal-ordered `authority-history-record/v1` array from zero
+  through head. Its digest frames `G`, bounded head ordinal, head digest, each
+  recomputed record digest in order, recomputed genesis-selection-evidence
+  digest, and canonical binding bytes under domain
+  `authority-history-binding/v1`. It validates the full linear chain and
+  cross-binds `G` and head to the packet's selected current authority value. It
+  adds no path, checkpoint, tree, inventory, compaction, or capability.
 - Rotation is forward-only once appended. A crash between chain append and
   authority CAS is resumable only by the same transaction under the old
   capability re-driving the same CAS to completion; the pending record is the
