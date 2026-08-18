@@ -153,6 +153,21 @@ are exactly those in `supervisor-contract.md`.
   stages 6–8, ordinary resolution, later selector artifacts, and successor-
   epoch writes refuse. No post-CAS write occurs under the new epoch, no
   separate rotation receipt or coordinator exists, and no run crosses epochs.
+- The ordinary-only `pointer-mutation-commit-resolution/v1` record has exactly
+  `conflictReceiptDigest`, `outcome`, `outcomeEvidenceDigest`,
+  `producerAuthorityPathInstanceDigest`, `producerAuthorityReceiptDigest`,
+  `producerAuthorityTipDigest`, `producerAuthorityValueDigest`, `resolvedAt`,
+  `schemaVersion`, `selectedTargetTipDigest`, `targetMutationId`,
+  `targetPathInstanceDigest`, and `unknownEvidenceDigest` in canonical member
+  order. The four non-null producer-authority digests are the selected run
+  epoch `Dp/Dt/Dv/Dr` under their named fields and must equal the ORDINARY
+  commit's old/packet authority tuple. `SELECTED`, `LOST_CONFLICT`, and
+  `UNKNOWN_TERMINAL` respectively require only selected-target-tip,
+  conflict-receipt, or fixed unknown-evidence digest and require
+  `outcomeEvidenceDigest` to equal that one non-null arm. Its digest is domain
+  `pointer-mutation-commit-resolution/v1` over canonical record bytes only.
+  There is no `producerEpochKey`, membership index/proof, sparse-root fact, or
+  rotation arm.
 - Rotation is forward-only once appended. A crash between chain append and
   authority CAS is resumable only by the same transaction under the old
   capability re-driving the same CAS to completion; the pending record is the

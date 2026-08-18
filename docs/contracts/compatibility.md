@@ -335,6 +335,14 @@ evidence is bounded by the closed evidence-slot census. Tombstones
 authenticate both removal and selected prior producers. Authority history
 remains FULL_REQUIRED.
 
+The ordinary terminal resolution carries the exact producer authority
+`Dp/Dt/Dv/Dr` as `producerAuthorityPathInstanceDigest`,
+`producerAuthorityTipDigest`, `producerAuthorityValueDigest`, and
+`producerAuthorityReceiptDigest`. Compatibility refuses the deleted
+`producerEpochKey`, any membership/root/proof substitute, a partial tuple, a
+tuple different from the run/packet authority, and every wrong outcome-arm
+nullability or evidence-digest binding.
+
 The packet serializes the exact global identity, selected current authority,
 composed authority-history binding, eleven registry-ordered typed evidence
 slots, and (for `MUTATION_COMMIT`) the exact `Dcommit` arm: nine-checkpoint

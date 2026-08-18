@@ -964,6 +964,39 @@ The closed run domains are `pointer-mutation-run-id/v1`,
 `pointer-mutation-commit-resolution/v1`, composed by the closed
 `pointer-mutation-commit-evidence/v1` union.
 
+The ordinary-only `pointer-mutation-commit-resolution/v1` record has this exact
+canonical member census:
+
+| JSON member                           | Type / literal                                       |
+| ------------------------------------- | ---------------------------------------------------- |
+| `conflictReceiptDigest`               | nullable `sha256`                                    |
+| `outcome`                             | enum `SELECTED`, `LOST_CONFLICT`, `UNKNOWN_TERMINAL` |
+| `outcomeEvidenceDigest`               | `sha256`                                             |
+| `producerAuthorityPathInstanceDigest` | `sha256` (`Dp`)                                      |
+| `producerAuthorityReceiptDigest`      | `sha256` (`Dr`)                                      |
+| `producerAuthorityTipDigest`          | `sha256` (`Dt`)                                      |
+| `producerAuthorityValueDigest`        | `sha256` (`Dv`)                                      |
+| `resolvedAt`                          | canonical millisecond UTC timestamp                  |
+| `schemaVersion`                       | literal `pointer-mutation-commit-resolution/v1`      |
+| `selectedTargetTipDigest`             | nullable `sha256`                                    |
+| `targetMutationId`                    | `sha256`                                             |
+| `targetPathInstanceDigest`            | `sha256` (`Dp` of the target)                        |
+| `unknownEvidenceDigest`               | nullable `sha256`                                    |
+
+All four producer-authority fields are required and equal the selected
+single-epoch authority tuple carried by the ORDINARY commit's common old and
+KNOWN packet authority fields. For `SELECTED`, only
+`selectedTargetTipDigest` is non-null and equals `outcomeEvidenceDigest`; for
+`LOST_CONFLICT`, only `conflictReceiptDigest` is non-null and equals
+`outcomeEvidenceDigest`; for `UNKNOWN_TERMINAL`, only
+`unknownEvidenceDigest` is non-null and equals `outcomeEvidenceDigest`. The
+resolution digest is
+`H(F("pointer-mutation-commit-resolution/v1", canonical resolution bytes))`.
+It excludes its selecting run-current value/proposal/tip and readbacks, `Dpost`,
+packet wrappers, membership material, and every rotation field. The deleted
+`producerEpochKey` has no replacement alias: the exact four-digest tuple above
+is the only producer-epoch representation.
+
 `Dcommit` is always:
 
 ```text
