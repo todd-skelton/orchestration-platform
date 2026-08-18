@@ -2,6 +2,7 @@ import {
   canonicalDigest,
   frame,
   framedDigest,
+  incrementCanonicalDecimal,
   isCanonicalDecimal,
   isCanonicalTimestamp,
   isContractRelativePath,
@@ -17,6 +18,7 @@ import {
 import {
   computeConflictDigest,
   computeCurrentTipDigest,
+  computePointerInstanceDigest,
   computePointerValueDigest,
   computeProposalReceiptDigest,
   parsePointerCurrentTip,
@@ -202,6 +204,7 @@ const ordinaryCommitEvidenceFields = Object.freeze([
   "packetAuthorityReceiptDigest",
   "packetAuthorityTipDigest",
   "packetAuthorityValueDigest",
+  "priorCheckpointEvidence",
   "runId",
   "runOrdinal",
   "schemaVersion",
@@ -231,6 +234,7 @@ const rotationCommitResumableFields = Object.freeze([
   "packetAuthorityValueDigest",
   "pendingRecord",
   "pendingRecordReadbackDigest",
+  "priorCheckpointEvidence",
   "resumableOldAuthorityPathInstanceDigest",
   "resumableOldAuthorityReceiptDigest",
   "resumableOldAuthorityTipDigest",
@@ -265,6 +269,7 @@ const rotationCommitSelectedFields = Object.freeze([
   "packetAuthorityReceiptDigest",
   "packetAuthorityTipDigest",
   "packetAuthorityValueDigest",
+  "priorCheckpointEvidence",
   "rotationInputDigest",
   "rotationOutcome",
   "runId",
@@ -301,6 +306,7 @@ const rotationCommitUnknownFields = Object.freeze([
   "packetAuthorityReceiptDigest",
   "packetAuthorityTipDigest",
   "packetAuthorityValueDigest",
+  "priorCheckpointEvidence",
   "rotationInputDigest",
   "rotationOutcome",
   "runId",
@@ -646,7 +652,7 @@ const ordinaryResolutionBindingFields = Object.freeze([
   "packetAuthorityReceiptDigest",
   "packetAuthorityTipDigest",
   "packetAuthorityValueDigest",
-  "priorCheckpointDigest",
+  "priorCheckpointEvidence",
   "runId",
   "runOrdinal",
   "targetMutationId",
@@ -683,9 +689,18 @@ export function validateCommitResolutionBinding(
     "targetPathInstanceDigest",
   ] as const)
     if (!isSha256(expected[field])) issues.push(`${field}:invalid`);
-  if (expected.priorCheckpointDigest !== null && !isSha256(expected.priorCheckpointDigest))
-    issues.push("priorCheckpointDigest:invalid");
+  const priorCheckpoint =
+    expected.priorCheckpointEvidence === null
+      ? null
+      : parseRunCheckpointEvidence(expected.priorCheckpointEvidence);
+  if (priorCheckpoint !== null && !priorCheckpoint.ok)
+    issues.push(...priorCheckpoint.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
   if (!isCanonicalDecimal(expected.runOrdinal)) issues.push("runOrdinal:invalid");
+  if (
+    isCanonicalDecimal(expected.runOrdinal) &&
+    (expected.runOrdinal === "0") !== (priorCheckpoint === null)
+  )
+    issues.push("priorCheckpointEvidence:runOrdinal-mismatch");
   const equalities = [
     [
       "producerAuthorityPathInstanceDigest",
@@ -705,13 +720,19 @@ export function validateCommitResolutionBinding(
   for (const field of ["outcome", "targetMutationId", "targetPathInstanceDigest"] as const)
     if (resolution.value[field] !== expected[field]) issues.push(`${field}:mismatch`);
   try {
+    const priorCheckpointDigest =
+      priorCheckpoint === null
+        ? null
+        : priorCheckpoint.ok
+          ? computeRunCheckpointCoreDigest(priorCheckpoint.value.core)
+          : null;
     const expectedRunId = computeRunId({
       authorityPathInstanceDigest: expected.oldAuthorityPathInstanceDigest,
       authorityReceiptDigest: expected.oldAuthorityReceiptDigest,
       authorityTipDigest: expected.oldAuthorityTipDigest,
       authorityValueDigest: expected.oldAuthorityValueDigest,
       globalIdentityDigest: expected.globalIdentityDigest,
-      priorCheckpointDigest: expected.priorCheckpointDigest,
+      priorCheckpointDigest,
       runOrdinal: expected.runOrdinal,
       targetMutationId: expected.targetMutationId,
     });
@@ -1182,6 +1203,7 @@ export function validateCommitCheckpointSequence(
 export function validateCommitCheckpointEvidenceSequence(
   input: unknown,
   commitKind: "ORDINARY" | "AUTHORITY_ROTATION",
+  priorCheckpointEvidenceInput: unknown = null,
 ): readonly string[] {
   const checkpoints = snapshotClosedArray(input);
   if (!checkpoints.ok) return checkpoints.issues;
@@ -1200,6 +1222,30 @@ export function validateCommitCheckpointEvidenceSequence(
   let priorSelectorReceiptDigest: string | null = null;
   let priorObservationDigest: string | null = null;
   let stageSevenResolutionDigest: string | null = null;
+
+  if (priorCheckpointEvidenceInput !== null) {
+    const prior = parseRunCheckpointEvidence(priorCheckpointEvidenceInput);
+    if (!prior.ok)
+      return Object.freeze(prior.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
+    const priorSelection = snapshotClosedRecord(prior.value.selectorSelection, [
+      "proposal",
+      "tip",
+      "value",
+    ]);
+    const priorProposal = priorSelection.ok
+      ? parsePointerProposal(priorSelection.value.proposal)
+      : priorSelection;
+    const priorTip = priorSelection.ok
+      ? parsePointerCurrentTip(priorSelection.value.tip)
+      : priorSelection;
+    const priorObservation = parseRunPostSelectionObservation(prior.value.postSelectionObservation);
+    if (!priorSelection.ok || !priorProposal.ok || !priorTip.ok || !priorObservation.ok)
+      return Object.freeze(["priorCheckpointEvidence:composition-invalid"]);
+    priorSelectorTipDigest = computeCurrentTipDigest(priorTip.value);
+    priorSelectorValueDigest = String(priorTip.value.valueDigest);
+    priorSelectorReceiptDigest = computeProposalReceiptDigest(priorProposal.value);
+    priorObservationDigest = computeRunPostSelectionObservationDigest(priorObservation.value);
+  }
 
   for (let index = 0; index < checkpoints.value.length; index += 1) {
     const parsed = parseRunCheckpointEvidence(checkpoints.value[index]);
@@ -1228,6 +1274,22 @@ export function validateCommitCheckpointEvidenceSequence(
     if (core.value.checkpointOrdinal !== String(index)) issues.push(`${index}:checkpointOrdinal`);
     if (core.value.stage !== commitRunStages[index]) issues.push(`${index}:stage`);
     if (segment.value.runId !== firstRunId) issues.push(`${index}:runId`);
+    try {
+      const expectedTargetPathInstanceDigest = computePointerInstanceDigest({
+        pointerKind: core.value.pointerKind as PointerKind,
+        canonicalPointerPath: String(core.value.canonicalPointerPath),
+        installationId: String(core.value.installationId),
+        projectId: String(core.value.projectId),
+        stateRootDigest: String(core.value.stateRootDigest),
+        transactionId: core.value.transactionId as string | null,
+        sourceToken: String(core.value.sourceToken),
+        positionEvidence: null,
+      });
+      if (core.value.targetPathInstanceDigest !== expectedTargetPathInstanceDigest)
+        issues.push(`${index}:targetPathInstanceDigest:derived-mismatch`);
+    } catch {
+      issues.push(`${index}:targetPathInstanceDigest:inputs-invalid`);
+    }
     for (const [field, expected] of [
       ["authorityEpochTipDigest", epochTip],
       ["authorityEpochValueDigest", epochValue],
@@ -1263,6 +1325,12 @@ export function validateCommitCheckpointEvidenceSequence(
       ["priorPostSelectionObservationDigest", priorObservationDigest],
     ] as const)
       if (core.value[field] !== expected) issues.push(`${index}:${field}`);
+    for (const [field, expected] of [
+      ["priorTipDigest", priorSelectorTipDigest],
+      ["priorValueDigest", priorSelectorValueDigest],
+      ["priorReceiptDigest", priorSelectorReceiptDigest],
+    ] as const)
+      if (proposal.value[field] !== expected) issues.push(`${index}:proposal:${field}`);
 
     if (index === 7 && wrapper.terminalResolution !== null)
       stageSevenResolutionDigest = computeCommitResolutionDigest(wrapper.terminalResolution);
@@ -1289,6 +1357,113 @@ export function validateCommitCheckpointEvidenceSequence(
   return Object.freeze([...new Set(issues)].sort());
 }
 
+function validateCommitRunLineage(
+  record: ContractRecord,
+  firstCheckpointInput: unknown,
+): readonly string[] {
+  const firstCheckpoint = parseRunCheckpointEvidence(firstCheckpointInput);
+  if (!firstCheckpoint.ok)
+    return Object.freeze(firstCheckpoint.issues.map((issue) => `firstCheckpoint:${issue}`));
+  const currentCore = parseRunCheckpointCore(firstCheckpoint.value.core);
+  if (!currentCore.ok)
+    return Object.freeze(currentCore.issues.map((issue) => `firstCheckpoint:core:${issue}`));
+
+  const issues: string[] = [];
+  const priorInput = record.priorCheckpointEvidence;
+  let priorCoreDigest: string | null = null;
+  try {
+    const expectedTargetPathInstanceDigest = computePointerInstanceDigest({
+      pointerKind: currentCore.value.pointerKind as PointerKind,
+      canonicalPointerPath: String(currentCore.value.canonicalPointerPath),
+      installationId: String(currentCore.value.installationId),
+      projectId: String(currentCore.value.projectId),
+      stateRootDigest: String(currentCore.value.stateRootDigest),
+      transactionId: currentCore.value.transactionId as string | null,
+      sourceToken: String(currentCore.value.sourceToken),
+      positionEvidence: null,
+    });
+    if (currentCore.value.targetPathInstanceDigest !== expectedTargetPathInstanceDigest)
+      issues.push("targetPathInstanceDigest:derived-mismatch");
+  } catch {
+    issues.push("targetPathInstanceDigest:inputs-invalid");
+  }
+  if (record.commitKind === "AUTHORITY_ROTATION") {
+    if (record.runOrdinal !== "0") issues.push("runOrdinal:rotation-must-be-zero");
+    if (priorInput !== null) issues.push("priorCheckpointEvidence:rotation-must-be-null");
+  } else {
+    const zero = record.runOrdinal === "0";
+    if (zero !== (priorInput === null)) issues.push("priorCheckpointEvidence:runOrdinal-mismatch");
+    if (priorInput !== null) {
+      const prior = parseRunCheckpointEvidence(priorInput);
+      if (!prior.ok) {
+        issues.push(...prior.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
+      } else {
+        const priorCore = parseRunCheckpointCore(prior.value.core);
+        const priorSelection = snapshotClosedRecord(prior.value.selectorSelection, [
+          "proposal",
+          "tip",
+          "value",
+        ]);
+        const priorProposal = priorSelection.ok
+          ? parsePointerProposal(priorSelection.value.proposal)
+          : priorSelection;
+        if (!priorCore.ok)
+          issues.push(...priorCore.issues.map((issue) => `priorCheckpointEvidence:core:${issue}`));
+        if (!priorSelection.ok || !priorProposal.ok)
+          issues.push("priorCheckpointEvidence:selection-invalid");
+        if (priorCore.ok) {
+          priorCoreDigest = computeRunCheckpointCoreDigest(priorCore.value);
+          try {
+            if (incrementCanonicalDecimal(String(priorCore.value.runOrdinal)) !== record.runOrdinal)
+              issues.push("priorCheckpointEvidence:runOrdinal:not-predecessor");
+          } catch {
+            issues.push("priorCheckpointEvidence:runOrdinal:invalid");
+          }
+          for (const field of [
+            "canonicalPointerPath",
+            "globalIdentityDigest",
+            "installationId",
+            "pointerKind",
+            "projectId",
+            "sourceToken",
+            "stateRootDigest",
+            "targetMutationId",
+            "targetPathInstanceDigest",
+            "transactionId",
+          ] as const)
+            if (priorCore.value[field] !== currentCore.value[field])
+              issues.push(`priorCheckpointEvidence:${field}:mismatch`);
+        }
+        if (priorProposal.ok)
+          for (const [proposalField, commitField] of [
+            ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+            ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+            ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+          ] as const)
+            if (priorProposal.value[proposalField] !== record[commitField])
+              issues.push(`priorCheckpointEvidence:${proposalField}:old-authority-mismatch`);
+      }
+    }
+  }
+
+  try {
+    const expectedRunId = computeRunId({
+      authorityPathInstanceDigest: record.oldAuthorityPathInstanceDigest,
+      authorityReceiptDigest: record.oldAuthorityReceiptDigest,
+      authorityTipDigest: record.oldAuthorityTipDigest,
+      authorityValueDigest: record.oldAuthorityValueDigest,
+      globalIdentityDigest: currentCore.value.globalIdentityDigest,
+      priorCheckpointDigest: priorCoreDigest,
+      runOrdinal: record.runOrdinal,
+      targetMutationId: record.targetMutationId,
+    });
+    if (record.runId !== expectedRunId) issues.push("runId:derived-mismatch");
+  } catch {
+    issues.push("runId:inputs-invalid");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
 export function parseOrdinaryCommitEvidence(input: unknown): ParseResult {
   const parsed = snapshotClosedRecord(input, ordinaryCommitEvidenceFields);
   if (!parsed.ok) return parsed;
@@ -1296,6 +1471,10 @@ export function parseOrdinaryCommitEvidence(input: unknown): ParseResult {
   const resolution = parseCommitResolution(record.ordinaryResolution);
   const slot = parsePointerEvidenceSlot(record.targetRegistrySlot);
   const checkpoints = snapshotClosedArray(record.checkpoints);
+  const priorCheckpoint =
+    record.priorCheckpointEvidence === null
+      ? null
+      : parseRunCheckpointEvidence(record.priorCheckpointEvidence);
   const issues: string[] = [];
   if (record.schemaVersion !== "pointer-mutation-commit-evidence/v1")
     issues.push("schemaVersion:mismatch");
@@ -1337,11 +1516,22 @@ export function parseOrdinaryCommitEvidence(input: unknown): ParseResult {
     issues.push(...resolution.issues.map((issue) => `ordinaryResolution:${issue}`));
   if (!slot.ok) issues.push(...slot.issues.map((issue) => `targetRegistrySlot:${issue}`));
   if (!checkpoints.ok) issues.push(...checkpoints.issues.map((issue) => `checkpoints:${issue}`));
-  if (!resolution.ok || !slot.ok || !checkpoints.ok) return invalid(...issues);
+  if (priorCheckpoint !== null && !priorCheckpoint.ok)
+    issues.push(...priorCheckpoint.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
+  if (
+    !resolution.ok ||
+    !slot.ok ||
+    !checkpoints.ok ||
+    (priorCheckpoint !== null && !priorCheckpoint.ok)
+  )
+    return invalid(...issues);
   issues.push(
-    ...validateCommitCheckpointEvidenceSequence(checkpoints.value, "ORDINARY").map(
-      (issue) => `checkpoints:${issue}`,
-    ),
+    ...validateCommitCheckpointEvidenceSequence(
+      checkpoints.value,
+      "ORDINARY",
+      record.priorCheckpointEvidence,
+    ).map((issue) => `checkpoints:${issue}`),
+    ...validateCommitRunLineage(record, checkpoints.value[0]),
   );
   if (resolution.value.outcome !== record.outcome) issues.push("outcome:resolution-mismatch");
   for (const field of ["targetMutationId", "targetPathInstanceDigest"] as const)
@@ -1736,7 +1926,17 @@ export function parseRotationCommitEvidence(input: unknown): ParseResult {
         issues.push("unknownEvidence:targetPathInstanceDigest:mismatch");
     }
   }
+  issues.push(...validateCommitRunLineage(record, record.checkpoint5));
   return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+function priorCheckpointCoreDigest(record: ContractRecord): string | null {
+  if (record.priorCheckpointEvidence === null) return null;
+  const prior = parseRunCheckpointEvidence(record.priorCheckpointEvidence);
+  if (!prior.ok) throw new TypeError(prior.issues.join(","));
+  const core = parseRunCheckpointCore(prior.value.core);
+  if (!core.ok) throw new TypeError(core.issues.join(","));
+  return computeRunCheckpointCoreDigest(core.value);
 }
 
 function commitCommonDigestParts(record: ContractRecord, branchTag: "00" | "01"): FramePart[] {
@@ -1749,6 +1949,7 @@ function commitCommonDigestParts(record: ContractRecord, branchTag: "00" | "01")
     frame.raw32(String(record.intentDigest)),
     frame.raw32(String(record.runId)),
     frame.boundedDecimal(String(record.runOrdinal)),
+    frame.nullableRaw32(priorCheckpointCoreDigest(record)),
     frame.raw32(String(record.oldAuthorityPathInstanceDigest)),
     frame.raw32(String(record.oldAuthorityTipDigest)),
     frame.raw32(String(record.oldAuthorityValueDigest)),
