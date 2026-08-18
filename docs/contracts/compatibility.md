@@ -28,6 +28,17 @@ exotics, and traps refuse without executing user code.
 
 ## Current registry
 
+`planning/iss-002-schema-disposition.json` is the closed machine-readable
+authority for the post-simplification registry. Its exact one-status union is
+102 current public `v1` schemas: 25 unchanged general definitions bound to
+their exact base field/golden identities, eight already-exact authority
+families bound to the normative tables in `supervisor-contract.md`, 24
+field-for-field inherited authority definitions bound to commit, blob, path,
+definition shape, and golden bytes, and 45 newly pinned definitions. The same
+ledger names 70 deleted schema versions and every deleted public symbol. A
+schema absent from that union is not public; a schema cannot occupy two
+dispositions.
+
 The current census is `v1` for every contract family. Before the first
 deployed release, a superseded schema generation is deleted from the package
 and its tests; no diagnostic or archive namespace exists, and no superseded
@@ -40,7 +51,9 @@ The current registry uses the approved authority contracts:
 
 - pointer graph: `pointer-current-tip/v1`,
   `pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`,
-  and `pointer-tombstone-value/v1`;
+  `pointer-tombstone-value/v1`, `pointer-terminal-proof/v1`, and
+  `pointer-archive-record/v1`, with non-persisted closed
+  `pointer-instance-input/v1` and `pointer-mutation-id-input/v1` digest inputs;
 - epoch/history: `state-mutation-authority-value/v1`,
   `reviewed-authority-operation/v1`,
   `state-mutation-successor-authority-core/v1`,
@@ -53,10 +66,13 @@ The current registry uses the approved authority contracts:
 - release/cleanup:
   `active-release/v1`, `activation-cleanup-gate-root/v1`,
   `activation-cleanup-gate-head/v1`,
+  `activation-cleanup-gate-value/v1`,
   `activation-cleanup-archive-head/v1`,
   `activation-recovery-fence-root/v1`, and
-  `activation-recovery-fence-head/v1`;
+  `activation-recovery-fence-head/v1` with
+  `activation-recovery-fence-value/v1`;
 - attempts: `activation-recovery-launch/v1`,
+  `activation-recovery-launch-archive/v1`,
   `recovery-attempt-reservation/v1`, `recovery-attempt-descriptor/v1`, and
   `attempt-log/v1`;
 - authorization: `recovery-authorization-core/v1`,
@@ -101,6 +117,7 @@ The current registry uses the approved authority contracts:
   `state-mutation-bootstrap-anchor-lifecycle-archive/v1`,
   `state-mutation-bootstrap-genesis-core/v1`, and
   `state-mutation-bootstrap-genesis-post-selection-receipt/v1`.
+- worker handoff: the non-persisted, recursively closed `dispatch-brief/v1`.
 
 Superseded pre-deployment generations are deleted from the package and its
 tests rather than frozen; an API-surface test proves no superseded symbol is
@@ -200,7 +217,8 @@ operation `Dop`, helper/profile/ABI/lock/state-component, and custody instance/
 observation. `Dop` is the closed BOOTSTRAP_INSTALL/STABLE_PROMOTION formula in
 `supervisor-contract.md`, not caller input.
 
-The normative simplified-authority schema ledger in `supervisor-contract.md`
+The eight-family normative simplified-authority schema ledger in
+`supervisor-contract.md`, together with the complete disposition ledger,
 pins the literal `schemaVersion`, canonical JSON member order, scalar type,
 nullability/branch absence, enum census, storage disposition, digest domain,
 ordered framed parts, and selecting/downstream exclusions for `Dop`, `Dsc`,

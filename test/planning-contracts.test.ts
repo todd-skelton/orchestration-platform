@@ -182,6 +182,12 @@ describe("planning contract", () => {
       },
     ],
     [
+      "post-census source absence target total",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.sourceAbsenceTargetRecordCount = 185;
+      },
+    ],
+    [
       "post-census addendum duplicate identity",
       (snapshot: PlanningSnapshot) => {
         snapshot.migration.postCensusAddendum.records[1].sourceIssueNumber = 6999;
@@ -212,6 +218,30 @@ describe("planning contract", () => {
       "post-census addendum source state",
       (snapshot: PlanningSnapshot) => {
         snapshot.migration.postCensusAddendum.records[0].sourceState = "CLOSED";
+      },
+    ],
+    [
+      "post-census addendum disposition",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].disposition = "MIGRATED_PLATFORM";
+      },
+    ],
+    [
+      "post-census consumer-policy decision issue",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].authorityDecisionIssueNumber = 7008;
+      },
+    ],
+    [
+      "post-census consumer-policy decision comment",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].authorityDecisionCommentId = 1;
+      },
+    ],
+    [
+      "post-census unrelated exclusion widening",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[1].disposition = "EXCLUDED_CONSUMER_POLICY";
       },
     ],
     [
@@ -273,6 +303,333 @@ describe("planning contract", () => {
       },
     ],
   ])("rejects the %s mutant", (_name, mutate) => {
+    const snapshot = mutant();
+    mutate(snapshot);
+    expect(() => validatePlanningSnapshot(snapshot)).toThrow(/PLANNING_CONTRACT_MISMATCH/);
+  });
+});
+
+describe("ISS-002 public schema disposition ledger", () => {
+  test("accepts the exact one-status public census and 11/11/10 registry", () => {
+    expect(() => validatePlanningSnapshot(baseline)).not.toThrow();
+    expect(baseline.schemaDisposition.alreadyExactGeneral).toHaveLength(25);
+    expect(baseline.schemaDisposition.alreadyExactAuthority).toHaveLength(8);
+    expect(baseline.schemaDisposition.inheritedExact).toHaveLength(24);
+    expect(Object.keys(baseline.schemaDisposition.newlyPinned)).toHaveLength(45);
+    expect(baseline.schemaDisposition.pointerRegistry).toHaveLength(11);
+    expect(
+      baseline.schemaDisposition.pointerRegistry.filter((row: unknown[]) => row[10] !== null),
+    ).toHaveLength(10);
+    expect(baseline.schemaDisposition.pointerRegistryContract).toMatchObject({
+      ordinaryPositionCount: 11,
+      packetSlotCount: 11,
+      packetTargetSlotCount: 1,
+      packetRemainingSlotCount: 10,
+      retention: "FULL_REQUIRED",
+      tombstoneFamilyCount: 10,
+      tombstonePositionCount: 10,
+    });
+  });
+
+  test.each([
+    [
+      "status removal",
+      (snapshot: PlanningSnapshot) => snapshot.schemaDisposition.alreadyExactGeneral.pop(),
+    ],
+    [
+      "status duplication",
+      (snapshot: PlanningSnapshot) =>
+        snapshot.schemaDisposition.alreadyExactAuthority.push(
+          snapshot.schemaDisposition.alreadyExactGeneral[0][0],
+        ),
+    ],
+    [
+      "status rename",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-current-tip-renamed/v1"] =
+          snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"];
+        delete snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"];
+      },
+    ],
+    [
+      "exact-base commit",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.exactBase.commit = "0".repeat(40);
+      },
+    ],
+    [
+      "exact-base blob",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.exactBase.sources.approved.blob = "0".repeat(40);
+      },
+    ],
+    [
+      "exact-base path",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.exactBase.sources.approved.path = "somewhere.ts";
+      },
+    ],
+    [
+      "exact-base public schema total",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.exactBase.publicSchemaCount = 154;
+      },
+    ],
+    [
+      "exact-base public schema census digest",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.exactBase.publicSchemaCensusDigest = "0".repeat(64);
+      },
+    ],
+    [
+      "inherited definition identity",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.inheritedExact[0][2] = "0".repeat(64);
+      },
+    ],
+    [
+      "inherited golden identity",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.inheritedExact[0][3] = "0".repeat(64);
+      },
+    ],
+    [
+      "field removal",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"] =
+          "pathInstanceDigest:sha256|pointerKind:pointer-kind|proposalReceiptDigest:sha256|schemaVersion:literal(pointer-current-tip/v1)";
+      },
+    ],
+    [
+      "field addition",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"] += "|zExtra:sha256";
+      },
+    ],
+    [
+      "field rename",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"] =
+          snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"].replace(
+            "valueDigest",
+            "selectedValueDigest",
+          );
+      },
+    ],
+    [
+      "field nullability",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"] =
+          snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"].replace(
+            "valueDigest:sha256",
+            "valueDigest:nullable(sha256)",
+          );
+      },
+    ],
+    [
+      "field scalar type",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"] =
+          snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"].replace(
+            "valueDigest:sha256",
+            "valueDigest:token",
+          );
+      },
+    ],
+    [
+      "field canonical order",
+      (snapshot: PlanningSnapshot) => {
+        const fields = snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"].split("|");
+        [fields[0], fields[1]] = [fields[1], fields[0]];
+        snapshot.schemaDisposition.newlyPinned["pointer-current-tip/v1"] = fields.join("|");
+      },
+    ],
+    [
+      "closed enum",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-conflict-receipt/v1"] =
+          snapshot.schemaDisposition.newlyPinned["pointer-conflict-receipt/v1"].replace(
+            "VALUE_CONFLICT)",
+            "VALUE_CONFLICT,OTHER)",
+          );
+      },
+    ],
+    [
+      "nested unknown field",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.nestedDefinitions["selected-evidence"] += "|zExtra:sha256";
+      },
+    ],
+    [
+      "missing persistence disposition",
+      (snapshot: PlanningSnapshot) => {
+        delete snapshot.schemaDisposition.operationalBindings.persistence["dispatch-brief/v1"];
+      },
+    ],
+    [
+      "persisted path alias",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.operationalBindings.persistence[
+          "activation-cleanup-gate-root/v1"
+        ] = "somewhere.json";
+      },
+    ],
+    [
+      "digest domain or part order",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.operationalBindings.digestProfiles.TIP =
+          "pointer-tip/v1|value-digest,path-instance-digest";
+      },
+    ],
+    [
+      "selecting-field exclusion",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.operationalBindings.exclusions[
+          "pointer-mutation-run-checkpoint-core/v1"
+        ].pop();
+      },
+    ],
+    [
+      "registry missing row",
+      (snapshot: PlanningSnapshot) => snapshot.schemaDisposition.pointerRegistry.pop(),
+    ],
+    [
+      "registry extra row",
+      (snapshot: PlanningSnapshot) =>
+        snapshot.schemaDisposition.pointerRegistry.push(
+          structuredClone(snapshot.schemaDisposition.pointerRegistry[0]),
+        ),
+    ],
+    [
+      "registry value schema",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistry[0][2] = "active-release/v2";
+      },
+    ],
+    [
+      "registry root",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistry[0][7] = [];
+      },
+    ],
+    [
+      "registry archive",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistry[0][8] = [];
+      },
+    ],
+    [
+      "registry source",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistry[3][6] = ["none"];
+      },
+    ],
+    [
+      "registry genesis",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistry[0][3] = "ABSENT";
+      },
+    ],
+    [
+      "registry transaction policy",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistry[0][4] = "NULL";
+      },
+    ],
+    [
+      "registry ordinary position count",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistryContract.ordinaryPositionCount = 10;
+      },
+    ],
+    [
+      "registry tombstone position count",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistry[0][10] = null;
+      },
+    ],
+    [
+      "registry preservation policy",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistryContract.retention =
+          "TERMINAL_CHECKPOINT_ALLOWED";
+      },
+    ],
+    [
+      "packet total slot count",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistryContract.packetSlotCount = 10;
+      },
+    ],
+    [
+      "packet remaining slot count",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.pointerRegistryContract.packetRemainingSlotCount = 11;
+      },
+    ],
+    [
+      "UNKNOWN arbitrary JSON",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-mutation-unknown-evidence/v1"] +=
+          "|zObservation:json";
+      },
+    ],
+    [
+      "UNKNOWN native message",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-mutation-unknown-evidence/v1"] +=
+          "|zMessage:bounded-string";
+      },
+    ],
+    [
+      "UNKNOWN host path",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-mutation-unknown-evidence/v1"] +=
+          "|zPath:relative-path";
+      },
+    ],
+    [
+      "UNKNOWN variable array",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-mutation-unknown-evidence/v1"] +=
+          "|zItems:array(token)";
+      },
+    ],
+    [
+      "UNKNOWN unsafe length",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["pointer-mutation-unknown-evidence/v1"] =
+          snapshot.schemaDisposition.newlyPinned["pointer-mutation-unknown-evidence/v1"].replace(
+            "observedByteLength:safe-decimal",
+            "observedByteLength:decimal",
+          );
+      },
+    ],
+    [
+      "UNKNOWN category/reason mismatch",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.unknownEvidenceReasons.UNREADABLE[0] = "EPOCH_MISMATCH";
+      },
+    ],
+    [
+      "deleted API restored",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.deletedPublicSymbols.pop();
+      },
+    ],
+    [
+      "deleted schema restored",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.deletedSchemaVersions.pop();
+      },
+    ],
+    [
+      "dispatch brief free prose",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.schemaDisposition.newlyPinned["dispatch-brief/v1"] += "|zPrompt:bounded-string";
+      },
+    ],
+  ])("rejects the schema ledger %s mutant", (_name, mutate) => {
     const snapshot = mutant();
     mutate(snapshot);
     expect(() => validatePlanningSnapshot(snapshot)).toThrow(/PLANNING_CONTRACT_MISMATCH/);

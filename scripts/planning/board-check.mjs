@@ -313,7 +313,9 @@ export function planningProjectMismatches(
   }
   const migratedSourceIssueNumbers = [
     ...planning.migration.sourceIssueNumbers,
-    ...planning.migration.postCensusAddendum.records.map((record) => record.sourceIssueNumber),
+    ...planning.migration.postCensusAddendum.records
+      .filter((record) => record.disposition === "MIGRATED_PLATFORM")
+      .map((record) => record.sourceIssueNumber),
   ];
   for (const sourceIssueNumber of migratedSourceIssueNumbers) {
     const matches = sourceProject.items.filter(
@@ -326,6 +328,7 @@ export function planningProjectMismatches(
     }
   }
   for (const record of planning.migration.postCensusAddendum.records) {
+    if (record.disposition !== "MIGRATED_PLATFORM") continue;
     const matches = sourceBoard.issues.filter((item) => item.number === record.sourceIssueNumber);
     if (matches.length !== 1) {
       problems.push(`source issue #${record.sourceIssueNumber} census has ${matches.length} rows`);

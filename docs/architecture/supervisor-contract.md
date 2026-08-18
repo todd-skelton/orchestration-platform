@@ -249,6 +249,18 @@ caller-supplied:
 
 #### Normative simplified-authority schema ledger
 
+The complete public-schema disposition authority is
+`planning/iss-002-schema-disposition.json`. It assigns every post-simplification
+public schema exactly one status, binds unchanged definitions to their exact
+base commit/blob/path/field-shape/golden identity, pins every changed/new field
+census plus persistence and digest profile, and enumerates every deletion.
+The tables below are the already-exact eight authority families and are
+referenced by that ledger rather than duplicated there. The ledger's shared
+validator closes field/type/nullability/enum/order changes, nested structures,
+the 11-row registry, eleven ordinary and ten tombstone positions, all
+FULL_REQUIRED record classes, and the packet's eleven total slots: one
+outcome-bound target slot plus ten remaining registry slots.
+
 This ledger is authoritative for the simplified current authority surfaces.
 Every table lists canonical JSON member names in ascending UTF-16 code-unit
 order, which is also their canonical serialized order. A branch has exactly the
@@ -1176,7 +1188,7 @@ selector artifacts, or a successor-epoch write refuses.
 
 Packet authority and the complete kind/path/install/project/state/transaction/
 source/`Dp`/mutation/run identity tuple must equal `Dcommit` and selected-slot
-facts; any cross-field mismatch refuses. The remaining eleven registry slots
+facts; any cross-field mismatch refuses. The remaining ten registry slots
 retain their exact registry-ordered current evidence and may not duplicate or
 substitute the target slot.
 

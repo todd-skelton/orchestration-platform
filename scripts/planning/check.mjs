@@ -50,6 +50,413 @@ function sameArray(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+const sha256Pattern = /^[0-9a-f]{64}$/;
+
+function digestJson(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function exactKeys(value, expected, subject) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !sameArray(Object.keys(value).sort(), [...expected].sort())
+  ) {
+    fail(`${subject} is not a closed record`);
+  }
+}
+
+function splitTopLevel(value, separator) {
+  const result = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (depth < 0) fail("schema field descriptor has an unmatched parenthesis");
+    if (character === separator && depth === 0) {
+      result.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  if (depth !== 0) fail("schema field descriptor has an unmatched parenthesis");
+  result.push(value.slice(start));
+  return result;
+}
+
+function validateFieldDescriptor(descriptor, subject) {
+  if (!/^[A-Za-z0-9_./(),=-]+$/.test(descriptor)) {
+    fail(`${subject} has a prose or malformed field type`);
+  }
+  const enumMatch = /(?:^|\()enum\(([^()]*)\)/.exec(descriptor);
+  if (enumMatch) {
+    const values = enumMatch[1].split(",");
+    if (
+      values.length === 0 ||
+      values.some((value) => value.length === 0) ||
+      new Set(values).size !== values.length ||
+      !sameArray(values, [...values].sort())
+    ) {
+      fail(`${subject} has an open, duplicate, or noncanonical enum`);
+    }
+  }
+}
+
+function validateDefinition(schemaVersion, definition) {
+  if (typeof definition !== "string" || definition.length === 0) {
+    fail(`${schemaVersion} has no exact definition`);
+  }
+  const fields = splitTopLevel(definition, "|").map((entry) => {
+    const separator = entry.indexOf(":");
+    if (separator < 1) fail(`${schemaVersion} has a malformed field definition`);
+    const name = entry.slice(0, separator);
+    const descriptor = entry.slice(separator + 1);
+    if (!/^[a-z][A-Za-z0-9]*$/.test(name)) fail(`${schemaVersion} has an invalid field name`);
+    validateFieldDescriptor(descriptor, `${schemaVersion}.${name}`);
+    return [name, descriptor];
+  });
+  const names = fields.map(([name]) => name);
+  if (new Set(names).size !== names.length || !sameArray(names, [...names].sort())) {
+    fail(`${schemaVersion} field order is not canonical or is duplicated`);
+  }
+  const schemaField = fields.find(([name]) => name === "schemaVersion");
+  if (!schemaField || schemaField[1] !== `literal(${schemaVersion})`) {
+    fail(`${schemaVersion} does not pin its exact schemaVersion literal`);
+  }
+}
+
+export function validateSchemaDisposition(ledger) {
+  exactKeys(
+    ledger,
+    [
+      "alreadyExactAuthority",
+      "alreadyExactAuthorityBinding",
+      "alreadyExactGeneral",
+      "deletedPublicSymbols",
+      "deletedSchemaVersions",
+      "exactBase",
+      "inheritedExact",
+      "nestedDefinitions",
+      "newlyPinned",
+      "newlyPinnedContract",
+      "operationalBindings",
+      "pointerRegistry",
+      "pointerRegistryContract",
+      "schemaVersion",
+      "subjectHead",
+      "unknownEvidenceReasons",
+    ],
+    "ISS-002 schema disposition ledger",
+  );
+  if (ledger.schemaVersion !== "iss-002-schema-disposition/v1") {
+    fail("unknown ISS-002 schema disposition version");
+  }
+  if (ledger.subjectHead !== "332d8345bdc964ccbe654b22e88b30b99fe770dc") {
+    fail("ISS-002 schema disposition subject head moved");
+  }
+  exactKeys(
+    ledger.exactBase,
+    [
+      "commit",
+      "fixtureBlob",
+      "fixturePath",
+      "newPublicSchemaCount",
+      "publicSchemaCensusDigest",
+      "publicSchemaCount",
+      "retainedPublicSchemaCount",
+      "sources",
+    ],
+    "exact base",
+  );
+  if (
+    ledger.exactBase.commit !== "2527ef6457e4a65b7c54ffd521f8c4c0bbe34905" ||
+    ledger.exactBase.fixturePath !== "test/contracts/fixtures.ts" ||
+    ledger.exactBase.fixtureBlob !== "3435d78637057ba7d9238efc734bc411cd72bf41" ||
+    ledger.exactBase.publicSchemaCount !== 155 ||
+    ledger.exactBase.publicSchemaCensusDigest !==
+      "2a569ffc440bd6c3226b44cb78d909c6c77487a2abe908faecc5f672a75c3b61" ||
+    ledger.exactBase.retainedPublicSchemaCount !== 85 ||
+    ledger.exactBase.newPublicSchemaCount !== 17
+  ) {
+    fail("ISS-002 exact-base identity moved");
+  }
+  exactKeys(ledger.exactBase.sources, ["approved", "definitions", "v2"], "exact-base sources");
+  const expectedSources = {
+    approved: ["packages/contracts/src/approved.ts", "c07a107f3bae9a9f248e1684fe532c0898642ef5"],
+    definitions: [
+      "packages/contracts/src/definitions.ts",
+      "511b521aeb4efd745bf51cc002435188378829f8",
+    ],
+    v2: ["packages/contracts/src/v2.ts", "e743567d846a047de10eb7c4cb2c5d71638b08e4"],
+  };
+  for (const [key, [path, blob]] of Object.entries(expectedSources)) {
+    exactKeys(ledger.exactBase.sources[key], ["blob", "path"], `exact-base ${key}`);
+    if (
+      ledger.exactBase.sources[key].path !== path ||
+      ledger.exactBase.sources[key].blob !== blob
+    ) {
+      fail(`ISS-002 exact-base ${key} identity moved`);
+    }
+  }
+
+  const general = ledger.alreadyExactGeneral;
+  if (!Array.isArray(general) || general.length !== 25) fail("already-exact general census moved");
+  for (const row of general) {
+    if (
+      !Array.isArray(row) ||
+      row.length !== 3 ||
+      typeof row[0] !== "string" ||
+      !sha256Pattern.test(row[1]) ||
+      !sha256Pattern.test(row[2])
+    ) {
+      fail("already-exact general binding is malformed");
+    }
+  }
+  if (digestJson(general) !== "a3bca29e7db6de2356914cb2aec6a06caeb14e59ffa40f41dffd562284ed5a85") {
+    fail("already-exact general definition/golden identity moved");
+  }
+  const authority = ledger.alreadyExactAuthority;
+  if (!Array.isArray(authority) || authority.length !== 8) {
+    fail("already-exact authority census moved");
+  }
+  if (
+    digestJson(authority) !== "d8bb91f85125a4fac591fa0251aa00a6171ef352f0f1501f541b45773dcab558"
+  ) {
+    fail("already-exact authority census identity moved");
+  }
+  exactKeys(
+    ledger.alreadyExactAuthorityBinding,
+    ["path", "requiredDimensions", "section"],
+    "already-exact authority binding",
+  );
+  if (
+    ledger.alreadyExactAuthorityBinding.path !== "docs/architecture/supervisor-contract.md" ||
+    ledger.alreadyExactAuthorityBinding.section !==
+      "Normative simplified-authority schema ledger" ||
+    !sameArray(ledger.alreadyExactAuthorityBinding.requiredDimensions, [
+      "canonical-order",
+      "digest-domain",
+      "enums",
+      "excluded-fields",
+      "fields",
+      "golden-identity",
+      "nullability",
+      "persistence",
+      "scalar-types",
+    ])
+  ) {
+    fail("already-exact authority table binding moved");
+  }
+
+  const inherited = ledger.inheritedExact;
+  if (!Array.isArray(inherited) || inherited.length !== 24) {
+    fail("inherited exact census moved");
+  }
+  for (const row of inherited) {
+    if (
+      !Array.isArray(row) ||
+      row.length !== 4 ||
+      typeof row[0] !== "string" ||
+      !Object.hasOwn(ledger.exactBase.sources, row[1]) ||
+      !sha256Pattern.test(row[2]) ||
+      !sha256Pattern.test(row[3])
+    ) {
+      fail("inherited exact definition/golden binding is malformed");
+    }
+  }
+  if (
+    digestJson(inherited) !== "dce90237ebcd9608abb419ae7069cbb743f7f7e747cdf9d88f7072093aaa9e46"
+  ) {
+    fail("inherited exact definition/golden identity moved");
+  }
+
+  exactKeys(
+    ledger.newlyPinnedContract,
+    [
+      "canonicalOrder",
+      "closedRecord",
+      "defaultNullability",
+      "goldenIdentityPrefix",
+      "unicode",
+      "unknownFields",
+    ],
+    "newly-pinned contract",
+  );
+  if (
+    ledger.newlyPinnedContract.canonicalOrder !== "ascending-utf16-field-name" ||
+    ledger.newlyPinnedContract.closedRecord !== true ||
+    ledger.newlyPinnedContract.defaultNullability !== "NON_NULL" ||
+    ledger.newlyPinnedContract.goldenIdentityPrefix !== "ISS-002/current-v1/" ||
+    ledger.newlyPinnedContract.unicode !== "VALID_SCALAR_SEQUENCE_ONLY" ||
+    ledger.newlyPinnedContract.unknownFields !== "REFUSE"
+  ) {
+    fail("newly-pinned closure contract moved");
+  }
+  if (Object.keys(ledger.newlyPinned).length !== 45) fail("newly-pinned schema census moved");
+  for (const [schemaVersion, definition] of Object.entries(ledger.newlyPinned)) {
+    validateDefinition(schemaVersion, definition);
+  }
+  if (
+    digestJson(ledger.newlyPinned) !==
+    "50f361f02b999807f76df1698f745aecb11e3236b6e1ddfd75591171f56b419e"
+  ) {
+    fail("newly-pinned field/type/nullability/enum census moved");
+  }
+  exactKeys(
+    ledger.operationalBindings,
+    ["digestProfiles", "exclusions", "persistence", "schemaDigestProfile"],
+    "newly-pinned operational bindings",
+  );
+  const newlyPinnedNames = Object.keys(ledger.newlyPinned).sort();
+  if (
+    !sameArray(Object.keys(ledger.operationalBindings.persistence).sort(), newlyPinnedNames) ||
+    !sameArray(Object.keys(ledger.operationalBindings.schemaDigestProfile).sort(), newlyPinnedNames)
+  ) {
+    fail("newly-pinned schema lacks an exact persistence or digest binding");
+  }
+  for (const [schemaVersion, profile] of Object.entries(
+    ledger.operationalBindings.schemaDigestProfile,
+  )) {
+    if (!Object.hasOwn(ledger.operationalBindings.digestProfiles, profile)) {
+      fail(`${schemaVersion} uses an unknown digest profile`);
+    }
+    const persistence = ledger.operationalBindings.persistence[schemaVersion];
+    if (typeof persistence !== "string" || persistence.length === 0) {
+      fail(`${schemaVersion} lacks a persisted path or explicit non-persisted disposition`);
+    }
+  }
+  if (
+    digestJson(ledger.operationalBindings) !==
+    "1804c39d500c46b6696416708f61ae3845ca204cd381bdca03db91003c31107a"
+  ) {
+    fail("newly-pinned path/digest/exclusion binding moved");
+  }
+  exactKeys(
+    ledger.nestedDefinitions,
+    ["authority-history-binding", "selected-evidence"],
+    "nested definition census",
+  );
+  for (const [name, definition] of Object.entries(ledger.nestedDefinitions)) {
+    const synthetic = definition.replace(
+      /(^|\|)([a-z][A-Za-z0-9]*):/g,
+      (_match, prefix, field) => `${prefix}${field}:`,
+    );
+    const fields = splitTopLevel(synthetic, "|").map((entry) => entry.slice(0, entry.indexOf(":")));
+    if (new Set(fields).size !== fields.length || !sameArray(fields, [...fields].sort())) {
+      fail(`nested ${name} field order is not canonical or is duplicated`);
+    }
+    for (const entry of splitTopLevel(definition, "|")) {
+      validateFieldDescriptor(entry.slice(entry.indexOf(":") + 1), `nested ${name}`);
+    }
+  }
+  if (
+    digestJson(ledger.nestedDefinitions) !==
+    "54ef3beb06d206faac9423fc128751a0809b9552b076e10eb035786e52f7082b"
+  ) {
+    fail("nested recursively closed definition census moved");
+  }
+
+  const currentSchemas = [
+    ...general.map((row) => row[0]),
+    ...authority,
+    ...inherited.map((row) => row[0]),
+    ...Object.keys(ledger.newlyPinned),
+  ].sort();
+  if (
+    currentSchemas.length !== 102 ||
+    new Set(currentSchemas).size !== 102 ||
+    currentSchemas.some((schemaVersion) => !schemaVersion.endsWith("/v1")) ||
+    digestJson(currentSchemas) !==
+      "b2cae9988657d45d875d85dd2aeb28b982a61c02f19640cb049a648ff7a12167"
+  ) {
+    fail("current public schema disposition union moved or overlaps");
+  }
+  if (
+    !Array.isArray(ledger.deletedSchemaVersions) ||
+    ledger.deletedSchemaVersions.length !== 70 ||
+    !sameArray(ledger.deletedSchemaVersions, [...ledger.deletedSchemaVersions].sort()) ||
+    digestJson(ledger.deletedSchemaVersions) !==
+      "4e4bbcdcb7311ebc236c8835137f1929d4a9f17128dd60ca74979bd51c94d8b1" ||
+    ledger.deletedSchemaVersions.some((schemaVersion) => currentSchemas.includes(schemaVersion))
+  ) {
+    fail("deleted schema census moved, overlaps, or is not canonical");
+  }
+  if (
+    ledger.exactBase.retainedPublicSchemaCount + ledger.deletedSchemaVersions.length !==
+      ledger.exactBase.publicSchemaCount ||
+    ledger.exactBase.retainedPublicSchemaCount + ledger.exactBase.newPublicSchemaCount !==
+      currentSchemas.length
+  ) {
+    fail("exact-base retained/deleted/new schema partition does not conserve the census");
+  }
+  if (
+    !Array.isArray(ledger.deletedPublicSymbols) ||
+    ledger.deletedPublicSymbols.length !== 13 ||
+    digestJson(ledger.deletedPublicSymbols) !==
+      "bfbb94a402fb9139c6a68229b1ce42880796afde58bdb5bc62f788af96adaf0c"
+  ) {
+    fail("deleted public symbol census moved");
+  }
+
+  if (
+    !Array.isArray(ledger.pointerRegistry) ||
+    ledger.pointerRegistry.length !== 11 ||
+    ledger.pointerRegistry.some((row) => !Array.isArray(row) || row.length !== 11) ||
+    digestJson(ledger.pointerRegistry) !==
+      "1e303c9912b7d04008080f3ba20e1d132138ee1c3a7100238efa527ecd312947"
+  ) {
+    fail("pointer registry exact 11-row census moved");
+  }
+  const registryKinds = ledger.pointerRegistry.map((row) => row[0]);
+  if (new Set(registryKinds).size !== 11) fail("pointer registry kind is duplicated");
+  const currentSet = new Set(currentSchemas);
+  for (const row of ledger.pointerRegistry) {
+    if (!currentSet.has(row[2])) fail(`pointer registry ${row[0]} uses an uncensused value schema`);
+    if (typeof row[9] !== "string") fail(`pointer registry ${row[0]} lacks an ordinary position`);
+  }
+  const tombstonePositions = ledger.pointerRegistry.filter((row) => row[10] !== null);
+  if (tombstonePositions.length !== 10) fail("pointer registry tombstone position census moved");
+  exactKeys(
+    ledger.pointerRegistryContract,
+    [
+      "ordinaryPositionCount",
+      "packetRemainingSlotCount",
+      "packetSlotCount",
+      "packetTargetSlotCount",
+      "retention",
+      "tombstoneFamilyCount",
+      "tombstonePositionCount",
+    ],
+    "pointer registry contract",
+  );
+  if (
+    ledger.pointerRegistryContract.ordinaryPositionCount !== 11 ||
+    ledger.pointerRegistryContract.tombstonePositionCount !== 10 ||
+    ledger.pointerRegistryContract.tombstoneFamilyCount !== 10 ||
+    ledger.pointerRegistryContract.packetSlotCount !== 11 ||
+    ledger.pointerRegistryContract.packetTargetSlotCount !== 1 ||
+    ledger.pointerRegistryContract.packetRemainingSlotCount !== 10 ||
+    ledger.pointerRegistryContract.retention !== "FULL_REQUIRED"
+  ) {
+    fail("pointer registry 11/11/10/FULL or packet 11/10 contract moved");
+  }
+  exactKeys(
+    ledger.unknownEvidenceReasons,
+    ["IMPOSSIBLE", "MALFORMED", "UNREADABLE"],
+    "unknown evidence reason union",
+  );
+  const expectedUnknown = {
+    IMPOSSIBLE: ["EPOCH_MISMATCH", "IDENTITY_MISMATCH", "STATE_CONTRADICTION"],
+    MALFORMED: ["DIGEST_MISMATCH", "NON_CANONICAL", "SCHEMA_INVALID"],
+    UNREADABLE: ["IO_ERROR", "MISSING", "PERMISSION_DENIED"],
+  };
+  if (JSON.stringify(ledger.unknownEvidenceReasons) !== JSON.stringify(expectedUnknown)) {
+    fail("fixed UNKNOWN category/reason matrix moved");
+  }
+}
+
 function uniqueRows(rows, kind) {
   const keys = new Set();
   const files = new Set();
@@ -190,6 +597,9 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
     addendum?.baseSnapshotRecordCount !== 183 ||
     addendum.baseSnapshotRecordCount !== source.length ||
     addendum?.addendumRecordCount !== 2 ||
+    addendum?.migratedAddendumRecordCount !== 1 ||
+    addendum?.excludedConsumerPolicyRecordCount !== 1 ||
+    addendum?.sourceAbsenceTargetRecordCount !== 184 ||
     !Array.isArray(records) ||
     addendum.addendumRecordCount !== records.length ||
     addendum?.totalProvenanceRecordCount !== source.length + records.length
@@ -204,7 +614,8 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
         sourceState: "OPEN",
         sourceStateReason: "REOPENED",
         sourceBoardPresence: "PRESENT",
-        sourceBoardRole: "PENDING_CLEANUP",
+        sourceBoardRole: "CONSUMER_POLICY_RETAINED",
+        disposition: "EXCLUDED_CONSUMER_POLICY",
       },
     ],
     [
@@ -215,10 +626,13 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
         sourceStateReason: null,
         sourceBoardPresence: "PRESENT",
         sourceBoardRole: "PENDING_CLEANUP",
+        disposition: "MIGRATED_PLATFORM",
       },
     ],
   ]);
   const seenAddendumIssues = new Set();
+  let migratedAddendumRecords = 0;
+  let excludedConsumerPolicyRecords = 0;
   for (const record of records) {
     const number = record.sourceIssueNumber;
     if (
@@ -242,24 +656,82 @@ function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
     }
     if (
       record.sourceState !== expected.sourceState ||
-      record.sourceStateReason !== expected.sourceStateReason
+      record.sourceStateReason !== expected.sourceStateReason ||
+      record.disposition !== expected.disposition
     ) {
       fail(`migration post-census addendum issue ${number} has invalid source state`);
     }
     if (
       record.sourceBoardPresence !== expected.sourceBoardPresence ||
       record.sourceBoardRole !== expected.sourceBoardRole ||
-      record.requiredSourceState !== "CLOSED" ||
-      record.requiredSourceStateReason !== "NOT_PLANNED" ||
-      record.requiredSourceBoardPresence !== "ABSENT" ||
-      record.requiredSourceBoardRole !== "SUPERSEDED_REMOVED" ||
       typeof record.provenanceStatement !== "string" ||
       record.provenanceStatement.trim() === ""
     ) {
       fail(`migration post-census addendum issue ${number} has invalid provenance`);
     }
+    const commonKeys = [
+      "destinationKey",
+      "disposition",
+      "provenanceStatement",
+      "sourceBoardPresence",
+      "sourceBoardRole",
+      "sourceIssueNumber",
+      "sourceState",
+      "sourceStateReason",
+    ];
+    if (record.disposition === "EXCLUDED_CONSUMER_POLICY") {
+      excludedConsumerPolicyRecords += 1;
+      exactKeys(
+        record,
+        [
+          ...commonKeys,
+          "authorityDecisionCommentId",
+          "authorityDecisionIssueNumber",
+          "authorityDecisionRecordedAt",
+          "authorityDecisionSelection",
+        ],
+        `migration post-census excluded consumer policy #${number}`,
+      );
+      if (
+        number !== 6999 ||
+        record.authorityDecisionIssueNumber !== 7007 ||
+        record.authorityDecisionCommentId !== 5321438227 ||
+        record.authorityDecisionRecordedAt !== "2026-08-17T23:29:22Z" ||
+        record.authorityDecisionSelection !== "B"
+      ) {
+        fail(`migration post-census excluded consumer policy #${number} lacks exact authority`);
+      }
+    } else if (record.disposition === "MIGRATED_PLATFORM") {
+      migratedAddendumRecords += 1;
+      exactKeys(
+        record,
+        [
+          ...commonKeys,
+          "requiredSourceBoardPresence",
+          "requiredSourceBoardRole",
+          "requiredSourceState",
+          "requiredSourceStateReason",
+        ],
+        `migration post-census migrated platform #${number}`,
+      );
+      if (
+        record.requiredSourceState !== "CLOSED" ||
+        record.requiredSourceStateReason !== "NOT_PLANNED" ||
+        record.requiredSourceBoardPresence !== "ABSENT" ||
+        record.requiredSourceBoardRole !== "SUPERSEDED_REMOVED"
+      ) {
+        fail(`migration post-census migrated platform #${number} has invalid terminal target`);
+      }
+    } else {
+      fail(`migration post-census addendum issue ${number} has unknown disposition`);
+    }
   }
-  if (seenAddendumIssues.size !== expectedAddendum.size) {
+  if (
+    seenAddendumIssues.size !== expectedAddendum.size ||
+    migratedAddendumRecords !== addendum.migratedAddendumRecordCount ||
+    excludedConsumerPolicyRecords !== addendum.excludedConsumerPolicyRecordCount ||
+    source.length + migratedAddendumRecords !== addendum.sourceAbsenceTargetRecordCount
+  ) {
     fail("migration post-census addendum is incomplete");
   }
 }
@@ -445,6 +917,7 @@ function validateCapabilitySlots(snapshot) {
 }
 
 export function validatePlanningSnapshot(snapshot) {
+  validateSchemaDisposition(snapshot.schemaDisposition);
   const { roadmap } = snapshot;
   if (roadmap.schemaVersion !== "orchestration-roadmap/v1") fail("unknown roadmap schema");
   if (roadmap.repository !== "todd-skelton/orchestration-platform")
@@ -551,6 +1024,9 @@ async function loadCapabilitySlots(root) {
 
 export async function loadPlanningSnapshot(root = defaultRoot) {
   const roadmap = JSON.parse(await readFile(resolve(root, "planning/roadmap.json"), "utf8"));
+  const schemaDisposition = JSON.parse(
+    await readFile(resolve(root, "planning/iss-002-schema-disposition.json"), "utf8"),
+  );
   const migration = JSON.parse(
     await readFile(resolve(root, "planning/chase-sets-orchestration-migration.json"), "utf8"),
   );
@@ -587,6 +1063,7 @@ export async function loadPlanningSnapshot(root = defaultRoot) {
   }
   return {
     roadmap,
+    schemaDisposition,
     migration,
     issueDrafts,
     epicDrafts,

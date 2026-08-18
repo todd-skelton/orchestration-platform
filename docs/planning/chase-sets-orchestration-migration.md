@@ -86,19 +86,27 @@ The addendum is intentionally not folded into the 183-record base or its
 182-item source-board count:
 
 - `chase-sets/chase-sets#6999` maps to `ISS-039`. The recorded live observation
-  is `OPEN`/`REOPENED` and present on Chase Sets Delivery.
+  is `OPEN`/`REOPENED` and present on Chase Sets Delivery. Todd's later Option
+  B decision is bound exactly to decision issue `#7007`, comment `5321438227`,
+  at `2026-08-17T23:29:22Z`; it retains #6999 as Chase consumer policy and the
+  full review-v3 cutover. Its addendum disposition is therefore
+  `EXCLUDED_CONSUMER_POLICY`, not a platform-migration terminal target.
 - `chase-sets/chase-sets#7000` maps to `ISS-040`. The recorded live observation
   is `OPEN` with no state reason and present on Chase Sets Delivery.
 
-Both required terminal states are `CLOSED`/`NOT_PLANNED`, absent from Chase
-Sets Delivery, with board role `SUPERSEDED_REMOVED`. The platform issues are
-their sole executable owners. These are pending cleanup targets until exact
-provider readback proves them; the manifest does not coerce the observation
-into the desired state.
+#7000 alone has required terminal state `CLOSED`/`NOT_PLANNED`, absent from
+Chase Sets Delivery, with board role `SUPERSEDED_REMOVED`. #6999 may remain
+open/present or later terminalize under Chase authority; the platform board
+checker does not claim its state or membership. `ISS-039` remains the canonical
+generic module mirror for the first consumer, while #6999 remains the only
+Chase consumer-policy/full-cutover execution owner, so neither repository may
+dispatch the other's scope as duplicate work.
 
-Thus the current manifest proves 185 provenance identities and separately
-records observed versus required addendum state. The pending cleanup does not
-change the already reconciled historical base counts.
+Thus the current manifest proves 185 provenance identities: the immutable 183
+base, one migrated addendum record (#7000), and one excluded consumer-policy
+record (#6999). The source-absence target is exactly 184 identities—the base
+plus #7000. Neither later decision changes the already reconciled historical
+base counts.
 
 Explicit exclusions stay on the Chase Sets delivery board:
 
@@ -159,14 +167,17 @@ Explicit exclusions stay on the Chase Sets delivery board:
    numbers from complete paginated project and issue collections against the
    checked-in migration manifest.
 6. Record issues created after the historical census in
-   `postCensusAddendum`; preserve their source identity and terminal cleanup
-   disposition, and never rewrite the 183-record base count to absorb them.
+   `postCensusAddendum`; preserve their source identity and closed disposition,
+   apply the source-absence target only to `MIGRATED_PLATFORM` records, and
+   never rewrite the 183-record base count to absorb them.
 
 The new board's executable frontier is always derived from native issue
 dependencies and milestones. Imported source provenance never competes with a
 platform slice for dispatch.
 
-Destination keys `ISS-039` and `ISS-040` own the post-census simplification and
-evidence-proportionality registrations. Their `#6999/#7000` records live only
-in the addendum, while the later proportionality-replan issues retain
-`ISS-041` through `ISS-043` without collision.
+Destination keys `ISS-039` and `ISS-040` mirror the post-census simplification
+and evidence-proportionality registrations. #7000 is migrated to ISS-040.
+#6999 stays excluded consumer policy under Option B; ISS-039 owns only the
+generic reusable module contract and cites #6999 as its first consumer. Both
+source records live only in the addendum, while the later proportionality-
+replan issues retain `ISS-041` through `ISS-043` without collision.

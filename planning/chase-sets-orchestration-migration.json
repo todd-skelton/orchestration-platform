@@ -175,6 +175,9 @@
     "liveAuditRecordedAt": "2026-08-17T18:23:17.2990398-05:00",
     "baseSnapshotRecordCount": 183,
     "addendumRecordCount": 2,
+    "migratedAddendumRecordCount": 1,
+    "excludedConsumerPolicyRecordCount": 1,
+    "sourceAbsenceTargetRecordCount": 184,
     "totalProvenanceRecordCount": 185,
     "records": [
       {
@@ -183,12 +186,13 @@
         "sourceState": "OPEN",
         "sourceStateReason": "REOPENED",
         "sourceBoardPresence": "PRESENT",
-        "sourceBoardRole": "PENDING_CLEANUP",
-        "requiredSourceState": "CLOSED",
-        "requiredSourceStateReason": "NOT_PLANNED",
-        "requiredSourceBoardPresence": "ABSENT",
-        "requiredSourceBoardRole": "SUPERSEDED_REMOVED",
-        "provenanceStatement": "Live audit records this source registration reopened and still present; the required terminal state closes it as superseded/NOT_PLANNED and removes it from Chase Sets Delivery, with ISS-039 as sole executable owner."
+        "sourceBoardRole": "CONSUMER_POLICY_RETAINED",
+        "disposition": "EXCLUDED_CONSUMER_POLICY",
+        "authorityDecisionIssueNumber": 7007,
+        "authorityDecisionCommentId": 5321438227,
+        "authorityDecisionRecordedAt": "2026-08-17T23:29:22Z",
+        "authorityDecisionSelection": "B",
+        "provenanceStatement": "Todd's later Option B decision retains #6999 as Chase Sets consumer policy and the full review-v3 cutover. ISS-039 mirrors the generic module contract for the first consumer but is not a duplicate execution owner. The source issue remains outside the platform-migration absence and terminal-state target."
       },
       {
         "sourceIssueNumber": 7000,
@@ -197,6 +201,7 @@
         "sourceStateReason": null,
         "sourceBoardPresence": "PRESENT",
         "sourceBoardRole": "PENDING_CLEANUP",
+        "disposition": "MIGRATED_PLATFORM",
         "requiredSourceState": "CLOSED",
         "requiredSourceStateReason": "NOT_PLANNED",
         "requiredSourceBoardPresence": "ABSENT",

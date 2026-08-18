@@ -53,6 +53,13 @@ function synthesizeProjects(board: BoardSnapshot): {
     repository: planning.roadmap.repository,
     number: row.number,
   }));
+  const excludedConsumerPolicyItems = planning.migration.postCensusAddendum.records
+    .filter((record: Record<string, any>) => record.disposition === "EXCLUDED_CONSUMER_POLICY")
+    .map((record: Record<string, any>, index: number) => ({
+      id: `excluded-consumer-policy-${index}`,
+      repository: planning.migration.sourceRepository,
+      number: record.sourceIssueNumber,
+    }));
   return {
     destination: {
       id: planning.migration.destinationProject.id,
@@ -63,8 +70,8 @@ function synthesizeProjects(board: BoardSnapshot): {
     source: {
       id: planning.migration.sourceProject.id,
       title: planning.migration.sourceProject.title,
-      totalCount: 0,
-      items: [],
+      totalCount: excludedConsumerPolicyItems.length,
+      items: excludedConsumerPolicyItems,
     },
     sourceBoard: {
       repository: planning.migration.sourceRepository,
@@ -74,8 +81,14 @@ function synthesizeProjects(board: BoardSnapshot): {
         title: `source ${record.sourceIssueNumber}`,
         body: "",
         milestone: null,
-        state: record.requiredSourceState,
-        stateReason: record.requiredSourceStateReason,
+        state:
+          record.disposition === "MIGRATED_PLATFORM"
+            ? record.requiredSourceState
+            : record.sourceState,
+        stateReason:
+          record.disposition === "MIGRATED_PLATFORM"
+            ? record.requiredSourceStateReason
+            : record.sourceStateReason,
       })),
     },
   };
@@ -399,6 +412,23 @@ describe("board contract", () => {
     ).not.toThrow();
   });
 
+  test("allows excluded #6999 consumer policy presence or later terminalization", () => {
+    const projects = synthesizeProjects(baseline);
+    projects.source.items = projects.source.items.filter((item) => item.number !== 6999);
+    projects.source.totalCount -= 1;
+    projects.sourceBoard.issues[0]!.state = "CLOSED";
+    projects.sourceBoard.issues[0]!.stateReason = "NOT_PLANNED";
+    expect(() =>
+      validatePlanningProjects(
+        planning,
+        baseline,
+        projects.destination,
+        projects.source,
+        projects.sourceBoard,
+      ),
+    ).not.toThrow();
+  });
+
   test("ignores unrelated non-Issue Project items without aliasing their identity", () => {
     const projects = synthesizeProjects(baseline);
     projects.destination.items.push(
@@ -436,14 +466,14 @@ describe("board contract", () => {
       },
     ],
     [
-      "source cleanup residue",
+      "migrated addendum source cleanup residue",
       (projects: ReturnType<typeof synthesizeProjects>) => {
         projects.source.items.push({
-          id: "source-6999",
+          id: "source-7000",
           repository: planning.migration.sourceRepository,
-          number: 6999,
+          number: 7000,
         });
-        projects.source.totalCount = 1;
+        projects.source.totalCount += 1;
       },
     ],
     [
@@ -454,13 +484,13 @@ describe("board contract", () => {
           repository: planning.migration.sourceRepository,
           number: planning.migration.sourceIssueNumbers[0],
         });
-        projects.source.totalCount = 1;
+        projects.source.totalCount += 1;
       },
     ],
     [
       "source issue state",
       (projects: ReturnType<typeof synthesizeProjects>) => {
-        projects.sourceBoard.issues[0]!.state = "OPEN";
+        projects.sourceBoard.issues[1]!.state = "OPEN";
       },
     ],
     [

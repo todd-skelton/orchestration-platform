@@ -1,5 +1,6 @@
 export interface PlanningSnapshot {
   roadmap: Record<string, any>;
+  schemaDisposition: Record<string, any>;
   migration: Record<string, any>;
   issueDrafts: Record<string, string>;
   epicDrafts: Record<string, string>;
@@ -10,5 +11,6 @@ export interface PlanningSnapshot {
 
 export declare function parseFrontmatter(source: string, file: string): Record<string, any>;
 export declare function verificationCommands(source: string): string[];
+export declare function validateSchemaDisposition(ledger: Record<string, any>): void;
 export declare function validatePlanningSnapshot(snapshot: PlanningSnapshot): void;
 export declare function loadPlanningSnapshot(root?: string): Promise<PlanningSnapshot>;
