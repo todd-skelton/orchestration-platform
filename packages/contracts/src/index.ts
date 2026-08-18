@@ -20,6 +20,7 @@ export * from "./dispatch.js";
 export * from "./evidence.js";
 export * from "./external.js";
 export * from "./pointer.js";
+export * from "./recovery.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
 export {
