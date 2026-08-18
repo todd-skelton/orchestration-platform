@@ -78,6 +78,7 @@ The current registry uses the approved authority contracts:
   terminal unions;
 - external bootstrap: `physical-destination-identity/v1`,
   `physical-destination-locator-observation-receipt/v1`,
+  `external-destination-absence-observation/v1`,
   `state-mutation-destination-owner-value/v1`,
   `state-mutation-destination-owner-cas-proposal/v1`,
   `state-mutation-destination-owner-current-tip/v1`,
@@ -404,24 +405,30 @@ mode exists. Loss of any required record is `UNKNOWN` and blocks mutation.
 
 The external bootstrap graph remains acyclic: selected owner/anchor lifecycle
 values do not embed the downstream successor-post or final consumption receipt.
+The use intent contains only independent bootstrap preimage facts; its digest is
+computed before and then bound by `Dgb`, GENESIS `Dh`, E0 `Dv`, and `Dbg`.
+None of those four downstream digests may appear in the intent.
 Composed validators instead recompute those receipts after their referenced
 owner/anchor tips exist and bind every value/proposal/tip readback. Owner
-retirement first selects an anchor `RETIRED` value from an `ACTIVE` or
-`CONSUMED` predecessor and archives only that exact prior owner triple. The
-owner `RETIRED` value is selected afterward and binds the selected anchor
-`Dt/Dv/Dr` plus the owner archive. Neither anchor archive nor receipt contains
-a future owner value, so anchor retirement, owner retirement, and successor
-activation remain acyclic and crash-resumable.
+retirement creates the prior-anchor lifecycle archive, creates the teardown
+receipt that binds that archive, selects anchor `RETIRED`, creates the owner
+archive, and only then selects owner `RETIRED`. The lifecycle archive contains
+no teardown-receipt digest, and neither archive or receipt contains a future
+owner value, so anchor retirement, owner retirement, and successor activation
+remain acyclic and crash-resumable.
 
 Physical destination identity accepts exactly one canonical leaf component.
 Separators, dot components, alternate streams, Windows reserved names
 (including `COM`/`LPT` superscript-digit aliases), trailing dot-or-space
 aliases, noncanonical case, and mismatched Unicode/profile forms refuse before
-`Dphys` computation. Windows uses Unicode lowercase NFC without an invalid
-upper/lower round-trip (so a canonical leaf such as `straße` remains valid),
-macOS lowercase NFD, and Linux case-sensitive NFC; the selected profile must
-match the OS field. Case or normalization-distinct Linux identities remain
-distinct rather than colliding.
+`Dphys` computation. Decoded leaf bytes must be shortest-form UTF-8 Unicode
+scalars and use the pinned Unicode 15.1.0 normalization and locale-independent
+lowercase data. Windows uses lowercase NFC with no uppercase/case-fold
+round-trip (so a canonical leaf such as `straße` remains valid), macOS
+lowercase NFD, and Linux case-sensitive NFC; the selected profile must match
+the OS field. Case or normalization-distinct Linux identities remain distinct
+rather than colliding. The closed `Dabs` observation is the sole absence proof
+for E0 and expired-unused retirement; opaque SHA-256 absence claims refuse.
 
 Authority-history verification recomputes each record digest and authenticates
 the chain against the exact selected current authority's `G`, `headOrdinal`,
