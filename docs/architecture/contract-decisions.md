@@ -191,6 +191,44 @@ are exactly those in `supervisor-contract.md`.
   deterministic, versioned template. No free-form operator or module prose
   field exists; every human-readable section derives from typed fields. The
   rendered bytes are digest-bound in the dispatch plan and launch identity.
+- The closed dispatch-brief ledger has exactly three record schemas. A
+  `dispatch-brief/v1` record has the exact members `action`, `directives`,
+  `footprint`, `role`, and `schemaVersion`. `role` is exactly
+  `implementation|review|observer`. `action` is a closed
+  `dispatch-brief-action/v1`; `directives` is a dense array of 1–256 closed
+  `dispatch-brief-directive/v1` records; `footprint` is a dense array of 0–256
+  closed `dispatch-brief-resource/v1` records. Unknown fields refuse.
+- `dispatch-brief-action/v1` has exactly `actionKind`, `actionPlanDigest`,
+  `capabilityName`, `immutableSubjectDigest`, and `schemaVersion`.
+  `actionPlanDigest` and `immutableSubjectDigest` are SHA-256 digests.
+  `actionKind` and `capabilityName` are lowercase bounded identifiers matching
+  `[a-z][a-z0-9._:-]{0,127}`; they contain no whitespace and are data keys, not
+  renderable prose.
+- `dispatch-brief-directive/v1` has exactly `code`, `directiveKind`,
+  `referenceDigest`, `referenceSchemaVersion`, `schemaVersion`, and
+  `subjectDigest`. `directiveKind` is exactly `ACCEPTANCE_EVIDENCE|CONSTRAINT|`
+  `DECISION|NON_GOAL|OPERATOR_ACTION|REVIEW_ATTACK|SCOPE_EXCLUDE|SCOPE_INCLUDE|`
+  `VERIFICATION`. `code` uses the same bounded identifier grammar.
+  `subjectDigest` is SHA-256. `referenceDigest` and
+  `referenceSchemaVersion` are either both null or both present; a present
+  digest is SHA-256 and a present schema version matches
+  `[a-z][a-z0-9-]*/v[1-9][0-9]*`. Directives are unique by
+  `(directiveKind,code,subjectDigest,referenceSchemaVersion,referenceDigest)`
+  and every `subjectDigest` equals the enclosing action's
+  `immutableSubjectDigest`.
+- Every brief contains at least one directive of each kind. Absence is explicit
+  through a module-owned bounded code such as `none`; an omitted section is not
+  equivalent to no requirement. The host template groups directives by the
+  closed kind order above and renders only reviewed template text plus bounded
+  identifiers and digest/schema references. It never renders an arbitrary
+  input string as prose.
+- `dispatch-brief-resource/v1` has exactly `access`,
+  `resourceIdentityDigest`, `resourceKind`, and `schemaVersion`. `access` is
+  exactly `READ|CREATE|MODIFY|DELETE`; `resourceIdentityDigest` is SHA-256; and
+  `resourceKind` uses the bounded identifier grammar. Resources are unique by
+  `(access,resourceKind,resourceIdentityDigest)`. They are opaque engine
+  identities: repository paths, branches, worktrees, and host paths remain
+  adapter/host vocabulary and cannot appear in this record.
 - Engine contract field names and closed enum values are linted against the
   generated adapter-vocabulary denylist; branch, worktree, label, milestone,
   queue, deployment, and consumer product terms fail the contracts build.
