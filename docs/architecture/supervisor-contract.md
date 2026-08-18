@@ -127,6 +127,275 @@ Every named digest in the following public tables is
 | `Dsrc`            | schema `state-mutation-destination-owner-successor-review-core/v1`; domain `destination-owner-successor-review-core/v1`                                     | `Ddest` raw32, prior RETIRED `Dot` raw32, prior RETIRED `Dov` raw32, prior RETIRED `Dor` raw32, teardown-archive digest raw32, prior-installation canonical bytes, successor installation ID text, successor-authority canonical bytes, independent-review canonical bytes, canonical review-core bytes                                        | `.../<Ddest>/successor-review-cores/<prior-retired-tip>/<Dsrc>.json`; excludes successor `Dba`, `Dov`, `Dor`, `Dot`, their readbacks, and `Dsrp`               |
 | `Dsrp`            | schema `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`; domain `destination-owner-successor-review-post-selection-receipt/v1` | `Dsrc` raw32, successor `Dba` raw32, successor `Dov` raw32, successor `Dor` raw32, successor `Dot` raw32, value-readback digest raw32, proposal-readback digest raw32, tip-readback digest raw32, destination-lock/custody-observation digest raw32, canonical post-selection bytes                                                            | `.../<Ddest>/successor-review-post-selection-receipts/<successor-owner-tip>.json`; downstream and excluded from review core, anchor, and owner selection graph |
 
+#### Normative external bootstrap schema ledger
+
+This ledger is incorporated by `contract-decisions.md` and is the sole source
+of literal JSON member names for the external bootstrap family. Every listed
+record is a detached closed record. Members below are listed in ascending UTF-16
+code-unit order, which is also canonical JSON order. Omission, addition,
+renaming, null outside a declared nullable position, wrong scalar, wrong-case or
+future enum, and a conceptual label substituted for a literal member all
+refuse before digest comparison.
+
+The scalar names used only in this ledger mean:
+
+- `sha256`, `uuid-v7`, `safe-decimal`, and `timestamp` have the global closed
+  grammars in `contract-decisions.md`;
+- `external-token` is 1--128 ASCII characters matching
+  `[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}` and is case-sensitive;
+- `leaf-bytes` is unpadded RFC 4648 base64url text whose decode is 1--3072
+  bytes and whose re-encoding is byte-for-byte identical; and
+- `record<X>` is one nested closed record of exact schema `X`, never a digest,
+  path, open object, or array.
+
+Physical identity and observation have these exact censuses:
+
+| Schema                                                | Exact members and types                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `physical-destination-identity/v1`                    | `ancestorObjectIdentityDigest:sha256`, `canonicalPhysicalLeafBytes:leaf-bytes`, `filesystemIdentityDigest:sha256`, `hostCustodyNamespaceDigest:sha256`, `leafIdentityKind:EXISTING_DIRECTORY_ENTRY\|ABSENT_DIRECTORY_ENTRY`, `operatingSystem:DARWIN\|LINUX\|WINDOWS`, `physicalVolumeIdentityDigest:sha256`, `schemaVersion:physical-destination-identity/v1`                                                                                                                                                                                                                                                                    |
+| `physical-destination-locator-observation-receipt/v1` | `caseComparisonProfile:CASE_INSENSITIVE_LOWERCASE\|CASE_SENSITIVE`, `custodyInstanceDigest:nullable sha256`, `custodyReceiptDigest:nullable sha256`, `disposition:ADMITTED\|UNSUPPORTED\|UNKNOWN`, `helperDigest:sha256`, `helperVersion:external-token`, `logicalLocatorDigest:sha256`, `nativeIdentityReadbackDigest:nullable sha256`, `observedAt:timestamp`, `physicalDestinationIdentityDigest:sha256`, `resolvedLocatorReadbackDigest:nullable sha256`, `schemaVersion:physical-destination-locator-observation-receipt/v1`, `unicodeNormalizationProfile:NFC\|NFD`, `validFrom:timestamp`, `validUntil:nullable timestamp` |
+
+The physical leaf is exactly one decoded component. It must contain neither `/`
+nor `\\`, `.` or `..`, an alternate-stream separator, NUL, a drive or URI
+prefix, a trailing dot/space, nor a platform-reserved spelling. Its selected
+profile is exactly `DARWIN + CASE_INSENSITIVE_LOWERCASE + NFD`,
+`WINDOWS + CASE_INSENSITIVE_LOWERCASE + NFC`, or
+`LINUX + CASE_SENSITIVE + NFC`; all other combinations refuse. The two leaf
+kinds distinguish an existing non-symlink directory entry from a single absent
+canonical child of the named stable ancestor. Symlinks, junctions, reparse
+points, aliases, and multi-component suffixes refuse rather than choosing a
+third kind.
+
+For `ADMITTED`, all four nullable observation digests are non-null,
+`validFrom <= observedAt`, and `validUntil` is null or strictly later than
+`observedAt`. For `UNSUPPORTED|UNKNOWN`, all four are null. A mutation requires
+an `ADMITTED` receipt whose interval contains the injected current UTC and whose
+helper/profile/custody fields equal the selected probe admission. Observation
+time and interval fields remain inside canonical receipt bytes and are not
+separate framed parts.
+
+`Dphys` frames, in order, `hostCustodyNamespaceDigest`, `operatingSystem`,
+`physicalVolumeIdentityDigest`, `filesystemIdentityDigest`,
+`ancestorObjectIdentityDigest`, `leafIdentityKind`, the decoded raw leaf bytes,
+and canonical identity bytes under domain `physical-destination-identity/v1`.
+`Dobs` frames `physicalDestinationIdentityDigest`, `helperDigest`,
+`helperVersion`, `logicalLocatorDigest`, `resolvedLocatorReadbackDigest`,
+`caseComparisonProfile`, `unicodeNormalizationProfile`,
+`custodyInstanceDigest`, `custodyReceiptDigest`,
+`nativeIdentityReadbackDigest`, `disposition`, and canonical observation bytes
+under domain `physical-destination-locator-observation-receipt/v1`. `Ddest`
+continues to frame raw `Dphys` alone. The identity and observation persist only
+at the two paths already stated above and are FULL_REQUIRED.
+
+The destination-owner records have these exact censuses:
+
+| Schema                                                 | Exact members and types                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state-mutation-destination-owner-value/v1`            | `anchorDigest:sha256`, `anchorReceiptDigest:nullable sha256`, `anchorTipDigest:nullable sha256`, `anchorValueDigest:nullable sha256`, `destinationDigest:sha256`, `installationId:uuid-v7`, `lifecycle:ACTIVE\|CONSUMED\|RETIRED`, `ownerOrdinal:safe-decimal`, `schemaVersion:state-mutation-destination-owner-value/v1`, `successorReviewCoreDigest:nullable sha256`, `teardownArchiveDigest:nullable sha256`                                                                                                                                         |
+| `state-mutation-destination-owner-cas-proposal/v1`     | `destinationDigest:sha256`, `mutationId:sha256`, `observationDigest:sha256`, `positionDigest:sha256`, `priorReceiptDigest:nullable sha256`, `priorTipDigest:nullable sha256`, `priorValueDigest:nullable sha256`, `proposedAt:timestamp`, `schemaVersion:state-mutation-destination-owner-cas-proposal/v1`, `source:BOOTSTRAP_GENESIS\|ANCHOR_CONSUMED\|ANCHOR_RETIRED\|SUCCESSOR_REVIEW`, `successorValueDigest:sha256`, `transition:ACTIVATE_GENESIS\|CONSUME\|RETIRE_UNUSED\|RETIRE_CONSUMED\|ACTIVATE_SUCCESSOR`, `transitionEvidenceDigest:sha256` |
+| `state-mutation-destination-owner-current-tip/v1`      | `destinationDigest:sha256`, `proposalReceiptDigest:sha256`, `schemaVersion:state-mutation-destination-owner-current-tip/v1`, `valueDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `state-mutation-destination-owner-conflict-receipt/v1` | `conflictAt:timestamp`, `destinationDigest:sha256`, `losingProposalReceiptDigest:sha256`, `losingSuccessorValueDigest:sha256`, `mutationId:sha256`, `schemaVersion:state-mutation-destination-owner-conflict-receipt/v1`, `winningProposalReceiptDigest:sha256`, `winningTipDigest:sha256`, `winningValueDigest:sha256`                                                                                                                                                                                                                                 |
+| `state-mutation-destination-owner-teardown-archive/v1` | `anchorRetiredReceiptDigest:sha256`, `anchorRetiredTipDigest:sha256`, `anchorRetiredValueDigest:sha256`, `destinationDigest:sha256`, `installationId:uuid-v7`, `observationDigest:sha256`, `priorOwnerReceiptDigest:sha256`, `priorOwnerTipDigest:sha256`, `priorOwnerValueDigest:sha256`, `schemaVersion:state-mutation-destination-owner-teardown-archive/v1`, `teardownReceiptDigest:sha256`                                                                                                                                                         |
+
+The owner transition matrix is exhaustive:
+
+| Transition           | Prior triple                                                                                     | Successor value                                                                                                          | Required branch evidence                                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `ACTIVATE_GENESIS`   | all three prior members null; no current tip; owner ordinal `"0"`                                | `ACTIVE`; anchor triple, successor review, and teardown archive all null                                                 | source `BOOTSTRAP_GENESIS`; `transitionEvidenceDigest` equals the reviewed bootstrap-grant digest; observation is current `ADMITTED` |
+| `CONSUME`            | all non-null and select `ACTIVE` for the same destination, installation, anchor, and ordinal `n` | `CONSUMED`, ordinal `n+1`; selected anchor `CONSUMED` tip/value/receipt are all non-null; review/archive null            | source `ANCHOR_CONSUMED`; evidence equals the selected anchor-consumed tip digest                                                    |
+| `RETIRE_UNUSED`      | all non-null and select `ACTIVE`                                                                 | `RETIRED`, ordinal `n+1`; selected anchor `RETIRED` triple and teardown archive are non-null; review null                | source `ANCHOR_RETIRED`; evidence equals the archive digest                                                                          |
+| `RETIRE_CONSUMED`    | all non-null and select `CONSUMED`                                                               | same requirements as `RETIRE_UNUSED`                                                                                     | source `ANCHOR_RETIRED`; evidence equals the archive digest                                                                          |
+| `ACTIVATE_SUCCESSOR` | all non-null and select `RETIRED`                                                                | `ACTIVE`, ordinal `n+1`, a different installation and anchor; anchor triple/archive null; successor review core non-null | source `SUCCESSOR_REVIEW`; evidence equals the successor-review-core digest                                                          |
+
+Every non-genesis proposal has an all-non-null exact prior `Dot/Dov/Dor` triple;
+mixed nullability refuses. The successor ordinal is exactly zero for genesis and
+exactly prior plus one otherwise. The proposal's destination, successor value,
+transition branch, installation/anchor facts, observation, review/archive, and
+prior triple must equal the recomputed value and selected readbacks. A same
+mutation and same canonical bytes is idempotent; a different selected winner is
+represented only by the closed conflict receipt.
+
+`Dov`, `Dor`, `Dot`, and `Doc` use the domains and framed-part order in the
+external digest table immediately above. The teardown-archive digest uses
+domain `state-mutation-destination-owner-teardown-archive/v1` and frames, in
+order, destination, prior owner tip/value/receipt, installation, selected anchor
+RETIRED tip/value/receipt, teardown receipt, observation, and canonical archive
+bytes. The owner mutation ID uses domain `destination-owner-mutation-id/v1` and
+frames destination, canonical current path, nullable prior tip/value/receipt,
+owner ordinal, transition, successor value, installation, anchor, source, and
+transition evidence. Proposed/read-back timestamps never enter that identity.
+
+The successor-review records have these exact censuses:
+
+| Schema                                                                        | Exact members and types                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `destination-owner-prior-installation/v1`                                     | `anchorDigest:sha256`, `anchorRetiredReceiptDigest:sha256`, `anchorRetiredTipDigest:sha256`, `anchorRetiredValueDigest:sha256`, `installationId:uuid-v7`, `projectId:uuid-v7`, `schemaVersion:destination-owner-prior-installation/v1`, `stateRootDigest:sha256`                                                                                                                                                                                             |
+| `destination-owner-successor-authority/v1`                                    | `bootstrapGrantDigest:sha256`, `bootstrapTransactionId:uuid-v7`, `globalBootstrapIdentityDigest:sha256`, `installationId:uuid-v7`, `projectId:uuid-v7`, `reviewedInstallerDigest:sha256`, `reviewedReleaseManifestDigest:sha256`, `reviewedReleaseSubjectDigest:sha256`, `schemaVersion:destination-owner-successor-authority/v1`, `stateRootDigest:sha256`                                                                                                  |
+| `destination-owner-independent-review/v1`                                     | `authorIdentityDigest:sha256`, `candidateDigest:sha256`, `reviewReceiptDigest:sha256`, `reviewedAt:timestamp`, `reviewerIdentityDigest:sha256`, `schemaVersion:destination-owner-independent-review/v1`                                                                                                                                                                                                                                                      |
+| `state-mutation-destination-owner-successor-review-core/v1`                   | `destinationDigest:sha256`, `independentReview:record<destination-owner-independent-review/v1>`, `priorInstallation:record<destination-owner-prior-installation/v1>`, `priorRetiredReceiptDigest:sha256`, `priorRetiredTipDigest:sha256`, `priorRetiredValueDigest:sha256`, `schemaVersion:state-mutation-destination-owner-successor-review-core/v1`, `successorAuthority:record<destination-owner-successor-authority/v1>`, `teardownArchiveDigest:sha256` |
+| `state-mutation-destination-owner-successor-review-post-selection-receipt/v1` | `destinationLockCustodyObservationDigest:sha256`, `observedAt:timestamp`, `proposalReadbackDigest:sha256`, `reviewCoreDigest:sha256`, `schemaVersion:state-mutation-destination-owner-successor-review-post-selection-receipt/v1`, `successorAnchorDigest:sha256`, `successorOwnerProposalReceiptDigest:sha256`, `successorOwnerTipDigest:sha256`, `successorOwnerValueDigest:sha256`, `tipReadbackDigest:sha256`, `valueReadbackDigest:sha256`              |
+
+The independent-review author and reviewer digests must differ. `candidateDigest`
+equals the canonical digest of the other review inputs excluding the review
+record itself; the authenticated `reviewReceiptDigest` is issued externally by
+the admitted review path and cannot be candidate-produced. Prior installation
+and RETIRED anchor/owner triples equal the teardown archive and selected prior
+records. Successor authority installation differs from the prior installation;
+its destination remains the same and its anchor is not present in the core.
+
+`Dsrc` uses the already-stated domain and frames destination, prior RETIRED
+tip/value/receipt, teardown archive, canonical prior-installation record,
+successor installation ID, canonical successor-authority record, canonical
+independent-review record, and canonical core bytes. `Dsrp` uses its stated
+domain and frames review core, successor anchor, successor owner
+value/proposal/tip, the three readbacks, destination-lock/custody observation,
+and canonical receipt bytes. Its observed time remains only inside canonical
+bytes. The post-selection receipt is created only after the selected owner tip
+and exact readbacks exist; no member of it may enter `Dsrc`, the successor
+anchor, or the owner value/proposal/tip graph.
+
+The bootstrap-anchor and E0 records have these exact censuses:
+
+| Schema                                                       | Exact members and types                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `state-mutation-bootstrap-anchor/v1`                         | `abiDigest:sha256`, `authorityPathInstanceDigest:sha256`, `bootstrapGrantDigest:sha256`, `bootstrapTransactionId:uuid-v7`, `custodyInstanceDigest:sha256`, `custodyReceiptDigest:sha256`, `destinationDigest:sha256`, `globalBootstrapIdentityDigest:sha256`, `helperDigest:sha256`, `helperProfileDigest:sha256`, `independentReviewReceiptDigest:sha256`, `installationId:uuid-v7`, `lockProfileDigest:sha256`, `projectId:uuid-v7`, `reviewedInstallerDigest:sha256`, `schemaVersion:state-mutation-bootstrap-anchor/v1`, `stateComponentProfileDigest:sha256`, `stateRootDigest:sha256`, `successorReviewCoreDigest:nullable sha256`                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `state-mutation-bootstrap-anchor-lifecycle-value/v1`         | `anchorDigest:sha256`, `bootstrapGenesisCoreDigest:nullable sha256`, `lifecycle:ACTIVE\|CONSUMED\|RETIRED`, `lifecycleOrdinal:safe-decimal`, `schemaVersion:state-mutation-bootstrap-anchor-lifecycle-value/v1`, `selectedAuthorityPathInstanceDigest:nullable sha256`, `selectedAuthorityReceiptDigest:nullable sha256`, `selectedAuthorityTipDigest:nullable sha256`, `selectedAuthorityValueDigest:nullable sha256`, `selectionPostReceiptDigest:nullable sha256`, `teardownReceiptDigest:nullable sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `state-mutation-bootstrap-anchor-cas-proposal/v1`            | `anchorDigest:sha256`, `mutationId:sha256`, `priorReceiptDigest:nullable sha256`, `priorTipDigest:nullable sha256`, `priorValueDigest:nullable sha256`, `proposedAt:timestamp`, `schemaVersion:state-mutation-bootstrap-anchor-cas-proposal/v1`, `source:BOOTSTRAP_CREATE\|E0_SELECTION\|TEARDOWN`, `successorValueDigest:sha256`, `transition:ACTIVATE\|CONSUME\|RETIRE_UNUSED\|RETIRE_CONSUMED`, `transitionEvidenceDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `state-mutation-bootstrap-anchor-current-tip/v1`             | `anchorDigest:sha256`, `proposalReceiptDigest:sha256`, `schemaVersion:state-mutation-bootstrap-anchor-current-tip/v1`, `valueDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `state-mutation-bootstrap-anchor-conflict-receipt/v1`        | `anchorDigest:sha256`, `conflictAt:timestamp`, `losingProposalReceiptDigest:sha256`, `losingSuccessorValueDigest:sha256`, `mutationId:sha256`, `schemaVersion:state-mutation-bootstrap-anchor-conflict-receipt/v1`, `winningProposalReceiptDigest:sha256`, `winningTipDigest:sha256`, `winningValueDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `bootstrap-proposed-genesis-input/v1`                        | `authorityPathInstanceDigest:sha256`, `bootstrapGenesisCoreDigest:sha256`, `expectedAuthorityValueDigest:sha256`, `genesisBootstrapInputDigest:sha256`, `genesisHistoryRecordDigest:sha256`, `genesisPositionDigest:sha256`, `globalIdentityDigest:sha256`, `schemaVersion:bootstrap-proposed-genesis-input/v1`, `successorCoreDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `bootstrap-reviewed-installer/v1`                            | `installerArtifactDigest:sha256`, `installerSourceDigest:sha256`, `reviewReceiptDigest:sha256`, `schemaVersion:bootstrap-reviewed-installer/v1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `bootstrap-reviewed-helper/v1`                               | `abiDigest:sha256`, `helperDigest:sha256`, `helperProfileDigest:sha256`, `lockProfileDigest:sha256`, `schemaVersion:bootstrap-reviewed-helper/v1`, `stateComponentProfileDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `state-mutation-bootstrap-anchor-use-intent/v1`              | `anchorActiveReceiptDigest:sha256`, `anchorActiveTipDigest:sha256`, `anchorActiveValueDigest:sha256`, `anchorDigest:sha256`, `bootstrapTransactionId:uuid-v7`, `custodyInstanceDigest:sha256`, `destinationDigest:sha256`, `destinationOwnerActiveReceiptDigest:sha256`, `destinationOwnerActiveTipDigest:sha256`, `destinationOwnerActiveValueDigest:sha256`, `destinationStateRootDigest:sha256`, `expectedAuthorityValueDigest:sha256`, `expiresAt:timestamp`, `proposedGenesisInput:record<bootstrap-proposed-genesis-input/v1>`, `reviewedHelper:record<bootstrap-reviewed-helper/v1>`, `reviewedInstaller:record<bootstrap-reviewed-installer/v1>`, `schemaVersion:state-mutation-bootstrap-anchor-use-intent/v1`, `startedAt:timestamp`                                                                                                                                                                                                                                                                                                         |
+| `state-mutation-bootstrap-anchor-consumption-receipt/v1`     | `anchorDigest:sha256`, `bootstrapGenesisCoreDigest:sha256`, `bootstrapTransactionId:uuid-v7`, `consumedAt:timestamp`, `custodyInstanceDigest:sha256`, `destinationOwnerActiveReceiptDigest:sha256`, `destinationOwnerActiveTipDigest:sha256`, `destinationOwnerActiveValueDigest:sha256`, `destinationOwnerConsumedReceiptDigest:sha256`, `destinationOwnerConsumedTipDigest:sha256`, `destinationOwnerConsumedValueDigest:sha256`, `destinationStateRootDigest:sha256`, `externalAnchorProposalReadbackDigest:sha256`, `externalAnchorTipReadbackDigest:sha256`, `externalAnchorValueReadbackDigest:sha256`, `externalRuntimeCustodyDigest:sha256`, `runtimePostSelectionReceiptDigest:sha256`, `runtimeProposalReadbackDigest:sha256`, `runtimeReceiptDigest:sha256`, `runtimeTipDigest:sha256`, `runtimeTipReadbackDigest:sha256`, `runtimeValueDigest:sha256`, `runtimeValueReadbackDigest:sha256`, `schemaVersion:state-mutation-bootstrap-anchor-consumption-receipt/v1`, `selectedAuthorityPathInstanceDigest:sha256`, `useIntentDigest:sha256` |
+| `state-mutation-bootstrap-anchor-teardown-receipt/v1`        | `anchorDigest:sha256`, `destinationDigest:sha256`, `externalArchiveDigest:sha256`, `priorAnchorReceiptDigest:sha256`, `priorAnchorTipDigest:sha256`, `priorAnchorValueDigest:sha256`, `processCustodyProofDigest:sha256`, `retirementTransition:RETIRE_UNUSED\|RETIRE_CONSUMED`, `schemaVersion:state-mutation-bootstrap-anchor-teardown-receipt/v1`, `selectedOwnerReceiptDigest:sha256`, `selectedOwnerTipDigest:sha256`, `selectedOwnerValueDigest:sha256`, `teardownEvidenceDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `state-mutation-bootstrap-anchor-lifecycle-archive/v1`       | `anchorDigest:sha256`, `archivedReceiptDigest:sha256`, `archivedTipDigest:sha256`, `archivedValueDigest:sha256`, `lifecycle:ACTIVE\|CONSUMED`, `schemaVersion:state-mutation-bootstrap-anchor-lifecycle-archive/v1`, `teardownReceiptDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `state-mutation-bootstrap-genesis-core/v1`                   | `anchorDigest:sha256`, `authorityPathInstanceDigest:sha256`, `authorityValueDigest:sha256`, `bootstrapTransactionId:uuid-v7`, `destinationAbsenceDigest:sha256`, `destinationDigest:sha256`, `destinationOwnerActiveReceiptDigest:sha256`, `destinationOwnerActiveTipDigest:sha256`, `destinationOwnerActiveValueDigest:sha256`, `genesisBootstrapInputDigest:sha256`, `genesisHistoryRecordDigest:sha256`, `genesisPositionDigest:sha256`, `globalIdentityDigest:sha256`, `schemaVersion:state-mutation-bootstrap-genesis-core/v1`, `successorCoreDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `state-mutation-bootstrap-genesis-post-selection-receipt/v1` | `anchorDigest:sha256`, `authorityPathInstanceDigest:sha256`, `bootstrapGenesisCoreDigest:sha256`, `observedAt:timestamp`, `proposalReadbackDigest:sha256`, `receiptDigest:sha256`, `schemaVersion:state-mutation-bootstrap-genesis-post-selection-receipt/v1`, `tipDigest:sha256`, `tipReadbackDigest:sha256`, `valueDigest:sha256`, `valueReadbackDigest:sha256`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+
+`globalBootstrapIdentityDigest` uses domain `global-bootstrap-identity/v1` and
+frames, in order, installation, project, destination, state root, custody
+instance, bootstrap transaction, reviewed installer, independent review,
+bootstrap grant, authority path, lock profile, helper, helper profile, ABI,
+state-component profile, and custody receipt. It excludes the identity digest,
+schema literal, successor review, anchor digest, owner/anchor lifecycle, E0,
+readbacks, and timestamps. `Dba` then frames that raw digest and canonical
+anchor bytes under `state-mutation-bootstrap-anchor/v1`. Genesis anchors require
+`successorReviewCoreDigest:null`; successor anchors require it non-null and equal
+the exact `Dsrc` that names the same successor authority. No `Dsrp` is admitted
+into either digest.
+
+The anchor lifecycle matrix is exhaustive:
+
+| Transition        | Prior triple                                    | Successor value                                                       | Required branch evidence                                                       |
+| ----------------- | ----------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `ACTIVATE`        | all three prior members null and no current tip | `ACTIVE`, ordinal `"0"`; all E0 and teardown members null             | source `BOOTSTRAP_CREATE`; evidence equals the anchor's bootstrap-grant digest |
+| `CONSUME`         | all non-null and select `ACTIVE`                | `CONSUMED`, ordinal `n+1`; all six E0 members non-null; teardown null | source `E0_SELECTION`; evidence equals `selectionPostReceiptDigest` (`Dgp`)    |
+| `RETIRE_UNUSED`   | all non-null and select `ACTIVE`                | `RETIRED`, ordinal `n+1`; E0 members null; teardown non-null          | source `TEARDOWN`; evidence equals teardown receipt                            |
+| `RETIRE_CONSUMED` | all non-null and select `CONSUMED`              | `RETIRED`, ordinal `n+1`; E0 members null; teardown non-null          | source `TEARDOWN`; evidence equals teardown receipt                            |
+
+The six E0 members beginning with `bootstrapGenesisCoreDigest` and ending with
+`selectionPostReceiptDigest` in the lifecycle value are an all-null/all-non-null
+group. In `CONSUMED`, they select the same authority `Dp/Dv/Dr/Dt` and `Dgp`
+named by `Dbg`, the use intent, and readbacks. An anchor never returns from
+RETIRED, never re-activates in place, and never has a bare-absence successor.
+All non-genesis proposal prior members are non-null and select exactly the named
+lifecycle/ordinal; mixed nullability refuses.
+
+`Dbav`, `Dbar`, `Dbat`, and `Dbac` use the domains and exact framed-part orders
+in the anchor digest table below. The anchor mutation ID uses domain
+`bootstrap-anchor-mutation-id/v1` and frames anchor, canonical current path,
+nullable prior tip/value/receipt, lifecycle ordinal, transition, successor
+value, source, and transition evidence. It excludes timestamps/readbacks. The
+lifecycle archive digest uses its schema literal as domain and frames anchor,
+archived tip/value/receipt, archived lifecycle, teardown receipt, and canonical
+archive bytes.
+
+The use intent is create-once while both owner and anchor ACTIVE triples are
+selected and read back under destination-then-anchor lock order. `startedAt`
+must precede `expiresAt`; the interval is at most 15 minutes. Its destination,
+installation (through `Dba`), transaction, state root, custody, helper, and
+reviewed installer equal the anchor and selected bootstrap grant. Its proposed
+genesis input recomputes `Dsc`, `Dgb`, GENESIS `Dh`, expected E0 `Dv`, `Dbg`,
+and genesis-position digest; the separately repeated expected value equals the
+nested value. The use-intent digest uses domain
+`bootstrap-anchor-use-intent/v1` and frames Dba, anchor ACTIVE tip/value/receipt,
+owner ACTIVE tip/value/receipt, transaction, destination/state root, custody,
+canonical proposed-genesis input, expected E0 value, canonical reviewed
+installer, canonical reviewed helper, start, expiry, and canonical intent
+bytes. It excludes every E0 proposal/receipt/tip/readback and every CONSUMED
+record.
+
+`Dbg` uses domain `state-mutation-bootstrap-genesis-core/v1` and frames, in
+order, anchor, global identity, transaction, authority path, E0 value,
+genesis-position digest, and canonical core bytes. Every additional core member
+is equal-bound through those canonical bytes to `Dgb`, GENESIS `Dh`, `Dsc`, the
+selected owner ACTIVE triple, and the exact destination absence observation.
+The core excludes its digest, proposal, `Dr`, tip, `Dt`, readbacks, `Dgp`, every
+CONSUMED fact, and the final consumption receipt.
+
+The E0 proposal is the existing closed
+`pointer-cas-proposal-receipt/v1` bootstrap-producer arm. It has null selected
+epoch, producer kind `REVIEWED_BOOTSTRAP_GENESIS`, target authority `Dp`,
+successor `Dv`, and producer digest equal `Dbg`; no worker/candidate verdict is
+a producer. `Dgp` uses domain
+`state-mutation-bootstrap-genesis-post-selection-receipt/v1` and frames anchor,
+`Dbg`, authority path, value, receipt, tip, the three readbacks, and canonical
+receipt bytes. `observedAt` remains only inside canonical bytes. Every digest
+and readback is recomputed from the exact selected E0 graph.
+
+The anchor consumption receipt uses domain
+`bootstrap-anchor-consumption-receipt/v1` and frames, in order, Dba, Dbg,
+authority Dp/Dv/Dr/Dt, Dgp, transaction, use intent, destination state root,
+custody, runtime value/proposal/tip/post readbacks, owner ACTIVE
+tip/value/receipt, owner CONSUMED tip/value/receipt, external anchor
+value/proposal/tip readbacks, external/runtime custody, consumption time, and
+canonical receipt bytes. The anchor teardown receipt uses domain
+`bootstrap-anchor-teardown-receipt/v1` and frames Dba, prior anchor
+tip/value/receipt, retirement transition, destination, selected owner
+tip/value/receipt, teardown evidence, process/custody proof, external archive,
+and canonical receipt bytes.
+
+The final cross-record order and equality matrix is normative:
+
+1. A current `ADMITTED` observation selects one `Dphys/Ddest`; under the sole
+   destination lock, genesis owner ACTIVE selects one installation and `Dba`.
+2. A successor owner requires selected prior owner RETIRED, exact teardown
+   archive, `Dsrc`, a new anchor that embeds `Dsrc`, selected successor owner
+   ACTIVE that embeds both, and downstream `Dsrp`. Anchor ACTIVE, use intent,
+   E0, and context issuance all refuse until `Dsrp` is read back.
+3. A create-once unexpired use intent equal-binds owner ACTIVE, anchor ACTIVE,
+   transaction, grant, proposed `Dgb/Dsc/Dh/Dbg`, expected E0 value, helper,
+   review, custody, and state root. Expiry without such an intent permits only
+   teardown after a fresh destination-absence proof; a pre-expiry intent permits
+   recovery only of its exact transaction.
+4. E0 selects the precomputed value and immutable core, then `Dgp` binds its
+   selected proposal/tip/readbacks. Anchor CONSUMED embeds E0 and `Dgp`; owner
+   CONSUMED embeds that exact anchor triple; only then is the final consumption
+   receipt created and read back. No upstream record contains that downstream
+   receipt.
+5. Retirement selects anchor RETIRED from ACTIVE or CONSUMED, writes its
+   lifecycle archive and teardown receipt, writes the owner teardown archive,
+   then selects owner RETIRED bound to the anchor triple/archive. No receipt or
+   archive names a future owner value.
+6. Exact reinstall requires the same physical identity, selected owner and
+   anchor CONSUMED triples, final consumption receipt, original use intent,
+   original `Dbg`, original E0 `Dp/Dv/Dr/Dt`, and original `Dgp`. It creates no
+   owner, anchor, intent, core, proposal, history record, or capability.
+7. Any moved physical identity, stale/expired unmatched intent, different
+   transaction/installation/project/state root, mismatched observation or
+   custody, missing readback/archive/post receipt, mixed nullability, forked
+   prior triple, reused grant, author-equals-reviewer, or self-produced review
+   refuses before E0 context issuance.
+
+All records in this ledger are FULL_REQUIRED at the canonical paths in the two
+external tables and `externalAuthorityPaths`; the three nested review records
+and three nested use-intent records exist only inside their parent canonical
+bytes. There is no enumeration, alternate path, deletion, compaction,
+diagnostic namespace, receipt alias, migration, or READY-only form. The ledger
+defines structural contracts only and grants no lock, live handle,
+installation, promotion, runtime mutation, or self-certification authority.
+
 `physical-destination-identity/v1` excludes helper, path spelling, comparison
 profile, custody instance, receipt, time, and readback. `Ddest` has no part other
 than raw `Dphys`. Those changing observation/owner facts therefore cannot move

@@ -60,6 +60,14 @@ observation may feed a later core. Pointer path, instance digest,
 proposal/conflict paths, mutation ID, tombstone, archive, and FULL_REQUIRED preservation
 are exactly those in `supervisor-contract.md`.
 
+The `Normative external bootstrap schema ledger` in
+`supervisor-contract.md` is incorporated into this decision authority. Its
+literal external physical-identity, observation, destination-owner,
+successor-review, anchor, and E0 member censuses, branch matrices, framed
+formulas, persistence paths, exclusions, and cross-record equalities are not
+implementer-selected. No other prose or digest-table label is a JSON member
+name for those families.
+
 ## Configuration and state roots
 
 - Project configuration is `.orchestration/project.json`.
