@@ -191,47 +191,74 @@ are exactly those in `supervisor-contract.md`.
   deterministic, versioned template. No free-form operator or module prose
   field exists; every human-readable section derives from typed fields. The
   rendered bytes are digest-bound in the dispatch plan and launch identity.
-- The closed dispatch-brief ledger has exactly three record schemas. A
-  `dispatch-brief/v1` record has the exact members `action`, `directives`,
+- The closed dispatch-brief ledger has one envelope and exactly three nested
+  record schemas: four record types in total. Their `schemaVersion` literals
+  are respectively `dispatch-brief/v1`, `dispatch-brief-action/v1`,
+  `dispatch-brief-directive/v1`, and `dispatch-brief-resource/v1`; omission,
+  null, wrong-family, wrong-case, unknown, and future values refuse at each
+  level. The `dispatch-brief/v1` envelope has exactly `action`, `directives`,
   `footprint`, `role`, and `schemaVersion`. `role` is exactly
-  `implementation|review|observer`. `action` is a closed
-  `dispatch-brief-action/v1`; `directives` is a dense array of 1–256 closed
-  `dispatch-brief-directive/v1` records; `footprint` is a dense array of 0–256
-  closed `dispatch-brief-resource/v1` records. Unknown fields refuse.
-- `dispatch-brief-action/v1` has exactly `actionKind`, `actionPlanDigest`,
-  `capabilityName`, `immutableSubjectDigest`, and `schemaVersion`.
-  `actionPlanDigest` and `immutableSubjectDigest` are SHA-256 digests.
-  `actionKind` and `capabilityName` are lowercase bounded identifiers matching
-  `[a-z][a-z0-9._:-]{0,127}`; they contain no whitespace and are data keys, not
-  renderable prose.
+  `implementation|review|observer`. `action` is one closed action record;
+  `directives` is a dense array of 1–256 closed directive records; and
+  `footprint` is a dense array of 0–256 closed resource records. Unknown fields
+  refuse.
+- `dispatch-brief-action/v1` has exactly `actionCoreDigest`, `actionKind`,
+  `capabilityName`, `immutableSubjectDigest`, `moduleDescriptorDigest`, and
+  `schemaVersion`. The three digests are SHA-256. `actionKind` and
+  `capabilityName` match `[a-z][a-z0-9._:-]{0,63}` and are admitted only when
+  their exact pair is declared by the selected release-reviewed
+  `module-descriptor/v1`; they are lookup keys and are never rendered.
+  `actionCoreDigest` is the domain-separated digest of the enclosing step-4
+  `module-action-plan/v1` action projection, which excludes `dispatchBrief` and
+  every digest derived from it so the graph is acyclic. Before journaling step
+  4, the brief action's kind, capability, immutable subject, descriptor digest,
+  and action-core digest must equal that plan's corresponding authoritative
+  values. A moved plan, descriptor, subject, action, or capability refuses.
+- A release-reviewed module descriptor contains a finite, dense, unique
+  `dispatchCatalog` of 1–256 closed entries. Each entry has exactly
+  `actionKind`, `capabilityName`, `code`, `directiveKind`, `planAccessor`, and
+  `templateId`; every value other than the closed `directiveKind` matches
+  `[a-z][a-z0-9._:-]{0,63}`. The catalog is digest-bound in the module
+  descriptor and release manifest. A present directive is admitted only by an
+  exact catalog entry for the brief action pair. `planAccessor` selects typed
+  data only from the same exact `module-action-plan/v1` action projection, and
+  `templateId` selects a release-reviewed ISS-021 renderer. Neither value nor
+  any other catalog key is rendered. The host resolves this pair from its
+  installed static module/renderer registry; filesystem, network, adapter, and
+  arbitrary schema-family resolution are forbidden. Thus the brief has no
+  open reference-schema or external-reference surface.
 - `dispatch-brief-directive/v1` has exactly `code`, `directiveKind`,
-  `referenceDigest`, `referenceSchemaVersion`, `schemaVersion`, and
-  `subjectDigest`. `directiveKind` is exactly `ACCEPTANCE_EVIDENCE|CONSTRAINT|`
-  `DECISION|NON_GOAL|OPERATOR_ACTION|REVIEW_ATTACK|SCOPE_EXCLUDE|SCOPE_INCLUDE|`
-  `VERIFICATION`. `code` uses the same bounded identifier grammar.
-  `subjectDigest` is SHA-256. `referenceDigest` and
-  `referenceSchemaVersion` are either both null or both present; a present
-  digest is SHA-256 and a present schema version matches
-  `[a-z][a-z0-9-]*/v[1-9][0-9]*`. Directives are unique by
-  `(directiveKind,code,subjectDigest,referenceSchemaVersion,referenceDigest)`
-  and every `subjectDigest` equals the enclosing action's
-  `immutableSubjectDigest`.
-- Every brief contains at least one directive of each kind. Absence is explicit
-  through a module-owned bounded code such as `none`; an omitted section is not
-  equivalent to no requirement. The host template groups directives by the
-  closed kind order above and renders only reviewed template text plus bounded
-  identifiers and digest/schema references. It never renders an arbitrary
-  input string as prose.
+  `presence`, `schemaVersion`, and `subjectDigest`. `directiveKind` is exactly
+  `ACCEPTANCE_EVIDENCE|CONSTRAINT|DECISION|NON_GOAL|OPERATOR_ACTION|`
+  `REVIEW_ATTACK|SCOPE_EXCLUDE|SCOPE_INCLUDE|VERIFICATION`; `presence` is
+  exactly `PRESENT|ABSENT`; and `subjectDigest` is SHA-256 and equals the brief
+  action's `immutableSubjectDigest`. For `PRESENT`, `code` matches the bounded
+  catalog-key grammar and the exact `(actionKind,capabilityName,directiveKind,`
+  `code)` catalog row must exist. For `ABSENT`, `code` is null, the kind must be
+  `OPERATOR_ACTION`, and no present operator-action directive may coexist.
+  Every other kind has at least one `PRESENT` directive. Present directives are
+  unique by `(directiveKind,code)`; multiple typed inputs require distinct
+  reviewed catalog codes rather than repeated codes with substituted content.
+  There is at most one absent record.
+- The host groups directives in the closed kind order above and renders only
+  the reviewed text and typed values selected by each admitted catalog row.
+  It never renders raw action, capability, code, accessor, template, schema, or
+  resource values. The step-7 `dispatch-plan/v1` role must equal both the
+  step-4 `module-action-plan/v1` requested role and brief role before rendering
+  or ownership publication; it also binds the unchanged action-core, subject,
+  descriptor, rendered-byte, and template-registry digests. Any substitution
+  refuses before launch.
 - `dispatch-brief-resource/v1` has exactly `access`,
-  `resourceIdentityDigest`, `resourceKind`, and `schemaVersion`. `access` is
-  exactly `READ|CREATE|MODIFY|DELETE`; `resourceIdentityDigest` is SHA-256; and
-  `resourceKind` uses the bounded identifier grammar. Resources are unique by
-  `(access,resourceKind,resourceIdentityDigest)`. They are opaque engine
-  identities: repository paths, branches, worktrees, and host paths remain
-  adapter/host vocabulary and cannot appear in this record.
-- Engine contract field names and closed enum values are linted against the
-  generated adapter-vocabulary denylist; branch, worktree, label, milestone,
-  queue, deployment, and consumer product terms fail the contracts build.
+  `resourceIdentityDigest`, and `schemaVersion`. `access` is exactly
+  `READ|CREATE|MODIFY|DELETE` and `resourceIdentityDigest` is SHA-256.
+  Resources are unique by `(access,resourceIdentityDigest)` and remain opaque
+  engine identities; no resource class, repository path, branch, worktree, or
+  host path appears in this record.
+- Engine contract field names, closed enum values, every value admitted to a
+  module `dispatchCatalog`, and runtime action/capability/catalog lookup values
+  are checked against the generated adapter-vocabulary denylist. Branch,
+  worktree, label, milestone, queue, deployment, consumer product terms, and
+  their registered abbreviations fail the contracts build or runtime admission.
 
 ## Proportionality and schema lifecycle
 

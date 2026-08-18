@@ -29,6 +29,12 @@ the brief bytes during step-7 dispatch-plan construction, before ownership
 publication; the rendered bytes are digest-bound in the dispatch plan and
 launch identity. `ISS-011` owns the emitted structure, `ISS-021` owns the
 versioned template and rendering goldens, and `ISS-008` owns digest binding.
+Before rendering, step 7 proves the brief still equal-binds the step-4 action
+core, action/capability pair, immutable subject, and selected module descriptor,
+then requires the dispatch role to equal both the module-requested and brief
+roles. It resolves directive accessors only through that descriptor's installed
+release-reviewed catalog; a moved plan, descriptor, role, catalog, subject, or
+rendered-byte digest refuses before ownership publication.
 
 The complete steps 7–10 block is skipped only for a typed action that requires
 no worker or review; the module manifest must declare that capability and step
