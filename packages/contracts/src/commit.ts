@@ -1,4 +1,5 @@
 import {
+  canonicalDigest,
   frame,
   framedDigest,
   isCanonicalDecimal,
@@ -11,7 +12,17 @@ import {
   type ContractRecord,
   type ParseResult,
 } from "./runtime.js";
-import { pointerKinds, pointerRegistry, type PointerKind } from "./pointer.js";
+import {
+  computeCurrentTipDigest,
+  computePointerValueDigest,
+  computeProposalReceiptDigest,
+  parsePointerCurrentTip,
+  parsePointerProposal,
+  pointerKinds,
+  pointerRegistry,
+  validateSelectedPointerEvidence,
+  type PointerKind,
+} from "./pointer.js";
 
 export const commitRunStages = Object.freeze([
   "CURRENT_AUTHORITY_READ",
@@ -116,9 +127,17 @@ const commitResolutionFields = Object.freeze([
   "targetPathInstanceDigest",
   "unknownEvidenceDigest",
 ] as const);
+const checkpointEvidenceFields = Object.freeze([
+  "core",
+  "postSelectionObservation",
+  "segment",
+  "selectorSelection",
+  "terminalResolution",
+] as const);
 
 export const commitSchemaFields = Object.freeze({
   commitResolution: commitResolutionFields,
+  checkpointEvidence: checkpointEvidenceFields,
   checkpointCore: checkpointCoreFields,
   runSegment: runSegmentFields,
   runCurrentValue: runCurrentValueFields,
@@ -126,6 +145,7 @@ export const commitSchemaFields = Object.freeze({
 });
 export const commitSchemaVersions = Object.freeze([
   "pointer-mutation-commit-resolution/v1",
+  "pointer-mutation-run-checkpoint-evidence/v1",
   "pointer-mutation-run-checkpoint-core/v1",
   "pointer-mutation-run-current-value/v1",
   "pointer-mutation-run-segment/v1",
@@ -586,6 +606,139 @@ export function computeRunPostSelectionObservationDigest(input: unknown): string
   ]);
 }
 
+export function parseRunCheckpointEvidence(input: unknown): ParseResult {
+  const wrapper = snapshotClosedRecord(input, checkpointEvidenceFields);
+  if (!wrapper.ok) return wrapper;
+  const segment = parseRunSegment(wrapper.value.segment);
+  const core = parseRunCheckpointCore(wrapper.value.core);
+  const observation = parseRunPostSelectionObservation(wrapper.value.postSelectionObservation);
+  const selection = snapshotClosedRecord(wrapper.value.selectorSelection, [
+    "proposal",
+    "tip",
+    "value",
+  ]);
+  const proposal = selection.ok ? parsePointerProposal(selection.value.proposal) : selection;
+  const tip = selection.ok ? parsePointerCurrentTip(selection.value.tip) : selection;
+  const current = selection.ok ? parseRunCurrentValue(selection.value.value) : selection;
+  const resolution =
+    wrapper.value.terminalResolution === null
+      ? null
+      : parseCommitResolution(wrapper.value.terminalResolution);
+  const issues: string[] = [];
+  for (const [name, parsed] of [
+    ["segment", segment],
+    ["core", core],
+    ["postSelectionObservation", observation],
+    ["selectorSelection", selection],
+    ["selectorSelection.proposal", proposal],
+    ["selectorSelection.tip", tip],
+    ["selectorSelection.value", current],
+  ] as const)
+    if (!parsed.ok) issues.push(...parsed.issues.map((issue) => `${name}:${issue}`));
+  if (resolution !== null && !resolution.ok)
+    issues.push(...resolution.issues.map((issue) => `terminalResolution:${issue}`));
+  if (
+    !segment.ok ||
+    !core.ok ||
+    !observation.ok ||
+    !selection.ok ||
+    !proposal.ok ||
+    !tip.ok ||
+    !current.ok ||
+    (resolution !== null && !resolution.ok)
+  )
+    return invalid(...issues);
+
+  issues.push(
+    ...validateSelectedPointerEvidence(selection.value).map(
+      (issue) => `selectorSelection:${issue}`,
+    ),
+    ...validateRunCurrentSelection(core.value, current.value).map(
+      (issue) => `selectorSelection.value:${issue}`,
+    ),
+  );
+  if (proposal.value.pointerKind !== "POINTER_MUTATION_RUN_CURRENT")
+    issues.push("selectorSelection.proposal:pointerKind:mismatch");
+  if (tip.value.pointerKind !== "POINTER_MUTATION_RUN_CURRENT")
+    issues.push("selectorSelection.tip:pointerKind:mismatch");
+  const segmentDigest = computeRunSegmentDigest(segment.value);
+  if (core.value.segmentDigest !== segmentDigest) issues.push("core:segmentDigest:mismatch");
+  for (const field of [
+    "canonicalPointerPath",
+    "globalIdentityDigest",
+    "installationId",
+    "pointerKind",
+    "projectId",
+    "runOrdinal",
+    "sourceToken",
+    "stage",
+    "stateRootDigest",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+    "transactionId",
+  ] as const)
+    if (segment.value[field] !== core.value[field]) issues.push(`${field}:segment-core-mismatch`);
+
+  const coreDigest = computeRunCheckpointCoreDigest(core.value);
+  const valueDigest = computePointerValueDigest(
+    "POINTER_MUTATION_RUN_CURRENT",
+    String(proposal.value.pathInstanceDigest),
+    current.value,
+  );
+  const receiptDigest = computeProposalReceiptDigest(proposal.value);
+  const tipDigest = computeCurrentTipDigest(tip.value);
+  const expectedObservation = {
+    checkpointCoreDigest: coreDigest,
+    selectorMutationId: proposal.value.mutationId,
+    selectorPathInstanceDigest: proposal.value.pathInstanceDigest,
+    selectorReceiptDigest: receiptDigest,
+    selectorTipDigest: tipDigest,
+    selectorValueDigest: valueDigest,
+    valueReadbackDigest: canonicalDigest(current.value),
+    proposalReadbackDigest: canonicalDigest(proposal.value),
+    tipReadbackDigest: canonicalDigest(tip.value),
+  } as const;
+  for (const [field, expected] of Object.entries(expectedObservation))
+    if (observation.value[field] !== expected) issues.push(`${field}:observation-mismatch`);
+
+  const terminal = terminalPhase(core.value.phase);
+  if (terminal !== (resolution !== null)) issues.push("terminalResolution:phase-mismatch");
+  if (resolution !== null && resolution.ok)
+    issues.push(
+      ...validateRunTerminalResolution(core.value, resolution.value).map(
+        (issue) => `terminalResolution:${issue}`,
+      ),
+    );
+  return issues.length === 0 ? wrapper : invalid(...issues);
+}
+
+export function computeRunCheckpointEvidenceDigest(input: unknown): string {
+  const parsed = parseRunCheckpointEvidence(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const wrapper = parsed.value;
+  const core = parseRunCheckpointCore(wrapper.core);
+  const selection = snapshotClosedRecord(wrapper.selectorSelection, ["proposal", "tip", "value"]);
+  const observation = parseRunPostSelectionObservation(wrapper.postSelectionObservation);
+  if (!core.ok || !selection.ok || !observation.ok)
+    throw new TypeError("checkpointEvidence:invalid");
+  const proposal = parsePointerProposal(selection.value.proposal);
+  const tip = parsePointerCurrentTip(selection.value.tip);
+  if (!proposal.ok || !tip.ok) throw new TypeError("selectorSelection:invalid");
+  return framedDigest("pointer-mutation-run-checkpoint-evidence/v1", [
+    frame.boundedDecimal(String(core.value.checkpointOrdinal)),
+    frame.text(String(core.value.stage)),
+    frame.raw32(computeRunCheckpointCoreDigest(core.value)),
+    frame.raw32(String(proposal.value.pathInstanceDigest)),
+    frame.raw32(computeCurrentTipDigest(tip.value)),
+    frame.raw32(String(tip.value.valueDigest)),
+    frame.raw32(computeProposalReceiptDigest(proposal.value)),
+    frame.raw32(String(observation.value.valueReadbackDigest)),
+    frame.raw32(String(observation.value.proposalReadbackDigest)),
+    frame.raw32(String(observation.value.tipReadbackDigest)),
+    frame.raw32(computeRunPostSelectionObservationDigest(observation.value)),
+  ]);
+}
+
 export function computeRunId(input: unknown): string {
   const parsed = snapshotClosedRecord(input, [
     "authorityPathInstanceDigest",
@@ -719,6 +872,8 @@ export function parseCommitContract(
       return parseCommitResolution(input);
     case "pointer-mutation-run-checkpoint-core/v1":
       return parseRunCheckpointCore(input);
+    case "pointer-mutation-run-checkpoint-evidence/v1":
+      return parseRunCheckpointEvidence(input);
     case "pointer-mutation-run-current-value/v1":
       return parseRunCurrentValue(input);
     case "pointer-mutation-run-segment/v1":

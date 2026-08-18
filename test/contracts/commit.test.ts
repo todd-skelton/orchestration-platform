@@ -1,9 +1,16 @@
 import { describe, expect, test } from "vitest";
 import {
+  canonicalDigest,
   commitRunStages,
   commitJournalPaths,
   computeCommitResolutionDigest,
+  computeCurrentTipDigest,
+  computePointerInstanceDigest,
+  computePointerPositionDigest,
+  computePointerValueDigest,
+  computeProposalReceiptDigest,
   computeRunAuditDigest,
+  computeRunCheckpointEvidenceDigest,
   computeRunCheckpointCoreDigest,
   computeRunId,
   computeRunPostSelectionObservationDigest,
@@ -11,6 +18,7 @@ import {
   parseContract,
   parseCommitResolution,
   parseRunCheckpointCore,
+  parseRunCheckpointEvidence,
   parseRunCurrentValue,
   parseRunPostSelectionObservation,
   parseRunSegment,
@@ -113,6 +121,112 @@ function checkpoint(
         ? d("c")
         : null,
     transactionId: pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION" ? null : installationId,
+  };
+}
+
+function checkpointEvidence() {
+  const segment = {
+    canonicalPointerPath: "installation/active-release.json",
+    globalIdentityDigest: d("3"),
+    installationId,
+    pointerKind: "ACTIVE_RELEASE",
+    projectId,
+    recordedAt: "2026-08-18T13:59:00.000Z",
+    runId: d("d"),
+    runOrdinal: "0",
+    schemaVersion: "pointer-mutation-run-segment/v1",
+    sourceToken: "none",
+    stage: "CURRENT_AUTHORITY_READ",
+    stageEvidenceDigest: d("e"),
+    stateRootDigest: d("9"),
+    targetMutationId: d("a"),
+    targetPathInstanceDigest: d("b"),
+    transactionId: installationId,
+  };
+  const segmentDigest = computeRunSegmentDigest(segment);
+  const core = {
+    ...checkpoint(0),
+    auditDigest: computeRunAuditDigest(null, segmentDigest),
+    segmentDigest,
+  };
+  const coreDigest = computeRunCheckpointCoreDigest(core);
+  const value = {
+    checkpointCoreDigest: coreDigest,
+    checkpointOrdinal: "0",
+    phase: "CRASH_PREFIX",
+    runOrdinal: "0",
+    schemaVersion: "pointer-mutation-run-current-value/v1",
+    stage: "CURRENT_AUTHORITY_READ",
+    targetMutationId: d("a"),
+    targetPathInstanceDigest: d("b"),
+    terminalResolutionDigest: null,
+  };
+  const positionEvidence = {
+    mode: "VALUE",
+    parts: { targetInstanceDigest: d("b"), targetMutationId: d("a") },
+  } as const;
+  const selectorPath = `installation/pointer-cas/${d("b")}/commits/${d("a")}/current-run.json`;
+  const pathInstanceDigest = computePointerInstanceDigest({
+    pointerKind: "POINTER_MUTATION_RUN_CURRENT",
+    canonicalPointerPath: selectorPath,
+    installationId,
+    projectId,
+    stateRootDigest: d("9"),
+    transactionId: null,
+    sourceToken: "none",
+    positionEvidence,
+  });
+  const valueDigest = computePointerValueDigest(
+    "POINTER_MUTATION_RUN_CURRENT",
+    pathInstanceDigest,
+    value,
+  );
+  const proposal = {
+    authorityEpochReceiptDigest: d("1"),
+    authorityEpochTipDigest: d("2"),
+    authorityEpochValueDigest: d("3"),
+    intent: "VALUE_PROPOSED",
+    mutationId: d("4"),
+    outcome: "SELECT",
+    pathInstanceDigest,
+    pointerKind: "POINTER_MUTATION_RUN_CURRENT",
+    positionDigest: computePointerPositionDigest("POINTER_MUTATION_RUN_CURRENT", positionEvidence),
+    priorReceiptDigest: null,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    producerDigest: d("5"),
+    producerKind: "SELECTED_EPOCH",
+    proposedAt: "2026-08-18T14:00:00.000Z",
+    schemaVersion: "pointer-cas-proposal-receipt/v1",
+    successorValueDigest: valueDigest,
+  };
+  const proposalReceiptDigest = computeProposalReceiptDigest(proposal);
+  const tip = {
+    pathInstanceDigest,
+    pointerKind: "POINTER_MUTATION_RUN_CURRENT",
+    proposalReceiptDigest,
+    schemaVersion: "pointer-current-tip/v1",
+    valueDigest,
+  };
+  const observation = {
+    checkpointCoreDigest: coreDigest,
+    observedAt: "2026-08-18T14:01:00.000Z",
+    proposalReadbackDigest: canonicalDigest(proposal),
+    schemaVersion: "pointer-mutation-run-selector-post-selection-observation/v1",
+    selectorMutationId: proposal.mutationId,
+    selectorPathInstanceDigest: pathInstanceDigest,
+    selectorReceiptDigest: proposalReceiptDigest,
+    selectorTipDigest: computeCurrentTipDigest(tip),
+    selectorValueDigest: valueDigest,
+    tipReadbackDigest: canonicalDigest(tip),
+    valueReadbackDigest: canonicalDigest(value),
+  };
+  return {
+    core,
+    postSelectionObservation: observation,
+    segment,
+    selectorSelection: { proposal, tip, value },
+    terminalResolution: null,
   };
 }
 
@@ -299,6 +413,37 @@ describe("single-epoch commit journal atoms", () => {
     expect(parseRunPostSelectionObservation({ ...observation, nextCoreDigest: d("9") }).ok).toBe(
       false,
     );
+  });
+
+  test("composes a closed acyclic checkpoint-evidence record", () => {
+    const evidence = checkpointEvidence();
+    expect(parseRunCheckpointEvidence(evidence).ok).toBe(true);
+    expect(parseContract("pointer-mutation-run-checkpoint-evidence/v1", evidence).ok).toBe(true);
+    expect(computeRunCheckpointEvidenceDigest(evidence)).toBe(
+      "c338536af580edf28f325a78dd5678a837e6ac69c229d7f3b86d6790f9c5e0d5",
+    );
+    expect(
+      parseRunCheckpointEvidence({
+        ...evidence,
+        selectorSelection: {
+          ...evidence.selectorSelection,
+          tip: { ...evidence.selectorSelection.tip, valueDigest: d("f") },
+        },
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseRunCheckpointEvidence({
+        ...evidence,
+        postSelectionObservation: {
+          ...evidence.postSelectionObservation,
+          valueReadbackDigest: d("f"),
+        },
+      }).ok,
+    ).toBe(false);
+    expect(parseRunCheckpointEvidence({ ...evidence, terminalResolution: resolution() }).ok).toBe(
+      false,
+    );
+    expect(parseRunCheckpointEvidence({ ...evidence, schemaVersion: "v1" }).ok).toBe(false);
   });
 
   test("derives run identity from one selected authority epoch and bounded ordinal", () => {

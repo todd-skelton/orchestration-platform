@@ -119,6 +119,11 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: commitSchemaFields.checkpointCore,
       closedValues: Object.freeze([...pointerKinds, ...commitRunStages, ...commitRunPhases]),
     }),
+    "pointer-mutation-run-checkpoint-evidence/v1": Object.freeze({
+      schemaVersion: "pointer-mutation-run-checkpoint-evidence/v1",
+      fields: commitSchemaFields.checkpointEvidence,
+      closedValues: Object.freeze([...pointerKinds, ...commitRunStages, ...commitRunPhases]),
+    }),
     "pointer-mutation-commit-resolution/v1": Object.freeze({
       schemaVersion: "pointer-mutation-commit-resolution/v1",
       fields: commitSchemaFields.commitResolution,
