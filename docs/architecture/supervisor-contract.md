@@ -1176,9 +1176,10 @@ selector artifacts, or a successor-epoch write refuses.
 
 Packet authority and the complete kind/path/install/project/state/transaction/
 source/`Dp`/mutation/run identity tuple must equal `Dcommit` and selected-slot
-facts; any cross-field mismatch refuses. The remaining eleven registry slots
-retain their exact registry-ordered current evidence and may not duplicate or
-substitute the target slot.
+facts; any cross-field mismatch refuses. The target occupies its one exact
+registry-ordered slot. The remaining ten registry slots retain their exact
+registry-ordered current evidence and may not duplicate or substitute the
+target slot.
 
 Packet `UNKNOWN` evidence is a fixed-size closed union with category
 `UNREADABLE|MALFORMED|IMPOSSIBLE`, a category-specific closed reason enum, one

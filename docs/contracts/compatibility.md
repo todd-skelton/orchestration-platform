@@ -416,7 +416,8 @@ fake lost conflicts, pointer deletion/bare absence, invalid cleanup cells/edges,
 mixed epochs, incomplete rotation census, candidate core fields, reordered
 native/post receipts, attachment-to-terminal-record confusion, reservation
 forks, ordinal overflow, chain-record forgery and head substitution,
-run-current recursion, packet purpose overflow, compaction ordering,
-superseded symbols reachable after deletion, and all hostile
+run-current recursion, packet purpose overflow, retention/compaction/degraded-
+audit exports or dispatch reachability, superseded symbols reachable after
+deletion, and all hostile
 reflective shapes. Cross-OS conformance reuses the same canonical goldens
 without changing authority.
