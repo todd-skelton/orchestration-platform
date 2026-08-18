@@ -27,11 +27,12 @@ Chase Sets adoption. Milestone placement describes the evidence an issue helps
 produce; native dependencies determine when the issue is runnable. Preparation
 for a later outcome may proceed early when its own dependencies are satisfied.
 
-Imported Chase Sets issues are provenance, not a second executable backlog.
-Reusable acceptance outcomes consolidate into the current platform issue that
-owns the capability. Consumer-specific policy remains in the Chase Sets
-adapter or product backlog. A source issue may create a new platform slice only
-when the current graph has no owner for its acceptance outcome.
+This repository's registered drafts are the only executable backlog. Consumer
+backlogs and consumer boards are independent: the platform neither reads nor
+asserts anything about them, and consumer-specific policy remains in that
+consumer's adapter or product backlog. A consumer requirement may create a new
+platform slice only when the current graph has no owner for its acceptance
+outcome.
 
 The minimum kernel is the smallest complete authority chain that can select,
 dispatch, independently review, journal, recover, and supervise one cycle.
@@ -84,8 +85,8 @@ reconciles the two: it rejects a missing, duplicated, or unregistered item, a
 title or milestone that disagrees with the draft and roadmap, incomplete or
 duplicated pagination, and any body that has drifted from its draft — including
 the labels and dependency edges the draft frontmatter carries. It also proves
-each registered issue appears exactly once on Orchestration Platform Delivery
-and every migrated source identity is absent from Chase Sets Delivery; Project
-presentation status is not authority because no roadmap field owns it. Board
+each registered issue appears exactly once on the delivery project the roadmap
+registers; Project presentation status is not authority because no roadmap
+field owns it. The checker reads this repository and its own project only. Board
 and drafts change in the same reviewed change; a board edited directly is
 drift, not authority.

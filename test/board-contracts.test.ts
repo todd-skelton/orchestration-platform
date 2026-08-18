@@ -43,11 +43,7 @@ function item(board: BoardSnapshot, key: string): BoardSnapshot["issues"][number
   return board.issues.find((row) => planningKeyOf(row.body) === key)!;
 }
 
-function synthesizeProjects(board: BoardSnapshot): {
-  destination: ProjectSnapshot;
-  source: ProjectSnapshot;
-  sourceBoard: BoardSnapshot;
-} {
+function synthesizeProjects(board: BoardSnapshot): { destination: ProjectSnapshot } {
   const destinationItems = board.issues.map((row, index) => ({
     id: `destination-${index}`,
     repository: planning.roadmap.repository,
@@ -55,28 +51,10 @@ function synthesizeProjects(board: BoardSnapshot): {
   }));
   return {
     destination: {
-      id: planning.migration.destinationProject.id,
-      title: planning.migration.destinationProject.title,
+      id: planning.roadmap.project.id,
+      title: planning.roadmap.project.title,
       totalCount: destinationItems.length,
       items: destinationItems,
-    },
-    source: {
-      id: planning.migration.sourceProject.id,
-      title: planning.migration.sourceProject.title,
-      totalCount: 0,
-      items: [],
-    },
-    sourceBoard: {
-      repository: planning.migration.sourceRepository,
-      totalCount: 2,
-      issues: planning.migration.postCensusAddendum.records.map((record: Record<string, any>) => ({
-        number: record.sourceIssueNumber,
-        title: `source ${record.sourceIssueNumber}`,
-        body: "",
-        milestone: null,
-        state: record.requiredSourceState,
-        stateReason: record.requiredSourceStateReason,
-      })),
     },
   };
 }
@@ -215,8 +193,6 @@ describe("board contract", () => {
       title: `issue ${index + 1}`,
       body: "",
       milestone: null,
-      state: "OPEN",
-      stateReason: null,
     }));
     const pages = [
       {
@@ -386,17 +362,9 @@ describe("board contract", () => {
     expect(() => validateBoardSnapshot(planning, board)).toThrow(/malformed or duplicated/);
   });
 
-  test("accepts exact destination project membership and terminal source cleanup", () => {
+  test("accepts exact destination project membership", () => {
     const projects = synthesizeProjects(baseline);
-    expect(() =>
-      validatePlanningProjects(
-        planning,
-        baseline,
-        projects.destination,
-        projects.source,
-        projects.sourceBoard,
-      ),
-    ).not.toThrow();
+    expect(() => validatePlanningProjects(planning, baseline, projects.destination)).not.toThrow();
   });
 
   test("ignores unrelated non-Issue Project items without aliasing their identity", () => {
@@ -406,15 +374,7 @@ describe("board contract", () => {
       { id: "draft-2", repository: undefined, number: undefined },
     );
     projects.destination.totalCount += 2;
-    expect(() =>
-      validatePlanningProjects(
-        planning,
-        baseline,
-        projects.destination,
-        projects.source,
-        projects.sourceBoard,
-      ),
-    ).not.toThrow();
+    expect(() => validatePlanningProjects(planning, baseline, projects.destination)).not.toThrow();
   });
 
   test.each([
@@ -435,52 +395,12 @@ describe("board contract", () => {
         projects.destination.totalCount += 1;
       },
     ],
-    [
-      "source cleanup residue",
-      (projects: ReturnType<typeof synthesizeProjects>) => {
-        projects.source.items.push({
-          id: "source-6999",
-          repository: planning.migration.sourceRepository,
-          number: 6999,
-        });
-        projects.source.totalCount = 1;
-      },
-    ],
-    [
-      "historical source migration residue",
-      (projects: ReturnType<typeof synthesizeProjects>) => {
-        projects.source.items.push({
-          id: "source-historical",
-          repository: planning.migration.sourceRepository,
-          number: planning.migration.sourceIssueNumbers[0],
-        });
-        projects.source.totalCount = 1;
-      },
-    ],
-    [
-      "source issue state",
-      (projects: ReturnType<typeof synthesizeProjects>) => {
-        projects.sourceBoard.issues[0]!.state = "OPEN";
-      },
-    ],
-    [
-      "source issue state reason",
-      (projects: ReturnType<typeof synthesizeProjects>) => {
-        projects.sourceBoard.issues[1]!.stateReason = null;
-      },
-    ],
   ])("refuses project mismatch: %s", (_name, mutate) => {
     const projects = synthesizeProjects(baseline);
     mutate(projects);
-    expect(() =>
-      validatePlanningProjects(
-        planning,
-        baseline,
-        projects.destination,
-        projects.source,
-        projects.sourceBoard,
-      ),
-    ).toThrow(/PROJECT_MISMATCH|BOARD_CONTRACT_MISMATCH/);
+    expect(() => validatePlanningProjects(planning, baseline, projects.destination)).toThrow(
+      /PROJECT_MISMATCH|BOARD_CONTRACT_MISMATCH/,
+    );
   });
 
   test("refuses a project provider cap boundary without its second page", () => {

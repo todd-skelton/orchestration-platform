@@ -5,8 +5,6 @@ export interface BoardItem {
   title: string;
   body: string;
   milestone: string | null;
-  state?: "OPEN" | "CLOSED";
-  stateReason?: "COMPLETED" | "NOT_PLANNED" | "REOPENED" | null;
 }
 
 export interface BoardSnapshot {
@@ -61,15 +59,11 @@ export declare function validatePlanningProjects(
   planning: PlanningSnapshot,
   board: BoardSnapshot,
   destinationProject: ProjectSnapshot,
-  sourceProject: ProjectSnapshot,
-  sourceBoard: BoardSnapshot,
 ): void;
 export declare function planningProjectMismatches(
   planning: PlanningSnapshot,
   board: BoardSnapshot,
   destinationProject: ProjectSnapshot,
-  sourceProject: ProjectSnapshot,
-  sourceBoard: BoardSnapshot,
 ): string[];
 export declare function loadProjectSnapshot(project: {
   id: string;

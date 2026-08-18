@@ -1,6 +1,5 @@
 export interface PlanningSnapshot {
   roadmap: Record<string, any>;
-  migration: Record<string, any>;
   issueDrafts: Record<string, string>;
   epicDrafts: Record<string, string>;
   rootPackage: Record<string, any>;

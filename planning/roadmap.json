@@ -1,6 +1,12 @@
 {
   "schemaVersion": "orchestration-roadmap/v1",
   "repository": "todd-skelton/orchestration-platform",
+  "project": {
+    "id": "PVT_kwHOAQbtE84BgoZg",
+    "number": 1,
+    "title": "Orchestration Platform Delivery",
+    "url": "https://github.com/users/todd-skelton/projects/1"
+  },
   "milestones": [
     {
       "key": "M1",

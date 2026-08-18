@@ -200,8 +200,6 @@ export function boardSnapshotFromGraphqlPages(repository, pages) {
         title: node?.title,
         body: node?.body,
         milestone: node?.milestone?.title ?? null,
-        state: node?.state,
-        stateReason: node?.stateReason ?? null,
       });
     }
   }
@@ -276,13 +274,7 @@ export function projectSnapshotFromGraphqlPages(project, pages) {
   return { id: project.id, title: project.title, totalCount, items };
 }
 
-export function planningProjectMismatches(
-  planning,
-  board,
-  destinationProject,
-  sourceProject,
-  sourceBoard,
-) {
+export function planningProjectMismatches(planning, board, destinationProject) {
   const problems = [];
   const byKey = indexBoardByKey(board);
   const destinationIdentityCounts = new Map();
@@ -311,54 +303,11 @@ export function planningProjectMismatches(
   for (const [identity, count] of destinationIdentityCounts) {
     if (count > 1) problems.push(`${identity} is duplicated on the destination project`);
   }
-  const migratedSourceIssueNumbers = [
-    ...planning.migration.sourceIssueNumbers,
-    ...planning.migration.postCensusAddendum.records.map((record) => record.sourceIssueNumber),
-  ];
-  for (const sourceIssueNumber of migratedSourceIssueNumbers) {
-    const matches = sourceProject.items.filter(
-      (item) =>
-        item.repository === planning.migration.sourceRepository &&
-        item.number === sourceIssueNumber,
-    );
-    if (matches.length !== 0) {
-      problems.push(`migrated #${sourceIssueNumber} remains on ${sourceProject.title}`);
-    }
-  }
-  for (const record of planning.migration.postCensusAddendum.records) {
-    const matches = sourceBoard.issues.filter((item) => item.number === record.sourceIssueNumber);
-    if (matches.length !== 1) {
-      problems.push(`source issue #${record.sourceIssueNumber} census has ${matches.length} rows`);
-      continue;
-    }
-    if (matches[0].state !== record.requiredSourceState) {
-      problems.push(
-        `source issue #${record.sourceIssueNumber} state is ${String(matches[0].state)} instead of ${record.requiredSourceState}`,
-      );
-    }
-    if (matches[0].stateReason !== record.requiredSourceStateReason) {
-      problems.push(
-        `source issue #${record.sourceIssueNumber} stateReason is ${String(matches[0].stateReason)} instead of ${record.requiredSourceStateReason}`,
-      );
-    }
-  }
   return problems;
 }
 
-export function validatePlanningProjects(
-  planning,
-  board,
-  destinationProject,
-  sourceProject,
-  sourceBoard,
-) {
-  const problems = planningProjectMismatches(
-    planning,
-    board,
-    destinationProject,
-    sourceProject,
-    sourceBoard,
-  );
+export function validatePlanningProjects(planning, board, destinationProject) {
+  const problems = planningProjectMismatches(planning, board, destinationProject);
   if (problems.length > 0) {
     fail(`${problems.length} project mismatch(es)\n  - ${problems.join("\n  - ")}`);
   }
@@ -384,7 +333,7 @@ export async function loadBoardSnapshot(repository) {
         "-F",
         `name=${name}`,
         "-f",
-        "query=query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$endCursor,states:[OPEN,CLOSED],orderBy:{field:CREATED_AT,direction:ASC}){totalCount nodes{number title body state stateReason milestone{title}} pageInfo{hasNextPage endCursor}}}}",
+        "query=query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$endCursor,states:[OPEN,CLOSED],orderBy:{field:CREATED_AT,direction:ASC}){totalCount nodes{number title body milestone{title}} pageInfo{hasNextPage endCursor}}}}",
       ],
       { maxBuffer: 256 * 1024 * 1024 },
     ));
@@ -437,17 +386,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (process.argv.length !== 2) fail("board checker accepts no arguments");
   const planning = await loadPlanningSnapshot();
   const board = await loadBoardSnapshot(planning.roadmap.repository);
-  const destinationProject = await loadProjectSnapshot(planning.migration.destinationProject);
-  const sourceProject = await loadProjectSnapshot(planning.migration.sourceProject);
-  const sourceBoard = await loadBoardSnapshot(planning.migration.sourceRepository);
+  const destinationProject = await loadProjectSnapshot(planning.roadmap.project);
   const issueProblems = boardMismatches(planning, board);
-  const projectProblems = planningProjectMismatches(
-    planning,
-    board,
-    destinationProject,
-    sourceProject,
-    sourceBoard,
-  );
+  const projectProblems = planningProjectMismatches(planning, board, destinationProject);
   const problems = [...issueProblems, ...projectProblems];
   if (problems.length > 0) {
     fail(`${problems.length} board/project mismatch(es)\n  - ${problems.join("\n  - ")}`);

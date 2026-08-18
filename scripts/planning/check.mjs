@@ -1,5 +1,4 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { capabilitySlotName, capabilitySlotRoot } from "../capability-slots.mjs";
@@ -58,209 +57,6 @@ function uniqueRows(rows, kind) {
     if (row.file && files.has(row.file)) fail(`duplicate ${kind} file ${row.file}`);
     keys.add(row.key);
     if (row.file) files.add(row.file);
-  }
-}
-
-function validateMigrationCoverage(snapshot, issueKeys, epicKeys) {
-  const migration = snapshot.migration;
-  const historicalBase = {
-    observedAt: migration.observedAt,
-    sourceRepository: migration.sourceRepository,
-    sourceProject: migration.sourceProject,
-    destinationRepository: migration.destinationRepository,
-    destinationProject: migration.destinationProject,
-    migrationPolicy: migration.migrationPolicy,
-    sourceIssueNumbers: migration.sourceIssueNumbers,
-    sourceBoardItemCount: migration.sourceBoardItemCount,
-    sourceIssuesNotOnSourceBoard: migration.sourceIssuesNotOnSourceBoard,
-    explicitExclusions: migration.explicitExclusions,
-    ownershipGroups: migration.ownershipGroups,
-  };
-  const historicalBaseBytes = Buffer.from(JSON.stringify(historicalBase), "utf8");
-  const historicalBaseDigest = createHash("sha256").update(historicalBaseBytes).digest("hex");
-  if (
-    historicalBaseBytes.byteLength !== 7126 ||
-    historicalBaseDigest !== "a8d168d55fdb2ee12da28988009d8e93c25675117e0f2b903c3c1f8edc832b7a"
-  ) {
-    fail("migration historical 183-record base moved");
-  }
-  if (migration.schemaVersion !== "orchestration-migration/v1") {
-    fail("unknown orchestration migration schema");
-  }
-  const source = migration.sourceIssueNumbers;
-  if (
-    !Array.isArray(source) ||
-    source.length === 0 ||
-    source.some((number) => !Number.isSafeInteger(number) || number <= 0) ||
-    new Set(source).size !== source.length
-  ) {
-    fail("migration source issue census is malformed or duplicated");
-  }
-  const absent = migration.sourceIssuesNotOnSourceBoard;
-  if (
-    !Array.isArray(absent) ||
-    absent.some((number) => !Number.isSafeInteger(number) || number <= 0) ||
-    absent.some((number) => !source.includes(number)) ||
-    new Set(absent).size !== absent.length ||
-    migration.sourceBoardItemCount + absent.length !== source.length
-  ) {
-    fail("migration source board census does not conserve issues");
-  }
-  const groups = migration.ownershipGroups;
-  if (!Array.isArray(groups) || groups.length === 0) fail("migration has no ownership groups");
-  uniqueRows(groups, "migration ownership group");
-  const allowedDestinations = new Set([...issueKeys, ...epicKeys]);
-  const allowedDispositions = new Set(["CAPTURED", "PARKED", "COMPLETED_PROVENANCE"]);
-  const covered = new Set();
-  for (const group of groups) {
-    if (!allowedDispositions.has(group.disposition)) {
-      fail(`migration group ${group.key} has unknown disposition ${group.disposition}`);
-    }
-    if (!Array.isArray(group.destinationKeys) || group.destinationKeys.length === 0) {
-      fail(`migration group ${group.key} has no destination owner`);
-    }
-    if (
-      new Set(group.destinationKeys).size !== group.destinationKeys.length ||
-      group.destinationKeys.some((key) => !allowedDestinations.has(key))
-    ) {
-      fail(`migration group ${group.key} has duplicate or unknown destination owner`);
-    }
-    if (
-      (group.disposition === "CAPTURED" || group.disposition === "PARKED") &&
-      group.destinationKeys.some((key) => !issueKeys.has(key))
-    ) {
-      fail(`migration group ${group.key} must use issue destination owners`);
-    }
-    if (typeof group.coverageStatement !== "string" || group.coverageStatement.trim() === "") {
-      fail(`migration group ${group.key} has no coverage statement`);
-    }
-    if (
-      group.disposition === "PARKED" &&
-      (typeof group.unparkCondition !== "string" || group.unparkCondition.trim() === "")
-    ) {
-      fail(`parked migration group ${group.key} has no unpark condition`);
-    }
-    if (!Array.isArray(group.sourceIssueNumbers) || group.sourceIssueNumbers.length === 0) {
-      fail(`migration group ${group.key} has no source issues`);
-    }
-    for (const number of group.sourceIssueNumbers) {
-      if (!source.includes(number))
-        fail(`migration group ${group.key} contains unknown issue ${number}`);
-      if (covered.has(number))
-        fail(`migration source issue ${number} has multiple ownership groups`);
-      covered.add(number);
-    }
-  }
-  if (
-    !sameArray(
-      [...covered].sort((a, b) => a - b),
-      [...source].sort((a, b) => a - b),
-    )
-  ) {
-    fail("migration ownership groups do not cover the exact source census");
-  }
-  const exclusions = migration.explicitExclusions?.issueNumbers;
-  if (
-    !Array.isArray(exclusions) ||
-    exclusions.some((number) => !Number.isSafeInteger(number) || number <= 0) ||
-    exclusions.some((number) => source.includes(number)) ||
-    new Set(exclusions).size !== exclusions.length
-  ) {
-    fail("migration exclusions overlap or are malformed");
-  }
-  const canonicalDestinationKeys = new Set();
-  for (const destinations of Object.values(migration.canonicalDestinations ?? {})) {
-    if (
-      !Array.isArray(destinations) ||
-      destinations.length === 0 ||
-      new Set(destinations).size !== destinations.length ||
-      destinations.some((key) => !issueKeys.has(key))
-    ) {
-      fail("migration canonical destination table contains an unknown issue");
-    }
-    for (const destination of destinations) canonicalDestinationKeys.add(destination);
-  }
-
-  const addendum = migration.postCensusAddendum;
-  const records = addendum?.records;
-  if (
-    addendum?.observedAt !== migration.observedAt ||
-    typeof addendum?.liveAuditRecordedAt !== "string" ||
-    Number.isNaN(Date.parse(addendum.liveAuditRecordedAt)) ||
-    addendum?.baseSnapshotRecordCount !== 183 ||
-    addendum.baseSnapshotRecordCount !== source.length ||
-    addendum?.addendumRecordCount !== 2 ||
-    !Array.isArray(records) ||
-    addendum.addendumRecordCount !== records.length ||
-    addendum?.totalProvenanceRecordCount !== source.length + records.length
-  ) {
-    fail("migration post-census addendum count mismatch");
-  }
-  const expectedAddendum = new Map([
-    [
-      6999,
-      {
-        destinationKey: "ISS-039",
-        sourceState: "OPEN",
-        sourceStateReason: "REOPENED",
-        sourceBoardPresence: "PRESENT",
-        sourceBoardRole: "PENDING_CLEANUP",
-      },
-    ],
-    [
-      7000,
-      {
-        destinationKey: "ISS-040",
-        sourceState: "OPEN",
-        sourceStateReason: null,
-        sourceBoardPresence: "PRESENT",
-        sourceBoardRole: "PENDING_CLEANUP",
-      },
-    ],
-  ]);
-  const seenAddendumIssues = new Set();
-  for (const record of records) {
-    const number = record.sourceIssueNumber;
-    if (
-      !Number.isSafeInteger(number) ||
-      number <= 0 ||
-      seenAddendumIssues.has(number) ||
-      source.includes(number) ||
-      exclusions.includes(number)
-    ) {
-      fail("migration post-census addendum identities overlap or are malformed");
-    }
-    seenAddendumIssues.add(number);
-    const expected = expectedAddendum.get(number);
-    if (!expected) fail(`migration post-census addendum contains unknown issue ${number}`);
-    if (
-      record.destinationKey !== expected.destinationKey ||
-      !issueKeys.has(record.destinationKey) ||
-      !canonicalDestinationKeys.has(record.destinationKey)
-    ) {
-      fail(`migration post-census addendum issue ${number} has noncanonical destination`);
-    }
-    if (
-      record.sourceState !== expected.sourceState ||
-      record.sourceStateReason !== expected.sourceStateReason
-    ) {
-      fail(`migration post-census addendum issue ${number} has invalid source state`);
-    }
-    if (
-      record.sourceBoardPresence !== expected.sourceBoardPresence ||
-      record.sourceBoardRole !== expected.sourceBoardRole ||
-      record.requiredSourceState !== "CLOSED" ||
-      record.requiredSourceStateReason !== "NOT_PLANNED" ||
-      record.requiredSourceBoardPresence !== "ABSENT" ||
-      record.requiredSourceBoardRole !== "SUPERSEDED_REMOVED" ||
-      typeof record.provenanceStatement !== "string" ||
-      record.provenanceStatement.trim() === ""
-    ) {
-      fail(`migration post-census addendum issue ${number} has invalid provenance`);
-    }
-  }
-  if (seenAddendumIssues.size !== expectedAddendum.size) {
-    fail("migration post-census addendum is incomplete");
   }
 }
 
@@ -449,6 +245,19 @@ export function validatePlanningSnapshot(snapshot) {
   if (roadmap.schemaVersion !== "orchestration-roadmap/v1") fail("unknown roadmap schema");
   if (roadmap.repository !== "todd-skelton/orchestration-platform")
     fail("roadmap repository mismatch");
+  const project = roadmap.project;
+  if (
+    typeof project?.id !== "string" ||
+    project.id === "" ||
+    !Number.isSafeInteger(project.number) ||
+    project.number <= 0 ||
+    typeof project.title !== "string" ||
+    project.title === "" ||
+    typeof project.url !== "string" ||
+    !project.url.startsWith("https://")
+  ) {
+    fail("roadmap delivery project registration is malformed");
+  }
   uniqueRows(roadmap.milestones, "milestone");
   uniqueRows(roadmap.epics, "epic");
   uniqueRows(roadmap.issues, "issue");
@@ -456,7 +265,6 @@ export function validatePlanningSnapshot(snapshot) {
   const milestoneTitles = new Map(roadmap.milestones.map((row) => [row.key, row.title]));
   const epicKeys = new Set(roadmap.epics.map((row) => row.key));
   const issueKeys = new Set(roadmap.issues.map((row) => row.key));
-  validateMigrationCoverage(snapshot, issueKeys, epicKeys);
   if (!sameArray(Object.keys(snapshot.issueDrafts).sort(), [...issueKeys].sort())) {
     fail("registered issue drafts and filesystem issue drafts differ");
   }
@@ -551,9 +359,6 @@ async function loadCapabilitySlots(root) {
 
 export async function loadPlanningSnapshot(root = defaultRoot) {
   const roadmap = JSON.parse(await readFile(resolve(root, "planning/roadmap.json"), "utf8"));
-  const migration = JSON.parse(
-    await readFile(resolve(root, "planning/chase-sets-orchestration-migration.json"), "utf8"),
-  );
   const draftNames = (await readdir(resolve(root, "planning/drafts"))).filter((name) =>
     name.endsWith(".md"),
   );
@@ -587,7 +392,6 @@ export async function loadPlanningSnapshot(root = defaultRoot) {
   }
   return {
     roadmap,
-    migration,
     issueDrafts,
     epicDrafts,
     rootPackage: JSON.parse(await readFile(resolve(root, "package.json"), "utf8")),
