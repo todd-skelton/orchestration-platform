@@ -36,11 +36,11 @@ roles. It resolves directive accessors only through that descriptor's installed
 release-reviewed catalog. It also proves the executing host-renderer artifact
 digest equals the exact row selected by the route's opaque worker-host identity
 in the installed active-release manifest, and recomputes that identity from the
-row's installed artifact digest while separately validating its embedded static
-host contract/capability census. The candidate or worker cannot supply this
-equality. A moved plan, descriptor, role, catalog, subject, host identity, host
-contract/capability census, host-renderer artifact, or rendered-byte digest
-refuses before ownership publication.
+row's installed artifact digest plus its closed canonical capability array. It
+uses the same total mapping admission and exact capability-membership relation
+as step 5. The candidate or worker cannot supply this equality. A moved plan,
+descriptor, role, catalog, subject, host identity, capability array, host-
+renderer artifact, or rendered-byte digest refuses before ownership publication.
 
 The complete steps 7–10 block is skipped only for a typed action that requires
 no worker or review; the module manifest must declare that capability and step

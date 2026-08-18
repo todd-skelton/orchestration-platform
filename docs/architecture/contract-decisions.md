@@ -274,50 +274,58 @@ are exactly those in `supervisor-contract.md`.
   ISS-021 is the first producer; any additional registered host, including
   ISS-045, produces a distinct reviewed artifact under the same contract.
 - Each host build also emits one closed `worker-host-identity/v1` projection
-  with exactly `hostRendererArtifactDigest` and `schemaVersion`, in that
-  canonical order. The digest is SHA-256 and `schemaVersion` is literal
-  `worker-host-identity/v1`. `workerHostIdentityDigest` uses domain
+  with exactly `capabilityNames`, `hostRendererArtifactDigest`, and
+  `schemaVersion`, in that canonical order. `schemaVersion` is literal
+  `worker-host-identity/v1`; `hostRendererArtifactDigest` is SHA-256; and
+  `capabilityNames` is a dense array of 1–256 identifiers matching
+  `[a-z][a-z0-9._:-]{0,63}`, strictly increasing in ASCII byte order and
+  therefore duplicate-free and case-sensitive. These are release-reviewed
+  lookup keys and are never rendered. `workerHostIdentityDigest` uses domain
   `worker-host-identity/v1` and these ordered framed parts: text
-  `schemaVersion`, then raw-32 `hostRendererArtifactDigest`. The exact artifact
-  already contains the closed static host contract and capability census; route
-  admission validates those bytes separately rather than adding derived digests
-  to the identity. The identity excludes provider/model names and selectors,
-  executable/path identity, credentials, mutable evidence or telemetry,
-  runtime configuration, route/dispatch/launch facts, worker output, and the
-  identity digest itself. It is stable only for that exact reviewed artifact:
-  any artifact, contract, capability, renderer, or template change changes the
-  artifact digest and therefore creates a new identity. No host-supplied
-  identity string is authority.
+  `schemaVersion`, raw-32 `hostRendererArtifactDigest`, then canonical
+  `capabilityNames` array bytes. The identity excludes provider/model names and
+  selectors, executable/path identity, credentials, mutable evidence or
+  telemetry, runtime configuration, route/dispatch/launch facts, worker output,
+  and the identity digest itself. It is stable only for that exact reviewed
+  artifact/capability pair: any artifact, capability, renderer, or template
+  change creates a new identity. No host-supplied identity string is authority.
 - `release-manifest/v1` contains a dense 1–16
   `workerHostRendererArtifacts` array of closed
   `worker-host-renderer-artifact/v1` records. Each record has exactly
-  `hostRendererArtifactDigest`, `schemaVersion`, and
-  `workerHostIdentityDigest`, in that canonical order; both digests are SHA-256
-  and the schema literal is `worker-host-renderer-artifact/v1`. Rows are unique
-  by `workerHostIdentityDigest`. The route selects only the opaque identity
-  digest; engine contracts never name a provider or executable. Every row's
-  identity is recomputed from its exact installed artifact digest and must equal
-  the recorded digest. ISS-020 owns the reviewed N0 manifest and install
-  read-back of this mapping; ISS-014 owns every reviewed successor manifest and
-  install read-back. Installation proves every mapped artifact and identity
-  digest against installed bytes and the selected active release. A candidate,
-  host, or worker cannot add, choose, or attest a row.
+  `capabilityNames`, `hostRendererArtifactDigest`, `schemaVersion`, and
+  `workerHostIdentityDigest`, in that canonical order. The capability array uses
+  the exact identity-projection rules, both digests are SHA-256, and the schema
+  literal is `worker-host-renderer-artifact/v1`. Rows are unique by
+  `workerHostIdentityDigest`. The total mapping admission relation snapshots
+  the complete dense array, parses every closed row and capability array,
+  recomputes each identity from that row's artifact digest plus canonical
+  capability array, requires equality, and then proves the 1–16 and unique-key
+  census; any unreadable row makes the whole mapping invalid. The route selects
+  only the opaque identity digest; engine contracts never name a provider or
+  executable. ISS-020 owns the reviewed N0 manifest and install read-back of
+  this mapping; ISS-014 owns every reviewed successor manifest and install
+  read-back. Installation proves every mapped artifact digest against installed
+  bytes, applies the same total relation to the read-back, and binds it to the
+  selected active release. A candidate, host, or worker cannot add, choose, or
+  attest a row.
 - At step 5, ISS-012 alone emits `route-selection/v1` with one
   `workerHostIdentityDigest` selected from the complete installed active-release
-  mapping. The selected artifact's embedded closed capability census must
-  contain the exact action capability; zero, duplicate, unknown, stale, moved,
-  or capability-incompatible rows refuse routing. Provider/model evidence may
-  refine a route but cannot manufacture or substitute the opaque host identity.
+  mapping after applying the same total admission relation. The selected row's
+  `capabilityNames` must contain the action core's exact case-sensitive
+  `capabilityName`; zero, duplicate, unknown, stale, moved, or capability-
+  incompatible rows refuse routing. Provider/model evidence may refine a route
+  but cannot manufacture or substitute the opaque host identity.
 - There is no separate template-registry digest. Before rendering or ownership
   publication, step 7 uses the route-selected `workerHostIdentityDigest` to
   select exactly one installed active-release mapping row, proves its executing
-  host artifact digest equals that row, and requires its role to equal both the
-  step-4 requested role and brief role. `dispatch-plan/v1` binds the unchanged
-  host identity, action-core, subject, descriptor, rendered-byte, and host-
-  renderer artifact digests. Missing, duplicate, stale, wrong-package,
-  candidate-supplied, self-reported, moved, identity/artifact-coordinated,
-  cross-host, manifest/read-back-substituted, or otherwise mismatched renderer
-  authority refuses before launch.
+  host artifact digest equals that row, reapplies the identical total mapping
+  relation and capability membership rule, and requires its role to equal both
+  the step-4 requested role and brief role. `dispatch-plan/v1` binds the
+  unchanged host identity, action-core, subject, descriptor, rendered-byte, and
+  host-renderer artifact digests. Missing, duplicate, stale, wrong-package,
+  candidate-supplied, self-reported, moved, capability/case-substituted,
+  identity/artifact-coordinated, cross-host, manifest/read-back-substituted, or
+  otherwise mismatched renderer authority refuses before launch.
 - `dispatch-brief-resource/v1` has exactly `access`,
   `resourceIdentityDigest`, and `schemaVersion`. `access` is exactly
   `READ|CREATE|MODIFY|DELETE` and `resourceIdentityDigest` is SHA-256.
