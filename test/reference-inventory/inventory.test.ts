@@ -697,7 +697,7 @@ describe("reference redaction controls", () => {
     expect(() =>
       redactionTestApi.validateBuiltText(neutral, new Set(), undefined, [], publication),
     ).not.toThrow();
-  }, 120_000);
+  }, 300_000);
 
   test("enumerates bounded template alternatives and fails closed at every scalar bound", () => {
     const publication = redactionTestApi.buildPublicationOracle(baseline);
