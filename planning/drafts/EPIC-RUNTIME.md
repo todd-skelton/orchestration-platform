@@ -2,7 +2,21 @@
 key: EPIC-RUNTIME
 title: "Epic: Establish the portable runtime foundation"
 labels: ["type:epic", "area:runtime"]
-children: [ISS-000, ISS-001, ISS-002, ISS-003, ISS-006, ISS-022, ISS-004, ISS-005, ISS-031, ISS-032, ISS-035, ISS-038]
+children:
+  [
+    ISS-000,
+    ISS-001,
+    ISS-002,
+    ISS-003,
+    ISS-006,
+    ISS-022,
+    ISS-004,
+    ISS-005,
+    ISS-031,
+    ISS-032,
+    ISS-035,
+    ISS-038,
+  ]
 ---
 
 ## Outcome
@@ -32,7 +46,7 @@ extends that foundation for cold-session self-hosting without ambient secrets.
   local Node runtime reaches parity.
 - Decisions: TypeScript, Node.js 24, pnpm, three equal operating-system targets.
   State authority additionally requires the ISS-022-proven fixed epoch lock;
-  ISS-004 owns the twelve-kind selection surface, the hash-chained linear
+  ISS-004 owns the eleven-kind selection surface, the hash-chained linear
   authority-history log, and single-epoch authority runs; ISS-032 only
   requests typed broker transitions.
 

@@ -67,8 +67,8 @@ describe("planning contract", () => {
       "epic membership",
       (snapshot: PlanningSnapshot) => {
         snapshot.epicDrafts["EPIC-RUNTIME"] = snapshot.epicDrafts["EPIC-RUNTIME"]!.replace(
-          "ISS-000, ",
-          "",
+          /\s+ISS-000,\r?\n/,
+          "\n",
         );
       },
     ],
@@ -211,7 +211,13 @@ describe("planning contract", () => {
     [
       "post-census addendum source state",
       (snapshot: PlanningSnapshot) => {
-        snapshot.migration.postCensusAddendum.records[0].sourceState = "OPEN";
+        snapshot.migration.postCensusAddendum.records[0].sourceState = "CLOSED";
+      },
+    ],
+    [
+      "post-census addendum source state reason",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[1].sourceStateReason = "REOPENED";
       },
     ],
     [
@@ -223,7 +229,38 @@ describe("planning contract", () => {
     [
       "post-census addendum board role",
       (snapshot: PlanningSnapshot) => {
-        snapshot.migration.postCensusAddendum.records[1].sourceBoardRole = "PROVENANCE_ONLY";
+        snapshot.migration.postCensusAddendum.records[1].sourceBoardRole = "SUPERSEDED_REMOVED";
+      },
+    ],
+    [
+      "post-census addendum board presence",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].sourceBoardPresence = "ABSENT";
+      },
+    ],
+    [
+      "post-census required source state",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].requiredSourceState = "OPEN";
+      },
+    ],
+    [
+      "post-census required source state reason",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[1].requiredSourceStateReason = null;
+      },
+    ],
+    [
+      "post-census required board presence",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].requiredSourceBoardPresence = "PRESENT";
+      },
+    ],
+    [
+      "post-census required board role",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.migration.postCensusAddendum.records[0].requiredSourceBoardRole =
+          "PENDING_CLEANUP";
       },
     ],
     [

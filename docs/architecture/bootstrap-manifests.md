@@ -225,7 +225,7 @@ as amended by the `Proportionality and schema lifecycle` decisions: every
 family is `v1`, including `state-mutation-authority-value/v1`, the
 `authority-history/v1` chain, reviewed operation, successor core, genesis
 bootstrap/selection evidence, derived `Drot`, run intent/current
-value/core, the ordinary/rotation commit-evidence union, evidence slot/packet, and the twelve-kind
+value/core, the ordinary/rotation commit-evidence union, evidence slot/packet, and the eleven-kind
 registry. Superseded
 pre-deployment generations are deleted, not archived; no diagnostic API
 exists. No authority version is implicitly migrated and no old record may be

@@ -40,14 +40,15 @@ The current registry uses the approved authority contracts:
 
 - pointer graph: `pointer-current-tip/v1`,
   `pointer-cas-proposal-receipt/v1`, `pointer-conflict-receipt/v1`,
-  `pointer-tombstone-value/v1`, and `authority-retention/v1`;
+  and `pointer-tombstone-value/v1`;
 - epoch/history: `state-mutation-authority-value/v1`,
   `reviewed-authority-operation/v1`,
   `state-mutation-successor-authority-core/v1`,
   `authority-history-genesis-bootstrap-input/v1`,
   `authority-history-genesis-selection-evidence/v1`,
   `state-mutation-authority-rotation-id/v1`,
-  `authority-history/v1` chain records,
+  `authority-history-record/v1` chain records (digested under
+  `authority-history/v1`),
   `pointer-evidence-slot/v1`, and `pointer-evidence-packet/v1`;
 - release/cleanup:
   `active-release/v1`, `activation-cleanup-gate-root/v1`,
@@ -63,7 +64,9 @@ The current registry uses the approved authority contracts:
   `recovery-authorization-consume-receipt/v1`,
   `native-removal-receipt/v1`,
   `recovery-authorization-revoke-receipt/v1`, and
-  `recovery-authorization-attachment/v1`;
+  `recovery-authorization-attachment/v1`, with the closed archives
+  `recovery-authorization-archive/v1` and
+  `recovery-authorization-attachment-archive/v1`;
 - commit journal: `pointer-mutation-run-checkpoint-core/v1`,
   `pointer-mutation-run-current-value/v1`,
   `pointer-mutation-run-selector-post-selection-observation/v1`, and
@@ -85,7 +88,6 @@ The current registry uses the approved authority contracts:
   `destination-owner-successor-authority/v1`,
   `destination-owner-independent-review/v1`,
   `state-mutation-destination-owner-successor-review-post-selection-receipt/v1`,
-  `state-mutation-destination-owner-retention/v1`,
   `state-mutation-bootstrap-anchor/v1`,
   `state-mutation-bootstrap-anchor-lifecycle-value/v1`,
   `state-mutation-bootstrap-anchor-use-intent/v1`,
@@ -104,15 +106,14 @@ Superseded pre-deployment generations are deleted from the package and its
 tests rather than frozen; an API-surface test proves no superseded symbol is
 reachable. No migration exists because no superseded authority was deployed.
 
-Exact current versions are readable. The named
-`platform-configuration/v0-fixture` alone is migratable. Missing, legacy,
-malformed, unknown, and future versions are refused.
+Exact current versions are readable. Missing, legacy, malformed, unknown,
+and future versions are refused; a v0 record refuses like any unknown version.
 
 ## Pointer registry and framing
 
-The closed runtime pointer registry has exactly twelve kinds and, for each kind, exact
-tip path, roots, archives, genesis mode, source tokens, retention class, and
-value schemas. Transaction path bindings are lowercase UUIDv7; unused/extra,
+The closed runtime pointer registry has exactly eleven kinds and, for each kind,
+exact tip path, roots, archives, genesis mode, source tokens, and value schemas.
+Transaction path bindings are lowercase UUIDv7; unused/extra,
 wrong-family, alternate, or partial bindings refuse. The fixed singleton lock is
 `installation/state-mutation.lock`. `ACTIVATION_RECOVERY_LAUNCH`,
 `RECOVERY_ATTEMPT_LOG`, and `RECOVERY_ATTEMPT_RESERVATION` each accept
@@ -120,11 +121,11 @@ exactly `recovery-fence` or `cleanup-gate-pre-fence`; all other runtime
 kinds require `none`. Unknown, differently cased/encoded, cross-family, or
 colliding paths/tokens refuse.
 
-The twelve kinds are `ACTIVE_RELEASE`, `ACTIVATION_CLEANUP_GATE`,
+The eleven kinds are `ACTIVE_RELEASE`, `ACTIVATION_CLEANUP_GATE`,
 `ACTIVATION_RECOVERY_FENCE`, `ACTIVATION_RECOVERY_LAUNCH`,
 `RECOVERY_AUTHORIZATION_STATE`, `RECOVERY_AUTHORIZATION_ATTACHMENT`,
 `RECOVERY_ATTEMPT_LOG`, `ACTIVATION_CLEANUP_ARCHIVE_HEAD`,
-`AUTHORITY_RETENTION`, `RECOVERY_ATTEMPT_RESERVATION`,
+`RECOVERY_ATTEMPT_RESERVATION`,
 `STATE_MUTATION_AUTHORITY_ROTATION`, and `POINTER_MUTATION_RUN_CURRENT`.
 
 Public tip, root, and archive constructors expand placeholders even inside a
@@ -146,8 +147,10 @@ then closed type tag, U64 byte length, and bytes for every part. Digests are raw
 32 bytes; nullable text/digests have distinct typed nulls; attempt-log tags are
 raw fixed bytes `00` and `01`, never text. Authority/history/run ordinals and
 counts are canonical decimal strings (`"0"|[1-9][0-9]*`) bounded by the
-JavaScript safe-integer range; a value above `2^53 - 1` refuses, and no
-arbitrary-precision numeric type exists. Goldens pin:
+JavaScript safe-integer range. Grammar, length, and lexicographic comparison
+against `Number.MAX_SAFE_INTEGER` occur before any numeric conversion; an
+overflow value never reaches `Number`, and no arbitrary-precision numeric type
+exists. Goldens pin:
 
 - Dp under `pointer-instance/v1`;
 - Dv under `pointer-value/v1`;
@@ -159,11 +162,12 @@ arbitrary-precision numeric type exists. Goldens pin:
 
 Values never contain the receipt/tip selecting them. Proposals are create-once
 `VALUE_PROPOSED|TOMBSTONE_PROPOSED` and classify only as PENDING, SELECTED,
-LOST_CONFLICT, COMPACTED, or UNKNOWN from exact winner evidence. Terminal
+LOST_CONFLICT, or UNKNOWN from exact winner evidence. Terminal
 authority selects `pointer-tombstone-value/v1`; the current tip is never deleted
-and bare absence never regains authority. The ten tombstone-enabled families
-use distinct ordinary and tombstone position domains and closed per-kind field
-contracts. Ordinary values require
+and bare absence never regains authority. The ten tombstone-enabled families —
+every registry kind except `STATE_MUTATION_AUTHORITY_ROTATION`, whose authority
+pointer is never removed — use distinct ordinary and tombstone position domains
+and closed per-kind field contracts. Ordinary values require
 `VALUE_PROPOSED/SELECT`; tombstones require `TOMBSTONE_PROPOSED/REMOVE`, an
 exact non-genesis selected ordinary predecessor, and closed
 `pointer-terminal-proof/v1` plus `pointer-archive-record/v1` evidence. The
@@ -188,13 +192,24 @@ teardown, and exact reinstall without parallel genesis.
 
 State mutation validators pin the fixed lock sequence, revocable ISS-004
 context identity, exact E0 bootstrap producer versus selected-stable rotation,
-and the twelve-kind census. `state-mutation-authority-value/v1` binds the
+and the eleven-kind census. `state-mutation-authority-value/v1` binds the
 selected `authority-history/v1` head ordinal and record digest. Both record
 arms bind the exact shared successor core `Dsc`: `G`, authority `Dp`, successor
 ordinal, release manifest/installed bytes/subject/review, derived reviewed-
 operation `Dop`, helper/profile/ABI/lock/state-component, and custody instance/
 observation. `Dop` is the closed BOOTSTRAP_INSTALL/STABLE_PROMOTION formula in
 `supervisor-contract.md`, not caller input.
+
+The normative simplified-authority schema ledger in `supervisor-contract.md`
+pins the literal `schemaVersion`, canonical JSON member order, scalar type,
+nullability/branch absence, enum census, storage disposition, digest domain,
+ordered framed parts, and selecting/downstream exclusions for `Dop`, `Dsc`,
+`Dgb`, `Dgse`, `Drot`, both `Dh` arms, the selected authority value, and both
+`Dcommit` arms. Conceptual labels in this document are aliases for those exact
+member names and never authorize an implementation-defined key. In particular,
+history files parse only as `authority-history-record/v1`; the distinct literal
+`authority-history/v1` is the `Dh` digest domain and is never accepted as a
+record `schemaVersion`.
 
 `GENESIS` binds ordinal zero, the genesis predecessor, and `Dgb`; `Dgb` binds
 the selected destination-owner and anchor ACTIVE triples, use intent,
@@ -210,9 +225,12 @@ rather than supplied as an input. Both records exclude successor value/proposal/
 downstream artifacts. Verification
 walks the complete chain from genesis against the selected head: a missing
 record at or below the head, a head-ordinal or digest mismatch, or a fork,
-gap, reorder, or truncation refuses; the path at head plus one must be absent
-or match the armed rotation intent and the path at head plus two must be
-absent. Lifetime-stable `G` excludes rotating
+gap, reorder, or truncation refuses. A head-plus-one record is accepted only
+when its ordinal is head plus one, its predecessor digest equals the selected
+head record digest, and its rotation identity and successor facts equal the
+selected CAS-armed journal plus its create-once intent record. With no selected
+armed intent, any head-plus-one file refuses; head plus two must be absent.
+Lifetime-stable `G` excludes rotating
 helper/profile/ABI/lock/state-component facts. En validates derived `Drot` and
 the exact chain append. ISS-004 owns
 locks, live handles, CAS, reconciliation, tombstones, history writes, and
@@ -226,12 +244,21 @@ selection observation for all nine stages and ends in exactly
 resolutions exclude their selecting selector graph. `PROPOSED` is live-only;
 persisted ordinary recovery remains `CRASH_PREFIX|CAS_AMBIGUOUS`.
 
+`pointer-mutation-commit-evidence/v1` has no persistence path or selecting
+pointer. The ledger's exact common members and branch-only members are embedded
+in `pointer-evidence-packet/v1`; missing, null-for-absent, extra, or wrong-arm
+members refuse before `Dcommit` is recomputed. ORDINARY binds its target slot to
+the exact selected target, recomputed real winner, or empty slot for SELECTED,
+LOST_CONFLICT, or UNKNOWN_TERMINAL. AUTHORITY_ROTATION binds the authority slot
+to old, successor, or empty for RESUMABLE, SELECTED, or UNKNOWN. Structural
+success without that outcome-to-slot equality never grants a capability.
+
 AUTHORITY_ROTATION composes the old E(n) intent and selected checkpoint 5,
 expected successor `Dv`/target mutation/head/record/`Drot`/`Dsc`, then exactly
 RESUMABLE old authority plus matching pending record, SELECTED exact successor
 authority plus record, or bounded UNKNOWN. Checkpoints 6–8, an ordinary
 resolution, selector evidence after checkpoint 5, or a successor-epoch write
-are schema errors. META_LEAF follows generic storage/classification/retention
+are schema errors. META_LEAF follows generic storage/classification
 but does not recursively journal itself.
 
 Recovery authorization core has closed BOOTSTRAP/SUCCESSOR unions. It excludes
@@ -309,20 +336,16 @@ authenticate both removal and selected prior producers. Authority history
 remains FULL_REQUIRED.
 
 The packet serializes the exact global identity, selected current authority,
-composed authority-history binding, twelve registry-ordered typed evidence
+composed authority-history binding, eleven registry-ordered typed evidence
 slots, and (for `MUTATION_COMMIT`) the exact `Dcommit` arm: nine-checkpoint
 ordinary evidence or checkpoint-5-only rotation evidence.
 Digest-only bags, reordered/duplicate slots, unselected producer triples, and
 a mutation purpose without a current commit refuse.
 
-Retention keeps destination/anchor lineage, physical identity/observations,
-authority history, and run audit FULL_REQUIRED. Terminal attempt history alone
-may use checkpoint compaction. Compaction requires selected non-pending
-classification, checkpoint, plan, and completion in order and never applies to
-PENDING/UNKNOWN.
-AUDIT_DEGRADED permits only existing recovery/retry/cleanup, selected attachment,
-and ordinary non-release ticks; it blocks new promotion/bootstrap/certification,
-unrelated authorization/attachment, compaction, and audit finalization.
+Every record class is FULL_REQUIRED, including destination/anchor lineage,
+physical identity/observations, authority history, run audit, and terminal
+attempt history. No retention pointer, compaction protocol, or degraded-audit
+mode exists. Loss of any required record is `UNKNOWN` and blocks mutation.
 
 The external bootstrap graph remains acyclic: selected owner/anchor lifecycle
 values do not embed the downstream successor-post or final consumption receipt.

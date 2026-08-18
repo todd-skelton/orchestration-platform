@@ -16,6 +16,7 @@
     "test": "vitest run",
     "verify:bootstrap": "node scripts/verify/bootstrap.mjs",
     "planning:check": "node scripts/planning/check.mjs",
+    "planning:board-check": "node scripts/planning/board-check.mjs",
     "bootstrap": "node bootstrap/bin/orchestration-bootstrap.mjs",
     "host-custody:bootstrap": "node packages/host-custody/bin/orchestration-host-custody-bootstrap.mjs",
     "inventory:check": "node scripts/capability-not-implemented.mjs ISS-001 inventory:check",
@@ -89,7 +90,11 @@
     "status:test": "node scripts/capability-not-implemented.mjs ISS-042 status:test",
     "status:golden": "node scripts/capability-not-implemented.mjs ISS-042 status:golden",
     "review:calibration": "node scripts/capability-not-implemented.mjs ISS-043 review:calibration",
-    "review:calibration-report": "node scripts/capability-not-implemented.mjs ISS-043 review:calibration-report"
+    "review:calibration-report": "node scripts/capability-not-implemented.mjs ISS-043 review:calibration-report",
+    "probe:host-claude": "node scripts/capability-not-implemented.mjs ISS-044 probe:host-claude",
+    "probe:host-claude:verify": "node scripts/capability-not-implemented.mjs ISS-044 probe:host-claude:verify",
+    "host:claude:conformance": "node scripts/capability-not-implemented.mjs ISS-045 host:claude:conformance",
+    "host:claude:probe": "node scripts/capability-not-implemented.mjs ISS-045 host:claude:probe"
   },
   "devDependencies": {
     "@types/node": "26.2.0",

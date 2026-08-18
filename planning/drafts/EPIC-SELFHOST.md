@@ -51,13 +51,10 @@ post-self-host improvements unless a measured blocker promotes them.
 - Decision registry: bootstrap root, release layout, and predecessor authority
   are settled in `docs/architecture/contract-decisions.md`.
   Reviewed bootstrap owns state-authority genesis/reinstall; later authority
-  rotation is a forward ISS-014 request. ISS-004 rotates in one single-epoch
-  run under E(n) that appends the `authority-history/v1` record and performs
-  the authority CAS as its final action, legitimately resting CAS-armed.
-  Prior-selected/exact-pending evidence is resumable under E(n), while
-  successor-selected/exact-`Drot`/`Dsc`-record/old-checkpoint-5 evidence derives
-  `SELECTED`; otherwise truth is `UNKNOWN`. Rotation stage6–8, ordinary
-  resolution, later selector evidence, and E(n+1) writes refuse.
+  rotation is a forward ISS-014 request. ISS-004 alone executes it under the
+  canonical `Authority rotation` protocol in `supervisor-contract.md` and
+  `state-machines.md`, appending `authority-history-record/v1` bytes whose
+  `Dh` uses the `authority-history/v1` domain.
 
 ## Child index
 

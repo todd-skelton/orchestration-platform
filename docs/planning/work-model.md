@@ -51,14 +51,14 @@ that edits the registration and every census table restating it together, with
 the owning issue named in the change. Frozen scaffold is not immutable
 scaffold; an amendment without its census updates fails verification.
 
-Every replan and independent review includes one proportionality check. For
-each retained or proposed mechanism, it records the concrete in-scope threat,
-the deletion test, the smallest credible alternative, and why the selected
-shape is smaller or better evidenced. A finding may delete machinery or adopt
-a strictly smaller replacement in the same repair. No protocol requires
-repeated "clean removal" rounds: the repaired packet returns to the ordinary
-independent review gate. Complexity that only defends against threats the
-architecture excludes is a finding, not a safeguard.
+Every replan and independent review includes one bounded proportionality check.
+For each retained or proposed mechanism, it records the concrete in-scope
+threat, the deletion test, the smallest credible alternative, and why the
+selected shape is smaller or better evidenced. A finding may delete machinery
+or adopt a strictly smaller replacement in the same repair. The repaired packet
+returns to the ordinary independent exact-head review gate; there is no
+repeat-until-clean removal ritual. Complexity that only defends against threats
+the architecture excludes is a finding, not a safeguard.
 
 Portable planning standards also register a falsifiable prediction and
 review-by horizon, express acceptance criteria as observable properties with
@@ -76,3 +76,16 @@ Reduction audits classify lifecycle timing and external-authority admission as
 correctness dependencies before removing edges. A direct edge is retained when
 the alternate path does not itself establish that timing or authority; closure
 alone is insufficient evidence to erase a semantically distinct gate.
+
+Drafts are the source of truth and the registered board mirrors them. Each
+board item opens with a `planning-key` marker, then its parent-epic reference
+and source-draft link, then the verbatim draft. `pnpm run planning:board-check`
+reconciles the two: it rejects a missing, duplicated, or unregistered item, a
+title or milestone that disagrees with the draft and roadmap, incomplete or
+duplicated pagination, and any body that has drifted from its draft — including
+the labels and dependency edges the draft frontmatter carries. It also proves
+each registered issue appears exactly once on Orchestration Platform Delivery
+and every migrated source identity is absent from Chase Sets Delivery; Project
+presentation status is not authority because no roadmap field owns it. Board
+and drafts change in the same reviewed change; a board edited directly is
+drift, not authority.

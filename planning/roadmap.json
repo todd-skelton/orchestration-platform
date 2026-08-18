@@ -79,6 +79,8 @@
     { "key": "ISS-018", "file": "planning/drafts/ISS-018.md", "milestone": "M5", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-017", "ISS-024"] },
     { "key": "ISS-041", "file": "planning/drafts/ISS-041.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-003"] },
     { "key": "ISS-042", "file": "planning/drafts/ISS-042.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-010"] },
-    { "key": "ISS-043", "file": "planning/drafts/ISS-043.md", "milestone": "M3", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-009", "ISS-021"] }
+    { "key": "ISS-043", "file": "planning/drafts/ISS-043.md", "milestone": "M3", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-009", "ISS-021"] },
+    { "key": "ISS-044", "file": "planning/drafts/ISS-044.md", "milestone": "M4", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-021"] },
+    { "key": "ISS-045", "file": "planning/drafts/ISS-045.md", "milestone": "M4", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-044"] }
   ]
 }

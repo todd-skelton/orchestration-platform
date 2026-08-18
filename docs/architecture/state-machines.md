@@ -14,7 +14,6 @@ and tips form the acyclic `Dv/Dr/Dt` graph in `supervisor-contract.md`.
 | `PENDING`               | create-once value and proposal, no selected winner yet       | under the same epoch lock perform the real CAS/read-back |
 | `SELECTED`              | canonical tip equals the proposed `Dv/Dr`                    | idempotent read; never reapply                           |
 | `LOST_CONFLICT`         | a different selected winner and exact conflict receipt       | retain for census/audit                                  |
-| `COMPACTED`             | selected retention plan and completion receipt               | retain the compacted classification proof                |
 | `UNKNOWN`               | malformed, contradictory, missing, fake-lost, or mixed epoch | external diagnosis; refuse mutation/start                |
 
 The `ORDINARY` durable commit resolution states are exactly:
@@ -44,10 +43,11 @@ does not recursively journal itself.
 
 An ordinary commit rereads the same selected authority before and after target
 selection. Rotation runs under the old private capability, resolves every
-pending proposal among the other eleven kinds of the twelve-kind registry,
+pending proposal among the other ten kinds of the eleven-kind registry,
 requires a complete zero-unrelated-PENDING/zero-UNKNOWN census, appends the
-exact `authority-history/v1` chain record, and performs the authority CAS as
-its final action; its run-current journal legitimately rests at the selected
+exact `authority-history-record/v1` record (with `Dh` under
+`authority-history/v1`), and performs the authority CAS as its final action;
+its run-current journal legitimately rests at the selected
 `CAS_ARMED` checkpoint across the selection. Authority CAS revokes the old
 context; selected authority, exact chain head, and the old CAS-armed checkpoint
 derive terminal truth without a post-CAS write. Kernel owner death is
@@ -104,8 +104,11 @@ transition. Records live at canonical ordinal-derived paths;
 the walk constructs the path of record `n+1` from `n` and never enumerates a
 directory. Verification walks the complete chain from genesis and compares the
 selected head ordinal and digest: a missing record at or below the head
-refuses, the path at head plus one must be absent or match the armed rotation
-intent, the path at head plus two must be absent, and a file outside the
+refuses. A head-plus-one record is accepted only when its ordinal is head plus
+one, its predecessor digest equals the selected head record digest, and its
+rotation identity and successor facts equal the selected CAS-armed journal and
+its create-once intent record. With no selected armed intent, any head-plus-one
+file refuses. The path at head plus two must be absent, and a file outside the
 canonical ordinal paths carries no authority. Ordinals are canonical decimal
 strings bounded by the safe-integer range; grammar, length, and lexicographic
 comparison refuse above `Number.MAX_SAFE_INTEGER` before conversion.
@@ -113,6 +116,12 @@ Historical producer projections derive from the selected authority value and
 the fully walked chain. `G` remains identical across rotations and excludes
 rotating helper/profile/ABI/lock/state-component facts. Projections revoke
 when the context/head changes.
+
+The record `schemaVersion` is always `authority-history-record/v1`; the
+similarly named `authority-history/v1` is only the branch-separated digest
+domain. The supervisor ledger's literal member sets and absence rules are part
+of every transition guard. No state-machine implementation may derive JSON
+keys from the `G`/`Dop`/`Dsc`/`Dgb`/`Dgse`/`Drot`/`Dh` labels.
 
 ### Authority rotation
 
@@ -154,6 +163,14 @@ arbitrary JSON, native text, paths, and arrays refuse. Packet arrays are bounded
 by the closed evidence-slot census, not lifetime history. A structurally valid
 serialized packet without the corresponding live ISS-004 handle grants no
 authority.
+
+The exact `pointer-mutation-commit-evidence/v1` member census in the supervisor
+ledger makes outcome-to-slot equality executable. Ordinary SELECTED and
+LOST_CONFLICT require the selected target or recomputed winner in the target
+slot, while UNKNOWN_TERMINAL requires it empty; rotation RESUMABLE/SELECTED/
+UNKNOWN require the old/successor/empty authority slot respectively. Wrong,
+empty-at-positive, or nonempty-at-unknown slots refuse before capability
+issuance.
 
 ## Worker process and ownership
 
@@ -335,19 +352,13 @@ self-loop write is allowed. Root/head histories are complete, dense,
 digest-linked arrays validated with the shared closed-array snapshot. Their
 canonical selected pointers never CAS from bare absence after genesis.
 
-### Retention and degraded audit
+### Required record retention
 
-Destination owner/anchor, physical identity/observations, state-authority
-history, and run-current audit are FULL_REQUIRED and may not be discarded.
-Terminal attempt history may compact only after a selected checkpoint, selected
-plan, exact deletion, verified receipt, and completion selection. Pending
-proposals never compact.
-Unexpected old terminal loss may select `AUDIT_DEGRADED` only after an eligible
-checkpoint/tombstone. That state permits existing forward recovery, retry,
-cleanup, selected attachment, and ordinary non-release ticks; it blocks new
-promotion/bootstrap/certification, unrelated authorization/attachment,
-compaction, and audit finalization. Any earlier or full-required loss is
-`UNKNOWN` and blocks all mutation/start.
+Every record class is FULL_REQUIRED and may not be discarded or compacted.
+Loss of destination owner/anchor, physical identity/observations,
+state-authority history, run-current audit, terminal attempt history, or any
+other required record is `UNKNOWN` and blocks mutation/start. No retention
+transition or degraded-audit mode exists.
 
 ## Shadow discrepancy
 
