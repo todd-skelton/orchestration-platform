@@ -1038,6 +1038,116 @@ export function validateCommitCheckpointSequence(
   return Object.freeze([...new Set(issues)].sort());
 }
 
+export function validateCommitCheckpointEvidenceSequence(
+  input: unknown,
+  commitKind: "ORDINARY" | "AUTHORITY_ROTATION",
+): readonly string[] {
+  const checkpoints = snapshotClosedArray(input);
+  if (!checkpoints.ok) return checkpoints.issues;
+  const expectedLength = commitKind === "ORDINARY" ? 9 : 6;
+  if (checkpoints.value.length !== expectedLength) return ["checkpoints:length"];
+  const issues: string[] = [];
+  const cores: ContractRecord[] = [];
+  let firstCore: ContractRecord | null = null;
+  let firstRunId: unknown;
+  let epochTip: unknown;
+  let epochValue: unknown;
+  let epochReceipt: unknown;
+  let priorAuditDigest: string | null = null;
+  let priorSelectorTipDigest: string | null = null;
+  let priorSelectorValueDigest: string | null = null;
+  let priorSelectorReceiptDigest: string | null = null;
+  let priorObservationDigest: string | null = null;
+  let stageSevenResolutionDigest: string | null = null;
+
+  for (let index = 0; index < checkpoints.value.length; index += 1) {
+    const parsed = parseRunCheckpointEvidence(checkpoints.value[index]);
+    if (!parsed.ok) {
+      issues.push(...parsed.issues.map((issue) => `${index}:${issue}`));
+      continue;
+    }
+    const wrapper = parsed.value;
+    const core = parseRunCheckpointCore(wrapper.core);
+    const segment = parseRunSegment(wrapper.segment);
+    const observation = parseRunPostSelectionObservation(wrapper.postSelectionObservation);
+    const selection = snapshotClosedRecord(wrapper.selectorSelection, ["proposal", "tip", "value"]);
+    const proposal = selection.ok ? parsePointerProposal(selection.value.proposal) : selection;
+    const tip = selection.ok ? parsePointerCurrentTip(selection.value.tip) : selection;
+    if (!core.ok || !segment.ok || !observation.ok || !selection.ok || !proposal.ok || !tip.ok) {
+      issues.push(`${index}:checkpointEvidence:unreadable`);
+      continue;
+    }
+    cores.push(core.value);
+    firstCore ??= core.value;
+    firstRunId ??= segment.value.runId;
+    epochTip ??= proposal.value.authorityEpochTipDigest;
+    epochValue ??= proposal.value.authorityEpochValueDigest;
+    epochReceipt ??= proposal.value.authorityEpochReceiptDigest;
+
+    if (core.value.checkpointOrdinal !== String(index)) issues.push(`${index}:checkpointOrdinal`);
+    if (core.value.stage !== commitRunStages[index]) issues.push(`${index}:stage`);
+    if (segment.value.runId !== firstRunId) issues.push(`${index}:runId`);
+    for (const [field, expected] of [
+      ["authorityEpochTipDigest", epochTip],
+      ["authorityEpochValueDigest", epochValue],
+      ["authorityEpochReceiptDigest", epochReceipt],
+    ] as const)
+      if (proposal.value[field] !== expected) issues.push(`${index}:${field}:epoch-mismatch`);
+    if (proposal.value.producerKind !== "SELECTED_EPOCH")
+      issues.push(`${index}:producerKind:not-selected-epoch`);
+
+    if (firstCore !== null)
+      for (const field of [
+        "canonicalPointerPath",
+        "globalIdentityDigest",
+        "installationId",
+        "pointerKind",
+        "projectId",
+        "runOrdinal",
+        "sourceToken",
+        "stateRootDigest",
+        "targetMutationId",
+        "targetPathInstanceDigest",
+        "transactionId",
+      ] as const)
+        if (core.value[field] !== firstCore[field]) issues.push(`${index}:${field}`);
+
+    const segmentDigest = computeRunSegmentDigest(segment.value);
+    const expectedAuditDigest = computeRunAuditDigest(priorAuditDigest, segmentDigest);
+    if (core.value.auditDigest !== expectedAuditDigest) issues.push(`${index}:auditDigest`);
+    for (const [field, expected] of [
+      ["priorSelectorTipDigest", priorSelectorTipDigest],
+      ["priorSelectorValueDigest", priorSelectorValueDigest],
+      ["priorSelectorReceiptDigest", priorSelectorReceiptDigest],
+      ["priorPostSelectionObservationDigest", priorObservationDigest],
+    ] as const)
+      if (core.value[field] !== expected) issues.push(`${index}:${field}`);
+
+    if (index === 7 && wrapper.terminalResolution !== null)
+      stageSevenResolutionDigest = computeCommitResolutionDigest(wrapper.terminalResolution);
+    if (
+      index === 8 &&
+      wrapper.terminalResolution !== null &&
+      computeCommitResolutionDigest(wrapper.terminalResolution) !== stageSevenResolutionDigest
+    )
+      issues.push("8:terminalResolution:not-stage-seven");
+
+    priorAuditDigest = core.value.auditDigest as string;
+    priorSelectorTipDigest = computeCurrentTipDigest(tip.value);
+    priorSelectorValueDigest = tip.value.valueDigest as string;
+    priorSelectorReceiptDigest = tip.value.proposalReceiptDigest as string;
+    priorObservationDigest = computeRunPostSelectionObservationDigest(observation.value);
+  }
+
+  issues.push(...validateCommitCheckpointSequence(cores, commitKind));
+  if (firstCore !== null) {
+    const rotationTarget = firstCore.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION";
+    if ((commitKind === "AUTHORITY_ROTATION") !== rotationTarget)
+      issues.push("commitKind:pointerKind-mismatch");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
 export function parseCommitContract(
   expectedSchemaVersion: string,
   input: unknown,
