@@ -101,14 +101,31 @@ const postSelectionObservationFields = Object.freeze([
   "tipReadbackDigest",
   "valueReadbackDigest",
 ] as const);
+const commitResolutionFields = Object.freeze([
+  "conflictReceiptDigest",
+  "outcome",
+  "outcomeEvidenceDigest",
+  "producerAuthorityPathInstanceDigest",
+  "producerAuthorityReceiptDigest",
+  "producerAuthorityTipDigest",
+  "producerAuthorityValueDigest",
+  "resolvedAt",
+  "schemaVersion",
+  "selectedTargetTipDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "unknownEvidenceDigest",
+] as const);
 
 export const commitSchemaFields = Object.freeze({
+  commitResolution: commitResolutionFields,
   checkpointCore: checkpointCoreFields,
   runSegment: runSegmentFields,
   runCurrentValue: runCurrentValueFields,
   postSelectionObservation: postSelectionObservationFields,
 });
 export const commitSchemaVersions = Object.freeze([
+  "pointer-mutation-commit-resolution/v1",
   "pointer-mutation-run-checkpoint-core/v1",
   "pointer-mutation-run-current-value/v1",
   "pointer-mutation-run-segment/v1",
@@ -131,6 +148,63 @@ function nullableDigestIssues(record: ContractRecord, fields: readonly string[])
 
 function terminalPhase(phase: unknown): boolean {
   return ["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(String(phase));
+}
+
+export function parseCommitResolution(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, commitResolutionFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-commit-resolution/v1")
+    issues.push("schemaVersion:mismatch");
+  if (!["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(String(record.outcome)))
+    issues.push("outcome:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "outcomeEvidenceDigest",
+      "producerAuthorityPathInstanceDigest",
+      "producerAuthorityReceiptDigest",
+      "producerAuthorityTipDigest",
+      "producerAuthorityValueDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+    ...nullableDigestIssues(record, [
+      "conflictReceiptDigest",
+      "selectedTargetTipDigest",
+      "unknownEvidenceDigest",
+    ]),
+  );
+  if (!isCanonicalTimestamp(record.resolvedAt)) issues.push("resolvedAt:invalid");
+  const selected = record.outcome === "SELECTED";
+  const lost = record.outcome === "LOST_CONFLICT";
+  const unknown = record.outcome === "UNKNOWN_TERMINAL";
+  if (
+    selected
+      ? !isSha256(record.selectedTargetTipDigest) ||
+        record.conflictReceiptDigest !== null ||
+        record.unknownEvidenceDigest !== null ||
+        record.outcomeEvidenceDigest !== record.selectedTargetTipDigest
+      : lost
+        ? record.selectedTargetTipDigest !== null ||
+          !isSha256(record.conflictReceiptDigest) ||
+          record.unknownEvidenceDigest !== null ||
+          record.outcomeEvidenceDigest !== record.conflictReceiptDigest
+        : unknown
+          ? record.selectedTargetTipDigest !== null ||
+            record.conflictReceiptDigest !== null ||
+            !isSha256(record.unknownEvidenceDigest) ||
+            record.outcomeEvidenceDigest !== record.unknownEvidenceDigest
+          : false
+  )
+    issues.push("outcome:evidence-union-mismatch");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeCommitResolutionDigest(input: unknown): string {
+  const parsed = parseCommitResolution(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("pointer-mutation-commit-resolution/v1", [frame.canonical(parsed.value)]);
 }
 
 function validateStagePhase(record: ContractRecord): string[] {
@@ -324,6 +398,122 @@ export function validateRunCurrentSelection(
   ] as const)
     if (current.value[field] !== core.value[field]) issues.push(`${field}:mismatch`);
   return Object.freeze(issues);
+}
+
+export function validateRunTerminalResolution(
+  checkpointCoreInput: unknown,
+  resolutionInput: unknown,
+): readonly string[] {
+  const core = parseRunCheckpointCore(checkpointCoreInput);
+  const resolution = parseCommitResolution(resolutionInput);
+  if (!core.ok || !resolution.ok)
+    return Object.freeze([
+      ...(!core.ok ? core.issues.map((issue) => `core:${issue}`) : []),
+      ...(!resolution.ok ? resolution.issues.map((issue) => `resolution:${issue}`) : []),
+    ]);
+  const issues: string[] = [];
+  if (core.value.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION")
+    issues.push("pointerKind:rotation-resolution-forbidden");
+  if (
+    core.value.stage !== "PROPOSAL_CLASSIFIED" &&
+    core.value.stage !== "CURRENT_AUTHORITY_POST_CAS_READ"
+  )
+    issues.push("stage:not-terminal");
+  if (core.value.phase !== resolution.value.outcome) issues.push("outcome:phase-mismatch");
+  if (core.value.terminalResolutionDigest !== computeCommitResolutionDigest(resolution.value))
+    issues.push("terminalResolutionDigest:mismatch");
+  for (const field of ["targetMutationId", "targetPathInstanceDigest"] as const)
+    if (core.value[field] !== resolution.value[field]) issues.push(`${field}:mismatch`);
+  return Object.freeze(issues);
+}
+
+const ordinaryResolutionBindingFields = Object.freeze([
+  "commitKind",
+  "globalIdentityDigest",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "outcome",
+  "packetAuthorityKind",
+  "packetAuthorityPathInstanceDigest",
+  "packetAuthorityReceiptDigest",
+  "packetAuthorityTipDigest",
+  "packetAuthorityValueDigest",
+  "priorCheckpointDigest",
+  "runId",
+  "runOrdinal",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+] as const);
+
+export function validateCommitResolutionBinding(
+  resolutionInput: unknown,
+  ordinaryCommitBindingInput: unknown,
+): readonly string[] {
+  const resolution = parseCommitResolution(resolutionInput);
+  const binding = snapshotClosedRecord(ordinaryCommitBindingInput, ordinaryResolutionBindingFields);
+  if (!resolution.ok || !binding.ok)
+    return Object.freeze([
+      ...(!resolution.ok ? resolution.issues.map((issue) => `resolution:${issue}`) : []),
+      ...(!binding.ok ? binding.issues.map((issue) => `binding:${issue}`) : []),
+    ]);
+  const expected = binding.value;
+  const issues: string[] = [];
+  if (expected.commitKind !== "ORDINARY") issues.push("commitKind:not-ordinary");
+  if (expected.packetAuthorityKind !== "KNOWN") issues.push("packetAuthorityKind:not-known");
+  for (const field of [
+    "globalIdentityDigest",
+    "oldAuthorityPathInstanceDigest",
+    "oldAuthorityReceiptDigest",
+    "oldAuthorityTipDigest",
+    "oldAuthorityValueDigest",
+    "packetAuthorityPathInstanceDigest",
+    "packetAuthorityReceiptDigest",
+    "packetAuthorityTipDigest",
+    "packetAuthorityValueDigest",
+    "runId",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+  ] as const)
+    if (!isSha256(expected[field])) issues.push(`${field}:invalid`);
+  if (expected.priorCheckpointDigest !== null && !isSha256(expected.priorCheckpointDigest))
+    issues.push("priorCheckpointDigest:invalid");
+  if (!isCanonicalDecimal(expected.runOrdinal)) issues.push("runOrdinal:invalid");
+  const equalities = [
+    [
+      "producerAuthorityPathInstanceDigest",
+      "oldAuthorityPathInstanceDigest",
+      "packetAuthorityPathInstanceDigest",
+    ],
+    ["producerAuthorityReceiptDigest", "oldAuthorityReceiptDigest", "packetAuthorityReceiptDigest"],
+    ["producerAuthorityTipDigest", "oldAuthorityTipDigest", "packetAuthorityTipDigest"],
+    ["producerAuthorityValueDigest", "oldAuthorityValueDigest", "packetAuthorityValueDigest"],
+  ] as const;
+  for (const [resolutionField, oldField, packetField] of equalities)
+    if (
+      resolution.value[resolutionField] !== expected[oldField] ||
+      resolution.value[resolutionField] !== expected[packetField]
+    )
+      issues.push(`${resolutionField}:authority-mismatch`);
+  for (const field of ["outcome", "targetMutationId", "targetPathInstanceDigest"] as const)
+    if (resolution.value[field] !== expected[field]) issues.push(`${field}:mismatch`);
+  try {
+    const expectedRunId = computeRunId({
+      authorityPathInstanceDigest: expected.oldAuthorityPathInstanceDigest,
+      authorityReceiptDigest: expected.oldAuthorityReceiptDigest,
+      authorityTipDigest: expected.oldAuthorityTipDigest,
+      authorityValueDigest: expected.oldAuthorityValueDigest,
+      globalIdentityDigest: expected.globalIdentityDigest,
+      priorCheckpointDigest: expected.priorCheckpointDigest,
+      runOrdinal: expected.runOrdinal,
+      targetMutationId: expected.targetMutationId,
+    });
+    if (expected.runId !== expectedRunId) issues.push("runId:authority-mismatch");
+  } catch {
+    issues.push("runId:inputs-invalid");
+  }
+  return Object.freeze([...new Set(issues)].sort());
 }
 
 export function validateRunSegmentCore(
@@ -525,6 +715,8 @@ export function parseCommitContract(
   input: unknown,
 ): ParseResult | undefined {
   switch (expectedSchemaVersion) {
+    case "pointer-mutation-commit-resolution/v1":
+      return parseCommitResolution(input);
     case "pointer-mutation-run-checkpoint-core/v1":
       return parseRunCheckpointCore(input);
     case "pointer-mutation-run-current-value/v1":

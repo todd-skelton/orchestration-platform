@@ -2,24 +2,82 @@ import { describe, expect, test } from "vitest";
 import {
   commitRunStages,
   commitJournalPaths,
+  computeCommitResolutionDigest,
   computeRunAuditDigest,
   computeRunCheckpointCoreDigest,
   computeRunId,
   computeRunPostSelectionObservationDigest,
   computeRunSegmentDigest,
   parseContract,
+  parseCommitResolution,
   parseRunCheckpointCore,
   parseRunCurrentValue,
   parseRunPostSelectionObservation,
   parseRunSegment,
   validateCommitCheckpointSequence,
+  validateCommitResolutionBinding,
   validateRunCurrentSelection,
   validateRunSegmentCore,
+  validateRunTerminalResolution,
 } from "../../packages/contracts/src/index.js";
 
 const d = (value: string) => value.repeat(64);
 const installationId = "018f0f4d-7b2d-7a11-8a2b-123456789abc";
 const projectId = "018f0f4d-7b2d-7a11-9a2b-123456789abc";
+
+function resolution(outcome = "SELECTED") {
+  const evidenceDigest =
+    outcome === "SELECTED" ? d("1") : outcome === "LOST_CONFLICT" ? d("2") : d("3");
+  return {
+    conflictReceiptDigest: outcome === "LOST_CONFLICT" ? evidenceDigest : null,
+    outcome,
+    outcomeEvidenceDigest: evidenceDigest,
+    producerAuthorityPathInstanceDigest: d("4"),
+    producerAuthorityReceiptDigest: d("5"),
+    producerAuthorityTipDigest: d("6"),
+    producerAuthorityValueDigest: d("7"),
+    resolvedAt: "2026-08-18T14:30:00.000Z",
+    schemaVersion: "pointer-mutation-commit-resolution/v1",
+    selectedTargetTipDigest: outcome === "SELECTED" ? evidenceDigest : null,
+    targetMutationId: d("a"),
+    targetPathInstanceDigest: d("b"),
+    unknownEvidenceDigest: outcome === "UNKNOWN_TERMINAL" ? evidenceDigest : null,
+  };
+}
+
+function resolutionBinding() {
+  const common = {
+    commitKind: "ORDINARY",
+    globalIdentityDigest: d("8"),
+    oldAuthorityPathInstanceDigest: d("4"),
+    oldAuthorityReceiptDigest: d("5"),
+    oldAuthorityTipDigest: d("6"),
+    oldAuthorityValueDigest: d("7"),
+    outcome: "SELECTED",
+    packetAuthorityKind: "KNOWN",
+    packetAuthorityPathInstanceDigest: d("4"),
+    packetAuthorityReceiptDigest: d("5"),
+    packetAuthorityTipDigest: d("6"),
+    packetAuthorityValueDigest: d("7"),
+    priorCheckpointDigest: null,
+    runOrdinal: "0",
+    targetMutationId: d("a"),
+    targetPathInstanceDigest: d("b"),
+  };
+  return {
+    ...common,
+    runId: computeRunId({
+      authorityPathInstanceDigest: common.oldAuthorityPathInstanceDigest,
+      authorityReceiptDigest: common.oldAuthorityReceiptDigest,
+      authorityTipDigest: common.oldAuthorityTipDigest,
+      authorityValueDigest: common.oldAuthorityValueDigest,
+      globalIdentityDigest: common.globalIdentityDigest,
+      priorCheckpointDigest: common.priorCheckpointDigest,
+      runOrdinal: common.runOrdinal,
+      targetMutationId: common.targetMutationId,
+    }),
+  };
+}
 
 function checkpoint(
   index: number,
@@ -59,6 +117,76 @@ function checkpoint(
 }
 
 describe("single-epoch commit journal atoms", () => {
+  test("closes ordinary resolution arms and binds the selected producer epoch", () => {
+    const selected = resolution();
+    expect(parseCommitResolution(selected).ok).toBe(true);
+    expect(parseContract("pointer-mutation-commit-resolution/v1", selected).ok).toBe(true);
+    expect(computeCommitResolutionDigest(selected)).toBe(
+      "13f36e1caf519a44adff90765c8cec34a42669662ba4ae264e53bfa4119a7fa9",
+    );
+    expect(validateCommitResolutionBinding(selected, resolutionBinding())).toEqual([]);
+
+    for (const outcome of ["LOST_CONFLICT", "UNKNOWN_TERMINAL"])
+      expect(parseCommitResolution(resolution(outcome)).ok).toBe(true);
+    expect(parseCommitResolution({ ...selected, outcomeEvidenceDigest: d("9") }).ok).toBe(false);
+    expect(parseCommitResolution({ ...selected, conflictReceiptDigest: d("2") }).ok).toBe(false);
+    expect(parseCommitResolution({ ...selected, producerEpochKey: d("f") }).ok).toBe(false);
+    for (const field of [
+      "producerAuthorityPathInstanceDigest",
+      "producerAuthorityReceiptDigest",
+      "producerAuthorityTipDigest",
+      "producerAuthorityValueDigest",
+    ] as const) {
+      expect(parseCommitResolution({ ...selected, [field]: null }).ok).toBe(false);
+      const missing = { ...selected } as Record<string, unknown>;
+      delete missing[field];
+      expect(parseCommitResolution(missing).ok).toBe(false);
+    }
+
+    const wrongResolutionTuple = {
+      ...selected,
+      producerAuthorityPathInstanceDigest: d("9"),
+      producerAuthorityReceiptDigest: d("a"),
+      producerAuthorityTipDigest: d("b"),
+      producerAuthorityValueDigest: d("c"),
+    };
+    expect(validateCommitResolutionBinding(wrongResolutionTuple, resolutionBinding())).toEqual([
+      "producerAuthorityPathInstanceDigest:authority-mismatch",
+      "producerAuthorityReceiptDigest:authority-mismatch",
+      "producerAuthorityTipDigest:authority-mismatch",
+      "producerAuthorityValueDigest:authority-mismatch",
+    ]);
+    const coordinatedBinding = {
+      ...resolutionBinding(),
+      oldAuthorityPathInstanceDigest: d("9"),
+      packetAuthorityPathInstanceDigest: d("9"),
+    };
+    expect(validateCommitResolutionBinding(selected, coordinatedBinding)).toContain(
+      "runId:authority-mismatch",
+    );
+  });
+
+  test("binds terminal resolution before the run-current selector and forbids rotation", () => {
+    const selected = resolution();
+    const digest = computeCommitResolutionDigest(selected);
+    const terminalCore = { ...checkpoint(7), terminalResolutionDigest: digest };
+    expect(validateRunTerminalResolution(terminalCore, selected)).toEqual([]);
+    expect(
+      validateRunTerminalResolution({ ...terminalCore, targetMutationId: d("d") }, selected),
+    ).toContain("targetMutationId:mismatch");
+    expect(
+      validateRunTerminalResolution(
+        {
+          ...terminalCore,
+          canonicalPointerPath: "installation/state-mutation-authority.json",
+          pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+          transactionId: null,
+        },
+        selected,
+      ),
+    ).toContain("pointerKind:rotation-resolution-forbidden");
+  });
+
   test("constructs only digest- and ordinal-derived journal paths", () => {
     expect(commitJournalPaths.intent(d("1"), d("2"))).toBe(
       `installation/pointer-cas/${d("1")}/commits/${d("2")}/intent.json`,
