@@ -178,8 +178,17 @@ const authorityValueFields = Object.freeze([
   "stateComponentProfileDigest",
   "stateRootDigest",
 ] as const);
+const authorityHistoryBindingFields = Object.freeze([
+  "genesisSelectionEvidence",
+  "globalIdentityDigest",
+  "headOrdinal",
+  "headRecordDigest",
+  "records",
+  "schemaVersion",
+] as const);
 
 export const simplifiedAuthoritySchemaFields = Object.freeze({
+  authorityHistoryBinding: authorityHistoryBindingFields,
   reviewedAuthorityOperationBootstrap: bootstrapOperationFields,
   reviewedAuthorityOperationPromotion: promotionOperationFields,
   successorAuthorityCore: successorCoreFields,
@@ -192,6 +201,7 @@ export const simplifiedAuthoritySchemaFields = Object.freeze({
 });
 
 export const simplifiedAuthoritySchemaVersions = Object.freeze([
+  "authority-history-binding/v1",
   "authority-history-genesis-bootstrap-input/v1",
   "authority-history-genesis-selection-evidence/v1",
   "authority-history-record/v1",
@@ -594,11 +604,80 @@ export function parseStateMutationAuthorityValue(input: unknown): ParseResult {
   return issues.length === 0 ? parsed : invalid(...issues);
 }
 
+export function parseAuthorityHistoryBinding(input: unknown): ParseResult {
+  const parsed = schemaRecord(input, authorityHistoryBindingFields, "authority-history-binding/v1");
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const records = snapshotClosedArray(record.records);
+  const genesisSelection = parseGenesisSelectionEvidence(record.genesisSelectionEvidence);
+  const issues: string[] = [];
+  if (!isSha256(record.globalIdentityDigest)) issues.push("globalIdentityDigest:invalid");
+  if (!isCanonicalDecimal(record.headOrdinal)) issues.push("headOrdinal:invalid");
+  if (!isSha256(record.headRecordDigest)) issues.push("headRecordDigest:invalid");
+  if (!records.ok) issues.push(...records.issues.map((issue) => `records:${issue}`));
+  if (!genesisSelection.ok)
+    issues.push(...genesisSelection.issues.map((issue) => `genesisSelectionEvidence:${issue}`));
+  if (!records.ok || !genesisSelection.ok) return invalid(...issues);
+  if (records.value.length === 0) return invalid(...issues, "records:empty");
+
+  let priorDigest: string | null = null;
+  let genesis: ContractRecord | null = null;
+  for (let index = 0; index < records.value.length; index += 1) {
+    const current = parseAuthorityHistoryRecord(records.value[index]);
+    if (!current.ok) {
+      issues.push(...current.issues.map((issue) => `records:${index}:${issue}`));
+      continue;
+    }
+    const historyRecord = current.value;
+    if (historyRecord.ordinal !== String(index)) issues.push(`records:${index}:ordinal`);
+    if (historyRecord.globalIdentityDigest !== record.globalIdentityDigest)
+      issues.push(`records:${index}:globalIdentityDigest`);
+    if (index === 0) {
+      genesis = historyRecord;
+      if (historyRecord.recordKind !== "GENESIS") issues.push("records:0:not-genesis");
+    } else if (historyRecord.priorRecordDigest !== priorDigest) {
+      issues.push(`records:${index}:priorRecordDigest`);
+    }
+    priorDigest = computeAuthorityHistoryRecordDigest(historyRecord);
+  }
+  const finalOrdinal = String(records.value.length - 1);
+  if (record.headOrdinal !== finalOrdinal) issues.push("headOrdinal:records-length-mismatch");
+  if (record.headRecordDigest !== priorDigest) issues.push("headRecordDigest:mismatch");
+  if (genesis !== null && genesis.recordKind === "GENESIS") {
+    const genesisDigest = computeAuthorityHistoryRecordDigest(genesis);
+    if (genesisSelection.value.genesisBootstrapInputDigest !== genesis.genesisBootstrapInputDigest)
+      issues.push("genesisSelectionEvidence:genesisBootstrapInputDigest:mismatch");
+    if (genesisSelection.value.historyRecordDigest !== genesisDigest)
+      issues.push("genesisSelectionEvidence:historyRecordDigest:mismatch");
+    if (genesisSelection.value.successorCoreDigest !== genesis.successorCoreDigest)
+      issues.push("genesisSelectionEvidence:successorCoreDigest:mismatch");
+  }
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeAuthorityHistoryBindingDigest(input: unknown): string {
+  const record = parsedOrThrow(parseAuthorityHistoryBinding(input));
+  const records = snapshotClosedArray(record.records);
+  if (!records.ok) throw new TypeError(records.issues.join(","));
+  return framedDigest("authority-history-binding/v1", [
+    frame.raw32(String(record.globalIdentityDigest)),
+    frame.boundedDecimal(String(record.headOrdinal)),
+    frame.raw32(String(record.headRecordDigest)),
+    ...records.value.map((historyRecord) =>
+      frame.raw32(computeAuthorityHistoryRecordDigest(historyRecord)),
+    ),
+    frame.raw32(computeGenesisSelectionEvidenceDigest(record.genesisSelectionEvidence)),
+    frame.canonical(record),
+  ]);
+}
+
 export function parseSimplifiedAuthorityContract(
   expectedSchemaVersion: string,
   input: unknown,
 ): ParseResult | undefined {
   switch (expectedSchemaVersion) {
+    case "authority-history-binding/v1":
+      return parseAuthorityHistoryBinding(input);
     case "authority-history-genesis-bootstrap-input/v1":
       return parseGenesisBootstrapInput(input);
     case "authority-history-genesis-selection-evidence/v1":

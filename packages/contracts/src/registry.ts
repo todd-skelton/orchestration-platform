@@ -92,6 +92,11 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "authority-history-genesis-bootstrap-input/v1",
       fields: simplifiedAuthoritySchemaFields.genesisBootstrapInput,
     }),
+    "authority-history-binding/v1": Object.freeze({
+      schemaVersion: "authority-history-binding/v1",
+      fields: simplifiedAuthoritySchemaFields.authorityHistoryBinding,
+      closedValues: Object.freeze(["GENESIS", "ROTATION", "GENESIS_LITERAL", "RECORD"]),
+    }),
     "authority-history-genesis-selection-evidence/v1": Object.freeze({
       schemaVersion: "authority-history-genesis-selection-evidence/v1",
       fields: simplifiedAuthoritySchemaFields.genesisSelectionEvidence,

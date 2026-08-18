@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   authorityHistoryRecordPath,
   canonicalBytes,
+  computeAuthorityHistoryBindingDigest,
   computeAuthorityHistoryRecordDigest,
   computeGenesisBootstrapInputDigest,
   computeGenesisSelectionEvidenceDigest,
@@ -9,6 +10,7 @@ import {
   computeRotationInputDigest,
   computeSuccessorAuthorityCoreDigest,
   parseAuthorityHistoryRecord,
+  parseAuthorityHistoryBinding,
   parseCanonicalContractBytes,
   parseContract,
   parseRotationInput,
@@ -194,6 +196,7 @@ function authorityValue(
 
 describe("simplified authority ledger", () => {
   test("pins exact branch field censuses and the record/digest version split", () => {
+    expect(simplifiedAuthoritySchemaFields.authorityHistoryBinding).toHaveLength(6);
     expect(simplifiedAuthoritySchemaFields.reviewedAuthorityOperationBootstrap).toHaveLength(9);
     expect(simplifiedAuthoritySchemaFields.reviewedAuthorityOperationPromotion).toHaveLength(15);
     expect(simplifiedAuthoritySchemaFields.successorAuthorityCore).toHaveLength(17);
@@ -208,6 +211,42 @@ describe("simplified authority ledger", () => {
       ok: false,
       issues: ["schemaVersion:unsupported"],
     });
+  });
+
+  test("composes the complete linear history with exact genesis selection", () => {
+    const boundGenesisSelection = {
+      ...genesisSelectionEvidence,
+      genesisBootstrapInputDigest: genesisRecord.genesisBootstrapInputDigest,
+      historyRecordDigest: genesisRecordDigest,
+      successorCoreDigest: genesisRecord.successorCoreDigest,
+    };
+    const binding = {
+      genesisSelectionEvidence: boundGenesisSelection,
+      globalIdentityDigest: genesisRecord.globalIdentityDigest,
+      headOrdinal: "1",
+      headRecordDigest: rotationRecordDigest,
+      records: [genesisRecord, rotationRecord],
+      schemaVersion: "authority-history-binding/v1",
+    };
+    expect(parseAuthorityHistoryBinding(binding).ok).toBe(true);
+    expect(parseContract("authority-history-binding/v1", binding).ok).toBe(true);
+    expect(computeAuthorityHistoryBindingDigest(binding)).toBe(
+      "63b558fb41c4cf112254590e5db6ab1d2583f19261810f11d402540fef7f61a7",
+    );
+    expect(
+      parseAuthorityHistoryBinding({ ...binding, records: [rotationRecord, genesisRecord] }).ok,
+    ).toBe(false);
+    expect(parseAuthorityHistoryBinding({ ...binding, records: [genesisRecord] }).ok).toBe(false);
+    expect(
+      parseAuthorityHistoryBinding({
+        ...binding,
+        genesisSelectionEvidence: {
+          ...boundGenesisSelection,
+          historyRecordDigest: d("0"),
+        },
+      }).ok,
+    ).toBe(false);
+    expect(parseAuthorityHistoryBinding({ ...binding, proof: d("0") }).ok).toBe(false);
   });
 
   test("derives branch-separated reviewed operation, successor, genesis, rotation, and history digests", () => {
