@@ -8,6 +8,11 @@ import {
   dispatchSchemaFields,
   dispatchSchemaVersions,
 } from "./dispatch.js";
+import {
+  evidenceSchemaFields,
+  evidenceSchemaVersions,
+  unknownEvidenceReasons,
+} from "./evidence.js";
 import { pointerGraphSchemaFields, pointerGraphSchemaVersions } from "./pointer.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
@@ -161,6 +166,18 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "worker-host-renderer-artifact/v1",
       fields: dispatchSchemaFields.hostArtifact,
     }),
+    "state-mutation-global-identity/v1": Object.freeze({
+      schemaVersion: "state-mutation-global-identity/v1",
+      fields: evidenceSchemaFields.globalIdentity,
+    }),
+    "pointer-mutation-unknown-evidence/v1": Object.freeze({
+      schemaVersion: "pointer-mutation-unknown-evidence/v1",
+      fields: evidenceSchemaFields.unknownEvidence,
+      closedValues: Object.freeze([
+        ...Object.keys(unknownEvidenceReasons),
+        ...Object.values(unknownEvidenceReasons).flat(),
+      ]),
+    }),
   });
 export const schemaVersions = Object.freeze(
   [
@@ -168,6 +185,7 @@ export const schemaVersions = Object.freeze(
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...dispatchSchemaVersions,
+    ...evidenceSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
