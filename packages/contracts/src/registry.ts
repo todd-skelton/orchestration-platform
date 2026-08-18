@@ -124,6 +124,47 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: commitSchemaFields.checkpointCore,
       closedValues: Object.freeze([...pointerKinds, ...commitRunStages, ...commitRunPhases]),
     }),
+    "pointer-mutation-commit-evidence/v1#ORDINARY": Object.freeze({
+      schemaVersion: "pointer-mutation-commit-evidence/v1",
+      fields: commitSchemaFields.commitEvidenceOrdinary,
+      closedValues: Object.freeze([
+        "ORDINARY",
+        "KNOWN",
+        "SELECTED",
+        "LOST_CONFLICT",
+        "UNKNOWN_TERMINAL",
+        ...pointerKinds,
+      ]),
+    }),
+    "pointer-mutation-commit-evidence/v1#AUTHORITY_ROTATION#RESUMABLE": Object.freeze({
+      schemaVersion: "pointer-mutation-commit-evidence/v1",
+      fields: commitSchemaFields.commitEvidenceRotationResumable,
+      closedValues: Object.freeze([
+        "AUTHORITY_ROTATION",
+        "KNOWN",
+        "RESUMABLE",
+        "STATE_MUTATION_AUTHORITY_ROTATION",
+      ]),
+    }),
+    "pointer-mutation-commit-evidence/v1#AUTHORITY_ROTATION#SELECTED": Object.freeze({
+      schemaVersion: "pointer-mutation-commit-evidence/v1",
+      fields: commitSchemaFields.commitEvidenceRotationSelected,
+      closedValues: Object.freeze([
+        "AUTHORITY_ROTATION",
+        "KNOWN",
+        "SELECTED",
+        "STATE_MUTATION_AUTHORITY_ROTATION",
+      ]),
+    }),
+    "pointer-mutation-commit-evidence/v1#AUTHORITY_ROTATION#UNKNOWN": Object.freeze({
+      schemaVersion: "pointer-mutation-commit-evidence/v1",
+      fields: commitSchemaFields.commitEvidenceRotationUnknown,
+      closedValues: Object.freeze([
+        "AUTHORITY_ROTATION",
+        "UNKNOWN",
+        "STATE_MUTATION_AUTHORITY_ROTATION",
+      ]),
+    }),
     "pointer-mutation-run-checkpoint-evidence/v1": Object.freeze({
       schemaVersion: "pointer-mutation-run-checkpoint-evidence/v1",
       fields: commitSchemaFields.checkpointEvidence,

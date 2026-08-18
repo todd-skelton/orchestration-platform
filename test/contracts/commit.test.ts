@@ -22,6 +22,7 @@ import {
   parseContract,
   parseCommitResolution,
   parseOrdinaryCommitEvidence,
+  parseRotationCommitEvidence,
   parseRunCheckpointCore,
   parseRunCheckpointEvidence,
   parseRunCurrentValue,
@@ -312,6 +313,7 @@ function rotationIntent() {
 function checkpointEvidenceSequence(
   commitKind: "ORDINARY" | "AUTHORITY_ROTATION",
   suppliedResolution = resolution(),
+  authorityEpoch = { receipt: d("1"), tip: d("2"), value: d("3") },
 ) {
   const length = commitKind === "ORDINARY" ? 9 : 6;
   const targetPointerKind =
@@ -413,9 +415,9 @@ function checkpointEvidenceSequence(
       value,
     );
     const proposal = {
-      authorityEpochReceiptDigest: d("1"),
-      authorityEpochTipDigest: d("2"),
-      authorityEpochValueDigest: d("3"),
+      authorityEpochReceiptDigest: authorityEpoch.receipt,
+      authorityEpochTipDigest: authorityEpoch.tip,
+      authorityEpochValueDigest: authorityEpoch.value,
       intent: "VALUE_PROPOSED",
       mutationId: d(String(index)),
       outcome: "SELECT",
@@ -619,6 +621,203 @@ function lostOrdinaryCommitEvidence() {
         targetMutationId: selected.targetMutationId,
         targetPathInstanceDigest: selected.targetPathInstanceDigest,
       },
+    },
+  };
+}
+
+function authoritySelection(
+  headOrdinal: string,
+  headRecordDigest: string,
+  prior: { tip: string; value: string; receipt: string } | null,
+) {
+  const pathInstanceDigest = d("4");
+  const value = {
+    activeReleasePathInstanceDigest: d("1"),
+    activeReleaseReceiptDigest: d("2"),
+    activeReleaseTipDigest: d("3"),
+    activeReleaseValueDigest: d("4"),
+    admittedCustodyObservationDigest: d("5"),
+    authorityOrdinal: headOrdinal,
+    custodyInstanceDigest: d("6"),
+    globalIdentityDigest: d("3"),
+    headOrdinal,
+    headRecordDigest,
+    helperAbiDigest: d("7"),
+    helperDigest: d("8"),
+    helperProfileDigest: d("9"),
+    installationId,
+    lockProfileDigest: d("a"),
+    priorAuthorityReceiptDigest: prior?.receipt ?? null,
+    priorAuthorityTipDigest: prior?.tip ?? null,
+    priorAuthorityValueDigest: prior?.value ?? null,
+    projectId,
+    schemaVersion: "state-mutation-authority-value/v1",
+    stateComponentProfileDigest: d("b"),
+    stateRootDigest: d("9"),
+  };
+  const valueDigest = computePointerValueDigest(
+    "STATE_MUTATION_AUTHORITY_ROTATION",
+    pathInstanceDigest,
+    value,
+  );
+  const proposal = {
+    authorityEpochReceiptDigest: prior?.receipt ?? d("c"),
+    authorityEpochTipDigest: prior?.tip ?? d("d"),
+    authorityEpochValueDigest: prior?.value ?? d("e"),
+    intent: "VALUE_PROPOSED",
+    mutationId: d(headOrdinal === "0" ? "5" : "6"),
+    outcome: "SELECT",
+    pathInstanceDigest,
+    pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+    positionDigest: d("f"),
+    priorReceiptDigest: prior?.receipt ?? null,
+    priorTipDigest: prior?.tip ?? null,
+    priorValueDigest: prior?.value ?? null,
+    producerDigest: d("0"),
+    producerKind: "SELECTED_EPOCH",
+    proposedAt: `2026-08-18T16:2${headOrdinal}:00.000Z`,
+    schemaVersion: "pointer-cas-proposal-receipt/v1",
+    successorValueDigest: valueDigest,
+  };
+  const receiptDigest = computeProposalReceiptDigest(proposal);
+  const tip = {
+    pathInstanceDigest,
+    pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+    proposalReceiptDigest: receiptDigest,
+    schemaVersion: "pointer-current-tip/v1",
+    valueDigest,
+  };
+  return {
+    proposal,
+    receiptDigest,
+    selectedEvidence: { proposal, tip, value },
+    tipDigest: computeCurrentTipDigest(tip),
+    value,
+    valueDigest,
+    pathInstanceDigest,
+  };
+}
+
+function rotationCommitEvidence(outcome: "RESUMABLE" | "SELECTED" | "UNKNOWN") {
+  const priorRecordDigest = d("7");
+  const old = authoritySelection("0", priorRecordDigest, null);
+  const rotationInputDigest = d("8");
+  const successorCoreDigest = d("9");
+  const pendingRecord = {
+    globalIdentityDigest: d("3"),
+    ordinal: "1",
+    predecessorKind: "RECORD",
+    priorHeadOrdinal: "0",
+    priorRecordDigest,
+    recordKind: "ROTATION",
+    retiringAuthorityPathInstanceDigest: old.pathInstanceDigest,
+    retiringAuthorityReceiptDigest: old.receiptDigest,
+    retiringAuthorityTipDigest: old.tipDigest,
+    retiringAuthorityValueDigest: old.valueDigest,
+    rotationInputDigest,
+    schemaVersion: "authority-history-record/v1",
+    successorCoreDigest,
+  };
+  const expectedRecordDigest = computeAuthorityHistoryRecordDigest(pendingRecord);
+  const successor = authoritySelection("1", expectedRecordDigest, {
+    receipt: old.receiptDigest,
+    tip: old.tipDigest,
+    value: old.valueDigest,
+  });
+  const checkpoint5 = checkpointEvidenceSequence("AUTHORITY_ROTATION", resolution(), {
+    receipt: old.receiptDigest,
+    tip: old.tipDigest,
+    value: old.valueDigest,
+  })[5];
+  const common = {
+    authorityRegistrySlot: {
+      pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      schemaVersion: "pointer-evidence-slot/v1",
+      selectedEvidence:
+        outcome === "RESUMABLE"
+          ? old.selectedEvidence
+          : outcome === "SELECTED"
+            ? successor.selectedEvidence
+            : null,
+    },
+    canonicalPointerPath: "installation/state-mutation-authority.json",
+    checkpoint5,
+    commitKind: "AUTHORITY_ROTATION",
+    expectedHeadOrdinal: "1",
+    expectedRecordDigest,
+    expectedSuccessorValueDigest: successor.valueDigest,
+    intentDigest: d("a"),
+    oldAuthorityPathInstanceDigest: old.pathInstanceDigest,
+    oldAuthorityReceiptDigest: old.receiptDigest,
+    oldAuthorityTipDigest: old.tipDigest,
+    oldAuthorityValueDigest: old.valueDigest,
+    packetAuthorityKind: outcome === "UNKNOWN" ? "UNKNOWN" : "KNOWN",
+    packetAuthorityPathInstanceDigest:
+      outcome === "UNKNOWN"
+        ? null
+        : outcome === "RESUMABLE"
+          ? old.pathInstanceDigest
+          : successor.pathInstanceDigest,
+    packetAuthorityReceiptDigest:
+      outcome === "UNKNOWN"
+        ? null
+        : outcome === "RESUMABLE"
+          ? old.receiptDigest
+          : successor.receiptDigest,
+    packetAuthorityTipDigest:
+      outcome === "UNKNOWN" ? null : outcome === "RESUMABLE" ? old.tipDigest : successor.tipDigest,
+    packetAuthorityValueDigest:
+      outcome === "UNKNOWN"
+        ? null
+        : outcome === "RESUMABLE"
+          ? old.valueDigest
+          : successor.valueDigest,
+    rotationInputDigest,
+    rotationOutcome: outcome,
+    runId: d("d"),
+    runOrdinal: "0",
+    schemaVersion: "pointer-mutation-commit-evidence/v1",
+    successorCoreDigest,
+    targetMutationId: d("a"),
+    targetPathInstanceDigest: d("b"),
+    targetPointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+  };
+  if (outcome === "RESUMABLE")
+    return {
+      ...common,
+      headPlusTwoAbsent: true,
+      pendingRecord,
+      pendingRecordReadbackDigest: canonicalDigest(pendingRecord),
+      resumableOldAuthorityPathInstanceDigest: old.pathInstanceDigest,
+      resumableOldAuthorityReceiptDigest: old.receiptDigest,
+      resumableOldAuthorityTipDigest: old.tipDigest,
+      resumableOldAuthorityValueDigest: old.valueDigest,
+      resumablePriorHeadOrdinal: "0",
+      resumablePriorRecordDigest: priorRecordDigest,
+    };
+  if (outcome === "SELECTED")
+    return {
+      ...common,
+      selectedHistoryRecord: pendingRecord,
+      selectedHistoryRecordReadbackDigest: canonicalDigest(pendingRecord),
+      selectedSuccessorAuthorityPathInstanceDigest: successor.pathInstanceDigest,
+      selectedSuccessorAuthorityReceiptDigest: successor.receiptDigest,
+      selectedSuccessorAuthorityTipDigest: successor.tipDigest,
+      selectedSuccessorAuthorityValue: successor.value,
+      selectedSuccessorAuthorityValueDigest: successor.valueDigest,
+      selectedSuccessorValueReadbackDigest: canonicalDigest(successor.value),
+    };
+  return {
+    ...common,
+    unknownEvidence: {
+      category: "UNREADABLE",
+      observationDigest: d("c"),
+      observedAt: "2026-08-18T16:30:00.000Z",
+      observedByteLength: "0",
+      reason: "MISSING",
+      schemaVersion: "pointer-mutation-unknown-evidence/v1",
+      targetMutationId: d("a"),
+      targetPathInstanceDigest: d("b"),
     },
   };
 }
@@ -946,6 +1145,7 @@ describe("single-epoch commit journal atoms", () => {
   test("closes the ordinary commit arm and outcome-to-slot equalities", () => {
     const selected = ordinaryCommitEvidence();
     expect(parseOrdinaryCommitEvidence(selected).ok).toBe(true);
+    expect(parseContract("pointer-mutation-commit-evidence/v1", selected).ok).toBe(true);
     const unknown = ordinaryCommitEvidence("UNKNOWN_TERMINAL");
     expect(parseOrdinaryCommitEvidence(unknown).ok).toBe(true);
     const lost = lostOrdinaryCommitEvidence();
@@ -1015,6 +1215,41 @@ describe("single-epoch commit journal atoms", () => {
         },
       }).ok,
     ).toBe(false);
+  });
+
+  test("closes resumable, selected, and unknown rotation evidence arms", () => {
+    const resumable = rotationCommitEvidence("RESUMABLE");
+    const selected = rotationCommitEvidence("SELECTED");
+    const unknown = rotationCommitEvidence("UNKNOWN");
+    expect(parseRotationCommitEvidence(resumable).ok).toBe(true);
+    expect(parseRotationCommitEvidence(selected).ok).toBe(true);
+    expect(parseRotationCommitEvidence(unknown).ok).toBe(true);
+    expect(parseContract("pointer-mutation-commit-evidence/v1", selected).ok).toBe(true);
+    expect(parseRotationCommitEvidence({ ...resumable, headPlusTwoAbsent: false }).ok).toBe(false);
+    expect(
+      parseRotationCommitEvidence({
+        ...resumable,
+        pendingRecord: {
+          ...(resumable as { pendingRecord: Record<string, unknown> }).pendingRecord,
+          rotationInputDigest: d("0"),
+        },
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseRotationCommitEvidence({
+        ...selected,
+        selectedSuccessorAuthorityValueDigest: d("0"),
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseRotationCommitEvidence({
+        ...unknown,
+        packetAuthorityKind: "KNOWN",
+      }).ok,
+    ).toBe(false);
+    expect(parseRotationCommitEvidence({ ...selected, ordinaryResolution: resolution() }).ok).toBe(
+      false,
+    );
   });
 
   test("fails closed for partial predecessor triples, unsafe ordinals, wrong phases, and extras", () => {
