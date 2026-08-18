@@ -659,6 +659,86 @@ export function validateAuthorityHistoryChain(
   return Object.freeze(issues);
 }
 
+export interface ArmedRotationExpectation {
+  readonly expectedRecordDigest: string;
+  readonly retiringAuthorityPathInstanceDigest: string;
+  readonly retiringAuthorityReceiptDigest: string;
+  readonly retiringAuthorityTipDigest: string;
+  readonly retiringAuthorityValueDigest: string;
+  readonly rotationInputDigest: string;
+  readonly successorCoreDigest: string;
+}
+
+export function validateAuthorityHistoryWalk(input: unknown): readonly string[] {
+  const envelope = snapshotClosedRecord(input, [
+    "armedRotation",
+    "headPlusOne",
+    "headPlusTwoExists",
+    "records",
+    "selectedAuthorityValue",
+  ]);
+  if (!envelope.ok) return envelope.issues;
+  const value = envelope.value;
+  if (typeof value.headPlusTwoExists !== "boolean") return ["headPlusTwoExists:invalid"];
+  let armed: ContractRecord | null = null;
+  if (value.armedRotation !== null) {
+    const parsedArmed = snapshotClosedRecord(value.armedRotation, [
+      "expectedRecordDigest",
+      "retiringAuthorityPathInstanceDigest",
+      "retiringAuthorityReceiptDigest",
+      "retiringAuthorityTipDigest",
+      "retiringAuthorityValueDigest",
+      "rotationInputDigest",
+      "successorCoreDigest",
+    ]);
+    if (!parsedArmed.ok) return parsedArmed.issues.map((issue) => `armedRotation:${issue}`);
+    const invalidDigest = Object.entries(parsedArmed.value).find(([, item]) => !isSha256(item));
+    if (invalidDigest) return [`armedRotation:${invalidDigest[0]}:invalid`];
+    armed = parsedArmed.value;
+  }
+  const issues = [...validateAuthorityHistoryChain(value.records, value.selectedAuthorityValue)];
+  const records = snapshotClosedArray(value.records);
+  const selected = parseStateMutationAuthorityValue(value.selectedAuthorityValue);
+  if (!records.ok || !selected.ok || records.value.length === 0) return Object.freeze(issues);
+  if (value.headPlusTwoExists) issues.push("headPlusTwo:must-be-absent");
+  if (value.headPlusOne === null) return Object.freeze(issues);
+  if (armed === null) {
+    issues.push("headPlusOne:unarmed");
+    return Object.freeze(issues);
+  }
+  const pending = parseAuthorityHistoryRecord(value.headPlusOne);
+  if (!pending.ok) {
+    issues.push(...pending.issues.map((issue) => `headPlusOne:${issue}`));
+    return Object.freeze(issues);
+  }
+  const record = pending.value;
+  if (record.recordKind !== "ROTATION") issues.push("headPlusOne:not-rotation");
+  let expectedOrdinal: string | undefined;
+  try {
+    expectedOrdinal = incrementCanonicalDecimal(String(selected.value.headOrdinal));
+  } catch {
+    issues.push("headPlusOne:ordinal-overflow");
+  }
+  if (record.ordinal !== expectedOrdinal) issues.push("headPlusOne:ordinal");
+  if (record.priorHeadOrdinal !== selected.value.headOrdinal)
+    issues.push("headPlusOne:priorHeadOrdinal");
+  if (record.priorRecordDigest !== selected.value.headRecordDigest)
+    issues.push("headPlusOne:priorRecordDigest");
+  for (const field of [
+    "retiringAuthorityPathInstanceDigest",
+    "retiringAuthorityReceiptDigest",
+    "retiringAuthorityTipDigest",
+    "retiringAuthorityValueDigest",
+    "rotationInputDigest",
+    "successorCoreDigest",
+  ] as const) {
+    if (record[field] !== armed[field]) issues.push(`headPlusOne:${field}`);
+  }
+  if (computeAuthorityHistoryRecordDigest(record) !== armed.expectedRecordDigest)
+    issues.push("headPlusOne:recordDigest");
+  return Object.freeze(issues);
+}
+
 export function authorityHistoryRecordDigestForReadback(input: unknown): string {
   return canonicalDigest(parsedOrThrow(parseAuthorityHistoryRecord(input)));
 }

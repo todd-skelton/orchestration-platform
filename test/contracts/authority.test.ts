@@ -14,6 +14,7 @@ import {
   parseRotationInput,
   simplifiedAuthoritySchemaFields,
   validateAuthorityHistoryChain,
+  validateAuthorityHistoryWalk,
 } from "../../packages/contracts/src/index.js";
 
 const d = (digit: string) => digit.repeat(64);
@@ -335,5 +336,40 @@ describe("linear authority history", () => {
     expect(
       parseAuthorityHistoryRecord({ ...rotationRecord, successorAuthorityValueDigest: d("0") }).ok,
     ).toBe(false);
+  });
+
+  test("admits only one exact CAS-armed head-plus-one record and requires head-plus-two absence", () => {
+    const selected = authorityValue("0", genesisRecordDigest, null);
+    const armedRotation = {
+      expectedRecordDigest: rotationRecordDigest,
+      retiringAuthorityPathInstanceDigest: rotationRecord.retiringAuthorityPathInstanceDigest,
+      retiringAuthorityReceiptDigest: rotationRecord.retiringAuthorityReceiptDigest,
+      retiringAuthorityTipDigest: rotationRecord.retiringAuthorityTipDigest,
+      retiringAuthorityValueDigest: rotationRecord.retiringAuthorityValueDigest,
+      rotationInputDigest: rotationRecord.rotationInputDigest,
+      successorCoreDigest: rotationRecord.successorCoreDigest,
+    };
+    const input = {
+      armedRotation,
+      headPlusOne: rotationRecord,
+      headPlusTwoExists: false,
+      records: [genesisRecord],
+      selectedAuthorityValue: selected,
+    };
+    expect(validateAuthorityHistoryWalk(input)).toEqual([]);
+    expect(validateAuthorityHistoryWalk({ ...input, armedRotation: null })).toContain(
+      "headPlusOne:unarmed",
+    );
+    expect(
+      validateAuthorityHistoryWalk({
+        ...input,
+        armedRotation: { ...armedRotation, rotationInputDigest: d("0") },
+      }),
+    ).toContain("headPlusOne:rotationInputDigest");
+    expect(validateAuthorityHistoryWalk({ ...input, headPlusTwoExists: true })).toContain(
+      "headPlusTwo:must-be-absent",
+    );
+    expect(() => validateAuthorityHistoryWalk(new Proxy(input, {}))).not.toThrow();
+    expect(validateAuthorityHistoryWalk(new Proxy(input, {}))).not.toEqual([]);
   });
 });
