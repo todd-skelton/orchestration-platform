@@ -34,6 +34,10 @@ inheriting any of its evidence, and sit off the self-host critical path.
 - Gate: shadow comparison follows `docs/planning/first-consumer.md`,
   distinguishes authoritative decisions from advisory telemetry, and explains
   every authority difference.
+- Gate: adapter workspace topology (`ISS-013`, `ISS-028`) keeps isolation
+  keyed per workspace subject and must not hard-code a single concurrent
+  subject, so un-parking same-host concurrency in `EPIC-KERNEL` requires no
+  adapter contract change.
 - Parked: second-consumer onboarding; un-park after the first cutover remains
   stable for its observation window.
 - Decision registry: none.

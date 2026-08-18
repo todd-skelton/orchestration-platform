@@ -34,6 +34,25 @@ its independent review actually discriminates.
   identities and preflight facts from `ISS-013`.
 - Parked: distributed coordination across multiple machines; un-park after the
   single-host kernel is self-hosting.
+- Parked: same-host concurrent cycles — more than one routine cycle, and so
+  more than one worker, in flight per installation. Un-park when a measured
+  cycle-throughput or worker-runtime blocker is recorded against self-host
+  delivery or the `ISS-017` delivery-rate comparison. Replacement floor for
+  that decision: fan out only observation steps (snapshot through review
+  reduction), keep every authority-pointer mutation single-writer behind the
+  `ISS-026` one-cycle fence, and weigh a dispatch/observe cycle split with
+  workers detached from the tick process tree as the smallest credible
+  alternative before any multi-writer machinery.
+- Registered throughput ceiling: the supervisor contract binds a five-minute
+  scheduler cadence with 30-minute native execution limits, a reviewed slice
+  consumes about five serial cycles (implementation, worker-result review,
+  assemble-certify, candidate review, verification), and in-cycle worker
+  observation on Windows and Linux is bounded below the tick execution limit
+  because the worker shares the tick's process tree. Cadence and limit tuning
+  in the native scheduler definitions is the first lever and belongs to
+  `ISS-030` scheduler-definition goldens; no pressure-test round has attacked
+  throughput yet, so the next kernel replan's proportionality check must
+  include this ceiling.
 - Recovery attempts are unlimited over installation lifetime; each operation
   verifies the selected reservation/descriptor and folded TERMINAL attempt-log records plus the
   append-only attempt log, whose full verification stays cheap because

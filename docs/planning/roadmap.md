@@ -127,3 +127,7 @@ project adapter + self-hosting + certified release ─> shadow mode ─> cutover
 - Keep `ISS-044`/`ISS-045` in Chase Sets integration-ready, off the self-host
   critical path; unsupported OS/capability rows narrow or replan and never pass
   by absence.
+- Keep the kernel single-flight — one tick, one cycle, one action — through
+  the self-hosting release. Same-host concurrency is parked in `EPIC-KERNEL`
+  with a measured-throughput unpark condition, and `ISS-017` records the
+  delivery-rate evidence that can trigger it.
