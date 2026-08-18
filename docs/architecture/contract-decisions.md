@@ -208,25 +208,46 @@ are exactly those in `supervisor-contract.md`.
   `capabilityName` match `[a-z][a-z0-9._:-]{0,63}` and are admitted only when
   their exact pair is declared by the selected release-reviewed
   `module-descriptor/v1`; they are lookup keys and are never rendered.
-  `actionCoreDigest` is the domain-separated digest of the enclosing step-4
-  `module-action-plan/v1` action projection, which excludes `dispatchBrief` and
-  every digest derived from it so the graph is acyclic. Before journaling step
-  4, the brief action's kind, capability, immutable subject, descriptor digest,
-  and action-core digest must equal that plan's corresponding authoritative
-  values. A moved plan, descriptor, subject, action, or capability refuses.
+- The enclosing `module-action-plan/v1` carries one closed
+  `dispatch-action-core/v1` projection with exactly `actionKind`,
+  `capabilityName`, `immutableSubjectDigest`, `moduleDescriptorDigest`,
+  `requestedRole`, and `schemaVersion`, in that canonical JSON member order.
+  `schemaVersion` is literal `dispatch-action-core/v1`; the two identifiers use
+  the admitted 64-character grammar and pair; the two digests are SHA-256; and
+  `requestedRole` is exactly `implementation|review|observer`.
+  `actionCoreDigest` is domain `dispatch-action-core/v1` over these ordered
+  framed parts: text `schemaVersion`, text `actionKind`, text `capabilityName`,
+  raw-32 `immutableSubjectDigest`, raw-32 `moduleDescriptorDigest`, and text
+  `requestedRole`. The projection excludes `dispatchBrief`, `actionCoreDigest`,
+  rendered brief bytes/digest, dispatch/launch identity, host-renderer artifact
+  digest, and every field derived from any of them; no other plan member enters
+  the digest. Before journaling step 4, the brief action's kind, capability,
+  immutable subject, descriptor digest, and action-core digest must equal that
+  projection. A moved plan, descriptor, subject, action, capability, member,
+  frame, or order refuses without constructing a second plan or digest.
 - A release-reviewed module descriptor contains a finite, dense, unique
   `dispatchCatalog` of 1–256 closed entries. Each entry has exactly
   `actionKind`, `capabilityName`, `code`, `directiveKind`, `planAccessor`, and
-  `templateId`; every value other than the closed `directiveKind` matches
+  `templateId`. `directiveKind` uses the closed nine-kind union below;
+  `planAccessor` is exactly `IMMUTABLE_SUBJECT_DIGEST|MODULE_DESCRIPTOR_DIGEST|`
+  `REQUESTED_ROLE`; and every other value matches
   `[a-z][a-z0-9._:-]{0,63}`. The catalog is digest-bound in the module
-  descriptor and release manifest. A present directive is admitted only by an
-  exact catalog entry for the brief action pair. `planAccessor` selects typed
-  data only from the same exact `module-action-plan/v1` action projection, and
-  `templateId` selects a release-reviewed ISS-021 renderer. Neither value nor
-  any other catalog key is rendered. The host resolves this pair from its
-  installed static module/renderer registry; filesystem, network, adapter, and
-  arbitrary schema-family resolution are forbidden. Thus the brief has no
-  open reference-schema or external-reference surface.
+  descriptor and release manifest. Rows are unique by the exact resolver key
+  `(actionKind,capabilityName,directiveKind,code)`, and each such key selects
+  exactly one `(planAccessor,templateId)` pair; duplicate keys refuse when the
+  accessor, template, or both differ. The descriptor's separately declared
+  worker-required action/capability pair census has no duplicates and exactly
+  equals the distinct pair projection of this catalog.
+- A present directive is admitted only by an exact catalog resolver key for the
+  brief action pair. `planAccessor` selects the named nonempty digest or closed
+  role from the same exact `dispatch-action-core/v1`; `templateId` selects one
+  release-reviewed ISS-021 renderer whose fixed UTF-8 template body is 1–8192
+  bytes. Each present rendering contains that nonempty fixed body and the
+  canonical selected scalar. No catalog key is rendered. The host resolves the
+  pair only from its installed static module/renderer registry; filesystem,
+  network, adapter, dynamic, and arbitrary schema-family resolution are
+  forbidden. Thus the brief has no open reference-schema, external-reference,
+  empty-renderer, or empty-typed-value surface.
 - `dispatch-brief-directive/v1` has exactly `code`, `directiveKind`,
   `presence`, `schemaVersion`, and `subjectDigest`. `directiveKind` is exactly
   `ACCEPTANCE_EVIDENCE|CONSTRAINT|DECISION|NON_GOAL|OPERATOR_ACTION|`
@@ -236,18 +257,28 @@ are exactly those in `supervisor-contract.md`.
   catalog-key grammar and the exact `(actionKind,capabilityName,directiveKind,`
   `code)` catalog row must exist. For `ABSENT`, `code` is null, the kind must be
   `OPERATOR_ACTION`, and no present operator-action directive may coexist.
-  Every other kind has at least one `PRESENT` directive. Present directives are
-  unique by `(directiveKind,code)`; multiple typed inputs require distinct
-  reviewed catalog codes rather than repeated codes with substituted content.
-  There is at most one absent record.
+  Every non-operator kind has at least one `PRESENT` directive and no `ABSENT`
+  directive. Operator action is an exhaustive XOR: either one or more unique
+  `PRESENT` operator-action directives and zero absent records, or exactly one
+  `ABSENT` operator-action directive and zero present operator-action
+  directives. Present directives are unique by `(directiveKind,code)`;
+  multiple typed inputs require distinct reviewed catalog codes rather than
+  repeated codes with substituted content. No directive kind may be omitted.
 - The host groups directives in the closed kind order above and renders only
   the reviewed text and typed values selected by each admitted catalog row.
   It never renders raw action, capability, code, accessor, template, schema, or
-  resource values. The step-7 `dispatch-plan/v1` role must equal both the
-  step-4 `module-action-plan/v1` requested role and brief role before rendering
-  or ownership publication; it also binds the unchanged action-core, subject,
-  descriptor, rendered-byte, and template-registry digests. Any substitution
-  refuses before launch.
+  resource values. ISS-021's build is the sole producer of the
+  `hostRendererArtifactDigest`: the SHA-256 of the exact host package artifact
+  containing the compiled renderer table and every fixed template byte. The
+  stable release assembly binds that digest in its reviewed
+  `release-manifest/v1`; installation read-back binds the identical artifact to
+  the selected active release. There is no separate template-registry digest.
+  Before rendering or ownership publication, step 7 proves its executing host
+  artifact digest equals that installed active-release value, and its role
+  equals both the step-4 requested role and brief role. `dispatch-plan/v1`
+  binds the unchanged action-core, subject, descriptor, rendered-byte, and host-
+  renderer artifact digests. A stale, candidate-supplied, self-reported, moved,
+  or substituted renderer/artifact refuses before launch.
 - `dispatch-brief-resource/v1` has exactly `access`,
   `resourceIdentityDigest`, and `schemaVersion`. `access` is exactly
   `READ|CREATE|MODIFY|DELETE` and `resourceIdentityDigest` is SHA-256.

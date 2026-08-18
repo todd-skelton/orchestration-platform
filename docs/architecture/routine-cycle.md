@@ -33,8 +33,11 @@ Before rendering, step 7 proves the brief still equal-binds the step-4 action
 core, action/capability pair, immutable subject, and selected module descriptor,
 then requires the dispatch role to equal both the module-requested and brief
 roles. It resolves directive accessors only through that descriptor's installed
-release-reviewed catalog; a moved plan, descriptor, role, catalog, subject, or
-rendered-byte digest refuses before ownership publication.
+release-reviewed catalog. It also proves the executing ISS-021 host-renderer
+artifact digest equals the exact value bound by the installed active release;
+the candidate or worker cannot supply this equality. A moved plan, descriptor,
+role, catalog, subject, host-renderer artifact, or rendered-byte digest refuses
+before ownership publication.
 
 The complete steps 7–10 block is skipped only for a typed action that requires
 no worker or review; the module manifest must declare that capability and step
