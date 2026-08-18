@@ -48,11 +48,14 @@ its independent review actually discriminates.
   consumes about five serial cycles (implementation, worker-result review,
   assemble-certify, candidate review, verification), and in-cycle worker
   observation on Windows and Linux is bounded below the tick execution limit
-  because the worker shares the tick's process tree. Cadence and limit tuning
-  in the native scheduler definitions is the first lever and belongs to
-  `ISS-030` scheduler-definition goldens; no pressure-test round has attacked
-  throughput yet, so the next kernel replan's proportionality check must
-  include this ceiling.
+  because the worker shares the tick's process tree. Decided route: re-entry
+  becomes event-based with the periodic definition retained as fallback —
+  each OS definition adds its native queued trigger and the shim emits one
+  trigger from the persisted terminal receipt (`ISS-030`) — which removes
+  inter-cycle wait from the serial slice chain while leaving tick and worker
+  execution limits as the remaining levers. No pressure-test round has
+  attacked throughput yet, so the next kernel replan's proportionality check
+  must include this ceiling and the trigger surface.
 - Recovery attempts are unlimited over installation lifetime; each operation
   verifies the selected reservation/descriptor and folded TERMINAL attempt-log records plus the
   append-only attempt log, whose full verification stays cheap because

@@ -131,3 +131,9 @@ project adapter + self-hosting + certified release ─> shadow mode ─> cutover
   the self-hosting release. Same-host concurrency is parked in `EPIC-KERNEL`
   with a measured-throughput unpark condition, and `ISS-017` records the
   delivery-rate evidence that can trigger it.
+- Re-enter event-based with a periodic fallback: each native scheduler
+  definition adds its OS's queued trigger (systemd path unit, launchd queue
+  directory, Task Scheduler queued on-demand run), the shim emits one trigger
+  from the persisted terminal receipt when a follow-up or fence-clear is
+  pending, and the five-minute periodic definition remains the fallback
+  heartbeat. Triggers convey no authority (`ISS-030`).
