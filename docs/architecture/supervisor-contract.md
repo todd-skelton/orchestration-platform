@@ -212,7 +212,10 @@ destination and anchor locks, is create-once and read back before lock release,
 and equal-binds the same `Dphys/Ddest`, current `ADMITTED` `Dobs`, helper,
 custody, and state root. It is not made current by elapsed time. E0 requires
 `RUNTIME_AUTHORITY_ABSENT`; expired-unused retirement requires
-`DESTINATION_STATE_ROOT_ABSENT`. A caller/candidate-selected digest, a receipt
+`DESTINATION_STATE_ROOT_ABSENT`. `RETIRE_CONSUMED` also requires
+`DESTINATION_STATE_ROOT_ABSENT` after terminal cleanup and before its lifecycle
+archive; its receipt equal-binds the selected CONSUMED graph in addition to the
+same absence predicate. A caller/candidate-selected digest, a receipt
 from another lock critical section, or either reason substituted for the other
 refuses.
 
@@ -326,12 +329,12 @@ into either digest.
 
 The anchor lifecycle matrix is exhaustive:
 
-| Transition        | Prior triple                                    | Successor value                                                       | Required branch evidence                                                       |
-| ----------------- | ----------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `ACTIVATE`        | all three prior members null and no current tip | `ACTIVE`, ordinal `"0"`; all E0 and teardown members null             | source `BOOTSTRAP_CREATE`; evidence equals the anchor's bootstrap-grant digest |
-| `CONSUME`         | all non-null and select `ACTIVE`                | `CONSUMED`, ordinal `n+1`; all six E0 members non-null; teardown null | source `E0_SELECTION`; evidence equals `selectionPostReceiptDigest` (`Dgp`)    |
-| `RETIRE_UNUSED`   | all non-null and select `ACTIVE`                | `RETIRED`, ordinal `n+1`; E0 members null; teardown non-null          | source `TEARDOWN`; evidence equals teardown receipt                            |
-| `RETIRE_CONSUMED` | all non-null and select `CONSUMED`              | `RETIRED`, ordinal `n+1`; E0 members null; teardown non-null          | source `TEARDOWN`; evidence equals teardown receipt                            |
+| Transition        | Prior triple                                    | Successor value                                                       | Required branch evidence                                                                                      |
+| ----------------- | ----------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `ACTIVATE`        | all three prior members null and no current tip | `ACTIVE`, ordinal `"0"`; all E0 and teardown members null             | source `BOOTSTRAP_CREATE`; evidence equals the anchor's bootstrap-grant digest                                |
+| `CONSUME`         | all non-null and select `ACTIVE`                | `CONSUMED`, ordinal `n+1`; all six E0 members non-null; teardown null | source `E0_SELECTION`; evidence equals `selectionPostReceiptDigest` (`Dgp`)                                   |
+| `RETIRE_UNUSED`   | all non-null and select `ACTIVE`                | `RETIRED`, ordinal `n+1`; E0 members null; teardown non-null          | source `TEARDOWN`; evidence equals teardown receipt over `DESTINATION_STATE_ROOT_ABSENT` `Dabs`               |
+| `RETIRE_CONSUMED` | all non-null and select `CONSUMED`              | `RETIRED`, ordinal `n+1`; E0 members null; teardown non-null          | source `TEARDOWN`; evidence equals teardown receipt over the same absence reason plus selected CONSUMED graph |
 
 The six E0 members beginning with `bootstrapGenesisCoreDigest` and ending with
 `selectionPostReceiptDigest` in the lifecycle value are an all-null/all-non-null

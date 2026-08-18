@@ -428,7 +428,9 @@ round-trip (so a canonical leaf such as `straße` remains valid), macOS
 lowercase NFD, and Linux case-sensitive NFC; the selected profile must match
 the OS field. Case or normalization-distinct Linux identities remain distinct
 rather than colliding. The closed `Dabs` observation is the sole absence proof
-for E0 and expired-unused retirement; opaque SHA-256 absence claims refuse.
+for E0 and both `RETIRE_UNUSED` and `RETIRE_CONSUMED`; both retirement branches
+use `DESTINATION_STATE_ROOT_ABSENT`, while E0 uses
+`RUNTIME_AUTHORITY_ABSENT`. Opaque SHA-256 absence claims refuse.
 
 Authority-history verification recomputes each record digest and authenticates
 the chain against the exact selected current authority's `G`, `headOrdinal`,
