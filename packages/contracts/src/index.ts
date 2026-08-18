@@ -18,6 +18,7 @@ export * from "./commit.js";
 export * from "./definitions.js";
 export * from "./dispatch.js";
 export * from "./evidence.js";
+export * from "./external.js";
 export * from "./pointer.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";

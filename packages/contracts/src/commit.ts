@@ -434,6 +434,39 @@ export function computeRunId(input: unknown): string {
   ]);
 }
 
+function requiredDigest(value: string, name: string): string {
+  if (!isSha256(value)) throw new TypeError(`${name}:invalid`);
+  return value;
+}
+
+export const commitJournalPaths = Object.freeze({
+  intent: (targetPathInstanceDigest: string, targetMutationId: string): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/intent.json`,
+  checkpoint: (
+    targetPathInstanceDigest: string,
+    targetMutationId: string,
+    checkpointCoreDigest: string,
+  ): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/checkpoints/${requiredDigest(checkpointCoreDigest, "checkpointCoreDigest")}.json`,
+  runSegment: (
+    targetPathInstanceDigest: string,
+    targetMutationId: string,
+    runOrdinal: string,
+    runId: string,
+  ): string => {
+    if (!isCanonicalDecimal(runOrdinal)) throw new TypeError("runOrdinal:invalid");
+    return `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/runs/${runOrdinal}-${requiredDigest(runId, "runId")}/segment.json`;
+  },
+  selectorObservation: (
+    targetPathInstanceDigest: string,
+    targetMutationId: string,
+    selectorMutationId: string,
+  ): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/selector-observations/${requiredDigest(selectorMutationId, "selectorMutationId")}.json`,
+  resolution: (targetPathInstanceDigest: string, targetMutationId: string): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/resolution.json`,
+});
+
 export function validateCommitCheckpointSequence(
   input: unknown,
   commitKind: "ORDINARY" | "AUTHORITY_ROTATION",

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   commitRunStages,
+  commitJournalPaths,
   computeRunAuditDigest,
   computeRunCheckpointCoreDigest,
   computeRunId,
@@ -58,6 +59,28 @@ function checkpoint(
 }
 
 describe("single-epoch commit journal atoms", () => {
+  test("constructs only digest- and ordinal-derived journal paths", () => {
+    expect(commitJournalPaths.intent(d("1"), d("2"))).toBe(
+      `installation/pointer-cas/${d("1")}/commits/${d("2")}/intent.json`,
+    );
+    expect(commitJournalPaths.checkpoint(d("1"), d("2"), d("3"))).toBe(
+      `installation/pointer-cas/${d("1")}/commits/${d("2")}/checkpoints/${d("3")}.json`,
+    );
+    expect(commitJournalPaths.runSegment(d("1"), d("2"), "9007199254740991", d("4"))).toBe(
+      `installation/pointer-cas/${d("1")}/commits/${d("2")}/runs/9007199254740991-${d("4")}/segment.json`,
+    );
+    expect(commitJournalPaths.selectorObservation(d("1"), d("2"), d("5"))).toBe(
+      `installation/pointer-cas/${d("1")}/commits/${d("2")}/selector-observations/${d("5")}.json`,
+    );
+    expect(commitJournalPaths.resolution(d("1"), d("2"))).toBe(
+      `installation/pointer-cas/${d("1")}/commits/${d("2")}/resolution.json`,
+    );
+    expect(() =>
+      commitJournalPaths.runSegment(d("1"), d("2"), "9007199254740992", d("4")),
+    ).toThrow();
+    expect(() => commitJournalPaths.intent(d("z"), d("2"))).toThrow();
+  });
+
   test("chains immutable segments into the checkpoint core audit", () => {
     const runId = computeRunId({
       authorityPathInstanceDigest: d("1"),
