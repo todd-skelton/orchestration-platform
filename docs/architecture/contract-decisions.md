@@ -241,13 +241,14 @@ are exactly those in `supervisor-contract.md`.
 - A present directive is admitted only by an exact catalog resolver key for the
   brief action pair. `planAccessor` selects the named nonempty digest or closed
   role from the same exact `dispatch-action-core/v1`; `templateId` selects one
-  release-reviewed ISS-021 renderer whose fixed UTF-8 template body is 1–8192
-  bytes. Each present rendering contains that nonempty fixed body and the
-  canonical selected scalar. No catalog key is rendered. The host resolves the
-  pair only from its installed static module/renderer registry; filesystem,
-  network, adapter, dynamic, and arbitrary schema-family resolution are
-  forbidden. Thus the brief has no open reference-schema, external-reference,
-  empty-renderer, or empty-typed-value surface.
+  release-reviewed renderer in the selected installed worker-host artifact;
+  the fixed UTF-8 template body is 1–8192 bytes. Each present rendering
+  contains that nonempty fixed body and the canonical selected scalar. No
+  catalog key is rendered. The selected host resolves the pair only from its
+  installed static module/renderer registry; filesystem, network, adapter,
+  dynamic, and arbitrary schema-family resolution are forbidden. Thus the
+  brief has no open reference-schema, external-reference, empty-renderer, or
+  empty-typed-value surface.
 - `dispatch-brief-directive/v1` has exactly `code`, `directiveKind`,
   `presence`, `schemaVersion`, and `subjectDigest`. `directiveKind` is exactly
   `ACCEPTANCE_EVIDENCE|CONSTRAINT|DECISION|NON_GOAL|OPERATOR_ACTION|`
@@ -267,18 +268,32 @@ are exactly those in `supervisor-contract.md`.
 - The host groups directives in the closed kind order above and renders only
   the reviewed text and typed values selected by each admitted catalog row.
   It never renders raw action, capability, code, accessor, template, schema, or
-  resource values. ISS-021's build is the sole producer of the
-  `hostRendererArtifactDigest`: the SHA-256 of the exact host package artifact
-  containing the compiled renderer table and every fixed template byte. The
-  stable release assembly binds that digest in its reviewed
-  `release-manifest/v1`; installation read-back binds the identical artifact to
-  the selected active release. There is no separate template-registry digest.
-  Before rendering or ownership publication, step 7 proves its executing host
-  artifact digest equals that installed active-release value, and its role
-  equals both the step-4 requested role and brief role. `dispatch-plan/v1`
-  binds the unchanged action-core, subject, descriptor, rendered-byte, and host-
-  renderer artifact digests. A stale, candidate-supplied, self-reported, moved,
-  or substituted renderer/artifact refuses before launch.
+  resource values. Each worker-host build is the sole producer of its own
+  `hostRendererArtifactDigest`: the SHA-256 of that exact host package artifact
+  containing its compiled renderer table and every fixed template byte.
+  ISS-021 is the first producer; any additional registered host, including
+  ISS-045, produces a distinct reviewed artifact under the same contract.
+- `release-manifest/v1` contains a dense 1–16
+  `workerHostRendererArtifacts` array of closed
+  `worker-host-renderer-artifact/v1` records. Each record has exactly
+  `hostRendererArtifactDigest`, `schemaVersion`, and
+  `workerHostIdentityDigest`, in that canonical order; both digests are SHA-256
+  and the schema literal is `worker-host-renderer-artifact/v1`. Rows are unique
+  by `workerHostIdentityDigest`. The route selects only the opaque identity
+  digest; engine contracts never name a provider or executable. ISS-020 owns
+  the reviewed N0 manifest and install read-back of this mapping; ISS-014 owns
+  every reviewed successor manifest and install read-back. Installation proves
+  every mapped artifact digest against installed bytes and the selected active
+  release. A candidate, host, or worker cannot add, choose, or attest a row.
+- There is no separate template-registry digest. Before rendering or ownership
+  publication, step 7 uses the route-selected `workerHostIdentityDigest` to
+  select exactly one installed active-release mapping row, proves its executing
+  host artifact digest equals that row, and requires its role to equal both the
+  step-4 requested role and brief role. `dispatch-plan/v1` binds the unchanged
+  host identity, action-core, subject, descriptor, rendered-byte, and host-
+  renderer artifact digests. Missing, duplicate, stale, wrong-package,
+  candidate-supplied, self-reported, moved, manifest/read-back-substituted, or
+  otherwise mismatched renderer authority refuses before launch.
 - `dispatch-brief-resource/v1` has exactly `access`,
   `resourceIdentityDigest`, and `schemaVersion`. `access` is exactly
   `READ|CREATE|MODIFY|DELETE` and `resourceIdentityDigest` is SHA-256.
