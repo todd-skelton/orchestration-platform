@@ -1179,17 +1179,21 @@ path/tip/value/receipt; the packet-authority byte; nullable packet authority
 path/tip/value/receipt; then the branch parts in the order below; finally
 canonical union bytes.
 
-`priorCheckpointEvidence` is null exactly when `runOrdinal` is zero. For a
-positive run ordinal it is the complete closed selected checkpoint evidence
-from the immediately prior run: its core run ordinal increments to the current
-run ordinal; its kind/path/installation/project/state/transaction/source,
-target `Dp` and mutation, `G`, and selected authority epoch equal the current
-run; and its recomputed selector `Dp/Dt/Dv/Dr` plus `Dpost` are the initial
-predecessor fields of current checkpoint zero. The run-ID prior-checkpoint part
-is the recomputed prior `Dcore`, never a caller-supplied digest. Every current
-checkpoint target `Dp` is independently recomputed from its existing
-kind/path/installation/project/state/transaction/source tuple before sequence
-or packet acceptance.
+For ORDINARY, `priorCheckpointEvidence` is null exactly when `runOrdinal` is
+zero. A positive ordinary run ordinal carries the complete closed selected
+checkpoint evidence from the immediately prior run: its core run ordinal
+increments to the current run ordinal; its kind/path/installation/project/
+state/transaction/source, target `Dp` and mutation, `G`, and selected authority
+epoch equal the current run; and its recomputed selector `Dp/Dt/Dv/Dr` plus
+`Dpost` are the initial predecessor fields of current checkpoint zero. The
+run-ID prior-checkpoint part is the recomputed prior `Dcore`, never a caller-
+supplied digest. AUTHORITY_ROTATION instead requires `runOrdinal="0"` and
+`priorCheckpointEvidence=null`. Its selected checkpoint 5 remains the same
+CAS-armed run across a crash; the same transaction may re-drive the same final
+CAS but may not open another rotation run or add checkpoints 0–4 to `Dcommit`.
+Every current checkpoint target `Dp` is independently recomputed from its
+existing kind/path/installation/project/state/transaction/source tuple before
+sequence or packet acceptance.
 
 - ORDINARY branch parts: for checkpoint ordinals zero through eight, the
   recomputed digest of that closed checkpoint evidence in ordinal order; the
