@@ -206,7 +206,18 @@ are exactly those in `supervisor-contract.md`.
   `selectedEvidence` is either the generic closed value/proposal/tip selection
   or this conflict composition. LOST_CONFLICT requires the latter; positive
   non-conflict outcomes require the former; unknown/empty outcomes require
-  null.
+  null. For ORDINARY SELECTED, the selected proposal has the target mutation ID
+  and its recomputed tip digest equals
+  `ordinaryResolution.selectedTargetTipDigest`; its named producer
+  `Dt/Dv/Dr` equals the common old/KNOWN packet and resolution producer tuple.
+  For ORDINARY LOST_CONFLICT, the conflict composition's losing proposal has
+  the target mutation ID, its recomputed conflict-receipt digest equals
+  `ordinaryResolution.conflictReceiptDigest`, and the losing proposal plus
+  conflict receipt named producer `Dt/Dv/Dr` each equal that same run/packet/
+  resolution tuple. Producer `Dp` has no duplicate in the generic proposal or
+  conflict schemas and remains equal-bound by the resolution and common
+  old/KNOWN packet fields. Hashing both siblings without these equalities is
+  insufficient and refuses.
 - The packet's `authorityHistoryBinding` is the closed non-persisted
   `authority-history-binding/v1` record with exactly
   `genesisSelectionEvidence`, `globalIdentityDigest`, `headOrdinal`,

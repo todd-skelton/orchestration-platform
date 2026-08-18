@@ -1288,6 +1288,23 @@ slot requires the generic selection. ORDINARY LOST_CONFLICT requires the
 conflict composition. ORDINARY UNKNOWN_TERMINAL and rotation UNKNOWN require
 null. Historical-read slots admit only null or the generic selection.
 
+The ORDINARY outcome-to-slot equalities are mandatory. For SELECTED,
+`targetRegistrySlot.selectedEvidence.proposal.mutationId` equals the common
+`targetMutationId`, and the recomputed selected tip digest equals
+`ordinaryResolution.selectedTargetTipDigest`. The selected proposal's
+`authorityEpochTipDigest`, `authorityEpochValueDigest`, and
+`authorityEpochReceiptDigest` respectively equal the common old/KNOWN packet
+authority `Dt/Dv/Dr` and the correspondingly named resolution producer fields.
+For LOST_CONFLICT, the conflict composition's losing proposal mutation equals
+the common target mutation; the recomputed digest of its `conflictReceipt`
+equals `ordinaryResolution.conflictReceiptDigest`; and both the losing
+proposal's and conflict receipt's three named authority-epoch digests equal the
+same old/KNOWN packet and resolution producer `Dt/Dv/Dr`. The producer `Dp` is
+not duplicated in the generic proposal or conflict-receipt schemas; it remains
+equal-bound by the resolution and common old/KNOWN packet fields. A valid
+resolution paired with a different valid selected graph, conflict receipt, or
+producer epoch refuses before `Dcommit` is accepted.
+
 The packet's `authorityHistoryBinding` is the non-persisted closed
 `authority-history-binding/v1` record with exactly:
 

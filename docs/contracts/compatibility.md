@@ -371,6 +371,17 @@ conflict arm, positive non-conflict outcomes require generic selected evidence,
 and unknown outcomes require null. Wrong-kind, caller-asserted winner, stale
 receipt, mixed arm, or an extra conflict field refuses.
 
+ORDINARY sibling evidence is equality-bound rather than merely co-hashed.
+SELECTED requires the slot proposal mutation to equal the target mutation, its
+tip digest to equal the resolution's selected-tip digest, and its producer
+`Dt/Dv/Dr` to equal the old/KNOWN packet and resolution producer tuple.
+LOST_CONFLICT requires the losing proposal mutation to equal the target, the
+slot conflict-receipt digest to equal the resolution conflict digest, and both
+losing-proposal and conflict-receipt producer `Dt/Dv/Dr` to equal that same
+tuple. Producer `Dp` remains bound by the resolution and common packet fields
+because the generic proposal/conflict schemas do not duplicate it. Independent
+and coordinated sibling or producer substitutions refuse.
+
 `authority-history-binding/v1` has exactly `genesisSelectionEvidence`,
 `globalIdentityDigest`, `headOrdinal`, `headRecordDigest`, `records`, and
 `schemaVersion`. The dense array is the complete ordinal-ordered linear chain
