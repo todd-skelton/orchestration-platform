@@ -124,6 +124,11 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: commitSchemaFields.runCurrentValue,
       closedValues: Object.freeze([...commitRunStages, ...commitRunPhases]),
     }),
+    "pointer-mutation-run-segment/v1": Object.freeze({
+      schemaVersion: "pointer-mutation-run-segment/v1",
+      fields: commitSchemaFields.runSegment,
+      closedValues: Object.freeze([...pointerKinds, ...commitRunStages]),
+    }),
     "pointer-mutation-run-selector-post-selection-observation/v1": Object.freeze({
       schemaVersion: "pointer-mutation-run-selector-post-selection-observation/v1",
       fields: commitSchemaFields.postSelectionObservation,

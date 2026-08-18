@@ -1,15 +1,19 @@
 import { describe, expect, test } from "vitest";
 import {
   commitRunStages,
+  computeRunAuditDigest,
   computeRunCheckpointCoreDigest,
   computeRunId,
   computeRunPostSelectionObservationDigest,
+  computeRunSegmentDigest,
   parseContract,
   parseRunCheckpointCore,
   parseRunCurrentValue,
   parseRunPostSelectionObservation,
+  parseRunSegment,
   validateCommitCheckpointSequence,
   validateRunCurrentSelection,
+  validateRunSegmentCore,
 } from "../../packages/contracts/src/index.js";
 
 const d = (value: string) => value.repeat(64);
@@ -54,6 +58,48 @@ function checkpoint(
 }
 
 describe("single-epoch commit journal atoms", () => {
+  test("chains immutable segments into the checkpoint core audit", () => {
+    const runId = computeRunId({
+      authorityPathInstanceDigest: d("1"),
+      authorityReceiptDigest: d("2"),
+      authorityTipDigest: d("3"),
+      authorityValueDigest: d("4"),
+      globalIdentityDigest: d("3"),
+      priorCheckpointDigest: null,
+      runOrdinal: "0",
+      targetMutationId: d("a"),
+    });
+    const segment = {
+      canonicalPointerPath: "installation/active-release.json",
+      globalIdentityDigest: d("3"),
+      installationId,
+      pointerKind: "ACTIVE_RELEASE",
+      projectId,
+      recordedAt: "2026-08-18T13:59:00.000Z",
+      runId,
+      runOrdinal: "0",
+      schemaVersion: "pointer-mutation-run-segment/v1",
+      sourceToken: "none",
+      stage: "CURRENT_AUTHORITY_READ",
+      stageEvidenceDigest: d("d"),
+      stateRootDigest: d("9"),
+      targetMutationId: d("a"),
+      targetPathInstanceDigest: d("b"),
+      transactionId: installationId,
+    };
+    const segmentDigest = computeRunSegmentDigest(segment);
+    const auditDigest = computeRunAuditDigest(null, segmentDigest);
+    expect(parseRunSegment(segment).ok).toBe(true);
+    expect(segmentDigest).toBe("610bb53e6cc71d253275611d3bac3217f7d3bf44d1d984f5b0e34eeb58ef094a");
+    expect(auditDigest).toBe("65e7134e48ed70cb625d06c23761987efb93bb269dfd85c04b55fbc8e29c5e65");
+    const core = { ...checkpoint(0), segmentDigest, auditDigest };
+    expect(validateRunSegmentCore(segment, core, null)).toEqual([]);
+    expect(validateRunSegmentCore(segment, { ...core, segmentDigest: d("e") }, null)).toContain(
+      "segmentDigest:mismatch",
+    );
+    expect(parseRunSegment({ ...segment, recordedAt: "2026-08-18" }).ok).toBe(false);
+  });
+
   test("parses and hashes the exact checkpoint core and selected run-current projection", () => {
     const core = checkpoint(0);
     expect(parseRunCheckpointCore(core).ok).toBe(true);

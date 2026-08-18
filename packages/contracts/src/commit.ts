@@ -59,6 +59,24 @@ const checkpointCoreFields = Object.freeze([
   "terminalResolutionDigest",
   "transactionId",
 ] as const);
+const runSegmentFields = Object.freeze([
+  "canonicalPointerPath",
+  "globalIdentityDigest",
+  "installationId",
+  "pointerKind",
+  "projectId",
+  "recordedAt",
+  "runId",
+  "runOrdinal",
+  "schemaVersion",
+  "sourceToken",
+  "stage",
+  "stageEvidenceDigest",
+  "stateRootDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "transactionId",
+] as const);
 const runCurrentValueFields = Object.freeze([
   "checkpointCoreDigest",
   "checkpointOrdinal",
@@ -86,12 +104,14 @@ const postSelectionObservationFields = Object.freeze([
 
 export const commitSchemaFields = Object.freeze({
   checkpointCore: checkpointCoreFields,
+  runSegment: runSegmentFields,
   runCurrentValue: runCurrentValueFields,
   postSelectionObservation: postSelectionObservationFields,
 });
 export const commitSchemaVersions = Object.freeze([
   "pointer-mutation-run-checkpoint-core/v1",
   "pointer-mutation-run-current-value/v1",
+  "pointer-mutation-run-segment/v1",
   "pointer-mutation-run-selector-post-selection-observation/v1",
 ] as const);
 
@@ -131,6 +151,67 @@ function validateStagePhase(record: ContractRecord): string[] {
   return issues;
 }
 
+function validateTargetIdentity(record: ContractRecord): string[] {
+  const issues: string[] = [];
+  if (!pointerKinds.includes(record.pointerKind as PointerKind)) issues.push("pointerKind:invalid");
+  if (!isContractRelativePath(record.canonicalPointerPath))
+    issues.push("canonicalPointerPath:invalid");
+  if (!isUuidV7(record.installationId)) issues.push("installationId:invalid");
+  if (!isUuidV7(record.projectId)) issues.push("projectId:invalid");
+  const row = pointerRegistry.find((candidate) => candidate.kind === record.pointerKind);
+  if (row) {
+    if (row.transactionPolicy === "REQUIRED") {
+      if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
+    } else if (record.transactionId !== null) issues.push("transactionId:must-be-null");
+    if (!row.sourceTokens.includes(String(record.sourceToken))) issues.push("sourceToken:invalid");
+  }
+  return issues;
+}
+
+export function parseRunSegment(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, runSegmentFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-run-segment/v1")
+    issues.push("schemaVersion:mismatch");
+  if (!commitRunStages.includes(record.stage as CommitRunStage)) issues.push("stage:invalid");
+  if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
+  if (!isCanonicalTimestamp(record.recordedAt)) issues.push("recordedAt:invalid");
+  issues.push(
+    ...validateTargetIdentity(record),
+    ...digestIssues(record, [
+      "globalIdentityDigest",
+      "runId",
+      "stageEvidenceDigest",
+      "stateRootDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+  );
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeRunSegmentDigest(input: unknown): string {
+  const parsed = parseRunSegment(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("pointer-mutation-run-segment/v1", [frame.canonical(parsed.value)]);
+}
+
+export function computeRunAuditDigest(
+  priorAuditDigest: string | null,
+  segmentDigest: string,
+): string {
+  if (priorAuditDigest !== null && !isSha256(priorAuditDigest))
+    throw new TypeError("priorAuditDigest:invalid");
+  if (!isSha256(segmentDigest)) throw new TypeError("segmentDigest:invalid");
+  return framedDigest("pointer-mutation-run-audit/v1", [
+    frame.fixed(priorAuditDigest === null ? "00" : "01"),
+    ...(priorAuditDigest === null ? [] : [frame.raw32(priorAuditDigest)]),
+    frame.raw32(segmentDigest),
+  ]);
+}
+
 export function parseRunCheckpointCore(input: unknown): ParseResult {
   const parsed = snapshotClosedRecord(input, checkpointCoreFields);
   if (!parsed.ok) return parsed;
@@ -138,11 +219,7 @@ export function parseRunCheckpointCore(input: unknown): ParseResult {
   const issues: string[] = [];
   if (record.schemaVersion !== "pointer-mutation-run-checkpoint-core/v1")
     issues.push("schemaVersion:mismatch");
-  if (!pointerKinds.includes(record.pointerKind as PointerKind)) issues.push("pointerKind:invalid");
-  if (!isContractRelativePath(record.canonicalPointerPath))
-    issues.push("canonicalPointerPath:invalid");
-  if (!isUuidV7(record.installationId)) issues.push("installationId:invalid");
-  if (!isUuidV7(record.projectId)) issues.push("projectId:invalid");
+  issues.push(...validateTargetIdentity(record));
   if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
   if (!isCanonicalDecimal(record.checkpointOrdinal)) issues.push("checkpointOrdinal:invalid");
   issues.push(
@@ -169,13 +246,6 @@ export function parseRunCheckpointCore(input: unknown): ParseResult {
   ];
   if (!(priorSelector.every((value) => value === null) || priorSelector.every(isSha256)))
     issues.push("priorSelector:partial");
-  const row = pointerRegistry.find((candidate) => candidate.kind === record.pointerKind);
-  if (row) {
-    if (row.transactionPolicy === "REQUIRED") {
-      if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
-    } else if (record.transactionId !== null) issues.push("transactionId:must-be-null");
-    if (!row.sourceTokens.includes(String(record.sourceToken))) issues.push("sourceToken:invalid");
-  }
   return issues.length === 0 ? parsed : invalid(...issues);
 }
 
@@ -253,6 +323,41 @@ export function validateRunCurrentSelection(
     "terminalResolutionDigest",
   ] as const)
     if (current.value[field] !== core.value[field]) issues.push(`${field}:mismatch`);
+  return Object.freeze(issues);
+}
+
+export function validateRunSegmentCore(
+  segmentInput: unknown,
+  checkpointCoreInput: unknown,
+  priorAuditDigest: string | null,
+): readonly string[] {
+  const segment = parseRunSegment(segmentInput);
+  const core = parseRunCheckpointCore(checkpointCoreInput);
+  if (!segment.ok || !core.ok)
+    return Object.freeze([
+      ...(!segment.ok ? segment.issues.map((issue) => `segment:${issue}`) : []),
+      ...(!core.ok ? core.issues.map((issue) => `core:${issue}`) : []),
+    ]);
+  const segmentDigest = computeRunSegmentDigest(segment.value);
+  const issues: string[] = [];
+  if (core.value.segmentDigest !== segmentDigest) issues.push("segmentDigest:mismatch");
+  if (core.value.auditDigest !== computeRunAuditDigest(priorAuditDigest, segmentDigest))
+    issues.push("auditDigest:mismatch");
+  for (const field of [
+    "canonicalPointerPath",
+    "globalIdentityDigest",
+    "installationId",
+    "pointerKind",
+    "projectId",
+    "runOrdinal",
+    "sourceToken",
+    "stage",
+    "stateRootDigest",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+    "transactionId",
+  ] as const)
+    if (segment.value[field] !== core.value[field]) issues.push(`${field}:mismatch`);
   return Object.freeze(issues);
 }
 
@@ -391,6 +496,8 @@ export function parseCommitContract(
       return parseRunCheckpointCore(input);
     case "pointer-mutation-run-current-value/v1":
       return parseRunCurrentValue(input);
+    case "pointer-mutation-run-segment/v1":
+      return parseRunSegment(input);
     case "pointer-mutation-run-selector-post-selection-observation/v1":
       return parseRunPostSelectionObservation(input);
     default:
