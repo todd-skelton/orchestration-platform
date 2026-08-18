@@ -262,6 +262,10 @@ the exact selected target, recomputed real winner, or empty slot for SELECTED,
 LOST_CONFLICT, or UNKNOWN_TERMINAL. AUTHORITY_ROTATION binds the authority slot
 to old, successor, or empty for RESUMABLE, SELECTED, or UNKNOWN. Structural
 success without that outcome-to-slot equality never grants a capability.
+The framed outcome byte is declaration-ordered and branch-local: ORDINARY uses
+`00/01/02` for SELECTED/LOST_CONFLICT/UNKNOWN_TERMINAL, while rotation uses
+`00/01/02` for RESUMABLE/SELECTED/UNKNOWN. Text framing, cross-branch meaning,
+or any other byte refuses the digest golden.
 
 AUTHORITY_ROTATION composes the old E(n) intent and selected checkpoint 5,
 expected successor `Dv`/target mutation/head/record/`Drot`/`Dsc`, then exactly
@@ -334,6 +338,9 @@ authority to E; its target slot is selected target, real winner, or empty.
 AUTHORITY_ROTATION carries only old E(n) checkpoint 5 plus exact expected
 successor/history evidence. Its packet authority and authority slot are old/
 old for RESUMABLE, successor/successor for SELECTED, and null/empty for UNKNOWN.
+For rotation UNKNOWN, packet `currentAuthoritySelection` and
+`authorityHistoryBinding` are also both exactly null; every other packet purpose
+or outcome requires both non-null and cross-bound. Partial nullability refuses.
 Rotation checkpoints 6–8, resolution, later selector artifacts, and new-epoch
 writes refuse. Every arm cross-binds the complete identity tuple. Unknown evidence is a fixed-size closed
 `UNREADABLE|MALFORMED|IMPOSSIBLE` union with a category-specific closed reason,

@@ -1196,6 +1196,10 @@ substitute for the other.
 `branch-tag` is `0x00` ORDINARY or
 `0x01` AUTHORITY_ROTATION; `packet-authority-tag` is `0x00` UNKNOWN or `0x01`
 KNOWN and the four authority parts must be all absent or all present.
+The ORDINARY outcome byte is `0x00` SELECTED, `0x01` LOST_CONFLICT, or
+`0x02` UNKNOWN_TERMINAL. The AUTHORITY_ROTATION outcome byte is independently
+`0x00` RESUMABLE, `0x01` SELECTED, or `0x02` UNKNOWN. Every tag is a raw fixed
+one-byte framed part; enum text and any other numeric assignment refuse.
 
 ORDINARY `branch-parts` are, in order, the digest of closed
 `pointer-mutation-run-checkpoint-evidence/v1` over the nine ordered stage
@@ -1351,6 +1355,15 @@ epoch transaction's CAS method; SELECTED is evidence usable by a separately
 created successor-epoch context; UNKNOWN exposes none. A rotation packet that
 contains ordinary checkpoints 6–8, ordinary resolution, post-checkpoint-5
 selector artifacts, or a successor-epoch write refuses.
+
+The outer `currentAuthoritySelection` and `authorityHistoryBinding` members are
+both nullable. HISTORICAL_READ, ORDINARY MUTATION_COMMIT, rotation RESUMABLE,
+and rotation SELECTED require both non-null; the selected authority value and
+the complete binding have the same `G`, head ordinal, and head record digest.
+Rotation UNKNOWN requires both exactly null, together with UNKNOWN/null packet
+authority and the empty authority registry slot. One null without the other,
+either non-null UNKNOWN member, or any attempt to issue a historical-read or
+mutation capability from that arm refuses.
 
 Packet authority and the complete kind/path/install/project/state/transaction/
 source/`Dp`/mutation/run identity tuple must equal `Dcommit` and selected-slot

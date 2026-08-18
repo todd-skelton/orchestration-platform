@@ -153,6 +153,18 @@ are exactly those in `supervisor-contract.md`.
   stages 6–8, ordinary resolution, later selector artifacts, and successor-
   epoch writes refuse. No post-CAS write occurs under the new epoch, no
   separate rotation receipt or coordinator exists, and no run crosses epochs.
+- The `Dcommit` outcome byte is declaration-ordered and exact. ORDINARY uses
+  `0x00=SELECTED`, `0x01=LOST_CONFLICT`, and
+  `0x02=UNKNOWN_TERMINAL`. AUTHORITY_ROTATION independently uses
+  `0x00=RESUMABLE`, `0x01=SELECTED`, and `0x02=UNKNOWN`. These are raw fixed
+  one-byte framed parts, not enum text or caller-selected numbers.
+- In `pointer-evidence-packet/v1`, `currentAuthoritySelection` and
+  `authorityHistoryBinding` are both nullable. They are both non-null and
+  mutually cross-bound for HISTORICAL_READ, ORDINARY MUTATION_COMMIT, rotation
+  RESUMABLE, and rotation SELECTED. Rotation UNKNOWN requires both exactly
+  null, matching its UNKNOWN packet authority and empty authority registry
+  slot; it exposes no historical-read or mutation capability. Partial nullability
+  refuses.
 - The ordinary-only `pointer-mutation-commit-resolution/v1` record has exactly
   `conflictReceiptDigest`, `outcome`, `outcomeEvidenceDigest`,
   `producerAuthorityPathInstanceDigest`, `producerAuthorityReceiptDigest`,
