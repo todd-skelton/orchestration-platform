@@ -11,6 +11,7 @@ import {
   snapshotClosedRecord,
   snapshotJson,
   type ContractRecord,
+  type FramePart,
   type ParseResult,
 } from "./runtime.js";
 import {
@@ -1736,6 +1737,130 @@ export function parseRotationCommitEvidence(input: unknown): ParseResult {
     }
   }
   return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+function commitCommonDigestParts(record: ContractRecord, branchTag: "00" | "01"): FramePart[] {
+  return [
+    frame.fixed(branchTag),
+    frame.text(String(record.targetPointerKind)),
+    frame.text(String(record.canonicalPointerPath)),
+    frame.raw32(String(record.targetPathInstanceDigest)),
+    frame.raw32(String(record.targetMutationId)),
+    frame.raw32(String(record.intentDigest)),
+    frame.raw32(String(record.runId)),
+    frame.boundedDecimal(String(record.runOrdinal)),
+    frame.raw32(String(record.oldAuthorityPathInstanceDigest)),
+    frame.raw32(String(record.oldAuthorityTipDigest)),
+    frame.raw32(String(record.oldAuthorityValueDigest)),
+    frame.raw32(String(record.oldAuthorityReceiptDigest)),
+    frame.fixed(record.packetAuthorityKind === "KNOWN" ? "01" : "00"),
+    frame.nullableRaw32(record.packetAuthorityPathInstanceDigest as string | null),
+    frame.nullableRaw32(record.packetAuthorityTipDigest as string | null),
+    frame.nullableRaw32(record.packetAuthorityValueDigest as string | null),
+    frame.nullableRaw32(record.packetAuthorityReceiptDigest as string | null),
+  ];
+}
+
+function ordinaryOutcomeTag(outcome: unknown): "00" | "01" | "02" {
+  if (outcome === "SELECTED") return "00";
+  if (outcome === "LOST_CONFLICT") return "01";
+  if (outcome === "UNKNOWN_TERMINAL") return "02";
+  throw new TypeError("outcome:invalid");
+}
+
+function rotationOutcomeTag(outcome: unknown): "00" | "01" | "02" {
+  if (outcome === "RESUMABLE") return "00";
+  if (outcome === "SELECTED") return "01";
+  if (outcome === "UNKNOWN") return "02";
+  throw new TypeError("rotationOutcome:invalid");
+}
+
+function rotationCheckpointDigestParts(checkpointInput: unknown): FramePart[] {
+  const checkpoint = parseRunCheckpointEvidence(checkpointInput);
+  if (!checkpoint.ok) throw new TypeError(checkpoint.issues.join(","));
+  const core = parseRunCheckpointCore(checkpoint.value.core);
+  const selector = selectedPointerTuple(checkpoint.value.selectorSelection);
+  const observation = parseRunPostSelectionObservation(checkpoint.value.postSelectionObservation);
+  if (!core.ok || !selector.ok || !observation.ok)
+    throw new TypeError("checkpoint5:composition-invalid");
+  return [
+    frame.raw32(computeRunCheckpointCoreDigest(core.value)),
+    frame.raw32(selector.pathInstanceDigest),
+    frame.raw32(selector.tipDigest),
+    frame.raw32(selector.valueDigest),
+    frame.raw32(selector.receiptDigest),
+    frame.raw32(String(observation.value.valueReadbackDigest)),
+    frame.raw32(String(observation.value.proposalReadbackDigest)),
+    frame.raw32(String(observation.value.tipReadbackDigest)),
+    frame.raw32(computeRunPostSelectionObservationDigest(observation.value)),
+  ];
+}
+
+function rotationOutcomeDigestParts(record: ContractRecord): FramePart[] {
+  if (record.rotationOutcome === "RESUMABLE")
+    return [
+      frame.canonical(record.headPlusTwoAbsent as true),
+      frame.canonical(record.pendingRecord as ContractRecord),
+      frame.raw32(String(record.pendingRecordReadbackDigest)),
+      frame.raw32(String(record.resumableOldAuthorityPathInstanceDigest)),
+      frame.raw32(String(record.resumableOldAuthorityReceiptDigest)),
+      frame.raw32(String(record.resumableOldAuthorityTipDigest)),
+      frame.raw32(String(record.resumableOldAuthorityValueDigest)),
+      frame.boundedDecimal(String(record.resumablePriorHeadOrdinal)),
+      frame.raw32(String(record.resumablePriorRecordDigest)),
+    ];
+  if (record.rotationOutcome === "SELECTED")
+    return [
+      frame.canonical(record.selectedHistoryRecord as ContractRecord),
+      frame.raw32(String(record.selectedHistoryRecordReadbackDigest)),
+      frame.raw32(String(record.selectedSuccessorAuthorityPathInstanceDigest)),
+      frame.raw32(String(record.selectedSuccessorAuthorityReceiptDigest)),
+      frame.raw32(String(record.selectedSuccessorAuthorityTipDigest)),
+      frame.canonical(record.selectedSuccessorAuthorityValue as ContractRecord),
+      frame.raw32(String(record.selectedSuccessorAuthorityValueDigest)),
+      frame.raw32(String(record.selectedSuccessorValueReadbackDigest)),
+    ];
+  return [frame.canonical(record.unknownEvidence as ContractRecord)];
+}
+
+export function computeCommitEvidenceDigest(input: unknown): string {
+  const parsed = parseCommitEvidence(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  const branchParts: FramePart[] = [];
+  if (record.commitKind === "ORDINARY") {
+    const checkpoints = snapshotClosedArray(record.checkpoints);
+    if (!checkpoints.ok) throw new TypeError(checkpoints.issues.join(","));
+    branchParts.push(
+      ...checkpoints.value.map((checkpoint) =>
+        frame.raw32(computeRunCheckpointEvidenceDigest(checkpoint)),
+      ),
+      frame.raw32(computeCommitResolutionDigest(record.ordinaryResolution)),
+      frame.fixed(ordinaryOutcomeTag(record.outcome)),
+      frame.canonical(record.targetRegistrySlot as ContractRecord),
+    );
+    return framedDigest("pointer-mutation-commit-evidence/v1", [
+      ...commitCommonDigestParts(record, "00"),
+      ...branchParts,
+      frame.canonical(record),
+    ]);
+  }
+  branchParts.push(
+    ...rotationCheckpointDigestParts(record.checkpoint5),
+    frame.raw32(String(record.expectedSuccessorValueDigest)),
+    frame.boundedDecimal(String(record.expectedHeadOrdinal)),
+    frame.raw32(String(record.expectedRecordDigest)),
+    frame.raw32(String(record.rotationInputDigest)),
+    frame.raw32(String(record.successorCoreDigest)),
+    frame.fixed(rotationOutcomeTag(record.rotationOutcome)),
+    ...rotationOutcomeDigestParts(record),
+    frame.canonical(record.authorityRegistrySlot as ContractRecord),
+  );
+  return framedDigest("pointer-mutation-commit-evidence/v1", [
+    ...commitCommonDigestParts(record, "01"),
+    ...branchParts,
+    frame.canonical(record),
+  ]);
 }
 
 export function parseCommitEvidence(input: unknown): ParseResult {

@@ -4,6 +4,7 @@ import {
   commitRunStages,
   commitJournalPaths,
   computeCommitResolutionDigest,
+  computeCommitEvidenceDigest,
   computeConflictDigest,
   computeAuthorityHistoryRecordDigest,
   computeCurrentTipDigest,
@@ -1250,6 +1251,26 @@ describe("single-epoch commit journal atoms", () => {
     expect(parseRotationCommitEvidence({ ...selected, ordinaryResolution: resolution() }).ok).toBe(
       false,
     );
+  });
+
+  test("pins branch-local outcome tags in exact Dcommit goldens", () => {
+    const digests = [
+      computeCommitEvidenceDigest(ordinaryCommitEvidence("SELECTED")),
+      computeCommitEvidenceDigest(lostOrdinaryCommitEvidence()),
+      computeCommitEvidenceDigest(ordinaryCommitEvidence("UNKNOWN_TERMINAL")),
+      computeCommitEvidenceDigest(rotationCommitEvidence("RESUMABLE")),
+      computeCommitEvidenceDigest(rotationCommitEvidence("SELECTED")),
+      computeCommitEvidenceDigest(rotationCommitEvidence("UNKNOWN")),
+    ];
+    expect(digests).toEqual([
+      "667be225f71005b4d14b97e0657f6eb9dade29455b5a3624c1b9d635875942f9",
+      "603b4c8c77d01e7e537e2e20a0a663a8ebabe90fe3e2e7057cfbbca0ad0438a9",
+      "22041de2c8d4e14718498098b06547b14ae553c440a36c4a85524554da27a8e5",
+      "7ac2e6010347992e3c1144c9f853334034bfe05a2978a5164e84b125f2229e99",
+      "e92dd11a42e3c9c8e070faf087c258a8186742e0d6768c0ca3483fd49f75f8a1",
+      "2dc48322cd5d0eedcb13780b193a4f154908d04d1570b2780f750cc73479743b",
+    ]);
+    expect(new Set(digests).size).toBe(6);
   });
 
   test("fails closed for partial predecessor triples, unsafe ordinals, wrong phases, and extras", () => {
