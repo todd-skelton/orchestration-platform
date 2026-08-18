@@ -13,7 +13,7 @@ import {
   evidenceSchemaVersions,
   unknownEvidenceReasons,
 } from "./evidence.js";
-import { pointerGraphSchemaFields, pointerGraphSchemaVersions } from "./pointer.js";
+import { pointerGraphSchemaFields, pointerGraphSchemaVersions, pointerKinds } from "./pointer.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -128,6 +128,11 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
     "pointer-current-tip/v1": Object.freeze({
       schemaVersion: "pointer-current-tip/v1",
       fields: pointerGraphSchemaFields.currentTip,
+    }),
+    "pointer-tombstone-value/v1": Object.freeze({
+      schemaVersion: "pointer-tombstone-value/v1",
+      fields: pointerGraphSchemaFields.tombstone,
+      closedValues: pointerKinds.filter((kind) => kind !== "STATE_MUTATION_AUTHORITY_ROTATION"),
     }),
     "dispatch-action-core/v1": Object.freeze({
       schemaVersion: "dispatch-action-core/v1",

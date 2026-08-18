@@ -5,6 +5,8 @@ import {
   computePointerInstanceDigest,
   computePointerValueDigest,
   computeProposalReceiptDigest,
+  parseContract,
+  parsePointerTombstoneValue,
   pointerKinds,
   pointerPath,
   pointerRegistry,
@@ -182,5 +184,39 @@ describe("acyclic pointer graph", () => {
         ),
       ),
     ).toBe("UNKNOWN");
+  });
+});
+
+describe("durable pointer tombstones", () => {
+  const tombstone = Object.freeze({
+    archiveDigest: d("a"),
+    pointerKind: "ACTIVE_RELEASE",
+    priorReceiptDigest: d("b"),
+    priorTipDigest: d("c"),
+    priorValueDigest: d("d"),
+    schemaVersion: "pointer-tombstone-value/v1",
+    terminalProofDigest: d("e"),
+    tombstonedAt: "2026-08-18T13:00:00.000Z",
+  });
+
+  test("accepts the exact closed record through both direct and registry dispatch", () => {
+    expect(parsePointerTombstoneValue(tombstone).ok).toBe(true);
+    expect(parseContract("pointer-tombstone-value/v1", tombstone).ok).toBe(true);
+  });
+
+  test("rejects rotation tombstones and malformed, incomplete, or extended evidence", () => {
+    expect(
+      parsePointerTombstoneValue({
+        ...tombstone,
+        pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
+      }).ok,
+    ).toBe(false);
+    expect(parsePointerTombstoneValue({ ...tombstone, archiveDigest: d("z") }).ok).toBe(false);
+    expect(parsePointerTombstoneValue({ ...tombstone, tombstonedAt: "2026-08-18" }).ok).toBe(false);
+    expect(parsePointerTombstoneValue({ ...tombstone, nativeError: "missing" }).ok).toBe(false);
+    const missingArchive = { ...tombstone } as Record<string, unknown>;
+    delete missingArchive.archiveDigest;
+    expect(parsePointerTombstoneValue(missingArchive).ok).toBe(false);
+    expect(parsePointerTombstoneValue(null).ok).toBe(false);
   });
 });

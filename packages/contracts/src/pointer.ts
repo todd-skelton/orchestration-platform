@@ -490,15 +490,27 @@ const conflictFields = Object.freeze([
   "winningTipDigest",
   "winningValueDigest",
 ] as const);
+const tombstoneFields = Object.freeze([
+  "archiveDigest",
+  "pointerKind",
+  "priorReceiptDigest",
+  "priorTipDigest",
+  "priorValueDigest",
+  "schemaVersion",
+  "terminalProofDigest",
+  "tombstonedAt",
+] as const);
 export const pointerGraphSchemaFields = Object.freeze({
   currentTip: currentTipFields,
   proposal: Object.freeze(proposalFields),
   conflict: conflictFields,
+  tombstone: tombstoneFields,
 });
 export const pointerGraphSchemaVersions = Object.freeze([
   "pointer-cas-proposal-receipt/v1",
   "pointer-conflict-receipt/v1",
   "pointer-current-tip/v1",
+  "pointer-tombstone-value/v1",
 ] as const);
 
 function pointerParseFailure(...issues: readonly string[]): ParseResult {
@@ -675,6 +687,29 @@ export function parsePointerConflict(input: unknown): ParseResult {
   return issues.length === 0 ? closed : pointerParseFailure(...issues);
 }
 
+export function parsePointerTombstoneValue(input: unknown): ParseResult {
+  const closed = snapshotClosedRecord(input, tombstoneFields);
+  if (!closed.ok) return closed;
+  const record = closed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-tombstone-value/v1") issues.push("schemaVersion:mismatch");
+  if (
+    !pointerKinds.includes(record.pointerKind as PointerKind) ||
+    record.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION"
+  )
+    issues.push("pointerKind:invalid");
+  for (const field of [
+    "archiveDigest",
+    "priorReceiptDigest",
+    "priorTipDigest",
+    "priorValueDigest",
+    "terminalProofDigest",
+  ] as const)
+    if (!isSha256(record[field])) issues.push(`${field}:invalid`);
+  if (!isCanonicalTimestamp(record.tombstonedAt)) issues.push("tombstonedAt:invalid");
+  return issues.length === 0 ? closed : pointerParseFailure(...issues);
+}
+
 export function parsePointerGraphContract(
   expectedSchemaVersion: string,
   input: unknown,
@@ -686,6 +721,8 @@ export function parsePointerGraphContract(
       return parsePointerConflict(input);
     case "pointer-current-tip/v1":
       return parsePointerCurrentTip(input);
+    case "pointer-tombstone-value/v1":
+      return parsePointerTombstoneValue(input);
     default:
       return undefined;
   }
