@@ -165,6 +165,18 @@ are exactly those in `supervisor-contract.md`.
   null, matching its UNKNOWN packet authority and empty authority registry
   slot; it exposes no historical-read or mutation capability. Partial nullability
   refuses.
+- `pointer-mutation-commit-evidence/v1` carries nullable
+  `priorCheckpointEvidence`, a closed
+  `pointer-mutation-run-checkpoint-evidence/v1` record and the sole source of
+  the prior-checkpoint input to `pointer-mutation-run-id/v1`. Run ordinal zero
+  requires null; every positive run ordinal requires the immediately prior
+  run's evidence. Its recomputed `Dcore`, selected run-current `Dp/Dt/Dv/Dr`,
+  and `Dpost` bind the new run ID and checkpoint-zero predecessor fields. The
+  prior evidence repeats the exact target, platform identity, and old-authority
+  epoch, and its run ordinal is exactly one less. Every current checkpoint
+  target `Dp` is recomputed from its existing kind/path/installation/project/
+  state/transaction/source tuple. Copied `Dp`, run ID, or coordinated sibling
+  copies never substitute for either derivation.
 - The ordinary-only `pointer-mutation-commit-resolution/v1` record has exactly
   `conflictReceiptDigest`, `outcome`, `outcomeEvidenceDigest`,
   `producerAuthorityPathInstanceDigest`, `producerAuthorityReceiptDigest`,

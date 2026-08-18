@@ -1058,7 +1058,8 @@ is the only producer-epoch representation.
 Dcommit = H(F(pointer-mutation-commit-evidence/v1,
   branch-tag, target-kind text, target-path text, target-Dp raw32,
   target-mutation-id raw32, intent-digest raw32, run-id raw32,
-  run-ordinal bounded-decimal, old-authority Dp/Dt/Dv/Dr raw32,
+  run-ordinal bounded-decimal, nullable prior-checkpoint Dcore raw32,
+  old-authority Dp/Dt/Dv/Dr raw32,
   packet-authority-tag, nullable packet-authority Dp/Dt/Dv/Dr raw32,
   branch-parts, canonical union bytes))
 ```
@@ -1068,26 +1069,27 @@ non-persisted composed evidence: it has no commit path or selecting pointer and
 appears only as a recursively closed value inside `pointer-evidence-packet/v1`.
 Both branches first carry this exact common census (canonical member order):
 
-| JSON member                         | Type / literal                                |
-| ----------------------------------- | --------------------------------------------- |
-| `canonicalPointerPath`              | `relative-path`                               |
-| `commitKind`                        | enum `ORDINARY`, `AUTHORITY_ROTATION`         |
-| `intentDigest`                      | `sha256`                                      |
-| `oldAuthorityPathInstanceDigest`    | `sha256`                                      |
-| `oldAuthorityReceiptDigest`         | `sha256`                                      |
-| `oldAuthorityTipDigest`             | `sha256`                                      |
-| `oldAuthorityValueDigest`           | `sha256`                                      |
-| `packetAuthorityKind`               | enum `KNOWN`, `UNKNOWN`                       |
-| `packetAuthorityPathInstanceDigest` | nullable `sha256`                             |
-| `packetAuthorityReceiptDigest`      | nullable `sha256`                             |
-| `packetAuthorityTipDigest`          | nullable `sha256`                             |
-| `packetAuthorityValueDigest`        | nullable `sha256`                             |
-| `runId`                             | `sha256`                                      |
-| `runOrdinal`                        | `safe-decimal`                                |
-| `schemaVersion`                     | literal `pointer-mutation-commit-evidence/v1` |
-| `targetMutationId`                  | `sha256`                                      |
-| `targetPathInstanceDigest`          | `sha256`                                      |
-| `targetPointerKind`                 | one of the exact eleven registry kinds        |
+| JSON member                         | Type / literal                                                 |
+| ----------------------------------- | -------------------------------------------------------------- |
+| `canonicalPointerPath`              | `relative-path`                                                |
+| `commitKind`                        | enum `ORDINARY`, `AUTHORITY_ROTATION`                          |
+| `intentDigest`                      | `sha256`                                                       |
+| `oldAuthorityPathInstanceDigest`    | `sha256`                                                       |
+| `oldAuthorityReceiptDigest`         | `sha256`                                                       |
+| `oldAuthorityTipDigest`             | `sha256`                                                       |
+| `oldAuthorityValueDigest`           | `sha256`                                                       |
+| `packetAuthorityKind`               | enum `KNOWN`, `UNKNOWN`                                        |
+| `packetAuthorityPathInstanceDigest` | nullable `sha256`                                              |
+| `packetAuthorityReceiptDigest`      | nullable `sha256`                                              |
+| `packetAuthorityTipDigest`          | nullable `sha256`                                              |
+| `packetAuthorityValueDigest`        | nullable `sha256`                                              |
+| `priorCheckpointEvidence`           | nullable `record<pointer-mutation-run-checkpoint-evidence/v1>` |
+| `runId`                             | `sha256`                                                       |
+| `runOrdinal`                        | `safe-decimal`                                                 |
+| `schemaVersion`                     | literal `pointer-mutation-commit-evidence/v1`                  |
+| `targetMutationId`                  | `sha256`                                                       |
+| `targetPathInstanceDigest`          | `sha256`                                                       |
+| `targetPointerKind`                 | one of the exact eleven registry kinds                         |
 
 For either branch, canonical JSON order is the single ascending UTF-16 merge
 of this common table, its branch table, and its one applicable outcome table;
@@ -1171,10 +1173,23 @@ successor-epoch write.
 The `Dcommit` digest domain is exactly
 `pointer-mutation-commit-evidence/v1`. Framed parts are the branch byte;
 `targetPointerKind`; `canonicalPointerPath`; `targetPathInstanceDigest`;
-`targetMutationId`; `intentDigest`; `runId`; `runOrdinal`; old authority
+`targetMutationId`; `intentDigest`; `runId`; `runOrdinal`; the nullable
+recomputed prior-checkpoint `Dcore`; old authority
 path/tip/value/receipt; the packet-authority byte; nullable packet authority
 path/tip/value/receipt; then the branch parts in the order below; finally
 canonical union bytes.
+
+`priorCheckpointEvidence` is null exactly when `runOrdinal` is zero. For a
+positive run ordinal it is the complete closed selected checkpoint evidence
+from the immediately prior run: its core run ordinal increments to the current
+run ordinal; its kind/path/installation/project/state/transaction/source,
+target `Dp` and mutation, `G`, and selected authority epoch equal the current
+run; and its recomputed selector `Dp/Dt/Dv/Dr` plus `Dpost` are the initial
+predecessor fields of current checkpoint zero. The run-ID prior-checkpoint part
+is the recomputed prior `Dcore`, never a caller-supplied digest. Every current
+checkpoint target `Dp` is independently recomputed from its existing
+kind/path/installation/project/state/transaction/source tuple before sequence
+or packet acceptance.
 
 - ORDINARY branch parts: for checkpoint ordinals zero through eight, the
   recomputed digest of that closed checkpoint evidence in ordinal order; the

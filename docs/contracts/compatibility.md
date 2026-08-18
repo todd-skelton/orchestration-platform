@@ -463,6 +463,17 @@ epoch write or ordinary post-CAS artifact exists. Rotation is forward-only once 
 single permitted head-plus-one excess, and any other excess, gap, fork, or
 mismatch refuses.
 
+Run identity is derived evidence, not copied agreement.
+`pointer-mutation-commit-evidence/v1.priorCheckpointEvidence` is null exactly
+for run ordinal zero and otherwise contains the complete selected checkpoint
+evidence from the immediately prior run. Its recomputed `Dcore` is the sole
+prior-checkpoint input to the run ID; its selector tuple and `Dpost` initialize
+checkpoint zero's predecessor fields, and its prior run ordinal increments to
+the current ordinal. Every checkpoint target `Dp` is recomputed from the exact
+kind/path/installation/project/state/transaction/source tuple. Independent and
+coordinated copied `Dp`, run ID, prior `Dcore`, selector tuple, or `Dpost`
+substitutions refuse before `Dcommit` or packet use.
+
 ## Review attack surface
 
 Executable mutants cover missing/extra/partial fields, coordinated digest
