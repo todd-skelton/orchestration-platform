@@ -11,6 +11,7 @@ import { parseSimplifiedAuthorityContract } from "./authority.js";
 import { parseCommitContract } from "./commit.js";
 import { parseDispatchContract } from "./dispatch.js";
 import { parseEvidenceContract } from "./evidence.js";
+import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
 export * from "./authority.js";
@@ -18,6 +19,7 @@ export * from "./commit.js";
 export * from "./definitions.js";
 export * from "./dispatch.js";
 export * from "./evidence.js";
+export * from "./packet.js";
 export * from "./external.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
@@ -61,6 +63,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (dispatch) return dispatch;
   const evidence = parseEvidenceContract(expectedSchemaVersion, input);
   if (evidence) return evidence;
+  const packet = parsePacketContract(expectedSchemaVersion, input);
+  if (packet) return packet;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);
   if (pointer) return pointer;
   const definition = schemaDefinitions[expectedSchemaVersion];

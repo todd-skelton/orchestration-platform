@@ -20,10 +20,13 @@ import {
   computeRunPostSelectionObservationDigest,
   computeRunSegmentDigest,
   computeRotationInputDigest,
+  computeStateMutationGlobalIdentityDigest,
   parseContract,
   parseCommitResolution,
   parseOrdinaryCommitEvidence,
   parseRotationCommitEvidence,
+  parsePointerEvidencePacket,
+  packetSchemaFields,
   parseRunCheckpointCore,
   parseRunCheckpointEvidence,
   parseRunCurrentValue,
@@ -36,6 +39,8 @@ import {
   validateRunCurrentSelection,
   validateRunSegmentCore,
   validateRunTerminalResolution,
+  pointerKinds,
+  simplifiedAuthoritySchemaFields,
 } from "../../packages/contracts/src/index.js";
 
 const d = (value: string) => value.repeat(64);
@@ -315,6 +320,7 @@ function checkpointEvidenceSequence(
   commitKind: "ORDINARY" | "AUTHORITY_ROTATION",
   suppliedResolution = resolution(),
   authorityEpoch = { receipt: d("1"), tip: d("2"), value: d("3") },
+  globalIdentityDigest = d("3"),
 ) {
   const length = commitKind === "ORDINARY" ? 9 : 6;
   const targetPointerKind =
@@ -365,7 +371,7 @@ function checkpointEvidenceSequence(
           : String(terminalResolution.outcome);
     const segment = {
       canonicalPointerPath,
-      globalIdentityDigest: d("3"),
+      globalIdentityDigest,
       installationId,
       pointerKind: targetPointerKind,
       projectId,
@@ -389,6 +395,7 @@ function checkpointEvidenceSequence(
       ...checkpoint(index, targetPointerKind, phase),
       auditDigest,
       canonicalPointerPath,
+      globalIdentityDigest,
       priorPostSelectionObservationDigest,
       priorSelectorReceiptDigest,
       priorSelectorTipDigest,
@@ -475,9 +482,22 @@ function checkpointEvidenceSequence(
   return rows;
 }
 
-function ordinaryCommitEvidence(outcome = "SELECTED") {
+function ordinaryCommitEvidence(
+  outcome = "SELECTED",
+  options: {
+    authority?: { path: string; receipt: string; tip: string; value: string };
+    globalIdentityDigest?: string;
+  } = {},
+) {
   const targetPathInstanceDigest = d("b");
   const targetMutationId = d("a");
+  const authority = options.authority ?? {
+    path: d("4"),
+    receipt: d("1"),
+    tip: d("2"),
+    value: d("3"),
+  };
+  const globalIdentityDigest = options.globalIdentityDigest ?? d("3");
   let selectedEvidence: null | {
     proposal: Record<string, unknown>;
     tip: Record<string, unknown>;
@@ -492,9 +512,9 @@ function ordinaryCommitEvidence(outcome = "SELECTED") {
       value,
     );
     const proposal = {
-      authorityEpochReceiptDigest: d("1"),
-      authorityEpochTipDigest: d("2"),
-      authorityEpochValueDigest: d("3"),
+      authorityEpochReceiptDigest: authority.receipt,
+      authorityEpochTipDigest: authority.tip,
+      authorityEpochValueDigest: authority.value,
       intent: "VALUE_PROPOSED",
       mutationId: targetMutationId,
       outcome: "SELECT",
@@ -525,10 +545,10 @@ function ordinaryCommitEvidence(outcome = "SELECTED") {
     conflictReceiptDigest: outcome === "LOST_CONFLICT" ? evidenceDigest : null,
     outcome,
     outcomeEvidenceDigest: evidenceDigest,
-    producerAuthorityPathInstanceDigest: d("4"),
-    producerAuthorityReceiptDigest: d("1"),
-    producerAuthorityTipDigest: d("2"),
-    producerAuthorityValueDigest: d("3"),
+    producerAuthorityPathInstanceDigest: authority.path,
+    producerAuthorityReceiptDigest: authority.receipt,
+    producerAuthorityTipDigest: authority.tip,
+    producerAuthorityValueDigest: authority.value,
     resolvedAt: "2026-08-18T16:11:00.000Z",
     schemaVersion: "pointer-mutation-commit-resolution/v1",
     selectedTargetTipDigest,
@@ -538,20 +558,25 @@ function ordinaryCommitEvidence(outcome = "SELECTED") {
   };
   return {
     canonicalPointerPath: "installation/active-release.json",
-    checkpoints: checkpointEvidenceSequence("ORDINARY", ordinaryResolution),
+    checkpoints: checkpointEvidenceSequence(
+      "ORDINARY",
+      ordinaryResolution,
+      { receipt: authority.receipt, tip: authority.tip, value: authority.value },
+      globalIdentityDigest,
+    ),
     commitKind: "ORDINARY",
     intentDigest: d("f"),
-    oldAuthorityPathInstanceDigest: d("4"),
-    oldAuthorityReceiptDigest: d("1"),
-    oldAuthorityTipDigest: d("2"),
-    oldAuthorityValueDigest: d("3"),
+    oldAuthorityPathInstanceDigest: authority.path,
+    oldAuthorityReceiptDigest: authority.receipt,
+    oldAuthorityTipDigest: authority.tip,
+    oldAuthorityValueDigest: authority.value,
     ordinaryResolution,
     outcome,
     packetAuthorityKind: "KNOWN",
-    packetAuthorityPathInstanceDigest: d("4"),
-    packetAuthorityReceiptDigest: d("1"),
-    packetAuthorityTipDigest: d("2"),
-    packetAuthorityValueDigest: d("3"),
+    packetAuthorityPathInstanceDigest: authority.path,
+    packetAuthorityReceiptDigest: authority.receipt,
+    packetAuthorityTipDigest: authority.tip,
+    packetAuthorityValueDigest: authority.value,
     runId: d("d"),
     runOrdinal: "0",
     schemaVersion: "pointer-mutation-commit-evidence/v1",
@@ -566,8 +591,8 @@ function ordinaryCommitEvidence(outcome = "SELECTED") {
   };
 }
 
-function lostOrdinaryCommitEvidence() {
-  const selected = ordinaryCommitEvidence();
+function lostOrdinaryCommitEvidence(options: Parameters<typeof ordinaryCommitEvidence>[1] = {}) {
+  const selected = ordinaryCommitEvidence("SELECTED", options);
   const selectedGraph = selected.targetRegistrySlot.selectedEvidence as {
     proposal: Record<string, unknown>;
     tip: Record<string, unknown>;
@@ -581,9 +606,9 @@ function lostOrdinaryCommitEvidence() {
     proposalReceiptDigest: winningReceiptDigest,
   };
   const conflictReceipt = {
-    authorityEpochReceiptDigest: d("1"),
-    authorityEpochTipDigest: d("2"),
-    authorityEpochValueDigest: d("3"),
+    authorityEpochReceiptDigest: losingProposal.authorityEpochReceiptDigest,
+    authorityEpochTipDigest: losingProposal.authorityEpochTipDigest,
+    authorityEpochValueDigest: losingProposal.authorityEpochValueDigest,
     conflictAt: "2026-08-18T16:12:00.000Z",
     conflictKind: "VALUE_CONFLICT",
     losingProposalReceiptDigest: computeProposalReceiptDigest(losingProposal),
@@ -605,7 +630,16 @@ function lostOrdinaryCommitEvidence() {
   };
   return {
     ...selected,
-    checkpoints: checkpointEvidenceSequence("ORDINARY", ordinaryResolution),
+    checkpoints: checkpointEvidenceSequence(
+      "ORDINARY",
+      ordinaryResolution,
+      {
+        receipt: selected.oldAuthorityReceiptDigest,
+        tip: selected.oldAuthorityTipDigest,
+        value: selected.oldAuthorityValueDigest,
+      },
+      options.globalIdentityDigest,
+    ),
     ordinaryResolution,
     outcome: "LOST_CONFLICT",
     targetRegistrySlot: {
@@ -630,6 +664,7 @@ function authoritySelection(
   headOrdinal: string,
   headRecordDigest: string,
   prior: { tip: string; value: string; receipt: string } | null,
+  globalIdentityDigest = d("3"),
 ) {
   const pathInstanceDigest = d("4");
   const value = {
@@ -640,7 +675,7 @@ function authoritySelection(
     admittedCustodyObservationDigest: d("5"),
     authorityOrdinal: headOrdinal,
     custodyInstanceDigest: d("6"),
-    globalIdentityDigest: d("3"),
+    globalIdentityDigest,
     headOrdinal,
     headRecordDigest,
     helperAbiDigest: d("7"),
@@ -699,13 +734,17 @@ function authoritySelection(
   };
 }
 
-function rotationCommitEvidence(outcome: "RESUMABLE" | "SELECTED" | "UNKNOWN") {
-  const priorRecordDigest = d("7");
-  const old = authoritySelection("0", priorRecordDigest, null);
+function rotationCommitEvidence(
+  outcome: "RESUMABLE" | "SELECTED" | "UNKNOWN",
+  options: { globalIdentityDigest?: string; priorRecordDigest?: string } = {},
+) {
+  const globalIdentityDigest = options.globalIdentityDigest ?? d("3");
+  const priorRecordDigest = options.priorRecordDigest ?? d("7");
+  const old = authoritySelection("0", priorRecordDigest, null, globalIdentityDigest);
   const rotationInputDigest = d("8");
   const successorCoreDigest = d("9");
   const pendingRecord = {
-    globalIdentityDigest: d("3"),
+    globalIdentityDigest,
     ordinal: "1",
     predecessorKind: "RECORD",
     priorHeadOrdinal: "0",
@@ -720,16 +759,26 @@ function rotationCommitEvidence(outcome: "RESUMABLE" | "SELECTED" | "UNKNOWN") {
     successorCoreDigest,
   };
   const expectedRecordDigest = computeAuthorityHistoryRecordDigest(pendingRecord);
-  const successor = authoritySelection("1", expectedRecordDigest, {
-    receipt: old.receiptDigest,
-    tip: old.tipDigest,
-    value: old.valueDigest,
-  });
-  const checkpoint5 = checkpointEvidenceSequence("AUTHORITY_ROTATION", resolution(), {
-    receipt: old.receiptDigest,
-    tip: old.tipDigest,
-    value: old.valueDigest,
-  })[5];
+  const successor = authoritySelection(
+    "1",
+    expectedRecordDigest,
+    {
+      receipt: old.receiptDigest,
+      tip: old.tipDigest,
+      value: old.valueDigest,
+    },
+    globalIdentityDigest,
+  );
+  const checkpoint5 = checkpointEvidenceSequence(
+    "AUTHORITY_ROTATION",
+    resolution(),
+    {
+      receipt: old.receiptDigest,
+      tip: old.tipDigest,
+      value: old.valueDigest,
+    },
+    globalIdentityDigest,
+  )[5];
   const common = {
     authorityRegistrySlot: {
       pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION",
@@ -820,6 +869,116 @@ function rotationCommitEvidence(outcome: "RESUMABLE" | "SELECTED" | "UNKNOWN") {
       targetMutationId: d("a"),
       targetPathInstanceDigest: d("b"),
     },
+  };
+}
+
+function packetGlobalIdentity() {
+  return {
+    authorityPath: "installation/state-mutation-authority.json",
+    authorityPathInstanceDigest: d("4"),
+    custodyInstanceDigest: d("6"),
+    installationId,
+    projectId,
+    schemaVersion: "state-mutation-global-identity/v1",
+    stateRootDigest: d("9"),
+  };
+}
+
+function packetGenesis(globalIdentityDigest: string) {
+  const record = {
+    genesisBootstrapInputDigest: d("1"),
+    globalIdentityDigest,
+    ordinal: "0",
+    predecessorKind: "GENESIS_LITERAL",
+    recordKind: "GENESIS",
+    schemaVersion: "authority-history-record/v1",
+    successorCoreDigest: d("2"),
+  };
+  const recordDigest = computeAuthorityHistoryRecordDigest(record);
+  const genesisSelectionEvidence = {
+    ...Object.fromEntries(
+      simplifiedAuthoritySchemaFields.genesisSelectionEvidence
+        .filter((field) => field.endsWith("Digest"))
+        .map((field) => [field, d("1")]),
+    ),
+    bootstrapTransactionId: installationId,
+    genesisBootstrapInputDigest: record.genesisBootstrapInputDigest,
+    historyRecordDigest: recordDigest,
+    schemaVersion: "authority-history-genesis-selection-evidence/v1",
+    successorCoreDigest: record.successorCoreDigest,
+  };
+  return { genesisSelectionEvidence, record, recordDigest };
+}
+
+function registrySlots(authoritySlot: Record<string, unknown>) {
+  return pointerKinds.map((pointerKind) =>
+    pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION"
+      ? authoritySlot
+      : {
+          pointerKind,
+          schemaVersion: "pointer-evidence-slot/v1",
+          selectedEvidence: null,
+        },
+  );
+}
+
+function rotationPacket(outcome: "RESUMABLE" | "SELECTED" | "UNKNOWN") {
+  const globalIdentity = packetGlobalIdentity();
+  const globalIdentityDigest = computeStateMutationGlobalIdentityDigest(globalIdentity);
+  const genesis = packetGenesis(globalIdentityDigest);
+  const currentCommit = rotationCommitEvidence(outcome, {
+    globalIdentityDigest,
+    priorRecordDigest: genesis.recordDigest,
+  });
+  const positive = outcome !== "UNKNOWN";
+  const selected = outcome === "SELECTED";
+  const selectedHistoryRecord = (currentCommit as unknown as Record<string, unknown>)[
+    "selectedHistoryRecord"
+  ];
+  const records = selected ? [genesis.record, selectedHistoryRecord] : [genesis.record];
+  const authorityHistoryBinding = positive
+    ? {
+        genesisSelectionEvidence: genesis.genesisSelectionEvidence,
+        globalIdentityDigest,
+        headOrdinal: selected ? "1" : "0",
+        headRecordDigest: selected ? currentCommit.expectedRecordDigest : genesis.recordDigest,
+        records,
+        schemaVersion: "authority-history-binding/v1",
+      }
+    : null;
+  return {
+    authorityHistoryBinding,
+    currentAuthoritySelection: positive
+      ? currentCommit.authorityRegistrySlot.selectedEvidence
+      : null,
+    currentCommit,
+    evidenceSlots: registrySlots(currentCommit.authorityRegistrySlot),
+    globalIdentity,
+    purpose: "MUTATION_COMMIT",
+    schemaVersion: "pointer-evidence-packet/v1",
+  };
+}
+
+function ordinaryPacket(outcome: "SELECTED" | "LOST_CONFLICT" | "UNKNOWN_TERMINAL") {
+  const base = rotationPacket("RESUMABLE");
+  const globalIdentityDigest = computeStateMutationGlobalIdentityDigest(base.globalIdentity);
+  const authority = {
+    path: String(base.currentCommit.packetAuthorityPathInstanceDigest),
+    receipt: String(base.currentCommit.packetAuthorityReceiptDigest),
+    tip: String(base.currentCommit.packetAuthorityTipDigest),
+    value: String(base.currentCommit.packetAuthorityValueDigest),
+  };
+  const options = { authority, globalIdentityDigest };
+  const currentCommit =
+    outcome === "LOST_CONFLICT"
+      ? lostOrdinaryCommitEvidence(options)
+      : ordinaryCommitEvidence(outcome, options);
+  return {
+    ...base,
+    currentCommit,
+    evidenceSlots: base.evidenceSlots.map((slot) =>
+      slot.pointerKind === "ACTIVE_RELEASE" ? currentCommit.targetRegistrySlot : slot,
+    ),
   };
 }
 
@@ -1271,6 +1430,85 @@ describe("single-epoch commit journal atoms", () => {
       "2dc48322cd5d0eedcb13780b193a4f154908d04d1570b2780f750cc73479743b",
     ]);
     expect(new Set(digests).size).toBe(6);
+  });
+
+  test("closes the eleven-slot packet and paired authority-history nullability", () => {
+    expect(packetSchemaFields.packet).toEqual([
+      "authorityHistoryBinding",
+      "currentAuthoritySelection",
+      "currentCommit",
+      "evidenceSlots",
+      "globalIdentity",
+      "purpose",
+      "schemaVersion",
+    ]);
+    const resumable = rotationPacket("RESUMABLE");
+    const selected = rotationPacket("SELECTED");
+    const unknown = rotationPacket("UNKNOWN");
+    const historical = { ...resumable, currentCommit: null, purpose: "HISTORICAL_READ" };
+    const ordinarySelected = ordinaryPacket("SELECTED");
+    const ordinaryLost = ordinaryPacket("LOST_CONFLICT");
+    const ordinaryUnknown = ordinaryPacket("UNKNOWN_TERMINAL");
+    for (const [name, packet] of Object.entries({
+      historical,
+      ordinaryLost,
+      ordinarySelected,
+      ordinaryUnknown,
+      resumable,
+      selected,
+      unknown,
+    })) {
+      const result = parsePointerEvidencePacket(packet);
+      expect(result.ok, `${name}: ${JSON.stringify(result)}`).toBe(true);
+      expect(parseContract("pointer-evidence-packet/v1", packet).ok).toBe(true);
+    }
+    expect(parsePointerEvidencePacket({ ...resumable, authorityHistoryBinding: null }).ok).toBe(
+      false,
+    );
+    expect(
+      parsePointerEvidencePacket({
+        ...unknown,
+        currentAuthoritySelection: resumable.currentAuthoritySelection,
+      }).ok,
+    ).toBe(false);
+    expect(
+      parsePointerEvidencePacket({ ...resumable, evidenceSlots: resumable.evidenceSlots.slice(1) })
+        .ok,
+    ).toBe(false);
+    expect(
+      parsePointerEvidencePacket({
+        ...resumable,
+        evidenceSlots: [
+          resumable.evidenceSlots[1],
+          resumable.evidenceSlots[0],
+          ...resumable.evidenceSlots.slice(2),
+        ],
+      }).ok,
+    ).toBe(false);
+    expect(
+      parsePointerEvidencePacket({
+        ...resumable,
+        evidenceSlots: resumable.evidenceSlots.map((slot) =>
+          slot.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION"
+            ? { ...slot, selectedEvidence: null }
+            : slot,
+        ),
+      }).ok,
+    ).toBe(false);
+    expect(
+      parsePointerEvidencePacket({ ...historical, currentCommit: resumable.currentCommit }).ok,
+    ).toBe(false);
+    expect(
+      parsePointerEvidencePacket({
+        ...ordinaryLost,
+        evidenceSlots: ordinaryLost.evidenceSlots.map((slot) =>
+          slot.pointerKind === "ACTIVE_RELEASE"
+            ? ordinarySelected.currentCommit.targetRegistrySlot
+            : slot,
+        ),
+      }).ok,
+    ).toBe(false);
+    expect(parsePointerEvidencePacket({ ...unknown, capability: d("1") }).ok).toBe(false);
   });
 
   test("fails closed for partial predecessor triples, unsafe ordinals, wrong phases, and extras", () => {

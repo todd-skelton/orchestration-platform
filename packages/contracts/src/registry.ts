@@ -20,6 +20,7 @@ import {
   unknownEvidenceReasons,
 } from "./evidence.js";
 import { pointerGraphSchemaFields, pointerGraphSchemaVersions, pointerKinds } from "./pointer.js";
+import { packetSchemaFields, packetSchemaVersions } from "./packet.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -287,6 +288,11 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: evidenceSchemaFields.evidenceSlot,
       closedValues: pointerKinds,
     }),
+    "pointer-evidence-packet/v1": Object.freeze({
+      schemaVersion: "pointer-evidence-packet/v1",
+      fields: packetSchemaFields.packet,
+      closedValues: Object.freeze(["HISTORICAL_READ", "MUTATION_COMMIT", ...pointerKinds]),
+    }),
   });
 export const schemaVersions = Object.freeze(
   [
@@ -296,6 +302,7 @@ export const schemaVersions = Object.freeze(
     ...commitSchemaVersions,
     ...dispatchSchemaVersions,
     ...evidenceSchemaVersions,
+    ...packetSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
