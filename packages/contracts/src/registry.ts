@@ -1,99 +1,135 @@
-import { legacySchemaDefinitions } from "./definitions.js";
-import { v2Definitions } from "./v2.js";
-import { approvedDefinitions, diagnosticAuthorityDefinitions } from "./approved.js";
-import type { SchemaDefinition } from "./runtime.js";
+import { isUuidV7, type ContractDefinition, type ContractRecord } from "./runtime.js";
+import { simplifiedAuthoritySchemaFields, simplifiedAuthoritySchemaVersions } from "./authority.js";
+import { pointerGraphSchemaFields, pointerGraphSchemaVersions } from "./pointer.js";
 
-export const supersededAuthorityVersions = Object.freeze([
-  "activation-cleanup-gate-archive/v1",
-  "activation-cleanup-gate-current/v1",
-  "activation-cleanup-gate-head/v1",
-  "activation-cleanup-gate-root/v1",
-  "activation-cleanup-head/v1",
-  "activation-recovery-fence-current/v1",
-  "activation-recovery-fence-head/v1",
-  "activation-recovery-fence-root/v1",
-  "activation-recovery-launch-archive/v1",
-  "activation-recovery-launch-current/v1",
-  "activation-recovery-launch/v1",
-  "active-release/v1",
-  "recovery-authorization/v1",
-  "pointer-cas-proposal-receipt/v1",
-  "state-mutation-authority-value/v1",
-] as const);
-
-const superseded = new Set<string>(supersededAuthorityVersions);
-const supersededApprovedVersions = new Set<string>([
-  "state-mutation-authority-rotation-id/v1",
-  "authority-history-empty-root/v1",
-  "authority-history-root/v1",
-  "authority-history-append-receipt/v1",
-  "state-mutation-authority-successor-core/v1",
-  "state-mutation-authority-value/v2",
-  "pointer-mutation-run-intent/v1",
-  "pointer-mutation-run-checkpoint-core/v1",
-  "pointer-mutation-run-current-value/v1",
-  "pointer-mutation-run-checkpoint-evidence/v1",
-  "pointer-mutation-commit-evidence/v1",
-  "pointer-mutation-commit-evidence/v2",
-  "pointer-mutation-proposed-target-evidence/v1",
-  "pointer-evidence-slot/v2",
-  "pointer-evidence-packet/v2",
-]);
-
-export const diagnosticSchemaDefinitions: Readonly<Record<string, SchemaDefinition>> =
-  Object.freeze({
-    ...Object.fromEntries(
-      Object.entries(legacySchemaDefinitions).filter(([schemaVersion]) =>
-        superseded.has(schemaVersion),
-      ),
-    ),
-    ...diagnosticAuthorityDefinitions,
-    ...Object.fromEntries(
-      Object.entries(v2Definitions).filter(([schemaVersion]) =>
-        supersededApprovedVersions.has(schemaVersion),
-      ),
-    ),
-    ...Object.fromEntries(
-      Object.entries(approvedDefinitions).filter(([schemaVersion]) =>
-        supersededApprovedVersions.has(schemaVersion),
-      ),
-    ),
-  });
-
-export const schemaDefinitions: Readonly<Record<string, SchemaDefinition>> = Object.freeze({
-  ...Object.fromEntries(
-    Object.entries(legacySchemaDefinitions).filter(
-      ([schemaVersion]) => !superseded.has(schemaVersion),
-    ),
-  ),
-  ...Object.fromEntries(
-    Object.entries(v2Definitions).filter(
-      ([schemaVersion]) => !supersededApprovedVersions.has(schemaVersion),
-    ),
-  ),
-  ...Object.fromEntries(
-    Object.entries(approvedDefinitions).filter(
-      ([schemaVersion]) => !supersededApprovedVersions.has(schemaVersion),
-    ),
-  ),
+const platformConfiguration: ContractDefinition = Object.freeze({
+  schemaVersion: "platform-configuration/v1",
+  fields: Object.freeze([
+    "schemaVersion",
+    "adapterId",
+    "capabilityNames",
+    "leaseFreshnessMs",
+    "maximumSessionMs",
+    "projectId",
+    "stateRoot",
+    "wallClockSkewMs",
+  ]),
+  validate(record: ContractRecord): readonly string[] {
+    const issues: string[] = [];
+    if (
+      typeof record.adapterId !== "string" ||
+      !/^[a-z0-9][a-z0-9._:@+-]{0,127}$/.test(record.adapterId)
+    )
+      issues.push("adapterId:invalid");
+    if (
+      !Array.isArray(record.capabilityNames) ||
+      record.capabilityNames.some((item) => typeof item !== "string")
+    )
+      issues.push("capabilityNames:invalid");
+    if (!isUuidV7(record.projectId)) issues.push("projectId:invalid");
+    if (typeof record.stateRoot !== "string" || !record.stateRoot.startsWith("file:///"))
+      issues.push("stateRoot:invalid");
+    for (const name of ["leaseFreshnessMs", "maximumSessionMs", "wallClockSkewMs"] as const)
+      if (
+        typeof record[name] !== "number" ||
+        !Number.isSafeInteger(record[name]) ||
+        Number(record[name]) < 0
+      )
+        issues.push(`${name}:invalid`);
+    if (
+      Number(record.leaseFreshnessMs) <= 0 ||
+      Number(record.leaseFreshnessMs) > Number(record.maximumSessionMs)
+    )
+      issues.push("leaseFreshnessMs:out-of-range");
+    if (Number(record.maximumSessionMs) <= 0 || Number(record.maximumSessionMs) > 86_400_000)
+      issues.push("maximumSessionMs:out-of-range");
+    if (Number(record.wallClockSkewMs) > 300_000) issues.push("wallClockSkewMs:out-of-range");
+    return Object.freeze(issues);
+  },
 });
 
-export const schemaVersions = Object.freeze(Object.keys(schemaDefinitions).sort());
-export const diagnosticSchemaVersions = Object.freeze(
-  Object.keys(diagnosticSchemaDefinitions).sort(),
+export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = Object.freeze({
+  [platformConfiguration.schemaVersion]: platformConfiguration,
+});
+export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
+  Object.freeze({
+    ...schemaDefinitions,
+    "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
+      schemaVersion: "reviewed-authority-operation/v1",
+      fields: simplifiedAuthoritySchemaFields.reviewedAuthorityOperationBootstrap,
+      closedValues: Object.freeze(["BOOTSTRAP_INSTALL"]),
+    }),
+    "reviewed-authority-operation/v1#STABLE_PROMOTION": Object.freeze({
+      schemaVersion: "reviewed-authority-operation/v1",
+      fields: simplifiedAuthoritySchemaFields.reviewedAuthorityOperationPromotion,
+      closedValues: Object.freeze(["STABLE_PROMOTION"]),
+    }),
+    "state-mutation-successor-authority-core/v1": Object.freeze({
+      schemaVersion: "state-mutation-successor-authority-core/v1",
+      fields: simplifiedAuthoritySchemaFields.successorAuthorityCore,
+      closedValues: Object.freeze(["BOOTSTRAP_INSTALL", "STABLE_PROMOTION"]),
+    }),
+    "authority-history-genesis-bootstrap-input/v1": Object.freeze({
+      schemaVersion: "authority-history-genesis-bootstrap-input/v1",
+      fields: simplifiedAuthoritySchemaFields.genesisBootstrapInput,
+    }),
+    "authority-history-genesis-selection-evidence/v1": Object.freeze({
+      schemaVersion: "authority-history-genesis-selection-evidence/v1",
+      fields: simplifiedAuthoritySchemaFields.genesisSelectionEvidence,
+    }),
+    "state-mutation-authority-rotation-id/v1": Object.freeze({
+      schemaVersion: "state-mutation-authority-rotation-id/v1",
+      fields: simplifiedAuthoritySchemaFields.rotationInput,
+    }),
+    "authority-history-record/v1#GENESIS": Object.freeze({
+      schemaVersion: "authority-history-record/v1",
+      fields: simplifiedAuthoritySchemaFields.historyGenesis,
+      closedValues: Object.freeze(["GENESIS", "GENESIS_LITERAL"]),
+    }),
+    "authority-history-record/v1#ROTATION": Object.freeze({
+      schemaVersion: "authority-history-record/v1",
+      fields: simplifiedAuthoritySchemaFields.historyRotation,
+      closedValues: Object.freeze(["ROTATION", "RECORD"]),
+    }),
+    "state-mutation-authority-value/v1": Object.freeze({
+      schemaVersion: "state-mutation-authority-value/v1",
+      fields: simplifiedAuthoritySchemaFields.selectedAuthorityValue,
+    }),
+    "pointer-cas-proposal-receipt/v1": Object.freeze({
+      schemaVersion: "pointer-cas-proposal-receipt/v1",
+      fields: pointerGraphSchemaFields.proposal,
+      closedValues: Object.freeze([
+        "VALUE_PROPOSED",
+        "TOMBSTONE_PROPOSED",
+        "SELECT",
+        "REMOVE",
+        "REVIEWED_BOOTSTRAP_GENESIS",
+        "SELECTED_EPOCH",
+      ]),
+    }),
+    "pointer-conflict-receipt/v1": Object.freeze({
+      schemaVersion: "pointer-conflict-receipt/v1",
+      fields: pointerGraphSchemaFields.conflict,
+      closedValues: Object.freeze(["VALUE_CONFLICT", "TOMBSTONE_CONFLICT", "EPOCH_CONFLICT"]),
+    }),
+    "pointer-current-tip/v1": Object.freeze({
+      schemaVersion: "pointer-current-tip/v1",
+      fields: pointerGraphSchemaFields.currentTip,
+    }),
+  });
+export const schemaVersions = Object.freeze(
+  [
+    ...Object.keys(schemaDefinitions),
+    ...pointerGraphSchemaVersions,
+    ...simplifiedAuthoritySchemaVersions,
+  ].sort(),
 );
-
-export type CompatibilityDisposition = "readable" | "migratable" | "refused";
+export type CompatibilityDisposition = "readable" | "refused";
 export function compatibilityDisposition(
   expectedSchemaVersion: string,
   observedSchemaVersion: string | null,
 ): CompatibilityDisposition {
-  if (!Object.hasOwn(schemaDefinitions, expectedSchemaVersion)) return "refused";
+  if (!schemaVersions.includes(expectedSchemaVersion)) return "refused";
   if (observedSchemaVersion === expectedSchemaVersion) return "readable";
-  if (
-    expectedSchemaVersion === "platform-configuration/v1" &&
-    observedSchemaVersion === "platform-configuration/v0-fixture"
-  )
-    return "migratable";
   return "refused";
 }
