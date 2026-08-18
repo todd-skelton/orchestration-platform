@@ -9,6 +9,7 @@ import {
   computeAuthorityHistoryRecordDigest,
   computeCurrentTipDigest,
   computePointerInstanceDigest,
+  computePointerInstanceDigestFromCanonicalPath,
   computePointerPositionDigest,
   computePointerValueDigest,
   computeProposalReceiptDigest,
@@ -40,6 +41,8 @@ import {
   validateRunSegmentCore,
   validateRunTerminalResolution,
   pointerKinds,
+  pointerPath,
+  pointerRegistry,
   simplifiedAuthoritySchemaFields,
 } from "../../packages/contracts/src/index.js";
 
@@ -70,6 +73,19 @@ const activeReleaseTargetPathInstanceDigest = targetPathInstanceDigest("ACTIVE_R
 const authorityTargetPathInstanceDigest = targetPathInstanceDigest(
   "STATE_MUTATION_AUTHORITY_ROTATION",
 );
+
+function registryPathBindings(row: (typeof pointerRegistry)[number]): Record<string, string> {
+  const bindings: Record<string, string> = {};
+  if (row.pathTemplate.includes("<transaction>")) bindings.transactionId = installationId;
+  if (row.pathTemplate.includes("<source>")) bindings.sourceToken = row.sourceTokens[0]!;
+  if (row.pathTemplate.includes("<predecessor-key>")) bindings.predecessorKey = d("1");
+  if (row.pathTemplate.includes("<pointer-instance-digest>"))
+    bindings.pointerInstanceDigest = d("2");
+  if (row.pathTemplate.includes("<target-instance-digest>")) bindings.targetInstanceDigest = d("3");
+  if (row.pathTemplate.includes("<release-digest>")) bindings.releaseDigest = d("4");
+  if (row.pathTemplate.includes("<target-mutation-id>")) bindings.targetMutationId = d("5");
+  return bindings;
+}
 
 function resolution(outcome = "SELECTED") {
   const evidenceDigest =
@@ -268,16 +284,33 @@ function checkpointEvidenceSequence(
   priorCheckpointEvidence: CheckpointEvidenceFixture | null = null,
   targetPathInstanceDigestOverride?: string,
   runIdOverride?: string,
+  selectorPathInstanceDigestOverride?: string,
+  targetIdentityOverride?: {
+    canonicalPointerPath: string;
+    pointerKind: (typeof pointerKinds)[number];
+    sourceToken: string;
+    targetPathInstanceDigest: string;
+    transactionId: string | null;
+  },
 ): CheckpointEvidenceFixture[] {
   const length = commitKind === "ORDINARY" ? 9 : 6;
   const targetPointerKind =
-    commitKind === "ORDINARY" ? "ACTIVE_RELEASE" : "STATE_MUTATION_AUTHORITY_ROTATION";
+    targetIdentityOverride?.pointerKind ??
+    (commitKind === "ORDINARY" ? "ACTIVE_RELEASE" : "STATE_MUTATION_AUTHORITY_ROTATION");
   const canonicalPointerPath =
-    commitKind === "ORDINARY"
+    targetIdentityOverride?.canonicalPointerPath ??
+    (commitKind === "ORDINARY"
       ? "installation/active-release.json"
-      : "installation/state-mutation-authority.json";
+      : "installation/state-mutation-authority.json");
+  const transactionId = targetIdentityOverride
+    ? targetIdentityOverride.transactionId
+    : commitKind === "ORDINARY"
+      ? installationId
+      : null;
+  const sourceToken = targetIdentityOverride?.sourceToken ?? "none";
   const targetPathInstanceDigest =
     targetPathInstanceDigestOverride ??
+    targetIdentityOverride?.targetPathInstanceDigest ??
     (commitKind === "ORDINARY"
       ? activeReleaseTargetPathInstanceDigest
       : authorityTargetPathInstanceDigest);
@@ -286,16 +319,18 @@ function checkpointEvidenceSequence(
     parts: { targetInstanceDigest: targetPathInstanceDigest, targetMutationId: d("a") },
   } as const;
   const selectorPath = `installation/pointer-cas/${targetPathInstanceDigest}/commits/${d("a")}/current-run.json`;
-  const selectorPathInstanceDigest = computePointerInstanceDigest({
-    pointerKind: "POINTER_MUTATION_RUN_CURRENT",
-    canonicalPointerPath: selectorPath,
-    installationId,
-    projectId,
-    stateRootDigest,
-    transactionId: null,
-    sourceToken: "none",
-    positionEvidence,
-  });
+  const selectorPathInstanceDigest =
+    selectorPathInstanceDigestOverride ??
+    computePointerInstanceDigest({
+      pointerKind: "POINTER_MUTATION_RUN_CURRENT",
+      canonicalPointerPath: selectorPath,
+      installationId,
+      projectId,
+      stateRootDigest,
+      transactionId: null,
+      sourceToken: "none",
+      positionEvidence,
+    });
   const terminalResolution = suppliedResolution;
   const rows: CheckpointEvidenceFixture[] = [];
   let priorAuditDigest: string | null = null;
@@ -348,13 +383,13 @@ function checkpointEvidenceSequence(
       runId,
       runOrdinal,
       schemaVersion: "pointer-mutation-run-segment/v1",
-      sourceToken: "none",
+      sourceToken,
       stage,
       stageEvidenceDigest: d("e"),
       stateRootDigest,
       targetMutationId: d("a"),
       targetPathInstanceDigest,
-      transactionId: commitKind === "ORDINARY" ? installationId : null,
+      transactionId,
     };
     const segmentDigest = computeRunSegmentDigest(segment);
     const auditDigest = computeRunAuditDigest(priorAuditDigest, segmentDigest);
@@ -371,8 +406,10 @@ function checkpointEvidenceSequence(
       priorSelectorValueDigest,
       runOrdinal,
       segmentDigest,
+      sourceToken,
       stage,
       targetPathInstanceDigest,
+      transactionId,
       terminalResolutionDigest:
         applicableResolution === null ? null : computeCommitResolutionDigest(applicableResolution),
     };
@@ -461,6 +498,7 @@ function ordinaryCommitEvidence(
     priorCheckpointEvidence?: CheckpointEvidenceFixture | null;
     runOrdinal?: string;
     runIdOverride?: string;
+    selectorPathInstanceDigestOverride?: string;
     targetPathInstanceDigestOverride?: string;
   } = {},
 ) {
@@ -543,6 +581,7 @@ function ordinaryCommitEvidence(
     priorCheckpointEvidence,
     options.targetPathInstanceDigestOverride,
     options.runIdOverride,
+    options.selectorPathInstanceDigestOverride,
   );
   return {
     canonicalPointerPath: "installation/active-release.json",
@@ -628,6 +667,7 @@ function lostOrdinaryCommitEvidence(options: Parameters<typeof ordinaryCommitEvi
       options.priorCheckpointEvidence ?? null,
       options.targetPathInstanceDigestOverride,
       options.runIdOverride,
+      options.selectorPathInstanceDigestOverride,
     ),
     ordinaryResolution,
     outcome: "LOST_CONFLICT",
@@ -1293,6 +1333,40 @@ describe("single-epoch commit journal atoms", () => {
     ).not.toEqual([]);
   });
 
+  test("derives target and selector identities for every ordinary registry kind", () => {
+    for (const row of pointerRegistry.filter(
+      ({ kind }) => kind !== "STATE_MUTATION_AUTHORITY_ROTATION",
+    )) {
+      const canonicalPointerPath = pointerPath(row.kind, registryPathBindings(row));
+      const identity = {
+        pointerKind: row.kind,
+        canonicalPointerPath,
+        installationId,
+        projectId,
+        stateRootDigest,
+        transactionId: row.transactionPolicy === "REQUIRED" ? installationId : null,
+        sourceToken: row.sourceTokens[0]!,
+      } as const;
+      const derivedTargetPathInstanceDigest =
+        computePointerInstanceDigestFromCanonicalPath(identity);
+      const checkpoints = checkpointEvidenceSequence(
+        "ORDINARY",
+        { ...resolution(), targetPathInstanceDigest: derivedTargetPathInstanceDigest },
+        undefined,
+        undefined,
+        undefined,
+        null,
+        undefined,
+        undefined,
+        undefined,
+        { ...identity, targetPathInstanceDigest: derivedTargetPathInstanceDigest },
+      );
+      expect(validateCommitCheckpointEvidenceSequence(checkpoints, "ORDINARY"), row.kind).toEqual(
+        [],
+      );
+    }
+  });
+
   test("closes the ordinary commit arm and outcome-to-slot equalities", () => {
     const selected = ordinaryCommitEvidence();
     expect(parseOrdinaryCommitEvidence(selected).ok).toBe(true);
@@ -1310,6 +1384,27 @@ describe("single-epoch commit journal atoms", () => {
     expect(computeCommitEvidenceDigest(retry)).toBe(
       "99579f5627884e1a68e071e1b9f2faa181199e08532acd8d2bd7a3d39390e58c",
     );
+    expect(
+      validateCommitResolutionBinding(retry.ordinaryResolution, {
+        commitKind: retry.commitKind,
+        globalIdentityDigest: retry.checkpoints[0]!.core.globalIdentityDigest,
+        oldAuthorityPathInstanceDigest: retry.oldAuthorityPathInstanceDigest,
+        oldAuthorityReceiptDigest: retry.oldAuthorityReceiptDigest,
+        oldAuthorityTipDigest: retry.oldAuthorityTipDigest,
+        oldAuthorityValueDigest: retry.oldAuthorityValueDigest,
+        outcome: retry.outcome,
+        packetAuthorityKind: retry.packetAuthorityKind,
+        packetAuthorityPathInstanceDigest: retry.packetAuthorityPathInstanceDigest,
+        packetAuthorityReceiptDigest: retry.packetAuthorityReceiptDigest,
+        packetAuthorityTipDigest: retry.packetAuthorityTipDigest,
+        packetAuthorityValueDigest: retry.packetAuthorityValueDigest,
+        priorCheckpointEvidence: retry.priorCheckpointEvidence,
+        runId: retry.runId,
+        runOrdinal: retry.runOrdinal,
+        targetMutationId: retry.targetMutationId,
+        targetPathInstanceDigest: retry.targetPathInstanceDigest,
+      }),
+    ).toContain("positive-lineage:full-commit-required");
     expect(parseOrdinaryCommitEvidence({ ...retry, priorCheckpointEvidence: null }).ok).toBe(false);
     expect(
       parseOrdinaryCommitEvidence({
@@ -1336,6 +1431,36 @@ describe("single-epoch commit journal atoms", () => {
     expect(coordinatedWrongRunResult.ok).toBe(false);
     if (!coordinatedWrongRunResult.ok)
       expect(coordinatedWrongRunResult.issues).toContain("runId:derived-mismatch");
+    const coordinatedWrongSelector = ordinaryCommitEvidence("SELECTED", {
+      selectorPathInstanceDigestOverride: d("0"),
+    });
+    const coordinatedWrongSelectorResult = parseOrdinaryCommitEvidence(coordinatedWrongSelector);
+    expect(coordinatedWrongSelectorResult.ok).toBe(false);
+    if (!coordinatedWrongSelectorResult.ok)
+      expect(coordinatedWrongSelectorResult.issues).toContain(
+        "checkpoints:0:selectorPathInstanceDigest:derived-mismatch",
+      );
+    const wrongPriorSelector = checkpointEvidenceSequence(
+      "ORDINARY",
+      resolution(),
+      undefined,
+      undefined,
+      undefined,
+      null,
+      undefined,
+      undefined,
+      d("0"),
+    )[6]!;
+    const wrongPriorSelectorRetry = ordinaryCommitEvidence("SELECTED", {
+      priorCheckpointEvidence: wrongPriorSelector,
+      runOrdinal: "1",
+    });
+    const wrongPriorSelectorResult = parseOrdinaryCommitEvidence(wrongPriorSelectorRetry);
+    expect(wrongPriorSelectorResult.ok).toBe(false);
+    if (!wrongPriorSelectorResult.ok)
+      expect(wrongPriorSelectorResult.issues).toContain(
+        "checkpoints:0:selectorPathInstanceDigest:predecessor-mismatch",
+      );
     expect(
       parseOrdinaryCommitEvidence({
         ...selected,

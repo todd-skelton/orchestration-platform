@@ -3,6 +3,7 @@ import {
   classifyProposal,
   computeCurrentTipDigest,
   computePointerInstanceDigest,
+  computePointerInstanceDigestFromCanonicalPath,
   computePointerValueDigest,
   computeProposalReceiptDigest,
   parseContract,
@@ -118,6 +119,53 @@ describe("eleven-kind pointer registry", () => {
       }),
     ).toContain("root:path-mismatch");
     expect(validatePointerGenesisDispatch("ACTIVE_RELEASE", "REVIEWED_BOOTSTRAP")).toEqual([]);
+  });
+
+  test("derives pointer identity from every canonical registry path", () => {
+    for (const [index, row] of pointerRegistry.entries()) {
+      const bindings: Record<string, string> = {};
+      if (row.pathTemplate.includes("<transaction>")) bindings.transactionId = installationId;
+      if (row.pathTemplate.includes("<source>")) bindings.sourceToken = row.sourceTokens[0]!;
+      if (row.pathTemplate.includes("<predecessor-key>")) bindings.predecessorKey = d("1");
+      if (row.pathTemplate.includes("<pointer-instance-digest>"))
+        bindings.pointerInstanceDigest = d("2");
+      if (row.pathTemplate.includes("<target-instance-digest>"))
+        bindings.targetInstanceDigest = d("3");
+      if (row.pathTemplate.includes("<release-digest>")) bindings.releaseDigest = d("4");
+      if (row.pathTemplate.includes("<target-mutation-id>")) bindings.targetMutationId = d("5");
+      const canonicalPointerPath = pointerPath(row.kind, bindings);
+      const identity = {
+        pointerKind: row.kind,
+        canonicalPointerPath,
+        installationId,
+        projectId,
+        stateRootDigest: d("b"),
+        transactionId: row.transactionPolicy === "REQUIRED" ? installationId : null,
+        sourceToken: row.sourceTokens[0]!,
+      } as const;
+      const fromPosition = computePointerInstanceDigest({
+        ...identity,
+        positionEvidence: { mode: "VALUE", parts: bindings },
+      });
+      expect(computePointerInstanceDigestFromCanonicalPath(identity), `${index}:${row.kind}`).toBe(
+        fromPosition,
+      );
+    }
+    expect(() =>
+      computePointerInstanceDigestFromCanonicalPath({
+        pointerKind: "RECOVERY_ATTEMPT_RESERVATION",
+        canonicalPointerPath: pointerPath("RECOVERY_ATTEMPT_RESERVATION", {
+          predecessorKey: d("1"),
+          sourceToken: "recovery-fence",
+          transactionId: installationId,
+        }).replace(d("1"), "not-a-digest"),
+        installationId,
+        projectId,
+        stateRootDigest: d("b"),
+        transactionId: installationId,
+        sourceToken: "recovery-fence",
+      }),
+    ).toThrow();
   });
 });
 

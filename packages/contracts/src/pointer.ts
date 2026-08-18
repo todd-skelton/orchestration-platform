@@ -359,6 +359,7 @@ export interface PointerIdentity {
   readonly sourceToken: string;
   readonly positionEvidence: JsonValue;
 }
+export type CanonicalPointerIdentity = Omit<PointerIdentity, "positionEvidence">;
 export interface SelectedPointerEvidence extends PointerIdentity {
   readonly pathInstanceDigest: string;
   readonly mutationId: string;
@@ -385,6 +386,14 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
 export function computePointerInstanceDigest(input: PointerIdentity): string {
   const row = rowFor(input.pointerKind);
   const expectedPath = pointerPath(input.pointerKind, pathBindingsFor(row, input));
+  return computePointerInstanceDigestWithExpectedPath(input, row, expectedPath);
+}
+
+function computePointerInstanceDigestWithExpectedPath(
+  input: CanonicalPointerIdentity,
+  row: PointerRegistryRow,
+  expectedPath: string,
+): string {
   if (input.canonicalPointerPath !== expectedPath)
     throw new TypeError("canonicalPointerPath:mismatch");
   if (
@@ -409,6 +418,63 @@ export function computePointerInstanceDigest(input: PointerIdentity): string {
     frame.nullableText(input.transactionId),
     frame.text(input.sourceToken),
   ]);
+}
+
+function pathBindingsFromCanonicalPath(
+  row: PointerRegistryRow,
+  input: CanonicalPointerIdentity,
+): PointerPathBindings {
+  if (!isContractRelativePath(input.canonicalPointerPath))
+    throw new TypeError("canonicalPointerPath:invalid");
+  const templateSegments = row.pathTemplate.split("/");
+  const actualSegments = input.canonicalPointerPath.split("/");
+  if (templateSegments.length !== actualSegments.length)
+    throw new TypeError("canonicalPointerPath:mismatch");
+  const bindings: Record<string, string> = {};
+  for (let index = 0; index < templateSegments.length; index += 1) {
+    const templateSegment = templateSegments[index]!;
+    const actualSegment = actualSegments[index]!;
+    const matches = Object.entries(placeholders).filter(([token]) =>
+      templateSegment.includes(token),
+    );
+    if (matches.length === 0) {
+      if (templateSegment !== actualSegment) throw new TypeError("canonicalPointerPath:mismatch");
+      continue;
+    }
+    if (matches.length !== 1) throw new TypeError("pathTemplate:ambiguous");
+    const [token, name] = matches[0]!;
+    const [prefix, suffix] = templateSegment.split(token) as [string, string];
+    if (
+      !actualSegment.startsWith(prefix) ||
+      !actualSegment.endsWith(suffix) ||
+      actualSegment.length <= prefix.length + suffix.length
+    )
+      throw new TypeError("canonicalPointerPath:mismatch");
+    const value = actualSegment.slice(prefix.length, actualSegment.length - suffix.length);
+    if (name === "transactionId") {
+      if (!isUuidV7(value) || value !== input.transactionId)
+        throw new TypeError("transactionId:path-mismatch");
+    } else if (name === "sourceToken") {
+      if (!row.sourceTokens.includes(value) || value !== input.sourceToken)
+        throw new TypeError("sourceToken:path-mismatch");
+    } else if (!isSha256(value)) {
+      throw new TypeError(`${name}:invalid`);
+    }
+    bindings[name] = value;
+  }
+  return bindings;
+}
+
+export function computePointerInstanceDigestFromCanonicalPath(
+  input: CanonicalPointerIdentity,
+): string {
+  const row = rowFor(input.pointerKind);
+  const bindings = pathBindingsFromCanonicalPath(row, input);
+  return computePointerInstanceDigestWithExpectedPath(
+    input,
+    row,
+    pointerPath(input.pointerKind, bindings),
+  );
 }
 
 function pathBindingsFor(row: PointerRegistryRow, input: PointerIdentity): PointerPathBindings {

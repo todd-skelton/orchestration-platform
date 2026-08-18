@@ -18,13 +18,14 @@ import {
 import {
   computeConflictDigest,
   computeCurrentTipDigest,
-  computePointerInstanceDigest,
+  computePointerInstanceDigestFromCanonicalPath,
   computePointerValueDigest,
   computeProposalReceiptDigest,
   parsePointerCurrentTip,
   parsePointerConflict,
   parsePointerProposal,
   pointerKinds,
+  pointerPath,
   pointerRegistry,
   validateSelectedPointerEvidence,
   type PointerKind,
@@ -701,6 +702,8 @@ export function validateCommitResolutionBinding(
     (expected.runOrdinal === "0") !== (priorCheckpoint === null)
   )
     issues.push("priorCheckpointEvidence:runOrdinal-mismatch");
+  if (expected.runOrdinal !== "0" || priorCheckpoint !== null)
+    issues.push("positive-lineage:full-commit-required");
   const equalities = [
     [
       "producerAuthorityPathInstanceDigest",
@@ -720,19 +723,13 @@ export function validateCommitResolutionBinding(
   for (const field of ["outcome", "targetMutationId", "targetPathInstanceDigest"] as const)
     if (resolution.value[field] !== expected[field]) issues.push(`${field}:mismatch`);
   try {
-    const priorCheckpointDigest =
-      priorCheckpoint === null
-        ? null
-        : priorCheckpoint.ok
-          ? computeRunCheckpointCoreDigest(priorCheckpoint.value.core)
-          : null;
     const expectedRunId = computeRunId({
       authorityPathInstanceDigest: expected.oldAuthorityPathInstanceDigest,
       authorityReceiptDigest: expected.oldAuthorityReceiptDigest,
       authorityTipDigest: expected.oldAuthorityTipDigest,
       authorityValueDigest: expected.oldAuthorityValueDigest,
       globalIdentityDigest: expected.globalIdentityDigest,
-      priorCheckpointDigest,
+      priorCheckpointDigest: null,
       runOrdinal: expected.runOrdinal,
       targetMutationId: expected.targetMutationId,
     });
@@ -1220,6 +1217,7 @@ export function validateCommitCheckpointEvidenceSequence(
   let priorSelectorTipDigest: string | null = null;
   let priorSelectorValueDigest: string | null = null;
   let priorSelectorReceiptDigest: string | null = null;
+  let priorSelectorPathInstanceDigest: string | null = null;
   let priorObservationDigest: string | null = null;
   let stageSevenResolutionDigest: string | null = null;
 
@@ -1244,6 +1242,7 @@ export function validateCommitCheckpointEvidenceSequence(
     priorSelectorTipDigest = computeCurrentTipDigest(priorTip.value);
     priorSelectorValueDigest = String(priorTip.value.valueDigest);
     priorSelectorReceiptDigest = computeProposalReceiptDigest(priorProposal.value);
+    priorSelectorPathInstanceDigest = String(priorProposal.value.pathInstanceDigest);
     priorObservationDigest = computeRunPostSelectionObservationDigest(priorObservation.value);
   }
 
@@ -1275,7 +1274,7 @@ export function validateCommitCheckpointEvidenceSequence(
     if (core.value.stage !== commitRunStages[index]) issues.push(`${index}:stage`);
     if (segment.value.runId !== firstRunId) issues.push(`${index}:runId`);
     try {
-      const expectedTargetPathInstanceDigest = computePointerInstanceDigest({
+      const expectedTargetPathInstanceDigest = computePointerInstanceDigestFromCanonicalPath({
         pointerKind: core.value.pointerKind as PointerKind,
         canonicalPointerPath: String(core.value.canonicalPointerPath),
         installationId: String(core.value.installationId),
@@ -1283,13 +1282,36 @@ export function validateCommitCheckpointEvidenceSequence(
         stateRootDigest: String(core.value.stateRootDigest),
         transactionId: core.value.transactionId as string | null,
         sourceToken: String(core.value.sourceToken),
-        positionEvidence: null,
       });
       if (core.value.targetPathInstanceDigest !== expectedTargetPathInstanceDigest)
         issues.push(`${index}:targetPathInstanceDigest:derived-mismatch`);
     } catch {
       issues.push(`${index}:targetPathInstanceDigest:inputs-invalid`);
     }
+    try {
+      const selectorPath = pointerPath("POINTER_MUTATION_RUN_CURRENT", {
+        targetInstanceDigest: String(core.value.targetPathInstanceDigest),
+        targetMutationId: String(core.value.targetMutationId),
+      });
+      const expectedSelectorPathInstanceDigest = computePointerInstanceDigestFromCanonicalPath({
+        pointerKind: "POINTER_MUTATION_RUN_CURRENT",
+        canonicalPointerPath: selectorPath,
+        installationId: String(core.value.installationId),
+        projectId: String(core.value.projectId),
+        stateRootDigest: String(core.value.stateRootDigest),
+        transactionId: null,
+        sourceToken: "none",
+      });
+      if (proposal.value.pathInstanceDigest !== expectedSelectorPathInstanceDigest)
+        issues.push(`${index}:selectorPathInstanceDigest:derived-mismatch`);
+    } catch {
+      issues.push(`${index}:selectorPathInstanceDigest:inputs-invalid`);
+    }
+    if (
+      priorSelectorPathInstanceDigest !== null &&
+      proposal.value.pathInstanceDigest !== priorSelectorPathInstanceDigest
+    )
+      issues.push(`${index}:selectorPathInstanceDigest:predecessor-mismatch`);
     for (const [field, expected] of [
       ["authorityEpochTipDigest", epochTip],
       ["authorityEpochValueDigest", epochValue],
@@ -1345,6 +1367,7 @@ export function validateCommitCheckpointEvidenceSequence(
     priorSelectorTipDigest = computeCurrentTipDigest(tip.value);
     priorSelectorValueDigest = tip.value.valueDigest as string;
     priorSelectorReceiptDigest = tip.value.proposalReceiptDigest as string;
+    priorSelectorPathInstanceDigest = String(proposal.value.pathInstanceDigest);
     priorObservationDigest = computeRunPostSelectionObservationDigest(observation.value);
   }
 
@@ -1372,7 +1395,7 @@ function validateCommitRunLineage(
   const priorInput = record.priorCheckpointEvidence;
   let priorCoreDigest: string | null = null;
   try {
-    const expectedTargetPathInstanceDigest = computePointerInstanceDigest({
+    const expectedTargetPathInstanceDigest = computePointerInstanceDigestFromCanonicalPath({
       pointerKind: currentCore.value.pointerKind as PointerKind,
       canonicalPointerPath: String(currentCore.value.canonicalPointerPath),
       installationId: String(currentCore.value.installationId),
@@ -1380,7 +1403,6 @@ function validateCommitRunLineage(
       stateRootDigest: String(currentCore.value.stateRootDigest),
       transactionId: currentCore.value.transactionId as string | null,
       sourceToken: String(currentCore.value.sourceToken),
-      positionEvidence: null,
     });
     if (currentCore.value.targetPathInstanceDigest !== expectedTargetPathInstanceDigest)
       issues.push("targetPathInstanceDigest:derived-mismatch");
