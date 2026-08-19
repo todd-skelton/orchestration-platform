@@ -464,6 +464,10 @@ describe("bootstrap anchor lifecycle archive and teardown receipt", () => {
     expect(validate(fixture("ACTIVE", d("8")))).toEqual([]);
   });
 
+  test("accepts successor-origin CONSUMED teardown after the ACTIVE review binding", () => {
+    expect(validate(fixture("CONSUMED", d("8")))).toEqual([]);
+  });
+
   test("refuses independent trusted-context and branch substitutions", () => {
     const f = fixture();
     expect(validate({ ...f, expected: { ...f.expected, priorAnchorTipDigest: d("4") } })).toContain(

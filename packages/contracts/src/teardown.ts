@@ -411,6 +411,8 @@ export function validateBootstrapAnchorTeardownBinding(
     issues.push("selectedOwnerProposal.mutationId:mismatch");
   if (lifecycle === "ACTIVE") {
     const successorReviewCoreDigest = anchor.value.successorReviewCoreDigest;
+    if (selectedOwnerValue.value.successorReviewCoreDigest !== successorReviewCoreDigest)
+      issues.push("selectedOwnerValue.successorReviewCoreDigest:mismatch");
     if (successorReviewCoreDigest === null) {
       if (
         selectedOwnerProposal.value.transition !== "ACTIVATE_GENESIS" ||
@@ -455,8 +457,6 @@ export function validateBootstrapAnchorTeardownBinding(
     issues.push("priorAnchorValue.lifecycle:mismatch");
   if (selectedOwnerValue.value.lifecycle !== lifecycle)
     issues.push("selectedOwnerValue.lifecycle:mismatch");
-  if (selectedOwnerValue.value.successorReviewCoreDigest !== anchor.value.successorReviewCoreDigest)
-    issues.push("selectedOwnerValue.successorReviewCoreDigest:mismatch");
   if (lifecycle === "CONSUMED") {
     for (const [field, actual, selected] of [
       ["anchorTipDigest", selectedOwnerValue.value.anchorTipDigest, priorAnchorTipDigest],
