@@ -354,6 +354,35 @@ describe("destination-owner contracts", () => {
         activeSelection.value,
       ),
     ).not.toEqual([]);
+    for (const [field, value] of [
+      ["mutationId", d("e")],
+      ["positionDigest", d("f")],
+      ["source", "SUCCESSOR_REVIEW"],
+    ] as const) {
+      const forgedWinningProposal = { ...activeSelection.proposal, [field]: value };
+      const forgedWinningProposalDigest =
+        computeDestinationOwnerProposalDigest(forgedWinningProposal);
+      const forgedWinningTip = {
+        ...activeSelection.tip,
+        proposalReceiptDigest: forgedWinningProposalDigest,
+      };
+      const forgedConflict = {
+        ...conflict,
+        winningProposalReceiptDigest: forgedWinningProposalDigest,
+        winningTipDigest: computeDestinationOwnerTipDigest(forgedWinningTip),
+      };
+      expect(
+        validateDestinationOwnerConflictBinding(
+          forgedConflict,
+          losingProposal,
+          losingValue,
+          forgedWinningTip,
+          forgedWinningProposal,
+          activeSelection.value,
+        ),
+        `coordinated-winning:${field}`,
+      ).not.toEqual([]);
+    }
   });
 
   test("rejects every omitted member, mixed nullability, and future values", () => {

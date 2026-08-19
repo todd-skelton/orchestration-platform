@@ -350,6 +350,58 @@ export function computeDestinationOwnerMutationId(
   ]);
 }
 
+function proposalValueSemanticIssues(
+  proposal: ContractRecord,
+  successor: ContractRecord,
+): string[] {
+  const issues: string[] = [];
+  const priorFields = ["priorTipDigest", "priorValueDigest", "priorReceiptDigest"] as const;
+  const priorCount = priorFields.filter((field) => proposal[field] !== null).length;
+  const successorDigest = computeDestinationOwnerValueDigest(successor);
+  if (proposal.destinationDigest !== successor.destinationDigest)
+    issues.push("successor.destinationDigest:mismatch");
+  if (proposal.successorValueDigest !== successorDigest)
+    issues.push("successorValueDigest:mismatch");
+  if (
+    proposal.positionDigest !==
+    computeDestinationOwnerPositionDigest(String(proposal.destinationDigest))
+  )
+    issues.push("positionDigest:mismatch");
+  if (proposal.mutationId !== computeDestinationOwnerMutationId(proposal, successor))
+    issues.push("mutationId:mismatch");
+  if (proposal.transition === "ACTIVATE_GENESIS") {
+    if (priorCount !== 0) issues.push("priorTriple:genesis-non-null");
+    if (proposal.source !== "BOOTSTRAP_GENESIS") issues.push("source:not-bootstrap-genesis");
+    if (successor.lifecycle !== "ACTIVE" || successor.ownerOrdinal !== "0")
+      issues.push("successor:genesis-shape");
+    if (successor.successorReviewCoreDigest !== null)
+      issues.push("successor:genesis-review-forbidden");
+  } else {
+    if (priorCount !== priorFields.length) issues.push("priorTriple:non-genesis-required");
+    if (proposal.transition === "CONSUME") {
+      if (proposal.source !== "ANCHOR_CONSUMED") issues.push("source:not-anchor-consumed");
+      if (successor.lifecycle !== "CONSUMED") issues.push("successor:consume-shape");
+      if (proposal.transitionEvidenceDigest !== successor.anchorTipDigest)
+        issues.push("transition:consume-evidence");
+    } else if (
+      proposal.transition === "RETIRE_UNUSED" ||
+      proposal.transition === "RETIRE_CONSUMED"
+    ) {
+      if (proposal.source !== "ANCHOR_RETIRED") issues.push("source:not-anchor-retired");
+      if (successor.lifecycle !== "RETIRED") issues.push("successor:retire-shape");
+      if (proposal.transitionEvidenceDigest !== successor.teardownArchiveDigest)
+        issues.push("transition:retire-evidence");
+    } else if (proposal.transition === "ACTIVATE_SUCCESSOR") {
+      if (proposal.source !== "SUCCESSOR_REVIEW") issues.push("source:not-successor-review");
+      if (successor.lifecycle !== "ACTIVE" || successor.successorReviewCoreDigest === null)
+        issues.push("successor:activation-shape");
+      if (proposal.transitionEvidenceDigest !== successor.successorReviewCoreDigest)
+        issues.push("transition:successor-evidence");
+    }
+  }
+  return issues;
+}
+
 function prefixed(prefix: string, parsed: ParseResult): string[] {
   return parsed.ok ? [] : parsed.issues.map((issue) => `${prefix}:${issue}`);
 }
@@ -400,6 +452,7 @@ export function validateDestinationOwnerMutationBinding(
   if (!isUuidV7(expected.value.installationId)) issues.push("expected:installationId:invalid");
   const p = proposal.value;
   const s = successor.value;
+  issues.push(...proposalValueSemanticIssues(p, s));
   const successorDigest = computeDestinationOwnerValueDigest(s);
   for (const [field, actual, selected] of [
     ["destinationDigest", p.destinationDigest, expected.value.destinationDigest],
@@ -539,6 +592,10 @@ export function validateDestinationOwnerConflictBinding(
   const winningTipDigest = computeDestinationOwnerTipDigest(wt);
   const winningProposalDigest = computeDestinationOwnerProposalDigest(wp);
   const winningValueDigest = computeDestinationOwnerValueDigest(wv);
+  issues.push(
+    ...proposalValueSemanticIssues(lp, lv).map((issue) => `losing:${issue}`),
+    ...proposalValueSemanticIssues(wp, wv).map((issue) => `winning:${issue}`),
+  );
   for (const [field, actual, selected] of [
     ["destinationDigest", c.destinationDigest, lp.destinationDigest],
     ["losing.destinationDigest", lv.destinationDigest, lp.destinationDigest],
