@@ -24,6 +24,7 @@ import { packetSchemaFields, packetSchemaVersions } from "./packet.js";
 import { externalSchemaFields, externalSchemaVersions } from "./external.js";
 import { destinationOwnerSchemaFields, destinationOwnerSchemaVersions } from "./owner.js";
 import { successorReviewSchemaFields, successorReviewSchemaVersions } from "./successor.js";
+import { bootstrapAnchorSchemaFields, bootstrapAnchorSchemaVersions } from "./anchor.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -164,6 +165,39 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
     "state-mutation-destination-owner-successor-review-post-selection-receipt/v1": Object.freeze({
       schemaVersion: "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
       fields: successorReviewSchemaFields.postSelection,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-bootstrap-anchor/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor/v1",
+      fields: bootstrapAnchorSchemaFields.anchor,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-bootstrap-anchor-lifecycle-value/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-lifecycle-value/v1",
+      fields: bootstrapAnchorSchemaFields.value,
+      closedValues: Object.freeze(["ACTIVE", "CONSUMED", "RETIRED"]),
+    }),
+    "state-mutation-bootstrap-anchor-cas-proposal/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-cas-proposal/v1",
+      fields: bootstrapAnchorSchemaFields.proposal,
+      closedValues: Object.freeze([
+        "BOOTSTRAP_CREATE",
+        "E0_SELECTION",
+        "TEARDOWN",
+        "ACTIVATE",
+        "CONSUME",
+        "RETIRE_UNUSED",
+        "RETIRE_CONSUMED",
+      ]),
+    }),
+    "state-mutation-bootstrap-anchor-current-tip/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-current-tip/v1",
+      fields: bootstrapAnchorSchemaFields.tip,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-bootstrap-anchor-conflict-receipt/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-conflict-receipt/v1",
+      fields: bootstrapAnchorSchemaFields.conflict,
       closedValues: Object.freeze([]),
     }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
@@ -398,6 +432,7 @@ export const schemaVersions = Object.freeze(
     ...externalSchemaVersions,
     ...destinationOwnerSchemaVersions,
     ...successorReviewSchemaVersions,
+    ...bootstrapAnchorSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";

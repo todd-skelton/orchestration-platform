@@ -14,6 +14,7 @@ import { parseEvidenceContract } from "./evidence.js";
 import { parseExternalContract } from "./external.js";
 import { parseDestinationOwnerContract } from "./owner.js";
 import { parseDestinationOwnerSuccessorContract } from "./successor.js";
+import { parseBootstrapAnchorContract } from "./anchor.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
@@ -26,6 +27,7 @@ export * from "./packet.js";
 export * from "./external.js";
 export * from "./owner.js";
 export * from "./successor.js";
+export * from "./anchor.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
 export * from "./vocabulary.js";
@@ -74,6 +76,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (owner) return owner;
   const successor = parseDestinationOwnerSuccessorContract(expectedSchemaVersion, input);
   if (successor) return successor;
+  const anchor = parseBootstrapAnchorContract(expectedSchemaVersion, input);
+  if (anchor) return anchor;
   const packet = parsePacketContract(expectedSchemaVersion, input);
   if (packet) return packet;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);
