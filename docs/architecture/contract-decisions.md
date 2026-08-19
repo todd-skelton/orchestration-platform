@@ -498,6 +498,87 @@ name for those families.
   record and reviewed installed-byte proof. It advances only through the common
   epoch-fenced pointer protocol. No symlink, package-manager link, second
   pointer, or candidate-owned record has authority.
+
+### Active-release authority ledger
+
+`active-release/v1` is the direct reviewed-release value selected by the
+`ACTIVE_RELEASE` pointer. It has exactly these seven required, non-null members
+in ascending canonical JSON member order; no nested proof record, optional
+member, branch member, or additional installed-release schema exists:
+
+| Member                           | Exact scalar rule           |
+| -------------------------------- | --------------------------- |
+| `independentReviewReceiptDigest` | SHA-256                     |
+| `installedBytesDigest`           | SHA-256                     |
+| `releaseDigest`                  | SHA-256                     |
+| `releaseManifestDigest`          | SHA-256                     |
+| `releaseSubjectDigest`           | SHA-256                     |
+| `reviewedInstallerDigest`        | SHA-256                     |
+| `schemaVersion`                  | literal `active-release/v1` |
+
+`installedBytesDigest` is the reviewed installer's canonical read-back digest
+of the complete installed release tree, not a candidate assertion or a digest
+of proposed staging bytes. `releaseDigest` is the immutable release-directory
+identity and equals `releaseSubjectDigest`; the latter name remains explicit so
+the selected value is directly equal-bound to the independently reviewed
+release subject without another record or lookup. The selected release root is
+exactly `releases/<releaseDigest>/`. Missing, extra, renamed, null, future,
+unknown, wrong-type, unequal release/subject, or noncanonical records refuse
+before any pointer digest is admitted.
+
+The record has no standalone digest domain. Its selected value digest is the
+common `Dv = pointer-value/v1("ACTIVE_RELEASE", Dp, canonical active-release
+bytes)`. The active-release pointer identity is stable across the installation:
+kind `ACTIVE_RELEASE`, path `installation/active-release.json`, the exact
+installation/project/state-root identities, `transactionId` equal to the
+installation ID, and source token `none`. VALUE position evidence is exactly
+`{ "mode": "VALUE", "parts": {} }` under the registered
+`active-release-position/v1` domain. The mutation ID, proposal `Dr`, and tip
+`Dt` use the common formulas; the selected proposal and tip both carry that
+exact `Dp/Dv`, and `Dt` carries the recomputed `Dr`. Persist the value and
+proposal at the common constructed `Dp`/mutation paths, the selected tip only
+at `installation/active-release.json`, and the immutable bytes only under the
+release root above. No directory enumeration or second pointer is authority.
+
+The initial N0 graph is the only `ACTIVE_RELEASE` proposal admitted with
+`producerKind=REVIEWED_BOOTSTRAP_GENESIS`. It has a null prior `Dt/Dv/Dr`, null
+authority-epoch `Dt/Dv/Dr`, `VALUE_PROPOSED`, `SELECT`, and the exact external
+reviewed-bootstrap `producerDigest = Dsc`. E0 recomputes that `Dsc` from the
+same exact `BOOTSTRAP_INSTALL` reviewed operation/successor core it consumes;
+the digest is never supplied by the candidate, host, or active-release value. The
+generic proposal contract admits this bootstrap producer kind only for the
+initial `ACTIVE_RELEASE` selection and the already-decided initial
+`STATE_MUTATION_AUTHORITY_ROTATION` selection. Every later active-release
+mutation requires `producerKind=SELECTED_EPOCH`, a non-null exact prior selected
+triple at the same `Dp`, and the non-null selected stable-predecessor authority
+epoch triple. A candidate's own verdict can therefore enter neither its initial
+selection nor its later promotion.
+
+E0 consumes the actual closed active-release value, proposal, and tip rather
+than a caller-supplied four-digest expectation. It recomputes `Dp/Dv/Dr/Dt`, the
+VALUE position digest, mutation ID, null bootstrap prior/epoch branches, and
+reviewed-bootstrap producer digest. It then requires the E0 authority value's
+four active-release members to equal that recomputed selected graph and directly
+equal-binds the active-release value to the exact parsed `BOOTSTRAP_INSTALL`
+reviewed operation and `Dsc` as follows:
+
+| Active-release member            | Required exact equality                                                            |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| `releaseDigest`                  | `releaseSubjectDigest` and reviewed operation/Dsc `reviewedReleaseSubjectDigest`   |
+| `releaseSubjectDigest`           | reviewed operation `releaseSubjectDigest` and Dsc `reviewedReleaseSubjectDigest`   |
+| `releaseManifestDigest`          | reviewed operation `releaseManifestDigest` and Dsc `reviewedReleaseManifestDigest` |
+| `installedBytesDigest`           | reviewed operation `installedBytesDigest` and Dsc `reviewedInstalledBytesDigest`   |
+| `independentReviewReceiptDigest` | reviewed operation/Dsc `independentReviewReceiptDigest`                            |
+| `reviewedInstallerDigest`        | reviewed operation `reviewedInstallerDigest`                                       |
+
+The bootstrap transaction, anchor, global identity, destination/physical
+identity, owner/anchor provenance, and successor-review bindings already fixed
+for E0 remain unchanged. The active-release graph adds no E0-specific record,
+digest, receipt, capability, self epoch, cleanup/gate/fence record, or recovery
+authority. Release cleanup, recovery-fence, cleanup-archive, and later promotion
+lifecycle schemas remain separately unauthorized until their own literal
+ledgers pass removal review.
+
 - Bootstrap N0 is built by pinned GitHub Actions workflow bytes from an exact
   source revision, certified on all required OS runners, independently reviewed
   by an identity distinct from the author/build attempts, and installed by a
