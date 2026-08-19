@@ -1132,6 +1132,94 @@ function selectionFixture(base: ReturnType<typeof consumptionFixture> = consumpt
   return { ...base, evidence };
 }
 
+function rebuildE0Graph(
+  base: ReturnType<typeof fixture>,
+  replacements: {
+    authorityGlobalIdentityDigest?: string;
+    successorCoreDigest?: string;
+  },
+) {
+  const successorCoreDigest =
+    replacements.successorCoreDigest ?? base.genesisInput.successorCoreDigest;
+  const genesisInput = { ...base.genesisInput, successorCoreDigest };
+  const genesisBootstrapInputDigest = computeGenesisBootstrapInputDigest(genesisInput);
+  const history = {
+    ...base.history,
+    genesisBootstrapInputDigest,
+    successorCoreDigest,
+  };
+  const genesisHistoryRecordDigest = computeAuthorityHistoryRecordDigest(history);
+  const authorityValue = {
+    ...base.authorityValue,
+    globalIdentityDigest:
+      replacements.authorityGlobalIdentityDigest ?? base.authorityValue.globalIdentityDigest,
+    headRecordDigest: genesisHistoryRecordDigest,
+  };
+  const authorityValueDigest = computePointerValueDigest(
+    "STATE_MUTATION_AUTHORITY_ROTATION",
+    base.core.authorityPathInstanceDigest,
+    authorityValue,
+  );
+  const core = {
+    ...base.core,
+    authorityValueDigest,
+    genesisBootstrapInputDigest,
+    genesisHistoryRecordDigest,
+    successorCoreDigest,
+  };
+  const bootstrapGenesisCoreDigest = computeBootstrapGenesisCoreDigest(core);
+  const authorityIdentity = {
+    pointerKind: "STATE_MUTATION_AUTHORITY_ROTATION" as const,
+    canonicalPointerPath: stateMutationAuthorityPath,
+    installationId: base.anchor.installationId,
+    projectId: base.anchor.projectId,
+    stateRootDigest: base.anchor.stateRootDigest,
+    transactionId: null,
+    sourceToken: "none",
+    positionEvidence: { mode: "VALUE" as const, parts: {} },
+  };
+  const proposal = {
+    ...base.proposal,
+    mutationId: computeMutationId({
+      ...authorityIdentity,
+      priorTipDigest: null,
+      priorValueDigest: null,
+      priorReceiptDigest: null,
+      successorValueDigest: authorityValueDigest,
+      outcome: "SELECT",
+    }),
+    producerDigest: bootstrapGenesisCoreDigest,
+    successorValueDigest: authorityValueDigest,
+  };
+  const receiptDigest = computeProposalReceiptDigest(proposal);
+  const tip = {
+    ...base.tip,
+    proposalReceiptDigest: receiptDigest,
+    valueDigest: authorityValueDigest,
+  };
+  const tipDigest = computeCurrentTipDigest(tip);
+  const post = {
+    ...base.post,
+    bootstrapGenesisCoreDigest,
+    proposalReadbackDigest: canonicalDigest(proposal),
+    receiptDigest,
+    tipDigest,
+    tipReadbackDigest: canonicalDigest(tip),
+    valueDigest: authorityValueDigest,
+    valueReadbackDigest: canonicalDigest(authorityValue),
+  };
+  return {
+    ...base,
+    authorityValue,
+    core,
+    genesisInput,
+    history,
+    post,
+    proposal,
+    tip,
+  };
+}
+
 function validateSelection(f: ReturnType<typeof selectionFixture>) {
   return validateGenesisSelectionEvidenceBinding(
     f.evidence,
@@ -1140,6 +1228,25 @@ function validateSelection(f: ReturnType<typeof selectionFixture>) {
     f.anchor,
     f.intent,
     f.core,
+    f.operation,
+    f.successorCore,
+    f.activeReleaseValue,
+    f.activeReleaseProposal,
+    f.activeReleaseTip,
+    f.globalIdentity,
+    f.priorOwnerTip,
+    f.priorOwnerValue,
+    f.priorOwnerProposal,
+    f.ownerTeardownArchive,
+    f.successorReviewCore,
+    f.successorReviewExpected,
+    f.successorPostSelection,
+    f.successorPostExpected,
+    f.physical,
+    f.observation,
+    f.absence,
+    f.intentExpected,
+    f.absenceExpected,
     f.authorityValue,
     f.proposal,
     f.tip,
@@ -1811,6 +1918,33 @@ describe("authority-history genesis selection evidence", () => {
 
   test("rejects coordinated upstream, selected-E0, and consumed-graph substitutions", () => {
     const f = selectionFixture();
+    const arbitraryDsc = selectionFixture(
+      consumptionFixture(rebuildE0Graph(fixture(), { successorCoreDigest: d("0") })),
+    );
+    expect(validateSelection(arbitraryDsc)).toEqual(
+      expect.arrayContaining([
+        "coreBinding:genesisInput.successorCoreDigest:mismatch",
+        "coreBinding:history.successorCoreDigest:mismatch",
+      ]),
+    );
+
+    const foreignAuthorityG = selectionFixture(
+      consumptionFixture(rebuildE0Graph(fixture(), { authorityGlobalIdentityDigest: d("0") })),
+    );
+    expect(validateSelection(foreignAuthorityG)).toEqual(
+      expect.arrayContaining([
+        "authority.globalIdentityDigest:mismatch",
+        "coreBinding:authority.globalIdentityDigest:mismatch",
+      ]),
+    );
+
+    expect(
+      validateSelection({
+        ...f,
+        successorCore: { ...f.successorCore, successorHelperDigest: d("1") },
+      }),
+    ).not.toEqual([]);
+
     const genesisInput = { ...f.genesisInput, useIntentDigest: d("2") };
     const genesisBootstrapInputDigest = computeGenesisBootstrapInputDigest(genesisInput);
     expect(
