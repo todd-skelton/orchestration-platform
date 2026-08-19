@@ -18,6 +18,7 @@ import { parseBootstrapAnchorContract } from "./anchor.js";
 import { parseBootstrapUseIntentContract } from "./intent.js";
 import { parseBootstrapAnchorTeardownContract } from "./teardown.js";
 import { parseBootstrapGenesisContract } from "./genesis.js";
+import { parseBootstrapConsumptionContract } from "./consumption.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
@@ -34,6 +35,7 @@ export * from "./anchor.js";
 export * from "./intent.js";
 export * from "./teardown.js";
 export * from "./genesis.js";
+export * from "./consumption.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
 export * from "./vocabulary.js";
@@ -90,6 +92,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (teardown) return teardown;
   const genesis = parseBootstrapGenesisContract(expectedSchemaVersion, input);
   if (genesis) return genesis;
+  const consumption = parseBootstrapConsumptionContract(expectedSchemaVersion, input);
+  if (consumption) return consumption;
   const packet = parsePacketContract(expectedSchemaVersion, input);
   if (packet) return packet;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);

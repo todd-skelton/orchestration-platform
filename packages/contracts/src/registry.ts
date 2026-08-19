@@ -31,6 +31,10 @@ import {
   bootstrapAnchorTeardownSchemaVersions,
 } from "./teardown.js";
 import { bootstrapGenesisSchemaFields, bootstrapGenesisSchemaVersions } from "./genesis.js";
+import {
+  bootstrapConsumptionSchemaFields,
+  bootstrapConsumptionSchemaVersions,
+} from "./consumption.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -245,6 +249,10 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "state-mutation-bootstrap-genesis-post-selection-receipt/v1",
       fields: bootstrapGenesisSchemaFields.post,
       closedValues: Object.freeze([]),
+    }),
+    "state-mutation-bootstrap-anchor-consumption-receipt/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-consumption-receipt/v1",
+      fields: bootstrapConsumptionSchemaFields.receipt,
     }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
       schemaVersion: "reviewed-authority-operation/v1",
@@ -486,6 +494,7 @@ export const schemaVersions = Object.freeze(
     ...bootstrapUseIntentSchemaVersions,
     ...bootstrapAnchorTeardownSchemaVersions,
     ...bootstrapGenesisSchemaVersions,
+    ...bootstrapConsumptionSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";

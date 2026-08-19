@@ -1,9 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
   bootstrapGenesisSchemaFields,
+  bootstrapConsumptionSchemaFields,
+  bootstrapAnchorConsumptionReceiptPath,
   canonicalDigest,
   computeAuthorityHistoryRecordDigest,
   computeBootstrapAnchorDigest,
+  computeBootstrapAnchorConsumptionId,
+  computeBootstrapAnchorConsumptionReceiptDigest,
   computeBootstrapAnchorMutationId,
   computeBootstrapAnchorProposalDigest,
   computeBootstrapAnchorTipDigest,
@@ -35,8 +39,10 @@ import {
   computeSuccessorAuthorityCoreDigest,
   computeStateMutationGlobalIdentityDigest,
   computeCurrentTipDigest,
+  incrementCanonicalDecimal,
   parseBootstrapGenesisCore,
   parseBootstrapGenesisPostSelection,
+  parseBootstrapAnchorConsumptionReceipt,
   parseActiveReleaseValue,
   parseContract,
   pointerGraphSchemaFields,
@@ -44,6 +50,7 @@ import {
   stateMutationAuthorityPath,
   validateBootstrapGenesisCoreBinding,
   validateBootstrapGenesisPostSelectionBinding,
+  validateBootstrapAnchorConsumptionBinding,
 } from "../../packages/contracts/src/index.js";
 
 const d = (value: string) => value.repeat(64);
@@ -911,6 +918,169 @@ function rebuildActiveRelease(
   };
 }
 
+function consumptionFixture(
+  base: ReturnType<typeof fixture> | ReturnType<typeof successorFixture> = fixture(),
+) {
+  const anchorDigest = computeBootstrapAnchorDigest(base.anchor);
+  const coreDigest = computeBootstrapGenesisCoreDigest(base.core);
+  const postDigest = computeBootstrapGenesisPostSelectionDigest(base.post);
+  const anchorActiveTipDigest = computeBootstrapAnchorTipDigest(base.anchorTip);
+  const anchorActiveValueDigest = computeBootstrapAnchorValueDigest(base.anchorValue);
+  const anchorActiveReceiptDigest = computeBootstrapAnchorProposalDigest(base.anchorProposal);
+  const anchorConsumedValue = {
+    anchorDigest,
+    bootstrapGenesisCoreDigest: coreDigest,
+    lifecycle: "CONSUMED",
+    lifecycleOrdinal: "1",
+    schemaVersion: "state-mutation-bootstrap-anchor-lifecycle-value/v1",
+    selectedAuthorityPathInstanceDigest: base.post.authorityPathInstanceDigest,
+    selectedAuthorityReceiptDigest: base.post.receiptDigest,
+    selectedAuthorityTipDigest: base.post.tipDigest,
+    selectedAuthorityValueDigest: base.post.valueDigest,
+    selectionPostReceiptDigest: postDigest,
+    teardownReceiptDigest: null,
+  };
+  const anchorConsumedValueDigest = computeBootstrapAnchorValueDigest(anchorConsumedValue);
+  const anchorConsumedProposalBase = {
+    anchorDigest,
+    mutationId: d("0"),
+    priorReceiptDigest: anchorActiveReceiptDigest,
+    priorTipDigest: anchorActiveTipDigest,
+    priorValueDigest: anchorActiveValueDigest,
+    proposedAt: "2026-08-19T12:05:00.000Z",
+    schemaVersion: "state-mutation-bootstrap-anchor-cas-proposal/v1",
+    source: "E0_SELECTION",
+    successorValueDigest: anchorConsumedValueDigest,
+    transition: "CONSUME",
+    transitionEvidenceDigest: postDigest,
+  };
+  const anchorConsumedProposal = {
+    ...anchorConsumedProposalBase,
+    mutationId: computeBootstrapAnchorMutationId(
+      base.anchor,
+      anchorConsumedProposalBase,
+      anchorConsumedValue,
+    ),
+  };
+  const anchorConsumedReceiptDigest = computeBootstrapAnchorProposalDigest(anchorConsumedProposal);
+  const anchorConsumedTip = {
+    anchorDigest,
+    proposalReceiptDigest: anchorConsumedReceiptDigest,
+    schemaVersion: "state-mutation-bootstrap-anchor-current-tip/v1",
+    valueDigest: anchorConsumedValueDigest,
+  };
+  const anchorConsumedTipDigest = computeBootstrapAnchorTipDigest(anchorConsumedTip);
+
+  const ownerActiveTipDigest = computeDestinationOwnerTipDigest(base.ownerTip);
+  const ownerActiveValueDigest = computeDestinationOwnerValueDigest(base.ownerValue);
+  const ownerActiveReceiptDigest = computeDestinationOwnerProposalDigest(base.ownerProposal);
+  const ownerConsumedValue = {
+    anchorDigest,
+    anchorReceiptDigest: anchorConsumedReceiptDigest,
+    anchorTipDigest: anchorConsumedTipDigest,
+    anchorValueDigest: anchorConsumedValueDigest,
+    destinationDigest: base.anchor.destinationDigest,
+    installationId: base.anchor.installationId,
+    lifecycle: "CONSUMED",
+    ownerOrdinal: incrementCanonicalDecimal(base.ownerValue.ownerOrdinal),
+    schemaVersion: "state-mutation-destination-owner-value/v1",
+    successorReviewCoreDigest: null,
+    teardownArchiveDigest: null,
+  };
+  const ownerConsumedValueDigest = computeDestinationOwnerValueDigest(ownerConsumedValue);
+  const ownerConsumedProposalBase = {
+    destinationDigest: base.anchor.destinationDigest,
+    mutationId: d("0"),
+    observationDigest: base.authorityValue.admittedCustodyObservationDigest,
+    positionDigest: computeDestinationOwnerPositionDigest(base.anchor.destinationDigest),
+    priorReceiptDigest: ownerActiveReceiptDigest,
+    priorTipDigest: ownerActiveTipDigest,
+    priorValueDigest: ownerActiveValueDigest,
+    proposedAt: "2026-08-19T12:06:00.000Z",
+    schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
+    source: "ANCHOR_CONSUMED",
+    successorValueDigest: ownerConsumedValueDigest,
+    transition: "CONSUME",
+    transitionEvidenceDigest: anchorConsumedTipDigest,
+  };
+  const ownerConsumedProposal = {
+    ...ownerConsumedProposalBase,
+    mutationId: computeDestinationOwnerMutationId(ownerConsumedProposalBase, ownerConsumedValue),
+  };
+  const ownerConsumedReceiptDigest = computeDestinationOwnerProposalDigest(ownerConsumedProposal);
+  const ownerConsumedTip = {
+    destinationDigest: base.anchor.destinationDigest,
+    proposalReceiptDigest: ownerConsumedReceiptDigest,
+    schemaVersion: "state-mutation-destination-owner-current-tip/v1",
+    valueDigest: ownerConsumedValueDigest,
+  };
+  const ownerConsumedTipDigest = computeDestinationOwnerTipDigest(ownerConsumedTip);
+  const receipt = {
+    anchorDigest,
+    bootstrapGenesisCoreDigest: coreDigest,
+    bootstrapTransactionId: base.anchor.bootstrapTransactionId,
+    consumedAt: "2026-08-19T12:07:00.000Z",
+    custodyInstanceDigest: base.anchor.custodyInstanceDigest,
+    destinationOwnerActiveReceiptDigest: ownerActiveReceiptDigest,
+    destinationOwnerActiveTipDigest: ownerActiveTipDigest,
+    destinationOwnerActiveValueDigest: ownerActiveValueDigest,
+    destinationOwnerConsumedReceiptDigest: ownerConsumedReceiptDigest,
+    destinationOwnerConsumedTipDigest: ownerConsumedTipDigest,
+    destinationOwnerConsumedValueDigest: ownerConsumedValueDigest,
+    destinationStateRootDigest: base.anchor.stateRootDigest,
+    externalAnchorProposalReadbackDigest: canonicalDigest(anchorConsumedProposal),
+    externalAnchorTipReadbackDigest: canonicalDigest(anchorConsumedTip),
+    externalAnchorValueReadbackDigest: canonicalDigest(anchorConsumedValue),
+    externalRuntimeCustodyDigest: base.authorityValue.admittedCustodyObservationDigest,
+    runtimePostSelectionReceiptDigest: postDigest,
+    runtimePostSelectionReceiptReadbackDigest: canonicalDigest(base.post),
+    runtimeProposalReadbackDigest: canonicalDigest(base.proposal),
+    runtimeReceiptDigest: base.post.receiptDigest,
+    runtimeTipDigest: base.post.tipDigest,
+    runtimeTipReadbackDigest: canonicalDigest(base.tip),
+    runtimeValueDigest: base.post.valueDigest,
+    runtimeValueReadbackDigest: canonicalDigest(base.authorityValue),
+    schemaVersion: "state-mutation-bootstrap-anchor-consumption-receipt/v1",
+    selectedAuthorityPathInstanceDigest: base.post.authorityPathInstanceDigest,
+    useIntentDigest: computeBootstrapAnchorUseIntentDigest(base.intent),
+  };
+  return {
+    ...base,
+    anchorConsumedProposal,
+    anchorConsumedTip,
+    anchorConsumedValue,
+    ownerConsumedProposal,
+    ownerConsumedTip,
+    ownerConsumedValue,
+    receipt,
+  };
+}
+
+function validateConsumption(f: ReturnType<typeof consumptionFixture>) {
+  return validateBootstrapAnchorConsumptionBinding(
+    f.receipt,
+    f.anchor,
+    f.intent,
+    f.core,
+    f.authorityValue,
+    f.proposal,
+    f.tip,
+    f.post,
+    f.anchorTip,
+    f.anchorValue,
+    f.anchorProposal,
+    f.anchorConsumedTip,
+    f.anchorConsumedValue,
+    f.anchorConsumedProposal,
+    f.ownerTip,
+    f.ownerValue,
+    f.ownerProposal,
+    f.ownerConsumedTip,
+    f.ownerConsumedValue,
+    f.ownerConsumedProposal,
+  );
+}
+
 describe("bootstrap E0 core and post-selection", () => {
   test.each([
     ["genesis", fixture()],
@@ -1273,5 +1443,205 @@ describe("bootstrap E0 core and post-selection", () => {
     expect(() => validateCore({ ...f, activeReleaseValue: hostile })).not.toThrow();
     expect(() => validateCore({ ...f, activeReleaseProposal: hostile })).not.toThrow();
     expect(() => validateCore({ ...f, activeReleaseTip: hostile })).not.toThrow();
+  });
+});
+
+describe("bootstrap anchor consumption", () => {
+  test.each([
+    ["genesis", consumptionFixture(fixture())],
+    ["successor", consumptionFixture(successorFixture())],
+  ] as const)("accepts the %s-anchor one-way CONSUMED graph", (_branch, f) => {
+    expect(validateConsumption(f)).toEqual([]);
+    expect(f.anchorConsumedValue).not.toHaveProperty("consumptionReceiptDigest");
+    expect(f.ownerConsumedValue).not.toHaveProperty("consumptionReceiptDigest");
+  });
+
+  test("closes the receipt schema, digest, identity, path, and dispatch", () => {
+    const f = consumptionFixture();
+    expect(parseBootstrapAnchorConsumptionReceipt(f.receipt).ok).toBe(true);
+    expect(
+      parseContract("state-mutation-bootstrap-anchor-consumption-receipt/v1", f.receipt).ok,
+    ).toBe(true);
+    expect(bootstrapConsumptionSchemaFields.receipt).toEqual(Object.keys(f.receipt).sort());
+    expect({
+      digest: computeBootstrapAnchorConsumptionReceiptDigest(f.receipt),
+      id: computeBootstrapAnchorConsumptionId(f.receipt),
+      path: bootstrapAnchorConsumptionReceiptPath(f.anchor, f.receipt),
+    }).toEqual({
+      digest: "45412a07503808a5c0a90e96f58c75af0b5287e548454629a5365588899c5ddb",
+      id: "d85477f1eb1c4267eef77f78fe99d5321b9b023f363b5b8623bb555cab2c5f30",
+      path: "state-mutation-authority-anchors/018f0f4d-7b2d-7a11-8a2b-123456789abc/consumption-receipts/d85477f1eb1c4267eef77f78fe99d5321b9b023f363b5b8623bb555cab2c5f30.json",
+    });
+  });
+
+  test("binds every receipt digest, selected graph, readback, custody, and time", () => {
+    const f = consumptionFixture();
+    for (const field of bootstrapConsumptionSchemaFields.receipt.filter((name) =>
+      name.endsWith("Digest"),
+    ))
+      expect(validateConsumption({ ...f, receipt: { ...f.receipt, [field]: d("0") } })).toContain(
+        `${field}:mismatch`,
+      );
+    expect(
+      validateConsumption({
+        ...f,
+        anchorConsumedValue: {
+          ...f.anchorConsumedValue,
+          selectionPostReceiptDigest: d("1"),
+        },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateConsumption({
+        ...f,
+        ownerConsumedValue: {
+          ...f.ownerConsumedValue,
+          anchorTipDigest: d("2"),
+        },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateConsumption({
+        ...f,
+        ownerConsumedProposal: {
+          ...f.ownerConsumedProposal,
+          observationDigest: d("3"),
+        },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "ownerConsumedBinding:observationDigest:mismatch",
+        "ownerConsumedProposal.observationDigest:mismatch",
+      ]),
+    );
+
+    const substitutedAnchorValue = {
+      ...f.anchorConsumedValue,
+      selectionPostReceiptDigest: d("4"),
+    };
+    const substitutedAnchorValueDigest = computeBootstrapAnchorValueDigest(substitutedAnchorValue);
+    const substitutedAnchorProposalBase = {
+      ...f.anchorConsumedProposal,
+      successorValueDigest: substitutedAnchorValueDigest,
+    };
+    const substitutedAnchorProposal = {
+      ...substitutedAnchorProposalBase,
+      mutationId: computeBootstrapAnchorMutationId(
+        f.anchor,
+        substitutedAnchorProposalBase,
+        substitutedAnchorValue,
+      ),
+    };
+    const substitutedAnchorReceiptDigest =
+      computeBootstrapAnchorProposalDigest(substitutedAnchorProposal);
+    const substitutedAnchorTip = {
+      ...f.anchorConsumedTip,
+      proposalReceiptDigest: substitutedAnchorReceiptDigest,
+      valueDigest: substitutedAnchorValueDigest,
+    };
+    const substitutedAnchorTipDigest = computeBootstrapAnchorTipDigest(substitutedAnchorTip);
+    const substitutedOwnerValue = {
+      ...f.ownerConsumedValue,
+      anchorReceiptDigest: substitutedAnchorReceiptDigest,
+      anchorTipDigest: substitutedAnchorTipDigest,
+      anchorValueDigest: substitutedAnchorValueDigest,
+    };
+    const substitutedOwnerValueDigest = computeDestinationOwnerValueDigest(substitutedOwnerValue);
+    const substitutedOwnerProposalBase = {
+      ...f.ownerConsumedProposal,
+      successorValueDigest: substitutedOwnerValueDigest,
+      transitionEvidenceDigest: substitutedAnchorTipDigest,
+    };
+    const substitutedOwnerProposal = {
+      ...substitutedOwnerProposalBase,
+      mutationId: computeDestinationOwnerMutationId(
+        substitutedOwnerProposalBase,
+        substitutedOwnerValue,
+      ),
+    };
+    const substitutedOwnerReceiptDigest =
+      computeDestinationOwnerProposalDigest(substitutedOwnerProposal);
+    const substitutedOwnerTip = {
+      ...f.ownerConsumedTip,
+      proposalReceiptDigest: substitutedOwnerReceiptDigest,
+      valueDigest: substitutedOwnerValueDigest,
+    };
+    const substitutedOwnerTipDigest = computeDestinationOwnerTipDigest(substitutedOwnerTip);
+    expect(
+      validateConsumption({
+        ...f,
+        anchorConsumedProposal: substitutedAnchorProposal,
+        anchorConsumedTip: substitutedAnchorTip,
+        anchorConsumedValue: substitutedAnchorValue,
+        ownerConsumedProposal: substitutedOwnerProposal,
+        ownerConsumedTip: substitutedOwnerTip,
+        ownerConsumedValue: substitutedOwnerValue,
+        receipt: {
+          ...f.receipt,
+          destinationOwnerConsumedReceiptDigest: substitutedOwnerReceiptDigest,
+          destinationOwnerConsumedTipDigest: substitutedOwnerTipDigest,
+          destinationOwnerConsumedValueDigest: substitutedOwnerValueDigest,
+          externalAnchorProposalReadbackDigest: canonicalDigest(substitutedAnchorProposal),
+          externalAnchorTipReadbackDigest: canonicalDigest(substitutedAnchorTip),
+          externalAnchorValueReadbackDigest: canonicalDigest(substitutedAnchorValue),
+        },
+      }),
+    ).toContain("anchorConsumedValue.selectionPostReceiptDigest:mismatch");
+    expect(
+      validateConsumption({
+        ...f,
+        receipt: { ...f.receipt, consumedAt: "2026-08-19T12:00:00.000Z" },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "consumedAt:before-anchor-consumed",
+        "consumedAt:before-owner-consumed",
+        "consumedAt:before-runtime-post",
+      ]),
+    );
+  });
+
+  test("fails closed for malformed, future, extended, and hostile receipts", () => {
+    const f = consumptionFixture();
+    expect(parseBootstrapAnchorConsumptionReceipt({ ...f.receipt, extra: true }).ok).toBe(false);
+    expect(
+      parseBootstrapAnchorConsumptionReceipt({
+        ...f.receipt,
+        schemaVersion: "state-mutation-bootstrap-anchor-consumption-receipt/v2",
+      }).ok,
+    ).toBe(false);
+    const proxy = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("trap");
+        },
+      },
+    );
+    expect(() => parseBootstrapAnchorConsumptionReceipt(proxy)).not.toThrow();
+    expect(() =>
+      validateBootstrapAnchorConsumptionBinding(
+        proxy,
+        f.anchor,
+        f.intent,
+        f.core,
+        f.authorityValue,
+        f.proposal,
+        f.tip,
+        f.post,
+        f.anchorTip,
+        f.anchorValue,
+        f.anchorProposal,
+        f.anchorConsumedTip,
+        f.anchorConsumedValue,
+        f.anchorConsumedProposal,
+        f.ownerTip,
+        f.ownerValue,
+        f.ownerProposal,
+        f.ownerConsumedTip,
+        f.ownerConsumedValue,
+        f.ownerConsumedProposal,
+      ),
+    ).not.toThrow();
   });
 });
