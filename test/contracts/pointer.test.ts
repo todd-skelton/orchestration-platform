@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   classifyProposal,
+  canonicalJson,
   computeCurrentTipDigest,
   computePointerInstanceDigest,
   computePointerInstanceDigestFromCanonicalPath,
@@ -304,9 +305,9 @@ describe("acyclic pointer graph", () => {
     pathInstanceDigest,
     pointerKind: "ACTIVE_RELEASE",
     positionDigest: d("0"),
-    priorReceiptDigest: null,
-    priorTipDigest: null,
-    priorValueDigest: null,
+    priorReceiptDigest: d("5"),
+    priorTipDigest: d("6"),
+    priorValueDigest: d("7"),
     producerDigest: d("b"),
     producerKind: "SELECTED_EPOCH",
     proposedAt: createdAt,
@@ -325,9 +326,13 @@ describe("acyclic pointer graph", () => {
   test("is deterministic and distinguishes a same-mutation byte conflict", () => {
     expect(parseActiveReleaseValue(value).ok).toBe(true);
     expect(parseContract("active-release/v1", value).ok).toBe(true);
+    expect(canonicalJson(value)).toBe(
+      `{"independentReviewReceiptDigest":"${d("1")}","installedBytesDigest":"${d("2")}","releaseDigest":"${d("a")}","releaseManifestDigest":"${d("3")}","releaseSubjectDigest":"${d("a")}","reviewedInstallerDigest":"${d("4")}","schemaVersion":"active-release/v1"}\n`,
+    );
     expect(
       computePointerValueDigest("ACTIVE_RELEASE", pathInstanceDigest, structuredClone(value)),
     ).toBe(valueDigest);
+    expect(valueDigest).toBe("0486d1e2d49f5fcc6758d04d62043fd88d3af5b77e1accee8444176405f56eb1");
     expect(computeProposalReceiptDigest(structuredClone(proposal))).toBe(proposalReceiptDigest);
     expect(computeCurrentTipDigest(tip)).toMatch(/^[0-9a-f]{64}$/);
     expect(computeProposalReceiptDigest({ ...proposal, successorValueDigest: d("0") })).not.toBe(
@@ -342,6 +347,9 @@ describe("acyclic pointer graph", () => {
       authorityEpochReceiptDigest: null,
       authorityEpochTipDigest: null,
       authorityEpochValueDigest: null,
+      priorReceiptDigest: null,
+      priorTipDigest: null,
+      priorValueDigest: null,
       producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
     };
     expect(() => computeProposalReceiptDigest(bootstrap)).not.toThrow();
@@ -352,6 +360,15 @@ describe("acyclic pointer graph", () => {
     expect(() =>
       computeProposalReceiptDigest({ ...bootstrap, authorityEpochTipDigest: d("6") }),
     ).toThrow("producerKind:epoch-mismatch");
+    expect(() =>
+      computeProposalReceiptDigest({
+        ...proposal,
+        priorReceiptDigest: null,
+        priorTipDigest: null,
+        priorValueDigest: null,
+      }),
+    ).toThrow("producerKind:active-release-prior-mismatch");
+    expect(() => computeProposalReceiptDigest(proposal)).not.toThrow();
   });
   test("classifies only exact selected evidence and returns UNKNOWN for malformed evidence", () => {
     const selected = {

@@ -705,6 +705,12 @@ function requireProposal(input: unknown): ContractRecord {
       !prior.every((item) => item === null))
   )
     throw new TypeError("producerKind:bootstrap-selection-mismatch");
+  if (
+    record.pointerKind === "ACTIVE_RELEASE" &&
+    !bootstrap &&
+    !prior.every((item) => isSha256(item))
+  )
+    throw new TypeError("producerKind:active-release-prior-mismatch");
   if (!isCanonicalTimestamp(record.proposedAt)) throw new TypeError("proposedAt:invalid");
   return record;
 }

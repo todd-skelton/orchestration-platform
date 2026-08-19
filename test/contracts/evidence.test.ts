@@ -64,9 +64,9 @@ function conflictEvidence() {
     pathInstanceDigest: targetPathInstanceDigest,
     pointerKind: "ACTIVE_RELEASE",
     positionDigest: d("e"),
-    priorReceiptDigest: null,
-    priorTipDigest: null,
-    priorValueDigest: null,
+    priorReceiptDigest: d("5"),
+    priorTipDigest: d("6"),
+    priorValueDigest: d("7"),
     producerDigest: d("f"),
     producerKind: "SELECTED_EPOCH",
     proposedAt: "2026-08-18T13:10:00.000Z",
@@ -202,7 +202,7 @@ describe("closed conflict composition and evidence slot", () => {
     expect(parsePointerMutationConflictEvidence(evidence).ok).toBe(true);
     expect(parseContract("pointer-mutation-conflict-evidence/v1", evidence).ok).toBe(true);
     expect(computePointerMutationConflictEvidenceDigest(evidence)).toBe(
-      "dea3b2e7f00287ea3558c9bdd6ac44fdb88add89fcc48419364770972b1d47ce",
+      "7b164ff874025481c40b00360605042b4cb2fde053db9db90964a6cf3afc01c1",
     );
     expect(
       parsePointerMutationConflictEvidence({

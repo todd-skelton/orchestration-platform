@@ -1147,7 +1147,7 @@ describe("bootstrap E0 core and post-selection", () => {
       producerKind: "SELECTED_EPOCH",
     };
     expect(validateCore({ ...f, activeReleaseProposal: selectedEpochProposal })).toContain(
-      "activeReleaseProposal:not-reviewed-bootstrap-genesis",
+      "activeReleaseProposal:producerKind:active-release-prior-mismatch",
     );
     expect(
       validateCore({
