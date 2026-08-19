@@ -12,12 +12,17 @@ import {
 import {
   computeDestinationOwnerProposalDigest,
   computeDestinationOwnerMutationId,
+  computeDestinationOwnerPositionDigest,
   computeDestinationOwnerTipDigest,
   computeDestinationOwnerValueDigest,
   parseDestinationOwnerProposal,
   parseDestinationOwnerTip,
   parseDestinationOwnerValue,
 } from "./owner.js";
+import {
+  computeDestinationOwnerSuccessorPostSelectionDigest,
+  parseDestinationOwnerSuccessorPostSelection,
+} from "./successor.js";
 import {
   canonicalJson,
   frame,
@@ -76,6 +81,7 @@ const expectationFields = Object.freeze([
   "anchorDigest",
   "bootstrapTransactionId",
   "custodyInstanceDigest",
+  "destinationLockCustodyObservationDigest",
   "destinationDigest",
   "destinationStateRootDigest",
   "effectiveAt",
@@ -84,6 +90,8 @@ const expectationFields = Object.freeze([
   "reviewedInstaller",
   "reviewedInstallerDigest",
   "successorPostSelectionReceiptDigest",
+  "successorPostSelectionReceipt",
+  "successorPostSelectionReceiptReadbackDigest",
   "successorPostSelectionReviewCoreDigest",
 ] as const);
 
@@ -261,6 +269,10 @@ export function validateBootstrapAnchorUseIntentBinding(
   const expectedHelper = expected.ok
     ? parseBootstrapReviewedHelper(expected.value.reviewedHelper)
     : undefined;
+  const expectedPostSelection =
+    expected.ok && expected.value.successorPostSelectionReceipt !== null
+      ? parseDestinationOwnerSuccessorPostSelection(expected.value.successorPostSelectionReceipt)
+      : undefined;
   const issues = [
     ...prefixed("intent", intent),
     ...prefixed("anchor", anchor),
@@ -274,6 +286,9 @@ export function validateBootstrapAnchorUseIntentBinding(
     ...(expectedProposed ? prefixed("expected:proposedGenesisInput", expectedProposed) : []),
     ...(expectedInstaller ? prefixed("expected:reviewedInstaller", expectedInstaller) : []),
     ...(expectedHelper ? prefixed("expected:reviewedHelper", expectedHelper) : []),
+    ...(expectedPostSelection
+      ? prefixed("expected:successorPostSelectionReceipt", expectedPostSelection)
+      : []),
   ];
   if (
     !intent.ok ||
@@ -287,7 +302,8 @@ export function validateBootstrapAnchorUseIntentBinding(
     !expected.ok ||
     !expectedProposed?.ok ||
     !expectedInstaller?.ok ||
-    !expectedHelper?.ok
+    !expectedHelper?.ok ||
+    (expected.value.successorPostSelectionReceipt !== null && !expectedPostSelection?.ok)
   )
     return Object.freeze([...new Set(issues)].sort());
   for (const field of [
@@ -303,10 +319,20 @@ export function validateBootstrapAnchorUseIntentBinding(
   if (!isCanonicalTimestamp(expected.value.effectiveAt))
     issues.push("expected:effectiveAt:invalid");
   if (
+    expected.value.destinationLockCustodyObservationDigest !== null &&
+    !isSha256(expected.value.destinationLockCustodyObservationDigest)
+  )
+    issues.push("expected:destinationLockCustodyObservationDigest:invalid");
+  if (
     expected.value.successorPostSelectionReceiptDigest !== null &&
     !isSha256(expected.value.successorPostSelectionReceiptDigest)
   )
     issues.push("expected:successorPostSelectionReceiptDigest:invalid");
+  if (
+    expected.value.successorPostSelectionReceiptReadbackDigest !== null &&
+    !isSha256(expected.value.successorPostSelectionReceiptReadbackDigest)
+  )
+    issues.push("expected:successorPostSelectionReceiptReadbackDigest:invalid");
   if (
     expected.value.successorPostSelectionReviewCoreDigest !== null &&
     !isSha256(expected.value.successorPostSelectionReviewCoreDigest)
@@ -341,6 +367,7 @@ export function validateBootstrapAnchorUseIntentBinding(
     ["anchorActiveReceiptDigest", i.anchorActiveReceiptDigest, anchorProposalDigest],
     ["anchorTip.valueDigest", at.valueDigest, anchorValueDigest],
     ["anchorTip.proposalReceiptDigest", at.proposalReceiptDigest, anchorProposalDigest],
+    ["anchorTip.anchorDigest", at.anchorDigest, anchorDigest],
     ["anchorValue.anchorDigest", av.anchorDigest, anchorDigest],
     ["anchorProposal.anchorDigest", ap.anchorDigest, anchorDigest],
     ["anchorProposal.successorValueDigest", ap.successorValueDigest, anchorValueDigest],
@@ -354,8 +381,15 @@ export function validateBootstrapAnchorUseIntentBinding(
     ],
     ["ownerTip.valueDigest", ot.valueDigest, ownerValueDigest],
     ["ownerTip.proposalReceiptDigest", ot.proposalReceiptDigest, ownerProposalDigest],
+    ["ownerTip.destinationDigest", ot.destinationDigest, a.destinationDigest],
     ["ownerProposal.successorValueDigest", op.successorValueDigest, ownerValueDigest],
     ["ownerProposal.mutationId", op.mutationId, computeDestinationOwnerMutationId(op, ov)],
+    ["ownerProposal.destinationDigest", op.destinationDigest, a.destinationDigest],
+    [
+      "ownerProposal.positionDigest",
+      op.positionDigest,
+      computeDestinationOwnerPositionDigest(String(a.destinationDigest)),
+    ],
     ["ownerValue.anchorDigest", ov.anchorDigest, anchorDigest],
     ["ownerValue.installationId", ov.installationId, a.installationId],
     ["ownerValue.destinationDigest", ov.destinationDigest, a.destinationDigest],
@@ -402,6 +436,7 @@ export function validateBootstrapAnchorUseIntentBinding(
     issues.push("reviewedHelper:expected-mismatch");
   const proposed = i.proposedGenesisInput as ContractRecord;
   const helper = i.reviewedHelper as ContractRecord;
+  const installer = i.reviewedInstaller as ContractRecord;
   for (const [field, actual, selected] of [
     [
       "proposed.authorityPathInstanceDigest",
@@ -411,9 +446,14 @@ export function validateBootstrapAnchorUseIntentBinding(
     ["proposed.bootstrapGrantDigest", proposed.bootstrapGrantDigest, a.bootstrapGrantDigest],
     ["proposed.bootstrapTransactionId", proposed.bootstrapTransactionId, a.bootstrapTransactionId],
     [
-      "proposed.globalIdentityDigest",
-      proposed.globalIdentityDigest,
-      a.globalBootstrapIdentityDigest,
+      "installer.installerArtifactDigest",
+      installer.installerArtifactDigest,
+      a.reviewedInstallerDigest,
+    ],
+    [
+      "installer.reviewReceiptDigest",
+      installer.reviewReceiptDigest,
+      a.independentReviewReceiptDigest,
     ],
     ["helper.abiDigest", helper.abiDigest, a.abiDigest],
     ["helper.helperDigest", helper.helperDigest, a.helperDigest],
@@ -436,6 +476,12 @@ export function validateBootstrapAnchorUseIntentBinding(
       issues.push("successorPostSelectionReceiptDigest:genesis-forbidden");
     if (expected.value.successorPostSelectionReviewCoreDigest !== null)
       issues.push("successorPostSelectionReviewCoreDigest:genesis-forbidden");
+    if (expected.value.successorPostSelectionReceipt !== null)
+      issues.push("successorPostSelectionReceipt:genesis-forbidden");
+    if (expected.value.successorPostSelectionReceiptReadbackDigest !== null)
+      issues.push("successorPostSelectionReceiptReadbackDigest:genesis-forbidden");
+    if (expected.value.destinationLockCustodyObservationDigest !== null)
+      issues.push("destinationLockCustodyObservationDigest:genesis-forbidden");
     if (
       op.transition !== "ACTIVATE_GENESIS" ||
       op.source !== "BOOTSTRAP_GENESIS" ||
@@ -450,6 +496,50 @@ export function validateBootstrapAnchorUseIntentBinding(
       issues.push("successorPostSelectionReceiptDigest:successor-required");
     if (expected.value.successorPostSelectionReviewCoreDigest !== a.successorReviewCoreDigest)
       issues.push("successorPostSelectionReviewCoreDigest:mismatch");
+    if (!expectedPostSelection?.ok) {
+      issues.push("successorPostSelectionReceipt:successor-required");
+    } else {
+      const post = expectedPostSelection.value;
+      const postDigest = computeDestinationOwnerSuccessorPostSelectionDigest(post);
+      for (const [field, actual, selected] of [
+        [
+          "successorPostSelectionReceiptDigest",
+          expected.value.successorPostSelectionReceiptDigest,
+          postDigest,
+        ],
+        [
+          "successorPostSelection.reviewCoreDigest",
+          post.reviewCoreDigest,
+          a.successorReviewCoreDigest,
+        ],
+        ["successorPostSelection.successorAnchorDigest", post.successorAnchorDigest, anchorDigest],
+        [
+          "successorPostSelection.successorOwnerTipDigest",
+          post.successorOwnerTipDigest,
+          ownerTipDigest,
+        ],
+        [
+          "successorPostSelection.successorOwnerValueDigest",
+          post.successorOwnerValueDigest,
+          ownerValueDigest,
+        ],
+        [
+          "successorPostSelection.successorOwnerProposalReceiptDigest",
+          post.successorOwnerProposalReceiptDigest,
+          ownerProposalDigest,
+        ],
+        [
+          "successorPostSelection.destinationLockCustodyObservationDigest",
+          post.destinationLockCustodyObservationDigest,
+          expected.value.destinationLockCustodyObservationDigest,
+        ],
+      ] as const)
+        if (actual !== selected) issues.push(`${field}:mismatch`);
+    }
+    if (expected.value.successorPostSelectionReceiptReadbackDigest === null)
+      issues.push("successorPostSelectionReceiptReadbackDigest:successor-required");
+    if (expected.value.destinationLockCustodyObservationDigest === null)
+      issues.push("destinationLockCustodyObservationDigest:successor-required");
     if (
       op.transition !== "ACTIVATE_SUCCESSOR" ||
       op.source !== "SUCCESSOR_REVIEW" ||

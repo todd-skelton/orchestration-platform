@@ -10,6 +10,7 @@ import {
   computeDestinationOwnerMutationId,
   computeDestinationOwnerPositionDigest,
   computeDestinationOwnerProposalDigest,
+  computeDestinationOwnerSuccessorPostSelectionDigest,
   computeDestinationOwnerTipDigest,
   computeDestinationOwnerValueDigest,
   computeGlobalBootstrapIdentityDigest,
@@ -138,14 +139,14 @@ function fixture(successorReviewCoreDigest: string | null = null) {
     bootstrapGrantDigest: anchor.bootstrapGrantDigest,
     bootstrapTransactionId: transactionId,
     genesisPositionDigest: d("f"),
-    globalIdentityDigest: anchor.globalBootstrapIdentityDigest,
+    globalIdentityDigest: d("e"),
     schemaVersion: "bootstrap-proposed-genesis-input/v1",
     successorCoreDigest: d("0"),
   };
   const reviewedInstaller = {
-    installerArtifactDigest: d("1"),
+    installerArtifactDigest: anchor.reviewedInstallerDigest,
     installerSourceDigest: d("2"),
-    reviewReceiptDigest: d("3"),
+    reviewReceiptDigest: anchor.independentReviewReceiptDigest,
     schemaVersion: "bootstrap-reviewed-installer/v1",
   };
   const reviewedHelper = {
@@ -175,10 +176,29 @@ function fixture(successorReviewCoreDigest: string | null = null) {
     schemaVersion: "state-mutation-bootstrap-anchor-use-intent/v1",
     startedAt: "2026-08-18T12:00:00.000Z",
   };
+  const successorPostSelectionReceipt =
+    successorReviewCoreDigest === null
+      ? null
+      : {
+          destinationLockCustodyObservationDigest: d("4"),
+          observedAt: "2026-08-18T12:00:03.000Z",
+          proposalReadbackDigest: d("5"),
+          reviewCoreDigest: successorReviewCoreDigest,
+          schemaVersion:
+            "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
+          successorAnchorDigest: anchorDigest,
+          successorOwnerProposalReceiptDigest: ownerProposalDigest,
+          successorOwnerTipDigest: computeDestinationOwnerTipDigest(ownerTip),
+          successorOwnerValueDigest: ownerValueDigest,
+          tipReadbackDigest: d("6"),
+          valueReadbackDigest: d("7"),
+        };
   const expected = {
     anchorDigest,
     bootstrapTransactionId: transactionId,
     custodyInstanceDigest: anchor.custodyInstanceDigest,
+    destinationLockCustodyObservationDigest:
+      successorPostSelectionReceipt?.destinationLockCustodyObservationDigest ?? null,
     destinationDigest: anchor.destinationDigest,
     destinationStateRootDigest: anchor.stateRootDigest,
     effectiveAt: "2026-08-18T12:10:00.000Z",
@@ -186,7 +206,13 @@ function fixture(successorReviewCoreDigest: string | null = null) {
     reviewedHelper,
     reviewedInstaller,
     reviewedInstallerDigest: anchor.reviewedInstallerDigest,
-    successorPostSelectionReceiptDigest: successorReviewCoreDigest === null ? null : d("4"),
+    successorPostSelectionReceiptDigest:
+      successorPostSelectionReceipt === null
+        ? null
+        : computeDestinationOwnerSuccessorPostSelectionDigest(successorPostSelectionReceipt),
+    successorPostSelectionReceipt,
+    successorPostSelectionReceiptReadbackDigest:
+      successorPostSelectionReceipt === null ? null : d("8"),
     successorPostSelectionReviewCoreDigest: successorReviewCoreDigest,
   };
   return {
@@ -231,6 +257,11 @@ describe("bootstrap anchor use intent", () => {
     expect(parseBootstrapReviewedHelper(f.reviewedHelper).ok).toBe(true);
     expect(parseBootstrapAnchorUseIntent(f.intent).ok).toBe(true);
     expect(parseContract("state-mutation-bootstrap-anchor-use-intent/v1", f.intent).ok).toBe(true);
+    expect(f.proposedGenesisInput.globalIdentityDigest).not.toBe(
+      f.anchor.globalBootstrapIdentityDigest,
+    );
+    expect(f.reviewedInstaller.installerArtifactDigest).toBe(f.anchor.reviewedInstallerDigest);
+    expect(f.reviewedInstaller.reviewReceiptDigest).toBe(f.anchor.independentReviewReceiptDigest);
     expect(bootstrapUseIntentSchemaFields.useIntent).toEqual(Object.keys(f.intent).sort());
     expect(bootstrapUseIntentSchemaFields.proposedGenesis).toEqual(
       Object.keys(f.proposedGenesisInput).sort(),
@@ -242,7 +273,7 @@ describe("bootstrap anchor use intent", () => {
       Object.keys(f.reviewedHelper).sort(),
     );
     expect(computeBootstrapAnchorUseIntentDigest(f.intent)).toBe(
-      "f82b2c5538d825f8abbbf7155381bce2e509dee391108800883d575bb188c364",
+      "0bc50d1a0e4448547fac48bdbb9e8ff8e4cc497e8bb71b1e60037e6f5c423f54",
     );
     expect(externalAuthorityPaths.bootstrapAnchorUseIntent(installationId, transactionId)).toBe(
       `state-mutation-authority-anchors/${installationId}/use-intents/${transactionId}.json`,
@@ -266,6 +297,48 @@ describe("bootstrap anchor use intent", () => {
     expect(validate(f, f.intent, { ...f.expected, effectiveAt: f.intent.expiresAt })).toContain(
       "effectiveAt:at-or-after-expiry",
     );
+    const foreignAnchorTip = { ...f.anchorTip, anchorDigest: d("f") };
+    expect(
+      validateBootstrapAnchorUseIntentBinding(
+        {
+          ...f.intent,
+          anchorActiveTipDigest: computeBootstrapAnchorTipDigest(foreignAnchorTip),
+        },
+        f.anchor,
+        foreignAnchorTip,
+        f.anchorValue,
+        f.anchorProposal,
+        f.ownerTip,
+        f.ownerValue,
+        f.ownerProposal,
+        f.expected,
+      ),
+    ).not.toEqual([]);
+    const foreignOwnerTip = { ...f.ownerTip, destinationDigest: d("f") };
+    expect(
+      validateBootstrapAnchorUseIntentBinding(
+        {
+          ...f.intent,
+          destinationOwnerActiveTipDigest: computeDestinationOwnerTipDigest(foreignOwnerTip),
+        },
+        f.anchor,
+        f.anchorTip,
+        f.anchorValue,
+        f.anchorProposal,
+        foreignOwnerTip,
+        f.ownerValue,
+        f.ownerProposal,
+        f.expected,
+      ),
+    ).not.toEqual([]);
+    const substitutedInstaller = { ...f.reviewedInstaller, installerArtifactDigest: d("f") };
+    expect(
+      validate(
+        f,
+        { ...f.intent, reviewedInstaller: substitutedInstaller },
+        { ...f.expected, reviewedInstaller: substitutedInstaller },
+      ),
+    ).toContain("installer.installerArtifactDigest:mismatch");
   });
 
   test("requires successor post-selection only for successor anchors", () => {
@@ -278,6 +351,24 @@ describe("bootstrap anchor use intent", () => {
     ).toContain("successorPostSelectionReceiptDigest:genesis-forbidden");
     const successor = fixture(d("e"));
     expect(validate(successor)).toEqual([]);
+    expect(
+      validate(successor, successor.intent, {
+        ...successor.expected,
+        successorPostSelectionReceiptDigest: d("f"),
+      }),
+    ).toContain("successorPostSelectionReceiptDigest:mismatch");
+    const foreignPost = {
+      ...successor.expected.successorPostSelectionReceipt!,
+      reviewCoreDigest: d("f"),
+    };
+    expect(
+      validate(successor, successor.intent, {
+        ...successor.expected,
+        successorPostSelectionReceipt: foreignPost,
+        successorPostSelectionReceiptDigest:
+          computeDestinationOwnerSuccessorPostSelectionDigest(foreignPost),
+      }),
+    ).toContain("successorPostSelection.reviewCoreDigest:mismatch");
     expect(
       validate(successor, successor.intent, {
         ...successor.expected,
