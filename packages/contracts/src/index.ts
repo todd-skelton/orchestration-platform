@@ -37,6 +37,7 @@ export * from "./teardown.js";
 export * from "./genesis.js";
 export * from "./consumption.js";
 export * from "./selection.js";
+export * from "./retirement.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
 export * from "./vocabulary.js";
