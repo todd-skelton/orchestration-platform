@@ -16,6 +16,9 @@ import {
   computeDestinationOwnerPositionDigest,
   computeDestinationOwnerProposalDigest,
   computeDestinationOwnerSuccessorPostSelectionDigest,
+  computeDestinationOwnerSuccessorReviewCandidateDigest,
+  computeDestinationOwnerSuccessorReviewCoreDigest,
+  computeDestinationOwnerTeardownArchiveDigest,
   computeDestinationOwnerTipDigest,
   computeDestinationOwnerValueDigest,
   computeExternalDestinationAbsenceObservationDigest,
@@ -45,7 +48,14 @@ const installationId = "018f0f4d-7b2d-7a11-8a2b-123456789abc";
 const transactionId = "018f0f4d-7b2d-7a12-8a2b-123456789abc";
 const projectId = "018f0f4d-7b2d-7a13-9a2b-123456789abc";
 
-function fixture(successorReviewCoreDigest: string | null = null) {
+function fixture(
+  successorReviewCoreDigest: string | null = null,
+  successorPrior: {
+    proposalDigest: string;
+    tipDigest: string;
+    valueDigest: string;
+  } | null = null,
+) {
   const physical = {
     ancestorObjectIdentityDigest: d("1"),
     canonicalPhysicalLeafBytes: Buffer.from("destination", "utf8").toString("base64url"),
@@ -177,7 +187,7 @@ function fixture(successorReviewCoreDigest: string | null = null) {
     destinationDigest,
     installationId,
     lifecycle: "ACTIVE",
-    ownerOrdinal: successorReviewCoreDigest === null ? "0" : "1",
+    ownerOrdinal: successorReviewCoreDigest === null ? "0" : "2",
     schemaVersion: "state-mutation-destination-owner-value/v1",
     successorReviewCoreDigest,
     teardownArchiveDigest: null,
@@ -187,9 +197,9 @@ function fixture(successorReviewCoreDigest: string | null = null) {
     mutationId: d("0"),
     observationDigest,
     positionDigest: computeDestinationOwnerPositionDigest(destinationDigest),
-    priorReceiptDigest: successorReviewCoreDigest === null ? null : d("4"),
-    priorTipDigest: successorReviewCoreDigest === null ? null : d("5"),
-    priorValueDigest: successorReviewCoreDigest === null ? null : d("6"),
+    priorReceiptDigest: successorReviewCoreDigest === null ? null : successorPrior?.proposalDigest,
+    priorTipDigest: successorReviewCoreDigest === null ? null : successorPrior?.tipDigest,
+    priorValueDigest: successorReviewCoreDigest === null ? null : successorPrior?.valueDigest,
     proposedAt: "2026-08-19T12:00:01.000Z",
     schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
     source: successorReviewCoreDigest === null ? "BOOTSTRAP_GENESIS" : "SUCCESSOR_REVIEW",
@@ -502,13 +512,211 @@ function fixture(successorReviewCoreDigest: string | null = null) {
       bootstrapGenesisCoreDigest: coreDigest,
     },
     proposal,
+    priorOwnerProposal: null,
+    priorOwnerTip: null,
+    priorOwnerValue: null,
+    ownerTeardownArchive: null,
+    successorReviewCore: null,
+    successorReviewExpected: null,
+    successorPostSelection: null,
+    successorPostExpected: null,
     successorCore,
     tip,
   };
 }
 
+function successorFixture() {
+  const seed = fixture();
+  const priorInstallationId = "018f0f4d-7b2d-7a14-8a2b-123456789abc";
+  const priorProjectId = "018f0f4d-7b2d-7a15-8a2b-123456789abc";
+  const priorAnchorDigest = d("4");
+  const priorActiveValue = {
+    anchorDigest: priorAnchorDigest,
+    anchorReceiptDigest: null,
+    anchorTipDigest: null,
+    anchorValueDigest: null,
+    destinationDigest: seed.anchor.destinationDigest,
+    installationId: priorInstallationId,
+    lifecycle: "ACTIVE",
+    ownerOrdinal: "0",
+    schemaVersion: "state-mutation-destination-owner-value/v1",
+    successorReviewCoreDigest: null,
+    teardownArchiveDigest: null,
+  };
+  const priorActiveProposalBase = {
+    destinationDigest: seed.anchor.destinationDigest,
+    mutationId: d("0"),
+    observationDigest: d("5"),
+    positionDigest: computeDestinationOwnerPositionDigest(seed.anchor.destinationDigest),
+    priorReceiptDigest: null,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    proposedAt: "2026-08-19T11:00:00.000Z",
+    schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
+    source: "BOOTSTRAP_GENESIS",
+    successorValueDigest: computeDestinationOwnerValueDigest(priorActiveValue),
+    transition: "ACTIVATE_GENESIS",
+    transitionEvidenceDigest: d("6"),
+  };
+  const priorActiveProposal = {
+    ...priorActiveProposalBase,
+    mutationId: computeDestinationOwnerMutationId(priorActiveProposalBase, priorActiveValue),
+  };
+  const priorActiveValueDigest = computeDestinationOwnerValueDigest(priorActiveValue);
+  const priorActiveReceiptDigest = computeDestinationOwnerProposalDigest(priorActiveProposal);
+  const priorActiveTip = {
+    destinationDigest: seed.anchor.destinationDigest,
+    proposalReceiptDigest: priorActiveReceiptDigest,
+    schemaVersion: "state-mutation-destination-owner-current-tip/v1",
+    valueDigest: priorActiveValueDigest,
+  };
+  const priorActiveTipDigest = computeDestinationOwnerTipDigest(priorActiveTip);
+  const ownerTeardownArchive = {
+    anchorRetiredReceiptDigest: d("7"),
+    anchorRetiredTipDigest: d("8"),
+    anchorRetiredValueDigest: d("9"),
+    destinationDigest: seed.anchor.destinationDigest,
+    installationId: priorInstallationId,
+    observationDigest: d("a"),
+    priorOwnerReceiptDigest: priorActiveReceiptDigest,
+    priorOwnerTipDigest: priorActiveTipDigest,
+    priorOwnerValueDigest: priorActiveValueDigest,
+    schemaVersion: "state-mutation-destination-owner-teardown-archive/v1",
+    teardownReceiptDigest: d("b"),
+  };
+  const archiveDigest = computeDestinationOwnerTeardownArchiveDigest(ownerTeardownArchive);
+  const priorOwnerValue = {
+    anchorDigest: priorAnchorDigest,
+    anchorReceiptDigest: ownerTeardownArchive.anchorRetiredReceiptDigest,
+    anchorTipDigest: ownerTeardownArchive.anchorRetiredTipDigest,
+    anchorValueDigest: ownerTeardownArchive.anchorRetiredValueDigest,
+    destinationDigest: seed.anchor.destinationDigest,
+    installationId: priorInstallationId,
+    lifecycle: "RETIRED",
+    ownerOrdinal: "1",
+    schemaVersion: "state-mutation-destination-owner-value/v1",
+    successorReviewCoreDigest: null,
+    teardownArchiveDigest: archiveDigest,
+  };
+  const priorOwnerProposalBase = {
+    destinationDigest: seed.anchor.destinationDigest,
+    mutationId: d("0"),
+    observationDigest: d("c"),
+    positionDigest: computeDestinationOwnerPositionDigest(seed.anchor.destinationDigest),
+    priorReceiptDigest: priorActiveReceiptDigest,
+    priorTipDigest: priorActiveTipDigest,
+    priorValueDigest: priorActiveValueDigest,
+    proposedAt: "2026-08-19T11:10:00.000Z",
+    schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
+    source: "ANCHOR_RETIRED",
+    successorValueDigest: computeDestinationOwnerValueDigest(priorOwnerValue),
+    transition: "RETIRE_UNUSED",
+    transitionEvidenceDigest: archiveDigest,
+  };
+  const priorOwnerProposal = {
+    ...priorOwnerProposalBase,
+    mutationId: computeDestinationOwnerMutationId(priorOwnerProposalBase, priorOwnerValue),
+  };
+  const priorOwnerValueDigest = computeDestinationOwnerValueDigest(priorOwnerValue);
+  const priorOwnerReceiptDigest = computeDestinationOwnerProposalDigest(priorOwnerProposal);
+  const priorOwnerTip = {
+    destinationDigest: seed.anchor.destinationDigest,
+    proposalReceiptDigest: priorOwnerReceiptDigest,
+    schemaVersion: "state-mutation-destination-owner-current-tip/v1",
+    valueDigest: priorOwnerValueDigest,
+  };
+  const priorOwnerTipDigest = computeDestinationOwnerTipDigest(priorOwnerTip);
+  const priorInstallation = {
+    anchorDigest: priorAnchorDigest,
+    anchorRetiredReceiptDigest: ownerTeardownArchive.anchorRetiredReceiptDigest,
+    anchorRetiredTipDigest: ownerTeardownArchive.anchorRetiredTipDigest,
+    anchorRetiredValueDigest: ownerTeardownArchive.anchorRetiredValueDigest,
+    installationId: priorInstallationId,
+    projectId: priorProjectId,
+    schemaVersion: "destination-owner-prior-installation/v1",
+    stateRootDigest: d("d"),
+  };
+  const successorAuthority = {
+    bootstrapGrantDigest: seed.anchor.bootstrapGrantDigest,
+    bootstrapTransactionId: seed.anchor.bootstrapTransactionId,
+    globalBootstrapIdentityDigest: seed.anchor.globalBootstrapIdentityDigest,
+    installationId: seed.anchor.installationId,
+    projectId: seed.anchor.projectId,
+    reviewedInstallerDigest: seed.anchor.reviewedInstallerDigest,
+    reviewedReleaseManifestDigest: seed.operation.releaseManifestDigest,
+    reviewedReleaseSubjectDigest: seed.operation.releaseSubjectDigest,
+    schemaVersion: "destination-owner-successor-authority/v1",
+    stateRootDigest: seed.anchor.stateRootDigest,
+  };
+  const independentReview = {
+    authorIdentityDigest: d("e"),
+    candidateDigest: d("0"),
+    reviewReceiptDigest: d("f"),
+    reviewedAt: "2026-08-19T11:20:00.000Z",
+    reviewerIdentityDigest: d("1"),
+    schemaVersion: "destination-owner-independent-review/v1",
+  };
+  const reviewCoreBase = {
+    destinationDigest: seed.anchor.destinationDigest,
+    independentReview,
+    priorInstallation,
+    priorRetiredReceiptDigest: priorOwnerReceiptDigest,
+    priorRetiredTipDigest: priorOwnerTipDigest,
+    priorRetiredValueDigest: priorOwnerValueDigest,
+    schemaVersion: "state-mutation-destination-owner-successor-review-core/v1",
+    successorAuthority,
+    teardownArchiveDigest: archiveDigest,
+  };
+  const successorReviewCore = {
+    ...reviewCoreBase,
+    independentReview: {
+      ...independentReview,
+      candidateDigest: computeDestinationOwnerSuccessorReviewCandidateDigest(reviewCoreBase),
+    },
+  };
+  const reviewCoreDigest = computeDestinationOwnerSuccessorReviewCoreDigest(successorReviewCore);
+  const base = fixture(reviewCoreDigest, {
+    proposalDigest: priorOwnerReceiptDigest,
+    tipDigest: priorOwnerTipDigest,
+    valueDigest: priorOwnerValueDigest,
+  });
+  const successorPostSelection = base.intentExpected.successorPostSelectionReceipt!;
+  const successorReviewExpected = {
+    authorIdentityDigest: independentReview.authorIdentityDigest,
+    candidateDigest: successorReviewCore.independentReview.candidateDigest,
+    destinationDigest: base.anchor.destinationDigest,
+    priorProjectId,
+    priorStateRootDigest: priorInstallation.stateRootDigest,
+    reviewReceiptDigest: independentReview.reviewReceiptDigest,
+    reviewerIdentityDigest: independentReview.reviewerIdentityDigest,
+    successorAuthority,
+    teardownAbsenceDigest: ownerTeardownArchive.observationDigest,
+  };
+  const successorPostExpected = {
+    destinationLockCustodyObservationDigest:
+      successorPostSelection.destinationLockCustodyObservationDigest,
+    observationDigest: computePhysicalLocatorObservationDigest(base.observation),
+    proposalReadbackDigest: successorPostSelection.proposalReadbackDigest,
+    reviewCoreDigest,
+    successorAnchorDigest: computeBootstrapAnchorDigest(base.anchor),
+    tipReadbackDigest: successorPostSelection.tipReadbackDigest,
+    valueReadbackDigest: successorPostSelection.valueReadbackDigest,
+  };
+  return {
+    ...base,
+    ownerTeardownArchive,
+    priorOwnerProposal,
+    priorOwnerTip,
+    priorOwnerValue,
+    successorPostExpected,
+    successorPostSelection,
+    successorReviewCore,
+    successorReviewExpected,
+  };
+}
+
 function validateCore(
-  f: ReturnType<typeof fixture>,
+  f: ReturnType<typeof fixture> | ReturnType<typeof successorFixture>,
   core: unknown = f.core,
   globalIdentity: unknown = f.globalIdentity,
   observation: unknown = f.observation,
@@ -529,6 +737,14 @@ function validateCore(
     f.successorCore,
     f.authorityValue,
     globalIdentity,
+    f.priorOwnerTip,
+    f.priorOwnerValue,
+    f.priorOwnerProposal,
+    f.ownerTeardownArchive,
+    f.successorReviewCore,
+    f.successorReviewExpected,
+    f.successorPostSelection,
+    f.successorPostExpected,
     f.physical,
     observation,
     f.absence,
@@ -538,7 +754,10 @@ function validateCore(
   );
 }
 
-function validatePost(f: ReturnType<typeof fixture>, post: unknown = f.post) {
+function validatePost(
+  f: ReturnType<typeof fixture> | ReturnType<typeof successorFixture>,
+  post: unknown = f.post,
+) {
   return validateBootstrapGenesisPostSelectionBinding(
     post,
     f.core,
@@ -551,8 +770,10 @@ function validatePost(f: ReturnType<typeof fixture>, post: unknown = f.post) {
 }
 
 describe("bootstrap E0 core and post-selection", () => {
-  test.each([null, d("f")])("accepts genesis and successor-anchor E0 (%s)", (reviewCore) => {
-    const f = fixture(reviewCore);
+  test.each([
+    ["genesis", fixture()],
+    ["successor", successorFixture()],
+  ] as const)("accepts %s-anchor E0", (_branch, f) => {
     expect(validateCore(f)).toEqual([]);
     expect(validatePost(f)).toEqual([]);
   });
@@ -622,6 +843,41 @@ describe("bootstrap E0 core and post-selection", () => {
     );
     expect(validatePost(f, { ...f.post, receiptDigest: d("2") })).toContain(
       "receiptDigest:mismatch",
+    );
+
+    const successor = successorFixture();
+    const substitutedPost = {
+      ...successor.successorPostSelection,
+      proposalReadbackDigest: d("3"),
+      tipReadbackDigest: d("4"),
+      valueReadbackDigest: d("5"),
+    };
+    const substitutedIntentExpected = {
+      ...successor.intentExpected,
+      successorPostSelectionReceipt: substitutedPost,
+      successorPostSelectionReceiptDigest:
+        computeDestinationOwnerSuccessorPostSelectionDigest(substitutedPost),
+      successorPostSelectionReceiptReadbackDigest: canonicalDigest(substitutedPost),
+    };
+    const substitutedPostExpected = {
+      ...successor.successorPostExpected,
+      proposalReadbackDigest: substitutedPost.proposalReadbackDigest,
+      tipReadbackDigest: substitutedPost.tipReadbackDigest,
+      valueReadbackDigest: substitutedPost.valueReadbackDigest,
+    };
+    expect(
+      validateCore({
+        ...successor,
+        intentExpected: substitutedIntentExpected,
+        successorPostExpected: substitutedPostExpected,
+        successorPostSelection: substitutedPost,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "successorPost:proposalReadbackDigest:derived:mismatch",
+        "successorPost:tipReadbackDigest:derived:mismatch",
+        "successorPost:valueReadbackDigest:derived:mismatch",
+      ]),
     );
   });
 

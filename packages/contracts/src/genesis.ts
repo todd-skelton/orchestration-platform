@@ -1,4 +1,11 @@
 import {
+  computeDestinationOwnerSuccessorReviewCoreDigest,
+  parseDestinationOwnerSuccessorPostSelection,
+  parseDestinationOwnerSuccessorReviewCore,
+  validateDestinationOwnerSuccessorPostSelectionBinding,
+  validateDestinationOwnerSuccessorReviewCoreBinding,
+} from "./successor.js";
+import {
   computeBootstrapAnchorDigest,
   computeBootstrapAnchorProposalDigest,
   computeBootstrapAnchorTipDigest,
@@ -220,6 +227,14 @@ export function validateBootstrapGenesisCoreBinding(
   successorCoreInput: unknown,
   authorityValueInput: unknown,
   globalIdentityInput: unknown,
+  priorOwnerTipInput: unknown,
+  priorOwnerValueInput: unknown,
+  priorOwnerProposalInput: unknown,
+  ownerTeardownArchiveInput: unknown,
+  successorReviewCoreInput: unknown,
+  successorReviewExpectedInput: unknown,
+  successorPostSelectionInput: unknown,
+  successorPostExpectedInput: unknown,
   physicalIdentityInput: unknown,
   locatorObservationInput: unknown,
   absenceInput: unknown,
@@ -390,6 +405,66 @@ export function validateBootstrapGenesisCoreBinding(
         transitionEvidenceDigest: a.bootstrapGrantDigest,
       }).map((issue) => `ownerMutation:${issue}`),
     );
+  const successorInputs = [
+    priorOwnerTipInput,
+    priorOwnerValueInput,
+    priorOwnerProposalInput,
+    ownerTeardownArchiveInput,
+    successorReviewCoreInput,
+    successorReviewExpectedInput,
+    successorPostSelectionInput,
+    successorPostExpectedInput,
+  ];
+  if (a.successorReviewCoreDigest === null) {
+    if (!successorInputs.every((input) => input === null))
+      issues.push("successorProvenance:genesis-forbidden");
+  } else if (successorInputs.some((input) => input === null)) {
+    issues.push("successorProvenance:successor-required");
+  } else {
+    const reviewCore = parseDestinationOwnerSuccessorReviewCore(successorReviewCoreInput);
+    const successorPost = parseDestinationOwnerSuccessorPostSelection(successorPostSelectionInput);
+    issues.push(
+      ...prefixed("successorReviewCore", reviewCore),
+      ...prefixed("successorPostSelection", successorPost),
+      ...validateDestinationOwnerSuccessorReviewCoreBinding(
+        successorReviewCoreInput,
+        priorOwnerTipInput,
+        priorOwnerValueInput,
+        priorOwnerProposalInput,
+        ownerTeardownArchiveInput,
+        successorReviewExpectedInput,
+      ).map((issue) => `successorReview:${issue}`),
+      ...validateDestinationOwnerSuccessorPostSelectionBinding(
+        successorPostSelectionInput,
+        successorReviewCoreInput,
+        ov,
+        op,
+        ot,
+        priorOwnerTipInput,
+        priorOwnerValueInput,
+        priorOwnerProposalInput,
+        successorPostExpectedInput,
+      ).map((issue) => `successorPost:${issue}`),
+    );
+    if (reviewCore.ok && successorPost.ok) {
+      const reviewCoreDigest = computeDestinationOwnerSuccessorReviewCoreDigest(reviewCore.value);
+      for (const [field, actual, selected] of [
+        ["anchor.successorReviewCoreDigest", a.successorReviewCoreDigest, reviewCoreDigest],
+        ["ownerProposal.observationDigest", op.observationDigest, observationDigest],
+        [
+          "intentExpected.successorPostSelectionReceiptReadbackDigest",
+          intentExpected.value.successorPostSelectionReceiptReadbackDigest,
+          canonicalDigest(successorPost.value),
+        ],
+        [
+          "intentExpected.successorPostSelectionReceipt",
+          canonicalDigest(intentExpected.value.successorPostSelectionReceipt),
+          canonicalDigest(successorPost.value),
+        ],
+      ] as const)
+        if (actual !== selected) issues.push(`${field}:mismatch`);
+    }
+  }
 
   for (const [field, actual, selected] of [
     ["anchor.authorityPathInstanceDigest", a.authorityPathInstanceDigest, dp],
