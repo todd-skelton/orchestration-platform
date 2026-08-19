@@ -12,6 +12,7 @@ import {
   validateDestinationOwnerMutationBinding,
 } from "./owner.js";
 import {
+  canonicalDigest,
   canonicalJson,
   frame,
   framedDigest,
@@ -497,6 +498,9 @@ export function validateDestinationOwnerSuccessorPostSelectionBinding(
     ["valueReadbackDigest", r.valueReadbackDigest, expected.value.valueReadbackDigest],
     ["proposalReadbackDigest", r.proposalReadbackDigest, expected.value.proposalReadbackDigest],
     ["tipReadbackDigest", r.tipReadbackDigest, expected.value.tipReadbackDigest],
+    ["valueReadbackDigest:derived", r.valueReadbackDigest, canonicalDigest(value)],
+    ["proposalReadbackDigest:derived", r.proposalReadbackDigest, canonicalDigest(proposal)],
+    ["tipReadbackDigest:derived", r.tipReadbackDigest, canonicalDigest(tip)],
     [
       "destinationLockCustodyObservationDigest",
       r.destinationLockCustodyObservationDigest,

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  canonicalDigest,
   computeDestinationOwnerMutationId,
   computeDestinationOwnerPositionDigest,
   computeDestinationOwnerProposalDigest,
@@ -191,11 +192,11 @@ function fixture() {
   const postExpected = {
     destinationLockCustodyObservationDigest: d("6"),
     observationDigest: d("5"),
-    proposalReadbackDigest: d("7"),
+    proposalReadbackDigest: canonicalDigest(successorProposal),
     reviewCoreDigest: coreDigest,
     successorAnchorDigest,
-    tipReadbackDigest: d("8"),
-    valueReadbackDigest: d("9"),
+    tipReadbackDigest: canonicalDigest(successorSelection.tip),
+    valueReadbackDigest: canonicalDigest(successorValue),
   };
   const post = {
     destinationLockCustodyObservationDigest: postExpected.destinationLockCustodyObservationDigest,
@@ -262,7 +263,7 @@ describe("destination-owner successor review", () => {
     expect({ candidateDigest, coreDigest, postDigest }).toEqual({
       candidateDigest: "0a7a2788c7882442a98e7cef4085a3ede2ea7c1114bd94715d12b8bd76abd4dc",
       coreDigest: "1e8ef93f6121e90eb2557005ef9a6add3c4a8f688b2bbac6463f5f0e8916d651",
-      postDigest: "e1c3c259878e8c8df5212d33ecd8432611f6d3a179f901a21ecaa40fe6356f1b",
+      postDigest: "127dfb0b64ee50e8a0160301a92b005809fcd1b2d9e044b0574200e351cad125",
     });
     expect(
       externalAuthorityPaths.destinationSuccessorReviewCore(

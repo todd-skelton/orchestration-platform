@@ -30,6 +30,7 @@ import {
   computeProposalReceiptDigest,
   computeReviewedAuthorityOperationDigest,
   computeSuccessorAuthorityCoreDigest,
+  computeStateMutationGlobalIdentityDigest,
   computeCurrentTipDigest,
   parseBootstrapGenesisCore,
   parseBootstrapGenesisPostSelection,
@@ -221,7 +222,16 @@ function fixture(successorReviewCoreDigest: string | null = null) {
     reviewedInstallerDigest: anchor.reviewedInstallerDigest,
     schemaVersion: "reviewed-authority-operation/v1",
   };
-  const globalIdentityDigest = d("a");
+  const globalIdentity = {
+    authorityPath: stateMutationAuthorityPath,
+    authorityPathInstanceDigest,
+    custodyInstanceDigest: anchor.custodyInstanceDigest,
+    installationId,
+    projectId,
+    schemaVersion: "state-mutation-global-identity/v1",
+    stateRootDigest: anchor.stateRootDigest,
+  };
+  const globalIdentityDigest = computeStateMutationGlobalIdentityDigest(globalIdentity);
   const successorCore = {
     abiDigest: anchor.abiDigest,
     admittedCustodyObservationDigest: observationDigest,
@@ -290,7 +300,7 @@ function fixture(successorReviewCoreDigest: string | null = null) {
       : {
           destinationLockCustodyObservationDigest: d("c"),
           observedAt: "2026-08-19T12:00:02.000Z",
-          proposalReadbackDigest: d("d"),
+          proposalReadbackDigest: canonicalDigest(ownerProposal),
           reviewCoreDigest: successorReviewCoreDigest,
           schemaVersion:
             "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
@@ -298,8 +308,8 @@ function fixture(successorReviewCoreDigest: string | null = null) {
           successorOwnerProposalReceiptDigest: ownerReceiptDigest,
           successorOwnerTipDigest: ownerTipDigest,
           successorOwnerValueDigest: ownerValueDigest,
-          tipReadbackDigest: d("e"),
-          valueReadbackDigest: d("f"),
+          tipReadbackDigest: canonicalDigest(ownerTip),
+          valueReadbackDigest: canonicalDigest(ownerValue),
         };
   const intentExpected = {
     anchorDigest,
@@ -320,7 +330,9 @@ function fixture(successorReviewCoreDigest: string | null = null) {
         : computeDestinationOwnerSuccessorPostSelectionDigest(successorPostSelectionReceipt),
     successorPostSelectionReceipt,
     successorPostSelectionReceiptReadbackDigest:
-      successorPostSelectionReceipt === null ? null : d("1"),
+      successorPostSelectionReceipt === null
+        ? null
+        : canonicalDigest(successorPostSelectionReceipt),
     successorPostSelectionReviewCoreDigest: successorReviewCoreDigest,
   };
   const useIntentDigest = computeBootstrapAnchorUseIntentDigest(intent);
@@ -473,6 +485,7 @@ function fixture(successorReviewCoreDigest: string | null = null) {
     core,
     coreExpected,
     genesisInput,
+    globalIdentity,
     history,
     intent,
     intentExpected,
@@ -494,7 +507,12 @@ function fixture(successorReviewCoreDigest: string | null = null) {
   };
 }
 
-function validateCore(f: ReturnType<typeof fixture>, core: unknown = f.core) {
+function validateCore(
+  f: ReturnType<typeof fixture>,
+  core: unknown = f.core,
+  globalIdentity: unknown = f.globalIdentity,
+  observation: unknown = f.observation,
+) {
   return validateBootstrapGenesisCoreBinding(
     core,
     f.anchor,
@@ -510,8 +528,9 @@ function validateCore(f: ReturnType<typeof fixture>, core: unknown = f.core) {
     f.operation,
     f.successorCore,
     f.authorityValue,
+    globalIdentity,
     f.physical,
-    f.observation,
+    observation,
     f.absence,
     f.intentExpected,
     f.absenceExpected,
@@ -552,8 +571,8 @@ describe("bootstrap E0 core and post-selection", () => {
       core: computeBootstrapGenesisCoreDigest(f.core),
       post: computeBootstrapGenesisPostSelectionDigest(f.post),
     }).toEqual({
-      core: "7c575b62c71380e4281504788cba6dd0035dc82a2bf8d35a5a084ae2fccd1f4a",
-      post: "32bf4eb73f25c82a36a027a7661076a34c611a9c57cf1ae356568179f3108239",
+      core: "b0ff65a21b902a64f546cf13a47f2adb2db92953e008edc13a5f12db35410fee",
+      post: "6feaddc69046148c64345e11d8409e455bef786b0d03e1d40fe5fdd9b982c170",
     });
   });
 
@@ -571,6 +590,18 @@ describe("bootstrap E0 core and post-selection", () => {
     expect(validateCore(f, { ...f.core, destinationAbsenceDigest: d("4") })).toContain(
       "destinationAbsenceDigest:mismatch",
     );
+    expect(validateCore(f, f.core, { ...f.globalIdentity, custodyInstanceDigest: d("5") })).toEqual(
+      expect.arrayContaining([
+        "globalIdentity.custodyInstanceDigest:mismatch",
+        "globalIdentityDigest:mismatch",
+      ]),
+    );
+    expect(
+      validateCore(f, f.core, f.globalIdentity, {
+        ...f.observation,
+        validUntil: "2026-08-19T12:05:00.000Z",
+      }),
+    ).toContain("effectiveObservation:effectiveAt:after-validity");
   });
 
   test("refuses self-epoch, producer, graph, and readback substitution", () => {

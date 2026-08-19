@@ -7,6 +7,7 @@ import {
   parseBootstrapAnchorLifecycleValue,
   parseBootstrapAnchorProposal,
   parseBootstrapAnchorTip,
+  validateBootstrapAnchorMutationBinding,
 } from "./anchor.js";
 import {
   computeAuthorityHistoryRecordDigest,
@@ -19,14 +20,20 @@ import {
   parseSuccessorAuthorityCore,
 } from "./authority.js";
 import {
+  computeStateMutationGlobalIdentityDigest,
+  parseStateMutationGlobalIdentity,
+} from "./evidence.js";
+import {
   computeExternalDestinationAbsenceObservationDigest,
   computePhysicalLocatorObservationDigest,
   parseExternalDestinationAbsenceObservation,
   parsePhysicalDestinationIdentity,
   parsePhysicalLocatorObservation,
   validateExternalAbsenceBinding,
+  validatePhysicalObservationBinding,
 } from "./external.js";
 import {
+  bootstrapUseIntentExpectationFields,
   computeBootstrapAnchorUseIntentDigest,
   parseBootstrapAnchorUseIntent,
   validateBootstrapAnchorUseIntentBinding,
@@ -38,6 +45,7 @@ import {
   parseDestinationOwnerProposal,
   parseDestinationOwnerTip,
   parseDestinationOwnerValue,
+  validateDestinationOwnerMutationBinding,
 } from "./owner.js";
 import {
   computeCurrentTipDigest,
@@ -211,6 +219,7 @@ export function validateBootstrapGenesisCoreBinding(
   reviewedOperationInput: unknown,
   successorCoreInput: unknown,
   authorityValueInput: unknown,
+  globalIdentityInput: unknown,
   physicalIdentityInput: unknown,
   locatorObservationInput: unknown,
   absenceInput: unknown,
@@ -232,10 +241,15 @@ export function validateBootstrapGenesisCoreBinding(
   const operation = parseReviewedAuthorityOperation(reviewedOperationInput);
   const successor = parseSuccessorAuthorityCore(successorCoreInput);
   const authorityValue = parseStateMutationAuthorityValue(authorityValueInput);
+  const globalIdentity = parseStateMutationGlobalIdentity(globalIdentityInput);
   const identity = parsePhysicalDestinationIdentity(physicalIdentityInput);
   const observation = parsePhysicalLocatorObservation(locatorObservationInput);
   const absence = parseExternalDestinationAbsenceObservation(absenceInput);
   const expected = snapshotClosedRecord(expectedInput, coreExpectationFields);
+  const intentExpected = snapshotClosedRecord(
+    intentExpectedInput,
+    bootstrapUseIntentExpectationFields,
+  );
   const issues = [
     ...prefixed("core", core),
     ...prefixed("anchor", anchor),
@@ -251,10 +265,12 @@ export function validateBootstrapGenesisCoreBinding(
     ...prefixed("reviewedOperation", operation),
     ...prefixed("successorCore", successor),
     ...prefixed("authorityValue", authorityValue),
+    ...prefixed("globalIdentity", globalIdentity),
     ...prefixed("identity", identity),
     ...prefixed("observation", observation),
     ...prefixed("absence", absence),
     ...(expected.ok ? [] : expected.issues.map((issue) => `expected:${issue}`)),
+    ...(intentExpected.ok ? [] : intentExpected.issues.map((issue) => `intentExpected:${issue}`)),
   ];
   if (
     !core.ok ||
@@ -271,10 +287,12 @@ export function validateBootstrapGenesisCoreBinding(
     !operation.ok ||
     !successor.ok ||
     !authorityValue.ok ||
+    !globalIdentity.ok ||
     !identity.ok ||
     !observation.ok ||
     !absence.ok ||
-    !expected.ok
+    !expected.ok ||
+    !intentExpected.ok
   )
     return Object.freeze([...new Set(issues)].sort());
   for (const field of coreExpectationFields)
@@ -295,6 +313,7 @@ export function validateBootstrapGenesisCoreBinding(
   const operationRecord = operation.value;
   const sc = successor.value;
   const authority = authorityValue.value;
+  const global = globalIdentity.value;
   const missing = absence.value;
   const proposed = i.proposedGenesisInput as ContractRecord;
   let anchorDigest: string;
@@ -327,6 +346,7 @@ export function validateBootstrapGenesisCoreBinding(
   const dv = computePointerValueDigest("STATE_MUTATION_AUTHORITY_ROTATION", dp, authority);
   const absenceDigest = computeExternalDestinationAbsenceObservationDigest(missing);
   const observationDigest = computePhysicalLocatorObservationDigest(observation.value);
+  const globalIdentityDigest = computeStateMutationGlobalIdentityDigest(global);
 
   issues.push(
     ...validateBootstrapAnchorUseIntentBinding(
@@ -346,7 +366,30 @@ export function validateBootstrapGenesisCoreBinding(
       missing,
       absenceExpectedInput,
     ).map((issue) => `absenceBinding:${issue}`),
+    ...validatePhysicalObservationBinding(
+      identity.value,
+      observation.value,
+      String(intentExpected.value.effectiveAt),
+      {
+        locatorObservationDigest: observationDigest,
+        physicalDestinationIdentityDigest: missing.physicalDestinationIdentityDigest,
+      },
+    ).map((issue) => `effectiveObservation:${issue}`),
+    ...validateBootstrapAnchorMutationBinding(a, ap, av, null, null, null, {
+      anchorDigest,
+      transitionEvidenceDigest: a.bootstrapGrantDigest,
+    }).map((issue) => `anchorMutation:${issue}`),
   );
+  if (a.successorReviewCoreDigest === null)
+    issues.push(
+      ...validateDestinationOwnerMutationBinding(op, ov, null, null, null, {
+        anchorDigest,
+        destinationDigest: a.destinationDigest,
+        installationId: a.installationId,
+        observationDigest,
+        transitionEvidenceDigest: a.bootstrapGrantDigest,
+      }).map((issue) => `ownerMutation:${issue}`),
+    );
 
   for (const [field, actual, selected] of [
     ["anchor.authorityPathInstanceDigest", a.authorityPathInstanceDigest, dp],
@@ -366,7 +409,7 @@ export function validateBootstrapGenesisCoreBinding(
     ["genesisBootstrapInputDigest", c.genesisBootstrapInputDigest, genesisBootstrapInputDigest],
     ["genesisHistoryRecordDigest", c.genesisHistoryRecordDigest, historyRecordDigest],
     ["genesisPositionDigest", c.genesisPositionDigest, genesisPositionDigest],
-    ["globalIdentityDigest", c.globalIdentityDigest, sc.globalIdentityDigest],
+    ["globalIdentityDigest", c.globalIdentityDigest, globalIdentityDigest],
     ["successorCoreDigest", c.successorCoreDigest, successorCoreDigest],
     [
       "intent.proposedGenesisInput.authorityPathInstanceDigest",
@@ -376,7 +419,7 @@ export function validateBootstrapGenesisCoreBinding(
     [
       "intent.proposedGenesisInput.globalIdentityDigest",
       proposed.globalIdentityDigest,
-      sc.globalIdentityDigest,
+      globalIdentityDigest,
     ],
     [
       "intent.proposedGenesisInput.successorCoreDigest",
@@ -429,7 +472,7 @@ export function validateBootstrapGenesisCoreBinding(
     ["genesisInput.bootstrapTransactionId", gb.bootstrapTransactionId, a.bootstrapTransactionId],
     ["genesisInput.bootstrapGrantDigest", gb.bootstrapGrantDigest, a.bootstrapGrantDigest],
     ["genesisInput.successorCoreDigest", gb.successorCoreDigest, successorCoreDigest],
-    ["history.globalIdentityDigest", h.globalIdentityDigest, sc.globalIdentityDigest],
+    ["history.globalIdentityDigest", h.globalIdentityDigest, globalIdentityDigest],
     [
       "history.genesisBootstrapInputDigest",
       h.genesisBootstrapInputDigest,
@@ -437,6 +480,7 @@ export function validateBootstrapGenesisCoreBinding(
     ],
     ["history.successorCoreDigest", h.successorCoreDigest, successorCoreDigest],
     ["successorCore.authorityPathInstanceDigest", sc.authorityPathInstanceDigest, dp],
+    ["successorCore.globalIdentityDigest", sc.globalIdentityDigest, globalIdentityDigest],
     ["successorCore.successorHelperDigest", sc.successorHelperDigest, a.helperDigest],
     [
       "successorCore.successorHelperProfileDigest",
@@ -456,7 +500,7 @@ export function validateBootstrapGenesisCoreBinding(
       sc.admittedCustodyObservationDigest,
       observationDigest,
     ],
-    ["authority.globalIdentityDigest", authority.globalIdentityDigest, sc.globalIdentityDigest],
+    ["authority.globalIdentityDigest", authority.globalIdentityDigest, globalIdentityDigest],
     ["authority.headRecordDigest", authority.headRecordDigest, historyRecordDigest],
     ["authority.helperDigest", authority.helperDigest, a.helperDigest],
     ["authority.helperProfileDigest", authority.helperProfileDigest, a.helperProfileDigest],
@@ -500,6 +544,12 @@ export function validateBootstrapGenesisCoreBinding(
     ["absence.stateRootDigest", missing.stateRootDigest, a.stateRootDigest],
     ["absence.helperDigest", missing.helperDigest, a.helperDigest],
     ["absence.custodyInstanceDigest", missing.custodyInstanceDigest, a.custodyInstanceDigest],
+    ["globalIdentity.installationId", global.installationId, a.installationId],
+    ["globalIdentity.projectId", global.projectId, a.projectId],
+    ["globalIdentity.stateRootDigest", global.stateRootDigest, a.stateRootDigest],
+    ["globalIdentity.custodyInstanceDigest", global.custodyInstanceDigest, a.custodyInstanceDigest],
+    ["globalIdentity.authorityPath", global.authorityPath, stateMutationAuthorityPath],
+    ["globalIdentity.authorityPathInstanceDigest", global.authorityPathInstanceDigest, dp],
   ] as const)
     if (actual !== selected) issues.push(`${field}:mismatch`);
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   bootstrapUseIntentSchemaFields,
+  canonicalDigest,
   computeBootstrapAnchorDigest,
   computeBootstrapAnchorMutationId,
   computeBootstrapAnchorProposalDigest,
@@ -182,7 +183,7 @@ function fixture(successorReviewCoreDigest: string | null = null) {
       : {
           destinationLockCustodyObservationDigest: d("4"),
           observedAt: "2026-08-18T12:00:03.000Z",
-          proposalReadbackDigest: d("5"),
+          proposalReadbackDigest: canonicalDigest(ownerProposal),
           reviewCoreDigest: successorReviewCoreDigest,
           schemaVersion:
             "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
@@ -190,8 +191,8 @@ function fixture(successorReviewCoreDigest: string | null = null) {
           successorOwnerProposalReceiptDigest: ownerProposalDigest,
           successorOwnerTipDigest: computeDestinationOwnerTipDigest(ownerTip),
           successorOwnerValueDigest: ownerValueDigest,
-          tipReadbackDigest: d("6"),
-          valueReadbackDigest: d("7"),
+          tipReadbackDigest: canonicalDigest(ownerTip),
+          valueReadbackDigest: canonicalDigest(ownerValue),
         };
   const expected = {
     anchorDigest,
@@ -212,7 +213,9 @@ function fixture(successorReviewCoreDigest: string | null = null) {
         : computeDestinationOwnerSuccessorPostSelectionDigest(successorPostSelectionReceipt),
     successorPostSelectionReceipt,
     successorPostSelectionReceiptReadbackDigest:
-      successorPostSelectionReceipt === null ? null : d("8"),
+      successorPostSelectionReceipt === null
+        ? null
+        : canonicalDigest(successorPostSelectionReceipt),
     successorPostSelectionReviewCoreDigest: successorReviewCoreDigest,
   };
   return {

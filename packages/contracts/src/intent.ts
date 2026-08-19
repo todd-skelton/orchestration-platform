@@ -24,6 +24,7 @@ import {
   parseDestinationOwnerSuccessorPostSelection,
 } from "./successor.js";
 import {
+  canonicalDigest,
   canonicalJson,
   frame,
   framedDigest,
@@ -77,7 +78,7 @@ const useIntentFields = Object.freeze([
   "schemaVersion",
   "startedAt",
 ] as const);
-const expectationFields = Object.freeze([
+export const bootstrapUseIntentExpectationFields = Object.freeze([
   "anchorDigest",
   "bootstrapTransactionId",
   "custodyInstanceDigest",
@@ -259,7 +260,7 @@ export function validateBootstrapAnchorUseIntentBinding(
   const ownerTip = parseDestinationOwnerTip(ownerTipInput);
   const ownerValue = parseDestinationOwnerValue(ownerValueInput);
   const ownerProposal = parseDestinationOwnerProposal(ownerProposalInput);
-  const expected = snapshotClosedRecord(expectedInput, expectationFields);
+  const expected = snapshotClosedRecord(expectedInput, bootstrapUseIntentExpectationFields);
   const expectedProposed = expected.ok
     ? parseBootstrapProposedGenesisInput(expected.value.proposedGenesisInput)
     : undefined;
@@ -506,6 +507,11 @@ export function validateBootstrapAnchorUseIntentBinding(
           "successorPostSelectionReceiptDigest",
           expected.value.successorPostSelectionReceiptDigest,
           postDigest,
+        ],
+        [
+          "successorPostSelectionReceiptReadbackDigest",
+          expected.value.successorPostSelectionReceiptReadbackDigest,
+          canonicalDigest(post),
         ],
         [
           "successorPostSelection.reviewCoreDigest",
