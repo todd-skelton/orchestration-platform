@@ -192,6 +192,7 @@ function fixture() {
     destinationLockCustodyObservationDigest: d("6"),
     observationDigest: d("5"),
     proposalReadbackDigest: d("7"),
+    reviewCoreDigest: coreDigest,
     successorAnchorDigest,
     tipReadbackDigest: d("8"),
     valueReadbackDigest: d("9"),
@@ -211,6 +212,7 @@ function fixture() {
   };
   const reviewExpected = {
     authorIdentityDigest: independentReview.authorIdentityDigest,
+    candidateDigest: core.independentReview.candidateDigest,
     destinationDigest,
     priorProjectId,
     priorStateRootDigest: priorInstallation.stateRootDigest,
@@ -358,6 +360,52 @@ describe("destination-owner successor review", () => {
         ),
         field,
       ).not.toEqual([]);
+    const substitutedCore = {
+      ...f.core,
+      independentReview: { ...f.core.independentReview, reviewReceiptDigest: d("f") },
+    };
+    const substitutedCoreDigest = computeDestinationOwnerSuccessorReviewCoreDigest(substitutedCore);
+    const substitutedValue = {
+      ...f.successorSelection.value,
+      successorReviewCoreDigest: substitutedCoreDigest,
+    };
+    const substitutedProposalBase = {
+      ...f.successorSelection.proposal,
+      mutationId: d("0"),
+      successorValueDigest: computeDestinationOwnerValueDigest(substitutedValue),
+      transitionEvidenceDigest: substitutedCoreDigest,
+    };
+    const substitutedProposal = {
+      ...substitutedProposalBase,
+      mutationId: computeDestinationOwnerMutationId(substitutedProposalBase, substitutedValue),
+    };
+    const substitutedValueDigest = computeDestinationOwnerValueDigest(substitutedValue);
+    const substitutedProposalDigest = computeDestinationOwnerProposalDigest(substitutedProposal);
+    const substitutedTip = {
+      ...f.successorSelection.tip,
+      proposalReceiptDigest: substitutedProposalDigest,
+      valueDigest: substitutedValueDigest,
+    };
+    const substitutedPost = {
+      ...f.post,
+      reviewCoreDigest: substitutedCoreDigest,
+      successorOwnerProposalReceiptDigest: substitutedProposalDigest,
+      successorOwnerTipDigest: computeDestinationOwnerTipDigest(substitutedTip),
+      successorOwnerValueDigest: substitutedValueDigest,
+    };
+    expect(
+      validateDestinationOwnerSuccessorPostSelectionBinding(
+        substitutedPost,
+        substitutedCore,
+        substitutedValue,
+        substitutedProposal,
+        substitutedTip,
+        f.retiredSelection.tip,
+        f.retiredSelection.value,
+        f.retiredSelection.proposal,
+        f.postExpected,
+      ),
+    ).not.toEqual([]);
   });
 
   test("rejects coordinated authority substitution, self-review, additions, and omissions", () => {

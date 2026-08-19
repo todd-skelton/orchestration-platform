@@ -79,6 +79,7 @@ const postSelectionFields = Object.freeze([
 ] as const);
 const reviewExpectationFields = Object.freeze([
   "authorIdentityDigest",
+  "candidateDigest",
   "destinationDigest",
   "priorProjectId",
   "priorStateRootDigest",
@@ -91,6 +92,7 @@ const postExpectationFields = Object.freeze([
   "destinationLockCustodyObservationDigest",
   "observationDigest",
   "proposalReadbackDigest",
+  "reviewCoreDigest",
   "successorAnchorDigest",
   "tipReadbackDigest",
   "valueReadbackDigest",
@@ -319,6 +321,7 @@ export function validateDestinationOwnerSuccessorReviewCoreBinding(
     return Object.freeze([...new Set(issues)].sort());
   for (const field of [
     "authorIdentityDigest",
+    "candidateDigest",
     "destinationDigest",
     "priorStateRootDigest",
     "reviewReceiptDigest",
@@ -339,6 +342,7 @@ export function validateDestinationOwnerSuccessorReviewCoreBinding(
   const valueDigest = computeDestinationOwnerValueDigest(pv);
   const proposalDigest = computeDestinationOwnerProposalDigest(pp);
   const archiveDigest = computeDestinationOwnerTeardownArchiveDigest(a);
+  const candidateDigest = computeDestinationOwnerSuccessorReviewCandidateDigest(c);
   for (const [field, actual, selected] of [
     ["destinationDigest", c.destinationDigest, expected.value.destinationDigest],
     ["priorRetiredTipDigest", c.priorRetiredTipDigest, tipDigest],
@@ -396,6 +400,8 @@ export function validateDestinationOwnerSuccessorReviewCoreBinding(
       expected.value.reviewerIdentityDigest,
     ],
     ["review.reviewReceiptDigest", review.reviewReceiptDigest, expected.value.reviewReceiptDigest],
+    ["review.candidateDigest", review.candidateDigest, candidateDigest],
+    ["expected.candidateDigest", expected.value.candidateDigest, candidateDigest],
   ] as const)
     if (actual !== selected) issues.push(`${field}:mismatch`);
   if (pv.lifecycle !== "RETIRED") issues.push("priorValue:lifecycle-not-retired");
@@ -410,8 +416,6 @@ export function validateDestinationOwnerSuccessorReviewCoreBinding(
     issues.push("successorAuthority:installation-not-distinct");
   if (!sameCanonical(sa, expected.value.successorAuthority))
     issues.push("successorAuthority:expected-mismatch");
-  if (review.candidateDigest !== computeDestinationOwnerSuccessorReviewCandidateDigest(c))
-    issues.push("independentReview:candidateDigest:mismatch");
   return Object.freeze([...new Set(issues)].sort());
 }
 
@@ -473,12 +477,13 @@ export function validateDestinationOwnerSuccessorPostSelectionBinding(
         destinationDigest: c.destinationDigest,
         installationId: authority.installationId,
         observationDigest: expected.value.observationDigest,
-        transitionEvidenceDigest: coreDigest,
+        transitionEvidenceDigest: expected.value.reviewCoreDigest,
       },
     ).map((issue) => `ownerMutation:${issue}`),
   );
   for (const [field, actual, selected] of [
     ["reviewCoreDigest", r.reviewCoreDigest, coreDigest],
+    ["expected.reviewCoreDigest", expected.value.reviewCoreDigest, coreDigest],
     ["successorAnchorDigest", r.successorAnchorDigest, expected.value.successorAnchorDigest],
     ["successorOwnerValueDigest", r.successorOwnerValueDigest, valueDigest],
     ["successorOwnerProposalReceiptDigest", r.successorOwnerProposalReceiptDigest, proposalDigest],
