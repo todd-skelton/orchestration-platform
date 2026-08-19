@@ -30,6 +30,7 @@ import {
   bootstrapAnchorTeardownSchemaFields,
   bootstrapAnchorTeardownSchemaVersions,
 } from "./teardown.js";
+import { bootstrapGenesisSchemaFields, bootstrapGenesisSchemaVersions } from "./genesis.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -234,6 +235,16 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "state-mutation-bootstrap-anchor-teardown-receipt/v1",
       fields: bootstrapAnchorTeardownSchemaFields.teardownReceipt,
       closedValues: Object.freeze(["RETIRE_UNUSED", "RETIRE_CONSUMED"]),
+    }),
+    "state-mutation-bootstrap-genesis-core/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-genesis-core/v1",
+      fields: bootstrapGenesisSchemaFields.core,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-bootstrap-genesis-post-selection-receipt/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-genesis-post-selection-receipt/v1",
+      fields: bootstrapGenesisSchemaFields.post,
+      closedValues: Object.freeze([]),
     }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
       schemaVersion: "reviewed-authority-operation/v1",
@@ -470,6 +481,7 @@ export const schemaVersions = Object.freeze(
     ...bootstrapAnchorSchemaVersions,
     ...bootstrapUseIntentSchemaVersions,
     ...bootstrapAnchorTeardownSchemaVersions,
+    ...bootstrapGenesisSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
