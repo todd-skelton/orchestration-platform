@@ -276,6 +276,16 @@ export function validateBootstrapAnchorTeardownBinding(
   const externalArchiveDigest = computeBootstrapAnchorLifecycleArchiveDigest(archive.value);
   const transition = String(expected.value.retirementTransition);
   const lifecycle = transition === "RETIRE_UNUSED" ? "ACTIVE" : "CONSUMED";
+  const anchorPrior = [
+    priorAnchorProposal.value.priorTipDigest,
+    priorAnchorProposal.value.priorValueDigest,
+    priorAnchorProposal.value.priorReceiptDigest,
+  ];
+  const ownerPrior = [
+    selectedOwnerProposal.value.priorTipDigest,
+    selectedOwnerProposal.value.priorValueDigest,
+    selectedOwnerProposal.value.priorReceiptDigest,
+  ];
 
   issues.push(
     ...validateExternalAbsenceBinding(
@@ -380,6 +390,8 @@ export function validateBootstrapAnchorTeardownBinding(
       priorAnchorProposal.value.source !== "E0_SELECTION"
     )
       issues.push("priorAnchorProposal.consumed-branch:mismatch");
+    if (!anchorPrior.every((value) => isSha256(value)))
+      issues.push("priorAnchorProposal.consumed-prior:required");
     if (
       priorAnchorProposal.value.transitionEvidenceDigest !==
       priorAnchorValue.value.selectionPostReceiptDigest
@@ -398,26 +410,40 @@ export function validateBootstrapAnchorTeardownBinding(
   )
     issues.push("selectedOwnerProposal.mutationId:mismatch");
   if (lifecycle === "ACTIVE") {
-    const genesis = selectedOwnerProposal.value.transition === "ACTIVATE_GENESIS";
-    const successor = selectedOwnerProposal.value.transition === "ACTIVATE_SUCCESSOR";
-    if (
-      (!genesis && !successor) ||
-      (genesis && selectedOwnerProposal.value.source !== "BOOTSTRAP_GENESIS") ||
-      (successor && selectedOwnerProposal.value.source !== "SUCCESSOR_REVIEW")
-    )
-      issues.push("selectedOwnerProposal.active-branch:mismatch");
-    if (
-      successor &&
-      selectedOwnerProposal.value.transitionEvidenceDigest !==
-        selectedOwnerValue.value.successorReviewCoreDigest
-    )
-      issues.push("selectedOwnerProposal.transitionEvidenceDigest:mismatch");
+    const successorReviewCoreDigest = anchor.value.successorReviewCoreDigest;
+    if (successorReviewCoreDigest === null) {
+      if (
+        selectedOwnerProposal.value.transition !== "ACTIVATE_GENESIS" ||
+        selectedOwnerProposal.value.source !== "BOOTSTRAP_GENESIS"
+      )
+        issues.push("selectedOwnerProposal.genesis-branch:mismatch");
+      if (!ownerPrior.every((value) => value === null))
+        issues.push("selectedOwnerProposal.genesis-prior:not-null");
+      if (selectedOwnerValue.value.ownerOrdinal !== "0")
+        issues.push("selectedOwnerValue.ownerOrdinal:not-zero");
+      if (
+        selectedOwnerProposal.value.transitionEvidenceDigest !== anchor.value.bootstrapGrantDigest
+      )
+        issues.push("selectedOwnerProposal.transitionEvidenceDigest:mismatch");
+    } else {
+      if (
+        selectedOwnerProposal.value.transition !== "ACTIVATE_SUCCESSOR" ||
+        selectedOwnerProposal.value.source !== "SUCCESSOR_REVIEW"
+      )
+        issues.push("selectedOwnerProposal.successor-branch:mismatch");
+      if (!ownerPrior.every((value) => isSha256(value)))
+        issues.push("selectedOwnerProposal.successor-prior:required");
+      if (selectedOwnerProposal.value.transitionEvidenceDigest !== successorReviewCoreDigest)
+        issues.push("selectedOwnerProposal.transitionEvidenceDigest:mismatch");
+    }
   } else {
     if (
       selectedOwnerProposal.value.transition !== "CONSUME" ||
       selectedOwnerProposal.value.source !== "ANCHOR_CONSUMED"
     )
       issues.push("selectedOwnerProposal.consumed-branch:mismatch");
+    if (!ownerPrior.every((value) => isSha256(value)))
+      issues.push("selectedOwnerProposal.consumed-prior:required");
     if (
       selectedOwnerProposal.value.transitionEvidenceDigest !==
       selectedOwnerValue.value.anchorTipDigest
@@ -429,10 +455,30 @@ export function validateBootstrapAnchorTeardownBinding(
     issues.push("priorAnchorValue.lifecycle:mismatch");
   if (selectedOwnerValue.value.lifecycle !== lifecycle)
     issues.push("selectedOwnerValue.lifecycle:mismatch");
+  if (selectedOwnerValue.value.successorReviewCoreDigest !== anchor.value.successorReviewCoreDigest)
+    issues.push("selectedOwnerValue.successorReviewCoreDigest:mismatch");
+  if (lifecycle === "CONSUMED") {
+    for (const [field, actual, selected] of [
+      ["anchorTipDigest", selectedOwnerValue.value.anchorTipDigest, priorAnchorTipDigest],
+      ["anchorValueDigest", selectedOwnerValue.value.anchorValueDigest, priorAnchorValueDigest],
+      [
+        "anchorReceiptDigest",
+        selectedOwnerValue.value.anchorReceiptDigest,
+        priorAnchorReceiptDigest,
+      ],
+    ] as const)
+      if (actual !== selected) issues.push(`selectedOwnerValue.${field}:mismatch`);
+  }
   if (absence.value.reason !== "DESTINATION_STATE_ROOT_ABSENT")
     issues.push("absence.reason:not-destination-state-root-absent");
   if (absence.value.destinationDigest !== anchor.value.destinationDigest)
     issues.push("absence.destinationDigest:mismatch");
+  if (absence.value.stateRootDigest !== anchor.value.stateRootDigest)
+    issues.push("absence.stateRootDigest:mismatch");
+  if (absence.value.helperDigest !== anchor.value.helperDigest)
+    issues.push("absence.helperDigest:mismatch");
+  if (absence.value.custodyInstanceDigest !== anchor.value.custodyInstanceDigest)
+    issues.push("absence.custodyInstanceDigest:mismatch");
   if (archive.value.anchorDigest !== anchorDigest) issues.push("archive.anchorDigest:mismatch");
   if (archive.value.archivedTipDigest !== priorAnchorTipDigest)
     issues.push("archive.archivedTipDigest:mismatch");
