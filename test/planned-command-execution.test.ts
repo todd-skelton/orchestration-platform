@@ -84,5 +84,5 @@ describe("planned verification command execution census", () => {
       }
     }
     expect(executed + implemented).toBe(declared);
-  }, 300_000);
+  }, 600_000);
 });

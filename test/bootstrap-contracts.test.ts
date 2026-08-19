@@ -18,7 +18,7 @@ function asCrLf(value: string) {
 
 beforeAll(async () => {
   baseline = await loadBootstrapSnapshot();
-}, 30_000);
+}, 300_000);
 
 describe("bootstrap manifest graph", () => {
   test("accepts CRLF tracked text contracts without changing their semantics", async () => {

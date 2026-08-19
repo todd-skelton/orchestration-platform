@@ -27,6 +27,7 @@ import {
   computeDestinationOwnerValueDigest,
   computeExternalDestinationAbsenceObservationDigest,
   computeGenesisBootstrapInputDigest,
+  computeGenesisSelectionEvidenceDigest,
   computeGlobalBootstrapIdentityDigest,
   computeMutationId,
   computePhysicalDestinationIdentityDigest,
@@ -51,6 +52,7 @@ import {
   validateBootstrapGenesisCoreBinding,
   validateBootstrapGenesisPostSelectionBinding,
   validateBootstrapAnchorConsumptionBinding,
+  validateGenesisSelectionEvidenceBinding,
 } from "../../packages/contracts/src/index.js";
 
 const d = (value: string) => value.repeat(64);
@@ -1082,6 +1084,82 @@ function validateConsumption(f: ReturnType<typeof consumptionFixture>) {
   );
 }
 
+function selectionFixture(base: ReturnType<typeof consumptionFixture> = consumptionFixture()) {
+  const evidence = {
+    anchorConsumedProposalReadbackDigest: canonicalDigest(base.anchorConsumedProposal),
+    anchorConsumedReceiptDigest: computeBootstrapAnchorProposalDigest(base.anchorConsumedProposal),
+    anchorConsumedTipDigest: computeBootstrapAnchorTipDigest(base.anchorConsumedTip),
+    anchorConsumedTipReadbackDigest: canonicalDigest(base.anchorConsumedTip),
+    anchorConsumedValueDigest: computeBootstrapAnchorValueDigest(base.anchorConsumedValue),
+    anchorConsumedValueReadbackDigest: canonicalDigest(base.anchorConsumedValue),
+    anchorConsumptionReceiptDigest: computeBootstrapAnchorConsumptionReceiptDigest(base.receipt),
+    bootstrapAnchorActiveReceiptDigest: computeBootstrapAnchorProposalDigest(base.anchorProposal),
+    bootstrapAnchorActiveTipDigest: computeBootstrapAnchorTipDigest(base.anchorTip),
+    bootstrapAnchorActiveValueDigest: computeBootstrapAnchorValueDigest(base.anchorValue),
+    bootstrapAnchorDigest: computeBootstrapAnchorDigest(base.anchor),
+    bootstrapGenesisCoreDigest: computeBootstrapGenesisCoreDigest(base.core),
+    bootstrapGrantDigest: base.anchor.bootstrapGrantDigest,
+    bootstrapTransactionId: base.anchor.bootstrapTransactionId,
+    destinationDigest: base.anchor.destinationDigest,
+    destinationOwnerActiveReceiptDigest: computeDestinationOwnerProposalDigest(base.ownerProposal),
+    destinationOwnerActiveTipDigest: computeDestinationOwnerTipDigest(base.ownerTip),
+    destinationOwnerActiveValueDigest: computeDestinationOwnerValueDigest(base.ownerValue),
+    genesisBootstrapInputDigest: computeGenesisBootstrapInputDigest(base.genesisInput),
+    globalBootstrapIdentityDigest: base.anchor.globalBootstrapIdentityDigest,
+    historyRecordDigest: computeAuthorityHistoryRecordDigest(base.history),
+    ownerConsumedProposalReadbackDigest: canonicalDigest(base.ownerConsumedProposal),
+    ownerConsumedReceiptDigest: computeDestinationOwnerProposalDigest(base.ownerConsumedProposal),
+    ownerConsumedTipDigest: computeDestinationOwnerTipDigest(base.ownerConsumedTip),
+    ownerConsumedTipReadbackDigest: canonicalDigest(base.ownerConsumedTip),
+    ownerConsumedValueDigest: computeDestinationOwnerValueDigest(base.ownerConsumedValue),
+    ownerConsumedValueReadbackDigest: canonicalDigest(base.ownerConsumedValue),
+    schemaVersion: "authority-history-genesis-selection-evidence/v1",
+    selectedAuthorityPathInstanceDigest: base.core.authorityPathInstanceDigest,
+    selectedAuthorityProposalReadbackDigest: canonicalDigest(base.proposal),
+    selectedAuthorityReceiptDigest: computeProposalReceiptDigest(base.proposal),
+    selectedAuthorityTipDigest: computeCurrentTipDigest(base.tip),
+    selectedAuthorityTipReadbackDigest: canonicalDigest(base.tip),
+    selectedAuthorityValueDigest: computePointerValueDigest(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      base.core.authorityPathInstanceDigest,
+      base.authorityValue,
+    ),
+    selectedAuthorityValueReadbackDigest: canonicalDigest(base.authorityValue),
+    selectionPostReceiptDigest: computeBootstrapGenesisPostSelectionDigest(base.post),
+    successorCoreDigest: base.genesisInput.successorCoreDigest,
+    useIntentDigest: computeBootstrapAnchorUseIntentDigest(base.intent),
+  };
+  return { ...base, evidence };
+}
+
+function validateSelection(f: ReturnType<typeof selectionFixture>) {
+  return validateGenesisSelectionEvidenceBinding(
+    f.evidence,
+    f.genesisInput,
+    f.history,
+    f.anchor,
+    f.intent,
+    f.core,
+    f.authorityValue,
+    f.proposal,
+    f.tip,
+    f.post,
+    f.anchorTip,
+    f.anchorValue,
+    f.anchorProposal,
+    f.anchorConsumedTip,
+    f.anchorConsumedValue,
+    f.anchorConsumedProposal,
+    f.ownerTip,
+    f.ownerValue,
+    f.ownerProposal,
+    f.ownerConsumedTip,
+    f.ownerConsumedValue,
+    f.ownerConsumedProposal,
+    f.receipt,
+  );
+}
+
 describe("bootstrap E0 core and post-selection", () => {
   test.each([
     ["genesis", fixture()],
@@ -1688,5 +1766,126 @@ describe("bootstrap anchor consumption", () => {
         f.ownerConsumedProposal,
       ),
     ).not.toThrow();
+  });
+});
+
+describe("authority-history genesis selection evidence", () => {
+  test.each([
+    [
+      "genesis",
+      selectionFixture(consumptionFixture(fixture())),
+      "3be26d312cb0cc5bf58aec2328c87b7d97fe326570a64bef35e668b0008393b3",
+    ],
+    [
+      "successor",
+      selectionFixture(consumptionFixture(successorFixture())),
+      "ca0b056776ed1c207803246e8555d728683c62dfa12b3d778b08ef3c2e07507e",
+    ],
+  ] as const)("accepts the complete %s-origin downstream composition", (_branch, f, golden) => {
+    expect(validateSelection(f)).toEqual([]);
+    expect(parseContract("authority-history-genesis-selection-evidence/v1", f.evidence).ok).toBe(
+      true,
+    );
+    expect(computeGenesisSelectionEvidenceDigest(f.evidence)).toBe(golden);
+    expect(f.evidence).not.toHaveProperty("path");
+    expect(f.evidence).not.toHaveProperty("mutationId");
+    expect(f.evidence).not.toHaveProperty("proposalReceiptDigest");
+  });
+
+  test("binds every evidence member to a recomputed selected record", () => {
+    const f = selectionFixture();
+    for (const field of Object.keys(f.evidence).filter((name) => name.endsWith("Digest")))
+      expect(
+        validateSelection({
+          ...f,
+          evidence: { ...f.evidence, [field]: d("0") },
+        }),
+      ).toContain(`${field}:mismatch`);
+    expect(
+      validateSelection({
+        ...f,
+        evidence: { ...f.evidence, bootstrapTransactionId: installationId },
+      }),
+    ).toContain("bootstrapTransactionId:mismatch");
+  });
+
+  test("rejects coordinated upstream, selected-E0, and consumed-graph substitutions", () => {
+    const f = selectionFixture();
+    const genesisInput = { ...f.genesisInput, useIntentDigest: d("2") };
+    const genesisBootstrapInputDigest = computeGenesisBootstrapInputDigest(genesisInput);
+    expect(
+      validateSelection({
+        ...f,
+        evidence: { ...f.evidence, genesisBootstrapInputDigest },
+        genesisInput,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "consumptionBinding:core.genesisBootstrapInputDigest:mismatch",
+        "genesisInput.useIntentDigest:mismatch",
+        "history.genesisBootstrapInputDigest:mismatch",
+      ]),
+    );
+
+    const authorityValue = { ...f.authorityValue, helperDigest: d("3") };
+    const selectedAuthorityValueDigest = computePointerValueDigest(
+      "STATE_MUTATION_AUTHORITY_ROTATION",
+      f.core.authorityPathInstanceDigest,
+      authorityValue,
+    );
+    expect(
+      validateSelection({
+        ...f,
+        authorityValue,
+        evidence: {
+          ...f.evidence,
+          selectedAuthorityValueDigest,
+          selectedAuthorityValueReadbackDigest: canonicalDigest(authorityValue),
+        },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "consumptionBinding:runtimePostBinding:core.authorityValueDigest:mismatch",
+        "core.authorityValueDigest:mismatch",
+      ]),
+    );
+
+    const ownerConsumedValue = { ...f.ownerConsumedValue, anchorTipDigest: d("4") };
+    const ownerConsumedValueDigest = computeDestinationOwnerValueDigest(ownerConsumedValue);
+    expect(
+      validateSelection({
+        ...f,
+        evidence: {
+          ...f.evidence,
+          ownerConsumedValueDigest,
+          ownerConsumedValueReadbackDigest: canonicalDigest(ownerConsumedValue),
+        },
+        ownerConsumedValue,
+      }),
+    ).not.toEqual([]);
+  });
+
+  test("is total for malformed and hostile nested inputs", () => {
+    const f = selectionFixture();
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("trap");
+        },
+      },
+    );
+    expect(() =>
+      validateSelection({ ...f, evidence: hostile as unknown as typeof f.evidence }),
+    ).not.toThrow();
+    expect(() =>
+      validateSelection({ ...f, genesisInput: hostile as unknown as typeof f.genesisInput }),
+    ).not.toThrow();
+    expect(() =>
+      validateSelection({ ...f, receipt: hostile as unknown as typeof f.receipt }),
+    ).not.toThrow();
+    expect(validateSelection({ ...f, evidence: null as unknown as typeof f.evidence })).not.toEqual(
+      [],
+    );
   });
 });
