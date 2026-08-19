@@ -23,6 +23,7 @@ import { pointerGraphSchemaFields, pointerGraphSchemaVersions, pointerKinds } fr
 import { packetSchemaFields, packetSchemaVersions } from "./packet.js";
 import { externalSchemaFields, externalSchemaVersions } from "./external.js";
 import { destinationOwnerSchemaFields, destinationOwnerSchemaVersions } from "./owner.js";
+import { successorReviewSchemaFields, successorReviewSchemaVersions } from "./successor.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -138,6 +139,31 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
     "state-mutation-destination-owner-teardown-archive/v1": Object.freeze({
       schemaVersion: "state-mutation-destination-owner-teardown-archive/v1",
       fields: destinationOwnerSchemaFields.archive,
+      closedValues: Object.freeze([]),
+    }),
+    "destination-owner-prior-installation/v1": Object.freeze({
+      schemaVersion: "destination-owner-prior-installation/v1",
+      fields: successorReviewSchemaFields.priorInstallation,
+      closedValues: Object.freeze([]),
+    }),
+    "destination-owner-successor-authority/v1": Object.freeze({
+      schemaVersion: "destination-owner-successor-authority/v1",
+      fields: successorReviewSchemaFields.successorAuthority,
+      closedValues: Object.freeze([]),
+    }),
+    "destination-owner-independent-review/v1": Object.freeze({
+      schemaVersion: "destination-owner-independent-review/v1",
+      fields: successorReviewSchemaFields.independentReview,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-destination-owner-successor-review-core/v1": Object.freeze({
+      schemaVersion: "state-mutation-destination-owner-successor-review-core/v1",
+      fields: successorReviewSchemaFields.reviewCore,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-destination-owner-successor-review-post-selection-receipt/v1": Object.freeze({
+      schemaVersion: "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
+      fields: successorReviewSchemaFields.postSelection,
       closedValues: Object.freeze([]),
     }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
@@ -371,6 +397,7 @@ export const schemaVersions = Object.freeze(
     ...packetSchemaVersions,
     ...externalSchemaVersions,
     ...destinationOwnerSchemaVersions,
+    ...successorReviewSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
