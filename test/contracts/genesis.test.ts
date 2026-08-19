@@ -1062,6 +1062,7 @@ function validateConsumption(f: ReturnType<typeof consumptionFixture>) {
     f.anchor,
     f.intent,
     f.core,
+    f.genesisInput,
     f.authorityValue,
     f.proposal,
     f.tip,
@@ -1601,6 +1602,49 @@ describe("bootstrap anchor consumption", () => {
     );
   });
 
+  test.each(["destinationOwnerActiveTipDigest", "reviewReceiptDigest", "globalIdentityDigest"])(
+    "binds a substituted use-intent %s through the selected Dgb",
+    (field) => {
+      const f = consumptionFixture();
+      const intent =
+        field === "destinationOwnerActiveTipDigest"
+          ? { ...f.intent, destinationOwnerActiveTipDigest: d("7") }
+          : field === "reviewReceiptDigest"
+            ? {
+                ...f.intent,
+                reviewedInstaller: {
+                  ...f.intent.reviewedInstaller,
+                  reviewReceiptDigest: d("7"),
+                },
+              }
+            : {
+                ...f.intent,
+                proposedGenesisInput: {
+                  ...f.intent.proposedGenesisInput,
+                  globalIdentityDigest: d("7"),
+                },
+              };
+      const useIntentDigest = computeBootstrapAnchorUseIntentDigest(intent);
+      expect(
+        validateConsumption({
+          ...f,
+          intent,
+          receipt: { ...f.receipt, useIntentDigest },
+        }),
+      ).toContain("genesisInput.useIntentDigest:mismatch");
+
+      const genesisInput = { ...f.genesisInput, useIntentDigest };
+      expect(
+        validateConsumption({
+          ...f,
+          genesisInput,
+          intent,
+          receipt: { ...f.receipt, useIntentDigest },
+        }),
+      ).toContain("core.genesisBootstrapInputDigest:mismatch");
+    },
+  );
+
   test("fails closed for malformed, future, extended, and hostile receipts", () => {
     const f = consumptionFixture();
     expect(parseBootstrapAnchorConsumptionReceipt({ ...f.receipt, extra: true }).ok).toBe(false);
@@ -1625,6 +1669,7 @@ describe("bootstrap anchor consumption", () => {
         f.anchor,
         f.intent,
         f.core,
+        f.genesisInput,
         f.authorityValue,
         f.proposal,
         f.tip,

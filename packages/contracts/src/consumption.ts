@@ -9,7 +9,11 @@ import {
   parseBootstrapAnchorTip,
   validateBootstrapAnchorMutationBinding,
 } from "./anchor.js";
-import { parseStateMutationAuthorityValue } from "./authority.js";
+import {
+  computeGenesisBootstrapInputDigest,
+  parseGenesisBootstrapInput,
+  parseStateMutationAuthorityValue,
+} from "./authority.js";
 import { externalAuthorityPaths } from "./external.js";
 import {
   computeBootstrapGenesisCoreDigest,
@@ -172,6 +176,7 @@ export function validateBootstrapAnchorConsumptionBinding(
   anchorInput: unknown,
   useIntentInput: unknown,
   genesisCoreInput: unknown,
+  genesisBootstrapInput: unknown,
   authorityValueInput: unknown,
   runtimeProposalInput: unknown,
   runtimeTipInput: unknown,
@@ -193,6 +198,7 @@ export function validateBootstrapAnchorConsumptionBinding(
   const anchor = parseBootstrapAnchor(anchorInput);
   const intent = parseBootstrapAnchorUseIntent(useIntentInput);
   const core = parseBootstrapGenesisCore(genesisCoreInput);
+  const genesisInput = parseGenesisBootstrapInput(genesisBootstrapInput);
   const authority = parseStateMutationAuthorityValue(authorityValueInput);
   const runtimeProposal = parsePointerProposal(runtimeProposalInput);
   const runtimeTip = parsePointerCurrentTip(runtimeTipInput);
@@ -214,6 +220,7 @@ export function validateBootstrapAnchorConsumptionBinding(
     ["anchor", anchor],
     ["intent", intent],
     ["core", core],
+    ["genesisInput", genesisInput],
     ["authority", authority],
     ["runtimeProposal", runtimeProposal],
     ["runtimeTip", runtimeTip],
@@ -237,6 +244,7 @@ export function validateBootstrapAnchorConsumptionBinding(
     !anchor.ok ||
     !intent.ok ||
     !core.ok ||
+    !genesisInput.ok ||
     !authority.ok ||
     !runtimeProposal.ok ||
     !runtimeTip.ok ||
@@ -260,6 +268,7 @@ export function validateBootstrapAnchorConsumptionBinding(
   const a = anchor.value;
   const i = intent.value;
   const c = core.value;
+  const gb = genesisInput.value;
   const av = authority.value;
   const rp = runtimeProposal.value;
   const rt = runtimeTip.value;
@@ -284,6 +293,7 @@ export function validateBootstrapAnchorConsumptionBinding(
     return Object.freeze(["anchor:globalBootstrapIdentityDigest:mismatch"]);
   }
   const coreDigest = computeBootstrapGenesisCoreDigest(c);
+  const genesisInputDigest = computeGenesisBootstrapInputDigest(gb);
   const authorityDp = String(c.authorityPathInstanceDigest);
   const authorityDv = computePointerValueDigest(
     "STATE_MUTATION_AUTHORITY_ROTATION",
@@ -337,6 +347,48 @@ export function validateBootstrapAnchorConsumptionBinding(
     ["intent.destinationDigest", i.destinationDigest, a.destinationDigest],
     ["intent.destinationStateRootDigest", i.destinationStateRootDigest, a.stateRootDigest],
     ["intent.custodyInstanceDigest", i.custodyInstanceDigest, a.custodyInstanceDigest],
+    ["core.genesisBootstrapInputDigest", c.genesisBootstrapInputDigest, genesisInputDigest],
+    ["genesisInput.destinationDigest", gb.destinationDigest, a.destinationDigest],
+    [
+      "genesisInput.destinationOwnerActiveTipDigest",
+      gb.destinationOwnerActiveTipDigest,
+      ownerActiveTipDigest,
+    ],
+    [
+      "genesisInput.destinationOwnerActiveValueDigest",
+      gb.destinationOwnerActiveValueDigest,
+      ownerActiveValueDigest,
+    ],
+    [
+      "genesisInput.destinationOwnerActiveReceiptDigest",
+      gb.destinationOwnerActiveReceiptDigest,
+      ownerActiveReceiptDigest,
+    ],
+    ["genesisInput.bootstrapAnchorDigest", gb.bootstrapAnchorDigest, anchorDigest],
+    [
+      "genesisInput.bootstrapAnchorActiveTipDigest",
+      gb.bootstrapAnchorActiveTipDigest,
+      anchorActiveTipDigest,
+    ],
+    [
+      "genesisInput.bootstrapAnchorActiveValueDigest",
+      gb.bootstrapAnchorActiveValueDigest,
+      anchorActiveValueDigest,
+    ],
+    [
+      "genesisInput.bootstrapAnchorActiveReceiptDigest",
+      gb.bootstrapAnchorActiveReceiptDigest,
+      anchorActiveReceiptDigest,
+    ],
+    ["genesisInput.useIntentDigest", gb.useIntentDigest, useIntentDigest],
+    [
+      "genesisInput.globalBootstrapIdentityDigest",
+      gb.globalBootstrapIdentityDigest,
+      a.globalBootstrapIdentityDigest,
+    ],
+    ["genesisInput.bootstrapTransactionId", gb.bootstrapTransactionId, a.bootstrapTransactionId],
+    ["genesisInput.bootstrapGrantDigest", gb.bootstrapGrantDigest, a.bootstrapGrantDigest],
+    ["genesisInput.successorCoreDigest", gb.successorCoreDigest, c.successorCoreDigest],
     ["core.anchorDigest", c.anchorDigest, anchorDigest],
     ["core.bootstrapTransactionId", c.bootstrapTransactionId, a.bootstrapTransactionId],
     ["core.destinationDigest", c.destinationDigest, a.destinationDigest],
