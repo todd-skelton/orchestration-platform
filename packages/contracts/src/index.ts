@@ -12,6 +12,7 @@ import { parseCommitContract } from "./commit.js";
 import { parseDispatchContract } from "./dispatch.js";
 import { parseEvidenceContract } from "./evidence.js";
 import { parseExternalContract } from "./external.js";
+import { parseDestinationOwnerContract } from "./owner.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
@@ -22,6 +23,7 @@ export * from "./dispatch.js";
 export * from "./evidence.js";
 export * from "./packet.js";
 export * from "./external.js";
+export * from "./owner.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
 export * from "./vocabulary.js";
@@ -66,6 +68,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (evidence) return evidence;
   const external = parseExternalContract(expectedSchemaVersion, input);
   if (external) return external;
+  const owner = parseDestinationOwnerContract(expectedSchemaVersion, input);
+  if (owner) return owner;
   const packet = parsePacketContract(expectedSchemaVersion, input);
   if (packet) return packet;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);

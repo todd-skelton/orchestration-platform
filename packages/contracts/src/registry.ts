@@ -22,6 +22,7 @@ import {
 import { pointerGraphSchemaFields, pointerGraphSchemaVersions, pointerKinds } from "./pointer.js";
 import { packetSchemaFields, packetSchemaVersions } from "./packet.js";
 import { externalSchemaFields, externalSchemaVersions } from "./external.js";
+import { destinationOwnerSchemaFields, destinationOwnerSchemaVersions } from "./owner.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -103,6 +104,41 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "external-destination-absence-observation/v1",
       fields: externalSchemaFields.absenceObservation,
       closedValues: Object.freeze(["RUNTIME_AUTHORITY_ABSENT", "DESTINATION_STATE_ROOT_ABSENT"]),
+    }),
+    "state-mutation-destination-owner-value/v1": Object.freeze({
+      schemaVersion: "state-mutation-destination-owner-value/v1",
+      fields: destinationOwnerSchemaFields.value,
+      closedValues: Object.freeze(["ACTIVE", "CONSUMED", "RETIRED"]),
+    }),
+    "state-mutation-destination-owner-cas-proposal/v1": Object.freeze({
+      schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
+      fields: destinationOwnerSchemaFields.proposal,
+      closedValues: Object.freeze([
+        "BOOTSTRAP_GENESIS",
+        "ANCHOR_CONSUMED",
+        "ANCHOR_RETIRED",
+        "SUCCESSOR_REVIEW",
+        "ACTIVATE_GENESIS",
+        "CONSUME",
+        "RETIRE_UNUSED",
+        "RETIRE_CONSUMED",
+        "ACTIVATE_SUCCESSOR",
+      ]),
+    }),
+    "state-mutation-destination-owner-current-tip/v1": Object.freeze({
+      schemaVersion: "state-mutation-destination-owner-current-tip/v1",
+      fields: destinationOwnerSchemaFields.tip,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-destination-owner-conflict-receipt/v1": Object.freeze({
+      schemaVersion: "state-mutation-destination-owner-conflict-receipt/v1",
+      fields: destinationOwnerSchemaFields.conflict,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-destination-owner-teardown-archive/v1": Object.freeze({
+      schemaVersion: "state-mutation-destination-owner-teardown-archive/v1",
+      fields: destinationOwnerSchemaFields.archive,
+      closedValues: Object.freeze([]),
     }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
       schemaVersion: "reviewed-authority-operation/v1",
@@ -334,6 +370,7 @@ export const schemaVersions = Object.freeze(
     ...evidenceSchemaVersions,
     ...packetSchemaVersions,
     ...externalSchemaVersions,
+    ...destinationOwnerSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
