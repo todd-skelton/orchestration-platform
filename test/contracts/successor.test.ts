@@ -318,6 +318,48 @@ describe("destination-owner successor review", () => {
         { ...f.reviewExpected, reviewReceiptDigest: d("f") },
       ),
     ).not.toEqual([]);
+    expect(
+      validateDestinationOwnerSuccessorReviewCoreBinding(
+        f.core,
+        f.retiredSelection.tip,
+        f.retiredSelection.value,
+        f.retiredSelection.proposal,
+        f.archive,
+        { ...f.reviewExpected, candidateDigest: d("f") },
+      ),
+    ).toContain("expected.candidateDigest:mismatch");
+
+    const rebuiltPriorProposal = {
+      ...f.retiredSelection.proposal,
+      proposedAt: "2026-08-18T12:00:01.000Z",
+    };
+    const rebuiltPriorProposalDigest = computeDestinationOwnerProposalDigest(rebuiltPriorProposal);
+    const rebuiltPriorTip = {
+      ...f.retiredSelection.tip,
+      proposalReceiptDigest: rebuiltPriorProposalDigest,
+    };
+    const rebuiltCoreBase = {
+      ...f.core,
+      priorRetiredReceiptDigest: rebuiltPriorProposalDigest,
+      priorRetiredTipDigest: computeDestinationOwnerTipDigest(rebuiltPriorTip),
+    };
+    const rebuiltCore = {
+      ...rebuiltCoreBase,
+      independentReview: {
+        ...f.core.independentReview,
+        candidateDigest: computeDestinationOwnerSuccessorReviewCandidateDigest(rebuiltCoreBase),
+      },
+    };
+    expect(
+      validateDestinationOwnerSuccessorReviewCoreBinding(
+        rebuiltCore,
+        rebuiltPriorTip,
+        f.retiredSelection.value,
+        rebuiltPriorProposal,
+        f.archive,
+        f.reviewExpected,
+      ),
+    ).toContain("expected.candidateDigest:mismatch");
   });
 
   test("binds downstream selection without feeding it into the review core", () => {
