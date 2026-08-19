@@ -25,6 +25,7 @@ import { externalSchemaFields, externalSchemaVersions } from "./external.js";
 import { destinationOwnerSchemaFields, destinationOwnerSchemaVersions } from "./owner.js";
 import { successorReviewSchemaFields, successorReviewSchemaVersions } from "./successor.js";
 import { bootstrapAnchorSchemaFields, bootstrapAnchorSchemaVersions } from "./anchor.js";
+import { bootstrapUseIntentSchemaFields, bootstrapUseIntentSchemaVersions } from "./intent.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -198,6 +199,26 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
     "state-mutation-bootstrap-anchor-conflict-receipt/v1": Object.freeze({
       schemaVersion: "state-mutation-bootstrap-anchor-conflict-receipt/v1",
       fields: bootstrapAnchorSchemaFields.conflict,
+      closedValues: Object.freeze([]),
+    }),
+    "bootstrap-proposed-genesis-input/v1": Object.freeze({
+      schemaVersion: "bootstrap-proposed-genesis-input/v1",
+      fields: bootstrapUseIntentSchemaFields.proposedGenesis,
+      closedValues: Object.freeze([]),
+    }),
+    "bootstrap-reviewed-installer/v1": Object.freeze({
+      schemaVersion: "bootstrap-reviewed-installer/v1",
+      fields: bootstrapUseIntentSchemaFields.reviewedInstaller,
+      closedValues: Object.freeze([]),
+    }),
+    "bootstrap-reviewed-helper/v1": Object.freeze({
+      schemaVersion: "bootstrap-reviewed-helper/v1",
+      fields: bootstrapUseIntentSchemaFields.reviewedHelper,
+      closedValues: Object.freeze([]),
+    }),
+    "state-mutation-bootstrap-anchor-use-intent/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-use-intent/v1",
+      fields: bootstrapUseIntentSchemaFields.useIntent,
       closedValues: Object.freeze([]),
     }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
@@ -433,6 +454,7 @@ export const schemaVersions = Object.freeze(
     ...destinationOwnerSchemaVersions,
     ...successorReviewSchemaVersions,
     ...bootstrapAnchorSchemaVersions,
+    ...bootstrapUseIntentSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
