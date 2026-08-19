@@ -61,8 +61,10 @@ import {
   computePointerPositionDigest,
   computePointerValueDigest,
   computeProposalReceiptDigest,
+  parseActiveReleaseValue,
   parsePointerCurrentTip,
   parsePointerProposal,
+  pointerPath,
   stateMutationAuthorityPath,
 } from "./pointer.js";
 import {
@@ -106,12 +108,6 @@ const postFields = Object.freeze([
   "tipReadbackDigest",
   "valueDigest",
   "valueReadbackDigest",
-] as const);
-const coreExpectationFields = Object.freeze([
-  "activeReleasePathInstanceDigest",
-  "activeReleaseReceiptDigest",
-  "activeReleaseTipDigest",
-  "activeReleaseValueDigest",
 ] as const);
 const postExpectationFields = Object.freeze([
   "anchorDigest",
@@ -211,6 +207,19 @@ function authorityIdentity(anchor: ContractRecord) {
   };
 }
 
+function activeReleaseIdentity(anchor: ContractRecord) {
+  return {
+    pointerKind: "ACTIVE_RELEASE" as const,
+    canonicalPointerPath: pointerPath("ACTIVE_RELEASE"),
+    installationId: String(anchor.installationId),
+    projectId: String(anchor.projectId),
+    stateRootDigest: String(anchor.stateRootDigest),
+    transactionId: String(anchor.installationId),
+    sourceToken: "none",
+    positionEvidence: { mode: "VALUE", parts: {} },
+  };
+}
+
 export function validateBootstrapGenesisCoreBinding(
   coreInput: unknown,
   anchorInput: unknown,
@@ -226,6 +235,9 @@ export function validateBootstrapGenesisCoreBinding(
   reviewedOperationInput: unknown,
   successorCoreInput: unknown,
   authorityValueInput: unknown,
+  activeReleaseValueInput: unknown,
+  activeReleaseProposalInput: unknown,
+  activeReleaseTipInput: unknown,
   globalIdentityInput: unknown,
   priorOwnerTipInput: unknown,
   priorOwnerValueInput: unknown,
@@ -240,7 +252,6 @@ export function validateBootstrapGenesisCoreBinding(
   absenceInput: unknown,
   intentExpectedInput: unknown,
   absenceExpectedInput: unknown,
-  expectedInput: unknown,
 ): readonly string[] {
   const core = parseBootstrapGenesisCore(coreInput);
   const anchor = parseBootstrapAnchor(anchorInput);
@@ -256,11 +267,13 @@ export function validateBootstrapGenesisCoreBinding(
   const operation = parseReviewedAuthorityOperation(reviewedOperationInput);
   const successor = parseSuccessorAuthorityCore(successorCoreInput);
   const authorityValue = parseStateMutationAuthorityValue(authorityValueInput);
+  const activeReleaseValue = parseActiveReleaseValue(activeReleaseValueInput);
+  const activeReleaseProposal = parsePointerProposal(activeReleaseProposalInput);
+  const activeReleaseTip = parsePointerCurrentTip(activeReleaseTipInput);
   const globalIdentity = parseStateMutationGlobalIdentity(globalIdentityInput);
   const identity = parsePhysicalDestinationIdentity(physicalIdentityInput);
   const observation = parsePhysicalLocatorObservation(locatorObservationInput);
   const absence = parseExternalDestinationAbsenceObservation(absenceInput);
-  const expected = snapshotClosedRecord(expectedInput, coreExpectationFields);
   const intentExpected = snapshotClosedRecord(
     intentExpectedInput,
     bootstrapUseIntentExpectationFields,
@@ -280,11 +293,13 @@ export function validateBootstrapGenesisCoreBinding(
     ...prefixed("reviewedOperation", operation),
     ...prefixed("successorCore", successor),
     ...prefixed("authorityValue", authorityValue),
+    ...prefixed("activeReleaseValue", activeReleaseValue),
+    ...prefixed("activeReleaseProposal", activeReleaseProposal),
+    ...prefixed("activeReleaseTip", activeReleaseTip),
     ...prefixed("globalIdentity", globalIdentity),
     ...prefixed("identity", identity),
     ...prefixed("observation", observation),
     ...prefixed("absence", absence),
-    ...(expected.ok ? [] : expected.issues.map((issue) => `expected:${issue}`)),
     ...(intentExpected.ok ? [] : intentExpected.issues.map((issue) => `intentExpected:${issue}`)),
   ];
   if (
@@ -302,16 +317,16 @@ export function validateBootstrapGenesisCoreBinding(
     !operation.ok ||
     !successor.ok ||
     !authorityValue.ok ||
+    !activeReleaseValue.ok ||
+    !activeReleaseProposal.ok ||
+    !activeReleaseTip.ok ||
     !globalIdentity.ok ||
     !identity.ok ||
     !observation.ok ||
     !absence.ok ||
-    !expected.ok ||
     !intentExpected.ok
   )
     return Object.freeze([...new Set(issues)].sort());
-  for (const field of coreExpectationFields)
-    if (!isSha256(expected.value[field])) issues.push(`expected:${field}:invalid`);
   if (issues.length > 0) return Object.freeze([...new Set(issues)].sort());
 
   const c = core.value;
@@ -328,6 +343,9 @@ export function validateBootstrapGenesisCoreBinding(
   const operationRecord = operation.value;
   const sc = successor.value;
   const authority = authorityValue.value;
+  const activeValue = activeReleaseValue.value;
+  const activeProposal = activeReleaseProposal.value;
+  const activeTip = activeReleaseTip.value;
   const global = globalIdentity.value;
   const missing = absence.value;
   const proposed = i.proposedGenesisInput as ContractRecord;
@@ -354,6 +372,23 @@ export function validateBootstrapGenesisCoreBinding(
   const genesisBootstrapInputDigest = computeGenesisBootstrapInputDigest(gb);
   const historyRecordDigest = computeAuthorityHistoryRecordDigest(h);
   const dp = computePointerInstanceDigest(authorityIdentity(a));
+  const activeIdentity = activeReleaseIdentity(a);
+  const activeDp = computePointerInstanceDigest(activeIdentity);
+  const activePositionDigest = computePointerPositionDigest("ACTIVE_RELEASE", {
+    mode: "VALUE",
+    parts: {},
+  });
+  const activeDv = computePointerValueDigest("ACTIVE_RELEASE", activeDp, activeValue);
+  const activeMutationId = computeMutationId({
+    ...activeIdentity,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    priorReceiptDigest: null,
+    successorValueDigest: activeDv,
+    outcome: "SELECT",
+  });
+  const activeDr = computeProposalReceiptDigest(activeProposal);
+  const activeDt = computeCurrentTipDigest(activeTip);
   const genesisPositionDigest = computePointerPositionDigest("STATE_MUTATION_AUTHORITY_ROTATION", {
     mode: "VALUE",
     parts: {},
@@ -636,22 +671,68 @@ export function validateBootstrapGenesisCoreBinding(
     [
       "authority.activeReleasePathInstanceDigest",
       authority.activeReleasePathInstanceDigest,
-      expected.value.activeReleasePathInstanceDigest,
+      activeDp,
+    ],
+    ["authority.activeReleaseTipDigest", authority.activeReleaseTipDigest, activeDt],
+    ["authority.activeReleaseValueDigest", authority.activeReleaseValueDigest, activeDv],
+    ["authority.activeReleaseReceiptDigest", authority.activeReleaseReceiptDigest, activeDr],
+    ["activeReleaseProposal.pathInstanceDigest", activeProposal.pathInstanceDigest, activeDp],
+    ["activeReleaseProposal.successorValueDigest", activeProposal.successorValueDigest, activeDv],
+    ["activeReleaseProposal.positionDigest", activeProposal.positionDigest, activePositionDigest],
+    ["activeReleaseProposal.mutationId", activeProposal.mutationId, activeMutationId],
+    ["activeReleaseProposal.producerDigest", activeProposal.producerDigest, successorCoreDigest],
+    ["activeReleaseTip.pathInstanceDigest", activeTip.pathInstanceDigest, activeDp],
+    ["activeReleaseTip.valueDigest", activeTip.valueDigest, activeDv],
+    ["activeReleaseTip.proposalReceiptDigest", activeTip.proposalReceiptDigest, activeDr],
+    [
+      "activeReleaseValue.releaseDigest",
+      activeValue.releaseDigest,
+      operationRecord.releaseSubjectDigest,
     ],
     [
-      "authority.activeReleaseTipDigest",
-      authority.activeReleaseTipDigest,
-      expected.value.activeReleaseTipDigest,
+      "activeReleaseValue.releaseSubjectDigest",
+      activeValue.releaseSubjectDigest,
+      operationRecord.releaseSubjectDigest,
     ],
     [
-      "authority.activeReleaseValueDigest",
-      authority.activeReleaseValueDigest,
-      expected.value.activeReleaseValueDigest,
+      "activeReleaseValue.releaseManifestDigest",
+      activeValue.releaseManifestDigest,
+      operationRecord.releaseManifestDigest,
     ],
     [
-      "authority.activeReleaseReceiptDigest",
-      authority.activeReleaseReceiptDigest,
-      expected.value.activeReleaseReceiptDigest,
+      "activeReleaseValue.installedBytesDigest",
+      activeValue.installedBytesDigest,
+      operationRecord.installedBytesDigest,
+    ],
+    [
+      "activeReleaseValue.independentReviewReceiptDigest",
+      activeValue.independentReviewReceiptDigest,
+      operationRecord.independentReviewReceiptDigest,
+    ],
+    [
+      "activeReleaseValue.reviewedInstallerDigest",
+      activeValue.reviewedInstallerDigest,
+      operationRecord.reviewedInstallerDigest,
+    ],
+    [
+      "activeReleaseValue.releaseSubjectDigest:successorCore",
+      activeValue.releaseSubjectDigest,
+      sc.reviewedReleaseSubjectDigest,
+    ],
+    [
+      "activeReleaseValue.releaseManifestDigest:successorCore",
+      activeValue.releaseManifestDigest,
+      sc.reviewedReleaseManifestDigest,
+    ],
+    [
+      "activeReleaseValue.installedBytesDigest:successorCore",
+      activeValue.installedBytesDigest,
+      sc.reviewedInstalledBytesDigest,
+    ],
+    [
+      "activeReleaseValue.independentReviewReceiptDigest:successorCore",
+      activeValue.independentReviewReceiptDigest,
+      sc.independentReviewReceiptDigest,
     ],
     ["absence.destinationDigest", missing.destinationDigest, a.destinationDigest],
     ["absence.stateRootDigest", missing.stateRootDigest, a.stateRootDigest],
@@ -666,6 +747,21 @@ export function validateBootstrapGenesisCoreBinding(
   ] as const)
     if (actual !== selected) issues.push(`${field}:mismatch`);
 
+  if (
+    activeProposal.pointerKind !== "ACTIVE_RELEASE" ||
+    activeProposal.producerKind !== "REVIEWED_BOOTSTRAP_GENESIS" ||
+    activeProposal.intent !== "VALUE_PROPOSED" ||
+    activeProposal.outcome !== "SELECT" ||
+    activeProposal.priorTipDigest !== null ||
+    activeProposal.priorValueDigest !== null ||
+    activeProposal.priorReceiptDigest !== null ||
+    activeProposal.authorityEpochTipDigest !== null ||
+    activeProposal.authorityEpochValueDigest !== null ||
+    activeProposal.authorityEpochReceiptDigest !== null
+  )
+    issues.push("activeReleaseProposal:not-reviewed-bootstrap-genesis");
+  if (activeTip.pointerKind !== "ACTIVE_RELEASE")
+    issues.push("activeReleaseTip:pointer-kind-mismatch");
   if (av.lifecycle !== "ACTIVE") issues.push("anchorValue:lifecycle-not-active");
   if (ov.lifecycle !== "ACTIVE") issues.push("ownerValue:lifecycle-not-active");
   if (missing.reason !== "RUNTIME_AUTHORITY_ABSENT")

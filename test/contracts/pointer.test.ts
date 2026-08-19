@@ -6,6 +6,7 @@ import {
   computePointerInstanceDigestFromCanonicalPath,
   computePointerValueDigest,
   computeProposalReceiptDigest,
+  parseActiveReleaseValue,
   parseContract,
   parsePointerTombstoneValue,
   pointerStoragePaths,
@@ -272,7 +273,15 @@ describe("eleven-kind pointer registry", () => {
 });
 
 describe("acyclic pointer graph", () => {
-  const value = Object.freeze({ schemaVersion: "active-release/v1", releaseDigest: d("a") });
+  const value = Object.freeze({
+    independentReviewReceiptDigest: d("1"),
+    installedBytesDigest: d("2"),
+    releaseDigest: d("a"),
+    releaseManifestDigest: d("3"),
+    releaseSubjectDigest: d("a"),
+    reviewedInstallerDigest: d("4"),
+    schemaVersion: "active-release/v1",
+  });
   const identity = Object.freeze({
     pointerKind: "ACTIVE_RELEASE" as const,
     canonicalPointerPath: "installation/active-release.json",
@@ -314,6 +323,8 @@ describe("acyclic pointer graph", () => {
   });
 
   test("is deterministic and distinguishes a same-mutation byte conflict", () => {
+    expect(parseActiveReleaseValue(value).ok).toBe(true);
+    expect(parseContract("active-release/v1", value).ok).toBe(true);
     expect(
       computePointerValueDigest("ACTIVE_RELEASE", pathInstanceDigest, structuredClone(value)),
     ).toBe(valueDigest);
@@ -324,6 +335,23 @@ describe("acyclic pointer graph", () => {
     );
     expect(proposal).not.toHaveProperty("tipDigest");
     expect(value).not.toHaveProperty("proposalReceiptDigest");
+  });
+  test("admits reviewed-bootstrap genesis only for initial active release or authority", () => {
+    const bootstrap = {
+      ...proposal,
+      authorityEpochReceiptDigest: null,
+      authorityEpochTipDigest: null,
+      authorityEpochValueDigest: null,
+      producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
+    };
+    expect(() => computeProposalReceiptDigest(bootstrap)).not.toThrow();
+    expect(() =>
+      computeProposalReceiptDigest({ ...bootstrap, pointerKind: "ACTIVATION_CLEANUP_GATE" }),
+    ).toThrow("producerKind:bootstrap-selection-mismatch");
+    expect(() => computeProposalReceiptDigest({ ...bootstrap, priorTipDigest: d("5") })).toThrow();
+    expect(() =>
+      computeProposalReceiptDigest({ ...bootstrap, authorityEpochTipDigest: d("6") }),
+    ).toThrow("producerKind:epoch-mismatch");
   });
   test("classifies only exact selected evidence and returns UNKNOWN for malformed evidence", () => {
     const selected = {

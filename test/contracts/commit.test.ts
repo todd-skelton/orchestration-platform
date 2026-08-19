@@ -550,7 +550,15 @@ function ordinaryCommitEvidence(
   } = null;
   let selectedTargetTipDigest: string | null = null;
   if (outcome === "SELECTED") {
-    const value = { releaseDigest: d("8"), schemaVersion: "active-release/v1" };
+    const value = {
+      independentReviewReceiptDigest: d("1"),
+      installedBytesDigest: d("2"),
+      releaseDigest: d("8"),
+      releaseManifestDigest: d("3"),
+      releaseSubjectDigest: d("8"),
+      reviewedInstallerDigest: d("4"),
+      schemaVersion: "active-release/v1",
+    };
     const valueDigest = computePointerValueDigest(
       targetPointerKind,
       targetPathInstanceDigest,
@@ -1638,7 +1646,7 @@ describe("single-epoch commit journal atoms", () => {
     });
     expect(parseOrdinaryCommitEvidence(retry).ok).toBe(true);
     expect(computeCommitEvidenceDigest(retry)).toBe(
-      "99579f5627884e1a68e071e1b9f2faa181199e08532acd8d2bd7a3d39390e58c",
+      "368bc9a7ee46db49886754551fd019abe74939f74c20b61a6e415ab01059fe35",
     );
     expect(
       validateCommitResolutionBinding(retry.ordinaryResolution, {
@@ -1836,8 +1844,8 @@ describe("single-epoch commit journal atoms", () => {
       computeCommitEvidenceDigest(rotationCommitEvidence("UNKNOWN")),
     ];
     expect(digests).toEqual([
-      "a6b50df49cb2820fa02c823414f40c0c16dafffea4b9e3090ec5130ee934cca2",
-      "2a26184b20db7bb752983471925e5e06267852b7c5439405ef7c9dc96abc7554",
+      "64d3afdfae907ade4d98e69920c47f3e08c1b0b09b7e0c221178d91b1f8d14d9",
+      "9564f9359f91b69fc7703cd59db6224dc7c7c513533ac7efbdc54a3c95ab0e38",
       "80777a7bbec4948569dd14c925b1198a700d0ab80503fb8e9c18b1b0a499c879",
       "e4d29c239382342babf889e21c29a2afcd396f3340f2a738d8d815d51db82a01",
       "a4b7fed5d58ad81e5ac005fda69c5eff8a975b3649e3419b32ad0dd184ca4c27",

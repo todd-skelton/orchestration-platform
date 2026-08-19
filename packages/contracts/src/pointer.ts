@@ -566,13 +566,24 @@ const tombstoneFields = Object.freeze([
   "terminalProofDigest",
   "tombstonedAt",
 ] as const);
+const activeReleaseFields = Object.freeze([
+  "independentReviewReceiptDigest",
+  "installedBytesDigest",
+  "releaseDigest",
+  "releaseManifestDigest",
+  "releaseSubjectDigest",
+  "reviewedInstallerDigest",
+  "schemaVersion",
+] as const);
 export const pointerGraphSchemaFields = Object.freeze({
+  activeRelease: activeReleaseFields,
   currentTip: currentTipFields,
   proposal: Object.freeze(proposalFields),
   conflict: conflictFields,
   tombstone: tombstoneFields,
 });
 export const pointerGraphSchemaVersions = Object.freeze([
+  "active-release/v1",
   "pointer-cas-proposal-receipt/v1",
   "pointer-conflict-receipt/v1",
   "pointer-current-tip/v1",
@@ -581,6 +592,23 @@ export const pointerGraphSchemaVersions = Object.freeze([
 
 function pointerParseFailure(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+export function parseActiveReleaseValue(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, activeReleaseFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  for (const field of activeReleaseFields.filter((field) => field.endsWith("Digest")))
+    if (!isSha256(record[field])) issues.push(`${field}:invalid`);
+  if (record.schemaVersion !== "active-release/v1") issues.push("schemaVersion:mismatch");
+  if (
+    isSha256(record.releaseDigest) &&
+    isSha256(record.releaseSubjectDigest) &&
+    record.releaseDigest !== record.releaseSubjectDigest
+  )
+    issues.push("releaseDigest:subject-mismatch");
+  return issues.length === 0 ? parsed : pointerParseFailure(...issues);
 }
 
 function storageDigest(value: string, name: string): string {
@@ -669,7 +697,9 @@ function requireProposal(input: unknown): ContractRecord {
     throw new TypeError("producerKind:epoch-mismatch");
   if (
     bootstrap &&
-    (record.pointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION" ||
+    (!(["ACTIVE_RELEASE", "STATE_MUTATION_AUTHORITY_ROTATION"] as const).includes(
+      record.pointerKind as "ACTIVE_RELEASE" | "STATE_MUTATION_AUTHORITY_ROTATION",
+    ) ||
       record.intent !== "VALUE_PROPOSED" ||
       record.outcome !== "SELECT" ||
       !prior.every((item) => item === null))
@@ -807,6 +837,8 @@ export function parsePointerGraphContract(
   input: unknown,
 ): ParseResult | undefined {
   switch (expectedSchemaVersion) {
+    case "active-release/v1":
+      return parseActiveReleaseValue(input);
     case "pointer-cas-proposal-receipt/v1":
       return parsePointerProposal(input);
     case "pointer-conflict-receipt/v1":
@@ -944,4 +976,4 @@ export function validatePointerRegistry(): readonly string[] {
   return Object.freeze(issues);
 }
 
-export const pointerGraphFields = Object.freeze({ proposalFields });
+export const pointerGraphFields = Object.freeze({ activeReleaseFields, proposalFields });

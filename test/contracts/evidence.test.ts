@@ -40,7 +40,15 @@ const unknownEvidence = Object.freeze({
 
 function conflictEvidence() {
   const targetPathInstanceDigest = d("7");
-  const winnerValue = { releaseDigest: d("8"), schemaVersion: "active-release/v1" };
+  const winnerValue = {
+    independentReviewReceiptDigest: d("1"),
+    installedBytesDigest: d("2"),
+    releaseDigest: d("8"),
+    releaseManifestDigest: d("3"),
+    releaseSubjectDigest: d("8"),
+    reviewedInstallerDigest: d("4"),
+    schemaVersion: "active-release/v1",
+  };
   const winnerValueDigest = computePointerValueDigest(
     "ACTIVE_RELEASE",
     targetPathInstanceDigest,
@@ -73,7 +81,11 @@ function conflictEvidence() {
     schemaVersion: "pointer-current-tip/v1",
     valueDigest: winnerValueDigest,
   };
-  const losingValue = { releaseDigest: d("0"), schemaVersion: "active-release/v1" };
+  const losingValue = {
+    ...winnerValue,
+    releaseDigest: d("0"),
+    releaseSubjectDigest: d("0"),
+  };
   const losingValueDigest = computePointerValueDigest(
     "ACTIVE_RELEASE",
     targetPathInstanceDigest,
@@ -190,7 +202,7 @@ describe("closed conflict composition and evidence slot", () => {
     expect(parsePointerMutationConflictEvidence(evidence).ok).toBe(true);
     expect(parseContract("pointer-mutation-conflict-evidence/v1", evidence).ok).toBe(true);
     expect(computePointerMutationConflictEvidenceDigest(evidence)).toBe(
-      "ceda5d3beffcab20869d91abfc27329a6989a7e221762b4106c8990c9e4c02a3",
+      "dea3b2e7f00287ea3558c9bdd6ac44fdb88add89fcc48419364770972b1d47ce",
     );
     expect(
       parsePointerMutationConflictEvidence({

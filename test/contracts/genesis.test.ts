@@ -37,7 +37,10 @@ import {
   computeCurrentTipDigest,
   parseBootstrapGenesisCore,
   parseBootstrapGenesisPostSelection,
+  parseActiveReleaseValue,
   parseContract,
+  pointerGraphSchemaFields,
+  pointerRootPaths,
   stateMutationAuthorityPath,
   validateBootstrapGenesisCoreBinding,
   validateBootstrapGenesisPostSelectionBinding,
@@ -373,17 +376,76 @@ function fixture(
     successorCoreDigest,
   };
   const historyRecordDigest = computeAuthorityHistoryRecordDigest(history);
-  const coreExpected = {
-    activeReleasePathInstanceDigest: d("2"),
-    activeReleaseReceiptDigest: d("3"),
-    activeReleaseTipDigest: d("4"),
-    activeReleaseValueDigest: d("5"),
+  const activeReleaseIdentity = {
+    pointerKind: "ACTIVE_RELEASE" as const,
+    canonicalPointerPath: "installation/active-release.json",
+    installationId,
+    projectId,
+    stateRootDigest: anchor.stateRootDigest,
+    transactionId: installationId,
+    sourceToken: "none",
+    positionEvidence: { mode: "VALUE", parts: {} },
   };
+  const activeReleaseValue = {
+    independentReviewReceiptDigest: operation.independentReviewReceiptDigest,
+    installedBytesDigest: operation.installedBytesDigest,
+    releaseDigest: operation.releaseSubjectDigest,
+    releaseManifestDigest: operation.releaseManifestDigest,
+    releaseSubjectDigest: operation.releaseSubjectDigest,
+    reviewedInstallerDigest: operation.reviewedInstallerDigest,
+    schemaVersion: "active-release/v1",
+  };
+  const activeReleasePathInstanceDigest = computePointerInstanceDigest(activeReleaseIdentity);
+  const activeReleaseValueDigest = computePointerValueDigest(
+    "ACTIVE_RELEASE",
+    activeReleasePathInstanceDigest,
+    activeReleaseValue,
+  );
+  const activeReleasePositionDigest = computePointerPositionDigest("ACTIVE_RELEASE", {
+    mode: "VALUE",
+    parts: {},
+  });
+  const activeReleaseMutationId = computeMutationId({
+    ...activeReleaseIdentity,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    priorReceiptDigest: null,
+    successorValueDigest: activeReleaseValueDigest,
+    outcome: "SELECT",
+  });
+  const activeReleaseProposal = {
+    authorityEpochReceiptDigest: null,
+    authorityEpochTipDigest: null,
+    authorityEpochValueDigest: null,
+    intent: "VALUE_PROPOSED",
+    mutationId: activeReleaseMutationId,
+    outcome: "SELECT",
+    pathInstanceDigest: activeReleasePathInstanceDigest,
+    pointerKind: "ACTIVE_RELEASE",
+    positionDigest: activeReleasePositionDigest,
+    priorReceiptDigest: null,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    producerDigest: successorCoreDigest,
+    producerKind: "REVIEWED_BOOTSTRAP_GENESIS",
+    proposedAt: "2026-08-19T12:01:00.000Z",
+    schemaVersion: "pointer-cas-proposal-receipt/v1",
+    successorValueDigest: activeReleaseValueDigest,
+  };
+  const activeReleaseReceiptDigest = computeProposalReceiptDigest(activeReleaseProposal);
+  const activeReleaseTip = {
+    pathInstanceDigest: activeReleasePathInstanceDigest,
+    pointerKind: "ACTIVE_RELEASE",
+    proposalReceiptDigest: activeReleaseReceiptDigest,
+    schemaVersion: "pointer-current-tip/v1",
+    valueDigest: activeReleaseValueDigest,
+  };
+  const activeReleaseTipDigest = computeCurrentTipDigest(activeReleaseTip);
   const authorityValue = {
-    activeReleasePathInstanceDigest: coreExpected.activeReleasePathInstanceDigest,
-    activeReleaseReceiptDigest: coreExpected.activeReleaseReceiptDigest,
-    activeReleaseTipDigest: coreExpected.activeReleaseTipDigest,
-    activeReleaseValueDigest: coreExpected.activeReleaseValueDigest,
+    activeReleasePathInstanceDigest,
+    activeReleaseReceiptDigest,
+    activeReleaseTipDigest,
+    activeReleaseValueDigest,
     admittedCustodyObservationDigest: observationDigest,
     authorityOrdinal: "0",
     custodyInstanceDigest: anchor.custodyInstanceDigest,
@@ -491,9 +553,11 @@ function fixture(
     anchorProposal,
     anchorTip,
     anchorValue,
+    activeReleaseProposal,
+    activeReleaseTip,
+    activeReleaseValue,
     authorityValue,
     core,
-    coreExpected,
     genesisInput,
     globalIdentity,
     history,
@@ -715,8 +779,18 @@ function successorFixture() {
   };
 }
 
+type E0Fixture = ReturnType<typeof fixture> | ReturnType<typeof successorFixture>;
+type E0CoreFixture = Omit<
+  E0Fixture,
+  "activeReleaseValue" | "activeReleaseProposal" | "activeReleaseTip"
+> & {
+  activeReleaseValue: unknown;
+  activeReleaseProposal: unknown;
+  activeReleaseTip: unknown;
+};
+
 function validateCore(
-  f: ReturnType<typeof fixture> | ReturnType<typeof successorFixture>,
+  f: E0CoreFixture,
   core: unknown = f.core,
   globalIdentity: unknown = f.globalIdentity,
   observation: unknown = f.observation,
@@ -736,6 +810,9 @@ function validateCore(
     f.operation,
     f.successorCore,
     f.authorityValue,
+    f.activeReleaseValue,
+    f.activeReleaseProposal,
+    f.activeReleaseTip,
     globalIdentity,
     f.priorOwnerTip,
     f.priorOwnerValue,
@@ -750,7 +827,6 @@ function validateCore(
     f.absence,
     f.intentExpected,
     f.absenceExpected,
-    f.coreExpected,
   );
 }
 
@@ -769,6 +845,72 @@ function validatePost(
   );
 }
 
+function rebuildActiveRelease(
+  f: ReturnType<typeof fixture> | ReturnType<typeof successorFixture>,
+  activeReleaseValue: typeof f.activeReleaseValue,
+) {
+  const identity = {
+    pointerKind: "ACTIVE_RELEASE" as const,
+    canonicalPointerPath: "installation/active-release.json",
+    installationId: f.anchor.installationId,
+    projectId: f.anchor.projectId,
+    stateRootDigest: f.anchor.stateRootDigest,
+    transactionId: f.anchor.installationId,
+    sourceToken: "none",
+    positionEvidence: { mode: "VALUE", parts: {} },
+  };
+  const pathInstanceDigest = computePointerInstanceDigest(identity);
+  const valueDigest = computePointerValueDigest(
+    "ACTIVE_RELEASE",
+    pathInstanceDigest,
+    activeReleaseValue,
+  );
+  const mutationId = computeMutationId({
+    ...identity,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    priorReceiptDigest: null,
+    successorValueDigest: valueDigest,
+    outcome: "SELECT",
+  });
+  const activeReleaseProposal = {
+    ...f.activeReleaseProposal,
+    mutationId,
+    pathInstanceDigest,
+    successorValueDigest: valueDigest,
+  };
+  const receiptDigest = computeProposalReceiptDigest(activeReleaseProposal);
+  const activeReleaseTip = {
+    ...f.activeReleaseTip,
+    pathInstanceDigest,
+    proposalReceiptDigest: receiptDigest,
+    valueDigest,
+  };
+  const tipDigest = computeCurrentTipDigest(activeReleaseTip);
+  const authorityValue = {
+    ...f.authorityValue,
+    activeReleasePathInstanceDigest: pathInstanceDigest,
+    activeReleaseReceiptDigest: receiptDigest,
+    activeReleaseTipDigest: tipDigest,
+    activeReleaseValueDigest: valueDigest,
+  };
+  return {
+    ...f,
+    activeReleaseProposal,
+    activeReleaseTip,
+    activeReleaseValue,
+    authorityValue,
+    core: {
+      ...f.core,
+      authorityValueDigest: computePointerValueDigest(
+        "STATE_MUTATION_AUTHORITY_ROTATION",
+        f.core.authorityPathInstanceDigest,
+        authorityValue,
+      ),
+    },
+  };
+}
+
 describe("bootstrap E0 core and post-selection", () => {
   test.each([
     ["genesis", fixture()],
@@ -780,20 +922,28 @@ describe("bootstrap E0 core and post-selection", () => {
 
   test("closes schemas, digest framing, and contract dispatch", () => {
     const f = fixture();
+    expect(parseActiveReleaseValue(f.activeReleaseValue).ok).toBe(true);
     expect(parseBootstrapGenesisCore(f.core).ok).toBe(true);
     expect(parseBootstrapGenesisPostSelection(f.post).ok).toBe(true);
     expect(parseContract("state-mutation-bootstrap-genesis-core/v1", f.core).ok).toBe(true);
     expect(
       parseContract("state-mutation-bootstrap-genesis-post-selection-receipt/v1", f.post).ok,
     ).toBe(true);
+    expect(parseContract("active-release/v1", f.activeReleaseValue).ok).toBe(true);
+    expect(pointerGraphSchemaFields.activeRelease).toEqual(
+      Object.keys(f.activeReleaseValue).sort(),
+    );
+    expect(
+      pointerRootPaths("ACTIVE_RELEASE", { releaseDigest: f.activeReleaseValue.releaseDigest }),
+    ).toEqual([`releases/${f.activeReleaseValue.releaseDigest}/`]);
     expect(bootstrapGenesisSchemaFields.core).toEqual(Object.keys(f.core).sort());
     expect(bootstrapGenesisSchemaFields.post).toEqual(Object.keys(f.post).sort());
     expect({
       core: computeBootstrapGenesisCoreDigest(f.core),
       post: computeBootstrapGenesisPostSelectionDigest(f.post),
     }).toEqual({
-      core: "b0ff65a21b902a64f546cf13a47f2adb2db92953e008edc13a5f12db35410fee",
-      post: "6feaddc69046148c64345e11d8409e455bef786b0d03e1d40fe5fdd9b982c170",
+      core: "681e300e5ab60c766bfcf90b92b188da852e041e31f8751e9edaaa35a44d2d28",
+      post: "1c686e33c981c74e3ee0e9c6ede0a49271f6e8875950682cc28bfa2c2c0bd1a1",
     });
   });
 
@@ -909,6 +1059,186 @@ describe("bootstrap E0 core and post-selection", () => {
     ).toContain("successorAuthority.bootstrapGrantDigest:mismatch");
   });
 
+  test("closes the direct active-release value and N0 reviewed-bootstrap graph", () => {
+    const f = fixture();
+    for (const field of pointerGraphSchemaFields.activeRelease.filter((name) =>
+      name.endsWith("Digest"),
+    )) {
+      expect(parseActiveReleaseValue({ ...f.activeReleaseValue, [field]: null }).ok).toBe(false);
+      expect(parseActiveReleaseValue({ ...f.activeReleaseValue, [field]: "not-a-digest" }).ok).toBe(
+        false,
+      );
+    }
+    const { installedBytesDigest: _removed, ...missing } = f.activeReleaseValue;
+    expect(parseActiveReleaseValue(missing).ok).toBe(false);
+    expect(parseActiveReleaseValue({ ...f.activeReleaseValue, extra: d("a") }).ok).toBe(false);
+    const releaseMismatch = parseActiveReleaseValue({
+      ...f.activeReleaseValue,
+      releaseDigest: d("b"),
+    });
+    expect(releaseMismatch.ok ? [] : releaseMismatch.issues).toContain(
+      "releaseDigest:subject-mismatch",
+    );
+    expect(
+      parseActiveReleaseValue({ ...f.activeReleaseValue, schemaVersion: "active-release/v2" }).ok,
+    ).toBe(false);
+
+    for (const field of [
+      "independentReviewReceiptDigest",
+      "installedBytesDigest",
+      "releaseManifestDigest",
+      "reviewedInstallerDigest",
+    ] as const)
+      expect(
+        validateCore({
+          ...f,
+          activeReleaseValue: { ...f.activeReleaseValue, [field]: d("9") },
+        }),
+      ).toContain(`activeReleaseValue.${field}:mismatch`);
+    expect(
+      validateCore({
+        ...f,
+        activeReleaseValue: {
+          ...f.activeReleaseValue,
+          releaseDigest: d("a"),
+          releaseSubjectDigest: d("a"),
+        },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "activeReleaseValue.releaseDigest:mismatch",
+        "activeReleaseValue.releaseSubjectDigest:mismatch",
+      ]),
+    );
+    for (const [field, issue] of [
+      ["activeReleasePathInstanceDigest", "authority.activeReleasePathInstanceDigest:mismatch"],
+      ["activeReleaseReceiptDigest", "authority.activeReleaseReceiptDigest:mismatch"],
+      ["activeReleaseTipDigest", "authority.activeReleaseTipDigest:mismatch"],
+      ["activeReleaseValueDigest", "authority.activeReleaseValueDigest:mismatch"],
+    ] as const)
+      expect(
+        validateCore({ ...f, authorityValue: { ...f.authorityValue, [field]: d("b") } }),
+      ).toContain(issue);
+
+    expect(
+      validateCore({
+        ...f,
+        activeReleaseProposal: { ...f.activeReleaseProposal, producerDigest: d("c") },
+      }),
+    ).toContain("activeReleaseProposal.producerDigest:mismatch");
+    expect(
+      validateCore({
+        ...f,
+        activeReleaseProposal: { ...f.activeReleaseProposal, positionDigest: d("d") },
+      }),
+    ).toContain("activeReleaseProposal.positionDigest:mismatch");
+    expect(
+      validateCore({
+        ...f,
+        activeReleaseProposal: { ...f.activeReleaseProposal, mutationId: d("e") },
+      }),
+    ).toContain("activeReleaseProposal.mutationId:mismatch");
+
+    const selectedEpochProposal = {
+      ...f.activeReleaseProposal,
+      authorityEpochReceiptDigest: d("1"),
+      authorityEpochTipDigest: d("2"),
+      authorityEpochValueDigest: d("3"),
+      producerKind: "SELECTED_EPOCH",
+    };
+    expect(validateCore({ ...f, activeReleaseProposal: selectedEpochProposal })).toContain(
+      "activeReleaseProposal:not-reviewed-bootstrap-genesis",
+    );
+    expect(
+      validateCore({
+        ...f,
+        activeReleaseProposal: {
+          ...f.activeReleaseProposal,
+          priorReceiptDigest: d("4"),
+          priorTipDigest: d("5"),
+          priorValueDigest: d("6"),
+        },
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateCore({
+        ...f,
+        activeReleaseProposal: {
+          ...f.activeReleaseProposal,
+          authorityEpochReceiptDigest: d("4"),
+          authorityEpochTipDigest: d("5"),
+          authorityEpochValueDigest: d("6"),
+        },
+      }),
+    ).not.toEqual([]);
+
+    const substitutedValue = {
+      ...f.activeReleaseValue,
+      independentReviewReceiptDigest: d("4"),
+      installedBytesDigest: d("5"),
+      releaseDigest: d("6"),
+      releaseManifestDigest: d("7"),
+      releaseSubjectDigest: d("6"),
+      reviewedInstallerDigest: d("8"),
+    };
+    expect(validateCore(rebuildActiveRelease(f, substitutedValue))).toEqual(
+      expect.arrayContaining([
+        "activeReleaseValue.independentReviewReceiptDigest:mismatch",
+        "activeReleaseValue.installedBytesDigest:mismatch",
+        "activeReleaseValue.releaseDigest:mismatch",
+        "activeReleaseValue.releaseManifestDigest:mismatch",
+        "activeReleaseValue.releaseSubjectDigest:mismatch",
+        "activeReleaseValue.reviewedInstallerDigest:mismatch",
+      ]),
+    );
+
+    const foreignDp = d("9");
+    const foreignDv = computePointerValueDigest("ACTIVE_RELEASE", foreignDp, f.activeReleaseValue);
+    const foreignProposal = {
+      ...f.activeReleaseProposal,
+      mutationId: d("a"),
+      pathInstanceDigest: foreignDp,
+      successorValueDigest: foreignDv,
+    };
+    const foreignDr = computeProposalReceiptDigest(foreignProposal);
+    const foreignTip = {
+      ...f.activeReleaseTip,
+      pathInstanceDigest: foreignDp,
+      proposalReceiptDigest: foreignDr,
+      valueDigest: foreignDv,
+    };
+    const foreignDt = computeCurrentTipDigest(foreignTip);
+    const foreignAuthority = {
+      ...f.authorityValue,
+      activeReleasePathInstanceDigest: foreignDp,
+      activeReleaseReceiptDigest: foreignDr,
+      activeReleaseTipDigest: foreignDt,
+      activeReleaseValueDigest: foreignDv,
+    };
+    expect(
+      validateCore({
+        ...f,
+        activeReleaseProposal: foreignProposal,
+        activeReleaseTip: foreignTip,
+        authorityValue: foreignAuthority,
+        core: {
+          ...f.core,
+          authorityValueDigest: computePointerValueDigest(
+            "STATE_MUTATION_AUTHORITY_ROTATION",
+            f.core.authorityPathInstanceDigest,
+            foreignAuthority,
+          ),
+        },
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "activeReleaseProposal.pathInstanceDigest:mismatch",
+        "activeReleaseTip.pathInstanceDigest:mismatch",
+        "authority.activeReleasePathInstanceDigest:mismatch",
+      ]),
+    );
+  });
+
   test("fails closed for malformed, future, and hostile inputs", () => {
     const f = fixture();
     expect(parseBootstrapGenesisCore({ ...f.core, extra: true }).ok).toBe(false);
@@ -932,5 +1262,16 @@ describe("bootstrap E0 core and post-selection", () => {
       ),
     ).not.toThrow();
     expect(() => validatePost(f, null)).not.toThrow();
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("trap");
+        },
+      },
+    );
+    expect(() => validateCore({ ...f, activeReleaseValue: hostile })).not.toThrow();
+    expect(() => validateCore({ ...f, activeReleaseProposal: hostile })).not.toThrow();
+    expect(() => validateCore({ ...f, activeReleaseTip: hostile })).not.toThrow();
   });
 });

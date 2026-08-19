@@ -388,6 +388,10 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
         "SELECTED_EPOCH",
       ]),
     }),
+    "active-release/v1": Object.freeze({
+      schemaVersion: "active-release/v1",
+      fields: pointerGraphSchemaFields.activeRelease,
+    }),
     "pointer-conflict-receipt/v1": Object.freeze({
       schemaVersion: "pointer-conflict-receipt/v1",
       fields: pointerGraphSchemaFields.conflict,
