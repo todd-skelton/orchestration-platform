@@ -28,6 +28,7 @@ import {
 } from "./owner.js";
 import { type ParseResult } from "./runtime.js";
 import {
+  parseBootstrapAnchorLifecycleArchive,
   computeBootstrapAnchorTeardownReceiptDigest,
   parseBootstrapAnchorTeardownReceipt,
   validateBootstrapAnchorTeardownBinding,
@@ -69,6 +70,7 @@ export function validateBootstrapRetirementBinding(
   const selectedOwnerProposal = parseDestinationOwnerProposal(selectedOwnerProposalInput);
   const observation = parsePhysicalLocatorObservation(locatorObservationInput);
   const absence = parseExternalDestinationAbsenceObservation(absenceInput);
+  const lifecycleArchive = parseBootstrapAnchorLifecycleArchive(lifecycleArchiveInput);
   const teardownReceipt = parseBootstrapAnchorTeardownReceipt(teardownReceiptInput);
   const anchorRetiredTip = parseBootstrapAnchorTip(anchorRetiredTipInput);
   const anchorRetiredValue = parseBootstrapAnchorLifecycleValue(anchorRetiredValueInput);
@@ -87,6 +89,7 @@ export function validateBootstrapRetirementBinding(
     ["selectedOwnerProposal", selectedOwnerProposal],
     ["observation", observation],
     ["absence", absence],
+    ["lifecycleArchive", lifecycleArchive],
     ["teardownReceipt", teardownReceipt],
     ["anchorRetiredTip", anchorRetiredTip],
     ["anchorRetiredValue", anchorRetiredValue],
@@ -107,6 +110,7 @@ export function validateBootstrapRetirementBinding(
     !selectedOwnerProposal.ok ||
     !observation.ok ||
     !absence.ok ||
+    !lifecycleArchive.ok ||
     !teardownReceipt.ok ||
     !anchorRetiredTip.ok ||
     !anchorRetiredValue.ok ||
@@ -127,6 +131,7 @@ export function validateBootstrapRetirementBinding(
   const sop = selectedOwnerProposal.value;
   const observed = observation.value;
   const missing = absence.value;
+  const lifecycle = lifecycleArchive.value;
   const receipt = teardownReceipt.value;
   const art = anchorRetiredTip.value;
   const arv = anchorRetiredValue.value;
@@ -186,6 +191,12 @@ export function validateBootstrapRetirementBinding(
   );
 
   const transition = receipt.retirementTransition;
+  if (pav.lifecycle === "CONSUMED" || a.successorReviewCoreDigest !== null)
+    issues.push("priorProvenance:full-binding-required");
+  if (String(arp.proposedAt) < String(lifecycle.archivedAt))
+    issues.push("anchorRetiredProposal.proposedAt:before-lifecycle-archive");
+  if (String(orp.proposedAt) < String(arp.proposedAt))
+    issues.push("ownerRetiredProposal.proposedAt:before-anchor-retired");
   for (const [field, actual, expected] of [
     ["anchorRetiredTip.anchorDigest", art.anchorDigest, anchorDigest],
     ["anchorRetiredTip.valueDigest", art.valueDigest, anchorRetiredValueDigest],

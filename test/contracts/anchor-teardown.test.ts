@@ -844,13 +844,19 @@ describe("bootstrap anchor lifecycle archive and teardown receipt", () => {
 });
 
 describe("bootstrap retirement composition", () => {
+  test.each([["unused-genesis", retirementFixture("ACTIVE")]] as const)(
+    "accepts the %s anchor/owner RETIRED graph",
+    (_branch, f) => {
+      expect(validateRetirement(f)).toEqual([]);
+    },
+  );
+
   test.each([
-    ["unused-genesis", retirementFixture("ACTIVE")],
     ["consumed-genesis", retirementFixture("CONSUMED")],
     ["unused-successor", retirementFixture("ACTIVE", d("8"))],
     ["consumed-successor", retirementFixture("CONSUMED", d("8"))],
-  ] as const)("accepts the %s anchor/owner RETIRED graph", (_branch, f) => {
-    expect(validateRetirement(f)).toEqual([]);
+  ] as const)("fails closed for the %s graph until full provenance is supplied", (_branch, f) => {
+    expect(validateRetirement(f)).toContain("priorProvenance:full-binding-required");
   });
 
   test("binds the owner archive to prior owner, retired anchor, teardown, and absence", () => {
@@ -865,13 +871,13 @@ describe("bootstrap retirement composition", () => {
   });
 
   test("refuses crossed retirement branches and detached final selections", () => {
-    const f = retirementFixture("CONSUMED");
+    const f = retirementFixture();
     expect(
       validateRetirement({
         ...f,
         anchorRetiredProposal: {
           ...f.anchorRetiredProposal,
-          transition: "RETIRE_UNUSED",
+          transition: "RETIRE_CONSUMED",
         },
       }),
     ).not.toEqual([]);
@@ -893,6 +899,28 @@ describe("bootstrap retirement composition", () => {
         },
       }),
     ).toContain("ownerRetiredValue.teardownArchiveDigest:mismatch");
+  });
+
+  test("enforces archive, anchor-retired, then owner-retired chronology", () => {
+    const f = retirementFixture();
+    expect(
+      validateRetirement({
+        ...f,
+        anchorRetiredProposal: {
+          ...f.anchorRetiredProposal,
+          proposedAt: "2026-08-19T12:01:30.000Z",
+        },
+      }),
+    ).toContain("anchorRetiredProposal.proposedAt:before-lifecycle-archive");
+    expect(
+      validateRetirement({
+        ...f,
+        ownerRetiredProposal: {
+          ...f.ownerRetiredProposal,
+          proposedAt: "2026-08-19T12:02:30.000Z",
+        },
+      }),
+    ).toContain("ownerRetiredProposal.proposedAt:before-anchor-retired");
   });
 
   test("is total for malformed and hostile retirement inputs", () => {
