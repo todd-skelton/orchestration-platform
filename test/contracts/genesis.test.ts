@@ -879,6 +879,34 @@ describe("bootstrap E0 core and post-selection", () => {
         "successorPost:valueReadbackDigest:derived:mismatch",
       ]),
     );
+
+    const substitutedAuthority = {
+      ...successor.successorReviewCore.successorAuthority,
+      bootstrapGrantDigest: d("6"),
+    };
+    const substitutedReviewBase = {
+      ...successor.successorReviewCore,
+      successorAuthority: substitutedAuthority,
+    };
+    const substitutedReview = {
+      ...substitutedReviewBase,
+      independentReview: {
+        ...substitutedReviewBase.independentReview,
+        candidateDigest:
+          computeDestinationOwnerSuccessorReviewCandidateDigest(substitutedReviewBase),
+      },
+    };
+    expect(
+      validateCore({
+        ...successor,
+        successorReviewCore: substitutedReview,
+        successorReviewExpected: {
+          ...successor.successorReviewExpected,
+          candidateDigest: substitutedReview.independentReview.candidateDigest,
+          successorAuthority: substitutedAuthority,
+        },
+      }),
+    ).toContain("successorAuthority.bootstrapGrantDigest:mismatch");
   });
 
   test("fails closed for malformed, future, and hostile inputs", () => {

@@ -448,9 +448,47 @@ export function validateBootstrapGenesisCoreBinding(
     );
     if (reviewCore.ok && successorPost.ok) {
       const reviewCoreDigest = computeDestinationOwnerSuccessorReviewCoreDigest(reviewCore.value);
+      const successorAuthority = reviewCore.value.successorAuthority as ContractRecord;
       for (const [field, actual, selected] of [
         ["anchor.successorReviewCoreDigest", a.successorReviewCoreDigest, reviewCoreDigest],
         ["ownerProposal.observationDigest", op.observationDigest, observationDigest],
+        [
+          "successorAuthority.bootstrapGrantDigest",
+          successorAuthority.bootstrapGrantDigest,
+          a.bootstrapGrantDigest,
+        ],
+        [
+          "successorAuthority.bootstrapTransactionId",
+          successorAuthority.bootstrapTransactionId,
+          a.bootstrapTransactionId,
+        ],
+        [
+          "successorAuthority.globalBootstrapIdentityDigest",
+          successorAuthority.globalBootstrapIdentityDigest,
+          a.globalBootstrapIdentityDigest,
+        ],
+        ["successorAuthority.installationId", successorAuthority.installationId, a.installationId],
+        ["successorAuthority.projectId", successorAuthority.projectId, a.projectId],
+        [
+          "successorAuthority.reviewedInstallerDigest",
+          successorAuthority.reviewedInstallerDigest,
+          a.reviewedInstallerDigest,
+        ],
+        [
+          "successorAuthority.reviewedReleaseManifestDigest",
+          successorAuthority.reviewedReleaseManifestDigest,
+          operationRecord.releaseManifestDigest,
+        ],
+        [
+          "successorAuthority.reviewedReleaseSubjectDigest",
+          successorAuthority.reviewedReleaseSubjectDigest,
+          operationRecord.releaseSubjectDigest,
+        ],
+        [
+          "successorAuthority.stateRootDigest",
+          successorAuthority.stateRootDigest,
+          a.stateRootDigest,
+        ],
         [
           "intentExpected.successorPostSelectionReceiptReadbackDigest",
           intentExpected.value.successorPostSelectionReceiptReadbackDigest,
