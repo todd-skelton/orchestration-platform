@@ -26,6 +26,10 @@ import { destinationOwnerSchemaFields, destinationOwnerSchemaVersions } from "./
 import { successorReviewSchemaFields, successorReviewSchemaVersions } from "./successor.js";
 import { bootstrapAnchorSchemaFields, bootstrapAnchorSchemaVersions } from "./anchor.js";
 import { bootstrapUseIntentSchemaFields, bootstrapUseIntentSchemaVersions } from "./intent.js";
+import {
+  bootstrapAnchorTeardownSchemaFields,
+  bootstrapAnchorTeardownSchemaVersions,
+} from "./teardown.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -220,6 +224,16 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "state-mutation-bootstrap-anchor-use-intent/v1",
       fields: bootstrapUseIntentSchemaFields.useIntent,
       closedValues: Object.freeze([]),
+    }),
+    "state-mutation-bootstrap-anchor-lifecycle-archive/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-lifecycle-archive/v1",
+      fields: bootstrapAnchorTeardownSchemaFields.lifecycleArchive,
+      closedValues: Object.freeze(["ACTIVE", "CONSUMED"]),
+    }),
+    "state-mutation-bootstrap-anchor-teardown-receipt/v1": Object.freeze({
+      schemaVersion: "state-mutation-bootstrap-anchor-teardown-receipt/v1",
+      fields: bootstrapAnchorTeardownSchemaFields.teardownReceipt,
+      closedValues: Object.freeze(["RETIRE_UNUSED", "RETIRE_CONSUMED"]),
     }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
       schemaVersion: "reviewed-authority-operation/v1",
@@ -455,6 +469,7 @@ export const schemaVersions = Object.freeze(
     ...successorReviewSchemaVersions,
     ...bootstrapAnchorSchemaVersions,
     ...bootstrapUseIntentSchemaVersions,
+    ...bootstrapAnchorTeardownSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";

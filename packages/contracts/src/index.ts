@@ -16,6 +16,7 @@ import { parseDestinationOwnerContract } from "./owner.js";
 import { parseDestinationOwnerSuccessorContract } from "./successor.js";
 import { parseBootstrapAnchorContract } from "./anchor.js";
 import { parseBootstrapUseIntentContract } from "./intent.js";
+import { parseBootstrapAnchorTeardownContract } from "./teardown.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
@@ -30,6 +31,7 @@ export * from "./owner.js";
 export * from "./successor.js";
 export * from "./anchor.js";
 export * from "./intent.js";
+export * from "./teardown.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
 export * from "./vocabulary.js";
@@ -82,6 +84,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (anchor) return anchor;
   const intent = parseBootstrapUseIntentContract(expectedSchemaVersion, input);
   if (intent) return intent;
+  const teardown = parseBootstrapAnchorTeardownContract(expectedSchemaVersion, input);
+  if (teardown) return teardown;
   const packet = parsePacketContract(expectedSchemaVersion, input);
   if (packet) return packet;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);
