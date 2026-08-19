@@ -11,6 +11,7 @@ import { parseSimplifiedAuthorityContract } from "./authority.js";
 import { parseCommitContract } from "./commit.js";
 import { parseDispatchContract } from "./dispatch.js";
 import { parseEvidenceContract } from "./evidence.js";
+import { parseExternalContract } from "./external.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 
@@ -63,6 +64,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (dispatch) return dispatch;
   const evidence = parseEvidenceContract(expectedSchemaVersion, input);
   if (evidence) return evidence;
+  const external = parseExternalContract(expectedSchemaVersion, input);
+  if (external) return external;
   const packet = parsePacketContract(expectedSchemaVersion, input);
   if (packet) return packet;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);

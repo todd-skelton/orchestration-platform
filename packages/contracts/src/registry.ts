@@ -21,6 +21,7 @@ import {
 } from "./evidence.js";
 import { pointerGraphSchemaFields, pointerGraphSchemaVersions, pointerKinds } from "./pointer.js";
 import { packetSchemaFields, packetSchemaVersions } from "./packet.js";
+import { externalSchemaFields, externalSchemaVersions } from "./external.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -74,6 +75,35 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "physical-destination-identity/v1": Object.freeze({
+      schemaVersion: "physical-destination-identity/v1",
+      fields: externalSchemaFields.physicalIdentity,
+      closedValues: Object.freeze([
+        "DARWIN",
+        "LINUX",
+        "WINDOWS",
+        "EXISTING_DIRECTORY_ENTRY",
+        "ABSENT_DIRECTORY_ENTRY",
+      ]),
+    }),
+    "physical-destination-locator-observation-receipt/v1": Object.freeze({
+      schemaVersion: "physical-destination-locator-observation-receipt/v1",
+      fields: externalSchemaFields.locatorObservation,
+      closedValues: Object.freeze([
+        "CASE_INSENSITIVE_LOWERCASE",
+        "CASE_SENSITIVE",
+        "NFC",
+        "NFD",
+        "ADMITTED",
+        "UNSUPPORTED",
+        "UNKNOWN",
+      ]),
+    }),
+    "external-destination-absence-observation/v1": Object.freeze({
+      schemaVersion: "external-destination-absence-observation/v1",
+      fields: externalSchemaFields.absenceObservation,
+      closedValues: Object.freeze(["RUNTIME_AUTHORITY_ABSENT", "DESTINATION_STATE_ROOT_ABSENT"]),
+    }),
     "reviewed-authority-operation/v1#BOOTSTRAP_INSTALL": Object.freeze({
       schemaVersion: "reviewed-authority-operation/v1",
       fields: simplifiedAuthoritySchemaFields.reviewedAuthorityOperationBootstrap,
@@ -303,6 +333,7 @@ export const schemaVersions = Object.freeze(
     ...dispatchSchemaVersions,
     ...evidenceSchemaVersions,
     ...packetSchemaVersions,
+    ...externalSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";
