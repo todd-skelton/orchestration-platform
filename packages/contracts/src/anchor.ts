@@ -398,11 +398,11 @@ export function computeBootstrapAnchorMutationId(
 
 function proposalValueIssues(
   anchor: ContractRecord,
+  anchorDigest: string,
   proposal: ContractRecord,
   successor: ContractRecord,
 ): string[] {
   const issues: string[] = [];
-  const anchorDigest = computeBootstrapAnchorDigest(anchor);
   const successorDigest = computeBootstrapAnchorValueDigest(successor);
   const priorCount = groupCount(proposal, priorFields);
   for (const [field, actual, selected] of [
@@ -483,9 +483,15 @@ export function validateBootstrapAnchorMutationBinding(
   const a = anchor.value;
   const p = proposal.value;
   const s = successor.value;
-  issues.push(...proposalValueIssues(a, p, s));
-  if (expected.value.anchorDigest !== computeBootstrapAnchorDigest(a))
-    issues.push("expected:anchorDigest:mismatch");
+  let anchorDigest: string;
+  try {
+    anchorDigest = computeBootstrapAnchorDigest(a);
+  } catch {
+    issues.push("anchor:globalBootstrapIdentityDigest:mismatch");
+    return Object.freeze([...new Set(issues)].sort());
+  }
+  issues.push(...proposalValueIssues(a, anchorDigest, p, s));
+  if (expected.value.anchorDigest !== anchorDigest) issues.push("expected:anchorDigest:mismatch");
   if (expected.value.transitionEvidenceDigest !== p.transitionEvidenceDigest)
     issues.push("expected:transitionEvidenceDigest:mismatch");
   if (nullCount === inputs.length) {
@@ -497,7 +503,9 @@ export function validateBootstrapAnchorMutationBinding(
     const tipDigest = computeBootstrapAnchorTipDigest(pt);
     const valueDigest = computeBootstrapAnchorValueDigest(pv);
     const proposalDigest = computeBootstrapAnchorProposalDigest(pp);
-    issues.push(...proposalValueIssues(a, pp, pv).map((issue) => `priorProposal:${issue}`));
+    issues.push(
+      ...proposalValueIssues(a, anchorDigest, pp, pv).map((issue) => `priorProposal:${issue}`),
+    );
     for (const [field, actual, selected] of [
       ["priorTipDigest", p.priorTipDigest, tipDigest],
       ["priorValueDigest", p.priorValueDigest, valueDigest],
@@ -570,11 +578,17 @@ export function validateBootstrapAnchorConflictBinding(
   const wt = winningTip.value;
   const wp = winningProposal.value;
   const wv = winningValue.value;
+  let anchorDigest: string;
+  try {
+    anchorDigest = computeBootstrapAnchorDigest(a);
+  } catch {
+    issues.push("anchor:globalBootstrapIdentityDigest:mismatch");
+    return Object.freeze([...new Set(issues)].sort());
+  }
   issues.push(
-    ...proposalValueIssues(a, lp, lv).map((issue) => `losing:${issue}`),
-    ...proposalValueIssues(a, wp, wv).map((issue) => `winning:${issue}`),
+    ...proposalValueIssues(a, anchorDigest, lp, lv).map((issue) => `losing:${issue}`),
+    ...proposalValueIssues(a, anchorDigest, wp, wv).map((issue) => `winning:${issue}`),
   );
-  const anchorDigest = computeBootstrapAnchorDigest(a);
   const losingProposalDigest = computeBootstrapAnchorProposalDigest(lp);
   const losingValueDigest = computeBootstrapAnchorValueDigest(lv);
   const winningTipDigest = computeBootstrapAnchorTipDigest(wt);

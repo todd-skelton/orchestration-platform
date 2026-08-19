@@ -377,6 +377,32 @@ describe("bootstrap anchor identity and lifecycle", () => {
         f.active,
       ),
     ).not.toEqual([]);
+    const substitutedGlobal = {
+      ...f.anchorRecord,
+      globalBootstrapIdentityDigest: d("f"),
+    };
+    expect(() =>
+      validateBootstrapAnchorConflictBinding(
+        substitutedGlobal,
+        conflict,
+        losingProposal,
+        f.active,
+        f.activeSelection.tip,
+        f.activeSelection.proposal,
+        f.active,
+      ),
+    ).not.toThrow();
+    expect(
+      validateBootstrapAnchorConflictBinding(
+        substitutedGlobal,
+        conflict,
+        losingProposal,
+        f.active,
+        f.activeSelection.tip,
+        f.activeSelection.proposal,
+        f.active,
+      ),
+    ).toContain("anchor:globalBootstrapIdentityDigest:mismatch");
   });
 
   test("rejects every omission, mixed groups, future enums, and hostile records", () => {
@@ -406,5 +432,37 @@ describe("bootstrap anchor identity and lifecycle", () => {
     });
     expect(() => parseBootstrapAnchor(hostile)).not.toThrow();
     expect(parseBootstrapAnchor(hostile).ok).toBe(false);
+    const substitutedGlobal = {
+      ...f.anchorRecord,
+      globalBootstrapIdentityDigest: d("f"),
+    };
+    expect(() =>
+      validateBootstrapAnchorMutationBinding(
+        substitutedGlobal,
+        f.activeSelection.proposal,
+        f.active,
+        null,
+        null,
+        null,
+        {
+          anchorDigest: f.anchorDigest,
+          transitionEvidenceDigest: f.anchorRecord.bootstrapGrantDigest,
+        },
+      ),
+    ).not.toThrow();
+    expect(
+      validateBootstrapAnchorMutationBinding(
+        substitutedGlobal,
+        f.activeSelection.proposal,
+        f.active,
+        null,
+        null,
+        null,
+        {
+          anchorDigest: f.anchorDigest,
+          transitionEvidenceDigest: f.anchorRecord.bootstrapGrantDigest,
+        },
+      ),
+    ).toContain("anchor:globalBootstrapIdentityDigest:mismatch");
   });
 });
