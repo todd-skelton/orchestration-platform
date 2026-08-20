@@ -28,6 +28,10 @@ import {
 } from "./owner.js";
 import { type ParseResult } from "./runtime.js";
 import {
+  validateDestinationOwnerSuccessorPostSelectionBinding,
+  validateDestinationOwnerSuccessorReviewCoreBinding,
+} from "./successor.js";
+import {
   parseBootstrapAnchorLifecycleArchive,
   computeBootstrapAnchorTeardownReceiptDigest,
   parseBootstrapAnchorTeardownReceipt,
@@ -239,5 +243,103 @@ export function validateBootstrapRetirementBinding(
   ] as const)
     if (actual !== expected) issues.push(`${field}:mismatch`);
 
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+function removeLocalProvenanceGuard(issues: readonly string[]): readonly string[] {
+  return issues.filter((issue) => issue !== "priorProvenance:full-binding-required");
+}
+
+export function validateBootstrapSuccessorActiveRetirementBinding(
+  anchorInput: unknown,
+  priorAnchorTipInput: unknown,
+  priorAnchorValueInput: unknown,
+  priorAnchorProposalInput: unknown,
+  selectedOwnerTipInput: unknown,
+  selectedOwnerValueInput: unknown,
+  selectedOwnerProposalInput: unknown,
+  physicalIdentityInput: unknown,
+  locatorObservationInput: unknown,
+  absenceInput: unknown,
+  lifecycleArchiveInput: unknown,
+  teardownReceiptInput: unknown,
+  absenceExpectedInput: unknown,
+  teardownExpectedInput: unknown,
+  anchorRetiredTipInput: unknown,
+  anchorRetiredValueInput: unknown,
+  anchorRetiredProposalInput: unknown,
+  ownerTeardownArchiveInput: unknown,
+  ownerRetiredTipInput: unknown,
+  ownerRetiredValueInput: unknown,
+  ownerRetiredProposalInput: unknown,
+  priorOwnerRetiredTipInput: unknown,
+  priorOwnerRetiredValueInput: unknown,
+  priorOwnerRetiredProposalInput: unknown,
+  priorOwnerTeardownArchiveInput: unknown,
+  successorReviewCoreInput: unknown,
+  successorReviewExpectedInput: unknown,
+  successorPostSelectionInput: unknown,
+  successorPostExpectedInput: unknown,
+): readonly string[] {
+  const anchor = parseBootstrapAnchor(anchorInput);
+  const priorAnchor = parseBootstrapAnchorLifecycleValue(priorAnchorValueInput);
+  const selectedOwner = parseDestinationOwnerValue(selectedOwnerValueInput);
+  const issues = [
+    ...prefixed("successorBranch:anchor", anchor),
+    ...prefixed("successorBranch:priorAnchorValue", priorAnchor),
+    ...prefixed("successorBranch:selectedOwnerValue", selectedOwner),
+    ...removeLocalProvenanceGuard(
+      validateBootstrapRetirementBinding(
+        anchorInput,
+        priorAnchorTipInput,
+        priorAnchorValueInput,
+        priorAnchorProposalInput,
+        selectedOwnerTipInput,
+        selectedOwnerValueInput,
+        selectedOwnerProposalInput,
+        physicalIdentityInput,
+        locatorObservationInput,
+        absenceInput,
+        lifecycleArchiveInput,
+        teardownReceiptInput,
+        absenceExpectedInput,
+        teardownExpectedInput,
+        anchorRetiredTipInput,
+        anchorRetiredValueInput,
+        anchorRetiredProposalInput,
+        ownerTeardownArchiveInput,
+        ownerRetiredTipInput,
+        ownerRetiredValueInput,
+        ownerRetiredProposalInput,
+      ),
+    ),
+    ...validateDestinationOwnerSuccessorReviewCoreBinding(
+      successorReviewCoreInput,
+      priorOwnerRetiredTipInput,
+      priorOwnerRetiredValueInput,
+      priorOwnerRetiredProposalInput,
+      priorOwnerTeardownArchiveInput,
+      successorReviewExpectedInput,
+    ).map((issue) => `successorReviewBinding:${issue}`),
+    ...validateDestinationOwnerSuccessorPostSelectionBinding(
+      successorPostSelectionInput,
+      successorReviewCoreInput,
+      selectedOwnerValueInput,
+      selectedOwnerProposalInput,
+      selectedOwnerTipInput,
+      priorOwnerRetiredTipInput,
+      priorOwnerRetiredValueInput,
+      priorOwnerRetiredProposalInput,
+      successorPostExpectedInput,
+    ).map((issue) => `successorPostBinding:${issue}`),
+  ];
+  if (anchor.ok && priorAnchor.ok && selectedOwner.ok) {
+    if (
+      anchor.value.successorReviewCoreDigest === null ||
+      priorAnchor.value.lifecycle !== "ACTIVE" ||
+      selectedOwner.value.lifecycle !== "ACTIVE"
+    )
+      issues.push("successorBranch:not-active-successor");
+  }
   return Object.freeze([...new Set(issues)].sort());
 }
