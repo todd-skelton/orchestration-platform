@@ -577,9 +577,10 @@ The bootstrap transaction, anchor, global identity, destination/physical
 identity, owner/anchor provenance, and successor-review bindings already fixed
 for E0 remain unchanged. The active-release graph adds no E0-specific record,
 digest, receipt, capability, self epoch, cleanup/gate/fence record, or recovery
-authority. Release cleanup, recovery-fence, cleanup-archive, and later promotion
-lifecycle schemas remain separately unauthorized until their own literal
-ledgers pass removal review.
+authority. The cleanup-gate and recovery-fence root/head ledger is decided
+below. Recovery-authorization records, cleanup archives, and later promotion
+receipts remain separately unauthorized until their own literal ledgers pass
+removal review.
 
 ### Reviewed-bootstrap pre-E0 producer boundary
 
@@ -648,9 +649,171 @@ ISS-020/ISS-022/ISS-027. Candidate N0, candidate N+1, a receipt, or knowledge of
 `Dsc` alone cannot perform the CAS.
 
 This section decides only the producer topology and branch boundary. The exact
-recovery-authorization, cleanup-gate, and cleanup-archive member ledgers and
-their composed equality matrices remain unauthorized until their own removal
-rounds pass; implementation may not infer those bytes from this branch table.
+cleanup-gate and recovery-fence root/head bytes are fixed by the next ledger.
+Recovery-authorization and cleanup-archive member ledgers and their composed
+equality matrices remain unauthorized until their own removal rounds pass;
+implementation may not infer those bytes from this branch table.
+
+### Cleanup-gate and recovery-fence literal ledger
+
+This ledger fixes only the two immutable roots and their bounded state-history
+values. It deliberately does not copy terminal proofs, broker receipts,
+authorization receipts, selected release records, or archive records into the
+heads. Those facts remain required inputs to the composed transition validator
+and later downstream archive, but the selected state value is not a proof bag.
+This deletes the superseded v2 head's nullable proof bundle and avoids a
+head/archive digest cycle.
+
+The scalar names below use the global closed `sha256`, `uuid-v7`,
+`safe-decimal`, and `timestamp` grammars. `nullable sha256` means exactly null
+or a lowercase SHA-256 digest. Each row is one closed record with all and only
+the listed members in ascending canonical JSON member order:
+
+| Schema                              | Exact members and types                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `activation-cleanup-gate-root/v1`   | `authorizationCoreDigest:sha256`, `authorizationCreatedReceiptDigest:sha256`, `authorizationCreatedTipDigest:sha256`, `authorizationCreatedValueDigest:sha256`, `candidateActiveReleaseValueDigest:sha256`, `cleanupArchivePredecessorReceiptDigest:nullable sha256`, `cleanupArchivePredecessorTipDigest:nullable sha256`, `cleanupArchivePredecessorValueDigest:nullable sha256`, `createdAt:timestamp`, `installationId:uuid-v7`, `mode:BOOTSTRAP\|SUCCESSOR`, `predecessorActiveReleaseReceiptDigest:nullable sha256`, `predecessorActiveReleaseTipDigest:nullable sha256`, `predecessorActiveReleaseValueDigest:nullable sha256`, `projectId:uuid-v7`, `recoveryFenceRootDigest:nullable sha256`, `schemaVersion:activation-cleanup-gate-root/v1`, `stateRootDigest:sha256`, `successorCoreDigest:sha256`, `transactionId:uuid-v7` |
+| `activation-cleanup-gate-head/v1`   | `lifecycle:PENDING\|ACTIVATING\|ABORTING\|COMPLETE`, `ordinal:safe-decimal`, `priorHeadValueDigest:nullable sha256`, `publication:NOT_PUBLISHED\|PUBLISHING\|PUBLISHED\|CLEARED`, `recordedAt:timestamp`, `rootDigest:sha256`, `schemaVersion:activation-cleanup-gate-head/v1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `activation-recovery-fence-root/v1` | `candidateActiveReleaseValueDigest:sha256`, `candidateBrokerAdmissionDigest:sha256`, `cleanupArchivePredecessorReceiptDigest:sha256`, `cleanupArchivePredecessorTipDigest:sha256`, `cleanupArchivePredecessorValueDigest:sha256`, `createdAt:timestamp`, `installationId:uuid-v7`, `predecessorActiveReleaseReceiptDigest:sha256`, `predecessorActiveReleaseTipDigest:sha256`, `predecessorActiveReleaseValueDigest:sha256`, `predecessorBrokerGeneration:safe-decimal`, `projectId:uuid-v7`, `schemaVersion:activation-recovery-fence-root/v1`, `stateRootDigest:sha256`, `successorBrokerGeneration:safe-decimal`, `successorCoreDigest:sha256`, `transactionId:uuid-v7`                                                                                                                                                              |
+| `activation-recovery-fence-head/v1` | `ordinal:safe-decimal`, `priorHeadValueDigest:nullable sha256`, `recordedAt:timestamp`, `rootDigest:sha256`, `schemaVersion:activation-recovery-fence-head/v1`, `state:PREPARED\|POST_ACTIVATION`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+All non-nullable members are required. Missing, extra, renamed, duplicate,
+wrong-type, noncanonical, unknown/future-schema, partial nullable group, or
+unsafe-ordinal records refuse before any digest is used. No nested record,
+array, path, executable, operation manifest, candidate verdict, capability,
+selected epoch, proposal, receipt, tip, archive, tombstone, or read-back member
+is present in any of the four records.
+
+The cleanup-root branch matrix is exact:
+
+| Root mode   | Cleanup-archive predecessor triple                                                                                                                 | Predecessor active-release triple                                                 | Recovery-fence root                                       | Required equalities                                                                                                                                                                                                                                                  |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BOOTSTRAP` | all null exactly when the canonical cleanup-archive head has never been selected; otherwise all non-null and equal its current selected `Dt/Dv/Dr` | all null                                                                          | null                                                      | candidate value is the actual reviewed N0 `active-release/v1` `Dv`; `successorCoreDigest` is recomputed BOOTSTRAP_INSTALL `Dsc`; authorization core and selected CREATED triple are for the same bootstrap transaction and identities                                |
+| `SUCCESSOR` | all non-null and equal the current selected cleanup-archive-head `Dt/Dv/Dr`                                                                        | all non-null and equal the current selected predecessor active-release `Dt/Dv/Dr` | non-null and equal the recomputed fence-root digest below | candidate value is the actual reviewed N+1 `active-release/v1` `Dv`; `successorCoreDigest` is recomputed STABLE_PROMOTION `Dsc`; authorization core and selected CREATED triple bind the same transaction, predecessor, candidate, fence, admission, and generations |
+
+The three members of each nullable triple are all null or all non-null. A
+selected cleanup-archive head can never be replaced by bare absence; after its
+first selection the null branch is permanently unavailable. For both modes,
+the root's installation, project, state root, transaction, candidate value,
+`Dsc`, authorization core, and selected CREATED triple equal the actual parsed
+upstream records. The selected CREATED proposal has the exact producer branch
+fixed by the pre-E0 ledger for BOOTSTRAP and the exact selected stable epoch for
+SUCCESSOR. `createdAt` is not earlier than any upstream create-once receipt it
+binds. A digest copied consistently across root and caller expectations is not
+an equality source.
+
+The recovery-fence root is successor-only and every member is non-null. Its
+predecessor active-release triple and cleanup-archive predecessor triple equal
+the same selected records consumed by the SUCCESSOR gate root. Its candidate
+value equals the reviewed N+1 active-release `Dv`; its admission digest equals
+the exact read-back pending broker admission; and its `successorCoreDigest`
+equals the recomputed STABLE_PROMOTION `Dsc` over that predecessor, candidate,
+reviewed operation, release, host/custody, and independent review. Broker
+generations are canonical safe-decimal strings and the successor is exactly the
+predecessor plus one. The fence root excludes authorization core/state and all
+gate facts so it can be computed before authorization CREATED and the gate root
+without a digest back-edge.
+
+The only standalone root digests are:
+
+```text
+Dgr = SHA256(frame("activation-cleanup-gate-root/v1", canonical gate-root bytes))
+Dfr = SHA256(frame("activation-recovery-fence-root/v1", canonical fence-root bytes))
+```
+
+Each formula has exactly one canonical-record framed part after the literal
+domain. Member-wise reframing, raw JSON text, untagged canonical digest, a v2
+domain, or swapping the two domains refuses. The head schemas have no second
+standalone digest. Their sole identity is the common pointer value digest
+`Dv = pointer-value/v1(kind, Dp, canonical head bytes)`. Consequently
+`priorHeadValueDigest` is the prior head's recomputed common `Dv`, not an
+untagged hash or a second head ID.
+
+The gate history starts only at `PENDING/NOT_PUBLISHED`; its admissible ten
+cells and twelve non-self edges remain exactly the existing closed graph. The
+fence history starts only at `PREPARED` and has at most the single
+`PREPARED -> POST_ACTIVATION` edge. For both histories:
+
+- ordinal zero requires `priorHeadValueDigest:null`;
+- every positive ordinal is exactly prior ordinal plus one and carries the
+  immediately prior head's recomputed `Dv`;
+- `rootDigest` is constant and equals the recomputed immutable `Dgr` or `Dfr`;
+- `recordedAt` is greater than or equal to root `createdAt` and never less than
+  the prior head's time;
+- a repeated request for the already-selected same state is `NO_APPEND`; and
+- cleanup history contains one through six records, while fence history
+  contains exactly one or two. Any extension beyond those graph bounds,
+  self-loop, fork, gap, reorder, truncation, wrong root, wrong prior `Dv`, or
+  unsafe ordinal refuses.
+
+For a transaction's ordinal-zero head, the generic proposal prior triple is
+null only if the canonical tip has never been selected. If an earlier
+transaction left a selected FULL_REQUIRED tombstone, the new proposal carries
+that exact tombstone `Dt/Dv/Dr`; the new head's `priorHeadValueDigest` is still
+null because its bounded history begins at ordinal zero. The root's selected
+cleanup-archive predecessor is the cross-transaction lineage source. For every
+positive head ordinal, the proposal prior triple selects the immediately prior
+head and the head's `priorHeadValueDigest` equals that proposal's prior `Dv`.
+
+VALUE position evidence is closed and exact:
+
+```json
+{ "mode": "VALUE", "parts": { "ordinal": "<safe-decimal>", "rootDigest": "<Dgr-or-Dfr>" } }
+```
+
+It hashes under the already-registered `cleanup-gate-position/v1` or
+`recovery-fence-position/v1` domain. The common mutation ID separately binds
+the successor `Dv` and prior selected triple, so position does not duplicate a
+caller-supplied head digest. Tombstone position is deferred to the cleanup-
+archive ledger and cannot be inferred here.
+
+Gate root persists only at
+`installation/activation-cleanup-gate-roots/<transaction>.json`; fence root
+persists only at
+`installation/activation-recovery-fence-roots/<transaction>.json`. Head values,
+proposals, conflicts, and tombstones use only the common constructed
+`pointer-cas/<Dp>/...` paths. The selected tips remain exactly
+`installation/activation-cleanup-gate.json` and
+`installation/activation-recovery-fence.json`. A full history is fetched by
+the selected/common value digests and walked from the supplied dense bounded
+record array; no directory enumeration, duplicate family-head file, alternate
+tip, symlink, or latest-file convention is authority.
+
+The composed gate validator consumes the actual root, full bounded head
+history, common selected proposal/tip/read-backs, current active-release graph,
+authorization graph, fence graph when branch-required, and transition-specific
+terminal/absence facts. `PUBLISHING|PUBLISHED` requires a SUCCESSOR root;
+BOOTSTRAP can use only the three `NOT_PUBLISHED` cells in its authorized
+`PENDING -> ABORTING -> COMPLETE` or post-E0 completion line. `PUBLISHED`
+requires the exact selected PREPARED fence over the root's `Dfr` before the
+gate head time. `ACTIVATING` remains forward-only. `ABORTING` requires the
+active release still select the predecessor; for BOOTSTRAP it additionally
+requires the exact canonical abort input and fresh same-lock destination
+absence before the first mutation. `COMPLETE` is accepted only with the exact
+branch terminal facts and remains upstream of the later cleanup archive, so a
+head never contains or hashes its downstream archive.
+
+The composed POST_ACTIVATION fence validator consumes the actual root and both
+head values plus the selected candidate active-release graph, activated broker
+generation/read-back, terminal predecessor recovery facts, and current stable
+authority. Those proofs are exact inputs, not optional head members. The later
+cleanup archive binds the final gate/fence selected triples and terminal
+receipts after they exist. Until that archive ledger and the recovery-
+authorization ledger pass independent removal review, this slice authorizes
+only parsers, root digests, VALUE position evidence, bounded history walking,
+and pure relative composition over caller-supplied actual records; it
+authorizes no tombstone, archive, filesystem mutation, broker call, live
+capability, release selection, promotion, or runtime state transition.
+
+Compatibility evidence must cover every member/census/enum/nullability and
+branch row; exact root-domain and common-`Dv` byte goldens; all ten/twelve gate
+cells/edges and the one fence edge; zero/max/overflow ordinals; one/six and
+one/two history bounds; root/time/prior/triple substitutions; position-member
+add/remove/reorder attacks; independent and coordinated upstream graph
+substitution; branch-only proof absence; and hostile reflective inputs without
+throwing. Deleting any equality or graph edge, restoring untagged
+`canonicalDigest`, restoring the v2 proof bundle/numeric generations, adding a
+duplicate head path, or accepting a candidate/self epoch must make a committed
+mutant pass and therefore fail the suite.
 
 - Bootstrap N0 is built by pinned GitHub Actions workflow bytes from an exact
   source revision, certified on all required OS runners, independently reviewed

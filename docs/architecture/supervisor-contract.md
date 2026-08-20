@@ -1757,7 +1757,9 @@ Cleanup gate and recovery fence roots are immutable transaction records.
 Their immutable heads retain the closed lifecycle/publication or fence-state
 transition facts. Their canonical paths now hold generic selected tips whose
 family values name the exact root/head. Initialization writes root and ordinal
-zero head, then selects the genesis current value under the epoch lock.
+zero head, then selects the genesis current value under the exact producer
+branch fixed by `contract-decisions.md`: bounded reviewed-bootstrap `Dsc` only
+for the N0 cleanup gate, and the selected stable epoch for successor gate/fence.
 
 Cleanup gate admissible pairs are exactly:
 
