@@ -254,6 +254,45 @@ function removeLocalProvenanceGuard(issues: readonly string[]): readonly string[
   return issues.filter((issue) => issue !== "priorProvenance:full-binding-required");
 }
 
+function validateSuccessorRetirementChronology(
+  priorOwnerRetiredProposalInput: unknown,
+  successorReviewCoreInput: unknown,
+  selectedOwnerProposalInput: unknown,
+  successorPostSelectionInput: unknown,
+  retirementAbsenceInput: unknown,
+): readonly string[] {
+  const selectedOwnerProposal = parseDestinationOwnerProposal(selectedOwnerProposalInput);
+  const priorOwnerRetiredProposal = parseDestinationOwnerProposal(priorOwnerRetiredProposalInput);
+  const reviewCore = parseDestinationOwnerSuccessorReviewCore(successorReviewCoreInput);
+  const successorPost = parseDestinationOwnerSuccessorPostSelection(successorPostSelectionInput);
+  const retirementAbsence = parseExternalDestinationAbsenceObservation(retirementAbsenceInput);
+  const issues = [
+    ...prefixed("successorBranch:selectedOwnerProposal", selectedOwnerProposal),
+    ...prefixed("successorBranch:priorOwnerRetiredProposal", priorOwnerRetiredProposal),
+    ...prefixed("successorBranch:reviewCore", reviewCore),
+    ...prefixed("successorBranch:successorPost", successorPost),
+    ...prefixed("successorBranch:retirementAbsence", retirementAbsence),
+  ];
+  if (
+    selectedOwnerProposal.ok &&
+    priorOwnerRetiredProposal.ok &&
+    reviewCore.ok &&
+    successorPost.ok &&
+    retirementAbsence.ok
+  ) {
+    const review = reviewCore.value.independentReview as ContractRecord;
+    if (String(review.reviewedAt) < String(priorOwnerRetiredProposal.value.proposedAt))
+      issues.push("successorChronology:review-before-prior-retired");
+    if (String(selectedOwnerProposal.value.proposedAt) < String(review.reviewedAt))
+      issues.push("successorChronology:active-before-review");
+    if (String(successorPost.value.observedAt) < String(selectedOwnerProposal.value.proposedAt))
+      issues.push("successorChronology:post-before-active");
+    if (String(retirementAbsence.value.observedAt) < String(successorPost.value.observedAt))
+      issues.push("successorChronology:absence-before-post");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
 export function validateBootstrapSuccessorActiveRetirementBinding(
   anchorInput: unknown,
   priorAnchorTipInput: unknown,
@@ -288,20 +327,17 @@ export function validateBootstrapSuccessorActiveRetirementBinding(
   const anchor = parseBootstrapAnchor(anchorInput);
   const priorAnchor = parseBootstrapAnchorLifecycleValue(priorAnchorValueInput);
   const selectedOwner = parseDestinationOwnerValue(selectedOwnerValueInput);
-  const selectedOwnerProposal = parseDestinationOwnerProposal(selectedOwnerProposalInput);
-  const priorOwnerRetiredProposal = parseDestinationOwnerProposal(priorOwnerRetiredProposalInput);
-  const reviewCore = parseDestinationOwnerSuccessorReviewCore(successorReviewCoreInput);
-  const successorPost = parseDestinationOwnerSuccessorPostSelection(successorPostSelectionInput);
-  const retirementAbsence = parseExternalDestinationAbsenceObservation(absenceInput);
   const issues = [
     ...prefixed("successorBranch:anchor", anchor),
     ...prefixed("successorBranch:priorAnchorValue", priorAnchor),
     ...prefixed("successorBranch:selectedOwnerValue", selectedOwner),
-    ...prefixed("successorBranch:selectedOwnerProposal", selectedOwnerProposal),
-    ...prefixed("successorBranch:priorOwnerRetiredProposal", priorOwnerRetiredProposal),
-    ...prefixed("successorBranch:reviewCore", reviewCore),
-    ...prefixed("successorBranch:successorPost", successorPost),
-    ...prefixed("successorBranch:retirementAbsence", retirementAbsence),
+    ...validateSuccessorRetirementChronology(
+      priorOwnerRetiredProposalInput,
+      successorReviewCoreInput,
+      selectedOwnerProposalInput,
+      successorPostSelectionInput,
+      absenceInput,
+    ),
     ...removeLocalProvenanceGuard(
       validateBootstrapRetirementBinding(
         anchorInput,
@@ -354,23 +390,6 @@ export function validateBootstrapSuccessorActiveRetirementBinding(
       selectedOwner.value.lifecycle !== "ACTIVE"
     )
       issues.push("successorBranch:not-active-successor");
-  }
-  if (
-    selectedOwnerProposal.ok &&
-    priorOwnerRetiredProposal.ok &&
-    reviewCore.ok &&
-    successorPost.ok &&
-    retirementAbsence.ok
-  ) {
-    const review = reviewCore.value.independentReview as ContractRecord;
-    if (String(review.reviewedAt) < String(priorOwnerRetiredProposal.value.proposedAt))
-      issues.push("successorChronology:review-before-prior-retired");
-    if (String(selectedOwnerProposal.value.proposedAt) < String(review.reviewedAt))
-      issues.push("successorChronology:active-before-review");
-    if (String(successorPost.value.observedAt) < String(selectedOwnerProposal.value.proposedAt))
-      issues.push("successorChronology:post-before-active");
-    if (String(retirementAbsence.value.observedAt) < String(successorPost.value.observedAt))
-      issues.push("successorChronology:absence-before-post");
   }
   return Object.freeze([...new Set(issues)].sort());
 }
@@ -433,11 +452,13 @@ export function validateBootstrapConsumedRetirementBinding(
   ownerActiveProposalInput: unknown,
   consumptionReceiptInput: unknown,
 ): readonly string[] {
+  const anchor = parseBootstrapAnchor(anchorInput);
   const priorAnchor = parseBootstrapAnchorLifecycleValue(priorAnchorValueInput);
   const selectedOwner = parseDestinationOwnerValue(selectedOwnerValueInput);
   const retirementAbsence = parseExternalDestinationAbsenceObservation(absenceInput);
   const consumptionReceipt = parseBootstrapAnchorConsumptionReceipt(consumptionReceiptInput);
   const issues = [
+    ...prefixed("consumedBranch:anchor", anchor),
     ...prefixed("consumedBranch:priorAnchorValue", priorAnchor),
     ...prefixed("consumedBranch:selectedOwnerValue", selectedOwner),
     ...prefixed("consumedBranch:retirementAbsence", retirementAbsence),
@@ -515,6 +536,17 @@ export function validateBootstrapConsumedRetirementBinding(
   if (priorAnchor.ok && selectedOwner.ok) {
     if (priorAnchor.value.lifecycle !== "CONSUMED" || selectedOwner.value.lifecycle !== "CONSUMED")
       issues.push("consumedBranch:not-consumed");
+  }
+  if (anchor.ok && anchor.value.successorReviewCoreDigest !== null) {
+    issues.push(
+      ...validateSuccessorRetirementChronology(
+        priorOwnerProposalInput,
+        successorReviewCoreInput,
+        ownerActiveProposalInput,
+        successorPostSelectionInput,
+        absenceInput,
+      ),
+    );
   }
   if (retirementAbsence.ok && consumptionReceipt.ok) {
     if (String(retirementAbsence.value.observedAt) < String(consumptionReceipt.value.consumedAt))

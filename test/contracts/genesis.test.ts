@@ -70,6 +70,10 @@ function fixture(
     tipDigest: string;
     valueDigest: string;
   } | null = null,
+  timing: {
+    selectedOwnerProposedAt?: string;
+    successorPostObservedAt?: string;
+  } = {},
 ) {
   const physical = {
     ancestorObjectIdentityDigest: d("1"),
@@ -215,7 +219,7 @@ function fixture(
     priorReceiptDigest: successorReviewCoreDigest === null ? null : successorPrior?.proposalDigest,
     priorTipDigest: successorReviewCoreDigest === null ? null : successorPrior?.tipDigest,
     priorValueDigest: successorReviewCoreDigest === null ? null : successorPrior?.valueDigest,
-    proposedAt: "2026-08-19T12:00:01.000Z",
+    proposedAt: timing.selectedOwnerProposedAt ?? "2026-08-19T12:00:01.000Z",
     schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
     source: successorReviewCoreDigest === null ? "BOOTSTRAP_GENESIS" : "SUCCESSOR_REVIEW",
     successorValueDigest: computeDestinationOwnerValueDigest(ownerValue),
@@ -324,7 +328,7 @@ function fixture(
       ? null
       : {
           destinationLockCustodyObservationDigest: d("c"),
-          observedAt: "2026-08-19T12:00:02.000Z",
+          observedAt: timing.successorPostObservedAt ?? "2026-08-19T12:00:02.000Z",
           proposalReadbackDigest: canonicalDigest(ownerProposal),
           reviewCoreDigest: successorReviewCoreDigest,
           schemaVersion:
@@ -601,7 +605,14 @@ function fixture(
   };
 }
 
-function successorFixture() {
+function successorFixture(
+  timing: {
+    priorRetiredProposedAt?: string;
+    reviewedAt?: string;
+    selectedOwnerProposedAt?: string;
+    successorPostObservedAt?: string;
+  } = {},
+) {
   const seed = fixture();
   const priorInstallationId = "018f0f4d-7b2d-7a14-8a2b-123456789abc";
   const priorProjectId = "018f0f4d-7b2d-7a15-8a2b-123456789abc";
@@ -682,7 +693,7 @@ function successorFixture() {
     priorReceiptDigest: priorActiveReceiptDigest,
     priorTipDigest: priorActiveTipDigest,
     priorValueDigest: priorActiveValueDigest,
-    proposedAt: "2026-08-19T11:10:00.000Z",
+    proposedAt: timing.priorRetiredProposedAt ?? "2026-08-19T11:10:00.000Z",
     schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
     source: "ANCHOR_RETIRED",
     successorValueDigest: computeDestinationOwnerValueDigest(priorOwnerValue),
@@ -728,7 +739,7 @@ function successorFixture() {
     authorIdentityDigest: d("e"),
     candidateDigest: d("0"),
     reviewReceiptDigest: d("f"),
-    reviewedAt: "2026-08-19T11:20:00.000Z",
+    reviewedAt: timing.reviewedAt ?? "2026-08-19T11:20:00.000Z",
     reviewerIdentityDigest: d("1"),
     schemaVersion: "destination-owner-independent-review/v1",
   };
@@ -751,11 +762,15 @@ function successorFixture() {
     },
   };
   const reviewCoreDigest = computeDestinationOwnerSuccessorReviewCoreDigest(successorReviewCore);
-  const base = fixture(reviewCoreDigest, {
-    proposalDigest: priorOwnerReceiptDigest,
-    tipDigest: priorOwnerTipDigest,
-    valueDigest: priorOwnerValueDigest,
-  });
+  const base = fixture(
+    reviewCoreDigest,
+    {
+      proposalDigest: priorOwnerReceiptDigest,
+      tipDigest: priorOwnerTipDigest,
+      valueDigest: priorOwnerValueDigest,
+    },
+    timing,
+  );
   const successorPostSelection = base.intentExpected.successorPostSelectionReceipt!;
   const successorReviewExpected = {
     authorIdentityDigest: independentReview.authorIdentityDigest,
@@ -925,6 +940,7 @@ function rebuildActiveRelease(
 
 function consumptionFixture(
   base: ReturnType<typeof fixture> | ReturnType<typeof successorFixture> = fixture(),
+  timing: { consumedAt?: string } = {},
 ) {
   const anchorDigest = computeBootstrapAnchorDigest(base.anchor);
   const coreDigest = computeBootstrapGenesisCoreDigest(base.core);
@@ -1024,7 +1040,7 @@ function consumptionFixture(
     anchorDigest,
     bootstrapGenesisCoreDigest: coreDigest,
     bootstrapTransactionId: base.anchor.bootstrapTransactionId,
-    consumedAt: "2026-08-19T12:07:00.000Z",
+    consumedAt: timing.consumedAt ?? "2026-08-19T12:07:00.000Z",
     custodyInstanceDigest: base.anchor.custodyInstanceDigest,
     destinationOwnerActiveReceiptDigest: ownerActiveReceiptDigest,
     destinationOwnerActiveTipDigest: ownerActiveTipDigest,
@@ -1270,11 +1286,14 @@ function validateSelection(f: ReturnType<typeof selectionFixture>) {
   );
 }
 
-function consumedRetirementFixture(base: ReturnType<typeof selectionFixture> = selectionFixture()) {
+function consumedRetirementFixture(
+  base: ReturnType<typeof selectionFixture> = selectionFixture(),
+  timing: { retirementAbsenceObservedAt?: string } = {},
+) {
   const anchorDigest = computeBootstrapAnchorDigest(base.anchor);
   const retirementAbsence = {
     ...base.absence,
-    observedAt: "2026-08-19T12:08:00.000Z",
+    observedAt: timing.retirementAbsenceObservedAt ?? "2026-08-19T12:08:00.000Z",
     reason: "DESTINATION_STATE_ROOT_ABSENT",
   };
   const destinationAbsenceDigest =
@@ -1434,6 +1453,24 @@ function consumedRetirementFixture(base: ReturnType<typeof selectionFixture> = s
     teardownExpected,
     teardownReceipt,
   };
+}
+
+function successorConsumedRetirementFixture(
+  timing: Parameters<typeof successorFixture>[0] & {
+    consumedAt?: string;
+    retirementAbsenceObservedAt?: string;
+  } = {},
+) {
+  const consumptionTiming =
+    timing.consumedAt === undefined ? {} : { consumedAt: timing.consumedAt };
+  const retirementTiming =
+    timing.retirementAbsenceObservedAt === undefined
+      ? {}
+      : { retirementAbsenceObservedAt: timing.retirementAbsenceObservedAt };
+  return consumedRetirementFixture(
+    selectionFixture(consumptionFixture(successorFixture(timing), consumptionTiming)),
+    retirementTiming,
+  );
 }
 
 function validateConsumedRetirement(f: ReturnType<typeof consumedRetirementFixture>) {
@@ -2257,12 +2294,74 @@ describe("authority-history genesis selection evidence", () => {
 describe("consumed retirement provenance", () => {
   test.each([
     ["genesis", consumedRetirementFixture(selectionFixture(consumptionFixture(fixture())))],
-    [
-      "successor",
-      consumedRetirementFixture(selectionFixture(consumptionFixture(successorFixture()))),
-    ],
+    ["successor", successorConsumedRetirementFixture()],
   ] as const)("accepts the complete %s-origin CONSUMED retirement", (_branch, f) => {
     expect(validateConsumedRetirement(f)).toEqual([]);
+  });
+
+  test.each([
+    [
+      "review before prior RETIRED",
+      { reviewedAt: "2026-08-19T11:09:00.000Z" },
+      "successorChronology:review-before-prior-retired",
+    ],
+    [
+      "ACTIVE before review",
+      { selectedOwnerProposedAt: "2026-08-19T11:19:00.000Z" },
+      "successorChronology:active-before-review",
+    ],
+    [
+      "post-selection before ACTIVE",
+      { successorPostObservedAt: "2026-08-19T12:00:00.000Z" },
+      "successorChronology:post-before-active",
+    ],
+    [
+      "retirement absence before post-selection",
+      { successorPostObservedAt: "2026-08-19T12:08:30.000Z" },
+      "successorChronology:absence-before-post",
+    ],
+  ] as const)("refuses fully rebuilt successor chronology: %s", (_case, timing, issue) => {
+    expect(validateConsumedRetirement(successorConsumedRetirementFixture(timing))).toEqual([issue]);
+  });
+
+  test.each([
+    [
+      "prior RETIRED equals review",
+      {
+        priorRetiredProposedAt: "2026-08-19T11:10:00.000Z",
+        reviewedAt: "2026-08-19T11:10:00.000Z",
+      },
+    ],
+    [
+      "review equals ACTIVE",
+      {
+        reviewedAt: "2026-08-19T11:20:00.000Z",
+        selectedOwnerProposedAt: "2026-08-19T11:20:00.000Z",
+      },
+    ],
+    [
+      "ACTIVE equals post-selection",
+      {
+        selectedOwnerProposedAt: "2026-08-19T12:00:01.000Z",
+        successorPostObservedAt: "2026-08-19T12:00:01.000Z",
+      },
+    ],
+    [
+      "post-selection equals retirement absence",
+      {
+        successorPostObservedAt: "2026-08-19T12:08:00.000Z",
+        retirementAbsenceObservedAt: "2026-08-19T12:08:00.000Z",
+      },
+    ],
+    [
+      "consumption equals retirement absence",
+      {
+        consumedAt: "2026-08-19T12:08:00.000Z",
+        retirementAbsenceObservedAt: "2026-08-19T12:08:00.000Z",
+      },
+    ],
+  ] as const)("accepts the inclusive chronology boundary: %s", (_case, timing) => {
+    expect(validateConsumedRetirement(successorConsumedRetirementFixture(timing))).toEqual([]);
   });
 
   test("refuses substituted Dgse, E0/consumption, and retirement chronology", () => {
