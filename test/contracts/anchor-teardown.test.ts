@@ -453,7 +453,14 @@ function retirementFixture(
   };
 }
 
-function successorActiveRetirementFixture() {
+function successorActiveRetirementFixture(
+  times: {
+    absenceObservedAt?: string;
+    activeProposedAt?: string;
+    postObservedAt?: string;
+    reviewedAt?: string;
+  } = {},
+) {
   const prior = retirementFixture();
   const successorInstallationId = "018f0f4d-7b2d-7a21-9a2b-123456789abc";
   const successorProjectId = "018f0f4d-7b2d-7a22-aa2b-123456789abc";
@@ -483,7 +490,7 @@ function successorActiveRetirementFixture() {
     authorIdentityDigest: d("d"),
     candidateDigest: d("0"),
     reviewReceiptDigest: d("e"),
-    reviewedAt: "2026-08-19T12:05:00.000Z",
+    reviewedAt: times.reviewedAt ?? "2026-08-19T12:05:00.000Z",
     reviewerIdentityDigest: d("f"),
     schemaVersion: "destination-owner-independent-review/v1",
   };
@@ -535,7 +542,7 @@ function successorActiveRetirementFixture() {
     priorReceiptDigest: computeDestinationOwnerProposalDigest(prior.ownerRetiredProposal),
     priorTipDigest: computeDestinationOwnerTipDigest(prior.ownerRetiredTip),
     priorValueDigest: computeDestinationOwnerValueDigest(prior.ownerRetiredValue),
-    proposedAt: "2026-08-19T12:06:00.000Z",
+    proposedAt: times.activeProposedAt ?? "2026-08-19T12:06:00.000Z",
     schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
     source: "SUCCESSOR_REVIEW",
     successorValueDigest: selectedOwnerValueDigest,
@@ -565,7 +572,7 @@ function successorActiveRetirementFixture() {
   const observed = observation(physical);
   const missing = {
     ...absence(physical, observed),
-    observedAt: "2026-08-19T12:08:00.000Z",
+    observedAt: times.absenceObservedAt ?? "2026-08-19T12:08:00.000Z",
   };
   const destinationAbsenceDigest = computeExternalDestinationAbsenceObservationDigest(missing);
   const lifecycleArchive = {
@@ -641,7 +648,7 @@ function successorActiveRetirementFixture() {
   const successorPost = {
     destinationLockCustodyObservationDigest:
       successorPostExpected.destinationLockCustodyObservationDigest,
-    observedAt: "2026-08-19T12:07:00.000Z",
+    observedAt: times.postObservedAt ?? "2026-08-19T12:07:00.000Z",
     proposalReadbackDigest: successorPostExpected.proposalReadbackDigest,
     reviewCoreDigest,
     schemaVersion: "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
@@ -1195,24 +1202,26 @@ describe("bootstrap retirement composition", () => {
         successorPost: { ...f.successorPost, reviewCoreDigest: d("0") },
       }),
     ).toContain("successorPostBinding:reviewCoreDigest:mismatch");
-    expect(
-      validateSuccessorActiveRetirement({
-        ...f,
-        reviewCore: {
-          ...f.reviewCore,
-          independentReview: {
-            ...f.reviewCore.independentReview,
-            reviewedAt: "2026-08-19T12:03:00.000Z",
-          },
-        },
-      }),
-    ).toContain("successorChronology:review-before-prior-retired");
-    expect(
-      validateSuccessorActiveRetirement({
-        ...f,
-        successorPost: { ...f.successorPost, observedAt: "2026-08-19T12:09:30.000Z" },
-      }),
-    ).toContain("successorChronology:absence-before-post");
+  });
+
+  test.each([
+    [{ reviewedAt: "2026-08-19T12:03:00.000Z" }, "successorChronology:review-before-prior-retired"],
+    [{ activeProposedAt: "2026-08-19T12:04:30.000Z" }, "successorChronology:active-before-review"],
+    [{ postObservedAt: "2026-08-19T12:05:30.000Z" }, "successorChronology:post-before-active"],
+    [{ absenceObservedAt: "2026-08-19T12:06:30.000Z" }, "successorChronology:absence-before-post"],
+  ] as const)("refuses the fully rebuilt reverse chronology %s", (times, issue) => {
+    expect(validateSuccessorActiveRetirement(successorActiveRetirementFixture(times))).toEqual([
+      issue,
+    ]);
+  });
+
+  test.each([
+    [{ reviewedAt: "2026-08-19T12:04:00.000Z" }],
+    [{ activeProposedAt: "2026-08-19T12:05:00.000Z" }],
+    [{ postObservedAt: "2026-08-19T12:06:00.000Z" }],
+    [{ absenceObservedAt: "2026-08-19T12:07:00.000Z" }],
+  ] as const)("accepts the inclusive chronology boundary %s", (times) => {
+    expect(validateSuccessorActiveRetirement(successorActiveRetirementFixture(times))).toEqual([]);
   });
 
   test("is total for malformed and hostile retirement inputs", () => {
