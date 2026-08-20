@@ -745,8 +745,11 @@ fence history starts only at `PREPARED` and has at most the single
 - a repeated request for the already-selected same state is `NO_APPEND`; and
 - cleanup history contains one through six records, while fence history
   contains exactly one or two. Any extension beyond those graph bounds,
-  self-loop, fork, gap, reorder, truncation, wrong root, wrong prior `Dv`, or
-  unsafe ordinal refuses.
+  self-loop, fork, gap, reorder, start/interior omission, wrong root, wrong
+  prior `Dv`, or unsafe ordinal refuses. A valid shorter prefix is a valid
+  earlier history state; this structural validator cannot claim that it is the
+  current complete suffix. Tail completeness/currentness is deferred to the
+  authenticated common-CAS selected-evidence locator decision.
 
 For a transaction's ordinal-zero head, the generic proposal prior triple is
 null only if the canonical tip has never been selected. If an earlier
