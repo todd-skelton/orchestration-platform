@@ -340,6 +340,8 @@ function retirementFixture(
   suppliedBase?: ReturnType<typeof fixture>,
 ) {
   const base = suppliedBase ?? fixture(lifecycle, successorReviewCoreDigest);
+  const anchorRetiredAt = suppliedBase ? "2026-08-19T12:10:00.000Z" : "2026-08-19T12:03:00.000Z";
+  const ownerRetiredAt = suppliedBase ? "2026-08-19T12:11:00.000Z" : "2026-08-19T12:04:00.000Z";
   const anchorDigest = computeBootstrapAnchorDigest(base.anchorRecord);
   const teardownReceiptDigest = computeBootstrapAnchorTeardownReceiptDigest(base.receipt);
   const anchorRetiredValue = {
@@ -362,7 +364,7 @@ function retirementFixture(
     priorReceiptDigest: base.priorAnchor.proposalDigest,
     priorTipDigest: base.priorAnchor.tipDigest,
     priorValueDigest: base.priorAnchor.valueDigest,
-    proposedAt: "2026-08-19T12:03:00.000Z",
+    proposedAt: anchorRetiredAt,
     schemaVersion: "state-mutation-bootstrap-anchor-cas-proposal/v1",
     source: "TEARDOWN",
     successorValueDigest: anchorRetiredValueDigest,
@@ -421,7 +423,7 @@ function retirementFixture(
     priorReceiptDigest: base.selectedOwner.proposalDigest,
     priorTipDigest: base.selectedOwner.tipDigest,
     priorValueDigest: base.selectedOwner.valueDigest,
-    proposedAt: "2026-08-19T12:04:00.000Z",
+    proposedAt: ownerRetiredAt,
     schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
     source: "ANCHOR_RETIRED",
     successorValueDigest: ownerRetiredValueDigest,
@@ -481,7 +483,7 @@ function successorActiveRetirementFixture() {
     authorIdentityDigest: d("d"),
     candidateDigest: d("0"),
     reviewReceiptDigest: d("e"),
-    reviewedAt: "2026-08-19T11:58:00.000Z",
+    reviewedAt: "2026-08-19T12:05:00.000Z",
     reviewerIdentityDigest: d("f"),
     schemaVersion: "destination-owner-independent-review/v1",
   };
@@ -533,7 +535,7 @@ function successorActiveRetirementFixture() {
     priorReceiptDigest: computeDestinationOwnerProposalDigest(prior.ownerRetiredProposal),
     priorTipDigest: computeDestinationOwnerTipDigest(prior.ownerRetiredTip),
     priorValueDigest: computeDestinationOwnerValueDigest(prior.ownerRetiredValue),
-    proposedAt: "2026-08-19T11:59:00.000Z",
+    proposedAt: "2026-08-19T12:06:00.000Z",
     schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
     source: "SUCCESSOR_REVIEW",
     successorValueDigest: selectedOwnerValueDigest,
@@ -561,11 +563,14 @@ function successorActiveRetirementFixture() {
   };
   const physical = identity();
   const observed = observation(physical);
-  const missing = absence(physical, observed);
+  const missing = {
+    ...absence(physical, observed),
+    observedAt: "2026-08-19T12:08:00.000Z",
+  };
   const destinationAbsenceDigest = computeExternalDestinationAbsenceObservationDigest(missing);
   const lifecycleArchive = {
     anchorDigest: computeBootstrapAnchorDigest(anchorRecord),
-    archivedAt: "2026-08-19T12:02:00.000Z",
+    archivedAt: "2026-08-19T12:09:00.000Z",
     archivedReceiptDigest: priorAnchor.proposalDigest,
     archivedTipDigest: priorAnchor.tipDigest,
     archivedValueDigest: priorAnchor.valueDigest,
@@ -636,7 +641,7 @@ function successorActiveRetirementFixture() {
   const successorPost = {
     destinationLockCustodyObservationDigest:
       successorPostExpected.destinationLockCustodyObservationDigest,
-    observedAt: "2026-08-19T12:00:00.000Z",
+    observedAt: "2026-08-19T12:07:00.000Z",
     proposalReadbackDigest: successorPostExpected.proposalReadbackDigest,
     reviewCoreDigest,
     schemaVersion: "state-mutation-destination-owner-successor-review-post-selection-receipt/v1",
@@ -1190,6 +1195,24 @@ describe("bootstrap retirement composition", () => {
         successorPost: { ...f.successorPost, reviewCoreDigest: d("0") },
       }),
     ).toContain("successorPostBinding:reviewCoreDigest:mismatch");
+    expect(
+      validateSuccessorActiveRetirement({
+        ...f,
+        reviewCore: {
+          ...f.reviewCore,
+          independentReview: {
+            ...f.reviewCore.independentReview,
+            reviewedAt: "2026-08-19T12:03:00.000Z",
+          },
+        },
+      }),
+    ).toContain("successorChronology:review-before-prior-retired");
+    expect(
+      validateSuccessorActiveRetirement({
+        ...f,
+        successorPost: { ...f.successorPost, observedAt: "2026-08-19T12:09:30.000Z" },
+      }),
+    ).toContain("successorChronology:absence-before-post");
   });
 
   test("is total for malformed and hostile retirement inputs", () => {

@@ -26,8 +26,10 @@ import {
   parseDestinationOwnerValue,
   validateDestinationOwnerMutationBinding,
 } from "./owner.js";
-import { type ParseResult } from "./runtime.js";
+import { type ContractRecord, type ParseResult } from "./runtime.js";
 import {
+  parseDestinationOwnerSuccessorPostSelection,
+  parseDestinationOwnerSuccessorReviewCore,
   validateDestinationOwnerSuccessorPostSelectionBinding,
   validateDestinationOwnerSuccessorReviewCoreBinding,
 } from "./successor.js";
@@ -284,10 +286,20 @@ export function validateBootstrapSuccessorActiveRetirementBinding(
   const anchor = parseBootstrapAnchor(anchorInput);
   const priorAnchor = parseBootstrapAnchorLifecycleValue(priorAnchorValueInput);
   const selectedOwner = parseDestinationOwnerValue(selectedOwnerValueInput);
+  const selectedOwnerProposal = parseDestinationOwnerProposal(selectedOwnerProposalInput);
+  const priorOwnerRetiredProposal = parseDestinationOwnerProposal(priorOwnerRetiredProposalInput);
+  const reviewCore = parseDestinationOwnerSuccessorReviewCore(successorReviewCoreInput);
+  const successorPost = parseDestinationOwnerSuccessorPostSelection(successorPostSelectionInput);
+  const retirementAbsence = parseExternalDestinationAbsenceObservation(absenceInput);
   const issues = [
     ...prefixed("successorBranch:anchor", anchor),
     ...prefixed("successorBranch:priorAnchorValue", priorAnchor),
     ...prefixed("successorBranch:selectedOwnerValue", selectedOwner),
+    ...prefixed("successorBranch:selectedOwnerProposal", selectedOwnerProposal),
+    ...prefixed("successorBranch:priorOwnerRetiredProposal", priorOwnerRetiredProposal),
+    ...prefixed("successorBranch:reviewCore", reviewCore),
+    ...prefixed("successorBranch:successorPost", successorPost),
+    ...prefixed("successorBranch:retirementAbsence", retirementAbsence),
     ...removeLocalProvenanceGuard(
       validateBootstrapRetirementBinding(
         anchorInput,
@@ -340,6 +352,23 @@ export function validateBootstrapSuccessorActiveRetirementBinding(
       selectedOwner.value.lifecycle !== "ACTIVE"
     )
       issues.push("successorBranch:not-active-successor");
+  }
+  if (
+    selectedOwnerProposal.ok &&
+    priorOwnerRetiredProposal.ok &&
+    reviewCore.ok &&
+    successorPost.ok &&
+    retirementAbsence.ok
+  ) {
+    const review = reviewCore.value.independentReview as ContractRecord;
+    if (String(review.reviewedAt) < String(priorOwnerRetiredProposal.value.proposedAt))
+      issues.push("successorChronology:review-before-prior-retired");
+    if (String(selectedOwnerProposal.value.proposedAt) < String(review.reviewedAt))
+      issues.push("successorChronology:active-before-review");
+    if (String(successorPost.value.observedAt) < String(selectedOwnerProposal.value.proposedAt))
+      issues.push("successorChronology:post-before-active");
+    if (String(retirementAbsence.value.observedAt) < String(successorPost.value.observedAt))
+      issues.push("successorChronology:absence-before-post");
   }
   return Object.freeze([...new Set(issues)].sort());
 }
