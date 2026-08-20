@@ -546,13 +546,15 @@ authority-epoch `Dt/Dv/Dr`, `VALUE_PROPOSED`, `SELECT`, and the exact external
 reviewed-bootstrap `producerDigest = Dsc`. E0 recomputes that `Dsc` from the
 same exact `BOOTSTRAP_INSTALL` reviewed operation/successor core it consumes;
 the digest is never supplied by the candidate, host, or active-release value. The
-generic proposal contract admits this bootstrap producer kind only for the
-initial `ACTIVE_RELEASE` selection and the already-decided initial
-`STATE_MUTATION_AUTHORITY_ROTATION` selection. Every later active-release
-mutation requires `producerKind=SELECTED_EPOCH`, a non-null exact prior selected
-triple at the same `Dp`, and the non-null selected stable-predecessor authority
-epoch triple. A candidate's own verdict can therefore enter neither its initial
-selection nor its later promotion.
+generic proposal contract admits this bootstrap producer kind only through the
+closed reviewed-bootstrap branches below. They include the initial
+`ACTIVE_RELEASE` and `STATE_MUTATION_AUTHORITY_ROTATION` selections and the
+bounded pre-E0 recovery/abort transactions needed to reach or safely decline
+that genesis. Every later active-release mutation requires
+`producerKind=SELECTED_EPOCH`, a non-null exact prior selected triple at the
+same `Dp`, and the non-null selected stable-predecessor authority epoch triple.
+A candidate's own verdict can therefore enter neither its initial selection nor
+its later promotion.
 
 E0 consumes the actual closed active-release value, proposal, and tip rather
 than a caller-supplied four-digest expectation. It recomputes `Dp/Dv/Dr/Dt`, the
@@ -578,6 +580,77 @@ digest, receipt, capability, self epoch, cleanup/gate/fence record, or recovery
 authority. Release cleanup, recovery-fence, cleanup-archive, and later promotion
 lifecycle schemas remain separately unauthorized until their own literal
 ledgers pass removal review.
+
+### Reviewed-bootstrap pre-E0 producer boundary
+
+Before E0 is selected, no stable authority epoch exists. Nevertheless the
+reviewed bootstrap must durably create and consume its one-use recovery
+authorization before the first destination mutation, and it must be able to
+revoke and archive that exact transaction if the canonical bootstrap abort
+command wins before the mutation. Requiring `SELECTED_EPOCH` for those records
+is impossible, while manufacturing a bootstrap epoch would let the candidate
+certify the authority intended to constrain it.
+
+The sole pre-E0 producer is therefore the already-reviewed bootstrap successor
+core `Dsc`. Every admitted proposal uses
+`producerKind=REVIEWED_BOOTSTRAP_GENESIS`, `producerDigest = Dsc`, and an
+all-null authority-epoch `Dt/Dv/Dr` triple. The validator recomputes `Dsc` from
+the actual closed `BOOTSTRAP_INSTALL` reviewed operation and successor core,
+including `G`, authority `Dp`, installation/project/state-root, target custody,
+reviewed installer, release manifest/installed bytes/subject, and independent
+review. A copied digest, candidate verdict, host assertion, unsigned receipt,
+or caller-provided producer expectation is never sufficient.
+
+The closed semantic branches are exactly:
+
+| Pointer kind                        | Admitted reviewed-bootstrap branch                                                                                                                                                | Exact prior rule                                                                                                                                                      |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RECOVERY_AUTHORIZATION_STATE`      | initial `CREATED`; normal bootstrap `CREATED -> CONSUMED`; pre-mutation abort from `CREATED` or `CONSUMED` to `REVOKED`; exact abort archive/tombstone completion after `REVOKED` | initial `CREATED` has a null prior; every later branch carries the complete immediately selected prior `Dt/Dv/Dr` at the same transaction-scoped `Dp`                 |
+| `ACTIVATION_CLEANUP_GATE`           | initial `PENDING/NOT_PUBLISHED`; pre-mutation abort `PENDING/NOT_PUBLISHED -> ABORTING/NOT_PUBLISHED -> COMPLETE/NOT_PUBLISHED`; exact abort archive/tombstone completion         | initial `PENDING/NOT_PUBLISHED` has a null prior; every later branch carries the complete immediately selected prior triple at the same installation-scoped gate `Dp` |
+| `ACTIVATION_CLEANUP_ARCHIVE_HEAD`   | the exact terminal bootstrap-abort archive-head selection after authorization `REVOKED`, gate `COMPLETE/NOT_PUBLISHED`, destination absence, and all required archive read-backs  | null only when the installation archive head has never been selected; otherwise the complete immediately selected archive-head prior triple is required               |
+| `ACTIVE_RELEASE`                    | the already-decided initial N0 selection                                                                                                                                          | null, as fixed by the active-release ledger                                                                                                                           |
+| `STATE_MUTATION_AUTHORITY_ROTATION` | the already-decided initial E0 authority selection                                                                                                                                | null, as fixed by the genesis authority ledger                                                                                                                        |
+
+No other pointer kind, cleanup cell, lifecycle edge, publication state,
+recovery-fence state, release mutation, attachment, launch, reservation,
+attempt-log mutation, later cleanup, uninstall, or later transaction admits the
+reviewed-bootstrap producer. `ACTIVATION_RECOVERY_FENCE` is successor-only and
+always requires the selected stable predecessor. Pre-gate abort revokes and
+archives authorization without manufacturing a cleanup gate. Post-gate abort
+derives the same transaction and paths from the immutable
+`bootstrap-install-input/v1`, requires a fresh authoritative destination-
+absence observation proving that the first destination mutation has not
+occurred, and follows only the tabled `ABORTING` branch. Once the first
+destination mutation is observed, abort and every new recovery/gate/archive
+proposal under `Dsc` refuse; restart may only read back or idempotently finish
+the already-proposed same mutation and then recover forward to E0 from the
+selected `CONSUMED` authorization.
+
+These branches use the common deterministic `Dp`, `Dv`, mutation ID, `Dr`,
+`Dt`, constructed paths, conflict classification, and exact selected-tip
+read-back. They do **not** enter the ordinary selected-epoch
+`pointer-mutation-commit-evidence/v1`, mutation packet, or
+`POINTER_MUTATION_RUN_CURRENT` protocol: making that meta pointer the producer
+of the authority needed to select itself would reintroduce a cycle. The
+reviewed bootstrap installer instead re-drives the same deterministic proposal
+under the external destination/bootstrap lock and its existing immutable
+transaction journal. A moved input, different transaction, changed prior,
+different bytes, conflict, unknown read-back, or incomplete tuple refuses; it
+never resolves a conflict by age or by writing another proposal.
+
+After E0 selection, every new mutation of these families requires the exact
+selected stable authority epoch and the ordinary run-current/commit protocol.
+Already-selected reviewed-bootstrap records remain immutable historical
+evidence but grant no live handle. Public proposal bytes are evidence, not a
+capability: the reviewed installer or abort path must additionally hold the
+external target-bound grant, admitted custody and kernel exclusion required by
+ISS-020/ISS-022/ISS-027. Candidate N0, candidate N+1, a receipt, or knowledge of
+`Dsc` alone cannot perform the CAS.
+
+This section decides only the producer topology and branch boundary. The exact
+recovery-authorization, cleanup-gate, and cleanup-archive member ledgers and
+their composed equality matrices remain unauthorized until their own removal
+rounds pass; implementation may not infer those bytes from this branch table.
 
 - Bootstrap N0 is built by pinned GitHub Actions workflow bytes from an exact
   source revision, certified on all required OS runners, independently reviewed
