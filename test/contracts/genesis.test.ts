@@ -6,11 +6,13 @@ import {
   canonicalDigest,
   computeAuthorityHistoryRecordDigest,
   computeBootstrapAnchorDigest,
+  computeBootstrapAnchorLifecycleArchiveDigest,
   computeBootstrapAnchorConsumptionId,
   computeBootstrapAnchorConsumptionReceiptDigest,
   computeBootstrapAnchorMutationId,
   computeBootstrapAnchorProposalDigest,
   computeBootstrapAnchorTipDigest,
+  computeBootstrapAnchorTeardownReceiptDigest,
   computeBootstrapAnchorUseIntentDigest,
   computeBootstrapAnchorValueDigest,
   computeBootstrapDestinationIdentityDigest,
@@ -52,6 +54,7 @@ import {
   validateBootstrapGenesisCoreBinding,
   validateBootstrapGenesisPostSelectionBinding,
   validateBootstrapAnchorConsumptionBinding,
+  validateBootstrapConsumedRetirementBinding,
   validateGenesisSelectionEvidenceBinding,
 } from "../../packages/contracts/src/index.js";
 
@@ -1267,6 +1270,233 @@ function validateSelection(f: ReturnType<typeof selectionFixture>) {
   );
 }
 
+function consumedRetirementFixture(base: ReturnType<typeof selectionFixture> = selectionFixture()) {
+  const anchorDigest = computeBootstrapAnchorDigest(base.anchor);
+  const retirementAbsence = {
+    ...base.absence,
+    observedAt: "2026-08-19T12:08:00.000Z",
+    reason: "DESTINATION_STATE_ROOT_ABSENT",
+  };
+  const destinationAbsenceDigest =
+    computeExternalDestinationAbsenceObservationDigest(retirementAbsence);
+  const lifecycleArchive = {
+    anchorDigest,
+    archivedAt: "2026-08-19T12:09:00.000Z",
+    archivedReceiptDigest: computeBootstrapAnchorProposalDigest(base.anchorConsumedProposal),
+    archivedTipDigest: computeBootstrapAnchorTipDigest(base.anchorConsumedTip),
+    archivedValueDigest: computeBootstrapAnchorValueDigest(base.anchorConsumedValue),
+    destinationAbsenceDigest,
+    lifecycle: "CONSUMED",
+    schemaVersion: "state-mutation-bootstrap-anchor-lifecycle-archive/v1",
+  };
+  const teardownReceipt = {
+    anchorDigest,
+    destinationDigest: base.anchor.destinationDigest,
+    externalArchiveDigest: computeBootstrapAnchorLifecycleArchiveDigest(lifecycleArchive),
+    priorAnchorReceiptDigest: lifecycleArchive.archivedReceiptDigest,
+    priorAnchorTipDigest: lifecycleArchive.archivedTipDigest,
+    priorAnchorValueDigest: lifecycleArchive.archivedValueDigest,
+    processCustodyProofDigest: d("3"),
+    retirementTransition: "RETIRE_CONSUMED",
+    schemaVersion: "state-mutation-bootstrap-anchor-teardown-receipt/v1",
+    selectedOwnerReceiptDigest: computeDestinationOwnerProposalDigest(base.ownerConsumedProposal),
+    selectedOwnerTipDigest: computeDestinationOwnerTipDigest(base.ownerConsumedTip),
+    selectedOwnerValueDigest: computeDestinationOwnerValueDigest(base.ownerConsumedValue),
+    teardownEvidenceDigest: destinationAbsenceDigest,
+  };
+  const teardownReceiptDigest = computeBootstrapAnchorTeardownReceiptDigest(teardownReceipt);
+  const anchorRetiredValue = {
+    anchorDigest,
+    bootstrapGenesisCoreDigest: null,
+    lifecycle: "RETIRED",
+    lifecycleOrdinal: incrementCanonicalDecimal(base.anchorConsumedValue.lifecycleOrdinal),
+    schemaVersion: "state-mutation-bootstrap-anchor-lifecycle-value/v1",
+    selectedAuthorityPathInstanceDigest: null,
+    selectedAuthorityReceiptDigest: null,
+    selectedAuthorityTipDigest: null,
+    selectedAuthorityValueDigest: null,
+    selectionPostReceiptDigest: null,
+    teardownReceiptDigest,
+  };
+  const anchorRetiredValueDigest = computeBootstrapAnchorValueDigest(anchorRetiredValue);
+  const anchorRetiredProposalBase = {
+    anchorDigest,
+    mutationId: d("0"),
+    priorReceiptDigest: lifecycleArchive.archivedReceiptDigest,
+    priorTipDigest: lifecycleArchive.archivedTipDigest,
+    priorValueDigest: lifecycleArchive.archivedValueDigest,
+    proposedAt: "2026-08-19T12:10:00.000Z",
+    schemaVersion: "state-mutation-bootstrap-anchor-cas-proposal/v1",
+    source: "TEARDOWN",
+    successorValueDigest: anchorRetiredValueDigest,
+    transition: "RETIRE_CONSUMED",
+    transitionEvidenceDigest: teardownReceiptDigest,
+  };
+  const anchorRetiredProposal = {
+    ...anchorRetiredProposalBase,
+    mutationId: computeBootstrapAnchorMutationId(
+      base.anchor,
+      anchorRetiredProposalBase,
+      anchorRetiredValue,
+    ),
+  };
+  const anchorRetiredReceiptDigest = computeBootstrapAnchorProposalDigest(anchorRetiredProposal);
+  const anchorRetiredTip = {
+    anchorDigest,
+    proposalReceiptDigest: anchorRetiredReceiptDigest,
+    schemaVersion: "state-mutation-bootstrap-anchor-current-tip/v1",
+    valueDigest: anchorRetiredValueDigest,
+  };
+  const anchorRetiredTipDigest = computeBootstrapAnchorTipDigest(anchorRetiredTip);
+  const ownerArchive = {
+    anchorRetiredReceiptDigest,
+    anchorRetiredTipDigest,
+    anchorRetiredValueDigest,
+    destinationDigest: base.anchor.destinationDigest,
+    installationId: base.anchor.installationId,
+    observationDigest: destinationAbsenceDigest,
+    priorOwnerReceiptDigest: teardownReceipt.selectedOwnerReceiptDigest,
+    priorOwnerTipDigest: teardownReceipt.selectedOwnerTipDigest,
+    priorOwnerValueDigest: teardownReceipt.selectedOwnerValueDigest,
+    schemaVersion: "state-mutation-destination-owner-teardown-archive/v1",
+    teardownReceiptDigest,
+  };
+  const ownerArchiveDigest = computeDestinationOwnerTeardownArchiveDigest(ownerArchive);
+  const ownerRetiredValue = {
+    anchorDigest,
+    anchorReceiptDigest: anchorRetiredReceiptDigest,
+    anchorTipDigest: anchorRetiredTipDigest,
+    anchorValueDigest: anchorRetiredValueDigest,
+    destinationDigest: base.anchor.destinationDigest,
+    installationId: base.anchor.installationId,
+    lifecycle: "RETIRED",
+    ownerOrdinal: incrementCanonicalDecimal(base.ownerConsumedValue.ownerOrdinal),
+    schemaVersion: "state-mutation-destination-owner-value/v1",
+    successorReviewCoreDigest: null,
+    teardownArchiveDigest: ownerArchiveDigest,
+  };
+  const ownerRetiredValueDigest = computeDestinationOwnerValueDigest(ownerRetiredValue);
+  const ownerRetiredProposalBase = {
+    destinationDigest: base.anchor.destinationDigest,
+    mutationId: d("0"),
+    observationDigest: computePhysicalLocatorObservationDigest(base.observation),
+    positionDigest: computeDestinationOwnerPositionDigest(base.anchor.destinationDigest),
+    priorReceiptDigest: teardownReceipt.selectedOwnerReceiptDigest,
+    priorTipDigest: teardownReceipt.selectedOwnerTipDigest,
+    priorValueDigest: teardownReceipt.selectedOwnerValueDigest,
+    proposedAt: "2026-08-19T12:11:00.000Z",
+    schemaVersion: "state-mutation-destination-owner-cas-proposal/v1",
+    source: "ANCHOR_RETIRED",
+    successorValueDigest: ownerRetiredValueDigest,
+    transition: "RETIRE_CONSUMED",
+    transitionEvidenceDigest: ownerArchiveDigest,
+  };
+  const ownerRetiredProposal = {
+    ...ownerRetiredProposalBase,
+    mutationId: computeDestinationOwnerMutationId(ownerRetiredProposalBase, ownerRetiredValue),
+  };
+  const ownerRetiredReceiptDigest = computeDestinationOwnerProposalDigest(ownerRetiredProposal);
+  const ownerRetiredTip = {
+    destinationDigest: base.anchor.destinationDigest,
+    proposalReceiptDigest: ownerRetiredReceiptDigest,
+    schemaVersion: "state-mutation-destination-owner-current-tip/v1",
+    valueDigest: ownerRetiredValueDigest,
+  };
+  const retirementAbsenceExpected = {
+    ...base.absenceExpected,
+    reason: "DESTINATION_STATE_ROOT_ABSENT",
+  };
+  const teardownExpected = {
+    anchorDigest,
+    destinationAbsenceDigest,
+    destinationDigest: base.anchor.destinationDigest,
+    priorAnchorReceiptDigest: lifecycleArchive.archivedReceiptDigest,
+    priorAnchorTipDigest: lifecycleArchive.archivedTipDigest,
+    priorAnchorValueDigest: lifecycleArchive.archivedValueDigest,
+    processCustodyProofDigest: d("3"),
+    retirementTransition: "RETIRE_CONSUMED",
+    selectedOwnerReceiptDigest: teardownReceipt.selectedOwnerReceiptDigest,
+    selectedOwnerTipDigest: teardownReceipt.selectedOwnerTipDigest,
+    selectedOwnerValueDigest: teardownReceipt.selectedOwnerValueDigest,
+  };
+  return {
+    ...base,
+    anchorRetiredProposal,
+    anchorRetiredTip,
+    anchorRetiredValue,
+    lifecycleArchive,
+    ownerArchive,
+    ownerRetiredProposal,
+    ownerRetiredTip,
+    ownerRetiredValue,
+    retirementAbsence,
+    retirementAbsenceExpected,
+    teardownExpected,
+    teardownReceipt,
+  };
+}
+
+function validateConsumedRetirement(f: ReturnType<typeof consumedRetirementFixture>) {
+  return validateBootstrapConsumedRetirementBinding(
+    f.anchor,
+    f.anchorConsumedTip,
+    f.anchorConsumedValue,
+    f.anchorConsumedProposal,
+    f.ownerConsumedTip,
+    f.ownerConsumedValue,
+    f.ownerConsumedProposal,
+    f.physical,
+    f.observation,
+    f.retirementAbsence,
+    f.lifecycleArchive,
+    f.teardownReceipt,
+    f.retirementAbsenceExpected,
+    f.teardownExpected,
+    f.anchorRetiredTip,
+    f.anchorRetiredValue,
+    f.anchorRetiredProposal,
+    f.ownerArchive,
+    f.ownerRetiredTip,
+    f.ownerRetiredValue,
+    f.ownerRetiredProposal,
+    f.evidence,
+    f.genesisInput,
+    f.history,
+    f.intent,
+    f.core,
+    f.operation,
+    f.successorCore,
+    f.activeReleaseValue,
+    f.activeReleaseProposal,
+    f.activeReleaseTip,
+    f.globalIdentity,
+    f.priorOwnerTip,
+    f.priorOwnerValue,
+    f.priorOwnerProposal,
+    f.ownerTeardownArchive,
+    f.successorReviewCore,
+    f.successorReviewExpected,
+    f.successorPostSelection,
+    f.successorPostExpected,
+    f.physical,
+    f.observation,
+    f.absence,
+    f.intentExpected,
+    f.absenceExpected,
+    f.authorityValue,
+    f.proposal,
+    f.tip,
+    f.post,
+    f.anchorTip,
+    f.anchorValue,
+    f.anchorProposal,
+    f.ownerTip,
+    f.ownerValue,
+    f.ownerProposal,
+    f.receipt,
+  );
+}
+
 describe("bootstrap E0 core and post-selection", () => {
   test.each([
     ["genesis", fixture()],
@@ -2021,5 +2251,39 @@ describe("authority-history genesis selection evidence", () => {
     expect(validateSelection({ ...f, evidence: null as unknown as typeof f.evidence })).not.toEqual(
       [],
     );
+  });
+});
+
+describe("consumed retirement provenance", () => {
+  test.each([
+    ["genesis", consumedRetirementFixture(selectionFixture(consumptionFixture(fixture())))],
+    [
+      "successor",
+      consumedRetirementFixture(selectionFixture(consumptionFixture(successorFixture()))),
+    ],
+  ] as const)("accepts the complete %s-origin CONSUMED retirement", (_branch, f) => {
+    expect(validateConsumedRetirement(f)).toEqual([]);
+  });
+
+  test("refuses substituted Dgse, E0/consumption, and retirement chronology", () => {
+    const f = consumedRetirementFixture();
+    expect(
+      validateConsumedRetirement({
+        ...f,
+        evidence: { ...f.evidence, selectionPostReceiptDigest: d("0") },
+      }),
+    ).toContain("genesisSelectionBinding:selectionPostReceiptDigest:mismatch");
+    expect(
+      validateConsumedRetirement({
+        ...f,
+        receipt: { ...f.receipt, consumedAt: "2026-08-19T12:08:30.000Z" },
+      }),
+    ).toContain("consumedChronology:absence-before-consumption");
+    expect(
+      validateConsumedRetirement({
+        ...f,
+        ownerConsumedValue: { ...f.ownerConsumedValue, anchorTipDigest: d("1") },
+      }),
+    ).not.toEqual([]);
   });
 });

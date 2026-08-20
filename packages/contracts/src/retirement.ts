@@ -1,3 +1,4 @@
+import { parseBootstrapAnchorConsumptionReceipt } from "./consumption.js";
 import {
   computeBootstrapAnchorDigest,
   computeBootstrapAnchorProposalDigest,
@@ -33,6 +34,7 @@ import {
   validateDestinationOwnerSuccessorPostSelectionBinding,
   validateDestinationOwnerSuccessorReviewCoreBinding,
 } from "./successor.js";
+import { validateGenesisSelectionEvidenceBinding } from "./selection.js";
 import {
   parseBootstrapAnchorLifecycleArchive,
   computeBootstrapAnchorTeardownReceiptDigest,
@@ -369,6 +371,154 @@ export function validateBootstrapSuccessorActiveRetirementBinding(
       issues.push("successorChronology:post-before-active");
     if (String(retirementAbsence.value.observedAt) < String(successorPost.value.observedAt))
       issues.push("successorChronology:absence-before-post");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+export function validateBootstrapConsumedRetirementBinding(
+  anchorInput: unknown,
+  priorAnchorTipInput: unknown,
+  priorAnchorValueInput: unknown,
+  priorAnchorProposalInput: unknown,
+  selectedOwnerTipInput: unknown,
+  selectedOwnerValueInput: unknown,
+  selectedOwnerProposalInput: unknown,
+  physicalIdentityInput: unknown,
+  locatorObservationInput: unknown,
+  absenceInput: unknown,
+  lifecycleArchiveInput: unknown,
+  teardownReceiptInput: unknown,
+  absenceExpectedInput: unknown,
+  teardownExpectedInput: unknown,
+  anchorRetiredTipInput: unknown,
+  anchorRetiredValueInput: unknown,
+  anchorRetiredProposalInput: unknown,
+  ownerTeardownArchiveInput: unknown,
+  ownerRetiredTipInput: unknown,
+  ownerRetiredValueInput: unknown,
+  ownerRetiredProposalInput: unknown,
+  genesisSelectionEvidenceInput: unknown,
+  genesisBootstrapInput: unknown,
+  historyRecordInput: unknown,
+  useIntentInput: unknown,
+  genesisCoreInput: unknown,
+  reviewedOperationInput: unknown,
+  successorCoreInput: unknown,
+  activeReleaseValueInput: unknown,
+  activeReleaseProposalInput: unknown,
+  activeReleaseTipInput: unknown,
+  globalIdentityInput: unknown,
+  priorOwnerTipInput: unknown,
+  priorOwnerValueInput: unknown,
+  priorOwnerProposalInput: unknown,
+  priorOwnerTeardownArchiveInput: unknown,
+  successorReviewCoreInput: unknown,
+  successorReviewExpectedInput: unknown,
+  successorPostSelectionInput: unknown,
+  successorPostExpectedInput: unknown,
+  e0PhysicalIdentityInput: unknown,
+  e0LocatorObservationInput: unknown,
+  e0AbsenceInput: unknown,
+  intentExpectedInput: unknown,
+  e0AbsenceExpectedInput: unknown,
+  authorityValueInput: unknown,
+  runtimeProposalInput: unknown,
+  runtimeTipInput: unknown,
+  runtimePostInput: unknown,
+  anchorActiveTipInput: unknown,
+  anchorActiveValueInput: unknown,
+  anchorActiveProposalInput: unknown,
+  ownerActiveTipInput: unknown,
+  ownerActiveValueInput: unknown,
+  ownerActiveProposalInput: unknown,
+  consumptionReceiptInput: unknown,
+): readonly string[] {
+  const priorAnchor = parseBootstrapAnchorLifecycleValue(priorAnchorValueInput);
+  const selectedOwner = parseDestinationOwnerValue(selectedOwnerValueInput);
+  const retirementAbsence = parseExternalDestinationAbsenceObservation(absenceInput);
+  const consumptionReceipt = parseBootstrapAnchorConsumptionReceipt(consumptionReceiptInput);
+  const issues = [
+    ...prefixed("consumedBranch:priorAnchorValue", priorAnchor),
+    ...prefixed("consumedBranch:selectedOwnerValue", selectedOwner),
+    ...prefixed("consumedBranch:retirementAbsence", retirementAbsence),
+    ...prefixed("consumedBranch:consumptionReceipt", consumptionReceipt),
+    ...removeLocalProvenanceGuard(
+      validateBootstrapRetirementBinding(
+        anchorInput,
+        priorAnchorTipInput,
+        priorAnchorValueInput,
+        priorAnchorProposalInput,
+        selectedOwnerTipInput,
+        selectedOwnerValueInput,
+        selectedOwnerProposalInput,
+        physicalIdentityInput,
+        locatorObservationInput,
+        absenceInput,
+        lifecycleArchiveInput,
+        teardownReceiptInput,
+        absenceExpectedInput,
+        teardownExpectedInput,
+        anchorRetiredTipInput,
+        anchorRetiredValueInput,
+        anchorRetiredProposalInput,
+        ownerTeardownArchiveInput,
+        ownerRetiredTipInput,
+        ownerRetiredValueInput,
+        ownerRetiredProposalInput,
+      ),
+    ),
+    ...validateGenesisSelectionEvidenceBinding(
+      genesisSelectionEvidenceInput,
+      genesisBootstrapInput,
+      historyRecordInput,
+      anchorInput,
+      useIntentInput,
+      genesisCoreInput,
+      reviewedOperationInput,
+      successorCoreInput,
+      activeReleaseValueInput,
+      activeReleaseProposalInput,
+      activeReleaseTipInput,
+      globalIdentityInput,
+      priorOwnerTipInput,
+      priorOwnerValueInput,
+      priorOwnerProposalInput,
+      priorOwnerTeardownArchiveInput,
+      successorReviewCoreInput,
+      successorReviewExpectedInput,
+      successorPostSelectionInput,
+      successorPostExpectedInput,
+      e0PhysicalIdentityInput,
+      e0LocatorObservationInput,
+      e0AbsenceInput,
+      intentExpectedInput,
+      e0AbsenceExpectedInput,
+      authorityValueInput,
+      runtimeProposalInput,
+      runtimeTipInput,
+      runtimePostInput,
+      anchorActiveTipInput,
+      anchorActiveValueInput,
+      anchorActiveProposalInput,
+      priorAnchorTipInput,
+      priorAnchorValueInput,
+      priorAnchorProposalInput,
+      ownerActiveTipInput,
+      ownerActiveValueInput,
+      ownerActiveProposalInput,
+      selectedOwnerTipInput,
+      selectedOwnerValueInput,
+      selectedOwnerProposalInput,
+      consumptionReceiptInput,
+    ).map((issue) => `genesisSelectionBinding:${issue}`),
+  ];
+  if (priorAnchor.ok && selectedOwner.ok) {
+    if (priorAnchor.value.lifecycle !== "CONSUMED" || selectedOwner.value.lifecycle !== "CONSUMED")
+      issues.push("consumedBranch:not-consumed");
+  }
+  if (retirementAbsence.ok && consumptionReceipt.ok) {
+    if (String(retirementAbsence.value.observedAt) < String(consumptionReceipt.value.consumedAt))
+      issues.push("consumedChronology:absence-before-consumption");
   }
   return Object.freeze([...new Set(issues)].sort());
 }
