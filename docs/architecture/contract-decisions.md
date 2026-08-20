@@ -683,35 +683,38 @@ array, path, executable, operation manifest, candidate verdict, capability,
 selected epoch, proposal, receipt, tip, archive, tombstone, or read-back member
 is present in any of the four records.
 
-The cleanup-root branch matrix is exact:
+The cleanup-root structural nullability matrix is exact:
 
-| Root mode   | Cleanup-archive predecessor triple                                                                                                                 | Predecessor active-release triple                                                 | Recovery-fence root                                       | Required equalities                                                                                                                                                                                                                                                  |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BOOTSTRAP` | all null exactly when the canonical cleanup-archive head has never been selected; otherwise all non-null and equal its current selected `Dt/Dv/Dr` | all null                                                                          | null                                                      | candidate value is the actual reviewed N0 `active-release/v1` `Dv`; `successorCoreDigest` is recomputed BOOTSTRAP_INSTALL `Dsc`; authorization core and selected CREATED triple are for the same bootstrap transaction and identities                                |
-| `SUCCESSOR` | all non-null and equal the current selected cleanup-archive-head `Dt/Dv/Dr`                                                                        | all non-null and equal the current selected predecessor active-release `Dt/Dv/Dr` | non-null and equal the recomputed fence-root digest below | candidate value is the actual reviewed N+1 `active-release/v1` `Dv`; `successorCoreDigest` is recomputed STABLE_PROMOTION `Dsc`; authorization core and selected CREATED triple bind the same transaction, predecessor, candidate, fence, admission, and generations |
+| Root mode   | Cleanup-archive predecessor triple | Predecessor active-release triple | Recovery-fence root |
+| ----------- | ---------------------------------- | --------------------------------- | ------------------- |
+| `BOOTSTRAP` | all null or all non-null           | all null                          | null                |
+| `SUCCESSOR` | all non-null                       | all non-null                      | non-null            |
 
-The three members of each nullable triple are all null or all non-null. A
-selected cleanup-archive head can never be replaced by bare absence; after its
-first selection the null branch is permanently unavailable. For both modes,
-the root's installation, project, state root, transaction, candidate value,
-`Dsc`, authorization core, and selected CREATED triple equal the actual parsed
-upstream records. The selected CREATED proposal has the exact producer branch
-fixed by the pre-E0 ledger for BOOTSTRAP and the exact selected stable epoch for
-SUCCESSOR. `createdAt` is not earlier than any upstream create-once receipt it
-binds. A digest copied consistently across root and caller expectations is not
-an equality source.
+The three members of each nullable triple are all null or all non-null. This
+matrix is a parser rule only. In particular, the BOOTSTRAP all-null archive arm
+does not prove that the canonical archive head has never been selected, and an
+all-non-null arm does not prove which archive it selects. The later cleanup-
+archive composition ledger must distinguish first-ever absence from a selected
+archive or tombstone and from missing, corrupt, or otherwise `UNKNOWN`
+FULL_REQUIRED history. Bare filesystem absence, a caller Boolean, or a copied
+digest is never that proof.
+
+No root-field equality to authorization, active-release, cleanup-archive,
+fence, admission, generation, `Dsc`, or create-once time is implementation-
+authorized by this slice. Those fields remain closed typed bytes so their
+canonical root digest is stable, but they grant no authority until a later
+closed composition input census and exhaustive branch proof matrix bind them to
+actual authenticated upstream records. A digest copied consistently across a
+root and caller expectations is not an equality source.
 
 The recovery-fence root is successor-only and every member is non-null. Its
-predecessor active-release triple and cleanup-archive predecessor triple equal
-the same selected records consumed by the SUCCESSOR gate root. Its candidate
-value equals the reviewed N+1 active-release `Dv`; its admission digest equals
-the exact read-back pending broker admission; and its `successorCoreDigest`
-equals the recomputed STABLE_PROMOTION `Dsc` over that predecessor, candidate,
-reviewed operation, release, host/custody, and independent review. Broker
-generations are canonical safe-decimal strings and the successor is exactly the
-predecessor plus one. The fence root excludes authorization core/state and all
-gate facts so it can be computed before authorization CREATED and the gate root
-without a digest back-edge.
+broker generations are canonical safe-decimal strings and the successor is
+exactly the predecessor plus one. The fence root excludes authorization
+core/state and all gate facts so the eventual composed graph can compute it
+before authorization CREATED and the gate root without a digest back-edge.
+Equality to the actual predecessor/candidate active-release graphs, cleanup
+archive, admission read-back, and recomputed STABLE_PROMOTION `Dsc` is deferred
+with that composed graph and is not performed by the structural parser.
 
 The only standalone root digests are:
 
@@ -766,54 +769,64 @@ the successor `Dv` and prior selected triple, so position does not duplicate a
 caller-supplied head digest. Tombstone position is deferred to the cleanup-
 archive ledger and cannot be inferred here.
 
-Gate root persists only at
-`installation/activation-cleanup-gate-roots/<transaction>.json`; fence root
-persists only at
-`installation/activation-recovery-fence-roots/<transaction>.json`. Head values,
-proposals, conflicts, and tombstones use only the common constructed
-`pointer-cas/<Dp>/...` paths. The selected tips remain exactly
-`installation/activation-cleanup-gate.json` and
-`installation/activation-recovery-fence.json`. A full history is fetched by
-the selected/common value digests and walked from the supplied dense bounded
-record array; no directory enumeration, duplicate family-head file, alternate
-tip, symlink, or latest-file convention is authority.
+The strings
+`installation/activation-cleanup-gate-roots/<transaction>.json`,
+`installation/activation-recovery-fence-roots/<transaction>.json`,
+`installation/activation-cleanup-gate.json`, and
+`installation/activation-recovery-fence.json` remain registered future runtime
+paths, not a lookup protocol authorized by this slice. Common immutable values
+and proposals are mutation-ID-addressed, while `pointer-current-tip/v1` does
+not expose that mutation ID or the transaction needed by the root path.
+Therefore no reader may claim that selected `Dp/Dv/Dr` fetches a root, head,
+proposal, or full history. Directory enumeration, a caller-selected path,
+unauthenticated index or journal, duplicate family-head file, alternate tip,
+symlink, and latest-file convention are not authority. A later independently
+reviewed common-CAS locator decision must make exact bytes constructible from
+authenticated selected evidence and define deletion/loss handling before any
+filesystem read or mutation is authorized.
 
-The composed gate validator consumes the actual root, full bounded head
-history, common selected proposal/tip/read-backs, current active-release graph,
-authorization graph, fence graph when branch-required, and transition-specific
-terminal/absence facts. `PUBLISHING|PUBLISHED` requires a SUCCESSOR root;
-BOOTSTRAP can use only the three `NOT_PUBLISHED` cells in its authorized
-`PENDING -> ABORTING -> COMPLETE` or post-E0 completion line. `PUBLISHED`
-requires the exact selected PREPARED fence over the root's `Dfr` before the
-gate head time. `ACTIVATING` remains forward-only. `ABORTING` requires the
-active release still select the predecessor; for BOOTSTRAP it additionally
-requires the exact canonical abort input and fresh same-lock destination
-absence before the first mutation. `COMPLETE` is accepted only with the exact
-branch terminal facts and remains upstream of the later cleanup archive, so a
-head never contains or hashes its downstream archive.
+The pure bounded-history validator receives the parsed root and a dense array
+of parsed head records as explicit inputs. It recomputes the root digest and
+each common head `Dv`, then checks only the closed lifecycle edge, ordinal,
+prior-head-`Dv`, root, time, and length rules above. Supplied bytes are evidence
+to validate, not proof that they came from canonical persistence. The
+structural validator performs no authorization, active-release, archive,
+fence, admission, terminal, absence, custody, or broker composition.
 
-The composed POST_ACTIVATION fence validator consumes the actual root and both
-head values plus the selected candidate active-release graph, activated broker
-generation/read-back, terminal predecessor recovery facts, and current stable
-authority. Those proofs are exact inputs, not optional head members. The later
-cleanup archive binds the final gate/fence selected triples and terminal
-receipts after they exist. Until that archive ledger and the recovery-
-authorization ledger pass independent removal review, this slice authorizes
-only parsers, root digests, VALUE position evidence, bounded history walking,
-and pure relative composition over caller-supplied actual records; it
-authorizes no tombstone, archive, filesystem mutation, broker call, live
-capability, release selection, promotion, or runtime state transition.
+The later composition ledger must provide a closed non-persisted input census
+and an exhaustive required/forbidden proof matrix for every admitted gate cell
+and edge and both fence cells. It must bind the selected actual graphs rather
+than caller expectations. Its time rules are inclusive: a selected PREPARED
+fence used by `PUBLISHED` has `recordedAt <=` the gate head `recordedAt`, and
+every other ordered proof edge must state its own inclusive comparison
+explicitly. It must also name the exact BOOTSTRAP pre-mutation abort active-
+release/absence evidence and the distinct terminal proof set for bootstrap
+post-E0 completion, successor activation, and each abort publication branch.
+The later cleanup archive remains downstream of final gate/fence selection, so
+a head never contains or hashes its downstream archive.
 
-Compatibility evidence must cover every member/census/enum/nullability and
-branch row; exact root-domain and common-`Dv` byte goldens; all ten/twelve gate
-cells/edges and the one fence edge; zero/max/overflow ordinals; one/six and
-one/two history bounds; root/time/prior/triple substitutions; position-member
-add/remove/reorder attacks; independent and coordinated upstream graph
-substitution; branch-only proof absence; and hostile reflective inputs without
-throwing. Deleting any equality or graph edge, restoring untagged
-`canonicalDigest`, restoring the v2 proof bundle/numeric generations, adding a
-duplicate head path, or accepting a candidate/self epoch must make a committed
-mutant pass and therefore fail the suite.
+Until the common-CAS locator, cleanup-archive ledger, recovery-authorization
+ledger, and composed proof matrix each pass independent removal review, this
+slice authorizes only the four structural parsers, two root digests, exact
+VALUE position parsing/digests, common `Dv` computation for supplied heads, and
+bounded relative history walking over supplied records. It authorizes no
+composed root/gate/fence validator, persistence lookup, tombstone, archive,
+filesystem mutation, broker call, live capability, release selection,
+promotion, or runtime state transition.
+
+Compatibility evidence for this structural slice must cover every literal
+member/census/enum/nullability and structural mode row; exact root-domain and
+common-`Dv` byte goldens; all ten/twelve gate cells/edges and the one fence
+edge; zero/max/overflow ordinals; one/six and one/two history bounds;
+root/time/prior-`Dv` substitutions; position-member add/remove/reorder attacks;
+and hostile reflective inputs without throwing. Equal head/root timestamps are
+positive cases. Deleting any structural comparison or graph edge, restoring
+untagged `canonicalDigest`, restoring the v2 proof bundle/numeric generations,
+or adding a persistence/lookup claim must make a committed mutant pass and
+therefore fail the suite. Upstream graph substitutions, branch-only proof
+absence, first-ever archive lineage, and composed time edges belong to the
+later exact composition matrices and are not acceptance evidence for this
+slice.
 
 - Bootstrap N0 is built by pinned GitHub Actions workflow bytes from an exact
   source revision, certified on all required OS runners, independently reviewed

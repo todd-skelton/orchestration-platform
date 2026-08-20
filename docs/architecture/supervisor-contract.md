@@ -1755,11 +1755,14 @@ archive head advances through the same pointer protocol and never scans.
 
 Cleanup gate and recovery fence roots are immutable transaction records.
 Their immutable heads retain the closed lifecycle/publication or fence-state
-transition facts. Their canonical paths now hold generic selected tips whose
-family values name the exact root/head. Initialization writes root and ordinal
-zero head, then selects the genesis current value under the exact producer
-branch fixed by `contract-decisions.md`: bounded reviewed-bootstrap `Dsc` only
-for the N0 cleanup gate, and the selected stable epoch for successor gate/fence.
+transition facts. The literal ISS-002 slice validates explicitly supplied
+closed root/head bytes, recomputes their root and common `Dv` identities, and
+walks bounded dense histories only. The registered canonical paths are not yet
+a durable lookup protocol: selected common tips do not expose the mutation ID
+needed by common immutable value/proposal paths. Persistence discovery,
+initialization, authorization/archive composition, and live selection remain
+unauthorized until the exact later decisions required by
+`contract-decisions.md` pass independent review.
 
 Cleanup gate admissible pairs are exactly:
 
