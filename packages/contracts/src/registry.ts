@@ -35,6 +35,7 @@ import {
   bootstrapConsumptionSchemaFields,
   bootstrapConsumptionSchemaVersions,
 } from "./consumption.js";
+import { gateFenceSchemaFields, gateFenceSchemaVersions } from "./definitions.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -414,6 +415,34 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: pointerGraphSchemaFields.tombstone,
       closedValues: pointerKinds.filter((kind) => kind !== "STATE_MUTATION_AUTHORITY_ROTATION"),
     }),
+    "activation-cleanup-gate-root/v1": Object.freeze({
+      schemaVersion: "activation-cleanup-gate-root/v1",
+      fields: gateFenceSchemaFields.cleanupGateRoot,
+      closedValues: Object.freeze(["BOOTSTRAP", "SUCCESSOR"]),
+    }),
+    "activation-cleanup-gate-head/v1": Object.freeze({
+      schemaVersion: "activation-cleanup-gate-head/v1",
+      fields: gateFenceSchemaFields.cleanupGateHead,
+      closedValues: Object.freeze([
+        "PENDING",
+        "ACTIVATING",
+        "ABORTING",
+        "COMPLETE",
+        "NOT_PUBLISHED",
+        "PUBLISHING",
+        "PUBLISHED",
+        "CLEARED",
+      ]),
+    }),
+    "activation-recovery-fence-root/v1": Object.freeze({
+      schemaVersion: "activation-recovery-fence-root/v1",
+      fields: gateFenceSchemaFields.recoveryFenceRoot,
+    }),
+    "activation-recovery-fence-head/v1": Object.freeze({
+      schemaVersion: "activation-recovery-fence-head/v1",
+      fields: gateFenceSchemaFields.recoveryFenceHead,
+      closedValues: Object.freeze(["PREPARED", "POST_ACTIVATION"]),
+    }),
     "dispatch-action-core/v1": Object.freeze({
       schemaVersion: "dispatch-action-core/v1",
       fields: dispatchSchemaFields.actionCore,
@@ -495,6 +524,7 @@ export const schemaVersions = Object.freeze(
     ...bootstrapAnchorTeardownSchemaVersions,
     ...bootstrapGenesisSchemaVersions,
     ...bootstrapConsumptionSchemaVersions,
+    ...gateFenceSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";

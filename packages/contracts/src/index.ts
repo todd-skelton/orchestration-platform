@@ -21,6 +21,7 @@ import { parseBootstrapGenesisContract } from "./genesis.js";
 import { parseBootstrapConsumptionContract } from "./consumption.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
+import { parseGateFenceContract } from "./definitions.js";
 
 export * from "./authority.js";
 export * from "./commit.js";
@@ -100,6 +101,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (packet) return packet;
   const pointer = parsePointerGraphContract(expectedSchemaVersion, input);
   if (pointer) return pointer;
+  const gateFence = parseGateFenceContract(expectedSchemaVersion, input);
+  if (gateFence) return gateFence;
   const definition = schemaDefinitions[expectedSchemaVersion];
   if (!definition) return { ok: false, issues: ["schemaVersion:unsupported"] };
   try {
