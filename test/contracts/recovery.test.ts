@@ -3,23 +3,14 @@ import {
   engineVocabularyValueFindings,
   recoveryAuthorizationLifecycles,
   recoveryAuthorizationPaths,
-  validateRecoveryAuthorizationTransition,
 } from "../../packages/contracts/src/index.js";
 
 const transactionId = "018f0f4d-7b2d-7a11-8a2b-123456789abc";
 const operationId = "018f0f4d-7b2d-7a11-9a2b-123456789abc";
 
 describe("recovery authorization state and storage", () => {
-  test("admits consume or pre-consume revoke, then requires revoke before removal", () => {
-    expect(recoveryAuthorizationLifecycles).toEqual(["CREATED", "CONSUMED", "REVOKED", "REMOVED"]);
-    expect(validateRecoveryAuthorizationTransition("CREATED", "CONSUMED")).toBe(true);
-    expect(validateRecoveryAuthorizationTransition("CREATED", "REVOKED")).toBe(true);
-    expect(validateRecoveryAuthorizationTransition("CONSUMED", "REVOKED")).toBe(true);
-    expect(validateRecoveryAuthorizationTransition("REVOKED", "REMOVED")).toBe(true);
-    expect(validateRecoveryAuthorizationTransition("CREATED", "REMOVED")).toBe(false);
-    expect(validateRecoveryAuthorizationTransition("CONSUMED", "REMOVED")).toBe(false);
-    expect(validateRecoveryAuthorizationTransition("REVOKED", "CONSUMED")).toBe(false);
-    expect(validateRecoveryAuthorizationTransition("REMOVED", "CREATED")).toBe(false);
+  test("exposes only selected state lifecycles; terminal removal is a tombstone", () => {
+    expect(recoveryAuthorizationLifecycles).toEqual(["CREATED", "CONSUMED", "REVOKED"]);
     expect(engineVocabularyValueFindings(recoveryAuthorizationLifecycles)).toEqual([]);
   });
 

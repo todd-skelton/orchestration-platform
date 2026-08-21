@@ -25,7 +25,7 @@ export type DestinationOwnerTransition =
   "ACTIVATE_GENESIS" | "CONSUME" | "RETIRE_UNUSED" | "RETIRE_CONSUMED" | "ACTIVATE_SUCCESSOR";
 export type RecoveryAttemptReservationLifecycle =
   "RESERVED" | "CONSUMED" | "TERMINAL" | "TOMBSTONE";
-export type RecoveryAuthorizationLifecycle = "CREATED" | "CONSUMED" | "REVOKED" | "REMOVED";
+export type RecoveryAuthorizationLifecycle = "CREATED" | "CONSUMED" | "REVOKED";
 
 const cleanupGateRootFields = Object.freeze([
   "authorizationCoreDigest",
@@ -327,7 +327,6 @@ export const recoveryAuthorizationLifecycles = Object.freeze([
   "CREATED",
   "CONSUMED",
   "REVOKED",
-  "REMOVED",
 ] as const);
 
 export function validateDestinationOwnerTransition(
@@ -348,14 +347,6 @@ export function validateRecoveryAttemptReservationTransition(
     (previous === "RESERVED" && next === "CONSUMED") ||
     (previous === "CONSUMED" && next === "TERMINAL") ||
     (previous === "TERMINAL" && next === "TOMBSTONE")
-  );
-}
-
-export function validateRecoveryAuthorizationTransition(previous: unknown, next: unknown): boolean {
-  return (
-    (previous === "CREATED" && (next === "CONSUMED" || next === "REVOKED")) ||
-    (previous === "CONSUMED" && next === "REVOKED") ||
-    (previous === "REVOKED" && next === "REMOVED")
   );
 }
 

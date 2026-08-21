@@ -39,6 +39,8 @@ import { gateFenceSchemaFields, gateFenceSchemaVersions } from "./definitions.js
 import {
   recoveryAuthorizationCoreSchemaFields,
   recoveryAuthorizationCoreSchemaVersions,
+  recoveryAuthorizationStateSchemaFields,
+  recoveryAuthorizationStateSchemaVersions,
 } from "./recovery.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
@@ -429,6 +431,21 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: recoveryAuthorizationCoreSchemaFields.successor,
       closedValues: Object.freeze(["SUCCESSOR"]),
     }),
+    "recovery-authorization-state/v1#CONSUMED": Object.freeze({
+      schemaVersion: "recovery-authorization-state/v1",
+      fields: recoveryAuthorizationStateSchemaFields.consumed,
+      closedValues: Object.freeze(["CONSUMED"]),
+    }),
+    "recovery-authorization-state/v1#CREATED": Object.freeze({
+      schemaVersion: "recovery-authorization-state/v1",
+      fields: recoveryAuthorizationStateSchemaFields.created,
+      closedValues: Object.freeze(["CREATED"]),
+    }),
+    "recovery-authorization-state/v1#REVOKED": Object.freeze({
+      schemaVersion: "recovery-authorization-state/v1",
+      fields: recoveryAuthorizationStateSchemaFields.revoked,
+      closedValues: Object.freeze(["REVOKED"]),
+    }),
     "activation-cleanup-gate-root/v1": Object.freeze({
       schemaVersion: "activation-cleanup-gate-root/v1",
       fields: gateFenceSchemaFields.cleanupGateRoot,
@@ -540,6 +557,7 @@ export const schemaVersions = Object.freeze(
     ...bootstrapConsumptionSchemaVersions,
     ...gateFenceSchemaVersions,
     ...recoveryAuthorizationCoreSchemaVersions,
+    ...recoveryAuthorizationStateSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";

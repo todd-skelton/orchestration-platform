@@ -87,6 +87,58 @@ export const recoveryAuthorizationCoreSchemaVersions = Object.freeze([
   "recovery-authorization-core/v1",
 ] as const);
 
+const createdStateFields = Object.freeze([
+  "authorizationCoreDigest",
+  "consumeOperationId",
+  "lifecycle",
+  "mode",
+  "recordedAt",
+  "schemaVersion",
+  "transactionId",
+] as const);
+const consumedStateFields = Object.freeze([
+  "authorizationCoreDigest",
+  "cleanupGateRootDigest",
+  "consumeOperationId",
+  "lifecycle",
+  "mode",
+  "nativeConsumeReceiptDigest",
+  "recordedAt",
+  "schemaVersion",
+  "transactionId",
+] as const);
+const revokedStateFields = Object.freeze([
+  "authorizationCoreDigest",
+  "cleanupGateRootDigest",
+  "consumeOperationId",
+  "consumePostSelectionReceiptDigest",
+  "lifecycle",
+  "mode",
+  "nativeConsumeReceiptDigest",
+  "nativeRemovalReceiptDigest",
+  "recordedAt",
+  "removalOperationId",
+  "schemaVersion",
+  "transactionId",
+] as const);
+const commonStateFields = Object.freeze([
+  "authorizationCoreDigest",
+  "lifecycle",
+  "mode",
+  "recordedAt",
+  "schemaVersion",
+  "transactionId",
+] as const);
+
+export const recoveryAuthorizationStateSchemaFields = Object.freeze({
+  consumed: consumedStateFields,
+  created: createdStateFields,
+  revoked: revokedStateFields,
+});
+export const recoveryAuthorizationStateSchemaVersions = Object.freeze([
+  "recovery-authorization-state/v1",
+] as const);
+
 function invalid(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
@@ -200,13 +252,140 @@ export function computeRecoveryAuthorizationCoreDigest(input: unknown): string {
   return framedDigest("recovery-authorization-core/v1", [frame.canonical(parsed.value)]);
 }
 
+function snapshotState(input: unknown): ParseResult {
+  const snapshot = snapshotJson(input);
+  if (!snapshot.ok) return snapshot;
+  if (
+    snapshot.value === null ||
+    Array.isArray(snapshot.value) ||
+    typeof snapshot.value !== "object"
+  )
+    return invalid("record:object-required");
+  const record = snapshot.value as ContractRecord;
+  const expected =
+    record.lifecycle === "CREATED"
+      ? createdStateFields
+      : record.lifecycle === "CONSUMED"
+        ? consumedStateFields
+        : record.lifecycle === "REVOKED"
+          ? revokedStateFields
+          : commonStateFields;
+  const expectedSet = new Set<string>(expected);
+  const observed = Object.keys(record).sort();
+  const issues = [
+    ...expected.filter((field) => !Object.hasOwn(record, field)).map((field) => `${field}:missing`),
+    ...observed.filter((field) => !expectedSet.has(field)).map((field) => `${field}:unknown-field`),
+  ];
+  return issues.length === 0 ? { ok: true, value: record } : invalid(...issues);
+}
+
+export function parseRecoveryAuthorizationState(input: unknown): ParseResult {
+  const parsed = snapshotState(input);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "recovery-authorization-state/v1")
+    issues.push("schemaVersion:mismatch");
+  if (
+    record.lifecycle !== "CREATED" &&
+    record.lifecycle !== "CONSUMED" &&
+    record.lifecycle !== "REVOKED"
+  )
+    issues.push("lifecycle:invalid");
+  if (record.mode !== "BOOTSTRAP" && record.mode !== "SUCCESSOR") issues.push("mode:invalid");
+  if (!isSha256(record.authorizationCoreDigest)) issues.push("authorizationCoreDigest:invalid");
+  if (!isUuidV7(record.consumeOperationId)) issues.push("consumeOperationId:invalid");
+  if (!isCanonicalTimestamp(record.recordedAt)) issues.push("recordedAt:invalid");
+  if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
+
+  if (record.lifecycle === "CONSUMED") {
+    if (!isSha256(record.cleanupGateRootDigest)) issues.push("cleanupGateRootDigest:invalid");
+    if (!isSha256(record.nativeConsumeReceiptDigest))
+      issues.push("nativeConsumeReceiptDigest:invalid");
+  }
+  if (record.lifecycle === "REVOKED") {
+    const gateValid =
+      record.cleanupGateRootDigest === null || isSha256(record.cleanupGateRootDigest);
+    const consumePostValid =
+      record.consumePostSelectionReceiptDigest === null ||
+      isSha256(record.consumePostSelectionReceiptDigest);
+    const nativeConsumeValid =
+      record.nativeConsumeReceiptDigest === null || isSha256(record.nativeConsumeReceiptDigest);
+    if (!gateValid) issues.push("cleanupGateRootDigest:invalid");
+    if (!consumePostValid) issues.push("consumePostSelectionReceiptDigest:invalid");
+    if (!nativeConsumeValid) issues.push("nativeConsumeReceiptDigest:invalid");
+    if (!isSha256(record.nativeRemovalReceiptDigest))
+      issues.push("nativeRemovalReceiptDigest:invalid");
+    if (!isUuidV7(record.removalOperationId)) issues.push("removalOperationId:invalid");
+    const consumePostPresent = record.consumePostSelectionReceiptDigest !== null;
+    const nativeConsumePresent = record.nativeConsumeReceiptDigest !== null;
+    if (consumePostPresent !== nativeConsumePresent) issues.push("consumeReceipts:partial");
+    if (consumePostPresent && record.cleanupGateRootDigest === null)
+      issues.push("cleanupGateRootDigest:required-after-consume");
+  }
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+function transitionIssues(...issues: readonly string[]): readonly string[] {
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+export function validateRecoveryAuthorizationTransition(
+  previousInput: unknown | null,
+  nextInput: unknown,
+): readonly string[] {
+  const next = parseRecoveryAuthorizationState(nextInput);
+  if (!next.ok) return transitionIssues(...next.issues.map((issue) => `next.${issue}`));
+  if (previousInput === null)
+    return next.value.lifecycle === "CREATED"
+      ? transitionIssues()
+      : transitionIssues("edge:invalid");
+  const previous = parseRecoveryAuthorizationState(previousInput);
+  if (!previous.ok) return transitionIssues(...previous.issues.map((issue) => `previous.${issue}`));
+
+  const prior = previous.value;
+  const current = next.value;
+  const edge = `${prior.lifecycle}>${current.lifecycle}`;
+  if (edge !== "CREATED>CONSUMED" && edge !== "CREATED>REVOKED" && edge !== "CONSUMED>REVOKED")
+    return transitionIssues("edge:invalid");
+
+  const issues: string[] = [];
+  for (const field of [
+    "authorizationCoreDigest",
+    "consumeOperationId",
+    "mode",
+    "transactionId",
+  ] as const)
+    if (prior[field] !== current[field]) issues.push(`${field}:mismatch`);
+  if (String(prior.recordedAt) > String(current.recordedAt)) issues.push("recordedAt:before-prior");
+
+  if (edge === "CREATED>REVOKED") {
+    if (
+      current.consumePostSelectionReceiptDigest !== null ||
+      current.nativeConsumeReceiptDigest !== null
+    )
+      issues.push("consumeReceipts:unexpected");
+  }
+  if (edge === "CONSUMED>REVOKED") {
+    if (current.consumePostSelectionReceiptDigest === null)
+      issues.push("consumePostSelectionReceiptDigest:required");
+    if (current.cleanupGateRootDigest !== prior.cleanupGateRootDigest)
+      issues.push("cleanupGateRootDigest:mismatch");
+    if (current.nativeConsumeReceiptDigest !== prior.nativeConsumeReceiptDigest)
+      issues.push("nativeConsumeReceiptDigest:mismatch");
+  }
+  return transitionIssues(...issues);
+}
+
 export function parseRecoveryAuthorizationContract(
   schemaVersion: string,
   input: unknown,
 ): ParseResult | null {
-  return schemaVersion === "recovery-authorization-core/v1"
-    ? parseRecoveryAuthorizationCore(input)
-    : null;
+  if (schemaVersion === "recovery-authorization-core/v1")
+    return parseRecoveryAuthorizationCore(input);
+  if (schemaVersion === "recovery-authorization-state/v1")
+    return parseRecoveryAuthorizationState(input);
+  return null;
 }
 
 function uuidV7(value: string, name: string): string {

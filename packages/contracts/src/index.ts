@@ -162,6 +162,8 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if (expectedSchemaVersion === "recovery-authorization-state/v1")
+    return { ok: false, issues: ["serialization:pointer-context-required"] };
   const digest =
     expectedSchemaVersion === "recovery-authorization-core/v1"
       ? computeRecoveryAuthorizationCoreDigest(parsed.value)
