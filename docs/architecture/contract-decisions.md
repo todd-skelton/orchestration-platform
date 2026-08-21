@@ -68,6 +68,115 @@ formulas, persistence paths, exclusions, and cross-record equalities are not
 implementer-selected. No other prose or digest-table label is a JSON member
 name for those families.
 
+### Authenticated common-CAS selected-object locator ledger
+
+The common current tip exposes exact `Dp`, `Dv`, and `Dr`, and its canonical
+bytes recompute `Dt`, but mutation-addressed immutable paths require a mutation
+ID and proposal paths additionally require the prior-tip bucket. A selected
+tip therefore cannot construct its own value/proposal bytes or any historical
+prior tip from the mutation-addressed paths alone. Directory enumeration,
+latest-file choice, an unauthenticated index/journal, symlink following, or a
+caller-supplied mutation ID is not authority.
+
+Every proposed selection writes the exact same canonical value, proposal, and
+tip bytes to these create-once content-addressed object paths before attempting
+the canonical current-tip CAS:
+
+```text
+installation/pointer-cas/<Dp>/objects/values/<Dv>.json
+installation/pointer-cas/<Dp>/objects/proposals/<Dr>.json
+installation/pointer-cas/<Dp>/objects/tips/<Dt>.json
+```
+
+`Dp`, `Dv`, `Dr`, and `Dt` are lowercase SHA-256 path components. These are
+immutable byte aliases, not new records, schemas, envelopes, digests, indexes,
+heads, or selection authority. Value and proposal bytes are byte-identical to
+their mutation-addressed originals; tip bytes are byte-identical to the
+candidate current-tip bytes. Existing bytes must match exactly. All three
+aliases are written and read back before CAS. A losing candidate may leave
+unselected aliases, but they grant nothing because no authenticated selected
+tip names their exact digest tuple. No alias may be deleted or compacted.
+
+A selected read starts only from canonical current-tip bytes obtained at the
+registered pointer path plus the independently trusted pointer identity. The
+pure locator validator has exactly four non-persisted inputs:
+
+```text
+expectedIdentity
+proposal
+tip
+value
+```
+
+`expectedIdentity` is the existing closed eight-member pointer identity:
+
+```text
+canonicalPointerPath
+installationId
+pointerKind
+positionEvidence
+projectId
+sourceToken
+stateRootDigest
+transactionId
+```
+
+The validator snapshots all four inputs, recomputes `Dp` from the exact
+identity and registered canonical path/position rules, parses the closed tip
+and proposal, and requires tip pointer kind/path instance equal the expected
+kind/`Dp`. It recomputes `Dv` from the supplied value, `Dr` from the supplied
+proposal, and `Dt` from the supplied tip; requires proposal successor `Dv`,
+proposal `Dp`, tip `Dv`, and tip `Dr` equal those recomputed values; and returns
+only the exact recomputed `Dp/Dv/Dr/Dt` tuple with the detached parsed records.
+The family composition validator must still parse the value under the exact
+schema admitted by the pointer registry; generic location never treats an
+open value object as semantically valid authority.
+
+After the canonical tip passes, its exact `Dp/Dv/Dr/Dt` constructs the three
+object paths above. Each read must be canonical bytes, recompute the digest in
+its filename, and reproduce the same four-input validation result. For a prior
+triple carried by a selected proposal, the same `Dp` plus prior `Dv/Dr/Dt`
+constructs the prior three objects recursively. A complete prior triple is
+required; null denotes only the pointer family's already-authorized genesis
+branch. This makes a full selected history constructible without mutation IDs,
+enumeration, a second current head, or trust in alias presence alone.
+
+The locator does not generically locate family root/archive records. Their
+registered family paths are constructed only by the family composition from
+the independently trusted identity and parsed selected value. For cleanup gate
+and recovery fence, the trusted transaction identity constructs the exact root
+path and the parsed selected head supplies the root digest; for other families
+their independently reviewed ledger owns the corresponding bindings. Missing,
+unreadable, noncanonical, conflicting, digest-mismatched, path-mismatched, or
+semantically invalid selected objects or required family roots are
+`FULL_REQUIRED UNKNOWN` and block mutation. Mutation-addressed originals are
+not a fallback when the required content path cannot be constructed from
+authenticated selected evidence.
+
+The order has no authority cycle. Candidate code may materialize immutable
+aliases, but only stable external authority may CAS the canonical current tip.
+Alias bytes never enter the producer epoch, capability, or candidate verdict;
+their existing `Dv/Dr/Dt` identities are already upstream of selection. A
+candidate cannot certify itself by writing objects that no selected tip names.
+
+This slice authorizes only the three pure path constructors and the total pure
+four-input selected-evidence validator over supplied records. It authorizes no
+filesystem read/write, directory enumeration, alias materialization, current-
+tip read, proposal/CAS, conflict resolution, capability, command, broker call,
+family root/archive composition, deletion, compaction, or runtime mutation.
+ISS-004 owns later create-once alias write/read-back ordering and authenticated
+current-tip/family-record reads under the stable release mutation path.
+
+Compatibility evidence must pin all three paths and every digest component;
+cross value/proposal/tip paths and `Dp/Dv/Dr/Dt`; mutate every expected-identity
+member and every selected record member independently and in coordinated
+rehashes; walk null-genesis and multi-record prior triples; reject partial,
+forked, reordered, missing, noncanonical, wrong-family, hostile, and orphan
+objects; and prove generic validation alone cannot admit an invalid family
+value. Deleting any path component, identity equality, selected-graph equality,
+canonical-byte check, or full-prior recursion check must make a committed mutant
+survive and therefore fail the suite.
+
 ## Configuration and state roots
 
 - Project configuration is `.orchestration/project.json`.
@@ -1448,15 +1557,16 @@ The strings
 `installation/activation-cleanup-gate.json`, and
 `installation/activation-recovery-fence.json` remain registered future runtime
 paths, not a lookup protocol authorized by this slice. Common immutable values
-and proposals are mutation-ID-addressed, while `pointer-current-tip/v1` does
-not expose that mutation ID or the transaction needed by the root path.
-Therefore no reader may claim that selected `Dp/Dv/Dr` fetches a root, head,
-proposal, or full history. Directory enumeration, a caller-selected path,
-unauthenticated index or journal, duplicate family-head file, alternate tip,
-symlink, and latest-file convention are not authority. A later independently
-reviewed common-CAS locator decision must make exact bytes constructible from
-authenticated selected evidence and define deletion/loss handling before any
-filesystem read or mutation is authorized.
+and proposals remain mutation-ID-addressed, but the independently reviewed
+common-CAS selected-object locator makes value/proposal/tip history
+constructible from authenticated `Dp/Dv/Dr/Dt` without mutation IDs. It does
+not locate family roots. Cleanup/fence composition must construct the exact
+transaction root path from the independently trusted pointer identity and
+equal-bind its recomputed root digest to the parsed selected head. Directory
+enumeration, caller-selected paths, unauthenticated indexes/journals, duplicate
+family-head files, alternate tips, symlinks, and latest-file conventions remain
+non-authority. No filesystem read or mutation is authorized until the
+corresponding family composition passes review.
 
 The pure bounded-history validator receives the parsed root and a dense array
 of parsed head records as explicit inputs. It recomputes the root digest and
@@ -1478,7 +1588,7 @@ post-E0 completion, successor activation, and each abort publication branch.
 The later cleanup archive remains downstream of final gate/fence selection, so
 a head never contains or hashes its downstream archive.
 
-Until the common-CAS locator, cleanup-archive ledger, remaining recovery-
+Until the common-CAS locator implementation, cleanup-archive ledger, remaining recovery-
 authorization state/receipt/archive ledger, and composed proof matrix each pass
 independent removal review, this slice authorizes only the four structural
 parsers, two root digests, exact
