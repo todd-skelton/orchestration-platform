@@ -41,6 +41,8 @@ import {
   recoveryAuthorizationCoreSchemaVersions,
   recoveryAuthorizationNativeReceiptSchemaFields,
   recoveryAuthorizationNativeReceiptSchemaVersions,
+  recoveryAuthorizationPostSelectionReceiptSchemaFields,
+  recoveryAuthorizationPostSelectionReceiptSchemaVersions,
   recoveryAuthorizationStateSchemaFields,
   recoveryAuthorizationStateSchemaVersions,
 } from "./recovery.js";
@@ -457,6 +459,14 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: recoveryAuthorizationNativeReceiptSchemaFields.removal,
       closedValues: Object.freeze(["ABSENT", "DISABLED"]),
     }),
+    "recovery-authorization-consume-receipt/v1": Object.freeze({
+      schemaVersion: "recovery-authorization-consume-receipt/v1",
+      fields: recoveryAuthorizationPostSelectionReceiptSchemaFields.consume,
+    }),
+    "recovery-authorization-revoke-receipt/v1": Object.freeze({
+      schemaVersion: "recovery-authorization-revoke-receipt/v1",
+      fields: recoveryAuthorizationPostSelectionReceiptSchemaFields.revoke,
+    }),
     "activation-cleanup-gate-root/v1": Object.freeze({
       schemaVersion: "activation-cleanup-gate-root/v1",
       fields: gateFenceSchemaFields.cleanupGateRoot,
@@ -569,6 +579,7 @@ export const schemaVersions = Object.freeze(
     ...gateFenceSchemaVersions,
     ...recoveryAuthorizationCoreSchemaVersions,
     ...recoveryAuthorizationNativeReceiptSchemaVersions,
+    ...recoveryAuthorizationPostSelectionReceiptSchemaVersions,
     ...recoveryAuthorizationStateSchemaVersions,
   ].sort(),
 );

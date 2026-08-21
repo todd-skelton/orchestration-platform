@@ -168,6 +168,23 @@ export const recoveryAuthorizationNativeReceiptSchemaVersions = Object.freeze([
   "native-removal-receipt/v1",
 ] as const);
 
+const postSelectionReceiptFields = Object.freeze([
+  "operationId",
+  "recordedAt",
+  "schemaVersion",
+  "selectedStateTipDigest",
+  "transactionId",
+] as const);
+
+export const recoveryAuthorizationPostSelectionReceiptSchemaFields = Object.freeze({
+  consume: postSelectionReceiptFields,
+  revoke: postSelectionReceiptFields,
+});
+export const recoveryAuthorizationPostSelectionReceiptSchemaVersions = Object.freeze([
+  "recovery-authorization-consume-receipt/v1",
+  "recovery-authorization-revoke-receipt/v1",
+] as const);
+
 function invalid(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
@@ -483,6 +500,39 @@ export function computeNativeRemovalReceiptDigest(input: unknown): string {
   return framedDigest("native-removal-receipt/v1", [frame.canonical(parsed.value)]);
 }
 
+function parsePostSelectionReceipt(input: unknown, schemaVersion: string): ParseResult {
+  const parsed = snapshotReceipt(input, postSelectionReceiptFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== schemaVersion) issues.push("schemaVersion:mismatch");
+  if (!isUuidV7(record.operationId)) issues.push("operationId:invalid");
+  if (!isCanonicalTimestamp(record.recordedAt)) issues.push("recordedAt:invalid");
+  if (!isSha256(record.selectedStateTipDigest)) issues.push("selectedStateTipDigest:invalid");
+  if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function parseRecoveryAuthorizationConsumeReceipt(input: unknown): ParseResult {
+  return parsePostSelectionReceipt(input, "recovery-authorization-consume-receipt/v1");
+}
+
+export function computeRecoveryAuthorizationConsumeReceiptDigest(input: unknown): string {
+  const parsed = parseRecoveryAuthorizationConsumeReceipt(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("recovery-authorization-consume-receipt/v1", [frame.canonical(parsed.value)]);
+}
+
+export function parseRecoveryAuthorizationRevokeReceipt(input: unknown): ParseResult {
+  return parsePostSelectionReceipt(input, "recovery-authorization-revoke-receipt/v1");
+}
+
+export function computeRecoveryAuthorizationRevokeReceiptDigest(input: unknown): string {
+  const parsed = parseRecoveryAuthorizationRevokeReceipt(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("recovery-authorization-revoke-receipt/v1", [frame.canonical(parsed.value)]);
+}
+
 export function parseRecoveryAuthorizationContract(
   schemaVersion: string,
   input: unknown,
@@ -493,6 +543,10 @@ export function parseRecoveryAuthorizationContract(
     return parseRecoveryAuthorizationState(input);
   if (schemaVersion === "native-consume-receipt/v1") return parseNativeConsumeReceipt(input);
   if (schemaVersion === "native-removal-receipt/v1") return parseNativeRemovalReceipt(input);
+  if (schemaVersion === "recovery-authorization-consume-receipt/v1")
+    return parseRecoveryAuthorizationConsumeReceipt(input);
+  if (schemaVersion === "recovery-authorization-revoke-receipt/v1")
+    return parseRecoveryAuthorizationRevokeReceipt(input);
   return null;
 }
 
