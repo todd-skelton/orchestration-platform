@@ -1109,8 +1109,11 @@ installation/pointer-cas/<instance-digest>/proposals/<prior-tip-or-genesis>/<mut
 installation/pointer-cas/<instance-digest>/conflicts/<prior-tip-or-genesis>/<mutation-id>.json
 ```
 
-Proposal intent is `VALUE_PROPOSED` or `TOMBSTONE_PROPOSED`. Its create-once
-timestamp is reused byte-for-byte on retry. Classification is exactly
+Proposal intent/outcome has exactly two valid rows:
+`VALUE_PROPOSED/SELECT` and `TOMBSTONE_PROPOSED/REMOVE`. Crossed pairs are
+malformed proposal evidence and classify as `UNKNOWN`; they never remain
+`PENDING` and never reach a family validator. Its create-once timestamp is
+reused byte-for-byte on retry. Classification is exactly
 `PENDING`, `SELECTED`, `LOST_CONFLICT`, or `UNKNOWN`. A conflict
 receipt is valid only after it binds an actually observed winning canonical
 triple. Malformed, contradictory, skipped, or fake-lost evidence is `UNKNOWN`.

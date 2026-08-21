@@ -78,6 +78,14 @@ prior tip from the mutation-addressed paths alone. Directory enumeration,
 latest-file choice, an unauthenticated index/journal, symlink following, or a
 caller-supplied mutation ID is not authority.
 
+The existing common proposal parser enforces the two-row proposal invariant
+before any locator or family composition runs: only
+`VALUE_PROPOSED/SELECT` and `TOMBSTONE_PROPOSED/REMOVE` parse. Every crossed
+intent/outcome pair refuses, and the public classifier returns `UNKNOWN` for
+that malformed evidence rather than `PENDING`. This common closure is distinct
+from the locator's additional equality between the trusted position mode and
+the already-valid proposal row.
+
 Every proposed selection writes the exact same canonical value, proposal, and
 tip bytes to these create-once content-addressed object paths before attempting
 the canonical current-tip CAS:
@@ -195,6 +203,8 @@ cross value/proposal/tip paths and `Dp/Dv/Dr/Dt`; mutate every expected-identity
 member and every selected record member independently and in coordinated
 rehashes; independently delete proposal-kind, proposal-position, mutation-ID,
 and position-mode-to-intent/outcome equalities;
+crossed-pair evidence must fail the common proposal parser and classify as
+`UNKNOWN` before locator use;
 return complete/null prior tuples and reject partial tuples, wrong-family,
 hostile, and orphan current nodes; and prove generic validation alone cannot
 admit an invalid family value. Structural multi-node tests may compose repeated
