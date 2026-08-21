@@ -676,6 +676,12 @@ function pointerPriorBucket(priorTipDigest: string | null): string {
 }
 
 export const pointerStoragePaths = Object.freeze({
+  selectedValue: (pathInstanceDigest: string, valueDigest: string): string =>
+    `installation/pointer-cas/${storageDigest(pathInstanceDigest, "pathInstanceDigest")}/objects/values/${storageDigest(valueDigest, "valueDigest")}.json`,
+  selectedProposal: (pathInstanceDigest: string, proposalReceiptDigest: string): string =>
+    `installation/pointer-cas/${storageDigest(pathInstanceDigest, "pathInstanceDigest")}/objects/proposals/${storageDigest(proposalReceiptDigest, "proposalReceiptDigest")}.json`,
+  selectedTip: (pathInstanceDigest: string, tipDigest: string): string =>
+    `installation/pointer-cas/${storageDigest(pathInstanceDigest, "pathInstanceDigest")}/objects/tips/${storageDigest(tipDigest, "tipDigest")}.json`,
   value: (pathInstanceDigest: string, mutationId: string): string =>
     `installation/pointer-cas/${storageDigest(pathInstanceDigest, "pathInstanceDigest")}/values/${storageDigest(mutationId, "mutationId")}.json`,
   proposal: (
@@ -1006,6 +1012,82 @@ export function validateSelectedPointerEvidence(input: unknown): readonly string
     return Object.freeze(issues);
   } catch {
     return ["selectedEvidence:invalid"];
+  }
+}
+
+const expectedPointerIdentityFields = Object.freeze([
+  "canonicalPointerPath",
+  "installationId",
+  "pointerKind",
+  "positionEvidence",
+  "projectId",
+  "sourceToken",
+  "stateRootDigest",
+  "transactionId",
+] as const);
+
+export function validateLocatedSelectedPointerEvidence(input: unknown): ParseResult {
+  const wrapper = snapshotClosedRecord(input, ["expectedIdentity", "proposal", "tip", "value"]);
+  if (!wrapper.ok) return wrapper;
+  const identity = snapshotClosedRecord(
+    wrapper.value.expectedIdentity,
+    expectedPointerIdentityFields,
+  );
+  if (!identity.ok)
+    return pointerParseFailure(
+      ...identity.issues.map((issue) => `expectedIdentity.${issue}`).sort(),
+    );
+  try {
+    const pointerKind = identity.value.pointerKind as PointerKind;
+    const pathInstanceDigest = computePointerInstanceDigest(
+      identity.value as unknown as PointerIdentity,
+    );
+    const expectedPositionDigest = computePointerPositionDigest(
+      pointerKind,
+      identity.value.positionEvidence,
+    );
+    const proposal = requireProposal(wrapper.value.proposal);
+    const tipResult = parsePointerCurrentTip(wrapper.value.tip);
+    if (!tipResult.ok)
+      return pointerParseFailure(...tipResult.issues.map((issue) => `tip.${issue}`).sort());
+    const value = snapshotRecord(wrapper.value.value);
+    const valueDigest = computePointerValueDigest(pointerKind, pathInstanceDigest, value);
+    const proposalReceiptDigest = computeProposalReceiptDigest(proposal);
+    const tipDigest = computeCurrentTipDigest(tipResult.value);
+    const issues: string[] = [];
+    if (proposal.pointerKind !== pointerKind) issues.push("proposal:pointer-kind-mismatch");
+    if (proposal.pathInstanceDigest !== pathInstanceDigest)
+      issues.push("proposal:path-instance-mismatch");
+    if (proposal.positionDigest !== expectedPositionDigest)
+      issues.push("proposal:position-digest-mismatch");
+    if (proposal.successorValueDigest !== valueDigest)
+      issues.push("proposal:value-digest-mismatch");
+    if (
+      tipResult.value.pointerKind !== pointerKind ||
+      tipResult.value.pathInstanceDigest !== pathInstanceDigest
+    )
+      issues.push("tip:identity-mismatch");
+    if (tipResult.value.valueDigest !== valueDigest) issues.push("tip:value-digest-mismatch");
+    if (tipResult.value.proposalReceiptDigest !== proposalReceiptDigest)
+      issues.push("tip:receipt-digest-mismatch");
+    if (issues.length > 0) return pointerParseFailure(...issues);
+    return {
+      ok: true,
+      value: Object.freeze({
+        pathInstanceDigest,
+        priorReceiptDigest: proposal.priorReceiptDigest as string | null,
+        priorTipDigest: proposal.priorTipDigest as string | null,
+        priorValueDigest: proposal.priorValueDigest as string | null,
+        proposal: Object.freeze({ ...proposal }),
+        proposalReceiptDigest,
+        tip: tipResult.value,
+        tipDigest,
+        value,
+        valueDigest,
+      }),
+    };
+  } catch {
+    return pointerParseFailure("selectedLocator:invalid");
   }
 }
 
