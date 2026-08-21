@@ -435,6 +435,27 @@ describe("bounded relative histories over supplied records", () => {
     expect(validateFenceHeadHistory(fenceRoot, fence, pathInstanceDigest)).toEqual([]);
   });
 
+  test("accepts an equal cleanup timestamp and isolates the ordinal-zero genesis cell", () => {
+    const history = gateHistory([
+      ["PENDING", "NOT_PUBLISHED"],
+      ["PENDING", "PUBLISHING"],
+    ]) as readonly Readonly<Record<string, unknown>>[];
+    const equalTimes = relinkHistory("ACTIVATION_CLEANUP_GATE", [
+      history[0]!,
+      { ...history[1]!, recordedAt: history[0]!.recordedAt },
+    ]);
+    expect(validateCleanupHeadHistory(bootstrapGateRoot, equalTimes, pathInstanceDigest)).toEqual(
+      [],
+    );
+
+    const wrongGenesisCell = [
+      { ...history[0]!, lifecycle: "COMPLETE", publication: "NOT_PUBLISHED" },
+    ];
+    expect(
+      validateCleanupHeadHistory(bootstrapGateRoot, wrongGenesisCell, pathInstanceDigest),
+    ).toEqual(["0:transition:not-genesis"]);
+  });
+
   test("pins common head Dv bytes and isolates every cleanup history comparison", () => {
     const history = gateHistory([
       ["PENDING", "NOT_PUBLISHED"],
