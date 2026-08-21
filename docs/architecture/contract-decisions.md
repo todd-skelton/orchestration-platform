@@ -124,22 +124,35 @@ transactionId
 The validator snapshots all four inputs, recomputes `Dp` from the exact
 identity and registered canonical path/position rules, parses the closed tip
 and proposal, and requires tip pointer kind/path instance equal the expected
-kind/`Dp`. It recomputes `Dv` from the supplied value, `Dr` from the supplied
-proposal, and `Dt` from the supplied tip; requires proposal successor `Dv`,
-proposal `Dp`, tip `Dv`, and tip `Dr` equal those recomputed values; and returns
-only the exact recomputed `Dp/Dv/Dr/Dt` tuple with the detached parsed records.
+kind/`Dp`. It also requires proposal `pointerKind` equal that trusted kind and
+proposal `positionDigest` equal
+`computePointerPositionDigest(expectedIdentity.pointerKind, expectedIdentity.positionEvidence)`.
+It recomputes `Dv` under the trusted kind from the supplied value, `Dr` from
+the supplied proposal, and `Dt` from the supplied tip; requires proposal
+successor `Dv`, proposal `Dp`, tip `Dv`, and tip `Dr` equal those recomputed
+values; and returns the exact recomputed `Dp/Dv/Dr/Dt`, the exact nullable prior
+`Dt/Dv/Dr` triple, and the detached parsed records.
 The family composition validator must still parse the value under the exact
 schema admitted by the pointer registry; generic location never treats an
 open value object as semantically valid authority.
 
-After the canonical tip passes, its exact `Dp/Dv/Dr/Dt` constructs the three
-object paths above. Each read must be canonical bytes, recompute the digest in
-its filename, and reproduce the same four-input validation result. For a prior
-triple carried by a selected proposal, the same `Dp` plus prior `Dv/Dr/Dt`
-constructs the prior three objects recursively. A complete prior triple is
-required; null denotes only the pointer family's already-authorized genesis
-branch. This makes a full selected history constructible without mutation IDs,
-enumeration, a second current head, or trust in alias presence alone.
+After the current node passes, its exact `Dp/Dv/Dr/Dt` constructs the three
+object paths above. The pure ISS-002 validator owns one selected node only. It
+requires the proposal prior `Dt/Dv/Dr` to be either complete or all null and
+returns that tuple; it does not claim that null is an authorized family genesis
+or that any non-null ancestor exists. ISS-004 iteratively constructs the prior
+three paths, performs canonical byte reads, invokes the same single-node
+validator, rejects digest/path mismatch and cycles, and continues until the
+family composition proves an authorized null terminal. Missing, forked,
+reordered, falsely terminated, or otherwise incomplete history is `UNKNOWN`.
+This makes history iteratively constructible without adding a history
+container, reader callback, mutation ID, enumeration, or second current head.
+
+Canonical persistence is an ISS-004 byte-read obligation, not a claim of the
+record-only pure validator. Each current or historical alias read must parse
+exact canonical bytes, recompute the digest in its filename, and reproduce the
+same single-node result before the record is used. Reordered JSON, whitespace,
+invalid UTF-8, missing LF termination, or other noncanonical bytes refuse there.
 
 The locator does not generically locate family root/archive records. Their
 registered family paths are constructed only by the family composition from
@@ -170,12 +183,17 @@ current-tip/family-record reads under the stable release mutation path.
 Compatibility evidence must pin all three paths and every digest component;
 cross value/proposal/tip paths and `Dp/Dv/Dr/Dt`; mutate every expected-identity
 member and every selected record member independently and in coordinated
-rehashes; walk null-genesis and multi-record prior triples; reject partial,
-forked, reordered, missing, noncanonical, wrong-family, hostile, and orphan
-objects; and prove generic validation alone cannot admit an invalid family
-value. Deleting any path component, identity equality, selected-graph equality,
-canonical-byte check, or full-prior recursion check must make a committed mutant
-survive and therefore fail the suite.
+rehashes; independently delete proposal-kind and proposal-position equalities;
+return complete/null prior tuples and reject partial tuples, wrong-family,
+hostile, and orphan current nodes; and prove generic validation alone cannot
+admit an invalid family value. Structural multi-node tests may compose repeated
+single-node calls only to prove path constructibility and tuple handoff; they
+make no completeness, terminal, missing-object, or source-byte claim. ISS-004
+tests own iterative missing/fork/reorder/cycle/false-terminal cases,
+noncanonical persisted bytes, and their deletion mutants. Deleting any path
+component, current-node identity/position/selected-graph equality, or prior-
+tuple completeness check must make an ISS-002 committed mutant survive and
+therefore fail the suite.
 
 ## Configuration and state roots
 
