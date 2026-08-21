@@ -1122,7 +1122,7 @@ nor digest can select state, authenticate a native provider, manufacture a
 producer epoch, issue a capability, or let a candidate certify itself.
 
 `recovery-authorization-consume-receipt/v1` and
-`recovery-authorization-revoke-receipt/v1` each have exactly these eight
+`recovery-authorization-revoke-receipt/v1` each have exactly these six
 members in ascending canonical JSON member order:
 
 ```text
@@ -1130,9 +1130,7 @@ operationId:uuid-v7
 recordedAt:timestamp
 schemaVersion:recovery-authorization-consume-receipt/v1|recovery-authorization-revoke-receipt/v1
 selectedStatePathInstanceDigest:sha256
-selectedStateProposalReceiptDigest:sha256
 selectedStateTipDigest:sha256
-selectedStateValueDigest:sha256
 transactionId:uuid-v7
 ```
 
@@ -1141,10 +1139,14 @@ literal or vice versa. The two records intentionally do not copy
 `authorizationCoreDigest`, gate, native-receipt, lifecycle, mode, generation,
 or removal-disposition fields. Later composition must parse the actual selected
 state value/proposal/tip, reconstruct its canonical path and empty VALUE
-position, recompute `Dp/Dv/Dr/Dt`, and then read the core and native receipts
-named by that state. Repeating those already-digested state members here would
-add no independent source and would recreate the proof-bag surface deleted by
-the proportionality replan.
+position, recompute `Dp/Dv/Dr/Dt`, require receipt
+`selectedStatePathInstanceDigest = Dp` and `selectedStateTipDigest = Dt`, and
+then read the core and native receipts named by that state. `Dt` already commits
+the exact `Dp/Dv/Dr` through the closed current-tip record and framing. Copying
+`Dv` or `Dr` beside it would add no independent source and would recreate the
+proof-bag surface deleted by the proportionality replan. `Dp` remains explicit
+as the receipt's pointer-instance context; `Dt` is the selected snapshot
+identity within that context.
 
 The canonical paths are:
 
