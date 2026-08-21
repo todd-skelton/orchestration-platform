@@ -139,6 +139,35 @@ export const recoveryAuthorizationStateSchemaVersions = Object.freeze([
   "recovery-authorization-state/v1",
 ] as const);
 
+const nativeConsumeReceiptFields = Object.freeze([
+  "authorizationCoreDigest",
+  "nativeGeneration",
+  "operationId",
+  "recordedAt",
+  "schemaVersion",
+  "transactionId",
+] as const);
+const nativeRemovalReceiptFields = Object.freeze([
+  "authorizationCoreDigest",
+  "nativeConsumeReceiptDigest",
+  "operationId",
+  "priorNativeGeneration",
+  "recordedAt",
+  "removalDisposition",
+  "schemaVersion",
+  "successorNativeGeneration",
+  "transactionId",
+] as const);
+
+export const recoveryAuthorizationNativeReceiptSchemaFields = Object.freeze({
+  consume: nativeConsumeReceiptFields,
+  removal: nativeRemovalReceiptFields,
+});
+export const recoveryAuthorizationNativeReceiptSchemaVersions = Object.freeze([
+  "native-consume-receipt/v1",
+  "native-removal-receipt/v1",
+] as const);
+
 function invalid(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
@@ -377,6 +406,83 @@ export function validateRecoveryAuthorizationTransition(
   return transitionIssues(...issues);
 }
 
+function snapshotReceipt(input: unknown, fields: readonly string[]): ParseResult {
+  const snapshot = snapshotJson(input);
+  if (!snapshot.ok) return snapshot;
+  if (
+    snapshot.value === null ||
+    Array.isArray(snapshot.value) ||
+    typeof snapshot.value !== "object"
+  )
+    return invalid("record:object-required");
+  const record = snapshot.value as ContractRecord;
+  const expected = new Set(fields);
+  const observed = Object.keys(record).sort();
+  const issues = [
+    ...fields.filter((field) => !Object.hasOwn(record, field)).map((field) => `${field}:missing`),
+    ...observed.filter((field) => !expected.has(field)).map((field) => `${field}:unknown-field`),
+  ];
+  return issues.length === 0 ? { ok: true, value: record } : invalid(...issues);
+}
+
+export function parseNativeConsumeReceipt(input: unknown): ParseResult {
+  const parsed = snapshotReceipt(input, nativeConsumeReceiptFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "native-consume-receipt/v1") issues.push("schemaVersion:mismatch");
+  if (!isSha256(record.authorizationCoreDigest)) issues.push("authorizationCoreDigest:invalid");
+  if (!isCanonicalDecimal(record.nativeGeneration)) issues.push("nativeGeneration:invalid");
+  if (!isUuidV7(record.operationId)) issues.push("operationId:invalid");
+  if (!isCanonicalTimestamp(record.recordedAt)) issues.push("recordedAt:invalid");
+  if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeNativeConsumeReceiptDigest(input: unknown): string {
+  const parsed = parseNativeConsumeReceipt(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("native-consume-receipt/v1", [frame.canonical(parsed.value)]);
+}
+
+export function parseNativeRemovalReceipt(input: unknown): ParseResult {
+  const parsed = snapshotReceipt(input, nativeRemovalReceiptFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "native-removal-receipt/v1") issues.push("schemaVersion:mismatch");
+  if (!isSha256(record.authorizationCoreDigest)) issues.push("authorizationCoreDigest:invalid");
+  if (record.nativeConsumeReceiptDigest !== null && !isSha256(record.nativeConsumeReceiptDigest))
+    issues.push("nativeConsumeReceiptDigest:invalid");
+  if (!isUuidV7(record.operationId)) issues.push("operationId:invalid");
+  const priorValid = isCanonicalDecimal(record.priorNativeGeneration);
+  const successorValid = isCanonicalDecimal(record.successorNativeGeneration);
+  if (!priorValid) issues.push("priorNativeGeneration:invalid");
+  if (!successorValid) issues.push("successorNativeGeneration:invalid");
+  if (priorValid && successorValid) {
+    try {
+      if (
+        incrementCanonicalDecimal(String(record.priorNativeGeneration)) !==
+        String(record.successorNativeGeneration)
+      )
+        issues.push("nativeGeneration:not-adjacent");
+    } catch {
+      issues.push("nativeGeneration:not-adjacent");
+    }
+  }
+  if (!isCanonicalTimestamp(record.recordedAt)) issues.push("recordedAt:invalid");
+  if (record.removalDisposition !== "ABSENT" && record.removalDisposition !== "DISABLED")
+    issues.push("removalDisposition:invalid");
+  if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeNativeRemovalReceiptDigest(input: unknown): string {
+  const parsed = parseNativeRemovalReceipt(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("native-removal-receipt/v1", [frame.canonical(parsed.value)]);
+}
+
 export function parseRecoveryAuthorizationContract(
   schemaVersion: string,
   input: unknown,
@@ -385,6 +491,8 @@ export function parseRecoveryAuthorizationContract(
     return parseRecoveryAuthorizationCore(input);
   if (schemaVersion === "recovery-authorization-state/v1")
     return parseRecoveryAuthorizationState(input);
+  if (schemaVersion === "native-consume-receipt/v1") return parseNativeConsumeReceipt(input);
+  if (schemaVersion === "native-removal-receipt/v1") return parseNativeRemovalReceipt(input);
   return null;
 }
 

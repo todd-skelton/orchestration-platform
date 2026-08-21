@@ -23,6 +23,8 @@ import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 import { parseGateFenceContract } from "./definitions.js";
 import {
+  computeNativeConsumeReceiptDigest,
+  computeNativeRemovalReceiptDigest,
   computeRecoveryAuthorizationCoreDigest,
   parseRecoveryAuthorizationContract,
 } from "./recovery.js";
@@ -167,7 +169,11 @@ export function serializeContract(
   const digest =
     expectedSchemaVersion === "recovery-authorization-core/v1"
       ? computeRecoveryAuthorizationCoreDigest(parsed.value)
-      : canonicalDigest(parsed.value);
+      : expectedSchemaVersion === "native-consume-receipt/v1"
+        ? computeNativeConsumeReceiptDigest(parsed.value)
+        : expectedSchemaVersion === "native-removal-receipt/v1"
+          ? computeNativeRemovalReceiptDigest(parsed.value)
+          : canonicalDigest(parsed.value);
   return { ok: true, bytes: canonicalBytes(parsed.value), digest };
 }
 
