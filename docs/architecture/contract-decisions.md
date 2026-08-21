@@ -1237,8 +1237,10 @@ transactionId:uuid-v7
 The archive intentionally does not copy `Dp`, `Dv`, `Dr`, `Dt`, `Dac`, native
 receipt, gate, lifecycle, mode, generation, operation, or removal-disposition
 fields. Later composition parses the actual revoke post-selection receipt,
-recomputes `Drrp`, follows its selected `Dt`, parses the actual REVOKED
-value/proposal/tip, and recomputes the complete `Dp/Dv/Dr/Dt` graph. Because
+recomputes `Drrp`, requires archive
+`revokePostSelectionReceiptDigest = Drrp`, follows its selected `Dt`, parses
+the actual REVOKED value/proposal/tip, and recomputes the complete
+`Dp/Dv/Dr/Dt` graph. Because
 `Drrp` commits the receipt's exact selected `Dt`, operation, transaction, and
 receipt time, copying any of those facts into the archive would add no
 independent source or replay discriminator.
@@ -1267,7 +1269,10 @@ time production. ISS-004 owns later composition and must require the parsed
 revoke receipt's `transactionId` equal the archive transaction, its
 `recordedAt <= archivedAt`, its operation equal selected REVOKED
 `removalOperationId`, and its `selectedStateTipDigest` equal the recomputed
-REVOKED `Dt`. Parser success alone authenticates none of those relations.
+REVOKED `Dt`. It must independently mutate the archive digest field, actual
+receipt bytes, and both together with every affected downstream digest
+recomputed; each refuses at the direct `Drrp` equality or another authenticated
+upstream seam. Parser success alone authenticates none of those relations.
 
 The recovery-authorization tombstone position is exactly the closed record:
 
