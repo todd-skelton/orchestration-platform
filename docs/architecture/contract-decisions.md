@@ -968,51 +968,40 @@ the listed members in ascending canonical JSON member order. Identity digests
 are opaque engine vocabulary; operating-system, credential-store, service,
 endpoint, provider, and repository names are not members.
 
-`native-consume-receipt/v1` has exactly thirteen members:
+`native-consume-receipt/v1` has exactly six members:
 
 ```text
 authorizationCoreDigest:sha256
-capabilityDigest:sha256
-capabilityReferenceDigest:sha256
-hostIdentityDigest:sha256
-installationId:uuid-v7
 nativeGeneration:safe-decimal
 operationId:uuid-v7
-projectId:uuid-v7
 recordedAt:timestamp
 schemaVersion:native-consume-receipt/v1
-stateRootDigest:sha256
 transactionId:uuid-v7
-userIdentityDigest:sha256
 ```
 
 The record exists only after the native provider has successfully consumed the
 one-use authorization at exactly `nativeGeneration` and the reviewed broker has
-read back the resulting non-secret evidence. Attempted, denied, partial,
-unknown, or caller-asserted outcomes produce no valid receipt. A later composed
-validator must equal-bind every duplicated core identity and require the core
-`issuedAt <= recordedAt < expiresAt`; the structural parser proves only the
-closed census and scalar grammars.
+read back the resulting non-secret evidence. `recordedAt` is the durable
+receipt-creation time after that native operation and read-back, not a caller
+request time. Attempted, denied, partial, unknown, or caller-asserted outcomes
+produce no authenticated receipt. The structural parser proves only the closed
+census and scalar grammars; ISS-032 later authenticates the provider operation,
+read-back, and receipt-creation time, and the ISS-004 composition must parse the
+actual core, recompute `Dac`, equal-bind `authorizationCoreDigest`, and require
+the core `issuedAt <= recordedAt < expiresAt`.
 
-`native-removal-receipt/v1` has exactly sixteen members:
+`native-removal-receipt/v1` has exactly nine members:
 
 ```text
 authorizationCoreDigest:sha256
-capabilityDigest:sha256
-capabilityReferenceDigest:sha256
-hostIdentityDigest:sha256
-installationId:uuid-v7
 nativeConsumeReceiptDigest:nullable sha256
 operationId:uuid-v7
 priorNativeGeneration:safe-decimal
-projectId:uuid-v7
 recordedAt:timestamp
 removalDisposition:ABSENT|DISABLED
 schemaVersion:native-removal-receipt/v1
-stateRootDigest:sha256
 successorNativeGeneration:safe-decimal
 transactionId:uuid-v7
-userIdentityDigest:sha256
 ```
 
 `successorNativeGeneration` is exactly `priorNativeGeneration + 1` under the
@@ -1026,20 +1015,32 @@ authenticate the provider-specific `ABSENT` or `DISABLED` read-back under the
 reviewed adapter. Neither disposition permits bare absence or a future
 generation to restore authority.
 
+The receipts deliberately do not repeat core `capabilityDigest`,
+`capabilityReferenceDigest`, `hostIdentityDigest`, `installationId`,
+`projectId`, `stateRootDigest`, or `userIdentityDigest`. The actual parsed core
+and recomputed `Dac` are the sole source for those facts; copied receipt fields
+would add no independent provenance and would expand the public equality matrix
+without discriminating an attack. ISS-032's later native-provider ledger may
+define additional authenticated read-back evidence, but it may not silently
+insert that provider vocabulary into these records.
+
 Both receipt paths are constructed beneath the immutable transaction root:
 
 ```text
 installation/recovery-authorizations/<transactionId>/native/<operationId>.json
 ```
 
-For consume, `<operationId>` is exactly the prebound state
-`consumeOperationId`; for removal it is exactly the later REVOKED state
-`removalOperationId`. Consume and removal operation IDs for one transaction
-must be distinct. The shared directory is not an ambiguity: the expected
-schema discriminator, exact operation ID, canonical bytes, and domain-tagged
-digest all have to match. Alternate paths, caller paths, enumeration,
-latest-file selection, another schema at the same path, a moved transaction,
-or a duplicate operation ID refuse in later composition.
+Structurally, each receipt constructs its own path from its own canonical
+`transactionId` and `operationId`; another otherwise valid UUIDv7 pair is
+another valid structural receipt and path. Later ISS-004 composition alone
+requires consume `operationId` equal the prebound state `consumeOperationId`,
+removal `operationId` equal the REVOKED state `removalOperationId`, and the two
+operation IDs for one transaction be distinct. The shared directory is not an
+ambiguity once those relations are authenticated: the expected schema
+discriminator, exact operation ID, canonical bytes, and domain-tagged digest
+all have to match. Alternate caller paths, enumeration, latest-file selection,
+another schema at the selected path, a moved transaction, or a duplicate
+operation ID grant nothing.
 
 The sole receipt identities are:
 
@@ -1052,8 +1053,10 @@ Each frame has exactly one canonical-record part after the literal domain.
 Untagged canonical digests, raw JSON text, cross-receipt domain reuse,
 field-wise framing, or common pointer `Dv` framing refuse. Generic
 `serializeContract` for either exact schema returns its domain-tagged digest
-and canonical bytes; there is no third native-receipt digest or generic
-success envelope.
+and canonical bytes through the existing public `SerializationResult` success
+arm `{ ok: true, bytes, digest }`, where `digest` is respectively `Dnc` or
+`Dnr`. There is no additional receipt-specific envelope or digest helper, no
+untagged fallback identity, and no third native-receipt domain.
 
 Both records are create-once immutable `FULL_REQUIRED` evidence. Retrying the
 same operation may only read back byte-identical canonical bytes at the same
@@ -1063,6 +1066,15 @@ conflict and refuses. Missing, truncated, noncanonical, or unreadable bytes are
 later reviewed archive may replace live receipt lookup is deferred to the
 authorization-archive ledger; this slice defines no deletion, compaction, or
 retention shortcut.
+
+Those are normative future persistence requirements, not claims made by the
+structural parser. ISS-032 owns the native provider call, create-once write,
+byte-identical retry/read-back, provider disposition authentication, and
+receipt-creation timestamp. ISS-004 owns selected-state composition and must
+turn missing, conflicting, or unreadable required evidence into fail-closed
+`UNKNOWN`. Until those independently reviewed implementations exist,
+structurally parseable bytes—including a caller-asserted `ABSENT` or `DISABLED`
+literal—are unauthenticated evidence and grant no authority.
 
 The operation order remains acyclic and is not executed by this slice. Native
 consume writes and read-backs `Dnc` before a later state proposal may contain
@@ -1085,16 +1097,20 @@ mutation, or runtime recovery. Those surfaces remain fail closed until their
 own literal ledgers and independent removal rounds pass.
 
 Compatibility evidence must remove, add, rename, reorder, null, or cross-type
-every member; pin exact canonical bytes, path, and `Dnc`/`Dnr` goldens; attack
-zero/max/overflow and non-adjacent removal generations; cross consume/removal
-schemas, domains, paths, operation IDs, and nullable consume arms; and cover
-hostile reflective inputs without throwing. Deleting either domain tag,
-branch closure, safe-decimal bound, generation increment, path relation, or
-serializer route must make a committed mutant survive and therefore fail the
-suite. Core/state/receipt equality, time order, selected-history currentness,
-native-provider read-back, and duplicate-operation relations belong only to
-the later closed composition matrix and must not be claimed by structural
-tests.
+every member; pin exact canonical bytes and `Dnc`/`Dnr` goldens; prove each
+receipt's canonical path changes with its own transaction or operation ID; and
+attack zero/max/overflow and non-adjacent removal generations,
+consume/removal schema and digest-domain substitution, nullable consume arms,
+and hostile reflective inputs without throwing. Public serializer tests pin
+the existing exact success-arm shape and tagged digest for both schemas and
+kill an untagged fallback. Deleting either domain tag, branch closure,
+safe-decimal bound, generation increment, path input, or serializer route must
+make a committed mutant survive and therefore fail the suite. Structural tests
+accept any otherwise valid UUIDv7 pair and make no cross-operation refusal,
+persistence, provider, disposition-authentication, or time-composition claim.
+Core/state/receipt equalities, operation-ID distinctness, selected path/schema
+read-back, time order, selected-history currentness, and native-provider
+outcomes belong only to the named later ISS-004/ISS-032 matrices.
 
 ### Cleanup-gate and recovery-fence literal ledger
 
