@@ -25,6 +25,7 @@ import { parseGateFenceContract } from "./definitions.js";
 import {
   computeNativeConsumeReceiptDigest,
   computeNativeRemovalReceiptDigest,
+  computeRecoveryAuthorizationArchiveDigest,
   computeRecoveryAuthorizationConsumeReceiptDigest,
   computeRecoveryAuthorizationCoreDigest,
   computeRecoveryAuthorizationRevokeReceiptDigest,
@@ -169,17 +170,19 @@ export function serializeContract(
   if (expectedSchemaVersion === "recovery-authorization-state/v1")
     return { ok: false, issues: ["serialization:pointer-context-required"] };
   const digest =
-    expectedSchemaVersion === "recovery-authorization-core/v1"
-      ? computeRecoveryAuthorizationCoreDigest(parsed.value)
-      : expectedSchemaVersion === "native-consume-receipt/v1"
-        ? computeNativeConsumeReceiptDigest(parsed.value)
-        : expectedSchemaVersion === "native-removal-receipt/v1"
-          ? computeNativeRemovalReceiptDigest(parsed.value)
-          : expectedSchemaVersion === "recovery-authorization-consume-receipt/v1"
-            ? computeRecoveryAuthorizationConsumeReceiptDigest(parsed.value)
-            : expectedSchemaVersion === "recovery-authorization-revoke-receipt/v1"
-              ? computeRecoveryAuthorizationRevokeReceiptDigest(parsed.value)
-              : canonicalDigest(parsed.value);
+    expectedSchemaVersion === "recovery-authorization-archive/v1"
+      ? computeRecoveryAuthorizationArchiveDigest(parsed.value)
+      : expectedSchemaVersion === "recovery-authorization-core/v1"
+        ? computeRecoveryAuthorizationCoreDigest(parsed.value)
+        : expectedSchemaVersion === "native-consume-receipt/v1"
+          ? computeNativeConsumeReceiptDigest(parsed.value)
+          : expectedSchemaVersion === "native-removal-receipt/v1"
+            ? computeNativeRemovalReceiptDigest(parsed.value)
+            : expectedSchemaVersion === "recovery-authorization-consume-receipt/v1"
+              ? computeRecoveryAuthorizationConsumeReceiptDigest(parsed.value)
+              : expectedSchemaVersion === "recovery-authorization-revoke-receipt/v1"
+                ? computeRecoveryAuthorizationRevokeReceiptDigest(parsed.value)
+                : canonicalDigest(parsed.value);
   return { ok: true, bytes: canonicalBytes(parsed.value), digest };
 }
 

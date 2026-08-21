@@ -185,6 +185,18 @@ export const recoveryAuthorizationPostSelectionReceiptSchemaVersions = Object.fr
   "recovery-authorization-revoke-receipt/v1",
 ] as const);
 
+const archiveFields = Object.freeze([
+  "archivedAt",
+  "revokePostSelectionReceiptDigest",
+  "schemaVersion",
+  "transactionId",
+] as const);
+
+export const recoveryAuthorizationArchiveSchemaFields = archiveFields;
+export const recoveryAuthorizationArchiveSchemaVersions = Object.freeze([
+  "recovery-authorization-archive/v1",
+] as const);
+
 function invalid(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
@@ -533,6 +545,26 @@ export function computeRecoveryAuthorizationRevokeReceiptDigest(input: unknown):
   return framedDigest("recovery-authorization-revoke-receipt/v1", [frame.canonical(parsed.value)]);
 }
 
+export function parseRecoveryAuthorizationArchive(input: unknown): ParseResult {
+  const parsed = snapshotReceipt(input, archiveFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "recovery-authorization-archive/v1")
+    issues.push("schemaVersion:mismatch");
+  if (!isCanonicalTimestamp(record.archivedAt)) issues.push("archivedAt:invalid");
+  if (!isSha256(record.revokePostSelectionReceiptDigest))
+    issues.push("revokePostSelectionReceiptDigest:invalid");
+  if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeRecoveryAuthorizationArchiveDigest(input: unknown): string {
+  const parsed = parseRecoveryAuthorizationArchive(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("recovery-authorization-archive/v1", [frame.canonical(parsed.value)]);
+}
+
 export function parseRecoveryAuthorizationContract(
   schemaVersion: string,
   input: unknown,
@@ -547,6 +579,8 @@ export function parseRecoveryAuthorizationContract(
     return parseRecoveryAuthorizationConsumeReceipt(input);
   if (schemaVersion === "recovery-authorization-revoke-receipt/v1")
     return parseRecoveryAuthorizationRevokeReceipt(input);
+  if (schemaVersion === "recovery-authorization-archive/v1")
+    return parseRecoveryAuthorizationArchive(input);
   return null;
 }
 

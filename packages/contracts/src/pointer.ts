@@ -386,6 +386,20 @@ export function parseRecoveryAuthorizationStateValuePosition(input: unknown): Pa
     : { ok: false, issues: Object.freeze(["mode:invalid"]) };
 }
 
+export function parseRecoveryAuthorizationStateTombstonePosition(input: unknown): ParseResult {
+  const snapshot = snapshotClosedRecord(input, ["mode", "parts"]);
+  if (!snapshot.ok) return snapshot;
+  const parts = snapshotClosedRecord(snapshot.value.parts, []);
+  if (!parts.ok)
+    return {
+      ok: false,
+      issues: Object.freeze(parts.issues.map((issue) => `parts.${issue}`).sort()),
+    };
+  return snapshot.value.mode === "TOMBSTONE"
+    ? snapshot
+    : { ok: false, issues: Object.freeze(["mode:invalid"]) };
+}
+
 export function computePointerPositionDigest(kind: PointerKind, evidence: unknown): string {
   const row = rowFor(kind);
   const snapshot = snapshotClosedRecord(evidence, ["mode", "parts"]);
@@ -400,7 +414,10 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
     if (!isSha256(parts.value.rootDigest)) throw new TypeError("parts.rootDigest:invalid");
   }
   if (kind === "RECOVERY_AUTHORIZATION_STATE") {
-    const parsed = parseRecoveryAuthorizationStateValuePosition(snapshot.value);
+    const parsed =
+      mode === "VALUE"
+        ? parseRecoveryAuthorizationStateValuePosition(snapshot.value)
+        : parseRecoveryAuthorizationStateTombstonePosition(snapshot.value);
     if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
   }
   if (mode === "TOMBSTONE" && row.tombstonePositionDomain === null)
@@ -411,6 +428,12 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
 
 export function computeRecoveryAuthorizationStateValuePositionDigest(input: unknown): string {
   const parsed = parseRecoveryAuthorizationStateValuePosition(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return computePointerPositionDigest("RECOVERY_AUTHORIZATION_STATE", parsed.value);
+}
+
+export function computeRecoveryAuthorizationStateTombstonePositionDigest(input: unknown): string {
+  const parsed = parseRecoveryAuthorizationStateTombstonePosition(input);
   if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
   return computePointerPositionDigest("RECOVERY_AUTHORIZATION_STATE", parsed.value);
 }

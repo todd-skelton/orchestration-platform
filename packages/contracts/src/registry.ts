@@ -37,6 +37,8 @@ import {
 } from "./consumption.js";
 import { gateFenceSchemaFields, gateFenceSchemaVersions } from "./definitions.js";
 import {
+  recoveryAuthorizationArchiveSchemaFields,
+  recoveryAuthorizationArchiveSchemaVersions,
   recoveryAuthorizationCoreSchemaFields,
   recoveryAuthorizationCoreSchemaVersions,
   recoveryAuthorizationNativeReceiptSchemaFields,
@@ -467,6 +469,10 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       schemaVersion: "recovery-authorization-revoke-receipt/v1",
       fields: recoveryAuthorizationPostSelectionReceiptSchemaFields.revoke,
     }),
+    "recovery-authorization-archive/v1": Object.freeze({
+      schemaVersion: "recovery-authorization-archive/v1",
+      fields: recoveryAuthorizationArchiveSchemaFields,
+    }),
     "activation-cleanup-gate-root/v1": Object.freeze({
       schemaVersion: "activation-cleanup-gate-root/v1",
       fields: gateFenceSchemaFields.cleanupGateRoot,
@@ -577,6 +583,7 @@ export const schemaVersions = Object.freeze(
     ...bootstrapGenesisSchemaVersions,
     ...bootstrapConsumptionSchemaVersions,
     ...gateFenceSchemaVersions,
+    ...recoveryAuthorizationArchiveSchemaVersions,
     ...recoveryAuthorizationCoreSchemaVersions,
     ...recoveryAuthorizationNativeReceiptSchemaVersions,
     ...recoveryAuthorizationPostSelectionReceiptSchemaVersions,

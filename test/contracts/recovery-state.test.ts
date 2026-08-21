@@ -244,8 +244,10 @@ describe("recovery authorization selected state", () => {
   test("pins the empty VALUE position and contextual common Dv", () => {
     const position = Object.freeze({ mode: "VALUE", parts: Object.freeze({}) });
     expect(contracts.parseRecoveryAuthorizationStateValuePosition(position).ok).toBe(true);
+    expect(
+      contracts.parseRecoveryAuthorizationStateValuePosition({ mode: "TOMBSTONE", parts: {} }).ok,
+    ).toBe(false);
     for (const invalid of [
-      { mode: "TOMBSTONE", parts: {} },
       { mode: "VALUE", parts: { ordinal: "0" } },
       { mode: "VALUE", parts: {}, extra: true },
       { mode: "VALUE" },
