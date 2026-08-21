@@ -1,0 +1,2128 @@
+import {
+  canonicalDigest,
+  frame,
+  framedDigest,
+  incrementCanonicalDecimal,
+  isCanonicalDecimal,
+  isCanonicalTimestamp,
+  isContractRelativePath,
+  isSha256,
+  isUuidV7,
+  snapshotClosedArray,
+  snapshotClosedRecord,
+  snapshotJson,
+  type ContractRecord,
+  type FramePart,
+  type ParseResult,
+} from "./runtime.js";
+import {
+  computeConflictDigest,
+  computeCurrentTipDigest,
+  computePointerInstanceDigestFromCanonicalPath,
+  computePointerValueDigest,
+  computeProposalReceiptDigest,
+  parsePointerCurrentTip,
+  parsePointerConflict,
+  parsePointerProposal,
+  pointerKinds,
+  pointerPath,
+  pointerRegistry,
+  validateSelectedPointerEvidence,
+  type PointerKind,
+} from "./pointer.js";
+import {
+  computeAuthorityHistoryRecordDigest,
+  computeRotationInputDigest,
+  parseAuthorityHistoryRecord,
+  parseRotationInput,
+  parseStateMutationAuthorityValue,
+} from "./authority.js";
+import {
+  parsePointerEvidenceSlot,
+  parsePointerMutationConflictEvidence,
+  parsePointerMutationUnknownEvidence,
+} from "./evidence.js";
+
+export const commitRunStages = Object.freeze([
+  "CURRENT_AUTHORITY_READ",
+  "TARGET_RECONCILED",
+  "VALUE_READBACK",
+  "PROPOSAL_READBACK",
+  "CURRENT_AUTHORITY_PRE_CAS_READ",
+  "CAS_ARMED",
+  "TARGET_POST_CAS_READBACK",
+  "PROPOSAL_CLASSIFIED",
+  "CURRENT_AUTHORITY_POST_CAS_READ",
+] as const);
+export type CommitRunStage = (typeof commitRunStages)[number];
+
+export const commitRunPhases = Object.freeze([
+  "CRASH_PREFIX",
+  "CAS_AMBIGUOUS",
+  "SELECTED",
+  "LOST_CONFLICT",
+  "UNKNOWN_TERMINAL",
+] as const);
+export type CommitRunPhase = (typeof commitRunPhases)[number];
+
+const checkpointCoreFields = Object.freeze([
+  "auditDigest",
+  "canonicalPointerPath",
+  "checkpointOrdinal",
+  "globalIdentityDigest",
+  "installationId",
+  "phase",
+  "pointerKind",
+  "priorPostSelectionObservationDigest",
+  "priorSelectorReceiptDigest",
+  "priorSelectorTipDigest",
+  "priorSelectorValueDigest",
+  "projectId",
+  "runOrdinal",
+  "schemaVersion",
+  "segmentDigest",
+  "sourceToken",
+  "stage",
+  "stateRootDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "terminalResolutionDigest",
+  "transactionId",
+] as const);
+const runSegmentFields = Object.freeze([
+  "canonicalPointerPath",
+  "globalIdentityDigest",
+  "installationId",
+  "pointerKind",
+  "projectId",
+  "recordedAt",
+  "runId",
+  "runOrdinal",
+  "schemaVersion",
+  "sourceToken",
+  "stage",
+  "stageEvidenceDigest",
+  "stateRootDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "transactionId",
+] as const);
+const runCurrentValueFields = Object.freeze([
+  "checkpointCoreDigest",
+  "checkpointOrdinal",
+  "phase",
+  "runOrdinal",
+  "schemaVersion",
+  "stage",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "terminalResolutionDigest",
+] as const);
+const postSelectionObservationFields = Object.freeze([
+  "checkpointCoreDigest",
+  "observedAt",
+  "proposalReadbackDigest",
+  "schemaVersion",
+  "selectorMutationId",
+  "selectorPathInstanceDigest",
+  "selectorReceiptDigest",
+  "selectorTipDigest",
+  "selectorValueDigest",
+  "tipReadbackDigest",
+  "valueReadbackDigest",
+] as const);
+const commitResolutionFields = Object.freeze([
+  "conflictReceiptDigest",
+  "outcome",
+  "outcomeEvidenceDigest",
+  "producerAuthorityPathInstanceDigest",
+  "producerAuthorityReceiptDigest",
+  "producerAuthorityTipDigest",
+  "producerAuthorityValueDigest",
+  "resolvedAt",
+  "schemaVersion",
+  "selectedTargetTipDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "unknownEvidenceDigest",
+] as const);
+const checkpointEvidenceFields = Object.freeze([
+  "core",
+  "postSelectionObservation",
+  "segment",
+  "selectorSelection",
+  "terminalResolution",
+] as const);
+const runIntentCommonFields = Object.freeze([
+  "canonicalPointerPath",
+  "commitKind",
+  "createdAt",
+  "globalIdentityDigest",
+  "intentKind",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "schemaVersion",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+] as const);
+const runIntentRotationFields = Object.freeze([
+  "canonicalPointerPath",
+  "commitKind",
+  "createdAt",
+  "expectedHeadOrdinal",
+  "expectedRecordDigest",
+  "expectedSuccessorValueDigest",
+  "globalIdentityDigest",
+  "intentKind",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "rotationInput",
+  "rotationInputDigest",
+  "schemaVersion",
+  "successorCoreDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+] as const);
+const ordinaryCommitEvidenceFields = Object.freeze([
+  "canonicalPointerPath",
+  "checkpoints",
+  "commitKind",
+  "intentDigest",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "ordinaryResolution",
+  "outcome",
+  "packetAuthorityKind",
+  "packetAuthorityPathInstanceDigest",
+  "packetAuthorityReceiptDigest",
+  "packetAuthorityTipDigest",
+  "packetAuthorityValueDigest",
+  "priorCheckpointEvidence",
+  "runId",
+  "runOrdinal",
+  "schemaVersion",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+  "targetRegistrySlot",
+] as const);
+const rotationCommitResumableFields = Object.freeze([
+  "authorityRegistrySlot",
+  "canonicalPointerPath",
+  "checkpoint5",
+  "commitKind",
+  "expectedHeadOrdinal",
+  "expectedRecordDigest",
+  "expectedSuccessorValueDigest",
+  "headPlusTwoAbsent",
+  "intentDigest",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "packetAuthorityKind",
+  "packetAuthorityPathInstanceDigest",
+  "packetAuthorityReceiptDigest",
+  "packetAuthorityTipDigest",
+  "packetAuthorityValueDigest",
+  "pendingRecord",
+  "pendingRecordReadbackDigest",
+  "priorCheckpointEvidence",
+  "resumableOldAuthorityPathInstanceDigest",
+  "resumableOldAuthorityReceiptDigest",
+  "resumableOldAuthorityTipDigest",
+  "resumableOldAuthorityValueDigest",
+  "resumablePriorHeadOrdinal",
+  "resumablePriorRecordDigest",
+  "rotationInputDigest",
+  "rotationOutcome",
+  "runId",
+  "runOrdinal",
+  "schemaVersion",
+  "successorCoreDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+] as const);
+const rotationCommitSelectedFields = Object.freeze([
+  "authorityRegistrySlot",
+  "canonicalPointerPath",
+  "checkpoint5",
+  "commitKind",
+  "expectedHeadOrdinal",
+  "expectedRecordDigest",
+  "expectedSuccessorValueDigest",
+  "intentDigest",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "packetAuthorityKind",
+  "packetAuthorityPathInstanceDigest",
+  "packetAuthorityReceiptDigest",
+  "packetAuthorityTipDigest",
+  "packetAuthorityValueDigest",
+  "priorCheckpointEvidence",
+  "rotationInputDigest",
+  "rotationOutcome",
+  "runId",
+  "runOrdinal",
+  "schemaVersion",
+  "selectedHistoryRecord",
+  "selectedHistoryRecordReadbackDigest",
+  "selectedSuccessorAuthorityPathInstanceDigest",
+  "selectedSuccessorAuthorityReceiptDigest",
+  "selectedSuccessorAuthorityTipDigest",
+  "selectedSuccessorAuthorityValue",
+  "selectedSuccessorAuthorityValueDigest",
+  "selectedSuccessorValueReadbackDigest",
+  "successorCoreDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+] as const);
+const rotationCommitUnknownFields = Object.freeze([
+  "authorityRegistrySlot",
+  "canonicalPointerPath",
+  "checkpoint5",
+  "commitKind",
+  "expectedHeadOrdinal",
+  "expectedRecordDigest",
+  "expectedSuccessorValueDigest",
+  "intentDigest",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "packetAuthorityKind",
+  "packetAuthorityPathInstanceDigest",
+  "packetAuthorityReceiptDigest",
+  "packetAuthorityTipDigest",
+  "packetAuthorityValueDigest",
+  "priorCheckpointEvidence",
+  "rotationInputDigest",
+  "rotationOutcome",
+  "runId",
+  "runOrdinal",
+  "schemaVersion",
+  "successorCoreDigest",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+  "targetPointerKind",
+  "unknownEvidence",
+] as const);
+
+export const commitSchemaFields = Object.freeze({
+  commitResolution: commitResolutionFields,
+  checkpointEvidence: checkpointEvidenceFields,
+  commitEvidenceOrdinary: ordinaryCommitEvidenceFields,
+  commitEvidenceRotationResumable: rotationCommitResumableFields,
+  commitEvidenceRotationSelected: rotationCommitSelectedFields,
+  commitEvidenceRotationUnknown: rotationCommitUnknownFields,
+  checkpointCore: checkpointCoreFields,
+  runSegment: runSegmentFields,
+  runCurrentValue: runCurrentValueFields,
+  postSelectionObservation: postSelectionObservationFields,
+  runIntentOrdinary: runIntentCommonFields,
+  runIntentRotation: runIntentRotationFields,
+});
+export const commitSchemaVersions = Object.freeze([
+  "pointer-mutation-commit-evidence/v1",
+  "pointer-mutation-commit-resolution/v1",
+  "pointer-mutation-run-checkpoint-evidence/v1",
+  "pointer-mutation-run-checkpoint-core/v1",
+  "pointer-mutation-run-current-value/v1",
+  "pointer-mutation-run-intent/v1",
+  "pointer-mutation-run-segment/v1",
+  "pointer-mutation-run-selector-post-selection-observation/v1",
+] as const);
+
+function invalid(...issues: readonly string[]): ParseResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function digestIssues(record: ContractRecord, fields: readonly string[]): string[] {
+  return fields.filter((field) => !isSha256(record[field])).map((field) => `${field}:invalid`);
+}
+
+function nullableDigestIssues(record: ContractRecord, fields: readonly string[]): string[] {
+  return fields
+    .filter((field) => record[field] !== null && !isSha256(record[field]))
+    .map((field) => `${field}:invalid`);
+}
+
+function terminalPhase(phase: unknown): boolean {
+  return ["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(String(phase));
+}
+
+export function parseCommitResolution(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, commitResolutionFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-commit-resolution/v1")
+    issues.push("schemaVersion:mismatch");
+  if (!["SELECTED", "LOST_CONFLICT", "UNKNOWN_TERMINAL"].includes(String(record.outcome)))
+    issues.push("outcome:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "outcomeEvidenceDigest",
+      "producerAuthorityPathInstanceDigest",
+      "producerAuthorityReceiptDigest",
+      "producerAuthorityTipDigest",
+      "producerAuthorityValueDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+    ...nullableDigestIssues(record, [
+      "conflictReceiptDigest",
+      "selectedTargetTipDigest",
+      "unknownEvidenceDigest",
+    ]),
+  );
+  if (!isCanonicalTimestamp(record.resolvedAt)) issues.push("resolvedAt:invalid");
+  const selected = record.outcome === "SELECTED";
+  const lost = record.outcome === "LOST_CONFLICT";
+  const unknown = record.outcome === "UNKNOWN_TERMINAL";
+  if (
+    selected
+      ? !isSha256(record.selectedTargetTipDigest) ||
+        record.conflictReceiptDigest !== null ||
+        record.unknownEvidenceDigest !== null ||
+        record.outcomeEvidenceDigest !== record.selectedTargetTipDigest
+      : lost
+        ? record.selectedTargetTipDigest !== null ||
+          !isSha256(record.conflictReceiptDigest) ||
+          record.unknownEvidenceDigest !== null ||
+          record.outcomeEvidenceDigest !== record.conflictReceiptDigest
+        : unknown
+          ? record.selectedTargetTipDigest !== null ||
+            record.conflictReceiptDigest !== null ||
+            !isSha256(record.unknownEvidenceDigest) ||
+            record.outcomeEvidenceDigest !== record.unknownEvidenceDigest
+          : false
+  )
+    issues.push("outcome:evidence-union-mismatch");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeCommitResolutionDigest(input: unknown): string {
+  const parsed = parseCommitResolution(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("pointer-mutation-commit-resolution/v1", [frame.canonical(parsed.value)]);
+}
+
+function validateStagePhase(record: ContractRecord): string[] {
+  const issues: string[] = [];
+  const stageIndex = commitRunStages.indexOf(record.stage as CommitRunStage);
+  if (stageIndex < 0) issues.push("stage:invalid");
+  else if (record.checkpointOrdinal !== String(stageIndex))
+    issues.push("checkpointOrdinal:stage-mismatch");
+  if (!commitRunPhases.includes(record.phase as CommitRunPhase)) issues.push("phase:invalid");
+  if (stageIndex >= 0) {
+    if (stageIndex <= 4 && record.phase !== "CRASH_PREFIX") issues.push("phase:stage-mismatch");
+    if ((stageIndex === 5 || stageIndex === 6) && record.phase !== "CAS_AMBIGUOUS")
+      issues.push("phase:stage-mismatch");
+    if (stageIndex >= 7 && !terminalPhase(record.phase)) issues.push("phase:stage-mismatch");
+  }
+  if (terminalPhase(record.phase) !== isSha256(record.terminalResolutionDigest))
+    issues.push("terminalResolutionDigest:phase-mismatch");
+  return issues;
+}
+
+function validateTargetIdentity(record: ContractRecord): string[] {
+  const issues: string[] = [];
+  if (!pointerKinds.includes(record.pointerKind as PointerKind)) issues.push("pointerKind:invalid");
+  if (!isContractRelativePath(record.canonicalPointerPath))
+    issues.push("canonicalPointerPath:invalid");
+  if (!isUuidV7(record.installationId)) issues.push("installationId:invalid");
+  if (!isUuidV7(record.projectId)) issues.push("projectId:invalid");
+  const row = pointerRegistry.find((candidate) => candidate.kind === record.pointerKind);
+  if (row) {
+    if (row.transactionPolicy === "REQUIRED") {
+      if (!isUuidV7(record.transactionId)) issues.push("transactionId:invalid");
+    } else if (record.transactionId !== null) issues.push("transactionId:must-be-null");
+    if (!row.sourceTokens.includes(String(record.sourceToken))) issues.push("sourceToken:invalid");
+  }
+  return issues;
+}
+
+export function parseRunSegment(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, runSegmentFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-run-segment/v1")
+    issues.push("schemaVersion:mismatch");
+  if (!commitRunStages.includes(record.stage as CommitRunStage)) issues.push("stage:invalid");
+  if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
+  if (!isCanonicalTimestamp(record.recordedAt)) issues.push("recordedAt:invalid");
+  issues.push(
+    ...validateTargetIdentity(record),
+    ...digestIssues(record, [
+      "globalIdentityDigest",
+      "runId",
+      "stageEvidenceDigest",
+      "stateRootDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+  );
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeRunSegmentDigest(input: unknown): string {
+  const parsed = parseRunSegment(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("pointer-mutation-run-segment/v1", [frame.canonical(parsed.value)]);
+}
+
+export function computeRunAuditDigest(
+  priorAuditDigest: string | null,
+  segmentDigest: string,
+): string {
+  if (priorAuditDigest !== null && !isSha256(priorAuditDigest))
+    throw new TypeError("priorAuditDigest:invalid");
+  if (!isSha256(segmentDigest)) throw new TypeError("segmentDigest:invalid");
+  return framedDigest("pointer-mutation-run-audit/v1", [
+    frame.fixed(priorAuditDigest === null ? "00" : "01"),
+    ...(priorAuditDigest === null ? [] : [frame.raw32(priorAuditDigest)]),
+    frame.raw32(segmentDigest),
+  ]);
+}
+
+export function parseRunCheckpointCore(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, checkpointCoreFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-run-checkpoint-core/v1")
+    issues.push("schemaVersion:mismatch");
+  issues.push(...validateTargetIdentity(record));
+  if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
+  if (!isCanonicalDecimal(record.checkpointOrdinal)) issues.push("checkpointOrdinal:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "auditDigest",
+      "globalIdentityDigest",
+      "segmentDigest",
+      "stateRootDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+    ...nullableDigestIssues(record, [
+      "priorPostSelectionObservationDigest",
+      "priorSelectorReceiptDigest",
+      "priorSelectorTipDigest",
+      "priorSelectorValueDigest",
+    ]),
+    ...validateStagePhase(record),
+  );
+  const priorSelector = [
+    record.priorSelectorTipDigest,
+    record.priorSelectorValueDigest,
+    record.priorSelectorReceiptDigest,
+  ];
+  if (!(priorSelector.every((value) => value === null) || priorSelector.every(isSha256)))
+    issues.push("priorSelector:partial");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeRunCheckpointCoreDigest(input: unknown): string {
+  const parsed = parseRunCheckpointCore(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  return framedDigest("pointer-mutation-run-checkpoint-core/v1", [
+    frame.raw32(String(record.globalIdentityDigest)),
+    frame.text(String(record.pointerKind)),
+    frame.text(String(record.canonicalPointerPath)),
+    frame.text(String(record.installationId)),
+    frame.text(String(record.projectId)),
+    frame.raw32(String(record.stateRootDigest)),
+    frame.nullableText(record.transactionId as string | null),
+    frame.text(String(record.sourceToken)),
+    frame.raw32(String(record.targetPathInstanceDigest)),
+    frame.raw32(String(record.targetMutationId)),
+    frame.boundedDecimal(String(record.runOrdinal)),
+    frame.boundedDecimal(String(record.checkpointOrdinal)),
+    frame.raw32(String(record.segmentDigest)),
+    frame.raw32(String(record.auditDigest)),
+    frame.nullableRaw32(record.priorSelectorTipDigest as string | null),
+    frame.nullableRaw32(record.priorSelectorValueDigest as string | null),
+    frame.nullableRaw32(record.priorSelectorReceiptDigest as string | null),
+    frame.nullableRaw32(record.priorPostSelectionObservationDigest as string | null),
+    frame.text(String(record.stage)),
+    frame.text(String(record.phase)),
+    frame.nullableRaw32(record.terminalResolutionDigest as string | null),
+    frame.canonical(record),
+  ]);
+}
+
+export function parseRunCurrentValue(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, runCurrentValueFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-run-current-value/v1")
+    issues.push("schemaVersion:mismatch");
+  if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
+  if (!isCanonicalDecimal(record.checkpointOrdinal)) issues.push("checkpointOrdinal:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "checkpointCoreDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+    ...validateStagePhase(record),
+  );
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function validateRunCurrentSelection(
+  checkpointCoreInput: unknown,
+  runCurrentValueInput: unknown,
+): readonly string[] {
+  const core = parseRunCheckpointCore(checkpointCoreInput);
+  const current = parseRunCurrentValue(runCurrentValueInput);
+  if (!core.ok || !current.ok)
+    return Object.freeze([
+      ...(!core.ok ? core.issues.map((issue) => `core:${issue}`) : []),
+      ...(!current.ok ? current.issues.map((issue) => `current:${issue}`) : []),
+    ]);
+  const issues: string[] = [];
+  if (current.value.checkpointCoreDigest !== computeRunCheckpointCoreDigest(core.value))
+    issues.push("checkpointCoreDigest:mismatch");
+  for (const field of [
+    "checkpointOrdinal",
+    "phase",
+    "runOrdinal",
+    "stage",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+    "terminalResolutionDigest",
+  ] as const)
+    if (current.value[field] !== core.value[field]) issues.push(`${field}:mismatch`);
+  return Object.freeze(issues);
+}
+
+export function validateRunTerminalResolution(
+  checkpointCoreInput: unknown,
+  resolutionInput: unknown,
+): readonly string[] {
+  const core = parseRunCheckpointCore(checkpointCoreInput);
+  const resolution = parseCommitResolution(resolutionInput);
+  if (!core.ok || !resolution.ok)
+    return Object.freeze([
+      ...(!core.ok ? core.issues.map((issue) => `core:${issue}`) : []),
+      ...(!resolution.ok ? resolution.issues.map((issue) => `resolution:${issue}`) : []),
+    ]);
+  const issues: string[] = [];
+  if (core.value.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION")
+    issues.push("pointerKind:rotation-resolution-forbidden");
+  if (
+    core.value.stage !== "PROPOSAL_CLASSIFIED" &&
+    core.value.stage !== "CURRENT_AUTHORITY_POST_CAS_READ"
+  )
+    issues.push("stage:not-terminal");
+  if (core.value.phase !== resolution.value.outcome) issues.push("outcome:phase-mismatch");
+  if (core.value.terminalResolutionDigest !== computeCommitResolutionDigest(resolution.value))
+    issues.push("terminalResolutionDigest:mismatch");
+  for (const field of ["targetMutationId", "targetPathInstanceDigest"] as const)
+    if (core.value[field] !== resolution.value[field]) issues.push(`${field}:mismatch`);
+  return Object.freeze(issues);
+}
+
+const ordinaryResolutionBindingFields = Object.freeze([
+  "commitKind",
+  "globalIdentityDigest",
+  "oldAuthorityPathInstanceDigest",
+  "oldAuthorityReceiptDigest",
+  "oldAuthorityTipDigest",
+  "oldAuthorityValueDigest",
+  "outcome",
+  "packetAuthorityKind",
+  "packetAuthorityPathInstanceDigest",
+  "packetAuthorityReceiptDigest",
+  "packetAuthorityTipDigest",
+  "packetAuthorityValueDigest",
+  "priorCheckpointEvidence",
+  "runId",
+  "runOrdinal",
+  "targetMutationId",
+  "targetPathInstanceDigest",
+] as const);
+
+export function validateCommitResolutionBinding(
+  resolutionInput: unknown,
+  ordinaryCommitBindingInput: unknown,
+): readonly string[] {
+  const resolution = parseCommitResolution(resolutionInput);
+  const binding = snapshotClosedRecord(ordinaryCommitBindingInput, ordinaryResolutionBindingFields);
+  if (!resolution.ok || !binding.ok)
+    return Object.freeze([
+      ...(!resolution.ok ? resolution.issues.map((issue) => `resolution:${issue}`) : []),
+      ...(!binding.ok ? binding.issues.map((issue) => `binding:${issue}`) : []),
+    ]);
+  const expected = binding.value;
+  const issues: string[] = [];
+  if (expected.commitKind !== "ORDINARY") issues.push("commitKind:not-ordinary");
+  if (expected.packetAuthorityKind !== "KNOWN") issues.push("packetAuthorityKind:not-known");
+  for (const field of [
+    "globalIdentityDigest",
+    "oldAuthorityPathInstanceDigest",
+    "oldAuthorityReceiptDigest",
+    "oldAuthorityTipDigest",
+    "oldAuthorityValueDigest",
+    "packetAuthorityPathInstanceDigest",
+    "packetAuthorityReceiptDigest",
+    "packetAuthorityTipDigest",
+    "packetAuthorityValueDigest",
+    "runId",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+  ] as const)
+    if (!isSha256(expected[field])) issues.push(`${field}:invalid`);
+  const priorCheckpoint =
+    expected.priorCheckpointEvidence === null
+      ? null
+      : parseRunCheckpointEvidence(expected.priorCheckpointEvidence);
+  if (priorCheckpoint !== null && !priorCheckpoint.ok)
+    issues.push(...priorCheckpoint.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
+  if (!isCanonicalDecimal(expected.runOrdinal)) issues.push("runOrdinal:invalid");
+  if (
+    isCanonicalDecimal(expected.runOrdinal) &&
+    (expected.runOrdinal === "0") !== (priorCheckpoint === null)
+  )
+    issues.push("priorCheckpointEvidence:runOrdinal-mismatch");
+  if (expected.runOrdinal !== "0" || priorCheckpoint !== null)
+    issues.push("positive-lineage:full-commit-required");
+  const equalities = [
+    [
+      "producerAuthorityPathInstanceDigest",
+      "oldAuthorityPathInstanceDigest",
+      "packetAuthorityPathInstanceDigest",
+    ],
+    ["producerAuthorityReceiptDigest", "oldAuthorityReceiptDigest", "packetAuthorityReceiptDigest"],
+    ["producerAuthorityTipDigest", "oldAuthorityTipDigest", "packetAuthorityTipDigest"],
+    ["producerAuthorityValueDigest", "oldAuthorityValueDigest", "packetAuthorityValueDigest"],
+  ] as const;
+  for (const [resolutionField, oldField, packetField] of equalities)
+    if (
+      resolution.value[resolutionField] !== expected[oldField] ||
+      resolution.value[resolutionField] !== expected[packetField]
+    )
+      issues.push(`${resolutionField}:authority-mismatch`);
+  for (const field of ["outcome", "targetMutationId", "targetPathInstanceDigest"] as const)
+    if (resolution.value[field] !== expected[field]) issues.push(`${field}:mismatch`);
+  try {
+    const expectedRunId = computeRunId({
+      authorityPathInstanceDigest: expected.oldAuthorityPathInstanceDigest,
+      authorityReceiptDigest: expected.oldAuthorityReceiptDigest,
+      authorityTipDigest: expected.oldAuthorityTipDigest,
+      authorityValueDigest: expected.oldAuthorityValueDigest,
+      globalIdentityDigest: expected.globalIdentityDigest,
+      priorCheckpointDigest: null,
+      runOrdinal: expected.runOrdinal,
+      targetMutationId: expected.targetMutationId,
+    });
+    if (expected.runId !== expectedRunId) issues.push("runId:authority-mismatch");
+  } catch {
+    issues.push("runId:inputs-invalid");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+export function validateRunSegmentCore(
+  segmentInput: unknown,
+  checkpointCoreInput: unknown,
+  priorAuditDigest: string | null,
+): readonly string[] {
+  const segment = parseRunSegment(segmentInput);
+  const core = parseRunCheckpointCore(checkpointCoreInput);
+  if (!segment.ok || !core.ok)
+    return Object.freeze([
+      ...(!segment.ok ? segment.issues.map((issue) => `segment:${issue}`) : []),
+      ...(!core.ok ? core.issues.map((issue) => `core:${issue}`) : []),
+    ]);
+  const segmentDigest = computeRunSegmentDigest(segment.value);
+  const issues: string[] = [];
+  if (core.value.segmentDigest !== segmentDigest) issues.push("segmentDigest:mismatch");
+  if (core.value.auditDigest !== computeRunAuditDigest(priorAuditDigest, segmentDigest))
+    issues.push("auditDigest:mismatch");
+  for (const field of [
+    "canonicalPointerPath",
+    "globalIdentityDigest",
+    "installationId",
+    "pointerKind",
+    "projectId",
+    "runOrdinal",
+    "sourceToken",
+    "stage",
+    "stateRootDigest",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+    "transactionId",
+  ] as const)
+    if (segment.value[field] !== core.value[field]) issues.push(`${field}:mismatch`);
+  return Object.freeze(issues);
+}
+
+export function parseRunPostSelectionObservation(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, postSelectionObservationFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-run-selector-post-selection-observation/v1")
+    issues.push("schemaVersion:mismatch");
+  issues.push(
+    ...digestIssues(
+      record,
+      postSelectionObservationFields.filter((field) => field.endsWith("Digest")),
+    ),
+  );
+  if (!isCanonicalTimestamp(record.observedAt)) issues.push("observedAt:invalid");
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeRunPostSelectionObservationDigest(input: unknown): string {
+  const parsed = parseRunPostSelectionObservation(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  return framedDigest("pointer-mutation-run-selector-post-selection-observation/v1", [
+    frame.raw32(String(record.checkpointCoreDigest)),
+    frame.raw32(String(record.selectorPathInstanceDigest)),
+    frame.raw32(String(record.selectorMutationId)),
+    frame.raw32(String(record.selectorValueDigest)),
+    frame.raw32(String(record.selectorReceiptDigest)),
+    frame.raw32(String(record.selectorTipDigest)),
+    frame.raw32(String(record.valueReadbackDigest)),
+    frame.raw32(String(record.proposalReadbackDigest)),
+    frame.raw32(String(record.tipReadbackDigest)),
+    frame.canonical(record),
+  ]);
+}
+
+export function parseRunCheckpointEvidence(input: unknown): ParseResult {
+  const wrapper = snapshotClosedRecord(input, checkpointEvidenceFields);
+  if (!wrapper.ok) return wrapper;
+  const segment = parseRunSegment(wrapper.value.segment);
+  const core = parseRunCheckpointCore(wrapper.value.core);
+  const observation = parseRunPostSelectionObservation(wrapper.value.postSelectionObservation);
+  const selection = snapshotClosedRecord(wrapper.value.selectorSelection, [
+    "proposal",
+    "tip",
+    "value",
+  ]);
+  const proposal = selection.ok ? parsePointerProposal(selection.value.proposal) : selection;
+  const tip = selection.ok ? parsePointerCurrentTip(selection.value.tip) : selection;
+  const current = selection.ok ? parseRunCurrentValue(selection.value.value) : selection;
+  const resolution =
+    wrapper.value.terminalResolution === null
+      ? null
+      : parseCommitResolution(wrapper.value.terminalResolution);
+  const issues: string[] = [];
+  for (const [name, parsed] of [
+    ["segment", segment],
+    ["core", core],
+    ["postSelectionObservation", observation],
+    ["selectorSelection", selection],
+    ["selectorSelection.proposal", proposal],
+    ["selectorSelection.tip", tip],
+    ["selectorSelection.value", current],
+  ] as const)
+    if (!parsed.ok) issues.push(...parsed.issues.map((issue) => `${name}:${issue}`));
+  if (resolution !== null && !resolution.ok)
+    issues.push(...resolution.issues.map((issue) => `terminalResolution:${issue}`));
+  if (
+    !segment.ok ||
+    !core.ok ||
+    !observation.ok ||
+    !selection.ok ||
+    !proposal.ok ||
+    !tip.ok ||
+    !current.ok ||
+    (resolution !== null && !resolution.ok)
+  )
+    return invalid(...issues);
+
+  issues.push(
+    ...validateSelectedPointerEvidence(selection.value).map(
+      (issue) => `selectorSelection:${issue}`,
+    ),
+    ...validateRunCurrentSelection(core.value, current.value).map(
+      (issue) => `selectorSelection.value:${issue}`,
+    ),
+  );
+  if (proposal.value.pointerKind !== "POINTER_MUTATION_RUN_CURRENT")
+    issues.push("selectorSelection.proposal:pointerKind:mismatch");
+  if (tip.value.pointerKind !== "POINTER_MUTATION_RUN_CURRENT")
+    issues.push("selectorSelection.tip:pointerKind:mismatch");
+  const segmentDigest = computeRunSegmentDigest(segment.value);
+  if (core.value.segmentDigest !== segmentDigest) issues.push("core:segmentDigest:mismatch");
+  for (const field of [
+    "canonicalPointerPath",
+    "globalIdentityDigest",
+    "installationId",
+    "pointerKind",
+    "projectId",
+    "runOrdinal",
+    "sourceToken",
+    "stage",
+    "stateRootDigest",
+    "targetMutationId",
+    "targetPathInstanceDigest",
+    "transactionId",
+  ] as const)
+    if (segment.value[field] !== core.value[field]) issues.push(`${field}:segment-core-mismatch`);
+
+  const coreDigest = computeRunCheckpointCoreDigest(core.value);
+  const valueDigest = computePointerValueDigest(
+    "POINTER_MUTATION_RUN_CURRENT",
+    String(proposal.value.pathInstanceDigest),
+    current.value,
+  );
+  const receiptDigest = computeProposalReceiptDigest(proposal.value);
+  const tipDigest = computeCurrentTipDigest(tip.value);
+  const expectedObservation = {
+    checkpointCoreDigest: coreDigest,
+    selectorMutationId: proposal.value.mutationId,
+    selectorPathInstanceDigest: proposal.value.pathInstanceDigest,
+    selectorReceiptDigest: receiptDigest,
+    selectorTipDigest: tipDigest,
+    selectorValueDigest: valueDigest,
+    valueReadbackDigest: canonicalDigest(current.value),
+    proposalReadbackDigest: canonicalDigest(proposal.value),
+    tipReadbackDigest: canonicalDigest(tip.value),
+  } as const;
+  for (const [field, expected] of Object.entries(expectedObservation))
+    if (observation.value[field] !== expected) issues.push(`${field}:observation-mismatch`);
+
+  const terminal = terminalPhase(core.value.phase);
+  if (terminal !== (resolution !== null)) issues.push("terminalResolution:phase-mismatch");
+  if (resolution !== null && resolution.ok)
+    issues.push(
+      ...validateRunTerminalResolution(core.value, resolution.value).map(
+        (issue) => `terminalResolution:${issue}`,
+      ),
+    );
+  return issues.length === 0 ? wrapper : invalid(...issues);
+}
+
+export function computeRunCheckpointEvidenceDigest(input: unknown): string {
+  const parsed = parseRunCheckpointEvidence(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const wrapper = parsed.value;
+  const core = parseRunCheckpointCore(wrapper.core);
+  const selection = snapshotClosedRecord(wrapper.selectorSelection, ["proposal", "tip", "value"]);
+  const observation = parseRunPostSelectionObservation(wrapper.postSelectionObservation);
+  if (!core.ok || !selection.ok || !observation.ok)
+    throw new TypeError("checkpointEvidence:invalid");
+  const proposal = parsePointerProposal(selection.value.proposal);
+  const tip = parsePointerCurrentTip(selection.value.tip);
+  if (!proposal.ok || !tip.ok) throw new TypeError("selectorSelection:invalid");
+  return framedDigest("pointer-mutation-run-checkpoint-evidence/v1", [
+    frame.boundedDecimal(String(core.value.checkpointOrdinal)),
+    frame.text(String(core.value.stage)),
+    frame.raw32(computeRunCheckpointCoreDigest(core.value)),
+    frame.raw32(String(proposal.value.pathInstanceDigest)),
+    frame.raw32(computeCurrentTipDigest(tip.value)),
+    frame.raw32(String(tip.value.valueDigest)),
+    frame.raw32(computeProposalReceiptDigest(proposal.value)),
+    frame.raw32(String(observation.value.valueReadbackDigest)),
+    frame.raw32(String(observation.value.proposalReadbackDigest)),
+    frame.raw32(String(observation.value.tipReadbackDigest)),
+    frame.raw32(computeRunPostSelectionObservationDigest(observation.value)),
+  ]);
+}
+
+export function parseRunIntent(input: unknown): ParseResult {
+  const snapshot = snapshotJson(input);
+  if (!snapshot.ok) return snapshot as ParseResult;
+  if (
+    snapshot.value === null ||
+    Array.isArray(snapshot.value) ||
+    typeof snapshot.value !== "object"
+  )
+    return invalid("record:object-required");
+  const detached = snapshot.value as ContractRecord;
+  const fields =
+    detached.commitKind === "ORDINARY"
+      ? runIntentCommonFields
+      : detached.commitKind === "AUTHORITY_ROTATION"
+        ? runIntentRotationFields
+        : null;
+  if (fields === null) return invalid("commitKind:invalid");
+  const parsed = snapshotClosedRecord(detached, fields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-run-intent/v1")
+    issues.push("schemaVersion:mismatch");
+  if (record.intentKind !== "SINGLE_EPOCH") issues.push("intentKind:mismatch");
+  if (!isCanonicalTimestamp(record.createdAt)) issues.push("createdAt:invalid");
+  if (!isContractRelativePath(record.canonicalPointerPath))
+    issues.push("canonicalPointerPath:invalid");
+  if (!pointerKinds.includes(record.targetPointerKind as PointerKind))
+    issues.push("targetPointerKind:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "globalIdentityDigest",
+      "oldAuthorityPathInstanceDigest",
+      "oldAuthorityReceiptDigest",
+      "oldAuthorityTipDigest",
+      "oldAuthorityValueDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+  );
+  if (record.commitKind === "ORDINARY") {
+    if (record.targetPointerKind === "STATE_MUTATION_AUTHORITY_ROTATION")
+      issues.push("targetPointerKind:rotation-arm-mismatch");
+    return issues.length === 0 ? parsed : invalid(...issues);
+  }
+
+  if (record.targetPointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION")
+    issues.push("targetPointerKind:rotation-required");
+  issues.push(
+    ...digestIssues(record, [
+      "expectedRecordDigest",
+      "expectedSuccessorValueDigest",
+      "rotationInputDigest",
+      "successorCoreDigest",
+    ]),
+  );
+  if (!isCanonicalDecimal(record.expectedHeadOrdinal) || record.expectedHeadOrdinal === "0")
+    issues.push("expectedHeadOrdinal:invalid");
+  const rotation = parseRotationInput(record.rotationInput);
+  if (!rotation.ok) {
+    issues.push(...rotation.issues.map((issue) => `rotationInput:${issue}`));
+    return invalid(...issues);
+  }
+  const rotationDigest = computeRotationInputDigest(rotation.value);
+  if (record.rotationInputDigest !== rotationDigest) issues.push("rotationInputDigest:mismatch");
+  const equalities = [
+    ["globalIdentityDigest", "globalIdentityDigest"],
+    ["oldAuthorityPathInstanceDigest", "retiringAuthorityPathInstanceDigest"],
+    ["oldAuthorityReceiptDigest", "retiringAuthorityReceiptDigest"],
+    ["oldAuthorityTipDigest", "retiringAuthorityTipDigest"],
+    ["oldAuthorityValueDigest", "retiringAuthorityValueDigest"],
+    ["successorCoreDigest", "successorCoreDigest"],
+  ] as const;
+  for (const [intentField, rotationField] of equalities)
+    if (record[intentField] !== rotation.value[rotationField])
+      issues.push(`${intentField}:rotation-input-mismatch`);
+  if (record.expectedHeadOrdinal !== rotation.value.successorAuthorityOrdinal)
+    issues.push("expectedHeadOrdinal:rotation-input-mismatch");
+  try {
+    const expectedRecordDigest = computeAuthorityHistoryRecordDigest({
+      globalIdentityDigest: rotation.value.globalIdentityDigest,
+      ordinal: rotation.value.successorAuthorityOrdinal,
+      predecessorKind: "RECORD",
+      priorHeadOrdinal: rotation.value.priorHeadOrdinal,
+      priorRecordDigest: rotation.value.priorRecordDigest,
+      recordKind: "ROTATION",
+      retiringAuthorityPathInstanceDigest: rotation.value.retiringAuthorityPathInstanceDigest,
+      retiringAuthorityReceiptDigest: rotation.value.retiringAuthorityReceiptDigest,
+      retiringAuthorityTipDigest: rotation.value.retiringAuthorityTipDigest,
+      retiringAuthorityValueDigest: rotation.value.retiringAuthorityValueDigest,
+      rotationInputDigest: rotationDigest,
+      schemaVersion: "authority-history-record/v1",
+      successorCoreDigest: rotation.value.successorCoreDigest,
+    });
+    if (record.expectedRecordDigest !== expectedRecordDigest)
+      issues.push("expectedRecordDigest:mismatch");
+  } catch {
+    issues.push("expectedRecordDigest:inputs-invalid");
+  }
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+export function computeRunIntentDigest(input: unknown): string {
+  const parsed = parseRunIntent(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  return framedDigest("pointer-mutation-run-intent/v1", [
+    frame.fixed(record.commitKind === "ORDINARY" ? "00" : "01"),
+    frame.raw32(String(record.globalIdentityDigest)),
+    frame.text(String(record.targetPointerKind)),
+    frame.text(String(record.canonicalPointerPath)),
+    frame.raw32(String(record.targetPathInstanceDigest)),
+    frame.raw32(String(record.targetMutationId)),
+    frame.raw32(String(record.oldAuthorityPathInstanceDigest)),
+    frame.raw32(String(record.oldAuthorityTipDigest)),
+    frame.raw32(String(record.oldAuthorityValueDigest)),
+    frame.raw32(String(record.oldAuthorityReceiptDigest)),
+    ...(record.commitKind === "AUTHORITY_ROTATION"
+      ? [
+          frame.raw32(String(record.rotationInputDigest)),
+          frame.raw32(String(record.expectedSuccessorValueDigest)),
+          frame.boundedDecimal(String(record.expectedHeadOrdinal)),
+          frame.raw32(String(record.expectedRecordDigest)),
+          frame.raw32(String(record.successorCoreDigest)),
+        ]
+      : []),
+    frame.canonical(record),
+  ]);
+}
+
+export function computeRunId(input: unknown): string {
+  const parsed = snapshotClosedRecord(input, [
+    "authorityPathInstanceDigest",
+    "authorityReceiptDigest",
+    "authorityTipDigest",
+    "authorityValueDigest",
+    "globalIdentityDigest",
+    "priorCheckpointDigest",
+    "runOrdinal",
+    "targetMutationId",
+  ]);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  const digestFields = [
+    "authorityPathInstanceDigest",
+    "authorityReceiptDigest",
+    "authorityTipDigest",
+    "authorityValueDigest",
+    "globalIdentityDigest",
+    "targetMutationId",
+  ] as const;
+  if (digestFields.some((field) => !isSha256(record[field])))
+    throw new TypeError("runId:digest-invalid");
+  if (record.priorCheckpointDigest !== null && !isSha256(record.priorCheckpointDigest))
+    throw new TypeError("priorCheckpointDigest:invalid");
+  if (!isCanonicalDecimal(record.runOrdinal)) throw new TypeError("runOrdinal:invalid");
+  return framedDigest("pointer-mutation-run-id/v1", [
+    frame.raw32(String(record.globalIdentityDigest)),
+    frame.raw32(String(record.targetMutationId)),
+    frame.boundedDecimal(String(record.runOrdinal)),
+    frame.nullableRaw32(record.priorCheckpointDigest as string | null),
+    frame.raw32(String(record.authorityPathInstanceDigest)),
+    frame.raw32(String(record.authorityTipDigest)),
+    frame.raw32(String(record.authorityValueDigest)),
+    frame.raw32(String(record.authorityReceiptDigest)),
+  ]);
+}
+
+function requiredDigest(value: string, name: string): string {
+  if (!isSha256(value)) throw new TypeError(`${name}:invalid`);
+  return value;
+}
+
+export const commitJournalPaths = Object.freeze({
+  intent: (targetPathInstanceDigest: string, targetMutationId: string): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/intent.json`,
+  checkpoint: (
+    targetPathInstanceDigest: string,
+    targetMutationId: string,
+    checkpointCoreDigest: string,
+  ): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/checkpoints/${requiredDigest(checkpointCoreDigest, "checkpointCoreDigest")}.json`,
+  runSegment: (
+    targetPathInstanceDigest: string,
+    targetMutationId: string,
+    runOrdinal: string,
+    runId: string,
+  ): string => {
+    if (!isCanonicalDecimal(runOrdinal)) throw new TypeError("runOrdinal:invalid");
+    return `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/runs/${runOrdinal}-${requiredDigest(runId, "runId")}/segment.json`;
+  },
+  selectorObservation: (
+    targetPathInstanceDigest: string,
+    targetMutationId: string,
+    selectorMutationId: string,
+  ): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/selector-observations/${requiredDigest(selectorMutationId, "selectorMutationId")}.json`,
+  resolution: (targetPathInstanceDigest: string, targetMutationId: string): string =>
+    `installation/pointer-cas/${requiredDigest(targetPathInstanceDigest, "targetPathInstanceDigest")}/commits/${requiredDigest(targetMutationId, "targetMutationId")}/resolution.json`,
+});
+
+export function validateCommitCheckpointSequence(
+  input: unknown,
+  commitKind: "ORDINARY" | "AUTHORITY_ROTATION",
+): readonly string[] {
+  const checkpoints = snapshotClosedArray(input);
+  if (!checkpoints.ok) return checkpoints.issues;
+  const expectedLength = commitKind === "ORDINARY" ? 9 : 6;
+  if (checkpoints.value.length !== expectedLength) return ["checkpoints:length"];
+  const issues: string[] = [];
+  let first: ContractRecord | undefined;
+  let stageSevenPhase: unknown;
+  for (let index = 0; index < checkpoints.value.length; index += 1) {
+    const parsed = parseRunCheckpointCore(checkpoints.value[index]);
+    if (!parsed.ok) {
+      issues.push(...parsed.issues.map((issue) => `${index}:${issue}`));
+      continue;
+    }
+    const record = parsed.value;
+    first ??= record;
+    if (record.checkpointOrdinal !== String(index)) issues.push(`${index}:checkpointOrdinal`);
+    if (record.stage !== commitRunStages[index]) issues.push(`${index}:stage`);
+    for (const field of [
+      "canonicalPointerPath",
+      "globalIdentityDigest",
+      "installationId",
+      "pointerKind",
+      "projectId",
+      "runOrdinal",
+      "sourceToken",
+      "stateRootDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+      "transactionId",
+    ] as const)
+      if (record[field] !== first[field]) issues.push(`${index}:${field}`);
+    if (index === 7) stageSevenPhase = record.phase;
+    if (index === 8 && record.phase !== stageSevenPhase) issues.push("8:phase:not-stage-seven");
+  }
+  if (first) {
+    const rotationTarget = first.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION";
+    if ((commitKind === "AUTHORITY_ROTATION") !== rotationTarget)
+      issues.push("commitKind:pointerKind-mismatch");
+    if (commitKind === "AUTHORITY_ROTATION") {
+      for (let index = 0; index < checkpoints.value.length; index += 1) {
+        const parsed = parseRunCheckpointCore(checkpoints.value[index]);
+        if (parsed.ok && parsed.value.terminalResolutionDigest !== null)
+          issues.push(`${index}:terminalResolutionDigest:rotation-forbidden`);
+      }
+    }
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+export function validateCommitCheckpointEvidenceSequence(
+  input: unknown,
+  commitKind: "ORDINARY" | "AUTHORITY_ROTATION",
+  priorCheckpointEvidenceInput: unknown = null,
+): readonly string[] {
+  const checkpoints = snapshotClosedArray(input);
+  if (!checkpoints.ok) return checkpoints.issues;
+  const expectedLength = commitKind === "ORDINARY" ? 9 : 6;
+  if (checkpoints.value.length !== expectedLength) return ["checkpoints:length"];
+  const issues: string[] = [];
+  const cores: ContractRecord[] = [];
+  let firstCore: ContractRecord | null = null;
+  let firstRunId: unknown;
+  let epochTip: unknown;
+  let epochValue: unknown;
+  let epochReceipt: unknown;
+  let priorAuditDigest: string | null = null;
+  let priorSelectorTipDigest: string | null = null;
+  let priorSelectorValueDigest: string | null = null;
+  let priorSelectorReceiptDigest: string | null = null;
+  let priorSelectorPathInstanceDigest: string | null = null;
+  let priorObservationDigest: string | null = null;
+  let stageSevenResolutionDigest: string | null = null;
+
+  if (priorCheckpointEvidenceInput !== null) {
+    const prior = parseRunCheckpointEvidence(priorCheckpointEvidenceInput);
+    if (!prior.ok)
+      return Object.freeze(prior.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
+    const priorSelection = snapshotClosedRecord(prior.value.selectorSelection, [
+      "proposal",
+      "tip",
+      "value",
+    ]);
+    const priorProposal = priorSelection.ok
+      ? parsePointerProposal(priorSelection.value.proposal)
+      : priorSelection;
+    const priorTip = priorSelection.ok
+      ? parsePointerCurrentTip(priorSelection.value.tip)
+      : priorSelection;
+    const priorObservation = parseRunPostSelectionObservation(prior.value.postSelectionObservation);
+    if (!priorSelection.ok || !priorProposal.ok || !priorTip.ok || !priorObservation.ok)
+      return Object.freeze(["priorCheckpointEvidence:composition-invalid"]);
+    priorSelectorTipDigest = computeCurrentTipDigest(priorTip.value);
+    priorSelectorValueDigest = String(priorTip.value.valueDigest);
+    priorSelectorReceiptDigest = computeProposalReceiptDigest(priorProposal.value);
+    priorSelectorPathInstanceDigest = String(priorProposal.value.pathInstanceDigest);
+    priorObservationDigest = computeRunPostSelectionObservationDigest(priorObservation.value);
+  }
+
+  for (let index = 0; index < checkpoints.value.length; index += 1) {
+    const parsed = parseRunCheckpointEvidence(checkpoints.value[index]);
+    if (!parsed.ok) {
+      issues.push(...parsed.issues.map((issue) => `${index}:${issue}`));
+      continue;
+    }
+    const wrapper = parsed.value;
+    const core = parseRunCheckpointCore(wrapper.core);
+    const segment = parseRunSegment(wrapper.segment);
+    const observation = parseRunPostSelectionObservation(wrapper.postSelectionObservation);
+    const selection = snapshotClosedRecord(wrapper.selectorSelection, ["proposal", "tip", "value"]);
+    const proposal = selection.ok ? parsePointerProposal(selection.value.proposal) : selection;
+    const tip = selection.ok ? parsePointerCurrentTip(selection.value.tip) : selection;
+    if (!core.ok || !segment.ok || !observation.ok || !selection.ok || !proposal.ok || !tip.ok) {
+      issues.push(`${index}:checkpointEvidence:unreadable`);
+      continue;
+    }
+    cores.push(core.value);
+    firstCore ??= core.value;
+    firstRunId ??= segment.value.runId;
+    epochTip ??= proposal.value.authorityEpochTipDigest;
+    epochValue ??= proposal.value.authorityEpochValueDigest;
+    epochReceipt ??= proposal.value.authorityEpochReceiptDigest;
+
+    if (core.value.checkpointOrdinal !== String(index)) issues.push(`${index}:checkpointOrdinal`);
+    if (core.value.stage !== commitRunStages[index]) issues.push(`${index}:stage`);
+    if (segment.value.runId !== firstRunId) issues.push(`${index}:runId`);
+    try {
+      const expectedTargetPathInstanceDigest = computePointerInstanceDigestFromCanonicalPath({
+        pointerKind: core.value.pointerKind as PointerKind,
+        canonicalPointerPath: String(core.value.canonicalPointerPath),
+        installationId: String(core.value.installationId),
+        projectId: String(core.value.projectId),
+        stateRootDigest: String(core.value.stateRootDigest),
+        transactionId: core.value.transactionId as string | null,
+        sourceToken: String(core.value.sourceToken),
+      });
+      if (core.value.targetPathInstanceDigest !== expectedTargetPathInstanceDigest)
+        issues.push(`${index}:targetPathInstanceDigest:derived-mismatch`);
+    } catch {
+      issues.push(`${index}:targetPathInstanceDigest:inputs-invalid`);
+    }
+    try {
+      const selectorPath = pointerPath("POINTER_MUTATION_RUN_CURRENT", {
+        targetInstanceDigest: String(core.value.targetPathInstanceDigest),
+        targetMutationId: String(core.value.targetMutationId),
+      });
+      const expectedSelectorPathInstanceDigest = computePointerInstanceDigestFromCanonicalPath({
+        pointerKind: "POINTER_MUTATION_RUN_CURRENT",
+        canonicalPointerPath: selectorPath,
+        installationId: String(core.value.installationId),
+        projectId: String(core.value.projectId),
+        stateRootDigest: String(core.value.stateRootDigest),
+        transactionId: null,
+        sourceToken: "none",
+      });
+      if (proposal.value.pathInstanceDigest !== expectedSelectorPathInstanceDigest)
+        issues.push(`${index}:selectorPathInstanceDigest:derived-mismatch`);
+    } catch {
+      issues.push(`${index}:selectorPathInstanceDigest:inputs-invalid`);
+    }
+    if (
+      priorSelectorPathInstanceDigest !== null &&
+      proposal.value.pathInstanceDigest !== priorSelectorPathInstanceDigest
+    )
+      issues.push(`${index}:selectorPathInstanceDigest:predecessor-mismatch`);
+    for (const [field, expected] of [
+      ["authorityEpochTipDigest", epochTip],
+      ["authorityEpochValueDigest", epochValue],
+      ["authorityEpochReceiptDigest", epochReceipt],
+    ] as const)
+      if (proposal.value[field] !== expected) issues.push(`${index}:${field}:epoch-mismatch`);
+    if (proposal.value.producerKind !== "SELECTED_EPOCH")
+      issues.push(`${index}:producerKind:not-selected-epoch`);
+
+    if (firstCore !== null)
+      for (const field of [
+        "canonicalPointerPath",
+        "globalIdentityDigest",
+        "installationId",
+        "pointerKind",
+        "projectId",
+        "runOrdinal",
+        "sourceToken",
+        "stateRootDigest",
+        "targetMutationId",
+        "targetPathInstanceDigest",
+        "transactionId",
+      ] as const)
+        if (core.value[field] !== firstCore[field]) issues.push(`${index}:${field}`);
+
+    const segmentDigest = computeRunSegmentDigest(segment.value);
+    const expectedAuditDigest = computeRunAuditDigest(priorAuditDigest, segmentDigest);
+    if (core.value.auditDigest !== expectedAuditDigest) issues.push(`${index}:auditDigest`);
+    for (const [field, expected] of [
+      ["priorSelectorTipDigest", priorSelectorTipDigest],
+      ["priorSelectorValueDigest", priorSelectorValueDigest],
+      ["priorSelectorReceiptDigest", priorSelectorReceiptDigest],
+      ["priorPostSelectionObservationDigest", priorObservationDigest],
+    ] as const)
+      if (core.value[field] !== expected) issues.push(`${index}:${field}`);
+    for (const [field, expected] of [
+      ["priorTipDigest", priorSelectorTipDigest],
+      ["priorValueDigest", priorSelectorValueDigest],
+      ["priorReceiptDigest", priorSelectorReceiptDigest],
+    ] as const)
+      if (proposal.value[field] !== expected) issues.push(`${index}:proposal:${field}`);
+
+    if (index === 7 && wrapper.terminalResolution !== null)
+      stageSevenResolutionDigest = computeCommitResolutionDigest(wrapper.terminalResolution);
+    if (
+      index === 8 &&
+      wrapper.terminalResolution !== null &&
+      computeCommitResolutionDigest(wrapper.terminalResolution) !== stageSevenResolutionDigest
+    )
+      issues.push("8:terminalResolution:not-stage-seven");
+
+    priorAuditDigest = core.value.auditDigest as string;
+    priorSelectorTipDigest = computeCurrentTipDigest(tip.value);
+    priorSelectorValueDigest = tip.value.valueDigest as string;
+    priorSelectorReceiptDigest = tip.value.proposalReceiptDigest as string;
+    priorSelectorPathInstanceDigest = String(proposal.value.pathInstanceDigest);
+    priorObservationDigest = computeRunPostSelectionObservationDigest(observation.value);
+  }
+
+  issues.push(...validateCommitCheckpointSequence(cores, commitKind));
+  if (firstCore !== null) {
+    const rotationTarget = firstCore.pointerKind === "STATE_MUTATION_AUTHORITY_ROTATION";
+    if ((commitKind === "AUTHORITY_ROTATION") !== rotationTarget)
+      issues.push("commitKind:pointerKind-mismatch");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+function validateCommitRunLineage(
+  record: ContractRecord,
+  firstCheckpointInput: unknown,
+): readonly string[] {
+  const firstCheckpoint = parseRunCheckpointEvidence(firstCheckpointInput);
+  if (!firstCheckpoint.ok)
+    return Object.freeze(firstCheckpoint.issues.map((issue) => `firstCheckpoint:${issue}`));
+  const currentCore = parseRunCheckpointCore(firstCheckpoint.value.core);
+  if (!currentCore.ok)
+    return Object.freeze(currentCore.issues.map((issue) => `firstCheckpoint:core:${issue}`));
+
+  const issues: string[] = [];
+  const priorInput = record.priorCheckpointEvidence;
+  let priorCoreDigest: string | null = null;
+  try {
+    const expectedTargetPathInstanceDigest = computePointerInstanceDigestFromCanonicalPath({
+      pointerKind: currentCore.value.pointerKind as PointerKind,
+      canonicalPointerPath: String(currentCore.value.canonicalPointerPath),
+      installationId: String(currentCore.value.installationId),
+      projectId: String(currentCore.value.projectId),
+      stateRootDigest: String(currentCore.value.stateRootDigest),
+      transactionId: currentCore.value.transactionId as string | null,
+      sourceToken: String(currentCore.value.sourceToken),
+    });
+    if (currentCore.value.targetPathInstanceDigest !== expectedTargetPathInstanceDigest)
+      issues.push("targetPathInstanceDigest:derived-mismatch");
+  } catch {
+    issues.push("targetPathInstanceDigest:inputs-invalid");
+  }
+  if (record.commitKind === "AUTHORITY_ROTATION") {
+    if (record.runOrdinal !== "0") issues.push("runOrdinal:rotation-must-be-zero");
+    if (priorInput !== null) issues.push("priorCheckpointEvidence:rotation-must-be-null");
+  } else {
+    const zero = record.runOrdinal === "0";
+    if (zero !== (priorInput === null)) issues.push("priorCheckpointEvidence:runOrdinal-mismatch");
+    if (priorInput !== null) {
+      const prior = parseRunCheckpointEvidence(priorInput);
+      if (!prior.ok) {
+        issues.push(...prior.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
+      } else {
+        const priorCore = parseRunCheckpointCore(prior.value.core);
+        const priorSelection = snapshotClosedRecord(prior.value.selectorSelection, [
+          "proposal",
+          "tip",
+          "value",
+        ]);
+        const priorProposal = priorSelection.ok
+          ? parsePointerProposal(priorSelection.value.proposal)
+          : priorSelection;
+        if (!priorCore.ok)
+          issues.push(...priorCore.issues.map((issue) => `priorCheckpointEvidence:core:${issue}`));
+        if (!priorSelection.ok || !priorProposal.ok)
+          issues.push("priorCheckpointEvidence:selection-invalid");
+        if (priorCore.ok) {
+          priorCoreDigest = computeRunCheckpointCoreDigest(priorCore.value);
+          try {
+            if (incrementCanonicalDecimal(String(priorCore.value.runOrdinal)) !== record.runOrdinal)
+              issues.push("priorCheckpointEvidence:runOrdinal:not-predecessor");
+          } catch {
+            issues.push("priorCheckpointEvidence:runOrdinal:invalid");
+          }
+          for (const field of [
+            "canonicalPointerPath",
+            "globalIdentityDigest",
+            "installationId",
+            "pointerKind",
+            "projectId",
+            "sourceToken",
+            "stateRootDigest",
+            "targetMutationId",
+            "targetPathInstanceDigest",
+            "transactionId",
+          ] as const)
+            if (priorCore.value[field] !== currentCore.value[field])
+              issues.push(`priorCheckpointEvidence:${field}:mismatch`);
+        }
+        if (priorProposal.ok)
+          for (const [proposalField, commitField] of [
+            ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+            ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+            ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+          ] as const)
+            if (priorProposal.value[proposalField] !== record[commitField])
+              issues.push(`priorCheckpointEvidence:${proposalField}:old-authority-mismatch`);
+      }
+    }
+  }
+
+  try {
+    const expectedRunId = computeRunId({
+      authorityPathInstanceDigest: record.oldAuthorityPathInstanceDigest,
+      authorityReceiptDigest: record.oldAuthorityReceiptDigest,
+      authorityTipDigest: record.oldAuthorityTipDigest,
+      authorityValueDigest: record.oldAuthorityValueDigest,
+      globalIdentityDigest: currentCore.value.globalIdentityDigest,
+      priorCheckpointDigest: priorCoreDigest,
+      runOrdinal: record.runOrdinal,
+      targetMutationId: record.targetMutationId,
+    });
+    if (record.runId !== expectedRunId) issues.push("runId:derived-mismatch");
+  } catch {
+    issues.push("runId:inputs-invalid");
+  }
+  return Object.freeze([...new Set(issues)].sort());
+}
+
+export function parseOrdinaryCommitEvidence(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, ordinaryCommitEvidenceFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const resolution = parseCommitResolution(record.ordinaryResolution);
+  const slot = parsePointerEvidenceSlot(record.targetRegistrySlot);
+  const checkpoints = snapshotClosedArray(record.checkpoints);
+  const priorCheckpoint =
+    record.priorCheckpointEvidence === null
+      ? null
+      : parseRunCheckpointEvidence(record.priorCheckpointEvidence);
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-commit-evidence/v1")
+    issues.push("schemaVersion:mismatch");
+  if (record.commitKind !== "ORDINARY") issues.push("commitKind:mismatch");
+  if (!isContractRelativePath(record.canonicalPointerPath))
+    issues.push("canonicalPointerPath:invalid");
+  if (
+    !pointerKinds.includes(record.targetPointerKind as PointerKind) ||
+    record.targetPointerKind === "STATE_MUTATION_AUTHORITY_ROTATION"
+  )
+    issues.push("targetPointerKind:invalid");
+  if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "intentDigest",
+      "oldAuthorityPathInstanceDigest",
+      "oldAuthorityReceiptDigest",
+      "oldAuthorityTipDigest",
+      "oldAuthorityValueDigest",
+      "packetAuthorityPathInstanceDigest",
+      "packetAuthorityReceiptDigest",
+      "packetAuthorityTipDigest",
+      "packetAuthorityValueDigest",
+      "runId",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+  );
+  if (record.packetAuthorityKind !== "KNOWN") issues.push("packetAuthorityKind:not-known");
+  for (const [oldField, packetField] of [
+    ["oldAuthorityPathInstanceDigest", "packetAuthorityPathInstanceDigest"],
+    ["oldAuthorityReceiptDigest", "packetAuthorityReceiptDigest"],
+    ["oldAuthorityTipDigest", "packetAuthorityTipDigest"],
+    ["oldAuthorityValueDigest", "packetAuthorityValueDigest"],
+  ] as const)
+    if (record[oldField] !== record[packetField])
+      issues.push(`${packetField}:old-authority-mismatch`);
+  if (!resolution.ok)
+    issues.push(...resolution.issues.map((issue) => `ordinaryResolution:${issue}`));
+  if (!slot.ok) issues.push(...slot.issues.map((issue) => `targetRegistrySlot:${issue}`));
+  if (!checkpoints.ok) issues.push(...checkpoints.issues.map((issue) => `checkpoints:${issue}`));
+  if (priorCheckpoint !== null && !priorCheckpoint.ok)
+    issues.push(...priorCheckpoint.issues.map((issue) => `priorCheckpointEvidence:${issue}`));
+  if (
+    !resolution.ok ||
+    !slot.ok ||
+    !checkpoints.ok ||
+    (priorCheckpoint !== null && !priorCheckpoint.ok)
+  )
+    return invalid(...issues);
+  issues.push(
+    ...validateCommitCheckpointEvidenceSequence(
+      checkpoints.value,
+      "ORDINARY",
+      record.priorCheckpointEvidence,
+    ).map((issue) => `checkpoints:${issue}`),
+    ...validateCommitRunLineage(record, checkpoints.value[0]),
+  );
+  if (resolution.value.outcome !== record.outcome) issues.push("outcome:resolution-mismatch");
+  for (const field of ["targetMutationId", "targetPathInstanceDigest"] as const)
+    if (resolution.value[field] !== record[field]) issues.push(`${field}:resolution-mismatch`);
+  for (const [resolutionField, commitField] of [
+    ["producerAuthorityPathInstanceDigest", "oldAuthorityPathInstanceDigest"],
+    ["producerAuthorityReceiptDigest", "oldAuthorityReceiptDigest"],
+    ["producerAuthorityTipDigest", "oldAuthorityTipDigest"],
+    ["producerAuthorityValueDigest", "oldAuthorityValueDigest"],
+  ] as const)
+    if (resolution.value[resolutionField] !== record[commitField])
+      issues.push(`${resolutionField}:old-authority-mismatch`);
+  if (slot.value.pointerKind !== record.targetPointerKind)
+    issues.push("targetRegistrySlot:pointerKind:mismatch");
+
+  const firstCheckpoint = parseRunCheckpointEvidence(checkpoints.value[0]);
+  if (firstCheckpoint.ok) {
+    const core = parseRunCheckpointCore(firstCheckpoint.value.core);
+    const segment = parseRunSegment(firstCheckpoint.value.segment);
+    const selection = snapshotClosedRecord(firstCheckpoint.value.selectorSelection, [
+      "proposal",
+      "tip",
+      "value",
+    ]);
+    const proposal = selection.ok ? parsePointerProposal(selection.value.proposal) : selection;
+    if (core.ok && segment.ok && proposal.ok) {
+      for (const [commitField, actual] of [
+        ["canonicalPointerPath", core.value.canonicalPointerPath],
+        ["runId", segment.value.runId],
+        ["runOrdinal", core.value.runOrdinal],
+        ["targetMutationId", core.value.targetMutationId],
+        ["targetPathInstanceDigest", core.value.targetPathInstanceDigest],
+        ["targetPointerKind", core.value.pointerKind],
+      ] as const)
+        if (record[commitField] !== actual) issues.push(`${commitField}:checkpoint-mismatch`);
+      for (const [proposalField, commitField] of [
+        ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+        ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+        ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+      ] as const)
+        if (proposal.value[proposalField] !== record[commitField])
+          issues.push(`${proposalField}:checkpoint-epoch-mismatch`);
+    }
+  }
+
+  const selectedEvidence = slot.value.selectedEvidence;
+  if (record.outcome === "UNKNOWN_TERMINAL") {
+    if (selectedEvidence !== null) issues.push("targetRegistrySlot:unknown-must-be-empty");
+  } else if (record.outcome === "SELECTED") {
+    if (selectedEvidence === null) {
+      issues.push("targetRegistrySlot:selected-must-be-present");
+    } else {
+      const selected = snapshotClosedRecord(selectedEvidence, ["proposal", "tip", "value"]);
+      const proposal = selected.ok ? parsePointerProposal(selected.value.proposal) : selected;
+      const tip = selected.ok ? parsePointerCurrentTip(selected.value.tip) : selected;
+      if (!selected.ok || !proposal.ok || !tip.ok) {
+        issues.push("targetRegistrySlot:selected-invalid");
+      } else {
+        if (proposal.value.mutationId !== record.targetMutationId)
+          issues.push("targetRegistrySlot:mutationId:mismatch");
+        if (proposal.value.pathInstanceDigest !== record.targetPathInstanceDigest)
+          issues.push("targetRegistrySlot:pathInstanceDigest:mismatch");
+        if (computeCurrentTipDigest(tip.value) !== resolution.value.selectedTargetTipDigest)
+          issues.push("targetRegistrySlot:selectedTargetTipDigest:mismatch");
+        for (const [proposalField, commitField] of [
+          ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+          ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+          ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+        ] as const)
+          if (proposal.value[proposalField] !== record[commitField])
+            issues.push(`targetRegistrySlot:${proposalField}:mismatch`);
+      }
+    }
+  } else if (record.outcome === "LOST_CONFLICT") {
+    const conflict = parsePointerMutationConflictEvidence(selectedEvidence);
+    if (!conflict.ok) {
+      issues.push(...conflict.issues.map((issue) => `targetRegistrySlot:${issue}`));
+    } else {
+      const receipt = parsePointerConflict(conflict.value.conflictReceipt);
+      const loser = parsePointerProposal(conflict.value.losingProposal);
+      if (!receipt.ok || !loser.ok) {
+        issues.push("targetRegistrySlot:conflict-invalid");
+      } else {
+        if (conflict.value.targetMutationId !== record.targetMutationId)
+          issues.push("targetRegistrySlot:mutationId:mismatch");
+        if (conflict.value.targetPathInstanceDigest !== record.targetPathInstanceDigest)
+          issues.push("targetRegistrySlot:pathInstanceDigest:mismatch");
+        if (computeConflictDigest(receipt.value) !== resolution.value.conflictReceiptDigest)
+          issues.push("targetRegistrySlot:conflictReceiptDigest:mismatch");
+        for (const [epochField, commitField] of [
+          ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+          ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+          ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+        ] as const) {
+          if (loser.value[epochField] !== record[commitField])
+            issues.push(`targetRegistrySlot:losingProposal:${epochField}:mismatch`);
+          if (receipt.value[epochField] !== record[commitField])
+            issues.push(`targetRegistrySlot:conflictReceipt:${epochField}:mismatch`);
+        }
+      }
+    }
+  } else {
+    issues.push("outcome:invalid");
+  }
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+function selectedPointerTuple(input: unknown):
+  | {
+      readonly ok: true;
+      readonly value: ContractRecord;
+      readonly proposal: ContractRecord;
+      readonly tip: ContractRecord;
+      readonly pathInstanceDigest: string;
+      readonly receiptDigest: string;
+      readonly tipDigest: string;
+      readonly valueDigest: string;
+    }
+  | { readonly ok: false; readonly issues: readonly string[] } {
+  const selected = snapshotClosedRecord(input, ["proposal", "tip", "value"]);
+  if (!selected.ok) return selected;
+  const proposal = parsePointerProposal(selected.value.proposal);
+  const tip = parsePointerCurrentTip(selected.value.tip);
+  const selectedIssues = validateSelectedPointerEvidence(selected.value);
+  if (!proposal.ok || !tip.ok || selectedIssues.length > 0)
+    return {
+      ok: false,
+      issues: [
+        ...(!proposal.ok ? proposal.issues.map((issue) => `proposal:${issue}`) : []),
+        ...(!tip.ok ? tip.issues.map((issue) => `tip:${issue}`) : []),
+        ...selectedIssues,
+      ],
+    };
+  return {
+    ok: true,
+    value: selected.value,
+    proposal: proposal.value,
+    tip: tip.value,
+    pathInstanceDigest: String(proposal.value.pathInstanceDigest),
+    receiptDigest: computeProposalReceiptDigest(proposal.value),
+    tipDigest: computeCurrentTipDigest(tip.value),
+    valueDigest: computePointerValueDigest(
+      proposal.value.pointerKind as PointerKind,
+      String(proposal.value.pathInstanceDigest),
+      selected.value.value,
+    ),
+  };
+}
+
+export function parseRotationCommitEvidence(input: unknown): ParseResult {
+  const snapshot = snapshotJson(input);
+  if (!snapshot.ok) return snapshot as ParseResult;
+  if (
+    snapshot.value === null ||
+    Array.isArray(snapshot.value) ||
+    typeof snapshot.value !== "object"
+  )
+    return invalid("record:object-required");
+  const detached = snapshot.value as ContractRecord;
+  const fields =
+    detached.rotationOutcome === "RESUMABLE"
+      ? rotationCommitResumableFields
+      : detached.rotationOutcome === "SELECTED"
+        ? rotationCommitSelectedFields
+        : detached.rotationOutcome === "UNKNOWN"
+          ? rotationCommitUnknownFields
+          : null;
+  if (fields === null) return invalid("rotationOutcome:invalid");
+  const parsed = snapshotClosedRecord(detached, fields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const checkpoint = parseRunCheckpointEvidence(record.checkpoint5);
+  const slot = parsePointerEvidenceSlot(record.authorityRegistrySlot);
+  const issues: string[] = [];
+  if (record.schemaVersion !== "pointer-mutation-commit-evidence/v1")
+    issues.push("schemaVersion:mismatch");
+  if (record.commitKind !== "AUTHORITY_ROTATION") issues.push("commitKind:mismatch");
+  if (record.targetPointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION")
+    issues.push("targetPointerKind:mismatch");
+  if (record.canonicalPointerPath !== "installation/state-mutation-authority.json")
+    issues.push("canonicalPointerPath:mismatch");
+  if (!isCanonicalDecimal(record.runOrdinal)) issues.push("runOrdinal:invalid");
+  if (!isCanonicalDecimal(record.expectedHeadOrdinal) || record.expectedHeadOrdinal === "0")
+    issues.push("expectedHeadOrdinal:invalid");
+  issues.push(
+    ...digestIssues(record, [
+      "expectedRecordDigest",
+      "expectedSuccessorValueDigest",
+      "intentDigest",
+      "oldAuthorityPathInstanceDigest",
+      "oldAuthorityReceiptDigest",
+      "oldAuthorityTipDigest",
+      "oldAuthorityValueDigest",
+      "rotationInputDigest",
+      "runId",
+      "successorCoreDigest",
+      "targetMutationId",
+      "targetPathInstanceDigest",
+    ]),
+    ...nullableDigestIssues(record, [
+      "packetAuthorityPathInstanceDigest",
+      "packetAuthorityReceiptDigest",
+      "packetAuthorityTipDigest",
+      "packetAuthorityValueDigest",
+    ]),
+  );
+  const packetDigests = [
+    record.packetAuthorityPathInstanceDigest,
+    record.packetAuthorityReceiptDigest,
+    record.packetAuthorityTipDigest,
+    record.packetAuthorityValueDigest,
+  ];
+  if (record.packetAuthorityKind === "KNOWN") {
+    if (!packetDigests.every(isSha256)) issues.push("packetAuthority:partial");
+  } else if (record.packetAuthorityKind === "UNKNOWN") {
+    if (!packetDigests.every((value) => value === null))
+      issues.push("packetAuthority:must-be-null");
+  } else {
+    issues.push("packetAuthorityKind:invalid");
+  }
+  if (!checkpoint.ok) issues.push(...checkpoint.issues.map((issue) => `checkpoint5:${issue}`));
+  if (!slot.ok) issues.push(...slot.issues.map((issue) => `authorityRegistrySlot:${issue}`));
+  if (!checkpoint.ok || !slot.ok) return invalid(...issues);
+  if (slot.value.pointerKind !== "STATE_MUTATION_AUTHORITY_ROTATION")
+    issues.push("authorityRegistrySlot:pointerKind:mismatch");
+
+  const core = parseRunCheckpointCore(checkpoint.value.core);
+  const segment = parseRunSegment(checkpoint.value.segment);
+  const selector = selectedPointerTuple(checkpoint.value.selectorSelection);
+  if (!core.ok || !segment.ok || !selector.ok) {
+    issues.push("checkpoint5:composition-invalid");
+    return invalid(...issues);
+  }
+  if (
+    core.value.checkpointOrdinal !== "5" ||
+    core.value.stage !== "CAS_ARMED" ||
+    core.value.phase !== "CAS_AMBIGUOUS" ||
+    core.value.terminalResolutionDigest !== null ||
+    checkpoint.value.terminalResolution !== null
+  )
+    issues.push("checkpoint5:state-mismatch");
+  for (const [commitField, actual] of [
+    ["canonicalPointerPath", core.value.canonicalPointerPath],
+    ["runId", segment.value.runId],
+    ["runOrdinal", core.value.runOrdinal],
+    ["targetMutationId", core.value.targetMutationId],
+    ["targetPathInstanceDigest", core.value.targetPathInstanceDigest],
+    ["targetPointerKind", core.value.pointerKind],
+  ] as const)
+    if (record[commitField] !== actual) issues.push(`${commitField}:checkpoint-mismatch`);
+  for (const [proposalField, commitField] of [
+    ["authorityEpochReceiptDigest", "oldAuthorityReceiptDigest"],
+    ["authorityEpochTipDigest", "oldAuthorityTipDigest"],
+    ["authorityEpochValueDigest", "oldAuthorityValueDigest"],
+  ] as const)
+    if (selector.proposal[proposalField] !== record[commitField])
+      issues.push(`checkpoint5:${proposalField}:old-authority-mismatch`);
+
+  const registrySelection =
+    slot.value.selectedEvidence === null ? null : selectedPointerTuple(slot.value.selectedEvidence);
+  if (record.rotationOutcome === "RESUMABLE") {
+    if (record.packetAuthorityKind !== "KNOWN") issues.push("packetAuthorityKind:not-known");
+    if (record.headPlusTwoAbsent !== true) issues.push("headPlusTwoAbsent:mismatch");
+    for (const [field, expected] of [
+      ["packetAuthorityPathInstanceDigest", record.oldAuthorityPathInstanceDigest],
+      ["packetAuthorityReceiptDigest", record.oldAuthorityReceiptDigest],
+      ["packetAuthorityTipDigest", record.oldAuthorityTipDigest],
+      ["packetAuthorityValueDigest", record.oldAuthorityValueDigest],
+      ["resumableOldAuthorityPathInstanceDigest", record.oldAuthorityPathInstanceDigest],
+      ["resumableOldAuthorityReceiptDigest", record.oldAuthorityReceiptDigest],
+      ["resumableOldAuthorityTipDigest", record.oldAuthorityTipDigest],
+      ["resumableOldAuthorityValueDigest", record.oldAuthorityValueDigest],
+    ] as const)
+      if (record[field] !== expected) issues.push(`${field}:old-authority-mismatch`);
+    if (registrySelection === null || !registrySelection.ok) {
+      issues.push("authorityRegistrySlot:old-selection-required");
+    } else {
+      for (const [actual, expected, name] of [
+        [registrySelection.pathInstanceDigest, record.oldAuthorityPathInstanceDigest, "path"],
+        [registrySelection.receiptDigest, record.oldAuthorityReceiptDigest, "receipt"],
+        [registrySelection.tipDigest, record.oldAuthorityTipDigest, "tip"],
+        [registrySelection.valueDigest, record.oldAuthorityValueDigest, "value"],
+      ] as const)
+        if (actual !== expected)
+          issues.push(`authorityRegistrySlot:${name}:old-authority-mismatch`);
+    }
+    const pending = parseAuthorityHistoryRecord(record.pendingRecord);
+    if (!pending.ok) {
+      issues.push(...pending.issues.map((issue) => `pendingRecord:${issue}`));
+    } else {
+      if (pending.value.recordKind !== "ROTATION") issues.push("pendingRecord:not-rotation");
+      if (computeAuthorityHistoryRecordDigest(pending.value) !== record.expectedRecordDigest)
+        issues.push("pendingRecord:expectedRecordDigest:mismatch");
+      if (canonicalDigest(pending.value) !== record.pendingRecordReadbackDigest)
+        issues.push("pendingRecordReadbackDigest:mismatch");
+      for (const [pendingField, expected] of [
+        ["globalIdentityDigest", core.value.globalIdentityDigest],
+        ["ordinal", record.expectedHeadOrdinal],
+        ["priorHeadOrdinal", record.resumablePriorHeadOrdinal],
+        ["priorRecordDigest", record.resumablePriorRecordDigest],
+        ["retiringAuthorityPathInstanceDigest", record.oldAuthorityPathInstanceDigest],
+        ["retiringAuthorityReceiptDigest", record.oldAuthorityReceiptDigest],
+        ["retiringAuthorityTipDigest", record.oldAuthorityTipDigest],
+        ["retiringAuthorityValueDigest", record.oldAuthorityValueDigest],
+        ["rotationInputDigest", record.rotationInputDigest],
+        ["successorCoreDigest", record.successorCoreDigest],
+      ] as const)
+        if (pending.value[pendingField] !== expected)
+          issues.push(`pendingRecord:${pendingField}:mismatch`);
+    }
+  } else if (record.rotationOutcome === "SELECTED") {
+    if (record.packetAuthorityKind !== "KNOWN") issues.push("packetAuthorityKind:not-known");
+    const selectedValue = parseStateMutationAuthorityValue(record.selectedSuccessorAuthorityValue);
+    const history = parseAuthorityHistoryRecord(record.selectedHistoryRecord);
+    if (registrySelection === null || !registrySelection.ok)
+      issues.push("authorityRegistrySlot:successor-selection-required");
+    if (!selectedValue.ok)
+      issues.push(
+        ...selectedValue.issues.map((issue) => `selectedSuccessorAuthorityValue:${issue}`),
+      );
+    if (!history.ok)
+      issues.push(...history.issues.map((issue) => `selectedHistoryRecord:${issue}`));
+    if (registrySelection !== null && registrySelection.ok && selectedValue.ok) {
+      const selectedTuple = [
+        [
+          registrySelection.pathInstanceDigest,
+          "selectedSuccessorAuthorityPathInstanceDigest",
+          "packetAuthorityPathInstanceDigest",
+        ],
+        [
+          registrySelection.receiptDigest,
+          "selectedSuccessorAuthorityReceiptDigest",
+          "packetAuthorityReceiptDigest",
+        ],
+        [
+          registrySelection.tipDigest,
+          "selectedSuccessorAuthorityTipDigest",
+          "packetAuthorityTipDigest",
+        ],
+        [
+          registrySelection.valueDigest,
+          "selectedSuccessorAuthorityValueDigest",
+          "packetAuthorityValueDigest",
+        ],
+      ] as const;
+      for (const [actual, selectedField, packetField] of selectedTuple)
+        if (actual !== record[selectedField] || actual !== record[packetField])
+          issues.push(`${selectedField}:registry-packet-mismatch`);
+      if (registrySelection.valueDigest !== record.expectedSuccessorValueDigest)
+        issues.push("expectedSuccessorValueDigest:mismatch");
+      if (canonicalDigest(registrySelection.value.value) !== canonicalDigest(selectedValue.value))
+        issues.push("selectedSuccessorAuthorityValue:registry-mismatch");
+      if (canonicalDigest(selectedValue.value) !== record.selectedSuccessorValueReadbackDigest)
+        issues.push("selectedSuccessorValueReadbackDigest:mismatch");
+      if (
+        selectedValue.value.headOrdinal !== record.expectedHeadOrdinal ||
+        selectedValue.value.headRecordDigest !== record.expectedRecordDigest ||
+        selectedValue.value.globalIdentityDigest !== core.value.globalIdentityDigest
+      )
+        issues.push("selectedSuccessorAuthorityValue:history-mismatch");
+    }
+    if (history.ok) {
+      if (history.value.recordKind !== "ROTATION")
+        issues.push("selectedHistoryRecord:not-rotation");
+      if (computeAuthorityHistoryRecordDigest(history.value) !== record.expectedRecordDigest)
+        issues.push("selectedHistoryRecord:expectedRecordDigest:mismatch");
+      if (canonicalDigest(history.value) !== record.selectedHistoryRecordReadbackDigest)
+        issues.push("selectedHistoryRecordReadbackDigest:mismatch");
+      for (const [historyField, expected] of [
+        ["globalIdentityDigest", core.value.globalIdentityDigest],
+        ["ordinal", record.expectedHeadOrdinal],
+        ["retiringAuthorityPathInstanceDigest", record.oldAuthorityPathInstanceDigest],
+        ["retiringAuthorityReceiptDigest", record.oldAuthorityReceiptDigest],
+        ["retiringAuthorityTipDigest", record.oldAuthorityTipDigest],
+        ["retiringAuthorityValueDigest", record.oldAuthorityValueDigest],
+        ["rotationInputDigest", record.rotationInputDigest],
+        ["successorCoreDigest", record.successorCoreDigest],
+      ] as const)
+        if (history.value[historyField] !== expected)
+          issues.push(`selectedHistoryRecord:${historyField}:mismatch`);
+    }
+  } else {
+    if (record.packetAuthorityKind !== "UNKNOWN") issues.push("packetAuthorityKind:not-unknown");
+    if (slot.value.selectedEvidence !== null)
+      issues.push("authorityRegistrySlot:unknown-must-be-empty");
+    const unknown = parsePointerMutationUnknownEvidence(record.unknownEvidence);
+    if (!unknown.ok) issues.push(...unknown.issues.map((issue) => `unknownEvidence:${issue}`));
+    else {
+      if (unknown.value.targetMutationId !== record.targetMutationId)
+        issues.push("unknownEvidence:targetMutationId:mismatch");
+      if (unknown.value.targetPathInstanceDigest !== record.targetPathInstanceDigest)
+        issues.push("unknownEvidence:targetPathInstanceDigest:mismatch");
+    }
+  }
+  issues.push(...validateCommitRunLineage(record, record.checkpoint5));
+  return issues.length === 0 ? parsed : invalid(...issues);
+}
+
+function priorCheckpointCoreDigest(record: ContractRecord): string | null {
+  if (record.priorCheckpointEvidence === null) return null;
+  const prior = parseRunCheckpointEvidence(record.priorCheckpointEvidence);
+  if (!prior.ok) throw new TypeError(prior.issues.join(","));
+  const core = parseRunCheckpointCore(prior.value.core);
+  if (!core.ok) throw new TypeError(core.issues.join(","));
+  return computeRunCheckpointCoreDigest(core.value);
+}
+
+function commitCommonDigestParts(record: ContractRecord, branchTag: "00" | "01"): FramePart[] {
+  return [
+    frame.fixed(branchTag),
+    frame.text(String(record.targetPointerKind)),
+    frame.text(String(record.canonicalPointerPath)),
+    frame.raw32(String(record.targetPathInstanceDigest)),
+    frame.raw32(String(record.targetMutationId)),
+    frame.raw32(String(record.intentDigest)),
+    frame.raw32(String(record.runId)),
+    frame.boundedDecimal(String(record.runOrdinal)),
+    frame.nullableRaw32(priorCheckpointCoreDigest(record)),
+    frame.raw32(String(record.oldAuthorityPathInstanceDigest)),
+    frame.raw32(String(record.oldAuthorityTipDigest)),
+    frame.raw32(String(record.oldAuthorityValueDigest)),
+    frame.raw32(String(record.oldAuthorityReceiptDigest)),
+    frame.fixed(record.packetAuthorityKind === "KNOWN" ? "01" : "00"),
+    frame.nullableRaw32(record.packetAuthorityPathInstanceDigest as string | null),
+    frame.nullableRaw32(record.packetAuthorityTipDigest as string | null),
+    frame.nullableRaw32(record.packetAuthorityValueDigest as string | null),
+    frame.nullableRaw32(record.packetAuthorityReceiptDigest as string | null),
+  ];
+}
+
+function ordinaryOutcomeTag(outcome: unknown): "00" | "01" | "02" {
+  if (outcome === "SELECTED") return "00";
+  if (outcome === "LOST_CONFLICT") return "01";
+  if (outcome === "UNKNOWN_TERMINAL") return "02";
+  throw new TypeError("outcome:invalid");
+}
+
+function rotationOutcomeTag(outcome: unknown): "00" | "01" | "02" {
+  if (outcome === "RESUMABLE") return "00";
+  if (outcome === "SELECTED") return "01";
+  if (outcome === "UNKNOWN") return "02";
+  throw new TypeError("rotationOutcome:invalid");
+}
+
+function rotationCheckpointDigestParts(checkpointInput: unknown): FramePart[] {
+  const checkpoint = parseRunCheckpointEvidence(checkpointInput);
+  if (!checkpoint.ok) throw new TypeError(checkpoint.issues.join(","));
+  const core = parseRunCheckpointCore(checkpoint.value.core);
+  const selector = selectedPointerTuple(checkpoint.value.selectorSelection);
+  const observation = parseRunPostSelectionObservation(checkpoint.value.postSelectionObservation);
+  if (!core.ok || !selector.ok || !observation.ok)
+    throw new TypeError("checkpoint5:composition-invalid");
+  return [
+    frame.raw32(computeRunCheckpointCoreDigest(core.value)),
+    frame.raw32(selector.pathInstanceDigest),
+    frame.raw32(selector.tipDigest),
+    frame.raw32(selector.valueDigest),
+    frame.raw32(selector.receiptDigest),
+    frame.raw32(String(observation.value.valueReadbackDigest)),
+    frame.raw32(String(observation.value.proposalReadbackDigest)),
+    frame.raw32(String(observation.value.tipReadbackDigest)),
+    frame.raw32(computeRunPostSelectionObservationDigest(observation.value)),
+  ];
+}
+
+function rotationOutcomeDigestParts(record: ContractRecord): FramePart[] {
+  if (record.rotationOutcome === "RESUMABLE")
+    return [
+      frame.canonical(record.headPlusTwoAbsent as true),
+      frame.canonical(record.pendingRecord as ContractRecord),
+      frame.raw32(String(record.pendingRecordReadbackDigest)),
+      frame.raw32(String(record.resumableOldAuthorityPathInstanceDigest)),
+      frame.raw32(String(record.resumableOldAuthorityReceiptDigest)),
+      frame.raw32(String(record.resumableOldAuthorityTipDigest)),
+      frame.raw32(String(record.resumableOldAuthorityValueDigest)),
+      frame.boundedDecimal(String(record.resumablePriorHeadOrdinal)),
+      frame.raw32(String(record.resumablePriorRecordDigest)),
+    ];
+  if (record.rotationOutcome === "SELECTED")
+    return [
+      frame.canonical(record.selectedHistoryRecord as ContractRecord),
+      frame.raw32(String(record.selectedHistoryRecordReadbackDigest)),
+      frame.raw32(String(record.selectedSuccessorAuthorityPathInstanceDigest)),
+      frame.raw32(String(record.selectedSuccessorAuthorityReceiptDigest)),
+      frame.raw32(String(record.selectedSuccessorAuthorityTipDigest)),
+      frame.canonical(record.selectedSuccessorAuthorityValue as ContractRecord),
+      frame.raw32(String(record.selectedSuccessorAuthorityValueDigest)),
+      frame.raw32(String(record.selectedSuccessorValueReadbackDigest)),
+    ];
+  return [frame.canonical(record.unknownEvidence as ContractRecord)];
+}
+
+export function computeCommitEvidenceDigest(input: unknown): string {
+  const parsed = parseCommitEvidence(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  const branchParts: FramePart[] = [];
+  if (record.commitKind === "ORDINARY") {
+    const checkpoints = snapshotClosedArray(record.checkpoints);
+    if (!checkpoints.ok) throw new TypeError(checkpoints.issues.join(","));
+    branchParts.push(
+      ...checkpoints.value.map((checkpoint) =>
+        frame.raw32(computeRunCheckpointEvidenceDigest(checkpoint)),
+      ),
+      frame.raw32(computeCommitResolutionDigest(record.ordinaryResolution)),
+      frame.fixed(ordinaryOutcomeTag(record.outcome)),
+      frame.canonical(record.targetRegistrySlot as ContractRecord),
+    );
+    return framedDigest("pointer-mutation-commit-evidence/v1", [
+      ...commitCommonDigestParts(record, "00"),
+      ...branchParts,
+      frame.canonical(record),
+    ]);
+  }
+  branchParts.push(
+    ...rotationCheckpointDigestParts(record.checkpoint5),
+    frame.raw32(String(record.expectedSuccessorValueDigest)),
+    frame.boundedDecimal(String(record.expectedHeadOrdinal)),
+    frame.raw32(String(record.expectedRecordDigest)),
+    frame.raw32(String(record.rotationInputDigest)),
+    frame.raw32(String(record.successorCoreDigest)),
+    frame.fixed(rotationOutcomeTag(record.rotationOutcome)),
+    ...rotationOutcomeDigestParts(record),
+    frame.canonical(record.authorityRegistrySlot as ContractRecord),
+  );
+  return framedDigest("pointer-mutation-commit-evidence/v1", [
+    ...commitCommonDigestParts(record, "01"),
+    ...branchParts,
+    frame.canonical(record),
+  ]);
+}
+
+export function parseCommitEvidence(input: unknown): ParseResult {
+  const snapshot = snapshotJson(input);
+  if (!snapshot.ok) return snapshot as ParseResult;
+  if (
+    snapshot.value === null ||
+    Array.isArray(snapshot.value) ||
+    typeof snapshot.value !== "object"
+  )
+    return invalid("record:object-required");
+  const record = snapshot.value as ContractRecord;
+  if (record.commitKind === "ORDINARY") return parseOrdinaryCommitEvidence(record);
+  if (record.commitKind === "AUTHORITY_ROTATION") return parseRotationCommitEvidence(record);
+  return invalid("commitKind:invalid");
+}
+
+export function parseCommitContract(
+  expectedSchemaVersion: string,
+  input: unknown,
+): ParseResult | undefined {
+  switch (expectedSchemaVersion) {
+    case "pointer-mutation-commit-evidence/v1":
+      return parseCommitEvidence(input);
+    case "pointer-mutation-commit-resolution/v1":
+      return parseCommitResolution(input);
+    case "pointer-mutation-run-checkpoint-core/v1":
+      return parseRunCheckpointCore(input);
+    case "pointer-mutation-run-checkpoint-evidence/v1":
+      return parseRunCheckpointEvidence(input);
+    case "pointer-mutation-run-current-value/v1":
+      return parseRunCurrentValue(input);
+    case "pointer-mutation-run-intent/v1":
+      return parseRunIntent(input);
+    case "pointer-mutation-run-segment/v1":
+      return parseRunSegment(input);
+    case "pointer-mutation-run-selector-post-selection-observation/v1":
+      return parseRunPostSelectionObservation(input);
+    default:
+      return undefined;
+  }
+}

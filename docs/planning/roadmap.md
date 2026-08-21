@@ -5,7 +5,7 @@
 Deliver a portable, self-hosting orchestration platform that can be adopted by
 an external project through a pinned release and versioned adapter.
 
-## Outcome 1: Portable foundation
+## Outcome 1: Portable substrate
 
 The same CLI, configuration, state contracts, and operating-system primitives
 pass conformance tests on current macOS, Windows, and Linux runners. The runtime
@@ -14,21 +14,42 @@ has no PowerShell dependency.
 Exit evidence: the complete conformance suite passes on all three operating
 systems from a clean checkout and produces equivalent normalized receipts.
 
-## Outcome 2: Self-hosting release
+## Outcome 2: Minimum orchestration kernel
+
+A policy-neutral cycle acquires a lease, selects work through an adapter,
+dispatches a concrete worker, obtains independent review, journals the result,
+applies routing and breaker policy, and resumes correctly after interruption.
+
+Exit evidence: one isolated end-to-end fixture completes with crash,
+stale-authority, provider-boundary, and self-certification negative controls.
+
+## Outcome 3: Self-hosting release
 
 A stable release orchestrates implementation and independent review of its
 successor, then promotes the unchanged candidate through a crash-recoverable
 protocol without granting the candidate pre-promotion authority.
 
-Preparatory M2 slices may start when their own dependencies clear. N0
-authorization is gated by the complete Portable foundation exit evidence at
+Preparatory self-host slices may start when their own dependencies clear. N0
+authorization is gated by the complete Portable substrate exit evidence at
 `ISS-019`, rather than by a blanket milestone entry gate.
 
 Exit evidence: stable N produces and promotes N+1 in an isolated fixture, with
 negative controls proving that moved, self-signed, or partially reviewed
 candidates are refused.
 
-## Outcome 3: First consumer adoption
+## Outcome 4: Chase Sets integration-ready
+
+The Chase Sets composition root, adapter contract, parity fixture, and
+state-import recovery rehearsal are complete. This preparation may run in
+parallel with kernel and self-host work whenever native dependencies clear, so
+the repository can begin Chase Sets implementation immediately after the
+self-hosting release exists.
+
+Exit evidence: the adapter builds against the pinned SDK, the fixture covers
+every authoritative incumbent decision, and a disposable import/recovery drill
+passes without live Chase Sets mutation.
+
+## Outcome 5: Chase Sets adoption
 
 An external repository pins the platform, supplies a project adapter, proves
 shadow-mode parity against its incumbent controller, and cuts over with a
@@ -60,6 +81,7 @@ repository bootstrap + adapter contracts ─> live GitHub/Actions + protection p
 OS harness + capability + credential backend ─> host-custody probe
 host-custody probe + credential broker + GitHub protection receipt ─> host-custody package
 
+contracts + CLI ─> walking skeleton (evidence only; blocks nothing)
 state ─> sessions ───────────────────────────────┐
 contracts + state + project adapter ─> circuit breaker ─┐
 process + sessions + project adapter + credential broker ─> dispatch ─> review authority
@@ -67,13 +89,17 @@ state + sessions ─> event journal ──────────────�
 contracts + project adapter ─> modules ─> routing
 trusted OS harness + CLI contract ─> Codex host probe
 dispatch + modules + routing + project adapter + host probe + credential broker ─> Codex host adapter
+CLI + journal ─> operator status projection
+review authority + Codex host ─> review-discrimination calibration (advisory)
+Codex host ─> Claude Code authority probe ─> Claude Code host adapter
 state + review + journal ─> release promotion
+review simplification + planning proportionality ─────────────────┐
 sessions + dispatch + review + journal + modules + routing + release + credential broker ─> engine cycle
 engine cycle + OS harness + credential broker ─> cross-platform supervisor ─> repeated/cold-host cycles
 runtime + engine + Codex host + credential broker + GitHub probe ─> concrete self-host adapter
 repository bootstrap + OS harness + host custody ─> authenticated bootstrap-authority probe
 release promotion + passed authority probe ─> frozen bootstrap root
-all shipped capabilities + engine + supervisor + self-host adapter + frozen bootstrap root ─> final N0 certification
+all shipped capabilities + engine + supervisor + self-host adapter + frozen bootstrap root ┼─> final N0 certification
 final N0 certification ─> independent exact-candidate review ─> production credential binding ─> authorized installed N0
 installed N0 ─> N0-to-N1 self-hosting
 
@@ -94,3 +120,20 @@ project adapter + self-hosting + certified release ─> shadow mode ─> cutover
   `docs/architecture/contract-decisions.md`.
 - Treat `docs/planning/work-model.md` as repository-local policy excluded from
   portable packages.
+- Ship `ISS-039` and `ISS-040` as Self-hosting release module slices under
+  `EPIC-MODULES`. `ISS-019` directly consumes both before freezing the N0
+  certification census; this is the smallest edge set that prevents module
+  bytes from landing after certification.
+- Keep `ISS-044`/`ISS-045` in Chase Sets integration-ready, off the self-host
+  critical path; unsupported OS/capability rows narrow or replan and never pass
+  by absence.
+- Keep the kernel single-flight — one tick, one cycle, one action — through
+  the self-hosting release. Same-host concurrency is parked in `EPIC-KERNEL`
+  with a measured-throughput unpark condition, and `ISS-017` records the
+  delivery-rate evidence that can trigger it.
+- Re-enter event-based with a periodic fallback: each native scheduler
+  definition adds its OS's queued trigger (systemd path unit, launchd queue
+  directory, Task Scheduler queued on-demand run), the shim emits one trigger
+  from the persisted terminal receipt when a follow-up or fence-clear is
+  pending, and the five-minute periodic definition remains the fallback
+  heartbeat. Triggers convey no authority (`ISS-030`).

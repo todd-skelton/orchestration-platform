@@ -5,34 +5,38 @@ reviewed planning decision rather than an implementation-lane choice.
 
 ## Workspace packages
 
-| Package | Canonical path | Primary public exports | Owning issue |
-|---|---|---|---|
-| `@orchestration-platform/contracts` | `packages/contracts/` | schemas, canonical JSON, identities, compatibility | `ISS-002` |
-| `@orchestration-platform/config` | `packages/config/` | config discovery, precedence, provenance | `ISS-003` |
-| `@orchestration-platform/cli` | `packages/cli/` | `orchestrate` entrypoint and output envelope | `ISS-003` |
-| `@orchestration-platform/conformance` | `packages/conformance/` | harness registry, receipt aggregation, suite census | `ISS-006`, `ISS-019` |
-| `@orchestration-platform/state` | `packages/state/` | create-once, compare-and-swap, atomic replace, durable append | `ISS-004` |
-| `@orchestration-platform/process` | `packages/process/` | native launch, identity, census, bounded termination | `ISS-005` |
-| `@orchestration-platform/session` | `packages/session/` | lease transitions and health reducer | `ISS-007` |
-| `@orchestration-platform/adapter-sdk` | `packages/adapter-sdk/` | adapter interfaces, facts, plans, conformance | `ISS-013` |
-| `@orchestration-platform/dispatch` | `packages/dispatch/` | dispatch plans, ownership, occupancy reducer | `ISS-008` |
-| `@orchestration-platform/breaker` | `packages/breaker/` | breaker lifecycle, capability holds, recovery receipts | `ISS-025` |
-| `@orchestration-platform/engine` | `packages/engine/` | routine cycle planning, execution, resume, inspection | `ISS-026` |
-| `@orchestration-platform/supervisor` | `packages/supervisor/` | cadence, scheduler installation, cold-host tick receipts | `ISS-030` |
-| `@orchestration-platform/credentials` | `packages/credentials/` | export exactly `.`; credential references, native broker, capability receipts; build-only `packages/credentials/build/compose.ts` is never exported or shipped standalone | `ISS-032` |
-| `@orchestration-platform/host-custody` | `packages/host-custody/` | export exactly `.`; host/user/state identity, enrollment, signed reboot evidence | `ISS-038` |
-| `@orchestration-platform/review` | `packages/review/` | review receipts and exact-subject reducer | `ISS-009` |
-| `@orchestration-platform/journal` | `packages/journal/` | event append, replay, reducers, snapshots | `ISS-010` |
-| `@orchestration-platform/routing` | `packages/routing/` | provider contract, evidence matrix, route selection | `ISS-012` |
-| `@orchestration-platform/release` | `packages/release/` | candidate assembly, certification inputs, promotion, recovery | `ISS-014` |
-| `@orchestration-platform/host-codex` | `packages/host-codex/` | exports exactly `.`, `./bootstrap-canaries`; Codex CLI discovery, launch, identity, terminal receipts | `ISS-021` |
-| `@orchestration-platform/adapter-self` | `adapters/self/` | exports exactly `.`, `./workspace`, `./code-host`, `./certification`, `./bootstrap-canaries`, `./broker-operations`; platform-repository frontier, workspace, GitHub/CI, certification, and mutation policy | `ISS-000`, `ISS-033` |
-| `@orchestration-platform/adapter-first-consumer` | `adapters/first-consumer/` | first-consumer composition plus `./shadow`, `./import`, `./mutation` | `ISS-000`, `ISS-028` |
+| Package                                          | Canonical path             | Primary public exports                                                                                                                                                                                      | Owning issue         |
+| ------------------------------------------------ | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `@orchestration-platform/contracts`              | `packages/contracts/`      | schemas, canonical JSON, identities, compatibility                                                                                                                                                          | `ISS-002`            |
+| `@orchestration-platform/config`                 | `packages/config/`         | config discovery, precedence, provenance                                                                                                                                                                    | `ISS-003`            |
+| `@orchestration-platform/cli`                    | `packages/cli/`            | `orchestrate` entrypoint and output envelope                                                                                                                                                                | `ISS-003`            |
+| `@orchestration-platform/conformance`            | `packages/conformance/`    | harness registry, receipt aggregation, suite census                                                                                                                                                         | `ISS-006`, `ISS-019` |
+| `@orchestration-platform/state`                  | `packages/state/`          | create-once, compare-and-swap, atomic replace, durable append                                                                                                                                               | `ISS-004`            |
+| `@orchestration-platform/process`                | `packages/process/`        | native launch, identity, census, bounded termination                                                                                                                                                        | `ISS-005`            |
+| `@orchestration-platform/session`                | `packages/session/`        | lease transitions and health reducer                                                                                                                                                                        | `ISS-007`            |
+| `@orchestration-platform/adapter-sdk`            | `packages/adapter-sdk/`    | adapter interfaces, facts, plans, conformance                                                                                                                                                               | `ISS-013`            |
+| `@orchestration-platform/dispatch`               | `packages/dispatch/`       | dispatch plans, ownership, occupancy reducer                                                                                                                                                                | `ISS-008`            |
+| `@orchestration-platform/breaker`                | `packages/breaker/`        | breaker lifecycle, capability holds, recovery receipts                                                                                                                                                      | `ISS-025`            |
+| `@orchestration-platform/engine`                 | `packages/engine/`         | routine cycle planning, execution, resume, inspection                                                                                                                                                       | `ISS-026`            |
+| `@orchestration-platform/supervisor`             | `packages/supervisor/`     | cadence, scheduler installation, cold-host tick receipts                                                                                                                                                    | `ISS-030`            |
+| `@orchestration-platform/credentials`            | `packages/credentials/`    | export exactly `.`; credential references, native broker, capability receipts; build-only `packages/credentials/build/compose.ts` is never exported or shipped standalone                                   | `ISS-032`            |
+| `@orchestration-platform/host-custody`           | `packages/host-custody/`   | export exactly `.`; host/user/state identity, enrollment, signed reboot evidence                                                                                                                            | `ISS-038`            |
+| `@orchestration-platform/review`                 | `packages/review/`         | review receipts and exact-subject reducer                                                                                                                                                                   | `ISS-009`            |
+| `@orchestration-platform/journal`                | `packages/journal/`        | event append, replay, reducers, snapshots                                                                                                                                                                   | `ISS-010`            |
+| `@orchestration-platform/routing`                | `packages/routing/`        | provider contract, evidence matrix, route selection                                                                                                                                                         | `ISS-012`            |
+| `@orchestration-platform/release`                | `packages/release/`        | candidate assembly, certification inputs, promotion, recovery                                                                                                                                               | `ISS-014`            |
+| `@orchestration-platform/host-codex`             | `packages/host-codex/`     | exports exactly `.`, `./bootstrap-canaries`; Codex CLI discovery, launch, identity, terminal receipts                                                                                                       | `ISS-021`            |
+| `@orchestration-platform/adapter-self`           | `adapters/self/`           | exports exactly `.`, `./workspace`, `./code-host`, `./certification`, `./bootstrap-canaries`, `./broker-operations`; platform-repository frontier, workspace, GitHub/CI, certification, and mutation policy | `ISS-000`, `ISS-033` |
+| `@orchestration-platform/adapter-first-consumer` | `adapters/first-consumer/` | first-consumer composition plus `./shadow`, `./import`, `./mutation`                                                                                                                                        | `ISS-000`, `ISS-028` |
 
 Portable workflow modules live under `modules/` and are release-manifest
 artifacts rather than npm library exports. Their exact static entrypoints,
 execution ABI, registry, and admission rules are defined in
 `docs/architecture/module-abi.md`.
+
+The shared native-store attack-suite fixture is `ISS-031`-owned at the
+canonical path `probes/credentials/attack-suite/`; its digest binding is
+recorded in its manifest row.
 
 `ISS-000` creates every package manifest, empty public entrypoint, and root
 script. It also creates an empty `modules/manifest.json`, a deterministic
@@ -68,13 +72,13 @@ The bootstrap pins `esbuild@0.28.2` exactly in the lockfile. `ISS-000` owns
 `config/private-compositions.json`; no package may provide or override bundler
 options. The configuration contains exactly these entries and outputs:
 
-| Target ID | Entry point | Installed output |
-| --- | --- | --- |
-| `bootstrap` | `bootstrap/build/composition.ts` | `bootstrap/dist/orchestration-bootstrap.mjs` |
-| `self-host` | `adapters/self/build/composition.ts` | `adapters/self/dist/orchestration-self.mjs` |
-| `credential-broker` | `bootstrap/build/broker-service-composition.ts` | `packages/credentials/dist/orchestration-credential-broker.mjs` |
-| `host-custody-bootstrap` | `packages/host-custody/build/composition.ts` | `packages/host-custody/dist/orchestration-host-custody-bootstrap.mjs` |
-| `host-custody-broker` | `packages/host-custody/build/broker-service-composition.ts` | `packages/host-custody/dist/orchestration-host-custody-broker.mjs` |
+| Target ID                | Entry point                                                 | Installed output                                                      |
+| ------------------------ | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| `bootstrap`              | `bootstrap/build/composition.ts`                            | `bootstrap/dist/orchestration-bootstrap.mjs`                          |
+| `self-host`              | `adapters/self/build/composition.ts`                        | `adapters/self/dist/orchestration-self.mjs`                           |
+| `credential-broker`      | `bootstrap/build/broker-service-composition.ts`             | `packages/credentials/dist/orchestration-credential-broker.mjs`       |
+| `host-custody-bootstrap` | `packages/host-custody/build/composition.ts`                | `packages/host-custody/dist/orchestration-host-custody-bootstrap.mjs` |
+| `host-custody-broker`    | `packages/host-custody/build/broker-service-composition.ts` | `packages/host-custody/dist/orchestration-host-custody-broker.mjs`    |
 
 For all five targets the immutable options are `bundle: true`, `platform: "node"`,
 `format: "esm"`, `target: "node24"`, `splitting: false`, `sourcemap: false`,
@@ -111,18 +115,19 @@ registry declarations and placeholders, while the implementation issue replaces
 only its named placeholder. Runtime discovery, filesystem scanning, and
 last-registration-wins behavior are forbidden.
 
-| Command family | Handler owner |
-|---|---|
-| `config` | `@orchestration-platform/config` (`ISS-003`) |
-| `session` | `@orchestration-platform/session` (`ISS-007`) |
-| `worker` | `@orchestration-platform/dispatch` (`ISS-008`) |
-| `review` | `@orchestration-platform/review` (`ISS-009`) |
-| `journal` | `@orchestration-platform/journal` (`ISS-010`) |
-| `project` | `@orchestration-platform/adapter-sdk` (`ISS-013`) |
-| `release` | `@orchestration-platform/release` (`ISS-014`) |
-| `cycle` | `@orchestration-platform/engine` (`ISS-026`) |
-| `supervisor` | `@orchestration-platform/supervisor` (`ISS-030`) |
-| `credential` | `@orchestration-platform/credentials` (`ISS-032`) |
+| Command family | Handler owner                                     |
+| -------------- | ------------------------------------------------- |
+| `config`       | `@orchestration-platform/config` (`ISS-003`)      |
+| `session`      | `@orchestration-platform/session` (`ISS-007`)     |
+| `worker`       | `@orchestration-platform/dispatch` (`ISS-008`)    |
+| `review`       | `@orchestration-platform/review` (`ISS-009`)      |
+| `journal`      | `@orchestration-platform/journal` (`ISS-010`)     |
+| `project`      | `@orchestration-platform/adapter-sdk` (`ISS-013`) |
+| `release`      | `@orchestration-platform/release` (`ISS-014`)     |
+| `cycle`        | `@orchestration-platform/engine` (`ISS-026`)      |
+| `supervisor`   | `@orchestration-platform/supervisor` (`ISS-030`)  |
+| `credential`   | `@orchestration-platform/credentials` (`ISS-032`) |
+| `status`       | `@orchestration-platform/status` (`ISS-042`)      |
 
 ## CLI grammar
 
@@ -140,41 +145,42 @@ argument is lowercase UUIDv7 except source revisions and content digests, which
 are lowercase hex. Options may not be positional or inferred. These invocations
 and result schema families are exhaustive:
 
-| Canonical argv after global flags | Input schema | Result schema |
-|---|---|---|
-| `config validate` | project/config records | `configuration-provenance/v1` |
-| `config paths [--reveal]` | project/config records | `configuration-paths/v1` |
-| `session acquire --request <file>` | `session-acquire-request/v1` | `session-receipt/v1` |
-| `session renew --session <id>` | identity | `session-receipt/v1` |
-| `session inspect [--session <id>]` | optional identity | `session-health/v1` |
-| `session release --session <id>` | identity | `session-receipt/v1` |
-| `session handoff --predecessor <file> --successor <file>` | `session-handoff-intent/v1` pair | `session-handoff-receipt/v1` |
-| `worker dispatch --plan <file>` | `dispatch-plan/v1` | `worker-launch-receipt/v1` |
-| `worker inspect --launch <id>` | identity | `worker-health/v1` |
-| `worker terminate --launch <id>` | identity | `worker-terminal-receipt/v1` |
-| `review reduce --subject <id> --journal <file>` | subject identity + `event-journal/v1` | `review-authority/v1` |
-| `journal append --event <file>` | `orchestration-event/v1` | `journal-append-receipt/v1` |
-| `journal reduce --journal <file>` | `event-journal/v1` | `reduced-state/v1` |
-| `journal snapshot --journal <file> --output <file>` | `event-journal/v1` | `snapshot-receipt/v1` |
-| `project snapshot --adapter <file>` | `adapter-configuration/v1` | `project-facts/v1` |
-| `project plan --request <file>` | `project-mutation-request/v1` | `project-mutation-plan/v1` |
-| `project apply --plan <file> --plan-id <sha256>` | `project-mutation-plan/v1` | `project-apply-receipt/v1` |
-| `release assemble --source-revision <sha> --output <file>` | exact revision | `release-candidate/v1` |
-| `release certify --candidate <file> --output <file>` | `release-candidate/v1` | `release-certification/v1` |
-| `release promote --input <file>` | `release-promotion-input/v1` | `release-promotion-receipt/v1` |
-| `release recover --input <file>` | `release-recovery-input/v1` | `release-recovery-receipt/v1` |
-| `cycle plan --request <file>` | `cycle-request/v1` | `cycle-plan/v1` |
-| `cycle run --plan <file> --plan-id <sha256>` | `cycle-plan/v1` | `cycle-receipt/v1` |
-| `cycle resume --cycle <id>` | identity | `cycle-receipt/v1` |
-| `cycle inspect --cycle <id>` | identity | `cycle-health/v1` |
-| `supervisor plan --request <file>` | `supervisor-request/v1` | `supervisor-install-plan/v1` |
-| `supervisor install --plan <file> --plan-id <sha256>` | `supervisor-install-plan/v1` | `supervisor-install-receipt/v1` |
-| `supervisor tick --installation <id>` | identity | `supervisor-tick-receipt/v1` |
-| `supervisor inspect --installation <id>` | identity | `supervisor-health/v1` |
-| `supervisor uninstall --installation <id>` | identity | `supervisor-uninstall-receipt/v1` |
-| `credential bind --request <file>` | `credential-bind-request/v1` containing reference/capabilities, never a secret | `credential-reference-receipt/v1` |
-| `credential inspect --credential <id>` | identity | `credential-health/v1` |
-| `credential revoke --credential <id>` | identity | `credential-revocation-receipt/v1` |
+| Canonical argv after global flags                          | Input schema                                                                   | Result schema                      |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------- |
+| `config validate`                                          | project/config records                                                         | `configuration-provenance/v1`      |
+| `config paths [--reveal]`                                  | project/config records                                                         | `configuration-paths/v1`           |
+| `session acquire --request <file>`                         | `session-acquire-request/v1`                                                   | `session-receipt/v1`               |
+| `session renew --session <id>`                             | identity                                                                       | `session-receipt/v1`               |
+| `session inspect [--session <id>]`                         | optional identity                                                              | `session-health/v1`                |
+| `session release --session <id>`                           | identity                                                                       | `session-receipt/v1`               |
+| `session handoff --predecessor <file> --successor <file>`  | `session-handoff-intent/v1` pair                                               | `session-handoff-receipt/v1`       |
+| `worker dispatch --plan <file>`                            | `dispatch-plan/v1`                                                             | `worker-launch-receipt/v1`         |
+| `worker inspect --launch <id>`                             | identity                                                                       | `worker-health/v1`                 |
+| `worker terminate --launch <id>`                           | identity                                                                       | `worker-terminal-receipt/v1`       |
+| `review reduce --subject <id> --journal <file>`            | subject identity + `event-journal/v1`                                          | `review-authority/v1`              |
+| `journal append --event <file>`                            | `orchestration-event/v1`                                                       | `journal-append-receipt/v1`        |
+| `journal reduce --journal <file>`                          | `event-journal/v1`                                                             | `reduced-state/v1`                 |
+| `journal snapshot --journal <file> --output <file>`        | `event-journal/v1`                                                             | `snapshot-receipt/v1`              |
+| `project snapshot --adapter <file>`                        | `adapter-configuration/v1`                                                     | `project-facts/v1`                 |
+| `project plan --request <file>`                            | `project-mutation-request/v1`                                                  | `project-mutation-plan/v1`         |
+| `project apply --plan <file> --plan-id <sha256>`           | `project-mutation-plan/v1`                                                     | `project-apply-receipt/v1`         |
+| `release assemble --source-revision <sha> --output <file>` | exact revision                                                                 | `release-candidate/v1`             |
+| `release certify --candidate <file> --output <file>`       | `release-candidate/v1`                                                         | `release-certification/v1`         |
+| `release promote --input <file>`                           | `release-promotion-input/v1`                                                   | `release-promotion-receipt/v1`     |
+| `release recover --input <file>`                           | `release-recovery-input/v1`                                                    | `release-recovery-receipt/v1`      |
+| `cycle plan --request <file>`                              | `cycle-request/v1`                                                             | `cycle-plan/v1`                    |
+| `cycle run --plan <file> --plan-id <sha256>`               | `cycle-plan/v1`                                                                | `cycle-receipt/v1`                 |
+| `cycle resume --cycle <id>`                                | identity                                                                       | `cycle-receipt/v1`                 |
+| `cycle inspect --cycle <id>`                               | identity                                                                       | `cycle-health/v1`                  |
+| `supervisor plan --request <file>`                         | `supervisor-request/v1`                                                        | `supervisor-install-plan/v1`       |
+| `supervisor install --plan <file> --plan-id <sha256>`      | `supervisor-install-plan/v1`                                                   | `supervisor-install-receipt/v1`    |
+| `supervisor tick --installation <id>`                      | identity                                                                       | `supervisor-tick-receipt/v1`       |
+| `supervisor inspect --installation <id>`                   | identity                                                                       | `supervisor-health/v1`             |
+| `supervisor uninstall --installation <id>`                 | identity                                                                       | `supervisor-uninstall-receipt/v1`  |
+| `credential bind --request <file>`                         | `credential-bind-request/v1` containing reference/capabilities, never a secret | `credential-reference-receipt/v1`  |
+| `credential inspect --credential <id>`                     | identity                                                                       | `credential-health/v1`             |
+| `credential revoke --credential <id>`                      | identity                                                                       | `credential-revocation-receipt/v1` |
+| `status show`                                              | none                                                                           | `operator-status/v1`               |
 
 Duplicate flags, positional substitutes, missing values, unknown commands, or
 unknown flags are invalid input. Project discovery walks from the
@@ -199,32 +205,44 @@ JSON output is one canonical envelope:
 
 Allowed outcomes and exits:
 
-| Exit | Outcome |
-|---:|---|
-| 0 | `success` |
-| 2 | `invalid-input` |
-| 3 | `authority-refused` or `authority-unknown` |
-| 4 | `external-unavailable` |
-| 5 | `operation-failed` |
-| 6 | `recovery-required` |
-| 70 | `internal-error` |
+| Exit | Outcome                                    |
+| ---: | ------------------------------------------ |
+|    0 | `success`                                  |
+|    2 | `invalid-input`                            |
+|    3 | `authority-refused` or `authority-unknown` |
+|    4 | `external-unavailable`                     |
+|    5 | `operation-failed`                         |
+|    6 | `recovery-required`                        |
+|   70 | `internal-error`                           |
 
 Diagnostics never carry secrets or unredacted home paths. Text mode is a human
 projection of the same envelope and is not authority evidence.
 
 ## Bootstrap compatibility
 
-All initial public records use version `v1` under their named schema family.
+Current authority dispatch uses the exact versions selected by the architecture
+as amended by the `Proportionality and schema lifecycle` decisions: every
+family is `v1`, including `state-mutation-authority-value/v1`, the
+`authority-history/v1` chain, reviewed operation, successor core, genesis
+bootstrap/selection evidence, derived `Drot`, run intent/current
+value/core, the ordinary/rotation commit-evidence union, evidence slot/packet, and the eleven-kind
+registry. Superseded
+pre-deployment generations are deleted, not archived; no diagnostic API
+exists. No authority version is implicitly migrated and no old record may be
+selected by bootstrap.
 
-| Observed version | Disposition |
-|---|---|
-| exact supported `v1` | readable |
-| explicit legacy fixture named by a contract test | migratable only through that named pure migration |
-| missing, malformed, unknown, or future version | refused |
-| pre-platform incumbent state | imported only through the first-consumer adapter; never read as a platform record |
+| Observed version                                                        | Disposition                                                                       |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| exact current schema at its current path                                | readable/selectable                                                               |
+| explicit legacy non-authority fixture with a named pure migration       | migratable only through that migration                                            |
+| missing, malformed, unknown, future, or old authority at a current path | refused                                                                           |
+| pre-platform incumbent state                                            | imported only through the first-consumer adapter; never read as a platform record |
 
-No implicit migration exists. A future issue adding `v2` must publish a complete
-pairwise readable/migratable/refused matrix before any `v2` writer lands.
+ISS-002 owns schema/compatibility changes. ISS-004 owns chain appends, run
+CAS, crash recovery, and full-chain verification. ISS-020 creates the E0
+genesis record. ISS-022 proves the lock, create-once/readback existence
+semantics at constructed paths, and custody semantics. No root wrapper or
+package manifest changes are required for this amendment.
 
 ## Bootstrap authority CLI
 
@@ -233,20 +251,20 @@ literal argument-forwarding wrappers and add no defaults or authority. It uses
 the same canonical envelope and exit mapping as `orchestrate`. Its complete
 surface is:
 
-| Canonical argv | Actor | Input/result schemas |
-|---|---|---|
-| `candidate --source <file> --output <file>` | pinned bootstrap build workflow | `bootstrap-source-subject/v1` → `release-candidate/v1` |
-| `certify --candidate <file> --output <file>` | pinned bootstrap aggregator workflow | `release-candidate/v1` → `release-certification/v1` |
-| `broker-plan --request <file> --output <file>` | independently reviewed bootstrap executable plus operator | `broker-install-plan-request/v1` containing accepted candidate/review, exact `ISS-031` topology/host, and required `host-custody-retention-receipt/v1` → `broker-install-plan/v1` CAS-binding the reduced and production identities |
-| `broker-install --plan <file> --output <file>` | independently reviewed bootstrap executable with explicit OS administration | fresh `broker-install-plan/v1` → `broker-upgrade-receipt/v1` (or new-install `broker-install-receipt/v1` only on an explicitly absent fixture host) or exit-6 `broker-install-recovery/v1` |
-| `broker-verify --receipt <file>` | reviewed bootstrap executable/readers | upgrade/install receipt + live service/principal/endpoint/profile/manifest/key read-back → `broker-verification/v1` |
-| `broker-remove --receipt <file> --output <file>` | reviewed bootstrap executable with explicit OS administration | exact installation + fenced clients → `broker-removal-receipt/v1` |
-| `bind-credentials --request <file> --output <file>` | independently reviewed bootstrap executable on the bound target host | `bootstrap-credential-bind-request/v1` containing native references + accepted review → `bootstrap-credential-set-receipt/v1` |
-| `authorize --candidate <file> --certification <file> --review <file> --grant <file> --output <file>` | reviewed bootstrap installer validating protected-environment attestation | bound inputs + `bootstrap-grant-attestation/v1` → `bootstrap-install-input/v1` |
-| `install --input <file> --output <file>` | reviewed bootstrap installer | `bootstrap-install-input/v1` → `bootstrap-receipt/v1` or exit-6 `bootstrap-recovery-transaction/v1` |
-| `abort --input <file> --output <file>` | same reviewed bootstrap installer plus operator before first destination mutation | existing immutable `bootstrap-install-input/v1`; derive its deterministic transaction/authorization/gate paths, read back the authoritative destination census, and emit `bootstrap-abort-receipt/v1`; authorization-absent refusal, pre-gate revoke, or idempotent post-gate `ABORTING` resume |
-| `recover --transaction <file> --output <file>` | same reviewed bootstrap installer on the bound target host | `bootstrap-recovery-transaction/v1` + broker-held one-use capability → `bootstrap-receipt/v1` |
-| `verify --receipt <file>` | readers/operator | `bootstrap-receipt/v1` → `bootstrap-verification/v1` |
+| Canonical argv                                                                                       | Actor                                                                             | Input/result schemas                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `candidate --source <file> --output <file>`                                                          | pinned bootstrap build workflow                                                   | `bootstrap-source-subject/v1` → `release-candidate/v1`                                                                                                                                                                                                                                          |
+| `certify --candidate <file> --output <file>`                                                         | pinned bootstrap aggregator workflow                                              | `release-candidate/v1` → `release-certification/v1`                                                                                                                                                                                                                                             |
+| `broker-plan --request <file> --output <file>`                                                       | independently reviewed bootstrap executable plus operator                         | `broker-install-plan-request/v1` containing accepted candidate/review, exact `ISS-031` topology/host, and required `host-custody-retention-receipt/v1` → `broker-install-plan/v1` CAS-binding the reduced and production identities                                                             |
+| `broker-install --plan <file> --output <file>`                                                       | independently reviewed bootstrap executable with explicit OS administration       | fresh `broker-install-plan/v1` → `broker-upgrade-receipt/v1` (or new-install `broker-install-receipt/v1` only on an explicitly absent fixture host) or exit-6 `broker-install-recovery/v1`                                                                                                      |
+| `broker-verify --receipt <file>`                                                                     | reviewed bootstrap executable/readers                                             | upgrade/install receipt + live service/principal/endpoint/profile/manifest/key read-back → `broker-verification/v1`                                                                                                                                                                             |
+| `broker-remove --receipt <file> --output <file>`                                                     | reviewed bootstrap executable with explicit OS administration                     | exact installation + fenced clients → `broker-removal-receipt/v1`                                                                                                                                                                                                                               |
+| `bind-credentials --request <file> --output <file>`                                                  | independently reviewed bootstrap executable on the bound target host              | `bootstrap-credential-bind-request/v1` containing native references + accepted review → `bootstrap-credential-set-receipt/v1`                                                                                                                                                                   |
+| `authorize --candidate <file> --certification <file> --review <file> --grant <file> --output <file>` | reviewed bootstrap installer validating protected-environment attestation         | bound inputs + `bootstrap-grant-attestation/v1` → `bootstrap-install-input/v1`                                                                                                                                                                                                                  |
+| `install --input <file> --output <file>`                                                             | reviewed bootstrap installer                                                      | `bootstrap-install-input/v1` → `bootstrap-receipt/v1` or exit-6 `bootstrap-recovery-transaction/v1`                                                                                                                                                                                             |
+| `abort --input <file> --output <file>`                                                               | same reviewed bootstrap installer plus operator before first destination mutation | existing immutable `bootstrap-install-input/v1`; derive its deterministic transaction/authorization/gate paths, read back the authoritative destination census, and emit `bootstrap-abort-receipt/v1`; authorization-absent refusal, pre-gate revoke, or idempotent post-gate `ABORTING` resume |
+| `recover --transaction <file> --output <file>`                                                       | same reviewed bootstrap installer on the bound target host                        | `bootstrap-recovery-transaction/v1` + broker-held one-use capability → `bootstrap-receipt/v1`                                                                                                                                                                                                   |
+| `verify --receipt <file>`                                                                            | readers/operator                                                                  | `bootstrap-receipt/v1` → `bootstrap-verification/v1`                                                                                                                                                                                                                                            |
 
 Every shown flag is required exactly once. Unknown, missing, duplicate,
 positional, or extra arguments refuse before state creation. The source-subject
