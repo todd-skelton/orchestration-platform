@@ -867,7 +867,10 @@ slice does not authenticate which upstream receipt or gate the digests name.
 removal is represented only by the common selected `pointer-tombstone-value/v1`
 after the later recovery-authorization archive ledger is satisfied. A
 `REMOVED` state record, bare absence, deletion, or an archive digest inserted
-into this value schema refuses.
+into this value schema refuses. The existing public recovery-authorization
+lifecycle type/list is narrowed to exactly `CREATED|CONSUMED|REVOKED`, and the
+legacy string-only `REVOKED -> REMOVED` transition is deleted. There is one
+public parsed-value transition contract, not a second legacy state machine.
 
 The only pure value transitions are:
 
@@ -910,12 +913,27 @@ remain the sole `Dp`/`Dv` authority; this ledger adds no standalone state digest
 and no alternate pointer path. Tombstone position and archive equality remain
 deferred to the archive ledger.
 
+Because `Dv` requires authenticated pointer context absent from a detached
+state record, generic
+`serializeContract("recovery-authorization-state/v1", value)` fails closed with
+exactly `serialization:pointer-context-required` and returns neither bytes nor
+a digest. It must not return the untagged canonical digest, synthesize a `Dp`,
+or expose a state-specific digest helper. After the detached value parses,
+canonical state bytes use the existing canonical byte primitive; the sole
+authority identity is then computed by the existing common
+`computePointerValueDigest("RECOVERY_AUTHORIZATION_STATE", Dp, value)` with the
+caller's independently authenticated `Dp`. `parseCanonicalContractBytes`
+continues to admit only exact canonical detached bytes and grants no identity.
+
 This slice authorizes only a total closed state parser, exact VALUE-position
 parser/common position-digest dispatch, and the pure lifecycle transition
-validator. It authorizes no native or post-selection receipt parser, archive,
-tombstone, composed core/gate/receipt equality, selected proposal/receipt/tip
-validator, persistence lookup, broker call, capability, pointer proposal, CAS,
-command, filesystem mutation, or runtime recovery.
+validator. It also authorizes the bounded public-API closure above: generic
+state serialization refusal and removal/replacement of the obsolete
+string-only REMOVED lifecycle surface. It authorizes no native or
+post-selection receipt parser, archive, tombstone, composed core/gate/receipt
+equality, selected proposal/receipt/tip validator, persistence lookup, broker
+call, capability, pointer proposal, CAS, command, filesystem mutation, or
+runtime recovery.
 
 Compatibility evidence must remove, add, rename, reorder, null, or cross-type
 every member in all three branches; insert every opposite-branch member; attack
@@ -928,7 +946,11 @@ CREATED revocation cells, the CONSUMED revocation equality edges, and hostile
 reflective inputs. Deleting any branch closure, nullability implication,
 transition edge, preserved-field equality, inclusive time comparison, or
 position closure must make a committed mutant survive and therefore fail the
-suite.
+suite. Public-API evidence must prove exact generic serializer refusal, no
+untagged state digest or standalone state-digest helper, canonical detached
+bytes for all five structural cells, common `Dv` equality and `Dp` sensitivity,
+and the absence of `REMOVED`, `REVOKED -> REMOVED`, or a second legacy
+transition entry point.
 
 ### Cleanup-gate and recovery-fence literal ledger
 
