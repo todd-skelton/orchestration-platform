@@ -22,7 +22,10 @@ import { parseBootstrapConsumptionContract } from "./consumption.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 import { parseGateFenceContract } from "./definitions.js";
-import { parseRecoveryAuthorizationContract } from "./recovery.js";
+import {
+  computeRecoveryAuthorizationCoreDigest,
+  parseRecoveryAuthorizationContract,
+} from "./recovery.js";
 
 export * from "./authority.js";
 export * from "./commit.js";
@@ -159,7 +162,11 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
-  return { ok: true, bytes: canonicalBytes(parsed.value), digest: canonicalDigest(parsed.value) };
+  const digest =
+    expectedSchemaVersion === "recovery-authorization-core/v1"
+      ? computeRecoveryAuthorizationCoreDigest(parsed.value)
+      : canonicalDigest(parsed.value);
+  return { ok: true, bytes: canonicalBytes(parsed.value), digest };
 }
 
 export interface CompatibilityRow {

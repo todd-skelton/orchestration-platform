@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  canonicalDigest,
   canonicalJson,
   computeRecoveryAuthorizationCoreDigest,
   parseCanonicalContractBytes,
@@ -7,6 +8,7 @@ import {
   parseRecoveryAuthorizationCore,
   recoveryAuthorizationCoreSchemaFields,
   recoveryAuthorizationPaths,
+  serializeContract,
 } from "../../packages/contracts/src/index.js";
 
 const d = (value: string): string => value.repeat(64);
@@ -101,6 +103,15 @@ describe("recovery-authorization immutable core", () => {
       "a8de464e22b7194daf49b52f102e6513b19255ff49d965fe68e4ef8940e67879",
       "d92dd5a77ab011dcc73f90bb3ad28d7444ddd4650306063de64d33d9152dc68a",
     ]);
+    for (const fixture of [bootstrapCore, successorCore]) {
+      const serialized = serializeContract("recovery-authorization-core/v1", fixture);
+      expect(serialized.ok).toBe(true);
+      if (serialized.ok) {
+        expect(serialized.digest).toBe(computeRecoveryAuthorizationCoreDigest(fixture));
+        expect(serialized.digest).not.toBe(canonicalDigest(fixture));
+        expect(serialized.bytes).toEqual(new TextEncoder().encode(canonicalJson(fixture)));
+      }
+    }
     expect(parseContract("recovery-authorization-core/v1", bootstrapCore).ok).toBe(true);
     expect(parseContract("recovery-authorization-core/v1", successorCore).ok).toBe(true);
     expect(recoveryAuthorizationPaths.core(transactionId)).toBe(
