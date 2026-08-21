@@ -1216,6 +1216,109 @@ Structural tests make no operation-equality, selected-graph, lifecycle,
 currentness, timing, persistence, provider, native-receipt, or archive claim;
 those remain in the named later ISS-004/ISS-032 composition matrices.
 
+### Recovery-authorization archive literal ledger
+
+This ledger fixes only the immutable transaction archive written after the
+selected REVOKED state and its revoke post-selection receipt have both been
+read back. The archive is evidence, not authority. It cannot select a
+tombstone, delete state, authenticate a provider, issue a capability, or let a
+candidate certify itself.
+
+`recovery-authorization-archive/v1` has exactly these four members in ascending
+canonical JSON member order:
+
+```text
+archivedAt:timestamp
+revokePostSelectionReceiptDigest:sha256
+schemaVersion:recovery-authorization-archive/v1
+transactionId:uuid-v7
+```
+
+The archive intentionally does not copy `Dp`, `Dv`, `Dr`, `Dt`, `Dac`, native
+receipt, gate, lifecycle, mode, generation, operation, or removal-disposition
+fields. Later composition parses the actual revoke post-selection receipt,
+recomputes `Drrp`, follows its selected `Dt`, parses the actual REVOKED
+value/proposal/tip, and recomputes the complete `Dp/Dv/Dr/Dt` graph. Because
+`Drrp` commits the receipt's exact selected `Dt`, operation, transaction, and
+receipt time, copying any of those facts into the archive would add no
+independent source or replay discriminator.
+
+The canonical path is:
+
+```text
+installation/recovery-authorizations/<transactionId>/archive.json
+```
+
+The sole archive identity is:
+
+```text
+Draa = SHA256(frame("recovery-authorization-archive/v1", canonical archive bytes))
+```
+
+The frame has exactly one canonical-record part after its literal domain.
+Generic `serializeContract` uses the existing
+`{ ok: true, bytes, digest }` success arm and returns exactly `Draa`. An
+untagged canonical digest, raw JSON, field-wise framing, another archive
+domain, common pointer `Dv`, or any second archive identity refuses.
+
+`archivedAt` is the durable archive-creation time after exact revoke-receipt
+read-back. ISS-032 owns create-once write, byte-identical retry, read-back, and
+time production. ISS-004 owns later composition and must require the parsed
+revoke receipt's `transactionId` equal the archive transaction, its
+`recordedAt <= archivedAt`, its operation equal selected REVOKED
+`removalOperationId`, and its `selectedStateTipDigest` equal the recomputed
+REVOKED `Dt`. Parser success alone authenticates none of those relations.
+
+The recovery-authorization tombstone position is exactly the closed record:
+
+```json
+{ "mode": "TOMBSTONE", "parts": {} }
+```
+
+It hashes only under the already-registered
+`authorization-state-position-tombstone/v1` domain. The empty parts avoid
+copying archive or terminal-proof digests already committed by the successor
+`pointer-tombstone-value/v1` and common mutation ID. VALUE continues to use its
+distinct empty-parts `authorization-state-position/v1` domain. Cross-mode,
+nonempty-parts, cross-family, or untagged positions refuse.
+
+Later ISS-004 terminal composition, not this ledger, must parse the actual
+archive and tombstone, recompute `Draa`, and require the tombstone's
+`pointerKind = RECOVERY_AUTHORIZATION_STATE`, `archiveDigest = Draa`, prior
+`Dt/Dv/Dr` equal the actual selected REVOKED graph, and
+`terminalProofDigest = Drrp`. It also requires `archivedAt <= tombstonedAt`,
+the same transaction-scoped `Dp`, a `TOMBSTONE_PROPOSED/REMOVE` proposal under
+the stable external mutation epoch, exact selected read-back, and no
+candidate/self-certification path. A selected tombstone is FULL_REQUIRED;
+bare absence, deletion, truncation, conflict, or unreadable archive/tombstone
+is `UNKNOWN`, never successful removal. No retention or compaction authority
+is introduced.
+
+The order is acyclic: selected REVOKED state -> revoke post-selection receipt
+`Drrp` -> archive `Draa` -> common tombstone proposal/selection. The archive
+contains only upstream `Drrp`; the revoke receipt and REVOKED graph contain no
+archive or tombstone digest. The generic tombstone carries the upstream archive
+and terminal proof, but neither is downstream of that tombstone.
+
+This slice authorizes only a total closed archive parser, the existing
+transaction archive-path constructor, `Draa`, its canonical serializer route,
+compatibility registration, and the exact empty-parts TOMBSTONE-position
+parser/digest route. It authorizes no selected-state/revoke/archive/tombstone
+composition, provider read-back, persistent lookup/write, broker operation,
+pointer proposal, CAS, deletion, capability, command, filesystem mutation, or
+runtime recovery.
+
+Compatibility evidence must remove, add, rename, reorder, null, and cross-type
+all four archive members; reject every deleted copied field; pin canonical
+bytes/path/`Draa`; kill domain and untagged-serializer fallbacks; cross VALUE,
+TOMBSTONE, nonempty-parts, and other-family positions through both specialized
+and common digest APIs; and cover hostile reflective inputs without throwing.
+Deleting a closure, domain, path input, schema-specific serializer route,
+position-mode/parts check, or schema literal must make a committed mutant
+survive and therefore fail the suite. Structural tests make no receipt/state
+equality, currentness, timing, persistence, tombstone selection, deletion, or
+runtime claim; those remain in the named later ISS-004/ISS-032 matrices.
+
 ### Cleanup-gate and recovery-fence literal ledger
 
 This ledger fixes only the two immutable roots and their bounded state-history
