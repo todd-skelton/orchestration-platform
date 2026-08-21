@@ -1112,6 +1112,110 @@ Core/state/receipt equalities, operation-ID distinctness, selected path/schema
 read-back, time order, selected-history currentness, and native-provider
 outcomes belong only to the named later ISS-004/ISS-032 matrices.
 
+### Recovery-authorization post-selection receipt literal ledger
+
+This ledger fixes only the two immutable observations written after an actual
+authorization-state selection has been read back. The records close the crash
+gap between a native operation, the selected state CAS, and a durable broker
+observation of that selection. They are evidence, not authority: neither bytes
+nor digest can select state, authenticate a native provider, manufacture a
+producer epoch, issue a capability, or let a candidate certify itself.
+
+`recovery-authorization-consume-receipt/v1` and
+`recovery-authorization-revoke-receipt/v1` each have exactly these eight
+members in ascending canonical JSON member order:
+
+```text
+operationId:uuid-v7
+recordedAt:timestamp
+schemaVersion:recovery-authorization-consume-receipt/v1|recovery-authorization-revoke-receipt/v1
+selectedStatePathInstanceDigest:sha256
+selectedStateProposalReceiptDigest:sha256
+selectedStateTipDigest:sha256
+selectedStateValueDigest:sha256
+transactionId:uuid-v7
+```
+
+The schema literal is branch-local; a consume record cannot carry the revoke
+literal or vice versa. The two records intentionally do not copy
+`authorizationCoreDigest`, gate, native-receipt, lifecycle, mode, generation,
+or removal-disposition fields. Later composition must parse the actual selected
+state value/proposal/tip, reconstruct its canonical path and empty VALUE
+position, recompute `Dp/Dv/Dr/Dt`, and then read the core and native receipts
+named by that state. Repeating those already-digested state members here would
+add no independent source and would recreate the proof-bag surface deleted by
+the proportionality replan.
+
+The canonical paths are:
+
+```text
+installation/recovery-authorizations/<transactionId>/receipts/<operationId>.json
+```
+
+Structurally, each receipt constructs its own path from its own canonical UUIDv7
+members and accepts any otherwise valid pair. ISS-004 later requires consume
+`operationId` equal the selected state's prebound `consumeOperationId`, revoke
+`operationId` equal selected REVOKED `removalOperationId`, and transaction/path
+identity equal the selected state. A consume and revoke operation for one
+transaction remain distinct. A structural parser cannot decide those
+relations and must not reject another valid UUIDv7 pair.
+
+The sole identities are:
+
+```text
+Drcp = SHA256(frame("recovery-authorization-consume-receipt/v1", canonical consume post-selection receipt bytes))
+Drrp = SHA256(frame("recovery-authorization-revoke-receipt/v1", canonical revoke post-selection receipt bytes))
+```
+
+Each frame has exactly one canonical-record part after its literal domain.
+Generic `serializeContract` uses the existing
+`{ ok: true, bytes, digest }` success arm and returns exactly `Drcp` or `Drrp`.
+Untagged canonical digests, raw JSON, swapped domains, field-wise framing,
+common pointer `Dv`, another helper identity, or a third post-selection domain
+refuse.
+
+`recordedAt` is the durable receipt-creation time after exact selected-tip
+read-back, not proposal time or caller request time. ISS-032 owns create-once
+write, byte-identical retry, selected read-back observation, and receipt-time
+production. ISS-004 owns the later closed composition and must require actual
+selected state `recordedAt <= post-selection recordedAt`, exact operation/path
+equality, and the complete recomputed state graph. Parser success alone does
+not authenticate that read-back or time.
+
+Both records are immutable `FULL_REQUIRED` evidence. Missing, conflicting,
+noncanonical, truncated, or unreadable bytes are fail-closed `UNKNOWN` in the
+later ISS-004/ISS-032 flow; bare absence never means that consume or revoke
+completed. Those persistence and composition obligations are normative future
+requirements, not behavior authorized in this structural slice. Archive and
+tombstone treatment remains separately gated and grants no deletion or
+compaction shortcut here.
+
+The order is acyclic. Native receipt precedes selected state; selected state
+precedes its post-selection receipt. The post-selection receipt contains only
+digests already fixed by that selection, and no selected state, native receipt,
+core, gate, proposal, or tip contains the downstream post-selection digest.
+For the later CONSUMED-to-REVOKED edge, the selected REVOKED state may carry the
+already-existing consume post-selection digest, but the downstream revoke
+post-selection receipt never enters the REVOKED state preimage.
+
+This slice authorizes only total closed parsers, receipt-own path construction,
+the two domain-separated digest functions, canonical serializer routes, and
+compatibility registration. It authorizes no selected-state graph validator,
+provider read-back, persistent lookup/write, broker operation, native receipt
+authentication, archive, tombstone, capability, pointer proposal, CAS,
+command, filesystem mutation, or runtime recovery.
+
+Compatibility evidence must remove, add, rename, reorder, null, or cross-type
+every member; pin both canonical byte/path/digest goldens; prove each path is
+sensitive to its own transaction and operation IDs while accepting any valid
+pair; swap schemas and digest domains; kill an untagged serializer fallback;
+and cover hostile reflective input without throwing. Deleting a closure,
+domain tag, path input, schema-specific serializer route, or exact schema
+literal must make a committed mutant survive and therefore fail the suite.
+Structural tests make no operation-equality, selected-graph, lifecycle,
+currentness, timing, persistence, provider, native-receipt, or archive claim;
+those remain in the named later ISS-004/ISS-032 composition matrices.
+
 ### Cleanup-gate and recovery-fence literal ledger
 
 This ledger fixes only the two immutable roots and their bounded state-history
