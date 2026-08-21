@@ -791,6 +791,145 @@ increment, or exact path relation must make a committed mutant pass and
 therefore fail the suite. Upstream grant/review/release/broker/fence equality
 mutants belong only to the later closed composition matrix.
 
+### Recovery-authorization state literal ledger
+
+This ledger fixes only the selected value bytes for the transaction-scoped
+`RECOVERY_AUTHORIZATION_STATE` pointer, its exact VALUE position, and pure
+value-to-value lifecycle checks. Native consume/removal receipts,
+post-selection receipts, archive/tombstone bytes, selected proposal/receipt/tip
+composition, persistent discovery, broker operations, and live mutation remain
+separately unauthorized. Every digest naming one of those deferred records is
+opaque structural evidence here and grants no authority until its own literal
+ledger and the closed composed equality matrix pass removal review.
+
+`recovery-authorization-state/v1` is a closed three-branch union. The scalar
+names below use the global closed `sha256`, `uuid-v7`, and `timestamp` grammars.
+Every branch contains all and only the members listed for it in ascending
+canonical JSON member order.
+
+`CREATED` has exactly seven members:
+
+```text
+authorizationCoreDigest:sha256
+consumeOperationId:uuid-v7
+lifecycle:CREATED
+mode:BOOTSTRAP|SUCCESSOR
+recordedAt:timestamp
+schemaVersion:recovery-authorization-state/v1
+transactionId:uuid-v7
+```
+
+The broker producer prebinds `consumeOperationId` before CREATED is proposed;
+the structural parser proves only its canonical UUIDv7 grammar. It does not
+derive or execute the operation.
+
+`CONSUMED` has exactly nine members:
+
+```text
+authorizationCoreDigest:sha256
+cleanupGateRootDigest:sha256
+consumeOperationId:uuid-v7
+lifecycle:CONSUMED
+mode:BOOTSTRAP|SUCCESSOR
+nativeConsumeReceiptDigest:sha256
+recordedAt:timestamp
+schemaVersion:recovery-authorization-state/v1
+transactionId:uuid-v7
+```
+
+`REVOKED` has exactly twelve members:
+
+```text
+authorizationCoreDigest:sha256
+cleanupGateRootDigest:nullable sha256
+consumeOperationId:uuid-v7
+consumePostSelectionReceiptDigest:nullable sha256
+lifecycle:REVOKED
+mode:BOOTSTRAP|SUCCESSOR
+nativeConsumeReceiptDigest:nullable sha256
+nativeRemovalReceiptDigest:sha256
+recordedAt:timestamp
+removalOperationId:uuid-v7
+schemaVersion:recovery-authorization-state/v1
+transactionId:uuid-v7
+```
+
+In REVOKED, `consumePostSelectionReceiptDigest` and
+`nativeConsumeReceiptDigest` are exactly both null or both non-null. When they
+are non-null, `cleanupGateRootDigest` is also non-null. A null consume pair with
+a null gate denotes the structurally possible pre-gate CREATED revocation; a
+null consume pair with a non-null gate denotes the structurally possible
+post-gate CREATED revocation. The all-non-null arm is the only structurally
+possible revocation after CONSUMED. These are nullability rules only: this
+slice does not authenticate which upstream receipt or gate the digests name.
+
+`REMOVED` is not a `recovery-authorization-state/v1` lifecycle value. Terminal
+removal is represented only by the common selected `pointer-tombstone-value/v1`
+after the later recovery-authorization archive ledger is satisfied. A
+`REMOVED` state record, bare absence, deletion, or an archive digest inserted
+into this value schema refuses.
+
+The only pure value transitions are:
+
+```text
+null -> CREATED
+CREATED -> CONSUMED
+CREATED -> REVOKED
+CONSUMED -> REVOKED
+```
+
+Every non-genesis transition preserves exact `authorizationCoreDigest`,
+`consumeOperationId`, `mode`, and `transactionId`, and requires prior
+`recordedAt <= next recordedAt`. `CREATED -> REVOKED` requires the REVOKED
+consume pair to be null. `CONSUMED -> REVOKED` requires the REVOKED consume
+pair and gate to be non-null, equal-binds `cleanupGateRootDigest` and
+`nativeConsumeReceiptDigest` to the CONSUMED value, and keeps the same
+prebound consume operation. Self-loops, skips, reverse edges, a second CREATED,
+and every future lifecycle refuse. The pure transition validator consumes only
+the two parsed values and does not claim selected-history continuity,
+currentness, or mutation authority.
+
+The canonical pointer path remains exactly:
+
+```text
+installation/recovery-authorizations/<transactionId>/state.json
+```
+
+where the path transaction equals the canonical value `transactionId`. The
+exact VALUE position evidence is the closed record:
+
+```json
+{ "mode": "VALUE", "parts": {} }
+```
+
+It hashes only under the already-registered
+`authorization-state-position/v1` domain. Missing/extra outer or nested
+members, nonempty `parts`, another mode, a cleanup/fence position, and any
+TOMBSTONE position refuse. The common path-instance and pointer-value formulas
+remain the sole `Dp`/`Dv` authority; this ledger adds no standalone state digest
+and no alternate pointer path. Tombstone position and archive equality remain
+deferred to the archive ledger.
+
+This slice authorizes only a total closed state parser, exact VALUE-position
+parser/common position-digest dispatch, and the pure lifecycle transition
+validator. It authorizes no native or post-selection receipt parser, archive,
+tombstone, composed core/gate/receipt equality, selected proposal/receipt/tip
+validator, persistence lookup, broker call, capability, pointer proposal, CAS,
+command, filesystem mutation, or runtime recovery.
+
+Compatibility evidence must remove, add, rename, reorder, null, or cross-type
+every member in all three branches; insert every opposite-branch member; attack
+the three REVOKED nullability cells; and pin exact canonical bytes for CREATED,
+CONSUMED, and all three REVOKED structural cells. Position goldens must kill an
+empty/nonempty-parts, VALUE/TOMBSTONE, or domain-dispatch substitution. Pure
+transition tests must cover all four legal edges, every illegal edge,
+inclusive timestamp equality, all preserved-field substitutions, both direct-
+CREATED revocation cells, the CONSUMED revocation equality edges, and hostile
+reflective inputs. Deleting any branch closure, nullability implication,
+transition edge, preserved-field equality, inclusive time comparison, or
+position closure must make a committed mutant survive and therefore fail the
+suite.
+
 ### Cleanup-gate and recovery-fence literal ledger
 
 This ledger fixes only the two immutable roots and their bounded state-history
