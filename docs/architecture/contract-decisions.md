@@ -666,8 +666,8 @@ Those downstream facts cannot enter the core without creating a cycle or making
 future evidence part of the authority that precedes it.
 
 The scalar names below use the global closed `sha256`, `uuid-v7`,
-`safe-decimal`, `timestamp`, and canonical relative-path grammars. The record is
-a closed mode union. Every branch has all and only these fifteen common members
+`safe-decimal`, and `timestamp` grammars. The record is a closed mode union.
+Every branch has all and only these fifteen common members
 in ascending canonical JSON member order:
 
 ```text
@@ -697,7 +697,7 @@ grantDigest:sha256
 installerDigest:sha256
 ```
 
-The `SUCCESSOR` branch instead additionally has exactly these thirteen members,
+The `SUCCESSOR` branch instead additionally has exactly these twelve members,
 again interleaved canonically:
 
 ```text
@@ -708,7 +708,6 @@ predecessorBrokerGeneration:safe-decimal
 predecessorExecutableDigest:sha256
 predecessorOperationManifestDigest:sha256
 predecessorReleaseDigest:sha256
-recoveryFencePath:relative-path
 recoveryFenceRootDigest:sha256
 successorBrokerGeneration:safe-decimal
 successorExecutableDigest:sha256
@@ -724,8 +723,10 @@ closed-record failure. The engine treats every identity digest as opaque;
 repository, code-host, operating-system credential-store, and provider names
 are adapter vocabulary and are not core members.
 
-`issuedAt` is strictly less than `expiresAt`. Admission must occur before
-expiry; after exact native consumption and selected `CONSUMED` state, the later
+`issuedAt` is strictly less than `expiresAt`. The structural parser proves only
+that internal order and consults no clock. Later composition must supply an
+authenticated admission time and require `issuedAt <= admittedAt < expiresAt`.
+After exact native consumption and selected `CONSUMED` state, the later
 authorization is non-expiring transaction evidence rather than a bearer
 secret. `nativeGeneration` and all SUCCESSOR generations use canonical safe-
 decimal strings. In SUCCESSOR mode, `successorBrokerGeneration` is exactly
@@ -759,7 +760,9 @@ and bind grant, installer, candidate, destination, host/user, state-root, and
 transaction identities to their authenticated sources. In SUCCESSOR mode,
 later composition must recompute the stable-promotion `Dsc`, bind the actual
 selected predecessor/candidate release and broker/admission graphs, require the
-canonical recovery-fence path, and bind `recoveryFenceRootDigest = Dfr`.
+transaction's exact constructed recovery-fence root path
+`installation/activation-recovery-fence-roots/<transactionId>.json`, and bind
+`recoveryFenceRootDigest = Dfr`. That derivable path is not a core member.
 Consistently copied core fields or a supplied expected digest are never an
 equality source.
 
