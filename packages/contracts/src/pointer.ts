@@ -4,6 +4,7 @@ import {
   closedRecord,
   frame,
   framedDigest,
+  isCanonicalDecimal,
   isCanonicalTimestamp,
   isContractRelativePath,
   isSha256,
@@ -377,6 +378,13 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
   if (!snapshot.ok) throw new TypeError(snapshot.issues.join(","));
   const mode = snapshot.value.mode;
   if (mode !== "VALUE" && mode !== "TOMBSTONE") throw new TypeError("mode:invalid");
+  if (kind === "ACTIVATION_CLEANUP_GATE" || kind === "ACTIVATION_RECOVERY_FENCE") {
+    if (mode !== "VALUE") throw new TypeError("mode:invalid");
+    const parts = snapshotClosedRecord(snapshot.value.parts, ["ordinal", "rootDigest"]);
+    if (!parts.ok) throw new TypeError(parts.issues.map((issue) => `parts.${issue}`).join(","));
+    if (!isCanonicalDecimal(parts.value.ordinal)) throw new TypeError("parts.ordinal:invalid");
+    if (!isSha256(parts.value.rootDigest)) throw new TypeError("parts.rootDigest:invalid");
+  }
   if (mode === "TOMBSTONE" && row.tombstonePositionDomain === null)
     throw new TypeError("mode:tombstone-refused");
   const domain = mode === "VALUE" ? row.positionDomain : row.tombstonePositionDomain!;

@@ -4,6 +4,7 @@ import {
   canonicalJson,
   computeCleanupGateRootDigest,
   computeCleanupGateValuePositionDigest,
+  computeMutationId,
   computePointerPositionDigest,
   computePointerValueDigest,
   computeRecoveryFenceRootDigest,
@@ -135,6 +136,22 @@ function fenceHistory(): readonly object[] {
     state: "POST_ACTIVATION",
   });
   return Object.freeze([first, second]);
+}
+
+function relinkHistory(
+  kind: "ACTIVATION_CLEANUP_GATE" | "ACTIVATION_RECOVERY_FENCE",
+  history: readonly Readonly<Record<string, unknown>>[],
+): readonly Readonly<Record<string, unknown>>[] {
+  let priorHeadValueDigest: string | null = null;
+  return history.map((input, index) => {
+    const head = Object.freeze({
+      ...input,
+      ordinal: String(index),
+      priorHeadValueDigest,
+    });
+    priorHeadValueDigest = computePointerValueDigest(kind, pathInstanceDigest, head);
+    return head;
+  });
 }
 
 function reorderedCanonicalBytes(record: Readonly<Record<string, unknown>>): Uint8Array {
@@ -270,6 +287,27 @@ describe("tagged roots and exact VALUE positions", () => {
     mode: "VALUE",
     parts: Object.freeze({ ordinal: "1", rootDigest: computeRecoveryFenceRootDigest(fenceRoot) }),
   });
+  const cleanupMutationInput = Object.freeze({
+    canonicalPointerPath: "installation/activation-cleanup-gate.json",
+    installationId,
+    outcome: "SELECT",
+    pointerKind: "ACTIVATION_CLEANUP_GATE",
+    positionEvidence: cleanupPosition,
+    priorReceiptDigest: null,
+    priorTipDigest: null,
+    priorValueDigest: null,
+    projectId,
+    sourceToken: "none",
+    stateRootDigest: d("5"),
+    successorValueDigest: d("e"),
+    transactionId,
+  });
+  const fenceMutationInput = Object.freeze({
+    ...cleanupMutationInput,
+    canonicalPointerPath: "installation/activation-recovery-fence.json",
+    pointerKind: "ACTIVATION_RECOVERY_FENCE",
+    positionEvidence: fencePosition,
+  });
 
   test("uses distinct root domains with stable goldens", () => {
     expect([
@@ -309,9 +347,13 @@ describe("tagged roots and exact VALUE positions", () => {
         parts: { ...cleanupPosition.parts, ordinal: "9007199254740991" },
       }).ok,
     ).toBe(true);
-    for (const invalid of [
+    const invalidPositions = [
+      { parts: cleanupPosition.parts },
+      { mode: "VALUE" },
       { ...cleanupPosition, mode: "TOMBSTONE" },
       { ...cleanupPosition, extra: true },
+      { ...cleanupPosition, parts: { rootDigest: cleanupPosition.parts.rootDigest } },
+      { ...cleanupPosition, parts: { ordinal: cleanupPosition.parts.ordinal } },
       { ...cleanupPosition, parts: { ...cleanupPosition.parts, ordinal: "00" } },
       {
         ...cleanupPosition,
@@ -319,10 +361,21 @@ describe("tagged roots and exact VALUE positions", () => {
       },
       { ...cleanupPosition, parts: { ...cleanupPosition.parts, rootDigest: "no" } },
       { ...cleanupPosition, parts: { ...cleanupPosition.parts, extra: true } },
-    ]) {
+    ];
+    for (const invalid of invalidPositions) {
       expect(parseCleanupGateValuePosition(invalid).ok).toBe(false);
       expect(parseRecoveryFenceValuePosition(invalid).ok).toBe(false);
+      expect(() => computePointerPositionDigest("ACTIVATION_CLEANUP_GATE", invalid)).toThrow();
+      expect(() => computePointerPositionDigest("ACTIVATION_RECOVERY_FENCE", invalid)).toThrow();
+      expect(() =>
+        computeMutationId({ ...cleanupMutationInput, positionEvidence: invalid }),
+      ).toThrow();
+      expect(() =>
+        computeMutationId({ ...fenceMutationInput, positionEvidence: invalid }),
+      ).toThrow();
     }
+    expect(() => computeMutationId(cleanupMutationInput)).not.toThrow();
+    expect(() => computeMutationId(fenceMutationInput)).not.toThrow();
   });
 });
 
@@ -382,8 +435,153 @@ describe("bounded relative histories over supplied records", () => {
     expect(validateFenceHeadHistory(fenceRoot, fence, pathInstanceDigest)).toEqual([]);
   });
 
+  test("pins common head Dv bytes and isolates every cleanup history comparison", () => {
+    const history = gateHistory([
+      ["PENDING", "NOT_PUBLISHED"],
+      ["PENDING", "PUBLISHING"],
+    ]) as readonly Readonly<Record<string, unknown>>[];
+    expect([
+      computePointerValueDigest("ACTIVATION_CLEANUP_GATE", pathInstanceDigest, history[0]!),
+      computePointerValueDigest(
+        "ACTIVATION_RECOVERY_FENCE",
+        pathInstanceDigest,
+        fenceHistory()[0]!,
+      ),
+    ]).toEqual([
+      "8773addd78800f0922e863ff8fc1b44d9b98e46c14a93687f82e09ef105cb831",
+      "56c1131812f99d922ef0a85253fded1e5ece049c3ebbcf23de65dc264a11030a",
+    ]);
+
+    expect(
+      validateCleanupHeadHistory(
+        bootstrapGateRoot,
+        [history[0]!, { ...history[1]!, ordinal: "2" }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["1:ordinal:not-dense"]);
+    expect(
+      validateCleanupHeadHistory(
+        bootstrapGateRoot,
+        [history[0]!, { ...history[1]!, priorHeadValueDigest: d("f") }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["1:priorHeadValueDigest:mismatch"]);
+    expect(
+      validateCleanupHeadHistory(
+        bootstrapGateRoot,
+        [history[0]!, { ...history[1]!, rootDigest: d("f") }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["1:rootDigest:mismatch"]);
+
+    const illegal = relinkHistory("ACTIVATION_CLEANUP_GATE", [
+      history[0]!,
+      { ...history[1]!, lifecycle: "ACTIVATING", publication: "PUBLISHED" },
+    ]);
+    expect(validateCleanupHeadHistory(bootstrapGateRoot, illegal, pathInstanceDigest)).toEqual([
+      "1:transition:invalid",
+    ]);
+    const selfLoop = relinkHistory("ACTIVATION_CLEANUP_GATE", [
+      history[0]!,
+      { ...history[1]!, lifecycle: "PENDING", publication: "NOT_PUBLISHED" },
+    ]);
+    expect(validateCleanupHeadHistory(bootstrapGateRoot, selfLoop, pathInstanceDigest)).toEqual([
+      "1:transition:invalid",
+    ]);
+
+    const beforeRoot = [{ ...history[0]!, recordedAt: "2026-08-20T11:59:59.999Z" }];
+    expect(validateCleanupHeadHistory(bootstrapGateRoot, beforeRoot, pathInstanceDigest)).toEqual([
+      "0:recordedAt:before-root",
+    ]);
+    const beforePrior = relinkHistory("ACTIVATION_CLEANUP_GATE", [
+      { ...history[0]!, recordedAt: "2026-08-20T12:01:00.000Z" },
+      { ...history[1]!, recordedAt: "2026-08-20T12:00:30.000Z" },
+    ]);
+    expect(validateCleanupHeadHistory(bootstrapGateRoot, beforePrior, pathInstanceDigest)).toEqual([
+      "1:recordedAt:before-prior",
+    ]);
+  });
+
+  test("refuses every recovery-fence history seam with discriminating evidence", () => {
+    const history = fenceHistory() as readonly Readonly<Record<string, unknown>>[];
+    expect(validateFenceHeadHistory(fenceRoot, [], pathInstanceDigest)).toEqual(["history:length"]);
+    const third = relinkHistory("ACTIVATION_RECOVERY_FENCE", [
+      history[0]!,
+      history[1]!,
+      { ...history[1]!, recordedAt: "2026-08-20T12:00:01.000Z" },
+    ]);
+    expect(validateFenceHeadHistory(fenceRoot, third, pathInstanceDigest)).toContain(
+      "history:length",
+    );
+    expect(
+      validateFenceHeadHistory(
+        fenceRoot,
+        [{ ...history[1]!, ordinal: "0", priorHeadValueDigest: null }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["0:transition:invalid"]);
+    expect(
+      validateFenceHeadHistory(fenceRoot, [history[1]!, history[0]!], pathInstanceDigest),
+    ).not.toEqual([]);
+    expect(
+      validateFenceHeadHistory(
+        fenceRoot,
+        [history[0]!, { ...history[1]!, ordinal: "2" }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["1:ordinal:not-dense"]);
+    expect(
+      validateFenceHeadHistory(
+        fenceRoot,
+        [history[0]!, { ...history[1]!, priorHeadValueDigest: d("f") }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["1:priorHeadValueDigest:mismatch"]);
+    expect(
+      validateFenceHeadHistory(
+        fenceRoot,
+        [history[0]!, { ...history[1]!, rootDigest: d("f") }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["1:rootDigest:mismatch"]);
+    expect(
+      validateFenceHeadHistory(
+        fenceRoot,
+        [{ ...history[0]!, recordedAt: "2026-08-20T11:59:59.999Z" }],
+        pathInstanceDigest,
+      ),
+    ).toEqual(["0:recordedAt:before-root"]);
+    const beforePrior = relinkHistory("ACTIVATION_RECOVERY_FENCE", [
+      { ...history[0]!, recordedAt: "2026-08-20T12:01:00.000Z" },
+      { ...history[1]!, recordedAt: "2026-08-20T12:00:30.000Z" },
+    ]);
+    expect(validateFenceHeadHistory(fenceRoot, beforePrior, pathInstanceDigest)).toEqual([
+      "1:recordedAt:before-prior",
+    ]);
+    const selfLoop = relinkHistory("ACTIVATION_RECOVERY_FENCE", [
+      history[0]!,
+      { ...history[1]!, state: "PREPARED" },
+    ]);
+    expect(validateFenceHeadHistory(fenceRoot, selfLoop, pathInstanceDigest)).toEqual([
+      "1:transition:invalid",
+    ]);
+    expect(validateFenceHeadHistory(fenceRoot, history, d("f"))).toContain(
+      "1:priorHeadValueDigest:mismatch",
+    );
+  });
+
   test("refuses detectable start/interior omissions and every structural seam", () => {
     const history = gateHistory(paths[1]!);
+    expect(validateCleanupHeadHistory(bootstrapGateRoot, [], pathInstanceDigest)).toEqual([
+      "history:length",
+    ]);
+    expect(
+      validateCleanupHeadHistory(
+        bootstrapGateRoot,
+        [...history, { ...history.at(-1), ordinal: "6" }],
+        pathInstanceDigest,
+      ),
+    ).toContain("history:length");
     expect(
       validateCleanupHeadHistory(bootstrapGateRoot, history.slice(1), pathInstanceDigest),
     ).not.toEqual([]);
