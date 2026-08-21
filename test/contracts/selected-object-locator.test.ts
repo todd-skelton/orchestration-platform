@@ -36,7 +36,14 @@ const proposal = Object.freeze({
   authorityEpochTipDigest: d("d"),
   authorityEpochValueDigest: d("e"),
   intent: "VALUE_PROPOSED",
-  mutationId: d("c"),
+  mutationId: contracts.computeMutationId({
+    ...expectedIdentity,
+    outcome: "SELECT",
+    priorReceiptDigest: d("5"),
+    priorTipDigest: d("6"),
+    priorValueDigest: d("7"),
+    successorValueDigest: valueDigest,
+  }),
   outcome: "SELECT",
   pathInstanceDigest,
   pointerKind: "ACTIVE_RELEASE",
@@ -109,6 +116,14 @@ describe("common selected-object locator", () => {
       authorityEpochReceiptDigest: null,
       authorityEpochTipDigest: null,
       authorityEpochValueDigest: null,
+      mutationId: contracts.computeMutationId({
+        ...expectedIdentity,
+        outcome: "SELECT",
+        priorReceiptDigest: null,
+        priorTipDigest: null,
+        priorValueDigest: null,
+        successorValueDigest: valueDigest,
+      }),
       priorReceiptDigest: null,
       priorTipDigest: null,
       priorValueDigest: null,
@@ -199,10 +214,100 @@ describe("common selected-object locator", () => {
       { ...locatedInput, tip: { ...tip, valueDigest: d("9") } },
       { ...locatedInput, tip: { ...tip, proposalReceiptDigest: d("9") } },
       { ...locatedInput, proposal: { ...proposal, successorValueDigest: d("9") } },
+      {
+        ...locatedInput,
+        proposal: { ...proposal, mutationId: d("9") },
+        tip: {
+          ...tip,
+          proposalReceiptDigest: contracts.computeProposalReceiptDigest({
+            ...proposal,
+            mutationId: d("9"),
+          }),
+        },
+      },
       { ...locatedInput, proposal: { ...proposal, pathInstanceDigest: d("9") } },
       { ...locatedInput, proposal: { ...proposal, priorReceiptDigest: null } },
     ])
       expect(contracts.validateLocatedSelectedPointerEvidence(mutant).ok).toBe(false);
+  });
+
+  test("closes common intent/outcome pairs and binds them to trusted position mode", () => {
+    for (const [intent, outcome] of [
+      ["VALUE_PROPOSED", "REMOVE"],
+      ["TOMBSTONE_PROPOSED", "SELECT"],
+    ] as const) {
+      const crossed = { ...proposal, intent, outcome };
+      expect(contracts.parsePointerProposal(crossed).ok).toBe(false);
+      expect(
+        contracts.classifyProposal({
+          conflictReceipt: null,
+          proposal: crossed,
+          selectedProposal: null,
+          selectedTip: null,
+          selectedValue: null,
+        }),
+      ).toBe("UNKNOWN");
+    }
+
+    const tombstonePosition = Object.freeze({ mode: "TOMBSTONE", parts: Object.freeze({}) });
+    const tombstoneIdentity = Object.freeze({
+      ...expectedIdentity,
+      positionEvidence: tombstonePosition,
+    });
+    const tombstoneProposalBase = {
+      ...proposal,
+      intent: "TOMBSTONE_PROPOSED",
+      outcome: "REMOVE",
+      positionDigest: contracts.computePointerPositionDigest("ACTIVE_RELEASE", tombstonePosition),
+    } as const;
+    const tombstoneProposal = Object.freeze({
+      ...tombstoneProposalBase,
+      mutationId: contracts.computeMutationId({
+        ...tombstoneIdentity,
+        outcome: "REMOVE",
+        priorReceiptDigest: proposal.priorReceiptDigest,
+        priorTipDigest: proposal.priorTipDigest,
+        priorValueDigest: proposal.priorValueDigest,
+        successorValueDigest: valueDigest,
+      }),
+    });
+    const tombstoneTip = Object.freeze({
+      ...tip,
+      proposalReceiptDigest: contracts.computeProposalReceiptDigest(tombstoneProposal),
+    });
+    expect(
+      contracts.validateLocatedSelectedPointerEvidence({
+        expectedIdentity: tombstoneIdentity,
+        proposal: tombstoneProposal,
+        tip: tombstoneTip,
+        value,
+      }).ok,
+    ).toBe(true);
+
+    const valueRowAtTombstonePosition = Object.freeze({
+      ...proposal,
+      positionDigest: tombstoneProposal.positionDigest,
+      mutationId: contracts.computeMutationId({
+        ...tombstoneIdentity,
+        outcome: "SELECT",
+        priorReceiptDigest: proposal.priorReceiptDigest,
+        priorTipDigest: proposal.priorTipDigest,
+        priorValueDigest: proposal.priorValueDigest,
+        successorValueDigest: valueDigest,
+      }),
+    });
+    const valueRowTip = Object.freeze({
+      ...tip,
+      proposalReceiptDigest: contracts.computeProposalReceiptDigest(valueRowAtTombstonePosition),
+    });
+    expect(
+      contracts.validateLocatedSelectedPointerEvidence({
+        expectedIdentity: tombstoneIdentity,
+        proposal: valueRowAtTombstonePosition,
+        tip: valueRowTip,
+        value,
+      }).ok,
+    ).toBe(false);
   });
 
   test("leaves family semantics to the family parser and remains total", () => {
@@ -212,7 +317,18 @@ describe("common selected-object locator", () => {
       pathInstanceDigest,
       openValue,
     );
-    const openProposal = Object.freeze({ ...proposal, successorValueDigest: openValueDigest });
+    const openProposal = Object.freeze({
+      ...proposal,
+      mutationId: contracts.computeMutationId({
+        ...expectedIdentity,
+        outcome: "SELECT",
+        priorReceiptDigest: proposal.priorReceiptDigest,
+        priorTipDigest: proposal.priorTipDigest,
+        priorValueDigest: proposal.priorValueDigest,
+        successorValueDigest: openValueDigest,
+      }),
+      successorValueDigest: openValueDigest,
+    });
     const openReceiptDigest = contracts.computeProposalReceiptDigest(openProposal);
     const openTip = Object.freeze({
       ...tip,

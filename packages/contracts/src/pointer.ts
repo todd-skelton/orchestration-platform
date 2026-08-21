@@ -733,6 +733,11 @@ function requireProposal(input: unknown): ContractRecord {
     throw new TypeError("proposal:invalid");
   if (!["SELECT", "REMOVE"].includes(String(record.outcome)))
     throw new TypeError("outcome:invalid");
+  if (!(
+    (record.intent === "VALUE_PROPOSED" && record.outcome === "SELECT") ||
+    (record.intent === "TOMBSTONE_PROPOSED" && record.outcome === "REMOVE")
+  ))
+    throw new TypeError("intent+outcome:mismatch");
   if (!pointerKinds.includes(record.pointerKind as PointerKind))
     throw new TypeError("pointerKind:invalid");
   for (const name of [
@@ -1052,14 +1057,28 @@ export function validateLocatedSelectedPointerEvidence(input: unknown): ParseRes
       return pointerParseFailure(...tipResult.issues.map((issue) => `tip.${issue}`).sort());
     const value = snapshotRecord(wrapper.value.value);
     const valueDigest = computePointerValueDigest(pointerKind, pathInstanceDigest, value);
+    const expectedMutationId = computeMutationId({
+      ...identity.value,
+      outcome: proposal.outcome,
+      priorReceiptDigest: proposal.priorReceiptDigest,
+      priorTipDigest: proposal.priorTipDigest,
+      priorValueDigest: proposal.priorValueDigest,
+      successorValueDigest: valueDigest,
+    });
     const proposalReceiptDigest = computeProposalReceiptDigest(proposal);
     const tipDigest = computeCurrentTipDigest(tipResult.value);
     const issues: string[] = [];
+    const positionMode = (identity.value.positionEvidence as ContractRecord).mode;
+    const expectedIntent = positionMode === "VALUE" ? "VALUE_PROPOSED" : "TOMBSTONE_PROPOSED";
+    const expectedOutcome = positionMode === "VALUE" ? "SELECT" : "REMOVE";
     if (proposal.pointerKind !== pointerKind) issues.push("proposal:pointer-kind-mismatch");
     if (proposal.pathInstanceDigest !== pathInstanceDigest)
       issues.push("proposal:path-instance-mismatch");
     if (proposal.positionDigest !== expectedPositionDigest)
       issues.push("proposal:position-digest-mismatch");
+    if (proposal.intent !== expectedIntent || proposal.outcome !== expectedOutcome)
+      issues.push("proposal:position-mode-mismatch");
+    if (proposal.mutationId !== expectedMutationId) issues.push("proposal:mutation-id-mismatch");
     if (proposal.successorValueDigest !== valueDigest)
       issues.push("proposal:value-digest-mismatch");
     if (
