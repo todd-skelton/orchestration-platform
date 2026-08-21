@@ -76,9 +76,14 @@ describe("common selected-object locator", () => {
       `installation/pointer-cas/${pathInstanceDigest}/objects/tips/${tipDigest}.json`,
     );
     expect(() => contracts.pointerStoragePaths.selectedValue(d("z"), valueDigest)).toThrow();
+    expect(() => contracts.pointerStoragePaths.selectedValue(pathInstanceDigest, "bad")).toThrow();
+    expect(() =>
+      contracts.pointerStoragePaths.selectedProposal("bad", proposalReceiptDigest),
+    ).toThrow();
     expect(() =>
       contracts.pointerStoragePaths.selectedProposal(pathInstanceDigest, "bad"),
     ).toThrow();
+    expect(() => contracts.pointerStoragePaths.selectedTip("bad", tipDigest)).toThrow();
     expect(() => contracts.pointerStoragePaths.selectedTip(pathInstanceDigest, d("Z"))).toThrow();
   });
 
@@ -189,6 +194,8 @@ describe("common selected-object locator", () => {
   test("refuses selected-graph substitutions and partial prior tuples", () => {
     for (const mutant of [
       { ...locatedInput, value: { ...value, installedBytesDigest: d("9") } },
+      { ...locatedInput, tip: { ...tip, pointerKind: "ACTIVATION_CLEANUP_GATE" } },
+      { ...locatedInput, tip: { ...tip, pathInstanceDigest: d("9") } },
       { ...locatedInput, tip: { ...tip, valueDigest: d("9") } },
       { ...locatedInput, tip: { ...tip, proposalReceiptDigest: d("9") } },
       { ...locatedInput, proposal: { ...proposal, successorValueDigest: d("9") } },
@@ -231,6 +238,19 @@ describe("common selected-object locator", () => {
       },
     );
     for (const input of [null, [], "selected", hostile, { ...locatedInput, extra: true }]) {
+      expect(() => contracts.validateLocatedSelectedPointerEvidence(input)).not.toThrow();
+      expect(contracts.validateLocatedSelectedPointerEvidence(input).ok).toBe(false);
+    }
+    for (const input of [
+      { ...locatedInput, expectedIdentity: hostile },
+      { ...locatedInput, proposal: hostile },
+      { ...locatedInput, tip: hostile },
+      { ...locatedInput, value: hostile },
+      {
+        ...locatedInput,
+        expectedIdentity: { ...expectedIdentity, positionEvidence: hostile },
+      },
+    ]) {
       expect(() => contracts.validateLocatedSelectedPointerEvidence(input)).not.toThrow();
       expect(contracts.validateLocatedSelectedPointerEvidence(input).ok).toBe(false);
     }
