@@ -671,9 +671,9 @@ Every branch has all and only these fifteen common members
 in ascending canonical JSON member order:
 
 ```text
+candidateDigest:sha256
 capabilityDigest:sha256
 capabilityReferenceDigest:sha256
-candidateDigest:sha256
 expiresAt:timestamp
 hostIdentityDigest:sha256
 installationId:uuid-v7
