@@ -952,6 +952,150 @@ bytes for all five structural cells, common `Dv` equality and `Dp` sensitivity,
 and the absence of `REMOVED`, `REVOKED -> REMOVED`, or a second legacy
 transition entry point.
 
+### Recovery-authorization native-receipt literal ledger
+
+This ledger fixes only the two immutable, non-secret native-operation receipts
+that precede selected `CONSUMED` or `REVOKED` authorization state. It does not
+define the downstream post-selection receipts, authorization archive,
+tombstone, selected-state composition, credential-broker IPC, native-provider
+implementation, or runtime mutation. A receipt is evidence that later
+composition must authenticate; possession of its bytes or digest is never a
+capability and never selects authorization state.
+
+The scalar names below use the global closed `sha256`, `uuid-v7`,
+`safe-decimal`, and `timestamp` grammars. Every record contains all and only
+the listed members in ascending canonical JSON member order. Identity digests
+are opaque engine vocabulary; operating-system, credential-store, service,
+endpoint, provider, and repository names are not members.
+
+`native-consume-receipt/v1` has exactly thirteen members:
+
+```text
+authorizationCoreDigest:sha256
+capabilityDigest:sha256
+capabilityReferenceDigest:sha256
+hostIdentityDigest:sha256
+installationId:uuid-v7
+nativeGeneration:safe-decimal
+operationId:uuid-v7
+projectId:uuid-v7
+recordedAt:timestamp
+schemaVersion:native-consume-receipt/v1
+stateRootDigest:sha256
+transactionId:uuid-v7
+userIdentityDigest:sha256
+```
+
+The record exists only after the native provider has successfully consumed the
+one-use authorization at exactly `nativeGeneration` and the reviewed broker has
+read back the resulting non-secret evidence. Attempted, denied, partial,
+unknown, or caller-asserted outcomes produce no valid receipt. A later composed
+validator must equal-bind every duplicated core identity and require the core
+`issuedAt <= recordedAt < expiresAt`; the structural parser proves only the
+closed census and scalar grammars.
+
+`native-removal-receipt/v1` has exactly sixteen members:
+
+```text
+authorizationCoreDigest:sha256
+capabilityDigest:sha256
+capabilityReferenceDigest:sha256
+hostIdentityDigest:sha256
+installationId:uuid-v7
+nativeConsumeReceiptDigest:nullable sha256
+operationId:uuid-v7
+priorNativeGeneration:safe-decimal
+projectId:uuid-v7
+recordedAt:timestamp
+removalDisposition:ABSENT|DISABLED
+schemaVersion:native-removal-receipt/v1
+stateRootDigest:sha256
+successorNativeGeneration:safe-decimal
+transactionId:uuid-v7
+userIdentityDigest:sha256
+```
+
+`successorNativeGeneration` is exactly `priorNativeGeneration + 1` under the
+canonical safe-integer rules. Null `nativeConsumeReceiptDigest` is the sole
+structural arm for removal from CREATED; non-null is the sole structural arm
+for removal after CONSUMED. This parser does not decide which arm is current.
+Later composition must bind null/non-null to the actual selected prior state,
+bind a non-null digest to the actual parsed native-consume receipt, require
+`priorNativeGeneration` equal the core/native-consume generation, and
+authenticate the provider-specific `ABSENT` or `DISABLED` read-back under the
+reviewed adapter. Neither disposition permits bare absence or a future
+generation to restore authority.
+
+Both receipt paths are constructed beneath the immutable transaction root:
+
+```text
+installation/recovery-authorizations/<transactionId>/native/<operationId>.json
+```
+
+For consume, `<operationId>` is exactly the prebound state
+`consumeOperationId`; for removal it is exactly the later REVOKED state
+`removalOperationId`. Consume and removal operation IDs for one transaction
+must be distinct. The shared directory is not an ambiguity: the expected
+schema discriminator, exact operation ID, canonical bytes, and domain-tagged
+digest all have to match. Alternate paths, caller paths, enumeration,
+latest-file selection, another schema at the same path, a moved transaction,
+or a duplicate operation ID refuse in later composition.
+
+The sole receipt identities are:
+
+```text
+Dnc = SHA256(frame("native-consume-receipt/v1", canonical consume receipt bytes))
+Dnr = SHA256(frame("native-removal-receipt/v1", canonical removal receipt bytes))
+```
+
+Each frame has exactly one canonical-record part after the literal domain.
+Untagged canonical digests, raw JSON text, cross-receipt domain reuse,
+field-wise framing, or common pointer `Dv` framing refuse. Generic
+`serializeContract` for either exact schema returns its domain-tagged digest
+and canonical bytes; there is no third native-receipt digest or generic
+success envelope.
+
+Both records are create-once immutable `FULL_REQUIRED` evidence. Retrying the
+same operation may only read back byte-identical canonical bytes at the same
+path; different bytes, another schema, or a second operation result is a
+conflict and refuses. Missing, truncated, noncanonical, or unreadable bytes are
+`UNKNOWN`, never evidence of absence or successful consume/removal. Whether a
+later reviewed archive may replace live receipt lookup is deferred to the
+authorization-archive ledger; this slice defines no deletion, compaction, or
+retention shortcut.
+
+The operation order remains acyclic and is not executed by this slice. Native
+consume writes and read-backs `Dnc` before a later state proposal may contain
+it; native removal writes and read-backs `Dnr` before a later REVOKED state may
+contain it. The downstream post-selection receipts then bind the actual
+selected state triples and these native receipts, so neither post-selection
+receipt can enter a native receipt preimage. Removal time must later satisfy
+actual prior-state `recordedAt <= native removal recordedAt <= REVOKED
+recordedAt`; consume time must satisfy actual CREATED `recordedAt <= native
+consume recordedAt <= CONSUMED recordedAt`. Equality is allowed for durable
+operations recorded at one canonical instant.
+
+This slice authorizes only total closed parsers, deterministic native receipt
+path construction, the two domain-separated digest functions, canonical
+serialization, and compatibility registration. It authorizes no native
+provider call, secret/reference materialization, post-selection receipt,
+archive, tombstone, selected proposal/receipt/tip composition, persistent
+lookup, broker service, capability, pointer proposal, CAS, command, filesystem
+mutation, or runtime recovery. Those surfaces remain fail closed until their
+own literal ledgers and independent removal rounds pass.
+
+Compatibility evidence must remove, add, rename, reorder, null, or cross-type
+every member; pin exact canonical bytes, path, and `Dnc`/`Dnr` goldens; attack
+zero/max/overflow and non-adjacent removal generations; cross consume/removal
+schemas, domains, paths, operation IDs, and nullable consume arms; and cover
+hostile reflective inputs without throwing. Deleting either domain tag,
+branch closure, safe-decimal bound, generation increment, path relation, or
+serializer route must make a committed mutant survive and therefore fail the
+suite. Core/state/receipt equality, time order, selected-history currentness,
+native-provider read-back, and duplicate-operation relations belong only to
+the later closed composition matrix and must not be claimed by structural
+tests.
+
 ### Cleanup-gate and recovery-fence literal ledger
 
 This ledger fixes only the two immutable roots and their bounded state-history
