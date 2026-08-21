@@ -1064,7 +1064,7 @@ The digest domains are closed and exact:
 | `Dr`                | `pointer-receipt/v1`           | pointer-kind text, path-instance digest raw32, mutation ID raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, position digest raw32, intent/outcome text, canonical `pointer-cas-proposal-receipt/v1` bytes |
 | `Dt`                | `pointer-tip/v1`               | pointer-kind text, path-instance digest raw32, `Dv` raw32, `Dr` raw32, canonical `pointer-current-tip/v1` bytes                                                                                                  |
 | `Dp`                | `pointer-instance/v1`          | kind, canonical path, installation/project/state, transaction, source                                                                                                                                            |
-| mutation ID         | `pointer-mutation-id/v1`       | pointer kind, canonical path, `Dp` raw32, transaction ID/null, source token, position digest raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, outcome/intent                                              |
+| mutation ID         | `pointer-mutation-id/v1`       | pointer kind, canonical path, `Dp` raw32, transaction ID/null, source token, position digest raw32, nullable prior `Dt/Dv/Dr`, successor `Dv` raw32, outcome text                                                |
 | `Dc`                | `pointer-conflict-receipt/v1`  | `Dp` raw32, mutation ID raw32, losing `Dr/Dv`, observed winning `Dt/Dv/Dr`, conflict kind, selected authority epoch triple, conflict time, canonical create-once conflict bytes                                  |
 | attempt-log genesis | `attempt-log/v1` + byte `0x00` | record ordinal `"0"`, canonical record bytes                                                                                                                                                                     |
 | attempt-log later   | `attempt-log/v1` + byte `0x01` | raw predecessor record digest, record ordinal, canonical record bytes                                                                                                                                            |
@@ -1096,7 +1096,12 @@ census is `v1` for every family.
 The pointer-instance digest binds kind, canonical pointer path, installation,
 project, state-root digest, transaction, and the closed source token. The
 deterministic mutation ID additionally binds position, prior triple, successor
-`Dv`, and proposed outcome. Storage is:
+`Dv`, and proposed outcome. Intent is not a second mutation-ID part: the
+trusted closed position mode derives it exactly (`VALUE` means
+`VALUE_PROPOSED`; `TOMBSTONE` means `TOMBSTONE_PROPOSED`), while outcome is the
+framed `SELECT|REMOVE` discriminator. Adding intent to the preimage would
+duplicate the trusted mode and silently change every existing mutation ID.
+Storage is:
 
 ```text
 installation/pointer-cas/<instance-digest>/values/<mutation-id>.json

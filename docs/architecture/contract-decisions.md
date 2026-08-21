@@ -127,11 +127,21 @@ and proposal, and requires tip pointer kind/path instance equal the expected
 kind/`Dp`. It also requires proposal `pointerKind` equal that trusted kind and
 proposal `positionDigest` equal
 `computePointerPositionDigest(expectedIdentity.pointerKind, expectedIdentity.positionEvidence)`.
+The trusted position mode also fixes the only admitted proposal pair: `VALUE`
+requires `VALUE_PROPOSED/SELECT`, and `TOMBSTONE` requires
+`TOMBSTONE_PROPOSED/REMOVE`. Crossed intent/outcome pairs refuse even if the
+proposal and tip are coherently rehashed.
 It recomputes `Dv` under the trusted kind from the supplied value, `Dr` from
 the supplied proposal, and `Dt` from the supplied tip; requires proposal
 successor `Dv`, proposal `Dp`, tip `Dv`, and tip `Dr` equal those recomputed
-values; and returns the exact recomputed `Dp/Dv/Dr/Dt`, the exact nullable prior
-`Dt/Dv/Dr` triple, and the detached parsed records.
+values. It also recomputes the proposal mutation ID from the trusted identity,
+trusted position, exact proposal prior tuple, recomputed successor `Dv`, and
+proposal outcome using the existing outcome-only `pointer-mutation-id/v1`
+formula, and requires exact equality to `proposal.mutationId`. Proposal intent
+is derived from trusted position mode and is deliberately not a redundant
+mutation-ID preimage part. The validator returns the exact recomputed
+`Dp/Dv/Dr/Dt`, the exact nullable prior `Dt/Dv/Dr` triple, and the detached
+parsed records.
 The family composition validator must still parse the value under the exact
 schema admitted by the pointer registry; generic location never treats an
 open value object as semantically valid authority.
@@ -183,7 +193,8 @@ current-tip/family-record reads under the stable release mutation path.
 Compatibility evidence must pin all three paths and every digest component;
 cross value/proposal/tip paths and `Dp/Dv/Dr/Dt`; mutate every expected-identity
 member and every selected record member independently and in coordinated
-rehashes; independently delete proposal-kind and proposal-position equalities;
+rehashes; independently delete proposal-kind, proposal-position, mutation-ID,
+and position-mode-to-intent/outcome equalities;
 return complete/null prior tuples and reject partial tuples, wrong-family,
 hostile, and orphan current nodes; and prove generic validation alone cannot
 admit an invalid family value. Structural multi-node tests may compose repeated
