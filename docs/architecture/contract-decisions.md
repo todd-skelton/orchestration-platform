@@ -577,10 +577,11 @@ The bootstrap transaction, anchor, global identity, destination/physical
 identity, owner/anchor provenance, and successor-review bindings already fixed
 for E0 remain unchanged. The active-release graph adds no E0-specific record,
 digest, receipt, capability, self epoch, cleanup/gate/fence record, or recovery
-authority. The cleanup-gate and recovery-fence root/head ledger is decided
-below. Recovery-authorization records, cleanup archives, and later promotion
-receipts remain separately unauthorized until their own literal ledgers pass
-removal review.
+authority. The recovery-authorization immutable core and cleanup-gate/recovery-
+fence root/head ledgers are decided below. Recovery-authorization state/native/
+post-selection/archive records, cleanup archives, and later promotion receipts
+remain separately unauthorized until their own literal ledgers pass removal
+review.
 
 ### Reviewed-bootstrap pre-E0 producer boundary
 
@@ -649,10 +650,143 @@ ISS-020/ISS-022/ISS-027. Candidate N0, candidate N+1, a receipt, or knowledge of
 `Dsc` alone cannot perform the CAS.
 
 This section decides only the producer topology and branch boundary. The exact
-cleanup-gate and recovery-fence root/head bytes are fixed by the next ledger.
-Recovery-authorization and cleanup-archive member ledgers and their composed
+recovery-authorization immutable core and cleanup-gate/recovery-fence root/head
+bytes are fixed by the next two ledgers. Recovery-authorization state/native/
+post-selection/archive records, cleanup-archive records, and their composed
 equality matrices remain unauthorized until their own removal rounds pass;
 implementation may not infer those bytes from this branch table.
+
+### Recovery-authorization immutable-core literal ledger
+
+This ledger fixes only the immutable `recovery-authorization-core/v1` evidence
+record, its canonical path, and its digest. It deliberately excludes lifecycle,
+gate selection, native consume/removal, post-selection observation, attachment,
+archive, tombstone, selected epoch, proposal, receipt, tip, and read-back facts.
+Those downstream facts cannot enter the core without creating a cycle or making
+future evidence part of the authority that precedes it.
+
+The scalar names below use the global closed `sha256`, `uuid-v7`,
+`safe-decimal`, `timestamp`, and canonical relative-path grammars. The record is
+a closed mode union. Every branch has all and only these fifteen common members
+in ascending canonical JSON member order:
+
+```text
+capabilityDigest:sha256
+capabilityReferenceDigest:sha256
+candidateDigest:sha256
+expiresAt:timestamp
+hostIdentityDigest:sha256
+installationId:uuid-v7
+issuedAt:timestamp
+mode:BOOTSTRAP|SUCCESSOR
+nativeGeneration:safe-decimal
+producerDigest:sha256
+projectId:uuid-v7
+schemaVersion:recovery-authorization-core/v1
+stateRootDigest:sha256
+transactionId:uuid-v7
+userIdentityDigest:sha256
+```
+
+The `BOOTSTRAP` branch additionally has exactly these three members, interleaved
+with the common members in ascending canonical JSON member order:
+
+```text
+destinationDigest:sha256
+grantDigest:sha256
+installerDigest:sha256
+```
+
+The `SUCCESSOR` branch instead additionally has exactly these thirteen members,
+again interleaved canonically:
+
+```text
+admissionDigest:sha256
+cycleId:uuid-v7
+expectedActiveGeneration:safe-decimal
+predecessorBrokerGeneration:safe-decimal
+predecessorExecutableDigest:sha256
+predecessorOperationManifestDigest:sha256
+predecessorReleaseDigest:sha256
+recoveryFencePath:relative-path
+recoveryFenceRootDigest:sha256
+successorBrokerGeneration:safe-decimal
+successorExecutableDigest:sha256
+successorOperationManifestDigest:sha256
+successorReleaseDigest:sha256
+```
+
+Mode members from the other branch are absent, not null. Inserting any
+BOOTSTRAP-only member into a SUCCESSOR core, any SUCCESSOR-only member into a
+BOOTSTRAP core, `candidateOperationManifestDigest`, a candidate verdict, a raw
+capability/reference, a selected authority tuple, or any unknown member is a
+closed-record failure. The engine treats every identity digest as opaque;
+repository, code-host, operating-system credential-store, and provider names
+are adapter vocabulary and are not core members.
+
+`issuedAt` is strictly less than `expiresAt`. Admission must occur before
+expiry; after exact native consumption and selected `CONSUMED` state, the later
+authorization is non-expiring transaction evidence rather than a bearer
+secret. `nativeGeneration` and all SUCCESSOR generations use canonical safe-
+decimal strings. In SUCCESSOR mode, `successorBrokerGeneration` is exactly
+`predecessorBrokerGeneration + 1`; grammar, bounds, and increment are checked
+before numeric conversion. Equality of `expectedActiveGeneration` to an actual
+broker read-back belongs to the later composed validator, not this structural
+core parser.
+
+The canonical core path is exactly:
+
+```text
+installation/recovery-authorizations/<transactionId>/core.json
+```
+
+where `<transactionId>` is the exact canonical UUIDv7 member. The path is
+constructed evidence, not a filesystem lookup protocol or mutation authority.
+Symlinks, alternate roots, caller paths, enumeration, and latest-file
+conventions grant nothing.
+
+The sole core digest is:
+
+```text
+Dac = SHA256(frame("recovery-authorization-core/v1", canonical core bytes))
+```
+
+The frame has exactly one canonical-record part after the literal domain. Raw
+JSON text, untagged canonical digest, field-wise reframing, cross-domain reuse,
+or a second core identity refuses. In BOOTSTRAP mode, later composition must
+recompute `producerDigest = Dsc` from the reviewed `BOOTSTRAP_INSTALL` operation
+and bind grant, installer, candidate, destination, host/user, state-root, and
+transaction identities to their authenticated sources. In SUCCESSOR mode,
+later composition must recompute the stable-promotion `Dsc`, bind the actual
+selected predecessor/candidate release and broker/admission graphs, require the
+canonical recovery-fence path, and bind `recoveryFenceRootDigest = Dfr`.
+Consistently copied core fields or a supplied expected digest are never an
+equality source.
+
+The digest order is acyclic. A SUCCESSOR recovery-fence root is computed before
+`Dac`; `Dac` and the selected CREATED authorization triple are then upstream of
+the cleanup-gate root `Dgr`. Neither `Dgr` nor a selected authorization value is
+a core member. BOOTSTRAP has no recovery-fence member. No branch lets a
+candidate, receipt, host assertion, or the core itself certify its producer.
+
+This slice authorizes only a total closed core parser, the deterministic core
+path constructor, and `Dac` computation. It authorizes no authorization-state,
+native receipt, post-selection receipt, archive, tombstone, attachment,
+composed equality validator, persistence lookup, credential-broker operation,
+live capability, pointer proposal, CAS, runtime mutation, or candidate self-
+certification. Those surfaces remain fail-closed until their later literal
+ledgers and independent removal rounds pass.
+
+Compatibility evidence for this core slice must remove, add, rename, reorder,
+cross-type, or cross-mode every member; attack both exact branch censuses,
+strict issue/expiry order, zero/max/overflow generation strings, successor
+generation adjacency, canonical path construction, hostile reflective inputs,
+and the forbidden `candidateOperationManifestDigest`. Exact-byte goldens must
+pin one BOOTSTRAP core and one SUCCESSOR core plus both `Dac` values. Deleting
+the domain tag, branch closure, timing check, safe-decimal bound, generation
+increment, or exact path relation must make a committed mutant pass and
+therefore fail the suite. Upstream grant/review/release/broker/fence equality
+mutants belong only to the later closed composition matrix.
 
 ### Cleanup-gate and recovery-fence literal ledger
 
@@ -808,9 +942,10 @@ post-E0 completion, successor activation, and each abort publication branch.
 The later cleanup archive remains downstream of final gate/fence selection, so
 a head never contains or hashes its downstream archive.
 
-Until the common-CAS locator, cleanup-archive ledger, recovery-authorization
-ledger, and composed proof matrix each pass independent removal review, this
-slice authorizes only the four structural parsers, two root digests, exact
+Until the common-CAS locator, cleanup-archive ledger, remaining recovery-
+authorization state/receipt/archive ledger, and composed proof matrix each pass
+independent removal review, this slice authorizes only the four structural
+parsers, two root digests, exact
 VALUE position parsing/digests, common `Dv` computation for supplied heads, and
 bounded relative history walking over supplied records. It authorizes no
 composed root/gate/fence validator, persistence lookup, tombstone, archive,
