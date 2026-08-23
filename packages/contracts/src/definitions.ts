@@ -23,8 +23,6 @@ export type CleanupHeadWriteDisposition = "APPEND" | "NO_APPEND" | "REFUSED";
 export type DestinationOwnerLifecycle = "ACTIVE" | "CONSUMED" | "RETIRED";
 export type DestinationOwnerTransition =
   "ACTIVATE_GENESIS" | "CONSUME" | "RETIRE_UNUSED" | "RETIRE_CONSUMED" | "ACTIVATE_SUCCESSOR";
-export type RecoveryAttemptReservationLifecycle =
-  "RESERVED" | "CONSUMED" | "TERMINAL" | "TOMBSTONE";
 export type RecoveryAuthorizationLifecycle = "CREATED" | "CONSUMED" | "REVOKED";
 
 const cleanupGateRootFields = Object.freeze([

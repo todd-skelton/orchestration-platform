@@ -1,5 +1,20 @@
 import { describe, expect, test } from "vitest";
 import * as contracts from "../../packages/contracts/src/index.js";
+import type { RecoveryAttemptReservationLifecycle } from "../../packages/contracts/src/index.js";
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
+    ? true
+    : false;
+const exactLifecycleType: Equal<
+  RecoveryAttemptReservationLifecycle,
+  "RESERVED" | "CONSUMED" | "TERMINAL"
+> = true;
+if (false) {
+  // @ts-expect-error the common tombstone schema is not a reservation value lifecycle
+  const forbiddenLifecycle: RecoveryAttemptReservationLifecycle = "TOMBSTONE";
+  void forbiddenLifecycle;
+}
 
 const d = (value: string): string => value.repeat(64);
 const attemptId = "018f0f4d-7b2d-7a11-8a2b-123456789abc";
@@ -257,6 +272,7 @@ describe("recovery attempt reservation values", () => {
   });
 
   test("keeps removed and downstream surfaces absent", () => {
+    expect(exactLifecycleType).toBe(true);
     expect(contracts.recoveryAttemptReservationLifecycles).toEqual([
       "RESERVED",
       "CONSUMED",

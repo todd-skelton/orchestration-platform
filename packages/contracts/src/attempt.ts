@@ -32,6 +32,8 @@ export const recoveryAttemptReservationLifecycles = Object.freeze([
   "CONSUMED",
   "TERMINAL",
 ] as const);
+export type RecoveryAttemptReservationLifecycle =
+  (typeof recoveryAttemptReservationLifecycles)[number];
 
 function invalid(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
