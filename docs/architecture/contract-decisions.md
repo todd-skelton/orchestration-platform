@@ -330,6 +330,136 @@ relation, position closure, canonical-path identity dispatch, or common
 position dispatch must make a committed mutant survive and therefore fail the
 suite.
 
+### Recovery-attempt reservation value ledger
+
+This ledger fixes only the selected immutable values and pure lifecycle for
+the reservation pointer whose identity is fixed above. Descriptor bytes,
+launch/attempt-log records, authorization attachment, terminal archive and
+tombstone composition, process creation/adoption, persistence, and mutation
+authority remain separately unauthorized.
+
+`recovery-attempt-reservation/v1` is a closed three-branch union. `RESERVED`
+has exactly these eight members in ascending canonical JSON member order:
+
+```text
+activeReleaseTipDigest:sha256
+attemptId:uuid-v7
+cleanupGateTipDigest:sha256
+lifecycle:RESERVED
+predecessorAttemptLogTipDigest:nullable sha256
+recordedAt:timestamp
+recoveryFenceTipDigest:nullable sha256
+schemaVersion:recovery-attempt-reservation/v1
+```
+
+`CONSUMED` and `TERMINAL` each have exactly the same eight members plus this
+ninth member after `schemaVersion`:
+
+```text
+selectedAttemptLogTipDigest:sha256
+```
+
+Branch-only members are absent, never null. There is no reservation-schema
+`TOMBSTONE` branch. After `TERMINAL`, later reviewed archive composition may
+select the existing common `pointer-tombstone-value/v1`; bare absence or a
+fourth reservation lifecycle never represents terminal state.
+
+The value deliberately carries only selected `Dt` snapshot identities for
+active release, cleanup gate, optional recovery fence, predecessor attempt
+log, and selected current attempt log. For each family, independently trusted
+pointer identity constructs `Dp`, and the authenticated common selected-object
+locator reads the exact `Dt` object and derives its committed `Dv/Dr`. Copying
+those triples into this value would add no locator or replay discriminator.
+The later family composition must still parse each located value under its
+exact family schema, walk required history, and prove currentness; a SHA-shaped
+tip member alone grants nothing.
+
+`attemptId` is the prebound random UUIDv7 selected by the reservation CAS.
+UUID time provides uniqueness only and never orders attempts. The exact
+reservation predecessor key and path do not contain the attempt ID; competing
+attempt IDs for one predecessor therefore race one pointer selection.
+
+The value has no second launch-definition, argv, executable, shim,
+declared-user, or process-tree digest. The installed shim/native definition is
+immutable after installation, already bound to installation/project/state/user
+authority and read-back, and successors never rewrite it. The selected active
+release plus trusted pointer identity therefore fixes the reviewed launch
+implementation; copying another digest would add no mutable-input or replay
+discriminator. The later LIVE descriptor binds the actual process-tree/start
+observation and must still refuse moved installed definition bytes. No raw
+argv, path, user, executable, or process ID enters this engine record.
+
+`predecessorAttemptLogTipDigest` is null only for the structurally possible
+first-attempt genesis and non-null for the structurally possible later-attempt
+arm. The parser does not decide whether a non-null tip is selected or terminal.
+Later composition derives the attempt-log `Dp` from the trusted transaction and
+source, locates the tip, derives its `Dv/Dr`, requires a terminal value and
+complete history, and recomputes the reservation predecessor key/path.
+
+`recoveryFenceTipDigest` is null only for the structurally possible pre-fence
+source and non-null only for the structurally possible fence-backed source.
+Because source is already in the independently trusted pointer identity, it is
+not copied into the value. Later composition equal-binds null to
+`cleanup-gate-pre-fence` and non-null to `recovery-fence`. Transaction,
+installation, project, and state-root identities are likewise owned by `Dp`
+and are not copied into the value.
+
+The only pure value transitions are:
+
+```text
+null -> RESERVED
+RESERVED -> CONSUMED
+CONSUMED -> TERMINAL
+```
+
+Every non-genesis edge preserves exact `activeReleaseTipDigest`, `attemptId`,
+`cleanupGateTipDigest`, `predecessorAttemptLogTipDigest`, and
+`recoveryFenceTipDigest`, and requires
+prior `recordedAt <= next recordedAt`. `RESERVED -> CONSUMED` introduces the
+selected IN_PROGRESS attempt-log `Dt`; `CONSUMED -> TERMINAL` replaces it with
+the selected TERMINAL attempt-log `Dt`. Those lifecycle meanings are later
+composition obligations, not claims of the pure transition validator.
+Self-loops, skips, reverse edges, a second RESERVED, mutation of any preserved
+input, or another lifecycle refuse.
+
+The only permitted dependency order is acyclic: selected RESERVED reservation
+→ immutable LIVE descriptor → selected IN_PROGRESS attempt-log tip → selected
+CONSUMED reservation → selected TERMINAL attempt-log tip → selected TERMINAL
+reservation → later archive/common tombstone. The future IN_PROGRESS record may
+bind only the upstream RESERVED selection; the future TERMINAL record may bind
+only upstream descriptor/IN_PROGRESS/CONSUMED evidence. No attempt-log record
+may contain the reservation value that names that same log tip.
+
+The record has no standalone digest. Detached
+`serializeContract("recovery-attempt-reservation/v1", value)` fails closed with
+exactly `serialization:pointer-context-required` and returns neither bytes nor
+an untagged digest. After parsing, canonical value bytes gain identity only
+through common `Dv = pointer-value/v1("RECOVERY_ATTEMPT_RESERVATION", Dp,
+canonical value bytes)` using independently authenticated `Dp`. No
+reservation-specific digest helper or alternate schema exists.
+
+This slice authorizes only a total closed three-branch parser, the pure
+three-edge transition validator, compatibility registration, exact generic
+serialization refusal, canonical detached bytes, and common `Dv` evidence. It
+authorizes no descriptor/launch/log/archive/tombstone schema, launch-definition
+producer, selected-family composition, history/currentness claim, filesystem
+IO, proposal/CAS, UUID allocation, capability, process operation, broker call,
+command, package, or runtime behavior.
+
+Compatibility evidence must remove, add, rename, null, reorder, cross-type, and
+cross-branch every member; pin canonical detached bytes for all three values;
+attack both nullable structural cells; cover every legal and illegal transition
+including equal timestamps and each preserved-field mutation; prove exact
+generic serializer refusal, no untagged or standalone digest, common `Dv`
+equality and `Dp` sensitivity, hostile reflective totality, and absence of
+`descriptorInputsDigest`, `launchDefinitionDigest`, copied selected triples,
+raw launch vocabulary, `READY_ONLY`, a terminal summary, and a
+reservation-schema TOMBSTONE. Deleting
+any closure, branch census, scalar/nullability check, transition edge,
+preserved-field equality, inclusive time comparison, serializer refusal, or
+public-surface exclusion must make a committed mutant survive and therefore
+fail the suite.
+
 ## Configuration and state roots
 
 - Project configuration is `.orchestration/project.json`.

@@ -1795,10 +1795,16 @@ Attempt order is cryptographic, not numeric. The supervisor requests the
 `RECOVERY_ATTEMPT_RESERVATION` pointer keyed by transaction/source and the
 predecessor terminal attempt-log triple (or tagged genesis). One competing
 proposal selects a random UUIDv7 `attemptId`; UUID time is never ordering
-authority. Reservation lifecycle is RESERVED→CONSUMED→TERMINAL→TOMBSTONE.
+authority. Reservation values follow RESERVED→CONSUMED→TERMINAL; terminal
+removal is the common selected pointer tombstone, not a fourth reservation
+schema branch.
 
 The selected reservation is durable before process creation and binds the
-immutable descriptor inputs. The attempt writes states under:
+immutable descriptor inputs through selected active-release/cleanup-gate/
+optional-fence tip identities plus its prebound attempt ID. Common
+selected-object location derives each selected `Dv/Dr`; the reservation does
+not copy proof triples or the immutable installed launch definition. The
+attempt writes states under:
 
 ```text
 installation/activation-recovery-launches/<transaction>/<source>/attempts/<attempt-id>/<ordinal>-<lifecycle>.json
