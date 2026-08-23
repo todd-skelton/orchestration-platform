@@ -460,6 +460,90 @@ preserved-field equality, inclusive time comparison, serializer refusal, or
 public-surface exclusion must make a committed mutant survive and therefore
 fail the suite.
 
+### Recovery-attempt LIVE descriptor ledger
+
+This ledger fixes only the immutable post-start descriptor immediately after a
+selected RESERVED reservation. It does not define the process-start
+observation bytes, launch-pointer value, attempt-log records, authorization
+attachment, terminal facts, persistence, process adoption, or mutation
+authority.
+
+`recovery-attempt-descriptor/v1` is one closed LIVE-only record with exactly
+these eight members in ascending canonical JSON member order:
+
+```text
+attemptId:uuid-v7
+lifecycle:LIVE
+processStartObservationDigest:sha256
+reservationTipDigest:sha256
+schemaVersion:recovery-attempt-descriptor/v1
+sourceToken:cleanup-gate-pre-fence|recovery-fence
+startedAt:timestamp
+transactionId:uuid-v7
+```
+
+There is no READY, READY_ONLY, TERMINAL, UNKNOWN, or TOMBSTONE descriptor
+branch. The selected reservation is the sole durable pre-launch record. A
+descriptor exists only after a process-start observation has been produced and
+is immutable thereafter.
+
+Its only canonical path is:
+
+```text
+installation/activation-recovery-launches/<transactionId>/<sourceToken>/attempts/<attemptId>/descriptor.json
+```
+
+The path constructor accepts only canonical UUIDv7 transaction/attempt IDs and
+the two closed recovery source tokens. The record's transaction, source, and
+attempt must equal the path inputs; a descriptor cannot move between attempts,
+sources, or transactions.
+
+`processStartObservationDigest` is the opaque identity of the exact downstream
+process-substrate observation. Later ISS-005/ISS-030 composition must parse that
+observation under its independently reviewed contract and prove exact native
+argument bytes, installed definition read-back, process-tree identity, and
+start event before treating the descriptor as LIVE. A SHA-shaped member alone
+grants none of those facts. Raw argv, executable, shim, path, declared user,
+process ID, process-tree members, provider/adapter vocabulary, or installed
+definition bytes do not enter this engine record.
+
+`reservationTipDigest` names the selected RESERVED common `Dt`. Later family
+composition locates and validates that exact selected graph, parses the
+reservation value, requires lifecycle RESERVED, and equal-binds its attempt ID,
+transaction/source pointer identity, active release, cleanup gate, optional
+fence, and predecessor lineage. The descriptor copies no reservation `Dp/Dv/Dr`
+siblings, authority triple, release/gate/fence tips, predecessor, launch-
+definition digest, or descriptor-input digest.
+
+The descriptor identity is the sole domain-separated digest:
+
+```text
+Ddescriptor = recovery-attempt-descriptor/v1(canonical descriptor bytes)
+```
+
+implemented as one canonical framed part under domain
+`recovery-attempt-descriptor/v1`. Detached generic serialization returns the
+canonical bytes and `Ddescriptor`; there is no untagged digest or alternate
+schema. `startedAt` must be at or after the selected reservation's `recordedAt`
+only in later composed validation because detached descriptor parsing does not
+possess reservation bytes.
+
+This slice authorizes only a total closed parser, canonical path constructor,
+domain-separated digest/serialization, compatibility registration, canonical
+byte goldens, and structural exclusions. It authorizes no process observation
+schema or producer, launch pointer, attempt log, attachment, selected-family
+composition/currentness claim, filesystem IO, proposal/CAS, capability,
+process operation/adoption, broker call, command, package, or runtime behavior.
+
+Compatibility evidence must remove, add, rename, null, reorder, and cross-type
+every member; attack every scalar and lifecycle/source enum; pin canonical
+bytes, path, and digest goldens plus transaction/source/attempt path movement;
+prove hostile reflective totality; and prove the public absence of READY_ONLY,
+descriptorInputsDigest, launchDefinitionDigest, raw launch/process vocabulary,
+attachment/log/archive schemas, and runtime authority. Deleting any closure,
+scalar/enum check, path binding, digest domain, or public-surface exclusion must
+make a committed mutant survive and therefore fail the suite.
+
 ## Configuration and state roots
 
 - Project configuration is `.orchestration/project.json`.

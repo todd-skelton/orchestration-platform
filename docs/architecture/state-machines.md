@@ -309,13 +309,12 @@ either path.
 
 ### Attempt reservation
 
-| State       | Permitted authority                | Required evidence                                                                                                                 | Next state          |
-| ----------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `RESERVED`  | selected old-epoch proposal winner | transaction/source and predecessor terminal attempt-log triple or tagged genesis select one prebound UUIDv7 and descriptor inputs | `CONSUMED`          |
-| `CONSUMED`  | exact launch transaction           | attempt-log `IN_PROGRESS` record binds reservation `Dt/Dv/Dr`                                                                     | `TERMINAL`          |
-| `TERMINAL`  | exact terminal reducer             | selected `TERMINAL` attempt-log record                                                                                            | `TOMBSTONE`         |
-| `TOMBSTONE` | readers/later transaction          | selected archive/tombstone proof                                                                                                  | no transition       |
-| `UNKNOWN`   | none                               | collision, fork, malformed or wrong predecessor                                                                                   | refuse launch/start |
+| State      | Permitted authority                | Required evidence                                                                                                                 | Next state               |
+| ---------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `RESERVED` | selected old-epoch proposal winner | transaction/source and predecessor terminal attempt-log triple or tagged genesis select one prebound UUIDv7 and descriptor inputs | `CONSUMED`               |
+| `CONSUMED` | exact launch transaction           | attempt-log `IN_PROGRESS` record binds reservation `Dt/Dv/Dr`                                                                     | `TERMINAL`               |
+| `TERMINAL` | exact terminal reducer             | selected `TERMINAL` attempt-log record                                                                                            | archive/common tombstone |
+| `UNKNOWN`  | none                               | collision, fork, malformed or wrong predecessor                                                                                   | refuse launch/start      |
 
 The same predecessor and bytes reuse the selected reservation. A competing
 UUID proposal is classified lost. UUIDv7 supplies uniqueness only.
