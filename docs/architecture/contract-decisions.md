@@ -216,6 +216,95 @@ component, current-node identity/position/selected-graph equality, or prior-
 tuple completeness check must make an ISS-002 committed mutant survive and
 therefore fail the suite.
 
+### Recovery-attempt reservation identity ledger
+
+This ledger fixes only the constructible competition-bucket identity that must
+exist before a recovery attempt can be reserved. It deliberately does not fix
+`recovery-attempt-reservation/v1` value bytes, descriptor inputs, lifecycle
+composition, attempt-log records, an archive, or a tombstone. Those downstream
+records remain unauthorized until their own literal ledgers pass removal
+review.
+
+The pure predecessor-key function has exactly one closed non-persisted input
+with these five members in ascending canonical JSON member order:
+
+```text
+predecessorReceiptDigest:nullable sha256
+predecessorTipDigest:nullable sha256
+predecessorValueDigest:nullable sha256
+sourceToken:cleanup-gate-pre-fence|recovery-fence
+transactionId:uuid-v7
+```
+
+The predecessor triple is exactly all null for tagged genesis or all non-null
+for one selected predecessor attempt-log node. Partial triples refuse. This
+structural function does not decide that a non-null triple is terminal,
+selected, current, or in the same complete attempt-log history; the later
+attempt composition owns those equalities.
+
+The sole predecessor key is:
+
+```text
+Kreservation = SHA256(frame(
+  "recovery-attempt-reservation-predecessor/v1",
+  transactionId text,
+  sourceToken text,
+  0x00 genesis | 0x01 selected-predecessor,
+  when selected: predecessorTipDigest raw32,
+                 predecessorValueDigest raw32,
+                 predecessorReceiptDigest raw32))
+```
+
+The branch tag is one fixed raw byte, not enum text or caller-selected numeric
+data. Transaction and source remain explicit parts even though the constructed
+path also contains them: the key is a reusable opaque path component and must
+change under a moved transaction or source without relying on its parent
+directory. UUID time and digest lexical order grant no attempt ordering.
+
+The canonical reservation pointer path is exactly:
+
+```text
+installation/activation-recovery-launches/<transactionId>/<sourceToken>/reservations/<Kreservation>.json
+```
+
+The path constructor consumes the same parsed key input and never accepts a
+caller-supplied key beside it. Alternate source spellings, raw predecessor
+digests in the path, directory enumeration, latest-file selection, or a random
+UUID path component grant nothing. Competing attempt UUIDs for the same
+predecessor deliberately share this path and compete through the common CAS;
+the future selected reservation value and common `Dv` distinguish them.
+
+Reservation VALUE position evidence is exactly the closed record:
+
+```json
+{ "mode": "VALUE", "parts": {} }
+```
+
+It hashes only under the already-registered
+`attempt-reservation-position/v1` domain. `attemptId` and `Kreservation` are
+not duplicated in position: the future value `Dv` binds the attempt and the
+pointer `Dp` already binds the constructed path containing the key. Missing or
+extra outer/nested members, nonempty parts, TOMBSTONE mode, cross-family
+evidence, or generic common-position bypass refuses. Reservation tombstone
+position remains deferred to the later reservation archive ledger.
+
+This slice authorizes only a total predecessor-key function, its exact
+constructed reservation path, the closed empty-parts VALUE-position parser,
+and its specialized/common position-digest route. It adds no schema or record
+identity and authorizes no reservation value, UUID allocation, descriptor,
+launch, attempt log, archive/tombstone, selected-history/currentness proof,
+filesystem IO, proposal/CAS, capability, process start, broker call, command,
+or runtime behavior.
+
+Compatibility evidence must pin null and selected predecessor-key goldens;
+cross every transaction/source/branch/triple input; refuse partial triples and
+invalid scalar forms; prove the exact path changes with the recomputed key;
+and cross empty/nonempty parts, VALUE/TOMBSTONE, nested extras, and another
+family through both specialized and common position APIs. Hostile reflective
+inputs are total. Deleting any key frame part, branch tag, path relation,
+position closure, or common dispatch must make a committed mutant survive and
+therefore fail the suite.
+
 ## Configuration and state roots
 
 - Project configuration is `.orchestration/project.json`.
