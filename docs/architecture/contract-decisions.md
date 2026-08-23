@@ -475,10 +475,10 @@ these eight members in ascending canonical JSON member order:
 attemptId:uuid-v7
 lifecycle:LIVE
 processStartObservationDigest:sha256
+reservationPredecessorKey:sha256
 reservationTipDigest:sha256
 schemaVersion:recovery-attempt-descriptor/v1
 sourceToken:cleanup-gate-pre-fence|recovery-fence
-startedAt:timestamp
 transactionId:uuid-v7
 ```
 
@@ -507,13 +507,18 @@ grants none of those facts. Raw argv, executable, shim, path, declared user,
 process ID, process-tree members, provider/adapter vocabulary, or installed
 definition bytes do not enter this engine record.
 
-`reservationTipDigest` names the selected RESERVED common `Dt`. Later family
-composition locates and validates that exact selected graph, parses the
+`reservationPredecessorKey` makes the selected reservation constructibly
+locatable after a crash without forbidden directory enumeration. Transaction,
+source, and key reconstruct its canonical path and `Dp`; `reservationTipDigest`
+then names the selected RESERVED common `Dt`. Later family composition locates
+and validates that exact selected graph, parses the
 reservation value, requires lifecycle RESERVED, and equal-binds its attempt ID,
 transaction/source pointer identity, active release, cleanup gate, optional
-fence, and predecessor lineage. The descriptor copies no reservation `Dp/Dv/Dr`
-siblings, authority triple, release/gate/fence tips, predecessor, launch-
-definition digest, or descriptor-input digest.
+fence, and predecessor lineage. It also recomputes the key from the actual
+tagged-genesis or selected terminal predecessor and requires exact equality.
+The descriptor copies no reservation `Dp/Dv/Dr` siblings, authority triple,
+release/gate/fence tips, predecessor triple, launch-definition digest, or
+descriptor-input digest.
 
 The descriptor identity is the sole domain-separated digest:
 
@@ -524,9 +529,10 @@ Ddescriptor = recovery-attempt-descriptor/v1(canonical descriptor bytes)
 implemented as one canonical framed part under domain
 `recovery-attempt-descriptor/v1`. Detached generic serialization returns the
 canonical bytes and `Ddescriptor`; there is no untagged digest or alternate
-schema. `startedAt` must be at or after the selected reservation's `recordedAt`
-only in later composed validation because detached descriptor parsing does not
-possess reservation bytes.
+schema. Start time exists only in the authenticated process-start observation;
+later composition requires that time to be at or after the selected
+reservation's `recordedAt`. The descriptor does not copy an unauthenticated
+second timestamp.
 
 This slice authorizes only a total closed parser, canonical path constructor,
 domain-separated digest/serialization, compatibility registration, canonical
@@ -538,6 +544,8 @@ process operation/adoption, broker call, command, package, or runtime behavior.
 Compatibility evidence must remove, add, rename, null, reorder, and cross-type
 every member; attack every scalar and lifecycle/source enum; pin canonical
 bytes, path, and digest goldens plus transaction/source/attempt path movement;
+attack the reservation predecessor key and prove it reconstructs the selected
+reservation path without enumeration;
 prove hostile reflective totality; and prove the public absence of READY_ONLY,
 descriptorInputsDigest, launchDefinitionDigest, raw launch/process vocabulary,
 attachment/log/archive schemas, and runtime authority. Deleting any closure,
