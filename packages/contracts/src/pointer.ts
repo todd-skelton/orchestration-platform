@@ -332,8 +332,28 @@ export function computeRecoveryAttemptReservationPredecessorKey(input: unknown):
 
 export function recoveryAttemptReservationPath(input: unknown): string {
   const record = requireRecoveryAttemptReservationPredecessor(input);
+  return recoveryAttemptReservationPathFromPredecessorKey({
+    reservationPredecessorKey: computeRecoveryAttemptReservationPredecessorKey(record),
+    sourceToken: record.sourceToken,
+    transactionId: record.transactionId,
+  });
+}
+
+export function recoveryAttemptReservationPathFromPredecessorKey(input: unknown): string {
+  const parsed = snapshotClosedRecord(input, [
+    "reservationPredecessorKey",
+    "sourceToken",
+    "transactionId",
+  ]);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  if (!isSha256(record.reservationPredecessorKey))
+    throw new TypeError("reservationPredecessorKey:invalid");
+  if (!isUuidV7(record.transactionId)) throw new TypeError("transactionId:invalid");
+  if (record.sourceToken !== "cleanup-gate-pre-fence" && record.sourceToken !== "recovery-fence")
+    throw new TypeError("sourceToken:invalid");
   return pointerPath("RECOVERY_ATTEMPT_RESERVATION", {
-    predecessorKey: computeRecoveryAttemptReservationPredecessorKey(record),
+    predecessorKey: String(record.reservationPredecessorKey),
     sourceToken: String(record.sourceToken),
     transactionId: String(record.transactionId),
   });

@@ -49,6 +49,8 @@ import {
   recoveryAuthorizationStateSchemaVersions,
 } from "./recovery.js";
 import {
+  recoveryAttemptDescriptorSchemaFields,
+  recoveryAttemptDescriptorSchemaVersions,
   recoveryAttemptReservationSchemaFields,
   recoveryAttemptReservationSchemaVersions,
 } from "./attempt.js";
@@ -482,6 +484,11 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: recoveryAttemptReservationSchemaFields.consumed,
       closedValues: Object.freeze(["CONSUMED"]),
     }),
+    "recovery-attempt-descriptor/v1": Object.freeze({
+      schemaVersion: "recovery-attempt-descriptor/v1",
+      fields: recoveryAttemptDescriptorSchemaFields,
+      closedValues: Object.freeze(["LIVE"]),
+    }),
     "recovery-attempt-reservation/v1#RESERVED": Object.freeze({
       schemaVersion: "recovery-attempt-reservation/v1",
       fields: recoveryAttemptReservationSchemaFields.reserved,
@@ -608,6 +615,7 @@ export const schemaVersions = Object.freeze(
     ...recoveryAuthorizationPostSelectionReceiptSchemaVersions,
     ...recoveryAuthorizationStateSchemaVersions,
     ...recoveryAttemptReservationSchemaVersions,
+    ...recoveryAttemptDescriptorSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";

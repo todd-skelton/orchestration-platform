@@ -282,7 +282,6 @@ describe("recovery attempt reservation values", () => {
       "computeRecoveryAttemptReservationDigest",
       "descriptorInputsDigest",
       "launchDefinitionDigest",
-      "recoveryAttemptDescriptorSchemaFields",
       "recoveryAttemptLogSchemaFields",
       "recoveryAttemptReservationTombstone",
     ])
