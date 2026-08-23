@@ -274,6 +274,25 @@ UUID path component grant nothing. Competing attempt UUIDs for the same
 predecessor deliberately share this path and compete through the common CAS;
 the future selected reservation value and common `Dv` distinguish them.
 
+`RECOVERY_ATTEMPT_RESERVATION` is the one current pointer family whose
+non-identity path component is intentionally absent from position. The common
+pointer identity dispatcher therefore uses the existing canonical-path-derived
+`Dp` route for this family: it parses the registered path template, requires
+the path transaction and source equal the closed identity members, requires the
+predecessor-key segment be lowercase SHA-256, reconstructs the exact path, and
+then applies the unchanged `pointer-instance/v1` formula. The public common
+`computePointerInstanceDigest`, `computeMutationId`, and selected-object locator
+all use that same family dispatch; callers do not choose between two `Dp`
+formulas. No digest formula or public identity census changes.
+
+Canonical-path-derived `Dp` proves only structural path identity. It does not
+prove that the key names the authorized predecessor. The later reservation
+family composition must take the actual tagged-genesis or selected terminal
+attempt-log predecessor evidence, recompute `Kreservation` and the whole path,
+and require equality to the independently trusted identity before generic
+locator success is used. A different well-formed key remains another
+structurally valid identity, not evidence of a valid reservation lineage.
+
 Reservation VALUE position evidence is exactly the closed record:
 
 ```json
@@ -290,7 +309,8 @@ position remains deferred to the later reservation archive ledger.
 
 This slice authorizes only a total predecessor-key function, its exact
 constructed reservation path, the closed empty-parts VALUE-position parser,
-and its specialized/common position-digest route. It adds no schema or record
+its specialized/common position-digest route, and the bounded common identity
+dispatch above. It adds no schema or record
 identity and authorizes no reservation value, UUID allocation, descriptor,
 launch, attempt log, archive/tombstone, selected-history/currentness proof,
 filesystem IO, proposal/CAS, capability, process start, broker call, command,
@@ -301,9 +321,14 @@ cross every transaction/source/branch/triple input; refuse partial triples and
 invalid scalar forms; prove the exact path changes with the recomputed key;
 and cross empty/nonempty parts, VALUE/TOMBSTONE, nested extras, and another
 family through both specialized and common position APIs. Hostile reflective
-inputs are total. Deleting any key frame part, branch tag, path relation,
-position closure, or common dispatch must make a committed mutant survive and
-therefore fail the suite.
+inputs are total. Constructed-path positives must produce one identical `Dp`
+through the common identity helper, mutation ID, and selected-object locator
+while retaining empty position. Malformed path keys or transaction/source
+mismatch refuse structurally; a well-formed but wrong key is rejected only by
+the later family composition. Deleting any key frame part, branch tag, path
+relation, position closure, canonical-path identity dispatch, or common
+position dispatch must make a committed mutant survive and therefore fail the
+suite.
 
 ## Configuration and state roots
 
