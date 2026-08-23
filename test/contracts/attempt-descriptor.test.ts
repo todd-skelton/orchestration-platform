@@ -74,6 +74,9 @@ describe("recovery attempt LIVE descriptor", () => {
         }).ok,
       ).toBe(false);
     }
+    expect(contracts.parseRecoveryAttemptDescriptor({ ...descriptor, unknown: true }).ok).toBe(
+      false,
+    );
     for (const lifecycle of ["READY", "READY_ONLY", "TERMINAL", "UNKNOWN", "TOMBSTONE"])
       expect(contracts.parseRecoveryAttemptDescriptor({ ...descriptor, lifecycle }).ok).toBe(false);
     expect(
@@ -115,6 +118,24 @@ describe("recovery attempt LIVE descriptor", () => {
     });
     expect(reservationPath).toBe(
       `installation/activation-recovery-launches/${transactionId}/recovery-fence/reservations/${descriptor.reservationPredecessorKey}.json`,
+    );
+    expect(
+      contracts.recoveryAttemptReservationPathFromPredecessorKey({
+        reservationPredecessorKey: descriptor.reservationPredecessorKey,
+        sourceToken: "cleanup-gate-pre-fence",
+        transactionId: descriptor.transactionId,
+      }),
+    ).toBe(
+      `installation/activation-recovery-launches/${transactionId}/cleanup-gate-pre-fence/reservations/${descriptor.reservationPredecessorKey}.json`,
+    );
+    expect(
+      contracts.recoveryAttemptReservationPathFromPredecessorKey({
+        reservationPredecessorKey: descriptor.reservationPredecessorKey,
+        sourceToken: descriptor.sourceToken,
+        transactionId: otherTransactionId,
+      }),
+    ).toBe(
+      `installation/activation-recovery-launches/${otherTransactionId}/recovery-fence/reservations/${descriptor.reservationPredecessorKey}.json`,
     );
     const predecessor = Object.freeze({
       predecessorReceiptDigest: d("5"),
@@ -162,6 +183,26 @@ describe("recovery attempt LIVE descriptor", () => {
           transactionId: invalid.transactionId,
         }),
       ).toThrow();
+    const locator = Object.freeze({
+      reservationPredecessorKey: descriptor.reservationPredecessorKey,
+      sourceToken: descriptor.sourceToken,
+      transactionId: descriptor.transactionId,
+    });
+    expect(() =>
+      contracts.recoveryAttemptReservationPathFromPredecessorKey({ ...locator, extra: true }),
+    ).toThrow();
+    for (const field of Object.keys(locator)) {
+      expect(() =>
+        contracts.recoveryAttemptReservationPathFromPredecessorKey(without(locator, field)),
+      ).toThrow();
+      for (const value of [null, 1, false, []])
+        expect(() =>
+          contracts.recoveryAttemptReservationPathFromPredecessorKey({
+            ...locator,
+            [field]: value,
+          }),
+        ).toThrow();
+    }
   });
 
   test("pins domain-separated serialization and canonical-byte parsing", () => {
@@ -193,6 +234,11 @@ describe("recovery attempt LIVE descriptor", () => {
     expect(exactLifecycleType).toBe(true);
     expect(contracts.recoveryAttemptDescriptorLifecycles).toEqual(["LIVE"]);
     expect(contracts.schemaVersions).toContain("recovery-attempt-descriptor/v1");
+    expect(contracts.schemaVocabularyDefinitions["recovery-attempt-descriptor/v1"]).toEqual({
+      schemaVersion: "recovery-attempt-descriptor/v1",
+      fields: contracts.recoveryAttemptDescriptorSchemaFields,
+      closedValues: ["LIVE"],
+    });
     for (const name of [
       "descriptorInputsDigest",
       "launchDefinitionDigest",
