@@ -287,6 +287,58 @@ export function pointerPath(kind: PointerKind, bindings: PointerPathBindings = {
   const row = rowFor(kind);
   return expand(row, row.pathTemplate, bindings);
 }
+
+const reservationPredecessorFields = Object.freeze([
+  "predecessorReceiptDigest",
+  "predecessorTipDigest",
+  "predecessorValueDigest",
+  "sourceToken",
+  "transactionId",
+] as const);
+
+function requireRecoveryAttemptReservationPredecessor(input: unknown): ContractRecord {
+  const parsed = snapshotClosedRecord(input, reservationPredecessorFields);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  const record = parsed.value;
+  if (!isUuidV7(record.transactionId)) throw new TypeError("transactionId:invalid");
+  if (record.sourceToken !== "cleanup-gate-pre-fence" && record.sourceToken !== "recovery-fence")
+    throw new TypeError("sourceToken:invalid");
+  const predecessor = [
+    record.predecessorTipDigest,
+    record.predecessorValueDigest,
+    record.predecessorReceiptDigest,
+  ];
+  if (!(predecessor.every((item) => item === null) || predecessor.every((item) => isSha256(item))))
+    throw new TypeError("predecessorTriple:partial-or-invalid");
+  return record;
+}
+
+export function computeRecoveryAttemptReservationPredecessorKey(input: unknown): string {
+  const record = requireRecoveryAttemptReservationPredecessor(input);
+  const genesis = record.predecessorTipDigest === null;
+  return framedDigest("recovery-attempt-reservation-predecessor/v1", [
+    frame.text(String(record.transactionId)),
+    frame.text(String(record.sourceToken)),
+    frame.fixed(genesis ? "00" : "01"),
+    ...(genesis
+      ? []
+      : [
+          frame.raw32(String(record.predecessorTipDigest)),
+          frame.raw32(String(record.predecessorValueDigest)),
+          frame.raw32(String(record.predecessorReceiptDigest)),
+        ]),
+  ]);
+}
+
+export function recoveryAttemptReservationPath(input: unknown): string {
+  const record = requireRecoveryAttemptReservationPredecessor(input);
+  return pointerPath("RECOVERY_ATTEMPT_RESERVATION", {
+    predecessorKey: computeRecoveryAttemptReservationPredecessorKey(record),
+    sourceToken: String(record.sourceToken),
+    transactionId: String(record.transactionId),
+  });
+}
+
 export function pointerRootPaths(
   kind: PointerKind,
   bindings: PointerPathBindings = {},
@@ -400,6 +452,20 @@ export function parseRecoveryAuthorizationStateTombstonePosition(input: unknown)
     : { ok: false, issues: Object.freeze(["mode:invalid"]) };
 }
 
+export function parseRecoveryAttemptReservationValuePosition(input: unknown): ParseResult {
+  const snapshot = snapshotClosedRecord(input, ["mode", "parts"]);
+  if (!snapshot.ok) return snapshot;
+  const parts = snapshotClosedRecord(snapshot.value.parts, []);
+  if (!parts.ok)
+    return {
+      ok: false,
+      issues: Object.freeze(parts.issues.map((issue) => `parts.${issue}`).sort()),
+    };
+  return snapshot.value.mode === "VALUE"
+    ? snapshot
+    : { ok: false, issues: Object.freeze(["mode:invalid"]) };
+}
+
 export function computePointerPositionDigest(kind: PointerKind, evidence: unknown): string {
   const row = rowFor(kind);
   const snapshot = snapshotClosedRecord(evidence, ["mode", "parts"]);
@@ -420,6 +486,10 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
         : parseRecoveryAuthorizationStateTombstonePosition(snapshot.value);
     if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
   }
+  if (kind === "RECOVERY_ATTEMPT_RESERVATION") {
+    const parsed = parseRecoveryAttemptReservationValuePosition(snapshot.value);
+    if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  }
   if (mode === "TOMBSTONE" && row.tombstonePositionDomain === null)
     throw new TypeError("mode:tombstone-refused");
   const domain = mode === "VALUE" ? row.positionDomain : row.tombstonePositionDomain!;
@@ -438,7 +508,15 @@ export function computeRecoveryAuthorizationStateTombstonePositionDigest(input: 
   return computePointerPositionDigest("RECOVERY_AUTHORIZATION_STATE", parsed.value);
 }
 
+export function computeRecoveryAttemptReservationValuePositionDigest(input: unknown): string {
+  const parsed = parseRecoveryAttemptReservationValuePosition(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return computePointerPositionDigest("RECOVERY_ATTEMPT_RESERVATION", parsed.value);
+}
+
 export function computePointerInstanceDigest(input: PointerIdentity): string {
+  if (input.pointerKind === "RECOVERY_ATTEMPT_RESERVATION")
+    return computePointerInstanceDigestFromCanonicalPath(input);
   const row = rowFor(input.pointerKind);
   const expectedPath = pointerPath(input.pointerKind, pathBindingsFor(row, input));
   return computePointerInstanceDigestWithExpectedPath(input, row, expectedPath);
