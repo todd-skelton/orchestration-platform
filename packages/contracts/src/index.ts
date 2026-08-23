@@ -22,6 +22,7 @@ import { parseBootstrapConsumptionContract } from "./consumption.js";
 import { parsePacketContract } from "./packet.js";
 import { parsePointerGraphContract } from "./pointer.js";
 import { parseGateFenceContract } from "./definitions.js";
+import { parseRecoveryAttemptContract } from "./attempt.js";
 import {
   computeNativeConsumeReceiptDigest,
   computeNativeRemovalReceiptDigest,
@@ -50,6 +51,7 @@ export * from "./selection.js";
 export * from "./retirement.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
+export * from "./attempt.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
 export {
@@ -114,6 +116,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (gateFence) return gateFence;
   const recoveryAuthorization = parseRecoveryAuthorizationContract(expectedSchemaVersion, input);
   if (recoveryAuthorization) return recoveryAuthorization;
+  const recoveryAttempt = parseRecoveryAttemptContract(expectedSchemaVersion, input);
+  if (recoveryAttempt) return recoveryAttempt;
   const definition = schemaDefinitions[expectedSchemaVersion];
   if (!definition) return { ok: false, issues: ["schemaVersion:unsupported"] };
   try {
@@ -167,7 +171,10 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
-  if (expectedSchemaVersion === "recovery-authorization-state/v1")
+  if (
+    expectedSchemaVersion === "recovery-authorization-state/v1" ||
+    expectedSchemaVersion === "recovery-attempt-reservation/v1"
+  )
     return { ok: false, issues: ["serialization:pointer-context-required"] };
   const digest =
     expectedSchemaVersion === "recovery-authorization-archive/v1"

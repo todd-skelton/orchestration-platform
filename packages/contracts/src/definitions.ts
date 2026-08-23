@@ -317,12 +317,6 @@ export const destinationOwnerTransitions = Object.freeze([
   Object.freeze({ previous: "CONSUMED", next: "RETIRED", transition: "RETIRE_CONSUMED" }),
   Object.freeze({ previous: "RETIRED", next: "ACTIVE", transition: "ACTIVATE_SUCCESSOR" }),
 ] as const);
-export const recoveryAttemptReservationLifecycles = Object.freeze([
-  "RESERVED",
-  "CONSUMED",
-  "TERMINAL",
-  "TOMBSTONE",
-] as const);
 export const recoveryAuthorizationLifecycles = Object.freeze([
   "CREATED",
   "CONSUMED",
@@ -336,17 +330,6 @@ export function validateDestinationOwnerTransition(
 ): boolean {
   return destinationOwnerTransitions.some(
     (edge) => edge.previous === previous && edge.next === next && edge.transition === transition,
-  );
-}
-
-export function validateRecoveryAttemptReservationTransition(
-  previous: unknown,
-  next: unknown,
-): boolean {
-  return (
-    (previous === "RESERVED" && next === "CONSUMED") ||
-    (previous === "CONSUMED" && next === "TERMINAL") ||
-    (previous === "TERMINAL" && next === "TOMBSTONE")
   );
 }
 

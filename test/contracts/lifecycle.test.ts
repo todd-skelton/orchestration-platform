@@ -7,10 +7,8 @@ import {
   engineVocabularyValueFindings,
   isCleanupLifecyclePublicationPair,
   reduceCleanupHeadWrite,
-  recoveryAttemptReservationLifecycles,
   validateFenceTransition,
   validateDestinationOwnerTransition,
-  validateRecoveryAttemptReservationTransition,
 } from "../../packages/contracts/src/index.js";
 
 describe("cleanup and fence transitions", () => {
@@ -52,7 +50,7 @@ describe("cleanup and fence transitions", () => {
   });
 });
 
-describe("external owner and recovery reservation lifecycles", () => {
+describe("external owner lifecycle", () => {
   test("admits exactly the five destination-owner edges", () => {
     expect(destinationOwnerLifecycles).toEqual(["ACTIVE", "CONSUMED", "RETIRED"]);
     expect(destinationOwnerTransitions).toHaveLength(5);
@@ -71,22 +69,5 @@ describe("external owner and recovery reservation lifecycles", () => {
         ...destinationOwnerTransitions.map((edge) => edge.transition),
       ]),
     ).toEqual([]);
-  });
-
-  test("admits only RESERVED to CONSUMED to TERMINAL to TOMBSTONE", () => {
-    expect(recoveryAttemptReservationLifecycles).toEqual([
-      "RESERVED",
-      "CONSUMED",
-      "TERMINAL",
-      "TOMBSTONE",
-    ]);
-    expect(validateRecoveryAttemptReservationTransition("RESERVED", "CONSUMED")).toBe(true);
-    expect(validateRecoveryAttemptReservationTransition("CONSUMED", "TERMINAL")).toBe(true);
-    expect(validateRecoveryAttemptReservationTransition("TERMINAL", "TOMBSTONE")).toBe(true);
-    expect(validateRecoveryAttemptReservationTransition("RESERVED", "TERMINAL")).toBe(false);
-    expect(validateRecoveryAttemptReservationTransition("TERMINAL", "RESERVED")).toBe(false);
-    expect(validateRecoveryAttemptReservationTransition("TOMBSTONE", "RESERVED")).toBe(false);
-    expect(validateRecoveryAttemptReservationTransition("RESERVED", "RESERVED")).toBe(false);
-    expect(engineVocabularyValueFindings(recoveryAttemptReservationLifecycles)).toEqual([]);
   });
 });
