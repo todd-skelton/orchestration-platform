@@ -32,6 +32,22 @@ describe("recovery attempt reservation identity", () => {
       `installation/activation-recovery-launches/${transactionId}/recovery-fence/reservations/${selectedKey}.json`,
     );
 
+    const movedTransaction = Object.freeze({ ...selected, transactionId: otherTransactionId });
+    const movedSource = Object.freeze({
+      ...selected,
+      sourceToken: "cleanup-gate-pre-fence" as const,
+    });
+    const movedPredecessor = Object.freeze({ ...selected, predecessorReceiptDigest: d("8") });
+    expect(contracts.recoveryAttemptReservationPath(movedTransaction)).toBe(
+      `installation/activation-recovery-launches/${otherTransactionId}/recovery-fence/reservations/${contracts.computeRecoveryAttemptReservationPredecessorKey(movedTransaction)}.json`,
+    );
+    expect(contracts.recoveryAttemptReservationPath(movedSource)).toBe(
+      `installation/activation-recovery-launches/${transactionId}/cleanup-gate-pre-fence/reservations/${contracts.computeRecoveryAttemptReservationPredecessorKey(movedSource)}.json`,
+    );
+    expect(contracts.recoveryAttemptReservationPath(movedPredecessor)).toBe(
+      `installation/activation-recovery-launches/${transactionId}/recovery-fence/reservations/${contracts.computeRecoveryAttemptReservationPredecessorKey(movedPredecessor)}.json`,
+    );
+
     expect(
       contracts.computeRecoveryAttemptReservationPredecessorKey({
         ...selected,
