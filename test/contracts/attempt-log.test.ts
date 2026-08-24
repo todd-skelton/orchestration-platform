@@ -210,6 +210,30 @@ describe("recovery attempt log", () => {
     expect(contracts.validateRecoveryAttemptLogEdge(null, inProgress0)).toEqual([]);
     expect(contracts.validateRecoveryAttemptLogEdge(inProgress0, terminal1)).toEqual([]);
     expect(contracts.validateRecoveryAttemptLogEdge(terminal1, inProgress2)).toEqual([]);
+    expect(
+      contracts.validateRecoveryAttemptLogEdge(inProgress0, {
+        ...inProgress0,
+        ordinal: "1",
+        predecessorRecordDigest: contracts.computeRecoveryAttemptLogRecordDigest(inProgress0),
+        recordedAt: "2026-08-24T00:00:01.000Z",
+      }),
+    ).toEqual(["edge:lifecycle"]);
+    expect(
+      contracts.validateRecoveryAttemptLogEdge(terminal1, {
+        ...terminal1,
+        attemptId: attemptB,
+        descriptorDigest: d("7"),
+        ordinal: "2",
+        predecessorRecordDigest: contracts.computeRecoveryAttemptLogRecordDigest(terminal1),
+        recordedAt: "2026-08-24T00:00:02.000Z",
+      }),
+    ).toEqual(["edge:lifecycle"]);
+    expect(
+      contracts.validateRecoveryAttemptLogEdge(inProgress0, {
+        ...terminal1,
+        attemptId: attemptB,
+      }),
+    ).toEqual(["attemptId:mismatch"]);
     for (const [previous, next] of [
       [null, terminal1],
       [inProgress0, inProgress2],
