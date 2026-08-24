@@ -1,4 +1,6 @@
 import { types as nodeTypes } from "node:util";
+import { readFileSync } from "node:fs";
+import { verifyLinuxCredentialStatus } from "./linux-credential-status.mjs";
 
 const parseJson = JSON.parse.bind(JSON);
 const stringifyJson = JSON.stringify.bind(JSON);
@@ -12,6 +14,11 @@ const isArray = Array.isArray.bind(Array);
 const isProxy = nodeTypes.isProxy.bind(nodeTypes);
 const isSafeInteger = Number.isSafeInteger.bind(Number);
 const exactArrayPrototype = Array.prototype;
+const getUid = process.getuid?.bind(process);
+const getEuid = process.geteuid?.bind(process);
+const getGid = process.getgid?.bind(process);
+const getEgid = process.getegid?.bind(process);
+const getGroups = process.getgroups?.bind(process);
 
 freeze(Object.prototype);
 freeze(Array.prototype);
@@ -52,12 +59,37 @@ function detachIssues(value) {
   return issues;
 }
 
+function verifyLinuxPrincipal(uidText, gidText) {
+  if (process.platform !== "linux")
+    throw new TypeError("candidate-principal:linux-expectation-refused");
+  if (!getUid || !getEuid || !getGid || !getEgid || !getGroups)
+    throw new TypeError("candidate-principal:credential-refused");
+  if (
+    !verifyLinuxCredentialStatus({
+      effectiveGid: getEgid(),
+      effectiveUid: getEuid(),
+      expectedGid: gidText,
+      expectedUid: uidText,
+      groups: getGroups(),
+      realGid: getGid(),
+      realUid: getUid(),
+      statusText: readFileSync("/proc/self/status", "utf8"),
+    })
+  )
+    throw new TypeError("candidate-principal:kernel-credential-refused");
+}
+
 if (
-  process.argv.length !== 3 ||
+  ![3, 6].includes(process.argv.length) ||
   typeof process.argv[2] !== "string" ||
   !process.argv[2].startsWith("file:")
 )
   throw new TypeError("candidate-module-url:refused");
+if (process.argv.length === 6) {
+  if (process.argv[3] !== "--linux-principal")
+    throw new TypeError("candidate-principal:mode-refused");
+  verifyLinuxPrincipal(process.argv[4], process.argv[5]);
+}
 
 const chunks = [];
 let byteLength = 0;

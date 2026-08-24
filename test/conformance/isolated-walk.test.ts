@@ -14,6 +14,7 @@ import {
   type Iss002IsolationLaunchRequest,
   type Iss002StableIsolationAuthority,
 } from "../../packages/conformance/src/isolated-walk.js";
+import { verifyLinuxCredentialStatus } from "../../packages/conformance/src/linux-credential-status.mjs";
 
 const temporaryRoots: string[] = [];
 const childScript = resolve(
@@ -45,21 +46,26 @@ function observation(
   };
 }
 
-async function runChild(moduleSource: string) {
+async function runChild(moduleSource: string, extraArguments: readonly string[] = []) {
   const root = await temporaryRoot();
   const candidateModule = resolve(root, "candidate.mjs");
   await writeFile(candidateModule, moduleSource, "utf8");
   const challenge = createIss002WalkChallenge();
-  const child = spawn(process.execPath, [childScript, pathToFileURL(candidateModule).href], {
-    cwd: root,
-    env: {},
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const child = spawn(
+    process.execPath,
+    [childScript, pathToFileURL(candidateModule).href, ...extraArguments],
+    {
+      cwd: root,
+      env: {},
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
   const stdout: Uint8Array[] = [];
   const stderr: Uint8Array[] = [];
   child.stdout.on("data", (chunk: Uint8Array) => stdout.push(Uint8Array.from(chunk)));
   child.stderr.on("data", (chunk: Uint8Array) => stderr.push(Uint8Array.from(chunk)));
+  child.stdin.on("error", () => {});
   child.stdin.end(challenge.inputText);
   const terminal = await new Promise<{
     readonly code: number | null;
@@ -84,6 +90,66 @@ afterEach(async () => {
 });
 
 describe("ISS-002 isolated walk protocol", () => {
+  test("requires every Linux kernel credential and capability relation", () => {
+    const uid = 1_000_001;
+    const gid = 1_000_002;
+    const statusText = [
+      `Uid:\t${uid}\t${uid}\t${uid}\t${uid}`,
+      `Gid:\t${gid}\t${gid}\t${gid}\t${gid}`,
+      "Groups:\t",
+      "NoNewPrivs:\t1",
+      ...["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"].map(
+        (field) => `${field}:\t0000000000000000`,
+      ),
+      "",
+    ].join("\n");
+    const valid = {
+      effectiveGid: gid,
+      effectiveUid: uid,
+      expectedGid: String(gid),
+      expectedUid: String(uid),
+      groups: [gid],
+      realGid: gid,
+      realUid: uid,
+      statusText,
+    };
+    expect(verifyLinuxCredentialStatus(valid)).toBe(true);
+    const mutations = [
+      { ...valid, expectedUid: "0" },
+      { ...valid, expectedGid: "0" },
+      { ...valid, expectedUid: "2147483647" },
+      { ...valid, realUid: uid + 1 },
+      { ...valid, effectiveUid: uid + 1 },
+      { ...valid, realGid: gid + 1 },
+      { ...valid, effectiveGid: gid + 1 },
+      { ...valid, groups: [] },
+      { ...valid, groups: [gid, gid + 1] },
+      { ...valid, statusText: statusText.replace(`${uid}\t${uid}`, `${uid + 1}\t${uid}`) },
+      { ...valid, statusText: statusText.replace(`${gid}\t${gid}`, `${gid + 1}\t${gid}`) },
+      { ...valid, statusText: statusText.replace("Groups:\t", `Groups:\t${gid}`) },
+      { ...valid, statusText: statusText.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0") },
+      { ...valid, statusText: statusText.replace("CapInh:\t0", "CapInh:\t1") },
+      { ...valid, statusText: statusText.replace("CapPrm:\t0", "CapPrm:\t1") },
+      { ...valid, statusText: statusText.replace("CapEff:\t0", "CapEff:\t1") },
+      { ...valid, statusText: statusText.replace("CapBnd:\t0", "CapBnd:\t1") },
+      { ...valid, statusText: statusText.replace("CapAmb:\t0", "CapAmb:\t1") },
+      { ...valid, statusText: statusText.replace("Uid:", "MissingUid:") },
+      { ...valid, statusText: `${statusText}Uid:\t${uid}\t${uid}\t${uid}\t${uid}\n` },
+    ];
+    for (const mutation of mutations) expect(verifyLinuxCredentialStatus(mutation)).toBe(false);
+    const extended = [gid];
+    extended.length = 2;
+    const hole = new Array<number>(1);
+    const accessor: number[] = [];
+    Object.defineProperty(accessor, "0", { enumerable: true, get: () => gid });
+    const symbol = [gid];
+    Object.defineProperty(symbol, Symbol("extra"), { value: true });
+    const extra = [gid] as number[] & { extra?: boolean };
+    extra.extra = true;
+    for (const groups of [extended, hole, accessor, new Proxy([gid], {}), symbol, extra])
+      expect(verifyLinuxCredentialStatus({ ...valid, groups })).toBe(false);
+  });
+
   test("constructs the fixed complete challenge and accepts only stable-timed exact output", () => {
     const challenge = createIss002WalkChallenge();
     const input = JSON.parse(challenge.inputText) as {
@@ -184,6 +250,16 @@ process.stdout.write("candidate-noise");
 export function validateAuthorityHistoryChain() { return []; }
 `);
     expect(evaluateIss002IsolatedWalk(noise.observation).ok).toBe(false);
+  });
+
+  test("refuses Linux credential ambiguity before importing candidate code", async () => {
+    const refused = await runChild(
+      'process.stdout.write("candidate-imported"); export function validateAuthorityHistoryChain() { return []; }\n',
+      ["--linux-principal", "0", "0"],
+    );
+    expect(refused.observation.stdout).toBe("");
+    expect(refused.observation.stderr).toContain("candidate-principal:");
+    expect(evaluateIss002IsolatedWalk(refused.observation).ok).toBe(false);
   });
 
   test("stable lifecycle owns three launch-to-parse intervals and tears each principal down", async () => {

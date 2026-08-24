@@ -56,6 +56,8 @@ export const iss002TestBundlePaths = Object.freeze([
   "packages/conformance/src/iss002-isolated-walk-child.mjs",
   "packages/conformance/src/iss002-vector-generator.mjs",
   "packages/conformance/src/iss002-walk-child.mjs",
+  "packages/conformance/src/linux-credential-status.d.mts",
+  "packages/conformance/src/linux-credential-status.mjs",
   "test/contracts/anchor-teardown.test.ts",
   "test/contracts/anchor.test.ts",
   "test/contracts/attempt-descriptor.test.ts",

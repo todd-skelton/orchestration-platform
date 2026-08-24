@@ -67,6 +67,8 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/iss002-isolated-walk-child.mjs",
       "packages/conformance/src/iss002-vector-generator.mjs",
       "packages/conformance/src/iss002-walk-child.mjs",
+      "packages/conformance/src/linux-credential-status.d.mts",
+      "packages/conformance/src/linux-credential-status.mjs",
     ]);
     const owned = [...harnessSources, ...testSources].sort((left, right) =>
       Buffer.compare(Buffer.from(left), Buffer.from(right)),
