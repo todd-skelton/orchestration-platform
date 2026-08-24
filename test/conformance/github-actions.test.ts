@@ -32,6 +32,98 @@ const providerRun = Object.freeze({
   workflowRevision: revision("b"),
 });
 
+const registry = Object.freeze({
+  jobs: Object.freeze(
+    ["linux", "macos", "windows"].map((environment) =>
+      Object.freeze({
+        environmentFamily: environment.toUpperCase(),
+        jobId: `iss002-contracts-${environment}`,
+        requirement: "REQUIRED",
+        suiteId: "iss002-contracts",
+      }),
+    ),
+  ),
+  schemaVersion: "conformance-required-job-registry/v1",
+  suites: Object.freeze([
+    Object.freeze({
+      custodyRequirement: "UNUSED",
+      helperRequirement: "UNUSED",
+      ownerPackage: "@orchestration-platform/contracts",
+      runnerToken: "ISS002_CONTRACTS",
+      suiteId: "iss002-contracts",
+      vectorCensusDigest: d("5"),
+      walkRequirement: "WALK_1000",
+    }),
+  ]),
+});
+const registryDigest = core.computeConformanceRecordDigest(
+  "conformance-required-job-registry/v1",
+  registry,
+);
+const providerRecordRun = Object.freeze({
+  ...providerRun,
+  requiredJobRegistryDigest: registryDigest,
+});
+const recordedAt = "2026-08-23T12:00:00.000Z";
+const expiresAt = core.addCompleteDays(recordedAt, 30);
+const artifactPrefix = `conformance-${providerRecordRun.runId}-${providerRecordRun.runAttempt}-`;
+const providerRecord = Object.freeze({
+  aggregateDigest: d("6"),
+  artifacts: Object.freeze(
+    ["aggregate", ...registry.jobs.map((job) => job.jobId)]
+      .map((logicalJobId, index) =>
+        Object.freeze({
+          artifactDigest: String(index + 6).repeat(64),
+          artifactId: String(index + 10),
+          artifactName: `${artifactPrefix}${logicalJobId}`,
+          byteLength: String(index + 100),
+          expiresAt,
+          logicalJobId,
+          role: logicalJobId === "aggregate" ? "AGGREGATE" : "OBSERVATION",
+        }),
+      )
+      .sort((left, right) =>
+        Buffer.compare(Buffer.from(left.artifactName), Buffer.from(right.artifactName)),
+      ),
+  ),
+  candidateRevision: providerRecordRun.candidateRevision,
+  candidateSubjectDigest: providerRecordRun.candidateSubjectDigest,
+  event: providerRecordRun.event,
+  harnessBundleDigest: providerRecordRun.harnessBundleDigest,
+  jobs: Object.freeze(
+    [
+      { logicalJobId: "aggregate", providerJobName: "Conformance / aggregate", role: "AGGREGATE" },
+      ...registry.jobs.map((job) => ({
+        logicalJobId: job.jobId,
+        providerJobName: `Conformance / observation / ${job.jobId}`,
+        role: "OBSERVATION",
+      })),
+      { logicalJobId: "plan", providerJobName: "Conformance / plan", role: "PLAN" },
+    ]
+      .sort((left, right) =>
+        Buffer.compare(Buffer.from(left.logicalJobId), Buffer.from(right.logicalJobId)),
+      )
+      .map((job, index) =>
+        Object.freeze({
+          conclusion: "SUCCESS",
+          ...job,
+          providerJobId: String(index + 20),
+        }),
+      ),
+  ),
+  protectionSnapshotDigest: providerRecordRun.protectionSnapshotDigest,
+  recordedAt,
+  repositoryId: providerRecordRun.repositoryId,
+  requiredJobRegistryDigest: providerRecordRun.requiredJobRegistryDigest,
+  runAttempt: providerRecordRun.runAttempt,
+  runId: providerRecordRun.runId,
+  schemaVersion: "github-conformance-provider-record/v1",
+  testBundleDigest: providerRecordRun.testBundleDigest,
+  workflowPath: providerRecordRun.workflowPath,
+  workflowRef: providerRecordRun.workflowRef,
+  workflowRevision: providerRecordRun.workflowRevision,
+});
+
 describe("GitHub Actions conformance adapter", () => {
   test("keeps provider exports out of the portable core entrypoint", () => {
     expect(Object.keys(core).some((name) => /github|protection/i.test(name))).toBe(false);
@@ -73,6 +165,94 @@ describe("GitHub Actions conformance adapter", () => {
       { ...providerRun, workflowRevision: revision("A") },
     ])
       expect(github.parseGithubProviderRunContext(mutation).ok).toBe(false);
+  });
+
+  test("closes the provider record and joins the exact stable registry census", () => {
+    expect(github.parseGithubConformanceProviderRecord(providerRecord).ok).toBe(true);
+    expect(
+      github.validateGithubConformanceProviderRecord(providerRecord, {
+        aggregateDigest: providerRecord.aggregateDigest,
+        providerRun: providerRecordRun,
+        registry,
+      }).ok,
+    ).toBe(true);
+    expect(github.computeGithubConformanceProviderRecordDigest(providerRecord)).toBe(
+      "ba430406478ff2b1e97a91d376ed821befb92fcb6f83af054555bf1e27e19eaa",
+    );
+    expect(
+      github.validateGithubConformanceProviderRecord(
+        { ...providerRecord, aggregateDigest: d("9") },
+        {
+          aggregateDigest: providerRecord.aggregateDigest,
+          providerRun: providerRecordRun,
+          registry,
+        },
+      ).ok,
+    ).toBe(false);
+  });
+
+  test("refuses provider record census, naming, retention, and context substitutions", () => {
+    const firstArtifact = providerRecord.artifacts[0]!;
+    const firstJob = providerRecord.jobs[0]!;
+    for (const [index, mutation] of [
+      {
+        ...providerRecord,
+        artifacts: [
+          { ...firstArtifact, artifactName: "fixed-name" },
+          ...providerRecord.artifacts.slice(1),
+        ],
+      },
+      {
+        ...providerRecord,
+        artifacts: [
+          { ...firstArtifact, expiresAt: recordedAt },
+          ...providerRecord.artifacts.slice(1),
+        ],
+      },
+      {
+        ...providerRecord,
+        jobs: [{ ...firstJob, conclusion: "FAILURE" }, ...providerRecord.jobs.slice(1)],
+      },
+      {
+        ...providerRecord,
+        jobs: [
+          firstJob,
+          { ...providerRecord.jobs[1], providerJobId: firstJob.providerJobId },
+          ...providerRecord.jobs.slice(2),
+        ],
+      },
+      {
+        ...providerRecord,
+        artifacts: [
+          firstArtifact,
+          { ...providerRecord.artifacts[1], artifactId: firstArtifact.artifactId },
+          ...providerRecord.artifacts.slice(2),
+        ],
+      },
+      { ...providerRecord, event: "push" },
+      { ...providerRecord, recordedAt: "2026-08-23T12:00:00Z" },
+      { ...providerRecord, recordedAt: "9999-12-31T23:59:59.999Z" },
+      { ...providerRecord, triggeringActorId: "9" },
+    ].entries())
+      expect(github.parseGithubConformanceProviderRecord(mutation).ok, String(index)).toBe(false);
+    for (const mutation of [
+      { ...providerRecord, artifacts: providerRecord.artifacts.slice(1) },
+      { ...providerRecord, jobs: providerRecord.jobs.slice(1) },
+    ])
+      expect(
+        github.validateGithubConformanceProviderRecord(mutation, {
+          aggregateDigest: providerRecord.aggregateDigest,
+          providerRun: providerRecordRun,
+          registry,
+        }).ok,
+      ).toBe(false);
+    expect(
+      github.validateGithubConformanceProviderRecord(providerRecord, {
+        aggregateDigest: providerRecord.aggregateDigest,
+        providerRun: { ...providerRecordRun, runAttempt: "3" },
+        registry,
+      }).ok,
+    ).toBe(false);
   });
 
   test("projects only complete regular Git trees into the portable subject", () => {
@@ -142,6 +322,7 @@ describe("GitHub Actions conformance adapter", () => {
     for (const input of [null, undefined, [], hostile]) {
       expect(() => github.parseGithubConformanceProtectionSnapshot(input)).not.toThrow();
       expect(() => github.parseGithubProviderRunContext(input)).not.toThrow();
+      expect(() => github.parseGithubConformanceProviderRecord(input)).not.toThrow();
       expect(() => github.projectGithubCandidateSubject(input)).not.toThrow();
     }
   });
