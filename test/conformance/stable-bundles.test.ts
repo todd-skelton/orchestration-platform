@@ -55,6 +55,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/github-protection.ts",
       "packages/conformance/src/github-terminal.ts",
       "packages/conformance/src/index.ts",
+      "packages/conformance/src/isolated-walk.ts",
       "packages/conformance/src/iss002-bundle-paths.mts",
       "packages/conformance/src/manifest.ts",
       "packages/conformance/src/reducer.ts",
@@ -63,6 +64,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/walk.ts",
     ]);
     expect(testSources).toEqual([
+      "packages/conformance/src/iss002-isolated-walk-child.mjs",
       "packages/conformance/src/iss002-vector-generator.mjs",
       "packages/conformance/src/iss002-walk-child.mjs",
     ]);

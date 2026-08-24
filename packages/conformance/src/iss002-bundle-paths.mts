@@ -9,6 +9,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/conformance/src/github-protection.ts",
   "packages/conformance/src/github-terminal.ts",
   "packages/conformance/src/index.ts",
+  "packages/conformance/src/isolated-walk.ts",
   "packages/conformance/src/iss002-bundle-paths.mts",
   "packages/conformance/src/manifest.ts",
   "packages/conformance/src/reducer.ts",
@@ -52,6 +53,7 @@ export const iss002HarnessPaths = Object.freeze([
 ] as const);
 
 export const iss002TestBundlePaths = Object.freeze([
+  "packages/conformance/src/iss002-isolated-walk-child.mjs",
   "packages/conformance/src/iss002-vector-generator.mjs",
   "packages/conformance/src/iss002-walk-child.mjs",
   "test/contracts/anchor-teardown.test.ts",
