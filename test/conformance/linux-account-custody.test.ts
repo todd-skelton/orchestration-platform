@@ -80,6 +80,7 @@ afterEach(async () => {
 async function fixture(
   run: (request: LinuxAccountCommandRequest) => Promise<unknown>,
   token = "0000000000000001",
+  syncStateDirectory?: () => Promise<void>,
 ) {
   const stateRoot = await mkdtemp(resolve(tmpdir(), "orchestration-linux-account-state-"));
   roots.push(stateRoot);
@@ -87,7 +88,7 @@ async function fixture(
   mockedFileOwnership.root = stateRoot;
   mockedFileOwnership.events.splice(0);
   return {
-    custody: await custodyAt(stateRoot, run, token),
+    custody: await custodyAt(stateRoot, run, token, async () => profile, syncStateDirectory),
     events: mockedFileOwnership.events,
     stateRoot,
   };
@@ -98,6 +99,9 @@ async function custodyAt(
   run: (request: LinuxAccountCommandRequest) => Promise<unknown>,
   token: string,
   profileReader: () => Promise<LinuxHelperProfile> = async () => profile,
+  syncStateDirectory: () => Promise<void> = async () => {
+    mockedFileOwnership.events.push("directory-sync");
+  },
 ) {
   return await createLinuxAccountCustodyTestFixture(
     {
@@ -113,9 +117,7 @@ async function custodyAt(
     {
       stableGid: 1001,
       stableUid: 1001,
-      syncStateDirectory: async () => {
-        mockedFileOwnership.events.push("directory-sync");
-      },
+      syncStateDirectory,
     },
   );
 }
@@ -171,7 +173,8 @@ describe("Linux stable account cleanup-intent custody", () => {
     await created.custody.deletePrincipal(principal);
     expect(await readdir(stateRoot)).toEqual(["linux-principal-used-orch6-0000000000000001.json"]);
     expect(calls).toEqual(["CREATE", "DELETE"]);
-    expect(created.events.slice(0, 5)).toEqual([
+    expect(created.events.slice(0, 6)).toEqual([
+      "directory-sync",
       "file-sync:linux-principal-used-orch6-0000000000000001.json",
       "directory-sync",
       "file-sync:linux-principal-intent-orch6-0000000000000001.json",
@@ -207,6 +210,46 @@ describe("Linux stable account cleanup-intent custody", () => {
     // A failed deletion command cannot authorize removing its persisted intent.
     await expect(successful.custody.deletePrincipal(principal)).rejects.toThrow();
     expect(await readdir(successful.stateRoot)).toHaveLength(2);
+    failDelete = false;
+    await successful.custody.deletePrincipal(principal);
+    expect(await readdir(successful.stateRoot)).toEqual([
+      "linux-principal-used-orch6-0000000000000001.json",
+    ]);
+  });
+
+  test("retries deletion after intent unlink succeeds but directory fsync fails", async () => {
+    let deletionSyncs = 0;
+    let failDeletionSync = false;
+    const calls: string[] = [];
+    const created = await fixture(
+      async (request) => {
+        const operation = request.arguments[3]!;
+        calls.push(operation);
+        return success(
+          operation === "CREATE"
+            ? '{"gid":"1100000001","name":"orch6-0000000000000001","uid":"1000001"}'
+            : '{"ok":true}',
+        );
+      },
+      "0000000000000001",
+      async () => {
+        mockedFileOwnership.events.push("directory-sync");
+        if (failDeletionSync) {
+          deletionSyncs += 1;
+          if (deletionSyncs === 1) throw new Error("lost intent unlink directory fsync");
+        }
+      },
+    );
+    const principal = await created.custody.createPrincipal();
+    failDeletionSync = true;
+    await expect(created.custody.deletePrincipal(principal)).rejects.toThrow(
+      "lost intent unlink directory fsync",
+    );
+    expect(await readdir(created.stateRoot)).toEqual([
+      "linux-principal-used-orch6-0000000000000001.json",
+    ]);
+    await created.custody.deletePrincipal(principal);
+    expect(calls).toEqual(["CREATE", "DELETE", "DELETE"]);
   });
 
   test("recovers a persisted prior intent before new authority use", async () => {
@@ -231,6 +274,43 @@ describe("Linux stable account cleanup-intent custody", () => {
     expect(await readdir(created.stateRoot)).toEqual([
       "linux-principal-used-orch6-0000000000000009.json",
     ]);
+  });
+
+  test("recovery retry fsyncs an already-unlinked intent before accepting absence", async () => {
+    let recoverySyncs = 0;
+    let failRecoveryUnlinkSync = false;
+    const calls: string[] = [];
+    const created = await fixture(
+      async (request) => {
+        calls.push(request.arguments[3]!);
+        return success('{"ok":true}');
+      },
+      "0000000000000001",
+      async () => {
+        mockedFileOwnership.events.push("directory-sync");
+        if (failRecoveryUnlinkSync) {
+          recoverySyncs += 1;
+          if (recoverySyncs === 2) throw new Error("lost recovery unlink directory fsync");
+        }
+      },
+    );
+    const name = "orch6-0000000000000009";
+    const bytes = JSON.stringify({ gid: "1100000009", name, uid: "1000009" });
+    await writeFile(resolve(created.stateRoot, `linux-principal-used-${name}.json`), bytes, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await writeFile(resolve(created.stateRoot, `linux-principal-intent-${name}.json`), bytes, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    failRecoveryUnlinkSync = true;
+    await expect(created.custody.recover()).rejects.toThrow("lost recovery unlink directory fsync");
+    expect(await readdir(created.stateRoot)).toEqual([`linux-principal-used-${name}.json`]);
+    await created.custody.recover();
+    expect(calls).toEqual(["DELETE"]);
+    expect(recoverySyncs).toBe(3);
+    expect(await readdir(created.stateRoot)).toEqual([`linux-principal-used-${name}.json`]);
   });
 
   test("persists never-reuse across custody reconstruction", async () => {

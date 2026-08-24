@@ -263,7 +263,7 @@ async function createLinuxAccountCustodyCore(
   const run = options.commandRunner ?? nativeCommandRunner;
   const token = options.principalToken ?? (() => randomBytes(8).toString("hex"));
   const usedIds = new Set<string>();
-  const active = new Set<LinuxAccountPrincipal>();
+  const active = new Map<LinuxAccountPrincipal, { intentUnlinked: boolean }>();
 
   async function requireCustody(): Promise<void> {
     const currentState = await lstat(stateRoot, { bigint: true });
@@ -325,14 +325,28 @@ async function createLinuxAccountCustodyCore(
     await writeStateRecord(principal.intentPath, principal);
   }
 
-  async function removeIntent(principal: LinuxAccountPrincipal): Promise<void> {
-    await rm(principal.intentPath, { force: false });
+  async function removeIntent(
+    principal: LinuxAccountPrincipal,
+    allowAbsent = false,
+    onUnlinked: () => void = () => {},
+  ): Promise<void> {
+    try {
+      await rm(principal.intentPath, { force: false });
+      onUnlinked();
+    } catch (error) {
+      if (!allowAbsent || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     await dependencies.syncStateDirectory(stateRoot);
   }
 
-  async function reverse(principal: LinuxAccountPrincipal): Promise<void> {
+  async function reverse(
+    principal: LinuxAccountPrincipal,
+    state?: { intentUnlinked: boolean },
+  ): Promise<void> {
     await command("DELETE", principal);
-    await removeIntent(principal);
+    await removeIntent(principal, state?.intentUnlinked ?? false, () => {
+      if (state) state.intentUnlinked = true;
+    });
   }
 
   const custody: LinuxAccountCustody = {
@@ -366,15 +380,18 @@ async function createLinuxAccountCustodyCore(
         }
         throw error;
       }
-      active.add(principal);
+      active.set(principal, { intentUnlinked: false });
       return principal;
     },
     async deletePrincipal(principal) {
-      if (!active.delete(principal)) throw new TypeError("linux-account:principal-handle-refused");
-      await reverse(principal);
+      const state = active.get(principal);
+      if (!state) throw new TypeError("linux-account:principal-handle-refused");
+      await reverse(principal, state);
+      active.delete(principal);
     },
     async recover() {
       await requireCustody();
+      await dependencies.syncStateDirectory(stateRoot);
       const entries = (await readdir(stateRoot, { withFileTypes: true })).sort((left, right) =>
         left.name.localeCompare(right.name),
       );
