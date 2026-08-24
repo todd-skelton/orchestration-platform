@@ -1820,7 +1820,7 @@ retroactively authorize attachment.
 The attempt log is append-only. The `RECOVERY_ATTEMPT_LOG` pointer selects
 exact `IN_PROGRESS` and `TERMINAL` `attempt-log/v1` records chained by
 predecessor record digest and safe-integer ordinal. The first IN_PROGRESS
-record has ordinal `"0"`, a tagged genesis predecessor, and binds the selected
+record has ordinal `"0"`, null `predecessorRecordDigest`, and binds the selected
 reservation/descriptor. Every later record binds the predecessor record digest
 and ordinal plus one; an ordinal above `2^53 - 1` refuses. TERMINAL binds the
 same descriptor and the folded terminal fields. Every operation verifies the
