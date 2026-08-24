@@ -1542,8 +1542,12 @@ receipt, extra-entry, and alternate-layout substitution refuses.
 
 The provider-record artifact alone uses the reviewed upload action's explicit
 single-file `archive:false` mode. Its provider API digest and byte length bind
-the canonical `provider-record.json` bytes directly; ZIP output or a different
-file name/mode refuses. The post-job reader uses the correspondingly pinned
+the canonical bytes written to the sole attempt-qualified source filename
+`conformance-<runId>-<runAttempt>-provider-record.json`. Under this mode the
+action derives the artifact name from that filename and ignores its `name`
+input, so the reviewed workflow omits `name` entirely. ZIP output, a fixed
+`provider-record.json`, a supplied/overridden name, or any other source
+basename/mode refuses. The post-job reader uses the correspondingly pinned
 download behavior and never treats an archive digest as an inner-record digest.
 
 The opaque core value is:
@@ -1610,8 +1614,9 @@ The sole authoritative hosted topology is:
    unchanged zero-bypass protection snapshot, and at least 30 days remaining
    retention for the already-listed artifacts, and writes then uploads with
    explicit `archive:false` the provider record as exact artifact
-   `conformance-<runId>-<runAttempt>-provider-record`. Rerunning only a subset
-   cannot combine attempts because every artifact name and API query is
+   `conformance-<runId>-<runAttempt>-provider-record.json`; the source file has
+   that exact basename and the upload step has no `name` input. Rerunning only a
+   subset cannot combine attempts because every artifact name and API query is
    attempt-qualified.
 
 The provider record cannot attest its own completed writer job or artifact
