@@ -102,6 +102,18 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "missing conformance esbuild pin",
+      (snapshot: any) => {
+        delete snapshot.manifests["@orchestration-platform/conformance"].dependencies.esbuild;
+      },
+    ],
+    [
+      "changed conformance esbuild pin",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/conformance"].dependencies.esbuild = "0.28.3";
+      },
+    ],
+    [
       "runtime alias",
       (snapshot: any) => {
         snapshot.manifests["@orchestration-platform/credentials"].imports = {

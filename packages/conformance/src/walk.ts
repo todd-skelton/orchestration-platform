@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { copyFile, lstat, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify, types as nodeTypes } from "node:util";
+import { build, type Plugin } from "esbuild";
 
 const execFileAsync = promisify(execFile);
 
@@ -9,6 +12,12 @@ export interface Iss002WalkInput {
   readonly childScriptPath: string;
   readonly stableModuleUrl: string;
   readonly workingDirectory: string;
+}
+
+export interface Iss002CrossRootWalkInput {
+  readonly candidateRoot: string;
+  readonly executionParent: string;
+  readonly stableRoot: string;
 }
 
 export type Iss002WalkResult =
@@ -60,6 +69,116 @@ function detachedWalkInput(input: unknown): Iss002WalkInput | undefined {
     values[field] = descriptor.value;
   }
   return Object.freeze({ ...values });
+}
+
+function detachedCrossRootInput(input: unknown): Iss002CrossRootWalkInput | undefined {
+  if (
+    input === null ||
+    typeof input !== "object" ||
+    nodeTypes.isProxy(input) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+  )
+    return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const fields = ["candidateRoot", "executionParent", "stableRoot"] as const;
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.some((key) => typeof key !== "string") ||
+    (keys as string[]).sort().join("\0") !== [...fields].sort().join("\0")
+  )
+    return undefined;
+  const values: Record<(typeof fields)[number], string> = Object.create(null) as Record<
+    (typeof fields)[number],
+    string
+  >;
+  for (const field of fields) {
+    const descriptor = descriptors[field];
+    if (
+      !descriptor ||
+      !("value" in descriptor) ||
+      descriptor.enumerable !== true ||
+      typeof descriptor.value !== "string"
+    )
+      return undefined;
+    values[field] = descriptor.value;
+  }
+  return Object.freeze({ ...values });
+}
+
+function within(root: string, path: string): boolean {
+  const value = relative(root, path);
+  return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
+}
+
+const dynamicDependencyPattern =
+  /(?:\b(?:import|require)\s*\(|\b(?:createRequire|getBuiltinModule)\b)/;
+
+function confinedContractPlugin(packageRoot: string, realPackageRoot: string): Plugin {
+  return {
+    name: "confined-contract-source",
+    setup(context) {
+      context.onResolve({ filter: /.*/ }, (arguments_) => {
+        if (arguments_.kind === "entry-point") return undefined;
+        if (["node:crypto", "node:util"].includes(arguments_.path))
+          return { external: true, path: arguments_.path };
+        if (!arguments_.path.startsWith("."))
+          return { errors: [{ text: "contract import is outside the closed dependency census" }] };
+        const requested = resolve(arguments_.resolveDir, arguments_.path);
+        return within(packageRoot, requested)
+          ? undefined
+          : { errors: [{ text: "contract import escapes its candidate package root" }] };
+      });
+      context.onLoad({ filter: /.*/ }, async (arguments_) => {
+        const identity = await lstat(arguments_.path);
+        const real = await realpath(arguments_.path);
+        const expectedReal = resolve(
+          realPackageRoot,
+          relative(packageRoot, resolve(arguments_.path)),
+        );
+        if (
+          !identity.isFile() ||
+          identity.isSymbolicLink() ||
+          !within(realPackageRoot, real) ||
+          relative(expectedReal, real) !== ""
+        )
+          return { errors: [{ text: "contract source is not a confined regular file" }] };
+        return dynamicDependencyPattern.test(await readFile(arguments_.path, "utf8"))
+          ? { errors: [{ text: "contract source contains a dynamic dependency" }] }
+          : undefined;
+      });
+    },
+  };
+}
+
+async function bundleContracts(root: string, output: string): Promise<void> {
+  const packageRoot = resolve(root, "packages/contracts");
+  const packageIdentity = await lstat(packageRoot);
+  const realPackageRoot = await realpath(packageRoot);
+  const realRoot = await realpath(root);
+  if (
+    !packageIdentity.isDirectory() ||
+    packageIdentity.isSymbolicLink() ||
+    !within(realRoot, realPackageRoot)
+  )
+    throw new TypeError("contract-package-root:refused");
+  await build({
+    absWorkingDir: root,
+    bundle: true,
+    entryPoints: [resolve(packageRoot, "src/index.ts")],
+    external: [],
+    format: "esm",
+    logLevel: "silent",
+    minify: false,
+    outfile: output,
+    platform: "node",
+    plugins: [confinedContractPlugin(packageRoot, realPackageRoot)],
+    sourcemap: false,
+    target: "node24",
+    treeShaking: false,
+  });
+  const bundledSource = await readFile(output, "utf8");
+  if (dynamicDependencyPattern.test(bundledSource))
+    throw new TypeError("contract-dynamic-dependency:refused");
 }
 
 function childEnvironment(workingDirectory: string): NodeJS.ProcessEnv {
@@ -160,4 +279,97 @@ export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Is
       BigInt(value) > BigInt(maximum) ? value : maximum,
     ),
   };
+}
+
+export async function runIss002CrossRootWalk(
+  input: Iss002CrossRootWalkInput,
+): Promise<Iss002WalkResult> {
+  const detached = detachedCrossRootInput(input);
+  if (!detached) return refusal("walk:cross-root-input-refused");
+  const stableRoot = resolve(detached.stableRoot);
+  const candidateRoot = resolve(detached.candidateRoot);
+  const executionParent = resolve(detached.executionParent);
+  let executionRoot: string | undefined;
+  let result: Iss002WalkResult = refusal("walk:cross-root-build-refused");
+  try {
+    const [
+      stableIdentity,
+      candidateIdentity,
+      executionParentIdentity,
+      realStableRoot,
+      realCandidateRoot,
+      realExecutionParent,
+    ] = await Promise.all([
+      lstat(stableRoot),
+      lstat(candidateRoot),
+      lstat(executionParent),
+      realpath(stableRoot),
+      realpath(candidateRoot),
+      realpath(executionParent),
+    ]);
+    if (
+      !stableIdentity.isDirectory() ||
+      stableIdentity.isSymbolicLink() ||
+      !candidateIdentity.isDirectory() ||
+      candidateIdentity.isSymbolicLink() ||
+      !executionParentIdentity.isDirectory() ||
+      executionParentIdentity.isSymbolicLink() ||
+      within(realStableRoot, realCandidateRoot) ||
+      within(realCandidateRoot, realStableRoot) ||
+      within(realStableRoot, realExecutionParent) ||
+      within(realCandidateRoot, realExecutionParent) ||
+      within(realExecutionParent, realStableRoot) ||
+      within(realExecutionParent, realCandidateRoot)
+    )
+      result = refusal("walk:separate-regular-roots-required");
+    else {
+      executionRoot = await mkdtemp(resolve(executionParent, "orchestration-iss002-execution-"));
+      const realExecutionRoot = await realpath(executionRoot);
+      if (
+        within(realStableRoot, realExecutionRoot) ||
+        within(realCandidateRoot, realExecutionRoot) ||
+        within(realExecutionRoot, realStableRoot) ||
+        within(realExecutionRoot, realCandidateRoot)
+      )
+        result = refusal("walk:external-execution-root-required");
+      else {
+        const stableModule = resolve(executionRoot, "stable-contracts.mjs");
+        const candidateModule = resolve(executionRoot, "candidate-contracts.mjs");
+        const childScript = resolve(executionRoot, "iss002-walk-child.mjs");
+        await bundleContracts(stableRoot, stableModule);
+        await bundleContracts(candidateRoot, candidateModule);
+        const childSource = resolve(stableRoot, "packages/conformance/src/iss002-walk-child.mjs");
+        const [childIdentity, realChildSource] = await Promise.all([
+          lstat(childSource),
+          realpath(childSource),
+        ]);
+        const expectedChildSource = resolve(
+          realStableRoot,
+          "packages/conformance/src/iss002-walk-child.mjs",
+        );
+        if (
+          !childIdentity.isFile() ||
+          childIdentity.isSymbolicLink() ||
+          relative(expectedChildSource, realChildSource) !== ""
+        )
+          throw new TypeError("walk-child-source:refused");
+        await copyFile(childSource, childScript);
+        result = await runIss002WalkIntervals({
+          candidateModuleUrl: pathToFileURL(candidateModule).href,
+          childScriptPath: childScript,
+          stableModuleUrl: pathToFileURL(stableModule).href,
+          workingDirectory: executionRoot,
+        });
+      }
+    }
+  } catch {
+    result = refusal("walk:cross-root-build-refused");
+  }
+  if (executionRoot)
+    try {
+      await rm(executionRoot, { force: true, recursive: true });
+    } catch {
+      return refusal("walk:execution-root-cleanup-refused");
+    }
+  return result;
 }

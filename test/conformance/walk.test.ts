@@ -1,11 +1,41 @@
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { build } from "esbuild";
-import { runIss002WalkIntervals } from "../../packages/conformance/src/index.js";
+import {
+  runIss002CrossRootWalk,
+  runIss002WalkIntervals,
+} from "../../packages/conformance/src/index.js";
+
+const walkIo = vi.hoisted(() => ({ refuseExecutionCleanup: false }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...original,
+    async rm(...arguments_: Parameters<typeof original.rm>) {
+      if (
+        walkIo.refuseExecutionCleanup &&
+        String(arguments_[0]).includes("orchestration-iss002-execution-")
+      )
+        throw new Error("injected execution cleanup refusal");
+      return original.rm(...arguments_);
+    },
+  };
+});
 
 const temporaryRoots: string[] = [];
 const childScriptPath = resolve(
@@ -16,6 +46,17 @@ const childScriptPath = resolve(
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(resolve(tmpdir(), "orchestration-iss002-walk-"));
   temporaryRoots.push(root);
+  return root;
+}
+
+async function candidateRoot(): Promise<string> {
+  const root = await temporaryRoot();
+  await mkdir(resolve(root, "packages"));
+  await cp(
+    resolve(import.meta.dirname, "../../packages/contracts"),
+    resolve(root, "packages/contracts"),
+    { recursive: true },
+  );
   return root;
 }
 
@@ -50,10 +91,176 @@ async function child(root: string, source: string): Promise<string> {
 }
 
 afterEach(async () => {
+  walkIo.refuseExecutionCleanup = false;
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true })));
 });
 
 describe("ISS-002 1,000-record walk", () => {
+  test("builds stable and candidate contracts from separate roots into an external execution root", async () => {
+    const candidate = await candidateRoot();
+    const executionParent = await temporaryRoot();
+    const result = await runIss002CrossRootWalk({
+      candidateRoot: candidate,
+      executionParent,
+      stableRoot: resolve(import.meta.dirname, "../.."),
+    });
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.ok).toBe(true);
+    expect(await readdir(executionParent)).toEqual([]);
+  });
+
+  test("refuses equal, nested, escaping-import, and symlinked candidate roots", async () => {
+    const stableRoot = resolve(import.meta.dirname, "../..");
+    const executionParent = await temporaryRoot();
+    expect(
+      (await runIss002CrossRootWalk({ candidateRoot: stableRoot, executionParent, stableRoot })).ok,
+    ).toBe(false);
+    const candidate = await candidateRoot();
+    expect(
+      (
+        await runIss002CrossRootWalk({
+          candidateRoot: resolve(candidate, "packages"),
+          executionParent,
+          stableRoot: candidate,
+        })
+      ).ok,
+    ).toBe(false);
+    await writeFile(resolve(candidate, "outside.mjs"), "export const outside = true;\n", "utf8");
+    await writeFile(
+      resolve(candidate, "packages/contracts/src/index.ts"),
+      'export * from "../../../outside.mjs";\n',
+      "utf8",
+    );
+    expect(
+      (await runIss002CrossRootWalk({ candidateRoot: candidate, executionParent, stableRoot })).ok,
+    ).toBe(false);
+    await writeFile(
+      resolve(candidate, "packages/contracts/src/index.ts"),
+      'import "node:child_process";\nexport * from "./authority.js";\n',
+      "utf8",
+    );
+    expect(
+      (await runIss002CrossRootWalk({ candidateRoot: candidate, executionParent, stableRoot })).ok,
+    ).toBe(false);
+    const linkedCandidate = await temporaryRoot();
+    await mkdir(resolve(linkedCandidate, "packages"));
+    await symlink(
+      resolve(stableRoot, "packages/contracts"),
+      resolve(linkedCandidate, "packages/contracts"),
+      "junction",
+    );
+    expect(
+      (
+        await runIss002CrossRootWalk({
+          candidateRoot: linkedCandidate,
+          executionParent,
+          stableRoot,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(await readdir(executionParent)).toEqual([]);
+  });
+
+  test("refuses hostile cross-root inputs without invoking candidate reflection", async () => {
+    const base = {
+      candidateRoot: await candidateRoot(),
+      executionParent: await temporaryRoot(),
+      stableRoot: resolve(import.meta.dirname, "../.."),
+    };
+    let getterCalls = 0;
+    let proxyTrapCalls = 0;
+    const accessor = {
+      candidateRoot: base.candidateRoot,
+      executionParent: base.executionParent,
+    };
+    Object.defineProperty(accessor, "stableRoot", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return base.stableRoot;
+      },
+    });
+    const throwingProxy = new Proxy(base, {
+      ownKeys() {
+        proxyTrapCalls += 1;
+        throw new Error("proxy trap must not run");
+      },
+    });
+    const nonenumerable = { ...base };
+    Object.defineProperty(nonenumerable, "candidate", { value: true });
+    for (const input of [
+      undefined,
+      null,
+      { ...base, candidateRoot: 1 },
+      { ...base, candidate: true },
+      { ...base, [Symbol("candidate")]: true },
+      nonenumerable,
+      Object.assign(Object.create({ candidate: true }) as object, base),
+      vm.runInNewContext(`(${JSON.stringify(base)})`),
+      new Proxy(base, {}),
+      throwingProxy,
+      accessor,
+    ])
+      await expect(
+        runIss002CrossRootWalk(input as Parameters<typeof runIss002CrossRootWalk>[0]),
+      ).resolves.toEqual({ issues: ["walk:cross-root-input-refused"], ok: false });
+    expect(getterCalls).toBe(0);
+    expect(proxyTrapCalls).toBe(0);
+  });
+
+  test("refuses computed dynamic import and require dependencies before candidate execution", async () => {
+    const stableRoot = resolve(import.meta.dirname, "../..");
+    const candidate = await candidateRoot();
+    const executionParent = await temporaryRoot();
+    const candidateIndex = resolve(candidate, "packages/contracts/src/index.ts");
+    const stableIndex = await readFile(
+      resolve(stableRoot, "packages/contracts/src/index.ts"),
+      "utf8",
+    );
+    for (const dynamicSource of [
+      `const specifier = "node:" + "fs";
+const dynamicModule = await import(specifier);
+dynamicModule.writeFileSync(${JSON.stringify(resolve(candidate, "dynamic-import-executed"))}, "executed");
+`,
+      `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(resolve(candidate, "get-builtin-executed"))}, "executed");
+`,
+      `const load = process.getBuiltinModule("node:module").createRequire(import.meta.url);
+load("node:fs").writeFileSync(${JSON.stringify(resolve(candidate, "dynamic-require-executed"))}, "executed");
+`,
+      `process.get\\u0042uiltinModule("node:fs").writeFileSync(${JSON.stringify(resolve(candidate, "escaped-builtin-executed"))}, "executed");
+`,
+    ]) {
+      await writeFile(candidateIndex, `${dynamicSource}${stableIndex}`, "utf8");
+      expect(
+        (await runIss002CrossRootWalk({ candidateRoot: candidate, executionParent, stableRoot }))
+          .ok,
+      ).toBe(false);
+    }
+    await expect(readFile(resolve(candidate, "dynamic-import-executed"))).rejects.toThrow();
+    await expect(readFile(resolve(candidate, "get-builtin-executed"))).rejects.toThrow();
+    await expect(readFile(resolve(candidate, "dynamic-require-executed"))).rejects.toThrow();
+    await expect(readFile(resolve(candidate, "escaped-builtin-executed"))).rejects.toThrow();
+    expect(await readdir(executionParent)).toEqual([]);
+  });
+
+  test("fails closed when the external execution root cannot be removed", async () => {
+    const candidate = await candidateRoot();
+    const executionParent = await temporaryRoot();
+    walkIo.refuseExecutionCleanup = true;
+    const result = await runIss002CrossRootWalk({
+      candidateRoot: candidate,
+      executionParent,
+      stableRoot: resolve(import.meta.dirname, "../.."),
+    });
+    walkIo.refuseExecutionCleanup = false;
+    expect(result).toEqual({ issues: ["walk:execution-root-cleanup-refused"], ok: false });
+    expect(
+      (await readdir(executionParent)).some((name) =>
+        name.startsWith("orchestration-iss002-execution-"),
+      ),
+    ).toBe(true);
+  });
+
   test("runs parse, full validation, and selected-head equality in three fresh processes", async () => {
     const root = await temporaryRoot();
     const modules = await bundledModules(root);
