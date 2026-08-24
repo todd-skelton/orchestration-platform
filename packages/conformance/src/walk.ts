@@ -7,6 +7,7 @@ export interface Iss002WalkInput {
   readonly candidateModuleUrl: string;
   readonly childScriptPath: string;
   readonly stableModuleUrl: string;
+  readonly workingDirectory: string;
 }
 
 export type Iss002WalkResult =
@@ -21,10 +22,13 @@ function refusal(...issues: readonly string[]): Iss002WalkResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
 
-function childEnvironment(): NodeJS.ProcessEnv {
+function childEnvironment(workingDirectory: string): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = Object.create(null) as NodeJS.ProcessEnv;
-  for (const key of ["SystemRoot", "WINDIR", "TEMP", "TMP"])
+  for (const key of ["SystemRoot", "WINDIR"])
     if (process.env[key]) environment[key] = process.env[key];
+  environment.TEMP = workingDirectory;
+  environment.TMP = workingDirectory;
+  environment.TMPDIR = workingDirectory;
   environment.LANG = "C";
   environment.LC_ALL = "C";
   environment.TZ = "UTC";
@@ -72,9 +76,9 @@ export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Is
         process.execPath,
         [input.childScriptPath, input.stableModuleUrl, input.candidateModuleUrl],
         {
-          cwd: process.cwd(),
+          cwd: input.workingDirectory,
           encoding: "utf8",
-          env: childEnvironment(),
+          env: childEnvironment(input.workingDirectory),
           maxBuffer: 1024 * 1024,
           timeout: 15_000,
           windowsHide: true,

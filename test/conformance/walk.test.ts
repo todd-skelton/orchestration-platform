@@ -59,6 +59,7 @@ describe("ISS-002 1,000-record walk", () => {
     const result = await runIss002WalkIntervals({
       ...modules,
       childScriptPath,
+      workingDirectory: root,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -81,6 +82,9 @@ describe("ISS-002 1,000-record walk", () => {
       `import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(audit)}, String(process.pid) + "\\n");
 const leaked = Object.keys(process.env).filter((key) => /^(?:ACTIONS_|GITHUB_)/.test(key));
+if (process.cwd() !== ${JSON.stringify(root)}) leaked.push("cwd");
+for (const key of ["TEMP", "TMP", "TMPDIR"])
+  if (process.env[key] !== ${JSON.stringify(root)}) leaked.push(key);
 process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues:leaked,recordCount:"1000"}));
 `,
     );
@@ -88,6 +92,7 @@ process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues:leaked,recor
       candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
       childScriptPath: script,
       stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
     });
     expect(result.ok).toBe(true);
     const pids = (await readFile(audit, "utf8")).trim().split("\n");
@@ -112,6 +117,7 @@ process.stdout.write(JSON.stringify({durationNanoseconds:values[index],issues:[]
       candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
       childScriptPath: script,
       stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
     });
     expect(result).toMatchObject({
       durationsNanoseconds: ["1", "10", "100"],
@@ -139,6 +145,7 @@ process.stdout.write(JSON.stringify({durationNanoseconds:values[index],issues:[]
           candidateModuleUrl: modules.stableModuleUrl,
           childScriptPath,
           stableModuleUrl: modules.stableModuleUrl,
+          workingDirectory: root,
         })
       ).ok,
     ).toBe(false);
@@ -157,6 +164,7 @@ export function validateAuthorityHistoryChain() { return []; }
           candidateModuleUrl: pathToFileURL(tamperingCandidate).href,
           childScriptPath,
           stableModuleUrl: modules.stableModuleUrl,
+          workingDirectory: root,
         })
       ).ok,
     ).toBe(true);
@@ -184,6 +192,7 @@ export function validateAuthorityHistoryChain() { return []; }
         candidateModuleUrl: pathToFileURL(candidate).href,
         childScriptPath,
         stableModuleUrl: modules.stableModuleUrl,
+        workingDirectory: root,
       });
       expect(result.ok).toBe(false);
     }
@@ -201,6 +210,7 @@ export function validateAuthorityHistoryChain() { return []; }
         candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
         childScriptPath: await child(root, source),
         stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+        workingDirectory: root,
       });
       expect(result.ok).toBe(false);
     }
@@ -220,6 +230,7 @@ process.exit(1);
       candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
       childScriptPath: script,
       stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
     });
     expect(result.ok).toBe(false);
     expect((await readFile(audit, "utf8")).trim().split("\n")).toHaveLength(1);
