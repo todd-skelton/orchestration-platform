@@ -83,7 +83,15 @@ function detachedPaths(input: unknown): readonly string[] | undefined {
   return values;
 }
 
-async function fileRow(root: string, path: string): Promise<ContractRecord> {
+export interface ConformanceBundleFile {
+  readonly bytes: Uint8Array;
+  readonly row: ContractRecord;
+}
+
+export async function readConformanceBundleFile(
+  root: string,
+  path: string,
+): Promise<ConformanceBundleFile> {
   if (!isContractRelativePath(path)) throw new TypeError("path:invalid");
   const components = path.split("/");
   const absolute = resolve(root, ...components);
@@ -120,10 +128,20 @@ async function fileRow(root: string, path: string): Promise<ContractRecord> {
     await handle.close();
   }
   return Object.freeze({
-    byteLength: String(bytes.byteLength),
-    path,
-    sha256Digest: sha256Bytes(bytes),
+    bytes,
+    row: Object.freeze({
+      byteLength: String(bytes.byteLength),
+      path,
+      sha256Digest: sha256Bytes(bytes),
+    }),
   });
+}
+
+export async function readConformanceBundleFileRow(
+  root: string,
+  path: string,
+): Promise<ContractRecord> {
+  return (await readConformanceBundleFile(root, path)).row;
 }
 
 export async function createConformanceBundleManifest(
@@ -138,7 +156,7 @@ export async function createConformanceBundleManifest(
     if (paths.some((path, index) => index > 0 && utf8Order(paths[index - 1]!, path) >= 0))
       return refusal("paths:order-refused");
     const files: ContractRecord[] = [];
-    for (const path of paths) files.push(await fileRow(root, path));
+    for (const path of paths) files.push(await readConformanceBundleFileRow(root, path));
     const manifest = Object.freeze({
       files: Object.freeze(files),
       purpose,

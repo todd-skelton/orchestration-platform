@@ -47,6 +47,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       path.startsWith("packages/conformance/src/"),
     );
     expect(harnessSources).toEqual([
+      "packages/conformance/src/candidate-materialization.ts",
       "packages/conformance/src/contracts.ts",
       "packages/conformance/src/github-actions.ts",
       "packages/conformance/src/github-actions/index.ts",

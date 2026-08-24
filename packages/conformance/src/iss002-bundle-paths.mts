@@ -1,6 +1,7 @@
 export const iss002HarnessPaths = Object.freeze([
   "package.json",
   "packages/conformance/package.json",
+  "packages/conformance/src/candidate-materialization.ts",
   "packages/conformance/src/contracts.ts",
   "packages/conformance/src/github-actions.ts",
   "packages/conformance/src/github-actions/index.ts",
