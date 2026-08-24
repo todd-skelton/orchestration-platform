@@ -105,7 +105,18 @@ describe("GitHub protection projection", () => {
       { rulesetPages: [[ruleset(["deletion"], { enforcement: "evaluate" })]] },
       { rulesetPages: [[ruleset(["deletion"], { include: ["refs/heads/ma*"] })]] },
       { rulesetPaginationTerminal: false },
+      { rulesetPaginationTerminal: "yes" },
       { branchProtectionStatus: "UNREADABLE" },
+      {
+        branchProtection: null,
+        branchProtectionStatus: "TIMEOUT",
+        rulesetPages: [[ruleset(["deletion", "non_fast_forward", "pull_request"])]],
+      },
+      {
+        branchProtection: null,
+        branchProtectionStatus: undefined,
+        rulesetPages: [[ruleset(["deletion", "non_fast_forward", "pull_request"])]],
+      },
       { targetRef: "refs/heads/candidate" },
     ])
       expect(project(mutation).ok).toBe(false);

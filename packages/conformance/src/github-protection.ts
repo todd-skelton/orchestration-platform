@@ -200,7 +200,9 @@ export function projectGithubProtectionSnapshot(
 ): GithubProtectionProjectionResult {
   try {
     if (input.targetRef !== "refs/heads/main") return refusal("targetRef:mismatch");
-    if (!input.rulesetPaginationTerminal) return refusal("rulesets:pagination-incomplete");
+    if (input.rulesetPaginationTerminal !== true) return refusal("rulesets:pagination-incomplete");
+    if (!["FOUND", "NOT_FOUND", "UNREADABLE"].includes(input.branchProtectionStatus as string))
+      return refusal("branchProtection:status-refused");
     if (input.branchProtectionStatus === "UNREADABLE")
       return refusal("branchProtection:unreadable");
     const pages = exactArray(input.rulesetPages, 1024);
