@@ -21,9 +21,33 @@ async function filesBelow(relativeRoot: string): Promise<readonly string[]> {
 describe("stable ISS-002 bundle path censuses", () => {
   test("partitions every conformance source byte into harness or test ownership", async () => {
     const conformanceSources = await filesBelow("packages/conformance/src");
-    const owned = [...conformance.iss002HarnessPaths, ...conformance.iss002TestBundlePaths]
-      .filter((path) => path.startsWith("packages/conformance/src/"))
-      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    const harnessSources = conformance.iss002HarnessPaths.filter((path) =>
+      path.startsWith("packages/conformance/src/"),
+    );
+    const testSources = conformance.iss002TestBundlePaths.filter((path) =>
+      path.startsWith("packages/conformance/src/"),
+    );
+    expect(harnessSources).toEqual([
+      "packages/conformance/src/contracts.ts",
+      "packages/conformance/src/github-actions.ts",
+      "packages/conformance/src/github-actions/index.ts",
+      "packages/conformance/src/github-artifacts.ts",
+      "packages/conformance/src/github-protection.ts",
+      "packages/conformance/src/github-terminal.ts",
+      "packages/conformance/src/index.ts",
+      "packages/conformance/src/manifest.ts",
+      "packages/conformance/src/reducer.ts",
+      "packages/conformance/src/stable-bundles.ts",
+      "packages/conformance/src/stable.ts",
+      "packages/conformance/src/walk.ts",
+    ]);
+    expect(testSources).toEqual([
+      "packages/conformance/src/iss002-vector-generator.mjs",
+      "packages/conformance/src/iss002-walk-child.mjs",
+    ]);
+    const owned = [...harnessSources, ...testSources].sort((left, right) =>
+      Buffer.compare(Buffer.from(left), Buffer.from(right)),
+    );
     expect(owned).toEqual(conformanceSources);
     expect(new Set(owned).size).toBe(owned.length);
   });
