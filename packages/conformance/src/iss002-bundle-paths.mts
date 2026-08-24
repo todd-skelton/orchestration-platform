@@ -14,6 +14,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/conformance/src/linux-account-custody.ts",
   "packages/conformance/src/linux-dac-custody.ts",
   "packages/conformance/src/linux-execution-cleanup.py",
+  "packages/conformance/src/linux-execution-custody.ts",
   "packages/conformance/src/linux-pidfd-quiesce.py",
   "packages/conformance/src/linux-principal-account.py",
   "packages/conformance/src/linux-principal-dac.py",
