@@ -1,4 +1,5 @@
-import { lstat, readFile } from "node:fs/promises";
+import { constants, type BigIntStats } from "node:fs";
+import { lstat, open } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { types as nodeTypes } from "node:util";
 import { isContractRelativePath, type ContractRecord } from "@orchestration-platform/contracts";
@@ -19,6 +20,31 @@ function below(root: string, path: string): boolean {
 
 function utf8Order(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+async function directoryChain(root: string, components: readonly string[]): Promise<BigIntStats[]> {
+  const directories = [root];
+  for (let index = 1; index < components.length; index += 1)
+    directories.push(resolve(root, ...components.slice(0, index)));
+  const identities: BigIntStats[] = [];
+  for (const directory of directories) {
+    const identity = await lstat(directory, { bigint: true });
+    if (!identity.isDirectory() || identity.isSymbolicLink())
+      throw new TypeError("path:regular-directory-chain-required");
+    identities.push(identity);
+  }
+  return identities;
 }
 
 function detachedPaths(input: unknown): readonly string[] | undefined {
@@ -62,28 +88,37 @@ async function fileRow(root: string, path: string): Promise<ContractRecord> {
   const components = path.split("/");
   const absolute = resolve(root, ...components);
   if (!below(root, absolute)) throw new TypeError("path:outside-root");
-  const rootStat = await lstat(root);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
-    throw new TypeError("root:regular-directory-required");
-  for (let index = 1; index < components.length; index += 1) {
-    const parent = await lstat(resolve(root, ...components.slice(0, index)));
-    if (!parent.isDirectory() || parent.isSymbolicLink())
-      throw new TypeError("path:regular-directory-chain-required");
-  }
-  const before = await lstat(absolute);
-  if (!before.isFile() || before.isSymbolicLink())
+  const directoriesBefore = await directoryChain(root, components);
+  const pathBefore = await lstat(absolute, { bigint: true });
+  if (!pathBefore.isFile() || pathBefore.isSymbolicLink())
     throw new TypeError("path:regular-file-required");
-  const bytes = Uint8Array.from(await readFile(absolute));
-  const after = await lstat(absolute);
-  if (
-    !after.isFile() ||
-    after.isSymbolicLink() ||
-    before.dev !== after.dev ||
-    before.ino !== after.ino ||
-    before.size !== after.size ||
-    before.mtimeMs !== after.mtimeMs
-  )
-    throw new TypeError("path:moved-during-read");
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const handle = await open(absolute, constants.O_RDONLY | noFollow);
+  let bytes: Uint8Array;
+  try {
+    const handleBefore = await handle.stat({ bigint: true });
+    if (!handleBefore.isFile() || !sameIdentity(pathBefore, handleBefore))
+      throw new TypeError("path:moved-before-read");
+    bytes = Uint8Array.from(await handle.readFile());
+    const handleAfter = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(absolute, { bigint: true });
+    const directoriesAfter = await directoryChain(root, components);
+    if (
+      !handleAfter.isFile() ||
+      !pathAfter.isFile() ||
+      pathAfter.isSymbolicLink() ||
+      !sameIdentity(handleBefore, handleAfter) ||
+      !sameIdentity(handleAfter, pathAfter) ||
+      directoriesBefore.length !== directoriesAfter.length ||
+      directoriesBefore.some(
+        (identity, index) => !sameIdentity(identity, directoriesAfter[index]!),
+      ) ||
+      BigInt(bytes.byteLength) !== handleAfter.size
+    )
+      throw new TypeError("path:moved-during-read");
+  } finally {
+    await handle.close();
+  }
   return Object.freeze({
     byteLength: String(bytes.byteLength),
     path,

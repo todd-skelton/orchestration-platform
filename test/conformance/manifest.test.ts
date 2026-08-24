@@ -1,9 +1,40 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import vm from "node:vm";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import * as conformance from "../../packages/conformance/src/index.js";
+
+const manifestIo = vi.hoisted(() => ({
+  beforeOpen: undefined as undefined | (() => Promise<void>),
+  beforeRead: undefined as undefined | (() => Promise<void>),
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...original,
+    async open(...arguments_: Parameters<typeof original.open>) {
+      const openHook = manifestIo.beforeOpen;
+      manifestIo.beforeOpen = undefined;
+      if (openHook) await openHook();
+      const handle = await original.open(...arguments_);
+      return new Proxy(handle, {
+        get(target, key) {
+          if (key === "readFile")
+            return async (...readArguments: Parameters<typeof handle.readFile>) => {
+              const hook = manifestIo.beforeRead;
+              manifestIo.beforeRead = undefined;
+              if (hook) await hook();
+              return handle.readFile(...readArguments);
+            };
+          const value = Reflect.get(target, key, target) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+});
 
 const roots: string[] = [];
 
@@ -17,6 +48,8 @@ async function fixture(): Promise<string> {
 }
 
 afterEach(async () => {
+  manifestIo.beforeOpen = undefined;
+  manifestIo.beforeRead = undefined;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -74,6 +107,45 @@ describe("stable bundle manifests", () => {
     await symlink(outside, resolve(root, "linked"), "junction");
     expect(
       (await conformance.createConformanceBundleManifest(root, ["linked/a.ts"], "HARNESS")).ok,
+    ).toBe(false);
+  });
+
+  test("refuses a symlinked manifest root", async () => {
+    const root = await fixture();
+    const container = await mkdtemp(resolve(tmpdir(), "orchestration-bundle-link-root-"));
+    roots.push(container);
+    const linkedRoot = resolve(container, "linked-root");
+    await symlink(root, linkedRoot, "junction");
+    expect(
+      (await conformance.createConformanceBundleManifest(linkedRoot, ["empty"], "HARNESS")).ok,
+    ).toBe(false);
+  });
+
+  test("refuses a parent directory replaced while an opened file is being read", async () => {
+    const root = await fixture();
+    const outside = await mkdtemp(resolve(tmpdir(), "orchestration-bundle-race-outside-"));
+    roots.push(outside);
+    await writeFile(resolve(outside, "a.ts"), "outside\n", "utf8");
+    manifestIo.beforeRead = async () => {
+      await rename(resolve(root, "src"), resolve(root, "original-src"));
+      await symlink(outside, resolve(root, "src"), "junction");
+    };
+    expect(
+      (await conformance.createConformanceBundleManifest(root, ["src/a.ts"], "HARNESS")).ok,
+    ).toBe(false);
+  });
+
+  test("refuses a parent directory replaced before the file is opened", async () => {
+    const root = await fixture();
+    const outside = await mkdtemp(resolve(tmpdir(), "orchestration-bundle-open-race-"));
+    roots.push(outside);
+    await writeFile(resolve(outside, "a.ts"), "outside\n", "utf8");
+    manifestIo.beforeOpen = async () => {
+      await rename(resolve(root, "src"), resolve(root, "original-src"));
+      await symlink(outside, resolve(root, "src"), "junction");
+    };
+    expect(
+      (await conformance.createConformanceBundleManifest(root, ["src/a.ts"], "HARNESS")).ok,
     ).toBe(false);
   });
 
