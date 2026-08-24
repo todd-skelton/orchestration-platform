@@ -46,11 +46,14 @@ function refusal(...issues: readonly string[]): {
 }
 
 function exactBytes(input: unknown): Uint8Array | undefined {
-  return input instanceof Uint8Array &&
-    !nodeTypes.isProxy(input) &&
-    Object.getPrototypeOf(input) === Uint8Array.prototype
-    ? input
-    : undefined;
+  try {
+    if (input === null || typeof input !== "object" || nodeTypes.isProxy(input)) return undefined;
+    return input instanceof Uint8Array && Object.getPrototypeOf(input) === Uint8Array.prototype
+      ? input
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function u16(view: DataView, offset: number): number {
@@ -74,6 +77,17 @@ function checkedEnd(offset: number, length: number, bound: number): number {
   )
     throw new RangeError("zip:range-refused");
   return end;
+}
+
+function rejectZip64Extra(view: DataView, offset: number, length: number, bound: number): void {
+  const end = checkedEnd(offset, length, bound);
+  while (offset < end) {
+    if (offset + 4 > end) throw new TypeError("zip:extra-field-truncated");
+    const id = u16(view, offset);
+    const fieldLength = u16(view, offset + 2);
+    offset = checkedEnd(offset + 4, fieldLength, end);
+    if (id === 0x0001) throw new TypeError("zip:zip64-extra-refused");
+  }
 }
 
 function decodeName(bytes: Uint8Array): string {
@@ -150,6 +164,7 @@ function centralEntries(bytes: Uint8Array, view: DataView, eocd: number): readon
   for (let index = 0; index < entryCount; index += 1) {
     if (u32(view, offset) !== 0x02014b50) throw new TypeError("zip:central-signature-refused");
     const versionMadeBy = u16(view, offset + 4);
+    const versionNeeded = u16(view, offset + 6);
     const flags = u16(view, offset + 8);
     const compression = u16(view, offset + 10);
     const crc = u32(view, offset + 16);
@@ -163,12 +178,14 @@ function centralEntries(bytes: Uint8Array, view: DataView, eocd: number): readon
     const localOffset = u32(view, offset + 42);
     if (startDisk !== 0 || [compressedSize, uncompressedSize, localOffset].includes(0xffffffff))
       throw new TypeError("zip:zip64-refused");
+    if (versionNeeded > 20) throw new TypeError("zip:version-needed-refused");
     if ((flags & 0x0001) !== 0 || (flags & ~0x0808) !== 0) throw new TypeError("zip:flags-refused");
     if (!(compression === 0 || compression === 8)) throw new TypeError("zip:compression-refused");
     if (uncompressedSize > maximumFileBytes || compressedSize > maximumArchiveBytes)
       throw new TypeError("zip:file-bound-refused");
     const nameStart = offset + 46;
     const nameEnd = checkedEnd(nameStart, nameLength, eocd);
+    rejectZip64Extra(view, nameEnd, extraLength, eocd);
     const next = checkedEnd(nameEnd, extraLength + commentLength, eocd);
     const nameBytes = bytes.slice(nameStart, nameEnd);
     const rawName = new TextDecoder("utf-8", { fatal: true }).decode(nameBytes);
@@ -207,6 +224,7 @@ function extractEntry(
 ): { readonly end: number; readonly output: Uint8Array } {
   const offset = entry.localOffset;
   if (u32(view, offset) !== 0x04034b50) throw new TypeError("zip:local-signature-refused");
+  const versionNeeded = u16(view, offset + 4);
   const flags = u16(view, offset + 6);
   const compression = u16(view, offset + 8);
   const localCrc = u32(view, offset + 14);
@@ -216,6 +234,7 @@ function extractEntry(
   const extraLength = u16(view, offset + 28);
   if (flags !== entry.flags || compression !== entry.compression)
     throw new TypeError("zip:local-metadata-mismatch");
+  if (versionNeeded > 20) throw new TypeError("zip:local-version-needed-refused");
   if (
     (flags & 0x0008) === 0 &&
     (localCrc !== entry.crc ||
@@ -223,10 +242,16 @@ function extractEntry(
       localUncompressed !== entry.uncompressedSize)
   )
     throw new TypeError("zip:local-size-or-crc-mismatch");
+  if (
+    (flags & 0x0008) !== 0 &&
+    (localCrc !== 0 || localCompressed !== 0 || localUncompressed !== 0)
+  )
+    throw new TypeError("zip:data-descriptor-local-triplet-refused");
   const nameStart = offset + 30;
   const nameEnd = checkedEnd(nameStart, nameLength, centralStart);
   if (!Buffer.from(bytes.slice(nameStart, nameEnd)).equals(Buffer.from(entry.nameBytes)))
     throw new TypeError("zip:local-name-mismatch");
+  rejectZip64Extra(view, nameEnd, extraLength, centralStart);
   const dataStart = checkedEnd(nameEnd, extraLength, centralStart);
   const dataEnd = checkedEnd(dataStart, entry.compressedSize, centralStart);
   const compressed = bytes.slice(dataStart, dataEnd);

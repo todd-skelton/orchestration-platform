@@ -25,10 +25,17 @@ function crc32(bytes: Uint8Array): number {
 interface ZipEntry {
   readonly bytes: Uint8Array;
   readonly descriptor?: boolean;
+  readonly descriptorLocal?: Readonly<{
+    crc?: number;
+    compressedSize?: number;
+    uncompressedSize?: number;
+  }>;
+  readonly extra?: Uint8Array;
   readonly flags?: number;
   readonly method?: number;
   readonly mode?: number;
   readonly name: string;
+  readonly versionNeeded?: number;
 }
 
 function zip(entries: readonly ZipEntry[]): Uint8Array {
@@ -37,6 +44,7 @@ function zip(entries: readonly ZipEntry[]): Uint8Array {
   let localOffset = 0;
   for (const entry of entries) {
     const name = Buffer.from(entry.name, "utf8");
+    const extra = Buffer.from(entry.extra ?? new Uint8Array());
     const rawPayload = Buffer.from(entry.bytes);
     const checksum = crc32(entry.bytes);
     const flags = entry.flags ?? (entry.descriptor ? 0x0808 : 0x0800);
@@ -44,23 +52,31 @@ function zip(entries: readonly ZipEntry[]): Uint8Array {
     const payload = method === 8 ? deflateRawSync(rawPayload) : rawPayload;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(entry.versionNeeded ?? 20, 4);
     local.writeUInt16LE(flags, 6);
     local.writeUInt16LE(method, 8);
-    local.writeUInt32LE(entry.descriptor ? 0 : checksum, 14);
-    local.writeUInt32LE(entry.descriptor ? 0 : payload.byteLength, 18);
-    local.writeUInt32LE(entry.descriptor ? 0 : rawPayload.byteLength, 22);
+    local.writeUInt32LE(entry.descriptor ? (entry.descriptorLocal?.crc ?? 0) : checksum, 14);
+    local.writeUInt32LE(
+      entry.descriptor ? (entry.descriptorLocal?.compressedSize ?? 0) : payload.byteLength,
+      18,
+    );
+    local.writeUInt32LE(
+      entry.descriptor ? (entry.descriptorLocal?.uncompressedSize ?? 0) : rawPayload.byteLength,
+      22,
+    );
     local.writeUInt16LE(name.byteLength, 26);
+    local.writeUInt16LE(extra.byteLength, 28);
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(0x0314, 4);
-    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(entry.versionNeeded ?? 20, 6);
     central.writeUInt16LE(flags, 8);
     central.writeUInt16LE(method, 10);
     central.writeUInt32LE(checksum, 16);
     central.writeUInt32LE(payload.byteLength, 20);
     central.writeUInt32LE(rawPayload.byteLength, 24);
     central.writeUInt16LE(name.byteLength, 28);
+    central.writeUInt16LE(extra.byteLength, 30);
     central.writeUInt32LE((entry.mode ?? 0o100644) * 65_536, 38);
     central.writeUInt32LE(localOffset, 42);
     const descriptor = entry.descriptor ? Buffer.alloc(16) : Buffer.alloc(0);
@@ -70,9 +86,14 @@ function zip(entries: readonly ZipEntry[]): Uint8Array {
       descriptor.writeUInt32LE(payload.byteLength, 8);
       descriptor.writeUInt32LE(rawPayload.byteLength, 12);
     }
-    localChunks.push(local, name, payload, descriptor);
-    centralChunks.push(central, name);
-    localOffset += local.byteLength + name.byteLength + payload.byteLength + descriptor.byteLength;
+    localChunks.push(local, name, extra, payload, descriptor);
+    centralChunks.push(central, name, extra);
+    localOffset +=
+      local.byteLength +
+      name.byteLength +
+      extra.byteLength +
+      payload.byteLength +
+      descriptor.byteLength;
   }
   const central = Buffer.concat(centralChunks);
   const end = Buffer.alloc(22);
@@ -213,6 +234,35 @@ describe("GitHub artifact archives", () => {
       zip([{ bytes: text("link"), mode: 0o120777, name: "link" }]),
       zip([{ bytes: text("unsupported"), method: 99, name: "file" }]),
       zip([{ bytes: text("secret"), flags: 0x0801, name: "file" }]),
+      zip([{ bytes: text("zip64-version"), name: "file", versionNeeded: 45 }]),
+      zip([{ bytes: text("zip64-extra"), extra: new Uint8Array([1, 0, 0, 0]), name: "file" }]),
+      zip([
+        {
+          bytes: text("descriptor-crc"),
+          descriptor: true,
+          descriptorLocal: { crc: 1 },
+          method: 8,
+          name: "file",
+        },
+      ]),
+      zip([
+        {
+          bytes: text("descriptor-compressed"),
+          descriptor: true,
+          descriptorLocal: { compressedSize: 1 },
+          method: 8,
+          name: "file",
+        },
+      ]),
+      zip([
+        {
+          bytes: text("descriptor-uncompressed"),
+          descriptor: true,
+          descriptorLocal: { uncompressedSize: 1 },
+          method: 8,
+          name: "file",
+        },
+      ]),
       zip([
         { bytes: text("one"), name: "same" },
         { bytes: text("two"), name: "same" },
@@ -259,10 +309,19 @@ describe("GitHub artifact archives", () => {
 
   test("is total for hostile archive inputs", () => {
     const hostile = new Proxy(new Uint8Array(), {});
-    for (const input of [null, undefined, [], hostile]) {
+    const throwingPrototype = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw new Error("trap");
+        },
+      },
+    );
+    for (const input of [null, undefined, [], hostile, throwingPrototype]) {
       expect(() => github.extractGithubArtifactZip(input)).not.toThrow();
       expect(() => github.verifyGithubObservationArchive(input)).not.toThrow();
       expect(() => github.verifyGithubAggregateArchive(input, registry)).not.toThrow();
+      expect(() => github.verifyGithubArtifactIdentity(input, d("1"), "0")).not.toThrow();
     }
   });
 });
