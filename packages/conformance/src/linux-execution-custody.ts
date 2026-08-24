@@ -50,6 +50,7 @@ interface CreatedRecord {
 }
 
 export interface LinuxExecutionCustodyOptions {
+  readonly accountStateRoot: string;
   readonly cleanupHelperPath: string;
   readonly commandRunner?: (request: LinuxDacCommandRequest) => Promise<unknown>;
   readonly executionParent: string;
@@ -419,12 +420,25 @@ async function createCore(
   const { stableGid, stableUid } = dependencies;
   if (stableUid <= 0 || stableGid <= 0)
     throw new TypeError("linux-execution:stable-unprivileged-required");
+  const accountStateRoot = await realpath(resolve(options.accountStateRoot));
   const stateRoot = await realpath(resolve(options.stateRoot));
   const executionParent = await realpath(resolve(options.executionParent));
-  if (within(stateRoot, executionParent) || within(executionParent, stateRoot))
+  if (
+    within(stateRoot, executionParent) ||
+    within(executionParent, stateRoot) ||
+    within(accountStateRoot, executionParent) ||
+    within(executionParent, accountStateRoot) ||
+    within(accountStateRoot, stateRoot) ||
+    within(stateRoot, accountStateRoot)
+  )
     throw new TypeError("linux-execution:root-separation-refused");
+  const accountStateProfile = await lstat(accountStateRoot, { bigint: true });
   const stateProfile = await lstat(stateRoot, { bigint: true });
   if (
+    !accountStateProfile.isDirectory() ||
+    accountStateProfile.uid !== BigInt(stableUid) ||
+    accountStateProfile.gid !== BigInt(stableGid) ||
+    (accountStateProfile.mode & 0o7777n) !== 0o700n ||
     !stateProfile.isDirectory() ||
     stateProfile.uid !== BigInt(stableUid) ||
     stateProfile.gid !== BigInt(stableGid) ||
@@ -478,7 +492,13 @@ async function createCore(
   async function requireCustody(): Promise<void> {
     if (closed) throw new TypeError("linux-execution:closed");
     const state = await lstat(stateRoot, { bigint: true });
+    const accountState = await lstat(accountStateRoot, { bigint: true });
     if (
+      accountState.dev !== accountStateProfile.dev ||
+      accountState.ino !== accountStateProfile.ino ||
+      accountState.mode !== accountStateProfile.mode ||
+      accountState.uid !== accountStateProfile.uid ||
+      accountState.gid !== accountStateProfile.gid ||
       state.dev !== stateProfile.dev ||
       state.ino !== stateProfile.ino ||
       state.mode !== stateProfile.mode ||
@@ -531,11 +551,11 @@ async function createCore(
   async function requireAccountPair(principal: AllocationRecord["principal"]): Promise<void> {
     const expected = JSON.stringify(principal);
     await readAccountRecord(
-      resolve(stateRoot, `${accountIntentPrefix}${principal.name}.json`),
+      resolve(accountStateRoot, `${accountIntentPrefix}${principal.name}.json`),
       expected,
     );
     await readAccountRecord(
-      resolve(stateRoot, `${accountUsedPrefix}${principal.name}.json`),
+      resolve(accountStateRoot, `${accountUsedPrefix}${principal.name}.json`),
       expected,
     );
   }
@@ -581,7 +601,7 @@ async function createCore(
 
   async function readSource(pathInput: string): Promise<{ bytes: Buffer; identity: Identity }> {
     const path = await realpath(resolve(pathInput));
-    if (within(stateRoot, path) || within(executionParent, path))
+    if (within(accountStateRoot, path) || within(stateRoot, path) || within(executionParent, path))
       throw new TypeError("linux-execution:source-root-refused");
     const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
@@ -819,7 +839,8 @@ async function createCore(
       const principal = detachedPrincipal(input.principal);
       if (
         !principal ||
-        principal.intentPath !== resolve(stateRoot, `${accountIntentPrefix}${principal.name}.json`)
+        principal.intentPath !==
+          resolve(accountStateRoot, `${accountIntentPrefix}${principal.name}.json`)
       )
         throw new TypeError("linux-execution:principal-refused");
       const principalRecord = Object.freeze({

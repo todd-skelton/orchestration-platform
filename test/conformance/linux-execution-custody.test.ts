@@ -1,9 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-const mocked = vi.hoisted(() => ({ base: "", events: [] as string[] }));
+const mocked = vi.hoisted(() => ({
+  accountMode: 0o700n,
+  accountRoot: "",
+  base: "",
+  events: [] as string[],
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -16,7 +21,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         if (property === "mode")
           return (
             ((Reflect.get(target, property, receiver) as bigint) & ~0o7777n) |
-            (file ? 0o600n : 0o700n)
+            (file
+              ? 0o600n
+              : resolve(path) === resolve(mocked.accountRoot)
+                ? mocked.accountMode
+                : 0o700n)
           );
         return Reflect.get(target, property, receiver);
       },
@@ -64,6 +73,7 @@ import {
   createLinuxExecutionCustody,
   createLinuxExecutionCustodyTestFixture,
   type LinuxExecutionCustody,
+  type LinuxExecutionCustodyOptions,
 } from "../../packages/conformance/src/linux-execution-custody.js";
 
 const roots: string[] = [];
@@ -81,6 +91,8 @@ const helperProfile: LinuxDacHelperProfile = Object.freeze({
 afterEach(async () => {
   await Promise.allSettled(custodies.splice(0).map(async (custody) => await custody.close()));
   mocked.base = "";
+  mocked.accountMode = 0o700n;
+  mocked.accountRoot = "";
   mocked.events = [];
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
   vi.restoreAllMocks();
@@ -90,10 +102,12 @@ async function fixture() {
   const base = await mkdtemp(resolve(tmpdir(), "orchestration-execution-custody-"));
   roots.push(base);
   mocked.base = base;
+  const accountStateRoot = resolve(base, "account-state");
+  mocked.accountRoot = accountStateRoot;
   const stateRoot = resolve(base, "state");
   const executionParent = resolve(base, "executions");
   const sourceRoot = resolve(base, "sources");
-  for (const path of [stateRoot, executionParent, sourceRoot]) {
+  for (const path of [accountStateRoot, stateRoot, executionParent, sourceRoot]) {
     await mkdir(path);
     await chmod(path, 0o700);
   }
@@ -103,7 +117,7 @@ async function fixture() {
   await writeFile(rpcRunnerPath, "export const rpc = true;", { mode: 0o600 });
   const principal: LinuxAccountPrincipal = Object.freeze({
     gid: "1100000001",
-    intentPath: resolve(stateRoot, "linux-principal-intent-orch6-0000000000000001.json"),
+    intentPath: resolve(accountStateRoot, "linux-principal-intent-orch6-0000000000000001.json"),
     name: "orch6-0000000000000001",
     uid: "1000001",
   });
@@ -114,13 +128,21 @@ async function fixture() {
   });
   await writeFile(principal.intentPath, principalBytes, { mode: 0o600 });
   await writeFile(
-    resolve(stateRoot, `linux-principal-used-${principal.name}.json`),
+    resolve(accountStateRoot, `linux-principal-used-${principal.name}.json`),
     principalBytes,
     {
       mode: 0o600,
     },
   );
-  return { base, candidateArtifactPath, executionParent, principal, rpcRunnerPath, stateRoot };
+  return {
+    accountStateRoot,
+    base,
+    candidateArtifactPath,
+    executionParent,
+    principal,
+    rpcRunnerPath,
+    stateRoot,
+  };
 }
 
 function success() {
@@ -144,9 +166,11 @@ async function custodyAt(
   syncStateDirectory: (path: string) => Promise<void> = async () => {},
   token = "0000000000000001",
   profileReader: () => Promise<LinuxDacHelperProfile> = async () => helperProfile,
+  overrides: Partial<LinuxExecutionCustodyOptions> = {},
 ) {
   const custody = await createLinuxExecutionCustodyTestFixture(
     {
+      accountStateRoot: value.accountStateRoot,
       cleanupHelperPath: resolve(
         import.meta.dirname,
         "../../packages/conformance/src/linux-execution-cleanup.py",
@@ -156,11 +180,27 @@ async function custodyAt(
       profileReader,
       stateRoot: value.stateRoot,
       token: () => token,
+      ...overrides,
     },
     { stableGid: 1001, stableUid: 1001, syncStateDirectory },
   );
   custodies.push(custody);
   return custody;
+}
+
+async function custodyWithOverrides(
+  value: Awaited<ReturnType<typeof fixture>>,
+  run: (request: LinuxDacCommandRequest) => Promise<unknown>,
+  overrides: Partial<LinuxExecutionCustodyOptions>,
+) {
+  return await custodyAt(
+    value,
+    run,
+    async () => {},
+    "0000000000000001",
+    async () => helperProfile,
+    overrides,
+  );
 }
 
 describe("Linux durable execution-root custody", () => {
@@ -171,6 +211,7 @@ describe("Linux durable execution-root custody", () => {
       const profileReader = vi.fn();
       await expect(
         createLinuxExecutionCustody({
+          accountStateRoot: "C:/forged-account-state",
           cleanupHelperPath: "C:/forged.py",
           commandRunner,
           executionParent: "C:/forged-execution",
@@ -182,6 +223,113 @@ describe("Linux durable execution-root custody", () => {
       expect(profileReader).not.toHaveBeenCalled();
     },
   );
+
+  test("refuses equality and both nesting directions for every authority root pair", async () => {
+    const value = await fixture();
+    const nested = {
+      accountInExecution: resolve(value.executionParent, "account-state"),
+      accountInState: resolve(value.stateRoot, "account-state"),
+      executionInAccount: resolve(value.accountStateRoot, "executions"),
+      executionInState: resolve(value.stateRoot, "executions"),
+      stateInAccount: resolve(value.accountStateRoot, "execution-state"),
+      stateInExecution: resolve(value.executionParent, "execution-state"),
+    };
+    for (const path of Object.values(nested)) {
+      await mkdir(path);
+      await chmod(path, 0o700);
+    }
+    const cases: Partial<LinuxExecutionCustodyOptions>[] = [
+      { accountStateRoot: value.stateRoot },
+      { accountStateRoot: value.executionParent },
+      { stateRoot: value.executionParent },
+      { accountStateRoot: nested.accountInState },
+      { stateRoot: nested.stateInAccount },
+      { accountStateRoot: nested.accountInExecution },
+      { executionParent: nested.executionInAccount },
+      { stateRoot: nested.stateInExecution },
+      { executionParent: nested.executionInState },
+    ];
+    for (const overrides of cases) {
+      const runner = vi.fn(async () => success());
+      const before = await Promise.all(
+        [value.accountStateRoot, value.stateRoot, value.executionParent].map(async (path) =>
+          (await readdir(path)).sort(),
+        ),
+      );
+      await expect(custodyWithOverrides(value, runner, overrides)).rejects.toThrow(
+        "root-separation-refused",
+      );
+      expect(runner).not.toHaveBeenCalled();
+      expect(
+        await Promise.all(
+          [value.accountStateRoot, value.stateRoot, value.executionParent].map(async (path) =>
+            (await readdir(path)).sort(),
+          ),
+        ),
+      ).toEqual(before);
+    }
+  });
+
+  test("refuses a writable or replaced account authority root before helper use", async () => {
+    const value = await fixture();
+    const runner = vi.fn(async () => success());
+    mocked.accountMode = 0o770n;
+    await expect(custodyAt(value, runner)).rejects.toThrow("state-root-refused");
+    expect(runner).not.toHaveBeenCalled();
+
+    mocked.accountMode = 0o700n;
+    const custody = await custodyAt(value, runner);
+    await custody.recoverAfterRevocation();
+    await rename(value.accountStateRoot, `${value.accountStateRoot}-moved`);
+    await mkdir(value.accountStateRoot);
+    await chmod(value.accountStateRoot, 0o700);
+    await expect(custody.create(value)).rejects.toThrow("state-root-moved");
+    expect(runner).not.toHaveBeenCalled();
+    expect(await readdir(value.executionParent)).toEqual([]);
+    expect(await readdir(value.stateRoot)).toEqual([]);
+  });
+
+  test("refuses a principal intent bound to execution state before allocation", async () => {
+    const value = await fixture();
+    const runner = vi.fn(async () => success());
+    const custody = await custodyAt(value, runner);
+    await custody.recoverAfterRevocation();
+    await expect(
+      custody.create({
+        ...value,
+        principal: Object.freeze({
+          ...value.principal,
+          intentPath: resolve(
+            value.stateRoot,
+            `linux-principal-intent-${value.principal.name}.json`,
+          ),
+        }),
+      }),
+    ).rejects.toThrow("principal-refused");
+    expect(runner).not.toHaveBeenCalled();
+    expect(await readdir(value.executionParent)).toEqual([]);
+    expect(await readdir(value.stateRoot)).toEqual([]);
+  });
+
+  test("refuses candidate and RPC sources inside account authority state", async () => {
+    const value = await fixture();
+    const runner = vi.fn(async () => success());
+    const candidateInside = resolve(value.accountStateRoot, "candidate-inside.mjs");
+    const rpcInside = resolve(value.accountStateRoot, "rpc-inside.mjs");
+    await writeFile(candidateInside, "export {};", { mode: 0o600 });
+    await writeFile(rpcInside, "export {};", { mode: 0o600 });
+    const custody = await custodyAt(value, runner);
+    await custody.recoverAfterRevocation();
+    await expect(
+      custody.create({ ...value, candidateArtifactPath: candidateInside }),
+    ).rejects.toThrow("source-root-refused");
+    await expect(custody.create({ ...value, rpcRunnerPath: rpcInside })).rejects.toThrow(
+      "source-root-refused",
+    );
+    expect(runner).not.toHaveBeenCalled();
+    expect(await readdir(value.executionParent)).toEqual([]);
+    expect(await readdir(value.stateRoot)).toEqual([]);
+  });
 
   test("requires recovery before allocation and writes CREATED identity before returning", async () => {
     const value = await fixture();
@@ -202,6 +350,10 @@ describe("Linux durable execution-root custody", () => {
     expect(entries).toContain(`linux-execution-used-${lease.executionName}.json`);
     expect(entries).toContain(`linux-execution-intent-${lease.executionName}.json`);
     expect(entries).toContain(`linux-execution-created-${lease.executionName}.json`);
+    expect((await readdir(value.accountStateRoot)).sort()).toEqual([
+      `linux-principal-intent-${value.principal.name}.json`,
+      `linux-principal-used-${value.principal.name}.json`,
+    ]);
     const created = JSON.parse(
       await readFile(
         resolve(value.stateRoot, `linux-execution-created-${lease.executionName}.json`),
@@ -217,6 +369,10 @@ describe("Linux durable execution-root custody", () => {
     expect(finalEntries).not.toContain(`linux-execution-intent-${lease.executionName}.json`);
     expect(finalEntries).not.toContain(`linux-execution-created-${lease.executionName}.json`);
     expect(finalEntries).toContain(`linux-execution-used-${lease.executionName}.json`);
+    expect((await readdir(value.accountStateRoot)).sort()).toEqual([
+      `linux-principal-intent-${value.principal.name}.json`,
+      `linux-principal-used-${value.principal.name}.json`,
+    ]);
   });
 
   test("recovers a crash before CREATED persistence through PARTIAL cleanup", async () => {
@@ -305,7 +461,7 @@ describe("Linux durable execution-root custody", () => {
 
   test("missing account tombstone refuses before allocation or cleanup", async () => {
     const value = await fixture();
-    await rm(resolve(value.stateRoot, `linux-principal-used-${value.principal.name}.json`));
+    await rm(resolve(value.accountStateRoot, `linux-principal-used-${value.principal.name}.json`));
     const runner = vi.fn(async () => success());
     const custody = await custodyAt(value, runner);
     await custody.recoverAfterRevocation();
