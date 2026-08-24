@@ -14,6 +14,7 @@ import {
   parseConformanceRequiredJobRegistry,
   sha256Bytes,
 } from "./contracts.js";
+import { reduceConformanceAggregate } from "./reducer.js";
 import {
   computeGithubConformanceProtectionDigest,
   computeGithubConformanceProviderRecordDigest,
@@ -386,19 +387,39 @@ export function verifyGithubTerminalEvidence(
       providerRecord.value.aggregateDigest
     )
       return refusal("aggregateDigest:mismatch");
-    for (const receipt of aggregate.receipts) {
-      const observation = observations.get(String(receipt.jobId));
-      if (!observation) return refusal(`observation.${String(receipt.jobId)}:missing`);
-      if (
-        computeConformanceRecordDigest("conformance-environment/v1", observation.environment) !==
-          receipt.environmentDigest ||
-        computeConformanceRecordDigest(
-          "conformance-raw-artifact-manifest/v1",
-          observation.rawArtifactManifest,
-        ) !== receipt.rawArtifactManifestDigest
-      )
-        return refusal(`observation.${String(receipt.jobId)}:receipt-mismatch`);
+    const expectedProviderRunDigest = computeGithubProviderRunDigest(providerRun.value);
+    for (const field of [
+      "candidateSubjectDigest",
+      "harnessBundleDigest",
+      "testBundleDigest",
+    ] as const)
+      if (aggregate.aggregate[field] !== providerRun.value[field])
+        return refusal(`aggregate.${field}:provider-run-mismatch`);
+    if (aggregate.aggregate.providerRunDigest !== expectedProviderRunDigest)
+      return refusal("aggregate.providerRunDigest:provider-run-mismatch");
+    const receiptsByJob = new Map(
+      aggregate.receipts.map((receipt) => [String(receipt.jobId), receipt]),
+    );
+    const replayEvidence: Array<{
+      readonly environment: ContractRecord;
+      readonly rawArtifactManifest: ContractRecord;
+      readonly receipt: ContractRecord;
+    }> = [];
+    for (const job of registry.value.jobs as readonly ContractRecord[]) {
+      const jobId = String(job.jobId);
+      const receipt = receiptsByJob.get(jobId);
+      const observation = observations.get(jobId);
+      if (!receipt || !observation) return refusal(`observation.${jobId}:missing`);
+      replayEvidence.push({
+        environment: observation.environment,
+        rawArtifactManifest: observation.rawArtifactManifest,
+        receipt,
+      });
     }
+    const replayed = reduceConformanceAggregate(registry.value, replayEvidence);
+    if (!replayed.ok) return refusal(...replayed.issues.map((issue) => `aggregateReplay.${issue}`));
+    if (canonicalJson(replayed.value) !== canonicalJson(aggregate.aggregate))
+      return refusal("aggregateReplay:canonical-aggregate-mismatch");
 
     const recordArtifactName = `conformance-${String(providerRecord.value.runId)}-${String(providerRecord.value.runAttempt)}-provider-record.json`;
     const recordArtifacts = artifacts.filter(

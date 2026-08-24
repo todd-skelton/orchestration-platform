@@ -155,23 +155,25 @@ const evidence = core.createConformanceJobEvidence({
   testBundleDigest: providerRun.testBundleDigest,
 });
 if (!evidence.ok) throw new Error(evidence.issues.join(","));
+const acceptedEvidence = evidence;
 const aggregateResult = core.reduceConformanceAggregate(registry, [
   {
-    environment: evidence.environment,
-    rawArtifactManifest: evidence.rawArtifactManifest,
-    receipt: evidence.receipt,
+    environment: acceptedEvidence.environment,
+    rawArtifactManifest: acceptedEvidence.rawArtifactManifest,
+    receipt: acceptedEvidence.receipt,
   },
 ]);
 if (!aggregateResult.ok) throw new Error(aggregateResult.issues.join(","));
+const acceptedAggregate = aggregateResult;
 
 const observationZip = zip([
   { bytes: raw.environment, name: "environment" },
   {
-    bytes: canonical("conformance-environment/v1", evidence.environment),
+    bytes: canonical("conformance-environment/v1", acceptedEvidence.environment),
     name: "environment-record.json",
   },
   {
-    bytes: canonical("conformance-raw-artifact-manifest/v1", evidence.rawArtifactManifest),
+    bytes: canonical("conformance-raw-artifact-manifest/v1", acceptedEvidence.rawArtifactManifest),
     name: "raw-manifest.json",
   },
   { bytes: raw.report, name: "report" },
@@ -179,9 +181,9 @@ const observationZip = zip([
   { bytes: raw.stdout, name: "stdout" },
 ]);
 const aggregateZip = zip([
-  { bytes: canonical("conformance-aggregate/v1", aggregateResult.value), name: "aggregate.json" },
+  { bytes: canonical("conformance-aggregate/v1", acceptedAggregate.value), name: "aggregate.json" },
   {
-    bytes: canonical("conformance-job-receipt/v1", evidence.receipt),
+    bytes: canonical("conformance-job-receipt/v1", acceptedEvidence.receipt),
     name: "receipts/iss002-contracts-linux.json",
   },
 ]);
@@ -234,7 +236,7 @@ const providerJobs = Object.freeze([
 const providerRecord = Object.freeze({
   aggregateDigest: core.computeConformanceRecordDigest(
     "conformance-aggregate/v1",
-    aggregateResult.value,
+    acceptedAggregate.value,
   ),
   artifacts: providerArtifacts,
   candidateRevision: providerRun.candidateRevision,
@@ -348,6 +350,144 @@ function withProviderRecord(record: Readonly<Record<string, unknown>>) {
   };
 }
 
+function composedEvidenceAttack(input: {
+  readonly environmentValue?: Readonly<Record<string, unknown>>;
+  readonly providerRunValue?: Readonly<Record<string, unknown>>;
+  readonly receiptValue: Readonly<Record<string, unknown>>;
+  readonly registryValue?: Readonly<Record<string, unknown>>;
+}) {
+  const environmentValue = input.environmentValue ?? acceptedEvidence.environment;
+  const providerRunValue = input.providerRunValue ?? providerRun;
+  const registryValue = input.registryValue ?? registry;
+  const receiptValue = input.receiptValue;
+  const registryValueDigest = core.computeConformanceRecordDigest(
+    "conformance-required-job-registry/v1",
+    registryValue,
+  );
+  const aggregateValue = {
+    ...acceptedAggregate.value,
+    candidateSubjectDigest: receiptValue.candidateSubjectDigest,
+    contractVersionsDigest: receiptValue.contractVersionsDigest,
+    harnessBundleDigest: receiptValue.harnessBundleDigest,
+    jobReceiptDigests: [
+      core.computeConformanceRecordDigest("conformance-job-receipt/v1", receiptValue),
+    ],
+    providerRunDigest: receiptValue.providerRunDigest,
+    requiredJobRegistryDigest: registryValueDigest,
+    testBundleDigest: receiptValue.testBundleDigest,
+  };
+  const movedObservationZip = zip([
+    { bytes: raw.environment, name: "environment" },
+    {
+      bytes: canonical("conformance-environment/v1", environmentValue),
+      name: "environment-record.json",
+    },
+    {
+      bytes: canonical(
+        "conformance-raw-artifact-manifest/v1",
+        acceptedEvidence.rawArtifactManifest,
+      ),
+      name: "raw-manifest.json",
+    },
+    { bytes: raw.report, name: "report" },
+    { bytes: raw.stderr, name: "stderr" },
+    { bytes: raw.stdout, name: "stdout" },
+  ]);
+  const movedAggregateZip = zip([
+    { bytes: canonical("conformance-aggregate/v1", aggregateValue), name: "aggregate.json" },
+    {
+      bytes: canonical("conformance-job-receipt/v1", receiptValue),
+      name: "receipts/iss002-contracts-linux.json",
+    },
+  ]);
+  const movedPrefix = `conformance-${String(providerRunValue.runId)}-${String(providerRunValue.runAttempt)}-`;
+  const movedProviderArtifacts = [
+    {
+      ...providerArtifacts[0]!,
+      artifactDigest: core.sha256Bytes(movedAggregateZip),
+      artifactName: `${movedPrefix}aggregate`,
+      byteLength: String(movedAggregateZip.byteLength),
+    },
+    {
+      ...providerArtifacts[1]!,
+      artifactDigest: core.sha256Bytes(movedObservationZip),
+      artifactName: `${movedPrefix}iss002-contracts-linux`,
+      byteLength: String(movedObservationZip.byteLength),
+    },
+  ];
+  const movedProviderRecord = {
+    ...providerRecord,
+    aggregateDigest: core.computeConformanceRecordDigest(
+      "conformance-aggregate/v1",
+      aggregateValue,
+    ),
+    artifacts: movedProviderArtifacts,
+    candidateRevision: providerRunValue.candidateRevision,
+    candidateSubjectDigest: providerRunValue.candidateSubjectDigest,
+    event: providerRunValue.event,
+    harnessBundleDigest: providerRunValue.harnessBundleDigest,
+    protectionSnapshotDigest: providerRunValue.protectionSnapshotDigest,
+    repositoryId: providerRunValue.repositoryId,
+    requiredJobRegistryDigest: registryValueDigest,
+    runAttempt: providerRunValue.runAttempt,
+    runId: providerRunValue.runId,
+    testBundleDigest: providerRunValue.testBundleDigest,
+    workflowPath: providerRunValue.workflowPath,
+    workflowRef: providerRunValue.workflowRef,
+    workflowRevision: providerRunValue.workflowRevision,
+  };
+  const movedRecordBytes = contracts.canonicalBytes(movedProviderRecord);
+  const movedLiveArtifacts = [
+    ...movedProviderArtifacts.map((artifact) => ({
+      artifactDigest: artifact.artifactDigest,
+      artifactId: artifact.artifactId,
+      artifactName: artifact.artifactName,
+      byteLength: artifact.byteLength,
+      createdAt: "2026-08-24T00:00:00.500Z",
+      expired: false,
+      expiresAt: artifact.expiresAt,
+      runAttempt: providerRunValue.runAttempt,
+      runId: providerRunValue.runId,
+    })),
+    {
+      ...recordArtifact,
+      artifactDigest: core.sha256Bytes(movedRecordBytes),
+      artifactName: `${movedPrefix}provider-record.json`,
+      byteLength: String(movedRecordBytes.byteLength),
+      runAttempt: providerRunValue.runAttempt,
+      runId: providerRunValue.runId,
+    },
+  ];
+  return {
+    ...baseline,
+    artifactBytes: [
+      { artifactId: "10", bytes: movedAggregateZip },
+      { artifactId: "11", bytes: movedObservationZip },
+      { artifactId: "99", bytes: movedRecordBytes },
+    ],
+    expected: {
+      repositoryId: providerRunValue.repositoryId,
+      runAttempt: providerRunValue.runAttempt,
+      runId: providerRunValue.runId,
+      workflowRevision: providerRunValue.workflowRevision,
+    },
+    liveArtifacts: movedLiveArtifacts,
+    liveRun: {
+      ...baseline.liveRun,
+      event: providerRunValue.event,
+      repositoryId: providerRunValue.repositoryId,
+      runAttempt: providerRunValue.runAttempt,
+      runId: providerRunValue.runId,
+      workflowPath: providerRunValue.workflowPath,
+      workflowRef: providerRunValue.workflowRef,
+      workflowRevision: providerRunValue.workflowRevision,
+    },
+    providerRecordBytes: movedRecordBytes,
+    providerRun: providerRunValue,
+    registry: registryValue,
+  };
+}
+
 describe("GitHub post-terminal evidence verifier", () => {
   test("revalidates the complete successful current-attempt join", () => {
     const verified = github.verifyGithubTerminalEvidence(baseline);
@@ -388,6 +528,74 @@ describe("GitHub post-terminal evidence verifier", () => {
         withProviderRecord({ ...providerRecord, aggregateDigest: d("9") }),
       ).ok,
     ).toBe(false);
+  });
+
+  test("replays retained evidence and refuses internally consistent identity movement", () => {
+    const wrongOperatingSystem = {
+      ...acceptedEvidence.environment,
+      operatingSystem: "WINDOWS",
+    };
+    const unexpectedHelper = {
+      ...acceptedEvidence.environment,
+      helperProfileDigest: d("9"),
+    };
+    const requiredRegistry = {
+      ...registry,
+      suites: [{ ...registry.suites[0], helperRequirement: "REQUIRED" }],
+    };
+    const requiredRegistryDigest = core.computeConformanceRecordDigest(
+      "conformance-required-job-registry/v1",
+      requiredRegistry,
+    );
+    const requiredProviderRun = {
+      ...providerRun,
+      requiredJobRegistryDigest: requiredRegistryDigest,
+    };
+    const attacks = [
+      composedEvidenceAttack({
+        receiptValue: { ...acceptedEvidence.receipt, providerRunDigest: d("9") },
+      }),
+      composedEvidenceAttack({
+        receiptValue: { ...acceptedEvidence.receipt, candidateSubjectDigest: d("9") },
+      }),
+      composedEvidenceAttack({
+        receiptValue: { ...acceptedEvidence.receipt, harnessBundleDigest: d("9") },
+      }),
+      composedEvidenceAttack({
+        receiptValue: { ...acceptedEvidence.receipt, testBundleDigest: d("9") },
+      }),
+      composedEvidenceAttack({
+        environmentValue: wrongOperatingSystem,
+        receiptValue: {
+          ...acceptedEvidence.receipt,
+          environmentDigest: core.computeConformanceRecordDigest(
+            "conformance-environment/v1",
+            wrongOperatingSystem,
+          ),
+        },
+      }),
+      composedEvidenceAttack({
+        environmentValue: unexpectedHelper,
+        receiptValue: {
+          ...acceptedEvidence.receipt,
+          environmentDigest: core.computeConformanceRecordDigest(
+            "conformance-environment/v1",
+            unexpectedHelper,
+          ),
+        },
+      }),
+      composedEvidenceAttack({
+        providerRunValue: requiredProviderRun,
+        receiptValue: {
+          ...acceptedEvidence.receipt,
+          providerRunDigest: github.computeGithubProviderRunDigest(requiredProviderRun),
+          requiredJobRegistryDigest: requiredRegistryDigest,
+        },
+        registryValue: requiredRegistry,
+      }),
+    ];
+    for (const attack of attacks)
+      expect(github.verifyGithubTerminalEvidence(attack).ok).toBe(false);
   });
 
   test("refuses job, artifact, bytes, retention, and provider-time mutations", () => {
