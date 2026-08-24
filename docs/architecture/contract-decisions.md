@@ -1123,11 +1123,12 @@ GitHub provider record defined below plus independent review. It is deliberately
 non-promotional: no ISS-006 record can install, select, certify, promote, issue
 a live capability, or mutate authority.
 
-The portable conformance core owns seven closed `v1` records in
-`@orchestration-platform/conformance`: bundle manifest, vector census,
-required-job registry, environment inventory, raw-artifact manifest, job
-receipt, and aggregate. The GitHub Actions adapter owns one additional closed
-provider record and its provider-run digest. The core sees only the opaque
+The portable conformance core owns nine closed `v1` records in
+`@orchestration-platform/conformance`: bundle manifest, candidate subject,
+contract-version census, vector census, required-job registry, environment
+inventory, raw-artifact manifest, job receipt, and aggregate. The GitHub
+Actions adapter owns two additional closed records, protection snapshot and
+provider record, plus its provider-run digest. The core sees only the opaque
 `providerRunDigest`; repository, workflow, revision, run, job, and artifact
 vocabulary never enters an engine-facing contract. ISS-002 continues to own
 the underlying platform schemas and golden values. ISS-006 owns only the
@@ -1150,7 +1151,7 @@ refuses without throwing.
 | Member          | Exact rule                                                                                   |
 | --------------- | -------------------------------------------------------------------------------------------- |
 | `files`         | dense nonempty array of at most 4,096 exact file rows, unique and sorted by UTF-8 path bytes |
-| `purpose`       | exactly `HARNESS                                                                             | TEST_BUNDLE` |
+| `purpose`       | exactly `HARNESS` or `TEST_BUNDLE`                                                           |
 | `schemaVersion` | exactly `conformance-bundle-manifest/v1`                                                     |
 
 Each file row has exactly `byteLength`, `path`, and `sha256Digest`.
@@ -1163,14 +1164,56 @@ execution and again afterward. Missing, extra-in-census, changed, or moved
 listed bytes refuse. Candidate files are never members of either stable
 manifest.
 
+`conformance-candidate-subject/v1` has exactly `files` and `schemaVersion`.
+`files` is the complete candidate commit tree: a dense, nonempty array of at
+most 65,536 exact rows, unique and sorted by UTF-8 path bytes. Each row has
+exactly `byteLength`, `executable`, `path`, and `sha256Digest`; `executable` is
+a boolean derived from the only admitted regular-file modes, and the remaining
+rules match the bundle file row. Symlinks, submodules, non-regular modes,
+unlisted tree entries, checkout-only files, missing blobs, or a partial tree
+refuse. The GitHub adapter projects the resolved candidate commit into this
+portable manifest; Git identities do not enter the record. Its identity is:
+
+```text
+Dsubject = conformance-candidate-subject/v1(canonical subject bytes)
+```
+
+`conformance-contract-versions/v1` has exactly `schemaVersion` and `versions`.
+`versions` is a dense, nonempty array of at most 1,024 exact schema-version
+strings, unique and sorted by UTF-8 bytes. It is derived from the stable
+ISS-002 `schemaVersions` export in the test bundle, never the candidate's
+declaration. The stable suite separately verifies candidate compatibility.
+Its identity is:
+
+```text
+Dcontracts = conformance-contract-versions/v1(canonical census bytes)
+```
+
+Every `candidateSubjectDigest` and `contractVersionsDigest` below is exactly
+`Dsubject` and `Dcontracts` respectively.
+
 `conformance-vector-census/v1` has exactly `entries` and `schemaVersion`.
-`entries` is a dense, nonempty, unique array sorted by `fixtureId`. Each row has
-exactly `expectedDisposition`, `fixtureDigest`, `fixtureId`, and `fixtureKind`;
-the dispositions are `ACCEPT|REFUSE|CENSUS|MEASURE`, and kinds are
-`BYTES|GENERATOR`. `BYTES` hashes immutable fixture bytes. `GENERATOR` hashes
-the stable generator source and its canonical parameter record. Every row must
-be executed exactly once by the named stable suite; an unexecuted, duplicate,
-unknown, deleted, or candidate-supplied row refuses aggregation.
+`entries` is a dense, nonempty array of at most 256 rows, unique and sorted by
+`fixtureId`. Each row has exactly `expectedDisposition`, `fixtureDigest`,
+`fixtureId`, `fixtureKind`, and `generatorParameters`; the dispositions are
+`ACCEPT|REFUSE|CENSUS|MEASURE`, and kinds are `BYTES|GENERATOR`. A BYTES row
+requires null parameters. A GENERATOR row requires an exact parameter record
+whose members are `caseId`, `iterationCount`, and `seed`; `caseId` is a
+portable ID, `iterationCount` is a positive canonical safe-integer decimal,
+and `seed` is SHA-256. The fixture identities are:
+
+```text
+DfixtureBytes = conformance-vector-bytes/v1(exact raw fixture bytes)
+DfixtureGenerator = conformance-vector-generator/v1(
+  exact raw stable generator source bytes,
+  canonical generator-parameter bytes
+)
+```
+
+`fixtureDigest` must equal the formula selected by `fixtureKind`. Every row
+must be executed exactly once by the named stable suite; an unexecuted,
+duplicate, unknown, deleted, over-bound, or candidate-supplied row refuses
+aggregation.
 
 The initial ISS-002 vector census contains exactly these IDs:
 
@@ -1223,16 +1266,21 @@ or a candidate-computed manifest/census refuses.
 #### Stable required-job registry
 
 `conformance-required-job-registry/v1` has exactly `jobs`, `schemaVersion`, and
-`suites`. Suite rows have exactly `ownerPackage`, `runnerToken`, `suiteId`, and
-`vectorCensusDigest`. Job rows have exactly `environmentFamily`, `jobId`,
+`suites`. `suites` contains at most 64 rows and `jobs` at most 256. Suite rows
+have exactly `custodyRequirement`, `helperRequirement`, `ownerPackage`,
+`runnerToken`, `suiteId`, `vectorCensusDigest`, and `walkRequirement`. The two
+environment requirements are exactly `REQUIRED|UNUSED`; `walkRequirement` is
+exactly `NONE|WALK_1000`. Job rows have exactly `environmentFamily`, `jobId`,
 `requirement`, and `suiteId`. Arrays are dense, unique by their IDs, sorted by
-ID, and contain no orphan suite/job. `environmentFamily` is exactly
-`LINUX|MACOS|WINDOWS`; `requirement` is exactly `REQUIRED`. `runnerToken` is a
-closed stable-handler catalog value, never argv or a candidate package script.
+ID, and contain no orphan suite/job. Every suite has at least one job.
+`environmentFamily` is exactly `LINUX|MACOS|WINDOWS`; `requirement` is exactly
+`REQUIRED`. `runnerToken` is a closed stable-handler catalog value, never argv
+or a candidate package script.
 
 The initial registry has one suite, `iss002-contracts`, owned by
 `@orchestration-platform/contracts`, using runner token
-`ISS002_CONTRACTS`, and exactly three required jobs:
+`ISS002_CONTRACTS`, `UNUSED` custody/helper requirements,
+`WALK_1000`, and exactly three required jobs:
 
 ```text
 iss002-contracts-linux
@@ -1240,11 +1288,12 @@ iss002-contracts-macos
 iss002-contracts-windows
 ```
 
-Each job names the matching environment family and the same reviewed
-`Dvector`. A future package registers a suite by landing a reviewed stable
-suite row, handler, vector census, and derived job rows in the conformance
-bundle. It does not edit shared workflow logic. Candidate discovery never
-creates, removes, renames, or downgrades a required row. The identity is:
+Each job names the matching environment family and its suite row commits the
+reviewed `Dvector`. A future package registers a suite by landing a reviewed
+stable suite row, handler, vector census, requirement arms, and derived job
+rows in the conformance bundle. It does not edit shared workflow logic.
+Candidate discovery never creates, removes, renames, or downgrades a required
+row. The identity is:
 
 ```text
 Dregistry = conformance-required-job-registry/v1(canonical registry bytes)
@@ -1285,14 +1334,23 @@ jobs require both null. Provider-native image text remains in bound raw bytes,
 not in the portable core.
 
 `conformance-raw-artifact-manifest/v1` has exactly `entries` and
-`schemaVersion`. Each of at most 64 entries has exactly `byteLength`,
-`mediaType`, `name`, and `sha256Digest`; names are portable IDs unique and
-sorted, and media type is exactly
-`APPLICATION_JSON|APPLICATION_OCTET_STREAM|TEXT_PLAIN`. Required ISS-002 job
-artifacts are exact raw `environment`, `report`, `stderr`, and `stdout` bytes.
-The wrapper performs no newline, encoding, path, locale, ordering, or diagnostic
-normalization before hashing. Diagnostics are advisory but digest-bound;
-missing or substituted raw evidence refuses the receipt.
+`schemaVersion`. It has exactly four entries, unique and sorted by name, and
+each row has exactly `byteLength`, `mediaType`, `name`, and `sha256Digest`:
+
+| `name`        | Exact `mediaType`  | Bound bytes                                                    |
+| ------------- | ------------------ | -------------------------------------------------------------- |
+| `environment` | `APPLICATION_JSON` | exact raw provider image/environment inventory                 |
+| `report`      | `APPLICATION_JSON` | exact stable-runner semantic report and executed-vector census |
+| `stderr`      | `TEXT_PLAIN`       | exact captured candidate-process stderr bytes                  |
+| `stdout`      | `TEXT_PLAIN`       | exact captured candidate-process stdout bytes                  |
+
+`byteLength` and `sha256Digest` bind each exact raw byte string. The
+environment row's `sha256Digest` must equal the parsed
+`conformance-environment/v1.osImageDigest`; no fresh portable environment claim
+may name different inventory bytes. The wrapper performs no newline, encoding,
+path, locale, ordering, or diagnostic normalization before hashing.
+Diagnostics are advisory but digest-bound; missing, extra, renamed,
+cross-media, or substituted raw evidence refuses the receipt.
 
 The identities are single canonical frames:
 
@@ -1303,7 +1361,7 @@ Draw = conformance-raw-artifact-manifest/v1(canonical manifest bytes)
 
 #### Job receipt and derived aggregate
 
-`conformance-job-receipt/v1` has exactly these required, non-null members:
+`conformance-job-receipt/v1` has exactly these required members:
 
 ```text
 candidateSubjectDigest
@@ -1322,14 +1380,18 @@ testBundleDigest
 vectorCensusDigest
 ```
 
-All identity members are SHA-256. Duration is a canonical safe-integer decimal
-count from the exact measurement below. `normalizedResult` is exactly
-`PASS|FAIL|UNSUPPORTED`. Only the stable aggregator writes a job receipt after
-re-reading provider metadata and raw observation bytes. A candidate job emits
-only an untrusted observation artifact; its JSON never parses as a receipt.
-Skipped, cancelled, timed-out, stale, neutral, action-required, unreadable, or
-missing jobs yield no valid receipt. `FAIL` and `UNSUPPORTED` receipts remain
-diagnostic evidence but cannot enter a successful aggregate.
+All identity members are SHA-256. `normalizedResult` is exactly
+`PASS|FAIL|UNSUPPORTED`. `maximumWalkDurationNanoseconds` is non-null canonical
+safe-integer decimal only when the suite has `walkRequirement:WALK_1000` and
+the result is PASS; it is null for `walkRequirement:NONE` and every non-PASS
+receipt. A PASS walk value is the maximum of the three exact raw-report
+intervals and must be at most 5,000,000,000. Only the stable aggregator writes
+a job receipt after re-reading provider metadata and raw observation bytes. A
+candidate job emits only an untrusted observation artifact; its JSON never
+parses as a receipt. Skipped, cancelled, timed-out, stale, neutral,
+action-required, unreadable, or missing jobs yield no valid receipt. `FAIL` and
+`UNSUPPORTED` receipts remain diagnostic evidence but cannot enter a successful
+aggregate.
 
 `conformance-aggregate/v1` has exactly these members:
 
@@ -1343,17 +1405,19 @@ requiredJobRegistryDigest
 result
 schemaVersion
 testBundleDigest
-vectorCensusDigest
 ```
 
 `jobReceiptDigests` is the exact complete array in stable registry order;
 `result` is the sole literal `PASS`. It is derived, never accepted from an
-input. The reducer requires exactly one parsed receipt for each required row,
-no extra or duplicate, the exact row job/suite/environment family, equality of
-every candidate/harness/test/registry/vector/contract/provider-run identity,
+input. `Dregistry` commits every suite-to-vector mapping, so the aggregate does
+not repeat one impossible global vector digest. The reducer requires exactly
+one parsed receipt for each required row, no extra or duplicate, the exact row
+job/suite/environment family, each receipt's vector digest equal its own suite
+row, helper/custody nullability equal that suite's requirements, equality of
+every global candidate/harness/test/registry/contract/provider-run identity,
 the exact recomputed environment/raw/receipt digests, `PASS` for every receipt,
-and the performance bound. Any mismatch or non-PASS result returns a closed
-refusal and no aggregate bytes.
+and the suite-selected timing arm. Any mismatch or non-PASS result returns a
+closed refusal and no aggregate bytes.
 
 The identities are:
 
@@ -1391,7 +1455,6 @@ runAttempt
 runId
 schemaVersion
 testBundleDigest
-triggeringActorId
 workflowPath
 workflowRef
 workflowRevision
@@ -1409,21 +1472,42 @@ treating a Git revision as a portable engine identity.
 `bypassActorCount`, `deletionBlocked`, `enforcement`,
 `nonFastForwardBlocked`, `pullRequestRequired`, `schemaVersion`, and
 `targetRef`. The only admitted values are canonical decimal `"0"`, booleans
-`true`, `ACTIVE`, and `refs/heads/main` respectively. The plan job derives this
-projection from the provider ruleset API and the record job independently
-re-derives the same digest; movement during the run refuses. `recordedAt` is the
-record job's canonical provider-observed time, and every artifact `expiresAt`
-must be at least 30 complete days later.
+`true`, `ACTIVE`, and `refs/heads/main` respectively.
+
+The adapter reads the default-branch protection endpoint and every applicable
+repository/organization ruleset through terminal pagination. It rejects an
+unreadable page, inactive/unknown enforcement, an unmatched target, any bypass
+actor or administrator exemption, or effective rules that do not require pull
+requests and block deletion/non-fast-forward updates. Multiple applicable
+layers reduce by their effective union: a required restriction remains true if
+any active layer imposes it, while any bypass makes `bypassActorCount` nonzero
+and therefore refuses before projection. The accepted projection is unique and
+has the identity:
+
+```text
+Dprotection = github-conformance-protection-snapshot/v1(
+  canonical protection projection bytes
+)
+```
+
+The plan job derives `Dprotection` and the record job independently re-derives
+it; movement during the run refuses. `recordedAt` is the record job's canonical
+provider-observed time, and every artifact listed inside the record has
+`expiresAt` at least 30 complete days later.
 
 Each job row has exactly `conclusion`, `logicalJobId`, `providerJobId`,
 `providerJobName`, and `role`. Conclusion is exactly `SUCCESS`; role is
 `PLAN|OBSERVATION|AGGREGATE`; the rows are the one plan job, every stable
-registry job, and one aggregate job, sorted by logical ID. Each artifact row
-has exactly `artifactDigest`, `artifactId`, `artifactName`, `byteLength`,
-`expiresAt`, `logicalJobId`, and `role`. Role is
-`OBSERVATION|AGGREGATE`; names include exact run ID, run attempt, and logical
-job ID; rows contain every required observation plus the sole aggregate and
-are sorted by name. The provider API's SHA-256, byte length, run association,
+registry job, and one aggregate job, sorted by logical ID, with a maximum of
+258 rows. Logical/provider names are exactly `plan` / `Conformance / plan`,
+each stable job ID / `Conformance / observation / <jobId>`, and `aggregate` /
+`Conformance / aggregate`. Each artifact row has exactly `artifactDigest`,
+`artifactId`, `artifactName`, `byteLength`, `expiresAt`, `logicalJobId`, and
+`role`. Role is `OBSERVATION|AGGREGATE`; exact names are
+`conformance-<runId>-<runAttempt>-<jobId>` and
+`conformance-<runId>-<runAttempt>-aggregate`. The array contains every
+required observation plus the sole aggregate, is sorted by name, and has at
+most 257 rows. The provider API's SHA-256, byte length, run association,
 non-expired state, and exact bytes must agree. Artifacts from any other run,
 attempt, repository, workflow, job census, name, candidate, or harness refuse.
 
@@ -1438,7 +1522,6 @@ DproviderRun = github-conformance-provider-run/v1(
   runId,
   runAttempt,
   event,
-  triggeringActorId,
   protectionSnapshotDigest,
   candidateRevision,
   candidateSubjectDigest,
@@ -1459,8 +1542,9 @@ The sole authoritative hosted topology is:
 
 1. A `repository_dispatch` event of exact type `conformance_candidate` reaches
    the workflow that exists on the protected default branch. Its closed payload
-   contains only one lowercase 40-hex candidate revision in this repository.
-   Symbolic refs, forks, extra payload members, and unresolved commits refuse.
+   is a JSON record with the sole member `candidateRevision`, whose value is one
+   lowercase 40-hex commit in this repository. Symbolic refs, forks, scalar
+   payloads, alternate/extra members, and unresolved commits refuse.
 2. The plan job requires `refs/heads/main`, `ref_protected=true`, the exact
    workflow path/ref, and `workflowRevision = GITHUB_WORKFLOW_SHA = GITHUB_SHA`.
    It checks out that exact stable revision and the candidate into separate
@@ -1483,8 +1567,34 @@ The sole authoritative hosted topology is:
 6. A final stable-only record job queries the provider run, current-attempt job,
    artifact, and ruleset APIs after aggregate upload, verifies the exact census,
    unchanged zero-bypass protection snapshot, and at least 30 days remaining
-   retention, and writes the provider record. Rerunning only a subset cannot
-   combine attempts because every artifact name and API query is attempt-qualified.
+   retention for the already-listed artifacts, and writes then uploads the
+   provider record as exact artifact
+   `conformance-<runId>-<runAttempt>-provider-record`. Rerunning only a subset
+   cannot combine attempts because every artifact name and API query is
+   attempt-qualified.
+
+The provider record cannot attest its own completed writer job or artifact
+without a cycle. The required post-job verifier therefore takes only the
+expected repository ID, run ID, run attempt, and workflow revision, queries the
+provider after the whole run is terminal, and requires:
+
+- overall run conclusion SUCCESS under the exact repository/workflow/ref/SHA;
+- exactly one logical `record` job in that attempt, with the reviewed stable
+  job name and SUCCESS conclusion;
+- exactly one provider-record artifact with the name above, same run
+  association, API SHA-256/length equal to downloaded canonical bytes, creation
+  during the record-job interval, non-expired status, and `expiresAt` at least
+  30 days after the record's `recordedAt`; and
+- the downloaded provider record, every listed job/artifact, `DproviderRun`,
+  `Dprotection`, and `Daggregate` all revalidate from live provider responses
+  and retained bytes.
+
+The artifact API does not assert its uploader job. The constructive join is the
+immutable reviewed workflow's unique attempt-qualified upload step plus unique
+artifact name, successful record job/run, creation interval, and same-run API
+association. Any ambiguity or duplicate refuses. The verifier emits only a
+PASS/refusal result for independent review; it creates no downstream authority
+record, so the chain terminates without a self-reference.
 
 Movement of the default branch after dispatch does not substitute bytes: the
 exact immutable `workflowRevision` remains the stable subject for the run.
@@ -1502,11 +1612,15 @@ result.
 
 #### Local mode, timing, retention, and exclusions
 
-The local entrypoint returns only `conformance-local-result/v1`, a closed
-advisory record with exact `authority:ADVISORY`, bundle/registry identities,
-per-suite semantic results, and raw diagnostic digests. It cannot serialize as
-a hosted receipt, aggregate, or provider record and is never accepted by the
-hosted reducer. Local mode is for deterministic development evidence only.
+The local entrypoint creates no contract record. It writes a diagnostic stream
+whose first exact line is `ADVISORY CONFORMANCE RESULT`, then returns the
+closed exit mapping `0` only when every selected local suite reports PASS and
+`1` for FAIL, UNSUPPORTED, malformed input, or internal refusal. It cannot invoke a
+hosted serializer or provider verifier and never emits canonical job-receipt,
+aggregate, or provider-record bytes. Every hosted parser rejects the diagnostic
+stream before semantic reads. Local mode is deterministic development evidence
+only; deleting the marker or routing local output to a hosted parser is an
+executable refusal mutant.
 
 The `walk-1000-records` row uses one fixed canonical 1,000-record
 `authority-history/v1` vector and selected head. On each OS, three fresh Node
@@ -1521,10 +1635,11 @@ measurement fails on a supported hosted OS.
 
 Raw observations, job receipts, aggregate, provider record, stable manifests,
 registry/census, provider metadata snapshot, and workflow-mutation outputs are
-retained for at least 30 days. The record job verifies provider `expiresAt`
-rather than trusting requested retention. Evidence is usable only before the
-earliest bound artifact expiry; downstream durable certification belongs to
-ISS-019.
+retained for at least 30 days. The record job verifies already-listed artifact
+expiry; the post-job verifier independently verifies the provider-record
+artifact expiry. Neither trusts requested retention. Evidence is usable only
+before the earliest bound artifact expiry; downstream durable certification
+belongs to ISS-019.
 
 The implementation adds no release candidate/certification/grant schema,
 signature system, OIDC claim, promotion route, package discovery authority,
