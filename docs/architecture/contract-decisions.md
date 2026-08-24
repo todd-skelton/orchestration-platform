@@ -552,6 +552,161 @@ attachment/log/archive schemas, and runtime authority. Deleting any closure,
 scalar/enum check, path binding, digest domain, or public-surface exclusion must
 make a committed mutant survive and therefore fail the suite.
 
+### Recovery attempt-log ledger
+
+This ledger fixes the immutable append-only records selected by the existing
+`RECOVERY_ATTEMPT_LOG` pointer after a LIVE descriptor exists. It replaces the
+deleted rolling accumulator and separate terminal-summary document; it does
+not define launch-pointer values, process/terminal observation bytes,
+authorization attachment bytes, archive/tombstone composition, persistence,
+or mutation authority.
+
+`attempt-log/v1` is a closed two-branch union. `IN_PROGRESS` has exactly these
+nine members in ascending canonical JSON member order:
+
+```text
+attemptId:uuid-v7
+descriptorDigest:sha256
+lifecycle:IN_PROGRESS
+ordinal:canonical safe-integer decimal
+predecessorRecordDigest:nullable sha256
+recordedAt:timestamp
+schemaVersion:attempt-log/v1
+sourceToken:cleanup-gate-pre-fence|recovery-fence
+transactionId:uuid-v7
+```
+
+`TERMINAL` has the same nine members plus exactly these six members in their
+ascending canonical positions:
+
+```text
+attachmentTipDigest:nullable sha256
+channelDenialEvidenceDigest:sha256
+processTerminalObservationDigest:sha256
+revocationEvidenceDigest:nullable sha256
+terminalDisposition:RETRYABLE|HANDOFF|ABORTED|COMPLETE
+terminalOutcomeEvidenceDigest:sha256
+```
+
+Thus the complete TERMINAL census is:
+
+```text
+attachmentTipDigest
+attemptId
+channelDenialEvidenceDigest
+descriptorDigest
+lifecycle
+ordinal
+predecessorRecordDigest
+processTerminalObservationDigest
+recordedAt
+revocationEvidenceDigest
+schemaVersion
+sourceToken
+terminalDisposition
+terminalOutcomeEvidenceDigest
+transactionId
+```
+
+Branch-only members are absent, never null. There is no READY, LIVE, UNKNOWN,
+summary, accumulator, checkpoint, compaction, or attempt-log TOMBSTONE branch.
+Later removal uses the common pointer tombstone only after independently
+reviewed archive composition.
+
+The first record is necessarily IN_PROGRESS with ordinal `"0"` and null
+`predecessorRecordDigest`. Every positive ordinal requires one SHA-256
+predecessor record digest. Ordinals use the existing canonical decimal grammar
+and safe-integer bound; overflow refuses before conversion.
+
+Every later record has the immediately prior record's digest and ordinal plus
+one. The only pure append edges are:
+
+```text
+null -> IN_PROGRESS
+IN_PROGRESS -> TERMINAL
+TERMINAL -> IN_PROGRESS
+```
+
+IN_PROGRESS→TERMINAL preserves exact transaction, source, attempt ID, and
+descriptor digest. TERMINAL→IN_PROGRESS preserves transaction/source but
+requires a different attempt ID and permits a new descriptor digest. Both
+non-genesis edges require prior `recordedAt <= next recordedAt`, exact adjacent
+ordinal, and `next.predecessorRecordDigest = Dattempt(prior)`. Self-loops,
+skips, reverse/crossed lifecycle edges, reused attempt IDs after TERMINAL,
+gaps, forks, decreasing time, or changed same-attempt identity refuse.
+
+The only canonical record path is:
+
+```text
+installation/activation-recovery-launches/<transactionId>/<sourceToken>/attempts/<attemptId>/<ordinal>-<lifecycle>.json
+```
+
+The path constructor accepts only the parsed record's UUIDs, closed source,
+bounded ordinal, and lifecycle. Moving any of them changes or refuses the path.
+
+The standalone record digest is exactly the already-decided tagged framing:
+
+```text
+genesis: attempt-log/v1(fixed 0x00, ordinal, canonical record bytes)
+later:   attempt-log/v1(fixed 0x01, predecessor record digest, ordinal,
+                        canonical record bytes)
+```
+
+The ordinal uses the bounded-decimal frame and predecessor uses raw-32. The
+record's null/nonnull predecessor and ordinal select the tag; callers never
+select it. Generic serialization returns canonical bytes plus `Dattempt`; no
+untagged, rolling, summary, or alternate digest exists.
+
+The `RECOVERY_ATTEMPT_LOG` VALUE position is the exact closed empty-parts
+record `{mode:"VALUE",parts:{}}`. Its existing family position domain supplies
+the common position digest. Tombstone position and archive composition remain
+unauthorized in this slice.
+
+`descriptorDigest` transitively commits the selected RESERVED reservation and
+its constructible predecessor key/tip; copying reservation `Dp/Dv/Dr/Dt`, gate,
+fence, release, process-start, or descriptor members adds no replay
+discriminator. Later composition constructs the descriptor path from the log
+transaction/source/attempt, parses exact descriptor bytes, recomputes its
+digest, then locates and validates the selected reservation.
+
+TERMINAL folds the minimum downstream identities needed to distinguish one
+terminal reduction. `attachmentTipDigest` is null when no selected attachment
+applies and otherwise names its selected common `Dt`.
+`processTerminalObservationDigest`, `channelDenialEvidenceDigest`, optional
+`revocationEvidenceDigest`, and `terminalOutcomeEvidenceDigest` are opaque
+structural identities only. Later ISS-005/ISS-030/ISS-032 composition must
+parse independently reviewed source records, prove exact exit/absence,
+process-tree death, denied channels, revocation applicability, and the selected
+disposition. SHA-shaped members, parser success, or a candidate/worker report
+grant none of those facts. A TERMINAL record cannot authorize a prior launch or
+retroactively authorize attachment.
+
+One total full-chain validator accepts a dense supplied array, requires at
+least one record, applies the exact genesis/edge rules through the final node,
+and returns the parsed immutable chain. It performs no lookup and makes no
+currentness claim. ISS-004 later locates each selected pointer graph under a
+live external handle and requires the supplied final record to equal the
+selected current value. Missing, malformed, forked, truncated, or noncurrent
+history is FULL_REQUIRED `UNKNOWN`, never degraded success.
+
+This slice authorizes only the two closed parsers, canonical record path,
+tagged digest/serialization, empty VALUE position route, pure edge/full-chain
+validators, compatibility registration, canonical goldens, and structural
+exclusions. It authorizes no observation/attachment/launch/archive schema,
+selected-family/currentness composition, filesystem IO, proposal/CAS,
+capability, process operation, broker call, command, package, or runtime
+behavior.
+
+Compatibility evidence must close every branch member and scalar, every
+branch-only absence, both predecessor structural arms, all legal/illegal
+edges, ordinal zero/one/MAX/overflow, inclusive time, preserved fields,
+different-attempt requirement, path movement, both digest tags/frame parts,
+canonical bytes, generic serialization, empty position, hostile records and
+arrays, full-chain fork/gap/truncation, registry entries, and public exclusion
+of accumulator/checkpoint/summary/retention and raw process/adapter vocabulary.
+Deleting any required relation must make a committed mutant survive and fail
+the suite.
+
 ## Configuration and state roots
 
 - Project configuration is `.orchestration/project.json`.
