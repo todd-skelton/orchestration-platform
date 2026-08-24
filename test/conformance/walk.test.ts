@@ -141,6 +141,30 @@ process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:
     expect(result).toEqual({ issues: ["workingDirectory:absolute-required"], ok: false });
   });
 
+  test("refuses malformed and reflective walk input without invoking accessors", async () => {
+    const root = await temporaryRoot();
+    const base = {
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: await child(root, "process.exit(0);"),
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
+    };
+    let getterCalls = 0;
+    const accessor = { ...base };
+    Object.defineProperty(accessor, "workingDirectory", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return root;
+      },
+    });
+    for (const input of [undefined, null, 1, { ...base, workingDirectory: undefined }, accessor])
+      await expect(
+        runIss002WalkIntervals(input as unknown as Parameters<typeof runIss002WalkIntervals>[0]),
+      ).resolves.toEqual({ issues: ["walk:input-refused"], ok: false });
+    expect(getterCalls).toBe(0);
+  });
+
   test("publishes the exact maximum and keeps parse and validation inside the interval", async () => {
     const root = await temporaryRoot();
     const audit = resolve(root, "interval.txt");

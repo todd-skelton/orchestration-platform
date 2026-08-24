@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { isAbsolute } from "node:path";
-import { promisify } from "node:util";
+import { promisify, types as nodeTypes } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +21,45 @@ export type Iss002WalkResult =
 
 function refusal(...issues: readonly string[]): Iss002WalkResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function detachedWalkInput(input: unknown): Iss002WalkInput | undefined {
+  if (
+    input === null ||
+    typeof input !== "object" ||
+    nodeTypes.isProxy(input) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+  )
+    return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const fields = [
+    "candidateModuleUrl",
+    "childScriptPath",
+    "stableModuleUrl",
+    "workingDirectory",
+  ] as const;
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.some((key) => typeof key !== "string") ||
+    (keys as string[]).sort().join("\0") !== [...fields].sort().join("\0")
+  )
+    return undefined;
+  const values: Record<(typeof fields)[number], string> = Object.create(null) as Record<
+    (typeof fields)[number],
+    string
+  >;
+  for (const field of fields) {
+    const descriptor = descriptors[field];
+    if (
+      !descriptor ||
+      !("value" in descriptor) ||
+      descriptor.enumerable !== true ||
+      typeof descriptor.value !== "string"
+    )
+      return undefined;
+    values[field] = descriptor.value;
+  }
+  return Object.freeze({ ...values });
 }
 
 function childEnvironment(workingDirectory: string): NodeJS.ProcessEnv {
@@ -83,21 +122,23 @@ function parseChildOutput(
 }
 
 export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Iss002WalkResult> {
-  if (!isAbsolute(input.workingDirectory)) return refusal("workingDirectory:absolute-required");
+  const detached = detachedWalkInput(input);
+  if (!detached) return refusal("walk:input-refused");
+  if (!isAbsolute(detached.workingDirectory)) return refusal("workingDirectory:absolute-required");
   const durations: string[] = [];
   for (let index = 0; index < 3; index += 1) {
     try {
-      const environment = childEnvironment(input.workingDirectory);
+      const environment = childEnvironment(detached.workingDirectory);
       const result = await execFileAsync(
         process.execPath,
         [
           `--import=${environmentScrubber(environment)}`,
-          input.childScriptPath,
-          input.stableModuleUrl,
-          input.candidateModuleUrl,
+          detached.childScriptPath,
+          detached.stableModuleUrl,
+          detached.candidateModuleUrl,
         ],
         {
-          cwd: input.workingDirectory,
+          cwd: detached.workingDirectory,
           encoding: "utf8",
           env: environment,
           maxBuffer: 1024 * 1024,
