@@ -1,0 +1,79 @@
+import { readdir } from "node:fs/promises";
+import { relative, resolve } from "node:path";
+import { describe, expect, test } from "vitest";
+import * as conformance from "../../packages/conformance/src/index.js";
+
+const repositoryRoot = resolve(import.meta.dirname, "../..");
+
+async function filesBelow(relativeRoot: string): Promise<readonly string[]> {
+  const entries = await readdir(resolve(repositoryRoot, relativeRoot), {
+    recursive: true,
+    withFileTypes: true,
+  });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) =>
+      relative(repositoryRoot, resolve(entry.parentPath, entry.name)).replaceAll("\\", "/"),
+    )
+    .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+}
+
+describe("stable ISS-002 bundle path censuses", () => {
+  test("partitions every conformance source byte into harness or test ownership", async () => {
+    const conformanceSources = await filesBelow("packages/conformance/src");
+    const owned = [...conformance.iss002HarnessPaths, ...conformance.iss002TestBundlePaths]
+      .filter((path) => path.startsWith("packages/conformance/src/"))
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    expect(owned).toEqual(conformanceSources);
+    expect(new Set(owned).size).toBe(owned.length);
+  });
+
+  test("owns the complete contracts implementation and exact stable test suite", async () => {
+    const contractSources = await filesBelow("packages/contracts/src");
+    expect(
+      conformance.iss002HarnessPaths.filter((path) => path.startsWith("packages/contracts/src/")),
+    ).toEqual(contractSources);
+    const stableTests = (await filesBelow("test/contracts")).filter((path) =>
+      path.endsWith(".test.ts"),
+    );
+    expect(
+      conformance.iss002TestBundlePaths.filter((path) => path.startsWith("test/contracts/")),
+    ).toEqual(stableTests);
+    expect(conformance.iss002TestBundlePaths).not.toContain("test/contracts/run-tests.mjs");
+  });
+
+  test("pins the package and frozen toolchain inputs without unrelated root files", () => {
+    expect(conformance.iss002HarnessPaths.filter((path) => !path.includes("/"))).toEqual([
+      "package.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "tsconfig.base.json",
+      "tsconfig.json",
+      "vitest.config.ts",
+    ]);
+    expect(conformance.iss002HarnessPaths.filter((path) => path.endsWith("/package.json"))).toEqual(
+      ["packages/conformance/package.json", "packages/contracts/package.json"],
+    );
+    expect(
+      conformance.iss002HarnessPaths.filter((path) => path.endsWith("/tsconfig.json")),
+    ).toEqual(["packages/conformance/tsconfig.json", "packages/contracts/tsconfig.json"]);
+  });
+
+  test("constructs both manifests only from the stable root", async () => {
+    const result = await conformance.createIss002StableBundleManifests(repositoryRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.harnessManifest.purpose).toBe("HARNESS");
+    expect(result.testBundleManifest.purpose).toBe("TEST_BUNDLE");
+    expect(
+      (result.harnessManifest.files as readonly Readonly<Record<string, unknown>>[]).map(
+        (row) => row.path,
+      ),
+    ).toEqual(conformance.iss002HarnessPaths);
+    expect(
+      (result.testBundleManifest.files as readonly Readonly<Record<string, unknown>>[]).map(
+        (row) => row.path,
+      ),
+    ).toEqual(conformance.iss002TestBundlePaths);
+  });
+});
