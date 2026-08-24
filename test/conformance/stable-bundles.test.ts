@@ -54,6 +54,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/github-protection.ts",
       "packages/conformance/src/github-terminal.ts",
       "packages/conformance/src/index.ts",
+      "packages/conformance/src/iss002-bundle-paths.mts",
       "packages/conformance/src/manifest.ts",
       "packages/conformance/src/reducer.ts",
       "packages/conformance/src/stable-bundles.ts",
@@ -100,6 +101,9 @@ describe("stable ISS-002 bundle path censuses", () => {
     expect(
       conformance.iss002HarnessPaths.filter((path) => path.endsWith("/tsconfig.json")),
     ).toEqual(["packages/conformance/tsconfig.json", "packages/contracts/tsconfig.json"]);
+    expect(conformance.iss002HarnessPaths.filter((path) => path.startsWith("scripts/"))).toEqual([
+      "scripts/harness-test.mts",
+    ]);
   });
 
   test("constructs both manifests only from the stable root", async () => {

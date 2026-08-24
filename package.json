@@ -25,7 +25,7 @@
     "test:cli-shell-matrix": "node scripts/capability-not-implemented.mjs ISS-003 test:cli-shell-matrix",
     "test:state-fault-matrix": "node scripts/capability-not-implemented.mjs ISS-004 test:state-fault-matrix",
     "test:process-matrix": "node scripts/capability-not-implemented.mjs ISS-005 test:process-matrix",
-    "harness:test": "node scripts/capability-not-implemented.mjs ISS-006 harness:test",
+    "harness:test": "node scripts/harness-test.mts",
     "test:harness-workflow-mutations": "node scripts/capability-not-implemented.mjs ISS-006 test:harness-workflow-mutations",
     "test:lease-state-machine": "node scripts/capability-not-implemented.mjs ISS-007 test:lease-state-machine",
     "test:worker-lifecycle-matrix": "node scripts/capability-not-implemented.mjs ISS-008 test:worker-lifecycle-matrix",

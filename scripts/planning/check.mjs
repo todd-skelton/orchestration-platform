@@ -143,6 +143,9 @@ export function verificationCommands(source) {
 
 function validateCommandCensus(snapshot) {
   const rootScripts = snapshot.rootPackage.scripts ?? {};
+  const implementedRootScripts = new Map([
+    ["ISS-006:harness:test", "node scripts/harness-test.mts"],
+  ]);
   const expectedRootScripts = new Set([
     "build",
     "format",
@@ -164,8 +167,11 @@ function validateCommandCensus(snapshot) {
         const observed = rootScripts[scriptName];
         if (!observed) fail(`${key} verification command ${scriptName} does not resolve`);
         if (key !== "ISS-000") {
-          const expected = `node scripts/capability-not-implemented.mjs ${key} ${scriptName}`;
-          if (observed !== expected) fail(`${scriptName} is not the exact ${key} placeholder`);
+          const expected =
+            implementedRootScripts.get(`${key}:${scriptName}`) ??
+            `node scripts/capability-not-implemented.mjs ${key} ${scriptName}`;
+          if (observed !== expected)
+            fail(`${scriptName} is not the exact ${key} verification wrapper`);
         }
         continue;
       }

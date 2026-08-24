@@ -108,6 +108,20 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "changed root harness entrypoint",
+      (snapshot: any) => {
+        snapshot.rootPackage.scripts["harness:test"] =
+          "node scripts/capability-not-implemented.mjs ISS-006 harness:test";
+      },
+    ],
+    [
+      "changed conformance harness entrypoint",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/conformance"].scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-006 @orchestration-platform/conformance:test";
+      },
+    ],
+    [
       "changed conformance esbuild pin",
       (snapshot: any) => {
         snapshot.manifests["@orchestration-platform/conformance"].dependencies.esbuild = "0.28.3";
