@@ -321,12 +321,12 @@ UUID proposal is classified lost. UUIDv7 supplies uniqueness only.
 
 ### Attempt and attempt log
 
-| State                            | Required evidence                                                                                                                                                       | Next operation                                 |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `LIVE` descriptor                | CAS-selected durable reservation and exact process identity                                                                                                             | attach or monitor                              |
-| `IN_PROGRESS` attempt-log record | current reservation/descriptor; first has ordinal `"0"` and tagged genesis predecessor, later binds the previous selected `TERMINAL` record digest and ordinal plus one | produce one `TERMINAL` record                  |
-| `TERMINAL` attempt-log record    | same descriptor plus folded terminal state/lineage, exit/absence, and channel-denial fields                                                                             | reserve from this terminal triple or tombstone |
-| `UNKNOWN`                        | malformed, duplicate ID, moved process, stale pointer, or mixed transaction                                                                                             | refuse launch/start                            |
+| State                            | Required evidence                                                                                                                                                           | Next operation                                 |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `LIVE` descriptor                | CAS-selected durable reservation and exact process identity                                                                                                                 | attach or monitor                              |
+| `IN_PROGRESS` attempt-log record | current reservation/descriptor; first has ordinal `"0"` and null predecessor record digest, later binds the previous selected `TERMINAL` record digest and ordinal plus one | produce one `TERMINAL` record                  |
+| `TERMINAL` attempt-log record    | same descriptor plus folded terminal state/lineage, exit/absence, and channel-denial fields                                                                                 | reserve from this terminal triple or tombstone |
+| `UNKNOWN`                        | malformed, duplicate ID, moved process, stale pointer, or mixed transaction                                                                                                 | refuse launch/start                            |
 
 Attachment binds a selected LIVE descriptor, never a future terminal record.
 The `TERMINAL` attempt-log record folds in descriptor, optional attachment,

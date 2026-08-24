@@ -145,8 +145,7 @@ accepted.
 
 Framing `F` is UTF-8 `orchestration-platform`, NUL, domain, NUL, U32 part count,
 then closed type tag, U64 byte length, and bytes for every part. Digests are raw
-32 bytes; nullable text/digests have distinct typed nulls; attempt-log tags are
-raw fixed bytes `00` and `01`, never text. Authority/history/run ordinals and
+32 bytes; nullable text/digests have distinct typed nulls. Authority/history/run ordinals and
 counts are canonical decimal strings (`"0"|[1-9][0-9]*`) bounded by the
 JavaScript safe-integer range. Grammar, length, and lexicographic comparison
 against `Number.MAX_SAFE_INTEGER` occur before any numeric conversion; an
@@ -299,37 +298,36 @@ mode unions compare their candidate, active/fence, admission, broker, release,
 executable, and operation-manifest facts field for field.
 
 Reservations bind one UUIDv7 (uniqueness only) to a predecessor terminal
-attempt-log triple/genesis and have exact
-RESERVED/CONSUMED/TERMINAL/TOMBSTONE fields. Launch, descriptor, attachment,
-and attempt-log records separately bind transaction/source, roots/heads,
-reservation, argv/process, predecessor, failure/recovery/idempotency, and
-terminal proofs. Genesis/later attempt-log records use domain-separated raw
-tags. A fixed packet verifies current gate/fence/launch, reservation,
-descriptor, attachment, and the attempt log, whose chain is verified in full
-and stays small because attempts are rare.
+attempt-log triple or tagged reservation genesis and have exactly
+RESERVED/CONSUMED/TERMINAL value branches. Later removal uses the common pointer
+tombstone after archive composition; no reservation-schema TOMBSTONE exists.
+The LIVE-only descriptor binds one selected RESERVED tip and its constructible
+predecessor key plus one opaque process-start observation identity, without
+copying reservation proof triples or raw launch vocabulary.
 
-IN_PROGRESS attempt-log records have no folded terminal fields. TERMINAL
-records fold the terminal-summary fields — descriptor, optional attachment,
-terminal lineage, exit/absence, channel-denial, and revocation evidence — so
-no separate terminal-summary document exists and summary-as-launch-authority
-is structurally impossible.
+`attempt-log/v1` has exact nine-member IN_PROGRESS and fifteen-member TERMINAL
+branches. IN_PROGRESS has no terminal-only members. TERMINAL folds the same
+descriptor plus optional selected attachment, process-terminal observation,
+channel-denial, optional revocation, and disposition-specific outcome
+identities; no accumulator, rolling digest, checkpoint, or separate terminal
+summary exists. `Dattempt` is one canonical-record frame under domain
+`attempt-log/v1`; no raw genesis/later tag or repeated predecessor/ordinal frame
+part exists.
 
-The composed attempt-log check walks the full chain from its tagged genesis:
-record `n` binds the digest of record `n-1` and ordinal `n`, ordinals are
-contiguous safe integers that refuse above `2^53 - 1`, and the selected
-reservation, descriptor, and predecessor TERMINAL record bind exactly. R0
-IN_PROGRESS has a tagged genesis predecessor; Rn IN_PROGRESS advances from the
-selected prior TERMINAL record; each TERMINAL record advances from its
-same-attempt IN_PROGRESS record. Current and predecessor roles recompute the
-same canonical attempt-log path/Dp and
-installation/project/state/transaction/source identities, so no role swap,
-stale sibling, or split claim is accepted. Each historical record retains and
-digest-binds its own producer authority epoch; a valid E1 predecessor may be
-advanced by an E2 proposal. Epoch equality is required only among the lock
-observations and new proposal/readbacks of one commit. Each predecessor-key
-reservation is a distinct create-once pointer instance, so its selected
-RESERVED proposal must have a fully null prior triple; a TERMINAL-to-RESERVED
-replay is never an allowed transition.
+The supplied-chain structural validator starts with IN_PROGRESS ordinal `"0"`
+and null `predecessorRecordDigest`. Every later record binds the exact digest of
+the prior record and adjacent safe-integer ordinal. IN_PROGRESS→TERMINAL keeps
+the same attempt/descriptor; TERMINAL→IN_PROGRESS uses a globally new attempt
+ID, and the dense supplied prefix refuses gaps, forks, reorder, or non-adjacent
+ID reuse. A valid prefix makes no fullness/currentness claim. Later ISS-004
+composition locates the authenticated selected current pointer graph and
+requires the supplied tail to equal it; only that boundary rejects a truncated
+suffix or stale prefix. Producer authority remains in each selected common
+proposal/tip graph rather than copied into every log record.
+
+Each predecessor-key reservation is a distinct create-once pointer instance,
+so its selected RESERVED proposal has a fully null prior pointer triple; a
+TERMINAL-to-RESERVED transition on one reservation value is never allowed.
 
 `pointer-evidence-packet/v1` is an exact purpose union. `HISTORICAL_READ`
 requires `currentCommit=null` and a scoped read handle; `MUTATION_COMMIT`
