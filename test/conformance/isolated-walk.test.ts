@@ -272,6 +272,9 @@ export function validateAuthorityHistoryChain() { return []; }
         calls.push(`create:${principals.length - 1}`);
         return principal;
       },
+      async prepare(principal: unknown) {
+        calls.push(`prepare:${principals.indexOf(principal as object)}`);
+      },
       async launch(principal: unknown, request: Iss002IsolationLaunchRequest) {
         const ordinal = principals.indexOf(principal as object);
         calls.push(`launch:${ordinal}`);
@@ -306,12 +309,15 @@ export function validateAuthorityHistoryChain() { return []; }
     expect(new Set(principals).size).toBe(3);
     expect(calls).toEqual([
       "create:0",
+      "prepare:0",
       "launch:0",
       "teardown:0",
       "create:1",
+      "prepare:1",
       "launch:1",
       "teardown:1",
       "create:2",
+      "prepare:2",
       "launch:2",
       "teardown:2",
     ]);
@@ -319,10 +325,38 @@ export function validateAuthorityHistoryChain() { return []; }
 
   test("stable lifecycle fails closed and tears down after hostile launch outcomes", async () => {
     let teardownCount = 0;
+    const preparationFailure: Iss002StableIsolationAuthority = {
+      async createPrincipal() {
+        return Object.freeze({});
+      },
+      async launch() {
+        throw new Error("launch must not run");
+      },
+      async prepare() {
+        throw new Error("candidate preparation failed");
+      },
+      async teardownPrincipal() {
+        teardownCount += 1;
+      },
+    };
+    const preparationResult = await runIss002IsolatedWalk(
+      {
+        candidateArtifactPath: resolve("C:/candidate/contracts.mjs"),
+        rpcRunnerPath: resolve("C:/stable/isolated-child.mjs"),
+      },
+      preparationFailure,
+    );
+    expect(preparationResult).toEqual({
+      issues: ["isolated-walk.0:preparation-refused"],
+      ok: false,
+    });
+    expect(teardownCount).toBe(1);
+
     const launchFailure: Iss002StableIsolationAuthority = {
       async createPrincipal() {
         return Object.freeze({});
       },
+      async prepare() {},
       async launch() {
         throw new Error("candidate launch failed");
       },
@@ -341,12 +375,13 @@ export function validateAuthorityHistoryChain() { return []; }
         )
       ).ok,
     ).toBe(false);
-    expect(teardownCount).toBe(1);
+    expect(teardownCount).toBe(2);
 
     const teardownFailure: Iss002StableIsolationAuthority = {
       async createPrincipal() {
         return Object.freeze({});
       },
+      async prepare() {},
       async launch() {
         return { exitCode: 0, signal: null, stderr: "", stdout: responseText() };
       },

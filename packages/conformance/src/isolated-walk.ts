@@ -33,6 +33,7 @@ export interface Iss002IsolationLaunchRequest {
 
 export interface Iss002StableIsolationAuthority {
   createPrincipal(): Promise<unknown>;
+  prepare(principal: unknown, request: Iss002IsolationLaunchRequest): Promise<void>;
   launch(principal: unknown, request: Iss002IsolationLaunchRequest): Promise<unknown>;
   teardownPrincipal(principal: unknown): Promise<void>;
 }
@@ -302,12 +303,14 @@ export async function runIss002IsolatedWalk(
     authority === null ||
     typeof authority !== "object" ||
     typeof authority.createPrincipal !== "function" ||
+    typeof authority.prepare !== "function" ||
     typeof authority.launch !== "function" ||
     typeof authority.teardownPrincipal !== "function"
   )
     return refusal("isolated-walk:authority-refused");
   const createPrincipal = authority.createPrincipal.bind(authority);
   const launch = authority.launch.bind(authority);
+  const prepare = authority.prepare.bind(authority);
   const teardownPrincipal = authority.teardownPrincipal.bind(authority);
   const challenge = createIss002WalkChallenge();
   const request = Object.freeze({
@@ -323,6 +326,16 @@ export async function runIss002IsolatedWalk(
       principal = await createPrincipal();
     } catch {
       return refusal(`isolated-walk.${index}:principal-create-refused`);
+    }
+    try {
+      await prepare(principal, request);
+    } catch {
+      try {
+        await teardownPrincipal(principal);
+      } catch {
+        return refusal(`isolated-walk.${index}:principal-teardown-refused`);
+      }
+      return refusal(`isolated-walk.${index}:preparation-refused`);
     }
     let semantic:
       { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
