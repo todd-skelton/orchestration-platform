@@ -1610,12 +1610,58 @@ The sole authoritative hosted topology is:
    parent/root identity, cleanup failure, or unconsumed path refuses. Local file
    mode is not authority on Windows: `executable` remains bound only by the
    adapter's authenticated `100644|100755` projection. The candidate receives
-   only the consumed artifact and allowlisted environment. Stable tests/vectors
-   and candidate implementation bytes never share authorship. After the child
-   exits, the stable wrapper captures raw bytes, measures the suite, rechecks the
-   stable bundle, and uploads one attempt-qualified immutable observation
-   artifact with explicit `archive:true`. Candidate output is data, never
-   executed by later jobs.
+   only the consumed artifact and allowlisted environment.
+
+   Candidate code never executes under the stable runner's OS principal. The
+   stable adapter creates one fresh non-login principal for the observation job:
+   an otherwise unprivileged transient UID on Linux/macOS and a fresh
+   AppContainer SID on Windows. It is not the runner user, belongs to no sudo,
+   administrator, or authority-bearing group, and is absent before creation.
+   The stable checkout, materialization parent, provider context, and stable
+   process remain owner-only. The isolated principal receives read/execute only
+   on the exact stable-produced candidate artifact and candidate-side RPC runner,
+   plus a fresh writable scratch directory whose bytes are never evidence. It
+   receives no stable path, credential, secret, token, provider metadata, or raw
+   account credential. Provider/repository vocabulary and the UID/SID lifecycle
+   remain adapter diagnostics, never core record members.
+
+   Privileged setup/teardown is confined to the reviewed stable adapter and only
+   creates/deletes that principal, applies/revokes those exact ACLs, and performs
+   the process census. Candidate code never receives elevation or invokes the
+   privileged helper. An unavailable or wider privileged operation is
+   `UNSUPPORTED`/refusal, never a fallback to the runner principal.
+
+   A stable-parent anonymous-pipe protocol sends one canonical vector input and
+   treats every candidate response as hostile data. Only the stable parent owns
+   expected values, selected-head equality, exact output parsing, timing, result
+   normalization, raw observation serialization, or receipt authority. Candidate
+   stdout cannot be a receipt or PASS assertion. The stable parent measures each
+   interval with its captured monotonic clock from immediately before isolated
+   process launch through terminal exit and complete response read; process
+   startup, module load, IPC, parse, full validation, and selected-head response
+   are all inside the five-second ceiling. Candidate-reported time is ignored.
+
+   The Windows adapter places the process in a non-breakaway kill-on-close Job
+   Object. Linux/macOS use the fresh UID as the complete process census. After
+   each interval the stable adapter requires terminal root-process exit, kills
+   every remaining process in that Job Object or UID census, and proves the
+   census empty before another interval. Before stable evidence is written it
+   revokes artifact access, removes only the identity-checked scratch/artifact
+   roots, deletes the AppContainer profile or transient UID, and proves the
+   principal absent. Any pre-existing/reused principal, runner-principal
+   equality, ACL widening, inherited authority group, process escape, ambiguous
+   pipe/exit, moved root, teardown residue, or unreadable lifecycle fact refuses.
+   Kernel compromise is outside this hosted-OS boundary; same-principal Node
+   permissions, textual dependency scans, `vm`, and candidate self-report are
+   explicitly not isolation substitutes.
+
+   Stable tests/vectors and candidate implementation bytes never share
+   authorship. After the isolated process exits and teardown succeeds, the
+   stable wrapper captures raw bytes, measures the suite, rechecks the stable
+   bundle, and uploads one attempt-qualified immutable observation artifact with
+   explicit `archive:true`. Candidate output is data, never executed by later
+   jobs.
+
 5. A fresh stable-only aggregate job downloads the exact current-attempt
    artifact census, parses all inputs hostile-safe, recomputes identities, and
    writes receipts and at most one aggregate, uploaded with explicit
@@ -1684,14 +1730,16 @@ executable refusal mutant.
 
 The `walk-1000-records` row uses one fixed canonical 1,000-record
 `authority-history/v1` vector and selected head. On each OS, three fresh Node
-processes each read the bytes before measurement, then use
-`process.hrtime.bigint()` around exactly JSON parse, full validation from
-genesis, and selected-head equality. Process startup, dependency installation,
-and file IO are excluded. There is no warmup, averaging, best-of, or retry.
-Every one of the three intervals must be at most 5,000,000,000 nanoseconds;
-timeout, overflow, refusal, or one slower interval makes the required job
-non-PASS. Checkpoints or indexes remain deleted until this exact clean-process
-measurement fails on a supported hosted OS.
+processes run under the isolated principal. The stable parent uses its captured
+`process.hrtime.bigint()` around the complete launch-to-terminal-response
+interval, including process startup, module load, anonymous-pipe IO, JSON parse,
+full validation from genesis, selected-head response, and process exit.
+Dependency installation and pre-launch artifact construction remain excluded.
+There is no warmup, averaging, best-of, or retry. Every one of the three trusted
+parent intervals must be at most 5,000,000,000 nanoseconds; candidate-reported
+time, timeout, overflow, refusal, nonempty residual process census, or one slower
+interval makes the required job non-PASS. Checkpoints or indexes remain deleted
+until this exact isolated-process measurement fails on a supported hosted OS.
 
 Raw observations, job receipts, aggregate, provider record, stable manifests,
 registry/census, provider metadata snapshot, and workflow-mutation outputs are
@@ -1712,12 +1760,15 @@ stable-manifest file row, vector row, registry suite/job row, workflow event/ref
 permission/checkout separation, matrix cell, attempt join, provider API
 equality, artifact archive/inner digest/length/layout/expiry, full action SHA,
 inclusive provider-time relation, Git mode/tree projection, result reduction,
-raw-diagnostic byte, reflection case, and timing interval. Mutation fixtures also add
+raw-diagnostic byte, reflection case, isolated principal/ACL/process census,
+stable-parent pipe/timing relation, teardown fact, and timing interval. Mutation fixtures also add
 `continue-on-error`, candidate checkout before stable selection, candidate
 matrix/aggregate writers, mutable action refs, ZIP/non-archive substitution,
 same-name prior-attempt artifacts, local-hosted substitution, skipped/cancelled/
-unsupported jobs, and a spoofed check name; all must refuse without producing
-hosted PASS evidence.
+unsupported jobs, same-principal execution, reused UID/SID, widened artifact or
+stable-root ACL, background/breakaway process, forged candidate duration/PASS,
+principal deletion failure, and a spoofed check name; all must refuse without
+producing hosted PASS evidence.
 
 ## Release layout and root of trust
 
