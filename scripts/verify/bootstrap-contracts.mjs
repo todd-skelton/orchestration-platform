@@ -16,7 +16,12 @@ export const packageContract = Object.freeze([
   ["@orchestration-platform/contracts", "packages/contracts", "ISS-002", ["."]],
   ["@orchestration-platform/config", "packages/config", "ISS-003", ["."]],
   ["@orchestration-platform/cli", "packages/cli", "ISS-003", ["."]],
-  ["@orchestration-platform/conformance", "packages/conformance", "ISS-006", ["."]],
+  [
+    "@orchestration-platform/conformance",
+    "packages/conformance",
+    "ISS-006",
+    [".", "./github-actions"],
+  ],
   ["@orchestration-platform/state", "packages/state", "ISS-004", ["."]],
   ["@orchestration-platform/process", "packages/process", "ISS-005", ["."]],
   ["@orchestration-platform/session", "packages/session", "ISS-007", ["."]],

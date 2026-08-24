@@ -10,6 +10,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./github-actions": {
+      "types": "./src/github-actions/index.ts",
+      "default": "./src/github-actions/index.ts"
     }
   },
   "dependencies": {
