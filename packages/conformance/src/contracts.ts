@@ -42,6 +42,7 @@ export const conformanceFixtureDispositions = Object.freeze([
 export const conformanceFixtureKinds = Object.freeze(["BYTES", "GENERATOR"] as const);
 export const conformanceRequirementKinds = Object.freeze(["REQUIRED", "UNUSED"] as const);
 export const conformanceWalkRequirements = Object.freeze(["NONE", "WALK_1000"] as const);
+export const conformanceRunnerTokens = Object.freeze(["ISS002_CONTRACTS"] as const);
 
 const bundleFields = Object.freeze(["files", "purpose", "schemaVersion"] as const);
 const candidateFields = Object.freeze(["files", "schemaVersion"] as const);
@@ -151,10 +152,6 @@ function portableId(value: JsonValue | undefined): value is string {
 
 function packageName(value: JsonValue | undefined): value is string {
   return typeof value === "string" && /^@orchestration-platform\/[a-z][a-z0-9-]{0,63}$/.test(value);
-}
-
-function runnerToken(value: JsonValue | undefined): value is string {
-  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(value);
 }
 
 function stableVersion(value: JsonValue | undefined, major: 24 | 11): value is string {
@@ -434,7 +431,13 @@ export function parseConformanceRequiredJobRegistry(input: unknown): ParseResult
       if (!enumValue(row.value.helperRequirement, conformanceRequirementKinds))
         issues.push(`suites.${index}.helperRequirement:invalid`);
       if (!packageName(row.value.ownerPackage)) issues.push(`suites.${index}.ownerPackage:invalid`);
-      if (!runnerToken(row.value.runnerToken)) issues.push(`suites.${index}.runnerToken:invalid`);
+      if (
+        typeof row.value.runnerToken !== "string" ||
+        !conformanceRunnerTokens.includes(
+          row.value.runnerToken as (typeof conformanceRunnerTokens)[number],
+        )
+      )
+        issues.push(`suites.${index}.runnerToken:not-in-stable-catalog`);
       if (!portableId(row.value.suiteId)) issues.push(`suites.${index}.suiteId:invalid`);
       else suiteIds.push(String(row.value.suiteId));
       if (!isSha256(row.value.vectorCensusDigest))
@@ -551,13 +554,16 @@ export function parseConformanceJobReceipt(input: unknown): ParseResult {
     if (!isSha256(record[field])) issues.push(`${field}:invalid`);
   for (const field of ["jobId", "suiteId"] as const)
     if (!portableId(record[field])) issues.push(`${field}:invalid`);
-  if (!(
-    record.maximumWalkDurationNanoseconds === null ||
-    isCanonicalDecimal(record.maximumWalkDurationNanoseconds)
-  ))
-    issues.push("maximumWalkDurationNanoseconds:invalid");
   if (!enumValue(record.normalizedResult, conformanceResults))
     issues.push("normalizedResult:invalid");
+  const walkDuration = record.maximumWalkDurationNanoseconds;
+  if (record.normalizedResult !== "PASS") {
+    if (walkDuration !== null) issues.push("maximumWalkDurationNanoseconds:must-be-null");
+  } else if (!(
+    walkDuration === null ||
+    (isCanonicalDecimal(walkDuration) && BigInt(walkDuration) <= 5_000_000_000n)
+  ))
+    issues.push("maximumWalkDurationNanoseconds:invalid-or-over-budget");
   if (record.schemaVersion !== "conformance-job-receipt/v1") issues.push("schemaVersion:mismatch");
   return issues.length === 0 ? success(record) : failure(...issues);
 }
@@ -681,7 +687,23 @@ function exactBytes(input: unknown): Uint8Array {
 }
 
 export function computeConformanceVectorBytesDigest(bytes: unknown): string {
-  const value = exactBytes(bytes);
+  if (!(bytes instanceof Uint8Array) || Object.getPrototypeOf(bytes) !== Uint8Array.prototype)
+    throw new TypeError("bytes:exact-uint8array-required");
+  const value = bytes;
+  if (value.length === 0) {
+    const domain = Buffer.from("conformance-vector-bytes/v1\0", "utf8");
+    const partCount = Buffer.alloc(4);
+    partCount.writeUInt32BE(1);
+    const byteLength = Buffer.alloc(8);
+    byteLength.writeBigUInt64BE(0n);
+    return createHash("sha256")
+      .update(Buffer.from("orchestration-platform\0", "utf8"))
+      .update(domain)
+      .update(partCount)
+      .update(Buffer.from([5]))
+      .update(byteLength)
+      .digest("hex");
+  }
   return framedDigest("conformance-vector-bytes/v1", [
     frame.fixed(Buffer.from(value).toString("hex")),
   ]);

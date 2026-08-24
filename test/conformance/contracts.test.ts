@@ -199,6 +199,9 @@ describe("portable conformance contracts", () => {
     expect(conformance.computeConformanceVectorBytesDigest(bytes("fixture"))).toBe(
       "8c149631824c4d253d04a70e27d1cf15379fbfa50599133e09fb89762b96ff7d",
     );
+    expect(conformance.computeConformanceVectorBytesDigest(new Uint8Array())).toBe(
+      "0a9f48975321d6a6e54525bd0200d1ebe0405be5c7a7721d20671e8c063bfa66",
+    );
     expect(serialized.digest).not.toBe(vectorDigest);
     expect(
       conformance.parseCanonicalConformanceBytes(
@@ -263,6 +266,12 @@ describe("portable conformance contracts", () => {
     expect(conformance.parseConformanceRequiredJobRegistry({ ...registry, jobs: [] }).ok).toBe(
       false,
     );
+    expect(
+      conformance.parseConformanceRequiredJobRegistry({
+        ...registry,
+        suites: [{ ...registry.suites[0], runnerToken: "CANDIDATE_SELECTED" }],
+      }).ok,
+    ).toBe(false);
   });
 
   test("builds exact raw evidence and refuses moved environment bytes", () => {
@@ -310,6 +319,19 @@ describe("portable conformance contracts", () => {
         testBundleDigest: d("5"),
       }).ok,
     ).toBe(false);
+    expect(
+      conformance.parseConformanceJobReceipt({
+        ...created.receipt,
+        maximumWalkDurationNanoseconds: "1",
+        normalizedResult: "FAIL",
+      }).ok,
+    ).toBe(false);
+    expect(
+      conformance.parseConformanceJobReceipt({
+        ...created.receipt,
+        maximumWalkDurationNanoseconds: "5000000001",
+      }).ok,
+    ).toBe(false);
   });
 
   test("derives a complete PASS aggregate in stable registry order", () => {
@@ -353,7 +375,7 @@ describe("portable conformance contracts", () => {
       custodyRequirement: "UNUSED",
       helperRequirement: "UNUSED",
       ownerPackage: "@orchestration-platform/contracts",
-      runnerToken: "FUTURE_SUITE",
+      runnerToken: "ISS002_CONTRACTS",
       suiteId: "future-suite",
       vectorCensusDigest: d("8"),
       walkRequirement: "NONE",
