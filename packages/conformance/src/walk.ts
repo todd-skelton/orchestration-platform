@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +36,19 @@ function childEnvironment(workingDirectory: string): NodeJS.ProcessEnv {
   return environment;
 }
 
+function environmentScrubber(environment: NodeJS.ProcessEnv): string {
+  const expected = Object.fromEntries(
+    Object.entries(environment).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
+  );
+  const source = `const expected=${JSON.stringify(expected)};
+for (const key of Object.keys(process.env)) delete process.env[key];
+for (const [key,value] of Object.entries(expected)) process.env[key]=value;
+`;
+  return `data:text/javascript,${encodeURIComponent(source)}`;
+}
+
 function parseChildOutput(
   stdout: string,
   stderr: string,
@@ -69,16 +83,23 @@ function parseChildOutput(
 }
 
 export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Iss002WalkResult> {
+  if (!isAbsolute(input.workingDirectory)) return refusal("workingDirectory:absolute-required");
   const durations: string[] = [];
   for (let index = 0; index < 3; index += 1) {
     try {
+      const environment = childEnvironment(input.workingDirectory);
       const result = await execFileAsync(
         process.execPath,
-        [input.childScriptPath, input.stableModuleUrl, input.candidateModuleUrl],
+        [
+          `--import=${environmentScrubber(environment)}`,
+          input.childScriptPath,
+          input.stableModuleUrl,
+          input.candidateModuleUrl,
+        ],
         {
           cwd: input.workingDirectory,
           encoding: "utf8",
-          env: childEnvironment(input.workingDirectory),
+          env: environment,
           maxBuffer: 1024 * 1024,
           timeout: 15_000,
           windowsHide: true,

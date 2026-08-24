@@ -74,30 +74,71 @@ describe("ISS-002 1,000-record walk", () => {
     );
   });
 
-  test("proves three distinct children and strips provider metadata", async () => {
+  test("proves three distinct children and the exact child environment allowlist", async () => {
     const root = await temporaryRoot();
     const audit = resolve(root, "pids.txt");
+    const expectedEnvironment = Object.fromEntries(
+      Object.entries({
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
+        LANG: "C",
+        LC_ALL: "C",
+        TEMP: root,
+        TMP: root,
+        TMPDIR: root,
+        TZ: "UTC",
+      }).sort(([left], [right]) => left.localeCompare(right)),
+    );
     const script = await child(
       root,
       `import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(audit)}, String(process.pid) + "\\n");
-const leaked = Object.keys(process.env).filter((key) => /^(?:ACTIONS_|GITHUB_)/.test(key));
-if (process.cwd() !== ${JSON.stringify(root)}) leaked.push("cwd");
-for (const key of ["TEMP", "TMP", "TMPDIR"])
-  if (process.env[key] !== ${JSON.stringify(root)}) leaked.push(key);
-process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues:leaked,recordCount:"1000"}));
+const observed = Object.fromEntries(Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right)));
+const issues = JSON.stringify(observed) === ${JSON.stringify(JSON.stringify(expectedEnvironment))} ? [] : ["environment:census-mismatch"];
+if (process.cwd() !== ${JSON.stringify(root)}) issues.push("cwd:mismatch");
+process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:"1000"}));
 `,
     );
-    const result = await runIss002WalkIntervals({
-      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
-      childScriptPath: script,
-      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
-      workingDirectory: root,
-    });
-    expect(result.ok).toBe(true);
+    const ambientKeys = [
+      "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+      "AWS_SECRET_ACCESS_KEY",
+      "CI",
+      "GITHUB_TOKEN",
+      "NODE_OPTIONS",
+      "ORCHESTRATION_SECRET",
+      "PATH",
+      "RUNNER_OS",
+    ] as const;
+    const prior = new Map(ambientKeys.map((key) => [key, process.env[key]]));
+    let result: Awaited<ReturnType<typeof runIss002WalkIntervals>> | undefined;
+    try {
+      for (const key of ambientKeys) process.env[key] = `poison-${key}`;
+      result = await runIss002WalkIntervals({
+        candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+        childScriptPath: script,
+        stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+        workingDirectory: root,
+      });
+    } finally {
+      for (const [key, value] of prior)
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+    expect(result?.ok).toBe(true);
     const pids = (await readFile(audit, "utf8")).trim().split("\n");
     expect(pids).toHaveLength(3);
     expect(new Set(pids).size).toBe(3);
+  });
+
+  test("refuses a relative child working directory", async () => {
+    const root = await temporaryRoot();
+    const result = await runIss002WalkIntervals({
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: await child(root, "process.exit(0);"),
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: ".",
+    });
+    expect(result).toEqual({ issues: ["workingDirectory:absolute-required"], ok: false });
   });
 
   test("publishes the exact maximum and keeps parse and validation inside the interval", async () => {
