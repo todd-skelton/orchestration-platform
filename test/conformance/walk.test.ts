@@ -2,6 +2,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import vm from "node:vm";
 import { afterEach, describe, expect, test } from "vitest";
 import { build } from "esbuild";
 import { runIss002WalkIntervals } from "../../packages/conformance/src/index.js";
@@ -158,11 +159,41 @@ process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:
         return root;
       },
     });
-    for (const input of [undefined, null, 1, { ...base, workingDirectory: undefined }, accessor])
+    const nonenumerable = { ...base };
+    Object.defineProperty(nonenumerable, "candidate", { value: true });
+    const symbolic = { ...base, [Symbol("candidate")]: true };
+    const exotic = Object.assign(Object.create({ candidate: true }) as object, base);
+    const crossRealm = vm.runInNewContext(`(${JSON.stringify(base)})`) as unknown;
+    let proxyTrapCalls = 0;
+    const throwingProxy = new Proxy(base, {
+      getPrototypeOf() {
+        proxyTrapCalls += 1;
+        throw new Error("proxy trap must not run");
+      },
+      ownKeys() {
+        proxyTrapCalls += 1;
+        throw new Error("proxy trap must not run");
+      },
+    });
+    for (const input of [
+      undefined,
+      null,
+      1,
+      { ...base, workingDirectory: undefined },
+      { ...base, candidate: true },
+      nonenumerable,
+      symbolic,
+      exotic,
+      crossRealm,
+      new Proxy(base, {}),
+      throwingProxy,
+      accessor,
+    ])
       await expect(
         runIss002WalkIntervals(input as unknown as Parameters<typeof runIss002WalkIntervals>[0]),
       ).resolves.toEqual({ issues: ["walk:input-refused"], ok: false });
     expect(getterCalls).toBe(0);
+    expect(proxyTrapCalls).toBe(0);
   });
 
   test("publishes the exact maximum and keeps parse and validation inside the interval", async () => {
