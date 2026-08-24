@@ -1168,11 +1168,13 @@ manifest.
 `files` is the complete candidate commit tree: a dense, nonempty array of at
 most 65,536 exact rows, unique and sorted by UTF-8 path bytes. Each row has
 exactly `byteLength`, `executable`, `path`, and `sha256Digest`; `executable` is
-a boolean derived from the only admitted regular-file modes, and the remaining
-rules match the bundle file row. Symlinks, submodules, non-regular modes,
-unlisted tree entries, checkout-only files, missing blobs, or a partial tree
-refuse. The GitHub adapter projects the resolved candidate commit into this
-portable manifest; Git identities do not enter the record. Its identity is:
+a boolean derived by the sole adapter mapping `type=blob,mode=100644` to false
+and `type=blob,mode=100755` to true; the remaining rules match the bundle file
+row. Mode `120000`, mode `160000`, every other mode/type, a truncated or
+unterminated tree response, unlisted/duplicate tree entries, checkout-only
+files, missing blobs, or a nonportable path refuses. The GitHub adapter
+projects the resolved candidate commit into this portable manifest; Git
+identities do not enter the record. Its identity is:
 
 ```text
 Dsubject = conformance-candidate-subject/v1(canonical subject bytes)
@@ -1491,9 +1493,12 @@ Dprotection = github-conformance-protection-snapshot/v1(
 ```
 
 The plan job derives `Dprotection` and the record job independently re-derives
-it; movement during the run refuses. `recordedAt` is the record job's canonical
-provider-observed time, and every artifact listed inside the record has
-`expiresAt` at least 30 complete days later.
+it; movement during the run refuses. Immediately before canonical provider-
+record serialization, the record job performs its final current-attempt jobs
+API GET and sets `recordedAt` to the canonical millisecond-UTC projection of
+that HTTPS response's provider `Date` header (whole seconds become `.000Z`). A
+missing, repeated, malformed, or non-UTC header refuses. Every artifact listed
+inside the record has `expiresAt >= recordedAt + 30 complete days`.
 
 Each job row has exactly `conclusion`, `logicalJobId`, `providerJobId`,
 `providerJobName`, and `role`. Conclusion is exactly `SUCCESS`; role is
@@ -1510,6 +1515,36 @@ required observation plus the sole aggregate, is sorted by name, and has at
 most 257 rows. The provider API's SHA-256, byte length, run association,
 non-expired state, and exact bytes must agree. Artifacts from any other run,
 attempt, repository, workflow, job census, name, candidate, or harness refuse.
+
+For observation and aggregate roles, `artifactDigest` and `byteLength` are the
+provider API's exact ZIP archive identity and archive byte length, normalized
+from the provider's `sha256:` value. After verifying those outer bytes, the
+reader performs safe ZIP extraction with no traversal, absolute/backslash path,
+symlink, duplicate, encryption, unsupported compression, or over-bound entry.
+An observation archive has exactly these regular files at its root:
+
+```text
+environment
+environment-record.json
+raw-manifest.json
+report
+stderr
+stdout
+```
+
+The four extensionless files are the exact bytes named by `Draw`; the two JSON
+files are canonical `conformance-environment/v1` and
+`conformance-raw-artifact-manifest/v1` bytes. An aggregate archive has exactly
+`aggregate.json` plus one canonical `receipts/<jobId>.json` for every registry
+job and no other regular file. Directory metadata is ignored; every regular
+file path and extracted byte is exact. Cross-role, ZIP/inner-digest, reordered
+receipt, extra-entry, and alternate-layout substitution refuses.
+
+The provider-record artifact alone uses the reviewed upload action's explicit
+single-file `archive:false` mode. Its provider API digest and byte length bind
+the canonical `provider-record.json` bytes directly; ZIP output or a different
+file name/mode refuses. The post-job reader uses the correspondingly pinned
+download behavior and never treats an archive digest as an inner-record digest.
 
 The opaque core value is:
 
@@ -1554,21 +1589,27 @@ The sole authoritative hosted topology is:
    no secrets, environments, caches, OIDC, write tokens, status writes, or
    self-hosted runners. Candidate child processes receive an allowlisted
    environment excluding all GitHub/Actions tokens and provider metadata.
+   Every remote `uses:` dependency, including checkout, Node setup, artifact
+   upload, and artifact download, is pinned to one independently reviewed full
+   40-hex commit SHA. Tags, branches, shortened hashes, dependency installs
+   outside the reviewed frozen lockfile/integrity graph, and unpinned remote
+   executable downloads in workflow steps refuse the workflow structure test.
 4. Each ephemeral hosted observation job invokes a stable runner token against
    candidate bytes in a separate temporary tree outside the checkout. Stable
    tests/vectors and candidate implementation bytes never share authorship.
    After the child exits, the stable wrapper captures raw bytes, measures the
    suite, rechecks the stable bundle, and uploads one attempt-qualified immutable
-   observation artifact. Candidate output is data, never executed by later jobs.
+   observation artifact with explicit `archive:true`. Candidate output is data,
+   never executed by later jobs.
 5. A fresh stable-only aggregate job downloads the exact current-attempt
    artifact census, parses all inputs hostile-safe, recomputes identities, and
-   writes receipts and at most one aggregate. It never checks out or executes
-   candidate code.
+   writes receipts and at most one aggregate, uploaded with explicit
+   `archive:true`. It never checks out or executes candidate code.
 6. A final stable-only record job queries the provider run, current-attempt job,
    artifact, and ruleset APIs after aggregate upload, verifies the exact census,
    unchanged zero-bypass protection snapshot, and at least 30 days remaining
-   retention for the already-listed artifacts, and writes then uploads the
-   provider record as exact artifact
+   retention for the already-listed artifacts, and writes then uploads with
+   explicit `archive:false` the provider record as exact artifact
    `conformance-<runId>-<runAttempt>-provider-record`. Rerunning only a subset
    cannot combine attempts because every artifact name and API query is
    attempt-qualified.
@@ -1583,16 +1624,19 @@ provider after the whole run is terminal, and requires:
   job name and SUCCESS conclusion;
 - exactly one provider-record artifact with the name above, same run
   association, API SHA-256/length equal to downloaded canonical bytes, creation
-  during the record-job interval, non-expired status, and `expiresAt` at least
-  30 days after the record's `recordedAt`; and
+  under `archive:false`, non-expired status, and `expiresAt` at least 30 days
+  after the record's `recordedAt`;
 - the downloaded provider record, every listed job/artifact, `DproviderRun`,
   `Dprotection`, and `Daggregate` all revalidate from live provider responses
   and retained bytes.
 
 The artifact API does not assert its uploader job. The constructive join is the
 immutable reviewed workflow's unique attempt-qualified upload step plus unique
-artifact name, successful record job/run, creation interval, and same-run API
-association. Any ambiguity or duplicate refuses. The verifier emits only a
+artifact name, successful record job/run, and same-run API association. The
+exact inclusive time relation is
+`recordJob.startedAt <= recordedAt <= artifact.createdAt <= recordJob.completedAt`;
+all four values are provider fields/projections, not runner wall clock. Any
+ambiguity, duplicate, or boundary violation refuses. The verifier emits only a
 PASS/refusal result for independent review; it creates no downstream authority
 record, so the chain terminates without a self-reference.
 
@@ -1650,12 +1694,14 @@ provider-neutral. A candidate never certifies itself.
 Deletion evidence must independently kill every schema member/domain/enum,
 stable-manifest file row, vector row, registry suite/job row, workflow event/ref/
 permission/checkout separation, matrix cell, attempt join, provider API
-equality, artifact digest/length/expiry, result reduction, raw-diagnostic byte,
-reflection case, and timing interval. Mutation fixtures also add
+equality, artifact archive/inner digest/length/layout/expiry, full action SHA,
+inclusive provider-time relation, Git mode/tree projection, result reduction,
+raw-diagnostic byte, reflection case, and timing interval. Mutation fixtures also add
 `continue-on-error`, candidate checkout before stable selection, candidate
-matrix/aggregate writers, same-name prior-attempt artifacts, local-hosted
-substitution, skipped/cancelled/unsupported jobs, and a spoofed check name; all
-must refuse without producing hosted PASS evidence.
+matrix/aggregate writers, mutable action refs, ZIP/non-archive substitution,
+same-name prior-attempt artifacts, local-hosted substitution, skipped/cancelled/
+unsupported jobs, and a spoofed check name; all must refuse without producing
+hosted PASS evidence.
 
 ## Release layout and root of trust
 
