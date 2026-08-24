@@ -1,1 +1,2 @@
 export * from "../github-actions.js";
+export * from "../github-artifacts.js";
