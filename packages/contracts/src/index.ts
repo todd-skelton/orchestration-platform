@@ -24,6 +24,10 @@ import { parsePointerGraphContract } from "./pointer.js";
 import { parseGateFenceContract } from "./definitions.js";
 import { computeRecoveryAttemptDescriptorDigest, parseRecoveryAttemptContract } from "./attempt.js";
 import {
+  computeRecoveryAttemptLogRecordDigest,
+  parseRecoveryAttemptLogContract,
+} from "./attempt-log.js";
+import {
   computeNativeConsumeReceiptDigest,
   computeNativeRemovalReceiptDigest,
   computeRecoveryAuthorizationArchiveDigest,
@@ -52,6 +56,7 @@ export * from "./retirement.js";
 export * from "./pointer.js";
 export * from "./recovery.js";
 export * from "./attempt.js";
+export * from "./attempt-log.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
 export {
@@ -118,6 +123,8 @@ export function parseContract(expectedSchemaVersion: string, input: unknown): Pa
   if (recoveryAuthorization) return recoveryAuthorization;
   const recoveryAttempt = parseRecoveryAttemptContract(expectedSchemaVersion, input);
   if (recoveryAttempt) return recoveryAttempt;
+  const recoveryAttemptLog = parseRecoveryAttemptLogContract(expectedSchemaVersion, input);
+  if (recoveryAttemptLog) return recoveryAttemptLog;
   const definition = schemaDefinitions[expectedSchemaVersion];
   if (!definition) return { ok: false, issues: ["schemaVersion:unsupported"] };
   try {
@@ -177,21 +184,23 @@ export function serializeContract(
   )
     return { ok: false, issues: ["serialization:pointer-context-required"] };
   const digest =
-    expectedSchemaVersion === "recovery-attempt-descriptor/v1"
-      ? computeRecoveryAttemptDescriptorDigest(parsed.value)
-      : expectedSchemaVersion === "recovery-authorization-archive/v1"
-        ? computeRecoveryAuthorizationArchiveDigest(parsed.value)
-        : expectedSchemaVersion === "recovery-authorization-core/v1"
-          ? computeRecoveryAuthorizationCoreDigest(parsed.value)
-          : expectedSchemaVersion === "native-consume-receipt/v1"
-            ? computeNativeConsumeReceiptDigest(parsed.value)
-            : expectedSchemaVersion === "native-removal-receipt/v1"
-              ? computeNativeRemovalReceiptDigest(parsed.value)
-              : expectedSchemaVersion === "recovery-authorization-consume-receipt/v1"
-                ? computeRecoveryAuthorizationConsumeReceiptDigest(parsed.value)
-                : expectedSchemaVersion === "recovery-authorization-revoke-receipt/v1"
-                  ? computeRecoveryAuthorizationRevokeReceiptDigest(parsed.value)
-                  : canonicalDigest(parsed.value);
+    expectedSchemaVersion === "attempt-log/v1"
+      ? computeRecoveryAttemptLogRecordDigest(parsed.value)
+      : expectedSchemaVersion === "recovery-attempt-descriptor/v1"
+        ? computeRecoveryAttemptDescriptorDigest(parsed.value)
+        : expectedSchemaVersion === "recovery-authorization-archive/v1"
+          ? computeRecoveryAuthorizationArchiveDigest(parsed.value)
+          : expectedSchemaVersion === "recovery-authorization-core/v1"
+            ? computeRecoveryAuthorizationCoreDigest(parsed.value)
+            : expectedSchemaVersion === "native-consume-receipt/v1"
+              ? computeNativeConsumeReceiptDigest(parsed.value)
+              : expectedSchemaVersion === "native-removal-receipt/v1"
+                ? computeNativeRemovalReceiptDigest(parsed.value)
+                : expectedSchemaVersion === "recovery-authorization-consume-receipt/v1"
+                  ? computeRecoveryAuthorizationConsumeReceiptDigest(parsed.value)
+                  : expectedSchemaVersion === "recovery-authorization-revoke-receipt/v1"
+                    ? computeRecoveryAuthorizationRevokeReceiptDigest(parsed.value)
+                    : canonicalDigest(parsed.value);
   return { ok: true, bytes: canonicalBytes(parsed.value), digest };
 }
 

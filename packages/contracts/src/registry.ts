@@ -54,6 +54,11 @@ import {
   recoveryAttemptReservationSchemaFields,
   recoveryAttemptReservationSchemaVersions,
 } from "./attempt.js";
+import {
+  recoveryAttemptLogSchemaFields,
+  recoveryAttemptLogSchemaVersions,
+  recoveryAttemptTerminalDispositions,
+} from "./attempt-log.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -489,6 +494,16 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: recoveryAttemptDescriptorSchemaFields,
       closedValues: Object.freeze(["LIVE"]),
     }),
+    "attempt-log/v1#IN_PROGRESS": Object.freeze({
+      schemaVersion: "attempt-log/v1",
+      fields: recoveryAttemptLogSchemaFields.inProgress,
+      closedValues: Object.freeze(["IN_PROGRESS"]),
+    }),
+    "attempt-log/v1#TERMINAL": Object.freeze({
+      schemaVersion: "attempt-log/v1",
+      fields: recoveryAttemptLogSchemaFields.terminal,
+      closedValues: Object.freeze(["TERMINAL", ...recoveryAttemptTerminalDispositions]),
+    }),
     "recovery-attempt-reservation/v1#RESERVED": Object.freeze({
       schemaVersion: "recovery-attempt-reservation/v1",
       fields: recoveryAttemptReservationSchemaFields.reserved,
@@ -616,6 +631,7 @@ export const schemaVersions = Object.freeze(
     ...recoveryAuthorizationStateSchemaVersions,
     ...recoveryAttemptReservationSchemaVersions,
     ...recoveryAttemptDescriptorSchemaVersions,
+    ...recoveryAttemptLogSchemaVersions,
   ].sort(),
 );
 export type CompatibilityDisposition = "readable" | "refused";

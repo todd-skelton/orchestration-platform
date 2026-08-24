@@ -486,6 +486,20 @@ export function parseRecoveryAttemptReservationValuePosition(input: unknown): Pa
     : { ok: false, issues: Object.freeze(["mode:invalid"]) };
 }
 
+export function parseRecoveryAttemptLogValuePosition(input: unknown): ParseResult {
+  const snapshot = snapshotClosedRecord(input, ["mode", "parts"]);
+  if (!snapshot.ok) return snapshot;
+  const parts = snapshotClosedRecord(snapshot.value.parts, []);
+  if (!parts.ok)
+    return {
+      ok: false,
+      issues: Object.freeze(parts.issues.map((issue) => `parts.${issue}`).sort()),
+    };
+  return snapshot.value.mode === "VALUE"
+    ? snapshot
+    : { ok: false, issues: Object.freeze(["mode:invalid"]) };
+}
+
 export function computePointerPositionDigest(kind: PointerKind, evidence: unknown): string {
   const row = rowFor(kind);
   const snapshot = snapshotClosedRecord(evidence, ["mode", "parts"]);
@@ -510,6 +524,10 @@ export function computePointerPositionDigest(kind: PointerKind, evidence: unknow
     const parsed = parseRecoveryAttemptReservationValuePosition(snapshot.value);
     if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
   }
+  if (kind === "RECOVERY_ATTEMPT_LOG") {
+    const parsed = parseRecoveryAttemptLogValuePosition(snapshot.value);
+    if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  }
   if (mode === "TOMBSTONE" && row.tombstonePositionDomain === null)
     throw new TypeError("mode:tombstone-refused");
   const domain = mode === "VALUE" ? row.positionDomain : row.tombstonePositionDomain!;
@@ -532,6 +550,12 @@ export function computeRecoveryAttemptReservationValuePositionDigest(input: unkn
   const parsed = parseRecoveryAttemptReservationValuePosition(input);
   if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
   return computePointerPositionDigest("RECOVERY_ATTEMPT_RESERVATION", parsed.value);
+}
+
+export function computeRecoveryAttemptLogValuePositionDigest(input: unknown): string {
+  const parsed = parseRecoveryAttemptLogValuePosition(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return computePointerPositionDigest("RECOVERY_ATTEMPT_LOG", parsed.value);
 }
 
 export function computePointerInstanceDigest(input: PointerIdentity): string {

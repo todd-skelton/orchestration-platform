@@ -282,7 +282,6 @@ describe("recovery attempt reservation values", () => {
       "computeRecoveryAttemptReservationDigest",
       "descriptorInputsDigest",
       "launchDefinitionDigest",
-      "recoveryAttemptLogSchemaFields",
       "recoveryAttemptReservationTombstone",
     ])
       expect(Object.hasOwn(contracts, name), name).toBe(false);
