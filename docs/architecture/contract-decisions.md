@@ -632,8 +632,11 @@ descriptor digest. TERMINAL→IN_PROGRESS preserves transaction/source but
 requires a different attempt ID and permits a new descriptor digest. Both
 non-genesis edges require prior `recordedAt <= next recordedAt`, exact adjacent
 ordinal, and `next.predecessorRecordDigest = Dattempt(prior)`. Self-loops,
-skips, reverse/crossed lifecycle edges, reused attempt IDs after TERMINAL,
-gaps, forks, decreasing time, or changed same-attempt identity refuse.
+skips, reverse/crossed lifecycle edges, gaps, forks, decreasing time, or changed
+same-attempt identity refuse. The supplied-chain validator additionally keeps
+the set of all prior attempt IDs and refuses any later IN_PROGRESS attempt ID
+that has appeared anywhere earlier in the chain, including non-adjacent A/B/A
+reuse.
 
 The only canonical record path is:
 
@@ -644,17 +647,16 @@ installation/activation-recovery-launches/<transactionId>/<sourceToken>/attempts
 The path constructor accepts only the parsed record's UUIDs, closed source,
 bounded ordinal, and lifecycle. Moving any of them changes or refuses the path.
 
-The standalone record digest is exactly the already-decided tagged framing:
+The standalone record digest is exactly one domain-separated canonical frame:
 
 ```text
-genesis: attempt-log/v1(fixed 0x00, ordinal, canonical record bytes)
-later:   attempt-log/v1(fixed 0x01, predecessor record digest, ordinal,
-                        canonical record bytes)
+Dattempt = attempt-log/v1(canonical record bytes)
 ```
 
-The ordinal uses the bounded-decimal frame and predecessor uses raw-32. The
-record's null/nonnull predecessor and ordinal select the tag; callers never
-select it. Generic serialization returns canonical bytes plus `Dattempt`; no
+The exact closed bytes already commit lifecycle, bounded ordinal, and nullable
+predecessor without ambiguous concatenation. Repeating those values as a tag,
+bounded-decimal part, or raw-32 part adds no substitution discriminator and is
+forbidden. Generic serialization returns canonical bytes plus `Dattempt`; no
 untagged, rolling, summary, or alternate digest exists.
 
 The `RECOVERY_ATTEMPT_LOG` VALUE position is the exact closed empty-parts
@@ -681,16 +683,17 @@ disposition. SHA-shaped members, parser success, or a candidate/worker report
 grant none of those facts. A TERMINAL record cannot authorize a prior launch or
 retroactively authorize attachment.
 
-One total full-chain validator accepts a dense supplied array, requires at
-least one record, applies the exact genesis/edge rules through the final node,
-and returns the parsed immutable chain. It performs no lookup and makes no
-currentness claim. ISS-004 later locates each selected pointer graph under a
-live external handle and requires the supplied final record to equal the
-selected current value. Missing, malformed, forked, truncated, or noncurrent
-history is FULL_REQUIRED `UNKNOWN`, never degraded success.
+One total supplied-chain structural validator accepts a dense array, requires
+at least one record, applies the exact genesis/edge rules and global attempt-ID
+uniqueness through the final supplied node, and returns the parsed immutable
+prefix. It performs no lookup and makes no fullness/currentness claim. A valid
+prefix is structurally valid. ISS-004 later locates each selected pointer graph
+under a live external handle and requires the supplied final record to equal
+the authenticated selected current value; only that composition can classify
+a valid truncated suffix or noncurrent prefix as FULL_REQUIRED `UNKNOWN`.
 
 This slice authorizes only the two closed parsers, canonical record path,
-tagged digest/serialization, empty VALUE position route, pure edge/full-chain
+domain-separated digest/serialization, empty VALUE position route, pure edge/supplied-chain
 validators, compatibility registration, canonical goldens, and structural
 exclusions. It authorizes no observation/attachment/launch/archive schema,
 selected-family/currentness composition, filesystem IO, proposal/CAS,
@@ -700,10 +703,12 @@ behavior.
 Compatibility evidence must close every branch member and scalar, every
 branch-only absence, both predecessor structural arms, all legal/illegal
 edges, ordinal zero/one/MAX/overflow, inclusive time, preserved fields,
-different-attempt requirement, path movement, both digest tags/frame parts,
+different/global attempt requirement, path movement, exact digest domain/frame,
 canonical bytes, generic serialization, empty position, hostile records and
-arrays, full-chain fork/gap/truncation, registry entries, and public exclusion
+arrays, supplied-chain fork/gap/non-adjacent ID reuse, registry entries, and public exclusion
 of accumulator/checkpoint/summary/retention and raw process/adapter vocabulary.
+Valid-prefix truncation/current-tail mutants belong only to later ISS-004
+selected-current composition.
 Deleting any required relation must make a committed mutant survive and fail
 the suite.
 
