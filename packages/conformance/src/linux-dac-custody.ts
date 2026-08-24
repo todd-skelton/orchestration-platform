@@ -876,7 +876,7 @@ export async function createLinuxDacCustodyTestFixture(
   return await createLinuxDacCustodyCore(options, dependencies);
 }
 
-export async function runLinuxDacCommandTestFixture(
+export async function runLinuxAuthorityCommand(
   request: LinuxDacCommandRequest,
 ): Promise<LinuxDacCommandResult> {
   return await nativeCommandRunner(request);

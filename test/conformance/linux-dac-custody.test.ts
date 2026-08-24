@@ -85,7 +85,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   createLinuxDacCustody,
   createLinuxDacCustodyTestFixture,
-  runLinuxDacCommandTestFixture,
+  runLinuxAuthorityCommand,
   type LinuxDacCommandRequest,
   type LinuxDacHelperProfile,
   type LinuxDacPrincipal,
@@ -447,7 +447,7 @@ describe("Linux stable POSIX DAC cleanup-intent custody", () => {
     "latches oversized %s even when the child exits cleanly",
     async (stream) => {
       await expect(
-        runLinuxDacCommandTestFixture({
+        runLinuxAuthorityCommand({
           arguments: [resolve(import.meta.dirname, "linux-dac-output-fixture.mjs"), stream],
           file: process.execPath,
           inputText: "",
