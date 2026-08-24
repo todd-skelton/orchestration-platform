@@ -11,6 +11,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/conformance/src/index.ts",
   "packages/conformance/src/isolated-walk.ts",
   "packages/conformance/src/iss002-bundle-paths.mts",
+  "packages/conformance/src/linux-pidfd-quiesce.py",
   "packages/conformance/src/manifest.ts",
   "packages/conformance/src/reducer.ts",
   "packages/conformance/src/stable-bundles.ts",
