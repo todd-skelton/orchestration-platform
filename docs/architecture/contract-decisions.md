@@ -1599,12 +1599,23 @@ The sole authoritative hosted topology is:
    outside the reviewed frozen lockfile/integrity graph, and unpinned remote
    executable downloads in workflow steps refuse the workflow structure test.
 4. Each ephemeral hosted observation job invokes a stable runner token against
-   candidate bytes in a separate temporary tree outside the checkout. Stable
-   tests/vectors and candidate implementation bytes never share authorship.
-   After the child exits, the stable wrapper captures raw bytes, measures the
-   suite, rechecks the stable bundle, and uploads one attempt-qualified immutable
-   observation artifact with explicit `archive:true`. Candidate output is data,
-   never executed by later jobs.
+   candidate bytes in a separate temporary tree outside the checkout. Before
+   any candidate or other untrusted same-principal process starts, the stable
+   wrapper exclusively owns a fresh external parent, reads each candidate file
+   through an identity-checked regular-file handle, copies only bytes matching
+   the adapter-authenticated candidate subject into a fresh child, and consumes
+   that child into the suite's external execution artifact. The materialized
+   path is never supplied to candidate code, never returned as evidence, and is
+   deleted before the candidate artifact is launched; a partial copy, changed
+   parent/root identity, cleanup failure, or unconsumed path refuses. Local file
+   mode is not authority on Windows: `executable` remains bound only by the
+   adapter's authenticated `100644|100755` projection. The candidate receives
+   only the consumed artifact and allowlisted environment. Stable tests/vectors
+   and candidate implementation bytes never share authorship. After the child
+   exits, the stable wrapper captures raw bytes, measures the suite, rechecks the
+   stable bundle, and uploads one attempt-qualified immutable observation
+   artifact with explicit `archive:true`. Candidate output is data, never
+   executed by later jobs.
 5. A fresh stable-only aggregate job downloads the exact current-attempt
    artifact census, parses all inputs hostile-safe, recomputes identities, and
    writes receipts and at most one aggregate, uploaded with explicit
