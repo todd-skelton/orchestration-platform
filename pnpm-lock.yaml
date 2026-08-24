@@ -67,7 +67,11 @@ importers:
 
   packages/config: {}
 
-  packages/conformance: {}
+  packages/conformance:
+    dependencies:
+      '@orchestration-platform/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/contracts: {}
 
