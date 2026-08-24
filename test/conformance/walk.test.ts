@@ -162,6 +162,33 @@ export function validateAuthorityHistoryChain() { return []; }
     ).toBe(true);
   });
 
+  test("independently refuses candidate mutations of every selected-head equality input", async () => {
+    const root = await temporaryRoot();
+    const modules = await bundledModules(root);
+    for (const mutation of [
+      'records[999].ordinal = "998";',
+      'records[999] = { ...records[999], retiringAuthorityTipDigest: "0".repeat(64) };',
+      'selectedAuthorityValue.headRecordDigest = "0".repeat(64);',
+    ]) {
+      const candidate = resolve(root, `mutating-candidate-${Math.random().toString(16)}.mjs`);
+      await writeFile(
+        candidate,
+        `export function validateAuthorityHistoryChain(records, selectedAuthorityValue) {
+  ${mutation}
+  return [];
+}
+`,
+        "utf8",
+      );
+      const result = await runIss002WalkIntervals({
+        candidateModuleUrl: pathToFileURL(candidate).href,
+        childScriptPath,
+        stableModuleUrl: modules.stableModuleUrl,
+      });
+      expect(result.ok).toBe(false);
+    }
+  });
+
   test("refuses over-budget, stderr, semantic issues, and malformed output", async () => {
     const root = await temporaryRoot();
     for (const source of [
