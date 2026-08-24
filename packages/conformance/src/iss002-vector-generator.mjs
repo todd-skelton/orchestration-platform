@@ -37,12 +37,38 @@ function next(state) {
   return BigInt.asUintN(64, value);
 }
 
-export function generate(parameters) {
+function detachedParameters(input) {
+  try {
+    if (
+      input === null ||
+      typeof input !== "object" ||
+      nodeTypes.isProxy(input) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+    )
+      throw new TypeError("iss002-vector-parameters:refused");
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Reflect.ownKeys(descriptors);
+    if (
+      keys.some((key) => typeof key !== "string") ||
+      keys.sort().join("\0") !== "caseId\0iterationCount\0seed"
+    )
+      throw new TypeError("iss002-vector-parameters:refused");
+    const values = Object.create(null);
+    for (const key of ["caseId", "iterationCount", "seed"]) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true)
+        throw new TypeError("iss002-vector-parameters:refused");
+      values[key] = descriptor.value;
+    }
+    return Object.freeze(values);
+  } catch {
+    throw new TypeError("iss002-vector-parameters:refused");
+  }
+}
+
+export function generate(input) {
+  const parameters = detachedParameters(input);
   if (
-    parameters === null ||
-    typeof parameters !== "object" ||
-    ![Object.prototype, null].includes(Object.getPrototypeOf(parameters)) ||
-    Object.keys(parameters).sort().join("\0") !== "caseId\0iterationCount\0seed" ||
     !caseIds.includes(parameters.caseId) ||
     !canonicalPositiveDecimal(parameters.iterationCount) ||
     typeof parameters.seed !== "string" ||
@@ -64,3 +90,4 @@ export function generate(parameters) {
     seed: parameters.seed,
   });
 }
+import { types as nodeTypes } from "node:util";

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import vm from "node:vm";
 import { describe, expect, test } from "vitest";
 import * as conformance from "../../packages/conformance/src/index.js";
 import * as contracts from "../../packages/contracts/src/index.js";
@@ -26,7 +27,7 @@ describe("stable ISS-002 conformance census", () => {
       iterationCount: "1000",
     });
     expect(conformance.computeConformanceRecordDigest("conformance-vector-census/v1", census)).toBe(
-      "3a820f880c50359974be5f28fcd7bc9a71b61b1297399c35261ee2f49c93dfa4",
+      "45de5ad79d5746cddf25c75de8540025a50d5eb1c61a798f96fcc139d73179ff",
     );
   });
 
@@ -111,5 +112,45 @@ describe("stable ISS-002 conformance census", () => {
         caseId: "candidate-added",
       }),
     ).toThrow(/refused/);
+  });
+
+  test("detaches generator parameters without invoking hostile reflection", async () => {
+    const generatorUrl = pathToFileURL(generatorPath).href;
+    const generator = (await import(generatorUrl)) as {
+      readonly generate: (parameters: unknown) => unknown;
+    };
+    const census = conformance.createIss002VectorCensus(await stableSource());
+    const base = {
+      ...((census.entries as readonly Readonly<Record<string, unknown>>[])[0]
+        ?.generatorParameters as Readonly<Record<string, unknown>>),
+    };
+    for (const accepted of [base, Object.seal({ ...base }), Object.freeze({ ...base })])
+      expect(() => generator.generate(accepted)).not.toThrow();
+    const nonenumerable = { ...base };
+    Object.defineProperty(nonenumerable, "candidate", { value: true });
+    const symbolic = { ...base, [Symbol("candidate")]: true };
+    let getterCalls = 0;
+    const accessor = { iterationCount: base.iterationCount, seed: base.seed };
+    Object.defineProperty(accessor, "caseId", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return base.caseId;
+      },
+    });
+    const crossRealm = vm.runInNewContext(
+      `(${JSON.stringify(base)})`,
+      Object.create(null) as object,
+    ) as unknown;
+    for (const refused of [
+      { ...base, candidate: true },
+      nonenumerable,
+      symbolic,
+      accessor,
+      new Proxy(base, {}),
+      crossRealm,
+    ])
+      expect(() => generator.generate(refused)).toThrow(/refused/);
+    expect(getterCalls).toBe(0);
   });
 });
