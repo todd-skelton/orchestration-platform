@@ -1,9 +1,28 @@
-import { readdir } from "node:fs/promises";
-import { relative, resolve } from "node:path";
-import { describe, expect, test } from "vitest";
+import { copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, relative, resolve } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 import * as conformance from "../../packages/conformance/src/index.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
+  );
+});
+
+async function stableSnapshot(): Promise<string> {
+  const root = await mkdtemp(resolve(tmpdir(), "orchestration-stable-bundles-"));
+  temporaryRoots.push(root);
+  for (const path of [...conformance.iss002HarnessPaths, ...conformance.iss002TestBundlePaths]) {
+    const destination = resolve(root, ...path.split("/"));
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(resolve(repositoryRoot, ...path.split("/")), destination);
+  }
+  return root;
+}
 
 async function filesBelow(relativeRoot: string): Promise<readonly string[]> {
   const entries = await readdir(resolve(repositoryRoot, relativeRoot), {
@@ -84,7 +103,7 @@ describe("stable ISS-002 bundle path censuses", () => {
   });
 
   test("constructs both manifests only from the stable root", async () => {
-    const result = await conformance.createIss002StableBundleManifests(repositoryRoot);
+    const result = await conformance.createIss002StableBundleManifests(await stableSnapshot());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.harnessManifest.purpose).toBe("HARNESS");
