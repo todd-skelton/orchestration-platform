@@ -36,6 +36,20 @@
 #undef FreeSid
 #endif
 
+#if defined(OP_WINDOWS_EXECUTION_FIXTURE)
+#undef CreateDirectoryW
+#undef CreateFileW
+#undef WriteFile
+#undef ReadFile
+#undef FlushFileBuffers
+#undef GetFileInformationByHandle
+#undef GetFileInformationByHandleEx
+#undef SetFileInformationByHandle
+#undef GetFileAttributesW
+#undef CloseHandle
+#undef FindClose
+#endif
+
 #if defined(OP_WINDOWS_ABSENCE_VERIFIER)
 
 __declspec(noreturn) void verifier_entry(void) {
@@ -109,6 +123,940 @@ __declspec(noreturn) void verifier_entry(void) {
   ExitProcess(absent ? 0U : 1U);
 }
 
+#elif defined(OP_WINDOWS_EXECUTION_FIXTURE)
+
+__declspec(dllimport) BOOL WINAPI SetFileAttributesW(PCWSTR, DWORD);
+
+static BYTE fixture_execution_case;
+static int fixture_execution_root_created;
+static int fixture_execution_short_write_fired;
+static BYTE fixture_execution_fault_phase;
+static BYTE fixture_execution_active_publication_phase;
+static BYTE fixture_execution_fault_point;
+static int fixture_execution_fault_active;
+static HANDLE fixture_execution_pending_handle;
+static WCHAR fixture_execution_pending_path[1200];
+static HANDLE fixture_execution_record_handle;
+static HANDLE fixture_execution_state_handle;
+static DWORD fixture_execution_product_deletes;
+static int fixture_execution_count_deletes;
+static DWORD fixture_execution_find_close_calls;
+static DWORD fixture_execution_find_close_target;
+static BYTE fixture_execution_stage;
+static int fixture_execution_target_write_complete;
+static int fixture_execution_cleanup_find_close;
+static int fixture_execution_simultaneous_close;
+static WCHAR fixture_execution_root_path[PATH_MAX_UNITS + 1U];
+static BYTE fixture_execution_delete_order[4];
+static DWORD fixture_execution_delete_order_count;
+static int fixture_execution_unidentified_delete;
+static int fixture_execution_track_recovery_opens;
+static DWORD fixture_execution_target_opens[EXECUTION_ROLE_COUNT];
+
+static int fixture_execution_ending(PCWSTR path, PCWSTR ending) {
+  SIZE_T path_units = wide_length(path);
+  SIZE_T ending_units = wide_length(ending);
+  if (path_units < ending_units) return 0;
+  for (SIZE_T index = 0U; index < ending_units; index += 1U)
+    if (path[path_units - ending_units + index] != ending[index]) return 0;
+  return 1;
+}
+
+static BYTE fixture_execution_object_role(PCWSTR path) {
+  static const WCHAR *target_names[] = {
+    L"node.exe", L"rpc-runner.mjs", L"candidate.mjs"
+  };
+  if (fixture_execution_root_path[0] != L'\0' &&
+      wide_equal(path, fixture_execution_root_path))
+    return 4U;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    WCHAR target[PATH_MAX_UNITS + 1U];
+    DWORD cursor = 0U;
+    if (!append_wide(target, PATH_MAX_UNITS + 1U, &cursor,
+                     fixture_execution_root_path) ||
+        !append_wide(target, PATH_MAX_UNITS + 1U, &cursor, L"\\") ||
+        !append_wide(target, PATH_MAX_UNITS + 1U, &cursor,
+                     target_names[role]))
+      return 0U;
+    if (wide_equal(path, target))
+      return (BYTE)(role + 1U);
+  }
+  return 0U;
+}
+
+static void fixture_execution_reset_delete_order(void) {
+  fixture_execution_delete_order_count = 0U;
+  fixture_execution_unidentified_delete = 0;
+  zero_bytes(fixture_execution_delete_order,
+             sizeof(fixture_execution_delete_order));
+}
+
+static int fixture_execution_exact_delete_order(const BYTE *roles,
+                                                DWORD count) {
+  return !fixture_execution_unidentified_delete &&
+         fixture_execution_delete_order_count == count &&
+         equal_bytes(fixture_execution_delete_order, roles, count);
+}
+
+static BYTE fixture_execution_path_phase(PCWSTR path, int *pending) {
+  static const WCHAR *endings[] = {
+    L"", L"-00-attempted.opwx", L"-01-created.opwx",
+    L"-02-delete-attempted.opwx", L"-03-absence-proved.opwx"
+  };
+  *pending = 0;
+  for (BYTE kind = EXECUTION_ATTEMPTED;
+       kind <= EXECUTION_ABSENCE_PROVED; kind += 1U) {
+    WCHAR pending_ending[64];
+    DWORD cursor = 0U;
+    if (fixture_execution_ending(path, endings[kind])) return kind;
+    if (!append_wide(pending_ending, 64U, &cursor, endings[kind]) ||
+        !append_wide(pending_ending, 64U, &cursor, L".pending"))
+      return 0U;
+    if (fixture_execution_ending(path, pending_ending)) {
+      *pending = 1;
+      return kind;
+    }
+  }
+  return 0U;
+}
+
+static HANDLE WINAPI fixture_execution_CreateFileW(
+    PCWSTR path, DWORD access, DWORD sharing,
+    SECURITY_ATTRIBUTES *attributes, DWORD creation, DWORD flags,
+    HANDLE template_file) {
+  int pending = 0;
+  BYTE phase = fixture_execution_path_phase(path, &pending);
+  HANDLE result;
+  if (fixture_execution_fault_active &&
+      phase == fixture_execution_fault_phase && pending &&
+      creation == CREATE_NEW && fixture_execution_fault_point == 1U) {
+    SetLastError(5U);
+    return INVALID_HANDLE_VALUE;
+  }
+  if (fixture_execution_fault_active &&
+      phase == fixture_execution_fault_phase && !pending &&
+      creation == OPEN_EXISTING && fixture_execution_fault_point == 12U) {
+    SetLastError(5U);
+    return INVALID_HANDLE_VALUE;
+  }
+  result = CreateFileW(path, access, sharing, attributes, creation, flags,
+                       template_file);
+  if (result != INVALID_HANDLE_VALUE) {
+    BYTE role = fixture_execution_object_role(path);
+    if (role != 0U) {
+      if (fixture_execution_track_recovery_opens && role <= 3U &&
+          creation == OPEN_EXISTING)
+        fixture_execution_target_opens[role - 1U] += 1U;
+    }
+  }
+  if (result != INVALID_HANDLE_VALUE && pending && phase != 0U)
+    fixture_execution_active_publication_phase = phase;
+  if (result != INVALID_HANDLE_VALUE && pending && phase != 0U) {
+    fixture_execution_pending_handle = result;
+    copy_bytes(fixture_execution_pending_path, path,
+               ((DWORD)wide_length(path) + 1U) * 2U);
+  }
+  if (result != INVALID_HANDLE_VALUE &&
+      phase == fixture_execution_fault_phase) {
+    if (!pending) fixture_execution_record_handle = result;
+  }
+  return result;
+}
+
+static BOOL WINAPI fixture_execution_CreateDirectoryW(
+    PCWSTR path, SECURITY_ATTRIBUTES *attributes) {
+  BOOL created = CreateDirectoryW(path, attributes);
+  if (!created) return FALSE;
+  fixture_execution_root_created = 1;
+  copy_bytes(fixture_execution_root_path, path,
+             ((DWORD)wide_length(path) + 1U) * 2U);
+  if (fixture_execution_case == 6U) {
+    WCHAR stream[PATH_MAX_UNITS + 32U];
+    DWORD cursor = 0U;
+    HANDLE file;
+    DWORD written = 0U;
+    BYTE value = 1U;
+    if (!append_wide(stream, PATH_MAX_UNITS + 32U, &cursor, path) ||
+        !append_wide(stream, PATH_MAX_UNITS + 32U, &cursor,
+                     L":fixture:$DATA"))
+      return FALSE;
+    file = CreateFileW(stream, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                       CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE ||
+        !WriteFile(file, &value, 1U, &written, NULL) || written != 1U ||
+        !CloseHandle(file))
+      return FALSE;
+  }
+  if (fixture_execution_case == 2U ||
+      (fixture_execution_case >= 10U && fixture_execution_case <= 33U) ||
+      fixture_execution_case == 38U) {
+    SetLastError(5U);
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_execution_WriteFile(HANDLE file, LPCVOID bytes,
+                                                DWORD length, DWORD *written,
+                                                LPVOID overlapped) {
+  if (fixture_execution_fault_active &&
+      fixture_execution_active_publication_phase ==
+          fixture_execution_fault_phase &&
+      file == fixture_execution_pending_handle) {
+    if (fixture_execution_fault_point == 2U) return FALSE;
+    if (fixture_execution_fault_point == 3U) {
+      if (!WriteFile(file, bytes, length, written, overlapped)) return FALSE;
+      if (*written != 0U) *written -= 1U;
+      return TRUE;
+    }
+  }
+  if (fixture_execution_case == 3U && fixture_execution_root_created &&
+      !fixture_execution_short_write_fired && length > 1U) {
+    DWORD partial = length / 2U;
+    fixture_execution_short_write_fired = 1;
+    return WriteFile(file, bytes, partial, written, overlapped);
+  }
+  {
+    BOOL result = WriteFile(file, bytes, length, written, overlapped);
+    if (result && fixture_execution_case == 37U &&
+        fixture_execution_root_created)
+      fixture_execution_target_write_complete = 1;
+    return result;
+  }
+}
+
+static BOOL WINAPI fixture_execution_ReadFile(HANDLE file, LPVOID bytes,
+                                               DWORD length, DWORD *read,
+                                               LPVOID overlapped) {
+  if (fixture_execution_fault_active &&
+      fixture_execution_active_publication_phase ==
+          fixture_execution_fault_phase &&
+      file == fixture_execution_pending_handle &&
+      fixture_execution_fault_point == 5U)
+    return FALSE;
+  return ReadFile(file, bytes, length, read, overlapped);
+}
+
+static BOOL WINAPI fixture_execution_FlushFileBuffers(HANDLE file) {
+  if (fixture_execution_fault_active &&
+      ((file == fixture_execution_pending_handle &&
+        fixture_execution_active_publication_phase ==
+            fixture_execution_fault_phase &&
+        fixture_execution_fault_point == 4U) ||
+       (file == fixture_execution_state_handle &&
+        fixture_execution_active_publication_phase ==
+            fixture_execution_fault_phase &&
+        fixture_execution_fault_point == 10U)))
+    return FALSE;
+  return FlushFileBuffers(file);
+}
+
+static BOOL WINAPI fixture_execution_GetFileInformationByHandle(
+    HANDLE file, BY_HANDLE_FILE_INFORMATION *information) {
+  if (fixture_execution_fault_active &&
+      fixture_execution_active_publication_phase ==
+          fixture_execution_fault_phase &&
+      file == fixture_execution_pending_handle &&
+      fixture_execution_fault_point == 6U)
+    return FALSE;
+  return GetFileInformationByHandle(file, information);
+}
+
+static BOOL WINAPI fixture_execution_GetFileInformationByHandleEx(
+    HANDLE file, FILE_INFO_BY_HANDLE_CLASS kind, LPVOID information,
+    DWORD length) {
+  if (fixture_execution_fault_active &&
+      fixture_execution_active_publication_phase ==
+          fixture_execution_fault_phase &&
+      file == fixture_execution_pending_handle && kind == FileIdInfo &&
+      fixture_execution_fault_point == 7U)
+    return FALSE;
+  return GetFileInformationByHandleEx(file, kind, information, length);
+}
+
+static BOOL WINAPI fixture_execution_SetFileInformationByHandle(
+    HANDLE file, FILE_INFO_BY_HANDLE_CLASS kind, LPVOID information,
+    DWORD length) {
+  if (fixture_execution_count_deletes && kind == FileDispositionInfo) {
+    WCHAR final_path[PATH_MAX_UNITS + 1U];
+    DWORD final_units = GetFinalPathNameByHandleW(
+        file, final_path, PATH_MAX_UNITS + 1U,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    int pending = 0;
+    BYTE role = 0U;
+    BYTE phase = 0U;
+    if (final_units == 0U || final_units > PATH_MAX_UNITS) {
+      fixture_execution_unidentified_delete = 1;
+    } else {
+      phase = fixture_execution_path_phase(final_path, &pending);
+      if (!pending || phase == 0U)
+        role = fixture_execution_object_role(final_path);
+    }
+    if (pending && phase != 0U &&
+        file == fixture_execution_pending_handle &&
+        phase == fixture_execution_active_publication_phase &&
+        wide_equal(final_path, fixture_execution_pending_path)) {
+      /* Journal rollback is not execution-object destruction. */
+    } else if (role != 0U) {
+      fixture_execution_product_deletes += 1U;
+      if (fixture_execution_delete_order_count >= 4U) {
+        fixture_execution_unidentified_delete = 1;
+      } else {
+        fixture_execution_delete_order[fixture_execution_delete_order_count] =
+            role;
+        fixture_execution_delete_order_count += 1U;
+      }
+    } else {
+      fixture_execution_unidentified_delete = 1;
+    }
+  }
+  if (fixture_execution_fault_active &&
+      fixture_execution_active_publication_phase ==
+          fixture_execution_fault_phase &&
+      file == fixture_execution_pending_handle && kind == FileRenameInfoEx &&
+      fixture_execution_fault_point == 8U)
+    return FALSE;
+  return SetFileInformationByHandle(file, kind, information, length);
+}
+
+static DWORD WINAPI fixture_execution_GetFileAttributesW(PCWSTR path) {
+  int pending = 0;
+  BYTE phase = fixture_execution_path_phase(path, &pending);
+  if (fixture_execution_fault_active &&
+      phase == fixture_execution_fault_phase && pending &&
+      fixture_execution_fault_point == 9U)
+    return FILE_ATTRIBUTE_NORMAL;
+  return GetFileAttributesW(path);
+}
+
+static BOOL WINAPI fixture_execution_CloseHandle(HANDLE file) {
+  int pending = file == fixture_execution_pending_handle;
+  int record = file == fixture_execution_record_handle;
+  BYTE publication_phase = fixture_execution_active_publication_phase;
+  BOOL result = CloseHandle(file);
+  if (pending) {
+    fixture_execution_pending_handle = INVALID_HANDLE_VALUE;
+    fixture_execution_pending_path[0] = L'\0';
+    fixture_execution_active_publication_phase = 0U;
+  }
+  if (fixture_execution_simultaneous_close) {
+    fixture_execution_simultaneous_close = 0;
+    return FALSE;
+  }
+  if (fixture_execution_fault_active &&
+      publication_phase == fixture_execution_fault_phase &&
+      (pending || record) &&
+      fixture_execution_fault_point == 11U)
+    return FALSE;
+  return result;
+}
+
+static BOOL WINAPI fixture_execution_FindClose(HANDLE find) {
+  BOOL result = FindClose(find);
+  int fail = 0;
+  fixture_execution_find_close_calls += 1U;
+  if (fixture_execution_find_close_target != 0U &&
+      fixture_execution_find_close_calls ==
+          fixture_execution_find_close_target)
+    fail = 1;
+  if (fixture_execution_case == 36U && fixture_execution_root_created)
+    fail = 1;
+  if (fixture_execution_case == 37U &&
+      fixture_execution_target_write_complete)
+    fail = 1;
+  if (fixture_execution_cleanup_find_close) {
+    fixture_execution_cleanup_find_close = 0;
+    fail = 1;
+  }
+  if (fail) {
+    if (fixture_execution_case == 40U)
+      fixture_execution_simultaneous_close = 1;
+    return FALSE;
+  }
+  return result;
+}
+
+DWORD WINAPI fixture_enum_appcontainers(DWORD flags, DWORD *count,
+                                        PINET_FIREWALL_APP_CONTAINER *rows) {
+  if (flags != NETISO_FLAG_FORCE_COMPUTE_BINARIES || count == NULL ||
+      rows == NULL)
+    return 87U;
+  *count = 0U;
+  *rows = NULL;
+  return ERROR_SUCCESS;
+}
+
+DWORD WINAPI fixture_free_appcontainers(PINET_FIREWALL_APP_CONTAINER rows) {
+  return rows == NULL ? ERROR_SUCCESS : 87U;
+}
+
+static int fixture_execution_stream(const WCHAR *path) {
+  WCHAR stream[PATH_MAX_UNITS + 32U];
+  DWORD cursor = 0U;
+  HANDLE file;
+  DWORD written = 0U;
+  BYTE value = 1U;
+  if (!append_wide(stream, PATH_MAX_UNITS + 32U, &cursor, path) ||
+      !append_wide(stream, PATH_MAX_UNITS + 32U, &cursor,
+                   L":fixture:$DATA"))
+    return 0;
+  file = CreateFileW(stream, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                     CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE) return 0;
+  if (!WriteFile(file, &value, 1U, &written, NULL) || written != 1U) {
+    (void)CloseHandle(file);
+    return 0;
+  }
+  return CloseHandle(file);
+}
+
+static int fixture_execution_remove_stream(const WCHAR *path) {
+  WCHAR stream[PATH_MAX_UNITS + 32U];
+  DWORD cursor = 0U;
+  HANDLE file;
+  FILE_DISPOSITION_INFO disposition;
+  disposition.DeleteFile = TRUE;
+  if (!append_wide(stream, PATH_MAX_UNITS + 32U, &cursor, path) ||
+      !append_wide(stream, PATH_MAX_UNITS + 32U, &cursor,
+                   L":fixture:$DATA"))
+    return 0;
+  file = CreateFileW(stream, DELETE, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                     NULL);
+  if (file == INVALID_HANDLE_VALUE) return 0;
+  if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                  sizeof(disposition)) ||
+      !CloseHandle(file))
+    return 0;
+  return 1;
+}
+
+static int fixture_parse_execution_chain(ROOT_CUSTODY *root,
+                                         const PROFILE_IDENTITY *identity,
+                                         int complete) {
+  JOURNAL_GROUP *group = (JOURNAL_GROUP *)HeapAlloc(
+      GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*group));
+  int valid = 0;
+  if (group == NULL) return 0;
+  copy_bytes(group->identity.token, identity->token, TOKEN_BYTES);
+  copy_bytes(group->profile_created_digest, identity->prior_digest, 32U);
+  if (!parse_execution_record(root, group, EXECUTION_ATTEMPTED) ||
+      (complete &&
+       !parse_execution_record(root, group, EXECUTION_CREATED)) ||
+      !parse_execution_record(root, group, EXECUTION_DELETE_ATTEMPTED) ||
+      !parse_execution_record(root, group, EXECUTION_ABSENCE_PROVED) ||
+      group->execution == NULL ||
+      group->execution->phase != EXECUTION_ABSENCE_PROVED)
+    goto done;
+  valid = 1;
+done:
+  if (group->execution != NULL) {
+    if (!release_execution(root, group->execution)) valid = 0;
+    if (!HeapFree(GetProcessHeap(), 0U, group->execution)) valid = 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, group)) valid = 0;
+  return valid;
+}
+
+static EXECUTION_CUSTODY *fixture_reload_execution(
+    ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity) {
+  JOURNAL_GROUP *group = (JOURNAL_GROUP *)HeapAlloc(
+      GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*group));
+  EXECUTION_CUSTODY *execution = NULL;
+  if (group == NULL) return NULL;
+  copy_bytes(group->identity.token, identity->token, TOKEN_BYTES);
+  copy_bytes(group->profile_created_digest, identity->prior_digest, 32U);
+  if (!parse_execution_record(root, group, EXECUTION_ATTEMPTED)) goto done;
+  for (BYTE kind = EXECUTION_CREATED;
+       kind <= EXECUTION_ABSENCE_PROVED; kind += 1U) {
+    WCHAR path[1200];
+    DWORD attributes;
+    if (!execution_journal_path(root, identity->token, kind, 0, path))
+      goto done;
+    attributes = GetFileAttributesW(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+      if (GetLastError() != ERROR_FILE_NOT_FOUND &&
+          GetLastError() != ERROR_PATH_NOT_FOUND)
+        goto done;
+      continue;
+    }
+    if (!parse_execution_record(root, group, kind)) goto done;
+  }
+  execution = group->execution;
+  group->execution = NULL;
+done:
+  if (group->execution != NULL) {
+    (void)release_execution(root, group->execution);
+    (void)HeapFree(GetProcessHeap(), 0U, group->execution);
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, group)) return NULL;
+  return execution;
+}
+
+static int fixture_execution_record_mutants(
+    ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity,
+    const EXECUTION_CUSTODY *template_execution) {
+  EXECUTION_CUSTODY *execution = (EXECUTION_CUSTODY *)HeapAlloc(
+      GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*execution));
+  BYTE *record = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 4096U);
+  int valid = 0;
+  if (execution == NULL || record == NULL) goto done;
+  copy_bytes(execution, template_execution, sizeof(*execution));
+  execution->phase = 0U;
+  zero_bytes(execution->root_binding, 32U);
+  zero_bytes(execution->target_bindings, 96U);
+  if (execution_record(root, identity, execution, EXECUTION_ATTEMPTED,
+                       record, 4096U) == 0U)
+    goto done;
+  execution->target_bindings[0][0] = 1U;
+  if (execution_record(root, identity, execution, EXECUTION_ATTEMPTED,
+                       record, 4096U) != 0U)
+    goto done;
+  execution->phase = EXECUTION_ATTEMPTED;
+  execution->root_binding[0] = 1U;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    execution->target_bindings[role][0] = (BYTE)(role + 1U);
+  if (execution_record(root, identity, execution, EXECUTION_CREATED,
+                       record, 4096U) == 0U)
+    goto done;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    BYTE retained = execution->target_bindings[role][0];
+    execution->target_bindings[role][0] = 0U;
+    if (execution_record(root, identity, execution, EXECUTION_CREATED,
+                         record, 4096U) != 0U)
+      goto done;
+    execution->target_bindings[role][0] = retained;
+  }
+  execution->phase = EXECUTION_ATTEMPTED;
+  if (execution_record(root, identity, execution,
+                       EXECUTION_DELETE_ATTEMPTED, record, 4096U) != 0U)
+    goto done;
+  execution->phase = EXECUTION_CREATED;
+  zero_bytes(execution->root_binding, 32U);
+  zero_bytes(execution->target_bindings, 96U);
+  if (execution_record(root, identity, execution,
+                       EXECUTION_DELETE_ATTEMPTED, record, 4096U) != 0U)
+    goto done;
+  valid = 1;
+done:
+  if (record != NULL && !HeapFree(GetProcessHeap(), 0U, record)) valid = 0;
+  if (execution != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, execution))
+    valid = 0;
+  return valid;
+}
+
+static int fixture_reject_corrupt_absence(ROOT_CUSTODY *root,
+                                          const PROFILE_IDENTITY *identity) {
+  WCHAR path[1200];
+  BYTE *record = NULL;
+  DWORD length = 0U;
+  DWORD cursor = 140U;
+  WORD parent_units;
+  WORD root_units;
+  HANDLE file = INVALID_HANDLE_VALUE;
+  DWORD written = 0U;
+  JOURNAL_GROUP *group = NULL;
+  int valid = 0;
+  if (!execution_journal_path(root, identity->token,
+                              EXECUTION_ABSENCE_PROVED, 0, path) ||
+      !load_record(root, path, &record, &length) || cursor + 2U > length)
+    goto done;
+  parent_units = read_u16(record + cursor);
+  cursor += 2U + (DWORD)parent_units * 2U + 32U;
+  if (cursor + 2U > length) goto done;
+  root_units = read_u16(record + cursor);
+  cursor += 2U + (DWORD)root_units * 2U + 96U;
+  if (cursor + 32U + 96U != length) goto done;
+  zero_bytes(record + cursor, 32U);
+  file = CreateFileW(path, GENERIC_WRITE | SYNCHRONIZE, 0U, NULL,
+                     OPEN_EXISTING,
+                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+                         FILE_FLAG_OPEN_REPARSE_POINT,
+                     NULL);
+  SetLastError(ERROR_SUCCESS);
+  if (file == INVALID_HANDLE_VALUE ||
+      (SetFilePointer(file, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER &&
+       GetLastError() != ERROR_SUCCESS) ||
+      !WriteFile(file, record, length, &written, NULL) || written != length ||
+      !FlushFileBuffers(file) || !CloseHandle(file))
+    goto done;
+  file = INVALID_HANDLE_VALUE;
+  group = (JOURNAL_GROUP *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                     sizeof(*group));
+  if (group == NULL) goto done;
+  copy_bytes(group->identity.token, identity->token, TOKEN_BYTES);
+  copy_bytes(group->profile_created_digest, identity->prior_digest, 32U);
+  if (!parse_execution_record(root, group, EXECUTION_ATTEMPTED) ||
+      !parse_execution_record(root, group, EXECUTION_CREATED) ||
+      !parse_execution_record(root, group, EXECUTION_DELETE_ATTEMPTED) ||
+      parse_execution_record(root, group, EXECUTION_ABSENCE_PROVED) != 0)
+    goto done;
+  valid = 1;
+done:
+  if (file != INVALID_HANDLE_VALUE && !CloseHandle(file)) valid = 0;
+  if (record != NULL && !HeapFree(GetProcessHeap(), 0U, record)) valid = 0;
+  if (group != NULL) {
+    if (group->execution != NULL) {
+      if (!release_execution(root, group->execution)) valid = 0;
+      if (!HeapFree(GetProcessHeap(), 0U, group->execution)) valid = 0;
+    }
+    if (!HeapFree(GetProcessHeap(), 0U, group)) valid = 0;
+  }
+  return valid;
+}
+
+static int fixture_execution_expected(void) {
+  HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+  BROKER_FRAME frame;
+  EXECUTION_PREPARE_PATHS *paths;
+  ROOT_CUSTODY root;
+  PROFILE_IDENTITY identity;
+  EXECUTION_CUSTODY *execution;
+  BYTE trailing;
+  DWORD index;
+  int retained;
+  int constructed;
+  int cleaned = 0;
+  int released;
+  paths = (EXECUTION_PREPARE_PATHS *)HeapAlloc(
+      GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*paths));
+  execution = (EXECUTION_CUSTODY *)HeapAlloc(
+      GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*execution));
+  if (paths == NULL || execution == NULL || input == NULL ||
+      input == INVALID_HANDLE_VALUE ||
+      !read_one(input, &fixture_execution_case) ||
+      fixture_execution_case < 1U || fixture_execution_case > 41U ||
+      read_frame(input, &frame, 1) != 1 ||
+      frame.operation != PREPARE_OPERATION ||
+      !canonical_execution_prepare(frame.payload, frame.length, paths) ||
+      read_one(input, &trailing) != 0)
+    return 0;
+  zero_bytes(&root, sizeof(root));
+  zero_bytes(&identity, sizeof(identity));
+  if (!retain_root(paths->state_root, paths->state_root_units, &root)) {
+    (void)release_root(&root);
+    return 0;
+  }
+  for (index = 0U; index < TOKEN_BYTES; index += 1U)
+    identity.token[index] = (BYTE)(index + 1U);
+  for (index = 0U; index < 32U; index += 1U)
+    identity.prior_digest[index] = (BYTE)(0x80U + index);
+  identity.phase = JOURNAL_PROFILE_CREATED;
+  if (fixture_execution_case == 4U &&
+      !fixture_execution_stream(paths->execution_parent)) {
+    (void)release_root(&root);
+    return 0;
+  }
+  if (fixture_execution_case == 5U &&
+      !fixture_execution_stream(paths->sources[0])) {
+    (void)release_root(&root);
+    return 0;
+  }
+  if (fixture_execution_case == 8U || fixture_execution_case == 40U)
+    fixture_execution_find_close_target = 1U;
+  if (fixture_execution_case == 9U)
+    fixture_execution_find_close_target = 2U;
+  retained = retain_execution_inputs(&root, paths, &identity, execution);
+  if (fixture_execution_case == 8U || fixture_execution_case == 9U ||
+      fixture_execution_case == 40U) {
+    int ambiguous = root.resource_ambiguous;
+    int execution_released = release_execution(&root, execution);
+    int root_released = release_root(&root);
+    int execution_freed = HeapFree(GetProcessHeap(), 0U, execution);
+    int paths_freed = HeapFree(GetProcessHeap(), 0U, paths);
+    return !retained && ambiguous &&
+           ((fixture_execution_case == 40U && !execution_released) ||
+            (fixture_execution_case != 40U && execution_released)) &&
+           !root_released && execution_freed && paths_freed;
+  }
+  if (fixture_execution_case == 4U || fixture_execution_case == 5U) {
+    released = release_execution(&root, execution) && release_root(&root) &&
+               HeapFree(GetProcessHeap(), 0U, execution) &&
+               HeapFree(GetProcessHeap(), 0U, paths);
+    return !retained && released;
+  }
+  if (!retained) {
+    (void)release_execution(&root, execution);
+    (void)release_root(&root);
+    return 0;
+  }
+  if (!fixture_execution_record_mutants(&root, &identity, execution)) {
+    (void)release_execution(&root, execution);
+    (void)release_root(&root);
+    return 0;
+  }
+  if (fixture_execution_case == 7U &&
+      !SetFileAttributesW(paths->sources[0], 0x2U)) {
+    (void)release_execution(&root, execution);
+    (void)release_root(&root);
+    return 0;
+  }
+  constructed = construct_execution(&root, &identity, execution);
+  if (fixture_execution_case == 36U || fixture_execution_case == 37U) {
+    int ambiguous = root.resource_ambiguous;
+    BYTE stopped_phase = execution->phase;
+    int execution_released = release_execution(&root, execution);
+    int root_released = release_root(&root);
+    int execution_freed = HeapFree(GetProcessHeap(), 0U, execution);
+    int paths_freed = HeapFree(GetProcessHeap(), 0U, paths);
+    return !constructed && ambiguous &&
+           stopped_phase == EXECUTION_ATTEMPTED && execution_released &&
+           !root_released && execution_freed && paths_freed;
+  }
+  if (fixture_execution_case == 7U) {
+    BYTE stopped_phase = execution->phase;
+    released = release_execution(&root, execution) && release_root(&root) &&
+               HeapFree(GetProcessHeap(), 0U, execution) &&
+               HeapFree(GetProcessHeap(), 0U, paths);
+    return !constructed && stopped_phase == 0U && released;
+  }
+  if (fixture_execution_case == 6U) {
+    BYTE stopped_phase = execution->phase;
+    WCHAR root_path[PATH_MAX_UNITS + 1U];
+    WORD root_units = execution->root.path_units;
+    copy_bytes(root_path, execution->root.path,
+               ((DWORD)execution->root.path_units + 1U) * 2U);
+    if (constructed || stopped_phase != EXECUTION_ATTEMPTED ||
+        fixture_execution_product_deletes != 0U ||
+        !release_retained_object(&root, &execution->root) ||
+        !fixture_execution_remove_stream(root_path))
+      goto done;
+    execution->root.path_units = root_units;
+    copy_bytes(execution->root.path, root_path,
+               ((DWORD)root_units + 1U) * 2U);
+    fixture_execution_reset_delete_order();
+    fixture_execution_count_deletes = 1;
+    cleaned = cleanup_execution(&root, &identity, execution);
+    fixture_execution_count_deletes = 0;
+    if (!cleaned || execution->phase != EXECUTION_ABSENCE_PROVED ||
+        fixture_execution_product_deletes == 0U ||
+        !fixture_execution_exact_delete_order((BYTE[1]){4U}, 1U) ||
+        !fixture_parse_execution_chain(&root, &identity, 0))
+      cleaned = 0;
+    goto done;
+  }
+  if (fixture_execution_case == 41U) {
+    BYTE first_delete[] = {1U};
+    BYTE remaining_deletes[] = {2U, 3U, 4U};
+    WCHAR absent_path[PATH_MAX_UNITS + 1U];
+    WORD absent_units;
+    int ambiguous;
+    if (!constructed || execution->phase != EXECUTION_CREATED ||
+        !persist_execution_phase(&root, &identity, execution,
+                                 EXECUTION_DELETE_ATTEMPTED) ||
+        !execution_target_path(&execution->root, 0U, absent_path,
+                               &absent_units))
+      goto done;
+    fixture_execution_reset_delete_order();
+    fixture_execution_count_deletes = 1;
+    cleaned = delete_retained_object(&root, &execution->targets[0]);
+    fixture_execution_count_deletes = 0;
+    if (!cleaned ||
+        !fixture_execution_exact_delete_order(first_delete, 1U) ||
+        GetFileAttributesW(absent_path) != INVALID_FILE_ATTRIBUTES ||
+        (GetLastError() != ERROR_FILE_NOT_FOUND &&
+         GetLastError() != ERROR_PATH_NOT_FOUND))
+      goto done;
+    if (!release_execution(&root, execution) ||
+        !HeapFree(GetProcessHeap(), 0U, execution))
+      goto done_without_execution;
+    execution = fixture_reload_execution(&root, &identity);
+    if (execution == NULL ||
+        execution->phase != EXECUTION_DELETE_ATTEMPTED)
+      goto done_without_execution;
+    fixture_execution_track_recovery_opens = 1;
+    fixture_execution_cleanup_find_close = 1;
+    fixture_execution_reset_delete_order();
+    fixture_execution_count_deletes = 1;
+    cleaned = cleanup_execution(&root, &identity, execution);
+    fixture_execution_count_deletes = 0;
+    ambiguous = root.resource_ambiguous;
+    if (cleaned || !ambiguous || fixture_execution_product_deletes != 1U ||
+        fixture_execution_delete_order_count != 0U ||
+        fixture_execution_unidentified_delete)
+      goto done;
+    root.resource_ambiguous = 0;
+    if (!release_execution(&root, execution) ||
+        !HeapFree(GetProcessHeap(), 0U, execution))
+      goto done_without_execution;
+    execution = fixture_reload_execution(&root, &identity);
+    if (execution == NULL ||
+        execution->phase != EXECUTION_DELETE_ATTEMPTED)
+      goto done_without_execution;
+    fixture_execution_reset_delete_order();
+    fixture_execution_count_deletes = 1;
+    cleaned = cleanup_execution(&root, &identity, execution);
+    fixture_execution_count_deletes = 0;
+    fixture_execution_track_recovery_opens = 0;
+    if (!cleaned || execution->phase != EXECUTION_ABSENCE_PROVED ||
+        fixture_execution_target_opens[0] != 0U ||
+        fixture_execution_target_opens[1] == 0U ||
+        fixture_execution_target_opens[2] == 0U ||
+        !fixture_execution_exact_delete_order(remaining_deletes, 3U) ||
+        !fixture_parse_execution_chain(&root, &identity, 1))
+      cleaned = 0;
+    goto done;
+  }
+  if (fixture_execution_case >= 10U) {
+    BYTE fault_phase;
+    BYTE fault_point;
+    int complete = fixture_execution_case == 34U ||
+                   fixture_execution_case == 35U ||
+                   fixture_execution_case == 39U;
+    int bad_delete_order;
+    if ((complete && (!constructed || execution->phase != EXECUTION_CREATED)) ||
+        (!complete &&
+         (constructed || execution->phase != EXECUTION_ATTEMPTED)))
+      goto done;
+    fixture_execution_stage = 1U;
+    if (fixture_execution_case == 38U || fixture_execution_case == 39U) {
+      int ambiguous;
+      fixture_execution_reset_delete_order();
+      fixture_execution_cleanup_find_close = 1;
+      fixture_execution_count_deletes = 1;
+      cleaned = cleanup_execution(&root, &identity, execution);
+      fixture_execution_count_deletes = 0;
+      ambiguous = root.resource_ambiguous;
+      if (cleaned || !ambiguous || fixture_execution_product_deletes != 0U ||
+          fixture_execution_delete_order_count != 0U ||
+          fixture_execution_unidentified_delete)
+        goto done;
+      root.resource_ambiguous = 0;
+      fixture_execution_reset_delete_order();
+      fixture_execution_count_deletes = 1;
+      cleaned = cleanup_execution(&root, &identity, execution);
+      fixture_execution_count_deletes = 0;
+      if (!cleaned || execution->phase != EXECUTION_ABSENCE_PROVED ||
+          (complete &&
+           !fixture_execution_exact_delete_order(
+               (BYTE[4]){1U, 2U, 3U, 4U}, 4U)) ||
+          (!complete &&
+           !fixture_execution_exact_delete_order((BYTE[1]){4U}, 1U)) ||
+          !fixture_parse_execution_chain(&root, &identity, complete))
+        cleaned = 0;
+      goto done;
+    } else if (fixture_execution_case <= 21U) {
+      fault_phase = EXECUTION_DELETE_ATTEMPTED;
+      fault_point = (BYTE)(fixture_execution_case - 9U);
+    } else if (fixture_execution_case <= 33U) {
+      fault_phase = EXECUTION_ABSENCE_PROVED;
+      fault_point = (BYTE)(fixture_execution_case - 21U);
+    } else {
+      fault_phase = fixture_execution_case == 34U ?
+          EXECUTION_DELETE_ATTEMPTED : EXECUTION_ABSENCE_PROVED;
+      fault_point = 1U;
+    }
+    fixture_execution_fault_phase = fault_phase;
+    fixture_execution_fault_point = fault_point;
+    fixture_execution_state_handle = root.handle;
+    fixture_execution_fault_active = 1;
+    fixture_execution_reset_delete_order();
+    fixture_execution_count_deletes = 1;
+    cleaned = cleanup_execution(&root, &identity, execution);
+    fixture_execution_count_deletes = 0;
+    fixture_execution_fault_active = 0;
+    bad_delete_order = fault_phase == EXECUTION_DELETE_ATTEMPTED
+        ? fixture_execution_product_deletes != 0U ||
+              fixture_execution_delete_order_count != 0U ||
+              fixture_execution_unidentified_delete
+        : fixture_execution_product_deletes == 0U ||
+              (complete
+                   ? !fixture_execution_exact_delete_order(
+                         (BYTE[4]){1U, 2U, 3U, 4U}, 4U)
+                   : !fixture_execution_exact_delete_order(
+                         (BYTE[1]){4U}, 1U));
+    if (cleaned || bad_delete_order)
+      goto done;
+    fixture_execution_stage = 2U;
+    root.resource_ambiguous = 0;
+    if (!release_execution(&root, execution) ||
+        !HeapFree(GetProcessHeap(), 0U, execution))
+      goto done_without_execution;
+    execution = fixture_reload_execution(&root, &identity);
+    if (execution == NULL) goto done_without_execution;
+    fixture_execution_stage = 3U;
+    fixture_execution_reset_delete_order();
+    fixture_execution_count_deletes = 1;
+    cleaned = execution->phase == EXECUTION_ABSENCE_PROVED ||
+              cleanup_execution(&root, &identity, execution);
+    fixture_execution_count_deletes = 0;
+    if (!cleaned || execution->phase != EXECUTION_ABSENCE_PROVED ||
+        (fault_phase == EXECUTION_DELETE_ATTEMPTED && complete &&
+         !fixture_execution_exact_delete_order(
+             (BYTE[4]){1U, 2U, 3U, 4U}, 4U)) ||
+        (fault_phase == EXECUTION_DELETE_ATTEMPTED && !complete &&
+         !fixture_execution_exact_delete_order((BYTE[1]){4U}, 1U)) ||
+        (fault_phase == EXECUTION_ABSENCE_PROVED &&
+         (fixture_execution_delete_order_count != 0U ||
+          fixture_execution_unidentified_delete)))
+      goto done;
+    fixture_execution_stage = 4U;
+    if (!fixture_parse_execution_chain(&root, &identity, complete))
+      cleaned = 0;
+    fixture_execution_stage = 5U;
+    goto done;
+  }
+  if (fixture_execution_case == 1U) {
+    if (!constructed || execution->phase != EXECUTION_CREATED)
+      goto done;
+  } else if (constructed || execution->phase != EXECUTION_ATTEMPTED) {
+    goto done;
+  }
+  fixture_execution_reset_delete_order();
+  fixture_execution_count_deletes = 1;
+  cleaned = cleanup_execution(&root, &identity, execution);
+  fixture_execution_count_deletes = 0;
+  if (cleaned &&
+      ((fixture_execution_case == 1U &&
+        !fixture_execution_exact_delete_order(
+            (BYTE[4]){1U, 2U, 3U, 4U}, 4U)) ||
+       (fixture_execution_case == 2U &&
+        !fixture_execution_exact_delete_order((BYTE[1]){4U}, 1U)) ||
+       (fixture_execution_case == 3U &&
+        !fixture_execution_exact_delete_order((BYTE[2]){1U, 4U}, 2U)))) {
+    diagnostic("fixture:execution-delete-order\n");
+    cleaned = 0;
+  }
+  if (!cleaned || execution->phase != EXECUTION_ABSENCE_PROVED ||
+      GetFileAttributesW(execution->root.path) != INVALID_FILE_ATTRIBUTES ||
+      (GetLastError() != ERROR_FILE_NOT_FOUND &&
+       GetLastError() != ERROR_PATH_NOT_FOUND) ||
+      !directory_empty(&root, &execution->parent))
+    cleaned = 0;
+  if (cleaned &&
+      !fixture_parse_execution_chain(&root, &identity,
+                                     fixture_execution_case == 1U))
+    cleaned = 0;
+  if (cleaned && fixture_execution_case == 1U &&
+      !fixture_reject_corrupt_absence(&root, &identity))
+    cleaned = 0;
+done:
+  released = release_execution(&root, execution) && release_root(&root) &&
+             HeapFree(GetProcessHeap(), 0U, execution) &&
+             HeapFree(GetProcessHeap(), 0U, paths);
+  if ((!cleaned || !released) && fixture_execution_case >= 10U) {
+    static const CHAR *messages[] = {
+      "", "fixture:execution-cleanup-stage-1\n",
+      "fixture:execution-cleanup-stage-2\n",
+      "fixture:execution-cleanup-stage-3\n",
+      "fixture:execution-cleanup-stage-4\n",
+      "fixture:execution-cleanup-stage-5\n"
+    };
+    diagnostic(messages[fixture_execution_stage]);
+  }
+  return cleaned && released;
+done_without_execution:
+  released = release_root(&root) &&
+             HeapFree(GetProcessHeap(), 0U, paths);
+  (void)released;
+  return 0;
+}
+
+__declspec(noreturn) void fixture_entry(void) {
+  ExitProcess(fixture_execution_expected() ? 0U : 1U);
+}
+
 #else
 
 #define FIXTURE_ENUM_ERROR 1U
@@ -143,6 +1091,8 @@ __declspec(noreturn) void verifier_entry(void) {
 #define FIXTURE_PROFILE_CONTROL 30U
 #define FIXTURE_MIXED_RECOVERY 31U
 #define FIXTURE_SUBSTITUTION 32U
+#define FIXTURE_FAULT_EXECUTION_PUBLICATION 33U
+#define FIXTURE_LIFECYCLE_EXECUTION_CLEANUP_FAILURE 34U
 
 static DWORD fixture_scenario;
 static DWORD fixture_free_calls;
@@ -524,6 +1474,27 @@ static BYTE fixture_path_phase(PCWSTR path, int *pending) {
       return kind;
     }
   }
+  {
+    static const WCHAR *execution_endings[] = {
+      L"", L"-00-attempted.opwx", L"-01-created.opwx",
+      L"-02-delete-attempted.opwx", L"-03-absence-proved.opwx"
+    };
+    for (BYTE kind = EXECUTION_ATTEMPTED;
+         kind <= EXECUTION_ABSENCE_PROVED; kind += 1U) {
+      SIZE_T ending_units = wide_length(execution_endings[kind]);
+      if (path_units >= ending_units &&
+          fixture_wide_units_equal(path + path_units - ending_units,
+                                   execution_endings[kind], ending_units))
+        return kind;
+      if (path_units >= ending_units + 8U &&
+          wide_equal(path + path_units - 8U, L".pending") &&
+          fixture_wide_units_equal(path + path_units - ending_units - 8U,
+                                   execution_endings[kind], ending_units)) {
+        *pending = 1;
+        return kind;
+      }
+    }
+  }
   return 0U;
 }
 
@@ -895,7 +1866,8 @@ static DWORD fixture_scenario_value(const WCHAR *value) {
     L"record-folder-arms", L"target-null-user", L"target-wrong-user",
     L"target-malformed-user", L"lifecycle-clean", L"lifecycle-cleanup-failure",
     L"lifecycle-root-close-failure", L"durable-publication", L"fault-publication",
-    L"fault-resources", L"profile-control", L"mixed-recovery", L"substitution"
+    L"fault-resources", L"profile-control", L"mixed-recovery", L"substitution",
+    L"fault-execution-publication", L"lifecycle-execution-cleanup-failure"
   };
   DWORD index;
   for (index = 1U; index < sizeof(names) / sizeof(names[0]); index += 1U)
@@ -1118,8 +2090,9 @@ mixed_done:
         configuration[0] < 1U || configuration[0] > 39U || configuration[1] > 2U ||
         read_frame(GetStdHandle(STD_INPUT_HANDLE), &frame, 1) != 1 ||
         frame.operation != PREPARE_OPERATION ||
-        !canonical_scope_path(frame.payload, frame.length, path, &path_units))
+        !canonical_scope_path(frame.payload, frame.length, path, &path_units)) {
       return 0;
+    }
     fixture_profile_case = configuration[0];
     fixture_profile_present = 0;
     fixture_profile_folder_present = 0;
@@ -1271,6 +2244,119 @@ profile_done:
   }
 #endif
 #if defined(OP_WINDOWS_FAULT_FIXTURE)
+  if (fixture_scenario == FIXTURE_FAULT_EXECUTION_PUBLICATION) {
+    BYTE configuration[2];
+    BROKER_FRAME frame;
+    WCHAR path[PATH_MAX_UNITS + 1U];
+    WORD path_units = 0U;
+    PROFILE_IDENTITY identity;
+    EXECUTION_CUSTODY *execution = NULL;
+    WCHAR pending[1200];
+    DWORD cursor = 0U;
+    int valid = 0;
+    BYTE stage = 1U;
+    if (!read_exact(GetStdHandle(STD_INPUT_HANDLE), configuration,
+                    sizeof(configuration))) {
+      diagnostic("fixture:execution-fault-input-read\n");
+      return 0;
+    }
+    if (configuration[0] < EXECUTION_ATTEMPTED ||
+        configuration[0] > EXECUTION_ABSENCE_PROVED ||
+        configuration[1] < FAULT_PENDING_CREATE ||
+        configuration[1] > FAULT_FINAL_REOPEN) {
+      diagnostic("fixture:execution-fault-input-config\n");
+      return 0;
+    }
+    if (read_frame(GetStdHandle(STD_INPUT_HANDLE), &frame, 1) != 1) {
+      diagnostic("fixture:execution-fault-input-frame\n");
+      return 0;
+    }
+    if (frame.operation != PREPARE_OPERATION) {
+      diagnostic("fixture:execution-fault-input-operation\n");
+      return 0;
+    }
+    if (!canonical_scope_path(frame.payload, frame.length, path, &path_units)) {
+      diagnostic("fixture:execution-fault-input-scope\n");
+      return 0;
+    }
+    execution = (EXECUTION_CUSTODY *)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*execution));
+    stage = 2U;
+    if (execution == NULL || !retain_root(path, path_units, &root) ||
+        !identity_for_token(&root, (BYTE[32]){7U}, &identity))
+      goto execution_fault_done;
+    identity.phase = JOURNAL_PROFILE_CREATED;
+    for (BYTE index = 0U; index < 32U; index += 1U)
+      identity.prior_digest[index] = (BYTE)(0x40U + index);
+    copy_bytes(execution->profile_created_digest, identity.prior_digest, 32U);
+    stage = 3U;
+    if (!append_wide(execution->parent.path, PATH_MAX_UNITS + 1U, &cursor,
+                     L"\\\\?\\C:\\fixture-execution-parent"))
+      goto execution_fault_done;
+    execution->parent.path_units = (WORD)cursor;
+    execution->parent.binding[0] = 1U;
+    cursor = 0U;
+    if (!append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                     L"\\\\?\\C:\\fixture-execution-parent\\orch6-execution-") ||
+        !append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                     L"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"))
+      goto execution_fault_done;
+    execution->root.path_units = (WORD)cursor;
+    for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+      execution->source_bindings[role][0] = (BYTE)(role + 1U);
+    fixture_fault_root_handle = root.handle;
+    fixture_fault_token_handle = root.token;
+    for (BYTE kind = EXECUTION_ATTEMPTED; kind < configuration[0]; kind += 1U) {
+      if (kind == EXECUTION_CREATED) {
+        execution->root_binding[0] = 1U;
+        for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+          execution->target_bindings[role][0] = (BYTE)(role + 1U);
+      }
+      if (!persist_execution_phase(&root, &identity, execution, kind))
+        goto execution_fault_done;
+    }
+    if (configuration[0] == EXECUTION_CREATED) {
+      execution->root_binding[0] = 1U;
+      for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+        execution->target_bindings[role][0] = (BYTE)(role + 1U);
+    }
+    fixture_fault_phase = configuration[0];
+    fixture_fault_point = configuration[1];
+    fixture_fault_active = 1U;
+    stage = 4U;
+    if (persist_execution_phase(&root, &identity, execution,
+                                configuration[0]) != 0)
+      goto execution_fault_done;
+    fixture_fault_active = 0U;
+    stage = 5U;
+    if (!execution_journal_path(&root, identity.token, configuration[0],
+                                1, pending) ||
+        GetFileAttributesW(pending) != INVALID_FILE_ATTRIBUTES ||
+        (GetLastError() != ERROR_FILE_NOT_FOUND &&
+         GetLastError() != ERROR_PATH_NOT_FOUND))
+      goto execution_fault_done;
+    valid = 1;
+    stage = 6U;
+execution_fault_done:
+    fixture_fault_active = 0U;
+    root.resource_ambiguous = 0;
+    if (execution != NULL &&
+        !HeapFree(GetProcessHeap(), 0U, execution))
+      valid = 0;
+    if (root.handle != NULL && !release_root(&root)) valid = 0;
+    if (!valid) {
+      static const CHAR *messages[] = {
+        "", "fixture:execution-fault-stage-1\n",
+        "fixture:execution-fault-stage-2\n",
+        "fixture:execution-fault-stage-3\n",
+        "fixture:execution-fault-stage-4\n",
+        "fixture:execution-fault-stage-5\n",
+        "fixture:execution-fault-stage-6\n"
+      };
+      diagnostic(messages[stage]);
+    }
+    return valid;
+  }
   if (fixture_scenario == FIXTURE_FAULT_RESOURCES) {
     BYTE resource_point;
     BROKER_FRAME frame;
@@ -1592,6 +2678,53 @@ static int fixture_cleanup_profile(ROOT_CUSTODY *root, PROFILE_IDENTITY *identit
   return fixture_scenario != FIXTURE_LIFECYCLE_CLEANUP_FAILURE;
 }
 
+static int fixture_retain_execution(ROOT_CUSTODY *root,
+                                    const EXECUTION_PREPARE_PATHS *paths,
+                                    const PROFILE_IDENTITY *identity,
+                                    EXECUTION_CUSTODY *execution) {
+  DWORD cursor = 0U;
+  (void)root;
+  (void)identity;
+  zero_bytes(execution, sizeof(*execution));
+  if (!append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                   paths->execution_parent) ||
+      !append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                   L"\\orch6-execution-fixture"))
+    return 0;
+  execution->root.path_units = (WORD)cursor;
+  return 1;
+}
+
+static int fixture_construct_execution(ROOT_CUSTODY *root,
+                                       PROFILE_IDENTITY *identity,
+                                       EXECUTION_CUSTODY *execution) {
+  (void)root;
+  (void)identity;
+  execution->root_binding[0] = 1U;
+  execution->phase = EXECUTION_CREATED;
+  return 1;
+}
+
+static int fixture_cleanup_execution(ROOT_CUSTODY *root,
+                                     PROFILE_IDENTITY *identity,
+                                     EXECUTION_CUSTODY *execution) {
+  (void)root;
+  (void)identity;
+  if (fixture_scenario == FIXTURE_LIFECYCLE_EXECUTION_CLEANUP_FAILURE) {
+    diagnostic("fixture:cleanup-execution\n");
+    return 0;
+  }
+  execution->phase = EXECUTION_ABSENCE_PROVED;
+  return 1;
+}
+
+static int fixture_release_execution(ROOT_CUSTODY *root,
+                                     EXECUTION_CUSTODY *execution) {
+  (void)root;
+  zero_bytes(execution, sizeof(*execution));
+  return 1;
+}
+
 static int fixture_release_root(ROOT_CUSTODY *root) {
   zero_bytes(root, sizeof(*root));
   diagnostic("fixture:release-root\n");
@@ -1607,6 +2740,8 @@ __declspec(noreturn) void fixture_entry(void) {
   fixture_stable_user = fixture_sid(21U, 1000U);
   if (fixture_scenario >= FIXTURE_LIFECYCLE_CLEAN &&
       fixture_scenario <= FIXTURE_LIFECYCLE_ROOT_CLOSE_FAILURE)
+    serve();
+  if (fixture_scenario == FIXTURE_LIFECYCLE_EXECUTION_CLEANUP_FAILURE)
     serve();
   if (fixture_scenario == 0U || fixture_stable_user == NULL || !fixture_expected_result())
     ExitProcess(1U);

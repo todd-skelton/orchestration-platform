@@ -31,9 +31,15 @@ const diagnosticDefine =
       ? "/DOP_WINDOWS_PAUSE_AFTER_ATTEMPTED"
       : diagnosticVariant === "pause-after-create"
         ? "/DOP_WINDOWS_PAUSE_AFTER_CREATE"
-        : (() => {
-            throw new Error("unknown Windows broker diagnostic variant");
-          })();
+        : diagnosticVariant === "pause-after-execution-attempted"
+          ? "/DOP_WINDOWS_PAUSE_AFTER_EXECUTION_ATTEMPTED"
+          : diagnosticVariant === "pause-after-execution-mkdir"
+            ? "/DOP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR"
+            : diagnosticVariant === "pause-after-execution-created"
+              ? "/DOP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED"
+              : (() => {
+                  throw new Error("unknown Windows broker diagnostic variant");
+                })();
 
 try {
   const version = await execFileAsync(clang, ["--version"], { windowsHide: true });

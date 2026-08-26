@@ -1,6 +1,8 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -31,6 +33,21 @@ const profileScope = (path: string): Buffer => {
   payload[5] = 1;
   payload.writeUInt16LE(path.length, 8);
   pathBytes.copy(payload, 12);
+  return payload;
+};
+
+const executionPrepare = (paths: readonly [string, string, string, string, string]): Buffer => {
+  const values = paths.map((path) => Buffer.from(path, "utf16le"));
+  const payload = Buffer.alloc(20 + values.reduce((total, value) => total + value.byteLength, 0));
+  payload.write("OPWE", 0, "ascii");
+  payload[4] = 1;
+  payload[5] = 1;
+  let cursor = 20;
+  for (const [index, value] of values.entries()) {
+    payload.writeUInt16LE(paths[index]!.length, 8 + index * 2);
+    value.copy(payload, cursor);
+    cursor += value.byteLength;
+  }
   return payload;
 };
 
@@ -79,7 +96,80 @@ const closeProcess = async (child: ReturnType<typeof spawn>): Promise<number | n
   return code;
 };
 
-type ProfileIdentity = Readonly<{ folder: string; moniker: string; sid: Buffer }>;
+const sha256File = async (path: string): Promise<string> =>
+  await new Promise((resolvePromise, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(path);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.once("error", reject);
+    stream.once("end", () => resolvePromise(hash.digest("hex")));
+  });
+
+type ExactCustody = Readonly<{
+  access: ReadonlyArray<
+    Readonly<{ inherited: boolean; rights: number; sid: string; type: string }>
+  >;
+  owner: string;
+  protected: boolean;
+  streams: ReadonlyArray<Readonly<{ length: number; name: string }>>;
+}>;
+
+const inspectExactCustody = (path: string, stableAccount: string): ExactCustody => {
+  const script = [
+    "$acl=if ([System.IO.Directory]::Exists($env:OP_CUSTODY_PATH)) { [System.IO.Directory]::GetAccessControl($env:OP_CUSTODY_PATH) } else { [System.IO.File]::GetAccessControl($env:OP_CUSTODY_PATH) }",
+    "$stable=([System.Security.Principal.NTAccount]::new($env:OP_STABLE_ACCOUNT)).Translate([System.Security.Principal.SecurityIdentifier]).Value",
+    "$access=@($acl.Access | ForEach-Object { [ordered]@{ sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; rights=[int]$_.FileSystemRights; type=$_.AccessControlType.ToString(); inherited=$_.IsInherited } } | Sort-Object sid)",
+    "$streams=@(Get-Item -LiteralPath $env:OP_CUSTODY_PATH -Stream * | ForEach-Object { [ordered]@{ name=$_.Stream; length=[long]$_.Length } })",
+    "$owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value",
+    "if ($owner -ne $stable) { throw 'owner mismatch' }",
+    "$value=[ordered]@{ owner=$owner; protected=$acl.AreAccessRulesProtected; access=$access; streams=$streams }",
+    "$value | ConvertTo-Json -Depth 5 -Compress",
+  ].join("; ");
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      env: { ...process.env, OP_CUSTODY_PATH: path, OP_STABLE_ACCOUNT: stableAccount },
+      windowsHide: true,
+    },
+  );
+  if (result.status !== 0) throw new Error(`custody inspection failed: ${result.stderr}`);
+  return JSON.parse(result.stdout) as ExactCustody;
+};
+
+const assertExactStableCustody = (
+  path: string,
+  stableAccount: string,
+  expectedSize: number | undefined,
+): void => {
+  const observed = inspectExactCustody(path, stableAccount);
+  const stableSid = observed.owner;
+  expect({
+    ...observed,
+    access: [...observed.access].sort((left, right) => left.sid.localeCompare(right.sid)),
+  }).toEqual({
+    owner: stableSid,
+    protected: true,
+    access: [
+      { sid: "S-1-5-18", rights: 2032127, type: "Allow", inherited: false },
+      { sid: stableSid, rights: 2032127, type: "Allow", inherited: false },
+    ].sort((left, right) => left.sid.localeCompare(right.sid)),
+    streams: expectedSize === undefined ? [] : [{ name: ":$DATA", length: expectedSize }],
+  });
+  const acl = spawnSync("icacls.exe", [path], { encoding: "utf8", windowsHide: true });
+  expect(acl.status).toBe(0);
+  expect(acl.stdout).toContain("Mandatory Label\\Medium Mandatory Level:(NW)");
+};
+
+type ProfileIdentity = Readonly<{
+  executionBinding: Buffer;
+  executionRoot: string;
+  folder: string;
+  moniker: string;
+  sid: Buffer;
+  sidText: string;
+}>;
 
 const prepareExactRoot = async (): Promise<{ extended: string; root: string }> => {
   const root = await mkdtemp(resolve(tmpdir(), "orchestration-windows-profile-"));
@@ -100,7 +190,7 @@ const prepareExactRoot = async (): Promise<{ extended: string; root: string }> =
 
 const assertPreparePayload = (payload: Buffer): ProfileIdentity => {
   expect(payload.subarray(0, 4).toString("ascii")).toBe("OPWR");
-  expect([...payload.subarray(4, 8)]).toEqual([1, 1, 0, 0]);
+  expect([...payload.subarray(4, 8)]).toEqual([1, 2, 0, 0]);
   const token = payload.subarray(8, 40);
   const moniker = payload.subarray(40, 104).toString("ascii");
   expect(token.byteLength).toBe(32);
@@ -115,15 +205,26 @@ const assertPreparePayload = (payload: Buffer): ProfileIdentity => {
   cursor += sidLength;
   const sidTextLength = payload.readUInt16LE(cursor);
   cursor += 2;
-  expect(payload.subarray(cursor, cursor + sidTextLength).toString("ascii")).toMatch(/^S-/);
+  const sidText = payload.subarray(cursor, cursor + sidTextLength).toString("ascii");
+  expect(sidText).toMatch(/^S-/);
   cursor += sidTextLength;
   const folderUnits = payload.readUInt16LE(cursor);
   cursor += 2;
   const folder = payload.subarray(cursor, cursor + folderUnits * 2).toString("utf16le");
   expect(folder).toMatch(/^\\\\\?\\[A-Z]:\\/);
   cursor += folderUnits * 2;
+  const executionRootUnits = payload.readUInt16LE(cursor);
+  cursor += 2;
+  const executionRoot = payload
+    .subarray(cursor, cursor + executionRootUnits * 2)
+    .toString("utf16le");
+  expect(executionRoot).toMatch(/\\orch6-execution-[0-9a-f]{64}$/);
+  cursor += executionRootUnits * 2;
+  const executionBinding = Buffer.from(payload.subarray(cursor, cursor + 32));
+  expect(executionBinding).not.toEqual(Buffer.alloc(32));
+  cursor += 32;
   expect(cursor).toBe(payload.byteLength);
-  return { folder, moniker, sid };
+  return { executionBinding, executionRoot, folder, moniker, sid, sidText };
 };
 
 const verifierPayload = ({ folder, moniker, sid }: ProfileIdentity): Buffer => {
@@ -156,11 +257,20 @@ const identityFromCreatedRecord = async (root: string, token: string): Promise<P
   const sid = Buffer.from(record.subarray(cursor, cursor + sidLength));
   cursor += sidLength;
   const sidTextLength = record.readUInt16LE(cursor);
-  cursor += 2 + sidTextLength;
+  cursor += 2;
+  const sidText = record.subarray(cursor, cursor + sidTextLength).toString("ascii");
+  cursor += sidTextLength;
   const folderUnits = record.readUInt16LE(cursor);
   cursor += 2;
   const folder = record.subarray(cursor, cursor + folderUnits * 2).toString("utf16le");
-  return { folder, moniker, sid };
+  return {
+    executionBinding: Buffer.alloc(32),
+    executionRoot: "",
+    folder,
+    moniker,
+    sid,
+    sidText,
+  };
 };
 
 const waitForDiagnostic = async (
@@ -233,25 +343,70 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
   )("creates, probes, tears down, and recovers without producing authority", async () => {
     const { extended, root } = await prepareExactRoot();
     const toolRoot = await mkdtemp(resolve(tmpdir(), "orchestration-windows-profile-tools-"));
+    const executionParent = await mkdtemp(
+      resolve(tmpdir(), "orchestration-windows-execution-parent-"),
+    );
+    const sourceRoot = await mkdtemp(resolve(tmpdir(), "orchestration-windows-sources-"));
+    const runtimeSource = resolve(sourceRoot, "node-source.exe");
+    const rpcSource = resolve(sourceRoot, "rpc-source.mjs");
+    const candidateSource = resolve(sourceRoot, "candidate-source.mjs");
+    await copyFile(process.execPath, runtimeSource);
+    await writeFile(rpcSource, "export default 'rpc';\n");
+    await writeFile(candidateSource, "export default 'candidate';\n");
+    const account = spawnSync("whoami.exe", { encoding: "utf8", windowsHide: true });
+    expect(account.status).toBe(0);
+    for (const path of [executionParent, sourceRoot, runtimeSource, rpcSource, candidateSource]) {
+      for (const args of [
+        [path, "/inheritance:r"],
+        [path, "/grant:r", "SYSTEM:F", `${account.stdout.trim()}:F`],
+        [path, "/setintegritylevel", "M"],
+      ]) {
+        const acl = spawnSync("icacls.exe", args, { encoding: "utf8", windowsHide: true });
+        expect({ args, status: acl.status, stderr: acl.stderr }).toEqual({
+          args,
+          status: 0,
+          stderr: "",
+        });
+      }
+    }
+    const preparePayload = executionPrepare([
+      extended,
+      `\\\\?\\${executionParent}`,
+      `\\\\?\\${runtimeSource}`,
+      `\\\\?\\${rpcSource}`,
+      `\\\\?\\${candidateSource}`,
+    ]);
     let recoveryProved = false;
+    let activeBroker: ReturnType<typeof spawn> | undefined;
     try {
       const verifier = buildVerifier(toolRoot);
       const pauseAfterAttempted = resolve(toolRoot, "pause-after-attempted.exe");
       const pauseAfterCreate = resolve(toolRoot, "pause-after-create.exe");
+      const pauseAfterExecutionAttempted = resolve(toolRoot, "pause-after-execution-attempted.exe");
+      const pauseAfterExecutionMkdir = resolve(toolRoot, "pause-after-execution-mkdir.exe");
+      const pauseAfterExecutionCreated = resolve(toolRoot, "pause-after-execution-created.exe");
       execFileSync(process.execPath, [buildPath, pauseAfterAttempted, "pause-after-attempted"], {
         windowsHide: true,
       });
       execFileSync(process.execPath, [buildPath, pauseAfterCreate, "pause-after-create"], {
         windowsHide: true,
       });
+      for (const [output, variant] of [
+        [pauseAfterExecutionAttempted, "pause-after-execution-attempted"],
+        [pauseAfterExecutionMkdir, "pause-after-execution-mkdir"],
+        [pauseAfterExecutionCreated, "pause-after-execution-created"],
+      ] as const) {
+        execFileSync(process.execPath, [buildPath, output, variant], { windowsHide: true });
+      }
       const first = spawn(imagePath, ["SERVE"], {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
+      activeBroker = first;
       const firstExit = closeProcess(first);
       const firstDiagnostics: Buffer[] = [];
       first.stderr.on("data", (chunk: Buffer) => firstDiagnostics.push(chunk));
-      first.stdin.write(frame(1, profileScope(extended)));
+      first.stdin.write(frame(1, preparePayload));
       const prepared = await readResponse(first.stdout);
       expect(prepared.header[6]).toBe(1);
       if (prepared.header[7] !== 0) {
@@ -265,6 +420,41 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
         );
       }
       const firstIdentity = assertPreparePayload(prepared.payload);
+      const stableAccount = account.stdout.trim();
+      assertExactStableCustody(executionParent, stableAccount, undefined);
+      assertExactStableCustody(firstIdentity.executionRoot, stableAccount, undefined);
+      expect((await readdir(firstIdentity.executionRoot)).sort()).toEqual([
+        "candidate.mjs",
+        "node.exe",
+        "rpc-runner.mjs",
+      ]);
+      for (const [target, source] of [
+        ["node.exe", runtimeSource],
+        ["rpc-runner.mjs", rpcSource],
+        ["candidate.mjs", candidateSource],
+      ] as const) {
+        const sourceSize = (await stat(source)).size;
+        expect(await sha256File(resolve(firstIdentity.executionRoot, target))).toBe(
+          await sha256File(source),
+        );
+        assertExactStableCustody(
+          resolve(firstIdentity.executionRoot, target),
+          stableAccount,
+          sourceSize,
+        );
+        const acl = spawnSync("icacls.exe", [resolve(firstIdentity.executionRoot, target)], {
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        expect(acl.status).toBe(0);
+        expect(acl.stdout).not.toContain(firstIdentity.sidText);
+      }
+      const executionAcl = spawnSync("icacls.exe", [firstIdentity.executionRoot], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      expect(executionAcl.status).toBe(0);
+      expect(executionAcl.stdout).not.toContain(firstIdentity.sidText);
       first.stdin.write(frame(2));
       const launch = await readResponse(first.stdout);
       expect([...launch.header.subarray(6, 12)]).toEqual([2, 78, 0, 0, 0, 0]);
@@ -273,23 +463,32 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
       const teardown = await readResponse(first.stdout);
       expect([...teardown.header.subarray(6, 12)]).toEqual([3, 0, 0, 0, 0, 0]);
       expect(await firstExit).toBe(0);
+      activeBroker = undefined;
       assertNativeAbsence(verifier, firstIdentity);
 
       for (const crash of [
         { executable: pauseAfterAttempted, marker: "pause-after-attempted" },
         { executable: pauseAfterCreate, marker: "pause-after-create" },
+        {
+          executable: pauseAfterExecutionAttempted,
+          marker: "pause-after-execution-attempted",
+        },
+        { executable: pauseAfterExecutionMkdir, marker: "pause-after-execution-mkdir" },
+        { executable: pauseAfterExecutionCreated, marker: "pause-after-execution-created" },
       ]) {
         const before = new Set(await readdir(root));
         const interrupted = spawn(crash.executable, ["SERVE"], {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });
+        activeBroker = interrupted;
         const interruptedExit = closeProcess(interrupted);
         const paused = waitForDiagnostic(interrupted.stderr, crash.marker);
-        interrupted.stdin.write(frame(1, profileScope(extended)));
+        interrupted.stdin.write(frame(1, preparePayload));
         await paused;
         expect(interrupted.kill()).toBe(true);
         await interruptedExit;
+        activeBroker = undefined;
         const recovered = spawnSync(imagePath, ["RECOVER"], {
           input: frame(3, profileScope(extended)),
           windowsHide: true,
@@ -310,13 +509,26 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
       recoveryProved = true;
 
       const records = (await readdir(root)).sort();
-      expect(records).toHaveLength(15);
-      expect(records.filter((name) => name.endsWith("-00-used.opwj"))).toHaveLength(3);
+      expect(records).toHaveLength(44);
+      expect(records.filter((name) => name.endsWith("-00-used.opwj"))).toHaveLength(6);
       expect(
         records.filter((name) => name.endsWith("-04-profile-absence-proved.opwj")),
-      ).toHaveLength(3);
+      ).toHaveLength(6);
+      expect(records.filter((name) => name.endsWith("-00-attempted.opwx"))).toHaveLength(4);
+      expect(records.filter((name) => name.endsWith("-01-created.opwx"))).toHaveLength(2);
+      expect(records.filter((name) => name.endsWith("-02-delete-attempted.opwx"))).toHaveLength(4);
+      expect(records.filter((name) => name.endsWith("-03-absence-proved.opwx"))).toHaveLength(4);
       expect(records.every((name) => !name.endsWith(".pending"))).toBe(true);
     } finally {
+      if (
+        activeBroker !== undefined &&
+        activeBroker.exitCode === null &&
+        activeBroker.signalCode === null
+      ) {
+        const exited = closeProcess(activeBroker);
+        activeBroker.kill();
+        await exited;
+      }
       if (!recoveryProved) {
         const finalRecovery = spawnSync(imagePath, ["RECOVER"], {
           input: frame(3, profileScope(extended)),
@@ -326,6 +538,8 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
       }
       if (recoveryProved) await rm(root, { force: true, recursive: true });
       await rm(toolRoot, { force: true, recursive: true });
+      if (recoveryProved) await rm(executionParent, { force: true, recursive: true });
+      await rm(sourceRoot, { force: true, recursive: true });
     }
   });
 });

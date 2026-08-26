@@ -1,7 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -50,6 +50,21 @@ const profileScope = (path: string): Buffer => {
   payload[5] = 1;
   payload.writeUInt16LE(path.length, 8);
   pathBytes.copy(payload, 12);
+  return payload;
+};
+
+const executionPrepare = (paths: readonly [string, string, string, string, string]): Buffer => {
+  const values = paths.map((path) => Buffer.from(path, "utf16le"));
+  const payload = Buffer.alloc(20 + values.reduce((total, value) => total + value.byteLength, 0));
+  payload.write("OPWE", 0, "ascii");
+  payload[4] = 1;
+  payload[5] = 1;
+  let cursor = 20;
+  for (const [index, value] of values.entries()) {
+    payload.writeUInt16LE(paths[index]!.length, 8 + index * 2);
+    value.copy(payload, cursor);
+    cursor += value.byteLength;
+  }
   return payload;
 };
 
@@ -182,9 +197,9 @@ describe("private Windows isolation broker bootstrap", () => {
     expect(image.subarray(peOffset, peOffset + 4).toString("binary")).toBe("PE\0\0");
     expect(image.readUInt16LE(peOffset + 4)).toBe(0x8664);
     expect(image.readUInt16LE(peOffset + 24)).toBe(0x20b);
-    expect(image.byteLength).toBe(31744);
+    expect(image.byteLength).toBe(54272);
     expect(createHash("sha256").update(image).digest("hex")).toBe(
-      "0b65284268d576df4acc6b15f440586cd245c42d8ec2f242a2dcb01d1b2ee965",
+      "65d823b8e50ae7ea2c36e229728eef199596c6d6a73d3adc289e7fc148eba292",
     );
     const census = peCensus(image);
     expect(census).toEqual({
@@ -196,11 +211,14 @@ describe("private Windows isolation broker bootstrap", () => {
           library: "KERNEL32.dll",
           symbols: [
             "CloseHandle",
+            "CreateDirectoryW",
             "CreateFileW",
             "ExitProcess",
             "FindClose",
             "FindFirstFileW",
+            "FindFirstStreamW",
             "FindNextFileW",
+            "FindNextStreamW",
             "FlushFileBuffers",
             "GetCommandLineW",
             "GetCurrentProcess",
@@ -209,6 +227,7 @@ describe("private Windows isolation broker bootstrap", () => {
             "GetFileAttributesW",
             "GetFileInformationByHandle",
             "GetFileInformationByHandleEx",
+            "GetFileSizeEx",
             "GetFinalPathNameByHandleW",
             "GetLastError",
             "GetProcessHeap",
@@ -273,7 +292,7 @@ describe("private Windows isolation broker bootstrap", () => {
           ],
         },
       ],
-      relocations: { rva: expect.any(Number), size: 32 },
+      relocations: { rva: expect.any(Number), size: 48 },
     });
     expect(census.dllCharacteristics & 0x160).toBe(0x160);
     expect(census.importDirectory.rva).toBeGreaterThan(0);
@@ -502,6 +521,26 @@ describe("private Windows isolation broker bootstrap", () => {
           for (const name of names) await rm(resolve(durableRoot, name));
         }
       }
+      for (let phase = 1; phase <= 4; phase += 1) {
+        for (let fault = 1; fault <= 12; fault += 1) {
+          const result = spawnSync(faultExecutable, ["fault-execution-publication"], {
+            input: Buffer.concat([
+              Buffer.from([phase, fault]),
+              brokerFrame(1, profileScope(`\\\\?\\${durableRoot}`)),
+            ]),
+            windowsHide: true,
+          });
+          expect({ phase, fault, status: result.status, stderr: result.stderr }).toEqual({
+            phase,
+            fault,
+            status: 0,
+            stderr: Buffer.alloc(0),
+          });
+          const names = await readdir(durableRoot);
+          expect(names.filter((name) => name.endsWith(".pending"))).toEqual([]);
+          for (const name of names) await rm(resolve(durableRoot, name));
+        }
+      }
       for (let fault = 14; fault <= 22; fault += 1) {
         const result = spawnSync(faultExecutable, ["fault-resources"], {
           input: Buffer.concat([
@@ -701,7 +740,16 @@ describe("private Windows isolation broker bootstrap", () => {
         ],
         { windowsHide: true },
       );
-      const prepare = brokerFrame(1, profileScope("\\\\?\\C:\\fixture-authority-state"));
+      const prepare = brokerFrame(
+        1,
+        executionPrepare([
+          "\\\\?\\C:\\fixture-authority-state",
+          "\\\\?\\C:\\fixture-execution-parent",
+          "\\\\?\\C:\\fixture-node.exe",
+          "\\\\?\\C:\\fixture-rpc-runner.mjs",
+          "\\\\?\\C:\\fixture-candidate.mjs",
+        ]),
+      );
       const oversized = brokerFrame(2);
       oversized.writeUInt32LE(1024 * 1024 + 1, 8);
       const truncatedBody = brokerFrame(2);
@@ -750,16 +798,33 @@ describe("private Windows isolation broker bootstrap", () => {
           exit: 70,
           secondStatus: undefined,
         },
+        {
+          scenario: "lifecycle-execution-cleanup-failure",
+          input: prepare,
+          exit: 70,
+          secondStatus: undefined,
+        },
       ]) {
         const result = spawnSync(lifecycleExecutable, [lifecycle.scenario], {
           input: lifecycle.input,
           windowsHide: true,
         });
-        expect(result.status).toBe(lifecycle.exit);
-        expect(result.stderr.toString("utf8")).toBe(
-          "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
-            "fixture:cleanup-profile\nfixture:release-root\n",
-        );
+        const expectedDiagnostics =
+          lifecycle.scenario === "lifecycle-execution-cleanup-failure"
+            ? "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+              "fixture:cleanup-execution\nfixture:release-root\n"
+            : "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+              "fixture:cleanup-profile\nfixture:release-root\n";
+        expect({
+          scenario: lifecycle.scenario,
+          status: result.status,
+          stderr: result.stderr.toString("utf8"),
+        }).toEqual({
+          scenario: lifecycle.scenario,
+          status: lifecycle.exit,
+          stderr: expectedDiagnostics,
+        });
+        expect(result.stderr.toString("utf8")).toBe(expectedDiagnostics);
         expect(result.stdout.subarray(0, 4).toString("ascii")).toBe("OPWB");
         expect(result.stdout[7]).toBe(0);
         const firstLength = 16 + result.stdout.readUInt32LE(8);
@@ -799,6 +864,124 @@ describe("private Windows isolation broker bootstrap", () => {
         expect(Buffer.concat(diagnostics).toString("utf8")).toBe(
           "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
             "fixture:cleanup-profile\nfixture:release-root\n",
+        );
+      }
+
+      const executionObject = resolve(root, "execution-fixture.obj");
+      const executionExecutable = resolve(root, "execution-fixture.exe");
+      execFileSync(
+        clangPath,
+        [
+          "/nologo",
+          "/c",
+          "/TC",
+          "/std:c11",
+          "/W4",
+          "/WX",
+          "/O1",
+          "/Oi-",
+          "/Gy",
+          "/Gs9999999",
+          "/clang:-fno-builtin",
+          "/clang:-Wno-unused-function",
+          "/GS-",
+          "/Zl",
+          "/Brepro",
+          "/DUNICODE",
+          "/D_UNICODE",
+          "/DOP_WINDOWS_EXECUTION_FIXTURE",
+          `/Fo${executionObject}`,
+          fixturePath,
+        ],
+        { windowsHide: true },
+      );
+      execFileSync(
+        linkerPath,
+        [
+          "/nologo",
+          `/out:${executionExecutable}`,
+          "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+          "/entry:fixture_entry",
+          "/subsystem:console",
+          "/machine:x64",
+          "/nodefaultlib",
+          "/dynamicbase",
+          "/nxcompat",
+          "/highentropyva",
+          "/Brepro",
+          "/opt:ref",
+          executionObject,
+          ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+        ],
+        { windowsHide: true },
+      );
+      const executionCases = [...Array.from({ length: 41 }, (_, index) => index + 1)];
+      for (const executionCase of executionCases) {
+        const executionState = await mkdtemp(
+          resolve(tmpdir(), "orchestration-windows-execution-fixture-state-"),
+        );
+        const executionParent = await mkdtemp(
+          resolve(tmpdir(), "orchestration-windows-execution-fixture-parent-"),
+        );
+        const sources = await mkdtemp(
+          resolve(tmpdir(), "orchestration-windows-execution-fixture-sources-"),
+        );
+        roots.push(executionState, executionParent, sources);
+        const sourceNames =
+          executionCase % 2 === 1
+            ? ["node.exe", "rpc-runner.mjs", "candidate.mjs"]
+            : [
+                "source-00-attempted.opwx.pending",
+                "source-01-created.opwx.pending",
+                "source-02-delete-attempted.opwx.pending",
+              ];
+        const runtime = resolve(sources, sourceNames[0]!);
+        const rpc = resolve(sources, sourceNames[1]!);
+        const candidate = resolve(sources, sourceNames[2]!);
+        const sourceBytes = [
+          Buffer.from("fixture-node-runtime\n"),
+          Buffer.from("export default 'rpc';\n"),
+          Buffer.from("export default 'candidate';\n"),
+        ];
+        await writeFile(runtime, sourceBytes[0]!);
+        await writeFile(rpc, sourceBytes[1]!);
+        await writeFile(candidate, sourceBytes[2]!);
+        for (const path of [executionState, executionParent, sources, runtime, rpc, candidate]) {
+          for (const args of [
+            [path, "/inheritance:r"],
+            [path, "/grant:r", "SYSTEM:F", `${account.stdout.trim()}:F`],
+            [path, "/setintegritylevel", "M"],
+          ]) {
+            expect(spawnSync("icacls.exe", args, { windowsHide: true }).status).toBe(0);
+          }
+        }
+        const input = Buffer.concat([
+          Buffer.from([executionCase]),
+          brokerFrame(
+            1,
+            executionPrepare([
+              `\\\\?\\${executionState}`,
+              `\\\\?\\${executionParent}`,
+              `\\\\?\\${runtime}`,
+              `\\\\?\\${rpc}`,
+              `\\\\?\\${candidate}`,
+            ]),
+          ),
+        ]);
+        const result = spawnSync(executionExecutable, { input, windowsHide: true });
+        expect({
+          executionCase,
+          status: result.status,
+          stderr: result.stderr,
+          stdout: result.stdout,
+        }).toEqual({
+          executionCase,
+          status: 0,
+          stderr: Buffer.alloc(0),
+          stdout: Buffer.alloc(0),
+        });
+        expect(await Promise.all([runtime, rpc, candidate].map((path) => readFile(path)))).toEqual(
+          sourceBytes,
         );
       }
     },
@@ -843,8 +1026,15 @@ describe("private Windows isolation broker bootstrap", () => {
         expect(result.stdout).toEqual(responseFrame(operation, 65));
       }
       const missingRoot = "\\\\?\\C:\\orchestration-missing-profile-root";
+      const missingPrepare = executionPrepare([
+        missingRoot,
+        "\\\\?\\C:\\orchestration-missing-execution-parent",
+        "\\\\?\\C:\\orchestration-missing-node.exe",
+        "\\\\?\\C:\\orchestration-missing-rpc.mjs",
+        "\\\\?\\C:\\orchestration-missing-candidate.mjs",
+      ]);
       const prepare = spawnSync(imagePath, ["SERVE"], {
-        input: brokerFrame(1, profileScope(missingRoot)),
+        input: brokerFrame(1, missingPrepare),
         windowsHide: true,
       });
       expect(prepare).toMatchObject({ status: 65, stderr: Buffer.alloc(0) });
@@ -906,18 +1096,24 @@ describe("private Windows isolation broker bootstrap", () => {
   );
 
   test.runIf(process.platform === "win32")(
-    "accepts only the closed normalized extended-DOS profile-scope path arm",
+    "accepts only the closed five-path execution-prepare arm",
     () => {
-      const canonical = profileScope("\\\\?\\C:\\orchestration-missing-profile-root");
-      const byteMutants = Array.from({ length: 12 }, (_, index) => {
+      const canonicalPaths = [
+        "\\\\?\\C:\\orchestration-missing-profile-root",
+        "\\\\?\\C:\\orchestration-missing-execution-parent",
+        "\\\\?\\C:\\orchestration-missing-node.exe",
+        "\\\\?\\C:\\orchestration-missing-rpc.mjs",
+        "\\\\?\\C:\\orchestration-missing-candidate.mjs",
+      ] as const;
+      const canonical = executionPrepare(canonicalPaths);
+      const byteMutants = Array.from({ length: 20 }, (_, index) => {
         const mutant = Buffer.from(canonical);
         mutant[index] = mutant[index]! ^ 0xff;
         return mutant;
       });
       const countZero = Buffer.from(canonical);
       countZero.writeUInt16LE(0, 8);
-      const countOverBound = Buffer.alloc(12 + 1025 * 2);
-      profileScope("\\\\?\\C:\\a").copy(countOverBound);
+      const countOverBound = Buffer.from(canonical);
       countOverBound.writeUInt16LE(1025, 8);
       const trailing = Buffer.concat([canonical, Buffer.from([0])]);
       const invalidPaths = [
@@ -932,7 +1128,15 @@ describe("private Windows isolation broker bootstrap", () => {
         "\\\\?\\C:\\wild*card",
         "\\\\?\\C:\\nul\0unit",
         `\\\\?\\C:\\surrogate${String.fromCharCode(0xd800)}`,
-      ].map(profileScope);
+      ].map((path) =>
+        executionPrepare([
+          path,
+          canonicalPaths[1],
+          canonicalPaths[2],
+          canonicalPaths[3],
+          canonicalPaths[4],
+        ]),
+      );
       for (const payload of [
         ...byteMutants,
         countZero,

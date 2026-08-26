@@ -35,6 +35,10 @@ typedef void *PSECURITY_DESCRIPTOR;
 typedef void *BCRYPT_ALG_HANDLE;
 typedef void *BCRYPT_HASH_HANDLE;
 typedef WORD SECURITY_DESCRIPTOR_CONTROL;
+typedef union large_integer {
+  struct { DWORD LowPart; LONG HighPart; };
+  long long QuadPart;
+} LARGE_INTEGER;
 
 #define WINAPI __stdcall
 #define NULL ((void *)0)
@@ -54,6 +58,7 @@ typedef WORD SECURITY_DESCRIPTOR_CONTROL;
 #define ERROR_INSUFFICIENT_BUFFER 122U
 #define ERROR_NO_TOKEN 1008U
 #define ERROR_NO_MORE_FILES 18U
+#define ERROR_HANDLE_EOF 38U
 #define HRESULT_ALREADY_EXISTS ((HRESULT)0x800700b7L)
 #define HEAP_ZERO_MEMORY 8U
 #define TOKEN_QUERY 8U
@@ -74,6 +79,7 @@ typedef WORD SECURITY_DESCRIPTOR_CONTROL;
 #define FILE_ATTRIBUTE_DIRECTORY 0x10U
 #define FILE_ATTRIBUTE_NORMAL 0x80U
 #define FILE_ATTRIBUTE_REPARSE_POINT 0x400U
+#define FILE_ATTRIBUTE_TEMPORARY 0x100U
 #define FILE_FLAG_WRITE_THROUGH 0x80000000U
 #define FILE_FLAG_SEQUENTIAL_SCAN 0x08000000U
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000U
@@ -171,6 +177,10 @@ typedef struct win32_find_data {
   WCHAR cFileName[260];
   WCHAR cAlternateFileName[14];
 } WIN32_FIND_DATAW;
+typedef struct win32_find_stream_data {
+  LARGE_INTEGER StreamSize;
+  WCHAR cStreamName[296];
+} WIN32_FIND_STREAM_DATA;
 typedef struct inet_firewall_ac_capabilities { DWORD count; SID_AND_ATTRIBUTES *capabilities; } INET_FIREWALL_AC_CAPABILITIES;
 typedef struct inet_firewall_ac_binaries { DWORD count; LPWSTR *binaries; } INET_FIREWALL_AC_BINARIES;
 typedef struct inet_firewall_app_container {
@@ -204,7 +214,9 @@ __declspec(dllimport) HANDLE WINAPI GetCurrentProcess(void);
 __declspec(dllimport) HANDLE WINAPI GetCurrentThread(void);
 __declspec(dllimport) BOOL WINAPI CloseHandle(HANDLE);
 __declspec(dllimport) HANDLE WINAPI CreateFileW(PCWSTR, DWORD, DWORD, SECURITY_ATTRIBUTES *, DWORD, DWORD, HANDLE);
+__declspec(dllimport) BOOL WINAPI CreateDirectoryW(PCWSTR, SECURITY_ATTRIBUTES *);
 __declspec(dllimport) DWORD WINAPI GetFileAttributesW(PCWSTR);
+__declspec(dllimport) BOOL WINAPI GetFileSizeEx(HANDLE, LARGE_INTEGER *);
 __declspec(dllimport) BOOL WINAPI FlushFileBuffers(HANDLE);
 __declspec(dllimport) BOOL WINAPI GetFileInformationByHandle(HANDLE, BY_HANDLE_FILE_INFORMATION *);
 __declspec(dllimport) BOOL WINAPI GetFileInformationByHandleEx(HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD);
@@ -213,6 +225,8 @@ __declspec(dllimport) DWORD WINAPI GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWO
 __declspec(dllimport) DWORD WINAPI GetDriveTypeW(PCWSTR);
 __declspec(dllimport) HANDLE WINAPI FindFirstFileW(PCWSTR, WIN32_FIND_DATAW *);
 __declspec(dllimport) BOOL WINAPI FindNextFileW(HANDLE, WIN32_FIND_DATAW *);
+__declspec(dllimport) HANDLE WINAPI FindFirstStreamW(PCWSTR, DWORD, WIN32_FIND_STREAM_DATA *, DWORD);
+__declspec(dllimport) BOOL WINAPI FindNextStreamW(HANDLE, WIN32_FIND_STREAM_DATA *);
 __declspec(dllimport) BOOL WINAPI FindClose(HANDLE);
 __declspec(dllimport) BOOL WINAPI DeleteFileW(PCWSTR);
 __declspec(dllimport) BOOL WINAPI OpenProcessToken(HANDLE, DWORD, HANDLE *);
@@ -266,6 +280,8 @@ __declspec(dllimport) DWORD WINAPI NetworkIsolationFreeAppContainers(PINET_FIREW
 #define EXIT_RECOVERY_REQUIRED 70U
 #define EXIT_LIFECYCLE_NOT_IMPLEMENTED 78U
 #define PATH_MAX_UNITS 1024U
+#define EXECUTION_ROLE_COUNT 3U
+#define EXECUTION_MAX_FILE_BYTES (512U * 1024U * 1024U)
 #define SID_MAX_BYTES 68U
 #define SID_TEXT_MAX_BYTES 184U
 #define MONIKER_BYTES 64U
@@ -276,6 +292,10 @@ __declspec(dllimport) DWORD WINAPI NetworkIsolationFreeAppContainers(PINET_FIREW
 #define JOURNAL_PROFILE_CREATED 3U
 #define JOURNAL_PROFILE_DELETE_ATTEMPTED 4U
 #define JOURNAL_PROFILE_ABSENCE_PROVED 5U
+#define EXECUTION_ATTEMPTED 1U
+#define EXECUTION_CREATED 2U
+#define EXECUTION_DELETE_ATTEMPTED 3U
+#define EXECUTION_ABSENCE_PROVED 4U
 
 static const WCHAR serve_mode[] = L"SERVE";
 static const WCHAR recover_mode[] = L"RECOVER";
@@ -302,6 +322,41 @@ typedef struct profile_identity {
   BYTE phase;
 } PROFILE_IDENTITY;
 
+typedef struct execution_prepare_paths {
+  WCHAR state_root[PATH_MAX_UNITS + 1U];
+  WORD state_root_units;
+  WCHAR execution_parent[PATH_MAX_UNITS + 1U];
+  WORD execution_parent_units;
+  WCHAR sources[EXECUTION_ROLE_COUNT][PATH_MAX_UNITS + 1U];
+  WORD source_units[EXECUTION_ROLE_COUNT];
+} EXECUTION_PREPARE_PATHS;
+
+typedef struct retained_object {
+  HANDLE handle;
+  WCHAR path[PATH_MAX_UNITS + 1U];
+  WORD path_units;
+  FILE_ID_INFO id;
+  DWORD attributes;
+  DWORD links;
+  ULONGLONG size;
+  PSECURITY_DESCRIPTOR security;
+  DWORD security_length;
+  BYTE binding[32];
+} RETAINED_OBJECT;
+
+typedef struct execution_custody {
+  RETAINED_OBJECT parent;
+  RETAINED_OBJECT sources[EXECUTION_ROLE_COUNT];
+  RETAINED_OBJECT root;
+  RETAINED_OBJECT targets[EXECUTION_ROLE_COUNT];
+  BYTE source_bindings[EXECUTION_ROLE_COUNT][32];
+  BYTE target_bindings[EXECUTION_ROLE_COUNT][32];
+  BYTE root_binding[32];
+  BYTE prior_digest[32];
+  BYTE profile_created_digest[32];
+  BYTE phase;
+} EXECUTION_CUSTODY;
+
 typedef struct root_custody {
   HANDLE handle;
   HANDLE token;
@@ -324,6 +379,10 @@ typedef struct journal_group {
   PROFILE_IDENTITY identity;
   BYTE final_seen[6];
   BYTE pending_seen[6];
+  EXECUTION_CUSTODY *execution;
+  BYTE execution_final_seen[5];
+  BYTE execution_pending_seen[5];
+  BYTE profile_created_digest[32];
 } JOURNAL_GROUP;
 
 #if defined(OP_WINDOWS_LIFECYCLE_FIXTURE)
@@ -332,17 +391,32 @@ static int fixture_preflight_and_recover(ROOT_CUSTODY *);
 static int fixture_create_profile(ROOT_CUSTODY *, PROFILE_IDENTITY *, HANDLE *);
 static int fixture_cleanup_profile(ROOT_CUSTODY *, PROFILE_IDENTITY *, HANDLE *);
 static int fixture_release_root(ROOT_CUSTODY *);
+static int fixture_retain_execution(ROOT_CUSTODY *, const EXECUTION_PREPARE_PATHS *,
+                                    const PROFILE_IDENTITY *, EXECUTION_CUSTODY *);
+static int fixture_construct_execution(ROOT_CUSTODY *, PROFILE_IDENTITY *,
+                                       EXECUTION_CUSTODY *);
+static int fixture_cleanup_execution(ROOT_CUSTODY *, PROFILE_IDENTITY *,
+                                     EXECUTION_CUSTODY *);
+static int fixture_release_execution(ROOT_CUSTODY *, EXECUTION_CUSTODY *);
 #define OP_BROKER_RETAIN_ROOT fixture_retain_root
 #define OP_BROKER_PREFLIGHT fixture_preflight_and_recover
 #define OP_BROKER_CREATE_PROFILE fixture_create_profile
 #define OP_BROKER_CLEANUP_PROFILE fixture_cleanup_profile
 #define OP_BROKER_RELEASE_ROOT fixture_release_root
+#define OP_BROKER_RETAIN_EXECUTION fixture_retain_execution
+#define OP_BROKER_CONSTRUCT_EXECUTION fixture_construct_execution
+#define OP_BROKER_CLEANUP_EXECUTION fixture_cleanup_execution
+#define OP_BROKER_RELEASE_EXECUTION fixture_release_execution
 #else
 #define OP_BROKER_RETAIN_ROOT retain_root
 #define OP_BROKER_PREFLIGHT preflight_and_recover
 #define OP_BROKER_CREATE_PROFILE create_profile
 #define OP_BROKER_CLEANUP_PROFILE cleanup_profile
 #define OP_BROKER_RELEASE_ROOT release_root
+#define OP_BROKER_RETAIN_EXECUTION retain_execution_inputs
+#define OP_BROKER_CONSTRUCT_EXECUTION construct_execution
+#define OP_BROKER_CLEANUP_EXECUTION cleanup_execution
+#define OP_BROKER_RELEASE_EXECUTION release_execution
 #endif
 
 #if defined(OP_WINDOWS_FAULT_FIXTURE)
@@ -379,6 +453,38 @@ static NTSTATUS WINAPI fixture_BCryptCloseAlgorithmProvider(BCRYPT_ALG_HANDLE, D
 #define FreeSid fixture_FreeSid
 #define BCryptDestroyHash fixture_BCryptDestroyHash
 #define BCryptCloseAlgorithmProvider fixture_BCryptCloseAlgorithmProvider
+#endif
+
+#if defined(OP_WINDOWS_EXECUTION_FIXTURE)
+static BOOL WINAPI fixture_execution_CreateDirectoryW(
+    PCWSTR, SECURITY_ATTRIBUTES *);
+static HANDLE WINAPI fixture_execution_CreateFileW(
+    PCWSTR, DWORD, DWORD, SECURITY_ATTRIBUTES *, DWORD, DWORD, HANDLE);
+static BOOL WINAPI fixture_execution_WriteFile(HANDLE, LPCVOID, DWORD,
+                                                DWORD *, LPVOID);
+static BOOL WINAPI fixture_execution_ReadFile(HANDLE, LPVOID, DWORD, DWORD *,
+                                               LPVOID);
+static BOOL WINAPI fixture_execution_FlushFileBuffers(HANDLE);
+static BOOL WINAPI fixture_execution_GetFileInformationByHandle(
+    HANDLE, BY_HANDLE_FILE_INFORMATION *);
+static BOOL WINAPI fixture_execution_GetFileInformationByHandleEx(
+    HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD);
+static BOOL WINAPI fixture_execution_SetFileInformationByHandle(
+    HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD);
+static DWORD WINAPI fixture_execution_GetFileAttributesW(PCWSTR);
+static BOOL WINAPI fixture_execution_CloseHandle(HANDLE);
+static BOOL WINAPI fixture_execution_FindClose(HANDLE);
+#define CreateDirectoryW fixture_execution_CreateDirectoryW
+#define CreateFileW fixture_execution_CreateFileW
+#define WriteFile fixture_execution_WriteFile
+#define ReadFile fixture_execution_ReadFile
+#define FlushFileBuffers fixture_execution_FlushFileBuffers
+#define GetFileInformationByHandle fixture_execution_GetFileInformationByHandle
+#define GetFileInformationByHandleEx fixture_execution_GetFileInformationByHandleEx
+#define SetFileInformationByHandle fixture_execution_SetFileInformationByHandle
+#define GetFileAttributesW fixture_execution_GetFileAttributesW
+#define CloseHandle fixture_execution_CloseHandle
+#define FindClose fixture_execution_FindClose
 #endif
 
 #if defined(OP_WINDOWS_PROFILE_FIXTURE)
@@ -662,11 +768,52 @@ static int canonical_folder_path(const WCHAR *path, WORD count) {
   return 1;
 }
 
+static int canonical_execution_prepare(const BYTE *payload, DWORD length,
+                                       EXECUTION_PREPARE_PATHS *paths) {
+  WORD counts[5];
+  WCHAR *outputs[5] = {
+    paths->state_root, paths->execution_parent, paths->sources[0],
+    paths->sources[1], paths->sources[2]
+  };
+  WORD *output_counts[5] = {
+    &paths->state_root_units, &paths->execution_parent_units,
+    &paths->source_units[0], &paths->source_units[1], &paths->source_units[2]
+  };
+  DWORD cursor = 20U;
+  DWORD total_units = 0U;
+  DWORD field;
+  if (length < 30U || payload[0] != 'O' || payload[1] != 'P' || payload[2] != 'W' ||
+      payload[3] != 'E' || payload[4] != 1U || payload[5] != 1U ||
+      payload[6] != 0U || payload[7] != 0U || payload[18] != 0U || payload[19] != 0U)
+    return 0;
+  zero_bytes(paths, sizeof(*paths));
+  for (field = 0U; field < 5U; field += 1U) {
+    counts[field] = read_u16(payload + 8U + field * 2U);
+    if (counts[field] == 0U || counts[field] > PATH_MAX_UNITS) return 0;
+    total_units += counts[field];
+  }
+  if (length != 20U + total_units * 2U) return 0;
+  for (field = 0U; field < 5U; field += 1U) {
+    DWORD bytes = (DWORD)counts[field] * 2U;
+    copy_bytes(outputs[field], payload + cursor, bytes);
+    outputs[field][counts[field]] = L'\0';
+    if (!canonical_folder_path(outputs[field], counts[field])) return 0;
+    *output_counts[field] = counts[field];
+    cursor += bytes;
+  }
+  return cursor == length;
+}
+
 static int canonical_frame_payload(const BROKER_FRAME *frame) {
-  WCHAR ignored_path[PATH_MAX_UNITS + 1U];
-  WORD ignored_units = 0;
-  if (frame->operation == PREPARE_OPERATION)
-    return canonical_scope_path(frame->payload, frame->length, ignored_path, &ignored_units);
+  if (frame->operation == PREPARE_OPERATION) {
+    EXECUTION_PREPARE_PATHS *ignored = (EXECUTION_PREPARE_PATHS *)HeapAlloc(
+      GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(EXECUTION_PREPARE_PATHS));
+    int valid;
+    if (ignored == NULL) return 0;
+    valid = canonical_execution_prepare(frame->payload, frame->length, ignored);
+    if (!HeapFree(GetProcessHeap(), 0U, ignored)) return 0;
+    return valid;
+  }
   return frame->length == 0U;
 }
 
@@ -946,6 +1093,382 @@ static int release_root(ROOT_CUSTODY *root) {
   return clean;
 }
 
+static int append_wide(WCHAR *target, DWORD capacity, DWORD *cursor, const WCHAR *value);
+
+static int path_contains(const WCHAR *parent, WORD parent_units,
+                         const WCHAR *child, WORD child_units) {
+  DWORD index;
+  if (child_units <= parent_units) return 0;
+  for (index = 0U; index < parent_units; index += 1U)
+    if (parent[index] != child[index]) return 0;
+  return child[parent_units] == L'\\';
+}
+
+static int same_path(const WCHAR *left, WORD left_units,
+                     const WCHAR *right, WORD right_units) {
+  return left_units == right_units &&
+         equal_bytes(left, right, (DWORD)left_units * 2U);
+}
+
+static int hash_file_handle(ROOT_CUSTODY *root, HANDLE file, ULONGLONG size,
+                            BYTE digest[32]) {
+  BCRYPT_ALG_HANDLE algorithm = NULL;
+  BCRYPT_HASH_HANDLE hash = NULL;
+  BYTE *object = NULL;
+  BYTE *buffer = NULL;
+  DWORD object_length = 0U;
+  DWORD returned = 0U;
+  ULONGLONG remaining = size;
+  int valid = 0;
+  SetLastError(ERROR_SUCCESS);
+  if ((SetFilePointer(file, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER &&
+       GetLastError() != ERROR_SUCCESS) ||
+      BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0U) < 0 ||
+      BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&object_length,
+                        sizeof(object_length), &returned, 0U) < 0 ||
+      returned != sizeof(object_length) || object_length == 0U)
+    goto done;
+  object = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, object_length);
+  buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0U, 65536U);
+  if (object == NULL || buffer == NULL ||
+      BCryptCreateHash(algorithm, &hash, object, object_length, NULL, 0U, 0U) < 0)
+    goto done;
+  while (remaining != 0U) {
+    DWORD requested = remaining > 65536U ? 65536U : (DWORD)remaining;
+    DWORD received = 0U;
+    if (!ReadFile(file, buffer, requested, &received, NULL) || received != requested ||
+        BCryptHashData(hash, buffer, received, 0U) < 0)
+      goto done;
+    remaining -= received;
+  }
+  {
+    BYTE trailing;
+    DWORD received = 0U;
+    if (!ReadFile(file, &trailing, 1U, &received, NULL) || received != 0U ||
+        BCryptFinishHash(hash, digest, 32U, 0U) < 0)
+      goto done;
+  }
+  valid = 1;
+done:
+  if (hash != NULL && BCryptDestroyHash(hash) < 0) root->resource_ambiguous = 1;
+  if (algorithm != NULL && BCryptCloseAlgorithmProvider(algorithm, 0U) < 0)
+    root->resource_ambiguous = 1;
+  if (object != NULL && !HeapFree(GetProcessHeap(), 0U, object)) root->resource_ambiguous = 1;
+  if (buffer != NULL && !HeapFree(GetProcessHeap(), 0U, buffer)) root->resource_ambiguous = 1;
+  return valid && !root->resource_ambiguous;
+}
+
+static int retained_object_binding(ROOT_CUSTODY *root, RETAINED_OBJECT *object,
+                                   const CHAR *domain, BYTE role, BYTE digest[32]) {
+  BYTE content_digest[32];
+  DWORD domain_bytes = (DWORD)ascii_length(domain) + 1U;
+  DWORD path_bytes = (DWORD)object->path_units * 2U;
+  DWORD material_length = domain_bytes + 1U + 4U + path_bytes + 8U + 16U +
+                          4U + 4U + 8U + 4U + object->security_length + 32U;
+  BYTE *material;
+  DWORD cursor = 0U;
+  if (object->size != 0U &&
+      !hash_file_handle(root, object->handle, object->size, content_digest))
+    return 0;
+  if (object->size == 0U) zero_bytes(content_digest, sizeof(content_digest));
+  material = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, material_length);
+  if (material == NULL) return 0;
+  copy_bytes(material + cursor, domain, domain_bytes); cursor += domain_bytes;
+  material[cursor++] = role;
+  write_u32(material + cursor, path_bytes); cursor += 4U;
+  copy_bytes(material + cursor, object->path, path_bytes); cursor += path_bytes;
+  write_u64(material + cursor, object->id.VolumeSerialNumber); cursor += 8U;
+  copy_bytes(material + cursor, object->id.FileId.Identifier, 16U); cursor += 16U;
+  write_u32(material + cursor, object->attributes); cursor += 4U;
+  write_u32(material + cursor, object->links); cursor += 4U;
+  write_u64(material + cursor, object->size); cursor += 8U;
+  write_u32(material + cursor, object->security_length); cursor += 4U;
+  copy_bytes(material + cursor, object->security, object->security_length);
+  cursor += object->security_length;
+  copy_bytes(material + cursor, content_digest, 32U);
+  if (!sha256(material, material_length, digest, &root->resource_ambiguous)) {
+    if (!HeapFree(GetProcessHeap(), 0U, material)) root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, material)) root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+}
+
+static int retained_object_facts(ROOT_CUSTODY *root, HANDLE handle,
+                                 const RETAINED_OBJECT *expected,
+                                 FILE_ID_INFO *id,
+                                 BY_HANDLE_FILE_INFORMATION *basic,
+                                 ULONGLONG *size,
+                                 PSECURITY_DESCRIPTOR *security,
+                                 DWORD *security_length) {
+  WCHAR final_path[PATH_MAX_UNITS + 1U];
+  DWORD final_units;
+  LARGE_INTEGER observed_size;
+  int directory =
+      (expected->attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U;
+  if (!GetFileInformationByHandleEx(handle, FileIdInfo, id, sizeof(*id)) ||
+      !GetFileInformationByHandle(handle, basic))
+    return 0;
+  final_units = GetFinalPathNameByHandleW(
+      handle, final_path, PATH_MAX_UNITS + 1U,
+      FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (final_units != expected->path_units || final_units > PATH_MAX_UNITS ||
+      !wide_equal(final_path, expected->path) ||
+      basic->nNumberOfLinks != 1U ||
+      !!(basic->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory ||
+      (basic->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U ||
+      !capture_security(root, handle, security, security_length))
+    return 0;
+  if (directory) {
+    *size = 0U;
+  } else {
+    if (!GetFileSizeEx(handle, &observed_size) || observed_size.QuadPart <= 0 ||
+        (ULONGLONG)observed_size.QuadPart > EXECUTION_MAX_FILE_BYTES)
+      return 0;
+    *size = (ULONGLONG)observed_size.QuadPart;
+  }
+  return 1;
+}
+
+static int close_find_handle(ROOT_CUSTODY *root, HANDLE find) {
+  if (!FindClose(find)) {
+    root->resource_ambiguous = 1;
+    return 0;
+  }
+  return 1;
+}
+
+static int directory_empty(ROOT_CUSTODY *root,
+                           const RETAINED_OBJECT *directory) {
+  WCHAR pattern[1200];
+  DWORD cursor = 0U;
+  HANDLE find;
+  WIN32_FIND_DATAW data;
+  int empty = 1;
+  if (!append_wide(pattern, 1200U, &cursor, directory->path) ||
+      !append_wide(pattern, 1200U, &cursor, L"\\*"))
+    return 0;
+  find = FindFirstFileW(pattern, &data);
+  if (find == INVALID_HANDLE_VALUE)
+    return GetLastError() == ERROR_FILE_NOT_FOUND;
+  for (;;) {
+    if (!wide_equal(data.cFileName, L".") && !wide_equal(data.cFileName, L"..")) {
+      empty = 0;
+      break;
+    }
+    if (!FindNextFileW(find, &data)) {
+      if (GetLastError() != ERROR_NO_MORE_FILES) empty = 0;
+      break;
+    }
+  }
+  if (!close_find_handle(root, find)) return 0;
+  return empty;
+}
+
+static int directory_fixed_census(ROOT_CUSTODY *root,
+                                  const RETAINED_OBJECT *directory) {
+  static const WCHAR *names[EXECUTION_ROLE_COUNT] = {
+    L"node.exe", L"rpc-runner.mjs", L"candidate.mjs"
+  };
+  WCHAR pattern[1200];
+  DWORD cursor = 0U;
+  DWORD seen = 0U;
+  HANDLE find;
+  WIN32_FIND_DATAW data;
+  if (!append_wide(pattern, 1200U, &cursor, directory->path) ||
+      !append_wide(pattern, 1200U, &cursor, L"\\*"))
+    return 0;
+  find = FindFirstFileW(pattern, &data);
+  if (find == INVALID_HANDLE_VALUE) return 0;
+  for (;;) {
+    if (!wide_equal(data.cFileName, L".") && !wide_equal(data.cFileName, L"..")) {
+      DWORD role;
+      if ((data.dwFileAttributes &
+           (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U) {
+        seen = 0U;
+        break;
+      }
+      for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+        if (wide_equal(data.cFileName, names[role])) break;
+      if (role == EXECUTION_ROLE_COUNT || (seen & (1U << role)) != 0U) {
+        seen = 0U;
+        break;
+      }
+      seen |= 1U << role;
+    }
+    if (!FindNextFileW(find, &data)) {
+      if (GetLastError() != ERROR_NO_MORE_FILES) seen = 0U;
+      break;
+    }
+  }
+  if (!close_find_handle(root, find)) return 0;
+  return seen == 7U;
+}
+
+static int exact_unnamed_stream(ROOT_CUSTODY *root,
+                                const RETAINED_OBJECT *object) {
+  WIN32_FIND_STREAM_DATA data;
+  HANDLE find = FindFirstStreamW(object->path, 0U, &data, 0U);
+  int valid;
+  int directory =
+      (object->attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U;
+  if (find == INVALID_HANDLE_VALUE)
+    return directory && GetLastError() == ERROR_HANDLE_EOF;
+  valid = wide_equal(data.cStreamName, L"::$DATA") &&
+          data.StreamSize.QuadPart >= 0 &&
+          (ULONGLONG)data.StreamSize.QuadPart == object->size &&
+          !FindNextStreamW(find, &data) && GetLastError() == ERROR_HANDLE_EOF;
+  if (!close_find_handle(root, find)) return 0;
+  return valid;
+}
+
+static int verify_retained_object(ROOT_CUSTODY *root, RETAINED_OBJECT *object,
+                                  const CHAR *domain, BYTE role,
+                                  const BYTE expected_binding[32]) {
+  FILE_ID_INFO retained_id;
+  FILE_ID_INFO probe_id;
+  BY_HANDLE_FILE_INFORMATION retained_basic;
+  BY_HANDLE_FILE_INFORMATION probe_basic;
+  ULONGLONG retained_size = 0U;
+  ULONGLONG probe_size = 0U;
+  PSECURITY_DESCRIPTOR retained_security = NULL;
+  PSECURITY_DESCRIPTOR retained_security_after = NULL;
+  PSECURITY_DESCRIPTOR probe_security = NULL;
+  DWORD retained_security_length = 0U;
+  DWORD retained_security_after_length = 0U;
+  DWORD probe_security_length = 0U;
+  HANDLE probe = INVALID_HANDLE_VALUE;
+  BYTE observed_binding[32];
+  DWORD access = GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL;
+  DWORD flags = FILE_FLAG_OPEN_REPARSE_POINT |
+                ((object->attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U
+                     ? FILE_FLAG_BACKUP_SEMANTICS
+                     : FILE_FLAG_SEQUENTIAL_SCAN);
+  int valid = 0;
+  if (object->handle == NULL || object->handle == INVALID_HANDLE_VALUE ||
+      !retained_object_facts(root, object->handle, object, &retained_id,
+                             &retained_basic, &retained_size,
+                             &retained_security, &retained_security_length))
+    goto done;
+  probe = CreateFileW(object->path, access,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                      NULL,
+                      OPEN_EXISTING, flags, NULL);
+  if (probe == INVALID_HANDLE_VALUE ||
+      !retained_object_facts(root, probe, object, &probe_id, &probe_basic,
+                             &probe_size, &probe_security,
+                             &probe_security_length) ||
+      !equal_bytes(&retained_id, &object->id, sizeof(retained_id)) ||
+      !equal_bytes(&probe_id, &retained_id, sizeof(probe_id)) ||
+      retained_basic.dwFileAttributes != object->attributes ||
+      probe_basic.dwFileAttributes != retained_basic.dwFileAttributes ||
+      retained_basic.nNumberOfLinks != object->links ||
+      probe_basic.nNumberOfLinks != retained_basic.nNumberOfLinks ||
+      retained_size != object->size || probe_size != retained_size ||
+      retained_security_length != object->security_length ||
+      probe_security_length != retained_security_length ||
+      !equal_bytes(retained_security, object->security,
+                   retained_security_length) ||
+      !equal_bytes(probe_security, retained_security,
+                   retained_security_length) ||
+      !exact_unnamed_stream(root, object) ||
+      !retained_object_facts(root, object->handle, object, &retained_id,
+                             &retained_basic, &retained_size,
+                             &retained_security_after,
+                             &retained_security_after_length) ||
+      !equal_bytes(&retained_id, &object->id, sizeof(retained_id)) ||
+      retained_basic.dwFileAttributes != object->attributes ||
+      retained_basic.nNumberOfLinks != object->links ||
+      retained_size != object->size ||
+      retained_security_after_length != object->security_length ||
+      !equal_bytes(retained_security_after, object->security,
+                   retained_security_after_length) ||
+      !retained_object_binding(root, object, domain, role,
+                               observed_binding) ||
+      !equal_bytes(observed_binding, expected_binding, 32U))
+    goto done;
+  valid = 1;
+done:
+  if (retained_security != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, retained_security))
+    root->resource_ambiguous = 1;
+  if (retained_security_after != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, retained_security_after))
+    root->resource_ambiguous = 1;
+  if (probe_security != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, probe_security))
+    root->resource_ambiguous = 1;
+  if (probe != INVALID_HANDLE_VALUE && !CloseHandle(probe))
+    root->resource_ambiguous = 1;
+  return valid && !root->resource_ambiguous;
+}
+
+static int retain_exact_object(ROOT_CUSTODY *root, const WCHAR *path, WORD path_units,
+                               int directory, int require_empty, int deletable,
+                               RETAINED_OBJECT *object,
+                               const CHAR *domain, BYTE role) {
+  WCHAR expected_path[PATH_MAX_UNITS + 1U];
+  WCHAR volume[] = L"C:\\";
+  WCHAR final_path[PATH_MAX_UNITS + 1U];
+  DWORD final_units;
+  BY_HANDLE_FILE_INFORMATION basic;
+  LARGE_INTEGER size;
+  DWORD access = GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL |
+                 (directory ? GENERIC_WRITE : 0U) | (deletable ? DELETE : 0U);
+  DWORD flags = FILE_FLAG_OPEN_REPARSE_POINT |
+                (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN);
+  copy_bytes(expected_path, path, ((DWORD)path_units + 1U) * 2U);
+  zero_bytes(object, sizeof(*object));
+  object->handle = INVALID_HANDLE_VALUE;
+  volume[0] = expected_path[4];
+  if (GetDriveTypeW(volume) != DRIVE_FIXED) return 0;
+  object->handle = CreateFileW(expected_path, access, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                               flags, NULL);
+  if (object->handle == INVALID_HANDLE_VALUE ||
+      !GetFileInformationByHandleEx(object->handle, FileIdInfo, &object->id,
+                                    sizeof(object->id)) ||
+      !GetFileInformationByHandle(object->handle, &basic))
+    return 0;
+  final_units = GetFinalPathNameByHandleW(object->handle, final_path,
+                                         PATH_MAX_UNITS + 1U,
+                                         FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  if (final_units != path_units || final_units > PATH_MAX_UNITS ||
+      !wide_equal(final_path, expected_path) || basic.nNumberOfLinks != 1U ||
+      !!(basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory ||
+      (basic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U ||
+      !capture_security(root, object->handle, &object->security,
+                        &object->security_length))
+    return 0;
+  object->path_units = path_units;
+  copy_bytes(object->path, expected_path, ((DWORD)path_units + 1U) * 2U);
+  object->attributes = basic.dwFileAttributes;
+  object->links = basic.nNumberOfLinks;
+  if (!directory) {
+    if (!GetFileSizeEx(object->handle, &size) || size.QuadPart <= 0 ||
+        (ULONGLONG)size.QuadPart > EXECUTION_MAX_FILE_BYTES)
+      return 0;
+    object->size = (ULONGLONG)size.QuadPart;
+  } else if (require_empty && !directory_empty(root, object)) {
+    return 0;
+  }
+  if (!exact_unnamed_stream(root, object) ||
+      !retained_object_binding(root, object, domain, role, object->binding))
+    return 0;
+  return verify_retained_object(root, object, domain, role, object->binding);
+}
+
+static int release_retained_object(ROOT_CUSTODY *root, RETAINED_OBJECT *object) {
+  int clean = 1;
+  if (object->security != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, object->security)) clean = 0;
+  if (object->handle != NULL && object->handle != INVALID_HANDLE_VALUE &&
+      !CloseHandle(object->handle)) clean = 0;
+  zero_bytes(object, sizeof(*object));
+  object->handle = INVALID_HANDLE_VALUE;
+  if (!clean) root->resource_ambiguous = 1;
+  return clean;
+}
+
 static int append_wide(WCHAR *target, DWORD capacity, DWORD *cursor, const WCHAR *value) {
   DWORD index = 0;
   while (value[index] != L'\0') {
@@ -1170,6 +1693,689 @@ static int persist_phase(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity, BYTE ki
   return 1;
 }
 
+static int execution_journal_path(const ROOT_CUSTODY *root, const BYTE token[32],
+                                  BYTE kind, int pending, WCHAR path[1200]) {
+  static const WCHAR *suffix[] = {
+    L"", L"-00-attempted.opwx", L"-01-created.opwx",
+    L"-02-delete-attempted.opwx", L"-03-absence-proved.opwx"
+  };
+  WCHAR hex[65];
+  DWORD cursor = 0U;
+  if (kind < EXECUTION_ATTEMPTED || kind > EXECUTION_ABSENCE_PROVED) return 0;
+  hex_token(token, hex);
+  return append_wide(path, 1200U, &cursor, root->path) &&
+         append_wide(path, 1200U, &cursor, L"\\windows-execution-") &&
+         append_wide(path, 1200U, &cursor, hex) &&
+         append_wide(path, 1200U, &cursor, suffix[kind]) &&
+         (!pending || append_wide(path, 1200U, &cursor, L".pending"));
+}
+
+static DWORD execution_record(const ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity,
+                              const EXECUTION_CUSTODY *execution, BYTE kind,
+                              BYTE *record, DWORD capacity) {
+  DWORD parent_bytes = (DWORD)execution->parent.path_units * 2U;
+  DWORD root_bytes = (DWORD)execution->root.path_units * 2U;
+  DWORD needed = 12U + 32U + 32U + 32U + 32U + 2U + parent_bytes + 32U +
+                 2U + root_bytes + 96U + 32U + 96U;
+  DWORD cursor = 12U;
+  int targets_nonzero = 1;
+  int partial = equal_bytes(execution->root_binding, (BYTE[32]){0}, 32U) &&
+                equal_bytes(execution->target_bindings, (BYTE[96]){0}, 96U);
+  int complete;
+  for (DWORD role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (equal_bytes(execution->target_bindings[role], (BYTE[32]){0}, 32U))
+      targets_nonzero = 0;
+  complete = !equal_bytes(execution->root_binding, (BYTE[32]){0}, 32U) &&
+             targets_nonzero;
+  if (needed > capacity || execution->parent.path_units == 0U ||
+      execution->root.path_units == 0U ||
+      identity->phase < JOURNAL_PROFILE_CREATED ||
+      (kind == EXECUTION_ATTEMPTED && (!partial || execution->phase != 0U)) ||
+      (kind == EXECUTION_CREATED && (!complete || execution->phase != EXECUTION_ATTEMPTED)) ||
+      (kind == EXECUTION_DELETE_ATTEMPTED &&
+       !((execution->phase == EXECUTION_ATTEMPTED && partial) ||
+         (execution->phase == EXECUTION_CREATED && complete))) ||
+      (kind == EXECUTION_ABSENCE_PROVED &&
+       (execution->phase != EXECUTION_DELETE_ATTEMPTED || (!partial && !complete))))
+    return 0U;
+  zero_bytes(record, needed);
+  record[0] = 'O'; record[1] = 'P'; record[2] = 'W'; record[3] = 'X';
+  record[4] = 1U; record[5] = kind;
+  write_u32(record + 8U, needed);
+  copy_bytes(record + cursor, identity->token, 32U); cursor += 32U;
+  if (kind != EXECUTION_ATTEMPTED)
+    copy_bytes(record + cursor, execution->prior_digest, 32U);
+  cursor += 32U;
+  copy_bytes(record + cursor, root->digest, 32U); cursor += 32U;
+  copy_bytes(record + cursor, execution->profile_created_digest, 32U); cursor += 32U;
+  write_u16(record + cursor, execution->parent.path_units); cursor += 2U;
+  copy_bytes(record + cursor, execution->parent.path, parent_bytes); cursor += parent_bytes;
+  copy_bytes(record + cursor, execution->parent.binding, 32U); cursor += 32U;
+  write_u16(record + cursor, execution->root.path_units); cursor += 2U;
+  copy_bytes(record + cursor, execution->root.path, root_bytes); cursor += root_bytes;
+  copy_bytes(record + cursor, execution->source_bindings, 96U); cursor += 96U;
+  copy_bytes(record + cursor, execution->root_binding, 32U);
+  copy_bytes(record + cursor + 32U, execution->target_bindings, 96U);
+  return needed;
+}
+
+static int persist_execution_phase(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
+                                   EXECUTION_CUSTODY *execution, BYTE kind) {
+  BYTE record[4096];
+  DWORD length = execution_record(root, identity, execution, kind, record,
+                                  sizeof(record));
+  WCHAR pending[1200];
+  WCHAR final[1200];
+  HANDLE file;
+  DWORD written = 0U;
+  PSECURITY_DESCRIPTOR security = NULL;
+  SECURITY_ATTRIBUTES attributes;
+  FILE_RENAME_INFO *rename_information;
+  FILE_ID_INFO file_identity;
+  DWORD rename_bytes;
+  int renamed;
+  if (length == 0U || !root_snapshot(root, 0) ||
+      !execution_journal_path(root, identity->token, kind, 1, pending) ||
+      !execution_journal_path(root, identity->token, kind, 0, final) ||
+      !file_security(root, &security))
+    return 0;
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = security;
+  attributes.bInheritHandle = FALSE;
+  file = CreateFileW(pending, GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
+                     0U, &attributes, CREATE_NEW,
+                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+                     FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  if (file == INVALID_HANDLE_VALUE) return 0;
+  if (!root_snapshot(root, 0) || !WriteFile(file, record, length, &written, NULL) ||
+      written != length || !FlushFileBuffers(file) ||
+      !verify_leaf_handle(root, file, pending, record, length, &file_identity, 0) ||
+      !root_snapshot(root, 0)) {
+    if (!discard_open_pending(root, file, pending)) root->resource_ambiguous = 1;
+    return 0;
+  }
+  {
+    DWORD final_bytes = (DWORD)wide_length(final) * 2U;
+    rename_bytes = (DWORD)sizeof(FILE_RENAME_INFO) + final_bytes;
+    rename_information = (FILE_RENAME_INFO *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                                       rename_bytes);
+    if (rename_information == NULL) {
+      if (!discard_open_pending(root, file, pending)) root->resource_ambiguous = 1;
+      return 0;
+    }
+    rename_information->ReplaceIfExists = (BOOL)FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    rename_information->FileNameLength = final_bytes;
+    copy_bytes(rename_information->FileName, final, final_bytes);
+    renamed = SetFileInformationByHandle(file, FileRenameInfoEx,
+                                         rename_information, rename_bytes);
+    if (!HeapFree(GetProcessHeap(), 0U, rename_information)) root->resource_ambiguous = 1;
+  }
+  if (!renamed) {
+    if (!discard_open_pending(root, file, pending))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!verify_leaf_handle(root, file, final, record, length,
+                          &file_identity, 1) ||
+      GetFileAttributesW(pending) != INVALID_FILE_ATTRIBUTES ||
+      GetLastError() != ERROR_FILE_NOT_FOUND || !FlushFileBuffers(root->handle) ||
+      !root_snapshot(root, 0)) {
+    if (!CloseHandle(file)) root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!CloseHandle(file))
+    return 0;
+  file = CreateFileW(final, GENERIC_READ | READ_CONTROL, 0U, NULL, OPEN_EXISTING,
+                     FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+  if (file == INVALID_HANDLE_VALUE ||
+      !verify_leaf_handle(root, file, final, record, length, &file_identity, 1)) {
+    if (file != INVALID_HANDLE_VALUE && !CloseHandle(file)) root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!CloseHandle(file) || !root_snapshot(root, 0) ||
+      !sha256(record, length, execution->prior_digest, &root->resource_ambiguous))
+    return 0;
+  execution->phase = kind;
+  return 1;
+}
+
+static int execution_target_path(const RETAINED_OBJECT *execution_root, BYTE role,
+                                 WCHAR path[PATH_MAX_UNITS + 1U], WORD *units) {
+  static const WCHAR *names[EXECUTION_ROLE_COUNT] = {
+    L"node.exe", L"rpc-runner.mjs", L"candidate.mjs"
+  };
+  DWORD cursor = 0U;
+  if (role >= EXECUTION_ROLE_COUNT ||
+      !append_wide(path, PATH_MAX_UNITS + 1U, &cursor, execution_root->path) ||
+      !append_wide(path, PATH_MAX_UNITS + 1U, &cursor, L"\\") ||
+      !append_wide(path, PATH_MAX_UNITS + 1U, &cursor, names[role]) ||
+      cursor > PATH_MAX_UNITS)
+    return 0;
+  *units = (WORD)cursor;
+  return 1;
+}
+
+static int retain_execution_inputs(ROOT_CUSTODY *root,
+                                   const EXECUTION_PREPARE_PATHS *paths,
+                                   const PROFILE_IDENTITY *identity,
+                                   EXECUTION_CUSTODY *execution) {
+  DWORD role;
+  WCHAR hex[65];
+  DWORD cursor = 0U;
+  zero_bytes(execution, sizeof(*execution));
+  execution->parent.handle = INVALID_HANDLE_VALUE;
+  execution->root.handle = INVALID_HANDLE_VALUE;
+  for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    execution->sources[role].handle = INVALID_HANDLE_VALUE;
+    execution->targets[role].handle = INVALID_HANDLE_VALUE;
+  }
+  if (same_path(paths->state_root, paths->state_root_units,
+                paths->execution_parent, paths->execution_parent_units) ||
+      path_contains(paths->state_root, paths->state_root_units,
+                    paths->execution_parent, paths->execution_parent_units) ||
+      path_contains(paths->execution_parent, paths->execution_parent_units,
+                    paths->state_root, paths->state_root_units) ||
+      !retain_exact_object(root, paths->execution_parent,
+                           paths->execution_parent_units, 1, 1, 0,
+                           &execution->parent,
+                           "op.windows-execution-parent/v1", 0U))
+    return 0;
+  for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    DWORD other;
+    if (path_contains(paths->state_root, paths->state_root_units,
+                      paths->sources[role], paths->source_units[role]) ||
+        path_contains(paths->execution_parent, paths->execution_parent_units,
+                      paths->sources[role], paths->source_units[role]) ||
+        same_path(paths->state_root, paths->state_root_units,
+                  paths->sources[role], paths->source_units[role]) ||
+        same_path(paths->execution_parent, paths->execution_parent_units,
+                  paths->sources[role], paths->source_units[role]) ||
+        !retain_exact_object(root, paths->sources[role],
+                             paths->source_units[role], 0, 0, 0,
+                             &execution->sources[role],
+                             "op.windows-execution-source/v1", (BYTE)role))
+      return 0;
+    for (other = 0U; other < role; other += 1U)
+      if (same_path(paths->sources[role], paths->source_units[role],
+                    paths->sources[other], paths->source_units[other]) ||
+          equal_bytes(&execution->sources[role].id,
+                      &execution->sources[other].id, sizeof(FILE_ID_INFO)))
+        return 0;
+    copy_bytes(execution->source_bindings[role],
+               execution->sources[role].binding, 32U);
+  }
+  copy_bytes(execution->profile_created_digest, identity->prior_digest, 32U);
+  hex_token(identity->token, hex);
+  if (!append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                   execution->parent.path) ||
+      !append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                   L"\\orch6-execution-") ||
+      !append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor, hex) ||
+      cursor > PATH_MAX_UNITS)
+    return 0;
+  execution->root.path_units = (WORD)cursor;
+  if (GetFileAttributesW(execution->root.path) != INVALID_FILE_ATTRIBUTES ||
+      (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND))
+    return 0;
+  return 1;
+}
+
+static int copy_execution_target(ROOT_CUSTODY *root, EXECUTION_CUSTODY *execution,
+                                 BYTE role) {
+  WCHAR path[PATH_MAX_UNITS + 1U];
+  WORD path_units;
+  PSECURITY_DESCRIPTOR security = NULL;
+  SECURITY_ATTRIBUTES attributes;
+  HANDLE target = INVALID_HANDLE_VALUE;
+  BYTE *buffer = NULL;
+  ULONGLONG remaining = execution->sources[role].size;
+  int valid = 0;
+  BYTE source_digest[32];
+  BYTE target_digest[32];
+  if (!verify_retained_object(root, &execution->sources[role],
+                              "op.windows-execution-source/v1", role,
+                              execution->source_bindings[role]) ||
+      !execution_target_path(&execution->root, role, path, &path_units) ||
+      !file_security(root, &security))
+    return 0;
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = security;
+  attributes.bInheritHandle = FALSE;
+  target = CreateFileW(path, GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
+                       0U, &attributes, CREATE_NEW,
+                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+                       FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  if (target == INVALID_HANDLE_VALUE) return 0;
+  buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0U, 65536U);
+  SetLastError(ERROR_SUCCESS);
+  if (buffer == NULL ||
+      (SetFilePointer(execution->sources[role].handle, 0, NULL, FILE_BEGIN) ==
+         INVALID_SET_FILE_POINTER && GetLastError() != ERROR_SUCCESS))
+    goto done;
+  while (remaining != 0U) {
+    DWORD requested = remaining > 65536U ? 65536U : (DWORD)remaining;
+    DWORD received = 0U;
+    DWORD written = 0U;
+    if (!ReadFile(execution->sources[role].handle, buffer, requested,
+                  &received, NULL) || received != requested ||
+        !WriteFile(target, buffer, received, &written, NULL) || written != received)
+      goto done;
+    remaining -= received;
+  }
+  if (!FlushFileBuffers(target)) goto done;
+  if (!CloseHandle(target)) {
+    target = INVALID_HANDLE_VALUE;
+    root->resource_ambiguous = 1;
+    goto done;
+  }
+  target = INVALID_HANDLE_VALUE;
+  if (!retain_exact_object(root, path, path_units, 0, 0, 1,
+                           &execution->targets[role],
+                           "op.windows-execution-target/v1", role) ||
+      execution->targets[role].size != execution->sources[role].size ||
+      !hash_file_handle(root, execution->sources[role].handle,
+                        execution->sources[role].size, source_digest) ||
+      !hash_file_handle(root, execution->targets[role].handle,
+                        execution->targets[role].size, target_digest) ||
+      !equal_bytes(source_digest, target_digest, 32U))
+    goto done;
+  if (!verify_retained_object(root, &execution->sources[role],
+                              "op.windows-execution-source/v1", role,
+                              execution->source_bindings[role]) ||
+      !verify_retained_object(root, &execution->targets[role],
+                              "op.windows-execution-target/v1", role,
+                              execution->targets[role].binding))
+    goto done;
+  copy_bytes(execution->target_bindings[role],
+             execution->targets[role].binding, 32U);
+  valid = 1;
+done:
+  if (buffer != NULL && !HeapFree(GetProcessHeap(), 0U, buffer))
+    root->resource_ambiguous = 1;
+  if (target != INVALID_HANDLE_VALUE && !CloseHandle(target))
+    root->resource_ambiguous = 1;
+  return valid && !root->resource_ambiguous;
+}
+
+static int execution_root_binding(ROOT_CUSTODY *root,
+                                  const PROFILE_IDENTITY *identity,
+                                  EXECUTION_CUSTODY *execution) {
+  BYTE root_object_binding[32];
+  DWORD domain_bytes = (DWORD)ascii_length("op.windows-execution-root/v1") + 1U;
+  DWORD length = domain_bytes + 32U + 32U + 32U + 96U + 96U;
+  BYTE *material = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, length);
+  DWORD cursor = 0U;
+  if (material == NULL ||
+      !verify_retained_object(root, &execution->root,
+                              "op.windows-execution-root-object/v1", 0U,
+                              execution->root.binding) ||
+      !retained_object_binding(root, &execution->root,
+                               "op.windows-execution-root-object/v1", 0U,
+                               root_object_binding)) {
+    if (material != NULL && !HeapFree(GetProcessHeap(), 0U, material))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  copy_bytes(material + cursor, "op.windows-execution-root/v1", domain_bytes);
+  cursor += domain_bytes;
+  copy_bytes(material + cursor, identity->token, 32U); cursor += 32U;
+  copy_bytes(material + cursor, execution->parent.binding, 32U); cursor += 32U;
+  copy_bytes(material + cursor, root_object_binding, 32U); cursor += 32U;
+  copy_bytes(material + cursor, execution->source_bindings, 96U); cursor += 96U;
+  copy_bytes(material + cursor, execution->target_bindings, 96U);
+  if (!sha256(material, length, execution->root_binding,
+              &root->resource_ambiguous)) {
+    if (!HeapFree(GetProcessHeap(), 0U, material)) root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, material)) root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+}
+
+#if defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_ATTEMPTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED)
+static void diagnostic_pause(void);
+#endif
+
+static int construct_execution(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
+                               EXECUTION_CUSTODY *execution) {
+  PSECURITY_DESCRIPTOR security = NULL;
+  SECURITY_ATTRIBUTES attributes;
+  DWORD role;
+  if (!verify_retained_object(root, &execution->parent,
+                              "op.windows-execution-parent/v1", 0U,
+                              execution->parent.binding))
+    return 0;
+  for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (!verify_retained_object(root, &execution->sources[role],
+                                "op.windows-execution-source/v1", (BYTE)role,
+                                execution->source_bindings[role]))
+      return 0;
+  if (!persist_execution_phase(root, identity, execution, EXECUTION_ATTEMPTED) ||
+      !file_security(root, &security))
+    return 0;
+#if defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_ATTEMPTED)
+  diagnostic_pause();
+#endif
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = security;
+  attributes.bInheritHandle = FALSE;
+  if (!CreateDirectoryW(execution->root.path, &attributes)) {
+    if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+#if defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR)
+  diagnostic_pause();
+#endif
+  if (!FlushFileBuffers(execution->parent.handle) ||
+      !retain_exact_object(root, execution->root.path, execution->root.path_units,
+                           1, 1, 1, &execution->root,
+                           "op.windows-execution-root-object/v1", 0U))
+    return 0;
+  for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (!copy_execution_target(root, execution, (BYTE)role)) return 0;
+  for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    if (!verify_retained_object(root, &execution->sources[role],
+                                "op.windows-execution-source/v1", (BYTE)role,
+                                execution->source_bindings[role]) ||
+        !verify_retained_object(root, &execution->targets[role],
+                                "op.windows-execution-target/v1", (BYTE)role,
+                                execution->target_bindings[role]))
+      return 0;
+  }
+  if (!verify_retained_object(root, &execution->parent,
+                              "op.windows-execution-parent/v1", 0U,
+                              execution->parent.binding))
+    return 0;
+  if (!FlushFileBuffers(execution->root.handle) ||
+      !directory_fixed_census(root, &execution->root) ||
+      !execution_root_binding(root, identity, execution) ||
+      !persist_execution_phase(root, identity, execution, EXECUTION_CREATED))
+    return 0;
+#if defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED)
+  diagnostic_pause();
+#endif
+  return 1;
+}
+
+static int execution_subset_census(ROOT_CUSTODY *root,
+                                   const RETAINED_OBJECT *directory,
+                                   DWORD *seen_output) {
+  static const WCHAR *names[EXECUTION_ROLE_COUNT] = {
+    L"node.exe", L"rpc-runner.mjs", L"candidate.mjs"
+  };
+  WCHAR pattern[1200];
+  DWORD cursor = 0U;
+  DWORD seen = 0U;
+  HANDLE find;
+  WIN32_FIND_DATAW data;
+  if (!append_wide(pattern, 1200U, &cursor, directory->path) ||
+      !append_wide(pattern, 1200U, &cursor, L"\\*"))
+    return 0;
+  find = FindFirstFileW(pattern, &data);
+  if (find == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+  for (;;) {
+    if (!wide_equal(data.cFileName, L".") && !wide_equal(data.cFileName, L"..")) {
+      DWORD role;
+      if ((data.dwFileAttributes &
+           (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U) {
+        if (!close_find_handle(root, find)) return 0;
+        return 0;
+      }
+      for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+        if (wide_equal(data.cFileName, names[role])) break;
+      if (role == EXECUTION_ROLE_COUNT || (seen & (1U << role)) != 0U) {
+        if (!close_find_handle(root, find)) return 0;
+        return 0;
+      }
+      seen |= 1U << role;
+    }
+    if (!FindNextFileW(find, &data)) {
+      if (GetLastError() != ERROR_NO_MORE_FILES) {
+        if (!close_find_handle(root, find)) return 0;
+        return 0;
+      }
+      break;
+    }
+  }
+  if (!close_find_handle(root, find)) return 0;
+  *seen_output = seen;
+  return 1;
+}
+
+static int delete_retained_object(ROOT_CUSTODY *root,
+                                  RETAINED_OBJECT *object);
+
+static int delete_partial_target(ROOT_CUSTODY *root, EXECUTION_CUSTODY *execution,
+                                 BYTE role) {
+  WCHAR path[PATH_MAX_UNITS + 1U];
+  WORD path_units;
+  RETAINED_OBJECT observed;
+  if (!execution_target_path(&execution->root, role, path, &path_units)) return 0;
+  zero_bytes(&observed, sizeof(observed));
+  observed.handle = INVALID_HANDLE_VALUE;
+  if (!retain_exact_object(root, path, path_units, 0, 0, 1, &observed,
+                           "op.windows-execution-target/v1", role)) {
+    (void)release_retained_object(root, &observed);
+    return 0;
+  }
+  if (!verify_retained_object(root, &observed,
+                              "op.windows-execution-target/v1", role,
+                              observed.binding) ||
+      !delete_retained_object(root, &observed)) {
+    (void)release_retained_object(root, &observed);
+    return 0;
+  }
+  return 1;
+}
+
+static int delete_retained_object(ROOT_CUSTODY *root, RETAINED_OBJECT *object) {
+  FILE_DISPOSITION_INFO disposition;
+  WCHAR path[PATH_MAX_UNITS + 1U];
+  WORD path_units = object->path_units;
+  int clean = 1;
+  if (object->handle == NULL || object->handle == INVALID_HANDLE_VALUE) return 0;
+  copy_bytes(path, object->path, ((DWORD)path_units + 1U) * 2U);
+  disposition.DeleteFile = TRUE;
+  if (!SetFileInformationByHandle(object->handle, FileDispositionInfo,
+                                  &disposition, sizeof(disposition)))
+    clean = 0;
+  if (!CloseHandle(object->handle)) clean = 0;
+  object->handle = INVALID_HANDLE_VALUE;
+  if (object->security != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, object->security)) clean = 0;
+  object->security = NULL;
+  if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES ||
+      (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND))
+    clean = 0;
+  if (!clean) root->resource_ambiguous = 1;
+  return clean;
+}
+
+static int cleanup_execution(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
+                             EXECUTION_CUSTODY *execution) {
+  int complete = execution->phase == EXECUTION_CREATED;
+  DWORD role;
+  DWORD subset = 0U;
+  if (execution->phase != EXECUTION_ATTEMPTED &&
+      execution->phase != EXECUTION_CREATED &&
+      execution->phase != EXECUTION_DELETE_ATTEMPTED)
+    return execution->phase == EXECUTION_ABSENCE_PROVED;
+  if (execution->parent.handle == NULL || execution->parent.handle == INVALID_HANDLE_VALUE) {
+    WCHAR parent_path[PATH_MAX_UNITS + 1U];
+    WORD parent_units = execution->parent.path_units;
+    BYTE expected_parent[32];
+    copy_bytes(parent_path, execution->parent.path,
+               ((DWORD)parent_units + 1U) * 2U);
+    copy_bytes(expected_parent, execution->parent.binding, 32U);
+    if (!retain_exact_object(root, parent_path, parent_units, 1, 0, 0,
+                             &execution->parent,
+                             "op.windows-execution-parent/v1", 0U) ||
+        !equal_bytes(expected_parent, execution->parent.binding, 32U))
+      return 0;
+  }
+  if (!verify_retained_object(root, &execution->parent,
+                              "op.windows-execution-parent/v1", 0U,
+                              execution->parent.binding))
+    return 0;
+  if (execution->phase == EXECUTION_CREATED) {
+    BYTE expected_root[32];
+    copy_bytes(expected_root, execution->root_binding, 32U);
+    if (execution->root.handle == NULL || execution->root.handle == INVALID_HANDLE_VALUE) {
+      WCHAR root_path[PATH_MAX_UNITS + 1U];
+      WORD root_units = execution->root.path_units;
+      copy_bytes(root_path, execution->root.path, ((DWORD)root_units + 1U) * 2U);
+      if (!retain_exact_object(root, root_path, root_units, 1, 0, 1,
+                               &execution->root,
+                               "op.windows-execution-root-object/v1", 0U))
+        return 0;
+    }
+    if (!directory_fixed_census(root, &execution->root)) return 0;
+    for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+      if (execution->targets[role].handle == NULL ||
+          execution->targets[role].handle == INVALID_HANDLE_VALUE) {
+        WCHAR target_path[PATH_MAX_UNITS + 1U];
+        WORD target_units;
+        BYTE expected_target[32];
+        copy_bytes(expected_target, execution->target_bindings[role], 32U);
+        if (!execution_target_path(&execution->root, (BYTE)role,
+                                   target_path, &target_units) ||
+            !retain_exact_object(root, target_path, target_units, 0, 0, 1,
+                                 &execution->targets[role],
+                                 "op.windows-execution-target/v1", (BYTE)role) ||
+            !equal_bytes(expected_target, execution->targets[role].binding, 32U))
+          return 0;
+      }
+      if (!verify_retained_object(root, &execution->targets[role],
+                                  "op.windows-execution-target/v1", (BYTE)role,
+                                  execution->target_bindings[role]))
+        return 0;
+    }
+    if (!execution_root_binding(root, identity, execution) ||
+        !equal_bytes(execution->root_binding, expected_root, 32U))
+      return 0;
+  }
+  if (execution->phase != EXECUTION_DELETE_ATTEMPTED &&
+      !persist_execution_phase(root, identity, execution,
+                               EXECUTION_DELETE_ATTEMPTED))
+    return 0;
+  complete = !equal_bytes(execution->root_binding, (BYTE[32]){0}, 32U);
+  if (GetFileAttributesW(execution->root.path) == INVALID_FILE_ATTRIBUTES) {
+    if (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)
+      return 0;
+  } else {
+    if (execution->root.handle == NULL || execution->root.handle == INVALID_HANDLE_VALUE) {
+      WCHAR root_path[PATH_MAX_UNITS + 1U];
+      WORD root_units = execution->root.path_units;
+      copy_bytes(root_path, execution->root.path, ((DWORD)root_units + 1U) * 2U);
+      if (!retain_exact_object(root, root_path, root_units, 1, 0, 1,
+                               &execution->root,
+                               "op.windows-execution-root-object/v1", 0U))
+        return 0;
+    }
+    if (complete) {
+      BYTE expected_root[32];
+      copy_bytes(expected_root, execution->root_binding, 32U);
+      if (!execution_subset_census(root, &execution->root, &subset)) return 0;
+      for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+        if ((subset & (1U << role)) == 0U) {
+          WCHAR absent_path[PATH_MAX_UNITS + 1U];
+          WORD absent_units;
+          if (!execution_target_path(&execution->root, (BYTE)role,
+                                     absent_path, &absent_units) ||
+              GetFileAttributesW(absent_path) != INVALID_FILE_ATTRIBUTES ||
+              (GetLastError() != ERROR_FILE_NOT_FOUND &&
+               GetLastError() != ERROR_PATH_NOT_FOUND))
+            return 0;
+          continue;
+        }
+        if (execution->targets[role].handle == NULL ||
+            execution->targets[role].handle == INVALID_HANDLE_VALUE) {
+          WCHAR target_path[PATH_MAX_UNITS + 1U];
+          WORD target_units;
+          BYTE expected_target[32];
+          copy_bytes(expected_target, execution->target_bindings[role], 32U);
+          if (!execution_target_path(&execution->root, (BYTE)role,
+                                     target_path, &target_units) ||
+              !retain_exact_object(root, target_path, target_units, 0, 0, 1,
+                                   &execution->targets[role],
+                                   "op.windows-execution-target/v1",
+                                   (BYTE)role) ||
+              !equal_bytes(expected_target,
+                           execution->targets[role].binding, 32U))
+            return 0;
+        }
+        if (!verify_retained_object(root, &execution->targets[role],
+                                    "op.windows-execution-target/v1",
+                                    (BYTE)role,
+                                    execution->target_bindings[role]))
+          return 0;
+      }
+      if (subset == 7U &&
+          (!execution_root_binding(root, identity, execution) ||
+           !equal_bytes(execution->root_binding, expected_root, 32U)))
+          return 0;
+      for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+        if ((subset & (1U << role)) != 0U) {
+          if (!verify_retained_object(root, &execution->root,
+                                      "op.windows-execution-root-object/v1", 0U,
+                                      execution->root.binding) ||
+              !verify_retained_object(root, &execution->targets[role],
+                                      "op.windows-execution-target/v1",
+                                      (BYTE)role,
+                                      execution->target_bindings[role]) ||
+              !delete_retained_object(root, &execution->targets[role]))
+            return 0;
+        }
+    } else {
+      if (!execution_subset_census(root, &execution->root, &subset)) return 0;
+      for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+        if ((subset & (1U << role)) != 0U) {
+          if (!verify_retained_object(root, &execution->root,
+                                      "op.windows-execution-root-object/v1", 0U,
+                                      execution->root.binding) ||
+              !delete_partial_target(root, execution, (BYTE)role))
+            return 0;
+        }
+    }
+    if (!verify_retained_object(root, &execution->root,
+                                "op.windows-execution-root-object/v1", 0U,
+                                execution->root.binding) ||
+        !directory_empty(root, &execution->root) ||
+        !delete_retained_object(root, &execution->root))
+      return 0;
+  }
+  {
+    if (!FlushFileBuffers(execution->parent.handle) ||
+        !verify_retained_object(root, &execution->parent,
+                                "op.windows-execution-parent/v1", 0U,
+                                execution->parent.binding) ||
+      GetFileAttributesW(execution->root.path) != INVALID_FILE_ATTRIBUTES ||
+      (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) ||
+      !root_snapshot(root, 0) ||
+      !persist_execution_phase(root, identity, execution,
+                               EXECUTION_ABSENCE_PROVED))
+      return 0;
+  }
+  return 1;
+}
+
+static int release_execution(ROOT_CUSTODY *root, EXECUTION_CUSTODY *execution) {
+  int clean = 1;
+  DWORD role;
+  for (role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    if (!release_retained_object(root, &execution->targets[role])) clean = 0;
+    if (!release_retained_object(root, &execution->sources[role])) clean = 0;
+  }
+  if (!release_retained_object(root, &execution->root)) clean = 0;
+  if (!release_retained_object(root, &execution->parent)) clean = 0;
+  return clean;
+}
+
 static int identity_sid_text(ROOT_CUSTODY *root, PSID sid, PROFILE_IDENTITY *identity) {
   LPWSTR text = NULL;
   SIZE_T length;
@@ -1310,6 +2516,48 @@ static int parse_journal_filename(const WCHAR *name, BYTE token[32], BYTE *kind,
   return 0;
 }
 
+static int parse_execution_journal_filename(const WCHAR *name, BYTE token[32],
+                                            BYTE *kind, int *pending) {
+  static const WCHAR prefix[] = L"windows-execution-";
+  static const WCHAR *suffix[] = {
+    L"", L"-00-attempted.opwx", L"-01-created.opwx",
+    L"-02-delete-attempted.opwx", L"-03-absence-proved.opwx"
+  };
+  DWORD index;
+  const WCHAR *tail;
+  for (index = 0U; index < 18U; index += 1U)
+    if (name[index] != prefix[index]) return 0;
+  for (index = 0U; index < 32U; index += 1U) {
+    BYTE high;
+    BYTE low;
+    if (!hex_value(name[18U + index * 2U], &high) ||
+        !hex_value(name[19U + index * 2U], &low))
+      return 0;
+    token[index] = (BYTE)((high << 4U) | low);
+  }
+  tail = name + 82U;
+  for (*kind = EXECUTION_ATTEMPTED; *kind <= EXECUTION_ABSENCE_PROVED;
+       *kind += 1U) {
+    DWORD suffix_units = (DWORD)wide_length(suffix[*kind]);
+    DWORD tail_units = (DWORD)wide_length(tail);
+    if (tail_units == suffix_units && wide_equal(tail, suffix[*kind])) {
+      *pending = 0;
+      return 1;
+    }
+    if (tail_units == suffix_units + 8U) {
+      DWORD match = 1U;
+      static const WCHAR pending_suffix[] = L".pending";
+      for (index = 0U; index < suffix_units; index += 1U)
+        if (tail[index] != suffix[*kind][index]) match = 0U;
+      if (match && wide_equal(tail + suffix_units, pending_suffix)) {
+        *pending = 1;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 static int secure_record_handle(HANDLE file, ROOT_CUSTODY *root) {
   PSID owner = NULL;
   PACL dacl = NULL;
@@ -1435,11 +2683,169 @@ static int parse_record(ROOT_CUSTODY *root, JOURNAL_GROUP *group, BYTE kind) {
     group->identity.folder_units = 0U;
   }
   copy_bytes(group->identity.prior_digest, digest, 32U);
+  if (kind == JOURNAL_PROFILE_CREATED)
+    copy_bytes(group->profile_created_digest, digest, 32U);
   group->identity.phase = kind;
   if (!HeapFree(GetProcessHeap(), 0U, record)) root->resource_ambiguous = 1;
   return !root->resource_ambiguous;
 failed:
   if (record != NULL && !HeapFree(GetProcessHeap(), 0U, record)) root->resource_ambiguous = 1;
+  return 0;
+}
+
+static int parse_execution_record(ROOT_CUSTODY *root, JOURNAL_GROUP *group,
+                                  BYTE kind) {
+  WCHAR path[1200];
+  BYTE *record = NULL;
+  DWORD length = 0U;
+  DWORD cursor = 12U;
+  WORD parent_units;
+  WORD root_units;
+  BYTE digest[32];
+  BYTE observed_parent_binding[32];
+  BYTE observed_source_bindings[96];
+  BYTE observed_root_binding[32];
+  BYTE observed_target_bindings[96];
+  WCHAR observed_parent[PATH_MAX_UNITS + 1U];
+  WCHAR observed_root[PATH_MAX_UNITS + 1U];
+  WCHAR expected_root[PATH_MAX_UNITS + 1U];
+  int partial;
+  int complete;
+  EXECUTION_CUSTODY *execution = group->execution;
+  if (kind == EXECUTION_ATTEMPTED) {
+    if (execution != NULL) return 0;
+    execution = (EXECUTION_CUSTODY *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                               sizeof(EXECUTION_CUSTODY));
+    if (execution == NULL) return 0;
+    group->execution = execution;
+  } else if (execution == NULL) {
+    return 0;
+  }
+  if (!execution_journal_path(root, group->identity.token, kind, 0, path) ||
+      !load_record(root, path, &record, &length))
+    return 0;
+  if (length < 348U || record[0] != 'O' || record[1] != 'P' ||
+      record[2] != 'W' || record[3] != 'X' || record[4] != 1U ||
+      record[5] != kind || record[6] != 0U || record[7] != 0U ||
+      read_u32(record + 8U) != length ||
+      !equal_bytes(record + cursor, group->identity.token, 32U))
+    goto failed;
+  cursor += 32U;
+  if ((kind == EXECUTION_ATTEMPTED &&
+       !equal_bytes(record + cursor, (BYTE[32]){0}, 32U)) ||
+      (kind != EXECUTION_ATTEMPTED &&
+       !equal_bytes(record + cursor, execution->prior_digest, 32U)))
+    goto failed;
+  cursor += 32U;
+  if (!equal_bytes(record + cursor, root->digest, 32U)) goto failed;
+  cursor += 32U;
+  if (!equal_bytes(record + cursor, group->profile_created_digest, 32U)) goto failed;
+  cursor += 32U;
+  if (cursor + 2U > length) goto failed;
+  parent_units = read_u16(record + cursor); cursor += 2U;
+  if (parent_units == 0U || parent_units > PATH_MAX_UNITS ||
+      cursor + (DWORD)parent_units * 2U + 34U > length)
+    goto failed;
+  copy_bytes(observed_parent, record + cursor, (DWORD)parent_units * 2U);
+  observed_parent[parent_units] = L'\0';
+  if (!canonical_folder_path(observed_parent, parent_units)) goto failed;
+  cursor += (DWORD)parent_units * 2U;
+  copy_bytes(observed_parent_binding, record + cursor, 32U); cursor += 32U;
+  root_units = read_u16(record + cursor); cursor += 2U;
+  if (root_units == 0U || root_units > PATH_MAX_UNITS ||
+      cursor + (DWORD)root_units * 2U + 224U != length)
+    goto failed;
+  copy_bytes(observed_root, record + cursor, (DWORD)root_units * 2U);
+  observed_root[root_units] = L'\0';
+  {
+    WCHAR hex[65];
+    DWORD expected_cursor = 0U;
+    hex_token(group->identity.token, hex);
+    if (!canonical_folder_path(observed_root, root_units) ||
+        !append_wide(expected_root, PATH_MAX_UNITS + 1U, &expected_cursor,
+                     observed_parent) ||
+        !append_wide(expected_root, PATH_MAX_UNITS + 1U, &expected_cursor,
+                     L"\\orch6-execution-") ||
+        !append_wide(expected_root, PATH_MAX_UNITS + 1U, &expected_cursor, hex) ||
+        expected_cursor != root_units || !wide_equal(expected_root, observed_root))
+      goto failed;
+  }
+  cursor += (DWORD)root_units * 2U;
+  copy_bytes(observed_source_bindings, record + cursor, 96U); cursor += 96U;
+  copy_bytes(observed_root_binding, record + cursor, 32U); cursor += 32U;
+  copy_bytes(observed_target_bindings, record + cursor, 96U); cursor += 96U;
+  partial = equal_bytes(observed_root_binding, (BYTE[32]){0}, 32U) &&
+            equal_bytes(observed_target_bindings, (BYTE[96]){0}, 96U);
+  complete = !equal_bytes(observed_root_binding, (BYTE[32]){0}, 32U);
+  for (DWORD role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (equal_bytes(observed_target_bindings + role * 32U,
+                    (BYTE[32]){0}, 32U))
+      complete = 0;
+  if (cursor != length ||
+      equal_bytes(observed_parent_binding, (BYTE[32]){0}, 32U))
+    goto failed;
+  for (DWORD role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (equal_bytes(observed_source_bindings + role * 32U,
+                    (BYTE[32]){0}, 32U))
+      goto failed;
+  if (kind == EXECUTION_ATTEMPTED) {
+    if (execution->phase != 0U || !partial) goto failed;
+    execution->parent.path_units = parent_units;
+    copy_bytes(execution->parent.path, observed_parent,
+               ((DWORD)parent_units + 1U) * 2U);
+    copy_bytes(execution->parent.binding, observed_parent_binding, 32U);
+    execution->root.path_units = root_units;
+    copy_bytes(execution->root.path, observed_root,
+               ((DWORD)root_units + 1U) * 2U);
+    copy_bytes(execution->source_bindings, observed_source_bindings, 96U);
+    copy_bytes(execution->profile_created_digest, group->profile_created_digest, 32U);
+    execution->parent.handle = INVALID_HANDLE_VALUE;
+    execution->root.handle = INVALID_HANDLE_VALUE;
+    for (DWORD role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+      execution->sources[role].handle = INVALID_HANDLE_VALUE;
+      execution->targets[role].handle = INVALID_HANDLE_VALUE;
+    }
+  } else {
+    if (parent_units != execution->parent.path_units ||
+        root_units != execution->root.path_units ||
+        !equal_bytes(observed_parent, execution->parent.path,
+                     (DWORD)parent_units * 2U) ||
+        !equal_bytes(observed_root, execution->root.path,
+                     (DWORD)root_units * 2U) ||
+        !equal_bytes(observed_parent_binding, execution->parent.binding, 32U) ||
+        !equal_bytes(observed_source_bindings, execution->source_bindings, 96U))
+      goto failed;
+    if (kind == EXECUTION_CREATED) {
+      if (execution->phase != EXECUTION_ATTEMPTED || !complete) goto failed;
+      copy_bytes(execution->root_binding, observed_root_binding, 32U);
+      copy_bytes(execution->target_bindings, observed_target_bindings, 96U);
+    } else if (kind == EXECUTION_DELETE_ATTEMPTED) {
+      if (!((execution->phase == EXECUTION_ATTEMPTED && partial) ||
+            (execution->phase == EXECUTION_CREATED && complete)))
+        goto failed;
+      if (execution->phase == EXECUTION_CREATED &&
+          (!equal_bytes(observed_root_binding, execution->root_binding, 32U) ||
+           !equal_bytes(observed_target_bindings,
+                        execution->target_bindings, 96U)))
+        goto failed;
+    } else {
+      int existing_partial = equal_bytes(execution->root_binding,
+                                         (BYTE[32]){0}, 32U);
+      if (execution->phase != EXECUTION_DELETE_ATTEMPTED ||
+          (existing_partial != partial) ||
+          !equal_bytes(observed_root_binding, execution->root_binding, 32U) ||
+          !equal_bytes(observed_target_bindings, execution->target_bindings, 96U))
+        goto failed;
+    }
+  }
+  if (!sha256(record, length, digest, &root->resource_ambiguous)) goto failed;
+  copy_bytes(execution->prior_digest, digest, 32U);
+  execution->phase = kind;
+  if (!HeapFree(GetProcessHeap(), 0U, record)) root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+failed:
+  if (record != NULL && !HeapFree(GetProcessHeap(), 0U, record))
+    root->resource_ambiguous = 1;
   return 0;
 }
 
@@ -1471,10 +2877,13 @@ static int scan_journals(ROOT_CUSTODY *root, JOURNAL_GROUP **groups_output, DWOR
     BYTE token[32];
     BYTE kind;
     int pending;
+    int execution_file = 0;
     DWORD group_index;
     if (!wide_equal(data.cFileName, L".") && !wide_equal(data.cFileName, L"..")) {
       if ((data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U ||
-          !parse_journal_filename(data.cFileName, token, &kind, &pending)) {
+          (!parse_journal_filename(data.cFileName, token, &kind, &pending) &&
+           !(execution_file = parse_execution_journal_filename(
+               data.cFileName, token, &kind, &pending)))) {
         if (!FindClose(find)) root->resource_ambiguous = 1;
         goto failed;
       }
@@ -1488,13 +2897,20 @@ static int scan_journals(ROOT_CUSTODY *root, JOURNAL_GROUP **groups_output, DWOR
         copy_bytes(groups[count].identity.token, token, 32U);
         count += 1U;
       }
-      if ((pending && groups[group_index].pending_seen[kind]) ||
-          (!pending && groups[group_index].final_seen[kind])) {
+      if ((pending && (execution_file ? groups[group_index].execution_pending_seen[kind] :
+                                        groups[group_index].pending_seen[kind])) ||
+          (!pending && (execution_file ? groups[group_index].execution_final_seen[kind] :
+                                         groups[group_index].final_seen[kind]))) {
         if (!FindClose(find)) root->resource_ambiguous = 1;
         goto failed;
       }
-      if (pending) groups[group_index].pending_seen[kind] = 1U;
-      else groups[group_index].final_seen[kind] = 1U;
+      if (execution_file) {
+        if (pending) groups[group_index].execution_pending_seen[kind] = 1U;
+        else groups[group_index].execution_final_seen[kind] = 1U;
+      } else {
+        if (pending) groups[group_index].pending_seen[kind] = 1U;
+        else groups[group_index].final_seen[kind] = 1U;
+      }
     }
     more = FindNextFileW(find, &data);
     if (!more && GetLastError() != ERROR_NO_MORE_FILES) {
@@ -1555,12 +2971,66 @@ static int scan_journals(ROOT_CUSTODY *root, JOURNAL_GROUP **groups_output, DWOR
         if (!CloseHandle(file)) goto failed;
       }
     }
+    if (group->execution_final_seen[EXECUTION_ATTEMPTED]) {
+      if (!group->final_seen[JOURNAL_PROFILE_CREATED]) goto failed;
+      if (!parse_execution_record(root, group, EXECUTION_ATTEMPTED)) goto failed;
+      if (group->execution_final_seen[EXECUTION_CREATED] &&
+          !parse_execution_record(root, group, EXECUTION_CREATED))
+        goto failed;
+      if (group->execution_final_seen[EXECUTION_DELETE_ATTEMPTED] &&
+          !parse_execution_record(root, group, EXECUTION_DELETE_ATTEMPTED))
+        goto failed;
+      if (group->execution_final_seen[EXECUTION_ABSENCE_PROVED]) {
+        if (!group->execution_final_seen[EXECUTION_DELETE_ATTEMPTED] ||
+            !parse_execution_record(root, group, EXECUTION_ABSENCE_PROVED))
+          goto failed;
+      }
+    } else {
+      for (BYTE kind = EXECUTION_CREATED; kind <= EXECUTION_ABSENCE_PROVED;
+           kind += 1U)
+        if (group->execution_final_seen[kind]) goto failed;
+    }
+    for (BYTE kind = EXECUTION_ATTEMPTED; kind <= EXECUTION_ABSENCE_PROVED;
+         kind += 1U) {
+      if (group->execution_pending_seen[kind]) {
+        WCHAR path[1200];
+        HANDLE file;
+        BY_HANDLE_FILE_INFORMATION information;
+        if (!group->final_seen[JOURNAL_PROFILE_CREATED] ||
+            !execution_journal_path(root, group->identity.token, kind, 1, path))
+          goto failed;
+        file = CreateFileW(path, GENERIC_READ | READ_CONTROL, 0U, NULL,
+                           OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (file == INVALID_HANDLE_VALUE) goto failed;
+        if (!GetFileInformationByHandle(file, &information) ||
+            information.nNumberOfLinks != 1U ||
+            (information.dwFileAttributes &
+             (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U ||
+            !secure_record_handle(file, root)) {
+          if (!CloseHandle(file)) root->resource_ambiguous = 1;
+          goto failed;
+        }
+        if (!CloseHandle(file)) goto failed;
+      }
+    }
+    if (group->identity.phase >= JOURNAL_PROFILE_DELETE_ATTEMPTED &&
+        group->execution != NULL &&
+        group->execution->phase != EXECUTION_ABSENCE_PROVED)
+      goto failed;
   }
   if (!root_snapshot(root, 0)) goto failed;
   *groups_output = groups;
   *count_output = count;
   return 1;
 failed:
+  if (groups != NULL) {
+    for (DWORD index = 0U; index < count; index += 1U)
+      if (groups[index].execution != NULL) {
+        if (!HeapFree(GetProcessHeap(), 0U, groups[index].execution))
+          root->resource_ambiguous = 1;
+        groups[index].execution = NULL;
+      }
+  }
   if (groups != NULL && !HeapFree(GetProcessHeap(), 0U, groups)) root->resource_ambiguous = 1;
   return -1;
 }
@@ -1744,6 +3214,40 @@ static int clear_pending(ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity) {
         !CloseHandle(file))
       return 0;
     if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES ||
+        (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND))
+      return 0;
+  }
+  return FlushFileBuffers(root->handle) && root_snapshot(root, 0);
+}
+
+static int clear_execution_pending(ROOT_CUSTODY *root,
+                                   const PROFILE_IDENTITY *identity) {
+  WCHAR path[1200];
+  BYTE kind;
+  for (kind = EXECUTION_ATTEMPTED; kind <= EXECUTION_ABSENCE_PROVED; kind += 1U) {
+    HANDLE file;
+    BY_HANDLE_FILE_INFORMATION information;
+    FILE_DISPOSITION_INFO disposition;
+    if (!execution_journal_path(root, identity->token, kind, 1, path)) return 0;
+    file = CreateFileW(path, DELETE | READ_CONTROL, 0U, NULL, OPEN_EXISTING,
+                       FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+      if (GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)
+        continue;
+      return 0;
+    }
+    if (!GetFileInformationByHandle(file, &information) ||
+        information.nNumberOfLinks != 1U ||
+        (information.dwFileAttributes &
+         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U ||
+        !secure_record_handle(file, root)) {
+      if (!CloseHandle(file)) root->resource_ambiguous = 1;
+      return 0;
+    }
+    disposition.DeleteFile = TRUE;
+    if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                    sizeof(disposition)) || !CloseHandle(file) ||
+        GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES ||
         (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND))
       return 0;
   }
@@ -2024,15 +3528,24 @@ static int cleanup_profile(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
   return 1;
 }
 
-#if defined(OP_WINDOWS_PAUSE_AFTER_ATTEMPTED) || defined(OP_WINDOWS_PAUSE_AFTER_CREATE)
+#if defined(OP_WINDOWS_PAUSE_AFTER_ATTEMPTED) || defined(OP_WINDOWS_PAUSE_AFTER_CREATE) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_ATTEMPTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED)
 static void diagnostic_pause(void) {
   BYTE resumed;
   DWORD received = 0U;
   HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
 #if defined(OP_WINDOWS_PAUSE_AFTER_ATTEMPTED)
   diagnostic("windows-broker:pause-after-attempted\n");
-#else
+#elif defined(OP_WINDOWS_PAUSE_AFTER_CREATE)
   diagnostic("windows-broker:pause-after-create\n");
+#elif defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_ATTEMPTED)
+  diagnostic("windows-broker:pause-after-execution-attempted\n");
+#elif defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR)
+  diagnostic("windows-broker:pause-after-execution-mkdir\n");
+#else
+  diagnostic("windows-broker:pause-after-execution-created\n");
 #endif
   if (input == NULL || input == INVALID_HANDLE_VALUE ||
       !ReadFile(input, &resumed, 1U, &received, NULL) || received != 1U)
@@ -2105,7 +3618,31 @@ static int recover_groups(ROOT_CUSTODY *root, JOURNAL_GROUP *groups, DWORD count
   }
   for (index = 0; index < count; index += 1U) {
     PROFILE_IDENTITY *identity = &groups[index].identity;
+    EXECUTION_CUSTODY *execution = groups[index].execution;
     HANDLE folder_handle = NULL;
+    if (execution != NULL && execution->phase != EXECUTION_ABSENCE_PROVED) {
+      if (!cleanup_execution(root, identity, execution)) {
+        (void)release_execution(root, execution);
+        if (!HeapFree(GetProcessHeap(), 0U, execution)) root->resource_ambiguous = 1;
+        groups[index].execution = NULL;
+        return -1;
+      }
+    }
+    if (!clear_execution_pending(root, identity) ||
+        (execution != NULL && execution->phase != EXECUTION_ABSENCE_PROVED)) {
+      if (execution != NULL) {
+        (void)release_execution(root, execution);
+        if (!HeapFree(GetProcessHeap(), 0U, execution)) root->resource_ambiguous = 1;
+        groups[index].execution = NULL;
+      }
+      return -1;
+    }
+    if (execution != NULL) {
+      if (!release_execution(root, execution) ||
+          !HeapFree(GetProcessHeap(), 0U, execution))
+        return -1;
+      groups[index].execution = NULL;
+    }
     if (identity->phase == 0U) {
       if (!census_profile(root, identity, 1, 0) || !clear_pending(root, identity))
         return -1;
@@ -2130,6 +3667,19 @@ static int recover_groups(ROOT_CUSTODY *root, JOURNAL_GROUP *groups, DWORD count
   return root_snapshot(root, 0) ? 1 : (count == 0U ? 0 : -1);
 }
 
+static void free_group_executions(ROOT_CUSTODY *root, JOURNAL_GROUP *groups,
+                                  DWORD count) {
+  DWORD index;
+  for (index = 0U; index < count; index += 1U) {
+    if (groups[index].execution != NULL) {
+      (void)release_execution(root, groups[index].execution);
+      if (!HeapFree(GetProcessHeap(), 0U, groups[index].execution))
+        root->resource_ambiguous = 1;
+      groups[index].execution = NULL;
+    }
+  }
+}
+
 static int preflight_and_recover(ROOT_CUSTODY *root) {
   JOURNAL_GROUP *groups = NULL;
   DWORD count = 0;
@@ -2139,6 +3689,7 @@ static int preflight_and_recover(ROOT_CUSTODY *root) {
   if (result <= 0) return result;
   initial_count = count;
   result = recover_groups(root, groups, count);
+  free_group_executions(root, groups, count);
   if (!HeapFree(GetProcessHeap(), 0U, groups)) root->resource_ambiguous = 1;
   if (result <= 0) {
     return result < 0 || initial_count != 0U || root->resource_ambiguous ? -1 : 0;
@@ -2147,20 +3698,25 @@ static int preflight_and_recover(ROOT_CUSTODY *root) {
   if (result <= 0) return -1;
   result = complete_profile_census(root, groups, count);
   if (result > 0 && !root_snapshot(root, 0)) result = -1;
+  free_group_executions(root, groups, count);
   if (!HeapFree(GetProcessHeap(), 0U, groups)) root->resource_ambiguous = 1;
   return root->resource_ambiguous ? -1 : result;
 }
 
-static DWORD prepare_response(const PROFILE_IDENTITY *identity, BYTE *response, DWORD capacity) {
+static DWORD prepare_response(const PROFILE_IDENTITY *identity,
+                              const EXECUTION_CUSTODY *execution,
+                              BYTE *response, DWORD capacity) {
   DWORD folder_bytes = (DWORD)identity->folder_units * 2U;
+  DWORD execution_root_bytes = (DWORD)execution->root.path_units * 2U;
   DWORD needed = 8U + 32U + 64U + 2U + identity->sid_length + 2U +
-                 identity->sid_text_length + 2U + folder_bytes;
+                 identity->sid_text_length + 2U + folder_bytes + 2U +
+                 execution_root_bytes + 32U;
   DWORD cursor = 8U;
   DWORD index;
   if (needed > capacity) return 0U;
   zero_bytes(response, needed);
   response[0] = 'O'; response[1] = 'P'; response[2] = 'W'; response[3] = 'R';
-  response[4] = 1U; response[5] = 1U;
+  response[4] = 1U; response[5] = 2U;
   copy_bytes(response + cursor, identity->token, 32U); cursor += 32U;
   for (index = 0; index < 64U; index += 1U)
     response[cursor + index] = (BYTE)identity->moniker[index];
@@ -2170,7 +3726,11 @@ static DWORD prepare_response(const PROFILE_IDENTITY *identity, BYTE *response, 
   write_u16(response + cursor, identity->sid_text_length); cursor += 2U;
   copy_bytes(response + cursor, identity->sid_text, identity->sid_text_length); cursor += identity->sid_text_length;
   write_u16(response + cursor, identity->folder_units); cursor += 2U;
-  copy_bytes(response + cursor, identity->folder, folder_bytes);
+  copy_bytes(response + cursor, identity->folder, folder_bytes); cursor += folder_bytes;
+  write_u16(response + cursor, execution->root.path_units); cursor += 2U;
+  copy_bytes(response + cursor, execution->root.path, execution_root_bytes);
+  cursor += execution_root_bytes;
+  copy_bytes(response + cursor, execution->root_binding, 32U);
   return needed;
 }
 
@@ -2182,12 +3742,18 @@ typedef enum broker_lifecycle_state {
 
 static __declspec(noreturn) void finish_prepared(ROOT_CUSTODY *root,
                                                   PROFILE_IDENTITY *identity,
+                                                  EXECUTION_CUSTODY *execution,
                                                   HANDLE *folder_handle, HANDLE output,
                                                   BYTE operation, int respond,
                                                   BROKER_LIFECYCLE_STATE *state) {
-  int clean = *state == BROKER_PREPARED &&
-              OP_BROKER_CLEANUP_PROFILE(root, identity, folder_handle);
+  int clean = *state == BROKER_PREPARED;
+  if (clean && execution->phase != 0U &&
+      execution->phase != EXECUTION_ABSENCE_PROVED)
+    clean = OP_BROKER_CLEANUP_EXECUTION(root, identity, execution);
+  if (clean) clean = OP_BROKER_CLEANUP_PROFILE(root, identity, folder_handle);
   *state = BROKER_TERMINAL;
+  if (!OP_BROKER_RELEASE_EXECUTION(root, execution)) clean = 0;
+  if (!HeapFree(GetProcessHeap(), 0U, execution)) clean = 0;
   int released = OP_BROKER_RELEASE_ROOT(root);
   BYTE status = clean && released ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED;
   if (respond) (void)send_response(output, operation, status, NULL, 0U);
@@ -2200,8 +3766,8 @@ static __declspec(noreturn) void serve(void) {
   BROKER_FRAME frame;
   ROOT_CUSTODY root;
   PROFILE_IDENTITY identity;
-  WCHAR path[PATH_MAX_UNITS + 1U];
-  WORD path_units = 0;
+  EXECUTION_CUSTODY *execution;
+  EXECUTION_PREPARE_PATHS *paths;
   HANDLE folder_handle = NULL;
   BYTE response[4096];
   DWORD response_length;
@@ -2217,15 +3783,28 @@ static __declspec(noreturn) void serve(void) {
     (void)send_response(output, frame.operation, STATUS_REFUSED, NULL, 0U);
     ExitProcess(EXIT_PROTOCOL_REFUSED);
   }
-  if (!canonical_scope_path(frame.payload, frame.length, path, &path_units)) protocol_refused();
-  if (!OP_BROKER_RETAIN_ROOT(path, path_units, &root)) {
+  execution = (EXECUTION_CUSTODY *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                             sizeof(EXECUTION_CUSTODY));
+  paths = (EXECUTION_PREPARE_PATHS *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                               sizeof(EXECUTION_PREPARE_PATHS));
+  if (execution == NULL || paths == NULL ||
+      !canonical_execution_prepare(frame.payload, frame.length, paths))
+    protocol_refused();
+  if (!OP_BROKER_RETAIN_ROOT(paths->state_root, paths->state_root_units, &root)) {
+    int paths_freed = HeapFree(GetProcessHeap(), 0U, paths);
+    int execution_freed = HeapFree(GetProcessHeap(), 0U, execution);
+    int allocation_clean = paths_freed && execution_freed;
     int released = OP_BROKER_RELEASE_ROOT(&root);
-    BYTE status = released ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED;
+    BYTE status = released && allocation_clean ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED;
     (void)send_response(output, PREPARE_OPERATION, status, NULL, 0U);
-    ExitProcess(released ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
+    ExitProcess(status == STATUS_REFUSED ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
   }
   preflight_result = OP_BROKER_PREFLIGHT(&root);
   if (preflight_result <= 0) {
+    int paths_freed = HeapFree(GetProcessHeap(), 0U, paths);
+    int execution_freed = HeapFree(GetProcessHeap(), 0U, execution);
+    if (!paths_freed || !execution_freed)
+      preflight_result = -1;
     int released = OP_BROKER_RELEASE_ROOT(&root);
     if (!released) preflight_result = -1;
     send_response(output, PREPARE_OPERATION,
@@ -2234,30 +3813,58 @@ static __declspec(noreturn) void serve(void) {
   }
   result = OP_BROKER_CREATE_PROFILE(&root, &identity, &folder_handle);
   if (result <= 0) {
+    int paths_freed = HeapFree(GetProcessHeap(), 0U, paths);
+    int execution_freed = HeapFree(GetProcessHeap(), 0U, execution);
+    if (!paths_freed || !execution_freed)
+      result = -1;
     int released = OP_BROKER_RELEASE_ROOT(&root);
     if (!released) result = -1;
     send_response(output, PREPARE_OPERATION,
                   result < 0 ? STATUS_RECOVERY_REQUIRED : STATUS_REFUSED, NULL, 0U);
     ExitProcess(result < 0 ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
   }
+  if (!OP_BROKER_RETAIN_EXECUTION(&root, paths, &identity, execution)) {
+    if (!HeapFree(GetProcessHeap(), 0U, paths)) root.resource_ambiguous = 1;
+  } else if (!HeapFree(GetProcessHeap(), 0U, paths)) {
+    root.resource_ambiguous = 1;
+  }
+  paths = NULL;
+  if (root.resource_ambiguous || execution->root.path_units == 0U ||
+      !OP_BROKER_CONSTRUCT_EXECUTION(&root, &identity, execution)) {
+    int clean = 1;
+    if (execution->phase != 0U && execution->phase != EXECUTION_ABSENCE_PROVED)
+      clean = OP_BROKER_CLEANUP_EXECUTION(&root, &identity, execution);
+    if (clean) clean = OP_BROKER_CLEANUP_PROFILE(&root, &identity, &folder_handle);
+    if (!OP_BROKER_RELEASE_EXECUTION(&root, execution)) clean = 0;
+    if (!HeapFree(GetProcessHeap(), 0U, execution)) clean = 0;
+    if (!OP_BROKER_RELEASE_ROOT(&root)) clean = 0;
+    send_response(output, PREPARE_OPERATION,
+                  clean ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED, NULL, 0U);
+    ExitProcess(clean ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
+  }
   state = BROKER_PREPARED;
-  response_length = prepare_response(&identity, response, sizeof(response));
+  response_length = prepare_response(&identity, execution, response, sizeof(response));
   if (response_length == 0U) {
-    finish_prepared(&root, &identity, &folder_handle, output, PREPARE_OPERATION, 1, &state);
+    finish_prepared(&root, &identity, execution, &folder_handle, output,
+                    PREPARE_OPERATION, 1, &state);
   }
   if (!send_response(output, PREPARE_OPERATION, STATUS_OK, response, response_length))
-    finish_prepared(&root, &identity, &folder_handle, output, PREPARE_OPERATION, 0, &state);
+    finish_prepared(&root, &identity, execution, &folder_handle, output,
+                    PREPARE_OPERATION, 0, &state);
   for (;;) {
     int next = read_frame(input, &frame, 0);
     if (next <= 0) {
-      finish_prepared(&root, &identity, &folder_handle, output, PREPARE_OPERATION, 0, &state);
+      finish_prepared(&root, &identity, execution, &folder_handle, output,
+                      PREPARE_OPERATION, 0, &state);
     }
     if (!canonical_frame_payload(&frame)) {
-      finish_prepared(&root, &identity, &folder_handle, output, frame.operation, 0, &state);
+      finish_prepared(&root, &identity, execution, &folder_handle, output,
+                      frame.operation, 0, &state);
     }
     if (frame.operation == LAUNCH_OPERATION && frame.length == 0U) {
       if (!send_response(output, LAUNCH_OPERATION, STATUS_NOT_IMPLEMENTED, NULL, 0U))
-        finish_prepared(&root, &identity, &folder_handle, output, LAUNCH_OPERATION, 0, &state);
+        finish_prepared(&root, &identity, execution, &folder_handle, output,
+                        LAUNCH_OPERATION, 0, &state);
       continue;
     }
     if (frame.operation == TEARDOWN_OPERATION && frame.length == 0U) {
@@ -2265,9 +3872,13 @@ static __declspec(noreturn) void serve(void) {
       int clean;
       int released;
       if (read_one(input, &trailing) != 0)
-        finish_prepared(&root, &identity, &folder_handle, output, TEARDOWN_OPERATION, 0, &state);
-      clean = OP_BROKER_CLEANUP_PROFILE(&root, &identity, &folder_handle);
+        finish_prepared(&root, &identity, execution, &folder_handle, output,
+                        TEARDOWN_OPERATION, 0, &state);
+      clean = OP_BROKER_CLEANUP_EXECUTION(&root, &identity, execution);
+      if (clean) clean = OP_BROKER_CLEANUP_PROFILE(&root, &identity, &folder_handle);
       state = BROKER_TERMINAL;
+      if (!OP_BROKER_RELEASE_EXECUTION(&root, execution)) clean = 0;
+      if (!HeapFree(GetProcessHeap(), 0U, execution)) clean = 0;
       released = OP_BROKER_RELEASE_ROOT(&root);
       if (!clean || !released) {
         (void)send_response(output, TEARDOWN_OPERATION, STATUS_RECOVERY_REQUIRED, NULL, 0U);
@@ -2277,7 +3888,8 @@ static __declspec(noreturn) void serve(void) {
         ExitProcess(EXIT_PROTOCOL_REFUSED);
       ExitProcess(0U);
     }
-    finish_prepared(&root, &identity, &folder_handle, output, frame.operation, 1, &state);
+    finish_prepared(&root, &identity, execution, &folder_handle, output,
+                    frame.operation, 1, &state);
   }
 }
 
