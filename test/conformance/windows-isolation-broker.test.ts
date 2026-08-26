@@ -18,6 +18,17 @@ const clangPath = "C:/Program Files/LLVM/bin/clang-cl.exe";
 const sdkLibrary = "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64/kernel32.lib";
 const roots: string[] = [];
 
+const brokerFrame = (operation: number, payload = Buffer.alloc(0)): Buffer => {
+  const frame = Buffer.alloc(16 + payload.byteLength);
+  frame.write("OPWB", 0, "ascii");
+  frame[4] = 1;
+  frame[5] = 1;
+  frame[6] = operation;
+  frame.writeUInt32LE(payload.byteLength, 8);
+  payload.copy(frame, 16);
+  return frame;
+};
+
 type PeSection = Readonly<{
   rawOffset: number;
   rawSize: number;
@@ -121,7 +132,7 @@ describe("private Windows isolation broker bootstrap", () => {
     expect(image.readUInt16LE(peOffset + 24)).toBe(0x20b);
     expect(image.byteLength).toBe(4096);
     expect(createHash("sha256").update(image).digest("hex")).toBe(
-      "98cacf2e046fd7da92945f35d4ac71107678afc044ad050b1409872391ce9342",
+      "dd36eb25deb580d3de3c796e60d3bd7eca4f57bfa447517197c2c9d3a9c2bad0",
     );
     const census = peCensus(image);
     expect(census).toEqual({
@@ -131,7 +142,7 @@ describe("private Windows isolation broker bootstrap", () => {
       imports: [
         {
           library: "KERNEL32.dll",
-          symbols: ["ExitProcess", "GetCommandLineW", "GetStdHandle", "WriteFile"],
+          symbols: ["ExitProcess", "GetCommandLineW", "GetStdHandle", "ReadFile", "WriteFile"],
         },
       ],
       relocations: { rva: expect.any(Number), size: 12 },
@@ -167,12 +178,91 @@ describe("private Windows isolation broker bootstrap", () => {
           stdout: "",
         });
       }
-      for (const [mode, diagnostic] of [
-        ["SERVE", "windows-broker:serve-not-implemented\n"],
-        ["RECOVER", "windows-broker:recover-not-implemented\n"],
-      ] as const) {
-        const result = spawnSync(imagePath, [mode], { encoding: "utf8", windowsHide: true });
-        expect(result).toMatchObject({ status: 78, stderr: diagnostic, stdout: "" });
+      expect(
+        spawnSync(imagePath, ["SERVE"], { encoding: "utf8", windowsHide: true }),
+      ).toMatchObject({
+        status: 65,
+        stderr: "windows-broker:protocol\n",
+        stdout: "",
+      });
+      expect(
+        spawnSync(imagePath, ["RECOVER"], { encoding: "utf8", windowsHide: true }),
+      ).toMatchObject({
+        status: 78,
+        stderr: "windows-broker:recover-not-implemented\n",
+        stdout: "",
+      });
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
+    "admits only the three closed transition frame opcodes and grants none authority",
+    () => {
+      for (const operation of [1, 2, 3]) {
+        const payload =
+          operation === 1
+            ? Buffer.alloc(1024 * 1024, 165)
+            : operation === 2
+              ? Buffer.from([operation, 0, 255])
+              : Buffer.alloc(0);
+        const request = brokerFrame(operation, payload);
+        const result = spawnSync(imagePath, ["SERVE"], {
+          input: request,
+          windowsHide: true,
+        });
+        const response = brokerFrame(operation);
+        response[5] = 2;
+        response[7] = 78;
+        expect(result.status).toBe(78);
+        expect(result.stderr).toEqual(Buffer.alloc(0));
+        expect(result.stdout).toEqual(response);
+      }
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
+    "refuses malformed, unknown, oversized, and truncated frames without a response",
+    () => {
+      const wrongMagic = Array.from({ length: 4 }, (_, index) => {
+        const frame = brokerFrame(1);
+        frame[index] = 0;
+        return frame;
+      });
+      const wrongVersion = brokerFrame(1);
+      wrongVersion[4] = 2;
+      const wrongKind = brokerFrame(1);
+      wrongKind[5] = 2;
+      const requestStatus = brokerFrame(1);
+      requestStatus[7] = 1;
+      const reserved = Array.from({ length: 4 }, (_, index) => {
+        const frame = brokerFrame(1);
+        frame[12 + index] = 1;
+        return frame;
+      });
+      const oversized = brokerFrame(1);
+      oversized.writeUInt32LE(1024 * 1024 + 1, 8);
+      const truncated = brokerFrame(1);
+      truncated.writeUInt32LE(1, 8);
+      const partialMultiChunk = brokerFrame(1, Buffer.alloc(4096));
+      partialMultiChunk.writeUInt32LE(4097, 8);
+      for (const input of [
+        ...Array.from({ length: 16 }, (_, index) => brokerFrame(1).subarray(0, index)),
+        ...wrongMagic,
+        brokerFrame(0),
+        brokerFrame(4),
+        brokerFrame(255),
+        wrongVersion,
+        wrongKind,
+        requestStatus,
+        ...reserved,
+        oversized,
+        truncated,
+        partialMultiChunk,
+      ]) {
+        const result = spawnSync(imagePath, ["SERVE"], { input, windowsHide: true });
+        expect(result.status).toBe(65);
+        expect(result.stderr.toString("utf8")).toBe("windows-broker:protocol\n");
+        expect(result.stdout).toEqual(Buffer.alloc(0));
       }
     },
   );
