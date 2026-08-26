@@ -66,6 +66,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/linux-principal-account.py",
       "packages/conformance/src/linux-principal-dac.py",
       "packages/conformance/src/linux-process-custody.ts",
+      "packages/conformance/src/macos-helper-custody.ts",
       "packages/conformance/src/macos-principal-helper.c",
       "packages/conformance/src/manifest.ts",
       "packages/conformance/src/reducer.ts",
