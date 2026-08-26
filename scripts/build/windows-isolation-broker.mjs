@@ -23,6 +23,17 @@ if (process.platform !== "win32" || process.arch !== "x64")
 const root = await mkdtemp(resolve(tmpdir(), "orchestration-windows-broker-"));
 const object = resolve(root, "windows-isolation-broker.obj");
 const output = process.argv[2] ? resolve(process.argv[2]) : destination;
+const diagnosticVariant = process.argv[3];
+const diagnosticDefine =
+  diagnosticVariant === undefined
+    ? undefined
+    : diagnosticVariant === "pause-after-attempted"
+      ? "/DOP_WINDOWS_PAUSE_AFTER_ATTEMPTED"
+      : diagnosticVariant === "pause-after-create"
+        ? "/DOP_WINDOWS_PAUSE_AFTER_CREATE"
+        : (() => {
+            throw new Error("unknown Windows broker diagnostic variant");
+          })();
 
 try {
   const version = await execFileAsync(clang, ["--version"], { windowsHide: true });
@@ -40,14 +51,19 @@ try {
       "/W4",
       "/WX",
       "/O1",
+      "/Oi-",
+      "/Gs9999999",
+      "/clang:-fno-builtin",
       "/GS-",
       "/Zl",
       "/Brepro",
       "/DUNICODE",
       "/D_UNICODE",
+      ...(diagnosticDefine === undefined ? [] : [diagnosticDefine]),
       `/Fo${object}`,
       `/I${resolve(sdk, "Include", sdkVersion, "shared")}`,
       `/I${resolve(sdk, "Include", sdkVersion, "um")}`,
+      `/I${resolve(sdk, "Include", sdkVersion, "ucrt")}`,
       source,
     ],
     { windowsHide: true },
@@ -68,6 +84,11 @@ try {
       "/Brepro",
       object,
       "kernel32.lib",
+      "userenv.lib",
+      "api-ms-win-net-isolation-l1-1-0.lib",
+      "advapi32.lib",
+      "ole32.lib",
+      "bcrypt.lib",
     ],
     { windowsHide: true },
   );

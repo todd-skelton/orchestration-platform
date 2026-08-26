@@ -1,6 +1,7 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { once } from "node:events";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -15,10 +16,22 @@ const imagePath = resolve(
 );
 const buildPath = resolve(import.meta.dirname, "../../scripts/build/windows-isolation-broker.mjs");
 const clangPath = "C:/Program Files/LLVM/bin/clang-cl.exe";
-const sdkLibrary = "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64/kernel32.lib";
+const linkerPath = "C:/Program Files/LLVM/bin/lld-link.exe";
+const fixturePath = resolve(import.meta.dirname, "windows-isolation-broker-fixture.c");
+const sdkLibraries = [
+  "kernel32.lib",
+  "userenv.lib",
+  "api-ms-win-net-isolation-l1-1-0.lib",
+  "advapi32.lib",
+  "ole32.lib",
+  "bcrypt.lib",
+].map((name) => `C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64/${name}`);
 const roots: string[] = [];
 
-const brokerFrame = (operation: number, payload = Buffer.alloc(0)): Buffer => {
+const brokerFrame = (
+  operation: number,
+  payload: Buffer<ArrayBufferLike> = Buffer.alloc(0),
+): Buffer => {
   const frame = Buffer.alloc(16 + payload.byteLength);
   frame.write("OPWB", 0, "ascii");
   frame[4] = 1;
@@ -27,6 +40,43 @@ const brokerFrame = (operation: number, payload = Buffer.alloc(0)): Buffer => {
   frame.writeUInt32LE(payload.byteLength, 8);
   payload.copy(frame, 16);
   return frame;
+};
+
+const profileScope = (path: string): Buffer => {
+  const pathBytes = Buffer.from(path, "utf16le");
+  const payload = Buffer.alloc(12 + pathBytes.byteLength);
+  payload.write("OPWP", 0, "ascii");
+  payload[4] = 1;
+  payload[5] = 1;
+  payload.writeUInt16LE(path.length, 8);
+  pathBytes.copy(payload, 12);
+  return payload;
+};
+
+const responseFrame = (operation: number, status: number): Buffer => {
+  const response = brokerFrame(operation);
+  response[5] = 2;
+  response[7] = status;
+  return response;
+};
+
+const readExactly = async (
+  output: NodeJS.ReadableStream & {
+    read(size?: number): string | Buffer | null;
+    readableLength: number;
+  },
+  length: number,
+): Promise<Buffer> => {
+  while (output.readableLength < length) await once(output, "readable");
+  const result = output.read(length);
+  if (!Buffer.isBuffer(result) || result.byteLength !== length)
+    throw new Error("short fixture output");
+  return result;
+};
+
+const waitForExit = async (child: ReturnType<typeof spawn>): Promise<number | null> => {
+  const [code] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+  return code;
 };
 
 type PeSection = Readonly<{
@@ -119,7 +169,9 @@ const peCensus = (image: Buffer) => {
 };
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map(async (root) => await rm(root, { recursive: true })));
+  await Promise.all(
+    roots.splice(0).map(async (root) => await rm(root, { force: true, recursive: true })),
+  );
 });
 
 describe("private Windows isolation broker bootstrap", () => {
@@ -130,22 +182,98 @@ describe("private Windows isolation broker bootstrap", () => {
     expect(image.subarray(peOffset, peOffset + 4).toString("binary")).toBe("PE\0\0");
     expect(image.readUInt16LE(peOffset + 4)).toBe(0x8664);
     expect(image.readUInt16LE(peOffset + 24)).toBe(0x20b);
-    expect(image.byteLength).toBe(4096);
+    expect(image.byteLength).toBe(31744);
     expect(createHash("sha256").update(image).digest("hex")).toBe(
-      "dd36eb25deb580d3de3c796e60d3bd7eca4f57bfa447517197c2c9d3a9c2bad0",
+      "0b65284268d576df4acc6b15f440586cd245c42d8ec2f242a2dcb01d1b2ee965",
     );
     const census = peCensus(image);
     expect(census).toEqual({
       delayImports: { rva: 0, size: 0 },
       dllCharacteristics: expect.any(Number),
-      importDirectory: { rva: expect.any(Number), size: 40 },
+      importDirectory: { rva: expect.any(Number), size: 140 },
       imports: [
         {
           library: "KERNEL32.dll",
-          symbols: ["ExitProcess", "GetCommandLineW", "GetStdHandle", "ReadFile", "WriteFile"],
+          symbols: [
+            "CloseHandle",
+            "CreateFileW",
+            "ExitProcess",
+            "FindClose",
+            "FindFirstFileW",
+            "FindNextFileW",
+            "FlushFileBuffers",
+            "GetCommandLineW",
+            "GetCurrentProcess",
+            "GetCurrentThread",
+            "GetDriveTypeW",
+            "GetFileAttributesW",
+            "GetFileInformationByHandle",
+            "GetFileInformationByHandleEx",
+            "GetFinalPathNameByHandleW",
+            "GetLastError",
+            "GetProcessHeap",
+            "GetStdHandle",
+            "HeapAlloc",
+            "HeapFree",
+            "LocalFree",
+            "ReadFile",
+            "SetFileInformationByHandle",
+            "SetFilePointer",
+            "SetLastError",
+            "WriteFile",
+          ],
+        },
+        {
+          library: "USERENV.dll",
+          symbols: [
+            "CreateAppContainerProfile",
+            "DeleteAppContainerProfile",
+            "DeriveAppContainerSidFromAppContainerName",
+            "GetAppContainerFolderPath",
+          ],
+        },
+        {
+          library: "api-ms-win-net-isolation-l1-1-0.dll",
+          symbols: ["NetworkIsolationEnumAppContainers", "NetworkIsolationFreeAppContainers"],
+        },
+        {
+          library: "ADVAPI32.dll",
+          symbols: [
+            "AllocateAndInitializeSid",
+            "ConvertSidToStringSidW",
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+            "CopySid",
+            "EqualSid",
+            "FreeSid",
+            "GetAce",
+            "GetAclInformation",
+            "GetLengthSid",
+            "GetSecurityDescriptorControl",
+            "GetSecurityDescriptorLength",
+            "GetSecurityInfo",
+            "GetTokenInformation",
+            "IsValidSid",
+            "MakeSelfRelativeSD",
+            "OpenProcessToken",
+            "OpenThreadToken",
+          ],
+        },
+        { library: "ole32.dll", symbols: ["CoTaskMemFree"] },
+        {
+          library: "bcrypt.dll",
+          symbols: [
+            "BCryptCloseAlgorithmProvider",
+            "BCryptCreateHash",
+            "BCryptDestroyHash",
+            "BCryptFinishHash",
+            "BCryptGenRandom",
+            "BCryptGetProperty",
+            "BCryptHashData",
+            "BCryptOpenAlgorithmProvider",
+          ],
         },
       ],
-      relocations: { rva: expect.any(Number), size: 12 },
+      relocations: { rva: expect.any(Number), size: 32 },
     });
     expect(census.dllCharacteristics & 0x160).toBe(0x160);
     expect(census.importDirectory.rva).toBeGreaterThan(0);
@@ -157,18 +285,528 @@ describe("private Windows isolation broker bootstrap", () => {
 
   test("source exposes exactly SERVE and RECOVER and no general command surface", async () => {
     const source = await readFile(sourcePath, "utf8");
-    expect([...source.matchAll(/same_text\(mode, ([a-z_]+)\)/g)].map((match) => match[1])).toEqual([
-      "serve_mode",
-      "recover_mode",
-    ]);
+    expect([...source.matchAll(/wide_equal\(mode, ([a-z_]+)\)/g)].map((match) => match[1])).toEqual(
+      ["serve_mode", "recover_mode"],
+    );
     for (const forbidden of ["system(", "CreateProcess", "ShellExecute", "WinExec", "LoadLibrary"])
       expect(source).not.toContain(forbidden);
     expect(source).toContain('#error "windows-isolation-broker.c is Windows-only"');
     expect(source).toContain('#error "windows-isolation-broker.c requires X64"');
   });
 
+  test("keeps fake OS substitutions outside the exact production source", async () => {
+    const fixture = await readFile(fixturePath, "utf8");
+    expect(fixture).toContain(
+      '#include "../../packages/conformance/src/windows-isolation-broker.c"',
+    );
+    expect(fixture.indexOf("#define NetworkIsolationEnumAppContainers")).toBeLessThan(
+      fixture.indexOf("#include"),
+    );
+    expect(fixture.indexOf("#define NetworkIsolationFreeAppContainers")).toBeLessThan(
+      fixture.indexOf("#include"),
+    );
+    for (const forbidden of ["receipt", "promotion", "certification", "CreateProcess"])
+      expect(fixture).not.toContain(forbidden);
+  });
+
   test.runIf(process.platform === "win32")(
-    "refuses non-modes and reports both unwired modes",
+    "executes raw target census cardinality and unrelated duplicate mutants",
+    async () => {
+      const root = await mkdtemp(resolve(tmpdir(), "orchestration-windows-broker-fixture-"));
+      roots.push(root);
+      const object = resolve(root, "fixture.obj");
+      const executable = resolve(root, "fixture.exe");
+      execFileSync(
+        clangPath,
+        [
+          "/nologo",
+          "/c",
+          "/TC",
+          "/std:c11",
+          "/W4",
+          "/WX",
+          "/O1",
+          "/Oi-",
+          "/Gy",
+          "/Gs9999999",
+          "/clang:-fno-builtin",
+          "/GS-",
+          "/Zl",
+          "/Brepro",
+          "/DUNICODE",
+          "/D_UNICODE",
+          `/Fo${object}`,
+          fixturePath,
+        ],
+        { windowsHide: true },
+      );
+      execFileSync(
+        linkerPath,
+        [
+          "/nologo",
+          `/out:${executable}`,
+          "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+          "/entry:fixture_entry",
+          "/subsystem:console",
+          "/machine:x64",
+          "/nodefaultlib",
+          "/dynamicbase",
+          "/nxcompat",
+          "/highentropyva",
+          "/Brepro",
+          "/opt:ref",
+          object,
+          ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+        ],
+        { windowsHide: true },
+      );
+      for (const scenario of [
+        "enum-error",
+        "overbound",
+        "unrelated-duplicate",
+        "unrelated-name-conflict",
+        "unrelated-sid-conflict",
+        "target-one",
+        "target-duplicate",
+        "target-name-only",
+        "target-sid-only",
+        "target-capability",
+        "malformed-late",
+        "free-error",
+        "complete-empty",
+        "complete-duplicate",
+        "complete-unjournaled",
+        "complete-terminal",
+        "complete-group-duplicate",
+        "complete-cross-group",
+        "pointer-mismatch",
+        "record-folder-arms",
+        "target-null-user",
+        "target-wrong-user",
+        "target-malformed-user",
+      ]) {
+        const result = spawnSync(executable, [scenario], { windowsHide: true });
+        expect({
+          scenario,
+          status: result.status,
+          stderr: result.stderr,
+          stdout: result.stdout,
+        }).toEqual({
+          scenario,
+          status: 0,
+          stderr: Buffer.alloc(0),
+          stdout: Buffer.alloc(0),
+        });
+      }
+
+      const durableRoot = await mkdtemp(resolve(tmpdir(), "orchestration-windows-broker-durable-"));
+      roots.push(durableRoot);
+      const account = spawnSync("whoami.exe", { encoding: "utf8", windowsHide: true });
+      expect(account.status).toBe(0);
+      for (const args of [
+        [durableRoot, "/inheritance:r"],
+        [durableRoot, "/grant:r", "SYSTEM:(OI)(CI)F", `${account.stdout.trim()}:(OI)(CI)F`],
+        [durableRoot, "/setintegritylevel", "(OI)(CI)M"],
+      ]) {
+        const acl = spawnSync("icacls.exe", args, { encoding: "utf8", windowsHide: true });
+        expect({ args, status: acl.status, stderr: acl.stderr }).toEqual({
+          args,
+          status: 0,
+          stderr: "",
+        });
+      }
+      const durable = spawnSync(executable, ["durable-publication"], {
+        input: brokerFrame(1, profileScope(`\\\\?\\${durableRoot}`)),
+        windowsHide: true,
+      });
+      expect({ status: durable.status, stderr: durable.stderr, stdout: durable.stdout }).toEqual({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.alloc(0),
+      });
+      expect((await readdir(durableRoot)).sort()).toEqual([
+        expect.stringMatching(/-00-used\.opwj$/),
+        expect.stringMatching(/-01-profile-attempted\.opwj$/),
+        expect.stringMatching(/-02-profile-created\.opwj$/),
+        expect.stringMatching(/-03-profile-delete-attempted\.opwj$/),
+        expect.stringMatching(/-04-profile-absence-proved\.opwj$/),
+      ]);
+      for (const name of await readdir(durableRoot)) await rm(resolve(durableRoot, name));
+
+      const faultObject = resolve(root, "fault-fixture.obj");
+      const faultExecutable = resolve(root, "fault-fixture.exe");
+      execFileSync(
+        clangPath,
+        [
+          "/nologo",
+          "/c",
+          "/TC",
+          "/std:c11",
+          "/W4",
+          "/WX",
+          "/O1",
+          "/Oi-",
+          "/Gy",
+          "/Gs9999999",
+          "/clang:-fno-builtin",
+          "/clang:-Wno-unused-function",
+          "/GS-",
+          "/Zl",
+          "/Brepro",
+          "/DUNICODE",
+          "/D_UNICODE",
+          "/DOP_WINDOWS_FAULT_FIXTURE",
+          `/Fo${faultObject}`,
+          fixturePath,
+        ],
+        { windowsHide: true },
+      );
+      execFileSync(
+        linkerPath,
+        [
+          "/nologo",
+          `/out:${faultExecutable}`,
+          "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+          "/entry:fixture_entry",
+          "/subsystem:console",
+          "/machine:x64",
+          "/nodefaultlib",
+          "/dynamicbase",
+          "/nxcompat",
+          "/highentropyva",
+          "/Brepro",
+          "/opt:ref",
+          faultObject,
+          ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+        ],
+        { windowsHide: true },
+      );
+      for (let phase = 1; phase <= 5; phase += 1) {
+        for (let fault = 1; fault <= 13; fault += 1) {
+          const result = spawnSync(faultExecutable, ["fault-publication"], {
+            input: Buffer.concat([
+              Buffer.from([phase, fault]),
+              brokerFrame(1, profileScope(`\\\\?\\${durableRoot}`)),
+            ]),
+            windowsHide: true,
+          });
+          expect({ phase, fault, status: result.status, stderr: result.stderr }).toEqual({
+            phase,
+            fault,
+            status: 0,
+            stderr: Buffer.alloc(0),
+          });
+          const names = await readdir(durableRoot);
+          expect(names.filter((name) => name.endsWith(".pending"))).toEqual([]);
+          expect(names).toHaveLength(5);
+          for (const name of names) await rm(resolve(durableRoot, name));
+        }
+      }
+      for (let fault = 14; fault <= 22; fault += 1) {
+        const result = spawnSync(faultExecutable, ["fault-resources"], {
+          input: Buffer.concat([
+            Buffer.from([fault]),
+            brokerFrame(1, profileScope(`\\\\?\\${durableRoot}`)),
+          ]),
+          windowsHide: true,
+        });
+        expect({ fault, status: result.status, stderr: result.stderr }).toEqual({
+          fault,
+          status: 0,
+          stderr: Buffer.alloc(0),
+        });
+        const names = await readdir(durableRoot);
+        expect(names.filter((name) => name.endsWith(".pending"))).toEqual([]);
+        expect(names).toHaveLength(5);
+        for (const name of names) await rm(resolve(durableRoot, name));
+      }
+
+      const profileObject = resolve(root, "profile-fixture.obj");
+      const profileExecutable = resolve(root, "profile-fixture.exe");
+      execFileSync(
+        clangPath,
+        [
+          "/nologo",
+          "/c",
+          "/TC",
+          "/std:c11",
+          "/W4",
+          "/WX",
+          "/O1",
+          "/Oi-",
+          "/Gy",
+          "/Gs9999999",
+          "/clang:-fno-builtin",
+          "/clang:-Wno-unused-function",
+          "/GS-",
+          "/Zl",
+          "/Brepro",
+          "/DUNICODE",
+          "/D_UNICODE",
+          "/DOP_WINDOWS_PROFILE_FIXTURE",
+          `/Fo${profileObject}`,
+          fixturePath,
+        ],
+        { windowsHide: true },
+      );
+      execFileSync(
+        linkerPath,
+        [
+          "/nologo",
+          `/out:${profileExecutable}`,
+          "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+          "/entry:fixture_entry",
+          "/subsystem:console",
+          "/machine:x64",
+          "/nodefaultlib",
+          "/dynamicbase",
+          "/nxcompat",
+          "/highentropyva",
+          "/Brepro",
+          "/opt:ref",
+          profileObject,
+          ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+        ],
+        { windowsHide: true },
+      );
+      const profileCases = [
+        { profileCase: 1, mode: 0 },
+        ...Array.from({ length: 36 }, (_, index) => ({ profileCase: index + 4, mode: 0 })),
+        { profileCase: 1, mode: 1 },
+        { profileCase: 1, mode: 2 },
+        ...Array.from({ length: 36 }, (_, index) => ({ profileCase: index + 4, mode: 1 })),
+        ...Array.from({ length: 31 }, (_, index) => ({ profileCase: index + 8, mode: 2 })),
+      ];
+      for (let variant = 1; variant <= 5; variant += 1) {
+        const result = spawnSync(profileExecutable, ["mixed-recovery"], {
+          input: Buffer.concat([
+            Buffer.from([variant]),
+            brokerFrame(1, profileScope(`\\\\?\\${durableRoot}`)),
+          ]),
+          windowsHide: true,
+        });
+        expect({ variant, status: result.status, stderr: result.stderr }).toEqual({
+          variant,
+          status: 0,
+          stderr: Buffer.alloc(0),
+        });
+        for (const name of await readdir(durableRoot)) await rm(resolve(durableRoot, name));
+      }
+      for (const profile of profileCases) {
+        const result = spawnSync(profileExecutable, ["profile-control"], {
+          input: Buffer.concat([
+            Buffer.from([profile.profileCase, profile.mode]),
+            brokerFrame(1, profileScope(`\\\\?\\${durableRoot}`)),
+          ]),
+          windowsHide: true,
+        });
+        expect({ ...profile, status: result.status, stderr: result.stderr }).toEqual({
+          ...profile,
+          status: 0,
+          stderr: Buffer.alloc(0),
+        });
+        const names = await readdir(durableRoot);
+        expect(names.filter((name) => name.endsWith(".pending"))).toEqual([]);
+        expect(names).toHaveLength(5);
+        for (const name of names) await rm(resolve(durableRoot, name));
+      }
+      for (let variant = 1; variant <= 3; variant += 1) {
+        const substitutionRoot = await mkdtemp(
+          resolve(tmpdir(), "orchestration-windows-broker-substitution-"),
+        );
+        roots.push(substitutionRoot);
+        for (const args of [
+          [substitutionRoot, "/inheritance:r"],
+          [substitutionRoot, "/grant:r", "SYSTEM:(OI)(CI)F", `${account.stdout.trim()}:(OI)(CI)F`],
+          [substitutionRoot, "/setintegritylevel", "(OI)(CI)M"],
+        ]) {
+          expect(spawnSync("icacls.exe", args, { windowsHide: true }).status).toBe(0);
+        }
+        const moved =
+          variant === 1
+            ? `${substitutionRoot}-moved`
+            : `${substitutionRoot}-${variant === 2 ? "final" : "pending"}-moved.opwj`;
+        const result = spawnSync(profileExecutable, ["substitution"], {
+          input: Buffer.concat([
+            Buffer.from([variant]),
+            brokerFrame(1, profileScope(`\\\\?\\${substitutionRoot}`)),
+          ]),
+          windowsHide: true,
+        });
+        expect({ variant, status: result.status, stderr: result.stderr }).toEqual({
+          variant,
+          status: 0,
+          stderr: Buffer.alloc(0),
+        });
+        const rootState = await stat(substitutionRoot).catch(() => undefined);
+        const movedState = await stat(moved).catch(() => undefined);
+        expect({
+          variant,
+          rootDirectory: rootState?.isDirectory(),
+          movedDirectory: movedState?.isDirectory(),
+        }).toEqual({
+          variant,
+          rootDirectory: true,
+          movedDirectory: variant === 1,
+        });
+        await rm(substitutionRoot, { force: true, recursive: true });
+        await rm(moved, { force: true, recursive: true });
+      }
+
+      const lifecycleObject = resolve(root, "lifecycle-fixture.obj");
+      const lifecycleExecutable = resolve(root, "lifecycle-fixture.exe");
+      execFileSync(
+        clangPath,
+        [
+          "/nologo",
+          "/c",
+          "/TC",
+          "/std:c11",
+          "/W4",
+          "/WX",
+          "/O1",
+          "/Oi-",
+          "/Gy",
+          "/Gs9999999",
+          "/clang:-fno-builtin",
+          "/GS-",
+          "/Zl",
+          "/Brepro",
+          "/DUNICODE",
+          "/D_UNICODE",
+          "/DOP_WINDOWS_LIFECYCLE_FIXTURE",
+          "/clang:-Wno-unused-function",
+          `/Fo${lifecycleObject}`,
+          fixturePath,
+        ],
+        { windowsHide: true },
+      );
+      execFileSync(
+        linkerPath,
+        [
+          "/nologo",
+          `/out:${lifecycleExecutable}`,
+          "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+          "/entry:fixture_entry",
+          "/subsystem:console",
+          "/machine:x64",
+          "/nodefaultlib",
+          "/dynamicbase",
+          "/nxcompat",
+          "/highentropyva",
+          "/Brepro",
+          "/opt:ref",
+          lifecycleObject,
+          ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+        ],
+        { windowsHide: true },
+      );
+      const prepare = brokerFrame(1, profileScope("\\\\?\\C:\\fixture-authority-state"));
+      const oversized = brokerFrame(2);
+      oversized.writeUInt32LE(1024 * 1024 + 1, 8);
+      const truncatedBody = brokerFrame(2);
+      truncatedBody.writeUInt32LE(1, 8);
+      for (const lifecycle of [
+        { scenario: "lifecycle-clean", input: prepare, exit: 65, secondStatus: undefined },
+        {
+          scenario: "lifecycle-clean",
+          input: Buffer.concat([prepare, Buffer.from("OPW", "ascii")]),
+          exit: 65,
+          secondStatus: undefined,
+        },
+        {
+          scenario: "lifecycle-clean",
+          input: Buffer.concat([prepare, oversized]),
+          exit: 65,
+          secondStatus: undefined,
+        },
+        {
+          scenario: "lifecycle-clean",
+          input: Buffer.concat([prepare, truncatedBody]),
+          exit: 65,
+          secondStatus: undefined,
+        },
+        {
+          scenario: "lifecycle-clean",
+          input: Buffer.concat([prepare, prepare]),
+          exit: 65,
+          secondStatus: 65,
+        },
+        {
+          scenario: "lifecycle-clean",
+          input: Buffer.concat([prepare, brokerFrame(3)]),
+          exit: 0,
+          secondStatus: 0,
+        },
+        {
+          scenario: "lifecycle-cleanup-failure",
+          input: prepare,
+          exit: 70,
+          secondStatus: undefined,
+        },
+        {
+          scenario: "lifecycle-root-close-failure",
+          input: prepare,
+          exit: 70,
+          secondStatus: undefined,
+        },
+      ]) {
+        const result = spawnSync(lifecycleExecutable, [lifecycle.scenario], {
+          input: lifecycle.input,
+          windowsHide: true,
+        });
+        expect(result.status).toBe(lifecycle.exit);
+        expect(result.stderr.toString("utf8")).toBe(
+          "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+            "fixture:cleanup-profile\nfixture:release-root\n",
+        );
+        expect(result.stdout.subarray(0, 4).toString("ascii")).toBe("OPWB");
+        expect(result.stdout[7]).toBe(0);
+        const firstLength = 16 + result.stdout.readUInt32LE(8);
+        if (lifecycle.secondStatus === undefined) {
+          expect(result.stdout.byteLength).toBe(firstLength);
+        } else {
+          expect(result.stdout.subarray(firstLength, firstLength + 4).toString("ascii")).toBe(
+            "OPWB",
+          );
+          expect(result.stdout[firstLength + 7]).toBe(lifecycle.secondStatus);
+          expect(result.stdout.byteLength).toBe(firstLength + 16);
+        }
+      }
+
+      for (const brokenOutput of ["prepare", "launch"] as const) {
+        const child = spawn(lifecycleExecutable, ["lifecycle-clean"], {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+        const diagnostics: Buffer[] = [];
+        child.stderr.on("data", (chunk: Buffer) => diagnostics.push(chunk));
+        child.stdin.on("error", () => {});
+        const exited = waitForExit(child);
+        if (brokenOutput === "prepare") {
+          child.stdout.destroy();
+          await once(child.stdout, "close");
+          child.stdin.end(prepare);
+        } else {
+          child.stdin.write(prepare);
+          const header = await readExactly(child.stdout, 16);
+          await readExactly(child.stdout, header.readUInt32LE(8));
+          child.stdout.destroy();
+          await once(child.stdout, "close");
+          child.stdin.end(brokerFrame(2));
+        }
+        expect(await exited).toBe(65);
+        expect(Buffer.concat(diagnostics).toString("utf8")).toBe(
+          "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+            "fixture:cleanup-profile\nfixture:release-root\n",
+        );
+      }
+    },
+    600_000,
+  );
+
+  test.runIf(process.platform === "win32")(
+    "refuses non-modes and requires one canonical frame for both modes",
     () => {
       for (const value of [[], ["UNKNOWN"], ["SERVE", "extra"], ["RECOVER", "extra"]]) {
         const result = spawnSync(imagePath, value, { encoding: "utf8", windowsHide: true });
@@ -187,36 +825,36 @@ describe("private Windows isolation broker bootstrap", () => {
       });
       expect(
         spawnSync(imagePath, ["RECOVER"], { encoding: "utf8", windowsHide: true }),
-      ).toMatchObject({
-        status: 78,
-        stderr: "windows-broker:recover-not-implemented\n",
-        stdout: "",
-      });
+      ).toMatchObject({ status: 65, stderr: "windows-broker:protocol\n", stdout: "" });
     },
   );
 
   test.runIf(process.platform === "win32")(
-    "admits only the three closed transition frame opcodes and grants none authority",
+    "refuses wrong-order operations and nonexistent authenticated state roots",
     () => {
-      for (const operation of [1, 2, 3]) {
-        const payload =
-          operation === 1
-            ? Buffer.alloc(1024 * 1024, 165)
-            : operation === 2
-              ? Buffer.from([operation, 0, 255])
-              : Buffer.alloc(0);
-        const request = brokerFrame(operation, payload);
+      for (const operation of [2, 3]) {
+        const request = brokerFrame(operation);
         const result = spawnSync(imagePath, ["SERVE"], {
           input: request,
           windowsHide: true,
         });
-        const response = brokerFrame(operation);
-        response[5] = 2;
-        response[7] = 78;
-        expect(result.status).toBe(78);
+        expect(result.status).toBe(65);
         expect(result.stderr).toEqual(Buffer.alloc(0));
-        expect(result.stdout).toEqual(response);
+        expect(result.stdout).toEqual(responseFrame(operation, 65));
       }
+      const missingRoot = "\\\\?\\C:\\orchestration-missing-profile-root";
+      const prepare = spawnSync(imagePath, ["SERVE"], {
+        input: brokerFrame(1, profileScope(missingRoot)),
+        windowsHide: true,
+      });
+      expect(prepare).toMatchObject({ status: 65, stderr: Buffer.alloc(0) });
+      expect(prepare.stdout).toEqual(responseFrame(1, 65));
+      const recover = spawnSync(imagePath, ["RECOVER"], {
+        input: brokerFrame(3, profileScope(missingRoot)),
+        windowsHide: true,
+      });
+      expect(recover).toMatchObject({ status: 65, stderr: Buffer.alloc(0) });
+      expect(recover.stdout).toEqual(responseFrame(3, 65));
     },
   );
 
@@ -268,10 +906,56 @@ describe("private Windows isolation broker bootstrap", () => {
   );
 
   test.runIf(process.platform === "win32")(
+    "accepts only the closed normalized extended-DOS profile-scope path arm",
+    () => {
+      const canonical = profileScope("\\\\?\\C:\\orchestration-missing-profile-root");
+      const byteMutants = Array.from({ length: 12 }, (_, index) => {
+        const mutant = Buffer.from(canonical);
+        mutant[index] = mutant[index]! ^ 0xff;
+        return mutant;
+      });
+      const countZero = Buffer.from(canonical);
+      countZero.writeUInt16LE(0, 8);
+      const countOverBound = Buffer.alloc(12 + 1025 * 2);
+      profileScope("\\\\?\\C:\\a").copy(countOverBound);
+      countOverBound.writeUInt16LE(1025, 8);
+      const trailing = Buffer.concat([canonical, Buffer.from([0])]);
+      const invalidPaths = [
+        "\\\\?\\c:\\lower-drive",
+        "\\\\?\\C:\\",
+        "\\\\?\\C:\\trailing\\",
+        "\\\\?\\C:\\empty\\\\segment",
+        "\\\\?\\C:\\.\\segment",
+        "\\\\?\\C:\\..\\segment",
+        "\\\\?\\C:\\forward/slash",
+        "\\\\?\\C:\\alternate:stream",
+        "\\\\?\\C:\\wild*card",
+        "\\\\?\\C:\\nul\0unit",
+        `\\\\?\\C:\\surrogate${String.fromCharCode(0xd800)}`,
+      ].map(profileScope);
+      for (const payload of [
+        ...byteMutants,
+        countZero,
+        countOverBound,
+        trailing,
+        ...invalidPaths,
+      ]) {
+        const result = spawnSync(imagePath, ["SERVE"], {
+          input: brokerFrame(1, payload),
+          windowsHide: true,
+        });
+        expect(result.status).toBe(65);
+        expect(result.stderr.toString("utf8")).toBe("windows-broker:protocol\n");
+        expect(result.stdout).toEqual(Buffer.alloc(0));
+      }
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
     "rebuilds byte-identically with the reviewed development toolchain",
     async () => {
       execFileSync(clangPath, ["--version"], { windowsHide: true });
-      await readFile(sdkLibrary);
+      await Promise.all(sdkLibraries.map(async (library) => await readFile(library)));
       const root = await mkdtemp(resolve(tmpdir(), "orchestration-windows-broker-test-"));
       roots.push(root);
       for (const name of ["first.exe", "second.exe"]) {
