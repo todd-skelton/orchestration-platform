@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -164,7 +164,7 @@ describe("Linux stable pidfd process custody", () => {
       {
         arguments: [
           "-n",
-          "/usr/bin/python3",
+          process.platform === "linux" ? await realpath("/usr/bin/python3") : "/usr/bin/python3",
           "-I",
           "-B",
           resolve(import.meta.dirname, "../../packages/conformance/src/linux-pidfd-quiesce.py"),

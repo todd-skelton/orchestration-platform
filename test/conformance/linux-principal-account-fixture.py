@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import stat
 import subprocess
 import sys
 import types
@@ -10,15 +11,14 @@ sys.dont_write_bytecode = True
 
 fake_pwd = types.ModuleType("pwd")
 fake_grp = types.ModuleType("grp")
-fake_spwd = types.ModuleType("spwd")
 sys.modules["pwd"] = fake_pwd
 sys.modules["grp"] = fake_grp
-sys.modules["spwd"] = fake_spwd
 
 spec = importlib.util.spec_from_file_location("linux_principal_account", sys.argv[1])
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 real_helper_identity = helper.helper_identity
+real_shadow_password = helper.shadow_password
 
 
 class Result:
@@ -54,7 +54,7 @@ class Database:
         fake_pwd.getpwall = lambda: list(self.users.values())
         fake_grp.getgrnam = lambda value: self.lookup(self.groups, "gr_name", value)
         fake_grp.getgrgid = lambda value: self.lookup(self.groups, "gr_gid", value)
-        fake_spwd.getspnam = lambda _value: types.SimpleNamespace(sp_pwdp=self.password)
+        helper.shadow_password = lambda _value: self.password
         helper.os.getgrouplist = lambda name, gid: [gid]
         helper.helper_identity = lambda _path: (1, 2, 0o100755, 0, 0)
 
@@ -260,6 +260,49 @@ class AccountTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     helper.process_identity(9)
 
+    def test_shadow_reader_is_bounded_no_follow_and_identity_stable(self):
+        def profile(mode=stat.S_IFREG | 0o640, uid=0, ctime=1):
+            return types.SimpleNamespace(
+                st_ctime_ns=ctime,
+                st_dev=1,
+                st_gid=42,
+                st_ino=2,
+                st_mode=mode,
+                st_mtime_ns=1,
+                st_size=100,
+                st_uid=uid,
+            )
+
+        def read_shadow(text, before=None, after=None):
+            initial = before or profile()
+            final = after or initial
+            with patch.object(helper.os, "O_NOFOLLOW", 0, create=True), patch.object(
+                helper.os, "open", return_value=10
+            ) as opened, patch.object(helper.os, "dup", return_value=11
+            ), patch.object(helper.os, "fstat", side_effect=[initial, final]), patch.object(
+                helper.os, "fdopen", return_value=io.StringIO(text)
+            ), patch.object(helper.os, "close"):
+                value = real_shadow_password(self.name)
+            opened.assert_called_once_with(helper.SHADOW, helper.os.O_RDONLY)
+            return value
+
+        row = f"{self.name}:!:1:2:3:4:5:6:7\n"
+        self.assertEqual(read_shadow(row), "!")
+        for text in [
+            "malformed\n",
+            f"{self.name}:!:1:2:3:4:5:6:7\n{self.name}:*:1:2:3:4:5:6:7\n",
+            "other:!:1:2:3:4:5:6:7\n",
+            f"{self.name}:!:1:2:3:4:5:6:７\n",
+            "other:!:1:2:3:4:5:6:7\n" * 100_001,
+        ]:
+            with self.assertRaises(RuntimeError):
+                read_shadow(text)
+        for refused in [profile(uid=1), profile(mode=stat.S_IFLNK | 0o777), profile(mode=stat.S_IFREG | 0o662)]:
+            with self.assertRaises(RuntimeError):
+                read_shadow(row, before=refused)
+        with self.assertRaises(RuntimeError):
+            read_shadow(row, after=profile(ctime=2))
+
 
 suite = unittest.defaultTestLoader.loadTestsFromTestCase(AccountTests)
 stream = io.StringIO()
@@ -267,4 +310,4 @@ outcome = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
 if not outcome.wasSuccessful():
     sys.stderr.write(stream.getvalue())
     raise SystemExit(1)
-sys.stdout.write('{"tests":9}')
+sys.stdout.write('{"tests":10}')

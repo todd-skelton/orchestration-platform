@@ -51,16 +51,16 @@ async function runChild(moduleSource: string, extraArguments: readonly string[] 
   const candidateModule = resolve(root, "candidate.mjs");
   await writeFile(candidateModule, moduleSource, "utf8");
   const challenge = createIss002WalkChallenge();
-  const child = spawn(
-    process.execPath,
-    [childScript, pathToFileURL(candidateModule).href, ...extraArguments],
-    {
-      cwd: root,
-      env: {},
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
+  const candidateSpecifier =
+    extraArguments.length === 3 && extraArguments[0] === "--linux-principal"
+      ? "./candidate.mjs"
+      : pathToFileURL(candidateModule).href;
+  const child = spawn(process.execPath, [childScript, candidateSpecifier, ...extraArguments], {
+    cwd: root,
+    env: {},
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
   const stdout: Uint8Array[] = [];
   const stderr: Uint8Array[] = [];
   child.stdout.on("data", (chunk: Uint8Array) => stdout.push(Uint8Array.from(chunk)));

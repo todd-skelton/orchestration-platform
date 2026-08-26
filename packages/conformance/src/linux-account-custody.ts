@@ -6,10 +6,11 @@ import { randomBytes } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
 const sudoPath = "/usr/bin/sudo";
-const pythonPath = "/usr/bin/python3";
+const pythonLinkPath = "/usr/bin/python3";
 const intentPrefix = "linux-principal-intent-";
 const usedPrefix = "linux-principal-used-";
 const nativeHostPlatform = process.platform;
+const pythonPath = nativeHostPlatform === "linux" ? await realpath(pythonLinkPath) : pythonLinkPath;
 
 export interface LinuxAccountCommandRequest {
   readonly arguments: readonly string[];
@@ -266,6 +267,8 @@ async function createLinuxAccountCustodyCore(
   const active = new Map<LinuxAccountPrincipal, { intentUnlinked: boolean }>();
 
   async function requireCustody(): Promise<void> {
+    if (nativeHostPlatform === "linux" && (await realpath(pythonLinkPath)) !== pythonPath)
+      throw new TypeError("linux-account:helper-moved");
     const currentState = await lstat(stateRoot, { bigint: true });
     if (!sameDirectoryIdentity(stateIdentity, currentState))
       throw new TypeError("linux-account:state-root-moved");

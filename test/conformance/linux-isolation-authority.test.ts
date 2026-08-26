@@ -129,7 +129,15 @@ function fakeDependencies(
     dacFactory: async () => {
       events.push("recover:dac");
       return {
-        async prepareAccess() {
+        async prepareAccess(input: {
+          readonly principal: { readonly gid: string; readonly name: string; readonly uid: string };
+        }) {
+          expect(input.principal).toEqual({
+            gid: value.principal.gid,
+            name: value.principal.name,
+            uid: value.principal.uid,
+          });
+          expect(Object.keys(input.principal).sort()).toEqual(["gid", "name", "uid"]);
           await phase("dac:prepare");
           return Object.freeze({ name: value.principal.name });
         },
@@ -151,7 +159,8 @@ function fakeDependencies(
         async close() {
           await phase("execution:close");
         },
-        async create() {
+        async create(input: { readonly runtimePath: string }) {
+          expect(input.runtimePath).toBe(value.paths.runtimePath);
           await phase("execution:create");
           const rootPath = resolve(
             value.options.execution.executionParent,
@@ -162,6 +171,7 @@ function fakeDependencies(
             executionName: "orch6-exec-0000000000000001",
             rootPath,
             rpcRunnerPath: resolve(rootPath, "rpc-runner.mjs"),
+            runtimePath: resolve(rootPath, "node"),
             scratchPath: resolve(rootPath, "scratch"),
           });
         },
@@ -279,8 +289,11 @@ describe("Linux stable isolation lifecycle composition", () => {
       inputText: request(value).inputText,
       timeoutMilliseconds: 5000,
     });
-    expect(commands[0]!.arguments.slice(0, 14)).toEqual([
+    expect(commands[0]!.cwd).toBe(value.options.execution.executionParent);
+    expect(commands[0]!.arguments.slice(0, 18)).toEqual([
       "-n",
+      "-D",
+      resolve(value.options.execution.executionParent, "orch6-exec-0000000000000001/scratch"),
       value.paths.setprivPath,
       "--reuid",
       value.principal.uid,
@@ -293,7 +306,9 @@ describe("Linux stable isolation lifecycle composition", () => {
       "--bounding-set=-all",
       value.paths.environmentPath,
       "-i",
-      value.paths.runtimePath,
+      "../node",
+      "../rpc-runner.mjs",
+      "./candidate.mjs",
     ]);
     expect(commands[0]!.arguments).toContain("--linux-principal");
     expect(commands[0]!.arguments).not.toContain(value.paths.candidateArtifactPath);

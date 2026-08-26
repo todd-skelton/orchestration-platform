@@ -5,6 +5,7 @@ import stat
 import sys
 import types
 import unittest
+from contextlib import ExitStack
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -41,6 +42,7 @@ def request(operation="PREPARE"):
         "parent": parent_record,
         "root": record(root, "DIRECTORY", 0o700, inode=2),
         "rpcRunner": record(f"{root}/rpc-runner.mjs", "FILE", 0o600, inode=4),
+        "runtime": record(f"{root}/node", "FILE", 0o600, inode=7),
         "scratch": record(f"{root}/scratch", "DIRECTORY", 0o700, inode=5),
         "stableGid": "1001",
         "stableUid": "1001",
@@ -127,6 +129,9 @@ class DacTests(unittest.TestCase):
         self.assertEqual(granted["root"]["uid"], 0)
         self.assertEqual(granted["root"]["gid"], 1_000_002)
         self.assertEqual(granted["root"]["mode"], 0o510)
+        self.assertEqual(granted["parent"]["uid"], 1001)
+        self.assertEqual(granted["parent"]["gid"], 1_000_002)
+        self.assertEqual(granted["parent"]["mode"], 0o710)
         self.assertEqual(granted["candidate"]["mode"], 0o550)
         self.assertEqual(granted["scratch"]["uid"], 1_000_001)
         for field, mode in [("root", 0o710), ("candidate", 0o640), ("scratch", 0o770)]:
@@ -151,8 +156,10 @@ class DacTests(unittest.TestCase):
         self.assertEqual([event[1] for event in profiles.events if event[0] == "chown"], [
             "candidate",
             "rpcRunner",
+            "runtime",
             "scratch",
             "root",
+            "parent",
         ])
 
     def test_partial_prepare_restores_every_original_profile(self):
@@ -167,7 +174,7 @@ class DacTests(unittest.TestCase):
                 helper.prepare(value, profiles.handles, originals)
         self.assertEqual(profiles.values, originals)
 
-    def test_restore_revokes_root_before_restoring_children(self):
+    def test_restore_revokes_parent_before_restoring_root_and_children(self):
         value = parsed(request("RESTORE"))
         originals = helper.original_profiles(value)
         profiles = Profiles(helper.granted_profiles(value))
@@ -177,7 +184,8 @@ class DacTests(unittest.TestCase):
         ), patch.object(helper.os, "fchmod", side_effect=profiles.chmod, create=True):
             helper.restore(value, profiles.handles, originals)
         self.assertEqual(profiles.values, originals)
-        self.assertEqual(profiles.events[0][1], "root")
+        self.assertEqual(profiles.events[0][1], "parent")
+        self.assertEqual(profiles.events[2][1], "root")
 
     def test_restore_retry_without_scratch_repairs_a_remaining_grant(self):
         value = parsed(request("RESTORE"))
@@ -256,6 +264,129 @@ class DacTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 helper.require_ancestor_custody(handles, value)
 
+    def _run_main_recovery(self, parent_profile, expected_error, include_scratch):
+        value = parsed(request("RESTORE"))
+        values = {
+            "filesystemRoot": value["ancestors"][0],
+            **helper.granted_profiles(value),
+        }
+        values["parent"] = parent_profile
+        if not include_scratch:
+            values.pop("scratch")
+        profiles = Profiles(values)
+        open_fields = ["filesystemRoot", "parent", "root", "candidate", "rpcRunner", "runtime"]
+        if include_scratch:
+            open_fields.append("scratch")
+        output = io.StringIO()
+        entries = list(helper.ENTRY_NAMES) if include_scratch else [
+            "candidate.mjs",
+            "node",
+            "rpc-runner.mjs",
+        ]
+        listdir_values = [
+            ["execution"],
+            entries,
+            ["candidate.mjs", "node", "rpc-runner.mjs"],
+        ]
+
+        def scratch_stat(*_args, **_kwargs):
+            if include_scratch:
+                include_scratch_stat = getattr(scratch_stat, "include_scratch", True)
+                if include_scratch_stat:
+                    scratch_stat.include_scratch = False
+                    return profiles.fake_stat("scratch")
+            raise FileNotFoundError()
+
+        with ExitStack() as stack:
+            for context in [
+                patch.object(helper.os, "path", helper.posixpath),
+                patch.object(helper.os, "O_DIRECTORY", 0, create=True),
+                patch.object(helper.os, "O_NOFOLLOW", 0, create=True),
+                patch.object(helper.os, "O_CLOEXEC", 0, create=True),
+                patch.object(
+                    helper, "process_identity", return_value=((0, 0, 0, 0), (0, 0, 0, 0))
+                ),
+                patch.object(helper.sys, "platform", "linux"),
+                patch.object(helper.sys, "argv", ["helper"]),
+                patch.object(helper.shutil.rmtree, "avoids_symlink_attacks", True),
+                patch.object(helper, "read_request", return_value=value),
+                patch.object(
+                    helper.os,
+                    "open",
+                    side_effect=[profiles.handles[field] for field in open_fields],
+                ),
+                patch.object(helper.os, "fstat", side_effect=profiles.fstat),
+                patch.object(helper.os, "fchown", side_effect=profiles.chown, create=True),
+                patch.object(helper.os, "fchmod", side_effect=profiles.chmod, create=True),
+                patch.object(helper.os, "close"),
+                patch.object(helper, "require_ancestor_custody"),
+                patch.object(helper.os, "stat", side_effect=scratch_stat),
+                patch.object(helper, "require_single_device_tree"),
+                patch.object(helper.shutil, "rmtree"),
+                patch.object(helper.os, "listdir", side_effect=listdir_values),
+                patch.object(helper.sys, "stdout", output),
+            ]:
+                stack.enter_context(context)
+            if expected_error:
+                with self.assertRaisesRegex(RuntimeError, expected_error):
+                    helper.main()
+            else:
+                helper.main()
+        return value, profiles, output.getvalue()
+
+    def test_main_recovers_prepare_parent_chown_crash_and_requires_clean_retry(self):
+        value = parsed(request("RESTORE"))
+        intermediate = helper.expected_profile(
+            value["parent"], value["stableUid"], value["gid"], 0o700
+        )
+        _, profiles, output = self._run_main_recovery(
+            intermediate, "parent-transition-ambiguous", True
+        )
+        self.assertEqual(output, "")
+        self.assertEqual(profiles.values["parent"], helper.original_profiles(value)["parent"])
+        _, retry_profiles, retry_output = self._run_main_recovery(
+            helper.original_profiles(value)["parent"], None, False
+        )
+        self.assertEqual(retry_output, '{"ok":true}')
+        self.assertEqual(
+            retry_profiles.values,
+            {
+                "filesystemRoot": value["ancestors"][0],
+                **{
+                    field: profile
+                    for field, profile in helper.original_profiles(value).items()
+                    if field != "scratch"
+                },
+            },
+        )
+
+    def test_main_recovers_restore_parent_chown_crash_and_requires_clean_retry(self):
+        value = parsed(request("RESTORE"))
+        intermediate = helper.expected_profile(
+            value["parent"], value["stableUid"], value["stableGid"], 0o710
+        )
+        _, profiles, output = self._run_main_recovery(
+            intermediate, "parent-transition-ambiguous", True
+        )
+        self.assertEqual(output, "")
+        self.assertEqual(profiles.values["parent"], helper.original_profiles(value)["parent"])
+        _, retry_profiles, retry_output = self._run_main_recovery(
+            helper.original_profiles(value)["parent"], None, False
+        )
+        self.assertEqual(retry_output, '{"ok":true}')
+        self.assertEqual(retry_profiles.values["parent"], helper.original_profiles(value)["parent"])
+
+    def test_main_refuses_a_parent_profile_outside_the_four_recovery_states(self):
+        value = parsed(request("RESTORE"))
+        third_profile = helper.expected_profile(
+            value["parent"], value["stableUid"], value["gid"], 0o711
+        )
+        _, profiles, output = self._run_main_recovery(
+            third_profile, "parent-profile-refused", True
+        )
+        self.assertEqual(output, "")
+        self.assertEqual(profiles.values["parent"], third_profile)
+
     def test_main_reaches_restore_with_granted_profiles_and_modified_scratch(self):
         value = parsed(request("RESTORE"))
         originals = helper.original_profiles(value)
@@ -289,7 +420,7 @@ class DacTests(unittest.TestCase):
         ), patch.object(helper, "require_single_device_tree"), patch.object(
             helper.shutil, "rmtree"
         ) as removed, patch.object(
-            helper.os, "listdir", return_value=["candidate.mjs", "rpc-runner.mjs"]
+            helper.os, "listdir", return_value=["candidate.mjs", "node", "rpc-runner.mjs"]
         ), patch.object(helper.sys, "stdout", output):
             helper.main()
         self.assertEqual(output.getvalue(), '{"ok":true}')
@@ -303,4 +434,4 @@ outcome = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
 if not outcome.wasSuccessful():
     sys.stderr.write(stream.getvalue())
     raise SystemExit(1)
-sys.stdout.write('{"tests":11}')
+sys.stdout.write('{"tests":14}')

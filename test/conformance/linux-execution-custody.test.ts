@@ -1,31 +1,49 @@
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, resolve, sep } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 const mocked = vi.hoisted(() => ({
   accountMode: 0o700n,
   accountRoot: "",
   base: "",
+  blockedAncestor: "",
   events: [] as string[],
+  executionParent: "",
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   const adjusted = <Value extends object>(value: Value, path: string): Value => {
-    if (!mocked.base || !resolve(path).startsWith(resolve(mocked.base))) return value;
-    const file = /(?:\.json|\.mjs|\.py)$/.test(String(path));
+    const resolvedPath = resolve(path);
+    const withinBase = mocked.base && resolvedPath.startsWith(resolve(mocked.base));
+    const executionParent = mocked.executionParent && resolve(mocked.executionParent);
+    const ancestorPrefix = resolvedPath.endsWith(sep) ? resolvedPath : `${resolvedPath}${sep}`;
+    const executionAncestor = executionParent && executionParent.startsWith(ancestorPrefix);
+    const isExecutionParent = executionParent === resolvedPath;
+    const executionPrefix = executionParent && `${executionParent}${sep}`;
+    const withinExecution = executionPrefix && resolvedPath.startsWith(executionPrefix);
+    if (!withinBase && !executionAncestor && !isExecutionParent && !withinExecution) return value;
+    const file = /(?:\.json|\.mjs|\.py)$/.test(String(path)) || basename(String(path)) === "node";
     return new Proxy(value, {
       get(target, property, receiver) {
-        if (property === "uid" || property === "gid") return 1001n;
+        if (
+          (property === "uid" || property === "gid") &&
+          (withinBase || isExecutionParent || withinExecution)
+        )
+          return 1001n;
         if (property === "mode")
           return (
             ((Reflect.get(target, property, receiver) as bigint) & ~0o7777n) |
-            (file
-              ? 0o600n
-              : resolve(path) === resolve(mocked.accountRoot)
-                ? mocked.accountMode
-                : 0o700n)
+            (resolvedPath === resolve(mocked.blockedAncestor)
+              ? 0o700n
+              : executionAncestor
+                ? 0o701n
+                : file
+                  ? 0o600n
+                  : resolve(path) === resolve(mocked.accountRoot)
+                    ? mocked.accountMode
+                    : 0o700n)
           );
         return Reflect.get(target, property, receiver);
       },
@@ -44,8 +62,18 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         path,
         ...values,
       );
-      if (!mocked.base || !resolve(path).startsWith(resolve(mocked.base))) return handle;
-      const file = /(?:\.json|\.mjs|\.py)$/.test(String(path));
+      const resolvedPath = resolve(path);
+      const executionParent = mocked.executionParent && resolve(mocked.executionParent);
+      const ancestorPrefix = resolvedPath.endsWith(sep) ? resolvedPath : `${resolvedPath}${sep}`;
+      const executionPrefix = executionParent && `${executionParent}${sep}`;
+      if (
+        (!mocked.base || !resolvedPath.startsWith(resolve(mocked.base))) &&
+        executionParent !== resolvedPath &&
+        (!executionParent || !executionParent.startsWith(ancestorPrefix)) &&
+        (!executionPrefix || !resolvedPath.startsWith(executionPrefix))
+      )
+        return handle;
+      const file = /(?:\.json|\.mjs|\.py)$/.test(String(path)) || basename(String(path)) === "node";
       return new Proxy(handle, {
         get(target, property) {
           if (property === "stat")
@@ -93,28 +121,34 @@ afterEach(async () => {
   mocked.base = "";
   mocked.accountMode = 0o700n;
   mocked.accountRoot = "";
+  mocked.blockedAncestor = "";
   mocked.events = [];
+  mocked.executionParent = "";
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
   vi.restoreAllMocks();
 });
 
 async function fixture() {
   const base = await mkdtemp(resolve(tmpdir(), "orchestration-execution-custody-"));
-  roots.push(base);
+  const executionParent = await mkdtemp(resolve(tmpdir(), "orchestration-execution-parent-"));
+  roots.push(base, executionParent);
   mocked.base = base;
+  mocked.executionParent = executionParent;
   const accountStateRoot = resolve(base, "account-state");
   mocked.accountRoot = accountStateRoot;
   const stateRoot = resolve(base, "state");
-  const executionParent = resolve(base, "executions");
   const sourceRoot = resolve(base, "sources");
-  for (const path of [accountStateRoot, stateRoot, executionParent, sourceRoot]) {
+  for (const path of [accountStateRoot, stateRoot, sourceRoot]) {
     await mkdir(path);
     await chmod(path, 0o700);
   }
+  await chmod(executionParent, 0o700);
   const candidateArtifactPath = resolve(sourceRoot, "candidate.mjs");
   const rpcRunnerPath = resolve(sourceRoot, "rpc.mjs");
+  const runtimePath = resolve(sourceRoot, "node");
   await writeFile(candidateArtifactPath, "export const candidate = true;", { mode: 0o600 });
   await writeFile(rpcRunnerPath, "export const rpc = true;", { mode: 0o600 });
+  await writeFile(runtimePath, "runtime", { mode: 0o600 });
   const principal: LinuxAccountPrincipal = Object.freeze({
     gid: "1100000001",
     intentPath: resolve(accountStateRoot, "linux-principal-intent-orch6-0000000000000001.json"),
@@ -141,6 +175,7 @@ async function fixture() {
     executionParent,
     principal,
     rpcRunnerPath,
+    runtimePath,
     stateRoot,
   };
 }
@@ -270,6 +305,16 @@ describe("Linux durable execution-root custody", () => {
     }
   });
 
+  test("refuses an execution parent beneath ancestry that the transient identity cannot search", async () => {
+    const value = await fixture();
+    const runner = vi.fn(async () => success());
+    mocked.blockedAncestor = tmpdir();
+    await expect(custodyAt(value, runner)).rejects.toThrow("ancestor-search-refused");
+    expect(runner).not.toHaveBeenCalled();
+    expect(await readdir(value.executionParent)).toEqual([]);
+    expect(await readdir(value.stateRoot)).toEqual([]);
+  });
+
   test("refuses a writable or replaced account authority root before helper use", async () => {
     const value = await fixture();
     const runner = vi.fn(async () => success());
@@ -342,9 +387,17 @@ describe("Linux durable execution-root custody", () => {
     await expect(custody.create(value)).rejects.toThrow("recovery-required");
     await custody.recoverAfterRevocation();
     const lease = await custody.create(value);
-    expect(await readdir(lease.rootPath)).toEqual(["candidate.mjs", "rpc-runner.mjs", "scratch"]);
+    expect(await readdir(lease.rootPath)).toEqual([
+      "candidate.mjs",
+      "node",
+      "rpc-runner.mjs",
+      "scratch",
+    ]);
     expect(await readFile(lease.candidateArtifactPath, "utf8")).toBe(
       await readFile(value.candidateArtifactPath, "utf8"),
+    );
+    expect(await readFile(lease.runtimePath, "utf8")).toBe(
+      await readFile(value.runtimePath, "utf8"),
     );
     const entries = await readdir(value.stateRoot);
     expect(entries).toContain(`linux-execution-used-${lease.executionName}.json`);
@@ -547,7 +600,7 @@ describe("Linux durable execution-root custody", () => {
 
     mocked.events = [];
     await custody.cleanupAfterRevocation(lease);
-    expect(mocked.events[0]).toBe("sync:executions");
+    expect(mocked.events[0]).toBe(`sync:${basename(value.executionParent)}`);
     expect(mocked.events.indexOf("sync:state-directory")).toBeGreaterThan(0);
   });
 

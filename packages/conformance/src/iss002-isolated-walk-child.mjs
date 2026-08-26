@@ -1,5 +1,7 @@
 import { types as nodeTypes } from "node:util";
-import { readFileSync } from "node:fs";
+import { accessSync, constants, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { verifyLinuxCredentialStatus } from "./linux-credential-status.mjs";
 
 const parseJson = JSON.parse.bind(JSON);
@@ -19,6 +21,9 @@ const getEuid = process.geteuid?.bind(process);
 const getGid = process.getgid?.bind(process);
 const getEgid = process.getegid?.bind(process);
 const getGroups = process.getgroups?.bind(process);
+const currentWorkingDirectory = process.cwd.bind(process);
+const executablePath = process.execPath;
+const rpcModulePath = fileURLToPath(import.meta.url);
 
 freeze(Object.prototype);
 freeze(Array.prototype);
@@ -79,16 +84,109 @@ function verifyLinuxPrincipal(uidText, gidText) {
     throw new TypeError("candidate-principal:kernel-credential-refused");
 }
 
+function requireAccess(path, mode, code) {
+  try {
+    accessSync(path, mode);
+  } catch {
+    throw new TypeError(code);
+  }
+}
+
+function requireRefusedAccess(path, mode, code) {
+  try {
+    accessSync(path, mode);
+  } catch (error) {
+    if (error?.code === "EACCES") return;
+    throw new TypeError(code);
+  }
+  throw new TypeError(code);
+}
+
+function requireProfile(path, expected) {
+  const profile = lstatSync(path, { bigint: true });
+  if (
+    (expected.directory ? !profile.isDirectory() : !profile.isFile()) ||
+    profile.isSymbolicLink() ||
+    profile.uid !== BigInt(expected.uid) ||
+    profile.gid !== BigInt(expected.gid) ||
+    (profile.mode & 0o7777n) !== BigInt(expected.mode)
+  )
+    throw new TypeError("candidate-filesystem:profile-refused");
+}
+
+function verifyLinuxFilesystemAccess(uidText, gidText) {
+  const uid = Number(uidText);
+  const gid = Number(gidText);
+  const rpcPath = realpathSync(rpcModulePath);
+  const rootPath = dirname(rpcPath);
+  const parentPath = dirname(rootPath);
+  const scratchPath = realpathSync(currentWorkingDirectory());
+  const runtimePath = realpathSync(executablePath);
+  const candidatePath = resolve(rootPath, "candidate.mjs");
+  if (
+    basename(scratchPath) !== "scratch" ||
+    dirname(scratchPath) !== rootPath ||
+    rpcPath !== resolve(rootPath, "rpc-runner.mjs") ||
+    runtimePath !== resolve(rootPath, "node")
+  )
+    throw new TypeError("candidate-filesystem:layout-refused");
+  requireProfile(parentPath, { directory: true, gid, mode: 0o710, uid: lstatSync(parentPath).uid });
+  if (lstatSync(parentPath).uid === BigInt(uid))
+    throw new TypeError("candidate-filesystem:parent-owner-refused");
+  requireProfile(rootPath, { directory: true, gid, mode: 0o510, uid: 0 });
+  requireProfile(candidatePath, { directory: false, gid, mode: 0o550, uid: 0 });
+  requireProfile(rpcPath, { directory: false, gid, mode: 0o550, uid: 0 });
+  requireProfile(runtimePath, { directory: false, gid, mode: 0o550, uid: 0 });
+  requireProfile(scratchPath, { directory: true, gid, mode: 0o700, uid });
+
+  requireAccess(parentPath, constants.X_OK, "candidate-filesystem:parent-search-refused");
+  requireRefusedAccess(parentPath, constants.R_OK, "candidate-filesystem:parent-read-admitted");
+  requireRefusedAccess(parentPath, constants.W_OK, "candidate-filesystem:parent-write-admitted");
+  try {
+    readdirSync(parentPath);
+    throw new TypeError("candidate-filesystem:parent-list-admitted");
+  } catch (error) {
+    if (error instanceof TypeError) throw error;
+    if (error?.code !== "EACCES") throw new TypeError("candidate-filesystem:parent-list-refused");
+  }
+  requireAccess(rootPath, constants.X_OK, "candidate-filesystem:root-search-refused");
+  requireRefusedAccess(rootPath, constants.R_OK, "candidate-filesystem:root-read-admitted");
+  requireRefusedAccess(rootPath, constants.W_OK, "candidate-filesystem:root-write-admitted");
+  try {
+    readdirSync(rootPath);
+    throw new TypeError("candidate-filesystem:root-list-admitted");
+  } catch (error) {
+    if (error instanceof TypeError) throw error;
+    if (error?.code !== "EACCES") throw new TypeError("candidate-filesystem:root-list-refused");
+  }
+  for (const path of [candidatePath, rpcPath, runtimePath]) {
+    requireAccess(
+      path,
+      constants.R_OK | constants.X_OK,
+      "candidate-filesystem:file-access-refused",
+    );
+    requireRefusedAccess(path, constants.W_OK, "candidate-filesystem:file-write-admitted");
+  }
+  requireAccess(
+    scratchPath,
+    constants.R_OK | constants.W_OK | constants.X_OK,
+    "candidate-filesystem:scratch-access-refused",
+  );
+}
+
 if (
   ![3, 6].includes(process.argv.length) ||
   typeof process.argv[2] !== "string" ||
-  !process.argv[2].startsWith("file:")
+  (process.argv.length === 6
+    ? process.argv[2] !== "./candidate.mjs"
+    : !process.argv[2].startsWith("file:"))
 )
   throw new TypeError("candidate-module-url:refused");
 if (process.argv.length === 6) {
   if (process.argv[3] !== "--linux-principal")
     throw new TypeError("candidate-principal:mode-refused");
   verifyLinuxPrincipal(process.argv[4], process.argv[5]);
+  verifyLinuxFilesystemAccess(process.argv[4], process.argv[5]);
 }
 
 const chunks = [];

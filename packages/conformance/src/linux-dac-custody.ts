@@ -1,13 +1,22 @@
 import { spawn } from "node:child_process";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, readdir, realpath, rm } from "node:fs/promises";
-import { dirname, isAbsolute, parse as parsePath, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  parse as parsePath,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { types as nodeTypes } from "node:util";
 
 const sudoPath = "/usr/bin/sudo";
-const pythonPath = "/usr/bin/python3";
+const pythonLinkPath = "/usr/bin/python3";
 const intentPrefix = "linux-dac-intent-";
 const nativeHostPlatform = process.platform;
+const pythonPath = nativeHostPlatform === "linux" ? await realpath(pythonLinkPath) : pythonLinkPath;
 const identityFields = ["device", "gid", "inode", "mode", "path", "type", "uid"] as const;
 
 export interface LinuxDacCommandRequest {
@@ -82,6 +91,7 @@ type LinuxDacRequest = Readonly<{
   parent: LinuxDacIdentity;
   root: LinuxDacIdentity;
   rpcRunner: LinuxDacIdentity;
+  runtime: LinuxDacIdentity;
   scratch: LinuxDacIdentity;
   stableGid: string;
   stableUid: string;
@@ -100,6 +110,7 @@ interface RetainedHandles {
   readonly parent: Awaited<ReturnType<typeof open>>;
   readonly root: Awaited<ReturnType<typeof open>>;
   readonly rpcRunner: Awaited<ReturnType<typeof open>>;
+  readonly runtime: Awaited<ReturnType<typeof open>>;
   readonly scratch: Awaited<ReturnType<typeof open>>;
 }
 
@@ -330,11 +341,19 @@ function grantedIdentity(
 }
 
 function grantedRequest(request: LinuxDacRequest): LinuxDacRequest {
+  const parent = grantedIdentity(request.parent, request.stableUid, request.gid, 0o710);
   return Object.freeze({
     ...request,
+    ancestors: Object.freeze(
+      request.ancestors.map((value, index) =>
+        index === request.ancestors.length - 1 ? parent : value,
+      ),
+    ),
     candidate: grantedIdentity(request.candidate, "0", request.gid, 0o550),
+    parent,
     root: grantedIdentity(request.root, "0", request.gid, 0o510),
     rpcRunner: grantedIdentity(request.rpcRunner, "0", request.gid, 0o550),
+    runtime: grantedIdentity(request.runtime, "0", request.gid, 0o550),
     scratch: grantedIdentity(request.scratch, request.uid, request.gid, 0o700),
   });
 }
@@ -342,6 +361,7 @@ function grantedRequest(request: LinuxDacRequest): LinuxDacRequest {
 async function closeHandles(handles: RetainedHandles): Promise<void> {
   const ordered = [
     handles.scratch,
+    handles.runtime,
     handles.rpcRunner,
     handles.candidate,
     handles.root,
@@ -431,6 +451,7 @@ function parseIntent(
     "parent",
     "root",
     "rpcRunner",
+    "runtime",
     "scratch",
     "stableGid",
     "stableUid",
@@ -448,6 +469,7 @@ function parseIntent(
   const root = parseIdentity(requestRecord.root, "DIRECTORY");
   const candidate = parseIdentity(requestRecord.candidate, "FILE");
   const rpcRunner = parseIdentity(requestRecord.rpcRunner, "FILE");
+  const runtime = parseIdentity(requestRecord.runtime, "FILE");
   const scratch = parseIdentity(requestRecord.scratch, "DIRECTORY");
   if (
     ancestors.some((value) => !value) ||
@@ -455,6 +477,7 @@ function parseIntent(
     !root ||
     !candidate ||
     !rpcRunner ||
+    !runtime ||
     !scratch ||
     requestRecord.operation !== "RESTORE" ||
     requestRecord.uid !== principal.uid ||
@@ -469,9 +492,16 @@ function parseIntent(
     dirname(root.path) !== parent.path ||
     candidate.path !== resolve(root.path, "candidate.mjs") ||
     rpcRunner.path !== resolve(root.path, "rpc-runner.mjs") ||
+    runtime.path !== resolve(root.path, "node") ||
     scratch.path !== resolve(root.path, "scratch") ||
-    new Set([parent.device, root.device, candidate.device, rpcRunner.device, scratch.device])
-      .size !== 1 ||
+    new Set([
+      parent.device,
+      root.device,
+      candidate.device,
+      rpcRunner.device,
+      runtime.device,
+      scratch.device,
+    ]).size !== 1 ||
     parent.uid !== String(stableUid) ||
     parent.gid !== String(stableGid) ||
     parent.mode !== String(0o700) ||
@@ -484,6 +514,9 @@ function parseIntent(
     rpcRunner.uid !== String(stableUid) ||
     rpcRunner.gid !== String(stableGid) ||
     rpcRunner.mode !== String(0o600) ||
+    runtime.uid !== String(stableUid) ||
+    runtime.gid !== String(stableGid) ||
+    runtime.mode !== String(0o600) ||
     scratch.uid !== String(stableUid) ||
     scratch.gid !== String(stableGid) ||
     scratch.mode !== String(0o700)
@@ -491,7 +524,9 @@ function parseIntent(
     return undefined;
   const objectIdentities = [
     ...ancestors.map((value) => `${value!.device}:${value!.inode}`),
-    ...[root, candidate, rpcRunner, scratch].map((value) => `${value.device}:${value.inode}`),
+    ...[root, candidate, rpcRunner, runtime, scratch].map(
+      (value) => `${value.device}:${value.inode}`,
+    ),
   ];
   if (new Set(objectIdentities).size !== objectIdentities.length) return undefined;
   return Object.freeze({
@@ -504,6 +539,7 @@ function parseIntent(
       parent,
       root,
       rpcRunner,
+      runtime,
       scratch,
       stableGid: String(stableGid),
       stableUid: String(stableUid),
@@ -544,6 +580,8 @@ async function createLinuxDacCustodyCore(
   const active = new Map<LinuxDacLease, ActiveLease>();
 
   async function requireCustody(): Promise<void> {
+    if (nativeHostPlatform === "linux" && (await realpath(pythonLinkPath)) !== pythonPath)
+      throw new TypeError("linux-dac:helper-moved");
     const currentState = await lstat(stateRoot, { bigint: true });
     if (!sameDirectoryIdentity(stateIdentity, currentState))
       throw new TypeError("linux-dac:state-root-moved");
@@ -635,8 +673,12 @@ async function createLinuxDacCustodyCore(
       )
         throw error;
     }
-    if ((await readdir(request.root.path)).sort().join("\0") !== "candidate.mjs\0rpc-runner.mjs")
+    if (
+      (await readdir(request.root.path)).sort().join("\0") !== "candidate.mjs\0node\0rpc-runner.mjs"
+    )
       throw new TypeError("linux-dac:restored-census-refused");
+    if ((await readdir(request.parent.path)).join("\0") !== basename(request.root.path))
+      throw new TypeError("linux-dac:parent-census-refused");
   }
 
   async function capture(input: LinuxDacExecutionInput): Promise<{
@@ -651,13 +693,18 @@ async function createLinuxDacCustodyCore(
     const parentPath = dirname(rootPath);
     if ((await realpath(parentPath)) !== parentPath)
       throw new TypeError("linux-dac:parent-alias-refused");
-    if ((await readdir(rootPath)).sort().join("\0") !== "candidate.mjs\0rpc-runner.mjs\0scratch")
+    if ((await readdir(parentPath)).join("\0") !== basename(rootPath))
+      throw new TypeError("linux-dac:parent-census-refused");
+    if (
+      (await readdir(rootPath)).sort().join("\0") !== "candidate.mjs\0node\0rpc-runner.mjs\0scratch"
+    )
       throw new TypeError("linux-dac:root-census-refused");
     const paths = {
       candidate: resolve(rootPath, "candidate.mjs"),
       parent: parentPath,
       root: rootPath,
       rpcRunner: resolve(rootPath, "rpc-runner.mjs"),
+      runtime: resolve(rootPath, "node"),
       scratch: resolve(rootPath, "scratch"),
     };
     const ancestorPaths = canonicalAncestorPaths(parentPath);
@@ -690,6 +737,7 @@ async function createLinuxDacCustodyCore(
         paths.rpcRunner,
         constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
       );
+      opened.runtime = await open(paths.runtime, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       opened.scratch = await open(
         paths.scratch,
         constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
@@ -718,6 +766,7 @@ async function createLinuxDacCustodyCore(
           "FILE",
           await handles.rpcRunner.stat({ bigint: true }),
         ),
+        runtime: identity(paths.runtime, "FILE", await handles.runtime.stat({ bigint: true })),
         scratch: identity(paths.scratch, "DIRECTORY", await handles.scratch.stat({ bigint: true })),
         stableGid: String(stableGid),
         stableUid: String(stableUid),
@@ -727,9 +776,13 @@ async function createLinuxDacCustodyCore(
         throw new TypeError("linux-dac:original-profile-refused");
       return { handles, request };
     } catch (error) {
-      const childHandles = [opened.scratch, opened.rpcRunner, opened.candidate, opened.root].filter(
-        (handle) => handle !== undefined,
-      );
+      const childHandles = [
+        opened.scratch,
+        opened.runtime,
+        opened.rpcRunner,
+        opened.candidate,
+        opened.root,
+      ].filter((handle) => handle !== undefined);
       await Promise.allSettled(
         [...childHandles, ...[...(opened.ancestors ?? [])].reverse()].map(
           async (handle) => await handle.close(),
@@ -754,7 +807,7 @@ async function createLinuxDacCustodyCore(
       if (!sameIdentity(observed, expectedAncestor))
         throw new TypeError("linux-dac:ancestor-handle-moved");
     }
-    for (const field of ["root", "candidate", "rpcRunner", "scratch"] as const) {
+    for (const field of ["root", "candidate", "rpcRunner", "runtime", "scratch"] as const) {
       const observed = identity(
         expected[field].path,
         expected[field].type,

@@ -6,7 +6,6 @@ import json
 import os
 import pwd
 import re
-import spwd
 import stat
 import subprocess
 import sys
@@ -20,6 +19,7 @@ GROUPDEL = "/usr/sbin/groupdel"
 NOLOGIN = "/usr/sbin/nologin"
 USERADD = "/usr/sbin/useradd"
 USERDEL = "/usr/sbin/userdel"
+SHADOW = "/etc/shadow"
 
 
 def canonical_id(value: str) -> int:
@@ -180,8 +180,56 @@ def require_created(name: str, uid: int, gid: int, stable_uid: int, stable_gid: 
 
 
 def locked_password(name: str) -> bool:
-    shadow = spwd.getspnam(name)
-    return bool(shadow.sp_pwdp) and shadow.sp_pwdp[0] in ("!", "*")
+    password = shadow_password(name)
+    return bool(password) and password[0] in ("!", "*")
+
+
+def shadow_password(name: str) -> str:
+    descriptor = os.open(SHADOW, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != 0
+            or stat.S_IMODE(before.st_mode) & 0o022
+        ):
+            raise RuntimeError("shadow:profile-refused")
+        matches = []
+        with os.fdopen(os.dup(descriptor), "r", encoding="ascii", errors="strict") as handle:
+            for index, line in enumerate(handle):
+                if index >= 100_000:
+                    raise RuntimeError("shadow:row-bound-refused")
+                fields = line.removesuffix("\n").split(":")
+                if len(fields) != 9 or not fields[0] or not line.isascii() or "\x00" in line:
+                    raise RuntimeError("shadow:row-refused")
+                if fields[0] == name:
+                    matches.append(fields[1])
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_gid,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_gid,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise RuntimeError("shadow:moved")
+        if len(matches) != 1:
+            raise RuntimeError("shadow:target-census-refused")
+        return matches[0]
+    finally:
+        os.close(descriptor)
 
 
 def remove_expected(name: str, uid: int, gid: int):

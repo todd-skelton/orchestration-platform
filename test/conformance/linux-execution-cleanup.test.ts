@@ -31,13 +31,13 @@ describe("Linux fd-relative execution cleanup helper", () => {
       "dir_fd=parent",
       "dir_fd=root",
       "os.unlink(name, dir_fd=root)",
-      'for field in ("candidate", "rpcRunner")',
+      'for field in ("candidate", "rpcRunner", "runtime")',
       'os.rmdir("scratch"',
       "require_chain(ancestors, request)",
     ])
       expect(source).toContain(relation);
     expect(source).not.toMatch(
-      /(?:os\.unlink|os\.rmdir)\(request\[["'](?:root|candidate|rpcRunner|scratch)/,
+      /(?:os\.unlink|os\.rmdir)\(request\[["'](?:root|candidate|rpcRunner|runtime|scratch)/,
     );
   });
 });

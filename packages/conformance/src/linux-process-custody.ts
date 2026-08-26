@@ -11,10 +11,11 @@ import {
 import type { LinuxAccountPrincipal } from "./linux-account-custody.js";
 
 const sudoPath = "/usr/bin/sudo";
-const pythonPath = "/usr/bin/python3";
+const pythonLinkPath = "/usr/bin/python3";
 const intentPrefix = "linux-principal-intent-";
 const usedPrefix = "linux-principal-used-";
 const nativeHostPlatform = process.platform;
+const pythonPath = nativeHostPlatform === "linux" ? await realpath(pythonLinkPath) : pythonLinkPath;
 
 export interface LinuxProcessCustodyOptions {
   readonly commandRunner?: (request: LinuxDacCommandRequest) => Promise<unknown>;
@@ -218,6 +219,8 @@ async function createLinuxProcessCustodyCore(
   const run = options.commandRunner ?? runLinuxAuthorityCommand;
 
   async function requireCustody(): Promise<void> {
+    if (nativeHostPlatform === "linux" && (await realpath(pythonLinkPath)) !== pythonPath)
+      throw new TypeError("linux-process:helper-moved");
     const currentState = await lstat(stateRoot, { bigint: true });
     if (!sameDirectoryIdentity(stateIdentity, currentState))
       throw new TypeError("linux-process:state-root-moved");

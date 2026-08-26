@@ -11,7 +11,7 @@ import sys
 
 MINIMUM_ID = 1_000_000
 MAXIMUM_ID = 2_147_483_646
-ENTRY_NAMES = ("candidate.mjs", "rpc-runner.mjs", "scratch")
+ENTRY_NAMES = ("candidate.mjs", "node", "rpc-runner.mjs", "scratch")
 IDENTITY_FIELDS = ("device", "gid", "inode", "mode", "path", "type", "uid")
 REQUEST_FIELDS = (
     "ancestors",
@@ -21,6 +21,7 @@ REQUEST_FIELDS = (
     "parent",
     "root",
     "rpcRunner",
+    "runtime",
     "scratch",
     "stableGid",
     "stableUid",
@@ -82,6 +83,7 @@ def read_request():
         "parent": exact_identity(value["parent"], "DIRECTORY"),
         "root": exact_identity(value["root"], "DIRECTORY"),
         "rpcRunner": exact_identity(value["rpcRunner"], "FILE"),
+        "runtime": exact_identity(value["runtime"], "FILE"),
         "scratch": exact_identity(value["scratch"], "DIRECTORY"),
         "stableGid": canonical_decimal(value["stableGid"], 1),
         "stableUid": canonical_decimal(value["stableUid"], 1),
@@ -108,7 +110,7 @@ def read_request():
         (ancestor["device"], ancestor["inode"]) for ancestor in request["ancestors"]
     ] + [
         (request[field]["device"], request[field]["inode"])
-        for field in ("root", "candidate", "rpcRunner", "scratch")
+        for field in ("root", "candidate", "rpcRunner", "runtime", "scratch")
     ]
     if len(set(object_keys)) != len(object_keys):
         raise ValueError("request:object-alias-refused")
@@ -164,7 +166,7 @@ def expected_profile(original, uid, gid, mode):
     return {**original, "uid": uid, "gid": gid, "mode": mode}
 
 
-def open_handles(request):
+def open_handles(request, admitted_parents=()):
     parent_path = request["parent"]["path"]
     root_path = request["root"]["path"]
     if (
@@ -188,10 +190,17 @@ def open_handles(request):
                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                     dir_fd=ancestor_handles[-1],
                 )
-            require_identity(handle, expected)
+            if index == len(request["ancestors"]) - 1 and admitted_parents:
+                observed = identity(os.fstat(handle), expected["path"], "DIRECTORY")
+                if observed not in admitted_parents:
+                    raise RuntimeError("identity:parent-profile-refused")
+            else:
+                require_identity(handle, expected)
             ancestor_handles.append(handle)
         parent = ancestor_handles[-1]
         handles["parent"] = parent
+        if tuple(os.listdir(parent)) != (os.path.basename(root_path),):
+            raise RuntimeError("identity:parent-census-refused")
         root = os.open(
             os.path.basename(root_path),
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -201,12 +210,13 @@ def open_handles(request):
         observed_entries = tuple(sorted(os.listdir(root)))
         admitted_entries = [tuple(sorted(ENTRY_NAMES))]
         if request["operation"] == "RESTORE":
-            admitted_entries.append(("candidate.mjs", "rpc-runner.mjs"))
+            admitted_entries.append(("candidate.mjs", "node", "rpc-runner.mjs"))
         if observed_entries not in admitted_entries:
             raise RuntimeError("identity:root-census-refused")
         for field, name, flags in [
             ("candidate", "candidate.mjs", os.O_RDONLY),
             ("rpcRunner", "rpc-runner.mjs", os.O_RDONLY),
+            ("runtime", "node", os.O_RDONLY),
             *(
                 [("scratch", "scratch", os.O_RDONLY | os.O_DIRECTORY)]
                 if "scratch" in observed_entries
@@ -220,7 +230,7 @@ def open_handles(request):
             require_immutable_identity(handle, request[field])
         return handles, ancestor_handles
     except BaseException:
-        for field in ("scratch", "rpcRunner", "candidate", "root"):
+        for field in ("scratch", "runtime", "rpcRunner", "candidate", "root"):
             if field in handles:
                 os.close(handles[field])
         for handle in reversed(ancestor_handles):
@@ -228,13 +238,18 @@ def open_handles(request):
         raise
 
 
-def require_ancestor_custody(ancestor_handles, request):
+def require_ancestor_custody(ancestor_handles, request, admitted_parent=None):
     if len(ancestor_handles) != len(request["ancestors"]):
         raise RuntimeError("identity:ancestor-handle-census-refused")
     for index, (handle, expected) in enumerate(
         zip(ancestor_handles, request["ancestors"], strict=True)
     ):
-        require_identity(handle, expected)
+        selected = (
+            admitted_parent
+            if index == len(request["ancestors"]) - 1 and admitted_parent is not None
+            else expected
+        )
+        require_identity(handle, selected)
         if index > 0:
             probe = os.open(
                 posixpath.basename(expected["path"]),
@@ -242,7 +257,7 @@ def require_ancestor_custody(ancestor_handles, request):
                 dir_fd=ancestor_handles[index - 1],
             )
             try:
-                require_identity(probe, expected)
+                require_identity(probe, selected)
             finally:
                 os.close(probe)
 
@@ -261,6 +276,7 @@ def original_profiles(request):
         "root": expected_profile(request["root"], stable_uid, stable_gid, 0o700),
         "candidate": expected_profile(request["candidate"], stable_uid, stable_gid, 0o600),
         "rpcRunner": expected_profile(request["rpcRunner"], stable_uid, stable_gid, 0o600),
+        "runtime": expected_profile(request["runtime"], stable_uid, stable_gid, 0o600),
         "scratch": expected_profile(request["scratch"], stable_uid, stable_gid, 0o700),
     }
     if any(request[field] != profile for field, profile in expected.items()):
@@ -273,25 +289,40 @@ def original_profiles(request):
 
 def granted_profiles(request):
     return {
-        "parent": request["parent"],
+        "parent": expected_profile(
+            request["parent"], request["stableUid"], request["gid"], 0o710
+        ),
         "root": expected_profile(request["root"], 0, request["gid"], 0o510),
         "candidate": expected_profile(request["candidate"], 0, request["gid"], 0o550),
         "rpcRunner": expected_profile(request["rpcRunner"], 0, request["gid"], 0o550),
+        "runtime": expected_profile(request["runtime"], 0, request["gid"], 0o550),
         "scratch": expected_profile(request["scratch"], request["uid"], request["gid"], 0o700),
     }
 
 
+def restorable_parent_profiles(request):
+    original = original_profiles(request)["parent"]
+    granted = granted_profiles(request)["parent"]
+    prepare_after_chown = expected_profile(
+        request["parent"], request["stableUid"], request["gid"], 0o700
+    )
+    restore_after_chown = expected_profile(
+        request["parent"], request["stableUid"], request["stableGid"], 0o710
+    )
+    return (original, granted, prepare_after_chown, restore_after_chown)
+
+
 def restore_all(handles, originals):
     issues = []
-    for field in ("root", "candidate", "rpcRunner", "scratch"):
+    try:
+        set_profile(handles["parent"], originals["parent"])
+    except BaseException:
+        issues.append("identity:parent-restore-refused")
+    for field in ("root", "candidate", "rpcRunner", "runtime", "scratch"):
         try:
             set_profile(handles[field], originals[field])
         except BaseException:
             issues.append(f"identity:{field}-restore-refused")
-    try:
-        require_identity(handles["parent"], originals["parent"])
-    except BaseException:
-        issues.append("identity:parent-moved")
     if issues:
         raise RuntimeError(",".join(sorted(issues)))
 
@@ -299,9 +330,8 @@ def restore_all(handles, originals):
 def prepare(request, handles, originals):
     granted = granted_profiles(request)
     try:
-        for field in ("candidate", "rpcRunner", "scratch", "root"):
+        for field in ("candidate", "rpcRunner", "runtime", "scratch", "root", "parent"):
             set_profile(handles[field], granted[field])
-        require_identity(handles["parent"], originals["parent"])
     except BaseException:
         restore_all(handles, originals)
         raise
@@ -310,12 +340,8 @@ def prepare(request, handles, originals):
 def restore(request, handles, originals):
     granted = granted_profiles(request)
     issues = []
-    for field in ("parent", "root", "candidate", "rpcRunner"):
+    for field in ("parent", "root", "candidate", "rpcRunner", "runtime"):
         observed = identity(os.fstat(handles[field]), originals[field]["path"], originals[field]["type"])
-        if field == "parent":
-            if observed != originals[field]:
-                issues.append("identity:parent-profile-refused")
-            continue
         if observed == originals[field]:
             continue
         if observed != granted[field]:
@@ -367,7 +393,13 @@ def main():
         raise RuntimeError("helper:fd-cleanup-unsupported")
     request = read_request()
     originals = original_profiles(request)
-    handles, ancestor_handles = open_handles(request)
+    granted = granted_profiles(request)
+    admitted_parents = (
+        restorable_parent_profiles(request) if request["operation"] == "RESTORE" else ()
+    )
+    handles, ancestor_handles = open_handles(
+        request, admitted_parents
+    )
     restore_issues = []
     try:
         if request["operation"] == "PREPARE":
@@ -375,8 +407,17 @@ def main():
                 require_identity(handle, originals[field])
             prepare(request, handles, originals)
         else:
-            restore_issues = restore(request, handles, originals)
-        require_ancestor_custody(ancestor_handles, request)
+            observed_parent = identity(
+                os.fstat(handles["parent"]), request["parent"]["path"], "DIRECTORY"
+            )
+            if observed_parent not in (originals["parent"], granted["parent"]):
+                restore_issues.append("identity:parent-transition-ambiguous")
+            restore_issues.extend(restore(request, handles, originals))
+        require_ancestor_custody(
+            ancestor_handles,
+            request,
+            granted["parent"] if request["operation"] == "PREPARE" else None,
+        )
         if request["operation"] == "RESTORE":
             try:
                 require_identity(handles["root"], originals["root"])
@@ -399,6 +440,7 @@ def main():
                     raise RuntimeError("identity:scratch-residue")
                 if tuple(sorted(os.listdir(handles["root"]))) != (
                     "candidate.mjs",
+                    "node",
                     "rpc-runner.mjs",
                 ):
                     raise RuntimeError("identity:restored-census-refused")
@@ -408,7 +450,7 @@ def main():
         sys.stdout.write('{"ok":true}')
         sys.stdout.flush()
     finally:
-        for field in ("scratch", "rpcRunner", "candidate", "root"):
+        for field in ("scratch", "runtime", "rpcRunner", "candidate", "root"):
             if field in handles:
                 os.close(handles[field])
         for handle in reversed(ancestor_handles):

@@ -11,13 +11,14 @@ import {
   type LinuxDacHelperProfile,
 } from "./linux-dac-custody.js";
 
-const pythonPath = "/usr/bin/python3";
+const pythonLinkPath = "/usr/bin/python3";
 const intentPrefix = "linux-execution-intent-";
 const usedPrefix = "linux-execution-used-";
 const createdPrefix = "linux-execution-created-";
 const accountIntentPrefix = "linux-principal-intent-";
 const accountUsedPrefix = "linux-principal-used-";
 const nativeHostPlatform = process.platform;
+const pythonPath = nativeHostPlatform === "linux" ? await realpath(pythonLinkPath) : pythonLinkPath;
 
 interface Identity {
   readonly device: string;
@@ -37,6 +38,7 @@ interface AllocationRecord {
   readonly executionName: string;
   readonly principal: Readonly<{ gid: string; name: string; uid: string }>;
   readonly rpcRunnerSource: Identity;
+  readonly runtimeSource: Identity;
   readonly stableGid: string;
   readonly stableUid: string;
 }
@@ -46,6 +48,7 @@ interface CreatedRecord {
   readonly candidate: Identity;
   readonly root: Identity;
   readonly rpcRunner: Identity;
+  readonly runtime: Identity;
   readonly scratch: Identity;
 }
 
@@ -66,6 +69,7 @@ export interface LinuxExecutionInput {
   readonly candidateArtifactPath: string;
   readonly principal: LinuxAccountPrincipal;
   readonly rpcRunnerPath: string;
+  readonly runtimePath: string;
 }
 
 export interface LinuxExecutionLease {
@@ -73,6 +77,7 @@ export interface LinuxExecutionLease {
   readonly executionName: string;
   readonly rootPath: string;
   readonly rpcRunnerPath: string;
+  readonly runtimePath: string;
   readonly scratchPath: string;
 }
 
@@ -329,7 +334,7 @@ function parseAllocation(input: unknown): AllocationRecord | undefined {
   const record = input as Readonly<Record<string, unknown>>;
   if (
     Object.keys(record).sort().join("\0") !==
-    "ancestors\0candidateSource\0executionName\0principal\0rpcRunnerSource\0stableGid\0stableUid"
+    "ancestors\0candidateSource\0executionName\0principal\0rpcRunnerSource\0runtimeSource\0stableGid\0stableUid"
   )
     return undefined;
   if (
@@ -341,11 +346,13 @@ function parseAllocation(input: unknown): AllocationRecord | undefined {
   const ancestors = record.ancestors.map((value) => parseIdentity(value, "DIRECTORY"));
   const candidateSource = parseIdentity(record.candidateSource, "FILE");
   const rpcRunnerSource = parseIdentity(record.rpcRunnerSource, "FILE");
+  const runtimeSource = parseIdentity(record.runtimeSource, "FILE");
   const principalRecord = record.principal as Readonly<Record<string, unknown>> | null;
   if (
     ancestors.some((value) => !value) ||
     !candidateSource ||
     !rpcRunnerSource ||
+    !runtimeSource ||
     typeof record.executionName !== "string" ||
     !/^orch6-exec-[a-f0-9]{16}$/.test(record.executionName) ||
     !canonicalDecimal(record.stableGid) ||
@@ -364,7 +371,7 @@ function parseAllocation(input: unknown): AllocationRecord | undefined {
     uid: principalRecord.uid,
   });
   if (!principal) return undefined;
-  const objectKeys = [...ancestors, candidateSource, rpcRunnerSource].map(
+  const objectKeys = [...ancestors, candidateSource, rpcRunnerSource, runtimeSource].map(
     (value) => `${value!.device}:${value!.inode}`,
   );
   if (new Set(objectKeys).size !== objectKeys.length) return undefined;
@@ -374,6 +381,7 @@ function parseAllocation(input: unknown): AllocationRecord | undefined {
     executionName: record.executionName,
     principal: Object.freeze({ gid: principal.gid, name: principal.name, uid: principal.uid }),
     rpcRunnerSource,
+    runtimeSource,
     stableGid: String(record.stableGid),
     stableUid: String(record.stableUid),
   });
@@ -384,23 +392,25 @@ function parseCreated(input: unknown): CreatedRecord | undefined {
   const record = input as Readonly<Record<string, unknown>>;
   if (
     Object.keys(record).sort().join("\0") !==
-    "allocationDigest\0candidate\0root\0rpcRunner\0scratch"
+    "allocationDigest\0candidate\0root\0rpcRunner\0runtime\0scratch"
   )
     return undefined;
   const candidate = parseIdentity(record.candidate, "FILE");
   const root = parseIdentity(record.root, "DIRECTORY");
   const rpcRunner = parseIdentity(record.rpcRunner, "FILE");
+  const runtime = parseIdentity(record.runtime, "FILE");
   const scratch = parseIdentity(record.scratch, "DIRECTORY");
   if (
     !candidate ||
     !root ||
     !rpcRunner ||
+    !runtime ||
     !scratch ||
     typeof record.allocationDigest !== "string" ||
     !/^[a-f0-9]{64}$/.test(record.allocationDigest)
   )
     return undefined;
-  const keys = [root, candidate, rpcRunner, scratch].map(
+  const keys = [root, candidate, rpcRunner, runtime, scratch].map(
     (value) => `${value.device}:${value.inode}`,
   );
   if (new Set(keys).size !== keys.length) return undefined;
@@ -409,6 +419,7 @@ function parseCreated(input: unknown): CreatedRecord | undefined {
     candidate,
     root,
     rpcRunner,
+    runtime,
     scratch,
   });
 }
@@ -464,6 +475,10 @@ async function createCore(
     throw error;
   }
   const parent = ancestors.at(-1)!;
+  if (ancestors.slice(0, -1).some((ancestor) => (Number(ancestor.mode) & 0o1) === 0)) {
+    await Promise.allSettled(ancestorHandles.map(async (handle) => await handle.close()));
+    throw new TypeError("linux-execution:ancestor-search-refused");
+  }
   if (
     parent.uid !== String(stableUid) ||
     parent.gid !== String(stableGid) ||
@@ -491,6 +506,8 @@ async function createCore(
 
   async function requireCustody(): Promise<void> {
     if (closed) throw new TypeError("linux-execution:closed");
+    if (nativeHostPlatform === "linux" && (await realpath(pythonLinkPath)) !== pythonPath)
+      throw new TypeError("linux-execution:helper-moved");
     const state = await lstat(stateRoot, { bigint: true });
     const accountState = await lstat(accountStateRoot, { bigint: true });
     if (
@@ -599,7 +616,10 @@ async function createCore(
     }
   }
 
-  async function readSource(pathInput: string): Promise<{ bytes: Buffer; identity: Identity }> {
+  async function readSource(
+    pathInput: string,
+    maximumBytes = 64n * 1024n * 1024n,
+  ): Promise<{ bytes: Buffer; identity: Identity }> {
     const path = await realpath(resolve(pathInput));
     if (within(accountStateRoot, path) || within(stateRoot, path) || within(executionParent, path))
       throw new TypeError("linux-execution:source-root-refused");
@@ -612,7 +632,7 @@ async function createCore(
         before.gid !== BigInt(stableGid) ||
         (before.mode & 0o22n) !== 0n ||
         before.size < 1n ||
-        before.size > 64n * 1024n * 1024n
+        before.size > maximumBytes
       )
         throw new TypeError("linux-execution:source-profile-refused");
       const bytes = await handle.readFile();
@@ -686,7 +706,13 @@ async function createCore(
   }
 
   async function requireCreatedTargets(created: CreatedRecord): Promise<void> {
-    for (const value of [created.root, created.candidate, created.rpcRunner, created.scratch])
+    for (const value of [
+      created.root,
+      created.candidate,
+      created.rpcRunner,
+      created.runtime,
+      created.scratch,
+    ])
       await requireTarget(value);
   }
 
@@ -698,6 +724,7 @@ async function createCore(
       mode: created ? "CREATED" : "PARTIAL",
       root: created?.root ?? null,
       rpcRunner: created?.rpcRunner ?? null,
+      runtime: created?.runtime ?? null,
       scratch: created?.scratch ?? null,
       stableGid: allocation.stableGid,
       stableUid: allocation.stableUid,
@@ -806,6 +833,7 @@ async function createCore(
         created.root.path !== rootPath ||
         created.candidate.path !== resolve(rootPath, "candidate.mjs") ||
         created.rpcRunner.path !== resolve(rootPath, "rpc-runner.mjs") ||
+        created.runtime.path !== resolve(rootPath, "node") ||
         created.scratch.path !== resolve(rootPath, "scratch")
       )
         throw new TypeError("linux-execution:created-path-refused");
@@ -851,13 +879,17 @@ async function createCore(
       await requireAccountPair(principalRecord);
       if ((await readdir(executionParent)).length !== 0)
         throw new TypeError("linux-execution:parent-census-refused");
-      const [candidateSource, rpcRunnerSource] = await Promise.all([
+      const [candidateSource, rpcRunnerSource, runtimeSource] = await Promise.all([
         readSource(input.candidateArtifactPath),
         readSource(input.rpcRunnerPath),
+        readSource(input.runtimePath, 256n * 1024n * 1024n),
       ]);
       if (
-        `${candidateSource.identity.device}:${candidateSource.identity.inode}` ===
-        `${rpcRunnerSource.identity.device}:${rpcRunnerSource.identity.inode}`
+        new Set(
+          [candidateSource.identity, rpcRunnerSource.identity, runtimeSource.identity].map(
+            (value) => `${value.device}:${value.inode}`,
+          ),
+        ).size !== 3
       )
         throw new TypeError("linux-execution:source-alias-refused");
       const tokenValue = token();
@@ -877,6 +909,7 @@ async function createCore(
         executionName,
         principal: principalRecord,
         rpcRunnerSource: rpcRunnerSource.identity,
+        runtimeSource: runtimeSource.identity,
         stableGid: String(stableGid),
         stableUid: String(stableUid),
       });
@@ -911,6 +944,7 @@ async function createCore(
             resolve(rootPath, "rpc-runner.mjs"),
             rpcRunnerSource.bytes,
           );
+          const runtime = await writeTarget(resolve(rootPath, "node"), runtimeSource.bytes);
           const scratchPath = resolve(rootPath, "scratch");
           await mkdir(scratchPath, { mode: 0o700 });
           const scratchHandle = await open(
@@ -941,6 +975,7 @@ async function createCore(
             candidate,
             root: rootIdentity,
             rpcRunner,
+            runtime,
             scratch,
           });
           const createdPath = resolve(stateRoot, `${createdPrefix}${executionName}.json`);
@@ -956,6 +991,7 @@ async function createCore(
             executionName,
             rootPath,
             rpcRunnerPath: rpcRunner.path,
+            runtimePath: runtime.path,
             scratchPath: scratch.path,
           });
           active.set(lease, {

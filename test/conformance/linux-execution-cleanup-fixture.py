@@ -36,6 +36,7 @@ def request(mode="CREATED"):
         "candidate": item(f"{root}/candidate.mjs", "FILE", 4, 0o600, content=b"candidate"),
         "root": item(root, "DIRECTORY", 3, 0o700),
         "rpcRunner": item(f"{root}/rpc-runner.mjs", "FILE", 5, 0o600, content=b"rpc"),
+        "runtime": item(f"{root}/node", "FILE", 8, 0o600, content=b"runtime"),
         "scratch": item(f"{root}/scratch", "DIRECTORY", 6, 0o700),
     }
     return {
@@ -49,6 +50,7 @@ def request(mode="CREATED"):
         "mode": mode,
         "root": identities["root"] if mode == "CREATED" else None,
         "rpcRunner": identities["rpcRunner"] if mode == "CREATED" else None,
+        "runtime": identities["runtime"] if mode == "CREATED" else None,
         "scratch": identities["scratch"] if mode == "CREATED" else None,
         "stableGid": "1001",
         "stableUid": "1001",
@@ -116,10 +118,10 @@ class Tests(unittest.TestCase):
 
     def test_created_cleanup_uses_only_fd_relative_fixed_names(self):
         value = parse(request())
-        handles = {"root": 20, "candidate": 21, "rpcRunner": 22, "scratch": 23}
-        open_children = iter([20, 21, 22, 23, 21, 22, 23, 20])
+        handles = {"root": 20, "candidate": 21, "rpcRunner": 22, "runtime": 23, "scratch": 24}
+        open_children = iter([20, 21, 22, 23, 24, 21, 22, 23, 24, 20])
         list_calls = iter([
-            ["candidate.mjs", "rpc-runner.mjs", "scratch"],
+            ["candidate.mjs", "node", "rpc-runner.mjs", "scratch"],
             [],
             [],
         ])
@@ -147,6 +149,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(output.getvalue(), '{"ok":true}')
         unlink.assert_any_call("candidate.mjs", dir_fd=handles["root"])
         unlink.assert_any_call("rpc-runner.mjs", dir_fd=handles["root"])
+        unlink.assert_any_call("node", dir_fd=handles["root"])
         rmdir.assert_any_call("scratch", dir_fd=handles["root"])
         rmdir.assert_any_call(value["executionName"], dir_fd=12)
 

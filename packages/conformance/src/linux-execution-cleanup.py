@@ -16,6 +16,7 @@ FIELDS = (
     "mode",
     "root",
     "rpcRunner",
+    "runtime",
     "scratch",
     "stableGid",
     "stableUid",
@@ -104,24 +105,39 @@ def read_request():
         "mode": mode,
         "root": None if value["root"] is None else identity(value["root"], "DIRECTORY"),
         "rpcRunner": None if value["rpcRunner"] is None else identity(value["rpcRunner"], "FILE"),
+        "runtime": None if value["runtime"] is None else identity(value["runtime"], "FILE"),
         "scratch": None if value["scratch"] is None else identity(value["scratch"], "DIRECTORY"),
         "stableGid": stable_gid,
         "stableUid": stable_uid,
     }
     if mode == "PARTIAL":
-        if any(parsed[field] is not None for field in ("candidate", "root", "rpcRunner", "scratch")):
+        if any(
+            parsed[field] is not None
+            for field in ("candidate", "root", "rpcRunner", "runtime", "scratch")
+        ):
             raise ValueError("request:partial-identity-refused")
     else:
-        if any(parsed[field] is None for field in ("candidate", "root", "rpcRunner", "scratch")):
+        if any(
+            parsed[field] is None
+            for field in ("candidate", "root", "rpcRunner", "runtime", "scratch")
+        ):
             raise ValueError("request:created-identity-required")
-        for field, name in (("candidate", "candidate.mjs"), ("rpcRunner", "rpc-runner.mjs"), ("scratch", "scratch")):
+        for field, name in (
+            ("candidate", "candidate.mjs"),
+            ("rpcRunner", "rpc-runner.mjs"),
+            ("runtime", "node"),
+            ("scratch", "scratch"),
+        ):
             if parsed[field]["path"] != posixpath.join(expected_root_path, name):
                 raise ValueError("request:child-path-refused")
         if parsed["root"]["path"] != expected_root_path:
             raise ValueError("request:root-path-refused")
     objects = list(ancestors)
     if mode == "CREATED":
-        objects.extend(parsed[field] for field in ("root", "candidate", "rpcRunner", "scratch"))
+        objects.extend(
+            parsed[field]
+            for field in ("root", "candidate", "rpcRunner", "runtime", "scratch")
+        )
     keys = [(item["device"], item["inode"]) for item in objects]
     if len(set(keys)) != len(keys):
         raise ValueError("request:object-alias-refused")
@@ -231,9 +247,14 @@ def main():
             sys.stdout.write('{"ok":true}')
             return
         entries = tuple(sorted(os.listdir(root)))
-        if any(name not in ("candidate.mjs", "rpc-runner.mjs", "scratch") for name in entries):
+        if any(
+            name not in ("candidate.mjs", "node", "rpc-runner.mjs", "scratch")
+            for name in entries
+        ):
             raise RuntimeError("identity:root-census-refused")
-        if request["mode"] == "CREATED" and not all(name in entries for name in ("candidate.mjs", "rpc-runner.mjs")):
+        if request["mode"] == "CREATED" and not all(
+            name in entries for name in ("candidate.mjs", "node", "rpc-runner.mjs")
+        ):
             raise RuntimeError("identity:created-census-refused")
         if request["mode"] == "CREATED":
             require_exact(root, request["root"])
@@ -241,7 +262,12 @@ def main():
             profile = os.fstat(root)
             if profile.st_uid != request["stableUid"] or profile.st_gid != request["stableGid"] or stat.S_IMODE(profile.st_mode) != 0o700:
                 raise RuntimeError("identity:partial-root-profile-refused")
-        for field, name, kind in (("candidate", "candidate.mjs", "FILE"), ("rpcRunner", "rpc-runner.mjs", "FILE"), ("scratch", "scratch", "DIRECTORY")):
+        for field, name, kind in (
+            ("candidate", "candidate.mjs", "FILE"),
+            ("rpcRunner", "rpc-runner.mjs", "FILE"),
+            ("runtime", "node", "FILE"),
+            ("scratch", "scratch", "DIRECTORY"),
+        ):
             if name not in entries:
                 continue
             flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | (os.O_DIRECTORY if kind == "DIRECTORY" else 0)
@@ -257,9 +283,13 @@ def main():
         if "scratch" in children and os.listdir(children["scratch"]):
             raise RuntimeError("identity:scratch-nonempty-refused")
         require_chain(ancestors, request)
-        for field in ("candidate", "rpcRunner"):
+        for field in ("candidate", "rpcRunner", "runtime"):
             if field in children:
-                name = "candidate.mjs" if field == "candidate" else "rpc-runner.mjs"
+                name = {
+                    "candidate": "candidate.mjs",
+                    "rpcRunner": "rpc-runner.mjs",
+                    "runtime": "node",
+                }[field]
                 expected = request[field] if request["mode"] == "CREATED" else observed(children[field], posixpath.join(request["ancestors"][-1]["path"], request["executionName"], name), "FILE")
                 require_entry(root, name, children[field], expected, "FILE", request["mode"] == "CREATED")
                 os.unlink(name, dir_fd=root)

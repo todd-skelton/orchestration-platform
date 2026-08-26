@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { types as nodeTypes } from "node:util";
 import {
   createLinuxAccountCustody,
@@ -394,10 +393,15 @@ async function createCore(
         candidateArtifactPath: request.candidateArtifactPath,
         principal: state.principal,
         rpcRunnerPath: request.rpcRunnerPath,
+        runtimePath,
       });
       state.dacPreparationAttempted = true;
       state.dacLease = await dacCustody.prepareAccess({
-        principal: state.principal,
+        principal: Object.freeze({
+          gid: state.principal.gid,
+          name: state.principal.name,
+          uid: state.principal.uid,
+        }),
         rootPath: state.executionLease.rootPath,
       });
       await requireLaunchCustody();
@@ -425,6 +429,8 @@ async function createCore(
         const launchCommand = Object.freeze({
           arguments: Object.freeze([
             "-n",
+            "-D",
+            state.executionLease.scratchPath,
             setprivPath,
             "--reuid",
             state.principal.uid,
@@ -437,14 +443,14 @@ async function createCore(
             "--bounding-set=-all",
             environmentPath,
             "-i",
-            runtimePath,
-            state.executionLease.rpcRunnerPath,
-            pathToFileURL(state.executionLease.candidateArtifactPath).href,
+            "../node",
+            "../rpc-runner.mjs",
+            "./candidate.mjs",
             "--linux-principal",
             state.principal.uid,
             state.principal.gid,
           ]),
-          cwd: state.executionLease.scratchPath,
+          cwd: dirname(state.executionLease.rootPath),
           file: sudoPath,
           inputText: request.inputText,
           timeoutMilliseconds: 5000 as const,

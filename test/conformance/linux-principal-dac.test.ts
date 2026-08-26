@@ -18,14 +18,14 @@ describe("Linux exact private-group DAC helper", () => {
       [fixturePath, helperPath],
       { env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } },
     );
-    expect(result.stdout).toBe('{"tests":11}');
+    expect(result.stdout).toBe('{"tests":14}');
     expect(result.stderr).toBe("");
   });
 
   test("uses only no-follow handles and fd-relative fixed child names", async () => {
     const source = await readFile(helperPath, "utf8");
     for (const relation of [
-      'ENTRY_NAMES = ("candidate.mjs", "rpc-runner.mjs", "scratch")',
+      'ENTRY_NAMES = ("candidate.mjs", "node", "rpc-runner.mjs", "scratch")',
       "os.O_NOFOLLOW | os.O_CLOEXEC",
       "dir_fd=parent",
       "dir_fd=root",
@@ -39,9 +39,17 @@ describe("Linux exact private-group DAC helper", () => {
     expect(source).not.toMatch(/\b(?:os\.chown|os\.chmod)\s*\(/);
   });
 
-  test("revokes root traversal before restoring children and deleting scratch", async () => {
+  test("revokes parent search before restoring root, children, and scratch", async () => {
     const source = await readFile(helperPath, "utf8");
-    expect(source).toContain('for field in ("root", "candidate", "rpcRunner", "scratch")');
+    expect(source).toContain(
+      'for field in ("candidate", "rpcRunner", "runtime", "scratch", "root", "parent")',
+    );
+    expect(source).toContain(
+      'for field in ("parent", "root", "candidate", "rpcRunner", "runtime")',
+    );
+    expect(source).toContain(
+      'for field in ("root", "candidate", "rpcRunner", "runtime", "scratch")',
+    );
     expect(source.indexOf("restore_all(handles, originals)")).toBeLessThan(
       source.indexOf('shutil.rmtree("scratch", dir_fd=handles["root"])'),
     );

@@ -18,7 +18,7 @@ describe("Linux transient user and private-group helper", () => {
       [fixturePath, helperPath],
       { env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } },
     );
-    expect(result.stdout).toBe('{"tests":9}');
+    expect(result.stdout).toBe('{"tests":10}');
     expect(result.stderr).toBe("");
   });
 

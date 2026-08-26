@@ -1,4 +1,13 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -115,6 +124,7 @@ interface HelperRequest {
   parent: Identity;
   root: Identity;
   rpcRunner: Identity;
+  runtime: Identity;
   scratch: Identity;
   stableGid: string;
   stableUid: string;
@@ -153,6 +163,7 @@ async function createRoots() {
   await mkdir(rootPath, { mode: 0o700 });
   await writeFile(resolve(rootPath, "candidate.mjs"), "export {};", { mode: 0o600 });
   await writeFile(resolve(rootPath, "rpc-runner.mjs"), "export {};", { mode: 0o600 });
+  await writeFile(resolve(rootPath, "node"), "runtime", { mode: 0o600 });
   await mkdir(resolve(rootPath, "scratch"), { mode: 0o700 });
   installIdentity(stateRoot, 0o700);
   mockedDac.stateRoots.add(resolve(stateRoot));
@@ -160,6 +171,7 @@ async function createRoots() {
   installIdentity(rootPath, 0o700);
   installIdentity(resolve(rootPath, "candidate.mjs"), 0o600);
   installIdentity(resolve(rootPath, "rpc-runner.mjs"), 0o600);
+  installIdentity(resolve(rootPath, "node"), 0o600);
   installIdentity(resolve(rootPath, "scratch"), 0o700);
   return { parent, rootPath, stateRoot };
 }
@@ -169,8 +181,14 @@ function mutate(request: HelperRequest): void {
     request.operation === "PREPARE"
       ? {
           candidate: { gid: BigInt(request.gid), mode: 0o550n, uid: 0n },
+          parent: {
+            gid: BigInt(request.gid),
+            mode: 0o710n,
+            uid: BigInt(request.stableUid),
+          },
           root: { gid: BigInt(request.gid), mode: 0o510n, uid: 0n },
           rpcRunner: { gid: BigInt(request.gid), mode: 0o550n, uid: 0n },
+          runtime: { gid: BigInt(request.gid), mode: 0o550n, uid: 0n },
           scratch: { gid: BigInt(request.gid), mode: 0o700n, uid: BigInt(request.uid) },
         }
       : {
@@ -179,15 +197,25 @@ function mutate(request: HelperRequest): void {
             mode: 0o600n,
             uid: BigInt(request.stableUid),
           },
+          parent: {
+            gid: BigInt(request.stableGid),
+            mode: 0o700n,
+            uid: BigInt(request.stableUid),
+          },
           root: { gid: BigInt(request.stableGid), mode: 0o700n, uid: BigInt(request.stableUid) },
           rpcRunner: {
             gid: BigInt(request.stableGid),
             mode: 0o600n,
             uid: BigInt(request.stableUid),
           },
+          runtime: {
+            gid: BigInt(request.stableGid),
+            mode: 0o600n,
+            uid: BigInt(request.stableUid),
+          },
           scratch: { gid: BigInt(request.stableGid), mode: 0o700n, uid: BigInt(request.stableUid) },
         };
-  for (const field of ["candidate", "root", "rpcRunner", "scratch"] as const) {
+  for (const field of ["candidate", "parent", "root", "rpcRunner", "runtime", "scratch"] as const) {
     const profile = mockedDac.identities.get(resolve(request[field].path));
     if (!profile) throw new Error(`missing ${field}`);
     Object.assign(profile, values[field]);
@@ -252,7 +280,12 @@ describe("Linux stable POSIX DAC cleanup-intent custody", () => {
       calls.push(request);
       mockedDac.events.push(`command:${request.operation}`);
       expect(command.file).toBe("/usr/bin/sudo");
-      expect(command.arguments.slice(0, 4)).toEqual(["-n", "/usr/bin/python3", "-I", "-B"]);
+      expect(command.arguments.slice(0, 4)).toEqual([
+        "-n",
+        process.platform === "linux" ? await realpath("/usr/bin/python3") : "/usr/bin/python3",
+        "-I",
+        "-B",
+      ]);
       if (request.operation === "PREPARE") {
         const entries = await readdir(created.stateRoot);
         expect(entries).toEqual([`linux-dac-intent-${principal.name}.json`]);
@@ -273,12 +306,36 @@ describe("Linux stable POSIX DAC cleanup-intent custody", () => {
       uid: principal.uid,
     });
     expect(calls[0]!.root).toMatchObject({ gid: "1001", mode: String(0o700), uid: "1001" });
+    expect(mockedDac.identities.get(resolve(created.parent))).toMatchObject({
+      gid: BigInt(principal.gid),
+      mode: 0o710n,
+      uid: 1001n,
+    });
     expect(mockedDac.events.indexOf("directory-sync")).toBeLessThan(
       mockedDac.events.indexOf("command:PREPARE"),
     );
     await custody.restoreAccess(lease);
+    expect(mockedDac.identities.get(resolve(created.parent))).toMatchObject({
+      gid: 1001n,
+      mode: 0o700n,
+      uid: 1001n,
+    });
     expect(calls.map((value) => value.operation)).toEqual(["PREPARE", "RESTORE"]);
     expect(await readdir(created.stateRoot)).toEqual([]);
+  });
+
+  test("refuses a sibling in the dedicated parent before writing intent or granting search", async () => {
+    const created = await createRoots();
+    const sibling = resolve(created.parent, "sibling");
+    await mkdir(sibling, { mode: 0o700 });
+    const runner = vi.fn(async () => success());
+    const custody = await custodyAt(created.stateRoot, runner);
+    await expect(custody.prepareAccess({ principal, rootPath: created.rootPath })).rejects.toThrow(
+      "parent-census-refused",
+    );
+    expect(runner).not.toHaveBeenCalled();
+    expect(await readdir(created.stateRoot)).toEqual([]);
+    expect((await readdir(created.parent)).sort()).toEqual(["execution", "sibling"]);
   });
 
   test("reverses an ambiguous PREPARE and removes intent only after exact RESTORE", async () => {
