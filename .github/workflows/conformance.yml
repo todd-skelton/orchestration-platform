@@ -39,7 +39,7 @@ jobs:
         working-directory: stable
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/conformance/hosted.mts plan-select
+        run: node scripts/conformance/run-bundled.mts hosted plan-select
       - name: Check out selected candidate revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -52,7 +52,7 @@ jobs:
         env:
           CANDIDATE_ROOT: ${{ github.workspace }}/candidate
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/conformance/hosted.mts plan-finalize
+        run: node scripts/conformance/run-bundled.mts hosted plan-finalize
 
   observation:
     name: observation / ${{ matrix.jobId }}
@@ -92,7 +92,7 @@ jobs:
           CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-observation
           CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
           CONFORMANCE_RUNNER_TOKEN: ${{ matrix.runnerToken }}
-        run: node scripts/conformance/hosted.mts observation
+        run: node scripts/conformance/run-bundled.mts hosted observation
       - name: Upload immutable observation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -136,7 +136,7 @@ jobs:
           CONFORMANCE_DOWNLOAD_ROOT: ${{ runner.temp }}/conformance-downloads
           CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-aggregate
           CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
-        run: node scripts/conformance/hosted.mts aggregate
+        run: node scripts/conformance/run-bundled.mts hosted aggregate
       - name: Upload immutable aggregate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -173,7 +173,7 @@ jobs:
           CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-record
           CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/conformance/hosted.mts record
+        run: node scripts/conformance/run-bundled.mts hosted record
       - name: Upload exact provider record bytes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

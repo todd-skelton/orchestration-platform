@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export type WorkflowStructureResult =
   { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
 
-const expectedDigest = "2580f52381b98ec6efba35e053efb2d7cdfffa78b8b28ea7c082549a6bf6a585";
+const expectedDigest = "fda0ed4c5fc23f560afa62cb20cc4ac059c1cd94d9feb76314ef3bb671683639";
 const actionShaPattern =
   /^[ ]+uses: actions\/(?:checkout|setup-node|upload-artifact|download-artifact)@[0-9a-f]{40}$/;
 
@@ -39,6 +39,7 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "stable/.conformance/observation",
     "stable/.conformance/aggregate",
     "stable/.conformance/conformance-",
+    "node scripts/conformance/hosted.mts ",
   ]) {
     if (source.includes(forbidden)) issues.push(`workflow:forbidden:${forbidden}`);
   }
@@ -55,17 +56,17 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "archive: true",
     "archive: false",
     "retention-days: 31",
-    "node scripts/conformance/hosted.mts plan-select",
-    "node scripts/conformance/hosted.mts plan-finalize",
-    "node scripts/conformance/hosted.mts observation",
+    "node scripts/conformance/run-bundled.mts hosted plan-select",
+    "node scripts/conformance/run-bundled.mts hosted plan-finalize",
+    "node scripts/conformance/run-bundled.mts hosted observation",
     "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-observation",
     "path: ${{ runner.temp }}/conformance-observation",
     "CONFORMANCE_DOWNLOAD_ROOT: ${{ runner.temp }}/conformance-downloads",
     "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-aggregate",
     "path: ${{ runner.temp }}/conformance-downloads",
     "path: ${{ runner.temp }}/conformance-aggregate",
-    "node scripts/conformance/hosted.mts aggregate",
-    "node scripts/conformance/hosted.mts record",
+    "node scripts/conformance/run-bundled.mts hosted aggregate",
+    "node scripts/conformance/run-bundled.mts hosted record",
     "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-record",
     "path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json",
   ]) {

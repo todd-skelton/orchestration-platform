@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { validateConformanceWorkflowSource } from "../../scripts/conformance/workflow-structure.mjs";
 
 const workflowPath = resolve(import.meta.dirname, "../../.github/workflows/conformance.yml");
-const hostedPath = resolve(import.meta.dirname, "../../scripts/conformance/hosted.mts");
+const hostedPath = resolve(import.meta.dirname, "../../scripts/conformance/run-bundled.mts");
 
 async function source(): Promise<string> {
   return readFile(workflowPath, "utf8");
@@ -47,8 +47,13 @@ describe("protected conformance workflow structure", () => {
     ],
     [
       "candidate before stable selection",
+      "node scripts/conformance/run-bundled.mts hosted plan-select",
+      "node scripts/conformance/run-bundled.mts hosted observation",
+    ],
+    [
+      "unbundled hosted source",
+      "node scripts/conformance/run-bundled.mts hosted plan-select",
       "node scripts/conformance/hosted.mts plan-select",
-      "node scripts/conformance/hosted.mts observation",
     ],
     [
       "hard-coded matrix",
@@ -59,8 +64,8 @@ describe("protected conformance workflow structure", () => {
     ["local-hosted substitution", "runs-on: ${{ matrix.runner }}", "runs-on: self-hosted"],
     [
       "aggregate writer in candidate job",
-      "node scripts/conformance/hosted.mts observation",
-      "node scripts/conformance/hosted.mts aggregate",
+      "node scripts/conformance/run-bundled.mts hosted observation",
+      "node scripts/conformance/run-bundled.mts hosted aggregate",
     ],
     ["observation archive disabled", "archive: true", "archive: false"],
     [
@@ -113,7 +118,7 @@ describe("protected conformance workflow structure", () => {
   });
 
   test("refuses the implemented observation mode without provider inputs", () => {
-    const result = spawnSync(process.execPath, [hostedPath, "observation"], {
+    const result = spawnSync(process.execPath, [hostedPath, "hosted", "observation"], {
       encoding: "utf8",
     });
     expect(result.status).not.toBe(0);
@@ -122,7 +127,7 @@ describe("protected conformance workflow structure", () => {
   });
 
   test("refuses the implemented aggregate mode without provider inputs", () => {
-    const result = spawnSync(process.execPath, [hostedPath, "aggregate"], {
+    const result = spawnSync(process.execPath, [hostedPath, "hosted", "aggregate"], {
       encoding: "utf8",
     });
     expect(result.status).not.toBe(0);
@@ -131,7 +136,7 @@ describe("protected conformance workflow structure", () => {
   });
 
   test("refuses the implemented record mode without provider inputs", () => {
-    const result = spawnSync(process.execPath, [hostedPath, "record"], {
+    const result = spawnSync(process.execPath, [hostedPath, "hosted", "record"], {
       encoding: "utf8",
     });
     expect(result.status).not.toBe(0);
@@ -142,7 +147,9 @@ describe("protected conformance workflow structure", () => {
   test.each(["plan-select", "plan-finalize"])(
     "refuses the implemented %s mode without provider inputs",
     (mode) => {
-      const result = spawnSync(process.execPath, [hostedPath, mode], { encoding: "utf8" });
+      const result = spawnSync(process.execPath, [hostedPath, "hosted", mode], {
+        encoding: "utf8",
+      });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(`HOSTED_CONFORMANCE_REFUSED:${mode}`);
     },

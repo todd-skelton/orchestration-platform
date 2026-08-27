@@ -1,5 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  parseHostedTerminalArguments,
   readGithubTerminalArtifacts,
   readGithubTerminalJobs,
   readGithubTerminalRun,
@@ -36,6 +39,32 @@ function runtime(fetcher: HostedTerminalRuntime["fetcher"]): HostedTerminalRunti
 }
 
 describe("post-terminal GitHub API projection", () => {
+  test("accepts only the four bounded terminal-verifier arguments", () => {
+    expect(parseHostedTerminalArguments(["123", "456", "2", revision])).toEqual({
+      ok: true,
+      value: expected,
+    });
+    for (const arguments_ of [
+      [],
+      ["123", "456", "2"],
+      ["0", "456", "2", revision],
+      ["123", "0456", "2", revision],
+      ["123", "456", "2", "refs/heads/main"],
+    ])
+      expect(parseHostedTerminalArguments(arguments_)).toEqual({ ok: false });
+  });
+
+  test("the direct entrypoint emits only a refusal result without authority inputs", () => {
+    const path = resolve(import.meta.dirname, "../../scripts/conformance/run-bundled.mts");
+    const result = spawnSync(process.execPath, [path, "terminal", "123", "456", "2", revision], {
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_TOKEN: "" },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({ issues: ["input:refused"], result: "REFUSED" });
+  });
+
   test("projects the completed protected workflow run", async () => {
     const result = await readGithubTerminalRun(
       repository,
