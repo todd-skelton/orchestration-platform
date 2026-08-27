@@ -666,9 +666,10 @@ export async function validateBootstrapSnapshot(snapshot) {
   if (
     snapshot.rootPackage.packageManager !== "pnpm@11.22.0" ||
     snapshot.rootPackage.engines?.node !== ">=24 <25" ||
-    snapshot.rootPackage.devDependencies?.esbuild !== "0.28.2"
+    snapshot.rootPackage.devDependencies?.esbuild !== "0.28.2" ||
+    snapshot.rootPackage.scripts?.["harness:test"] !== "node scripts/harness-test.mts"
   ) {
-    fail("root runtime metadata or esbuild pin mismatch");
+    fail("root runtime metadata, esbuild pin, or harness entrypoint mismatch");
   }
   for (const dependency of ["@types/node", "esbuild", "prettier", "typescript", "vitest"]) {
     const version = snapshot.rootPackage.devDependencies[dependency];
@@ -715,7 +716,10 @@ export async function validateBootstrapSnapshot(snapshot) {
     ) {
       fail("@orchestration-platform/conformance esbuild pin mismatch");
     }
-    const expectedTest = `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
+    const expectedTest =
+      name === "@orchestration-platform/conformance"
+        ? "node ../../scripts/harness-test.mts"
+        : `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
     if (manifest.scripts?.test !== expectedTest) fail(`${name} test placeholder owner mismatch`);
     for (const [exportKey, value] of Object.entries(manifest.exports)) {
       const expectedTarget =

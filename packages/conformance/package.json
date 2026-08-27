@@ -21,6 +21,6 @@
     "esbuild": "0.28.2"
   },
   "scripts": {
-    "test": "node ../../scripts/capability-not-implemented.mjs ISS-006 @orchestration-platform/conformance:test"
+    "test": "node ../../scripts/harness-test.mts"
   }
 }
