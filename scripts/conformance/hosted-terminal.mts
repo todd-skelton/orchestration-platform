@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { promisify, types as nodeTypes } from "node:util";
-import type { ContractRecord } from "../../packages/contracts/src/index.js";
+import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import {
   parseGithubConformanceProviderRecord,
   projectGithubProtectionSnapshot,
@@ -353,4 +354,56 @@ export async function verifyHostedTerminalFromGithub(
   } catch {
     return refusal("terminalProvider:unreadable");
   }
+}
+
+export function parseHostedTerminalArguments(
+  input: readonly string[],
+): { readonly ok: true; readonly value: HostedTerminalExpected } | { readonly ok: false } {
+  if (input.length !== 4) return { ok: false };
+  const [repositoryId, runId, runAttempt, workflowRevision] = input;
+  if (
+    !repositoryId ||
+    !runId ||
+    !runAttempt ||
+    !workflowRevision ||
+    !expectedDecimal(repositoryId) ||
+    !expectedDecimal(runId) ||
+    !expectedDecimal(runAttempt) ||
+    !revisionPattern.test(workflowRevision)
+  )
+    return { ok: false };
+  return {
+    ok: true,
+    value: Object.freeze({ repositoryId, runAttempt, runId, workflowRevision }),
+  };
+}
+
+export async function runHostedTerminalCli(
+  arguments_: readonly string[] = process.argv.slice(2),
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<number> {
+  const parsed = parseHostedTerminalArguments(arguments_);
+  const token = environment.GITHUB_TOKEN;
+  if (!parsed.ok || !token) {
+    process.stdout.write(`${canonicalJson({ issues: ["input:refused"], result: "REFUSED" })}\n`);
+    return 1;
+  }
+  const result = await verifyHostedTerminalFromGithub(parsed.value, token);
+  if (!result.ok) {
+    process.stdout.write(`${canonicalJson({ issues: result.issues, result: "REFUSED" })}\n`);
+    return 1;
+  }
+  process.stdout.write(
+    `${canonicalJson({
+      providerRecordDigest: result.providerRecordDigest,
+      providerRunDigest: result.providerRunDigest,
+      result: "PASS",
+    })}\n`,
+  );
+  return 0;
+}
+
+const invokedPath = process.argv[1];
+if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+  process.exitCode = await runHostedTerminalCli();
 }

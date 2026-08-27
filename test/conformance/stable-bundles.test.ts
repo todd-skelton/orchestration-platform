@@ -136,9 +136,13 @@ describe("stable ISS-002 bundle path censuses", () => {
       "scripts/conformance/hosted-candidate.mts",
       "scripts/conformance/hosted-observation.mts",
       "scripts/conformance/hosted-plan.mts",
+      "scripts/conformance/hosted-record-api.mts",
+      "scripts/conformance/hosted-record.mts",
+      "scripts/conformance/hosted-terminal.mts",
       "scripts/conformance/hosted.mts",
       "scripts/conformance/iss002-executor.mts",
       "scripts/conformance/iss002-workspace.mts",
+      "scripts/conformance/run-bundled.mts",
       "scripts/harness-test.mts",
     ]);
   });
