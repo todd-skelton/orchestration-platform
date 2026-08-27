@@ -1600,67 +1600,48 @@ The sole authoritative hosted topology is:
    executable downloads in workflow steps refuse the workflow structure test.
 4. Each ephemeral hosted observation job invokes a stable runner token against
    candidate bytes in a separate temporary tree outside the checkout. Before
-   any candidate or other untrusted same-principal process starts, the stable
-   wrapper exclusively owns a fresh external parent, reads each candidate file
-   through an identity-checked regular-file handle, copies only bytes matching
-   the adapter-authenticated candidate subject into a fresh child, and consumes
-   that child into the suite's external execution artifact. The materialized
-   path is never supplied to candidate code, never returned as evidence, and is
-   deleted before the candidate artifact is launched; a partial copy, changed
-   parent/root identity, cleanup failure, or unconsumed path refuses. Local file
-   mode is not authority on Windows: `executable` remains bound only by the
-   adapter's authenticated `100644|100755` projection. The candidate receives
-   only the consumed artifact and allowlisted environment.
+   any candidate process starts, the stable wrapper exclusively owns a fresh
+   external parent, reads each candidate file through an identity-checked
+   regular-file handle, copies only bytes matching the adapter-authenticated
+   candidate subject into a fresh child, and consumes that child into the
+   suite's external execution artifact. The materialized path is never
+   supplied to candidate code, never returned as evidence, and is deleted
+   before the candidate artifact is launched; a partial copy, changed
+   parent/root identity, cleanup failure, or unconsumed path refuses. Local
+   file mode is not authority on Windows: `executable` remains bound only by
+   the adapter's authenticated `100644|100755` projection. The candidate
+   receives only the consumed artifact and allowlisted environment.
 
-   Candidate code never executes under the stable runner's OS principal. The
-   stable adapter creates one fresh non-login principal for the observation job:
-   an otherwise unprivileged transient UID on Linux/macOS and a fresh
-   AppContainer SID on Windows. It is not the runner user, belongs to no sudo,
-   administrator, or authority-bearing group, and is absent before creation.
-   The stable checkout, materialization parent, provider context, and stable
-   process remain owner-only. The isolated principal receives read/execute only
-   on the exact stable-produced candidate artifact and candidate-side RPC runner,
-   plus a fresh writable scratch directory whose bytes are never evidence. It
-   receives no stable path, credential, secret, token, provider metadata, or raw
-   account credential. Provider/repository vocabulary and the UID/SID lifecycle
-   remain adapter diagnostics, never core record members.
+   The isolation boundary for ISS-006 is the provider-fresh per-job runner
+   virtual machine plus protected-main admission of the independently reviewed
+   candidate revision (Round 234). Candidate vectors execute in fresh child
+   Node processes started by the stable parent; every candidate response is
+   hostile data. Only the stable parent owns expected values, selected-head
+   equality, exact output parsing, timing, result normalization, raw
+   observation serialization, or receipt authority. Candidate stdout cannot be
+   a receipt or PASS assertion. The stable parent measures each interval with
+   its captured monotonic clock from immediately before child-process launch
+   through terminal exit and complete response read; process startup, module
+   load, IPC, parse, full validation, and selected-head response are all
+   inside the five-second ceiling. Candidate-reported time is ignored, and the
+   stable parent requires terminal child exit before another interval.
 
-   Privileged setup/teardown is confined to the reviewed stable adapter and only
-   creates/deletes that principal, applies/revokes those exact ACLs, and performs
-   the process census. Candidate code never receives elevation or invokes the
-   privileged helper. An unavailable or wider privileged operation is
-   `UNSUPPORTED`/refusal, never a fallback to the runner principal.
-
-   A stable-parent anonymous-pipe protocol sends one canonical vector input and
-   treats every candidate response as hostile data. Only the stable parent owns
-   expected values, selected-head equality, exact output parsing, timing, result
-   normalization, raw observation serialization, or receipt authority. Candidate
-   stdout cannot be a receipt or PASS assertion. The stable parent measures each
-   interval with its captured monotonic clock from immediately before isolated
-   process launch through terminal exit and complete response read; process
-   startup, module load, IPC, parse, full validation, and selected-head response
-   are all inside the five-second ceiling. Candidate-reported time is ignored.
-
-   The Windows adapter places the process in a non-breakaway kill-on-close Job
-   Object. Linux/macOS use the fresh UID as the complete process census. After
-   each interval the stable adapter requires terminal root-process exit, kills
-   every remaining process in that Job Object or UID census, and proves the
-   census empty before another interval. Before stable evidence is written it
-   revokes artifact access, removes only the identity-checked scratch/artifact
-   roots, deletes the AppContainer profile or transient UID, and proves the
-   principal absent. Any pre-existing/reused principal, runner-principal
-   equality, ACL widening, inherited authority group, process escape, ambiguous
-   pipe/exit, moved root, teardown residue, or unreadable lifecycle fact refuses.
-   Kernel compromise is outside this hosted-OS boundary; same-principal Node
-   permissions, textual dependency scans, `vm`, and candidate self-report are
-   explicitly not isolation substitutes.
+   No job performs a privileged operating-system operation, and the repository
+   contains no compiled executable: everything executed builds from reviewed
+   source. Same-host OS-principal isolation — transient UIDs, AppContainer
+   SIDs, Job Objects, privileged setup/teardown helpers, and isolation
+   brokers — is parked, not refused. Its unpark condition is a slice that must
+   execute candidate bytes which are not an independently reviewed revision of
+   this repository; that condition is owned by the self-host promotion path
+   and is revisited no later than ISS-019. Same-principal Node permissions,
+   textual dependency scans, `vm`, and candidate self-report remain explicitly
+   not isolation substitutes if that machinery unparks.
 
    Stable tests/vectors and candidate implementation bytes never share
-   authorship. After the isolated process exits and teardown succeeds, the
-   stable wrapper captures raw bytes, measures the suite, rechecks the stable
-   bundle, and uploads one attempt-qualified immutable observation artifact with
-   explicit `archive:true`. Candidate output is data, never executed by later
-   jobs.
+   authorship. After the child processes exit, the stable wrapper captures raw
+   bytes, measures the suite, rechecks the stable bundle, and uploads one
+   attempt-qualified immutable observation artifact with explicit
+   `archive:true`. Candidate output is data, never executed by later jobs.
 
 5. A fresh stable-only aggregate job downloads the exact current-attempt
    artifact census, parses all inputs hostile-safe, recomputes identities, and
@@ -1729,17 +1710,17 @@ only; deleting the marker or routing local output to a hosted parser is an
 executable refusal mutant.
 
 The `walk-1000-records` row uses one fixed canonical 1,000-record
-`authority-history/v1` vector and selected head. On each OS, three fresh Node
-processes run under the isolated principal. The stable parent uses its captured
+`authority-history/v1` vector and selected head. On each OS, three fresh child
+Node processes run under the stable parent. The stable parent uses its captured
 `process.hrtime.bigint()` around the complete launch-to-terminal-response
-interval, including process startup, module load, anonymous-pipe IO, JSON parse,
+interval, including process startup, module load, child IPC, JSON parse,
 full validation from genesis, selected-head response, and process exit.
 Dependency installation and pre-launch artifact construction remain excluded.
 There is no warmup, averaging, best-of, or retry. Every one of the three trusted
 parent intervals must be at most 5,000,000,000 nanoseconds; candidate-reported
-time, timeout, overflow, refusal, nonempty residual process census, or one slower
+time, timeout, overflow, refusal, or one slower
 interval makes the required job non-PASS. Checkpoints or indexes remain deleted
-until this exact isolated-process measurement fails on a supported hosted OS.
+until this exact fresh-process measurement fails on a supported hosted OS.
 
 Raw observations, job receipts, aggregate, provider record, stable manifests,
 registry/census, provider metadata snapshot, and workflow-mutation outputs are
@@ -1760,15 +1741,14 @@ stable-manifest file row, vector row, registry suite/job row, workflow event/ref
 permission/checkout separation, matrix cell, attempt join, provider API
 equality, artifact archive/inner digest/length/layout/expiry, full action SHA,
 inclusive provider-time relation, Git mode/tree projection, result reduction,
-raw-diagnostic byte, reflection case, isolated principal/ACL/process census,
-stable-parent pipe/timing relation, teardown fact, and timing interval. Mutation fixtures also add
+raw-diagnostic byte, reflection case, stable-parent timing relation, and timing
+interval. Mutation fixtures also add
 `continue-on-error`, candidate checkout before stable selection, candidate
 matrix/aggregate writers, mutable action refs, ZIP/non-archive substitution,
 same-name prior-attempt artifacts, local-hosted substitution, skipped/cancelled/
-unsupported jobs, same-principal execution, reused UID/SID, widened artifact or
-stable-root ACL, background/breakaway process, forged candidate duration/PASS,
-principal deletion failure, and a spoofed check name; all must refuse without
-producing hosted PASS evidence.
+unsupported jobs, forged candidate duration/PASS, a reintroduced privileged
+isolation operation or committed compiled executable, and a spoofed check name;
+all must refuse without producing hosted PASS evidence.
 
 ## Release layout and root of trust
 

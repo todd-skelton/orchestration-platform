@@ -67,8 +67,8 @@ describe("planning contract", () => {
       "epic membership",
       (snapshot: PlanningSnapshot) => {
         snapshot.epicDrafts["EPIC-RUNTIME"] = snapshot.epicDrafts["EPIC-RUNTIME"]!.replace(
-          "ISS-000, ",
-          "",
+          /\s+ISS-000,\r?\n/,
+          "\n",
         );
       },
     ],
@@ -117,6 +117,15 @@ describe("planning contract", () => {
           isFile: true,
           isSymbolicLink: false,
         });
+      },
+    ],
+    [
+      "duplicate verification capability owner",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.issueDrafts["ISS-040"] = snapshot.issueDrafts["ISS-040"]!.replace(
+          "test:planning-module-proportionality",
+          "test:module-simplification-findings",
+        );
       },
     ],
   ])("rejects the %s mutant", (_name, mutate) => {
