@@ -150,7 +150,7 @@ function confinedContractPlugin(packageRoot: string, realPackageRoot: string): P
   };
 }
 
-async function bundleContracts(root: string, output: string): Promise<void> {
+export async function bundleIss002ContractsCandidate(root: string, output: string): Promise<void> {
   const packageRoot = resolve(root, "packages/contracts");
   const packageIdentity = await lstat(packageRoot);
   const realPackageRoot = await realpath(packageRoot);
@@ -336,8 +336,8 @@ export async function runIss002CrossRootWalk(
         const stableModule = resolve(executionRoot, "stable-contracts.mjs");
         const candidateModule = resolve(executionRoot, "candidate-contracts.mjs");
         const childScript = resolve(executionRoot, "iss002-walk-child.mjs");
-        await bundleContracts(stableRoot, stableModule);
-        await bundleContracts(candidateRoot, candidateModule);
+        await bundleIss002ContractsCandidate(stableRoot, stableModule);
+        await bundleIss002ContractsCandidate(candidateRoot, candidateModule);
         const childSource = resolve(stableRoot, "packages/conformance/src/iss002-walk-child.mjs");
         const [childIdentity, realChildSource] = await Promise.all([
           lstat(childSource),

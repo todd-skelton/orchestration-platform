@@ -1,11 +1,14 @@
+import { execFile } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import * as conformance from "../../packages/conformance/src/index.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const temporaryRoots: string[] = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(
@@ -55,35 +58,17 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/github-protection.ts",
       "packages/conformance/src/github-terminal.ts",
       "packages/conformance/src/index.ts",
-      "packages/conformance/src/isolated-walk.ts",
       "packages/conformance/src/iss002-bundle-paths.mts",
-      "packages/conformance/src/linux-account-custody.ts",
-      "packages/conformance/src/linux-dac-custody.ts",
-      "packages/conformance/src/linux-execution-cleanup.py",
-      "packages/conformance/src/linux-execution-custody.ts",
-      "packages/conformance/src/linux-isolation-authority.ts",
-      "packages/conformance/src/linux-pidfd-quiesce.py",
-      "packages/conformance/src/linux-principal-account.py",
-      "packages/conformance/src/linux-principal-dac.py",
-      "packages/conformance/src/linux-process-custody.ts",
-      "packages/conformance/src/macos-helper-custody.ts",
-      "packages/conformance/src/macos-principal-helper.c",
+      "packages/conformance/src/iss002-native-candidate-walk.ts",
       "packages/conformance/src/manifest.ts",
-      "packages/conformance/src/native-isolated-walk.ts",
       "packages/conformance/src/reducer.ts",
       "packages/conformance/src/stable-bundles.ts",
       "packages/conformance/src/stable.ts",
       "packages/conformance/src/walk.ts",
-      "packages/conformance/src/windows-isolation-authority.ts",
-      "packages/conformance/src/windows-isolation-broker-x64.exe",
-      "packages/conformance/src/windows-isolation-broker.c",
     ]);
     expect(testSources).toEqual([
-      "packages/conformance/src/iss002-isolated-walk-child.mjs",
       "packages/conformance/src/iss002-vector-generator.mjs",
       "packages/conformance/src/iss002-walk-child.mjs",
-      "packages/conformance/src/linux-credential-status.d.mts",
-      "packages/conformance/src/linux-credential-status.mjs",
     ]);
     const owned = [...harnessSources, ...testSources].sort((left, right) =>
       Buffer.compare(Buffer.from(left), Buffer.from(right)),
@@ -106,7 +91,27 @@ describe("stable ISS-002 bundle path censuses", () => {
     expect(conformance.iss002TestBundlePaths).not.toContain("test/contracts/run-tests.mjs");
     expect(
       conformance.iss002TestBundlePaths.filter((path) => path.startsWith("test/conformance/")),
-    ).toEqual(["test/conformance/native-isolated-walk.test.ts"]);
+    ).toEqual(["test/conformance/iss002-native-candidate-walk.test.ts"]);
+  });
+
+  test("keeps parked isolation paths and compiled executables absent", async () => {
+    const tracked = (await execFileAsync("git", ["ls-files"], { cwd: repositoryRoot })).stdout
+      .trim()
+      .split(/\r?\n/);
+    for (const path of [
+      "packages/conformance/src/windows-isolation-broker.c",
+      "packages/conformance/src/windows-isolation-broker-x64.exe",
+      "packages/conformance/src/macos-principal-helper.c",
+      "packages/conformance/src/linux-account-custody.ts",
+      "packages/conformance/src/linux-dac-custody.ts",
+      "packages/conformance/src/linux-execution-custody.ts",
+      "packages/conformance/src/linux-process-custody.ts",
+      "packages/conformance/src/native-isolated-walk.ts",
+      "packages/conformance/src/windows-isolation-authority.ts",
+      "packages/conformance/src/linux-isolation-authority.ts",
+    ])
+      expect(tracked).not.toContain(path);
+    expect(tracked.filter((path) => /\.(?:exe|dll|dylib|so)$/i.test(path))).toEqual([]);
   });
 
   test("pins the package and frozen toolchain inputs without unrelated root files", () => {
