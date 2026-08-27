@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export type WorkflowStructureResult =
   { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
 
-const expectedDigest = "9f66a5006a69b245209cb272596d12b124f7d21ac7ab3f101a20952c2da6db09";
+const expectedDigest = "94b1b6d881aa1e37015291defe88ed81f79863c1152b5b16b565cd8429334088";
 const actionShaPattern =
   /^[ ]+uses: actions\/(?:checkout|setup-node|upload-artifact|download-artifact)@[0-9a-f]{40}$/;
 
@@ -37,6 +37,7 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "environment:",
     "actions/cache@",
     "stable/.conformance/observation",
+    "stable/.conformance/aggregate",
   ]) {
     if (source.includes(forbidden)) issues.push(`workflow:forbidden:${forbidden}`);
   }
@@ -58,6 +59,10 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "node scripts/conformance/hosted.mts observation",
     "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-observation",
     "path: ${{ runner.temp }}/conformance-observation",
+    "CONFORMANCE_DOWNLOAD_ROOT: ${{ runner.temp }}/conformance-downloads",
+    "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-aggregate",
+    "path: ${{ runner.temp }}/conformance-downloads",
+    "path: ${{ runner.temp }}/conformance-aggregate",
     "node scripts/conformance/hosted.mts aggregate",
     "node scripts/conformance/hosted.mts record",
   ]) {

@@ -127,19 +127,21 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: conformance-${{ github.run_id }}-${{ github.run_attempt }}-iss002-contracts-*
-          path: stable/.conformance/downloads
+          path: ${{ runner.temp }}/conformance-downloads
           merge-multiple: false
           digest-mismatch: error
       - name: Reduce stable aggregate
         working-directory: stable
         env:
+          CONFORMANCE_DOWNLOAD_ROOT: ${{ runner.temp }}/conformance-downloads
+          CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-aggregate
           CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
         run: node scripts/conformance/hosted.mts aggregate
       - name: Upload immutable aggregate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: conformance-${{ github.run_id }}-${{ github.run_attempt }}-aggregate
-          path: stable/.conformance/aggregate
+          path: ${{ runner.temp }}/conformance-aggregate
           archive: true
           retention-days: 31
           if-no-files-found: error
