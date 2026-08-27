@@ -700,9 +700,15 @@ export async function validateBootstrapSnapshot(snapshot) {
     if (
       manifest.scripts?.build ||
       manifest.devDependencies?.esbuild ||
-      manifest.dependencies?.esbuild
+      (manifest.dependencies?.esbuild && name !== "@orchestration-platform/conformance")
     ) {
       fail(`${name} has a package-local private build override`);
+    }
+    if (
+      name === "@orchestration-platform/conformance" &&
+      manifest.dependencies?.esbuild !== "0.28.2"
+    ) {
+      fail("@orchestration-platform/conformance esbuild pin mismatch");
     }
     const expectedTest = `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
     if (manifest.scripts?.test !== expectedTest) fail(`${name} test placeholder owner mismatch`);
