@@ -61,6 +61,16 @@ returns to the ordinary independent exact-head review gate; there is no
 repeat-until-clean removal ritual. Complexity that only defends against threats
 the architecture excludes is a finding, not a safeguard.
 
+Delivery cadence is itself bounded (Round 234). Implementation merges to
+`main` through pull requests small enough for one independent review sitting;
+a branch that accumulates multiple slices or a diff beyond ordinary review is
+replan evidence, not a review candidate. Each slice receives one bounded
+pressure round before landing, plus at most one follow-up round after
+repairing a blocker; a further round requires a named new blocker, and a
+review record materially longer than the diff it reviews is a proportionality
+finding. Compiled artifacts are never committed to the repository: everything
+executed builds from reviewed source in the change that uses it.
+
 Portable planning standards also register a falsifiable prediction and
 review-by horizon, express acceptance criteria as observable properties with
 the cheapest discriminating evidence, and treat a prescribed replan mechanism
