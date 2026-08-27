@@ -37,23 +37,20 @@ describe("ISS-002 fixed-selector process executor", () => {
     });
     expect(result).toEqual({ ok: true });
     expect(calls).toHaveLength(2);
-    expect(calls[0]?.[0]).toBe(
-      process.platform === "win32"
-        ? resolve(process.env.SystemRoot ?? process.env.WINDIR!, "System32/cmd.exe")
-        : "pnpm",
-    );
-    expect(calls[0]?.[1]).toEqual(
-      process.platform === "win32"
-        ? ["/d", "/s", "/c", "pnpm store path --silent"]
-        : ["store", "path", "--silent"],
-    );
-    expect(calls[1]?.[1]).toEqual(
-      process.platform === "win32"
-        ? ["/d", "/s", "/c", "pnpm install --offline --frozen-lockfile --ignore-scripts"]
-        : ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
-    );
+    const corepackEntry = resolve(process.execPath, "../node_modules/corepack/dist/corepack.js");
+    expect(calls[0]?.[0]).toBe(process.execPath);
+    expect(calls[0]?.[1]).toEqual([corepackEntry, "pnpm", "store", "path", "--silent"]);
+    expect(calls[1]?.[1]).toEqual([
+      corepackEntry,
+      "pnpm",
+      "--store-dir",
+      resolve(root, "store"),
+      "install",
+      "--offline",
+      "--frozen-lockfile",
+      "--ignore-scripts",
+    ]);
     expect(calls[1]?.[2]).toMatchObject({ cwd: root, encoding: "buffer", windowsHide: true });
-    expect(calls[1]?.[2].env).toHaveProperty("npm_config_store_dir", resolve(root, "store"));
     expect(calls[1]?.[2].env).not.toHaveProperty("GITHUB_TOKEN");
     expect(calls[1]?.[2].env).not.toHaveProperty("GITHUB_RUN_ID");
   });
