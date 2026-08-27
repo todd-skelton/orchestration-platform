@@ -1,0 +1,5 @@
+packages/contracts/src/** text eol=lf
+packages/conformance/src/** text eol=lf
+test/contracts/** text eol=lf
+test/conformance/** text eol=lf
+scripts/harness-test.mts text eol=lf
