@@ -49,6 +49,7 @@ export const iss002HarnessPaths = Object.freeze([
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "scripts/conformance/hosted-candidate.mts",
+  "scripts/conformance/hosted-observation.mts",
   "scripts/conformance/hosted-plan.mts",
   "scripts/conformance/hosted.mts",
   "scripts/conformance/iss002-executor.mts",

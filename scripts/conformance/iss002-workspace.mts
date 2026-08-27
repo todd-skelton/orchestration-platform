@@ -108,7 +108,7 @@ export async function withIss002ExecutionWorkspace<T>(input: {
       for (let right = left + 1; right < roots.length; right += 1)
         if (within(roots[left]!, roots[right]!) || within(roots[right]!, roots[left]!))
           return refusal("workspace:separate-roots-required");
-    workspaceRoot = await mkdtemp(resolve(roots[1]!, "orchestration-iss002-workspace-"));
+    workspaceRoot = await mkdtemp(resolve(roots[1]!, "op-iss002-workspace-"));
     workspaceIdentity = await lstat(workspaceRoot, { bigint: true });
     if (!workspaceIdentity.isDirectory() || workspaceIdentity.isSymbolicLink())
       throw new TypeError("workspace:root-refused");
