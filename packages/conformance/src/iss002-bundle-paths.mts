@@ -10,6 +10,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/conformance/src/github-terminal.ts",
   "packages/conformance/src/index.ts",
   "packages/conformance/src/iss002-bundle-paths.mts",
+  "packages/conformance/src/iss002-handler.ts",
   "packages/conformance/src/iss002-native-candidate-walk.ts",
   "packages/conformance/src/manifest.ts",
   "packages/conformance/src/observation.ts",
