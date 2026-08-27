@@ -67,7 +67,14 @@ importers:
 
   packages/config: {}
 
-  packages/conformance: {}
+  packages/conformance:
+    dependencies:
+      '@orchestration-platform/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
 
   packages/contracts: {}
 
