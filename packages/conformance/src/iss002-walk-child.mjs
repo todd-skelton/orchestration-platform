@@ -11,7 +11,6 @@ if (
 
 const parseJson = JSON.parse.bind(JSON);
 const stringifyJson = JSON.stringify.bind(JSON);
-const monotonicNanoseconds = process.hrtime.bigint.bind(process.hrtime);
 const writeStdout = process.stdout.write.bind(process.stdout);
 const renderString = String;
 const append = Function.call.bind(Array.prototype.push);
@@ -87,7 +86,6 @@ const candidate = await import(candidateModuleUrl);
 if (typeof candidate.validateAuthorityHistoryChain !== "function")
   throw new TypeError("candidate-authority-api:missing");
 
-const started = monotonicNanoseconds();
 const parsed = parseJson(inputText);
 const issues = [
   ...candidate.validateAuthorityHistoryChain(parsed.records, parsed.selectedAuthorityValue),
@@ -99,11 +97,8 @@ if (
   parsed.selectedAuthorityValue.headRecordDigest !== expectedHeadRecordDigest
 )
   append(issues, "selected-head:equality-mismatch");
-const durationNanoseconds = renderString(monotonicNanoseconds() - started);
-
 writeStdout(
   stringifyJson({
-    durationNanoseconds,
     issues,
     recordCount: renderString(parsed.records.length),
   }),

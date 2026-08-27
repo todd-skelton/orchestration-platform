@@ -306,7 +306,7 @@ appendFileSync(${JSON.stringify(audit)}, String(process.pid) + "\\n");
 const observed = Object.fromEntries(Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right)));
 const issues = JSON.stringify(observed) === ${JSON.stringify(JSON.stringify(expectedEnvironment))} ? [] : ["environment:census-mismatch"];
 if (process.cwd() !== ${JSON.stringify(root)}) issues.push("cwd:mismatch");
-process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:"1000"}));
+process.stdout.write(JSON.stringify({issues,recordCount:"1000"}));
 `,
     );
     const ambientKeys = [
@@ -405,7 +405,7 @@ process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:
     expect(proxyTrapCalls).toBe(0);
   });
 
-  test("publishes the exact maximum and keeps parse and validation inside the interval", async () => {
+  test("publishes the stable-parent maximum over complete launch-to-terminal intervals", async () => {
     const root = await temporaryRoot();
     const audit = resolve(root, "interval.txt");
     const script = await child(
@@ -414,8 +414,7 @@ process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:
 const path = ${JSON.stringify(audit)};
 const index = existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
 writeFileSync(path, String(index + 1));
-const values = ["1", "10", "100"];
-process.stdout.write(JSON.stringify({durationNanoseconds:values[index],issues:[],recordCount:"1000"}));
+process.stdout.write(JSON.stringify({issues:[],recordCount:"1000"}));
 `,
     );
     const result = await runIss002WalkIntervals({
@@ -424,21 +423,26 @@ process.stdout.write(JSON.stringify({durationNanoseconds:values[index],issues:[]
       stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
       workingDirectory: root,
     });
-    expect(result).toMatchObject({
-      durationsNanoseconds: ["1", "10", "100"],
-      maximumWalkDurationNanoseconds: "100",
-      ok: true,
-    });
-    const source = await readFile(childScriptPath, "utf8");
-    expect(source.indexOf("const started = monotonicNanoseconds()")).toBeLessThan(
-      source.indexOf("const parsed = parseJson(inputText)"),
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.durationsNanoseconds).toHaveLength(3);
+    expect(result.durationsNanoseconds.every((value) => BigInt(value) > 0n)).toBe(true);
+    expect(result.maximumWalkDurationNanoseconds).toBe(
+      result.durationsNanoseconds.reduce((maximum, value) =>
+        BigInt(value) > BigInt(maximum) ? value : maximum,
+      ),
     );
-    expect(source.indexOf("const parsed = parseJson(inputText)")).toBeLessThan(
-      source.lastIndexOf("candidate.validateAuthorityHistoryChain"),
+    const parentSource = await readFile(
+      resolve(import.meta.dirname, "../../packages/conformance/src/walk.ts"),
+      "utf8",
     );
-    expect(source.lastIndexOf("candidate.validateAuthorityHistoryChain")).toBeLessThan(
-      source.indexOf("const durationNanoseconds"),
+    expect(parentSource.indexOf("const started = monotonicNanoseconds()")).toBeLessThan(
+      parentSource.indexOf("const result = await execFileAsync"),
     );
+    expect(parentSource.indexOf("const result = await execFileAsync")).toBeLessThan(
+      parentSource.indexOf("const durationNanoseconds = monotonicNanoseconds() - started"),
+    );
+    expect(await readFile(childScriptPath, "utf8")).not.toContain("durationNanoseconds");
   });
 
   test("keeps stable and candidate bytes separate and captures timing intrinsics", async () => {
@@ -503,12 +507,12 @@ export function validateAuthorityHistoryChain() { return []; }
     }
   });
 
-  test("refuses over-budget, stderr, semantic issues, and malformed output", async () => {
+  test("refuses forged duration, stderr, semantic issues, and malformed output", async () => {
     const root = await temporaryRoot();
     for (const source of [
       'process.stdout.write(JSON.stringify({durationNanoseconds:"5000000001",issues:[],recordCount:"1000"}));',
-      'process.stderr.write("diagnostic"); process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues:[],recordCount:"1000"}));',
-      'process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues:["bad"],recordCount:"1000"}));',
+      'process.stderr.write("diagnostic"); process.stdout.write(JSON.stringify({issues:[],recordCount:"1000"}));',
+      'process.stdout.write(JSON.stringify({issues:["bad"],recordCount:"1000"}));',
       'process.stdout.write("not-json");',
     ]) {
       const result = await runIss002WalkIntervals({
