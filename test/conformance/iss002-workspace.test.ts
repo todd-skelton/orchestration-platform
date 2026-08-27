@@ -91,7 +91,9 @@ describe("ISS-002 external execution workspace", () => {
         expect(
           await readFile(resolve(workspace, "test/contracts/authority.test.ts"), "utf8"),
         ).toContain('from "vitest"');
-        expect(await prepareIss002WorkspaceDependencies(workspace)).toEqual({ ok: true });
+        expect(await prepareIss002WorkspaceDependencies(stableRoot, workspace)).toEqual({
+          ok: true,
+        });
         const executed = await executeIss002ContractSelection(
           workspace,
           iss002StableVectorSelections[0]!,

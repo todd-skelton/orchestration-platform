@@ -72,6 +72,33 @@ function environment(workspaceRoot: string, includeToolchainPaths: boolean): Nod
   return value;
 }
 
+function packageManagerInvocation(command: string):
+  | {
+      readonly arguments_: readonly string[];
+      readonly executable: string;
+    }
+  | undefined {
+  if (process.platform !== "win32") return { arguments_: command.split(" "), executable: "pnpm" };
+  const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  return windowsRoot
+    ? {
+        arguments_: ["/d", "/s", "/c", `pnpm ${command}`],
+        executable: resolve(windowsRoot, "System32/cmd.exe"),
+      }
+    : undefined;
+}
+
+function storePath(stdout: Uint8Array): string | undefined {
+  try {
+    const value = new TextDecoder("utf-8", { fatal: true }).decode(stdout).trim();
+    return value.length > 0 && !/[\r\n]/.test(value) && isAbsolute(value)
+      ? resolve(value)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function regularWorkspace(workspaceRoot: string): Promise<boolean> {
   if (!isAbsolute(workspaceRoot)) return false;
   try {
@@ -83,26 +110,34 @@ async function regularWorkspace(workspaceRoot: string): Promise<boolean> {
 }
 
 export async function prepareIss002WorkspaceDependencies(
+  stableRoot: string,
   workspaceRoot: string,
   execute: Iss002Process = defaultProcess,
 ): Promise<Iss002PreparationResult> {
-  if (!(await regularWorkspace(workspaceRoot))) return refusal("executor:workspace-refused");
+  if (!(await regularWorkspace(stableRoot)) || !(await regularWorkspace(workspaceRoot)))
+    return refusal("executor:workspace-refused");
   try {
-    const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
-    const executable =
-      process.platform === "win32" && windowsRoot
-        ? resolve(windowsRoot, "System32/cmd.exe")
-        : "pnpm";
-    const arguments_ =
-      process.platform === "win32"
-        ? ["/d", "/s", "/c", "pnpm install --offline --frozen-lockfile --ignore-scripts"]
-        : ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"];
-    if (process.platform === "win32" && !windowsRoot)
-      return refusal("executor:windows-root-required");
-    await execute(executable, arguments_, {
+    const query = packageManagerInvocation("store path --silent");
+    const install = packageManagerInvocation(
+      "install --offline --frozen-lockfile --ignore-scripts",
+    );
+    if (!(query && install)) return refusal("executor:package-manager-refused");
+    const queried = await execute(query.executable, query.arguments_, {
+      cwd: stableRoot,
+      encoding: "buffer",
+      env: environment(stableRoot, true),
+      maxBuffer: 1024 * 1024,
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    const exactStorePath = storePath(queried.stdout);
+    if (!exactStorePath) return refusal("executor:store-path-refused");
+    const installEnvironment = environment(workspaceRoot, true);
+    installEnvironment.npm_config_store_dir = exactStorePath;
+    await execute(install.executable, install.arguments_, {
       cwd: workspaceRoot,
       encoding: "buffer",
-      env: environment(workspaceRoot, true),
+      env: installEnvironment,
       maxBuffer: 64 * 1024 * 1024,
       timeout: 300_000,
       windowsHide: true,

@@ -25,12 +25,18 @@ describe("ISS-002 fixed-selector process executor", () => {
   test("prepares dependencies only through the frozen offline graph", async () => {
     const root = await workspace();
     const calls: Parameters<Iss002Process>[] = [];
-    const result = await prepareIss002WorkspaceDependencies(root, async (...arguments_) => {
+    const result = await prepareIss002WorkspaceDependencies(root, root, async (...arguments_) => {
       calls.push(arguments_);
-      return { stderr: new Uint8Array(), stdout: new Uint8Array() };
+      return {
+        stderr: new Uint8Array(),
+        stdout:
+          calls.length === 1
+            ? new TextEncoder().encode(`${resolve(root, "store")}\n`)
+            : new Uint8Array(),
+      };
     });
     expect(result).toEqual({ ok: true });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0]?.[0]).toBe(
       process.platform === "win32"
         ? resolve(process.env.SystemRoot ?? process.env.WINDIR!, "System32/cmd.exe")
@@ -38,12 +44,18 @@ describe("ISS-002 fixed-selector process executor", () => {
     );
     expect(calls[0]?.[1]).toEqual(
       process.platform === "win32"
+        ? ["/d", "/s", "/c", "pnpm store path --silent"]
+        : ["store", "path", "--silent"],
+    );
+    expect(calls[1]?.[1]).toEqual(
+      process.platform === "win32"
         ? ["/d", "/s", "/c", "pnpm install --offline --frozen-lockfile --ignore-scripts"]
         : ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
     );
-    expect(calls[0]?.[2]).toMatchObject({ cwd: root, encoding: "buffer", windowsHide: true });
-    expect(calls[0]?.[2].env).not.toHaveProperty("GITHUB_TOKEN");
-    expect(calls[0]?.[2].env).not.toHaveProperty("GITHUB_RUN_ID");
+    expect(calls[1]?.[2]).toMatchObject({ cwd: root, encoding: "buffer", windowsHide: true });
+    expect(calls[1]?.[2].env).toHaveProperty("npm_config_store_dir", resolve(root, "store"));
+    expect(calls[1]?.[2].env).not.toHaveProperty("GITHUB_TOKEN");
+    expect(calls[1]?.[2].env).not.toHaveProperty("GITHUB_RUN_ID");
   });
 
   test("runs an exact stable selector in a fresh Node child with a scrubbed environment", async () => {
