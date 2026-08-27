@@ -1,5 +1,7 @@
 import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import { types as nodeTypes } from "node:util";
+import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   computeConformanceRecordDigest,
   parseConformanceRequiredJobRegistry,
@@ -14,6 +16,19 @@ import {
   type GithubProtectionApiInput,
 } from "../../packages/conformance/src/github-actions/index.js";
 import { parseHostedObservationContext } from "./hosted-observation.mjs";
+import {
+  hostedEnvironmentMatchesContext,
+  hostedIss002StableInputsMatchContext,
+  loadHostedIss002StableInputs,
+  decodeHostedObservationContext,
+} from "./hosted-observation.mjs";
+import { githubPlanApi } from "./hosted-plan.mjs";
+import {
+  readGithubHostedArtifacts,
+  readGithubHostedJobs,
+  type GithubHostedArtifactEvidence,
+  type GithubHostedJobEvidence,
+} from "./hosted-record-api.mjs";
 
 export type HostedProviderRecordResult =
   | {
@@ -325,5 +340,108 @@ export function createHostedProviderRecord(
     };
   } catch {
     return refusal("providerRecord:unreadable");
+  }
+}
+
+function within(root: string, path: string): boolean {
+  const value = relative(root, path);
+  return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
+}
+
+function environmentValue(
+  environment: Readonly<Record<string, string | undefined>>,
+  key: string,
+): string | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(environment, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+export interface HostedRecordRuntime {
+  readonly projectProtection: typeof githubPlanApi.projectProtection;
+  readonly readArtifacts: (input: {
+    readonly context: NonNullable<ReturnType<typeof parseHostedObservationContext>>;
+    readonly registry: unknown;
+    readonly token: string;
+  }) => Promise<
+    | { readonly ok: true; readonly value: readonly GithubHostedArtifactEvidence[] }
+    | { readonly ok: false; readonly issues: readonly string[] }
+  >;
+  readonly readJobs: (input: {
+    readonly context: NonNullable<ReturnType<typeof parseHostedObservationContext>>;
+    readonly registry: unknown;
+    readonly token: string;
+  }) => Promise<
+    | {
+        readonly ok: true;
+        readonly value: {
+          readonly jobs: readonly GithubHostedJobEvidence[];
+          readonly recordedAt: string;
+        };
+      }
+    | { readonly ok: false; readonly issues: readonly string[] }
+  >;
+}
+
+const githubRecordRuntime: HostedRecordRuntime = Object.freeze({
+  projectProtection: githubPlanApi.projectProtection,
+  readArtifacts: readGithubHostedArtifacts,
+  readJobs: readGithubHostedJobs,
+});
+
+export async function runHostedRecord(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  runtime: HostedRecordRuntime = githubRecordRuntime,
+): Promise<void> {
+  const encodedContext = environmentValue(environment, "CONFORMANCE_PLAN_CONTEXT");
+  const outputRootInput = environmentValue(environment, "CONFORMANCE_OUTPUT_ROOT");
+  const runnerTempInput = environmentValue(environment, "RUNNER_TEMP");
+  const token = environmentValue(environment, "GITHUB_TOKEN");
+  const context = encodedContext && decodeHostedObservationContext(encodedContext);
+  if (!context || !outputRootInput || !runnerTempInput || !token)
+    throw new Error("record:required-input-refused");
+  if (!hostedEnvironmentMatchesContext(environment, context))
+    throw new Error("record:provider-context-mismatch");
+  const stableRoot = resolve(process.cwd());
+  const outputRoot = resolve(outputRootInput);
+  const runnerTemp = resolve(runnerTempInput);
+  if (
+    !isAbsolute(outputRootInput) ||
+    !isAbsolute(runnerTempInput) ||
+    within(stableRoot, outputRoot) ||
+    !within(runnerTemp, outputRoot) ||
+    outputRoot === runnerTemp
+  )
+    throw new Error("record:external-output-root-required");
+  const stable = await loadHostedIss002StableInputs(stableRoot);
+  if (!stable || !hostedIss002StableInputsMatchContext(stable, context))
+    throw new Error("record:stable-inputs-moved");
+
+  const currentProtection = await runtime.projectProtection(context.repository, token);
+  const artifacts = await runtime.readArtifacts({ context, registry: stable.registry, token });
+  if (!artifacts.ok) throw new Error(artifacts.issues.join(","));
+  const jobs = await runtime.readJobs({ context, registry: stable.registry, token });
+  if (!jobs.ok) throw new Error(jobs.issues.join(","));
+  const record = createHostedProviderRecord({
+    artifacts: artifacts.value,
+    context,
+    currentProtection,
+    jobs: jobs.value.jobs,
+    recordedAt: jobs.value.recordedAt,
+    registry: stable.registry,
+  });
+  if (!record.ok) throw new Error(record.issues.join(","));
+
+  let created = false;
+  try {
+    await mkdir(outputRoot, { recursive: false });
+    created = true;
+    const identity = await lstat(outputRoot);
+    if (!identity.isDirectory() || identity.isSymbolicLink())
+      throw new Error("record:output-root-refused");
+    const filename = `conformance-${context.runId}-${context.runAttempt}-provider-record.json`;
+    await writeFile(resolve(outputRoot, filename), record.bytes, { flag: "wx" });
+  } catch (error) {
+    if (created) await rm(outputRoot, { recursive: true, force: false });
+    throw error;
   }
 }
