@@ -1,5 +1,7 @@
 packages/contracts/src/** text eol=lf
 packages/conformance/src/** text eol=lf
+.github/workflows/conformance.yml text eol=lf
+scripts/conformance/** text eol=lf
 test/contracts/** text eol=lf
 test/conformance/** text eol=lf
 scripts/harness-test.mts text eol=lf

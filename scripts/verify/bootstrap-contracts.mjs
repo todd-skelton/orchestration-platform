@@ -667,9 +667,11 @@ export async function validateBootstrapSnapshot(snapshot) {
     snapshot.rootPackage.packageManager !== "pnpm@11.22.0" ||
     snapshot.rootPackage.engines?.node !== ">=24 <25" ||
     snapshot.rootPackage.devDependencies?.esbuild !== "0.28.2" ||
-    snapshot.rootPackage.scripts?.["harness:test"] !== "node scripts/harness-test.mts"
+    snapshot.rootPackage.scripts?.["harness:test"] !== "node scripts/harness-test.mts" ||
+    snapshot.rootPackage.scripts?.["test:harness-workflow-mutations"] !==
+      "vitest run test/conformance/workflow-structure.test.ts"
   ) {
-    fail("root runtime metadata, esbuild pin, or harness entrypoint mismatch");
+    fail("root runtime metadata, esbuild pin, or harness entrypoint census mismatch");
   }
   for (const dependency of ["@types/node", "esbuild", "prettier", "typescript", "vitest"]) {
     const version = snapshot.rootPackage.devDependencies[dependency];
