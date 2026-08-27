@@ -1,7 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, link, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -18,6 +18,7 @@ const buildPath = resolve(import.meta.dirname, "../../scripts/build/windows-isol
 const clangPath = "C:/Program Files/LLVM/bin/clang-cl.exe";
 const linkerPath = "C:/Program Files/LLVM/bin/lld-link.exe";
 const fixturePath = resolve(import.meta.dirname, "windows-isolation-broker-fixture.c");
+const moduleCustodyFixturePath = resolve(import.meta.dirname, "windows-module-custody-fixture.c");
 const sdkLibraries = [
   "kernel32.lib",
   "userenv.lib",
@@ -27,6 +28,94 @@ const sdkLibraries = [
   "bcrypt.lib",
 ].map((name) => `C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64/${name}`);
 const roots: string[] = [];
+
+const protectedBroker = async (): Promise<string> => {
+  const root = await mkdtemp(resolve(tmpdir(), "orchestration-protected-windows-broker-"));
+  roots.push(root);
+  const source = resolve(root, "windows-isolation-broker.c");
+  const image = resolve(root, "windows-isolation-broker-x64.exe");
+  await Promise.all([copyFile(sourcePath, source), copyFile(imagePath, image)]);
+  const account = spawnSync("whoami.exe", { encoding: "utf8", windowsHide: true });
+  if (account.status !== 0) throw new Error(`whoami failed: ${account.stderr}`);
+  for (const path of [root, source, image]) {
+    for (const args of [
+      [path, "/inheritance:r"],
+      [path, "/grant:r", "SYSTEM:F", `${account.stdout.trim()}:F`],
+      [path, "/setintegritylevel", "M"],
+    ]) {
+      const result = spawnSync("icacls.exe", args, { encoding: "utf8", windowsHide: true });
+      if (result.status !== 0) throw new Error(`icacls failed: ${result.stderr}`);
+    }
+  }
+  return image;
+};
+
+const moduleCustodyFixture = async (): Promise<string> => {
+  const root = await mkdtemp(resolve(tmpdir(), "orchestration-module-custody-fixture-"));
+  roots.push(root);
+  const object = resolve(root, "module-custody.obj");
+  const executable = resolve(root, "windows-isolation-broker-x64.exe");
+  const source = resolve(root, "windows-isolation-broker.c");
+  await copyFile(sourcePath, source);
+  execFileSync(
+    clangPath,
+    [
+      "/nologo",
+      "/c",
+      "/TC",
+      "/std:c11",
+      "/W4",
+      "/WX",
+      "/O1",
+      "/Oi-",
+      "/Gs9999999",
+      "/clang:-fno-builtin",
+      "/clang:-Wno-unused-function",
+      "/GS-",
+      "/Zl",
+      "/Brepro",
+      "/DUNICODE",
+      "/D_UNICODE",
+      `/Fo${object}`,
+      moduleCustodyFixturePath,
+    ],
+    { windowsHide: true },
+  );
+  execFileSync(
+    linkerPath,
+    [
+      "/nologo",
+      `/out:${executable}`,
+      "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+      "/entry:fixture_entry",
+      "/subsystem:console",
+      "/machine:x64",
+      "/nodefaultlib",
+      "/dynamicbase",
+      "/nxcompat",
+      "/highentropyva",
+      "/Brepro",
+      "/opt:ref",
+      object,
+      ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+    ],
+    { windowsHide: true },
+  );
+  await rm(object);
+  const account = spawnSync("whoami.exe", { encoding: "utf8", windowsHide: true });
+  if (account.status !== 0) throw new Error(`whoami failed: ${account.stderr}`);
+  for (const path of [root, source, executable]) {
+    for (const args of [
+      [path, "/inheritance:r"],
+      [path, "/grant:r", "SYSTEM:F", `${account.stdout.trim()}:F`],
+      [path, "/setintegritylevel", "M"],
+    ]) {
+      const result = spawnSync("icacls.exe", args, { encoding: "utf8", windowsHide: true });
+      if (result.status !== 0) throw new Error(`icacls failed: ${result.stderr}`);
+    }
+  }
+  return executable;
+};
 
 const brokerFrame = (
   operation: number,
@@ -197,9 +286,9 @@ describe("private Windows isolation broker bootstrap", () => {
     expect(image.subarray(peOffset, peOffset + 4).toString("binary")).toBe("PE\0\0");
     expect(image.readUInt16LE(peOffset + 4)).toBe(0x8664);
     expect(image.readUInt16LE(peOffset + 24)).toBe(0x20b);
-    expect(image.byteLength).toBe(95232);
+    expect(image.byteLength).toBe(97792);
     expect(createHash("sha256").update(image).digest("hex")).toBe(
-      "4df6df24b316e2b534dfa09dc9334d33fe1d9b17818c9536a40e35d011333aa8",
+      "feb5c14f30a5ef289a5fb357e345673917c30c22c4ab7e1800f6e502c8cd03a4",
     );
     const census = peCensus(image);
     expect(census).toEqual({
@@ -324,7 +413,7 @@ describe("private Windows isolation broker bootstrap", () => {
           ],
         },
       ],
-      relocations: { rva: expect.any(Number), size: 64 },
+      relocations: { rva: expect.any(Number), size: 72 },
     });
     expect(census.dllCharacteristics & 0x160).toBe(0x160);
     expect(census.importDirectory.rva).toBeGreaterThan(0);
@@ -1229,38 +1318,127 @@ describe("private Windows isolation broker bootstrap", () => {
   );
 
   test.runIf(process.platform === "win32")(
+    "executes exact-source module custody retain, drift, refusal, and release paths",
+    async () => {
+      const success = await moduleCustodyFixture();
+      expect(spawnSync(success, ["SUCCESS"], { windowsHide: true })).toMatchObject({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.alloc(0),
+      });
+
+      const absent = await moduleCustodyFixture();
+      await rm(resolve(absent, "..", "windows-isolation-broker.c"));
+      expect(spawnSync(absent, ["REFUSE"], { windowsHide: true })).toMatchObject({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.alloc(0),
+      });
+
+      const streamed = await moduleCustodyFixture();
+      await writeFile(resolve(streamed, "..", "windows-isolation-broker.c:hostile"), "x");
+      expect(spawnSync(streamed, ["REFUSE"], { windowsHide: true })).toMatchObject({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.alloc(0),
+      });
+
+      const drifted = await moduleCustodyFixture();
+      const child = spawn(drifted, ["DRIFT"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      expect(await readExactly(child.stdout, 1)).toEqual(Buffer.from([1]));
+      const grant = spawnSync(
+        "icacls.exe",
+        [resolve(drifted, "..", "windows-isolation-broker.c"), "/grant", "BUILTIN\\Users:R"],
+        { encoding: "utf8", windowsHide: true },
+      );
+      expect(grant.status).toBe(0);
+      child.stdin.end(Buffer.from([1]));
+      expect(await waitForExit(child)).toBe(0);
+    },
+    120_000,
+  );
+
+  test.runIf(process.platform === "win32")(
+    "refuses unprotected, hard-linked, streamed, or widened live-image custody",
+    async () => {
+      const direct = spawnSync(imagePath, ["SERVE"], { encoding: "utf8", windowsHide: true });
+      expect(direct).toMatchObject({
+        status: 65,
+        stderr: "windows-broker:module-custody\n",
+        stdout: "",
+      });
+
+      const hardLinked = await protectedBroker();
+      await link(hardLinked, resolve(hardLinked, "..", "broker-alias.exe"));
+      expect(
+        spawnSync(hardLinked, ["SERVE"], { encoding: "utf8", windowsHide: true }),
+      ).toMatchObject({
+        status: 65,
+        stderr: "windows-broker:module-custody\n",
+        stdout: "",
+      });
+
+      const streamed = await protectedBroker();
+      await writeFile(resolve(streamed, "..", "windows-isolation-broker.c:hostile"), "x");
+      expect(spawnSync(streamed, ["SERVE"], { encoding: "utf8", windowsHide: true })).toMatchObject(
+        {
+          status: 65,
+          stderr: "windows-broker:module-custody\n",
+          stdout: "",
+        },
+      );
+
+      const widened = await protectedBroker();
+      const grant = spawnSync(
+        "icacls.exe",
+        [resolve(widened, ".."), "/grant", "BUILTIN\\Users:R"],
+        { encoding: "utf8", windowsHide: true },
+      );
+      expect(grant.status).toBe(0);
+      expect(spawnSync(widened, ["SERVE"], { encoding: "utf8", windowsHide: true })).toMatchObject({
+        status: 65,
+        stderr: "windows-broker:module-custody\n",
+        stdout: "",
+      });
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
     "refuses non-modes and requires one canonical frame for both modes",
-    () => {
+    async () => {
+      const broker = await protectedBroker();
       for (const value of [[], ["UNKNOWN"], ["SERVE", "extra"], ["RECOVER", "extra"]]) {
-        const result = spawnSync(imagePath, value, { encoding: "utf8", windowsHide: true });
+        const result = spawnSync(broker, value, { encoding: "utf8", windowsHide: true });
         expect(result).toMatchObject({
           status: 64,
           stderr: "windows-broker:arguments\n",
           stdout: "",
         });
       }
-      expect(
-        spawnSync(imagePath, ["SERVE"], { encoding: "utf8", windowsHide: true }),
-      ).toMatchObject({
+      expect(spawnSync(broker, ["SERVE"], { encoding: "utf8", windowsHide: true })).toMatchObject({
         status: 65,
         stderr: "windows-broker:protocol\n",
         stdout: "",
       });
-      expect(
-        spawnSync(imagePath, ["RECOVER"], { encoding: "utf8", windowsHide: true }),
-      ).toMatchObject({ status: 65, stderr: "windows-broker:protocol\n", stdout: "" });
+      expect(spawnSync(broker, ["RECOVER"], { encoding: "utf8", windowsHide: true })).toMatchObject(
+        { status: 65, stderr: "windows-broker:protocol\n", stdout: "" },
+      );
     },
   );
 
   test.runIf(process.platform === "win32")(
     "refuses wrong-order operations and nonexistent authenticated state roots",
-    () => {
+    async () => {
+      const broker = await protectedBroker();
       for (const operation of [2, 3]) {
         const request = brokerFrame(
           operation,
           operation === 2 ? Buffer.from("x", "utf8") : undefined,
         );
-        const result = spawnSync(imagePath, ["SERVE"], {
+        const result = spawnSync(broker, ["SERVE"], {
           input: request,
           windowsHide: true,
         });
@@ -1276,13 +1454,13 @@ describe("private Windows isolation broker bootstrap", () => {
         "\\\\?\\C:\\orchestration-missing-rpc.mjs",
         "\\\\?\\C:\\orchestration-missing-candidate.mjs",
       ]);
-      const prepare = spawnSync(imagePath, ["SERVE"], {
+      const prepare = spawnSync(broker, ["SERVE"], {
         input: brokerFrame(1, missingPrepare),
         windowsHide: true,
       });
       expect(prepare).toMatchObject({ status: 65, stderr: Buffer.alloc(0) });
       expect(prepare.stdout).toEqual(responseFrame(1, 65));
-      const recover = spawnSync(imagePath, ["RECOVER"], {
+      const recover = spawnSync(broker, ["RECOVER"], {
         input: brokerFrame(3, profileScope(missingRoot)),
         windowsHide: true,
       });
@@ -1293,7 +1471,8 @@ describe("private Windows isolation broker bootstrap", () => {
 
   test.runIf(process.platform === "win32")(
     "refuses malformed, unknown, oversized, and truncated frames without a response",
-    () => {
+    async () => {
+      const broker = await protectedBroker();
       const wrongMagic = Array.from({ length: 4 }, (_, index) => {
         const frame = brokerFrame(1);
         frame[index] = 0;
@@ -1330,7 +1509,7 @@ describe("private Windows isolation broker bootstrap", () => {
         truncated,
         partialMultiChunk,
       ]) {
-        const result = spawnSync(imagePath, ["SERVE"], { input, windowsHide: true });
+        const result = spawnSync(broker, ["SERVE"], { input, windowsHide: true });
         expect(result.status).toBe(65);
         expect(result.stderr.toString("utf8")).toBe("windows-broker:protocol\n");
         expect(result.stdout).toEqual(Buffer.alloc(0));
@@ -1340,7 +1519,8 @@ describe("private Windows isolation broker bootstrap", () => {
 
   test.runIf(process.platform === "win32")(
     "accepts only the closed five-path execution-prepare arm",
-    () => {
+    async () => {
+      const broker = await protectedBroker();
       const canonicalPaths = [
         "\\\\?\\C:\\orchestration-missing-profile-root",
         "\\\\?\\C:\\orchestration-missing-execution-parent",
@@ -1387,7 +1567,7 @@ describe("private Windows isolation broker bootstrap", () => {
         trailing,
         ...invalidPaths,
       ]) {
-        const result = spawnSync(imagePath, ["SERVE"], {
+        const result = spawnSync(broker, ["SERVE"], {
           input: brokerFrame(1, payload),
           windowsHide: true,
         });

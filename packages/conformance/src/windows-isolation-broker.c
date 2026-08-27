@@ -80,6 +80,7 @@ typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID);
 #define TOKEN_READ 0x00020008U
 #define MAXIMUM_ALLOWED 0x02000000U
 #define FILE_LIST_DIRECTORY 1U
+#define FILE_TRAVERSE 0x20U
 #define FILE_READ_ATTRIBUTES 0x80U
 #define READ_CONTROL 0x00020000U
 #define GENERIC_READ 0x80000000U
@@ -496,6 +497,19 @@ __declspec(dllimport) void WINAPI Sleep(DWORD);
 #define ADMISSION_REVOKE_ATTEMPTED 6U
 #define ADMISSION_ABSENCE_PROVED 7U
 
+#if !defined(OP_WINDOWS_LIFECYCLE_FIXTURE) && \
+    !defined(OP_WINDOWS_ADMISSION_FIXTURE) && \
+    !defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
+#define OP_WINDOWS_MODULE_CUSTODY_PRODUCTION 1
+#endif
+#if defined(OP_WINDOWS_MODULE_CUSTODY_PRODUCTION) || \
+    defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
+#define OP_WINDOWS_MODULE_CANDIDATE_PROOF 1
+#endif
+#if !defined(OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED)
+#define OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() 1
+#endif
+
 static const WCHAR serve_mode[] = L"SERVE";
 static const WCHAR recover_mode[] = L"RECOVER";
 static const void *volatile image_relocation_anchor = serve_mode;
@@ -503,6 +517,10 @@ static BYTE frame_payload[MAX_PAYLOAD];
 static const DWORD denied_execution_rights[] = {
   GENERIC_WRITE, FILE_APPEND_DATA, DELETE, WRITE_DAC, WRITE_OWNER,
   ACCESS_SYSTEM_SECURITY
+};
+static const DWORD denied_broker_rights[] = {
+  GENERIC_READ, GENERIC_WRITE, GENERIC_EXECUTE, FILE_APPEND_DATA,
+  DELETE, WRITE_DAC, WRITE_OWNER, ACCESS_SYSTEM_SECURITY
 };
 
 typedef struct broker_frame {
@@ -654,6 +672,19 @@ typedef struct root_custody {
   BYTE digest[32];
   int resource_ambiguous;
 } ROOT_CUSTODY;
+
+typedef struct module_custody {
+  ROOT_CUSTODY context;
+  RETAINED_OBJECT parent;
+  RETAINED_OBJECT image;
+  RETAINED_OBJECT source;
+  BYTE active;
+} MODULE_CUSTODY;
+
+static MODULE_CUSTODY module_custody;
+static __declspec(noreturn) void broker_exit(DWORD);
+static int verify_module_custody(void);
+static int retain_module_custody(void);
 
 typedef struct journal_group {
   PROFILE_IDENTITY identity;
@@ -1169,7 +1200,7 @@ static int read_one(HANDLE input, BYTE *value) {
 
 static __declspec(noreturn) void protocol_refused(void) {
   diagnostic("windows-broker:protocol\n");
-  ExitProcess(EXIT_PROTOCOL_REFUSED);
+  broker_exit(EXIT_PROTOCOL_REFUSED);
 }
 
 static int read_frame(HANDLE input, BROKER_FRAME *frame, int first) {
@@ -2567,7 +2598,9 @@ static int prove_child_token(ROOT_CUSTODY *root,
   int valid = 0;
   int impersonating = 0;
   HANDLE thread_token = NULL;
+#if !defined(OP_WINDOWS_MODULE_CUSTODY_PRODUCTION)
   WCHAR module_path[PATH_MAX_UNITS + 1U];
+#endif
   if (!OpenProcessToken(runtime->process.hProcess,
                         TOKEN_QUERY | TOKEN_DUPLICATE,
                         &runtime->process_token)) {
@@ -2688,6 +2721,38 @@ static int prove_child_token(ROOT_CUSTODY *root,
       diagnostic("windows-broker:admission-token-root-access\n");
       goto done;
     }
+#if defined(OP_WINDOWS_MODULE_CANDIDATE_PROOF)
+  RETAINED_OBJECT *broker_objects[3] = {
+    &module_custody.image, &module_custody.source, &module_custody.parent
+  };
+  if (OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() &&
+      !verify_module_custody()) {
+    diagnostic("windows-broker:admission-token-broker-access\n");
+    goto done;
+  }
+  for (DWORD object = 0U;
+       OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() && object < 3U;
+       object += 1U)
+    for (DWORD right = 0U;
+         right < sizeof(denied_broker_rights) / sizeof(DWORD);
+         right += 1U)
+      if (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                               broker_objects[object]->handle,
+                               denied_broker_rights[right], 0)) {
+        diagnostic("windows-broker:admission-token-broker-access\n");
+        goto done;
+      }
+  if (OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() &&
+      (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                           module_custody.parent.handle,
+                           FILE_LIST_DIRECTORY, 0) ||
+      !OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                           module_custody.parent.handle,
+                           FILE_TRAVERSE, 0))) {
+    diagnostic("windows-broker:admission-token-broker-parent-access\n");
+    goto done;
+  }
+#endif
   if (!ImpersonateLoggedOnUser(runtime->impersonation_token)) {
     diagnostic("windows-broker:admission-token-impersonate\n");
     goto done;
@@ -2724,12 +2789,45 @@ static int prove_child_token(ROOT_CUSTODY *root,
       goto done;
     }
   if (!OP_ADMISSION_OPEN(execution->parent.path, FILE_LIST_DIRECTORY, 1, 0) ||
-      !OP_ADMISSION_OPEN(root->path, FILE_LIST_DIRECTORY, 1, 0) ||
-      GetModuleFileNameW(NULL, module_path, PATH_MAX_UNITS + 1U) == 0U ||
-      !OP_ADMISSION_OPEN(module_path, GENERIC_READ, 0, 0)) {
+      !OP_ADMISSION_OPEN(root->path, FILE_LIST_DIRECTORY, 1, 0)
+#if !defined(OP_WINDOWS_MODULE_CANDIDATE_PROOF)
+      || GetModuleFileNameW(NULL, module_path, PATH_MAX_UNITS + 1U) == 0U ||
+      !OP_ADMISSION_OPEN(module_path, GENERIC_READ, 0, 0)
+#endif
+      ) {
     diagnostic("windows-broker:admission-token-negative-open\n");
     goto done;
   }
+#if defined(OP_WINDOWS_MODULE_CANDIDATE_PROOF)
+#if !defined(OP_WINDOWS_MODULE_CUSTODY_PRODUCTION)
+  if (!OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() &&
+      (GetModuleFileNameW(NULL, module_path, PATH_MAX_UNITS + 1U) == 0U ||
+       !OP_ADMISSION_OPEN(module_path, GENERIC_READ, 0, 0))) {
+    diagnostic("windows-broker:admission-token-negative-open\n");
+    goto done;
+  }
+#endif
+  for (DWORD object = 0U;
+       OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() && object < 3U;
+       object += 1U)
+    for (DWORD right = 0U;
+         right < sizeof(denied_broker_rights) / sizeof(DWORD);
+         right += 1U)
+      if (!OP_ADMISSION_OPEN(broker_objects[object]->path,
+                             denied_broker_rights[right],
+                             object == 2U, 0)) {
+        diagnostic("windows-broker:admission-token-broker-denied-open\n");
+        goto done;
+      }
+  if (OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() &&
+      (!OP_ADMISSION_OPEN(module_custody.parent.path,
+                         FILE_LIST_DIRECTORY, 1, 0) ||
+      !OP_ADMISSION_OPEN(module_custody.parent.path,
+                         FILE_TRAVERSE, 1, 0))) {
+    diagnostic("windows-broker:admission-token-broker-parent-open\n");
+    goto done;
+  }
+#endif
   if (!OP_ADMISSION_SCRATCH(root, identity)) {
     diagnostic("windows-broker:admission-token-scratch\n");
     goto done;
@@ -3492,6 +3590,147 @@ static int release_retained_object(ROOT_CUSTODY *root, RETAINED_OBJECT *object) 
   object->handle = INVALID_HANDLE_VALUE;
   if (!clean) root->resource_ambiguous = 1;
   return clean;
+}
+
+static int initialize_security_context(ROOT_CUSTODY *context) {
+  BOOL app_container = FALSE;
+  DWORD returned = 0U;
+  BYTE restricted[sizeof(TOKEN_GROUPS)];
+  HANDLE thread_token = NULL;
+  zero_bytes(context, sizeof(*context));
+  context->handle = INVALID_HANDLE_VALUE;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &context->token) ||
+      !GetTokenInformation(context->token, TokenIsAppContainer, &app_container,
+                           sizeof(app_container), &returned) || app_container)
+    return 0;
+  if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &thread_token) ||
+      GetLastError() != ERROR_NO_TOKEN) {
+    if (thread_token != NULL && !CloseHandle(thread_token))
+      context->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!GetTokenInformation(context->token, TokenRestrictedSids, restricted,
+                           sizeof(restricted), &returned) ||
+      ((TOKEN_GROUPS *)restricted)->GroupCount != 0U ||
+      !copy_token_sid(context, context->token, TokenUser,
+                      &context->stable_sid,
+                      &context->stable_sid_length) ||
+      !copy_token_sid(context, context->token, TokenIntegrityLevel,
+                      &context->integrity_sid,
+                      &context->integrity_sid_length))
+    return 0;
+  return !context->resource_ambiguous;
+}
+
+static int module_path_components(WCHAR image[PATH_MAX_UNITS + 1U],
+                                  WORD *image_units,
+                                  WCHAR parent[PATH_MAX_UNITS + 1U],
+                                  WORD *parent_units,
+                                  WCHAR source[PATH_MAX_UNITS + 1U],
+                                  WORD *source_units) {
+  static const WCHAR image_name[] = L"windows-isolation-broker-x64.exe";
+  static const WCHAR source_name[] = L"windows-isolation-broker.c";
+  WCHAR native[PATH_MAX_UNITS + 1U];
+  DWORD native_units = GetModuleFileNameW(NULL, native, PATH_MAX_UNITS + 1U);
+  DWORD slash = 0U;
+  DWORD index;
+  DWORD cursor = 0U;
+  if (native_units < 4U || native_units > PATH_MAX_UNITS - 4U ||
+      native[1] != L':' || native[2] != L'\\' ||
+      native[0] < L'A' || native[0] > L'Z')
+    return 0;
+  for (index = 0U; index < native_units; index += 1U)
+    if (native[index] == L'\\') slash = index;
+  if (slash < 3U || !wide_equal(native + slash + 1U, image_name)) return 0;
+  if (!append_wide(image, PATH_MAX_UNITS + 1U, &cursor, L"\\\\?\\") ||
+      !append_wide(image, PATH_MAX_UNITS + 1U, &cursor, native) ||
+      cursor > PATH_MAX_UNITS)
+    return 0;
+  *image_units = (WORD)cursor;
+  cursor = 0U;
+  for (index = 0U; index < 4U + slash; index += 1U) parent[cursor++] = image[index];
+  parent[cursor] = L'\0';
+  *parent_units = (WORD)cursor;
+  copy_bytes(source, parent, ((DWORD)*parent_units + 1U) * 2U);
+  cursor = *parent_units;
+  if (!append_wide(source, PATH_MAX_UNITS + 1U, &cursor, L"\\") ||
+      !append_wide(source, PATH_MAX_UNITS + 1U, &cursor, source_name) ||
+      cursor > PATH_MAX_UNITS)
+    return 0;
+  *source_units = (WORD)cursor;
+  return 1;
+}
+
+static int verify_module_custody(void) {
+#if !defined(OP_WINDOWS_MODULE_CUSTODY_PRODUCTION)
+  return 1;
+#else
+  MODULE_CUSTODY *custody = &module_custody;
+  if (!custody->active) return 0;
+  return verify_retained_object(&custody->context, &custody->parent,
+                                "op.windows-broker-parent/v1", 0U,
+                                custody->parent.binding) &&
+         verify_retained_object(&custody->context, &custody->source,
+                                "op.windows-broker-source/v1", 0U,
+                                custody->source.binding) &&
+         verify_retained_object(&custody->context, &custody->image,
+                                "op.windows-broker-image/v1", 0U,
+                                custody->image.binding);
+#endif
+}
+
+static int retain_module_custody(void) {
+  MODULE_CUSTODY *custody = &module_custody;
+  WCHAR image[PATH_MAX_UNITS + 1U];
+  WCHAR parent[PATH_MAX_UNITS + 1U];
+  WCHAR source[PATH_MAX_UNITS + 1U];
+  WORD image_units = 0U;
+  WORD parent_units = 0U;
+  WORD source_units = 0U;
+  zero_bytes(custody, sizeof(*custody));
+  custody->context.handle = INVALID_HANDLE_VALUE;
+  custody->parent.handle = INVALID_HANDLE_VALUE;
+  custody->image.handle = INVALID_HANDLE_VALUE;
+  custody->source.handle = INVALID_HANDLE_VALUE;
+  if (!module_path_components(image, &image_units, parent, &parent_units,
+                              source, &source_units) ||
+      !initialize_security_context(&custody->context) ||
+      !retain_exact_object(&custody->context, parent, parent_units, 1, 0, 0,
+                           &custody->parent,
+                           "op.windows-broker-parent/v1", 0U) ||
+      !retain_exact_object(&custody->context, source, source_units, 0, 0, 0,
+                           &custody->source,
+                           "op.windows-broker-source/v1", 0U) ||
+      !retain_exact_object(&custody->context, image, image_units, 0, 0, 0,
+                           &custody->image,
+                           "op.windows-broker-image/v1", 0U))
+    goto failed;
+  custody->active = 1U;
+  if (verify_module_custody()) return 1;
+failed:
+  custody->active = 0U;
+  (void)release_retained_object(&custody->context, &custody->image);
+  (void)release_retained_object(&custody->context, &custody->source);
+  (void)release_retained_object(&custody->context, &custody->parent);
+  (void)release_root(&custody->context);
+  return 0;
+}
+
+static int release_module_custody(void) {
+  MODULE_CUSTODY *custody = &module_custody;
+  int clean = custody->active && verify_module_custody();
+  custody->active = 0U;
+  if (!release_retained_object(&custody->context, &custody->image)) clean = 0;
+  if (!release_retained_object(&custody->context, &custody->source)) clean = 0;
+  if (!release_retained_object(&custody->context, &custody->parent)) clean = 0;
+  if (!release_root(&custody->context)) clean = 0;
+  return clean;
+}
+
+static __declspec(noreturn) void broker_exit(DWORD code) {
+  if (module_custody.active && !release_module_custody())
+    code = EXIT_RECOVERY_REQUIRED;
+  ExitProcess(code);
 }
 
 static int append_wide(WCHAR *target, DWORD capacity, DWORD *cursor, const WCHAR *value) {
@@ -6715,7 +6954,7 @@ static void diagnostic_pause(void) {
 #endif
   if (input == NULL || input == INVALID_HANDLE_VALUE ||
       !ReadFile(input, &resumed, 1U, &received, NULL) || received != 1U)
-    ExitProcess(EXIT_RECOVERY_REQUIRED);
+    broker_exit(EXIT_RECOVERY_REQUIRED);
 }
 #endif
 
@@ -7336,7 +7575,7 @@ static __declspec(noreturn) void finish_prepared(ROOT_CUSTODY *root,
   int released = OP_BROKER_RELEASE_ROOT(root);
   BYTE status = clean && released ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED;
   if (respond) (void)send_response(output, operation, status, NULL, 0U);
-  ExitProcess(status == STATUS_RECOVERY_REQUIRED ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
+  broker_exit(status == STATUS_RECOVERY_REQUIRED ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
 }
 
 static __declspec(noreturn) void finish_active_admission(
@@ -7345,9 +7584,9 @@ static __declspec(noreturn) void finish_active_admission(
     ACTIVE_ADMISSION *active, HANDLE output, int respond) {
   int clean;
   int released;
-  if (active->hard_abort) ExitProcess(EXIT_RECOVERY_REQUIRED);
+  if (active->hard_abort) broker_exit(EXIT_RECOVERY_REQUIRED);
   clean = revoke_active_admission(root, identity, execution, active, 1, 1) > 0;
-  if (active->hard_abort) ExitProcess(EXIT_RECOVERY_REQUIRED);
+  if (active->hard_abort) broker_exit(EXIT_RECOVERY_REQUIRED);
   if (clean) clean = OP_BROKER_CLEANUP_EXECUTION(root, identity, execution);
   if (clean) clean = OP_BROKER_CLEANUP_PROFILE(root, identity, folder_handle);
   if (!OP_BROKER_RELEASE_EXECUTION(root, execution)) clean = 0;
@@ -7358,7 +7597,7 @@ static __declspec(noreturn) void finish_active_admission(
     (void)send_response(output, TEARDOWN_OPERATION,
                         clean ? STATUS_OK : STATUS_RECOVERY_REQUIRED, NULL,
                         0U);
-  ExitProcess(clean ? 0U : EXIT_RECOVERY_REQUIRED);
+  broker_exit(clean ? 0U : EXIT_RECOVERY_REQUIRED);
 }
 
 static __declspec(noreturn) void serve(void) {
@@ -7378,11 +7617,13 @@ static __declspec(noreturn) void serve(void) {
   if (input == NULL || input == INVALID_HANDLE_VALUE || output == NULL ||
       output == INVALID_HANDLE_VALUE)
     protocol_refused();
+  if (!verify_module_custody()) broker_exit(EXIT_RECOVERY_REQUIRED);
   if (read_frame(input, &frame, 1) != 1) protocol_refused();
   if (!canonical_frame_payload(&frame)) protocol_refused();
+  if (!verify_module_custody()) broker_exit(EXIT_RECOVERY_REQUIRED);
   if (frame.operation != PREPARE_OPERATION) {
     (void)send_response(output, frame.operation, STATUS_REFUSED, NULL, 0U);
-    ExitProcess(EXIT_PROTOCOL_REFUSED);
+    broker_exit(EXIT_PROTOCOL_REFUSED);
   }
   execution = (EXECUTION_CUSTODY *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
                                              sizeof(EXECUTION_CUSTODY));
@@ -7398,7 +7639,7 @@ static __declspec(noreturn) void serve(void) {
     int released = OP_BROKER_RELEASE_ROOT(&root);
     BYTE status = released && allocation_clean ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED;
     (void)send_response(output, PREPARE_OPERATION, status, NULL, 0U);
-    ExitProcess(status == STATUS_REFUSED ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
+    broker_exit(status == STATUS_REFUSED ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
   }
   preflight_result = OP_BROKER_PREFLIGHT(&root);
   if (preflight_result <= 0) {
@@ -7410,7 +7651,7 @@ static __declspec(noreturn) void serve(void) {
     if (!released) preflight_result = -1;
     send_response(output, PREPARE_OPERATION,
                   preflight_result < 0 ? STATUS_RECOVERY_REQUIRED : STATUS_REFUSED, NULL, 0U);
-    ExitProcess(preflight_result < 0 ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
+    broker_exit(preflight_result < 0 ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
   }
   result = OP_BROKER_CREATE_PROFILE(&root, &identity, &folder_handle);
   if (result <= 0) {
@@ -7422,7 +7663,7 @@ static __declspec(noreturn) void serve(void) {
     if (!released) result = -1;
     send_response(output, PREPARE_OPERATION,
                   result < 0 ? STATUS_RECOVERY_REQUIRED : STATUS_REFUSED, NULL, 0U);
-    ExitProcess(result < 0 ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
+    broker_exit(result < 0 ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
   }
   if (!OP_BROKER_RETAIN_EXECUTION(&root, paths, &identity, execution)) {
     if (!HeapFree(GetProcessHeap(), 0U, paths)) root.resource_ambiguous = 1;
@@ -7441,7 +7682,7 @@ static __declspec(noreturn) void serve(void) {
     if (!OP_BROKER_RELEASE_ROOT(&root)) clean = 0;
     send_response(output, PREPARE_OPERATION,
                   clean ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED, NULL, 0U);
-    ExitProcess(clean ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
+    broker_exit(clean ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
   }
   state = BROKER_PREPARED;
   response_length = prepare_response(&identity, execution, response, sizeof(response));
@@ -7484,8 +7725,8 @@ static __declspec(noreturn) void serve(void) {
         status = STATUS_REFUSED;
       }
       if (!send_response(output, LAUNCH_OPERATION, status, NULL, 0U))
-        ExitProcess(EXIT_PROTOCOL_REFUSED);
-      ExitProcess(status == STATUS_NOT_IMPLEMENTED
+        broker_exit(EXIT_PROTOCOL_REFUSED);
+      broker_exit(status == STATUS_NOT_IMPLEMENTED
                       ? EXIT_LIFECYCLE_NOT_IMPLEMENTED
                       : (status == STATUS_REFUSED
                              ? EXIT_PROTOCOL_REFUSED
@@ -7502,7 +7743,7 @@ static __declspec(noreturn) void serve(void) {
       if (admission > 0)
         terminal = run_active_terminal(&root, &active, frame.payload,
                                        frame.length, &observation);
-      if (active.hard_abort) ExitProcess(EXIT_RECOVERY_REQUIRED);
+      if (active.hard_abort) broker_exit(EXIT_RECOVERY_REQUIRED);
       if (admission <= 0) {
         int clean = admission >= 0;
         int released;
@@ -7517,11 +7758,11 @@ static __declspec(noreturn) void serve(void) {
         if (!clean || !released) {
           (void)send_response(output, LAUNCH_OPERATION,
                               STATUS_RECOVERY_REQUIRED, NULL, 0U);
-          ExitProcess(EXIT_RECOVERY_REQUIRED);
+          broker_exit(EXIT_RECOVERY_REQUIRED);
         }
         (void)send_response(output, LAUNCH_OPERATION, STATUS_REFUSED, NULL,
                             0U);
-        ExitProcess(EXIT_PROTOCOL_REFUSED);
+        broker_exit(EXIT_PROTOCOL_REFUSED);
       }
       state = BROKER_AWAIT_TEARDOWN;
       if (terminal > 0) {
@@ -7565,11 +7806,11 @@ static __declspec(noreturn) void serve(void) {
       released = OP_BROKER_RELEASE_ROOT(&root);
       if (!clean || !released) {
         (void)send_response(output, TEARDOWN_OPERATION, STATUS_RECOVERY_REQUIRED, NULL, 0U);
-        ExitProcess(EXIT_RECOVERY_REQUIRED);
+        broker_exit(EXIT_RECOVERY_REQUIRED);
       }
       if (!send_response(output, TEARDOWN_OPERATION, STATUS_OK, NULL, 0U))
-        ExitProcess(EXIT_PROTOCOL_REFUSED);
-      ExitProcess(0U);
+        broker_exit(EXIT_PROTOCOL_REFUSED);
+      broker_exit(0U);
     }
     finish_prepared(&root, &identity, execution, &folder_handle, output,
                     frame.operation, 1, &state);
@@ -7588,21 +7829,23 @@ static __declspec(noreturn) void recover(void) {
   if (input == NULL || input == INVALID_HANDLE_VALUE || output == NULL ||
       output == INVALID_HANDLE_VALUE)
     protocol_refused();
+  if (!verify_module_custody()) broker_exit(EXIT_RECOVERY_REQUIRED);
   if (read_frame(input, &frame, 1) != 1) protocol_refused();
   if ((frame.operation == TEARDOWN_OPERATION &&
        !canonical_scope_path(frame.payload, frame.length, path, &path_units)) ||
       (frame.operation != TEARDOWN_OPERATION && !canonical_frame_payload(&frame)) ||
       read_one(input, &trailing) != 0)
     protocol_refused();
+  if (!verify_module_custody()) broker_exit(EXIT_RECOVERY_REQUIRED);
   if (frame.operation != TEARDOWN_OPERATION) {
     (void)send_response(output, frame.operation, STATUS_REFUSED, NULL, 0U);
-    ExitProcess(EXIT_PROTOCOL_REFUSED);
+    broker_exit(EXIT_PROTOCOL_REFUSED);
   }
   if (!OP_BROKER_RETAIN_ROOT(path, path_units, &root)) {
     int released = OP_BROKER_RELEASE_ROOT(&root);
     BYTE status = released ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED;
     (void)send_response(output, TEARDOWN_OPERATION, status, NULL, 0U);
-    ExitProcess(released ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
+    broker_exit(released ? EXIT_PROTOCOL_REFUSED : EXIT_RECOVERY_REQUIRED);
   }
   preflight_result = OP_BROKER_PREFLIGHT(&root);
   if (preflight_result <= 0) {
@@ -7610,15 +7853,15 @@ static __declspec(noreturn) void recover(void) {
     if (!released) preflight_result = -1;
     send_response(output, TEARDOWN_OPERATION,
                   preflight_result < 0 ? STATUS_RECOVERY_REQUIRED : STATUS_REFUSED, NULL, 0U);
-    ExitProcess(preflight_result < 0 ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
+    broker_exit(preflight_result < 0 ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
   }
   if (!OP_BROKER_RELEASE_ROOT(&root)) {
     (void)send_response(output, TEARDOWN_OPERATION, STATUS_RECOVERY_REQUIRED, NULL, 0U);
-    ExitProcess(EXIT_RECOVERY_REQUIRED);
+    broker_exit(EXIT_RECOVERY_REQUIRED);
   }
   if (!send_response(output, TEARDOWN_OPERATION, STATUS_OK, NULL, 0U))
-    ExitProcess(EXIT_PROTOCOL_REFUSED);
-  ExitProcess(0U);
+    broker_exit(EXIT_PROTOCOL_REFUSED);
+  broker_exit(0U);
 }
 
 static int parse_mode(WCHAR *command_line, WCHAR **mode) {
@@ -7646,6 +7889,12 @@ __declspec(noreturn) void broker_entry(void) {
     diagnostic("windows-broker:arguments\n");
     ExitProcess(EXIT_ARGUMENT_REFUSED);
   }
+#if defined(OP_WINDOWS_MODULE_CUSTODY_PRODUCTION)
+  if (!retain_module_custody()) {
+    diagnostic("windows-broker:module-custody\n");
+    ExitProcess(EXIT_PROTOCOL_REFUSED);
+  }
+#endif
   if (wide_equal(mode, serve_mode)) serve();
   if (wide_equal(mode, recover_mode)) recover();
   diagnostic("windows-broker:arguments\n");

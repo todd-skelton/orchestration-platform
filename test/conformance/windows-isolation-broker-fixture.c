@@ -1,4 +1,9 @@
 #define OP_WINDOWS_BROKER_FIXTURE 1
+#if defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
+static int fixture_admission_terminal_mode;
+#define OP_WINDOWS_MODULE_CANDIDATE_PROOF_ENABLED() \
+  (!fixture_admission_terminal_mode)
+#endif
 #if !defined(OP_WINDOWS_ABSENCE_VERIFIER) && \
     !defined(OP_WINDOWS_ADMISSION_FIXTURE) && \
     !defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
@@ -137,7 +142,6 @@ static int fixture_admission_track_allocations;
 static DWORD fixture_admission_allocations;
 static DWORD fixture_admission_attribute_deletes;
 static DWORD fixture_admission_pipe_drains;
-static int fixture_admission_terminal_mode;
 static int fixture_admission_terminal_timeout;
 static int fixture_admission_terminal_killed;
 static DWORD fixture_admission_terminal_exit_code;
@@ -345,6 +349,19 @@ static int fixture_admission_access(ROOT_CUSTODY *root, HANDLE token,
   } else if (ordinal <= 30U) {
     expected_object = fixture_admission_execution->root.handle;
     expected_right = denied_execution_rights[ordinal - 25U];
+  } else if (ordinal <= 54U) {
+    DWORD member = ordinal - 31U;
+    RETAINED_OBJECT *objects[3] = {
+      &module_custody.image, &module_custody.source, &module_custody.parent
+    };
+    expected_object = objects[member / 8U]->handle;
+    expected_right = denied_broker_rights[member % 8U];
+  } else if (ordinal == 55U) {
+    expected_object = module_custody.parent.handle;
+    expected_right = FILE_LIST_DIRECTORY;
+  } else if (ordinal == 56U) {
+    expected_object = module_custody.parent.handle;
+    expected_right = FILE_TRAVERSE;
   } else {
     return 0;
   }
@@ -420,15 +437,26 @@ static int fixture_admission_open(PCWSTR path, DWORD access, int directory,
     expected_path = fixture_admission_root->path;
     expected_access = FILE_LIST_DIRECTORY;
     expected_directory = 1;
-  } else if (ordinal == 34U) {
-    expected_path = fixture_admission_module_path;
-    expected_access = GENERIC_READ;
+  } else if (ordinal <= 57U) {
+    DWORD member = ordinal - 34U;
+    RETAINED_OBJECT *objects[3] = {
+      &module_custody.image, &module_custody.source, &module_custody.parent
+    };
+    expected_path = objects[member / 8U]->path;
+    expected_access = denied_broker_rights[member % 8U];
+    expected_directory = member / 8U == 2U;
+  } else if (ordinal == 58U) {
+    expected_path = module_custody.parent.path;
+    expected_access = FILE_LIST_DIRECTORY;
+    expected_directory = 1;
+  } else if (ordinal == 59U) {
+    expected_path = module_custody.parent.path;
+    expected_access = FILE_TRAVERSE;
+    expected_directory = 1;
   } else {
     return 0;
   }
-  if ((expected_path != NULL &&
-       (ordinal == 34U ? !wide_equal(path, expected_path) :
-                         path != expected_path)) ||
+  if ((expected_path != NULL && path != expected_path) ||
       access != expected_access || directory != expected_directory ||
       expected_allowed != expected_result)
     return 0;
@@ -1601,6 +1629,12 @@ static int fixture_admission_recovery_matrix(void) {
   zero_bytes(root, sizeof(*root));
   zero_bytes(plan, sizeof(*plan));
   fixture_admission_objects(execution);
+  module_custody.image.handle = (HANDLE)0x460U;
+  module_custody.source.handle = (HANDLE)0x461U;
+  module_custody.parent.handle = (HANDLE)0x462U;
+  copy_bytes(module_custody.image.path, L"I", 4U);
+  copy_bytes(module_custody.source.path, L"S", 4U);
+  copy_bytes(module_custody.parent.path, L"P", 4U);
   plan->grant_security = fixture_admission_grant;
   plan->grant_security_length = 4U;
   for (BYTE phase = ADMISSION_GRANT_ATTEMPTED;
@@ -2082,8 +2116,8 @@ static int fixture_admission_token_matrix(PROFILE_IDENTITY *identity,
   fixture_admission_resource_kind = 0U;
   if (!fixture_admission_token_once(root, identity, execution, plan, 0U,
                                     0U, 0U) ||
-      fixture_admission_access_count != 30U ||
-      fixture_admission_open_count != 34U ||
+      fixture_admission_access_count != 56U ||
+      fixture_admission_open_count != 59U ||
       fixture_admission_impersonating)
     return 0;
   for (DWORD fault = 1U; fault <= 41U; fault += 1U) {
@@ -2093,13 +2127,13 @@ static int fixture_admission_token_matrix(PROFILE_IDENTITY *identity,
                                      fault, 0U, 0U))
       return 0;
   }
-  for (DWORD failure = 1U; failure <= 30U; failure += 1U) {
+  for (DWORD failure = 1U; failure <= 56U; failure += 1U) {
     root->resource_ambiguous = 0;
     if (fixture_admission_token_once(root, identity, execution, plan, 0U,
                                      failure, 0U))
       return 0;
   }
-  for (DWORD failure = 1U; failure <= 34U; failure += 1U) {
+  for (DWORD failure = 1U; failure <= 59U; failure += 1U) {
     root->resource_ambiguous = 0;
     if (fixture_admission_token_once(root, identity, execution, plan, 0U,
                                      0U, failure))

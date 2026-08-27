@@ -27,6 +27,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/conformance/src/stable-bundles.ts",
   "packages/conformance/src/stable.ts",
   "packages/conformance/src/walk.ts",
+  "packages/conformance/src/windows-isolation-authority.ts",
   "packages/conformance/src/windows-isolation-broker-x64.exe",
   "packages/conformance/src/windows-isolation-broker.c",
   "packages/conformance/tsconfig.json",

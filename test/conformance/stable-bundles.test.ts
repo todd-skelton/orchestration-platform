@@ -73,6 +73,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/stable-bundles.ts",
       "packages/conformance/src/stable.ts",
       "packages/conformance/src/walk.ts",
+      "packages/conformance/src/windows-isolation-authority.ts",
       "packages/conformance/src/windows-isolation-broker-x64.exe",
       "packages/conformance/src/windows-isolation-broker.c",
     ]);
