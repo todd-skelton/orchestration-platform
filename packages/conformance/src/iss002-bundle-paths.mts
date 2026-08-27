@@ -51,6 +51,7 @@ export const iss002HarnessPaths = Object.freeze([
   "scripts/conformance/hosted-candidate.mts",
   "scripts/conformance/hosted-plan.mts",
   "scripts/conformance/hosted.mts",
+  "scripts/conformance/iss002-executor.mts",
   "scripts/conformance/iss002-workspace.mts",
   "scripts/harness-test.mts",
   "tsconfig.base.json",

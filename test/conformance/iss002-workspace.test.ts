@@ -3,7 +3,12 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import {
+  executeIss002ContractSelection,
+  prepareIss002WorkspaceDependencies,
+} from "../../scripts/conformance/iss002-executor.mjs";
 import { withIss002ExecutionWorkspace } from "../../scripts/conformance/iss002-workspace.mjs";
+import { iss002StableVectorSelections } from "../../packages/conformance/src/index.js";
 
 const roots: string[] = [];
 const stableRoot = resolve(import.meta.dirname, "../..");
@@ -68,6 +73,8 @@ describe("ISS-002 external execution workspace", () => {
     const executionParent = await root("orchestration-workspace-execution-");
     const materializationParent = await root("orchestration-workspace-materialization-");
     let workspaceRoot = "";
+    let preparation: Awaited<ReturnType<typeof prepareIss002WorkspaceDependencies>> | undefined;
+    let execution: Awaited<ReturnType<typeof executeIss002ContractSelection>> | undefined;
     const result = await withIss002ExecutionWorkspace({
       candidateSourceRoot: source.root,
       candidateSubject: source.subject,
@@ -86,11 +93,18 @@ describe("ISS-002 external execution workspace", () => {
         expect(
           await readFile(resolve(workspace, "test/contracts/authority.test.ts"), "utf8"),
         ).toContain('from "vitest"');
-        await mkdir(resolve(workspace, "node_modules"));
-        await writeFile(resolve(workspace, "node_modules/prepared"), "stable consumer output");
+        preparation = await prepareIss002WorkspaceDependencies(stableRoot, workspace);
+        if (!preparation.ok) return "preparation-refused";
+        execution = await executeIss002ContractSelection(
+          workspace,
+          iss002StableVectorSelections[0]!,
+        );
         return "prepared";
       },
     });
+    expect(preparation).toEqual({ ok: true });
+    expect(execution?.normalizedResult).toBe("PASS");
+    expect(execution?.stdoutBytes.byteLength).toBeGreaterThan(0);
     expect(result).toEqual({ ok: true, value: "prepared" });
     await expect(readFile(resolve(workspaceRoot, "package.json"))).rejects.toThrow();
     expect(await readdir(executionParent)).toEqual([]);
