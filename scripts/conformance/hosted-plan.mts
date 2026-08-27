@@ -75,6 +75,18 @@ export interface HostedPlanApi {
   readonly resolveCommit: (repository: string, revision: string, token: string) => Promise<string>;
 }
 
+export interface HostedCandidateSourceFile {
+  readonly bytes: Uint8Array;
+  readonly executable: boolean;
+  readonly path: string;
+}
+
+export interface HostedCandidateSnapshot {
+  readonly digest: string;
+  readonly files: readonly HostedCandidateSourceFile[];
+  readonly subject: ContractRecord;
+}
+
 function refusal<T>(...issues: readonly string[]): HostedPlanResult<T> {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
@@ -264,7 +276,7 @@ function gitBlobObjectId(bytes: Uint8Array): string {
 async function candidateProjectionFromTree(
   candidateRoot: string,
   treeRows: readonly ContractRecord[],
-): Promise<HostedPlanResult<{ readonly digest: string; readonly value: ContractRecord }>> {
+): Promise<HostedPlanResult<HostedCandidateSnapshot>> {
   try {
     const root = resolve(candidateRoot);
     const objectIds: string[] = [];
@@ -299,7 +311,22 @@ async function candidateProjectionFromTree(
       truncated: false,
     });
     return projection.ok
-      ? { ok: true, value: Object.freeze({ digest: projection.digest, value: projection.value }) }
+      ? {
+          ok: true,
+          value: Object.freeze({
+            digest: projection.digest,
+            files: Object.freeze(
+              entries.map((entry) =>
+                Object.freeze({
+                  bytes: Uint8Array.from(entry.bytes),
+                  executable: entry.mode === "100755",
+                  path: entry.path,
+                }),
+              ),
+            ),
+            subject: projection.value,
+          }),
+        }
       : refusal(...projection.issues.map((issue) => `candidate.${issue}`));
   } catch {
     return refusal("candidate:checkout-unreadable");
@@ -405,6 +432,30 @@ async function gitOutput(
   return Uint8Array.from(result.stdout);
 }
 
+export async function loadHostedCandidateSnapshot(
+  candidateRootInput: string,
+  candidateRevision: string,
+): Promise<HostedPlanResult<HostedCandidateSnapshot>> {
+  try {
+    if (!isAbsolute(candidateRootInput) || !commitPattern.test(candidateRevision))
+      return refusal("candidate:snapshot-input-refused");
+    const candidateRoot = resolve(candidateRootInput);
+    const [headBytes, statusBytes, treeBytes] = await Promise.all([
+      gitOutput(candidateRoot, ["rev-parse", "HEAD"]),
+      gitOutput(candidateRoot, ["status", "--porcelain=v1", "--untracked-files=all"]),
+      gitOutput(candidateRoot, ["ls-tree", "-r", "-z", "--full-tree", candidateRevision]),
+    ]);
+    const head = new TextDecoder("utf-8", { fatal: true }).decode(headBytes).trim();
+    if (head !== candidateRevision) return refusal("candidate:checkout-revision-mismatch");
+    if (statusBytes.byteLength !== 0) return refusal("candidate:checkout-not-clean");
+    const tree = parseGitTreeOutput(treeBytes);
+    if (!tree.ok) return tree;
+    return await candidateProjectionFromTree(candidateRoot, tree.value);
+  } catch {
+    return refusal("candidate:snapshot-unreadable");
+  }
+}
+
 export async function finalizeHostedPlan(input: {
   readonly candidateRoot: string;
   readonly selection: HostedPlanSelection;
@@ -425,27 +476,12 @@ export async function finalizeHostedPlan(input: {
       within(candidateRoot, stableRoot)
     )
       return refusal("candidate:separate-root-required");
-    const [headBytes, statusBytes, treeBytes, bundles] = await Promise.all([
-      gitOutput(candidateRoot, ["rev-parse", "HEAD"]),
-      gitOutput(candidateRoot, ["status", "--porcelain=v1", "--untracked-files=all"]),
-      gitOutput(candidateRoot, [
-        "ls-tree",
-        "-r",
-        "-z",
-        "--full-tree",
-        input.selection.candidateRevision,
-      ]),
+    const [candidate, bundles] = await Promise.all([
+      loadHostedCandidateSnapshot(candidateRoot, input.selection.candidateRevision),
       createIss002StableBundleManifests(stableRoot),
     ]);
-    const head = new TextDecoder().decode(headBytes).trim();
-    if (head !== input.selection.candidateRevision)
-      return refusal("candidate:checkout-revision-mismatch");
-    if (statusBytes.byteLength !== 0) return refusal("candidate:checkout-not-clean");
-    if (!bundles.ok) return refusal(...bundles.issues);
-    const tree = parseGitTreeOutput(treeBytes);
-    if (!tree.ok) return tree;
-    const candidate = await candidateProjectionFromTree(candidateRoot, tree.value);
     if (!candidate.ok) return candidate;
+    if (!bundles.ok) return refusal(...bundles.issues);
     const generatorBytes = Uint8Array.from(
       await readFile(resolve(stableRoot, "packages/conformance/src/iss002-vector-generator.mjs")),
     );
