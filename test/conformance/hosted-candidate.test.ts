@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -29,6 +29,7 @@ async function candidateRepository(): Promise<{
   await mkdir(resolve(root, "nested"));
   await writeFile(resolve(root, "nested/data.txt"), Uint8Array.from([0, 10, 13, 255]));
   await writeFile(resolve(root, "runner.sh"), "#!/bin/sh\nprintf raw\n", "utf8");
+  await chmod(resolve(root, "runner.sh"), 0o755);
   await execFileAsync("git", ["-C", root, "add", "."]);
   await execFileAsync("git", ["-C", root, "update-index", "--chmod=+x", "runner.sh"]);
   await execFileAsync("git", [
