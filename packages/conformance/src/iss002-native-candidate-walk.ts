@@ -5,7 +5,8 @@ import { types as nodeTypes } from "node:util";
 import { consumeConformanceCandidateMaterialization } from "./candidate-materialization.js";
 import {
   bundleIss002ContractsCandidate,
-  runIss002WalkIntervals,
+  runIss002WalkObservation,
+  type Iss002WalkObservationResult,
   type Iss002WalkResult,
 } from "./walk.js";
 
@@ -19,8 +20,17 @@ export interface Iss002NativeCandidateWalkInput {
   readonly materializationParent: string;
 }
 
-function refusal(issue: string): Iss002WalkResult {
-  return Object.freeze({ issues: Object.freeze([issue]), ok: false as const });
+function refusal(...issues: readonly string[]): Iss002WalkResult {
+  return Object.freeze({ issues: Object.freeze([...new Set(issues)].sort()), ok: false as const });
+}
+
+function observationRefusal(issue: string): Iss002WalkObservationResult {
+  return Object.freeze({
+    issues: Object.freeze([issue]),
+    ok: false as const,
+    stderrBytes: new Uint8Array(),
+    stdoutBytes: new Uint8Array(),
+  });
 }
 
 function detached(input: unknown): Iss002NativeCandidateWalkInput | undefined {
@@ -63,15 +73,17 @@ function detached(input: unknown): Iss002NativeCandidateWalkInput | undefined {
   });
 }
 
-export async function runIss002NativeCandidateWalk(
+export async function runIss002NativeCandidateObservation(
   inputValue: Iss002NativeCandidateWalkInput,
-): Promise<Iss002WalkResult> {
+): Promise<Iss002WalkObservationResult> {
   const input = detached(inputValue);
-  if (!input) return refusal("candidate-walk:input-refused");
+  if (!input) return observationRefusal("candidate-walk:input-refused");
   let executionRoot: string | undefined;
   let candidateModule: string | undefined;
   let stableModule: string | undefined;
-  let result: Iss002WalkResult = refusal("candidate-walk:preparation-refused");
+  let result: Iss002WalkObservationResult = observationRefusal(
+    "candidate-walk:preparation-refused",
+  );
   try {
     const parent = await lstat(input.executionParent);
     if (!parent.isDirectory() || parent.isSymbolicLink()) return result;
@@ -85,21 +97,21 @@ export async function runIss002NativeCandidateWalk(
       input.candidateSubject,
       async (root) => await bundleIss002ContractsCandidate(root, candidateModule!),
     );
-    if (!materialized.ok) result = refusal("candidate-walk:materialization-refused");
+    if (!materialized.ok) result = observationRefusal("candidate-walk:materialization-refused");
     else if (
       (await readdir(executionRoot)).sort().join("\0") !==
       "candidate-contracts.mjs\0stable-contracts.mjs"
     )
-      result = refusal("candidate-walk:artifact-census-refused");
+      result = observationRefusal("candidate-walk:artifact-census-refused");
     else
-      result = await runIss002WalkIntervals({
+      result = await runIss002WalkObservation({
         candidateModuleUrl: pathToFileURL(candidateModule).href,
         childScriptPath,
         stableModuleUrl: pathToFileURL(stableModule).href,
         workingDirectory: executionRoot,
       });
   } catch {
-    result = refusal("candidate-walk:preparation-refused");
+    result = observationRefusal("candidate-walk:preparation-refused");
   }
   if (candidateModule && stableModule && executionRoot)
     try {
@@ -107,7 +119,25 @@ export async function runIss002NativeCandidateWalk(
       await rm(stableModule, { force: true });
       await rmdir(executionRoot);
     } catch {
-      return refusal("candidate-walk:cleanup-refused");
+      return {
+        issues: Object.freeze(["candidate-walk:cleanup-refused"]),
+        ok: false,
+        stderrBytes: result.stderrBytes,
+        stdoutBytes: result.stdoutBytes,
+      };
     }
   return result;
+}
+
+export async function runIss002NativeCandidateWalk(
+  inputValue: Iss002NativeCandidateWalkInput,
+): Promise<Iss002WalkResult> {
+  const observed = await runIss002NativeCandidateObservation(inputValue);
+  return observed.ok
+    ? {
+        durationsNanoseconds: observed.durationsNanoseconds,
+        maximumWalkDurationNanoseconds: observed.maximumWalkDurationNanoseconds,
+        ok: true,
+      }
+    : refusal(...observed.issues);
 }
