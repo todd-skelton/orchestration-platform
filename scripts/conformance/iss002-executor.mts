@@ -72,20 +72,20 @@ function environment(workspaceRoot: string, includeToolchainPaths: boolean): Nod
   return value;
 }
 
-function packageManagerInvocation(command: string):
-  | {
-      readonly arguments_: readonly string[];
-      readonly executable: string;
-    }
-  | undefined {
-  return {
-    arguments_: [
-      resolve(dirname(process.execPath), "node_modules/corepack/dist/corepack.js"),
-      "pnpm",
-      ...command.split(" "),
-    ],
-    executable: process.execPath,
-  };
+function packageManagerInvocation(arguments_: readonly string[]): {
+  readonly arguments_: readonly string[];
+  readonly executable: string;
+} {
+  return process.platform === "win32"
+    ? {
+        arguments_: [
+          resolve(dirname(process.execPath), "node_modules/corepack/dist/corepack.js"),
+          "pnpm",
+          ...arguments_,
+        ],
+        executable: process.execPath,
+      }
+    : { arguments_: ["pnpm", ...arguments_], executable: "corepack" };
 }
 
 function storePath(stdout: Uint8Array): string | undefined {
@@ -99,28 +99,18 @@ function storePath(stdout: Uint8Array): string | undefined {
   }
 }
 
-function installInvocation(store: string):
-  | {
-      readonly arguments_: readonly string[];
-      readonly executable: string;
-    }
-  | undefined {
-  const invocation = packageManagerInvocation("");
-  return invocation
-    ? {
-        arguments_: [
-          invocation.arguments_[0]!,
-          "pnpm",
-          "--store-dir",
-          store,
-          "install",
-          "--offline",
-          "--frozen-lockfile",
-          "--ignore-scripts",
-        ],
-        executable: invocation.executable,
-      }
-    : undefined;
+function installInvocation(store: string): {
+  readonly arguments_: readonly string[];
+  readonly executable: string;
+} {
+  return packageManagerInvocation([
+    "--store-dir",
+    store,
+    "install",
+    "--offline",
+    "--frozen-lockfile",
+    "--ignore-scripts",
+  ]);
 }
 
 async function regularWorkspace(workspaceRoot: string): Promise<boolean> {
@@ -140,8 +130,7 @@ export async function prepareIss002WorkspaceDependencies(
 ): Promise<Iss002PreparationResult> {
   if (!(await regularWorkspace(stableRoot)) || !(await regularWorkspace(workspaceRoot)))
     return refusal("executor:workspace-refused");
-  const query = packageManagerInvocation("store path --silent");
-  if (!query) return refusal("executor:package-manager-refused");
+  const query = packageManagerInvocation(["store", "path", "--silent"]);
   let queried: Readonly<{ stderr: Uint8Array; stdout: Uint8Array }>;
   try {
     const queryResult = await execute(query.executable, query.arguments_, {
@@ -159,7 +148,6 @@ export async function prepareIss002WorkspaceDependencies(
   const exactStorePath = storePath(queried.stdout);
   if (!exactStorePath) return refusal("executor:store-path-refused");
   const install = installInvocation(exactStorePath);
-  if (!install) return refusal("executor:store-path-command-refused");
   try {
     await execute(install.executable, install.arguments_, {
       cwd: workspaceRoot,

@@ -37,12 +37,14 @@ describe("ISS-002 fixed-selector process executor", () => {
     });
     expect(result).toEqual({ ok: true });
     expect(calls).toHaveLength(2);
-    const corepackEntry = resolve(process.execPath, "../node_modules/corepack/dist/corepack.js");
-    expect(calls[0]?.[0]).toBe(process.execPath);
-    expect(calls[0]?.[1]).toEqual([corepackEntry, "pnpm", "store", "path", "--silent"]);
+    const prefix =
+      process.platform === "win32"
+        ? [resolve(process.execPath, "../node_modules/corepack/dist/corepack.js"), "pnpm"]
+        : ["pnpm"];
+    expect(calls[0]?.[0]).toBe(process.platform === "win32" ? process.execPath : "corepack");
+    expect(calls[0]?.[1]).toEqual([...prefix, "store", "path", "--silent"]);
     expect(calls[1]?.[1]).toEqual([
-      corepackEntry,
-      "pnpm",
+      ...prefix,
       "--store-dir",
       resolve(root, "store"),
       "install",
