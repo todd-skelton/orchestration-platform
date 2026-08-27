@@ -12,6 +12,10 @@
       "default": "./src/index.ts"
     }
   },
+  "dependencies": {
+    "@orchestration-platform/contracts": "workspace:*",
+    "esbuild": "0.28.2"
+  },
   "scripts": {
     "test": "node ../../scripts/capability-not-implemented.mjs ISS-006 @orchestration-platform/conformance:test"
   }
