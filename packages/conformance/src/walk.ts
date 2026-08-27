@@ -6,6 +6,7 @@ import { promisify, types as nodeTypes } from "node:util";
 import { build, type Plugin } from "esbuild";
 
 const execFileAsync = promisify(execFile);
+const monotonicNanoseconds = process.hrtime.bigint.bind(process.hrtime);
 
 export interface Iss002WalkInput {
   readonly candidateModuleUrl: string;
@@ -212,9 +213,7 @@ function parseChildOutput(
   stdout: string,
   stderr: string,
   index: number,
-):
-  | { readonly ok: true; readonly duration: string }
-  | { readonly ok: false; readonly issues: readonly string[] } {
+): { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] } {
   if (stderr !== "") return { ok: false, issues: [`walk.${index}:stderr-nonempty`] };
   let input: unknown;
   try {
@@ -225,20 +224,11 @@ function parseChildOutput(
   if (input === null || typeof input !== "object" || Array.isArray(input))
     return { ok: false, issues: [`walk.${index}:record-required`] };
   const record = input as Readonly<Record<string, unknown>>;
-  if (Object.keys(record).sort().join("\0") !== "durationNanoseconds\0issues\0recordCount")
+  if (Object.keys(record).sort().join("\0") !== "issues\0recordCount")
     return { ok: false, issues: [`walk.${index}:field-census-refused`] };
-  if (
-    record.recordCount !== "1000" ||
-    typeof record.durationNanoseconds !== "string" ||
-    !/^(?:0|[1-9][0-9]*)$/.test(record.durationNanoseconds) ||
-    !Number.isSafeInteger(Number(record.durationNanoseconds)) ||
-    !Array.isArray(record.issues) ||
-    record.issues.length !== 0
-  )
+  if (record.recordCount !== "1000" || !Array.isArray(record.issues) || record.issues.length !== 0)
     return { ok: false, issues: [`walk.${index}:result-refused`] };
-  if (BigInt(record.durationNanoseconds) > 5_000_000_000n)
-    return { ok: false, issues: [`walk.${index}:duration-limit-exceeded`] };
-  return { ok: true, duration: record.durationNanoseconds };
+  return { ok: true };
 }
 
 export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Iss002WalkResult> {
@@ -249,6 +239,7 @@ export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Is
   for (let index = 0; index < 3; index += 1) {
     try {
       const environment = childEnvironment(detached.workingDirectory);
+      const started = monotonicNanoseconds();
       const result = await execFileAsync(
         process.execPath,
         [
@@ -266,9 +257,12 @@ export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Is
           windowsHide: true,
         },
       );
+      const durationNanoseconds = monotonicNanoseconds() - started;
       const parsed = parseChildOutput(result.stdout, result.stderr, index);
       if (!parsed.ok) return refusal(...parsed.issues);
-      durations.push(parsed.duration);
+      if (durationNanoseconds > 5_000_000_000n)
+        return refusal(`walk.${index}:duration-limit-exceeded`);
+      durations.push(String(durationNanoseconds));
     } catch {
       return refusal(`walk.${index}:child-failed`);
     }
