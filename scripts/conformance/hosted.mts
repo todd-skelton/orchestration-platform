@@ -13,6 +13,9 @@ try {
   } else if (mode === "observation") {
     const observation = await import("./hosted-observation.mjs");
     await observation.runHostedObservation();
+  } else if (mode === "aggregate") {
+    const aggregate = await import("./hosted-aggregate.mjs");
+    await aggregate.runHostedAggregate();
   } else {
     throw new Error(`HOSTED_CONFORMANCE_PENDING:${mode}`);
   }

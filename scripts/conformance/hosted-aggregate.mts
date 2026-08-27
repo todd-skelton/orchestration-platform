@@ -13,6 +13,8 @@ import {
   sha256Bytes,
 } from "../../packages/conformance/src/index.js";
 import {
+  decodeHostedObservationContext,
+  hostedEnvironmentMatchesContext,
   hostedIss002StableInputsMatchContext,
   loadHostedIss002StableInputs,
   parseHostedObservationContext,
@@ -390,4 +392,27 @@ export async function runHostedAggregateComposition(
   } catch {
     return refusal("aggregate-runner:unreadable");
   }
+}
+
+export async function runHostedAggregate(): Promise<void> {
+  const context = decodeHostedObservationContext(process.env.CONFORMANCE_PLAN_CONTEXT ?? "");
+  const downloadRoot = process.env.CONFORMANCE_DOWNLOAD_ROOT;
+  const outputRoot = process.env.CONFORMANCE_OUTPUT_ROOT;
+  const runnerTemp = process.env.RUNNER_TEMP;
+  if (
+    !context ||
+    !hostedEnvironmentMatchesContext(process.env, context) ||
+    !downloadRoot ||
+    !outputRoot ||
+    !runnerTemp
+  )
+    throw new Error("aggregate:provider-context-refused");
+  const result = await runHostedAggregateComposition({
+    context,
+    downloadRoot,
+    outputRoot,
+    runnerTemp,
+    stableRoot: process.cwd(),
+  });
+  if (!result.ok) throw new Error("aggregate:composition-refused");
 }

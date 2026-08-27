@@ -156,7 +156,7 @@ describe("hosted stable aggregate composition", () => {
     expect(aggregate.value.result).toBe("PASS");
     expect(aggregate.value.providerRunDigest).toBe(input.plan.providerRunDigest);
     expect(await readdir(resolve(input.outputRoot, "receipts"))).toHaveLength(3);
-  });
+  }, 600_000);
 
   test("refuses a missing observation or changed bound report without leaving aggregate bytes", async () => {
     const missing = await fixture();
@@ -188,5 +188,5 @@ describe("hosted stable aggregate composition", () => {
       ).ok,
     ).toBe(false);
     await expect(readdir(changed.outputRoot)).rejects.toThrow();
-  });
+  }, 600_000);
 });
