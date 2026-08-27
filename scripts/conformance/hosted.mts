@@ -10,6 +10,9 @@ try {
     const plan = await import("./hosted-plan.mjs");
     if (mode === "plan-select") await plan.runHostedPlanSelect();
     else await plan.runHostedPlanFinalize();
+  } else if (mode === "observation") {
+    const observation = await import("./hosted-observation.mjs");
+    await observation.runHostedObservation();
   } else {
     throw new Error(`HOSTED_CONFORMANCE_PENDING:${mode}`);
   }

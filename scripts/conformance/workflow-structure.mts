@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export type WorkflowStructureResult =
   { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
 
-const expectedDigest = "e1e28f59d2452a6a3f091e660bcc4851c82222a379714fba51c2cb2be938a097";
+const expectedDigest = "9f66a5006a69b245209cb272596d12b124f7d21ac7ab3f101a20952c2da6db09";
 const actionShaPattern =
   /^[ ]+uses: actions\/(?:checkout|setup-node|upload-artifact|download-artifact)@[0-9a-f]{40}$/;
 
@@ -36,6 +36,7 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "secrets:",
     "environment:",
     "actions/cache@",
+    "stable/.conformance/observation",
   ]) {
     if (source.includes(forbidden)) issues.push(`workflow:forbidden:${forbidden}`);
   }
@@ -55,6 +56,8 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "node scripts/conformance/hosted.mts plan-select",
     "node scripts/conformance/hosted.mts plan-finalize",
     "node scripts/conformance/hosted.mts observation",
+    "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-observation",
+    "path: ${{ runner.temp }}/conformance-observation",
     "node scripts/conformance/hosted.mts aggregate",
     "node scripts/conformance/hosted.mts record",
   ]) {

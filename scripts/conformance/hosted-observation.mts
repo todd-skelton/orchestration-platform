@@ -516,3 +516,51 @@ export async function runHostedIss002Observation(
       }
   }
 }
+
+function hostedEnvironmentMatchesContext(
+  environment: Readonly<Record<string, string | undefined>>,
+  context: HostedPlanContext,
+): boolean {
+  return (
+    environment.GITHUB_EVENT_NAME === context.event &&
+    environment.GITHUB_REF === "refs/heads/main" &&
+    environment.GITHUB_REF_PROTECTED === "true" &&
+    environment.GITHUB_REPOSITORY === context.repository &&
+    environment.GITHUB_REPOSITORY_ID === context.repositoryId &&
+    environment.GITHUB_RUN_ATTEMPT === context.runAttempt &&
+    environment.GITHUB_RUN_ID === context.runId &&
+    environment.GITHUB_SHA === context.workflowRevision &&
+    environment.GITHUB_WORKFLOW_REF === context.workflowRef &&
+    environment.GITHUB_WORKFLOW_SHA === context.workflowRevision
+  );
+}
+
+export async function runHostedObservation(): Promise<void> {
+  const context = decodeHostedObservationContext(process.env.CONFORMANCE_PLAN_CONTEXT ?? "");
+  const candidateRoot = process.env.CANDIDATE_ROOT;
+  const jobId = process.env.CONFORMANCE_JOB_ID;
+  const outputRoot = process.env.CONFORMANCE_OUTPUT_ROOT;
+  const runnerTemp = process.env.RUNNER_TEMP;
+  const runnerToken = process.env.CONFORMANCE_RUNNER_TOKEN;
+  if (
+    !context ||
+    !hostedEnvironmentMatchesContext(process.env, context) ||
+    !candidateRoot ||
+    !jobId ||
+    !outputRoot ||
+    !runnerTemp ||
+    !runnerToken
+  )
+    throw new Error("observation:provider-context-refused");
+  const result = await runHostedIss002Observation({
+    candidateRoot,
+    context,
+    environment: process.env,
+    jobId,
+    outputRoot,
+    runnerTemp,
+    runnerToken,
+    stableRoot: process.cwd(),
+  });
+  if (!result.ok) throw new Error("observation:execution-refused");
+}

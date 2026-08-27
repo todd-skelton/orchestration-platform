@@ -89,6 +89,7 @@ jobs:
         env:
           CANDIDATE_ROOT: ${{ github.workspace }}/candidate
           CONFORMANCE_JOB_ID: ${{ matrix.jobId }}
+          CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-observation
           CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
           CONFORMANCE_RUNNER_TOKEN: ${{ matrix.runnerToken }}
         run: node scripts/conformance/hosted.mts observation
@@ -96,7 +97,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: conformance-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.jobId }}
-          path: stable/.conformance/observation
+          path: ${{ runner.temp }}/conformance-observation
           archive: true
           retention-days: 31
           if-no-files-found: error

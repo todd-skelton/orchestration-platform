@@ -63,6 +63,11 @@ describe("protected conformance workflow structure", () => {
       "node scripts/conformance/hosted.mts aggregate",
     ],
     ["observation archive disabled", "archive: true", "archive: false"],
+    [
+      "observation output in the checkout",
+      "${{ runner.temp }}/conformance-observation",
+      "stable/.conformance/observation",
+    ],
     ["provider record archived", "archive: false", "archive: true"],
     [
       "fixed provider filename",
@@ -97,7 +102,7 @@ describe("protected conformance workflow structure", () => {
     expect(validateConformanceWorkflowSource(mutant)).toMatchObject({ ok: false });
   });
 
-  test.each(["observation", "aggregate", "record"])(
+  test.each(["aggregate", "record"])(
     "keeps the %s hosted mode fail-closed until its implementation lands",
     (mode) => {
       const result = spawnSync(process.execPath, [hostedPath, mode], { encoding: "utf8" });
@@ -105,6 +110,15 @@ describe("protected conformance workflow structure", () => {
       expect(result.stderr).toContain(`HOSTED_CONFORMANCE_PENDING:${mode}`);
     },
   );
+
+  test("refuses the implemented observation mode without provider inputs", () => {
+    const result = spawnSync(process.execPath, [hostedPath, "observation"], {
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("HOSTED_CONFORMANCE_REFUSED:observation");
+    expect(result.stderr).not.toContain("HOSTED_CONFORMANCE_PENDING:observation");
+  });
 
   test.each(["plan-select", "plan-finalize"])(
     "refuses the implemented %s mode without provider inputs",
