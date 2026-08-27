@@ -286,7 +286,7 @@ async function environmentInputs(
   });
 }
 
-async function stableInputs(stableRoot: string) {
+export async function loadHostedIss002StableInputs(stableRoot: string) {
   const bundles = await createIss002StableBundleManifests(stableRoot);
   if (!bundles.ok) return undefined;
   const generatorBytes = Uint8Array.from(
@@ -322,8 +322,8 @@ async function stableInputs(stableRoot: string) {
   });
 }
 
-function stableMatchesContext(
-  stable: NonNullable<Awaited<ReturnType<typeof stableInputs>>>,
+export function hostedIss002StableInputsMatchContext(
+  stable: NonNullable<Awaited<ReturnType<typeof loadHostedIss002StableInputs>>>,
   context: HostedPlanContext,
 ): boolean {
   return (
@@ -418,8 +418,8 @@ export async function runHostedIss002Observation(
       input.jobId !== `iss002-contracts-${environment.operatingSystem.toLowerCase()}`
     )
       return refusal("observation-runner:environment-refused");
-    const stable = await stableInputs(stableRoot);
-    if (!stable || !stableMatchesContext(stable, context))
+    const stable = await loadHostedIss002StableInputs(stableRoot);
+    if (!stable || !hostedIss002StableInputsMatchContext(stable, context))
       return refusal("observation-runner:stable-authority-refused");
     const candidate = await loadHostedCandidateSnapshot(candidateRoot, context.candidateRevision);
     if (!candidate.ok || candidate.value.digest !== context.candidateSubjectDigest)
@@ -486,8 +486,8 @@ export async function runHostedIss002Observation(
     if (!sourceResult.ok || !sourceResult.value.ok || !sourceResult.value.value.ok)
       return refusal("observation-runner:execution-refused");
     const handler = sourceResult.value.value;
-    const stableAfter = await stableInputs(stableRoot);
-    if (!stableAfter || !stableMatchesContext(stableAfter, context))
+    const stableAfter = await loadHostedIss002StableInputs(stableRoot);
+    if (!stableAfter || !hostedIss002StableInputsMatchContext(stableAfter, context))
       return refusal("observation-runner:stable-recheck-refused");
     const artifacts = createIss002ObservationArtifacts({
       ...environment,
@@ -517,7 +517,7 @@ export async function runHostedIss002Observation(
   }
 }
 
-function hostedEnvironmentMatchesContext(
+export function hostedEnvironmentMatchesContext(
   environment: Readonly<Record<string, string | undefined>>,
   context: HostedPlanContext,
 ): boolean {
