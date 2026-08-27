@@ -1,5 +1,6 @@
 export * from "./contracts.js";
 export * from "./candidate-materialization.js";
+export * from "./observation.js";
 export * from "./reducer.js";
 export * from "./stable.js";
 export * from "./stable-bundles.js";

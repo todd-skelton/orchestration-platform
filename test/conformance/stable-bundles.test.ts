@@ -61,6 +61,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/iss002-bundle-paths.mts",
       "packages/conformance/src/iss002-native-candidate-walk.ts",
       "packages/conformance/src/manifest.ts",
+      "packages/conformance/src/observation.ts",
       "packages/conformance/src/reducer.ts",
       "packages/conformance/src/stable-bundles.ts",
       "packages/conformance/src/stable.ts",
