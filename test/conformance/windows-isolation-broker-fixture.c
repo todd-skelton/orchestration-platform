@@ -1,9 +1,42 @@
 #define OP_WINDOWS_BROKER_FIXTURE 1
-#if !defined(OP_WINDOWS_ABSENCE_VERIFIER)
+#if !defined(OP_WINDOWS_ABSENCE_VERIFIER) && \
+    !defined(OP_WINDOWS_ADMISSION_FIXTURE) && \
+    !defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
 #define NetworkIsolationEnumAppContainers fixture_enum_appcontainers
 #define NetworkIsolationFreeAppContainers fixture_free_appcontainers
 #endif
 #include "../../packages/conformance/src/windows-isolation-broker.c"
+
+#if defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
+#undef CreatePipe
+#undef SetHandleInformation
+#undef GetHandleInformation
+#undef CreateEventW
+#undef InitializeProcThreadAttributeList
+#undef UpdateProcThreadAttribute
+#undef DeleteProcThreadAttributeList
+#undef CreateProcessW
+#undef GetExitCodeProcess
+#undef CloseHandle
+#undef OpenProcessToken
+#undef OpenThreadToken
+#undef GetTokenInformation
+#undef IsProcessInJob
+#undef DuplicateTokenEx
+#undef ImpersonateLoggedOnUser
+#undef RevertToSelf
+#undef OpenJobObjectW
+#undef CreateJobObjectW
+#undef SetInformationJobObject
+#undef QueryInformationJobObject
+#undef TerminateJobObject
+#undef WaitForSingleObject
+#undef ReadFile
+#undef HeapFree
+#undef HeapAlloc
+#undef FreeSid
+#undef GetModuleFileNameW
+#endif
 
 #if defined(OP_WINDOWS_FAULT_FIXTURE)
 #undef CreateFileW
@@ -50,7 +83,2151 @@
 #undef FindClose
 #endif
 
-#if defined(OP_WINDOWS_ABSENCE_VERIFIER)
+#if defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
+
+#define ADMISSION_FIXTURE_PROCESS ((HANDLE)0x501U)
+#define ADMISSION_FIXTURE_THREAD ((HANDLE)0x502U)
+#define ADMISSION_FIXTURE_JOB ((HANDLE)0x503U)
+#define ADMISSION_FIXTURE_PROCESS_TOKEN ((HANDLE)0x504U)
+#define ADMISSION_FIXTURE_IMPERSONATION_TOKEN ((HANDLE)0x505U)
+
+static EXECUTION_CUSTODY *fixture_admission_execution;
+static BYTE fixture_admission_profiles[4];
+static BYTE fixture_admission_original[4][4];
+static BYTE fixture_admission_grant[4] = {9U, 8U, 7U, 6U};
+static BYTE fixture_admission_third[4] = {6U, 7U, 8U, 9U};
+static BYTE fixture_admission_order[64];
+static DWORD fixture_admission_order_count;
+static DWORD fixture_admission_fail_call;
+static DWORD fixture_admission_call;
+static DWORD fixture_admission_attribute_mask;
+static DWORD fixture_admission_access_count;
+static DWORD fixture_admission_open_count;
+static DWORD fixture_admission_access_fail;
+static DWORD fixture_admission_open_fail;
+static DWORD fixture_admission_token_fault;
+static DWORD fixture_admission_query_fault;
+static TOKEN_INFORMATION_CLASS fixture_admission_query_kind;
+static int fixture_admission_impersonating;
+static DWORD fixture_admission_job_fault;
+static DWORD fixture_admission_job_active;
+static int fixture_admission_job_present;
+static ADMISSION_PLAN *fixture_admission_job_plan;
+static ADMISSION_CUSTODY *fixture_admission_job_identity;
+static ADMISSION_PLAN *fixture_admission_launch_plan;
+static HANDLE fixture_admission_pipe_reads[3];
+static HANDLE fixture_admission_pipe_writes[3];
+static DWORD fixture_admission_pipe_count;
+static DWORD fixture_admission_handle_clear_count;
+static BYTE fixture_admission_persisted[16];
+static DWORD fixture_admission_persisted_count;
+static BYTE fixture_admission_persist_failure;
+static DWORD fixture_admission_component_failure;
+static DWORD fixture_admission_cleanup_count;
+static DWORD fixture_admission_restore_count;
+static DWORD fixture_admission_matrix_stage;
+static DWORD fixture_admission_resource_kind;
+static DWORD fixture_admission_resource_call;
+static DWORD fixture_admission_resource_failure;
+static int fixture_admission_track_allocations;
+static DWORD fixture_admission_allocations;
+static DWORD fixture_admission_attribute_deletes;
+static DWORD fixture_admission_pipe_drains;
+static const WCHAR fixture_admission_module_path[] =
+    L"\\\\?\\C:\\fixture-broker.exe";
+static PROFILE_IDENTITY *fixture_admission_identity;
+static ROOT_CUSTODY *fixture_admission_root;
+static ROOT_CUSTODY fixture_admission_test_root;
+static EXECUTION_CUSTODY fixture_admission_test_execution;
+static ADMISSION_PLAN fixture_admission_test_plan;
+static WCHAR fixture_admission_expected_command[4096];
+static WCHAR fixture_admission_expected_environment[8192];
+
+static int fixture_admission_expected_environment_add(
+    DWORD *cursor, PCWSTR key, PCWSTR value) {
+  SIZE_T key_units = wide_length(key);
+  SIZE_T value_units = wide_length(value);
+  if (*cursor + key_units + value_units + 2U >= 8192U) return 0;
+  copy_bytes(fixture_admission_expected_environment + *cursor, key,
+             key_units * 2U);
+  *cursor += (DWORD)key_units;
+  fixture_admission_expected_environment[(*cursor)++] = L'=';
+  copy_bytes(fixture_admission_expected_environment + *cursor, value,
+             value_units * 2U);
+  *cursor += (DWORD)value_units;
+  fixture_admission_expected_environment[(*cursor)++] = L'\0';
+  return 1;
+}
+
+static int fixture_admission_object_index(const RETAINED_OBJECT *object) {
+  if (object == &fixture_admission_execution->root) return 0;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (object == &fixture_admission_execution->targets[role])
+      return (int)role + 1;
+  return -1;
+}
+
+static int fixture_admission_verify_original(ROOT_CUSTODY *root,
+                                             EXECUTION_CUSTODY *execution) {
+  (void)root;
+  (void)execution;
+  fixture_admission_order[fixture_admission_order_count++] = 90U;
+  for (DWORD index = 0U; index < 4U; index += 1U)
+    if (fixture_admission_profiles[index] != 0U) return 0;
+  return 1;
+}
+
+static int fixture_admission_set_security(ROOT_CUSTODY *root,
+                                          RETAINED_OBJECT *object,
+                                          PSECURITY_DESCRIPTOR security,
+                                          DWORD length) {
+  int index = fixture_admission_object_index(object);
+  (void)root;
+  if (index < 0 || length != 4U) return 0;
+  fixture_admission_order[fixture_admission_order_count++] =
+      (BYTE)(security == fixture_admission_grant ? 10 + index : 20 + index);
+  fixture_admission_call += 1U;
+  if (fixture_admission_call == fixture_admission_fail_call) return 0;
+  fixture_admission_profiles[index] =
+      security == fixture_admission_grant ? 1U : 0U;
+  return 1;
+}
+
+static int fixture_admission_verify_object(ROOT_CUSTODY *root,
+                                           RETAINED_OBJECT *object,
+                                           const CHAR *domain, BYTE role,
+                                           const BYTE *binding) {
+  (void)root;
+  (void)object;
+  (void)domain;
+  (void)role;
+  (void)binding;
+  fixture_admission_order[fixture_admission_order_count++] = 91U;
+  {
+    int index = fixture_admission_object_index(object);
+    if (index >= 0 && fixture_admission_profiles[index] != 0U) return 0;
+  }
+  return 1;
+}
+
+static int fixture_admission_census(ROOT_CUSTODY *root,
+                                    const RETAINED_OBJECT *object) {
+  (void)root;
+  (void)object;
+  fixture_admission_order[fixture_admission_order_count++] = 92U;
+  return 1;
+}
+
+static int fixture_admission_capture_security(ROOT_CUSTODY *root, HANDLE handle,
+                                              PSECURITY_DESCRIPTOR *security,
+                                              DWORD *length) {
+  SIZE_T value = (SIZE_T)handle;
+  DWORD index;
+  const BYTE *source;
+  (void)root;
+  if (value < 0x201U || value > 0x204U) return 0;
+  index = (DWORD)(value - 0x201U);
+  source = fixture_admission_profiles[index] == 0U
+               ? fixture_admission_original[index]
+               : (fixture_admission_profiles[index] == 1U
+                      ? fixture_admission_grant
+                      : fixture_admission_third);
+  *security = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 4U);
+  if (*security == NULL) return 0;
+  copy_bytes(*security, source, 4U);
+  *length = 4U;
+  return 1;
+}
+
+static int fixture_admission_capture_job_security(
+    ROOT_CUSTODY *root, HANDLE handle, PSECURITY_DESCRIPTOR *security,
+    DWORD *length) {
+  const BYTE *source;
+  (void)root;
+  if (handle != ADMISSION_FIXTURE_JOB || fixture_admission_job_plan == NULL)
+    return 0;
+  source = fixture_admission_job_fault == 10U
+               ? fixture_admission_third
+               : (const BYTE *)fixture_admission_job_plan->job_security;
+  *length = fixture_admission_job_plan->job_security_length;
+  *security = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, *length);
+  if (*security == NULL) return 0;
+  copy_bytes(*security, source, *length);
+  return 1;
+}
+
+static int fixture_admission_access(ROOT_CUSTODY *root, HANDLE token,
+                                    HANDLE object, DWORD desired,
+                                    int expected_allowed) {
+  DWORD ordinal = fixture_admission_access_count + 1U;
+  HANDLE expected_object = NULL;
+  DWORD expected_right = 0U;
+  int expected_result = 0;
+  if (token != ADMISSION_FIXTURE_IMPERSONATION_TOKEN || object == NULL ||
+      desired == 0U || (expected_allowed != 0 && expected_allowed != 1))
+    return 0;
+  if (ordinal <= 21U) {
+    DWORD role = (ordinal - 1U) / 7U;
+    DWORD member = (ordinal - 1U) % 7U;
+    expected_object = fixture_admission_execution->targets[role].handle;
+    expected_right = member == 0U ? GENERIC_READ | GENERIC_EXECUTE :
+                                    denied_execution_rights[member - 1U];
+    expected_result = member == 0U;
+  } else if (ordinal == 22U) {
+    expected_object = fixture_admission_execution->root.handle;
+    expected_right = GENERIC_READ | GENERIC_EXECUTE;
+    expected_result = 1;
+  } else if (ordinal == 23U) {
+    expected_object = fixture_admission_execution->parent.handle;
+    expected_right = FILE_LIST_DIRECTORY;
+  } else if (ordinal == 24U) {
+    expected_object = root->handle;
+    expected_right = FILE_LIST_DIRECTORY;
+  } else if (ordinal <= 30U) {
+    expected_object = fixture_admission_execution->root.handle;
+    expected_right = denied_execution_rights[ordinal - 25U];
+  } else {
+    return 0;
+  }
+  if (object != expected_object || desired != expected_right ||
+      expected_allowed != expected_result)
+    return 0;
+  fixture_admission_access_count += 1U;
+  return fixture_admission_access_count != fixture_admission_access_fail;
+}
+
+static int fixture_admission_open(PCWSTR path, DWORD access, int directory,
+                                  int expected_allowed) {
+  DWORD ordinal = fixture_admission_open_count + 1U;
+  PCWSTR expected_path = NULL;
+  DWORD expected_access = 0U;
+  int expected_directory = 0;
+  int expected_result = 0;
+  if (path == NULL || path[0] == L'\0' || access == 0U ||
+      (directory != 0 && directory != 1) ||
+      (expected_allowed != 0 && expected_allowed != 1))
+    return 0;
+  if (ordinal == 1U) {
+    expected_path = fixture_admission_execution->root.path;
+    expected_access = GENERIC_READ | GENERIC_EXECUTE;
+    expected_directory = 1;
+    expected_result = 1;
+  } else if (ordinal <= 7U) {
+    DWORD role = (ordinal - 2U) / 2U;
+    int target = ((ordinal - 2U) & 1U) == 0U;
+    expected_path = target ? fixture_admission_execution->targets[role].path :
+                             fixture_admission_execution->sources[role].path;
+    expected_access = target ? GENERIC_READ | GENERIC_EXECUTE : GENERIC_READ;
+    expected_result = target;
+  } else if (ordinal <= 25U) {
+    DWORD member = ordinal - 8U;
+    DWORD role = member / 6U;
+    expected_path = fixture_admission_execution->targets[role].path;
+    expected_access = denied_execution_rights[member % 6U];
+  } else if (ordinal <= 31U) {
+    expected_path = fixture_admission_execution->root.path;
+    expected_access = denied_execution_rights[ordinal - 26U];
+    expected_directory = 1;
+  } else if (ordinal == 32U) {
+    expected_path = fixture_admission_execution->parent.path;
+    expected_access = FILE_LIST_DIRECTORY;
+    expected_directory = 1;
+  } else if (ordinal == 33U) {
+    expected_path = fixture_admission_root->path;
+    expected_access = FILE_LIST_DIRECTORY;
+    expected_directory = 1;
+  } else if (ordinal == 34U) {
+    expected_path = fixture_admission_module_path;
+    expected_access = GENERIC_READ;
+  } else {
+    return 0;
+  }
+  if ((expected_path != NULL &&
+       (ordinal == 34U ? !wide_equal(path, expected_path) :
+                         path != expected_path)) ||
+      access != expected_access || directory != expected_directory ||
+      expected_allowed != expected_result)
+    return 0;
+  fixture_admission_open_count += 1U;
+  return fixture_admission_open_count != fixture_admission_open_fail;
+}
+
+static int fixture_admission_scratch(ROOT_CUSTODY *root,
+                                     const PROFILE_IDENTITY *identity) {
+  (void)root;
+  (void)identity;
+  return fixture_admission_token_fault != 17U;
+}
+
+static int fixture_admission_verify_job(ROOT_CUSTODY *root, HANDLE job,
+                                        const ADMISSION_PLAN *plan,
+                                        DWORD expected_processes,
+                                        DWORD expected_process_id) {
+  (void)root;
+  (void)plan;
+  if (job != ADMISSION_FIXTURE_JOB) return 0;
+  if (fixture_admission_token_fault == 12U) return 0;
+  return (expected_processes == 1U && expected_process_id == 777U) ||
+         expected_processes == 0U || expected_processes == 0xffffffffU;
+}
+
+static int fixture_admission_launch_step(void) {
+  fixture_admission_call += 1U;
+  return fixture_admission_call != fixture_admission_fail_call;
+}
+
+static BOOL WINAPI fixture_admission_CreatePipe(HANDLE *read_handle,
+                                                HANDLE *write_handle,
+                                                SECURITY_ATTRIBUTES *attributes,
+                                                DWORD size) {
+  SIZE_T base = 0x600U + fixture_admission_call * 2U;
+  if (!fixture_admission_launch_step() || attributes == NULL ||
+      attributes->nLength != sizeof(*attributes) ||
+      attributes->lpSecurityDescriptor != NULL ||
+      attributes->bInheritHandle != TRUE || size != 0U)
+    return FALSE;
+  *read_handle = (HANDLE)base;
+  *write_handle = (HANDLE)(base + 1U);
+  if (fixture_admission_pipe_count >= 3U) return FALSE;
+  fixture_admission_pipe_reads[fixture_admission_pipe_count] = *read_handle;
+  fixture_admission_pipe_writes[fixture_admission_pipe_count] = *write_handle;
+  fixture_admission_pipe_count += 1U;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_SetHandleInformation(HANDLE handle,
+                                                          DWORD mask,
+                                                          DWORD flags) {
+  static const BYTE pipe_index[] = {0U, 1U, 2U};
+  HANDLE expected;
+  if (fixture_admission_handle_clear_count >= 3U) return FALSE;
+  expected = fixture_admission_handle_clear_count == 0U
+                 ? fixture_admission_pipe_writes[pipe_index[0]]
+                 : fixture_admission_pipe_reads[
+                       pipe_index[fixture_admission_handle_clear_count]];
+  fixture_admission_handle_clear_count += 1U;
+  return fixture_admission_launch_step() && handle == expected &&
+         mask == HANDLE_FLAG_INHERIT && flags == 0U;
+}
+
+static BOOL WINAPI fixture_admission_GetHandleInformation(HANDLE handle,
+                                                          DWORD *flags) {
+  if (!fixture_admission_launch_step() || handle == NULL || flags == NULL)
+    return FALSE;
+  *flags = 0U;
+  return TRUE;
+}
+
+static HANDLE WINAPI fixture_admission_CreateEventW(
+    SECURITY_ATTRIBUTES *attributes, BOOL manual, BOOL initial, PCWSTR name) {
+  if (!fixture_admission_launch_step() || attributes == NULL ||
+      attributes->bInheritHandle != TRUE || manual != TRUE ||
+      initial != FALSE || name != NULL)
+    return NULL;
+  return (HANDLE)0x620U;
+}
+
+static BOOL WINAPI fixture_admission_InitializeProcThreadAttributeList(
+    LPVOID attributes, DWORD count, DWORD flags, SIZE_T *bytes) {
+  if (!fixture_admission_launch_step() || count != 3U || flags != 0U ||
+      bytes == NULL)
+    return FALSE;
+  if (attributes == NULL) {
+    *bytes = 64U;
+    SetLastError(ERROR_INSUFFICIENT_BUFFER);
+    return FALSE;
+  }
+  return *bytes == 64U;
+}
+
+static BOOL WINAPI fixture_admission_UpdateProcThreadAttribute(
+    LPVOID attributes, DWORD flags, SIZE_T kind, LPVOID value, SIZE_T bytes,
+    LPVOID previous, SIZE_T *returned) {
+  if (!fixture_admission_launch_step() || attributes == NULL || flags != 0U ||
+      value == NULL || previous != NULL || returned != NULL)
+    return FALSE;
+  if (kind == PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES) {
+    SECURITY_CAPABILITIES *capabilities = (SECURITY_CAPABILITIES *)value;
+    if (bytes != sizeof(*capabilities) ||
+        capabilities->AppContainerSid !=
+            (PSID)fixture_admission_identity->sid ||
+        capabilities->Capabilities != NULL ||
+        capabilities->CapabilityCount != 0U || capabilities->Reserved != 0U)
+      return FALSE;
+    fixture_admission_attribute_mask |= 1U;
+  } else if (kind == PROC_THREAD_ATTRIBUTE_JOB_LIST) {
+    if (bytes != sizeof(HANDLE) || ((HANDLE *)value)[0] != ADMISSION_FIXTURE_JOB)
+      return FALSE;
+    fixture_admission_attribute_mask |= 2U;
+  } else if (kind == PROC_THREAD_ATTRIBUTE_HANDLE_LIST) {
+    if (bytes != 3U * sizeof(HANDLE) ||
+        ((HANDLE *)value)[0] != fixture_admission_pipe_reads[0] ||
+        ((HANDLE *)value)[1] != fixture_admission_pipe_writes[1] ||
+        ((HANDLE *)value)[2] != fixture_admission_pipe_writes[2])
+      return FALSE;
+    fixture_admission_attribute_mask |= 4U;
+  } else {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static void WINAPI fixture_admission_DeleteProcThreadAttributeList(
+    LPVOID attributes) {
+  if (attributes != NULL) fixture_admission_attribute_deletes += 1U;
+}
+
+static BOOL WINAPI fixture_admission_CreateProcessW(
+    PCWSTR application, LPWSTR command, SECURITY_ATTRIBUTES *process_security,
+    SECURITY_ATTRIBUTES *thread_security, BOOL inherit, DWORD flags,
+    LPVOID environment, PCWSTR cwd, STARTUPINFOW *startup,
+    PROCESS_INFORMATION *process) {
+  ADMISSION_PLAN *plan = fixture_admission_launch_plan;
+  if (!fixture_admission_launch_step() || plan == NULL ||
+      application == NULL || !wide_equal(application, plan->application) ||
+      command == NULL || command == plan->command_line ||
+      !wide_equal(command, plan->command_line) ||
+      process_security != NULL || thread_security != NULL ||
+      inherit != TRUE || environment != plan->environment || cwd == NULL ||
+      !wide_equal(cwd, plan->cwd) || flags != plan->creation_flags ||
+      startup == NULL || process == NULL ||
+      startup->cb != sizeof(STARTUPINFOEXW) ||
+      startup->dwFlags != STARTF_USESTDHANDLES ||
+      startup->hStdInput != fixture_admission_pipe_reads[0] ||
+      startup->hStdOutput != fixture_admission_pipe_writes[1] ||
+      startup->hStdError != fixture_admission_pipe_writes[2] ||
+      fixture_admission_attribute_mask != 7U)
+    return FALSE;
+  process->hProcess = ADMISSION_FIXTURE_PROCESS;
+  process->hThread = ADMISSION_FIXTURE_THREAD;
+  process->dwProcessId = 777U;
+  process->dwThreadId = 778U;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_GetExitCodeProcess(HANDLE process,
+                                                        DWORD *code) {
+  if (!fixture_admission_launch_step() ||
+      process != ADMISSION_FIXTURE_PROCESS || code == NULL)
+    return FALSE;
+  *code = STILL_ACTIVE;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_CloseHandle(HANDLE handle) {
+  int resource_failure = 0;
+  if ((fixture_admission_resource_kind == 3U ||
+       fixture_admission_resource_kind == 4U) && handle != NULL &&
+      handle != INVALID_HANDLE_VALUE) {
+    fixture_admission_resource_call += 1U;
+    resource_failure = fixture_admission_resource_kind == 4U ||
+                       fixture_admission_resource_call ==
+                           fixture_admission_resource_failure;
+  }
+  if (handle == ADMISSION_FIXTURE_JOB) {
+    fixture_admission_job_present = 0;
+    if (fixture_admission_job_fault == 25U) return FALSE;
+  }
+  if (resource_failure) return FALSE;
+  return handle != NULL && handle != INVALID_HANDLE_VALUE &&
+         fixture_admission_launch_step();
+}
+
+static DWORD fixture_admission_sid_bytes(BYTE *target,
+                                         SID_IDENTIFIER_AUTHORITY authority,
+                                         DWORD count, DWORD first,
+                                         DWORD second) {
+  DWORD length = 8U + count * 4U;
+  zero_bytes(target, length);
+  target[0] = 1U;
+  target[1] = (BYTE)count;
+  copy_bytes(target + 2U, authority.Value, 6U);
+  if (count > 0U) write_u32(target + 8U, first);
+  if (count > 1U) write_u32(target + 12U, second);
+  return length;
+}
+
+static BOOL WINAPI fixture_admission_OpenProcessToken(HANDLE process,
+                                                      DWORD access,
+                                                      HANDLE *token) {
+  if (fixture_admission_token_fault == 1U ||
+      process != ADMISSION_FIXTURE_PROCESS ||
+      access != (TOKEN_QUERY | TOKEN_DUPLICATE) || token == NULL)
+    return FALSE;
+  *token = ADMISSION_FIXTURE_PROCESS_TOKEN;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_GetTokenInformation(
+    HANDLE token, TOKEN_INFORMATION_CLASS kind, LPVOID output, DWORD capacity,
+    DWORD *returned) {
+  BYTE sid[SID_MAX_BYTES];
+  DWORD sid_length;
+  DWORD fixed;
+  DWORD needed;
+  DWORD group_sid_length = 0U;
+  SID_IDENTIFIER_AUTHORITY mandatory = SECURITY_MANDATORY_LABEL_AUTHORITY;
+  if (token != ADMISSION_FIXTURE_PROCESS_TOKEN || returned == NULL)
+    return FALSE;
+  if (kind == TokenIsAppContainer) {
+    if (output == NULL || capacity != sizeof(BOOL)) return FALSE;
+    *(BOOL *)output = fixture_admission_token_fault == 2U ? FALSE : TRUE;
+    *returned = fixture_admission_token_fault == 3U ? sizeof(BOOL) - 1U :
+                                                     sizeof(BOOL);
+    return TRUE;
+  }
+  if (kind == TokenElevation) {
+    if (output == NULL || capacity != sizeof(TOKEN_ELEVATION)) return FALSE;
+    ((TOKEN_ELEVATION *)output)->TokenIsElevated =
+        fixture_admission_token_fault == 4U ? 1U : 0U;
+    *returned = sizeof(TOKEN_ELEVATION);
+    return TRUE;
+  }
+  if (kind == TokenUIAccess) {
+    if (output == NULL || capacity != sizeof(DWORD)) return FALSE;
+    *(DWORD *)output = fixture_admission_token_fault == 5U ? 1U : 0U;
+    *returned = sizeof(DWORD);
+    return TRUE;
+  }
+  if (kind == TokenUser) {
+    sid_length = fixture_admission_root->stable_sid_length;
+    copy_bytes(sid, fixture_admission_root->stable_sid, sid_length);
+    if (fixture_admission_token_fault == 6U) sid[sid_length - 1U] ^= 1U;
+    fixed = sizeof(TOKEN_USER);
+  } else if (kind == TokenAppContainerSid) {
+    sid_length = fixture_admission_identity->sid_length;
+    copy_bytes(sid, fixture_admission_identity->sid, sid_length);
+    if (fixture_admission_token_fault == 7U) sid[sid_length - 1U] ^= 1U;
+    fixed = sizeof(TOKEN_APPCONTAINER_INFORMATION);
+  } else if (kind == TokenIntegrityLevel) {
+    sid_length = fixture_admission_sid_bytes(
+        sid, mandatory, 1U,
+        fixture_admission_token_fault == 8U ? 0x00002000U :
+                                              SECURITY_MANDATORY_LOW_RID,
+        0U);
+    fixed = sizeof(TOKEN_MANDATORY_LABEL);
+  } else if (kind == TokenCapabilities || kind == TokenGroups) {
+    fixed = (DWORD)__builtin_offsetof(TOKEN_GROUPS, Groups);
+    needed = fixed;
+    if (kind == TokenGroups && fixture_admission_token_fault == 24U)
+      needed = fixed + (DWORD)sizeof(SID_AND_ATTRIBUTES) +
+               fixture_admission_root->stable_sid_length;
+    if (kind == TokenGroups && fixture_admission_token_fault == 25U)
+      needed = fixed + 2U * (DWORD)sizeof(SID_AND_ATTRIBUTES) +
+               2U * fixture_admission_identity->sid_length;
+    if (kind == TokenGroups && fixture_admission_token_fault >= 33U &&
+        fixture_admission_token_fault <= 38U) {
+      if (fixture_admission_token_fault == 35U) {
+        group_sid_length = fixture_admission_root->stable_sid_length;
+        copy_bytes(sid, fixture_admission_root->stable_sid,
+                   group_sid_length);
+      } else if (fixture_admission_token_fault == 36U) {
+        SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+        group_sid_length = fixture_admission_sid_bytes(
+            sid, nt, 1U, SECURITY_LOCAL_SYSTEM_RID, 0U);
+      } else if (fixture_admission_token_fault == 37U) {
+        SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+        group_sid_length = fixture_admission_sid_bytes(
+            sid, nt, 2U, SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS);
+      } else {
+        group_sid_length = fixture_admission_identity->sid_length;
+        copy_bytes(sid, fixture_admission_identity->sid, group_sid_length);
+      }
+      needed = fixed + (DWORD)sizeof(SID_AND_ATTRIBUTES) +
+               group_sid_length +
+               (fixture_admission_token_fault == 38U ? 4U : 0U);
+    }
+    if (kind == TokenGroups && fixture_admission_token_fault == 39U)
+      needed = fixed + 4U;
+    if (kind == TokenGroups && fixture_admission_token_fault == 40U)
+      needed = fixed + 129U * (DWORD)sizeof(SID_AND_ATTRIBUTES) +
+               129U * 12U;
+    if (kind == TokenCapabilities && fixture_admission_token_fault == 41U)
+      needed = fixed + (DWORD)sizeof(SID_AND_ATTRIBUTES) +
+               fixture_admission_identity->sid_length;
+    if (output == NULL) {
+      if (kind == fixture_admission_query_kind &&
+          fixture_admission_query_fault == 1U) {
+        *returned = needed;
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+      }
+      *returned = kind == fixture_admission_query_kind &&
+                          fixture_admission_query_fault == 2U
+                      ? 0U
+                      : (kind == fixture_admission_query_kind &&
+                                 fixture_admission_query_fault == 3U
+                             ? TOKEN_BUFFER_MAXIMUM + 1U
+                             : needed);
+      SetLastError(ERROR_INSUFFICIENT_BUFFER);
+      return FALSE;
+    }
+    if (kind == fixture_admission_query_kind &&
+        fixture_admission_query_fault == 4U)
+      return FALSE;
+    if (capacity != needed) return FALSE;
+    zero_bytes(output, needed);
+    if ((kind == TokenCapabilities && fixture_admission_token_fault == 9U) ||
+        (kind == TokenGroups && fixture_admission_token_fault == 10U))
+      ((TOKEN_GROUPS *)output)->GroupCount = 1U;
+    if (kind == TokenCapabilities && fixture_admission_token_fault == 23U)
+      ((TOKEN_GROUPS *)output)->GroupCount = 129U;
+    if (kind == TokenGroups && fixture_admission_token_fault == 24U) {
+      TOKEN_GROUPS *groups = (TOKEN_GROUPS *)output;
+      BYTE *sid_start = (BYTE *)output + fixed + sizeof(SID_AND_ATTRIBUTES);
+      groups->GroupCount = 1U;
+      groups->Groups[0].Sid = sid_start;
+      groups->Groups[0].Attributes = SE_GROUP_ENABLED;
+      copy_bytes(sid_start, fixture_admission_root->stable_sid,
+                 fixture_admission_root->stable_sid_length);
+    }
+    if (kind == TokenGroups && fixture_admission_token_fault == 25U) {
+      TOKEN_GROUPS *groups = (TOKEN_GROUPS *)output;
+      BYTE *sid_start =
+          (BYTE *)output + fixed + 2U * sizeof(SID_AND_ATTRIBUTES);
+      groups->GroupCount = 2U;
+      groups->Groups[0].Sid = sid_start;
+      groups->Groups[1].Sid =
+          sid_start + fixture_admission_identity->sid_length;
+      copy_bytes(groups->Groups[0].Sid, fixture_admission_identity->sid,
+                 fixture_admission_identity->sid_length);
+      copy_bytes(groups->Groups[1].Sid, fixture_admission_identity->sid,
+                 fixture_admission_identity->sid_length);
+    }
+    if (kind == TokenGroups && fixture_admission_token_fault >= 33U &&
+        fixture_admission_token_fault <= 38U) {
+      TOKEN_GROUPS *groups = (TOKEN_GROUPS *)output;
+      BYTE *sid_start = (BYTE *)output + fixed + sizeof(SID_AND_ATTRIBUTES);
+      groups->GroupCount = 1U;
+      if (fixture_admission_token_fault == 38U) sid_start += 4U;
+      groups->Groups[0].Sid = sid_start;
+      groups->Groups[0].Attributes =
+          fixture_admission_token_fault == 33U
+              ? 0x10000000U
+              : (fixture_admission_token_fault == 34U
+                     ? SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY
+                     : (fixture_admission_token_fault >= 35U &&
+                                fixture_admission_token_fault <= 37U
+                            ? SE_GROUP_ENABLED
+                            : 0U));
+      copy_bytes(sid_start, sid, group_sid_length);
+    }
+    if (kind == TokenGroups && fixture_admission_token_fault == 40U) {
+      TOKEN_GROUPS *groups = (TOKEN_GROUPS *)output;
+      SID_IDENTIFIER_AUTHORITY package =
+          {{0U, 0U, 0U, 0U, 0U, 15U}};
+      BYTE *sid_start =
+          (BYTE *)output + fixed + 129U * sizeof(SID_AND_ATTRIBUTES);
+      groups->GroupCount = 129U;
+      for (DWORD index = 0U; index < 129U; index += 1U) {
+        groups->Groups[index].Sid = sid_start + index * 12U;
+        (void)fixture_admission_sid_bytes(
+            (BYTE *)groups->Groups[index].Sid, package, 1U, 100U + index,
+            0U);
+      }
+    }
+    if (kind == TokenCapabilities && fixture_admission_token_fault == 41U) {
+      TOKEN_GROUPS *groups = (TOKEN_GROUPS *)output;
+      BYTE *sid_start = (BYTE *)output + fixed + sizeof(SID_AND_ATTRIBUTES);
+      groups->GroupCount = 1U;
+      groups->Groups[0].Sid = sid_start;
+      copy_bytes(sid_start, fixture_admission_identity->sid,
+                 fixture_admission_identity->sid_length);
+    }
+    *returned = kind == fixture_admission_query_kind &&
+                        fixture_admission_query_fault == 5U
+                    ? needed - 1U : needed;
+    return TRUE;
+  } else {
+    return FALSE;
+  }
+  needed = fixed + sid_length;
+  if (output == NULL) {
+    if (kind == fixture_admission_query_kind &&
+        fixture_admission_query_fault == 1U) {
+      *returned = needed;
+      SetLastError(ERROR_ACCESS_DENIED);
+      return FALSE;
+    }
+    *returned = kind == fixture_admission_query_kind &&
+                        fixture_admission_query_fault == 2U
+                    ? 0U
+                    : (kind == fixture_admission_query_kind &&
+                               fixture_admission_query_fault == 3U
+                           ? TOKEN_BUFFER_MAXIMUM + 1U
+                           : needed);
+    SetLastError(ERROR_INSUFFICIENT_BUFFER);
+    return FALSE;
+  }
+  if (kind == fixture_admission_query_kind &&
+      fixture_admission_query_fault == 4U)
+    return FALSE;
+  if (capacity != needed) return FALSE;
+  zero_bytes(output, needed);
+  if (kind == TokenUser)
+    ((TOKEN_USER *)output)->User.Sid = (BYTE *)output + fixed;
+  else if (kind == TokenAppContainerSid)
+    ((TOKEN_APPCONTAINER_INFORMATION *)output)->TokenAppContainer =
+        (BYTE *)output + fixed;
+  else
+    ((TOKEN_MANDATORY_LABEL *)output)->Label.Sid =
+        (BYTE *)output + fixed;
+  if (kind == TokenUser && fixture_admission_token_fault == 20U)
+    ((TOKEN_USER *)output)->User.Sid = NULL;
+  if (kind == TokenUser && fixture_admission_token_fault == 28U)
+    ((TOKEN_USER *)output)->User.Sid = (BYTE *)output - 4U;
+  if (kind == TokenUser && fixture_admission_token_fault == 29U)
+    ((TOKEN_USER *)output)->User.Sid = (BYTE *)output + needed;
+  if (kind == TokenUser && fixture_admission_token_fault == 30U)
+    ((TOKEN_USER *)output)->User.Sid = (BYTE *)output + 4U;
+  if (kind == TokenAppContainerSid && fixture_admission_token_fault == 21U)
+    ((TOKEN_APPCONTAINER_INFORMATION *)output)->TokenAppContainer =
+        (BYTE *)output + 1U;
+  copy_bytes((BYTE *)output + fixed, sid, sid_length);
+  if (kind == TokenIntegrityLevel && fixture_admission_token_fault == 22U)
+    ((BYTE *)output)[fixed] = 0U;
+  if (kind == TokenAppContainerSid && fixture_admission_token_fault == 31U)
+    ((BYTE *)output)[fixed + 1U] = 16U;
+  if (kind == TokenIntegrityLevel && fixture_admission_token_fault == 32U)
+    ((BYTE *)output)[fixed + 1U] = 15U;
+  if (kind == TokenAppContainerSid && fixture_admission_token_fault == 27U)
+    copy_bytes((BYTE *)output + fixed, fixture_admission_root->stable_sid,
+               sid_length);
+  *returned = (kind == TokenUser && fixture_admission_token_fault == 26U) ||
+                      (kind == fixture_admission_query_kind &&
+                       fixture_admission_query_fault == 5U)
+                  ? needed - 1U : needed;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_IsProcessInJob(HANDLE process,
+                                                     HANDLE job,
+                                                     BOOL *in_job) {
+  if (process != ADMISSION_FIXTURE_PROCESS || job != ADMISSION_FIXTURE_JOB ||
+      in_job == NULL)
+    return FALSE;
+  *in_job = fixture_admission_token_fault == 11U ? FALSE : TRUE;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_DuplicateTokenEx(
+    HANDLE token, DWORD access, SECURITY_ATTRIBUTES *attributes, DWORD level,
+    DWORD kind, HANDLE *duplicate) {
+  if (fixture_admission_token_fault == 13U ||
+      token != ADMISSION_FIXTURE_PROCESS_TOKEN ||
+      access != (TOKEN_QUERY | TOKEN_IMPERSONATE) || attributes != NULL ||
+      level != SecurityImpersonation || kind != TokenImpersonation ||
+      duplicate == NULL)
+    return FALSE;
+  *duplicate = ADMISSION_FIXTURE_IMPERSONATION_TOKEN;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_ImpersonateLoggedOnUser(HANDLE token) {
+  if (fixture_admission_token_fault == 15U ||
+      token != ADMISSION_FIXTURE_IMPERSONATION_TOKEN)
+    return FALSE;
+  fixture_admission_impersonating = 1;
+  return TRUE;
+}
+
+static BOOL WINAPI fixture_admission_RevertToSelf(void) {
+  if (fixture_admission_token_fault == 18U) return FALSE;
+  fixture_admission_impersonating = 0;
+  return TRUE;
+}
+
+static HANDLE WINAPI fixture_admission_OpenJobObjectW(DWORD access,
+                                                      BOOL inherit,
+                                                      PCWSTR name) {
+  if (inherit != FALSE || name == NULL ||
+      fixture_admission_job_identity == NULL ||
+      !wide_equal(name, fixture_admission_job_identity->job_name) ||
+      (access != JOB_OBJECT_QUERY &&
+       access != (JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE))) {
+    SetLastError(ERROR_ACCESS_DENIED);
+    return NULL;
+  }
+  if (!fixture_admission_job_present) {
+    SetLastError(fixture_admission_job_fault == 26U ? ERROR_ACCESS_DENIED :
+                                                     ERROR_FILE_NOT_FOUND);
+    return NULL;
+  }
+  return ADMISSION_FIXTURE_JOB;
+}
+
+static HANDLE WINAPI fixture_admission_CreateJobObjectW(
+    SECURITY_ATTRIBUTES *attributes, PCWSTR name) {
+  if (fixture_admission_job_fault == 21U || attributes == NULL ||
+      attributes->nLength != sizeof(*attributes) ||
+      attributes->lpSecurityDescriptor !=
+          fixture_admission_job_plan->job_security ||
+      attributes->bInheritHandle != FALSE || name == NULL ||
+      !wide_equal(name, fixture_admission_job_identity->job_name))
+    return NULL;
+  fixture_admission_job_present = 1;
+  SetLastError(fixture_admission_job_fault == 22U ? ERROR_ALREADY_EXISTS :
+                                                     ERROR_SUCCESS);
+  return ADMISSION_FIXTURE_JOB;
+}
+
+static BOOL WINAPI fixture_admission_SetInformationJobObject(
+    HANDLE job, JOBOBJECTINFOCLASS kind, LPVOID information, DWORD length) {
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits =
+      (JOBOBJECT_EXTENDED_LIMIT_INFORMATION *)information;
+  return fixture_admission_job_fault != 23U &&
+         job == ADMISSION_FIXTURE_JOB &&
+         kind == JobObjectExtendedLimitInformation &&
+         length == sizeof(*limits) &&
+         limits->BasicLimitInformation.LimitFlags ==
+             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+}
+
+static BOOL WINAPI fixture_admission_QueryInformationJobObject(
+    HANDLE job, JOBOBJECTINFOCLASS kind, LPVOID information, DWORD length,
+    DWORD *returned) {
+  if (job != ADMISSION_FIXTURE_JOB || information == NULL || returned == NULL)
+    return FALSE;
+  if (kind == JobObjectExtendedLimitInformation) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits =
+        (JOBOBJECT_EXTENDED_LIMIT_INFORMATION *)information;
+    if (fixture_admission_job_fault == 1U || length != sizeof(*limits))
+      return FALSE;
+    zero_bytes(limits, sizeof(*limits));
+    limits->BasicLimitInformation.LimitFlags =
+        fixture_admission_job_fault == 3U ? 0U :
+                                            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    *returned = fixture_admission_job_fault == 2U ? sizeof(*limits) - 1U :
+                                                    sizeof(*limits);
+    return TRUE;
+  }
+  if (kind == JobObjectBasicAccountingInformation) {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION *accounting =
+        (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION *)information;
+    if (fixture_admission_job_fault == 4U || length != sizeof(*accounting))
+      return FALSE;
+    zero_bytes(accounting, sizeof(*accounting));
+    accounting->ActiveProcesses =
+        fixture_admission_job_fault == 9U
+            ? fixture_admission_job_active + 1U
+            : (fixture_admission_job_fault == 16U ? 2U :
+                                                    fixture_admission_job_active);
+    *returned = fixture_admission_job_fault == 5U
+                    ? sizeof(*accounting) - 1U
+                    : sizeof(*accounting);
+    return TRUE;
+  }
+  if (kind == JobObjectBasicProcessIdList) {
+    JOBOBJECT_BASIC_PROCESS_ID_LIST *list =
+        (JOBOBJECT_BASIC_PROCESS_ID_LIST *)information;
+    DWORD assigned = fixture_admission_job_active;
+    DWORD listed = assigned;
+    DWORD needed;
+    if (fixture_admission_job_fault == 13U) {
+      assigned = 65U;
+      listed = 65U;
+    }
+    if (fixture_admission_job_fault == 14U) listed = assigned + 1U;
+    if (fixture_admission_job_fault == 16U) assigned = listed = 2U;
+    if (fixture_admission_job_fault == 17U) assigned = listed = 0U;
+    needed = 8U + assigned * (DWORD)sizeof(SIZE_T);
+    if (fixture_admission_job_fault == 6U ||
+        (length < needed && fixture_admission_job_fault != 13U))
+      return FALSE;
+    zero_bytes(information, length);
+    list->NumberOfAssignedProcesses = assigned;
+    list->NumberOfProcessIdsInList =
+        fixture_admission_job_fault == 8U ? assigned + 1U : listed;
+    if (assigned != 0U)
+      list->ProcessIdList[0] =
+          fixture_admission_job_fault == 11U
+              ? 0U
+              : (fixture_admission_job_fault == 12U
+                     ? (SIZE_T)0x100000000ULL
+                     : (fixture_admission_job_fault == 15U ? 778U : 777U));
+    if (assigned > 1U) list->ProcessIdList[1] = 777U;
+    *returned = fixture_admission_job_fault == 7U
+                    ? needed - 1U
+                    : (fixture_admission_job_fault == 13U ? 8U :
+                       (fixture_admission_job_fault == 18U ? needed + 8U :
+                                                            needed));
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static BOOL WINAPI fixture_admission_TerminateJobObject(HANDLE job,
+                                                        DWORD code) {
+  if (job != ADMISSION_FIXTURE_JOB ||
+      code != EXIT_LIFECYCLE_NOT_IMPLEMENTED ||
+      fixture_admission_job_fault == 24U)
+    return FALSE;
+  fixture_admission_job_active = 0U;
+  return TRUE;
+}
+
+static DWORD WINAPI fixture_admission_WaitForSingleObject(HANDLE handle,
+                                                          DWORD timeout) {
+  return handle == ADMISSION_FIXTURE_PROCESS && timeout == 5000U ?
+             WAIT_OBJECT_0 :
+             WAIT_TIMEOUT;
+}
+
+static BOOL WINAPI fixture_admission_ReadFile(HANDLE handle, LPVOID bytes,
+                                              DWORD length, DWORD *read,
+                                              LPVOID overlapped) {
+  (void)bytes;
+  (void)length;
+  if (handle == NULL || read == NULL || overlapped != NULL ||
+      fixture_admission_pipe_drains >= 2U ||
+      handle != fixture_admission_pipe_reads[
+                    fixture_admission_pipe_drains + 1U])
+    return FALSE;
+  fixture_admission_pipe_drains += 1U;
+  *read = 0U;
+  SetLastError(ERROR_BROKEN_PIPE);
+  return FALSE;
+}
+
+static BOOL WINAPI fixture_admission_HeapFree(HANDLE heap, DWORD flags,
+                                              LPVOID value) {
+  BOOL result = HeapFree(heap, flags, value);
+  if (fixture_admission_resource_kind == 1U && value != NULL) {
+    fixture_admission_resource_call += 1U;
+    if (fixture_admission_resource_call ==
+        fixture_admission_resource_failure)
+      return FALSE;
+  }
+  return result;
+}
+
+static LPVOID WINAPI fixture_admission_HeapAlloc(HANDLE heap, DWORD flags,
+                                                 SIZE_T bytes) {
+  if (fixture_admission_track_allocations)
+    fixture_admission_allocations += 1U;
+  return HeapAlloc(heap, flags, bytes);
+}
+
+static PVOID WINAPI fixture_admission_FreeSid(PSID sid) {
+  PVOID result = FreeSid(sid);
+  if (fixture_admission_resource_kind == 2U && sid != NULL) {
+    fixture_admission_resource_call += 1U;
+    if (fixture_admission_resource_call ==
+        fixture_admission_resource_failure)
+      return sid;
+  }
+  return result;
+}
+
+static DWORD WINAPI fixture_admission_GetModuleFileNameW(HANDLE module,
+                                                         LPWSTR path,
+                                                         DWORD capacity) {
+  DWORD units = (DWORD)wide_length(fixture_admission_module_path);
+  if (module != NULL || path == NULL || capacity <= units) return 0U;
+  copy_bytes(path, fixture_admission_module_path, (units + 1U) * 2U);
+  return units;
+}
+
+static int fixture_admission_plan_digest(
+    ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity,
+    const EXECUTION_CUSTODY *execution, ADMISSION_CUSTODY *admission,
+    ADMISSION_PLAN *plan) {
+  (void)root;
+  (void)identity;
+  (void)execution;
+  fixture_admission_order[fixture_admission_order_count++] = 85U;
+  if (fixture_admission_component_failure == 8U) return 0;
+  plan->grant_security = fixture_admission_grant;
+  plan->grant_security_length = 4U;
+  plan->job_security = fixture_admission_grant;
+  plan->job_security_length = 4U;
+  if (equal_bytes(admission->grant_digest, (BYTE[32]){0}, 32U))
+    admission->grant_digest[0] = 1U;
+  if (equal_bytes(admission->launch_digest, (BYTE[32]){0}, 32U))
+    admission->launch_digest[0] = 2U;
+  return 1;
+}
+
+static int fixture_admission_persist(ROOT_CUSTODY *root,
+                                     PROFILE_IDENTITY *identity,
+                                     ADMISSION_CUSTODY *admission, BYTE kind) {
+  (void)root;
+  (void)identity;
+  fixture_admission_persisted[fixture_admission_persisted_count++] = kind;
+  fixture_admission_order[fixture_admission_order_count++] =
+      (BYTE)(60U + kind);
+  if (kind == fixture_admission_persist_failure) return 0;
+  admission->phase = kind;
+  admission->prior_digest[0] = kind;
+  return 1;
+}
+
+static int fixture_admission_phase_absent(ROOT_CUSTODY *root,
+                                          const PROFILE_IDENTITY *identity,
+                                          BYTE kind) {
+  (void)root;
+  (void)identity;
+  (void)kind;
+  return 1;
+}
+
+static int fixture_admission_apply(ROOT_CUSTODY *root,
+                                   EXECUTION_CUSTODY *execution,
+                                   const ADMISSION_PLAN *plan) {
+  (void)root;
+  (void)execution;
+  (void)plan;
+  return fixture_admission_component_failure != 1U;
+}
+
+static HANDLE fixture_admission_create_job(ROOT_CUSTODY *root,
+                                           const ADMISSION_CUSTODY *admission,
+                                           const ADMISSION_PLAN *plan) {
+  (void)root;
+  (void)admission;
+  (void)plan;
+  return fixture_admission_component_failure == 2U ? NULL :
+                                                     ADMISSION_FIXTURE_JOB;
+}
+
+static int fixture_admission_create_suspended(
+    ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity,
+    const ADMISSION_PLAN *plan, ADMISSION_RUNTIME *runtime) {
+  (void)root;
+  (void)identity;
+  (void)plan;
+  if (fixture_admission_component_failure == 3U) return 0;
+  runtime->process.hProcess = ADMISSION_FIXTURE_PROCESS;
+  runtime->process.hThread = ADMISSION_FIXTURE_THREAD;
+  runtime->process.dwProcessId = 777U;
+  return 1;
+}
+
+static int fixture_admission_prove(ROOT_CUSTODY *root,
+                                   const PROFILE_IDENTITY *identity,
+                                   EXECUTION_CUSTODY *execution,
+                                   const ADMISSION_PLAN *plan,
+                                   ADMISSION_RUNTIME *runtime) {
+  (void)root;
+  (void)identity;
+  (void)execution;
+  (void)plan;
+  (void)runtime;
+  return fixture_admission_component_failure != 4U;
+}
+
+static int fixture_admission_clear_pending(ROOT_CUSTODY *root,
+                                           const PROFILE_IDENTITY *identity) {
+  (void)root;
+  (void)identity;
+  fixture_admission_order[fixture_admission_order_count++] = 81U;
+  return fixture_admission_component_failure != 7U;
+}
+
+static int fixture_admission_cleanup_runtime(
+    ROOT_CUSTODY *root, const ADMISSION_CUSTODY *admission,
+    const ADMISSION_PLAN *plan, ADMISSION_RUNTIME *runtime) {
+  (void)root;
+  (void)admission;
+  (void)plan;
+  (void)runtime;
+  fixture_admission_cleanup_count += 1U;
+  return fixture_admission_component_failure != 5U;
+}
+
+static int fixture_admission_restore(ROOT_CUSTODY *root,
+                                     EXECUTION_CUSTODY *execution) {
+  (void)root;
+  (void)execution;
+  fixture_admission_restore_count += 1U;
+  return fixture_admission_component_failure != 6U;
+}
+
+static int fixture_admission_release_plan(ROOT_CUSTODY *root,
+                                          ADMISSION_PLAN *plan) {
+  (void)root;
+  fixture_admission_order[fixture_admission_order_count++] = 84U;
+  zero_bytes(plan, sizeof(*plan));
+  return 1;
+}
+
+static int fixture_admission_census_profile(ROOT_CUSTODY *root,
+                                            PROFILE_IDENTITY *identity,
+                                            int expect_absent,
+                                            int require_exact) {
+  (void)root;
+  (void)identity;
+  fixture_admission_order[fixture_admission_order_count++] = 86U;
+  return expect_absent == 0 && require_exact == 1;
+}
+
+static int fixture_admission_bind_folder(ROOT_CUSTODY *root,
+                                         PROFILE_IDENTITY *identity,
+                                         HANDLE *folder) {
+  (void)root;
+  (void)identity;
+  fixture_admission_order[fixture_admission_order_count++] = 87U;
+  *folder = (HANDLE)0x701U;
+  return 1;
+}
+
+static int fixture_admission_recovery_execution(ROOT_CUSTODY *root,
+                                                PROFILE_IDENTITY *identity,
+                                                EXECUTION_CUSTODY *execution) {
+  (void)root;
+  (void)identity;
+  (void)execution;
+  fixture_admission_order[fixture_admission_order_count++] = 88U;
+  return 1;
+}
+
+static int fixture_admission_recovery_descriptors(
+    ROOT_CUSTODY *root, const EXECUTION_CUSTODY *execution,
+    const ADMISSION_PLAN *plan, BYTE phase) {
+  fixture_admission_order[fixture_admission_order_count++] = 89U;
+  return admission_recovery_descriptor_state(root, execution, plan, phase);
+}
+
+static int fixture_admission_recovery_job(
+    ROOT_CUSTODY *root, const ADMISSION_CUSTODY *admission,
+    const ADMISSION_PLAN *plan, BYTE phase) {
+  (void)root;
+  (void)admission;
+  (void)plan;
+  fixture_admission_order[fixture_admission_order_count++] = 82U;
+  return phase >= ADMISSION_GRANT_ATTEMPTED &&
+         phase <= ADMISSION_REVOKE_ATTEMPTED;
+}
+
+static int fixture_admission_scratch_absent(
+    ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity) {
+  (void)root;
+  (void)identity;
+  fixture_admission_order[fixture_admission_order_count++] = 83U;
+  return 1;
+}
+
+static BOOL WINAPI fixture_admission_OpenThreadToken(HANDLE thread,
+                                                     DWORD access,
+                                                     BOOL open_as_self,
+                                                     HANDLE *token) {
+  (void)thread;
+  if (access != TOKEN_QUERY || open_as_self != TRUE || token == NULL)
+    return FALSE;
+  if (fixture_admission_token_fault == 19U) {
+    *token = (HANDLE)0x506U;
+    return TRUE;
+  }
+  SetLastError(ERROR_NO_TOKEN);
+  return FALSE;
+}
+
+static void fixture_admission_objects(EXECUTION_CUSTODY *execution) {
+  zero_bytes(execution, sizeof(*execution));
+  fixture_admission_execution = execution;
+  zero_bytes(fixture_admission_profiles, sizeof(fixture_admission_profiles));
+  execution->root.handle = (HANDLE)0x201U;
+  copy_bytes(execution->root.path, L"\\\\?\\C:\\fixture-root", 40U);
+  execution->root.path_units = 19U;
+  for (DWORD index = 0U; index < 4U; index += 1U) {
+    fixture_admission_original[index][0] = (BYTE)(index + 1U);
+    if (index == 0U) {
+      execution->root.security = fixture_admission_original[index];
+      execution->root.security_length = 4U;
+    } else {
+      BYTE role = (BYTE)(index - 1U);
+      execution->targets[role].handle = (HANDLE)(SIZE_T)(0x201U + index);
+      execution->targets[role].security = fixture_admission_original[index];
+      execution->targets[role].security_length = 4U;
+      execution->sources[role].handle = (HANDLE)(SIZE_T)(0x301U + role);
+      execution->targets[role].path[0] = L'X';
+      execution->targets[role].path[1] = L'\0';
+      execution->sources[role].path[0] = L'S';
+      execution->sources[role].path[1] = L'\0';
+    }
+  }
+  execution->parent.handle = (HANDLE)0x401U;
+  execution->parent.path[0] = L'P';
+  execution->parent.path[1] = L'\0';
+}
+
+static int fixture_admission_recovery_matrix(void) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
+  ADMISSION_PLAN *plan = &fixture_admission_test_plan;
+  zero_bytes(root, sizeof(*root));
+  zero_bytes(plan, sizeof(*plan));
+  fixture_admission_objects(execution);
+  plan->grant_security = fixture_admission_grant;
+  plan->grant_security_length = 4U;
+  for (BYTE phase = ADMISSION_GRANT_ATTEMPTED;
+       phase <= ADMISSION_REVOKE_ATTEMPTED; phase += 1U) {
+    for (DWORD mask = 0U; mask < 16U; mask += 1U) {
+      for (DWORD index = 0U; index < 4U; index += 1U)
+        fixture_admission_profiles[index] = (BYTE)((mask >> index) & 1U);
+      if (!admission_recovery_descriptor_state(root, execution, plan,
+                                               phase))
+        return 0;
+    }
+    for (DWORD index = 0U; index < 4U; index += 1U) {
+      zero_bytes(fixture_admission_profiles,
+                 sizeof(fixture_admission_profiles));
+      fixture_admission_profiles[index] = 2U;
+      if (admission_recovery_descriptor_state(root, execution, plan,
+                                              phase))
+        return 0;
+    }
+  }
+  return 1;
+}
+
+static int fixture_admission_grant_order(void) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
+  ADMISSION_PLAN *plan = &fixture_admission_test_plan;
+  static const BYTE grant_order[] = {90U, 11U, 12U, 13U, 10U,
+                                     91U, 91U, 91U, 92U};
+  static const BYTE restore_order[] = {20U, 21U, 22U, 23U, 90U};
+  zero_bytes(root, sizeof(*root));
+  zero_bytes(plan, sizeof(*plan));
+  fixture_admission_objects(execution);
+  plan->grant_security = fixture_admission_grant;
+  plan->grant_security_length = 4U;
+  fixture_admission_order_count = 0U;
+  fixture_admission_call = 0U;
+  fixture_admission_fail_call = 0U;
+  if (!apply_admission_grant(root, execution, plan) ||
+      fixture_admission_order_count != sizeof(grant_order) ||
+      !equal_bytes(fixture_admission_order, grant_order,
+                   sizeof(grant_order)))
+    return 0;
+  for (DWORD failure = 1U; failure <= 4U; failure += 1U) {
+    zero_bytes(fixture_admission_profiles,
+               sizeof(fixture_admission_profiles));
+    fixture_admission_order_count = 0U;
+    fixture_admission_call = 0U;
+    fixture_admission_fail_call = failure;
+    if (apply_admission_grant(root, execution, plan)) return 0;
+  }
+  fixture_admission_order_count = 0U;
+  fixture_admission_call = 0U;
+  fixture_admission_fail_call = 0U;
+  if (!restore_admission_grant(root, execution) ||
+      fixture_admission_order_count != sizeof(restore_order) ||
+      !equal_bytes(fixture_admission_order, restore_order,
+                   sizeof(restore_order)))
+    return 0;
+  for (DWORD failure = 1U; failure <= 4U; failure += 1U) {
+    for (DWORD index = 0U; index < 4U; index += 1U)
+      fixture_admission_profiles[index] = 1U;
+    fixture_admission_order_count = 0U;
+    fixture_admission_call = 0U;
+    fixture_admission_fail_call = failure;
+    if (restore_admission_grant(root, execution) ||
+        fixture_admission_order_count != 4U ||
+        !equal_bytes(fixture_admission_order, restore_order, 4U))
+      return 0;
+  }
+  zero_bytes(fixture_admission_profiles,
+             sizeof(fixture_admission_profiles));
+  fixture_admission_fail_call = 0U;
+  return 1;
+}
+
+static void fixture_admission_launch_reset(void) {
+  fixture_admission_call = 0U;
+  fixture_admission_attribute_mask = 0U;
+  fixture_admission_pipe_count = 0U;
+  fixture_admission_handle_clear_count = 0U;
+  fixture_admission_attribute_deletes = 0U;
+  fixture_admission_pipe_drains = 0U;
+  zero_bytes(fixture_admission_pipe_reads,
+             sizeof(fixture_admission_pipe_reads));
+  zero_bytes(fixture_admission_pipe_writes,
+             sizeof(fixture_admission_pipe_writes));
+}
+
+static int fixture_admission_launch_matrix(PROFILE_IDENTITY *identity) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  ADMISSION_PLAN *plan = &fixture_admission_test_plan;
+  ADMISSION_RUNTIME runtime;
+  ADMISSION_CUSTODY admission;
+  zero_bytes(root, sizeof(*root));
+  zero_bytes(plan, sizeof(*plan));
+  zero_bytes(&admission, sizeof(admission));
+  copy_bytes(plan->application, L"X", 4U);
+  copy_bytes(plan->command_line, L"\"X\"", 8U);
+  copy_bytes(plan->cwd, L"Y", 4U);
+  copy_bytes(plan->environment, L"A=B\0\0", 10U);
+  plan->creation_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
+                         CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+  plan->job_security = fixture_admission_grant;
+  plan->job_security_length = 4U;
+  copy_bytes(admission.job_name, L"Local\\orch6-job-launch", 46U);
+  admission.job_name_units = 22U;
+  fixture_admission_job_plan = plan;
+  fixture_admission_job_identity = &admission;
+  fixture_admission_identity = identity;
+  fixture_admission_launch_plan = plan;
+  zero_bytes(&runtime, sizeof(runtime));
+  runtime.job = ADMISSION_FIXTURE_JOB;
+  fixture_admission_fail_call = 0U;
+  fixture_admission_launch_reset();
+  fixture_admission_job_fault = 0U;
+  fixture_admission_token_fault = 0U;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 1U;
+  if (!create_suspended_admission(root, identity, plan, &runtime) ||
+      runtime.process.hProcess != ADMISSION_FIXTURE_PROCESS ||
+      runtime.process.hThread != ADMISSION_FIXTURE_THREAD ||
+      fixture_admission_attribute_mask != 7U) {
+    fixture_admission_matrix_stage = 91U;
+    return 0;
+  }
+  if (!cleanup_admission_runtime(root, &admission, plan, &runtime) ||
+      fixture_admission_job_present ||
+      fixture_admission_attribute_deletes != 1U ||
+      fixture_admission_pipe_drains != 2U) {
+    fixture_admission_matrix_stage = 92U;
+    return 0;
+  }
+  for (DWORD failure = 1U; failure <= 22U; failure += 1U) {
+    root->resource_ambiguous = 0;
+    zero_bytes(&runtime, sizeof(runtime));
+    runtime.job = ADMISSION_FIXTURE_JOB;
+    fixture_admission_fail_call = failure;
+    fixture_admission_launch_reset();
+    fixture_admission_job_present = 1;
+    fixture_admission_job_active = 0U;
+    if (create_suspended_admission(root, identity, plan, &runtime)) {
+      fixture_admission_matrix_stage = 100U + failure;
+      return 0;
+    }
+    if (runtime.process.hProcess != NULL)
+      fixture_admission_job_active = 1U;
+    {
+      int cleanup = cleanup_admission_runtime(root, &admission, plan, &runtime);
+      int expected_cleanup = failure < 14U || failure > 17U;
+      if (cleanup != expected_cleanup || fixture_admission_job_present ||
+          runtime.attributes != NULL || runtime.stdin_read != NULL ||
+          runtime.stdin_write != NULL || runtime.stdout_read != NULL ||
+          runtime.stdout_write != NULL || runtime.stderr_read != NULL ||
+          runtime.stderr_write != NULL || runtime.sentinel != NULL ||
+          runtime.process.hProcess != NULL ||
+          runtime.process.hThread != NULL) {
+      fixture_admission_matrix_stage = 130U + failure;
+      return 0;
+      }
+    }
+  }
+  for (DWORD failure = 1U; failure <= 6U; failure += 1U) {
+    root->resource_ambiguous = 0;
+    zero_bytes(&runtime, sizeof(runtime));
+    runtime.job = ADMISSION_FIXTURE_JOB;
+    fixture_admission_fail_call = 0U;
+    fixture_admission_launch_reset();
+    fixture_admission_job_present = 1;
+    fixture_admission_job_active = 1U;
+    fixture_admission_resource_kind = 0U;
+    if (!create_suspended_admission(root, identity, plan, &runtime)) return 0;
+    fixture_admission_resource_kind = 3U;
+    fixture_admission_resource_call = 0U;
+    fixture_admission_resource_failure = failure;
+    if (cleanup_admission_runtime(root, &admission, plan, &runtime) ||
+        fixture_admission_resource_call != 6U)
+      return 0;
+  }
+  root->resource_ambiguous = 0;
+  zero_bytes(&runtime, sizeof(runtime));
+  runtime.job = ADMISSION_FIXTURE_JOB;
+  fixture_admission_fail_call = 0U;
+  fixture_admission_launch_reset();
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 1U;
+  fixture_admission_resource_kind = 0U;
+  if (!create_suspended_admission(root, identity, plan, &runtime)) return 0;
+  fixture_admission_resource_kind = 1U;
+  fixture_admission_resource_call = 0U;
+  fixture_admission_resource_failure = 1U;
+  if (cleanup_admission_runtime(root, &admission, plan, &runtime) ||
+      runtime.attributes != NULL)
+    return 0;
+  root->resource_ambiguous = 0;
+  zero_bytes(&runtime, sizeof(runtime));
+  runtime.job = ADMISSION_FIXTURE_JOB;
+  fixture_admission_fail_call = 0U;
+  fixture_admission_launch_reset();
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 1U;
+  fixture_admission_resource_kind = 0U;
+  if (!create_suspended_admission(root, identity, plan, &runtime)) return 0;
+  fixture_admission_resource_kind = 4U;
+  fixture_admission_resource_call = 0U;
+  if (cleanup_admission_runtime(root, &admission, plan, &runtime) ||
+      fixture_admission_resource_call != 6U)
+    return 0;
+  fixture_admission_resource_kind = 0U;
+  fixture_admission_fail_call = 0U;
+  return 1;
+}
+
+static int fixture_admission_canonical_plan_matrix(
+    PROFILE_IDENTITY *identity, PSID stable, DWORD stable_length) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
+  ADMISSION_PLAN *plan = &fixture_admission_test_plan;
+  ADMISSION_CUSTODY admission;
+  ADMISSION_RUNTIME runtime;
+  PSECURITY_DESCRIPTOR original = NULL;
+  BYTE low_integrity[12];
+  SID_IDENTIFIER_AUTHORITY mandatory = SECURITY_MANDATORY_LABEL_AUTHORITY;
+  DWORD original_length = 0U;
+  DWORD cursor = 0U;
+  DWORD command_cursor = 0U;
+  DWORD environment_cursor = 0U;
+  WCHAR windows[PATH_MAX_UNITS + 1U];
+  DWORD windows_units;
+  int valid = 0;
+  static const WCHAR *target_names[] = {
+    L"node.exe", L"rpc-runner.mjs", L"candidate.mjs"
+  };
+  fixture_admission_matrix_stage = 181U;
+  zero_bytes(root, sizeof(*root));
+  zero_bytes(plan, sizeof(*plan));
+  zero_bytes(&admission, sizeof(admission));
+  zero_bytes(&runtime, sizeof(runtime));
+  fixture_admission_objects(execution);
+  root->stable_sid = stable;
+  root->stable_sid_length = stable_length;
+  root->integrity_sid_length = fixture_admission_sid_bytes(
+      low_integrity, mandatory, 1U, SECURITY_MANDATORY_LOW_RID, 0U);
+  root->integrity_sid = low_integrity;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"O:SYG:SYD:P(A;;FA;;;SY)S:(ML;;NW;;;LW)", SDDL_REVISION_1,
+          &original, &original_length) || original == NULL ||
+      original_length == 0U)
+    goto done;
+  fixture_admission_matrix_stage = 182U;
+  cursor = 0U;
+  if (!append_wide(identity->folder, PATH_MAX_UNITS + 1U, &cursor,
+                   L"\\\\?\\C:\\fixture-profile"))
+    goto done;
+  identity->folder_units = (WORD)cursor;
+  cursor = 0U;
+  if (!append_wide(execution->parent.path, PATH_MAX_UNITS + 1U, &cursor,
+                   L"\\\\?\\C:\\fixture-parent"))
+    goto done;
+  execution->parent.path_units = (WORD)cursor;
+  cursor = 0U;
+  if (!append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                   L"\\\\?\\C:\\fixture-parent\\orch6-execution-") ||
+      !append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                   L"0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"))
+    goto done;
+  execution->root.path_units = (WORD)cursor;
+  execution->parent.security = original;
+  execution->parent.security_length = original_length;
+  execution->root.security = original;
+  execution->root.security_length = original_length;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    cursor = 0U;
+    if (!append_wide(execution->targets[role].path,
+                     PATH_MAX_UNITS + 1U, &cursor,
+                     execution->root.path) ||
+        !append_wide(execution->targets[role].path,
+                     PATH_MAX_UNITS + 1U, &cursor, L"\\") ||
+        !append_wide(execution->targets[role].path,
+                     PATH_MAX_UNITS + 1U, &cursor, target_names[role]))
+      goto done;
+    execution->targets[role].path_units = (WORD)cursor;
+    execution->targets[role].security = original;
+    execution->targets[role].security_length = original_length;
+  }
+  fixture_admission_matrix_stage = 183U;
+  if (!admission_plan_digest(root, identity, execution, &admission, plan) ||
+      equal_bytes(admission.grant_digest, (BYTE[32]){0}, 32U) ||
+      equal_bytes(admission.launch_digest, (BYTE[32]){0}, 32U) ||
+      plan->creation_flags !=
+          (CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
+           CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW))
+    goto done;
+  zero_bytes(fixture_admission_expected_command,
+             sizeof(fixture_admission_expected_command));
+  if (!append_wide(fixture_admission_expected_command, 4096U,
+                   &command_cursor, L"\"") ||
+      !append_wide(fixture_admission_expected_command, 4096U,
+                   &command_cursor, execution->targets[0].path) ||
+      !append_wide(fixture_admission_expected_command, 4096U,
+                   &command_cursor, L"\" \"") ||
+      !append_wide(fixture_admission_expected_command, 4096U,
+                   &command_cursor, execution->targets[1].path) ||
+      !append_wide(fixture_admission_expected_command, 4096U,
+                   &command_cursor, L"\" \"") ||
+      !append_wide(
+          fixture_admission_expected_command, 4096U, &command_cursor,
+          L"file:///C:/fixture-parent/orch6-execution-0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20/candidate.mjs") ||
+      !append_wide(fixture_admission_expected_command, 4096U,
+                   &command_cursor, L"\"") ||
+      !wide_equal(plan->application, execution->targets[0].path) ||
+      !wide_equal(plan->command_line,
+                  fixture_admission_expected_command) ||
+      !wide_equal(plan->cwd, identity->folder))
+    goto done;
+  zero_bytes(fixture_admission_expected_environment,
+             sizeof(fixture_admission_expected_environment));
+  windows_units = GetWindowsDirectoryW(windows, PATH_MAX_UNITS + 1U);
+  if (windows_units == 0U || windows_units > PATH_MAX_UNITS ||
+      !fixture_admission_expected_environment_add(
+          &environment_cursor, L"LOCALAPPDATA", identity->folder) ||
+      !fixture_admission_expected_environment_add(
+          &environment_cursor, L"SystemRoot", windows) ||
+      !fixture_admission_expected_environment_add(
+          &environment_cursor, L"TEMP", identity->folder) ||
+      !fixture_admission_expected_environment_add(
+          &environment_cursor, L"TMP", identity->folder) ||
+      !fixture_admission_expected_environment_add(
+          &environment_cursor, L"WINDIR", windows) ||
+      plan->environment_units != environment_cursor + 1U ||
+      !equal_bytes(plan->environment,
+                   fixture_admission_expected_environment,
+                   plan->environment_units * 2U))
+    goto done;
+  fixture_admission_matrix_stage = 184U;
+  fixture_admission_identity = identity;
+  fixture_admission_launch_plan = plan;
+  fixture_admission_job_plan = plan;
+  fixture_admission_job_identity = &admission;
+  fixture_admission_fail_call = 0U;
+  fixture_admission_launch_reset();
+  fixture_admission_job_fault = 0U;
+  fixture_admission_token_fault = 0U;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 1U;
+  runtime.job = ADMISSION_FIXTURE_JOB;
+  if (!create_suspended_admission(root, identity, plan, &runtime) ||
+      !cleanup_admission_runtime(root, &admission, plan, &runtime) ||
+      fixture_admission_attribute_deletes != 1U ||
+      fixture_admission_pipe_drains != 2U)
+    goto done;
+  fixture_admission_matrix_stage = 185U;
+  valid = 1;
+done:
+  if (plan->grant_security != NULL || plan->job_security != NULL)
+    if (!release_admission_plan(root, plan)) valid = 0;
+  if (original != NULL && LocalFree(original) != NULL) valid = 0;
+  return valid;
+}
+
+static int fixture_admission_token_once(ROOT_CUSTODY *root,
+                                        PROFILE_IDENTITY *identity,
+                                        EXECUTION_CUSTODY *execution,
+                                        ADMISSION_PLAN *plan, DWORD fault,
+                                        DWORD access_failure,
+                                        DWORD open_failure) {
+  ADMISSION_RUNTIME runtime;
+  zero_bytes(&runtime, sizeof(runtime));
+  runtime.job = ADMISSION_FIXTURE_JOB;
+  runtime.process.hProcess = ADMISSION_FIXTURE_PROCESS;
+  runtime.process.dwProcessId = 777U;
+  fixture_admission_root = root;
+  fixture_admission_identity = identity;
+  fixture_admission_token_fault = fault;
+  fixture_admission_access_count = 0U;
+  fixture_admission_open_count = 0U;
+  fixture_admission_access_fail = access_failure;
+  fixture_admission_open_fail = open_failure;
+  fixture_admission_impersonating = 0;
+  return prove_child_token(root, identity, execution, plan, &runtime);
+}
+
+static int fixture_admission_token_matrix(PROFILE_IDENTITY *identity,
+                                          PSID stable, DWORD stable_length) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
+  ADMISSION_PLAN *plan = &fixture_admission_test_plan;
+  static const TOKEN_INFORMATION_CLASS variable_kinds[] = {
+    TokenUser, TokenAppContainerSid, TokenIntegrityLevel,
+    TokenCapabilities, TokenGroups
+  };
+  zero_bytes(root, sizeof(*root));
+  zero_bytes(plan, sizeof(*plan));
+  root->stable_sid = stable;
+  root->stable_sid_length = stable_length;
+  root->handle = (HANDLE)0x450U;
+  copy_bytes(root->path, L"R", 4U);
+  fixture_admission_objects(execution);
+  fixture_admission_query_fault = 0U;
+  fixture_admission_resource_kind = 0U;
+  if (!fixture_admission_token_once(root, identity, execution, plan, 0U,
+                                    0U, 0U) ||
+      fixture_admission_access_count != 30U ||
+      fixture_admission_open_count != 34U ||
+      fixture_admission_impersonating)
+    return 0;
+  for (DWORD fault = 1U; fault <= 41U; fault += 1U) {
+    if (fault == 14U || fault == 16U) continue;
+    root->resource_ambiguous = 0;
+    if (fixture_admission_token_once(root, identity, execution, plan,
+                                     fault, 0U, 0U))
+      return 0;
+  }
+  for (DWORD failure = 1U; failure <= 30U; failure += 1U) {
+    root->resource_ambiguous = 0;
+    if (fixture_admission_token_once(root, identity, execution, plan, 0U,
+                                     failure, 0U))
+      return 0;
+  }
+  for (DWORD failure = 1U; failure <= 34U; failure += 1U) {
+    root->resource_ambiguous = 0;
+    if (fixture_admission_token_once(root, identity, execution, plan, 0U,
+                                     0U, failure))
+      return 0;
+  }
+  for (DWORD kind = 0U;
+       kind < sizeof(variable_kinds) / sizeof(variable_kinds[0]);
+       kind += 1U) {
+    for (DWORD fault = 1U; fault <= 5U; fault += 1U) {
+      root->resource_ambiguous = 0;
+      fixture_admission_query_kind = variable_kinds[kind];
+      fixture_admission_query_fault = fault;
+      if (fixture_admission_token_once(root, identity, execution, plan, 0U,
+                                       0U, 0U))
+        return 0;
+    }
+    for (DWORD fault = 1U; fault <= 3U; fault += 1U) {
+      BYTE *buffer = NULL;
+      DWORD length = 0U;
+      fixture_admission_query_kind = variable_kinds[kind];
+      fixture_admission_query_fault = fault;
+      fixture_admission_track_allocations = 1;
+      fixture_admission_allocations = 0U;
+      if (query_token_buffer(root, ADMISSION_FIXTURE_PROCESS_TOKEN,
+                             variable_kinds[kind], &buffer, &length) ||
+          buffer != NULL || fixture_admission_allocations != 0U)
+        return 0;
+      fixture_admission_track_allocations = 0;
+    }
+  }
+  fixture_admission_query_fault = 0U;
+  for (DWORD failure = 1U; failure <= 5U; failure += 1U) {
+    root->resource_ambiguous = 0;
+    fixture_admission_resource_kind = 1U;
+    fixture_admission_resource_call = 0U;
+    fixture_admission_resource_failure = failure;
+    if (fixture_admission_token_once(root, identity, execution, plan, 0U,
+                                     0U, 0U))
+      return 0;
+  }
+  for (DWORD failure = 1U; failure <= 3U; failure += 1U) {
+    root->resource_ambiguous = 0;
+    fixture_admission_resource_kind = 2U;
+    fixture_admission_resource_call = 0U;
+    fixture_admission_resource_failure = failure;
+    if (fixture_admission_token_once(root, identity, execution, plan, 0U,
+                                     0U, 0U))
+      return 0;
+  }
+  fixture_admission_resource_kind = 0U;
+  return 1;
+}
+
+static int fixture_admission_job_matrix(void) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  ADMISSION_PLAN *plan = &fixture_admission_test_plan;
+  ADMISSION_CUSTODY admission;
+  HANDLE job;
+  zero_bytes(root, sizeof(*root));
+  zero_bytes(plan, sizeof(*plan));
+  zero_bytes(&admission, sizeof(admission));
+  copy_bytes(admission.job_name, L"Local\\orch6-job-fixture", 48U);
+  admission.job_name_units = 23U;
+  plan->job_security = fixture_admission_grant;
+  plan->job_security_length = 4U;
+  fixture_admission_job_plan = plan;
+  fixture_admission_job_identity = &admission;
+  fixture_admission_fail_call = 0U;
+  fixture_admission_call = 0U;
+  fixture_admission_token_fault = 0U;
+  fixture_admission_job_fault = 0U;
+  fixture_admission_job_present = 0;
+  fixture_admission_job_active = 0U;
+  job = create_admission_job(root, &admission, plan);
+  if (job != ADMISSION_FIXTURE_JOB) return 0;
+  fixture_admission_job_active = 1U;
+  if (!verify_admission_job(root, job, plan, 1U, 777U)) return 0;
+  for (DWORD fault = 1U; fault <= 18U; fault += 1U) {
+    root->resource_ambiguous = 0;
+    fixture_admission_job_fault = fault;
+    if (verify_admission_job(root, job, plan, 1U, 777U)) return 0;
+  }
+  for (DWORD fault = 24U; fault <= 26U; fault += 1U) {
+    fixture_admission_job_fault = fault;
+    fixture_admission_job_present = 1;
+    fixture_admission_job_active = 1U;
+    job = ADMISSION_FIXTURE_JOB;
+    if (terminate_admission_job(root, &job, &admission, plan)) return 0;
+    root->resource_ambiguous = 0;
+  }
+  fixture_admission_job_fault = 0U;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 1U;
+  job = ADMISSION_FIXTURE_JOB;
+  if (!terminate_admission_job(root, &job, &admission, plan) ||
+      job != NULL || fixture_admission_job_present)
+    return 0;
+  for (DWORD fault = 20U; fault <= 23U; fault += 1U) {
+    root->resource_ambiguous = 0;
+    fixture_admission_job_fault = fault;
+    fixture_admission_job_present = fault == 20U;
+    fixture_admission_token_fault = 0U;
+    job = create_admission_job(root, &admission, plan);
+    if (job != NULL) return 0;
+    fixture_admission_job_present = 0;
+  }
+  fixture_admission_job_fault = 0U;
+  fixture_admission_token_fault = 12U;
+  if (create_admission_job(root, &admission, plan) != NULL) return 0;
+  fixture_admission_token_fault = 0U;
+  fixture_admission_job_present = 0;
+  return 1;
+}
+
+static void fixture_admission_orchestration_reset(void) {
+  fixture_admission_persisted_count = 0U;
+  fixture_admission_persist_failure = 0U;
+  fixture_admission_component_failure = 0U;
+  fixture_admission_cleanup_count = 0U;
+  fixture_admission_restore_count = 0U;
+  fixture_admission_order_count = 0U;
+  fixture_admission_call = 0U;
+  fixture_admission_fail_call = 0U;
+}
+
+static int fixture_admission_lifecycle_matrix(PROFILE_IDENTITY *identity) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
+  typedef struct fixture_lifecycle_case {
+    DWORD failure;
+    int outcome;
+    BYTE count;
+    BYTE phases[7];
+    DWORD cleanup;
+    DWORD restore;
+  } FIXTURE_LIFECYCLE_CASE;
+  static const BYTE success[] = {
+    ADMISSION_GRANT_ATTEMPTED, ADMISSION_GRANTED,
+    ADMISSION_JOB_ATTEMPTED, ADMISSION_LAUNCH_ATTEMPTED,
+    ADMISSION_PROVED, ADMISSION_REVOKE_ATTEMPTED,
+    ADMISSION_ABSENCE_PROVED
+  };
+  static const FIXTURE_LIFECYCLE_CASE component_cases[] = {
+    {1U, 0, 3U, {1U, 6U, 7U}, 1U, 1U},
+    {2U, 0, 5U, {1U, 2U, 3U, 6U, 7U}, 1U, 1U},
+    {3U, 0, 6U, {1U, 2U, 3U, 4U, 6U, 7U}, 1U, 1U},
+    {4U, 0, 6U, {1U, 2U, 3U, 4U, 6U, 7U}, 1U, 1U},
+    {5U, -1, 6U, {1U, 2U, 3U, 4U, 5U, 6U}, 1U, 1U},
+    {6U, -1, 6U, {1U, 2U, 3U, 4U, 5U, 6U}, 1U, 1U},
+    {7U, -1, 5U, {1U, 2U, 3U, 4U, 5U}, 1U, 1U},
+    {8U, 0, 0U, {0U}, 0U, 0U}
+  };
+  static const FIXTURE_LIFECYCLE_CASE persist_cases[] = {
+    {1U, 0, 1U, {1U}, 0U, 0U},
+    {2U, -1, 2U, {1U, 2U}, 1U, 1U},
+    {3U, -1, 3U, {1U, 2U, 3U}, 1U, 1U},
+    {4U, -1, 4U, {1U, 2U, 3U, 4U}, 1U, 1U},
+    {5U, -1, 5U, {1U, 2U, 3U, 4U, 5U}, 1U, 1U},
+    {6U, -1, 6U, {1U, 2U, 3U, 4U, 5U, 6U}, 1U, 1U},
+    {7U, -1, 7U, {1U, 2U, 3U, 4U, 5U, 6U, 7U}, 1U, 1U}
+  };
+  zero_bytes(root, sizeof(*root));
+  fixture_admission_objects(execution);
+  execution->phase = EXECUTION_CREATED;
+  execution->profile_created_digest[0] = 1U;
+  execution->prior_digest[0] = 2U;
+  fixture_admission_orchestration_reset();
+  {
+    int outcome = run_admission_lifecycle(root, identity, execution);
+    if (outcome != 1) {
+      fixture_admission_matrix_stage =
+          outcome == 0 ? 80U + fixture_admission_persisted_count : 30U;
+      return 0;
+    }
+  }
+  if (fixture_admission_persisted_count != sizeof(success)) {
+    fixture_admission_matrix_stage = 32U;
+    return 0;
+  }
+  if (!equal_bytes(fixture_admission_persisted, success, sizeof(success))) {
+    fixture_admission_matrix_stage = 33U;
+    return 0;
+  }
+  if (fixture_admission_cleanup_count != 1U) {
+    fixture_admission_matrix_stage = 34U;
+    return 0;
+  }
+  if (fixture_admission_restore_count != 1U) {
+    fixture_admission_matrix_stage = 35U;
+    return 0;
+  }
+  for (DWORD index = 0U;
+       index < sizeof(component_cases) / sizeof(component_cases[0]);
+       index += 1U) {
+    const FIXTURE_LIFECYCLE_CASE *test_case = &component_cases[index];
+    int outcome;
+    fixture_admission_orchestration_reset();
+    fixture_admission_component_failure = test_case->failure;
+    outcome = run_admission_lifecycle(root, identity, execution);
+    if (outcome != test_case->outcome ||
+        fixture_admission_persisted_count != test_case->count ||
+        !equal_bytes(fixture_admission_persisted, test_case->phases,
+                     test_case->count) ||
+        fixture_admission_cleanup_count != test_case->cleanup ||
+        fixture_admission_restore_count != test_case->restore) {
+      fixture_admission_matrix_stage = 40U + test_case->failure;
+      return 0;
+    }
+  }
+  for (DWORD index = 0U;
+       index < sizeof(persist_cases) / sizeof(persist_cases[0]);
+       index += 1U) {
+    const FIXTURE_LIFECYCLE_CASE *test_case = &persist_cases[index];
+    int outcome;
+    fixture_admission_orchestration_reset();
+    fixture_admission_persist_failure = (BYTE)test_case->failure;
+    outcome = run_admission_lifecycle(root, identity, execution);
+    if (outcome != test_case->outcome ||
+        fixture_admission_persisted_count != test_case->count ||
+        !equal_bytes(fixture_admission_persisted, test_case->phases,
+                     test_case->count) ||
+        fixture_admission_cleanup_count != test_case->cleanup ||
+        fixture_admission_restore_count != test_case->restore) {
+      fixture_admission_matrix_stage = 60U + test_case->failure;
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int fixture_admission_outer_recovery_matrix(
+    PROFILE_IDENTITY *identity) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
+  JOURNAL_GROUP group;
+  static const BYTE recovery_order[] = {
+    86U, 87U, 88U, 85U, 89U, 81U, 66U, 82U, 20U, 21U, 22U,
+    23U, 91U, 92U, 91U, 91U, 91U, 83U, 81U, 67U, 84U
+  };
+  static const BYTE durable_recovery_order[] = {
+    86U, 87U, 88U, 85U, 89U, 81U, 82U, 20U, 21U, 22U,
+    23U, 91U, 92U, 91U, 91U, 91U, 83U, 81U, 67U, 84U
+  };
+  zero_bytes(root, sizeof(*root));
+  fixture_admission_objects(execution);
+  execution->phase = EXECUTION_CREATED;
+  for (BYTE phase = ADMISSION_GRANT_ATTEMPTED;
+       phase <= ADMISSION_REVOKE_ATTEMPTED; phase += 1U) {
+    zero_bytes(&group, sizeof(group));
+    copy_bytes(&group.identity, identity, sizeof(*identity));
+    group.execution = execution;
+    group.admission.phase = phase;
+    group.admission.grant_digest[0] = 1U;
+    group.admission.launch_digest[0] = 2U;
+    for (DWORD index = 0U; index < 4U; index += 1U)
+      fixture_admission_profiles[index] = (BYTE)((index + phase) & 1U);
+    fixture_admission_orchestration_reset();
+    if (!recover_admission(root, &group) ||
+        fixture_admission_persisted_count != (phase == 6U ? 1U : 2U) ||
+        fixture_admission_persisted[fixture_admission_persisted_count - 1U] !=
+            ADMISSION_ABSENCE_PROVED ||
+        fixture_admission_order_count !=
+            (phase == 6U ? sizeof(durable_recovery_order) :
+                           sizeof(recovery_order)) ||
+        !equal_bytes(fixture_admission_order,
+                     phase == 6U ? durable_recovery_order : recovery_order,
+                     phase == 6U ? sizeof(durable_recovery_order) :
+                                    sizeof(recovery_order)))
+      return 0;
+  }
+  zero_bytes(&group, sizeof(group));
+  copy_bytes(&group.identity, identity, sizeof(*identity));
+  group.execution = execution;
+  group.admission.phase = ADMISSION_PROVED;
+  group.admission.grant_digest[0] = 1U;
+  group.admission.launch_digest[0] = 2U;
+  zero_bytes(fixture_admission_profiles, sizeof(fixture_admission_profiles));
+  fixture_admission_orchestration_reset();
+  fixture_admission_persist_failure = ADMISSION_REVOKE_ATTEMPTED;
+  if (recover_admission(root, &group)) return 0;
+  fixture_admission_orchestration_reset();
+  if (!recover_admission(root, &group) ||
+      fixture_admission_persisted_count != 2U ||
+      fixture_admission_persisted[0] != ADMISSION_REVOKE_ATTEMPTED ||
+      fixture_admission_persisted[1] != ADMISSION_ABSENCE_PROVED)
+    return 0;
+  group.admission.phase = ADMISSION_REVOKE_ATTEMPTED;
+  fixture_admission_orchestration_reset();
+  fixture_admission_persist_failure = ADMISSION_ABSENCE_PROVED;
+  if (recover_admission(root, &group)) return 0;
+  fixture_admission_orchestration_reset();
+  if (!recover_admission(root, &group) ||
+      fixture_admission_persisted_count != 1U ||
+      fixture_admission_persisted[0] != ADMISSION_ABSENCE_PROVED)
+    return 0;
+  return 1;
+}
+
+__declspec(noreturn) void fixture_entry(void) {
+  SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+  SID_IDENTIFIER_AUTHORITY package = {{0U, 0U, 0U, 0U, 0U, 15U}};
+  BYTE stable[16];
+  BYTE app[16];
+  DWORD stable_length;
+  DWORD app_length;
+  PROFILE_IDENTITY identity;
+  int valid = 0;
+  zero_bytes(&identity, sizeof(identity));
+  stable_length = fixture_admission_sid_bytes(stable, nt, 2U, 21U, 4242U);
+  app_length = fixture_admission_sid_bytes(app, package, 2U, 2U, 4242U);
+  identity.sid_length = (WORD)app_length;
+  copy_bytes(identity.sid, app, app_length);
+  identity.sid_text_length =
+      (WORD)ascii_length("S-1-15-2-4242");
+  copy_bytes(identity.sid_text, "S-1-15-2-4242",
+             identity.sid_text_length + 1U);
+  valid = fixture_admission_recovery_matrix();
+  if (!valid) ExitProcess(11U);
+  valid = fixture_admission_grant_order();
+  if (!valid) ExitProcess(12U);
+  valid = fixture_admission_launch_matrix(&identity);
+  if (!valid) ExitProcess(fixture_admission_matrix_stage);
+  valid = fixture_admission_canonical_plan_matrix(&identity, stable,
+                                                  stable_length);
+  if (!valid) ExitProcess(fixture_admission_matrix_stage);
+  valid = fixture_admission_token_matrix(&identity, stable, stable_length);
+  if (!valid) ExitProcess(14U);
+  valid = fixture_admission_job_matrix();
+  if (!valid) ExitProcess(15U);
+  valid = fixture_admission_lifecycle_matrix(&identity);
+  if (!valid) ExitProcess(fixture_admission_matrix_stage);
+  valid = fixture_admission_outer_recovery_matrix(&identity);
+  ExitProcess(valid ? 0U : 17U);
+}
+
+#elif defined(OP_WINDOWS_ADMISSION_FIXTURE)
+
+static DWORD fixture_admission_stage;
+static BYTE fixture_admission_overbound_job[
+    8U + sizeof(SIZE_T) * (JOB_PROCESS_MAXIMUM + 1U)];
+
+static void fixture_admission_sid(BYTE sid[12], DWORD authority) {
+  zero_bytes(sid, 12U);
+  sid[0] = 1U;
+  sid[1] = 1U;
+  sid[7] = 5U;
+  write_u32(sid + 8U, authority);
+}
+
+static int fixture_expected_transition(BYTE current, BYTE kind) {
+  if (kind == ADMISSION_GRANT_ATTEMPTED) return current == 0U;
+  if (kind >= ADMISSION_GRANTED && kind <= ADMISSION_PROVED)
+    return current == (BYTE)(kind - 1U);
+  if (kind == ADMISSION_REVOKE_ATTEMPTED)
+    return current >= ADMISSION_GRANT_ATTEMPTED &&
+           current <= ADMISSION_PROVED;
+  return kind == ADMISSION_ABSENCE_PROVED &&
+         current == ADMISSION_REVOKE_ATTEMPTED;
+}
+
+static int fixture_expected_set(const BYTE seen[8]) {
+  BYTE last = 0U;
+  if (!seen[ADMISSION_GRANT_ATTEMPTED]) {
+    for (BYTE kind = ADMISSION_GRANTED;
+         kind <= ADMISSION_ABSENCE_PROVED; kind += 1U)
+      if (seen[kind]) return 0;
+    return 1;
+  }
+  for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+       kind <= ADMISSION_PROVED; kind += 1U) {
+    if (!seen[kind]) {
+      for (BYTE later = (BYTE)(kind + 1U);
+           later <= ADMISSION_PROVED; later += 1U)
+        if (seen[later]) return 0;
+      break;
+    }
+    last = kind;
+  }
+  return last != 0U &&
+         (!seen[ADMISSION_ABSENCE_PROVED] ||
+          seen[ADMISSION_REVOKE_ATTEMPTED]);
+}
+
+static int fixture_admission_contracts(void) {
+  ROOT_CUSTODY root;
+  PROFILE_IDENTITY identity;
+  ADMISSION_CUSTODY admission;
+  BYTE record[4096];
+  BYTE stable_sid[12];
+  BYTE system_sid[12];
+  BYTE admin_sid[12];
+  BYTE user_buffer[sizeof(TOKEN_USER) + 12U];
+  BYTE zero_groups[8];
+  BYTE one_group[8U + sizeof(SID_AND_ATTRIBUTES) + 12U];
+  BYTE two_groups[8U + sizeof(SID_AND_ATTRIBUTES) * 2U + 24U];
+  BYTE job_list[8U + sizeof(SIZE_T) * 2U];
+  DWORD observed = 0U;
+  DWORD sid_length = 0U;
+  zero_bytes(&root, sizeof(root));
+  zero_bytes(&identity, sizeof(identity));
+  zero_bytes(&admission, sizeof(admission));
+  fixture_admission_sid(stable_sid, 1000U);
+  fixture_admission_sid(system_sid, SECURITY_LOCAL_SYSTEM_RID);
+  fixture_admission_sid(admin_sid, DOMAIN_ALIAS_RID_ADMINS);
+  root.stable_sid = stable_sid;
+  root.stable_sid_length = 12U;
+  root.digest[0] = 1U;
+  fixture_admission_stage = 1U;
+  identity.token[0] = 2U;
+  identity.sid_length = 12U;
+  identity.phase = JOURNAL_PROFILE_CREATED;
+  copy_bytes(identity.sid, stable_sid, 12U);
+  admission.profile_created_digest[0] = 3U;
+  admission.execution_created_digest[0] = 4U;
+  admission.grant_digest[0] = 5U;
+  admission.launch_digest[0] = 6U;
+  if (!admission_job_name(identity.token, admission.job_name,
+                          &admission.job_name_units))
+    return 0;
+  for (BYTE current = 0U; current <= ADMISSION_ABSENCE_PROVED;
+       current += 1U) {
+    for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+         kind <= ADMISSION_ABSENCE_PROVED; kind += 1U) {
+      int expected = fixture_expected_transition(current, kind);
+      admission.phase = current;
+      if (valid_admission_transition(current, kind) != expected ||
+          !!admission_record(&root, &identity, &admission, kind, record,
+                             sizeof(record)) != !!expected)
+        return 0;
+    }
+  }
+  for (DWORD mask = 0U; mask < 128U; mask += 1U) {
+    fixture_admission_stage = 2U;
+    BYTE seen[8];
+    BYTE last = 0U;
+    zero_bytes(seen, sizeof(seen));
+    for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+         kind <= ADMISSION_ABSENCE_PROVED; kind += 1U)
+      seen[kind] = (BYTE)((mask >> (kind - 1U)) & 1U);
+    if (valid_admission_final_set(seen, &last) !=
+        fixture_expected_set(seen))
+      return 0;
+  }
+
+  fixture_admission_stage = 3U;
+  zero_bytes(user_buffer, sizeof(user_buffer));
+  ((TOKEN_USER *)user_buffer)->User.Sid = user_buffer + sizeof(TOKEN_USER);
+  copy_bytes(user_buffer + sizeof(TOKEN_USER), stable_sid, 12U);
+  if (!exact_detached_sid_value(user_buffer, sizeof(user_buffer),
+                                sizeof(TOKEN_USER),
+                                ((TOKEN_USER *)user_buffer)->User.Sid,
+                                stable_sid) ||
+      detached_sid(user_buffer, sizeof(user_buffer), sizeof(TOKEN_USER),
+                   user_buffer + sizeof(TOKEN_USER) + 1U, &sid_length) ||
+      exact_detached_sid_value(user_buffer, sizeof(user_buffer) - 1U,
+                               sizeof(TOKEN_USER),
+                               ((TOKEN_USER *)user_buffer)->User.Sid,
+                               stable_sid))
+    return 0;
+
+  fixture_admission_stage = 4U;
+  zero_bytes(zero_groups, sizeof(zero_groups));
+  if (!closed_token_groups(zero_groups, sizeof(zero_groups), 1, &root,
+                           system_sid, admin_sid) ||
+      closed_token_groups(zero_groups, sizeof(zero_groups) - 1U, 1, &root,
+                          system_sid, admin_sid))
+    return 0;
+
+  fixture_admission_stage = 5U;
+  zero_bytes(one_group, sizeof(one_group));
+  ((TOKEN_GROUPS *)one_group)->GroupCount = 1U;
+  ((TOKEN_GROUPS *)one_group)->Groups[0].Attributes = SE_GROUP_ENABLED;
+  ((TOKEN_GROUPS *)one_group)->Groups[0].Sid =
+      one_group + 8U + sizeof(SID_AND_ATTRIBUTES);
+  fixture_admission_sid(
+      one_group + 8U + sizeof(SID_AND_ATTRIBUTES), 2000U);
+  if (!closed_token_groups(one_group, sizeof(one_group), 0, &root,
+                           system_sid, admin_sid) ||
+      closed_token_groups(one_group, sizeof(one_group) - 1U, 0, &root,
+                          system_sid, admin_sid))
+    return 0;
+
+  fixture_admission_stage = 6U;
+  zero_bytes(two_groups, sizeof(two_groups));
+  ((TOKEN_GROUPS *)two_groups)->GroupCount = 2U;
+  for (DWORD index = 0U; index < 2U; index += 1U) {
+    ((TOKEN_GROUPS *)two_groups)->Groups[index].Attributes = SE_GROUP_ENABLED;
+    ((TOKEN_GROUPS *)two_groups)->Groups[index].Sid =
+        two_groups + 8U + sizeof(SID_AND_ATTRIBUTES) * 2U + index * 12U;
+    fixture_admission_sid(
+        two_groups + 8U + sizeof(SID_AND_ATTRIBUTES) * 2U + index * 12U,
+        3000U);
+  }
+  if (closed_token_groups(two_groups, sizeof(two_groups), 0, &root,
+                          system_sid, admin_sid))
+    return 0;
+
+  fixture_admission_stage = 7U;
+  zero_bytes(job_list, sizeof(job_list));
+  if (!closed_job_process_list(job_list, 8U, 0U, 0U, &observed) ||
+      closed_job_process_list(job_list, 7U, 0U, 0U, &observed))
+    return 0;
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)job_list)->NumberOfAssignedProcesses = 1U;
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)job_list)->NumberOfProcessIdsInList = 1U;
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)job_list)->ProcessIdList[0] = 42U;
+  fixture_admission_stage = 8U;
+  if (!closed_job_process_list(job_list, 16U, 1U, 42U, &observed) ||
+      closed_job_process_list(job_list, 16U, 1U, 43U, &observed))
+    return 0;
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)job_list)->NumberOfAssignedProcesses = 2U;
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)job_list)->NumberOfProcessIdsInList = 2U;
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)job_list)->ProcessIdList[1] = 42U;
+  fixture_admission_stage = 9U;
+  if (closed_job_process_list(job_list, sizeof(job_list), 2U, 0U,
+                              &observed))
+    return 0;
+
+  fixture_admission_stage = 10U;
+  zero_bytes(fixture_admission_overbound_job,
+             sizeof(fixture_admission_overbound_job));
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)fixture_admission_overbound_job)
+      ->NumberOfAssignedProcesses = JOB_PROCESS_MAXIMUM + 1U;
+  ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)fixture_admission_overbound_job)
+      ->NumberOfProcessIdsInList = JOB_PROCESS_MAXIMUM + 1U;
+  for (DWORD index = 0U; index <= JOB_PROCESS_MAXIMUM; index += 1U)
+    ((JOBOBJECT_BASIC_PROCESS_ID_LIST *)fixture_admission_overbound_job)
+        ->ProcessIdList[index] = 1000U + index;
+  if (closed_job_process_list(fixture_admission_overbound_job,
+                              sizeof(fixture_admission_overbound_job),
+                              0xffffffffU, 0U, &observed))
+    return 0;
+
+  fixture_admission_stage = 11U;
+  if (sizeof(denied_execution_rights) / sizeof(DWORD) != 6U ||
+      denied_execution_rights[0] != GENERIC_WRITE ||
+      denied_execution_rights[1] != FILE_APPEND_DATA ||
+      denied_execution_rights[2] != DELETE ||
+      denied_execution_rights[3] != WRITE_DAC ||
+      denied_execution_rights[4] != WRITE_OWNER ||
+      denied_execution_rights[5] != ACCESS_SYSTEM_SECURITY)
+    return 0;
+  return 1;
+}
+
+__declspec(noreturn) void fixture_entry(void) {
+  ExitProcess(fixture_admission_contracts() ? 0U : fixture_admission_stage);
+}
+
+#elif defined(OP_WINDOWS_ABSENCE_VERIFIER)
 
 __declspec(noreturn) void verifier_entry(void) {
   HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
@@ -1093,6 +3270,9 @@ __declspec(noreturn) void fixture_entry(void) {
 #define FIXTURE_SUBSTITUTION 32U
 #define FIXTURE_FAULT_EXECUTION_PUBLICATION 33U
 #define FIXTURE_LIFECYCLE_EXECUTION_CLEANUP_FAILURE 34U
+#define FIXTURE_FAULT_ADMISSION_PUBLICATION 35U
+#define FIXTURE_LIFECYCLE_ADMISSION_AMBIGUOUS 36U
+#define FIXTURE_LIFECYCLE_ADMISSION_REFUSED 37U
 
 static DWORD fixture_scenario;
 static DWORD fixture_free_calls;
@@ -1439,6 +3619,7 @@ failed:
 #define FAULT_SIMULTANEOUS 22U
 
 static BYTE fixture_fault_active;
+static BYTE fixture_fault_family;
 static BYTE fixture_fault_phase;
 static BYTE fixture_fault_point;
 static HANDLE fixture_fault_pending_handle;
@@ -1453,7 +3634,7 @@ static int fixture_wide_units_equal(const WCHAR *left, const WCHAR *right, SIZE_
   return 1;
 }
 
-static BYTE fixture_path_phase(PCWSTR path, int *pending) {
+static BYTE fixture_path_phase(PCWSTR path, int *pending, BYTE *family) {
   static const WCHAR *endings[] = {
     L"", L"-00-used.opwj", L"-01-profile-attempted.opwj",
     L"-02-profile-created.opwj", L"-03-profile-delete-attempted.opwj",
@@ -1461,6 +3642,7 @@ static BYTE fixture_path_phase(PCWSTR path, int *pending) {
   };
   SIZE_T path_units = wide_length(path);
   *pending = 0;
+  *family = 0U;
   for (BYTE kind = JOURNAL_USED; kind <= JOURNAL_PROFILE_ABSENCE_PROVED; kind += 1U) {
     SIZE_T ending_units = wide_length(endings[kind]);
     if (path_units >= ending_units &&
@@ -1484,13 +3666,42 @@ static BYTE fixture_path_phase(PCWSTR path, int *pending) {
       SIZE_T ending_units = wide_length(execution_endings[kind]);
       if (path_units >= ending_units &&
           fixture_wide_units_equal(path + path_units - ending_units,
-                                   execution_endings[kind], ending_units))
+                                   execution_endings[kind], ending_units)) {
+        *family = 1U;
         return kind;
+      }
       if (path_units >= ending_units + 8U &&
           wide_equal(path + path_units - 8U, L".pending") &&
           fixture_wide_units_equal(path + path_units - ending_units - 8U,
                                    execution_endings[kind], ending_units)) {
         *pending = 1;
+        *family = 1U;
+        return kind;
+      }
+    }
+  }
+  {
+    static const WCHAR *admission_endings[] = {
+      L"", L"-00-grant-attempted.opwl", L"-01-granted.opwl",
+      L"-02-job-attempted.opwl", L"-03-launch-attempted.opwl",
+      L"-04-admission-proved.opwl", L"-05-revoke-attempted.opwl",
+      L"-06-absence-proved.opwl"
+    };
+    for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+         kind <= ADMISSION_ABSENCE_PROVED; kind += 1U) {
+      SIZE_T ending_units = wide_length(admission_endings[kind]);
+      if (path_units >= ending_units &&
+          fixture_wide_units_equal(path + path_units - ending_units,
+                                   admission_endings[kind], ending_units)) {
+        *family = 2U;
+        return kind;
+      }
+      if (path_units >= ending_units + 8U &&
+          wide_equal(path + path_units - 8U, L".pending") &&
+          fixture_wide_units_equal(path + path_units - ending_units - 8U,
+                                   admission_endings[kind], ending_units)) {
+        *pending = 1;
+        *family = 2U;
         return kind;
       }
     }
@@ -1502,20 +3713,24 @@ static HANDLE WINAPI fixture_CreateFileW(PCWSTR path, DWORD access, DWORD sharin
                                          SECURITY_ATTRIBUTES *attributes, DWORD creation,
                                          DWORD flags, HANDLE template_file) {
   int pending = 0;
-  BYTE phase = fixture_path_phase(path, &pending);
+  BYTE family = 0U;
+  BYTE phase = fixture_path_phase(path, &pending, &family);
   HANDLE result;
-  if (fixture_fault_active && phase == fixture_fault_phase && pending &&
+  if (fixture_fault_active && family == fixture_fault_family &&
+      phase == fixture_fault_phase && pending &&
       creation == CREATE_NEW && fixture_fault_point == FAULT_PENDING_CREATE) {
     SetLastError(5U);
     return INVALID_HANDLE_VALUE;
   }
-  if (fixture_fault_active && phase == fixture_fault_phase && !pending &&
+  if (fixture_fault_active && family == fixture_fault_family &&
+      phase == fixture_fault_phase && !pending &&
       creation == OPEN_EXISTING && fixture_fault_point == FAULT_FINAL_REOPEN) {
     SetLastError(5U);
     return INVALID_HANDLE_VALUE;
   }
   result = CreateFileW(path, access, sharing, attributes, creation, flags, template_file);
-  if (result != INVALID_HANDLE_VALUE && phase == fixture_fault_phase) {
+  if (result != INVALID_HANDLE_VALUE && family == fixture_fault_family &&
+      phase == fixture_fault_phase) {
     if (pending) fixture_fault_pending_handle = result;
     else fixture_fault_record_handle = result;
   }
@@ -1586,8 +3801,10 @@ static BOOL WINAPI fixture_SetFileInformationByHandle(HANDLE file,
 
 static DWORD WINAPI fixture_GetFileAttributesW(PCWSTR path) {
   int pending = 0;
-  BYTE phase = fixture_path_phase(path, &pending);
-  if (fixture_fault_active && phase == fixture_fault_phase && pending &&
+  BYTE family = 0U;
+  BYTE phase = fixture_path_phase(path, &pending, &family);
+  if (fixture_fault_active && family == fixture_fault_family &&
+      phase == fixture_fault_phase && pending &&
       fixture_fault_point == FAULT_PENDING_ABSENCE)
     return FILE_ATTRIBUTE_NORMAL;
   return GetFileAttributesW(path);
@@ -1867,7 +4084,9 @@ static DWORD fixture_scenario_value(const WCHAR *value) {
     L"target-malformed-user", L"lifecycle-clean", L"lifecycle-cleanup-failure",
     L"lifecycle-root-close-failure", L"durable-publication", L"fault-publication",
     L"fault-resources", L"profile-control", L"mixed-recovery", L"substitution",
-    L"fault-execution-publication", L"lifecycle-execution-cleanup-failure"
+    L"fault-execution-publication", L"lifecycle-execution-cleanup-failure",
+    L"fault-admission-publication", L"lifecycle-admission-ambiguous",
+    L"lifecycle-admission-refused"
   };
   DWORD index;
   for (index = 1U; index < sizeof(names) / sizeof(names[0]); index += 1U)
@@ -2244,6 +4463,180 @@ profile_done:
   }
 #endif
 #if defined(OP_WINDOWS_FAULT_FIXTURE)
+  if (fixture_scenario == FIXTURE_FAULT_ADMISSION_PUBLICATION) {
+    BYTE configuration[3];
+    BROKER_FRAME frame;
+    WCHAR path[PATH_MAX_UNITS + 1U];
+    WORD path_units = 0U;
+    PROFILE_IDENTITY identity;
+    EXECUTION_CUSTODY *execution = NULL;
+    ADMISSION_CUSTODY admission;
+    JOURNAL_GROUP *observed = NULL;
+    DWORD observed_count = 0U;
+    DWORD cursor = 0U;
+    WCHAR token_hex[65];
+    BYTE predecessor;
+    BYTE target;
+    BYTE fault;
+    int valid = 0;
+    BYTE stage = 1U;
+    static const WCHAR folder[] = L"\\\\?\\C:\\fixture-profile";
+    if (!read_exact(GetStdHandle(STD_INPUT_HANDLE), configuration,
+                    sizeof(configuration)) ||
+        read_frame(GetStdHandle(STD_INPUT_HANDLE), &frame, 1) != 1 ||
+        frame.operation != PREPARE_OPERATION ||
+        !canonical_scope_path(frame.payload, frame.length, path, &path_units))
+      return 0;
+    predecessor = configuration[0];
+    target = configuration[1];
+    fault = configuration[2];
+    if (target < ADMISSION_GRANT_ATTEMPTED ||
+        target > ADMISSION_ABSENCE_PROVED ||
+        fault < FAULT_PENDING_CREATE || fault > FAULT_PRIOR_PARSE ||
+        !valid_admission_transition(predecessor, target))
+      return 0;
+    zero_bytes(&admission, sizeof(admission));
+    execution = (EXECUTION_CUSTODY *)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*execution));
+    stage = 2U;
+    if (execution == NULL || !retain_root(path, path_units, &root) ||
+        !identity_for_token(&root, (BYTE[32]){8U}, &identity) ||
+        !persist_phase(&root, &identity, JOURNAL_USED) ||
+        !persist_phase(&root, &identity, JOURNAL_PROFILE_ATTEMPTED))
+      goto admission_fault_done;
+    identity.folder_units = (WORD)wide_length(folder);
+    copy_bytes(identity.folder, folder,
+               ((DWORD)identity.folder_units + 1U) * 2U);
+    identity.folder_binding[0] = 1U;
+    if (!persist_phase(&root, &identity, JOURNAL_PROFILE_CREATED))
+      goto admission_fault_done;
+    copy_bytes(execution->profile_created_digest, identity.prior_digest, 32U);
+    if (!append_wide(execution->parent.path, PATH_MAX_UNITS + 1U, &cursor,
+                     L"\\\\?\\C:\\fixture-admission-parent"))
+      goto admission_fault_done;
+    execution->parent.path_units = (WORD)cursor;
+    execution->parent.binding[0] = 1U;
+    cursor = 0U;
+    hex_token(identity.token, token_hex);
+    if (!append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                     L"\\\\?\\C:\\fixture-admission-parent\\orch6-execution-") ||
+        !append_wide(execution->root.path, PATH_MAX_UNITS + 1U, &cursor,
+                     token_hex))
+      goto admission_fault_done;
+    execution->root.path_units = (WORD)cursor;
+    for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+      execution->source_bindings[role][0] = (BYTE)(role + 1U);
+    if (!persist_execution_phase(&root, &identity, execution,
+                                 EXECUTION_ATTEMPTED))
+      goto admission_fault_done;
+    execution->root_binding[0] = 1U;
+    for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+      execution->target_bindings[role][0] = (BYTE)(role + 1U);
+    if (!persist_execution_phase(&root, &identity, execution,
+                                 EXECUTION_CREATED) ||
+        !admission_job_name(identity.token, admission.job_name,
+                            &admission.job_name_units))
+      goto admission_fault_done;
+    copy_bytes(admission.profile_created_digest,
+               execution->profile_created_digest, 32U);
+    copy_bytes(admission.execution_created_digest,
+               execution->prior_digest, 32U);
+    admission.grant_digest[0] = 1U;
+    admission.launch_digest[0] = 2U;
+    stage = 3U;
+    if (predecessor <= ADMISSION_PROVED) {
+      for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+           kind <= predecessor; kind += 1U)
+        if (!persist_admission_phase(&root, &identity, &admission, kind))
+          goto admission_fault_done;
+    } else {
+      for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+           kind <= ADMISSION_PROVED; kind += 1U)
+        if (!persist_admission_phase(&root, &identity, &admission, kind))
+          goto admission_fault_done;
+      if (!persist_admission_phase(&root, &identity, &admission,
+                                   ADMISSION_REVOKE_ATTEMPTED))
+        goto admission_fault_done;
+    }
+    fixture_fault_family = 2U;
+    fixture_fault_phase = target;
+    fixture_fault_point = fault;
+    fixture_fault_root_handle = root.handle;
+    fixture_fault_token_handle = root.token;
+    fixture_fault_pending_handle = NULL;
+    fixture_fault_record_handle = NULL;
+    stage = 4U;
+    if (fault == FAULT_PRIOR_PARSE) {
+      if (!persist_admission_phase(&root, &identity, &admission, target))
+        goto admission_fault_done;
+      fixture_fault_active = 1U;
+      if (scan_journals(&root, &observed, &observed_count) != -1)
+        goto admission_fault_done;
+      fixture_fault_active = 0U;
+      if (observed != NULL) {
+        if (!HeapFree(GetProcessHeap(), 0U, observed))
+          goto admission_fault_done;
+        observed = NULL;
+      }
+    } else {
+      fixture_fault_active = 1U;
+      if (persist_admission_phase(&root, &identity, &admission, target) != 0)
+        goto admission_fault_done;
+      fixture_fault_active = 0U;
+    }
+    root.resource_ambiguous = 0;
+    if (!release_root(&root) || !retain_root(path, path_units, &root))
+      goto admission_fault_done;
+    fixture_fault_root_handle = root.handle;
+    fixture_fault_token_handle = root.token;
+    stage = 5U;
+    if (scan_journals(&root, &observed, &observed_count) != 1 ||
+        observed_count != 1U ||
+        (observed[0].admission.phase != predecessor &&
+         observed[0].admission.phase != target))
+      goto admission_fault_done;
+    copy_bytes(&identity, &observed[0].identity, sizeof(identity));
+    if (observed[0].admission.phase != 0U)
+      copy_bytes(&admission, &observed[0].admission, sizeof(admission));
+    if (!clear_admission_pending(&root, &identity))
+      goto admission_fault_done;
+    if (!HeapFree(GetProcessHeap(), 0U, observed))
+      goto admission_fault_done;
+    observed = NULL;
+    stage = 6U;
+    if (admission.phase == predecessor &&
+        !persist_admission_phase(&root, &identity, &admission, target))
+      goto admission_fault_done;
+    stage = 7U;
+    if (scan_journals(&root, &observed, &observed_count) != 1 ||
+        observed_count != 1U || observed[0].admission.phase != target)
+      goto admission_fault_done;
+    stage = 8U;
+    valid = 1;
+admission_fault_done:
+    fixture_fault_active = 0U;
+    root.resource_ambiguous = 0;
+    if (observed != NULL && !HeapFree(GetProcessHeap(), 0U, observed))
+      valid = 0;
+    if (execution != NULL &&
+        !HeapFree(GetProcessHeap(), 0U, execution))
+      valid = 0;
+    if (root.handle != NULL && !release_root(&root)) valid = 0;
+    if (!valid) {
+      static const CHAR *messages[] = {
+        "", "fixture:admission-fault-stage-1\n",
+        "fixture:admission-fault-stage-2\n",
+        "fixture:admission-fault-stage-3\n",
+        "fixture:admission-fault-stage-4\n",
+        "fixture:admission-fault-stage-5\n",
+        "fixture:admission-fault-stage-6\n",
+        "fixture:admission-fault-stage-7\n",
+        "fixture:admission-fault-stage-8\n"
+      };
+      diagnostic(messages[stage]);
+    }
+    return valid;
+  }
   if (fixture_scenario == FIXTURE_FAULT_EXECUTION_PUBLICATION) {
     BYTE configuration[2];
     BROKER_FRAME frame;
@@ -2322,6 +4715,7 @@ profile_done:
     }
     fixture_fault_phase = configuration[0];
     fixture_fault_point = configuration[1];
+    fixture_fault_family = 1U;
     fixture_fault_active = 1U;
     stage = 4U;
     if (persist_execution_phase(&root, &identity, execution,
@@ -2451,6 +4845,7 @@ resource_done:
       return 0;
     fixture_fault_phase = configuration[0];
     fixture_fault_point = configuration[1];
+    fixture_fault_family = 0U;
     zero_bytes(&root, sizeof(root));
     if (!retain_root(path, path_units, &root) ||
         !identity_for_token(&root, (BYTE[32]){5U}, &identity))
@@ -2718,6 +5113,17 @@ static int fixture_cleanup_execution(ROOT_CUSTODY *root,
   return 1;
 }
 
+static int fixture_run_admission(ROOT_CUSTODY *root,
+                                 PROFILE_IDENTITY *identity,
+                                 EXECUTION_CUSTODY *execution) {
+  (void)root;
+  (void)identity;
+  (void)execution;
+  diagnostic("fixture:admission\n");
+  if (fixture_scenario == FIXTURE_LIFECYCLE_ADMISSION_AMBIGUOUS) return -1;
+  return fixture_scenario == FIXTURE_LIFECYCLE_ADMISSION_REFUSED ? 0 : 1;
+}
+
 static int fixture_release_execution(ROOT_CUSTODY *root,
                                      EXECUTION_CUSTODY *execution) {
   (void)root;
@@ -2742,6 +5148,10 @@ __declspec(noreturn) void fixture_entry(void) {
       fixture_scenario <= FIXTURE_LIFECYCLE_ROOT_CLOSE_FAILURE)
     serve();
   if (fixture_scenario == FIXTURE_LIFECYCLE_EXECUTION_CLEANUP_FAILURE)
+    serve();
+  if (fixture_scenario == FIXTURE_LIFECYCLE_ADMISSION_AMBIGUOUS)
+    serve();
+  if (fixture_scenario == FIXTURE_LIFECYCLE_ADMISSION_REFUSED)
     serve();
   if (fixture_scenario == 0U || fixture_stable_user == NULL || !fixture_expected_result())
     ExitProcess(1U);

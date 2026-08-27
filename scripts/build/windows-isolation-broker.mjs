@@ -37,9 +37,17 @@ const diagnosticDefine =
             ? "/DOP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR"
             : diagnosticVariant === "pause-after-execution-created"
               ? "/DOP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED"
-              : (() => {
-                  throw new Error("unknown Windows broker diagnostic variant");
-                })();
+              : diagnosticVariant === "pause-after-admission-grant-attempted"
+                ? "/DOP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED"
+                : diagnosticVariant === "pause-after-admission-granted"
+                  ? "/DOP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANTED"
+                  : diagnosticVariant === "pause-after-admission-job-attempted"
+                    ? "/DOP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED"
+                    : diagnosticVariant === "pause-after-admission-launch-created"
+                      ? "/DOP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED"
+                      : (() => {
+                          throw new Error("unknown Windows broker diagnostic variant");
+                        })();
 
 try {
   const version = await execFileAsync(clang, ["--version"], { windowsHide: true });

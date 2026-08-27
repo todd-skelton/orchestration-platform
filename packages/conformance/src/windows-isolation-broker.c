@@ -35,6 +35,15 @@ typedef void *PSECURITY_DESCRIPTOR;
 typedef void *BCRYPT_ALG_HANDLE;
 typedef void *BCRYPT_HASH_HANDLE;
 typedef WORD SECURITY_DESCRIPTOR_CONTROL;
+typedef struct security_descriptor_relative {
+  BYTE Revision;
+  BYTE Sbz1;
+  SECURITY_DESCRIPTOR_CONTROL Control;
+  DWORD Owner;
+  DWORD Group;
+  DWORD Sacl;
+  DWORD Dacl;
+} SECURITY_DESCRIPTOR_RELATIVE;
 typedef union large_integer {
   struct { DWORD LowPart; LONG HighPart; };
   long long QuadPart;
@@ -54,20 +63,28 @@ typedef union large_integer {
 #define ERROR_SUCCESS 0U
 #define ERROR_FILE_NOT_FOUND 2U
 #define ERROR_PATH_NOT_FOUND 3U
+#define ERROR_ACCESS_DENIED 5U
+#define ERROR_ALREADY_EXISTS 183U
 #define ERROR_BROKEN_PIPE 109U
 #define ERROR_INSUFFICIENT_BUFFER 122U
 #define ERROR_NO_TOKEN 1008U
+#define ERROR_PRIVILEGE_NOT_HELD 1314U
 #define ERROR_NO_MORE_FILES 18U
 #define ERROR_HANDLE_EOF 38U
 #define HRESULT_ALREADY_EXISTS ((HRESULT)0x800700b7L)
 #define HEAP_ZERO_MEMORY 8U
 #define TOKEN_QUERY 8U
+#define TOKEN_DUPLICATE 2U
+#define TOKEN_IMPERSONATE 4U
+#define TOKEN_READ 0x00020008U
+#define MAXIMUM_ALLOWED 0x02000000U
 #define FILE_LIST_DIRECTORY 1U
 #define FILE_READ_ATTRIBUTES 0x80U
 #define READ_CONTROL 0x00020000U
 #define GENERIC_READ 0x80000000U
 #define GENERIC_WRITE 0x40000000U
 #define GENERIC_ALL 0x10000000U
+#define GENERIC_EXECUTE 0x20000000U
 #define DELETE 0x00010000U
 #define SYNCHRONIZE 0x00100000U
 #define FILE_SHARE_READ 1U
@@ -90,8 +107,11 @@ typedef union large_integer {
 #define VOLUME_NAME_DOS 0U
 #define DRIVE_FIXED 3U
 #define OWNER_SECURITY_INFORMATION 1U
+#define GROUP_SECURITY_INFORMATION 2U
 #define DACL_SECURITY_INFORMATION 4U
 #define LABEL_SECURITY_INFORMATION 0x10U
+#define SE_DACL_PRESENT 0x0004U
+#define SE_SACL_PRESENT 0x0010U
 #define SE_DACL_PROTECTED 0x1000U
 #define SE_SELF_RELATIVE 0x8000U
 #define INHERITED_ACE 0x10U
@@ -112,6 +132,32 @@ typedef union large_integer {
 #define FILE_WRITE_ATTRIBUTES 0x00000100U
 #define WRITE_DAC 0x00040000U
 #define WRITE_OWNER 0x00080000U
+#define ACCESS_SYSTEM_SECURITY 0x01000000U
+#define HANDLE_FLAG_INHERIT 1U
+#define CREATE_SUSPENDED 0x00000004U
+#define CREATE_NO_WINDOW 0x08000000U
+#define CREATE_UNICODE_ENVIRONMENT 0x00000400U
+#define EXTENDED_STARTUPINFO_PRESENT 0x00080000U
+#define STARTF_USESTDHANDLES 0x00000100U
+#define PROC_THREAD_ATTRIBUTE_HANDLE_LIST 0x00020002U
+#define PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES 0x00020009U
+#define PROC_THREAD_ATTRIBUTE_JOB_LIST 0x0002000dU
+#define JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 0x00002000U
+#define JOB_OBJECT_LIMIT_BREAKAWAY_OK 0x00000800U
+#define JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK 0x00001000U
+#define JOB_OBJECT_QUERY 0x0004U
+#define JOB_OBJECT_TERMINATE 0x0008U
+#define JOB_OBJECT_SET_ATTRIBUTES 0x0002U
+#define WAIT_OBJECT_0 0U
+#define WAIT_TIMEOUT 258U
+#define STILL_ACTIVE 259U
+#define INFINITE 0xffffffffU
+#define SecurityImpersonation 2U
+#define TokenImpersonation 2U
+#define SE_GROUP_MANDATORY 0x00000001U
+#define SE_GROUP_ENABLED_BY_DEFAULT 0x00000002U
+#define SE_GROUP_ENABLED 0x00000004U
+#define SE_GROUP_USE_FOR_DENY_ONLY 0x00000010U
 #define SECURITY_BUILTIN_DOMAIN_RID 32U
 #define DOMAIN_ALIAS_RID_ADMINS 544U
 #define SECURITY_LOCAL_SYSTEM_RID 18U
@@ -124,9 +170,14 @@ typedef union large_integer {
 
 typedef enum token_information_class {
   TokenUser = 1,
+  TokenGroups = 2,
   TokenRestrictedSids = 11,
+  TokenElevation = 20,
+  TokenUIAccess = 26,
   TokenIntegrityLevel = 25,
-  TokenIsAppContainer = 29
+  TokenIsAppContainer = 29,
+  TokenCapabilities = 30,
+  TokenAppContainerSid = 31
 } TOKEN_INFORMATION_CLASS;
 typedef enum file_info_by_handle_class {
   FileRenameInfo = 3,
@@ -135,12 +186,109 @@ typedef enum file_info_by_handle_class {
   FileRenameInfoEx = 22
 } FILE_INFO_BY_HANDLE_CLASS;
 typedef enum acl_information_class { AclSizeInformation = 2 } ACL_INFORMATION_CLASS;
-typedef enum se_object_type { SE_FILE_OBJECT = 1 } SE_OBJECT_TYPE;
+typedef enum se_object_type { SE_FILE_OBJECT = 1, SE_KERNEL_OBJECT = 6 } SE_OBJECT_TYPE;
+typedef enum job_object_info_class {
+  JobObjectBasicAccountingInformation = 1,
+  JobObjectBasicLimitInformation = 2,
+  JobObjectBasicProcessIdList = 3,
+  JobObjectExtendedLimitInformation = 9
+} JOBOBJECTINFOCLASS;
 
 typedef struct sid_and_attributes { PSID Sid; DWORD Attributes; } SID_AND_ATTRIBUTES;
 typedef struct token_user { SID_AND_ATTRIBUTES User; } TOKEN_USER;
 typedef struct token_mandatory_label { SID_AND_ATTRIBUTES Label; } TOKEN_MANDATORY_LABEL;
 typedef struct token_groups { DWORD GroupCount; SID_AND_ATTRIBUTES Groups[1]; } TOKEN_GROUPS;
+typedef struct token_elevation { DWORD TokenIsElevated; } TOKEN_ELEVATION;
+typedef struct token_appcontainer_information { PSID TokenAppContainer; } TOKEN_APPCONTAINER_INFORMATION;
+typedef struct security_capabilities {
+  PSID AppContainerSid;
+  SID_AND_ATTRIBUTES *Capabilities;
+  DWORD CapabilityCount;
+  DWORD Reserved;
+} SECURITY_CAPABILITIES;
+typedef struct startup_info_w {
+  DWORD cb;
+  LPWSTR lpReserved;
+  LPWSTR lpDesktop;
+  LPWSTR lpTitle;
+  DWORD dwX;
+  DWORD dwY;
+  DWORD dwXSize;
+  DWORD dwYSize;
+  DWORD dwXCountChars;
+  DWORD dwYCountChars;
+  DWORD dwFillAttribute;
+  DWORD dwFlags;
+  WORD wShowWindow;
+  WORD cbReserved2;
+  BYTE *lpReserved2;
+  HANDLE hStdInput;
+  HANDLE hStdOutput;
+  HANDLE hStdError;
+} STARTUPINFOW;
+typedef struct startup_info_ex_w {
+  STARTUPINFOW StartupInfo;
+  LPVOID lpAttributeList;
+} STARTUPINFOEXW;
+typedef struct process_information {
+  HANDLE hProcess;
+  HANDLE hThread;
+  DWORD dwProcessId;
+  DWORD dwThreadId;
+} PROCESS_INFORMATION;
+typedef struct jobobject_basic_accounting_information {
+  LARGE_INTEGER TotalUserTime;
+  LARGE_INTEGER TotalKernelTime;
+  LARGE_INTEGER ThisPeriodTotalUserTime;
+  LARGE_INTEGER ThisPeriodTotalKernelTime;
+  DWORD TotalPageFaultCount;
+  DWORD TotalProcesses;
+  DWORD ActiveProcesses;
+  DWORD TotalTerminatedProcesses;
+} JOBOBJECT_BASIC_ACCOUNTING_INFORMATION;
+typedef struct jobobject_basic_limit_information {
+  LARGE_INTEGER PerProcessUserTimeLimit;
+  LARGE_INTEGER PerJobUserTimeLimit;
+  DWORD LimitFlags;
+  SIZE_T MinimumWorkingSetSize;
+  SIZE_T MaximumWorkingSetSize;
+  DWORD ActiveProcessLimit;
+  SIZE_T Affinity;
+  DWORD PriorityClass;
+  DWORD SchedulingClass;
+} JOBOBJECT_BASIC_LIMIT_INFORMATION;
+typedef struct io_counters {
+  ULONGLONG ReadOperationCount;
+  ULONGLONG WriteOperationCount;
+  ULONGLONG OtherOperationCount;
+  ULONGLONG ReadTransferCount;
+  ULONGLONG WriteTransferCount;
+  ULONGLONG OtherTransferCount;
+} IO_COUNTERS;
+typedef struct jobobject_extended_limit_information {
+  JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+  IO_COUNTERS IoInfo;
+  SIZE_T ProcessMemoryLimit;
+  SIZE_T JobMemoryLimit;
+  SIZE_T PeakProcessMemoryUsed;
+  SIZE_T PeakJobMemoryUsed;
+} JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
+typedef struct jobobject_basic_process_id_list {
+  DWORD NumberOfAssignedProcesses;
+  DWORD NumberOfProcessIdsInList;
+  SIZE_T ProcessIdList[1];
+} JOBOBJECT_BASIC_PROCESS_ID_LIST;
+typedef struct generic_mapping {
+  ACCESS_MASK GenericRead;
+  ACCESS_MASK GenericWrite;
+  ACCESS_MASK GenericExecute;
+  ACCESS_MASK GenericAll;
+} GENERIC_MAPPING;
+typedef struct privilege_set {
+  DWORD PrivilegeCount;
+  DWORD Control;
+  BYTE Privilege[64];
+} PRIVILEGE_SET;
 typedef struct file_id_128 { BYTE Identifier[16]; } FILE_ID_128;
 typedef struct file_id_info { ULONGLONG VolumeSerialNumber; FILE_ID_128 FileId; } FILE_ID_INFO;
 typedef struct by_handle_file_information {
@@ -223,6 +371,8 @@ __declspec(dllimport) BOOL WINAPI GetFileInformationByHandleEx(HANDLE, FILE_INFO
 __declspec(dllimport) BOOL WINAPI SetFileInformationByHandle(HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD);
 __declspec(dllimport) DWORD WINAPI GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWORD, DWORD);
 __declspec(dllimport) DWORD WINAPI GetDriveTypeW(PCWSTR);
+__declspec(dllimport) DWORD WINAPI GetWindowsDirectoryW(LPWSTR, DWORD);
+__declspec(dllimport) DWORD WINAPI GetModuleFileNameW(HANDLE, LPWSTR, DWORD);
 __declspec(dllimport) HANDLE WINAPI FindFirstFileW(PCWSTR, WIN32_FIND_DATAW *);
 __declspec(dllimport) BOOL WINAPI FindNextFileW(HANDLE, WIN32_FIND_DATAW *);
 __declspec(dllimport) HANDLE WINAPI FindFirstStreamW(PCWSTR, DWORD, WIN32_FIND_STREAM_DATA *, DWORD);
@@ -242,7 +392,12 @@ __declspec(dllimport) BOOL WINAPI GetAclInformation(PACL, LPVOID, DWORD, ACL_INF
 __declspec(dllimport) BOOL WINAPI GetAce(PACL, DWORD, LPVOID *);
 __declspec(dllimport) BOOL WINAPI GetSecurityDescriptorControl(PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL *, DWORD *);
 __declspec(dllimport) DWORD WINAPI GetSecurityDescriptorLength(PSECURITY_DESCRIPTOR);
+__declspec(dllimport) BOOL WINAPI GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR, PSID *, BOOL *);
+__declspec(dllimport) BOOL WINAPI GetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR, PSID *, BOOL *);
+__declspec(dllimport) BOOL WINAPI GetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR, BOOL *, PACL *, BOOL *);
+__declspec(dllimport) BOOL WINAPI GetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR, BOOL *, PACL *, BOOL *);
 __declspec(dllimport) BOOL WINAPI MakeSelfRelativeSD(PSECURITY_DESCRIPTOR, PSECURITY_DESCRIPTOR, DWORD *);
+__declspec(dllimport) BOOL WINAPI SetKernelObjectSecurity(HANDLE, DWORD, PSECURITY_DESCRIPTOR);
 __declspec(dllimport) DWORD WINAPI GetSecurityInfo(HANDLE, SE_OBJECT_TYPE, DWORD, PSID *, PSID *, PACL *, PACL *, PSECURITY_DESCRIPTOR *);
 __declspec(dllimport) BOOL WINAPI ConvertSidToStringSidW(PSID, LPWSTR *);
 __declspec(dllimport) BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR, DWORD, PSECURITY_DESCRIPTOR *, DWORD *);
@@ -262,6 +417,27 @@ __declspec(dllimport) HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(P
 __declspec(dllimport) void WINAPI CoTaskMemFree(LPVOID);
 __declspec(dllimport) DWORD WINAPI NetworkIsolationEnumAppContainers(DWORD, DWORD *, PINET_FIREWALL_APP_CONTAINER *);
 __declspec(dllimport) DWORD WINAPI NetworkIsolationFreeAppContainers(PINET_FIREWALL_APP_CONTAINER);
+__declspec(dllimport) HANDLE WINAPI CreateJobObjectW(SECURITY_ATTRIBUTES *, PCWSTR);
+__declspec(dllimport) HANDLE WINAPI OpenJobObjectW(DWORD, BOOL, PCWSTR);
+__declspec(dllimport) BOOL WINAPI SetInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, LPVOID, DWORD);
+__declspec(dllimport) BOOL WINAPI QueryInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, LPVOID, DWORD, DWORD *);
+__declspec(dllimport) BOOL WINAPI TerminateJobObject(HANDLE, DWORD);
+__declspec(dllimport) BOOL WINAPI IsProcessInJob(HANDLE, HANDLE, BOOL *);
+__declspec(dllimport) BOOL WINAPI CreatePipe(HANDLE *, HANDLE *, SECURITY_ATTRIBUTES *, DWORD);
+__declspec(dllimport) BOOL WINAPI SetHandleInformation(HANDLE, DWORD, DWORD);
+__declspec(dllimport) BOOL WINAPI GetHandleInformation(HANDLE, DWORD *);
+__declspec(dllimport) HANDLE WINAPI CreateEventW(SECURITY_ATTRIBUTES *, BOOL, BOOL, PCWSTR);
+__declspec(dllimport) BOOL WINAPI InitializeProcThreadAttributeList(LPVOID, DWORD, DWORD, SIZE_T *);
+__declspec(dllimport) BOOL WINAPI UpdateProcThreadAttribute(LPVOID, DWORD, SIZE_T, LPVOID, SIZE_T, LPVOID, SIZE_T *);
+__declspec(dllimport) void WINAPI DeleteProcThreadAttributeList(LPVOID);
+__declspec(dllimport) BOOL WINAPI CreateProcessW(PCWSTR, LPWSTR, SECURITY_ATTRIBUTES *, SECURITY_ATTRIBUTES *, BOOL, DWORD, LPVOID, PCWSTR, STARTUPINFOW *, PROCESS_INFORMATION *);
+__declspec(dllimport) BOOL WINAPI DuplicateTokenEx(HANDLE, DWORD, SECURITY_ATTRIBUTES *, DWORD, DWORD, HANDLE *);
+__declspec(dllimport) BOOL WINAPI ImpersonateLoggedOnUser(HANDLE);
+__declspec(dllimport) BOOL WINAPI RevertToSelf(void);
+__declspec(dllimport) BOOL WINAPI AccessCheck(PSECURITY_DESCRIPTOR, HANDLE, DWORD, GENERIC_MAPPING *, PRIVILEGE_SET *, DWORD *, DWORD *, BOOL *);
+__declspec(dllimport) void WINAPI MapGenericMask(DWORD *, GENERIC_MAPPING *);
+__declspec(dllimport) DWORD WINAPI WaitForSingleObject(HANDLE, DWORD);
+__declspec(dllimport) BOOL WINAPI GetExitCodeProcess(HANDLE, DWORD *);
 
 #define FRAME_BYTES 16U
 #define MAX_PAYLOAD (1024U * 1024U)
@@ -287,6 +463,8 @@ __declspec(dllimport) DWORD WINAPI NetworkIsolationFreeAppContainers(PINET_FIREW
 #define MONIKER_BYTES 64U
 #define TOKEN_BYTES 32U
 #define CENSUS_MAXIMUM 4096U
+#define JOB_PROCESS_MAXIMUM 64U
+#define TOKEN_BUFFER_MAXIMUM 65536U
 #define JOURNAL_USED 1U
 #define JOURNAL_PROFILE_ATTEMPTED 2U
 #define JOURNAL_PROFILE_CREATED 3U
@@ -296,11 +474,22 @@ __declspec(dllimport) DWORD WINAPI NetworkIsolationFreeAppContainers(PINET_FIREW
 #define EXECUTION_CREATED 2U
 #define EXECUTION_DELETE_ATTEMPTED 3U
 #define EXECUTION_ABSENCE_PROVED 4U
+#define ADMISSION_GRANT_ATTEMPTED 1U
+#define ADMISSION_GRANTED 2U
+#define ADMISSION_JOB_ATTEMPTED 3U
+#define ADMISSION_LAUNCH_ATTEMPTED 4U
+#define ADMISSION_PROVED 5U
+#define ADMISSION_REVOKE_ATTEMPTED 6U
+#define ADMISSION_ABSENCE_PROVED 7U
 
 static const WCHAR serve_mode[] = L"SERVE";
 static const WCHAR recover_mode[] = L"RECOVER";
 static const void *volatile image_relocation_anchor = serve_mode;
 static BYTE frame_payload[MAX_PAYLOAD];
+static const DWORD denied_execution_rights[] = {
+  GENERIC_WRITE, FILE_APPEND_DATA, DELETE, WRITE_DAC, WRITE_OWNER,
+  ACCESS_SYSTEM_SECURITY
+};
 
 typedef struct broker_frame {
   BYTE operation;
@@ -357,6 +546,45 @@ typedef struct execution_custody {
   BYTE phase;
 } EXECUTION_CUSTODY;
 
+typedef struct admission_custody {
+  WCHAR job_name[128];
+  WORD job_name_units;
+  BYTE grant_digest[32];
+  BYTE launch_digest[32];
+  BYTE prior_digest[32];
+  BYTE profile_created_digest[32];
+  BYTE execution_created_digest[32];
+  BYTE phase;
+} ADMISSION_CUSTODY;
+
+typedef struct admission_plan {
+  PSECURITY_DESCRIPTOR grant_security;
+  DWORD grant_security_length;
+  PSECURITY_DESCRIPTOR job_security;
+  DWORD job_security_length;
+  WCHAR application[PATH_MAX_UNITS + 1U];
+  WCHAR command_line[4096];
+  WCHAR cwd[PATH_MAX_UNITS + 1U];
+  WCHAR environment[8192];
+  DWORD environment_units;
+  DWORD creation_flags;
+} ADMISSION_PLAN;
+
+typedef struct admission_runtime {
+  HANDLE job;
+  PROCESS_INFORMATION process;
+  HANDLE process_token;
+  HANDLE impersonation_token;
+  HANDLE stdin_read;
+  HANDLE stdin_write;
+  HANDLE stdout_read;
+  HANDLE stdout_write;
+  HANDLE stderr_read;
+  HANDLE stderr_write;
+  HANDLE sentinel;
+  LPVOID attributes;
+} ADMISSION_RUNTIME;
+
 typedef struct root_custody {
   HANDLE handle;
   HANDLE token;
@@ -383,6 +611,10 @@ typedef struct journal_group {
   BYTE execution_final_seen[5];
   BYTE execution_pending_seen[5];
   BYTE profile_created_digest[32];
+  ADMISSION_CUSTODY admission;
+  BYTE admission_final_seen[8];
+  BYTE admission_pending_seen[8];
+  BYTE execution_created_digest[32];
 } JOURNAL_GROUP;
 
 #if defined(OP_WINDOWS_LIFECYCLE_FIXTURE)
@@ -398,6 +630,8 @@ static int fixture_construct_execution(ROOT_CUSTODY *, PROFILE_IDENTITY *,
 static int fixture_cleanup_execution(ROOT_CUSTODY *, PROFILE_IDENTITY *,
                                      EXECUTION_CUSTODY *);
 static int fixture_release_execution(ROOT_CUSTODY *, EXECUTION_CUSTODY *);
+static int fixture_run_admission(ROOT_CUSTODY *, PROFILE_IDENTITY *,
+                                 EXECUTION_CUSTODY *);
 #define OP_BROKER_RETAIN_ROOT fixture_retain_root
 #define OP_BROKER_PREFLIGHT fixture_preflight_and_recover
 #define OP_BROKER_CREATE_PROFILE fixture_create_profile
@@ -407,6 +641,7 @@ static int fixture_release_execution(ROOT_CUSTODY *, EXECUTION_CUSTODY *);
 #define OP_BROKER_CONSTRUCT_EXECUTION fixture_construct_execution
 #define OP_BROKER_CLEANUP_EXECUTION fixture_cleanup_execution
 #define OP_BROKER_RELEASE_EXECUTION fixture_release_execution
+#define OP_BROKER_RUN_ADMISSION fixture_run_admission
 #else
 #define OP_BROKER_RETAIN_ROOT retain_root
 #define OP_BROKER_PREFLIGHT preflight_and_recover
@@ -417,6 +652,7 @@ static int fixture_release_execution(ROOT_CUSTODY *, EXECUTION_CUSTODY *);
 #define OP_BROKER_CONSTRUCT_EXECUTION construct_execution
 #define OP_BROKER_CLEANUP_EXECUTION cleanup_execution
 #define OP_BROKER_RELEASE_EXECUTION release_execution
+#define OP_BROKER_RUN_ADMISSION run_admission_lifecycle
 #endif
 
 #if defined(OP_WINDOWS_FAULT_FIXTURE)
@@ -517,6 +753,198 @@ static PVOID WINAPI fixture_profile_FreeSid(PSID);
 #define FreeSid fixture_profile_FreeSid
 #endif
 
+#if defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
+static int fixture_admission_verify_original(ROOT_CUSTODY *,
+                                             EXECUTION_CUSTODY *);
+static int fixture_admission_set_security(ROOT_CUSTODY *, RETAINED_OBJECT *,
+                                          PSECURITY_DESCRIPTOR, DWORD);
+static int fixture_admission_verify_object(ROOT_CUSTODY *, RETAINED_OBJECT *,
+                                           const CHAR *, BYTE, const BYTE *);
+static int fixture_admission_census(ROOT_CUSTODY *, const RETAINED_OBJECT *);
+static int fixture_admission_capture_security(ROOT_CUSTODY *, HANDLE,
+                                              PSECURITY_DESCRIPTOR *, DWORD *);
+static int fixture_admission_capture_job_security(
+    ROOT_CUSTODY *, HANDLE, PSECURITY_DESCRIPTOR *, DWORD *);
+static int fixture_admission_access(ROOT_CUSTODY *, HANDLE, HANDLE, DWORD,
+                                    int);
+static int fixture_admission_open(PCWSTR, DWORD, int, int);
+static int fixture_admission_scratch(ROOT_CUSTODY *,
+                                     const PROFILE_IDENTITY *);
+static int fixture_admission_verify_job(ROOT_CUSTODY *, HANDLE,
+                                        const ADMISSION_PLAN *, DWORD, DWORD);
+static BOOL WINAPI fixture_admission_CreatePipe(HANDLE *, HANDLE *,
+                                                SECURITY_ATTRIBUTES *, DWORD);
+static BOOL WINAPI fixture_admission_SetHandleInformation(HANDLE, DWORD,
+                                                          DWORD);
+static BOOL WINAPI fixture_admission_GetHandleInformation(HANDLE, DWORD *);
+static HANDLE WINAPI fixture_admission_CreateEventW(SECURITY_ATTRIBUTES *,
+                                                     BOOL, BOOL, PCWSTR);
+static BOOL WINAPI fixture_admission_InitializeProcThreadAttributeList(
+    LPVOID, DWORD, DWORD, SIZE_T *);
+static BOOL WINAPI fixture_admission_UpdateProcThreadAttribute(
+    LPVOID, DWORD, SIZE_T, LPVOID, SIZE_T, LPVOID, SIZE_T *);
+static void WINAPI fixture_admission_DeleteProcThreadAttributeList(LPVOID);
+static BOOL WINAPI fixture_admission_CreateProcessW(
+    PCWSTR, LPWSTR, SECURITY_ATTRIBUTES *, SECURITY_ATTRIBUTES *, BOOL, DWORD,
+    LPVOID, PCWSTR, STARTUPINFOW *, PROCESS_INFORMATION *);
+static BOOL WINAPI fixture_admission_GetExitCodeProcess(HANDLE, DWORD *);
+static BOOL WINAPI fixture_admission_CloseHandle(HANDLE);
+static BOOL WINAPI fixture_admission_OpenProcessToken(HANDLE, DWORD, HANDLE *);
+static BOOL WINAPI fixture_admission_OpenThreadToken(HANDLE, DWORD, BOOL,
+                                                     HANDLE *);
+static BOOL WINAPI fixture_admission_GetTokenInformation(
+    HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, DWORD *);
+static BOOL WINAPI fixture_admission_IsProcessInJob(HANDLE, HANDLE, BOOL *);
+static BOOL WINAPI fixture_admission_DuplicateTokenEx(
+    HANDLE, DWORD, SECURITY_ATTRIBUTES *, DWORD, DWORD, HANDLE *);
+static BOOL WINAPI fixture_admission_ImpersonateLoggedOnUser(HANDLE);
+static BOOL WINAPI fixture_admission_RevertToSelf(void);
+static HANDLE WINAPI fixture_admission_OpenJobObjectW(DWORD, BOOL, PCWSTR);
+static HANDLE WINAPI fixture_admission_CreateJobObjectW(SECURITY_ATTRIBUTES *,
+                                                        PCWSTR);
+static BOOL WINAPI fixture_admission_SetInformationJobObject(
+    HANDLE, JOBOBJECTINFOCLASS, LPVOID, DWORD);
+static BOOL WINAPI fixture_admission_QueryInformationJobObject(
+    HANDLE, JOBOBJECTINFOCLASS, LPVOID, DWORD, DWORD *);
+static BOOL WINAPI fixture_admission_TerminateJobObject(HANDLE, DWORD);
+static DWORD WINAPI fixture_admission_WaitForSingleObject(HANDLE, DWORD);
+static BOOL WINAPI fixture_admission_ReadFile(HANDLE, LPVOID, DWORD, DWORD *,
+                                              LPVOID);
+static BOOL WINAPI fixture_admission_HeapFree(HANDLE, DWORD, LPVOID);
+static LPVOID WINAPI fixture_admission_HeapAlloc(HANDLE, DWORD, SIZE_T);
+static PVOID WINAPI fixture_admission_FreeSid(PSID);
+static DWORD WINAPI fixture_admission_GetModuleFileNameW(HANDLE, LPWSTR,
+                                                         DWORD);
+static int fixture_admission_plan_digest(ROOT_CUSTODY *,
+                                         const PROFILE_IDENTITY *,
+                                         const EXECUTION_CUSTODY *,
+                                         ADMISSION_CUSTODY *, ADMISSION_PLAN *);
+static int fixture_admission_persist(ROOT_CUSTODY *, PROFILE_IDENTITY *,
+                                     ADMISSION_CUSTODY *, BYTE);
+static int fixture_admission_phase_absent(ROOT_CUSTODY *,
+                                          const PROFILE_IDENTITY *, BYTE);
+static int fixture_admission_apply(ROOT_CUSTODY *, EXECUTION_CUSTODY *,
+                                   const ADMISSION_PLAN *);
+static HANDLE fixture_admission_create_job(ROOT_CUSTODY *,
+                                           const ADMISSION_CUSTODY *,
+                                           const ADMISSION_PLAN *);
+static int fixture_admission_create_suspended(
+    ROOT_CUSTODY *, const PROFILE_IDENTITY *, const ADMISSION_PLAN *,
+    ADMISSION_RUNTIME *);
+static int fixture_admission_prove(ROOT_CUSTODY *, const PROFILE_IDENTITY *,
+                                   EXECUTION_CUSTODY *,
+                                   const ADMISSION_PLAN *, ADMISSION_RUNTIME *);
+static int fixture_admission_clear_pending(ROOT_CUSTODY *,
+                                           const PROFILE_IDENTITY *);
+static int fixture_admission_cleanup_runtime(
+    ROOT_CUSTODY *, const ADMISSION_CUSTODY *, const ADMISSION_PLAN *,
+    ADMISSION_RUNTIME *);
+static int fixture_admission_restore(ROOT_CUSTODY *, EXECUTION_CUSTODY *);
+static int fixture_admission_release_plan(ROOT_CUSTODY *, ADMISSION_PLAN *);
+static int fixture_admission_census_profile(ROOT_CUSTODY *, PROFILE_IDENTITY *,
+                                            int, int);
+static int fixture_admission_bind_folder(ROOT_CUSTODY *, PROFILE_IDENTITY *,
+                                         HANDLE *);
+static int fixture_admission_recovery_execution(ROOT_CUSTODY *,
+                                                PROFILE_IDENTITY *,
+                                                EXECUTION_CUSTODY *);
+static int fixture_admission_recovery_descriptors(
+    ROOT_CUSTODY *, const EXECUTION_CUSTODY *, const ADMISSION_PLAN *, BYTE);
+static int fixture_admission_recovery_job(ROOT_CUSTODY *,
+                                          const ADMISSION_CUSTODY *,
+                                          const ADMISSION_PLAN *, BYTE);
+static int fixture_admission_scratch_absent(ROOT_CUSTODY *,
+                                            const PROFILE_IDENTITY *);
+#define OP_ADMISSION_VERIFY_ORIGINAL fixture_admission_verify_original
+#define OP_ADMISSION_SET_SECURITY fixture_admission_set_security
+#define OP_ADMISSION_VERIFY_OBJECT fixture_admission_verify_object
+#define OP_ADMISSION_CENSUS fixture_admission_census
+#define OP_ADMISSION_CAPTURE_SECURITY fixture_admission_capture_security
+#define OP_ADMISSION_CAPTURE_JOB_SECURITY \
+  fixture_admission_capture_job_security
+#define OP_ADMISSION_ACCESS fixture_admission_access
+#define OP_ADMISSION_OPEN fixture_admission_open
+#define OP_ADMISSION_SCRATCH fixture_admission_scratch
+#define OP_ADMISSION_VERIFY_JOB fixture_admission_verify_job
+#define CreatePipe fixture_admission_CreatePipe
+#define SetHandleInformation fixture_admission_SetHandleInformation
+#define GetHandleInformation fixture_admission_GetHandleInformation
+#define CreateEventW fixture_admission_CreateEventW
+#define InitializeProcThreadAttributeList \
+  fixture_admission_InitializeProcThreadAttributeList
+#define UpdateProcThreadAttribute fixture_admission_UpdateProcThreadAttribute
+#define DeleteProcThreadAttributeList \
+  fixture_admission_DeleteProcThreadAttributeList
+#define CreateProcessW fixture_admission_CreateProcessW
+#define GetExitCodeProcess fixture_admission_GetExitCodeProcess
+#define CloseHandle fixture_admission_CloseHandle
+#define OpenProcessToken fixture_admission_OpenProcessToken
+#define OpenThreadToken fixture_admission_OpenThreadToken
+#define GetTokenInformation fixture_admission_GetTokenInformation
+#define IsProcessInJob fixture_admission_IsProcessInJob
+#define DuplicateTokenEx fixture_admission_DuplicateTokenEx
+#define ImpersonateLoggedOnUser fixture_admission_ImpersonateLoggedOnUser
+#define RevertToSelf fixture_admission_RevertToSelf
+#define OpenJobObjectW fixture_admission_OpenJobObjectW
+#define CreateJobObjectW fixture_admission_CreateJobObjectW
+#define SetInformationJobObject fixture_admission_SetInformationJobObject
+#define QueryInformationJobObject fixture_admission_QueryInformationJobObject
+#define TerminateJobObject fixture_admission_TerminateJobObject
+#define WaitForSingleObject fixture_admission_WaitForSingleObject
+#define ReadFile fixture_admission_ReadFile
+#define HeapFree fixture_admission_HeapFree
+#define HeapAlloc fixture_admission_HeapAlloc
+#define FreeSid fixture_admission_FreeSid
+#define GetModuleFileNameW fixture_admission_GetModuleFileNameW
+#define OP_ADMISSION_PLAN_DIGEST fixture_admission_plan_digest
+#define OP_ADMISSION_PERSIST fixture_admission_persist
+#define OP_ADMISSION_PHASE_ABSENT fixture_admission_phase_absent
+#define OP_ADMISSION_APPLY fixture_admission_apply
+#define OP_ADMISSION_CREATE_JOB fixture_admission_create_job
+#define OP_ADMISSION_CREATE_SUSPENDED fixture_admission_create_suspended
+#define OP_ADMISSION_PROVE fixture_admission_prove
+#define OP_ADMISSION_CLEAR_PENDING fixture_admission_clear_pending
+#define OP_ADMISSION_CLEANUP_RUNTIME fixture_admission_cleanup_runtime
+#define OP_ADMISSION_RESTORE fixture_admission_restore
+#define OP_ADMISSION_RELEASE_PLAN fixture_admission_release_plan
+#define OP_ADMISSION_CENSUS_PROFILE fixture_admission_census_profile
+#define OP_ADMISSION_BIND_FOLDER fixture_admission_bind_folder
+#define OP_ADMISSION_RECOVERY_EXECUTION fixture_admission_recovery_execution
+#define OP_ADMISSION_RECOVERY_DESCRIPTORS \
+  fixture_admission_recovery_descriptors
+#define OP_ADMISSION_RECOVERY_JOB fixture_admission_recovery_job
+#define OP_ADMISSION_SCRATCH_ABSENT fixture_admission_scratch_absent
+#else
+#define OP_ADMISSION_VERIFY_ORIGINAL verify_execution_original
+#define OP_ADMISSION_SET_SECURITY set_exact_security
+#define OP_ADMISSION_VERIFY_OBJECT verify_retained_object
+#define OP_ADMISSION_CENSUS directory_fixed_census
+#define OP_ADMISSION_CAPTURE_SECURITY capture_any_security
+#define OP_ADMISSION_CAPTURE_JOB_SECURITY capture_kernel_security
+#define OP_ADMISSION_ACCESS access_check_exact
+#define OP_ADMISSION_OPEN impersonated_open
+#define OP_ADMISSION_SCRATCH scratch_probe
+#define OP_ADMISSION_VERIFY_JOB verify_admission_job
+#define OP_ADMISSION_PLAN_DIGEST admission_plan_digest
+#define OP_ADMISSION_PERSIST persist_admission_phase
+#define OP_ADMISSION_PHASE_ABSENT admission_phase_absent
+#define OP_ADMISSION_APPLY apply_admission_grant
+#define OP_ADMISSION_CREATE_JOB create_admission_job
+#define OP_ADMISSION_CREATE_SUSPENDED create_suspended_admission
+#define OP_ADMISSION_PROVE prove_child_token
+#define OP_ADMISSION_CLEAR_PENDING clear_admission_pending
+#define OP_ADMISSION_CLEANUP_RUNTIME cleanup_admission_runtime
+#define OP_ADMISSION_RESTORE restore_admission_grant
+#define OP_ADMISSION_RELEASE_PLAN release_admission_plan
+#define OP_ADMISSION_CENSUS_PROFILE census_profile
+#define OP_ADMISSION_BIND_FOLDER bind_folder
+#define OP_ADMISSION_RECOVERY_EXECUTION admission_recovery_execution
+#define OP_ADMISSION_RECOVERY_DESCRIPTORS \
+  admission_recovery_descriptor_state
+#define OP_ADMISSION_RECOVERY_JOB admission_recovery_job
+#define OP_ADMISSION_SCRATCH_ABSENT admission_scratch_absent
+#endif
+
 static int equal_bytes(const void *left_value, const void *right_value, SIZE_T length) {
   const BYTE *left = (const BYTE *)left_value;
   const BYTE *right = (const BYTE *)right_value;
@@ -611,9 +1039,49 @@ static int write_all(HANDLE output, const BYTE *bytes, DWORD length) {
 }
 
 static void diagnostic(const CHAR *text) {
+#if defined(OP_WINDOWS_ADMISSION_OS_FIXTURE)
+  (void)text;
+#else
   HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
   if (output != NULL && output != INVALID_HANDLE_VALUE)
     (void)write_all(output, (const BYTE *)text, (DWORD)ascii_length(text));
+#endif
+}
+
+static void diagnostic_security_header(const CHAR *label,
+                                       PSECURITY_DESCRIPTOR descriptor) {
+  static const CHAR hex[] = "0123456789abcdef";
+  CHAR output[96];
+  const BYTE *bytes = (const BYTE *)descriptor;
+  DWORD cursor = 0U;
+  DWORD index;
+  while (label[cursor] != '\0' && cursor + 1U < sizeof(output)) {
+    output[cursor] = label[cursor];
+    cursor += 1U;
+  }
+  for (index = 0U; index < 20U && cursor + 3U < sizeof(output); index += 1U) {
+    output[cursor++] = hex[bytes[index] >> 4U];
+    output[cursor++] = hex[bytes[index] & 15U];
+  }
+  output[cursor++] = '\n';
+  output[cursor] = '\0';
+  diagnostic(output);
+}
+
+static void diagnostic_u32(const CHAR *label, DWORD value) {
+  static const CHAR hex[] = "0123456789abcdef";
+  CHAR output[96];
+  DWORD cursor = 0U;
+  DWORD shift;
+  while (label[cursor] != '\0' && cursor + 1U < sizeof(output)) {
+    output[cursor] = label[cursor];
+    cursor += 1U;
+  }
+  for (shift = 32U; shift != 0U && cursor + 1U < sizeof(output); shift -= 4U)
+    output[cursor++] = hex[(value >> (shift - 4U)) & 15U];
+  output[cursor++] = '\n';
+  output[cursor] = '\0';
+  diagnostic(output);
 }
 
 static int read_exact(HANDLE input, BYTE *bytes, DWORD length) {
@@ -898,17 +1366,42 @@ static int exact_acl(ROOT_CUSTODY *root, PACL acl, PSID stable_sid,
 static int forbidden_profile_sid(PSID sid, ROOT_CUSTODY *root) {
   SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
   PSID system_sid = NULL;
+  PSID administrators_sid = NULL;
   int forbidden;
   if (!AllocateAndInitializeSid(&authority, 1U, SECURITY_LOCAL_SYSTEM_RID, 0U, 0U, 0U, 0U, 0U,
-                                0U, 0U, &system_sid))
+                                0U, 0U, &system_sid) ||
+      !AllocateAndInitializeSid(&authority, 2U, SECURITY_BUILTIN_DOMAIN_RID,
+                                DOMAIN_ALIAS_RID_ADMINS, 0U, 0U, 0U, 0U,
+                                0U, 0U, &administrators_sid)) {
+    if (system_sid != NULL && FreeSid(system_sid) != NULL)
+      root->resource_ambiguous = 1;
     return 1;
-  forbidden = EqualSid(sid, root->stable_sid) || EqualSid(sid, system_sid);
-  if (FreeSid(system_sid) != NULL) {
+  }
+  forbidden = EqualSid(sid, root->stable_sid) || EqualSid(sid, system_sid) ||
+              EqualSid(sid, administrators_sid);
+  {
+    PVOID administrators_free = FreeSid(administrators_sid);
+    PVOID system_free = FreeSid(system_sid);
+    if (administrators_free == NULL && system_free == NULL)
+      return forbidden;
     root->resource_ambiguous = 1;
     return 1;
   }
-  return forbidden;
 }
+
+static int append_wide(WCHAR *target, DWORD capacity, DWORD *cursor,
+                       const WCHAR *value);
+static int exact_unnamed_stream(ROOT_CUSTODY *root,
+                                const RETAINED_OBJECT *object);
+static void hex_token(const BYTE token[32], WCHAR output[65]);
+static int admission_job_name(const BYTE token[32], WCHAR name[128],
+                              WORD *units);
+static int directory_fixed_census(ROOT_CUSTODY *root,
+                                  const RETAINED_OBJECT *directory);
+static int verify_retained_object(ROOT_CUSTODY *root,
+                                  RETAINED_OBJECT *object,
+                                  const CHAR *domain, BYTE role,
+                                  const BYTE expected_binding[32]);
 
 static int capture_security(ROOT_CUSTODY *root, HANDLE handle, PSECURITY_DESCRIPTOR *descriptor,
                             DWORD *length) {
@@ -956,6 +1449,1460 @@ static int capture_security(ROOT_CUSTODY *root, HANDLE handle, PSECURITY_DESCRIP
   *length = relative_length;
   *descriptor = relative;
   return 1;
+}
+
+static int capture_any_security(ROOT_CUSTODY *root, HANDLE handle,
+                                PSECURITY_DESCRIPTOR *descriptor,
+                                DWORD *length) {
+  PSECURITY_DESCRIPTOR security = NULL;
+  DWORD relative_length = 0U;
+  PSECURITY_DESCRIPTOR relative = NULL;
+  SECURITY_DESCRIPTOR_CONTROL control;
+  DWORD revision;
+  DWORD result = GetSecurityInfo(
+      handle, SE_FILE_OBJECT,
+      OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION |
+          LABEL_SECURITY_INFORMATION,
+      NULL, NULL, NULL, NULL, &security);
+  if (result != ERROR_SUCCESS || security == NULL ||
+      !GetSecurityDescriptorControl(security, &control, &revision))
+    return 0;
+  if ((control & SE_SELF_RELATIVE) != 0U) {
+    relative_length = GetSecurityDescriptorLength(security);
+    relative = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, relative_length);
+    if (relative != NULL) copy_bytes(relative, security, relative_length);
+  } else {
+    (void)MakeSelfRelativeSD(security, NULL, &relative_length);
+    relative = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, relative_length);
+    if (relative != NULL &&
+        !MakeSelfRelativeSD(security, relative, &relative_length)) {
+      if (!HeapFree(GetProcessHeap(), 0U, relative))
+        root->resource_ambiguous = 1;
+      relative = NULL;
+    }
+  }
+  if (relative == NULL || relative_length == 0U) {
+    if (relative != NULL && !HeapFree(GetProcessHeap(), 0U, relative))
+      root->resource_ambiguous = 1;
+    if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  *descriptor = relative;
+  *length = relative_length;
+  return !root->resource_ambiguous;
+}
+
+static int capture_kernel_security(ROOT_CUSTODY *root, HANDLE handle,
+                                   PSECURITY_DESCRIPTOR *descriptor,
+                                   DWORD *length) {
+  PSECURITY_DESCRIPTOR security = NULL;
+  DWORD result = GetSecurityInfo(handle, SE_KERNEL_OBJECT,
+                                 OWNER_SECURITY_INFORMATION |
+                                     DACL_SECURITY_INFORMATION,
+                                 NULL, NULL, NULL, NULL, &security);
+  DWORD security_length;
+  if (result != ERROR_SUCCESS || security == NULL) return 0;
+  security_length = GetSecurityDescriptorLength(security);
+  if (security_length == 0U) {
+    if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+    return 0;
+  }
+  *descriptor = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, security_length);
+  if (*descriptor == NULL) {
+    if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+    return 0;
+  }
+  copy_bytes(*descriptor, security, security_length);
+  *length = security_length;
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+}
+
+static DWORD aligned_security_length(DWORD length) {
+  return (length + 3U) & ~3U;
+}
+
+static int compose_stored_file_security(
+    ROOT_CUSTODY *root, PSECURITY_DESCRIPTOR original,
+    PSECURITY_DESCRIPTOR dacl_source, PSECURITY_DESCRIPTOR *descriptor,
+    DWORD *length) {
+  SECURITY_DESCRIPTOR_CONTROL control;
+  DWORD revision;
+  PSID owner = NULL;
+  PSID group = NULL;
+  PACL dacl = NULL;
+  PACL sacl = NULL;
+  BOOL owner_defaulted;
+  BOOL group_defaulted;
+  BOOL dacl_present;
+  BOOL dacl_defaulted;
+  BOOL sacl_present;
+  BOOL sacl_defaulted;
+  ACL_SIZE_INFORMATION dacl_information;
+  ACL_SIZE_INFORMATION sacl_information;
+  DWORD owner_length;
+  DWORD group_length;
+  DWORD dacl_length;
+  DWORD sacl_length;
+  DWORD cursor = sizeof(SECURITY_DESCRIPTOR_RELATIVE);
+  DWORD total;
+  SECURITY_DESCRIPTOR_RELATIVE *relative;
+  if (!GetSecurityDescriptorControl(original, &control, &revision) ||
+      revision != 1U || (control & SE_SELF_RELATIVE) == 0U ||
+      !GetSecurityDescriptorOwner(original, &owner, &owner_defaulted) ||
+      owner == NULL || owner_defaulted || !IsValidSid(owner) ||
+      !GetSecurityDescriptorGroup(original, &group, &group_defaulted) ||
+      group_defaulted || (group != NULL && !IsValidSid(group)) ||
+      !GetSecurityDescriptorDacl(dacl_source, &dacl_present, &dacl,
+                                 &dacl_defaulted) ||
+      !dacl_present || dacl == NULL || dacl_defaulted ||
+      !GetAclInformation(dacl, &dacl_information, sizeof(dacl_information),
+                         AclSizeInformation) ||
+      !GetSecurityDescriptorSacl(original, &sacl_present, &sacl,
+                                 &sacl_defaulted) ||
+      !sacl_present || sacl == NULL || sacl_defaulted ||
+      !GetAclInformation(sacl, &sacl_information, sizeof(sacl_information),
+                         AclSizeInformation))
+    return 0;
+  owner_length = GetLengthSid(owner);
+  group_length = group == NULL ? 0U : GetLengthSid(group);
+  dacl_length = dacl_information.AclBytesInUse;
+  sacl_length = sacl_information.AclBytesInUse;
+  if (owner_length < 8U || owner_length > SID_MAX_BYTES ||
+      group_length > SID_MAX_BYTES || dacl_length < sizeof(ACL) ||
+      sacl_length < sizeof(ACL))
+    return 0;
+  total = cursor + aligned_security_length(owner_length) +
+          aligned_security_length(group_length) +
+          aligned_security_length(dacl_length) +
+          aligned_security_length(sacl_length);
+  relative = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, total);
+  if (relative == NULL) return 0;
+  relative->Revision = 1U;
+  relative->Control =
+      control | SE_SELF_RELATIVE | SE_DACL_PRESENT | SE_SACL_PRESENT |
+      SE_DACL_PROTECTED;
+  relative->Owner = cursor;
+  copy_bytes((BYTE *)relative + cursor, owner, owner_length);
+  cursor += aligned_security_length(owner_length);
+  if (group != NULL) {
+    relative->Group = cursor;
+    copy_bytes((BYTE *)relative + cursor, group, group_length);
+    cursor += aligned_security_length(group_length);
+  }
+  relative->Dacl = cursor;
+  copy_bytes((BYTE *)relative + cursor, dacl, dacl_length);
+  cursor += aligned_security_length(dacl_length);
+  relative->Sacl = cursor;
+  copy_bytes((BYTE *)relative + cursor, sacl, sacl_length);
+  cursor += aligned_security_length(sacl_length);
+  if (cursor != total) {
+    if (!HeapFree(GetProcessHeap(), 0U, relative))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  *descriptor = relative;
+  *length = total;
+  return !root->resource_ambiguous;
+}
+
+static int package_grant_security(ROOT_CUSTODY *root,
+                                  const PROFILE_IDENTITY *identity,
+                                  PSECURITY_DESCRIPTOR original,
+                                  PSECURITY_DESCRIPTOR *descriptor,
+                                  DWORD *length) {
+  LPWSTR stable = NULL;
+  LPWSTR integrity = NULL;
+  WCHAR package[SID_TEXT_MAX_BYTES + 1U];
+  WCHAR sddl[2048];
+  DWORD cursor = 0U;
+  PSECURITY_DESCRIPTOR security = NULL;
+  DWORD security_length;
+  for (DWORD index = 0U; index < identity->sid_text_length; index += 1U)
+    package[index] = (WCHAR)(BYTE)identity->sid_text[index];
+  package[identity->sid_text_length] = L'\0';
+  if (!ConvertSidToStringSidW(root->stable_sid, &stable) ||
+      !ConvertSidToStringSidW(root->integrity_sid, &integrity))
+    goto failed;
+  if (!append_wide(sddl, 2048U, &cursor, L"O:") ||
+      !append_wide(sddl, 2048U, &cursor, stable) ||
+      !append_wide(sddl, 2048U, &cursor, L"D:P(A;;FA;;;") ||
+      !append_wide(sddl, 2048U, &cursor, stable) ||
+      !append_wide(sddl, 2048U, &cursor,
+                   L")(A;;FA;;;SY)(A;;0x1200a9;;;") ||
+      !append_wide(sddl, 2048U, &cursor, package) ||
+      !append_wide(sddl, 2048U, &cursor, L")S:(ML;;NW;;;") ||
+      !append_wide(sddl, 2048U, &cursor, integrity) ||
+      !append_wide(sddl, 2048U, &cursor, L")") ||
+      !ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          sddl, SDDL_REVISION_1, &security, NULL))
+    goto failed;
+  security_length = GetSecurityDescriptorLength(security);
+  if (security_length == 0U ||
+      !compose_stored_file_security(root, original, security, descriptor,
+                                    length))
+    goto failed;
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  if (LocalFree(stable) != NULL) root->resource_ambiguous = 1;
+  if (LocalFree(integrity) != NULL) root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+failed:
+  if (security != NULL && LocalFree(security) != NULL)
+    root->resource_ambiguous = 1;
+  if (stable != NULL && LocalFree(stable) != NULL)
+    root->resource_ambiguous = 1;
+  if (integrity != NULL && LocalFree(integrity) != NULL)
+    root->resource_ambiguous = 1;
+  return 0;
+}
+
+static int job_object_security(ROOT_CUSTODY *root,
+                               PSECURITY_DESCRIPTOR *descriptor,
+                               DWORD *length) {
+  LPWSTR stable = NULL;
+  WCHAR sddl[1024];
+  DWORD cursor = 0U;
+  PSECURITY_DESCRIPTOR security = NULL;
+  SECURITY_DESCRIPTOR_CONTROL control;
+  DWORD revision;
+  PSID owner = NULL;
+  PSID group = NULL;
+  PACL dacl = NULL;
+  BOOL owner_defaulted;
+  BOOL group_defaulted;
+  BOOL dacl_present;
+  BOOL dacl_defaulted;
+  ACL_SIZE_INFORMATION dacl_information;
+  DWORD owner_length;
+  DWORD group_length;
+  DWORD dacl_length;
+  DWORD layout_cursor;
+  DWORD security_length;
+  SECURITY_DESCRIPTOR_RELATIVE *relative = NULL;
+  if (!ConvertSidToStringSidW(root->stable_sid, &stable)) goto failed;
+  if (!append_wide(sddl, 1024U, &cursor, L"O:") ||
+      !append_wide(sddl, 1024U, &cursor, stable) ||
+      !append_wide(sddl, 1024U, &cursor, L"D:P(A;;0x1f001f;;;") ||
+      !append_wide(sddl, 1024U, &cursor, stable) ||
+      !append_wide(sddl, 1024U, &cursor, L")(A;;0x1f001f;;;SY)") ||
+      !ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          sddl, SDDL_REVISION_1, &security, NULL))
+    goto failed;
+  if (!GetSecurityDescriptorControl(security, &control, &revision) ||
+      revision != 1U || !GetSecurityDescriptorOwner(
+                             security, &owner, &owner_defaulted) ||
+      owner == NULL || owner_defaulted || !IsValidSid(owner) ||
+      !GetSecurityDescriptorGroup(security, &group, &group_defaulted) ||
+      group_defaulted || (group != NULL && !IsValidSid(group)) ||
+      !GetSecurityDescriptorDacl(security, &dacl_present, &dacl,
+                                 &dacl_defaulted) ||
+      !dacl_present || dacl == NULL || dacl_defaulted ||
+      !GetAclInformation(dacl, &dacl_information, sizeof(dacl_information),
+                         AclSizeInformation))
+    goto failed;
+  owner_length = GetLengthSid(owner);
+  group_length = group == NULL ? 0U : GetLengthSid(group);
+  dacl_length = dacl_information.AclBytesInUse;
+  if (owner_length < 8U || owner_length > SID_MAX_BYTES ||
+      group_length > SID_MAX_BYTES || dacl_length < sizeof(ACL))
+    goto failed;
+  layout_cursor = sizeof(SECURITY_DESCRIPTOR_RELATIVE);
+  security_length = layout_cursor + aligned_security_length(owner_length) +
+                    aligned_security_length(group_length) +
+                    aligned_security_length(dacl_length);
+  relative = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, security_length);
+  if (relative == NULL) goto failed;
+  relative->Revision = 1U;
+  relative->Control = control | SE_SELF_RELATIVE | SE_DACL_PRESENT;
+  relative->Owner = layout_cursor;
+  copy_bytes((BYTE *)relative + layout_cursor, owner, owner_length);
+  layout_cursor += aligned_security_length(owner_length);
+  if (group != NULL) {
+    relative->Group = layout_cursor;
+    copy_bytes((BYTE *)relative + layout_cursor, group, group_length);
+    layout_cursor += aligned_security_length(group_length);
+  }
+  relative->Dacl = layout_cursor;
+  copy_bytes((BYTE *)relative + layout_cursor, dacl, dacl_length);
+  layout_cursor += aligned_security_length(dacl_length);
+  if (layout_cursor != security_length) goto failed;
+  *descriptor = relative;
+  *length = security_length;
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  if (LocalFree(stable) != NULL) root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+failed:
+  if (relative != NULL && !HeapFree(GetProcessHeap(), 0U, relative))
+    root->resource_ambiguous = 1;
+  if (security != NULL && LocalFree(security) != NULL)
+    root->resource_ambiguous = 1;
+  if (stable != NULL && LocalFree(stable) != NULL)
+    root->resource_ambiguous = 1;
+  return 0;
+}
+
+static int append_quoted_argument(WCHAR *command, DWORD capacity,
+                                  DWORD *cursor, const WCHAR *argument) {
+  DWORD index = 0U;
+  DWORD slashes = 0U;
+  if (*cursor != 0U) {
+    if (*cursor + 1U >= capacity) return 0;
+    command[(*cursor)++] = L' ';
+  }
+  if (*cursor + 1U >= capacity) return 0;
+  command[(*cursor)++] = L'"';
+  while (argument[index] != L'\0') {
+    WCHAR value = argument[index++];
+    if (value == L'\\') {
+      slashes += 1U;
+      continue;
+    }
+    if (value == L'"') return 0;
+    while (slashes != 0U) {
+      if (*cursor + 1U >= capacity) return 0;
+      command[(*cursor)++] = L'\\';
+      slashes -= 1U;
+    }
+    if (*cursor + 1U >= capacity) return 0;
+    command[(*cursor)++] = value;
+  }
+  while (slashes != 0U) {
+    if (*cursor + 2U >= capacity) return 0;
+    command[(*cursor)++] = L'\\';
+    command[(*cursor)++] = L'\\';
+    slashes -= 1U;
+  }
+  if (*cursor + 1U >= capacity) return 0;
+  command[(*cursor)++] = L'"';
+  command[*cursor] = L'\0';
+  return 1;
+}
+
+static int candidate_file_url(const WCHAR *path, WCHAR output[2048]) {
+  static const WCHAR hex[] = L"0123456789ABCDEF";
+  DWORD cursor = 0U;
+  DWORD index;
+  if (!append_wide(output, 2048U, &cursor, L"file:///") ||
+      wide_length(path) < 7U)
+    return 0;
+  for (index = 4U; path[index] != L'\0'; index += 1U) {
+    WCHAR value = path[index] == L'\\' ? L'/' : path[index];
+    int plain = (value >= L'a' && value <= L'z') ||
+                (value >= L'A' && value <= L'Z') ||
+                (value >= L'0' && value <= L'9') || value == L':' ||
+                value == L'/' || value == L'-' || value == L'_' ||
+                value == L'.' || value == L'~';
+    if (plain) {
+      if (cursor + 1U >= 2048U) return 0;
+      output[cursor++] = value;
+    } else if (value <= 0x7fU) {
+      if (cursor + 3U >= 2048U) return 0;
+      output[cursor++] = L'%';
+      output[cursor++] = hex[(value >> 4U) & 15U];
+      output[cursor++] = hex[value & 15U];
+    } else {
+      return 0;
+    }
+  }
+  output[cursor] = L'\0';
+  return 1;
+}
+
+static int append_environment(WCHAR *environment, DWORD capacity,
+                              DWORD *cursor, const WCHAR *key,
+                              const WCHAR *value) {
+  if (!append_wide(environment, capacity, cursor, key)) return 0;
+  if (*cursor + 1U >= capacity) return 0;
+  environment[(*cursor)++] = L'=';
+  environment[*cursor] = L'\0';
+  if (!append_wide(environment, capacity, cursor, value)) return 0;
+  if (*cursor + 1U >= capacity) return 0;
+  *cursor += 1U;
+  environment[*cursor] = L'\0';
+  return 1;
+}
+
+static int admission_plan_digest(ROOT_CUSTODY *root,
+                                 const PROFILE_IDENTITY *identity,
+                                 const EXECUTION_CUSTODY *execution,
+                                 ADMISSION_CUSTODY *admission,
+                                 ADMISSION_PLAN *plan) {
+  const RETAINED_OBJECT *objects[5] = {
+    &execution->parent, &execution->root, &execution->targets[0],
+    &execution->targets[1], &execution->targets[2]
+  };
+  DWORD grant_length =
+      (DWORD)ascii_length("op.windows-admission-grant/v1") + 1U + 32U +
+      2U + identity->sid_length;
+  DWORD launch_length;
+  BYTE *material;
+  DWORD cursor = 0U;
+  WCHAR windows[PATH_MAX_UNITS + 1U];
+  WCHAR *candidate_url = NULL;
+  DWORD command_cursor = 0U;
+  DWORD environment_cursor = 0U;
+  DWORD windows_units = GetWindowsDirectoryW(windows, PATH_MAX_UNITS + 1U);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  if (windows_units < 3U || windows_units > PATH_MAX_UNITS ||
+      windows[0] < L'A' || windows[0] > L'Z' || windows[1] != L':' ||
+      windows[2] != L'\\' || windows[windows_units - 1U] == L'\\' ||
+      !package_grant_security(root, identity, execution->root.security,
+                              &plan->grant_security,
+                              &plan->grant_security_length) ||
+      !job_object_security(root, &plan->job_security,
+                           &plan->job_security_length) ||
+      !admission_job_name(identity->token, admission->job_name,
+                          &admission->job_name_units))
+    return 0;
+  for (DWORD role = 0U; role < 5U; role += 1U) {
+    DWORD path_bytes = (DWORD)objects[role]->path_units * 2U;
+    DWORD grant_security_length =
+        role == 0U ? objects[role]->security_length
+                   : plan->grant_security_length;
+    grant_length += 1U + 4U + path_bytes + 8U + 16U + 4U + 4U + 4U +
+                    objects[role]->security_length + 4U +
+                    grant_security_length;
+  }
+  material = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, grant_length);
+  if (material == NULL) return 0;
+  copy_bytes(material + cursor, "op.windows-admission-grant/v1",
+             ascii_length("op.windows-admission-grant/v1") + 1U);
+  cursor += (DWORD)ascii_length("op.windows-admission-grant/v1") + 1U;
+  copy_bytes(material + cursor, identity->token, 32U); cursor += 32U;
+  write_u16(material + cursor, identity->sid_length); cursor += 2U;
+  copy_bytes(material + cursor, identity->sid, identity->sid_length);
+  cursor += identity->sid_length;
+  for (DWORD role = 0U; role < 5U; role += 1U) {
+    DWORD path_bytes = (DWORD)objects[role]->path_units * 2U;
+    PSECURITY_DESCRIPTOR grant_security =
+        role == 0U ? objects[role]->security : plan->grant_security;
+    DWORD grant_security_length =
+        role == 0U ? objects[role]->security_length
+                   : plan->grant_security_length;
+    material[cursor++] = (BYTE)role;
+    write_u32(material + cursor, path_bytes); cursor += 4U;
+    copy_bytes(material + cursor, objects[role]->path, path_bytes);
+    cursor += path_bytes;
+    write_u64(material + cursor, objects[role]->id.VolumeSerialNumber);
+    cursor += 8U;
+    copy_bytes(material + cursor, objects[role]->id.FileId.Identifier, 16U);
+    cursor += 16U;
+    write_u32(material + cursor, objects[role]->attributes); cursor += 4U;
+    write_u32(material + cursor, objects[role]->links); cursor += 4U;
+    write_u32(material + cursor, objects[role]->security_length); cursor += 4U;
+    copy_bytes(material + cursor, objects[role]->security,
+               objects[role]->security_length);
+    cursor += objects[role]->security_length;
+    write_u32(material + cursor, grant_security_length); cursor += 4U;
+    copy_bytes(material + cursor, grant_security, grant_security_length);
+    cursor += grant_security_length;
+  }
+  if (cursor != grant_length ||
+      !sha256(material, grant_length, admission->grant_digest,
+              &root->resource_ambiguous)) {
+    if (!HeapFree(GetProcessHeap(), 0U, material))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, material))
+    root->resource_ambiguous = 1;
+  copy_bytes(plan->application, execution->targets[0].path,
+             ((DWORD)execution->targets[0].path_units + 1U) * 2U);
+  copy_bytes(plan->cwd, identity->folder,
+             ((DWORD)identity->folder_units + 1U) * 2U);
+  candidate_url = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                            2048U * sizeof(WCHAR));
+  if (candidate_url == NULL ||
+      !candidate_file_url(execution->targets[2].path, candidate_url) ||
+      !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
+                              execution->targets[0].path) ||
+      !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
+                              execution->targets[1].path) ||
+      !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
+                              candidate_url)) {
+    if (candidate_url != NULL &&
+        !HeapFree(GetProcessHeap(), 0U, candidate_url))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, candidate_url))
+    root->resource_ambiguous = 1;
+  candidate_url = NULL;
+  if (!append_environment(plan->environment, 8192U, &environment_cursor,
+                          L"LOCALAPPDATA", identity->folder) ||
+      !append_environment(plan->environment, 8192U, &environment_cursor,
+                          L"SystemRoot", windows) ||
+      !append_environment(plan->environment, 8192U, &environment_cursor,
+                          L"TEMP", identity->folder) ||
+      !append_environment(plan->environment, 8192U, &environment_cursor,
+                          L"TMP", identity->folder) ||
+      !append_environment(plan->environment, 8192U, &environment_cursor,
+                          L"WINDIR", windows))
+    return 0;
+  plan->environment_units = environment_cursor + 1U;
+  plan->creation_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
+                         CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+  zero_bytes(&limits, sizeof(limits));
+  limits.BasicLimitInformation.LimitFlags =
+      JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  launch_length =
+      (DWORD)ascii_length("op.windows-admission-launch/v1") + 1U + 32U +
+      2U + (DWORD)admission->job_name_units * 2U + 4U +
+      plan->job_security_length + 4U + sizeof(limits) + 4U +
+      (DWORD)wide_length(plan->application) * 2U + 4U +
+      command_cursor * 2U + 4U + (DWORD)wide_length(plan->cwd) * 2U + 4U +
+      plan->environment_units * 2U + 20U + 4U;
+  material = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, launch_length);
+  if (material == NULL) return 0;
+  cursor = 0U;
+  copy_bytes(material + cursor, "op.windows-admission-launch/v1",
+             ascii_length("op.windows-admission-launch/v1") + 1U);
+  cursor += (DWORD)ascii_length("op.windows-admission-launch/v1") + 1U;
+  copy_bytes(material + cursor, identity->token, 32U); cursor += 32U;
+  write_u16(material + cursor, admission->job_name_units); cursor += 2U;
+  copy_bytes(material + cursor, admission->job_name,
+             (DWORD)admission->job_name_units * 2U);
+  cursor += (DWORD)admission->job_name_units * 2U;
+  write_u32(material + cursor, plan->job_security_length); cursor += 4U;
+  copy_bytes(material + cursor, plan->job_security,
+             plan->job_security_length); cursor += plan->job_security_length;
+  write_u32(material + cursor, sizeof(limits)); cursor += 4U;
+  copy_bytes(material + cursor, &limits, sizeof(limits)); cursor += sizeof(limits);
+  {
+    const WCHAR *values[3] = {plan->application, plan->command_line, plan->cwd};
+    for (DWORD index = 0U; index < 3U; index += 1U) {
+      DWORD bytes = (DWORD)wide_length(values[index]) * 2U;
+      write_u32(material + cursor, bytes); cursor += 4U;
+      copy_bytes(material + cursor, values[index], bytes); cursor += bytes;
+    }
+  }
+  write_u32(material + cursor, plan->environment_units * 2U); cursor += 4U;
+  copy_bytes(material + cursor, plan->environment,
+             plan->environment_units * 2U);
+  cursor += plan->environment_units * 2U;
+  copy_bytes(material + cursor, "stdin\0stdout\0stderr", 20U); cursor += 20U;
+  write_u32(material + cursor, plan->creation_flags); cursor += 4U;
+  if (cursor != launch_length ||
+      !sha256(material, launch_length, admission->launch_digest,
+              &root->resource_ambiguous)) {
+    if (!HeapFree(GetProcessHeap(), 0U, material))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, material))
+    root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+}
+
+static int release_admission_plan(ROOT_CUSTODY *root, ADMISSION_PLAN *plan) {
+  int clean = 1;
+  if (plan->grant_security != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, plan->grant_security))
+    clean = 0;
+  if (plan->job_security != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, plan->job_security))
+    clean = 0;
+  zero_bytes(plan, sizeof(*plan));
+  if (!clean) root->resource_ambiguous = 1;
+  return clean;
+}
+
+static int set_exact_security(ROOT_CUSTODY *root, RETAINED_OBJECT *object,
+                              PSECURITY_DESCRIPTOR expected,
+                              DWORD expected_length);
+
+static int verify_execution_original(ROOT_CUSTODY *root,
+                                     EXECUTION_CUSTODY *execution) {
+  if (!verify_retained_object(root, &execution->parent,
+                              "op.windows-execution-parent/v1", 0U,
+                              execution->parent.binding) ||
+      !verify_retained_object(root, &execution->root,
+                              "op.windows-execution-root-object/v1", 0U,
+                              execution->root.binding))
+    return 0;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (!verify_retained_object(root, &execution->targets[role],
+                                "op.windows-execution-target/v1", role,
+                                execution->target_bindings[role]) ||
+        !verify_retained_object(root, &execution->sources[role],
+                                "op.windows-execution-source/v1", role,
+                                execution->source_bindings[role]))
+      return 0;
+  return directory_fixed_census(root, &execution->root);
+}
+
+static int apply_admission_grant(ROOT_CUSTODY *root,
+                                 EXECUTION_CUSTODY *execution,
+                                 const ADMISSION_PLAN *plan) {
+  if (!OP_ADMISSION_VERIFY_ORIGINAL(root, execution)) {
+    diagnostic("windows-broker:admission-original\n");
+    return 0;
+  }
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (!OP_ADMISSION_SET_SECURITY(root, &execution->targets[role],
+                                   plan->grant_security,
+                                   plan->grant_security_length)) {
+      diagnostic("windows-broker:admission-grant-target\n");
+      return 0;
+    }
+  if (!OP_ADMISSION_SET_SECURITY(root, &execution->root,
+                                 plan->grant_security,
+                                 plan->grant_security_length)) {
+    diagnostic("windows-broker:admission-grant-root\n");
+    return 0;
+  }
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (!OP_ADMISSION_VERIFY_OBJECT(
+            root, &execution->sources[role],
+            "op.windows-execution-source/v1", role,
+            execution->source_bindings[role]))
+      {
+        diagnostic("windows-broker:admission-source-drift\n");
+        return 0;
+      }
+  if (!OP_ADMISSION_CENSUS(root, &execution->root)) {
+    diagnostic("windows-broker:admission-census\n");
+    return 0;
+  }
+  return 1;
+}
+
+static int restore_admission_grant(ROOT_CUSTODY *root,
+                                   EXECUTION_CUSTODY *execution) {
+  int clean = 1;
+  if (execution->root.handle != NULL &&
+      execution->root.handle != INVALID_HANDLE_VALUE &&
+      !OP_ADMISSION_SET_SECURITY(root, &execution->root,
+                                 execution->root.security,
+                                 execution->root.security_length))
+    clean = 0;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (execution->targets[role].handle != NULL &&
+        execution->targets[role].handle != INVALID_HANDLE_VALUE &&
+        !OP_ADMISSION_SET_SECURITY(root, &execution->targets[role],
+                                   execution->targets[role].security,
+                                   execution->targets[role].security_length))
+      clean = 0;
+  if (clean && !OP_ADMISSION_VERIFY_ORIGINAL(root, execution)) clean = 0;
+  return clean;
+}
+
+static int closed_job_process_list(
+    const BYTE *bytes, DWORD length, DWORD expected_processes,
+    DWORD expected_process_id, DWORD *observed_processes) {
+  const JOBOBJECT_BASIC_PROCESS_ID_LIST *process_list =
+      (const JOBOBJECT_BASIC_PROCESS_ID_LIST *)bytes;
+  if (length < 8U ||
+      process_list->NumberOfAssignedProcesses > JOB_PROCESS_MAXIMUM ||
+      process_list->NumberOfProcessIdsInList !=
+          process_list->NumberOfAssignedProcesses ||
+      length != 8U + sizeof(SIZE_T) *
+                         process_list->NumberOfProcessIdsInList ||
+      (expected_processes != 0xffffffffU &&
+       process_list->NumberOfAssignedProcesses != expected_processes))
+    return 0;
+  for (DWORD index = 0U;
+       index < process_list->NumberOfProcessIdsInList; index += 1U) {
+    if (process_list->ProcessIdList[index] == 0U ||
+        process_list->ProcessIdList[index] > 0xffffffffU ||
+        (expected_process_id != 0U &&
+         process_list->ProcessIdList[index] != expected_process_id))
+      return 0;
+    for (DWORD prior = 0U; prior < index; prior += 1U)
+      if (process_list->ProcessIdList[index] ==
+          process_list->ProcessIdList[prior])
+        return 0;
+  }
+  if (expected_process_id != 0U &&
+      process_list->NumberOfProcessIdsInList != 1U)
+    return 0;
+  *observed_processes = process_list->NumberOfAssignedProcesses;
+  return 1;
+}
+
+static int verify_admission_job(ROOT_CUSTODY *root, HANDLE job,
+                                const ADMISSION_PLAN *plan,
+                                DWORD expected_processes,
+                                DWORD expected_process_id) {
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+  BYTE process_list_bytes[8U + sizeof(SIZE_T) * JOB_PROCESS_MAXIMUM];
+  JOBOBJECT_BASIC_PROCESS_ID_LIST *process_list =
+      (JOBOBJECT_BASIC_PROCESS_ID_LIST *)process_list_bytes;
+  PSECURITY_DESCRIPTOR security = NULL;
+  DWORD security_length = 0U;
+  DWORD returned = 0U;
+  DWORD observed_processes = 0U;
+  int valid = 0;
+  zero_bytes(&limits, sizeof(limits));
+  zero_bytes(&accounting, sizeof(accounting));
+  zero_bytes(process_list_bytes, sizeof(process_list_bytes));
+  if (!QueryInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                 &limits, sizeof(limits), &returned) ||
+      returned != sizeof(limits) ||
+      limits.BasicLimitInformation.LimitFlags !=
+          JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) {
+    diagnostic("windows-broker:admission-job-verify-limits\n");
+    goto done;
+  }
+  if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation,
+                                 &accounting, sizeof(accounting), &returned) ||
+      returned != sizeof(accounting)) {
+    diagnostic("windows-broker:admission-job-verify-accounting\n");
+    goto done;
+  }
+  if (!QueryInformationJobObject(job, JobObjectBasicProcessIdList,
+                                 process_list_bytes,
+                                 sizeof(process_list_bytes), &returned) ||
+      !closed_job_process_list(process_list_bytes, returned,
+                               expected_processes, expected_process_id,
+                               &observed_processes) ||
+      accounting.ActiveProcesses != observed_processes) {
+    diagnostic("windows-broker:admission-job-verify-processes\n");
+    diagnostic_u32("windows-broker:admission-job-returned:", returned);
+    if (returned >= 8U) {
+      diagnostic_u32("windows-broker:admission-job-assigned:",
+                     process_list->NumberOfAssignedProcesses);
+      diagnostic_u32("windows-broker:admission-job-listed:",
+                     process_list->NumberOfProcessIdsInList);
+    }
+    diagnostic_u32("windows-broker:admission-job-active:",
+                   accounting.ActiveProcesses);
+    goto done;
+  }
+  if (!OP_ADMISSION_CAPTURE_JOB_SECURITY(root, job, &security,
+                                         &security_length)) {
+    diagnostic("windows-broker:admission-job-verify-security-capture\n");
+    goto done;
+  }
+  if (security_length != plan->job_security_length) {
+    diagnostic("windows-broker:admission-job-verify-security-length\n");
+    goto done;
+  }
+  if (!equal_bytes(security, plan->job_security, security_length)) {
+    diagnostic("windows-broker:admission-job-verify-security-bytes\n");
+    diagnostic_security_header("windows-broker:expected-job-header:",
+                               plan->job_security);
+    diagnostic_security_header("windows-broker:observed-job-header:", security);
+    goto done;
+  }
+  valid = 1;
+done:
+  if (security != NULL && !HeapFree(GetProcessHeap(), 0U, security))
+    root->resource_ambiguous = 1;
+  return valid && !root->resource_ambiguous;
+}
+
+static HANDLE create_admission_job(ROOT_CUSTODY *root,
+                                   const ADMISSION_CUSTODY *admission,
+                                   const ADMISSION_PLAN *plan) {
+  SECURITY_ATTRIBUTES attributes;
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  HANDLE probe;
+  HANDLE job;
+  probe = OpenJobObjectW(JOB_OBJECT_QUERY, FALSE, admission->job_name);
+  if (probe != NULL || GetLastError() != ERROR_FILE_NOT_FOUND) {
+    diagnostic("windows-broker:admission-job-preexisting\n");
+    if (probe != NULL && !CloseHandle(probe)) root->resource_ambiguous = 1;
+    return NULL;
+  }
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = plan->job_security;
+  attributes.bInheritHandle = FALSE;
+  SetLastError(ERROR_SUCCESS);
+  job = CreateJobObjectW(&attributes, admission->job_name);
+  if (job == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
+    diagnostic("windows-broker:admission-job-create\n");
+    if (job != NULL && !CloseHandle(job)) root->resource_ambiguous = 1;
+    return NULL;
+  }
+  zero_bytes(&limits, sizeof(limits));
+  limits.BasicLimitInformation.LimitFlags =
+      JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                               &limits, sizeof(limits))) {
+    diagnostic("windows-broker:admission-job-limits\n");
+    if (!CloseHandle(job)) root->resource_ambiguous = 1;
+    return NULL;
+  }
+  if (!OP_ADMISSION_VERIFY_JOB(root, job, plan, 0U, 0U)) {
+    diagnostic("windows-broker:admission-job-verify\n");
+    if (!CloseHandle(job)) root->resource_ambiguous = 1;
+    return NULL;
+  }
+  return job;
+}
+
+static int terminate_admission_job(ROOT_CUSTODY *root, HANDLE *job,
+                                   const ADMISSION_CUSTODY *admission,
+                                   const ADMISSION_PLAN *plan) {
+  HANDLE reopened;
+  int clean = 1;
+  if (*job != NULL && *job != INVALID_HANDLE_VALUE) {
+    if (!OP_ADMISSION_VERIFY_JOB(root, *job, plan, 0xffffffffU, 0U)) clean = 0;
+    if (!TerminateJobObject(*job, EXIT_LIFECYCLE_NOT_IMPLEMENTED)) clean = 0;
+    if (!OP_ADMISSION_VERIFY_JOB(root, *job, plan, 0U, 0U)) clean = 0;
+    if (!CloseHandle(*job)) clean = 0;
+    *job = NULL;
+  }
+  reopened = OpenJobObjectW(JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE, FALSE,
+                            admission->job_name);
+  if (reopened != NULL || GetLastError() != ERROR_FILE_NOT_FOUND) {
+    if (reopened != NULL && !CloseHandle(reopened)) clean = 0;
+    clean = 0;
+  }
+  if (!clean) root->resource_ambiguous = 1;
+  return clean;
+}
+
+static int query_token_buffer(ROOT_CUSTODY *root, HANDLE token,
+                              TOKEN_INFORMATION_CLASS kind, BYTE **buffer,
+                              DWORD *length) {
+  DWORD required = 0U;
+  DWORD returned;
+  GetTokenInformation(token, kind, NULL, 0U, &required);
+  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || required == 0U ||
+      required > TOKEN_BUFFER_MAXIMUM)
+    return 0;
+  *buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, required);
+  returned = required;
+  if (*buffer == NULL ||
+      !GetTokenInformation(token, kind, *buffer, required, &returned) ||
+      returned != required) {
+    if (*buffer != NULL && !HeapFree(GetProcessHeap(), 0U, *buffer))
+      root->resource_ambiguous = 1;
+    *buffer = NULL;
+    return 0;
+  }
+  *length = returned;
+  return 1;
+}
+
+static int detached_sid(const BYTE *base, DWORD length, DWORD minimum_offset,
+                        PSID sid, DWORD *sid_length) {
+  SIZE_T start = (SIZE_T)sid;
+  SIZE_T begin = (SIZE_T)base;
+  SIZE_T end = begin + length;
+  const BYTE *bytes;
+  DWORD calculated;
+  if (sid == NULL || length < minimum_offset || start < begin + minimum_offset ||
+      start > end || (start & 3U) != 0U || end - start < 8U)
+    return 0;
+  bytes = (const BYTE *)sid;
+  if (bytes[0] != 1U || bytes[1] > 15U)
+    return 0;
+  calculated = 8U + (DWORD)bytes[1] * 4U;
+  if (calculated > SID_MAX_BYTES || end - start < calculated ||
+      !IsValidSid(sid) || GetLengthSid(sid) != calculated)
+    return 0;
+  *sid_length = calculated;
+  return 1;
+}
+
+static int exact_detached_sid_value(const BYTE *buffer, DWORD length,
+                                    DWORD structure_bytes, PSID sid,
+                                    PSID expected) {
+  DWORD sid_length;
+  return detached_sid(buffer, length, structure_bytes, sid, &sid_length) &&
+         (SIZE_T)sid == (SIZE_T)buffer + structure_bytes &&
+         length == structure_bytes + sid_length && EqualSid(sid, expected);
+}
+
+static int closed_token_groups(BYTE *buffer, DWORD length, int require_zero,
+                               ROOT_CUSTODY *root, PSID system,
+                               PSID administrators) {
+  TOKEN_GROUPS *groups = (TOKEN_GROUPS *)buffer;
+  DWORD rows_offset =
+      (DWORD)((BYTE *)&groups->Groups[0] - (BYTE *)groups);
+  DWORD row_bytes;
+  DWORD sid_cursor;
+  if (length < rows_offset || groups->GroupCount > 128U ||
+      (require_zero && groups->GroupCount != 0U))
+    return 0;
+  row_bytes = groups->GroupCount * (DWORD)sizeof(SID_AND_ATTRIBUTES);
+  if (row_bytes > length - rows_offset)
+    return 0;
+  sid_cursor = rows_offset + row_bytes;
+  if (groups->GroupCount == 0U) return length == rows_offset;
+  for (DWORD index = 0U; index < groups->GroupCount; index += 1U) {
+    SID_AND_ATTRIBUTES *row = &groups->Groups[index];
+    DWORD sid_length;
+    DWORD forbidden_attributes =
+        ~(SE_GROUP_MANDATORY | SE_GROUP_ENABLED_BY_DEFAULT |
+          SE_GROUP_ENABLED | SE_GROUP_USE_FOR_DENY_ONLY | 0x00000008U |
+          0x00000020U | 0x00000040U | 0x20000000U | 0xc0000000U);
+    if ((row->Attributes & forbidden_attributes) != 0U ||
+        ((row->Attributes & SE_GROUP_ENABLED) != 0U &&
+         (row->Attributes & SE_GROUP_USE_FOR_DENY_ONLY) != 0U) ||
+        !detached_sid(buffer, length, sid_cursor, row->Sid, &sid_length) ||
+        (SIZE_T)row->Sid != (SIZE_T)buffer + sid_cursor)
+      return 0;
+    for (DWORD prior = 0U; prior < index; prior += 1U)
+      if (EqualSid(row->Sid, groups->Groups[prior].Sid)) return 0;
+    if ((row->Attributes & SE_GROUP_ENABLED) != 0U &&
+        (EqualSid(row->Sid, root->stable_sid) || EqualSid(row->Sid, system) ||
+         EqualSid(row->Sid, administrators)))
+      return 0;
+    sid_cursor += (sid_length + 3U) & ~3U;
+    if (sid_cursor > length) return 0;
+  }
+  return sid_cursor == length;
+}
+
+static int access_check_exact(ROOT_CUSTODY *root, HANDLE token,
+                              HANDLE object, DWORD desired,
+                              int expected_allowed) {
+  PSECURITY_DESCRIPTOR security = NULL;
+  GENERIC_MAPPING mapping = {0x00120089U, 0x00120116U, 0x001200a0U,
+                             FILE_ALL_ACCESS};
+  PRIVILEGE_SET privileges;
+  DWORD privilege_length = sizeof(privileges);
+  DWORD mapped = desired;
+  DWORD granted = 0U;
+  BOOL allowed = FALSE;
+  DWORD result = GetSecurityInfo(object, SE_FILE_OBJECT,
+                                 OWNER_SECURITY_INFORMATION |
+                                     GROUP_SECURITY_INFORMATION |
+                                     DACL_SECURITY_INFORMATION |
+                                     LABEL_SECURITY_INFORMATION,
+                                 NULL, NULL, NULL, NULL, &security);
+  int valid = 0;
+  if (result != ERROR_SUCCESS || security == NULL) return 0;
+  zero_bytes(&privileges, sizeof(privileges));
+  MapGenericMask(&mapped, &mapping);
+  if (!AccessCheck(security, token, mapped, &mapping, &privileges,
+                   &privilege_length, &granted, &allowed)) {
+    diagnostic("windows-broker:admission-access-check-call\n");
+    diagnostic_u32("windows-broker:admission-access-check-error:",
+                   GetLastError());
+  } else if (!!allowed != !!expected_allowed) {
+    diagnostic(expected_allowed
+                   ? "windows-broker:admission-access-unexpected-deny\n"
+                   : "windows-broker:admission-access-unexpected-allow\n");
+  } else if (expected_allowed && (granted & mapped) != mapped) {
+    diagnostic("windows-broker:admission-access-grant-mask\n");
+  } else {
+    valid = 1;
+  }
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  return valid && !root->resource_ambiguous;
+}
+
+static int impersonated_open(PCWSTR path, DWORD access, int directory,
+                             int expected_allowed) {
+  HANDLE file = CreateFileW(
+      path, access,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+      OPEN_EXISTING,
+      FILE_FLAG_OPEN_REPARSE_POINT |
+          (directory ? FILE_FLAG_BACKUP_SEMANTICS
+                     : FILE_FLAG_SEQUENTIAL_SCAN),
+      NULL);
+  if (expected_allowed) {
+    if (file == INVALID_HANDLE_VALUE) return 0;
+    return CloseHandle(file);
+  }
+  if (file != INVALID_HANDLE_VALUE) {
+    (void)CloseHandle(file);
+    return 0;
+  }
+  return GetLastError() == ERROR_ACCESS_DENIED ||
+         (access == ACCESS_SYSTEM_SECURITY &&
+          GetLastError() == ERROR_PRIVILEGE_NOT_HELD);
+}
+
+static int scratch_probe(ROOT_CUSTODY *root,
+                         const PROFILE_IDENTITY *identity) {
+  WCHAR path[1200];
+  WCHAR hex[65];
+  DWORD cursor = 0U;
+  HANDLE file;
+  BYTE expected[32];
+  BYTE observed[32];
+  DWORD written = 0U;
+  DWORD read = 0U;
+  FILE_DISPOSITION_INFO disposition;
+  for (DWORD index = 0U; index < 32U; index += 1U)
+    expected[index] = (BYTE)(identity->token[index] ^ 0xa5U);
+  hex_token(identity->token, hex);
+  if (!append_wide(path, 1200U, &cursor, identity->folder) ||
+      !append_wide(path, 1200U, &cursor, L"\\orch6-admission-") ||
+      !append_wide(path, 1200U, &cursor, hex) ||
+      !append_wide(path, 1200U, &cursor, L".probe"))
+    return 0;
+  file = CreateFileW(path, GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
+                     0U, NULL, CREATE_NEW,
+                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+                         FILE_FLAG_OPEN_REPARSE_POINT,
+                     NULL);
+  if (file == INVALID_HANDLE_VALUE ||
+      !WriteFile(file, expected, sizeof(expected), &written, NULL) ||
+      written != sizeof(expected) || !FlushFileBuffers(file))
+    goto failed;
+  SetLastError(ERROR_SUCCESS);
+  if ((SetFilePointer(file, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER &&
+       GetLastError() != ERROR_SUCCESS) ||
+      !ReadFile(file, observed, sizeof(observed), &read, NULL) ||
+      read != sizeof(observed) ||
+      !equal_bytes(expected, observed, sizeof(expected)))
+    goto failed;
+  disposition.DeleteFile = TRUE;
+  if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                  sizeof(disposition)) ||
+      !CloseHandle(file))
+    return 0;
+  file = INVALID_HANDLE_VALUE;
+  return GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES &&
+         (GetLastError() == ERROR_FILE_NOT_FOUND ||
+          GetLastError() == ERROR_PATH_NOT_FOUND);
+failed:
+  if (file != INVALID_HANDLE_VALUE && !CloseHandle(file))
+    root->resource_ambiguous = 1;
+  return 0;
+}
+
+static int prove_child_token(ROOT_CUSTODY *root,
+                             const PROFILE_IDENTITY *identity,
+                             EXECUTION_CUSTODY *execution,
+                             const ADMISSION_PLAN *plan,
+                             ADMISSION_RUNTIME *runtime) {
+  BOOL is_appcontainer = FALSE;
+  BOOL in_job = FALSE;
+  DWORD returned = 0U;
+  DWORD ui_access = 0U;
+  TOKEN_ELEVATION elevation;
+  BYTE *user_bytes = NULL;
+  BYTE *app_bytes = NULL;
+  BYTE *integrity_bytes = NULL;
+  BYTE *capability_bytes = NULL;
+  BYTE *group_bytes = NULL;
+  DWORD user_length = 0U;
+  DWORD app_length = 0U;
+  DWORD integrity_length = 0U;
+  DWORD capability_length = 0U;
+  DWORD group_length = 0U;
+  SID_IDENTIFIER_AUTHORITY mandatory = SECURITY_MANDATORY_LABEL_AUTHORITY;
+  SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+  PSID low = NULL;
+  PSID system = NULL;
+  PSID admins = NULL;
+  int valid = 0;
+  int impersonating = 0;
+  HANDLE thread_token = NULL;
+  WCHAR module_path[PATH_MAX_UNITS + 1U];
+  if (!OpenProcessToken(runtime->process.hProcess,
+                        TOKEN_QUERY | TOKEN_DUPLICATE,
+                        &runtime->process_token)) {
+    diagnostic("windows-broker:admission-token-open\n");
+    goto done;
+  }
+  if (!GetTokenInformation(runtime->process_token, TokenIsAppContainer,
+                           &is_appcontainer, sizeof(is_appcontainer),
+                           &returned) || returned != sizeof(is_appcontainer) ||
+      is_appcontainer != TRUE) {
+    diagnostic("windows-broker:admission-token-appcontainer\n");
+    goto done;
+  }
+  if (!GetTokenInformation(runtime->process_token, TokenElevation, &elevation,
+                           sizeof(elevation), &returned) ||
+      returned != sizeof(elevation) ||
+      elevation.TokenIsElevated != 0U) {
+    diagnostic("windows-broker:admission-token-elevation\n");
+    goto done;
+  }
+  if (!GetTokenInformation(runtime->process_token, TokenUIAccess, &ui_access,
+                           sizeof(ui_access), &returned) ||
+      returned != sizeof(ui_access) ||
+      ui_access != 0U) {
+    diagnostic("windows-broker:admission-token-ui-access\n");
+    goto done;
+  }
+  if (!query_token_buffer(root, runtime->process_token, TokenUser,
+                          &user_bytes, &user_length) ||
+      !query_token_buffer(root, runtime->process_token, TokenAppContainerSid,
+                          &app_bytes, &app_length) ||
+      !query_token_buffer(root, runtime->process_token, TokenIntegrityLevel,
+                          &integrity_bytes, &integrity_length) ||
+      !query_token_buffer(root, runtime->process_token, TokenCapabilities,
+                          &capability_bytes, &capability_length) ||
+      !query_token_buffer(root, runtime->process_token, TokenGroups,
+                          &group_bytes, &group_length)) {
+    diagnostic("windows-broker:admission-token-buffers\n");
+    goto done;
+  }
+  if (!AllocateAndInitializeSid(&mandatory, 1U, SECURITY_MANDATORY_LOW_RID,
+                                0U, 0U, 0U, 0U, 0U, 0U, 0U, &low) ||
+      !AllocateAndInitializeSid(&nt, 1U, SECURITY_LOCAL_SYSTEM_RID, 0U, 0U,
+                                0U, 0U, 0U, 0U, 0U, &system) ||
+      !AllocateAndInitializeSid(&nt, 2U, SECURITY_BUILTIN_DOMAIN_RID,
+                                DOMAIN_ALIAS_RID_ADMINS, 0U, 0U, 0U, 0U, 0U,
+                                0U, &admins)) {
+    diagnostic("windows-broker:admission-token-sids\n");
+    goto done;
+  }
+  if (!exact_detached_sid_value(user_bytes, user_length, sizeof(TOKEN_USER),
+                                ((TOKEN_USER *)user_bytes)->User.Sid,
+                                root->stable_sid) ||
+      !exact_detached_sid_value(
+          app_bytes, app_length, sizeof(TOKEN_APPCONTAINER_INFORMATION),
+          ((TOKEN_APPCONTAINER_INFORMATION *)app_bytes)->TokenAppContainer,
+          (PSID)identity->sid) ||
+      forbidden_profile_sid(
+          ((TOKEN_APPCONTAINER_INFORMATION *)app_bytes)->TokenAppContainer,
+          root) ||
+      !exact_detached_sid_value(
+          integrity_bytes, integrity_length, sizeof(TOKEN_MANDATORY_LABEL),
+          ((TOKEN_MANDATORY_LABEL *)integrity_bytes)->Label.Sid, low) ||
+      !closed_token_groups(capability_bytes, capability_length, 1, root,
+                           system, admins) ||
+      !closed_token_groups(group_bytes, group_length, 0, root, system,
+                           admins)) {
+    diagnostic("windows-broker:admission-token-identity\n");
+    goto done;
+  }
+  if (!IsProcessInJob(runtime->process.hProcess, runtime->job, &in_job) ||
+      !in_job || !OP_ADMISSION_VERIFY_JOB(
+                     root, runtime->job, plan, 1U,
+                     runtime->process.dwProcessId)) {
+    diagnostic("windows-broker:admission-token-job\n");
+    goto done;
+  }
+  if (!DuplicateTokenEx(runtime->process_token,
+                        TOKEN_QUERY | TOKEN_IMPERSONATE, NULL,
+                        SecurityImpersonation, TokenImpersonation,
+                        &runtime->impersonation_token)) {
+    diagnostic("windows-broker:admission-token-duplicate\n");
+    goto done;
+  }
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    if (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                             execution->targets[role].handle,
+                             GENERIC_READ | GENERIC_EXECUTE, 1)) {
+      diagnostic("windows-broker:admission-token-target-read-access\n");
+      goto done;
+    }
+    for (DWORD right = 0U;
+         right < sizeof(denied_execution_rights) / sizeof(DWORD);
+         right += 1U)
+      if (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                               execution->targets[role].handle,
+                               denied_execution_rights[right], 0)) {
+        diagnostic("windows-broker:admission-token-target-access\n");
+        goto done;
+      }
+  }
+  if (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                           execution->root.handle,
+                           GENERIC_READ | GENERIC_EXECUTE, 1) ||
+      !OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                           execution->parent.handle, FILE_LIST_DIRECTORY, 0) ||
+      !OP_ADMISSION_ACCESS(root, runtime->impersonation_token, root->handle,
+                           FILE_LIST_DIRECTORY, 0)) {
+    diagnostic("windows-broker:admission-token-boundary-access\n");
+    goto done;
+  }
+  for (DWORD right = 0U;
+       right < sizeof(denied_execution_rights) / sizeof(DWORD);
+       right += 1U)
+    if (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                             execution->root.handle,
+                             denied_execution_rights[right], 0)) {
+      diagnostic("windows-broker:admission-token-root-access\n");
+      goto done;
+    }
+  if (!ImpersonateLoggedOnUser(runtime->impersonation_token)) {
+    diagnostic("windows-broker:admission-token-impersonate\n");
+    goto done;
+  }
+  impersonating = 1;
+  if (!OP_ADMISSION_OPEN(execution->root.path,
+                         GENERIC_READ | GENERIC_EXECUTE, 1, 1)) {
+    diagnostic("windows-broker:admission-token-root-open\n");
+    goto done;
+  }
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (!OP_ADMISSION_OPEN(execution->targets[role].path,
+                           GENERIC_READ | GENERIC_EXECUTE, 0, 1) ||
+        !OP_ADMISSION_OPEN(execution->sources[role].path, GENERIC_READ, 0,
+                           0)) {
+      diagnostic("windows-broker:admission-token-target-open\n");
+      goto done;
+    }
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    for (DWORD right = 0U;
+         right < sizeof(denied_execution_rights) / sizeof(DWORD);
+         right += 1U)
+      if (!OP_ADMISSION_OPEN(execution->targets[role].path,
+                             denied_execution_rights[right], 0, 0)) {
+        diagnostic("windows-broker:admission-token-target-denied-open\n");
+        goto done;
+      }
+  for (DWORD right = 0U;
+       right < sizeof(denied_execution_rights) / sizeof(DWORD);
+       right += 1U)
+    if (!OP_ADMISSION_OPEN(execution->root.path,
+                           denied_execution_rights[right], 1, 0)) {
+      diagnostic("windows-broker:admission-token-root-denied-open\n");
+      goto done;
+    }
+  if (!OP_ADMISSION_OPEN(execution->parent.path, FILE_LIST_DIRECTORY, 1, 0) ||
+      !OP_ADMISSION_OPEN(root->path, FILE_LIST_DIRECTORY, 1, 0) ||
+      GetModuleFileNameW(NULL, module_path, PATH_MAX_UNITS + 1U) == 0U ||
+      !OP_ADMISSION_OPEN(module_path, GENERIC_READ, 0, 0)) {
+    diagnostic("windows-broker:admission-token-negative-open\n");
+    goto done;
+  }
+  if (!OP_ADMISSION_SCRATCH(root, identity)) {
+    diagnostic("windows-broker:admission-token-scratch\n");
+    goto done;
+  }
+  if (!RevertToSelf()) {
+    diagnostic("windows-broker:admission-token-revert\n");
+    goto done;
+  }
+  impersonating = 0;
+  valid = 1;
+done:
+  if (impersonating && !RevertToSelf()) root->resource_ambiguous = 1;
+  if (low != NULL && FreeSid(low) != NULL) root->resource_ambiguous = 1;
+  if (system != NULL && FreeSid(system) != NULL) root->resource_ambiguous = 1;
+  if (admins != NULL && FreeSid(admins) != NULL) root->resource_ambiguous = 1;
+  if (user_bytes != NULL && !HeapFree(GetProcessHeap(), 0U, user_bytes))
+    root->resource_ambiguous = 1;
+  if (app_bytes != NULL && !HeapFree(GetProcessHeap(), 0U, app_bytes))
+    root->resource_ambiguous = 1;
+  if (integrity_bytes != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, integrity_bytes))
+    root->resource_ambiguous = 1;
+  if (capability_bytes != NULL &&
+      !HeapFree(GetProcessHeap(), 0U, capability_bytes))
+    root->resource_ambiguous = 1;
+  if (group_bytes != NULL && !HeapFree(GetProcessHeap(), 0U, group_bytes))
+    root->resource_ambiguous = 1;
+  if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &thread_token) ||
+      GetLastError() != ERROR_NO_TOKEN) {
+    if (thread_token != NULL && !CloseHandle(thread_token))
+      root->resource_ambiguous = 1;
+    valid = 0;
+  }
+  return valid && !root->resource_ambiguous;
+}
+
+static int close_runtime_handle(ROOT_CUSTODY *root, HANDLE *handle) {
+  if (*handle == NULL || *handle == INVALID_HANDLE_VALUE) return 1;
+  if (!CloseHandle(*handle)) {
+    root->resource_ambiguous = 1;
+    return 0;
+  }
+  *handle = NULL;
+  return 1;
+}
+
+static int create_suspended_admission(ROOT_CUSTODY *root,
+                                      const PROFILE_IDENTITY *identity,
+                                      const ADMISSION_PLAN *plan,
+                                      ADMISSION_RUNTIME *runtime) {
+  SECURITY_ATTRIBUTES inheritable;
+  SECURITY_CAPABILITIES capabilities;
+  STARTUPINFOEXW startup;
+  HANDLE handle_list[3];
+  HANDLE job_list[1];
+  SIZE_T attribute_bytes = 0U;
+  WCHAR *command_line = NULL;
+  DWORD handle_flags = 0U;
+  DWORD exit_code = 0U;
+  HANDLE retained_job = runtime->job;
+  zero_bytes(runtime, sizeof(*runtime));
+  runtime->job = retained_job;
+  zero_bytes(&startup, sizeof(startup));
+  zero_bytes(&capabilities, sizeof(capabilities));
+  zero_bytes(&runtime->process, sizeof(runtime->process));
+  inheritable.nLength = sizeof(inheritable);
+  inheritable.lpSecurityDescriptor = NULL;
+  inheritable.bInheritHandle = TRUE;
+  if (!CreatePipe(&runtime->stdin_read, &runtime->stdin_write, &inheritable,
+                  0U) ||
+      !CreatePipe(&runtime->stdout_read, &runtime->stdout_write, &inheritable,
+                  0U) ||
+      !CreatePipe(&runtime->stderr_read, &runtime->stderr_write, &inheritable,
+                  0U) ||
+      !SetHandleInformation(runtime->stdin_write, HANDLE_FLAG_INHERIT, 0U) ||
+      !SetHandleInformation(runtime->stdout_read, HANDLE_FLAG_INHERIT, 0U) ||
+      !SetHandleInformation(runtime->stderr_read, HANDLE_FLAG_INHERIT, 0U)) {
+    diagnostic("windows-broker:admission-launch-pipes\n");
+    return 0;
+  }
+  runtime->sentinel = CreateEventW(&inheritable, TRUE, FALSE, NULL);
+  if (runtime->sentinel == NULL) {
+    diagnostic("windows-broker:admission-launch-sentinel\n");
+    return 0;
+  }
+  (void)InitializeProcThreadAttributeList(NULL, 3U, 0U, &attribute_bytes);
+  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || attribute_bytes == 0U) {
+    diagnostic("windows-broker:admission-launch-attribute-size\n");
+    return 0;
+  }
+  runtime->attributes =
+      HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, attribute_bytes);
+  if (runtime->attributes == NULL ||
+      !InitializeProcThreadAttributeList(runtime->attributes, 3U, 0U,
+                                         &attribute_bytes)) {
+    diagnostic("windows-broker:admission-launch-attribute-init\n");
+    return 0;
+  }
+  capabilities.AppContainerSid = (PSID)identity->sid;
+  capabilities.Capabilities = NULL;
+  capabilities.CapabilityCount = 0U;
+  capabilities.Reserved = 0U;
+  job_list[0] = runtime->job;
+  handle_list[0] = runtime->stdin_read;
+  handle_list[1] = runtime->stdout_write;
+  handle_list[2] = runtime->stderr_write;
+  if (!UpdateProcThreadAttribute(
+          runtime->attributes, 0U,
+          PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &capabilities,
+          sizeof(capabilities), NULL, NULL) ||
+      !UpdateProcThreadAttribute(runtime->attributes, 0U,
+                                 PROC_THREAD_ATTRIBUTE_JOB_LIST, job_list,
+                                 sizeof(job_list), NULL, NULL) ||
+      !UpdateProcThreadAttribute(runtime->attributes, 0U,
+                                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                 handle_list, sizeof(handle_list), NULL,
+                                 NULL)) {
+    diagnostic("windows-broker:admission-launch-attributes\n");
+    return 0;
+  }
+  startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup.StartupInfo.hStdInput = runtime->stdin_read;
+  startup.StartupInfo.hStdOutput = runtime->stdout_write;
+  startup.StartupInfo.hStdError = runtime->stderr_write;
+  startup.lpAttributeList = runtime->attributes;
+  command_line = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                           4096U * sizeof(WCHAR));
+  if (command_line == NULL) {
+    diagnostic("windows-broker:admission-launch-command\n");
+    return 0;
+  }
+  copy_bytes(command_line, plan->command_line,
+             ((DWORD)wide_length(plan->command_line) + 1U) * 2U);
+  if (!CreateProcessW(plan->application, command_line, NULL, NULL, TRUE,
+                      plan->creation_flags, (LPVOID)plan->environment,
+                      plan->cwd, &startup.StartupInfo, &runtime->process)) {
+    diagnostic("windows-broker:admission-launch-process\n");
+    if (!HeapFree(GetProcessHeap(), 0U, command_line))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, command_line))
+    root->resource_ambiguous = 1;
+  if (!close_runtime_handle(root, &runtime->stdin_read) ||
+      !close_runtime_handle(root, &runtime->stdout_write) ||
+      !close_runtime_handle(root, &runtime->stderr_write) ||
+      !close_runtime_handle(root, &runtime->sentinel))
+    return 0;
+  if (!GetHandleInformation(runtime->stdin_write, &handle_flags) ||
+      (handle_flags & HANDLE_FLAG_INHERIT) != 0U ||
+      !GetHandleInformation(runtime->stdout_read, &handle_flags) ||
+      (handle_flags & HANDLE_FLAG_INHERIT) != 0U ||
+      !GetHandleInformation(runtime->stderr_read, &handle_flags) ||
+      (handle_flags & HANDLE_FLAG_INHERIT) != 0U ||
+      !GetHandleInformation(runtime->job, &handle_flags) ||
+      (handle_flags & HANDLE_FLAG_INHERIT) != 0U ||
+      !GetExitCodeProcess(runtime->process.hProcess, &exit_code) ||
+      exit_code != STILL_ACTIVE) {
+    diagnostic("windows-broker:admission-launch-postcondition\n");
+    return 0;
+  }
+  return 1;
+}
+
+static int drain_empty_pipe(HANDLE pipe) {
+  BYTE bytes[256];
+  DWORD read = 0U;
+  if (ReadFile(pipe, bytes, sizeof(bytes), &read, NULL)) return read == 0U;
+  return GetLastError() == ERROR_BROKEN_PIPE;
+}
+
+static int cleanup_admission_runtime(ROOT_CUSTODY *root,
+                                     const ADMISSION_CUSTODY *admission,
+                                     const ADMISSION_PLAN *plan,
+                                     ADMISSION_RUNTIME *runtime) {
+  int clean = 1;
+  if (runtime->job != NULL && runtime->job != INVALID_HANDLE_VALUE &&
+      !TerminateJobObject(runtime->job, EXIT_LIFECYCLE_NOT_IMPLEMENTED))
+    clean = 0;
+  if (runtime->process.hProcess != NULL &&
+      WaitForSingleObject(runtime->process.hProcess, 5000U) != WAIT_OBJECT_0)
+    clean = 0;
+  if (!close_runtime_handle(root, &runtime->stdin_read)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->stdout_write)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->stderr_write)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->sentinel)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->stdin_write)) clean = 0;
+  if (runtime->stdout_read != NULL &&
+      !drain_empty_pipe(runtime->stdout_read))
+    clean = 0;
+  if (runtime->stderr_read != NULL &&
+      !drain_empty_pipe(runtime->stderr_read))
+    clean = 0;
+  if (!close_runtime_handle(root, &runtime->stdout_read)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->stderr_read)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->impersonation_token)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->process_token)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->process.hThread)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->process.hProcess)) clean = 0;
+  if (runtime->attributes != NULL) {
+    DeleteProcThreadAttributeList(runtime->attributes);
+    if (!HeapFree(GetProcessHeap(), 0U, runtime->attributes)) clean = 0;
+    runtime->attributes = NULL;
+  }
+  if (!close_runtime_handle(root, &runtime->stdin_read)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->stdout_write)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->stderr_write)) clean = 0;
+  if (!close_runtime_handle(root, &runtime->sentinel)) clean = 0;
+  if (!terminate_admission_job(root, &runtime->job, admission, plan)) clean = 0;
+  return clean && !root->resource_ambiguous;
+}
+
+static int set_exact_security(ROOT_CUSTODY *root, RETAINED_OBJECT *object,
+                              PSECURITY_DESCRIPTOR expected,
+                              DWORD expected_length) {
+  PSECURITY_DESCRIPTOR observed = NULL;
+  DWORD observed_length = 0U;
+  int valid = 0;
+  if (!SetKernelObjectSecurity(object->handle, DACL_SECURITY_INFORMATION,
+                               expected)) {
+    diagnostic("windows-broker:admission-security-set\n");
+    goto done;
+  }
+  if (!OP_ADMISSION_CAPTURE_SECURITY(root, object->handle, &observed,
+                                     &observed_length)) {
+    diagnostic("windows-broker:admission-security-capture\n");
+    goto done;
+  }
+  if (observed_length != expected_length) {
+    diagnostic("windows-broker:admission-security-length\n");
+    goto done;
+  }
+  if (!equal_bytes(observed, expected, expected_length)) {
+    diagnostic("windows-broker:admission-security-bytes\n");
+    diagnostic_security_header("windows-broker:expected-security-header:",
+                               expected);
+    diagnostic_security_header("windows-broker:observed-security-header:",
+                               observed);
+    goto done;
+  }
+  if (!exact_unnamed_stream(root, object)) {
+    diagnostic("windows-broker:admission-security-stream\n");
+    goto done;
+  }
+  valid = 1;
+done:
+  if (observed != NULL && !HeapFree(GetProcessHeap(), 0U, observed))
+    root->resource_ambiguous = 1;
+  return valid && !root->resource_ambiguous;
 }
 
 static int probe_root_path(ROOT_CUSTODY *root) {
@@ -1414,7 +3361,8 @@ static int retain_exact_object(ROOT_CUSTODY *root, const WCHAR *path, WORD path_
   BY_HANDLE_FILE_INFORMATION basic;
   LARGE_INTEGER size;
   DWORD access = GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL |
-                 (directory ? GENERIC_WRITE : 0U) | (deletable ? DELETE : 0U);
+                 (directory ? GENERIC_WRITE : 0U) |
+                 (deletable ? DELETE | WRITE_DAC : 0U);
   DWORD flags = FILE_FLAG_OPEN_REPARSE_POINT |
                 (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_FLAG_SEQUENTIAL_SCAN);
   copy_bytes(expected_path, path, ((DWORD)path_units + 1U) * 2U);
@@ -1840,6 +3788,213 @@ static int persist_execution_phase(ROOT_CUSTODY *root, PROFILE_IDENTITY *identit
   return 1;
 }
 
+static int admission_job_name(const BYTE token[32], WCHAR name[128],
+                              WORD *units) {
+  WCHAR hex[65];
+  DWORD cursor = 0U;
+  hex_token(token, hex);
+  if (!append_wide(name, 128U, &cursor, L"Local\\orch6-job-") ||
+      !append_wide(name, 128U, &cursor, hex))
+    return 0;
+  *units = (WORD)cursor;
+  return 1;
+}
+
+static int admission_journal_path(const ROOT_CUSTODY *root,
+                                  const BYTE token[32], BYTE kind,
+                                  int pending, WCHAR path[1200]) {
+  static const WCHAR *suffix[] = {
+    L"", L"-00-grant-attempted.opwl", L"-01-granted.opwl",
+    L"-02-job-attempted.opwl", L"-03-launch-attempted.opwl",
+    L"-04-admission-proved.opwl", L"-05-revoke-attempted.opwl",
+    L"-06-absence-proved.opwl"
+  };
+  WCHAR hex[65];
+  DWORD cursor = 0U;
+  if (kind < ADMISSION_GRANT_ATTEMPTED ||
+      kind > ADMISSION_ABSENCE_PROVED)
+    return 0;
+  hex_token(token, hex);
+  return append_wide(path, 1200U, &cursor, root->path) &&
+         append_wide(path, 1200U, &cursor, L"\\windows-admission-") &&
+         append_wide(path, 1200U, &cursor, hex) &&
+         append_wide(path, 1200U, &cursor, suffix[kind]) &&
+         (!pending || append_wide(path, 1200U, &cursor, L".pending"));
+}
+
+static int valid_admission_transition(BYTE current, BYTE kind) {
+  if (kind == ADMISSION_GRANT_ATTEMPTED) return current == 0U;
+  if (kind >= ADMISSION_GRANTED && kind <= ADMISSION_PROVED)
+    return current == (BYTE)(kind - 1U);
+  if (kind == ADMISSION_REVOKE_ATTEMPTED)
+    return current >= ADMISSION_GRANT_ATTEMPTED &&
+           current <= ADMISSION_PROVED;
+  return kind == ADMISSION_ABSENCE_PROVED &&
+         current == ADMISSION_REVOKE_ATTEMPTED;
+}
+
+static int valid_admission_final_set(const BYTE seen[8],
+                                     BYTE *last_forward) {
+  *last_forward = 0U;
+  if (!seen[ADMISSION_GRANT_ATTEMPTED]) {
+    for (BYTE kind = ADMISSION_GRANTED;
+         kind <= ADMISSION_ABSENCE_PROVED; kind += 1U)
+      if (seen[kind]) return 0;
+    return 1;
+  }
+  for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+       kind <= ADMISSION_PROVED; kind += 1U) {
+    if (!seen[kind]) {
+      for (BYTE later = (BYTE)(kind + 1U);
+           later <= ADMISSION_PROVED; later += 1U)
+        if (seen[later]) return 0;
+      break;
+    }
+    *last_forward = kind;
+  }
+  return *last_forward != 0U &&
+         (!seen[ADMISSION_ABSENCE_PROVED] ||
+          seen[ADMISSION_REVOKE_ATTEMPTED]);
+}
+
+static DWORD admission_record(const ROOT_CUSTODY *root,
+                              const PROFILE_IDENTITY *identity,
+                              const ADMISSION_CUSTODY *admission, BYTE kind,
+                              BYTE *record, DWORD capacity) {
+  DWORD job_bytes = (DWORD)admission->job_name_units * 2U;
+  DWORD needed = 12U + 224U + 2U + identity->sid_length + 2U + job_bytes;
+  DWORD cursor = 12U;
+  WCHAR expected_job[128];
+  WORD expected_units = 0U;
+  if (needed > capacity || identity->phase < JOURNAL_PROFILE_CREATED ||
+      identity->sid_length == 0U ||
+      !admission_job_name(identity->token, expected_job, &expected_units) ||
+      expected_units != admission->job_name_units ||
+      !wide_equal(expected_job, admission->job_name) ||
+      equal_bytes(admission->grant_digest, (BYTE[32]){0}, 32U) ||
+      equal_bytes(admission->launch_digest, (BYTE[32]){0}, 32U) ||
+      equal_bytes(admission->profile_created_digest, (BYTE[32]){0}, 32U) ||
+      equal_bytes(admission->execution_created_digest, (BYTE[32]){0}, 32U) ||
+      !valid_admission_transition(admission->phase, kind))
+    return 0U;
+  zero_bytes(record, needed);
+  record[0] = 'O'; record[1] = 'P'; record[2] = 'W'; record[3] = 'L';
+  record[4] = 1U; record[5] = kind;
+  write_u32(record + 8U, needed);
+  copy_bytes(record + cursor, identity->token, 32U); cursor += 32U;
+  if (kind != ADMISSION_GRANT_ATTEMPTED)
+    copy_bytes(record + cursor, admission->prior_digest, 32U);
+  cursor += 32U;
+  copy_bytes(record + cursor, root->digest, 32U); cursor += 32U;
+  copy_bytes(record + cursor, admission->profile_created_digest, 32U);
+  cursor += 32U;
+  copy_bytes(record + cursor, admission->execution_created_digest, 32U);
+  cursor += 32U;
+  copy_bytes(record + cursor, admission->grant_digest, 32U); cursor += 32U;
+  copy_bytes(record + cursor, admission->launch_digest, 32U); cursor += 32U;
+  write_u16(record + cursor, identity->sid_length); cursor += 2U;
+  copy_bytes(record + cursor, identity->sid, identity->sid_length);
+  cursor += identity->sid_length;
+  write_u16(record + cursor, admission->job_name_units); cursor += 2U;
+  copy_bytes(record + cursor, admission->job_name, job_bytes);
+  return needed;
+}
+
+static int persist_admission_phase(ROOT_CUSTODY *root,
+                                   PROFILE_IDENTITY *identity,
+                                   ADMISSION_CUSTODY *admission, BYTE kind) {
+  BYTE record[4096];
+  DWORD length = admission_record(root, identity, admission, kind, record,
+                                  sizeof(record));
+  WCHAR pending[1200];
+  WCHAR final[1200];
+  HANDLE file;
+  DWORD written = 0U;
+  PSECURITY_DESCRIPTOR security = NULL;
+  SECURITY_ATTRIBUTES attributes;
+  FILE_RENAME_INFO *rename_information;
+  FILE_ID_INFO file_identity;
+  DWORD rename_bytes;
+  int renamed;
+  if (length == 0U || !root_snapshot(root, 0) ||
+      !admission_journal_path(root, identity->token, kind, 1, pending) ||
+      !admission_journal_path(root, identity->token, kind, 0, final) ||
+      !file_security(root, &security))
+    return 0;
+  attributes.nLength = sizeof(attributes);
+  attributes.lpSecurityDescriptor = security;
+  attributes.bInheritHandle = FALSE;
+  file = CreateFileW(pending,
+                     GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
+                     0U, &attributes, CREATE_NEW,
+                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
+                         FILE_FLAG_OPEN_REPARSE_POINT,
+                     NULL);
+  if (LocalFree(security) != NULL) root->resource_ambiguous = 1;
+  if (file == INVALID_HANDLE_VALUE) return 0;
+  if (!root_snapshot(root, 0) ||
+      !WriteFile(file, record, length, &written, NULL) || written != length ||
+      !FlushFileBuffers(file) ||
+      !verify_leaf_handle(root, file, pending, record, length, &file_identity,
+                          0) ||
+      !root_snapshot(root, 0)) {
+    if (!discard_open_pending(root, file, pending))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  {
+    DWORD final_bytes = (DWORD)wide_length(final) * 2U;
+    rename_bytes = (DWORD)sizeof(FILE_RENAME_INFO) + final_bytes;
+    rename_information = (FILE_RENAME_INFO *)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, rename_bytes);
+    if (rename_information == NULL) {
+      if (!discard_open_pending(root, file, pending))
+        root->resource_ambiguous = 1;
+      return 0;
+    }
+    rename_information->ReplaceIfExists =
+        (BOOL)FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    rename_information->FileNameLength = final_bytes;
+    copy_bytes(rename_information->FileName, final, final_bytes);
+    renamed = SetFileInformationByHandle(file, FileRenameInfoEx,
+                                         rename_information, rename_bytes);
+    if (!HeapFree(GetProcessHeap(), 0U, rename_information))
+      root->resource_ambiguous = 1;
+  }
+  if (!renamed) {
+    if (!discard_open_pending(root, file, pending))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!verify_leaf_handle(root, file, final, record, length, &file_identity,
+                          1) ||
+      GetFileAttributesW(pending) != INVALID_FILE_ATTRIBUTES ||
+      GetLastError() != ERROR_FILE_NOT_FOUND ||
+      !FlushFileBuffers(root->handle) || !root_snapshot(root, 0)) {
+    if (!CloseHandle(file)) root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!CloseHandle(file)) return 0;
+  file = CreateFileW(final, GENERIC_READ | READ_CONTROL, 0U, NULL,
+                     OPEN_EXISTING,
+                     FILE_FLAG_OPEN_REPARSE_POINT |
+                         FILE_FLAG_SEQUENTIAL_SCAN,
+                     NULL);
+  if (file == INVALID_HANDLE_VALUE ||
+      !verify_leaf_handle(root, file, final, record, length, &file_identity,
+                          1)) {
+    if (file != INVALID_HANDLE_VALUE && !CloseHandle(file))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!CloseHandle(file) || !root_snapshot(root, 0) ||
+      !sha256(record, length, admission->prior_digest,
+              &root->resource_ambiguous))
+    return 0;
+  admission->phase = kind;
+  return 1;
+}
+
 static int execution_target_path(const RETAINED_OBJECT *execution_root, BYTE role,
                                  WCHAR path[PATH_MAX_UNITS + 1U], WORD *units) {
   static const WCHAR *names[EXECUTION_ROLE_COUNT] = {
@@ -2036,7 +4191,11 @@ static int execution_root_binding(ROOT_CUSTODY *root,
 
 #if defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_ATTEMPTED) || \
     defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR) || \
-    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED)
+    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED)
 static void diagnostic_pause(void);
 #endif
 
@@ -2558,6 +4717,50 @@ static int parse_execution_journal_filename(const WCHAR *name, BYTE token[32],
   return 0;
 }
 
+static int parse_admission_journal_filename(const WCHAR *name, BYTE token[32],
+                                            BYTE *kind, int *pending) {
+  static const WCHAR prefix[] = L"windows-admission-";
+  static const WCHAR *suffix[] = {
+    L"", L"-00-grant-attempted.opwl", L"-01-granted.opwl",
+    L"-02-job-attempted.opwl", L"-03-launch-attempted.opwl",
+    L"-04-admission-proved.opwl", L"-05-revoke-attempted.opwl",
+    L"-06-absence-proved.opwl"
+  };
+  DWORD index;
+  const WCHAR *tail;
+  for (index = 0U; index < 18U; index += 1U)
+    if (name[index] != prefix[index]) return 0;
+  for (index = 0U; index < 32U; index += 1U) {
+    BYTE high;
+    BYTE low;
+    if (!hex_value(name[18U + index * 2U], &high) ||
+        !hex_value(name[19U + index * 2U], &low))
+      return 0;
+    token[index] = (BYTE)((high << 4U) | low);
+  }
+  tail = name + 82U;
+  for (*kind = ADMISSION_GRANT_ATTEMPTED;
+       *kind <= ADMISSION_ABSENCE_PROVED; *kind += 1U) {
+    DWORD suffix_units = (DWORD)wide_length(suffix[*kind]);
+    DWORD tail_units = (DWORD)wide_length(tail);
+    if (tail_units == suffix_units && wide_equal(tail, suffix[*kind])) {
+      *pending = 0;
+      return 1;
+    }
+    if (tail_units == suffix_units + 8U) {
+      DWORD match = 1U;
+      static const WCHAR pending_suffix[] = L".pending";
+      for (index = 0U; index < suffix_units; index += 1U)
+        if (tail[index] != suffix[*kind][index]) match = 0U;
+      if (match && wide_equal(tail + suffix_units, pending_suffix)) {
+        *pending = 1;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 static int secure_record_handle(HANDLE file, ROOT_CUSTODY *root) {
   PSID owner = NULL;
   PACL dacl = NULL;
@@ -2840,8 +5043,103 @@ static int parse_execution_record(ROOT_CUSTODY *root, JOURNAL_GROUP *group,
   }
   if (!sha256(record, length, digest, &root->resource_ambiguous)) goto failed;
   copy_bytes(execution->prior_digest, digest, 32U);
+  if (kind == EXECUTION_CREATED)
+    copy_bytes(group->execution_created_digest, digest, 32U);
   execution->phase = kind;
   if (!HeapFree(GetProcessHeap(), 0U, record)) root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+failed:
+  if (record != NULL && !HeapFree(GetProcessHeap(), 0U, record))
+    root->resource_ambiguous = 1;
+  return 0;
+}
+
+static int parse_admission_record(ROOT_CUSTODY *root, JOURNAL_GROUP *group,
+                                  BYTE kind) {
+  WCHAR path[1200];
+  BYTE *record = NULL;
+  DWORD length = 0U;
+  DWORD cursor = 12U;
+  WORD sid_length;
+  WORD job_units;
+  BYTE digest[32];
+  WCHAR observed_job[128];
+  WCHAR expected_job[128];
+  WORD expected_units = 0U;
+  ADMISSION_CUSTODY *admission = &group->admission;
+  if (!admission_journal_path(root, group->identity.token, kind, 0, path) ||
+      !load_record(root, path, &record, &length))
+    return 0;
+  if (length < 240U || record[0] != 'O' || record[1] != 'P' ||
+      record[2] != 'W' || record[3] != 'L' || record[4] != 1U ||
+      record[5] != kind || record[6] != 0U || record[7] != 0U ||
+      read_u32(record + 8U) != length ||
+      !equal_bytes(record + cursor, group->identity.token, 32U))
+    goto failed;
+  cursor += 32U;
+  if ((kind == ADMISSION_GRANT_ATTEMPTED &&
+       !equal_bytes(record + cursor, (BYTE[32]){0}, 32U)) ||
+      (kind != ADMISSION_GRANT_ATTEMPTED &&
+       !equal_bytes(record + cursor, admission->prior_digest, 32U)))
+    goto failed;
+  cursor += 32U;
+  if (!equal_bytes(record + cursor, root->digest, 32U)) goto failed;
+  cursor += 32U;
+  if (!equal_bytes(record + cursor, group->profile_created_digest, 32U))
+    goto failed;
+  if (kind == ADMISSION_GRANT_ATTEMPTED)
+    copy_bytes(admission->profile_created_digest, record + cursor, 32U);
+  cursor += 32U;
+  if (!equal_bytes(record + cursor, group->execution_created_digest, 32U))
+    goto failed;
+  if (kind == ADMISSION_GRANT_ATTEMPTED)
+    copy_bytes(admission->execution_created_digest, record + cursor, 32U);
+  cursor += 32U;
+  if (kind == ADMISSION_GRANT_ATTEMPTED) {
+    copy_bytes(admission->grant_digest, record + cursor, 32U);
+  } else if (!equal_bytes(record + cursor, admission->grant_digest, 32U)) {
+    goto failed;
+  }
+  if (equal_bytes(record + cursor, (BYTE[32]){0}, 32U)) goto failed;
+  cursor += 32U;
+  if (kind == ADMISSION_GRANT_ATTEMPTED) {
+    copy_bytes(admission->launch_digest, record + cursor, 32U);
+  } else if (!equal_bytes(record + cursor, admission->launch_digest, 32U)) {
+    goto failed;
+  }
+  if (equal_bytes(record + cursor, (BYTE[32]){0}, 32U)) goto failed;
+  cursor += 32U;
+  if (cursor + 2U > length) goto failed;
+  sid_length = read_u16(record + cursor); cursor += 2U;
+  if (sid_length != group->identity.sid_length ||
+      cursor + sid_length + 2U > length ||
+      !equal_bytes(record + cursor, group->identity.sid, sid_length))
+    goto failed;
+  cursor += sid_length;
+  job_units = read_u16(record + cursor); cursor += 2U;
+  if (job_units == 0U || job_units >= 128U ||
+      cursor + (DWORD)job_units * 2U != length)
+    goto failed;
+  copy_bytes(observed_job, record + cursor, (DWORD)job_units * 2U);
+  observed_job[job_units] = L'\0';
+  if (!admission_job_name(group->identity.token, expected_job,
+                          &expected_units) ||
+      job_units != expected_units || !wide_equal(observed_job, expected_job))
+    goto failed;
+  if (kind == ADMISSION_GRANT_ATTEMPTED) {
+    admission->job_name_units = job_units;
+    copy_bytes(admission->job_name, observed_job,
+               ((DWORD)job_units + 1U) * 2U);
+  } else if (admission->job_name_units != job_units ||
+             !wide_equal(admission->job_name, observed_job) ||
+             !valid_admission_transition(admission->phase, kind)) {
+    goto failed;
+  }
+  if (!sha256(record, length, digest, &root->resource_ambiguous)) goto failed;
+  copy_bytes(admission->prior_digest, digest, 32U);
+  admission->phase = kind;
+  if (!HeapFree(GetProcessHeap(), 0U, record))
+    root->resource_ambiguous = 1;
   return !root->resource_ambiguous;
 failed:
   if (record != NULL && !HeapFree(GetProcessHeap(), 0U, record))
@@ -2878,11 +5176,14 @@ static int scan_journals(ROOT_CUSTODY *root, JOURNAL_GROUP **groups_output, DWOR
     BYTE kind;
     int pending;
     int execution_file = 0;
+    int admission_file = 0;
     DWORD group_index;
     if (!wide_equal(data.cFileName, L".") && !wide_equal(data.cFileName, L"..")) {
       if ((data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U ||
           (!parse_journal_filename(data.cFileName, token, &kind, &pending) &&
            !(execution_file = parse_execution_journal_filename(
+               data.cFileName, token, &kind, &pending)) &&
+           !(admission_file = parse_admission_journal_filename(
                data.cFileName, token, &kind, &pending)))) {
         if (!FindClose(find)) root->resource_ambiguous = 1;
         goto failed;
@@ -2897,14 +5198,25 @@ static int scan_journals(ROOT_CUSTODY *root, JOURNAL_GROUP **groups_output, DWOR
         copy_bytes(groups[count].identity.token, token, 32U);
         count += 1U;
       }
-      if ((pending && (execution_file ? groups[group_index].execution_pending_seen[kind] :
-                                        groups[group_index].pending_seen[kind])) ||
-          (!pending && (execution_file ? groups[group_index].execution_final_seen[kind] :
-                                         groups[group_index].final_seen[kind]))) {
+      if ((pending &&
+           (admission_file
+                ? groups[group_index].admission_pending_seen[kind]
+                : (execution_file
+                       ? groups[group_index].execution_pending_seen[kind]
+                       : groups[group_index].pending_seen[kind]))) ||
+          (!pending &&
+           (admission_file
+                ? groups[group_index].admission_final_seen[kind]
+                : (execution_file
+                       ? groups[group_index].execution_final_seen[kind]
+                       : groups[group_index].final_seen[kind])))) {
         if (!FindClose(find)) root->resource_ambiguous = 1;
         goto failed;
       }
-      if (execution_file) {
+      if (admission_file) {
+        if (pending) groups[group_index].admission_pending_seen[kind] = 1U;
+        else groups[group_index].admission_final_seen[kind] = 1U;
+      } else if (execution_file) {
         if (pending) groups[group_index].execution_pending_seen[kind] = 1U;
         else groups[group_index].execution_final_seen[kind] = 1U;
       } else {
@@ -3013,6 +5325,73 @@ static int scan_journals(ROOT_CUSTODY *root, JOURNAL_GROUP **groups_output, DWOR
         if (!CloseHandle(file)) goto failed;
       }
     }
+    {
+      BYTE last_forward = 0U;
+      if (!valid_admission_final_set(group->admission_final_seen,
+                                     &last_forward))
+        goto failed;
+      if (last_forward != 0U) {
+        if (!group->final_seen[JOURNAL_PROFILE_CREATED] ||
+            !group->execution_final_seen[EXECUTION_CREATED])
+          goto failed;
+        for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+             kind <= last_forward; kind += 1U) {
+          if (!parse_admission_record(root, group, kind)) goto failed;
+        }
+        if (group->admission_final_seen[ADMISSION_REVOKE_ATTEMPTED] &&
+            !parse_admission_record(root, group,
+                                    ADMISSION_REVOKE_ATTEMPTED))
+          goto failed;
+        if (group->admission_final_seen[ADMISSION_ABSENCE_PROVED]) {
+          if (!group->admission_final_seen[ADMISSION_REVOKE_ATTEMPTED] ||
+              !parse_admission_record(root, group,
+                                      ADMISSION_ABSENCE_PROVED))
+            goto failed;
+        }
+      }
+    }
+    for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+         kind <= ADMISSION_ABSENCE_PROVED; kind += 1U) {
+      if (group->admission_pending_seen[kind]) {
+        WCHAR path[1200];
+        HANDLE file;
+        BY_HANDLE_FILE_INFORMATION information;
+        if (!group->final_seen[JOURNAL_PROFILE_CREATED] ||
+            !group->execution_final_seen[EXECUTION_CREATED] ||
+            (kind >= ADMISSION_GRANTED && kind <= ADMISSION_PROVED &&
+             (!group->admission_final_seen[kind - 1U] ||
+              group->admission_final_seen[ADMISSION_REVOKE_ATTEMPTED])) ||
+            (kind == ADMISSION_REVOKE_ATTEMPTED &&
+             !group->admission_final_seen[ADMISSION_GRANT_ATTEMPTED]) ||
+            (kind == ADMISSION_ABSENCE_PROVED &&
+             !group->admission_final_seen[ADMISSION_REVOKE_ATTEMPTED]) ||
+            !admission_journal_path(root, group->identity.token, kind, 1,
+                                    path))
+          goto failed;
+        file = CreateFileW(path, GENERIC_READ | READ_CONTROL, 0U, NULL,
+                           OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (file == INVALID_HANDLE_VALUE) goto failed;
+        if (!GetFileInformationByHandle(file, &information) ||
+            information.nNumberOfLinks != 1U ||
+            (information.dwFileAttributes &
+             (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) !=
+                0U ||
+            !secure_record_handle(file, root)) {
+          if (!CloseHandle(file)) root->resource_ambiguous = 1;
+          goto failed;
+        }
+        if (!CloseHandle(file)) goto failed;
+      }
+    }
+    if (group->admission.phase != 0U &&
+        group->admission.phase != ADMISSION_ABSENCE_PROVED &&
+        (group->execution == NULL ||
+         group->execution->phase != EXECUTION_CREATED))
+      goto failed;
+    if (group->identity.phase >= JOURNAL_PROFILE_DELETE_ATTEMPTED &&
+        group->admission.phase != 0U &&
+        group->admission.phase != ADMISSION_ABSENCE_PROVED)
+      goto failed;
     if (group->identity.phase >= JOURNAL_PROFILE_DELETE_ATTEMPTED &&
         group->execution != NULL &&
         group->execution->phase != EXECUTION_ABSENCE_PROVED)
@@ -3252,6 +5631,174 @@ static int clear_execution_pending(ROOT_CUSTODY *root,
       return 0;
   }
   return FlushFileBuffers(root->handle) && root_snapshot(root, 0);
+}
+
+static int clear_admission_pending(ROOT_CUSTODY *root,
+                                   const PROFILE_IDENTITY *identity) {
+  WCHAR path[1200];
+  for (BYTE kind = ADMISSION_GRANT_ATTEMPTED;
+       kind <= ADMISSION_ABSENCE_PROVED; kind += 1U) {
+    HANDLE file;
+    BY_HANDLE_FILE_INFORMATION information;
+    FILE_DISPOSITION_INFO disposition;
+    if (!admission_journal_path(root, identity->token, kind, 1, path))
+      return 0;
+    file = CreateFileW(path, DELETE | READ_CONTROL, 0U, NULL, OPEN_EXISTING,
+                       FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+      if (GetLastError() == ERROR_FILE_NOT_FOUND ||
+          GetLastError() == ERROR_PATH_NOT_FOUND)
+        continue;
+      return 0;
+    }
+    if (!GetFileInformationByHandle(file, &information) ||
+        information.nNumberOfLinks != 1U ||
+        (information.dwFileAttributes &
+         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U ||
+        !secure_record_handle(file, root)) {
+      if (!CloseHandle(file)) root->resource_ambiguous = 1;
+      return 0;
+    }
+    disposition.DeleteFile = TRUE;
+    if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                    sizeof(disposition)) ||
+        !CloseHandle(file) ||
+        GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES ||
+        (GetLastError() != ERROR_FILE_NOT_FOUND &&
+         GetLastError() != ERROR_PATH_NOT_FOUND))
+      return 0;
+  }
+  return FlushFileBuffers(root->handle) && root_snapshot(root, 0);
+}
+
+static int admission_phase_absent(ROOT_CUSTODY *root,
+                                  const PROFILE_IDENTITY *identity,
+                                  BYTE kind) {
+  WCHAR path[1200];
+  for (int pending = 0; pending <= 1; pending += 1) {
+    if (!admission_journal_path(root, identity->token, kind, pending, path))
+      return 0;
+    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES ||
+        (GetLastError() != ERROR_FILE_NOT_FOUND &&
+         GetLastError() != ERROR_PATH_NOT_FOUND))
+      return 0;
+  }
+  return 1;
+}
+
+static __attribute__((noinline)) int run_admission_lifecycle(
+    ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
+    EXECUTION_CUSTODY *execution) {
+  ADMISSION_CUSTODY admission;
+  ADMISSION_PLAN *plan;
+  ADMISSION_RUNTIME runtime;
+  int admitted = 0;
+  int forward = 1;
+  int cleanup_clean = 1;
+  int revoke_durable = 0;
+  int can_cancel = 1;
+  zero_bytes(&admission, sizeof(admission));
+  zero_bytes(&runtime, sizeof(runtime));
+  plan = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*plan));
+  if (plan == NULL) return 0;
+  if (execution->phase != EXECUTION_CREATED ||
+      !OP_ADMISSION_VERIFY_ORIGINAL(root, execution)) {
+    (void)HeapFree(GetProcessHeap(), 0U, plan);
+    return 0;
+  }
+  copy_bytes(admission.profile_created_digest,
+             execution->profile_created_digest, 32U);
+  copy_bytes(admission.execution_created_digest, execution->prior_digest, 32U);
+  if (!OP_ADMISSION_PLAN_DIGEST(root, identity, execution, &admission, plan)) {
+    (void)OP_ADMISSION_RELEASE_PLAN(root, plan);
+    (void)HeapFree(GetProcessHeap(), 0U, plan);
+    return 0;
+  }
+  if (!OP_ADMISSION_PERSIST(root, identity, &admission,
+                            ADMISSION_GRANT_ATTEMPTED)) {
+    int absent = !root->resource_ambiguous &&
+                 OP_ADMISSION_PHASE_ABSENT(root, identity,
+                                           ADMISSION_GRANT_ATTEMPTED);
+    (void)OP_ADMISSION_RELEASE_PLAN(root, plan);
+    (void)HeapFree(GetProcessHeap(), 0U, plan);
+    return absent ? 0 : -1;
+  }
+#if defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED)
+  diagnostic_pause();
+#endif
+  if (OP_ADMISSION_APPLY(root, execution, plan)) {
+    if (!OP_ADMISSION_PERSIST(root, identity, &admission,
+                              ADMISSION_GRANTED)) {
+      forward = 0;
+      can_cancel = 0;
+    }
+#if defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANTED)
+    if (forward) diagnostic_pause();
+#endif
+  } else {
+    forward = 0;
+  }
+  if (forward &&
+      !OP_ADMISSION_PERSIST(root, identity, &admission,
+                            ADMISSION_JOB_ATTEMPTED)) {
+    forward = 0;
+    can_cancel = 0;
+  }
+#if defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED)
+  if (forward) diagnostic_pause();
+#endif
+  if (forward) {
+    runtime.job = OP_ADMISSION_CREATE_JOB(root, &admission, plan);
+    if (runtime.job == NULL) forward = 0;
+  }
+  if (forward &&
+      !OP_ADMISSION_PERSIST(root, identity, &admission,
+                            ADMISSION_LAUNCH_ATTEMPTED)) {
+    forward = 0;
+    can_cancel = 0;
+  }
+  if (forward &&
+      !OP_ADMISSION_CREATE_SUSPENDED(root, identity, plan, &runtime)) {
+    diagnostic("windows-broker:admission-suspended-create\n");
+    forward = 0;
+  }
+#if defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED)
+  if (forward) diagnostic_pause();
+#endif
+  if (forward &&
+      !OP_ADMISSION_PROVE(root, identity, execution, plan, &runtime)) {
+    diagnostic("windows-broker:admission-token-proof\n");
+    forward = 0;
+  }
+  if (forward &&
+      !OP_ADMISSION_PERSIST(root, identity, &admission,
+                            ADMISSION_PROVED)) {
+    forward = 0;
+    can_cancel = 0;
+  }
+  if (forward) admitted = 1;
+  if (!can_cancel || !OP_ADMISSION_CLEAR_PENDING(root, identity) ||
+      !OP_ADMISSION_PERSIST(root, identity, &admission,
+                            ADMISSION_REVOKE_ATTEMPTED)) {
+    cleanup_clean = 0;
+  } else {
+    revoke_durable = 1;
+  }
+  if (!OP_ADMISSION_CLEANUP_RUNTIME(root, &admission, plan, &runtime))
+    cleanup_clean = 0;
+  if (!OP_ADMISSION_RESTORE(root, execution)) cleanup_clean = 0;
+  if (revoke_durable && cleanup_clean &&
+      OP_ADMISSION_CLEAR_PENDING(root, identity) &&
+      OP_ADMISSION_PERSIST(root, identity, &admission,
+                           ADMISSION_ABSENCE_PROVED)) {
+    /* Complete absence permits landed execution/profile cleanup. */
+  } else {
+    cleanup_clean = 0;
+  }
+  if (!OP_ADMISSION_RELEASE_PLAN(root, plan)) cleanup_clean = 0;
+  if (!HeapFree(GetProcessHeap(), 0U, plan)) cleanup_clean = 0;
+  if (!cleanup_clean) return -1;
+  return admitted ? 1 : 0;
 }
 
 static int folder_absent(const PROFILE_IDENTITY *identity) {
@@ -3531,7 +6078,11 @@ static int cleanup_profile(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
 #if defined(OP_WINDOWS_PAUSE_AFTER_ATTEMPTED) || defined(OP_WINDOWS_PAUSE_AFTER_CREATE) || \
     defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_ATTEMPTED) || \
     defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR) || \
-    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED)
+    defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED)
 static void diagnostic_pause(void) {
   BYTE resumed;
   DWORD received = 0U;
@@ -3544,8 +6095,16 @@ static void diagnostic_pause(void) {
   diagnostic("windows-broker:pause-after-execution-attempted\n");
 #elif defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_MKDIR)
   diagnostic("windows-broker:pause-after-execution-mkdir\n");
-#else
+#elif defined(OP_WINDOWS_PAUSE_AFTER_EXECUTION_CREATED)
   diagnostic("windows-broker:pause-after-execution-created\n");
+#elif defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED)
+  diagnostic("windows-broker:pause-after-admission-grant-attempted\n");
+#elif defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANTED)
+  diagnostic("windows-broker:pause-after-admission-granted\n");
+#elif defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED)
+  diagnostic("windows-broker:pause-after-admission-job-attempted\n");
+#else
+  diagnostic("windows-broker:pause-after-admission-launch-created\n");
 #endif
   if (input == NULL || input == INVALID_HANDLE_VALUE ||
       !ReadFile(input, &resumed, 1U, &received, NULL) || received != 1U)
@@ -3607,6 +6166,404 @@ static int create_profile(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
   return 1;
 }
 
+static int retain_admission_recovery_object(
+    ROOT_CUSTODY *root, const WCHAR *path, WORD path_units, int directory,
+    RETAINED_OBJECT *object, const CHAR *domain, BYTE role,
+    const BYTE expected_binding[32],
+    PSECURITY_DESCRIPTOR original_reference,
+    DWORD original_reference_length) {
+  WCHAR expected_path[PATH_MAX_UNITS + 1U];
+  WCHAR final_path[PATH_MAX_UNITS + 1U];
+  WCHAR volume[] = L"C:\\";
+  BY_HANDLE_FILE_INFORMATION basic;
+  LARGE_INTEGER size;
+  DWORD final_units;
+  DWORD access = GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL |
+                 WRITE_DAC | DELETE | (directory ? GENERIC_WRITE : 0U);
+  DWORD flags = FILE_FLAG_OPEN_REPARSE_POINT |
+                (directory ? FILE_FLAG_BACKUP_SEMANTICS
+                           : FILE_FLAG_SEQUENTIAL_SCAN);
+  PSECURITY_DESCRIPTOR observed = NULL;
+  DWORD observed_length = 0U;
+  PSECURITY_DESCRIPTOR original_template = NULL;
+  BYTE reconstructed_binding[32];
+  int valid = 0;
+  copy_bytes(expected_path, path, ((DWORD)path_units + 1U) * 2U);
+  zero_bytes(object, sizeof(*object));
+  object->handle = INVALID_HANDLE_VALUE;
+  volume[0] = expected_path[4];
+  if (GetDriveTypeW(volume) != DRIVE_FIXED) goto done;
+  object->handle = CreateFileW(expected_path, access, FILE_SHARE_READ, NULL,
+                               OPEN_EXISTING, flags, NULL);
+  if (object->handle == INVALID_HANDLE_VALUE ||
+      !GetFileInformationByHandleEx(object->handle, FileIdInfo, &object->id,
+                                    sizeof(object->id)) ||
+      !GetFileInformationByHandle(object->handle, &basic))
+    goto done;
+  final_units = GetFinalPathNameByHandleW(object->handle, final_path,
+                                         PATH_MAX_UNITS + 1U,
+                                         FILE_NAME_NORMALIZED |
+                                             VOLUME_NAME_DOS);
+  if (final_units != path_units || final_units > PATH_MAX_UNITS ||
+      !wide_equal(final_path, expected_path) || basic.nNumberOfLinks != 1U ||
+      !!(basic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != !!directory ||
+      (basic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U ||
+      !capture_any_security(root, object->handle, &observed,
+                            &observed_length))
+    goto done;
+  if (original_reference != NULL) {
+    object->security = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                 original_reference_length);
+    if (object->security == NULL) goto done;
+    copy_bytes(object->security, original_reference,
+               original_reference_length);
+    object->security_length = original_reference_length;
+  } else {
+    if (!file_security(root, &original_template) ||
+        !compose_stored_file_security(root, observed, original_template,
+                                      &object->security,
+                                      &object->security_length))
+      goto done;
+  }
+  object->path_units = path_units;
+  copy_bytes(object->path, expected_path, ((DWORD)path_units + 1U) * 2U);
+  object->attributes = basic.dwFileAttributes;
+  object->links = basic.nNumberOfLinks;
+  if (directory) {
+    object->size = 0U;
+  } else {
+    if (!GetFileSizeEx(object->handle, &size) || size.QuadPart <= 0 ||
+        (ULONGLONG)size.QuadPart > EXECUTION_MAX_FILE_BYTES)
+      goto done;
+    object->size = (ULONGLONG)size.QuadPart;
+  }
+  if (!exact_unnamed_stream(root, object) ||
+      !retained_object_binding(root, object, domain, role,
+                               reconstructed_binding) ||
+      (expected_binding != NULL &&
+       !equal_bytes(reconstructed_binding, expected_binding, 32U)))
+    goto done;
+  copy_bytes(object->binding, reconstructed_binding, 32U);
+  valid = 1;
+done:
+  if (observed != NULL && !HeapFree(GetProcessHeap(), 0U, observed))
+    root->resource_ambiguous = 1;
+  if (original_template != NULL && LocalFree(original_template) != NULL)
+    root->resource_ambiguous = 1;
+  if (!valid) (void)release_retained_object(root, object);
+  return valid && !root->resource_ambiguous;
+}
+
+static int admission_recovery_root_binding(ROOT_CUSTODY *root,
+                                           const PROFILE_IDENTITY *identity,
+                                           EXECUTION_CUSTODY *execution) {
+  BYTE root_object_binding[32];
+  DWORD domain_bytes =
+      (DWORD)ascii_length("op.windows-execution-root/v1") + 1U;
+  DWORD length = domain_bytes + 32U + 32U + 32U + 96U + 96U;
+  BYTE *material = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, length);
+  DWORD cursor = 0U;
+  if (material == NULL ||
+      !retained_object_binding(root, &execution->root,
+                               "op.windows-execution-root-object/v1", 0U,
+                               root_object_binding)) {
+    if (material != NULL && !HeapFree(GetProcessHeap(), 0U, material))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  copy_bytes(material + cursor, "op.windows-execution-root/v1", domain_bytes);
+  cursor += domain_bytes;
+  copy_bytes(material + cursor, identity->token, 32U); cursor += 32U;
+  copy_bytes(material + cursor, execution->parent.binding, 32U); cursor += 32U;
+  copy_bytes(material + cursor, root_object_binding, 32U); cursor += 32U;
+  copy_bytes(material + cursor, execution->source_bindings, 96U); cursor += 96U;
+  copy_bytes(material + cursor, execution->target_bindings, 96U);
+  if (!sha256(material, length, execution->root_binding,
+              &root->resource_ambiguous)) {
+    if (!HeapFree(GetProcessHeap(), 0U, material))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, material))
+    root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+}
+
+static int admission_recovery_execution(ROOT_CUSTODY *root,
+                                        PROFILE_IDENTITY *identity,
+                                        EXECUTION_CUSTODY *execution) {
+  WCHAR target_path[PATH_MAX_UNITS + 1U];
+  WORD target_units;
+  BYTE expected_parent[32];
+  BYTE expected_root[32];
+  copy_bytes(expected_parent, execution->parent.binding, 32U);
+  copy_bytes(expected_root, execution->root_binding, 32U);
+  if (!retain_exact_object(root, execution->parent.path,
+                           execution->parent.path_units, 1, 0, 0,
+                           &execution->parent,
+                           "op.windows-execution-parent/v1", 0U) ||
+      !equal_bytes(execution->parent.binding, expected_parent, 32U)) {
+    diagnostic("windows-broker:admission-recovery-parent-object\n");
+    return 0;
+  }
+  if (!retain_admission_recovery_object(
+          root, execution->root.path, execution->root.path_units, 1,
+          &execution->root, "op.windows-execution-root-object/v1", 0U,
+          NULL, NULL, 0U)) {
+    diagnostic("windows-broker:admission-recovery-root-object\n");
+    return 0;
+  }
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U) {
+    if (!execution_target_path(&execution->root, role, target_path,
+                               &target_units) ||
+        !retain_admission_recovery_object(
+            root, target_path, target_units, 0, &execution->targets[role],
+            "op.windows-execution-target/v1", role,
+            execution->target_bindings[role], NULL, 0U)) {
+      diagnostic("windows-broker:admission-recovery-target-object\n");
+      return 0;
+    }
+  }
+  if (!directory_fixed_census(root, &execution->root) ||
+      !admission_recovery_root_binding(root, identity, execution) ||
+      !equal_bytes(execution->root_binding, expected_root, 32U)) {
+    diagnostic("windows-broker:admission-recovery-root-binding\n");
+    diagnostic_security_header("windows-broker:recovery-root-security:",
+                               execution->root.security);
+    diagnostic_security_header("windows-broker:recovery-target-security:",
+                               execution->targets[0].security);
+    diagnostic_security_header("windows-broker:recovery-parent-security:",
+                               execution->parent.security);
+    return 0;
+  }
+  return 1;
+}
+
+static int admission_recovery_descriptor_state(
+    ROOT_CUSTODY *root, const EXECUTION_CUSTODY *execution,
+    const ADMISSION_PLAN *plan, BYTE phase) {
+  const RETAINED_OBJECT *objects[4] = {
+    &execution->root, &execution->targets[0], &execution->targets[1],
+    &execution->targets[2]
+  };
+  if (phase < ADMISSION_GRANT_ATTEMPTED ||
+      phase > ADMISSION_REVOKE_ATTEMPTED)
+    return 0;
+  for (DWORD index = 0U; index < 4U; index += 1U) {
+    PSECURITY_DESCRIPTOR observed = NULL;
+    DWORD observed_length = 0U;
+    int original;
+    int granted;
+    if (!OP_ADMISSION_CAPTURE_SECURITY(root, objects[index]->handle,
+                                       &observed, &observed_length))
+      return 0;
+    original = observed_length == objects[index]->security_length &&
+               equal_bytes(observed, objects[index]->security,
+                           observed_length);
+    granted = observed_length == plan->grant_security_length &&
+              equal_bytes(observed, plan->grant_security, observed_length);
+    if (!HeapFree(GetProcessHeap(), 0U, observed))
+      root->resource_ambiguous = 1;
+    if (!original && !granted)
+      return 0;
+  }
+  return !root->resource_ambiguous;
+}
+
+static int admission_scratch_absent(ROOT_CUSTODY *root,
+                                    const PROFILE_IDENTITY *identity) {
+  WCHAR path[1200];
+  WCHAR hex[65];
+  WCHAR final_path[1200];
+  DWORD cursor = 0U;
+  DWORD final_units;
+  HANDLE file = INVALID_HANDLE_VALUE;
+  BY_HANDLE_FILE_INFORMATION basic;
+  LARGE_INTEGER size;
+  BYTE expected[32];
+  BYTE observed[32];
+  DWORD read = 0U;
+  FILE_DISPOSITION_INFO disposition;
+  DWORD error;
+  hex_token(identity->token, hex);
+  if (!append_wide(path, 1200U, &cursor, identity->folder) ||
+      !append_wide(path, 1200U, &cursor, L"\\orch6-admission-") ||
+      !append_wide(path, 1200U, &cursor, hex) ||
+      !append_wide(path, 1200U, &cursor, L".probe"))
+    return 0;
+  file = CreateFileW(path, GENERIC_READ | DELETE | SYNCHRONIZE, 0U, NULL,
+                     OPEN_EXISTING,
+                     FILE_FLAG_OPEN_REPARSE_POINT |
+                         FILE_FLAG_SEQUENTIAL_SCAN,
+                     NULL);
+  if (file == INVALID_HANDLE_VALUE) {
+    error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+  }
+  final_units = GetFinalPathNameByHandleW(file, final_path, 1200U,
+                                         FILE_NAME_NORMALIZED |
+                                             VOLUME_NAME_DOS);
+  for (DWORD index = 0U; index < 32U; index += 1U)
+    expected[index] = (BYTE)(identity->token[index] ^ 0xa5U);
+  if (final_units != cursor || final_units >= 1200U ||
+      !wide_equal(final_path, path) ||
+      !GetFileInformationByHandle(file, &basic) ||
+      basic.nNumberOfLinks != 1U ||
+      (basic.dwFileAttributes &
+       (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0U ||
+      !GetFileSizeEx(file, &size) || size.QuadPart != 32 ||
+      !ReadFile(file, observed, sizeof(observed), &read, NULL) ||
+      read != sizeof(observed) ||
+      !equal_bytes(expected, observed, sizeof(expected)))
+    goto failed;
+  disposition.DeleteFile = TRUE;
+  if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                  sizeof(disposition)) ||
+      !CloseHandle(file))
+    return 0;
+  file = INVALID_HANDLE_VALUE;
+  return GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES &&
+         (GetLastError() == ERROR_FILE_NOT_FOUND ||
+          GetLastError() == ERROR_PATH_NOT_FOUND);
+failed:
+  if (file != INVALID_HANDLE_VALUE && !CloseHandle(file))
+    root->resource_ambiguous = 1;
+  return 0;
+}
+
+static int admission_recovery_job(ROOT_CUSTODY *root,
+                                  const ADMISSION_CUSTODY *admission,
+                                  const ADMISSION_PLAN *plan, BYTE phase) {
+  HANDLE job;
+  DWORD error;
+  if (phase < ADMISSION_JOB_ATTEMPTED) {
+    job = OpenJobObjectW(JOB_OBJECT_QUERY, FALSE, admission->job_name);
+    error = GetLastError();
+    if (job != NULL) {
+      if (!CloseHandle(job)) root->resource_ambiguous = 1;
+      return 0;
+    }
+    return error == ERROR_FILE_NOT_FOUND;
+  }
+  job = OpenJobObjectW(JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE, FALSE,
+                       admission->job_name);
+  if (job == NULL) return GetLastError() == ERROR_FILE_NOT_FOUND;
+  if (!verify_admission_job(root, job, plan, 0xffffffffU, 0U)) {
+    if (!CloseHandle(job)) root->resource_ambiguous = 1;
+    return 0;
+  }
+  return terminate_admission_job(root, &job, admission, plan);
+}
+
+static __attribute__((noinline)) int recover_admission(
+    ROOT_CUSTODY *root, JOURNAL_GROUP *group) {
+  PROFILE_IDENTITY *identity = &group->identity;
+  EXECUTION_CUSTODY *execution = group->execution;
+  ADMISSION_CUSTODY *admission = &group->admission;
+  ADMISSION_PLAN *plan = NULL;
+  HANDLE folder = NULL;
+  BYTE expected_folder_binding[32];
+  BYTE expected_grant_digest[32];
+  BYTE expected_launch_digest[32];
+  BYTE phase = admission->phase;
+  int revoke_durable = phase == ADMISSION_REVOKE_ATTEMPTED;
+  int clean = 1;
+  int authenticated = 0;
+  if (phase == 0U || phase == ADMISSION_ABSENCE_PROVED)
+    return OP_ADMISSION_CLEAR_PENDING(root, identity);
+  if (execution == NULL || execution->phase != EXECUTION_CREATED)
+    return 0;
+  copy_bytes(expected_folder_binding, identity->folder_binding, 32U);
+  copy_bytes(expected_grant_digest, admission->grant_digest, 32U);
+  copy_bytes(expected_launch_digest, admission->launch_digest, 32U);
+  plan = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*plan));
+  if (plan == NULL) {
+    diagnostic("windows-broker:admission-recovery-plan-allocation\n");
+    goto done;
+  }
+  if (!OP_ADMISSION_CENSUS_PROFILE(root, identity, 0, 1)) {
+    diagnostic("windows-broker:admission-recovery-profile-census\n");
+    goto done;
+  }
+  if (!OP_ADMISSION_BIND_FOLDER(root, identity, &folder) ||
+      !equal_bytes(identity->folder_binding, expected_folder_binding, 32U)) {
+    diagnostic("windows-broker:admission-recovery-folder\n");
+    goto done;
+  }
+  if (!OP_ADMISSION_RECOVERY_EXECUTION(root, identity, execution)) {
+    diagnostic("windows-broker:admission-recovery-execution\n");
+    goto done;
+  }
+  if (!OP_ADMISSION_PLAN_DIGEST(root, identity, execution, admission, plan)) {
+    diagnostic("windows-broker:admission-recovery-plan\n");
+    goto done;
+  }
+  if (!equal_bytes(admission->grant_digest, expected_grant_digest, 32U)) {
+    diagnostic("windows-broker:admission-recovery-grant-digest\n");
+    goto done;
+  }
+  if (!equal_bytes(admission->launch_digest, expected_launch_digest, 32U)) {
+    diagnostic("windows-broker:admission-recovery-launch-digest\n");
+    goto done;
+  }
+  if (!OP_ADMISSION_RECOVERY_DESCRIPTORS(root, execution, plan, phase)) {
+    diagnostic("windows-broker:admission-recovery-descriptors\n");
+    goto done;
+  }
+  authenticated = 1;
+  if (!OP_ADMISSION_CLEAR_PENDING(root, identity)) {
+    diagnostic("windows-broker:admission-recovery-clear-pending\n");
+    goto done;
+  }
+  if (!revoke_durable) {
+    if (OP_ADMISSION_PERSIST(root, identity, admission,
+                             ADMISSION_REVOKE_ATTEMPTED))
+      revoke_durable = 1;
+    else {
+      diagnostic("windows-broker:admission-recovery-revoke-record\n");
+      clean = 0;
+    }
+  }
+  if (!OP_ADMISSION_RECOVERY_JOB(root, admission, plan, phase)) clean = 0;
+  if (!OP_ADMISSION_SET_SECURITY(root, &execution->root,
+                                 execution->root.security,
+                                 execution->root.security_length))
+    clean = 0;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (!OP_ADMISSION_SET_SECURITY(root, &execution->targets[role],
+                                   execution->targets[role].security,
+                                   execution->targets[role].security_length))
+      clean = 0;
+  if (clean &&
+      (!OP_ADMISSION_VERIFY_OBJECT(root, &execution->root,
+                                   "op.windows-execution-root-object/v1", 0U,
+                                   execution->root.binding) ||
+       !OP_ADMISSION_CENSUS(root, &execution->root)))
+    clean = 0;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    if (clean &&
+        !OP_ADMISSION_VERIFY_OBJECT(
+            root, &execution->targets[role],
+            "op.windows-execution-target/v1", role,
+            execution->target_bindings[role]))
+      clean = 0;
+  if (clean && !OP_ADMISSION_SCRATCH_ABSENT(root, identity)) clean = 0;
+  if (!revoke_durable || !clean ||
+      !OP_ADMISSION_CLEAR_PENDING(root, identity) ||
+      !OP_ADMISSION_PERSIST(root, identity, admission,
+                            ADMISSION_ABSENCE_PROVED))
+    clean = 0;
+done:
+  if (folder != NULL && folder != INVALID_HANDLE_VALUE && !CloseHandle(folder))
+    root->resource_ambiguous = 1;
+  if (plan != NULL) {
+    if (!OP_ADMISSION_RELEASE_PLAN(root, plan)) clean = 0;
+    if (!HeapFree(GetProcessHeap(), 0U, plan)) clean = 0;
+  }
+  if (!authenticated) clean = 0;
+  return clean && !root->resource_ambiguous;
+}
+
 static int recover_groups(ROOT_CUSTODY *root, JOURNAL_GROUP *groups, DWORD count) {
   DWORD index;
   int census_result = complete_profile_census(root, groups, count);
@@ -3620,6 +6577,17 @@ static int recover_groups(ROOT_CUSTODY *root, JOURNAL_GROUP *groups, DWORD count
     PROFILE_IDENTITY *identity = &groups[index].identity;
     EXECUTION_CUSTODY *execution = groups[index].execution;
     HANDLE folder_handle = NULL;
+    if (!recover_admission(root, &groups[index]) ||
+        (groups[index].admission.phase != 0U &&
+         groups[index].admission.phase != ADMISSION_ABSENCE_PROVED)) {
+      if (execution != NULL) {
+        (void)release_execution(root, execution);
+        if (!HeapFree(GetProcessHeap(), 0U, execution))
+          root->resource_ambiguous = 1;
+        groups[index].execution = NULL;
+      }
+      return -1;
+    }
     if (execution != NULL && execution->phase != EXECUTION_ABSENCE_PROVED) {
       if (!cleanup_execution(root, identity, execution)) {
         (void)release_execution(root, execution);
@@ -3862,10 +6830,32 @@ static __declspec(noreturn) void serve(void) {
                       frame.operation, 0, &state);
     }
     if (frame.operation == LAUNCH_OPERATION && frame.length == 0U) {
-      if (!send_response(output, LAUNCH_OPERATION, STATUS_NOT_IMPLEMENTED, NULL, 0U))
-        finish_prepared(&root, &identity, execution, &folder_handle, output,
-                        LAUNCH_OPERATION, 0, &state);
-      continue;
+      int admission = OP_BROKER_RUN_ADMISSION(&root, &identity, execution);
+      int clean = admission >= 0;
+      int released;
+      BYTE status;
+      if (clean) clean = OP_BROKER_CLEANUP_EXECUTION(&root, &identity,
+                                                     execution);
+      if (clean) clean = OP_BROKER_CLEANUP_PROFILE(&root, &identity,
+                                                   &folder_handle);
+      state = BROKER_TERMINAL;
+      if (!OP_BROKER_RELEASE_EXECUTION(&root, execution)) clean = 0;
+      if (!HeapFree(GetProcessHeap(), 0U, execution)) clean = 0;
+      released = OP_BROKER_RELEASE_ROOT(&root);
+      if (!clean || !released) {
+        status = STATUS_RECOVERY_REQUIRED;
+      } else if (admission > 0) {
+        status = STATUS_NOT_IMPLEMENTED;
+      } else {
+        status = STATUS_REFUSED;
+      }
+      if (!send_response(output, LAUNCH_OPERATION, status, NULL, 0U))
+        ExitProcess(EXIT_PROTOCOL_REFUSED);
+      ExitProcess(status == STATUS_NOT_IMPLEMENTED
+                      ? EXIT_LIFECYCLE_NOT_IMPLEMENTED
+                      : (status == STATUS_REFUSED
+                             ? EXIT_PROTOCOL_REFUSED
+                             : EXIT_RECOVERY_REQUIRED));
     }
     if (frame.operation == TEARDOWN_OPERATION && frame.length == 0U) {
       BYTE trailing;

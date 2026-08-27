@@ -340,206 +340,298 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
     process.platform === "win32" &&
       process.arch === "x64" &&
       process.env.OP_WINDOWS_APPCONTAINER_DIAGNOSTIC === "1",
-  )("creates, probes, tears down, and recovers without producing authority", async () => {
-    const { extended, root } = await prepareExactRoot();
-    const toolRoot = await mkdtemp(resolve(tmpdir(), "orchestration-windows-profile-tools-"));
-    const executionParent = await mkdtemp(
-      resolve(tmpdir(), "orchestration-windows-execution-parent-"),
-    );
-    const sourceRoot = await mkdtemp(resolve(tmpdir(), "orchestration-windows-sources-"));
-    const runtimeSource = resolve(sourceRoot, "node-source.exe");
-    const rpcSource = resolve(sourceRoot, "rpc-source.mjs");
-    const candidateSource = resolve(sourceRoot, "candidate-source.mjs");
-    await copyFile(process.execPath, runtimeSource);
-    await writeFile(rpcSource, "export default 'rpc';\n");
-    await writeFile(candidateSource, "export default 'candidate';\n");
-    const account = spawnSync("whoami.exe", { encoding: "utf8", windowsHide: true });
-    expect(account.status).toBe(0);
-    for (const path of [executionParent, sourceRoot, runtimeSource, rpcSource, candidateSource]) {
-      for (const args of [
-        [path, "/inheritance:r"],
-        [path, "/grant:r", "SYSTEM:F", `${account.stdout.trim()}:F`],
-        [path, "/setintegritylevel", "M"],
-      ]) {
-        const acl = spawnSync("icacls.exe", args, { encoding: "utf8", windowsHide: true });
-        expect({ args, status: acl.status, stderr: acl.stderr }).toEqual({
-          args,
-          status: 0,
-          stderr: "",
-        });
+  )(
+    "creates, probes, tears down, and recovers without producing authority",
+    async () => {
+      const { extended, root } = await prepareExactRoot();
+      const toolRoot = await mkdtemp(resolve(tmpdir(), "orchestration-windows-profile-tools-"));
+      const executionParent = await mkdtemp(
+        resolve(tmpdir(), "orchestration-windows-execution-parent-"),
+      );
+      const sourceRoot = await mkdtemp(resolve(tmpdir(), "orchestration-windows-sources-"));
+      const runtimeSource = resolve(sourceRoot, "node-source.exe");
+      const rpcSource = resolve(sourceRoot, "rpc-source.mjs");
+      const candidateSource = resolve(sourceRoot, "candidate-source.mjs");
+      await copyFile(process.execPath, runtimeSource);
+      await writeFile(rpcSource, "export default 'rpc';\n");
+      await writeFile(candidateSource, "export default 'candidate';\n");
+      const account = spawnSync("whoami.exe", { encoding: "utf8", windowsHide: true });
+      expect(account.status).toBe(0);
+      for (const path of [executionParent, sourceRoot, runtimeSource, rpcSource, candidateSource]) {
+        for (const args of [
+          [path, "/inheritance:r"],
+          [path, "/grant:r", "SYSTEM:F", `${account.stdout.trim()}:F`],
+          [path, "/setintegritylevel", "M"],
+        ]) {
+          const acl = spawnSync("icacls.exe", args, { encoding: "utf8", windowsHide: true });
+          expect({ args, status: acl.status, stderr: acl.stderr }).toEqual({
+            args,
+            status: 0,
+            stderr: "",
+          });
+        }
       }
-    }
-    const preparePayload = executionPrepare([
-      extended,
-      `\\\\?\\${executionParent}`,
-      `\\\\?\\${runtimeSource}`,
-      `\\\\?\\${rpcSource}`,
-      `\\\\?\\${candidateSource}`,
-    ]);
-    let recoveryProved = false;
-    let activeBroker: ReturnType<typeof spawn> | undefined;
-    try {
-      const verifier = buildVerifier(toolRoot);
-      const pauseAfterAttempted = resolve(toolRoot, "pause-after-attempted.exe");
-      const pauseAfterCreate = resolve(toolRoot, "pause-after-create.exe");
-      const pauseAfterExecutionAttempted = resolve(toolRoot, "pause-after-execution-attempted.exe");
-      const pauseAfterExecutionMkdir = resolve(toolRoot, "pause-after-execution-mkdir.exe");
-      const pauseAfterExecutionCreated = resolve(toolRoot, "pause-after-execution-created.exe");
-      execFileSync(process.execPath, [buildPath, pauseAfterAttempted, "pause-after-attempted"], {
-        windowsHide: true,
-      });
-      execFileSync(process.execPath, [buildPath, pauseAfterCreate, "pause-after-create"], {
-        windowsHide: true,
-      });
-      for (const [output, variant] of [
-        [pauseAfterExecutionAttempted, "pause-after-execution-attempted"],
-        [pauseAfterExecutionMkdir, "pause-after-execution-mkdir"],
-        [pauseAfterExecutionCreated, "pause-after-execution-created"],
-      ] as const) {
-        execFileSync(process.execPath, [buildPath, output, variant], { windowsHide: true });
-      }
-      const first = spawn(imagePath, ["SERVE"], {
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      activeBroker = first;
-      const firstExit = closeProcess(first);
-      const firstDiagnostics: Buffer[] = [];
-      first.stderr.on("data", (chunk: Buffer) => firstDiagnostics.push(chunk));
-      first.stdin.write(frame(1, preparePayload));
-      const prepared = await readResponse(first.stdout);
-      expect(prepared.header[6]).toBe(1);
-      if (prepared.header[7] !== 0) {
-        await firstExit;
-        const acl = spawnSync("icacls.exe", [root], { encoding: "utf8", windowsHide: true });
-        const records = (await readdir(root)).sort();
-        throw new Error(
-          `PREPARE status ${prepared.header[7]}; records ${JSON.stringify(records)}; ` +
-            `diagnostic ${Buffer.concat(firstDiagnostics).toString("utf8")}; ` +
-            `temporary root ACL:\n${acl.stdout}${acl.stderr}`,
-        );
-      }
-      const firstIdentity = assertPreparePayload(prepared.payload);
-      const stableAccount = account.stdout.trim();
-      assertExactStableCustody(executionParent, stableAccount, undefined);
-      assertExactStableCustody(firstIdentity.executionRoot, stableAccount, undefined);
-      expect((await readdir(firstIdentity.executionRoot)).sort()).toEqual([
-        "candidate.mjs",
-        "node.exe",
-        "rpc-runner.mjs",
+      const preparePayload = executionPrepare([
+        extended,
+        `\\\\?\\${executionParent}`,
+        `\\\\?\\${runtimeSource}`,
+        `\\\\?\\${rpcSource}`,
+        `\\\\?\\${candidateSource}`,
       ]);
-      for (const [target, source] of [
-        ["node.exe", runtimeSource],
-        ["rpc-runner.mjs", rpcSource],
-        ["candidate.mjs", candidateSource],
-      ] as const) {
-        const sourceSize = (await stat(source)).size;
-        expect(await sha256File(resolve(firstIdentity.executionRoot, target))).toBe(
-          await sha256File(source),
+      let recoveryProved = false;
+      let activeBroker: ReturnType<typeof spawn> | undefined;
+      try {
+        const verifier = buildVerifier(toolRoot);
+        const pauseAfterAttempted = resolve(toolRoot, "pause-after-attempted.exe");
+        const pauseAfterCreate = resolve(toolRoot, "pause-after-create.exe");
+        const pauseAfterExecutionAttempted = resolve(
+          toolRoot,
+          "pause-after-execution-attempted.exe",
         );
-        assertExactStableCustody(
-          resolve(firstIdentity.executionRoot, target),
-          stableAccount,
-          sourceSize,
-        );
-        const acl = spawnSync("icacls.exe", [resolve(firstIdentity.executionRoot, target)], {
-          encoding: "utf8",
+        const pauseAfterExecutionMkdir = resolve(toolRoot, "pause-after-execution-mkdir.exe");
+        const pauseAfterExecutionCreated = resolve(toolRoot, "pause-after-execution-created.exe");
+        const admissionCrashes = [
+          {
+            executable: resolve(toolRoot, "pause-after-admission-grant-attempted.exe"),
+            marker: "pause-after-admission-grant-attempted",
+            variant: "pause-after-admission-grant-attempted",
+          },
+          {
+            executable: resolve(toolRoot, "pause-after-admission-granted.exe"),
+            marker: "pause-after-admission-granted",
+            variant: "pause-after-admission-granted",
+          },
+          {
+            executable: resolve(toolRoot, "pause-after-admission-job-attempted.exe"),
+            marker: "pause-after-admission-job-attempted",
+            variant: "pause-after-admission-job-attempted",
+          },
+          {
+            executable: resolve(toolRoot, "pause-after-admission-launch-created.exe"),
+            marker: "pause-after-admission-launch-created",
+            variant: "pause-after-admission-launch-created",
+          },
+        ] as const;
+        execFileSync(process.execPath, [buildPath, pauseAfterAttempted, "pause-after-attempted"], {
           windowsHide: true,
         });
-        expect(acl.status).toBe(0);
-        expect(acl.stdout).not.toContain(firstIdentity.sidText);
-      }
-      const executionAcl = spawnSync("icacls.exe", [firstIdentity.executionRoot], {
-        encoding: "utf8",
-        windowsHide: true,
-      });
-      expect(executionAcl.status).toBe(0);
-      expect(executionAcl.stdout).not.toContain(firstIdentity.sidText);
-      first.stdin.write(frame(2));
-      const launch = await readResponse(first.stdout);
-      expect([...launch.header.subarray(6, 12)]).toEqual([2, 78, 0, 0, 0, 0]);
-      expect(launch.payload).toEqual(Buffer.alloc(0));
-      first.stdin.end(frame(3));
-      const teardown = await readResponse(first.stdout);
-      expect([...teardown.header.subarray(6, 12)]).toEqual([3, 0, 0, 0, 0, 0]);
-      expect(await firstExit).toBe(0);
-      activeBroker = undefined;
-      assertNativeAbsence(verifier, firstIdentity);
-
-      for (const crash of [
-        { executable: pauseAfterAttempted, marker: "pause-after-attempted" },
-        { executable: pauseAfterCreate, marker: "pause-after-create" },
-        {
-          executable: pauseAfterExecutionAttempted,
-          marker: "pause-after-execution-attempted",
-        },
-        { executable: pauseAfterExecutionMkdir, marker: "pause-after-execution-mkdir" },
-        { executable: pauseAfterExecutionCreated, marker: "pause-after-execution-created" },
-      ]) {
-        const before = new Set(await readdir(root));
-        const interrupted = spawn(crash.executable, ["SERVE"], {
+        execFileSync(process.execPath, [buildPath, pauseAfterCreate, "pause-after-create"], {
+          windowsHide: true,
+        });
+        for (const [output, variant] of [
+          [pauseAfterExecutionAttempted, "pause-after-execution-attempted"],
+          [pauseAfterExecutionMkdir, "pause-after-execution-mkdir"],
+          [pauseAfterExecutionCreated, "pause-after-execution-created"],
+        ] as const) {
+          execFileSync(process.execPath, [buildPath, output, variant], { windowsHide: true });
+        }
+        for (const crash of admissionCrashes)
+          execFileSync(process.execPath, [buildPath, crash.executable, crash.variant], {
+            windowsHide: true,
+          });
+        const first = spawn(imagePath, ["SERVE"], {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });
-        activeBroker = interrupted;
-        const interruptedExit = closeProcess(interrupted);
-        const paused = waitForDiagnostic(interrupted.stderr, crash.marker);
-        interrupted.stdin.write(frame(1, preparePayload));
-        await paused;
-        expect(interrupted.kill()).toBe(true);
-        await interruptedExit;
+        activeBroker = first;
+        const firstExit = closeProcess(first);
+        const firstDiagnostics: Buffer[] = [];
+        first.stderr.on("data", (chunk: Buffer) => firstDiagnostics.push(chunk));
+        first.stdin.write(frame(1, preparePayload));
+        const prepared = await readResponse(first.stdout);
+        expect(prepared.header[6]).toBe(1);
+        if (prepared.header[7] !== 0) {
+          await firstExit;
+          const acl = spawnSync("icacls.exe", [root], { encoding: "utf8", windowsHide: true });
+          const records = (await readdir(root)).sort();
+          throw new Error(
+            `PREPARE status ${prepared.header[7]}; records ${JSON.stringify(records)}; ` +
+              `diagnostic ${Buffer.concat(firstDiagnostics).toString("utf8")}; ` +
+              `temporary root ACL:\n${acl.stdout}${acl.stderr}`,
+          );
+        }
+        const firstIdentity = assertPreparePayload(prepared.payload);
+        const stableAccount = account.stdout.trim();
+        assertExactStableCustody(executionParent, stableAccount, undefined);
+        assertExactStableCustody(firstIdentity.executionRoot, stableAccount, undefined);
+        expect((await readdir(firstIdentity.executionRoot)).sort()).toEqual([
+          "candidate.mjs",
+          "node.exe",
+          "rpc-runner.mjs",
+        ]);
+        for (const [target, source] of [
+          ["node.exe", runtimeSource],
+          ["rpc-runner.mjs", rpcSource],
+          ["candidate.mjs", candidateSource],
+        ] as const) {
+          const sourceSize = (await stat(source)).size;
+          expect(await sha256File(resolve(firstIdentity.executionRoot, target))).toBe(
+            await sha256File(source),
+          );
+          assertExactStableCustody(
+            resolve(firstIdentity.executionRoot, target),
+            stableAccount,
+            sourceSize,
+          );
+          const acl = spawnSync("icacls.exe", [resolve(firstIdentity.executionRoot, target)], {
+            encoding: "utf8",
+            windowsHide: true,
+          });
+          expect(acl.status).toBe(0);
+          expect(acl.stdout).not.toContain(firstIdentity.sidText);
+        }
+        const executionAcl = spawnSync("icacls.exe", [firstIdentity.executionRoot], {
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        expect(executionAcl.status).toBe(0);
+        expect(executionAcl.stdout).not.toContain(firstIdentity.sidText);
+        first.stdin.write(frame(2));
+        const launch = await readResponse(first.stdout);
+        if (launch.header[7] !== 78) {
+          const records = (await readdir(root)).sort();
+          const executionAcl = spawnSync("icacls.exe", [firstIdentity.executionRoot], {
+            encoding: "utf8",
+            windowsHide: true,
+          });
+          throw new Error(
+            `LAUNCH status ${launch.header[7]}; records ${JSON.stringify(records)}; ` +
+              `diagnostic ${Buffer.concat(firstDiagnostics).toString("utf8")}; ` +
+              `execution ACL:\n${executionAcl.stdout}${executionAcl.stderr}`,
+          );
+        }
+        expect([...launch.header.subarray(6, 12)]).toEqual([2, 78, 0, 0, 0, 0]);
+        expect(launch.payload).toEqual(Buffer.alloc(0));
+        first.stdin.end();
+        expect(await firstExit).toBe(78);
         activeBroker = undefined;
-        const recovered = spawnSync(imagePath, ["RECOVER"], {
-          input: frame(3, profileScope(extended)),
-          windowsHide: true,
-        });
-        expect(recovered.status).toBe(0);
-        expect(recovered.stderr).toEqual(Buffer.alloc(0));
-        const expected = frame(3);
-        expected[5] = 2;
-        expect(recovered.stdout).toEqual(expected);
-        const newUsed = (await readdir(root)).filter(
-          (name) => name.endsWith("-00-used.opwj") && !before.has(name),
-        );
-        expect(newUsed).toHaveLength(1);
-        const token = /^windows-profile-([0-9a-f]{64})-00-used\.opwj$/.exec(newUsed[0]!)?.[1];
-        expect(token).toMatch(/^[0-9a-f]{64}$/);
-        assertNativeAbsence(verifier, await identityFromCreatedRecord(root, token!));
-      }
-      recoveryProved = true;
+        assertNativeAbsence(verifier, firstIdentity);
 
-      const records = (await readdir(root)).sort();
-      expect(records).toHaveLength(44);
-      expect(records.filter((name) => name.endsWith("-00-used.opwj"))).toHaveLength(6);
-      expect(
-        records.filter((name) => name.endsWith("-04-profile-absence-proved.opwj")),
-      ).toHaveLength(6);
-      expect(records.filter((name) => name.endsWith("-00-attempted.opwx"))).toHaveLength(4);
-      expect(records.filter((name) => name.endsWith("-01-created.opwx"))).toHaveLength(2);
-      expect(records.filter((name) => name.endsWith("-02-delete-attempted.opwx"))).toHaveLength(4);
-      expect(records.filter((name) => name.endsWith("-03-absence-proved.opwx"))).toHaveLength(4);
-      expect(records.every((name) => !name.endsWith(".pending"))).toBe(true);
-    } finally {
-      if (
-        activeBroker !== undefined &&
-        activeBroker.exitCode === null &&
-        activeBroker.signalCode === null
-      ) {
-        const exited = closeProcess(activeBroker);
-        activeBroker.kill();
-        await exited;
+        for (const crash of [
+          { executable: pauseAfterAttempted, marker: "pause-after-attempted" },
+          { executable: pauseAfterCreate, marker: "pause-after-create" },
+          {
+            executable: pauseAfterExecutionAttempted,
+            marker: "pause-after-execution-attempted",
+          },
+          { executable: pauseAfterExecutionMkdir, marker: "pause-after-execution-mkdir" },
+          { executable: pauseAfterExecutionCreated, marker: "pause-after-execution-created" },
+        ]) {
+          const before = new Set(await readdir(root));
+          const interrupted = spawn(crash.executable, ["SERVE"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          activeBroker = interrupted;
+          const interruptedExit = closeProcess(interrupted);
+          const paused = waitForDiagnostic(interrupted.stderr, crash.marker);
+          interrupted.stdin.write(frame(1, preparePayload));
+          await paused;
+          expect(interrupted.kill()).toBe(true);
+          await interruptedExit;
+          activeBroker = undefined;
+          const recovered = spawnSync(imagePath, ["RECOVER"], {
+            input: frame(3, profileScope(extended)),
+            windowsHide: true,
+          });
+          expect(recovered.status).toBe(0);
+          expect(recovered.stderr).toEqual(Buffer.alloc(0));
+          const expected = frame(3);
+          expected[5] = 2;
+          expect(recovered.stdout).toEqual(expected);
+          const newUsed = (await readdir(root)).filter(
+            (name) => name.endsWith("-00-used.opwj") && !before.has(name),
+          );
+          expect(newUsed).toHaveLength(1);
+          const token = /^windows-profile-([0-9a-f]{64})-00-used\.opwj$/.exec(newUsed[0]!)?.[1];
+          expect(token).toMatch(/^[0-9a-f]{64}$/);
+          assertNativeAbsence(verifier, await identityFromCreatedRecord(root, token!));
+        }
+        for (const crash of admissionCrashes) {
+          const before = new Set(await readdir(root));
+          const interrupted = spawn(crash.executable, ["SERVE"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          activeBroker = interrupted;
+          const interruptedExit = closeProcess(interrupted);
+          interrupted.stdin.write(frame(1, preparePayload));
+          const prepared = await readResponse(interrupted.stdout);
+          expect(prepared.header[7]).toBe(0);
+          const interruptedIdentity = assertPreparePayload(prepared.payload);
+          const paused = waitForDiagnostic(interrupted.stderr, crash.marker);
+          interrupted.stdin.write(frame(2));
+          await paused;
+          expect(interrupted.kill()).toBe(true);
+          await interruptedExit;
+          activeBroker = undefined;
+          const recovered = spawnSync(imagePath, ["RECOVER"], {
+            input: frame(3, profileScope(extended)),
+            windowsHide: true,
+            timeout: 60_000,
+          });
+          expect({ status: recovered.status, stderr: recovered.stderr.toString("utf8") }).toEqual({
+            status: 0,
+            stderr: "",
+          });
+          const expected = frame(3);
+          expected[5] = 2;
+          expect(recovered.stdout).toEqual(expected);
+          const newUsed = (await readdir(root)).filter(
+            (name) => name.endsWith("-00-used.opwj") && !before.has(name),
+          );
+          expect(newUsed).toHaveLength(1);
+          assertNativeAbsence(verifier, interruptedIdentity);
+        }
+        recoveryProved = true;
+
+        const records = (await readdir(root)).sort();
+        expect(records).toHaveLength(105);
+        expect(records.filter((name) => name.endsWith("-00-used.opwj"))).toHaveLength(10);
+        expect(
+          records.filter((name) => name.endsWith("-04-profile-absence-proved.opwj")),
+        ).toHaveLength(10);
+        expect(records.filter((name) => name.endsWith("-00-attempted.opwx"))).toHaveLength(8);
+        expect(records.filter((name) => name.endsWith("-01-created.opwx"))).toHaveLength(6);
+        expect(records.filter((name) => name.endsWith("-02-delete-attempted.opwx"))).toHaveLength(
+          8,
+        );
+        expect(records.filter((name) => name.endsWith("-03-absence-proved.opwx"))).toHaveLength(8);
+        for (const [suffix, count] of [
+          ["-00-grant-attempted.opwl", 5],
+          ["-01-granted.opwl", 4],
+          ["-02-job-attempted.opwl", 3],
+          ["-03-launch-attempted.opwl", 2],
+          ["-04-admission-proved.opwl", 1],
+          ["-05-revoke-attempted.opwl", 5],
+          ["-06-absence-proved.opwl", 5],
+        ] as const) {
+          expect(records.filter((name) => name.endsWith(suffix))).toHaveLength(count);
+        }
+        expect(records.every((name) => !name.endsWith(".pending"))).toBe(true);
+      } finally {
+        if (
+          activeBroker !== undefined &&
+          activeBroker.exitCode === null &&
+          activeBroker.signalCode === null
+        ) {
+          const exited = closeProcess(activeBroker);
+          activeBroker.kill();
+          await exited;
+        }
+        if (!recoveryProved) {
+          const finalRecovery = spawnSync(imagePath, ["RECOVER"], {
+            input: frame(3, profileScope(extended)),
+            windowsHide: true,
+          });
+          recoveryProved = finalRecovery.status === 0;
+        }
+        if (recoveryProved) await rm(root, { force: true, recursive: true });
+        await rm(toolRoot, { force: true, recursive: true });
+        if (recoveryProved) await rm(executionParent, { force: true, recursive: true });
+        await rm(sourceRoot, { force: true, recursive: true });
       }
-      if (!recoveryProved) {
-        const finalRecovery = spawnSync(imagePath, ["RECOVER"], {
-          input: frame(3, profileScope(extended)),
-          windowsHide: true,
-        });
-        recoveryProved = finalRecovery.status === 0;
-      }
-      if (recoveryProved) await rm(root, { force: true, recursive: true });
-      await rm(toolRoot, { force: true, recursive: true });
-      if (recoveryProved) await rm(executionParent, { force: true, recursive: true });
-      await rm(sourceRoot, { force: true, recursive: true });
-    }
-  });
+    },
+    300_000,
+  );
 });

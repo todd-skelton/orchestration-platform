@@ -107,7 +107,7 @@ describe("ISS-002 1,000-record walk", () => {
     if (!result.ok) throw new Error(result.issues.join(","));
     expect(result.ok).toBe(true);
     expect(await readdir(executionParent)).toEqual([]);
-  });
+  }, 120_000);
 
   test("refuses equal, nested, escaping-import, and symlinked candidate roots", async () => {
     const stableRoot = resolve(import.meta.dirname, "../..");

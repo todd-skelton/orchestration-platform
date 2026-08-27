@@ -197,9 +197,9 @@ describe("private Windows isolation broker bootstrap", () => {
     expect(image.subarray(peOffset, peOffset + 4).toString("binary")).toBe("PE\0\0");
     expect(image.readUInt16LE(peOffset + 4)).toBe(0x8664);
     expect(image.readUInt16LE(peOffset + 24)).toBe(0x20b);
-    expect(image.byteLength).toBe(54272);
+    expect(image.byteLength).toBe(90112);
     expect(createHash("sha256").update(image).digest("hex")).toBe(
-      "65d823b8e50ae7ea2c36e229728eef199596c6d6a73d3adc289e7fc148eba292",
+      "712f0280cfbda59582849efc441bc458fcac33ee69857ae764efd969d75fa504",
     );
     const census = peCensus(image);
     expect(census).toEqual({
@@ -212,7 +212,12 @@ describe("private Windows isolation broker bootstrap", () => {
           symbols: [
             "CloseHandle",
             "CreateDirectoryW",
+            "CreateEventW",
             "CreateFileW",
+            "CreateJobObjectW",
+            "CreatePipe",
+            "CreateProcessW",
+            "DeleteProcThreadAttributeList",
             "ExitProcess",
             "FindClose",
             "FindFirstFileW",
@@ -224,21 +229,34 @@ describe("private Windows isolation broker bootstrap", () => {
             "GetCurrentProcess",
             "GetCurrentThread",
             "GetDriveTypeW",
+            "GetExitCodeProcess",
             "GetFileAttributesW",
             "GetFileInformationByHandle",
             "GetFileInformationByHandleEx",
             "GetFileSizeEx",
             "GetFinalPathNameByHandleW",
+            "GetHandleInformation",
             "GetLastError",
+            "GetModuleFileNameW",
             "GetProcessHeap",
             "GetStdHandle",
+            "GetWindowsDirectoryW",
             "HeapAlloc",
             "HeapFree",
+            "InitializeProcThreadAttributeList",
+            "IsProcessInJob",
             "LocalFree",
+            "OpenJobObjectW",
+            "QueryInformationJobObject",
             "ReadFile",
             "SetFileInformationByHandle",
             "SetFilePointer",
+            "SetHandleInformation",
+            "SetInformationJobObject",
             "SetLastError",
+            "TerminateJobObject",
+            "UpdateProcThreadAttribute",
+            "WaitForSingleObject",
             "WriteFile",
           ],
         },
@@ -258,23 +276,33 @@ describe("private Windows isolation broker bootstrap", () => {
         {
           library: "ADVAPI32.dll",
           symbols: [
+            "AccessCheck",
             "AllocateAndInitializeSid",
             "ConvertSidToStringSidW",
             "ConvertStringSecurityDescriptorToSecurityDescriptorW",
             "CopySid",
+            "DuplicateTokenEx",
             "EqualSid",
             "FreeSid",
             "GetAce",
             "GetAclInformation",
             "GetLengthSid",
             "GetSecurityDescriptorControl",
+            "GetSecurityDescriptorDacl",
+            "GetSecurityDescriptorGroup",
             "GetSecurityDescriptorLength",
+            "GetSecurityDescriptorOwner",
+            "GetSecurityDescriptorSacl",
             "GetSecurityInfo",
             "GetTokenInformation",
+            "ImpersonateLoggedOnUser",
             "IsValidSid",
             "MakeSelfRelativeSD",
+            "MapGenericMask",
             "OpenProcessToken",
             "OpenThreadToken",
+            "RevertToSelf",
+            "SetKernelObjectSecurity",
           ],
         },
         { library: "ole32.dll", symbols: ["CoTaskMemFree"] },
@@ -292,13 +320,13 @@ describe("private Windows isolation broker bootstrap", () => {
           ],
         },
       ],
-      relocations: { rva: expect.any(Number), size: 48 },
+      relocations: { rva: expect.any(Number), size: 64 },
     });
     expect(census.dllCharacteristics & 0x160).toBe(0x160);
     expect(census.importDirectory.rva).toBeGreaterThan(0);
     expect(census.relocations.rva).toBeGreaterThan(0);
     const strings = image.toString("latin1");
-    for (const forbidden of ["cmd.exe", "powershell", "CreateProcess", "ShellExecute", "WinExec"])
+    for (const forbidden of ["cmd.exe", "powershell", "ShellExecute", "WinExec"])
       expect(strings).not.toContain(forbidden);
   });
 
@@ -307,8 +335,17 @@ describe("private Windows isolation broker bootstrap", () => {
     expect([...source.matchAll(/wide_equal\(mode, ([a-z_]+)\)/g)].map((match) => match[1])).toEqual(
       ["serve_mode", "recover_mode"],
     );
-    for (const forbidden of ["system(", "CreateProcess", "ShellExecute", "WinExec", "LoadLibrary"])
+    for (const forbidden of [
+      "system(",
+      "ShellExecute",
+      "WinExec",
+      "LoadLibrary",
+      "IsTokenRestricted",
+      "TokenHasRestrictions",
+    ])
       expect(source).not.toContain(forbidden);
+    expect(source.match(/\bCreateProcessW\(/g)).toHaveLength(2);
+    expect(source).not.toContain("ResumeThread");
     expect(source).toContain('#error "windows-isolation-broker.c is Windows-only"');
     expect(source).toContain('#error "windows-isolation-broker.c requires X64"');
   });
@@ -324,9 +361,132 @@ describe("private Windows isolation broker bootstrap", () => {
     expect(fixture.indexOf("#define NetworkIsolationFreeAppContainers")).toBeLessThan(
       fixture.indexOf("#include"),
     );
-    for (const forbidden of ["receipt", "promotion", "certification", "CreateProcess"])
+    expect(fixture).toContain("OP_WINDOWS_ADMISSION_OS_FIXTURE");
+    for (const forbidden of ["receipt", "promotion", "certification"])
       expect(fixture).not.toContain(forbidden);
   });
+
+  test.runIf(process.platform === "win32")(
+    "executes compiled admission transition and hostile-buffer mutants",
+    async () => {
+      const root = await mkdtemp(resolve(tmpdir(), "orchestration-windows-admission-fixture-"));
+      roots.push(root);
+      const object = resolve(root, "admission-fixture.obj");
+      const executable = resolve(root, "admission-fixture.exe");
+      execFileSync(
+        clangPath,
+        [
+          "/nologo",
+          "/c",
+          "/TC",
+          "/std:c11",
+          "/W4",
+          "/WX",
+          "/O1",
+          "/Oi-",
+          "/Gy",
+          "/Gs9999999",
+          "/clang:-fno-builtin",
+          "/clang:-Wno-unused-function",
+          "/GS-",
+          "/Zl",
+          "/Brepro",
+          "/DUNICODE",
+          "/D_UNICODE",
+          "/DOP_WINDOWS_ADMISSION_FIXTURE",
+          `/Fo${object}`,
+          fixturePath,
+        ],
+        { windowsHide: true },
+      );
+      execFileSync(
+        linkerPath,
+        [
+          "/nologo",
+          `/out:${executable}`,
+          "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+          "/entry:fixture_entry",
+          "/subsystem:console",
+          "/machine:x64",
+          "/nodefaultlib",
+          "/dynamicbase",
+          "/nxcompat",
+          "/highentropyva",
+          "/Brepro",
+          "/opt:ref",
+          object,
+          ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+        ],
+        { windowsHide: true },
+      );
+      expect(spawnSync(executable, [], { windowsHide: true })).toMatchObject({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.alloc(0),
+      });
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
+    "executes exact-source fake-OS admission and recovery mutants",
+    async () => {
+      const root = await mkdtemp(resolve(tmpdir(), "orchestration-windows-admission-os-"));
+      roots.push(root);
+      const object = resolve(root, "admission-os-fixture.obj");
+      const executable = resolve(root, "admission-os-fixture.exe");
+      execFileSync(
+        clangPath,
+        [
+          "/nologo",
+          "/c",
+          "/TC",
+          "/std:c11",
+          "/W4",
+          "/WX",
+          "/O1",
+          "/Oi-",
+          "/Gy",
+          "/Gs9999999",
+          "/clang:-fno-builtin",
+          "/clang:-Wno-unused-function",
+          "/GS-",
+          "/Zl",
+          "/Brepro",
+          "/DUNICODE",
+          "/D_UNICODE",
+          "/DOP_WINDOWS_ADMISSION_OS_FIXTURE",
+          `/Fo${object}`,
+          fixturePath,
+        ],
+        { windowsHide: true },
+      );
+      execFileSync(
+        linkerPath,
+        [
+          "/nologo",
+          `/out:${executable}`,
+          "/libpath:C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64",
+          "/entry:fixture_entry",
+          "/subsystem:console",
+          "/machine:x64",
+          "/nodefaultlib",
+          "/dynamicbase",
+          "/nxcompat",
+          "/highentropyva",
+          "/Brepro",
+          "/opt:ref",
+          object,
+          ...sdkLibraries.map((library) => library.slice(library.lastIndexOf("/") + 1)),
+        ],
+        { windowsHide: true },
+      );
+      expect(spawnSync(executable, [], { windowsHide: true })).toMatchObject({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.alloc(0),
+      });
+    },
+  );
 
   test.runIf(process.platform === "win32")(
     "executes raw target census cardinality and unrelated duplicate mutants",
@@ -532,6 +692,46 @@ describe("private Windows isolation broker bootstrap", () => {
           });
           expect({ phase, fault, status: result.status, stderr: result.stderr }).toEqual({
             phase,
+            fault,
+            status: 0,
+            stderr: Buffer.alloc(0),
+          });
+          const names = await readdir(durableRoot);
+          expect(names.filter((name) => name.endsWith(".pending"))).toEqual([]);
+          for (const name of names) await rm(resolve(durableRoot, name));
+        }
+      }
+      const admissionTransitions: ReadonlyArray<readonly [number, number]> = [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+        [3, 4],
+        [4, 5],
+        [1, 6],
+        [2, 6],
+        [3, 6],
+        [4, 6],
+        [5, 6],
+        [6, 7],
+      ];
+      for (const [predecessor, target] of admissionTransitions) {
+        for (let fault = 1; fault <= 13; fault += 1) {
+          const result = spawnSync(faultExecutable, ["fault-admission-publication"], {
+            input: Buffer.concat([
+              Buffer.from([predecessor, target, fault]),
+              brokerFrame(1, profileScope(`\\\\?\\${durableRoot}`)),
+            ]),
+            windowsHide: true,
+          });
+          expect({
+            predecessor,
+            target,
+            fault,
+            status: result.status,
+            stderr: result.stderr,
+          }).toEqual({
+            predecessor,
+            target,
             fault,
             status: 0,
             stderr: Buffer.alloc(0),
@@ -787,6 +987,13 @@ describe("private Windows isolation broker bootstrap", () => {
           secondStatus: 0,
         },
         {
+          scenario: "lifecycle-clean",
+          input: Buffer.concat([prepare, brokerFrame(2)]),
+          exit: 78,
+          secondStatus: 78,
+          admission: true,
+        },
+        {
           scenario: "lifecycle-cleanup-failure",
           input: prepare,
           exit: 70,
@@ -804,17 +1011,37 @@ describe("private Windows isolation broker bootstrap", () => {
           exit: 70,
           secondStatus: undefined,
         },
+        {
+          scenario: "lifecycle-admission-ambiguous",
+          input: Buffer.concat([prepare, brokerFrame(2)]),
+          exit: 70,
+          secondStatus: 70,
+          ambiguousAdmission: true,
+        },
+        {
+          scenario: "lifecycle-admission-refused",
+          input: Buffer.concat([prepare, brokerFrame(2)]),
+          exit: 65,
+          secondStatus: 65,
+          admission: true,
+        },
       ]) {
         const result = spawnSync(lifecycleExecutable, [lifecycle.scenario], {
           input: lifecycle.input,
           windowsHide: true,
         });
         const expectedDiagnostics =
-          lifecycle.scenario === "lifecycle-execution-cleanup-failure"
+          "ambiguousAdmission" in lifecycle
             ? "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
-              "fixture:cleanup-execution\nfixture:release-root\n"
-            : "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
-              "fixture:cleanup-profile\nfixture:release-root\n";
+              "fixture:admission\nfixture:release-root\n"
+            : "admission" in lifecycle
+              ? "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+                "fixture:admission\nfixture:cleanup-profile\nfixture:release-root\n"
+              : lifecycle.scenario === "lifecycle-execution-cleanup-failure"
+                ? "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+                  "fixture:cleanup-execution\nfixture:release-root\n"
+                : "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+                  "fixture:cleanup-profile\nfixture:release-root\n";
         expect({
           scenario: lifecycle.scenario,
           status: result.status,
@@ -863,6 +1090,7 @@ describe("private Windows isolation broker bootstrap", () => {
         expect(await exited).toBe(65);
         expect(Buffer.concat(diagnostics).toString("utf8")).toBe(
           "fixture:retain-root\nfixture:preflight\nfixture:create-profile\n" +
+            (brokenOutput === "launch" ? "fixture:admission\n" : "") +
             "fixture:cleanup-profile\nfixture:release-root\n",
         );
       }
