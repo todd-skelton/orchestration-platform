@@ -131,6 +131,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       conformance.iss002HarnessPaths.filter((path) => path.endsWith("/tsconfig.json")),
     ).toEqual(["packages/conformance/tsconfig.json", "packages/contracts/tsconfig.json"]);
     expect(conformance.iss002HarnessPaths.filter((path) => path.startsWith("scripts/"))).toEqual([
+      "scripts/conformance/hosted-candidate.mts",
       "scripts/conformance/hosted-plan.mts",
       "scripts/conformance/hosted.mts",
       "scripts/harness-test.mts",
