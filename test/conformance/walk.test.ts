@@ -19,6 +19,7 @@ import { build } from "esbuild";
 import {
   runIss002CrossRootWalk,
   runIss002WalkIntervals,
+  runIss002WalkObservation,
 } from "../../packages/conformance/src/index.js";
 
 const walkIo = vi.hoisted(() => ({ refuseExecutionCleanup: false }));
@@ -282,6 +283,54 @@ load("node:fs").writeFileSync(${JSON.stringify(resolve(candidate, "dynamic-requi
         BigInt(duration) > BigInt(maximum) ? duration : maximum,
       ),
     );
+  });
+
+  test("retains exact child stream bytes without changing the semantic result", async () => {
+    const root = await temporaryRoot();
+    const stdout = '{"issues":[],"recordCount":"1000"}';
+    const script = await child(root, `process.stdout.write(${JSON.stringify(stdout)});`);
+    const input = {
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: script,
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
+    };
+    const observed = await runIss002WalkObservation(input);
+    expect(observed.ok).toBe(true);
+    expect(Buffer.from(observed.stdoutBytes).equals(Buffer.from(stdout.repeat(3), "utf8"))).toBe(
+      true,
+    );
+    expect(observed.stderrBytes.byteLength).toBe(0);
+    const semantic = await runIss002WalkIntervals(input);
+    expect(semantic.ok).toBe(true);
+    expect(semantic).not.toHaveProperty("stdoutBytes");
+    expect(semantic).not.toHaveProperty("stderrBytes");
+  });
+
+  test("retains exact failed child streams and refuses invalid UTF-8", async () => {
+    const root = await temporaryRoot();
+    const script = await child(
+      root,
+      "process.stdout.write(Buffer.from([0xff])); process.stderr.write(Buffer.from([0x00,0xfe])); process.exit(1);",
+    );
+    const observed = await runIss002WalkObservation({
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: script,
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
+    });
+    expect(observed).toMatchObject({ issues: ["walk.0:child-failed"], ok: false });
+    expect([...observed.stdoutBytes]).toEqual([0xff]);
+    expect([...observed.stderrBytes]).toEqual([0x00, 0xfe]);
+
+    const invalidUtf8 = await runIss002WalkObservation({
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: await child(root, "process.stdout.write(Buffer.from([0xff]));"),
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
+    });
+    expect(invalidUtf8).toMatchObject({ issues: ["walk.0:json-refused"], ok: false });
+    expect([...invalidUtf8.stdoutBytes]).toEqual([0xff]);
   });
 
   test("proves three distinct children and the exact child environment allowlist", async () => {
