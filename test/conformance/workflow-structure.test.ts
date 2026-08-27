@@ -97,12 +97,21 @@ describe("protected conformance workflow structure", () => {
     expect(validateConformanceWorkflowSource(mutant)).toMatchObject({ ok: false });
   });
 
-  test.each(["plan-select", "plan-finalize", "observation", "aggregate", "record"])(
+  test.each(["observation", "aggregate", "record"])(
     "keeps the %s hosted mode fail-closed until its implementation lands",
     (mode) => {
       const result = spawnSync(process.execPath, [hostedPath, mode], { encoding: "utf8" });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(`HOSTED_CONFORMANCE_PENDING:${mode}`);
+    },
+  );
+
+  test.each(["plan-select", "plan-finalize"])(
+    "refuses the implemented %s mode without provider inputs",
+    (mode) => {
+      const result = spawnSync(process.execPath, [hostedPath, mode], { encoding: "utf8" });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`HOSTED_CONFORMANCE_REFUSED:${mode}`);
     },
   );
 });
