@@ -172,6 +172,7 @@ export async function bundleIss002ContractsCandidate(root: string, output: strin
     outfile: output,
     platform: "node",
     plugins: [confinedContractPlugin(packageRoot, realPackageRoot)],
+    preserveSymlinks: true,
     sourcemap: false,
     target: "node24",
     treeShaking: false,

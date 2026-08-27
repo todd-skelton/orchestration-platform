@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -45,8 +46,9 @@ const childScriptPath = resolve(
 
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(resolve(tmpdir(), "orchestration-iss002-walk-"));
-  temporaryRoots.push(root);
-  return root;
+  const canonicalRoot = await realpath(root);
+  temporaryRoots.push(canonicalRoot);
+  return canonicalRoot;
 }
 
 async function candidateRoot(): Promise<string> {
