@@ -48,6 +48,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/contracts/tsconfig.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
+  "scripts/conformance/hosted-aggregate.mts",
   "scripts/conformance/hosted-candidate.mts",
   "scripts/conformance/hosted-observation.mts",
   "scripts/conformance/hosted-plan.mts",
