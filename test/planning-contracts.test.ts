@@ -95,6 +95,13 @@ describe("planning contract", () => {
       },
     ],
     [
+      "reverted implemented harness wrapper",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.rootPackage.scripts["harness:test"] =
+          "node scripts/capability-not-implemented.mjs ISS-006 harness:test";
+      },
+    ],
+    [
       "wrapper defaults",
       (snapshot: PlanningSnapshot) => {
         snapshot.rootPackage.scripts.bootstrap += " --state-root .state";

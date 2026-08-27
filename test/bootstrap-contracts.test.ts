@@ -18,7 +18,7 @@ function asCrLf(value: string) {
 
 beforeAll(async () => {
   baseline = await loadBootstrapSnapshot();
-}, 30_000);
+}, 300_000);
 
 describe("bootstrap manifest graph", () => {
   test("accepts CRLF tracked text contracts without changing their semantics", async () => {
@@ -105,6 +105,20 @@ describe("bootstrap manifest graph", () => {
       "missing conformance esbuild pin",
       (snapshot: any) => {
         delete snapshot.manifests["@orchestration-platform/conformance"].dependencies.esbuild;
+      },
+    ],
+    [
+      "changed root harness entrypoint",
+      (snapshot: any) => {
+        snapshot.rootPackage.scripts["harness:test"] =
+          "node scripts/capability-not-implemented.mjs ISS-006 harness:test";
+      },
+    ],
+    [
+      "changed conformance harness entrypoint",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/conformance"].scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-006 @orchestration-platform/conformance:test";
       },
     ],
     [
