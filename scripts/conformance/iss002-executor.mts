@@ -116,24 +116,28 @@ export async function prepareIss002WorkspaceDependencies(
 ): Promise<Iss002PreparationResult> {
   if (!(await regularWorkspace(stableRoot)) || !(await regularWorkspace(workspaceRoot)))
     return refusal("executor:workspace-refused");
+  const query = packageManagerInvocation("store path --silent");
+  const install = packageManagerInvocation("install --offline --frozen-lockfile --ignore-scripts");
+  if (!(query && install)) return refusal("executor:package-manager-refused");
+  let queried: Readonly<{ stderr: Uint8Array; stdout: Uint8Array }>;
   try {
-    const query = packageManagerInvocation("store path --silent");
-    const install = packageManagerInvocation(
-      "install --offline --frozen-lockfile --ignore-scripts",
-    );
-    if (!(query && install)) return refusal("executor:package-manager-refused");
-    const queried = await execute(query.executable, query.arguments_, {
+    const queryResult = await execute(query.executable, query.arguments_, {
       cwd: stableRoot,
       encoding: "buffer",
-      env: environment(stableRoot, true),
+      env: environment(workspaceRoot, true),
       maxBuffer: 1024 * 1024,
       timeout: 30_000,
       windowsHide: true,
     });
-    const exactStorePath = storePath(queried.stdout);
-    if (!exactStorePath) return refusal("executor:store-path-refused");
-    const installEnvironment = environment(workspaceRoot, true);
-    installEnvironment.npm_config_store_dir = exactStorePath;
+    queried = queryResult;
+  } catch {
+    return refusal("executor:store-query-failed");
+  }
+  const exactStorePath = storePath(queried.stdout);
+  if (!exactStorePath) return refusal("executor:store-path-refused");
+  const installEnvironment = environment(workspaceRoot, true);
+  installEnvironment.npm_config_store_dir = exactStorePath;
+  try {
     await execute(install.executable, install.arguments_, {
       cwd: workspaceRoot,
       encoding: "buffer",

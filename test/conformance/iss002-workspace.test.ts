@@ -73,6 +73,8 @@ describe("ISS-002 external execution workspace", () => {
     const executionParent = await root("orchestration-workspace-execution-");
     const materializationParent = await root("orchestration-workspace-materialization-");
     let workspaceRoot = "";
+    let preparation: Awaited<ReturnType<typeof prepareIss002WorkspaceDependencies>> | undefined;
+    let execution: Awaited<ReturnType<typeof executeIss002ContractSelection>> | undefined;
     const result = await withIss002ExecutionWorkspace({
       candidateSourceRoot: source.root,
       candidateSubject: source.subject,
@@ -91,18 +93,18 @@ describe("ISS-002 external execution workspace", () => {
         expect(
           await readFile(resolve(workspace, "test/contracts/authority.test.ts"), "utf8"),
         ).toContain('from "vitest"');
-        expect(await prepareIss002WorkspaceDependencies(stableRoot, workspace)).toEqual({
-          ok: true,
-        });
-        const executed = await executeIss002ContractSelection(
+        preparation = await prepareIss002WorkspaceDependencies(stableRoot, workspace);
+        if (!preparation.ok) return "preparation-refused";
+        execution = await executeIss002ContractSelection(
           workspace,
           iss002StableVectorSelections[0]!,
         );
-        expect(executed.normalizedResult).toBe("PASS");
-        expect(executed.stdoutBytes.byteLength).toBeGreaterThan(0);
         return "prepared";
       },
     });
+    expect(preparation).toEqual({ ok: true });
+    expect(execution?.normalizedResult).toBe("PASS");
+    expect(execution?.stdoutBytes.byteLength).toBeGreaterThan(0);
     expect(result).toEqual({ ok: true, value: "prepared" });
     await expect(readFile(resolve(workspaceRoot, "package.json"))).rejects.toThrow();
     expect(await readdir(executionParent)).toEqual([]);
