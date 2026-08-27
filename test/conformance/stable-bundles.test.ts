@@ -69,6 +69,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/macos-helper-custody.ts",
       "packages/conformance/src/macos-principal-helper.c",
       "packages/conformance/src/manifest.ts",
+      "packages/conformance/src/native-isolated-walk.ts",
       "packages/conformance/src/reducer.ts",
       "packages/conformance/src/stable-bundles.ts",
       "packages/conformance/src/stable.ts",
@@ -103,6 +104,9 @@ describe("stable ISS-002 bundle path censuses", () => {
       conformance.iss002TestBundlePaths.filter((path) => path.startsWith("test/contracts/")),
     ).toEqual(stableTests);
     expect(conformance.iss002TestBundlePaths).not.toContain("test/contracts/run-tests.mjs");
+    expect(
+      conformance.iss002TestBundlePaths.filter((path) => path.startsWith("test/conformance/")),
+    ).toEqual(["test/conformance/native-isolated-walk.test.ts"]);
   });
 
   test("pins the package and frozen toolchain inputs without unrelated root files", () => {
