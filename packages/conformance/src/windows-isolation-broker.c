@@ -50,6 +50,7 @@ typedef union large_integer {
 } LARGE_INTEGER;
 
 #define WINAPI __stdcall
+typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID);
 #define NULL ((void *)0)
 #define FALSE 0
 #define TRUE 1
@@ -438,9 +439,22 @@ __declspec(dllimport) BOOL WINAPI AccessCheck(PSECURITY_DESCRIPTOR, HANDLE, DWOR
 __declspec(dllimport) void WINAPI MapGenericMask(DWORD *, GENERIC_MAPPING *);
 __declspec(dllimport) DWORD WINAPI WaitForSingleObject(HANDLE, DWORD);
 __declspec(dllimport) BOOL WINAPI GetExitCodeProcess(HANDLE, DWORD *);
+__declspec(dllimport) HANDLE WINAPI CreateThread(SECURITY_ATTRIBUTES *, SIZE_T,
+                                                 LPTHREAD_START_ROUTINE,
+                                                 LPVOID, DWORD, DWORD *);
+__declspec(dllimport) DWORD WINAPI ResumeThread(HANDLE);
+__declspec(dllimport) ULONGLONG WINAPI GetTickCount64(void);
+__declspec(dllimport) void WINAPI Sleep(DWORD);
 
 #define FRAME_BYTES 16U
-#define MAX_PAYLOAD (1024U * 1024U)
+#define MAX_PAYLOAD (4U * 1024U * 1024U)
+#define TERMINAL_STREAM_MAXIMUM (4U * 1024U * 1024U)
+#define TERMINAL_METADATA_BYTES 16U
+#define TERMINAL_EXITED 0U
+#define TERMINAL_TIMEOUT 1U
+#define TERMINAL_WATCHDOG_MILLISECONDS 5000U
+#define TERMINAL_CLEANUP_MILLISECONDS 5000U
+#define TERMINAL_WORKER_COUNT 3U
 #define REQUEST_KIND 1U
 #define RESPONSE_KIND 2U
 #define PROTOCOL_VERSION 1U
@@ -585,6 +599,44 @@ typedef struct admission_runtime {
   LPVOID attributes;
 } ADMISSION_RUNTIME;
 
+typedef enum terminal_worker_kind {
+  TERMINAL_WORKER_STDIN = 0,
+  TERMINAL_WORKER_STDOUT = 1,
+  TERMINAL_WORKER_STDERR = 2
+} TERMINAL_WORKER_KIND;
+
+typedef struct terminal_worker {
+  HANDLE thread;
+  HANDLE pipe;
+  const BYTE *input;
+  DWORD input_length;
+  BYTE *output;
+  DWORD output_length;
+  BYTE kind;
+  BYTE complete;
+  BYTE overflow;
+  BYTE failed;
+} TERMINAL_WORKER;
+
+typedef struct terminal_observation {
+  BYTE kind;
+  DWORD exit_code;
+  BYTE *stdout_bytes;
+  DWORD stdout_length;
+  BYTE *stderr_bytes;
+  DWORD stderr_length;
+} TERMINAL_OBSERVATION;
+
+typedef struct active_admission {
+  ADMISSION_CUSTODY custody;
+  ADMISSION_PLAN *plan;
+  ADMISSION_RUNTIME runtime;
+  TERMINAL_WORKER workers[TERMINAL_WORKER_COUNT];
+  BYTE opened;
+  BYTE terminal;
+  BYTE hard_abort;
+} ACTIVE_ADMISSION;
+
 typedef struct root_custody {
   HANDLE handle;
   HANDLE token;
@@ -616,6 +668,9 @@ typedef struct journal_group {
   BYTE admission_pending_seen[8];
   BYTE execution_created_digest[32];
 } JOURNAL_GROUP;
+
+static int admission_scratch_absent(ROOT_CUSTODY *,
+                                    const PROFILE_IDENTITY *);
 
 #if defined(OP_WINDOWS_LIFECYCLE_FIXTURE)
 static int fixture_retain_root(const WCHAR *, WORD, ROOT_CUSTODY *);
@@ -810,6 +865,13 @@ static BOOL WINAPI fixture_admission_TerminateJobObject(HANDLE, DWORD);
 static DWORD WINAPI fixture_admission_WaitForSingleObject(HANDLE, DWORD);
 static BOOL WINAPI fixture_admission_ReadFile(HANDLE, LPVOID, DWORD, DWORD *,
                                               LPVOID);
+static BOOL WINAPI fixture_admission_WriteFile(HANDLE, LPCVOID, DWORD,
+                                               DWORD *, LPVOID);
+static HANDLE WINAPI fixture_admission_CreateThread(
+    SECURITY_ATTRIBUTES *, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD,
+    DWORD *);
+static DWORD WINAPI fixture_admission_ResumeThread(HANDLE);
+static ULONGLONG WINAPI fixture_admission_GetTickCount64(void);
 static BOOL WINAPI fixture_admission_HeapFree(HANDLE, DWORD, LPVOID);
 static LPVOID WINAPI fixture_admission_HeapAlloc(HANDLE, DWORD, SIZE_T);
 static PVOID WINAPI fixture_admission_FreeSid(PSID);
@@ -892,6 +954,10 @@ static int fixture_admission_scratch_absent(ROOT_CUSTODY *,
 #define TerminateJobObject fixture_admission_TerminateJobObject
 #define WaitForSingleObject fixture_admission_WaitForSingleObject
 #define ReadFile fixture_admission_ReadFile
+#define WriteFile fixture_admission_WriteFile
+#define CreateThread fixture_admission_CreateThread
+#define ResumeThread fixture_admission_ResumeThread
+#define GetTickCount64 fixture_admission_GetTickCount64
 #define HeapFree fixture_admission_HeapFree
 #define HeapAlloc fixture_admission_HeapAlloc
 #define FreeSid fixture_admission_FreeSid
@@ -1282,7 +1348,14 @@ static int canonical_frame_payload(const BROKER_FRAME *frame) {
     if (!HeapFree(GetProcessHeap(), 0U, ignored)) return 0;
     return valid;
   }
-  return frame->length == 0U;
+  if (frame->operation == LAUNCH_OPERATION) {
+#if defined(OP_WINDOWS_LIFECYCLE_FIXTURE)
+    return frame->length == 0U;
+#else
+    return frame->length >= 1U && frame->length <= MAX_PAYLOAD;
+#endif
+  }
+  return frame->operation == TEARDOWN_OPERATION && frame->length == 0U;
 }
 
 static int copy_token_sid(ROOT_CUSTODY *root, HANDLE token, TOKEN_INFORMATION_CLASS kind,
@@ -1917,6 +1990,10 @@ static int admission_plan_digest(ROOT_CUSTODY *root,
       !candidate_file_url(execution->targets[2].path, candidate_url) ||
       !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
                               execution->targets[0].path) ||
+      !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
+                              L"--preserve-symlinks") ||
+      !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
+                              L"--preserve-symlinks-main") ||
       !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
                               execution->targets[1].path) ||
       !append_quoted_argument(plan->command_line, 4096U, &command_cursor,
@@ -4195,7 +4272,9 @@ static int execution_root_binding(ROOT_CUSTODY *root,
     defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED) || \
     defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANTED) || \
     defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED) || \
-    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED)
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_RESUME) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_TERMINAL_RESPONSE)
 static void diagnostic_pause(void);
 #endif
 
@@ -5686,48 +5765,152 @@ static int admission_phase_absent(ROOT_CUSTODY *root,
   return 1;
 }
 
-static __attribute__((noinline)) int run_admission_lifecycle(
-    ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
-    EXECUTION_CUSTODY *execution) {
-  ADMISSION_CUSTODY admission;
-  ADMISSION_PLAN *plan;
-  ADMISSION_RUNTIME runtime;
-  int admitted = 0;
-  int forward = 1;
+static int release_active_admission(ROOT_CUSTODY *root,
+                                    ACTIVE_ADMISSION *active) {
+  int clean = 1;
+  if (active->plan != NULL) {
+    if (!OP_ADMISSION_RELEASE_PLAN(root, active->plan)) clean = 0;
+    if (!HeapFree(GetProcessHeap(), 0U, active->plan)) clean = 0;
+    active->plan = NULL;
+  }
+  return clean && !root->resource_ambiguous;
+}
+
+static int prove_revoked_token(ROOT_CUSTODY *root,
+                               EXECUTION_CUSTODY *execution,
+                               ADMISSION_RUNTIME *runtime) {
+  static const DWORD rights[] = {GENERIC_READ, GENERIC_EXECUTE, GENERIC_WRITE,
+                                 DELETE, WRITE_DAC, WRITE_OWNER,
+                                 ACCESS_SYSTEM_SECURITY};
+  HANDLE thread_token = NULL;
+  int impersonating = 0;
+  int valid = 1;
+  if (runtime->impersonation_token == NULL ||
+      runtime->impersonation_token == INVALID_HANDLE_VALUE)
+    return 0;
+  for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+    for (DWORD right = 0U; right < sizeof(rights) / sizeof(DWORD); right += 1U)
+      if (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                               execution->targets[role].handle,
+                               rights[right], 0))
+        valid = 0;
+  for (DWORD right = 0U; right < sizeof(rights) / sizeof(DWORD); right += 1U)
+    if (!OP_ADMISSION_ACCESS(root, runtime->impersonation_token,
+                             execution->root.handle, rights[right], 0))
+      valid = 0;
+  if (valid && !ImpersonateLoggedOnUser(runtime->impersonation_token)) valid = 0;
+  if (valid) {
+    impersonating = 1;
+    for (BYTE role = 0U; role < EXECUTION_ROLE_COUNT; role += 1U)
+      for (DWORD right = 0U; right < sizeof(rights) / sizeof(DWORD); right += 1U)
+        if (!OP_ADMISSION_OPEN(execution->targets[role].path,
+                               rights[right], 0, 0))
+          valid = 0;
+    for (DWORD right = 0U; right < sizeof(rights) / sizeof(DWORD); right += 1U)
+      if (!OP_ADMISSION_OPEN(execution->root.path, rights[right], 1, 0))
+        valid = 0;
+  }
+  if (impersonating) {
+    if (!RevertToSelf()) {
+      root->resource_ambiguous = 1;
+      valid = 0;
+    }
+  }
+  if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &thread_token) ||
+      GetLastError() != ERROR_NO_TOKEN) {
+    if (thread_token != NULL && !CloseHandle(thread_token))
+      root->resource_ambiguous = 1;
+    valid = 0;
+  }
+  return valid && !root->resource_ambiguous;
+}
+
+static int revoke_active_admission(ROOT_CUSTODY *root,
+                                   PROFILE_IDENTITY *identity,
+                                   EXECUTION_CUSTODY *execution,
+                                   ACTIVE_ADMISSION *active,
+                                   int can_cancel,
+                                   int terminal_run) {
   int cleanup_clean = 1;
   int revoke_durable = 0;
+  if (active->hard_abort) return -1;
+  if (terminal_run &&
+      !terminate_admission_job(root, &active->runtime.job,
+                               &active->custody, active->plan)) {
+    active->hard_abort = 1U;
+    root->resource_ambiguous = 1;
+    return -1;
+  }
+  if (!can_cancel || !OP_ADMISSION_CLEAR_PENDING(root, identity) ||
+      !OP_ADMISSION_PERSIST(root, identity, &active->custody,
+                            ADMISSION_REVOKE_ATTEMPTED)) {
+    cleanup_clean = 0;
+  } else {
+    revoke_durable = 1;
+  }
+  if (terminal_run) {
+    if (!OP_ADMISSION_RESTORE(root, execution)) cleanup_clean = 0;
+    if (!prove_revoked_token(root, execution, &active->runtime))
+      cleanup_clean = 0;
+    if (!OP_ADMISSION_CLEANUP_RUNTIME(root, &active->custody, active->plan,
+                                      &active->runtime))
+      cleanup_clean = 0;
+    if (!OP_ADMISSION_SCRATCH_ABSENT(root, identity)) cleanup_clean = 0;
+  } else {
+    if (!OP_ADMISSION_CLEANUP_RUNTIME(root, &active->custody, active->plan,
+                                      &active->runtime))
+      cleanup_clean = 0;
+    if (!OP_ADMISSION_RESTORE(root, execution)) cleanup_clean = 0;
+  }
+  if (revoke_durable && cleanup_clean &&
+      OP_ADMISSION_CLEAR_PENDING(root, identity) &&
+      OP_ADMISSION_PERSIST(root, identity, &active->custody,
+                           ADMISSION_ABSENCE_PROVED)) {
+    active->opened = 0U;
+  } else {
+    cleanup_clean = 0;
+  }
+  if (!release_active_admission(root, active)) cleanup_clean = 0;
+  return cleanup_clean ? 1 : -1;
+}
+
+static int open_active_admission(ROOT_CUSTODY *root,
+                                 PROFILE_IDENTITY *identity,
+                                 EXECUTION_CUSTODY *execution,
+                                 ACTIVE_ADMISSION *active) {
+  int forward = 1;
   int can_cancel = 1;
-  zero_bytes(&admission, sizeof(admission));
-  zero_bytes(&runtime, sizeof(runtime));
-  plan = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*plan));
-  if (plan == NULL) return 0;
+  zero_bytes(active, sizeof(*active));
+  active->plan = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                           sizeof(*active->plan));
+  if (active->plan == NULL) return 0;
   if (execution->phase != EXECUTION_CREATED ||
       !OP_ADMISSION_VERIFY_ORIGINAL(root, execution)) {
-    (void)HeapFree(GetProcessHeap(), 0U, plan);
+    (void)release_active_admission(root, active);
     return 0;
   }
-  copy_bytes(admission.profile_created_digest,
+  copy_bytes(active->custody.profile_created_digest,
              execution->profile_created_digest, 32U);
-  copy_bytes(admission.execution_created_digest, execution->prior_digest, 32U);
-  if (!OP_ADMISSION_PLAN_DIGEST(root, identity, execution, &admission, plan)) {
-    (void)OP_ADMISSION_RELEASE_PLAN(root, plan);
-    (void)HeapFree(GetProcessHeap(), 0U, plan);
+  copy_bytes(active->custody.execution_created_digest,
+             execution->prior_digest, 32U);
+  if (!OP_ADMISSION_PLAN_DIGEST(root, identity, execution,
+                                &active->custody, active->plan)) {
+    (void)release_active_admission(root, active);
     return 0;
   }
-  if (!OP_ADMISSION_PERSIST(root, identity, &admission,
+  if (!OP_ADMISSION_PERSIST(root, identity, &active->custody,
                             ADMISSION_GRANT_ATTEMPTED)) {
     int absent = !root->resource_ambiguous &&
                  OP_ADMISSION_PHASE_ABSENT(root, identity,
                                            ADMISSION_GRANT_ATTEMPTED);
-    (void)OP_ADMISSION_RELEASE_PLAN(root, plan);
-    (void)HeapFree(GetProcessHeap(), 0U, plan);
+    (void)release_active_admission(root, active);
     return absent ? 0 : -1;
   }
 #if defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED)
   diagnostic_pause();
 #endif
-  if (OP_ADMISSION_APPLY(root, execution, plan)) {
-    if (!OP_ADMISSION_PERSIST(root, identity, &admission,
+  if (OP_ADMISSION_APPLY(root, execution, active->plan)) {
+    if (!OP_ADMISSION_PERSIST(root, identity, &active->custody,
                               ADMISSION_GRANTED)) {
       forward = 0;
       can_cancel = 0;
@@ -5739,7 +5922,7 @@ static __attribute__((noinline)) int run_admission_lifecycle(
     forward = 0;
   }
   if (forward &&
-      !OP_ADMISSION_PERSIST(root, identity, &admission,
+      !OP_ADMISSION_PERSIST(root, identity, &active->custody,
                             ADMISSION_JOB_ATTEMPTED)) {
     forward = 0;
     can_cancel = 0;
@@ -5748,17 +5931,19 @@ static __attribute__((noinline)) int run_admission_lifecycle(
   if (forward) diagnostic_pause();
 #endif
   if (forward) {
-    runtime.job = OP_ADMISSION_CREATE_JOB(root, &admission, plan);
-    if (runtime.job == NULL) forward = 0;
+    active->runtime.job = OP_ADMISSION_CREATE_JOB(root, &active->custody,
+                                                  active->plan);
+    if (active->runtime.job == NULL) forward = 0;
   }
   if (forward &&
-      !OP_ADMISSION_PERSIST(root, identity, &admission,
+      !OP_ADMISSION_PERSIST(root, identity, &active->custody,
                             ADMISSION_LAUNCH_ATTEMPTED)) {
     forward = 0;
     can_cancel = 0;
   }
   if (forward &&
-      !OP_ADMISSION_CREATE_SUSPENDED(root, identity, plan, &runtime)) {
+      !OP_ADMISSION_CREATE_SUSPENDED(root, identity, active->plan,
+                                     &active->runtime)) {
     diagnostic("windows-broker:admission-suspended-create\n");
     forward = 0;
   }
@@ -5766,39 +5951,455 @@ static __attribute__((noinline)) int run_admission_lifecycle(
   if (forward) diagnostic_pause();
 #endif
   if (forward &&
-      !OP_ADMISSION_PROVE(root, identity, execution, plan, &runtime)) {
+      !OP_ADMISSION_PROVE(root, identity, execution, active->plan,
+                          &active->runtime)) {
     diagnostic("windows-broker:admission-token-proof\n");
     forward = 0;
   }
   if (forward &&
-      !OP_ADMISSION_PERSIST(root, identity, &admission,
+      !OP_ADMISSION_PERSIST(root, identity, &active->custody,
                             ADMISSION_PROVED)) {
     forward = 0;
     can_cancel = 0;
   }
-  if (forward) admitted = 1;
-  if (!can_cancel || !OP_ADMISSION_CLEAR_PENDING(root, identity) ||
-      !OP_ADMISSION_PERSIST(root, identity, &admission,
-                            ADMISSION_REVOKE_ATTEMPTED)) {
-    cleanup_clean = 0;
-  } else {
-    revoke_durable = 1;
+  if (forward) {
+    active->opened = 1U;
+    return 1;
   }
-  if (!OP_ADMISSION_CLEANUP_RUNTIME(root, &admission, plan, &runtime))
-    cleanup_clean = 0;
-  if (!OP_ADMISSION_RESTORE(root, execution)) cleanup_clean = 0;
-  if (revoke_durable && cleanup_clean &&
-      OP_ADMISSION_CLEAR_PENDING(root, identity) &&
-      OP_ADMISSION_PERSIST(root, identity, &admission,
-                           ADMISSION_ABSENCE_PROVED)) {
-    /* Complete absence permits landed execution/profile cleanup. */
+  if (revoke_active_admission(root, identity, execution, active, can_cancel,
+                              0) <= 0)
+    return -1;
+  return can_cancel ? 0 : -1;
+}
+
+static __attribute__((noinline, used)) int run_admission_lifecycle(
+    ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
+    EXECUTION_CUSTODY *execution) {
+  ACTIVE_ADMISSION active;
+  int admitted = open_active_admission(root, identity, execution, &active);
+  if (admitted <= 0) return admitted;
+  return revoke_active_admission(root, identity, execution, &active, 1, 0) > 0
+             ? 1
+             : -1;
+}
+
+static DWORD WINAPI terminal_worker_main(LPVOID value) {
+  TERMINAL_WORKER *worker = (TERMINAL_WORKER *)value;
+  if (worker->kind == TERMINAL_WORKER_STDIN) {
+    DWORD offset = 0U;
+    while (offset < worker->input_length) {
+      DWORD written = 0U;
+      if (!WriteFile(worker->pipe, worker->input + offset,
+                     worker->input_length - offset, &written, NULL) ||
+          written == 0U) {
+        if (GetLastError() != ERROR_BROKEN_PIPE) worker->failed = 1U;
+        break;
+      }
+      offset += written;
+    }
+    if (offset != worker->input_length) worker->failed = 1U;
   } else {
-    cleanup_clean = 0;
+    BYTE discard[4096];
+    for (;;) {
+      DWORD received = 0U;
+      DWORD available = TERMINAL_STREAM_MAXIMUM - worker->output_length;
+      DWORD requested = available > sizeof(discard) ? sizeof(discard) : available;
+      BYTE *target = worker->output + worker->output_length;
+      if (requested == 0U) {
+        target = discard;
+        requested = sizeof(discard);
+      }
+      if (!ReadFile(worker->pipe, target, requested, &received, NULL)) {
+        if (GetLastError() != ERROR_BROKEN_PIPE) worker->failed = 1U;
+        break;
+      }
+      if (received == 0U) break;
+      if (available == 0U) {
+        worker->overflow = 1U;
+      } else {
+        worker->output_length += received;
+      }
+    }
   }
-  if (!OP_ADMISSION_RELEASE_PLAN(root, plan)) cleanup_clean = 0;
-  if (!HeapFree(GetProcessHeap(), 0U, plan)) cleanup_clean = 0;
-  if (!cleanup_clean) return -1;
-  return admitted ? 1 : 0;
+  if (!CloseHandle(worker->pipe)) {
+    worker->failed = 1U;
+  } else {
+    worker->pipe = NULL;
+  }
+  worker->complete = 1U;
+  return worker->failed ? 1U : 0U;
+}
+
+static int terminal_remaining_before(ULONGLONG started, DWORD bound,
+                                     DWORD *remaining) {
+  ULONGLONG observed = GetTickCount64();
+  ULONGLONG elapsed;
+  if (observed < started) return -1;
+  elapsed = observed - started;
+  if (elapsed >= bound) {
+    *remaining = 0U;
+    return 0;
+  }
+  *remaining = bound - (DWORD)elapsed;
+  return 1;
+}
+
+static int terminal_wait_before_deadline(HANDLE handle, ULONGLONG started) {
+  DWORD remaining = 0U;
+  int current = terminal_remaining_before(
+      started, TERMINAL_WATCHDOG_MILLISECONDS, &remaining);
+  DWORD waited;
+  if (current <= 0) return current;
+  waited = WaitForSingleObject(handle, remaining);
+  if (waited == WAIT_OBJECT_0)
+    return terminal_remaining_before(started,
+                                     TERMINAL_WATCHDOG_MILLISECONDS,
+                                     &remaining);
+  if (waited == WAIT_TIMEOUT) return 0;
+  return -1;
+}
+
+static int terminal_job_zero_state(ROOT_CUSTODY *root,
+                                   ACTIVE_ADMISSION *active) {
+  JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+  BYTE process_list_bytes[8U + sizeof(SIZE_T) * JOB_PROCESS_MAXIMUM];
+  DWORD returned = 0U;
+  DWORD observed = 0U;
+  if (!OP_ADMISSION_VERIFY_JOB(root, active->runtime.job, active->plan,
+                               0xffffffffU, 0U))
+    return -1;
+  zero_bytes(&accounting, sizeof(accounting));
+  zero_bytes(process_list_bytes, sizeof(process_list_bytes));
+  if (!QueryInformationJobObject(active->runtime.job,
+                                 JobObjectBasicAccountingInformation,
+                                 &accounting, sizeof(accounting), &returned) ||
+      returned != sizeof(accounting) ||
+      !QueryInformationJobObject(active->runtime.job,
+                                 JobObjectBasicProcessIdList,
+                                 process_list_bytes,
+                                 sizeof(process_list_bytes), &returned) ||
+      !closed_job_process_list(process_list_bytes, returned, 0xffffffffU,
+                               0U, &observed) ||
+      accounting.ActiveProcesses != observed)
+    return -1;
+  return observed == 0U ? 1 : 0;
+}
+
+static int terminal_job_zero_before(ROOT_CUSTODY *root,
+                                    ACTIVE_ADMISSION *active,
+                                    ULONGLONG started, DWORD bound) {
+  for (;;) {
+    DWORD remaining = 0U;
+    int current = terminal_remaining_before(started, bound, &remaining);
+    if (current <= 0) return current;
+    int state = terminal_job_zero_state(root, active);
+    if (state < 0) return state;
+    current = terminal_remaining_before(started, bound, &remaining);
+    if (current <= 0) return current;
+    if (state == 1) return 1;
+    Sleep(remaining > 10U ? 10U : remaining);
+  }
+}
+
+static int terminal_join_after_kill(ROOT_CUSTODY *root,
+                                    ACTIVE_ADMISSION *active) {
+  int clean = 1;
+  if (active->runtime.process.hProcess != NULL &&
+      WaitForSingleObject(active->runtime.process.hProcess,
+                          TERMINAL_CLEANUP_MILLISECONDS) != WAIT_OBJECT_0)
+    clean = 0;
+  for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U) {
+    TERMINAL_WORKER *worker = &active->workers[index];
+    if (worker->thread != NULL &&
+        WaitForSingleObject(worker->thread,
+                            TERMINAL_CLEANUP_MILLISECONDS) != WAIT_OBJECT_0)
+      clean = 0;
+  }
+  if (active->runtime.job != NULL && active->plan != NULL) {
+    ULONGLONG cleanup_started = GetTickCount64();
+    if (terminal_job_zero_before(root, active, cleanup_started,
+                                 TERMINAL_CLEANUP_MILLISECONDS) != 1)
+      clean = 0;
+  }
+#if defined(OP_WINDOWS_FORCE_TERMINAL_JOIN_AMBIGUITY)
+  if (clean) {
+    diagnostic("windows-broker:forced-terminal-join-ambiguity\n");
+    return 0;
+  }
+#endif
+  return clean;
+}
+
+static int terminal_close_workers(ROOT_CUSTODY *root,
+                                  ACTIVE_ADMISSION *active) {
+  int clean = 1;
+  for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U) {
+    TERMINAL_WORKER *worker = &active->workers[index];
+    if (worker->thread != NULL && !CloseHandle(worker->thread) &&
+        !CloseHandle(worker->thread)) {
+      clean = 0;
+    } else {
+      worker->thread = NULL;
+    }
+    if (worker->pipe != NULL && !CloseHandle(worker->pipe) &&
+        !CloseHandle(worker->pipe)) {
+      clean = 0;
+    } else {
+      worker->pipe = NULL;
+    }
+  }
+  if (!clean) {
+    active->hard_abort = 1U;
+    root->resource_ambiguous = 1;
+  }
+  return clean;
+}
+
+static int terminal_kill_and_join(ROOT_CUSTODY *root,
+                                  ACTIVE_ADMISSION *active) {
+  int clean = 1;
+  if (active->runtime.job == NULL ||
+      !TerminateJobObject(active->runtime.job, EXIT_PROTOCOL_REFUSED))
+    clean = 0;
+  if (!terminal_join_after_kill(root, active)) {
+    active->hard_abort = 1U;
+    root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!terminal_close_workers(root, active)) clean = 0;
+  if (!clean) root->resource_ambiguous = 1;
+  return clean;
+}
+
+static int create_terminal_workers(ACTIVE_ADMISSION *active,
+                                   const BYTE *challenge,
+                                   DWORD challenge_length) {
+  TERMINAL_WORKER *input = &active->workers[TERMINAL_WORKER_STDIN];
+  TERMINAL_WORKER *output = &active->workers[TERMINAL_WORKER_STDOUT];
+  TERMINAL_WORKER *error = &active->workers[TERMINAL_WORKER_STDERR];
+  input->kind = TERMINAL_WORKER_STDIN;
+  input->pipe = active->runtime.stdin_write;
+  input->input = challenge;
+  input->input_length = challenge_length;
+  output->kind = TERMINAL_WORKER_STDOUT;
+  output->pipe = active->runtime.stdout_read;
+  error->kind = TERMINAL_WORKER_STDERR;
+  error->pipe = active->runtime.stderr_read;
+  active->runtime.stdin_write = NULL;
+  active->runtime.stdout_read = NULL;
+  active->runtime.stderr_read = NULL;
+  output->output = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                             TERMINAL_STREAM_MAXIMUM);
+  error->output = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                            TERMINAL_STREAM_MAXIMUM);
+  if (output->output == NULL || error->output == NULL) return 0;
+  for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U) {
+    DWORD identifier = 0U;
+    active->workers[index].thread =
+        CreateThread(NULL, 0U, terminal_worker_main,
+                     &active->workers[index], 0U, &identifier);
+    if (active->workers[index].thread == NULL || identifier == 0U) {
+      diagnostic("windows-broker:terminal-worker-create\n");
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static void release_terminal_observation(ROOT_CUSTODY *root,
+                                         TERMINAL_OBSERVATION *observation) {
+  if (observation->stdout_bytes != NULL) {
+    if (HeapFree(GetProcessHeap(), 0U, observation->stdout_bytes)) {
+      observation->stdout_bytes = NULL;
+      observation->stdout_length = 0U;
+    } else {
+      root->resource_ambiguous = 1;
+    }
+  }
+  if (observation->stderr_bytes != NULL) {
+    if (HeapFree(GetProcessHeap(), 0U, observation->stderr_bytes)) {
+      observation->stderr_bytes = NULL;
+      observation->stderr_length = 0U;
+    } else {
+      root->resource_ambiguous = 1;
+    }
+  }
+  if (!root->resource_ambiguous) zero_bytes(observation, sizeof(*observation));
+}
+
+static void release_terminal_buffers(ROOT_CUSTODY *root,
+                                     ACTIVE_ADMISSION *active) {
+  for (DWORD index = TERMINAL_WORKER_STDOUT;
+       index <= TERMINAL_WORKER_STDERR; index += 1U) {
+    if (active->workers[index].output != NULL) {
+      if (HeapFree(GetProcessHeap(), 0U, active->workers[index].output)) {
+        active->workers[index].output = NULL;
+      } else {
+        active->hard_abort = 1U;
+        root->resource_ambiguous = 1;
+      }
+    }
+  }
+}
+
+static int run_active_terminal(ROOT_CUSTODY *root,
+                               ACTIVE_ADMISSION *active,
+                               const BYTE *challenge,
+                               DWORD challenge_length,
+                               TERMINAL_OBSERVATION *observation) {
+  ULONGLONG started;
+  DWORD exit_code = 0U;
+  int wait_result;
+  int timed_out = 0;
+  int clean = 1;
+  zero_bytes(observation, sizeof(*observation));
+  if (!active->opened || active->terminal || challenge_length == 0U ||
+      challenge_length > MAX_PAYLOAD)
+    return 0;
+  if (!create_terminal_workers(active, challenge, challenge_length)) {
+    (void)terminal_kill_and_join(root, active);
+    if (!active->hard_abort) release_terminal_buffers(root, active);
+    return root->resource_ambiguous ? -1 : 0;
+  }
+  started = GetTickCount64();
+  if (ResumeThread(active->runtime.process.hThread) != 1U) {
+    diagnostic("windows-broker:terminal-resume\n");
+    (void)terminal_kill_and_join(root, active);
+    if (!active->hard_abort) release_terminal_buffers(root, active);
+    return root->resource_ambiguous ? -1 : 0;
+  }
+  if (!close_runtime_handle(root, &active->runtime.process.hThread))
+    clean = 0;
+#if defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_RESUME)
+  diagnostic_pause();
+#endif
+  wait_result = terminal_wait_before_deadline(active->runtime.process.hProcess,
+                                               started);
+  if (wait_result == 0) timed_out = 1;
+  if (wait_result < 0) clean = 0;
+  if (!timed_out && clean) {
+    for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U) {
+      wait_result = terminal_wait_before_deadline(active->workers[index].thread,
+                                                   started);
+      if (wait_result == 0) timed_out = 1;
+      if (wait_result < 0) clean = 0;
+      if (timed_out || !clean) break;
+    }
+  }
+  if (!timed_out && clean) {
+    wait_result = terminal_job_zero_before(root, active, started,
+                                           TERMINAL_WATCHDOG_MILLISECONDS);
+    if (wait_result == 0) timed_out = 1;
+    if (wait_result < 0) clean = 0;
+  }
+  if (timed_out || !clean) {
+    if (!terminal_kill_and_join(root, active)) clean = 0;
+  } else {
+    if (!terminal_close_workers(root, active)) clean = 0;
+  }
+  if (!clean || root->resource_ambiguous) {
+    if (!active->hard_abort) release_terminal_buffers(root, active);
+    return -1;
+  }
+  active->terminal = 1U;
+  if (timed_out) {
+    observation->kind = TERMINAL_TIMEOUT;
+    release_terminal_buffers(root, active);
+    return root->resource_ambiguous ? -1 : 1;
+  }
+  if (!GetExitCodeProcess(active->runtime.process.hProcess, &exit_code) ||
+      exit_code == STILL_ACTIVE) {
+    release_terminal_buffers(root, active);
+    return -1;
+  }
+  {
+    DWORD remaining = 0U;
+    int final_clock = terminal_remaining_before(
+        started, TERMINAL_WATCHDOG_MILLISECONDS, &remaining);
+    if (final_clock <= 0) {
+      if (final_clock == 0) {
+        if (!terminal_kill_and_join(root, active)) return -1;
+        observation->kind = TERMINAL_TIMEOUT;
+        release_terminal_buffers(root, active);
+        return active->hard_abort || root->resource_ambiguous ? -1 : 1;
+      }
+      release_terminal_buffers(root, active);
+      return -1;
+    }
+  }
+  if (active->workers[TERMINAL_WORKER_STDIN].failed ||
+      active->workers[TERMINAL_WORKER_STDOUT].failed ||
+      active->workers[TERMINAL_WORKER_STDERR].failed ||
+      active->workers[TERMINAL_WORKER_STDOUT].overflow ||
+      active->workers[TERMINAL_WORKER_STDERR].overflow) {
+    diagnostic_u32("windows-broker:terminal-stdin-failed:",
+                   active->workers[TERMINAL_WORKER_STDIN].failed);
+    diagnostic_u32("windows-broker:terminal-stdout-failed:",
+                   active->workers[TERMINAL_WORKER_STDOUT].failed);
+    diagnostic_u32("windows-broker:terminal-stderr-failed:",
+                   active->workers[TERMINAL_WORKER_STDERR].failed);
+    diagnostic_u32("windows-broker:terminal-stdout-overflow:",
+                   active->workers[TERMINAL_WORKER_STDOUT].overflow);
+    diagnostic_u32("windows-broker:terminal-stderr-overflow:",
+                   active->workers[TERMINAL_WORKER_STDERR].overflow);
+    release_terminal_buffers(root, active);
+    return 0;
+  }
+  observation->kind = TERMINAL_EXITED;
+  observation->exit_code = exit_code;
+  observation->stdout_bytes = active->workers[TERMINAL_WORKER_STDOUT].output;
+  observation->stdout_length =
+      active->workers[TERMINAL_WORKER_STDOUT].output_length;
+  observation->stderr_bytes = active->workers[TERMINAL_WORKER_STDERR].output;
+  observation->stderr_length =
+      active->workers[TERMINAL_WORKER_STDERR].output_length;
+  active->workers[TERMINAL_WORKER_STDOUT].output = NULL;
+  active->workers[TERMINAL_WORKER_STDERR].output = NULL;
+  return 1;
+}
+
+static int send_terminal_response(HANDLE output,
+                                  const TERMINAL_OBSERVATION *observation) {
+  BYTE header[FRAME_BYTES];
+  BYTE metadata[TERMINAL_METADATA_BYTES];
+  DWORD length;
+  if ((observation->kind != TERMINAL_EXITED &&
+       observation->kind != TERMINAL_TIMEOUT) ||
+      observation->stdout_length > TERMINAL_STREAM_MAXIMUM ||
+      observation->stderr_length > TERMINAL_STREAM_MAXIMUM ||
+      (observation->stdout_length != 0U &&
+       observation->stdout_bytes == NULL) ||
+      (observation->stderr_length != 0U &&
+       observation->stderr_bytes == NULL) ||
+      (observation->kind == TERMINAL_TIMEOUT &&
+       (observation->exit_code != 0U || observation->stdout_length != 0U ||
+        observation->stderr_length != 0U)))
+    return 0;
+  length = TERMINAL_METADATA_BYTES + observation->stdout_length +
+           observation->stderr_length;
+  zero_bytes(header, sizeof(header));
+  zero_bytes(metadata, sizeof(metadata));
+  header[0] = 'O';
+  header[1] = 'P';
+  header[2] = 'W';
+  header[3] = 'B';
+  header[4] = PROTOCOL_VERSION;
+  header[5] = RESPONSE_KIND;
+  header[6] = LAUNCH_OPERATION;
+  header[7] = STATUS_OK;
+  write_u32(header + 8U, length);
+  metadata[0] = observation->kind;
+  write_u32(metadata + 4U, observation->exit_code);
+  write_u32(metadata + 8U, observation->stdout_length);
+  write_u32(metadata + 12U, observation->stderr_length);
+  return write_all(output, header, sizeof(header)) &&
+         write_all(output, metadata, sizeof(metadata)) &&
+         (observation->stdout_length == 0U ||
+          write_all(output, observation->stdout_bytes,
+                    observation->stdout_length)) &&
+         (observation->stderr_length == 0U ||
+          write_all(output, observation->stderr_bytes,
+                    observation->stderr_length));
 }
 
 static int folder_absent(const PROFILE_IDENTITY *identity) {
@@ -6082,7 +6683,9 @@ static int cleanup_profile(ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
     defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANT_ATTEMPTED) || \
     defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_GRANTED) || \
     defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED) || \
-    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED)
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_LAUNCH_CREATED) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_RESUME) || \
+    defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_TERMINAL_RESPONSE)
 static void diagnostic_pause(void) {
   BYTE resumed;
   DWORD received = 0U;
@@ -6103,6 +6706,10 @@ static void diagnostic_pause(void) {
   diagnostic("windows-broker:pause-after-admission-granted\n");
 #elif defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_JOB_ATTEMPTED)
   diagnostic("windows-broker:pause-after-admission-job-attempted\n");
+#elif defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_RESUME)
+  diagnostic("windows-broker:pause-after-admission-resume\n");
+#elif defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_TERMINAL_RESPONSE)
+  diagnostic("windows-broker:pause-after-admission-terminal-response\n");
 #else
   diagnostic("windows-broker:pause-after-admission-launch-created\n");
 #endif
@@ -6511,6 +7118,10 @@ static __attribute__((noinline)) int recover_admission(
     goto done;
   }
   authenticated = 1;
+  if (!OP_ADMISSION_RECOVERY_JOB(root, admission, plan, phase)) {
+    diagnostic("windows-broker:admission-recovery-job\n");
+    goto done;
+  }
   if (!OP_ADMISSION_CLEAR_PENDING(root, identity)) {
     diagnostic("windows-broker:admission-recovery-clear-pending\n");
     goto done;
@@ -6524,7 +7135,6 @@ static __attribute__((noinline)) int recover_admission(
       clean = 0;
     }
   }
-  if (!OP_ADMISSION_RECOVERY_JOB(root, admission, plan, phase)) clean = 0;
   if (!OP_ADMISSION_SET_SECURITY(root, &execution->root,
                                  execution->root.security,
                                  execution->root.security_length))
@@ -6705,7 +7315,8 @@ static DWORD prepare_response(const PROFILE_IDENTITY *identity,
 typedef enum broker_lifecycle_state {
   BROKER_EMPTY = 0,
   BROKER_PREPARED = 1,
-  BROKER_TERMINAL = 2
+  BROKER_TERMINAL = 2,
+  BROKER_AWAIT_TEARDOWN = 3
 } BROKER_LIFECYCLE_STATE;
 
 static __declspec(noreturn) void finish_prepared(ROOT_CUSTODY *root,
@@ -6726,6 +7337,28 @@ static __declspec(noreturn) void finish_prepared(ROOT_CUSTODY *root,
   BYTE status = clean && released ? STATUS_REFUSED : STATUS_RECOVERY_REQUIRED;
   if (respond) (void)send_response(output, operation, status, NULL, 0U);
   ExitProcess(status == STATUS_RECOVERY_REQUIRED ? EXIT_RECOVERY_REQUIRED : EXIT_PROTOCOL_REFUSED);
+}
+
+static __declspec(noreturn) void finish_active_admission(
+    ROOT_CUSTODY *root, PROFILE_IDENTITY *identity,
+    EXECUTION_CUSTODY *execution, HANDLE *folder_handle,
+    ACTIVE_ADMISSION *active, HANDLE output, int respond) {
+  int clean;
+  int released;
+  if (active->hard_abort) ExitProcess(EXIT_RECOVERY_REQUIRED);
+  clean = revoke_active_admission(root, identity, execution, active, 1, 1) > 0;
+  if (active->hard_abort) ExitProcess(EXIT_RECOVERY_REQUIRED);
+  if (clean) clean = OP_BROKER_CLEANUP_EXECUTION(root, identity, execution);
+  if (clean) clean = OP_BROKER_CLEANUP_PROFILE(root, identity, folder_handle);
+  if (!OP_BROKER_RELEASE_EXECUTION(root, execution)) clean = 0;
+  if (!HeapFree(GetProcessHeap(), 0U, execution)) clean = 0;
+  released = OP_BROKER_RELEASE_ROOT(root);
+  if (!released) clean = 0;
+  if (respond)
+    (void)send_response(output, TEARDOWN_OPERATION,
+                        clean ? STATUS_OK : STATUS_RECOVERY_REQUIRED, NULL,
+                        0U);
+  ExitProcess(clean ? 0U : EXIT_RECOVERY_REQUIRED);
 }
 
 static __declspec(noreturn) void serve(void) {
@@ -6829,7 +7462,8 @@ static __declspec(noreturn) void serve(void) {
       finish_prepared(&root, &identity, execution, &folder_handle, output,
                       frame.operation, 0, &state);
     }
-    if (frame.operation == LAUNCH_OPERATION && frame.length == 0U) {
+    if (frame.operation == LAUNCH_OPERATION) {
+#if defined(OP_WINDOWS_LIFECYCLE_FIXTURE)
       int admission = OP_BROKER_RUN_ADMISSION(&root, &identity, execution);
       int clean = admission >= 0;
       int released;
@@ -6856,6 +7490,65 @@ static __declspec(noreturn) void serve(void) {
                       : (status == STATUS_REFUSED
                              ? EXIT_PROTOCOL_REFUSED
                              : EXIT_RECOVERY_REQUIRED));
+#else
+      ACTIVE_ADMISSION active;
+      TERMINAL_OBSERVATION observation;
+      BROKER_FRAME teardown;
+      int admission = open_active_admission(&root, &identity, execution,
+                                             &active);
+      int terminal = -1;
+      int response_clean = 1;
+      zero_bytes(&observation, sizeof(observation));
+      if (admission > 0)
+        terminal = run_active_terminal(&root, &active, frame.payload,
+                                       frame.length, &observation);
+      if (active.hard_abort) ExitProcess(EXIT_RECOVERY_REQUIRED);
+      if (admission <= 0) {
+        int clean = admission >= 0;
+        int released;
+        if (clean)
+          clean = OP_BROKER_CLEANUP_EXECUTION(&root, &identity, execution);
+        if (clean)
+          clean = OP_BROKER_CLEANUP_PROFILE(&root, &identity, &folder_handle);
+        state = BROKER_TERMINAL;
+        if (!OP_BROKER_RELEASE_EXECUTION(&root, execution)) clean = 0;
+        if (!HeapFree(GetProcessHeap(), 0U, execution)) clean = 0;
+        released = OP_BROKER_RELEASE_ROOT(&root);
+        if (!clean || !released) {
+          (void)send_response(output, LAUNCH_OPERATION,
+                              STATUS_RECOVERY_REQUIRED, NULL, 0U);
+          ExitProcess(EXIT_RECOVERY_REQUIRED);
+        }
+        (void)send_response(output, LAUNCH_OPERATION, STATUS_REFUSED, NULL,
+                            0U);
+        ExitProcess(EXIT_PROTOCOL_REFUSED);
+      }
+      state = BROKER_AWAIT_TEARDOWN;
+      if (terminal > 0) {
+        response_clean = send_terminal_response(output, &observation);
+      } else if (terminal == 0) {
+        response_clean = send_response(output, LAUNCH_OPERATION,
+                                       STATUS_REFUSED, NULL, 0U);
+      } else {
+        response_clean = send_response(output, LAUNCH_OPERATION,
+                                       STATUS_RECOVERY_REQUIRED, NULL, 0U);
+      }
+      release_terminal_observation(&root, &observation);
+#if defined(OP_WINDOWS_PAUSE_AFTER_ADMISSION_TERMINAL_RESPONSE)
+      if (response_clean && terminal >= 0) diagnostic_pause();
+#endif
+      if (!response_clean || terminal < 0 || root.resource_ambiguous)
+        finish_active_admission(&root, &identity, execution, &folder_handle,
+                                &active, output, 0);
+      if (read_frame(input, &teardown, 0) != 1 ||
+          !canonical_frame_payload(&teardown) ||
+          teardown.operation != TEARDOWN_OPERATION ||
+          read_one(input, response) != 0)
+        finish_active_admission(&root, &identity, execution, &folder_handle,
+                                &active, output, 0);
+      finish_active_admission(&root, &identity, execution, &folder_handle,
+                              &active, output, 1);
+#endif
     }
     if (frame.operation == TEARDOWN_OPERATION && frame.length == 0U) {
       BYTE trailing;

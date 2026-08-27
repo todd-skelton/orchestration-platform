@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { copyFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,6 +21,10 @@ const temporaryRoots: string[] = [];
 const childScript = resolve(
   import.meta.dirname,
   "../../packages/conformance/src/iss002-isolated-walk-child.mjs",
+);
+const credentialScript = resolve(
+  import.meta.dirname,
+  "../../packages/conformance/src/linux-credential-status.mjs",
 );
 
 async function temporaryRoot(): Promise<string> {
@@ -90,6 +95,54 @@ afterEach(async () => {
 });
 
 describe("ISS-002 isolated walk protocol", () => {
+  test("keeps the copied RPC runner dependency-free with an exact credential verifier", async () => {
+    const [runnerSource, credentialSource] = await Promise.all([
+      readFile(childScript, "utf8"),
+      readFile(credentialScript, "utf8"),
+    ]);
+    const markedRegion = (source: string): string => {
+      const begin = "// BEGIN LINUX_CREDENTIAL_VERIFIER";
+      const end = "// END LINUX_CREDENTIAL_VERIFIER";
+      const start = source.indexOf(begin);
+      const finish = source.indexOf(end);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(finish).toBeGreaterThan(start);
+      return source.slice(start + begin.length, finish);
+    };
+    expect(markedRegion(runnerSource)).toBe(markedRegion(credentialSource));
+    expect(runnerSource).not.toMatch(/\bfrom\s+["']\./);
+    expect(runnerSource).not.toMatch(/\bimport\s*\(\s*["']\./);
+
+    const root = await temporaryRoot();
+    const copiedRunner = resolve(root, "rpc-runner.mjs");
+    const candidateModule = resolve(root, "candidate.mjs");
+    await copyFile(childScript, copiedRunner);
+    await writeFile(
+      candidateModule,
+      "export function validateAuthorityHistoryChain() { return []; }\n",
+      "utf8",
+    );
+    expect((await readdir(root)).sort()).toEqual(["candidate.mjs", "rpc-runner.mjs"]);
+    const child = spawn(process.execPath, [copiedRunner, pathToFileURL(candidateModule).href], {
+      cwd: root,
+      env: {},
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdout: Uint8Array[] = [];
+    const stderr: Uint8Array[] = [];
+    child.stdout.on("data", (chunk: Uint8Array) => stdout.push(Uint8Array.from(chunk)));
+    child.stderr.on("data", (chunk: Uint8Array) => stderr.push(Uint8Array.from(chunk)));
+    child.stdin.end(createIss002WalkChallenge().inputText);
+    const [code, signal] = (await once(child, "close")) as [number | null, NodeJS.Signals | null];
+    expect({
+      code,
+      signal,
+      stderr: Buffer.concat(stderr).toString("utf8"),
+      stdout: Buffer.concat(stdout).toString("utf8"),
+    }).toEqual({ code: 0, signal: null, stderr: "", stdout: '{"issues":[]}' });
+  });
+
   test("requires every Linux kernel credential and capability relation", () => {
     const uid = 1_000_001;
     const gid = 1_000_002;

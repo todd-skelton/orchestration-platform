@@ -1,21 +1,22 @@
 import { types as nodeTypes } from "node:util";
 
-const exactArrayPrototype = Array.prototype;
-const getOwnPropertyDescriptors = Object.getOwnPropertyDescriptors.bind(Object);
-const getPrototypeOf = Object.getPrototypeOf.bind(Object);
-const ownKeys = Reflect.ownKeys.bind(Reflect);
-const isArray = Array.isArray.bind(Array);
-const isProxy = nodeTypes.isProxy.bind(nodeTypes);
-const safeDecimal = /^(?:0|[1-9][0-9]*)$/;
-const maximumLinuxIdentity = 2_147_483_646;
-const minimumLinuxIdentity = 1_000_000;
+// BEGIN LINUX_CREDENTIAL_VERIFIER
+const credentialArrayPrototype = Array.prototype;
+const credentialDescriptors = Object.getOwnPropertyDescriptors.bind(Object);
+const credentialPrototype = Object.getPrototypeOf.bind(Object);
+const credentialOwnKeys = Reflect.ownKeys.bind(Reflect);
+const credentialIsArray = Array.isArray.bind(Array);
+const credentialIsProxy = nodeTypes.isProxy.bind(nodeTypes);
+const credentialSafeDecimal = /^(?:0|[1-9][0-9]*)$/;
+const credentialMaximumIdentity = 2_147_483_646;
+const credentialMinimumIdentity = 1_000_000;
 
-function detachedInput(input) {
+function detachedCredentialInput(input) {
   if (
     input === null ||
     typeof input !== "object" ||
-    isProxy(input) ||
-    ![Object.prototype, null].includes(getPrototypeOf(input))
+    credentialIsProxy(input) ||
+    ![Object.prototype, null].includes(credentialPrototype(input))
   )
     return undefined;
   const fields = [
@@ -28,8 +29,8 @@ function detachedInput(input) {
     "realUid",
     "statusText",
   ];
-  const descriptors = getOwnPropertyDescriptors(input);
-  const keys = ownKeys(descriptors);
+  const descriptors = credentialDescriptors(input);
+  const keys = credentialOwnKeys(descriptors);
   if (
     keys.some((key) => typeof key !== "string") ||
     keys.sort().join("\0") !== [...fields].sort().join("\0")
@@ -48,15 +49,15 @@ function detachedInput(input) {
     ![value.effectiveGid, value.effectiveUid, value.realGid, value.realUid].every((identity) =>
       Number.isSafeInteger(identity),
     ) ||
-    !isArray(value.groups) ||
-    isProxy(value.groups) ||
-    getPrototypeOf(value.groups) !== exactArrayPrototype
+    !credentialIsArray(value.groups) ||
+    credentialIsProxy(value.groups) ||
+    credentialPrototype(value.groups) !== credentialArrayPrototype
   )
     return undefined;
-  const groupDescriptors = getOwnPropertyDescriptors(value.groups);
+  const groupDescriptors = credentialDescriptors(value.groups);
   const lengthDescriptor = groupDescriptors.length;
   if (
-    ownKeys(groupDescriptors).join("\0") !== "0\0length" ||
+    credentialOwnKeys(groupDescriptors).join("\0") !== "0\0length" ||
     !lengthDescriptor ||
     !("value" in lengthDescriptor) ||
     lengthDescriptor.value !== 1 ||
@@ -71,7 +72,7 @@ function detachedInput(input) {
   return { ...value, groups: [groupDescriptors["0"].value] };
 }
 
-function statusField(statusText, name) {
+function credentialStatusField(statusText, name) {
   const prefix = `${name}:`;
   const values = statusText
     .split("\n")
@@ -80,20 +81,24 @@ function statusField(statusText, name) {
   return values.length === 1 ? values[0] : undefined;
 }
 
-export function verifyLinuxCredentialStatus(input) {
+function verifyLinuxCredentialStatus(input) {
   try {
-    const value = detachedInput(input);
-    if (!value || !safeDecimal.test(value.expectedUid) || !safeDecimal.test(value.expectedGid))
+    const value = detachedCredentialInput(input);
+    if (
+      !value ||
+      !credentialSafeDecimal.test(value.expectedUid) ||
+      !credentialSafeDecimal.test(value.expectedGid)
+    )
       return false;
     const uid = Number(value.expectedUid);
     const gid = Number(value.expectedGid);
     if (
       !Number.isSafeInteger(uid) ||
       !Number.isSafeInteger(gid) ||
-      uid < minimumLinuxIdentity ||
-      gid < minimumLinuxIdentity ||
-      uid > maximumLinuxIdentity ||
-      gid > maximumLinuxIdentity ||
+      uid < credentialMinimumIdentity ||
+      gid < credentialMinimumIdentity ||
+      uid > credentialMaximumIdentity ||
+      gid > credentialMaximumIdentity ||
       value.realUid !== uid ||
       value.effectiveUid !== uid ||
       value.realGid !== gid ||
@@ -102,16 +107,19 @@ export function verifyLinuxCredentialStatus(input) {
     )
       return false;
     if (
-      statusField(value.statusText, "Uid") !== [uid, uid, uid, uid].join("\t") ||
-      statusField(value.statusText, "Gid") !== [gid, gid, gid, gid].join("\t") ||
-      statusField(value.statusText, "Groups") !== "" ||
-      statusField(value.statusText, "NoNewPrivs") !== "1"
+      credentialStatusField(value.statusText, "Uid") !== [uid, uid, uid, uid].join("\t") ||
+      credentialStatusField(value.statusText, "Gid") !== [gid, gid, gid, gid].join("\t") ||
+      credentialStatusField(value.statusText, "Groups") !== "" ||
+      credentialStatusField(value.statusText, "NoNewPrivs") !== "1"
     )
       return false;
     for (const field of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"])
-      if (!/^0+$/.test(statusField(value.statusText, field) ?? "")) return false;
+      if (!/^0+$/.test(credentialStatusField(value.statusText, field) ?? "")) return false;
     return true;
   } catch {
     return false;
   }
 }
+// END LINUX_CREDENTIAL_VERIFIER
+
+export { verifyLinuxCredentialStatus };

@@ -197,9 +197,9 @@ describe("private Windows isolation broker bootstrap", () => {
     expect(image.subarray(peOffset, peOffset + 4).toString("binary")).toBe("PE\0\0");
     expect(image.readUInt16LE(peOffset + 4)).toBe(0x8664);
     expect(image.readUInt16LE(peOffset + 24)).toBe(0x20b);
-    expect(image.byteLength).toBe(90112);
+    expect(image.byteLength).toBe(95232);
     expect(createHash("sha256").update(image).digest("hex")).toBe(
-      "712f0280cfbda59582849efc441bc458fcac33ee69857ae764efd969d75fa504",
+      "4df6df24b316e2b534dfa09dc9334d33fe1d9b17818c9536a40e35d011333aa8",
     );
     const census = peCensus(image);
     expect(census).toEqual({
@@ -217,6 +217,7 @@ describe("private Windows isolation broker bootstrap", () => {
             "CreateJobObjectW",
             "CreatePipe",
             "CreateProcessW",
+            "CreateThread",
             "DeleteProcThreadAttributeList",
             "ExitProcess",
             "FindClose",
@@ -240,6 +241,7 @@ describe("private Windows isolation broker bootstrap", () => {
             "GetModuleFileNameW",
             "GetProcessHeap",
             "GetStdHandle",
+            "GetTickCount64",
             "GetWindowsDirectoryW",
             "HeapAlloc",
             "HeapFree",
@@ -249,11 +251,13 @@ describe("private Windows isolation broker bootstrap", () => {
             "OpenJobObjectW",
             "QueryInformationJobObject",
             "ReadFile",
+            "ResumeThread",
             "SetFileInformationByHandle",
             "SetFilePointer",
             "SetHandleInformation",
             "SetInformationJobObject",
             "SetLastError",
+            "Sleep",
             "TerminateJobObject",
             "UpdateProcThreadAttribute",
             "WaitForSingleObject",
@@ -345,7 +349,13 @@ describe("private Windows isolation broker bootstrap", () => {
     ])
       expect(source).not.toContain(forbidden);
     expect(source.match(/\bCreateProcessW\(/g)).toHaveLength(2);
-    expect(source).not.toContain("ResumeThread");
+    expect(source.match(/\bResumeThread\(/g)).toHaveLength(2);
+    expect(source.match(/L"--preserve-symlinks"/g)).toHaveLength(1);
+    expect(source.match(/L"--preserve-symlinks-main"/g)).toHaveLength(1);
+    expect(source.indexOf('L"--preserve-symlinks"')).toBeLessThan(
+      source.indexOf('L"--preserve-symlinks-main"'),
+    );
+    expect(source).not.toContain("NODE_OPTIONS");
     expect(source).toContain('#error "windows-isolation-broker.c is Windows-only"');
     expect(source).toContain('#error "windows-isolation-broker.c requires X64"');
   });
@@ -425,6 +435,7 @@ describe("private Windows isolation broker bootstrap", () => {
         stdout: Buffer.alloc(0),
       });
     },
+    120_000,
   );
 
   test.runIf(process.platform === "win32")(
@@ -486,6 +497,7 @@ describe("private Windows isolation broker bootstrap", () => {
         stdout: Buffer.alloc(0),
       });
     },
+    120_000,
   );
 
   test.runIf(process.platform === "win32")(
@@ -1244,7 +1256,10 @@ describe("private Windows isolation broker bootstrap", () => {
     "refuses wrong-order operations and nonexistent authenticated state roots",
     () => {
       for (const operation of [2, 3]) {
-        const request = brokerFrame(operation);
+        const request = brokerFrame(
+          operation,
+          operation === 2 ? Buffer.from("x", "utf8") : undefined,
+        );
         const result = spawnSync(imagePath, ["SERVE"], {
           input: request,
           windowsHide: true,
@@ -1296,7 +1311,7 @@ describe("private Windows isolation broker bootstrap", () => {
         return frame;
       });
       const oversized = brokerFrame(1);
-      oversized.writeUInt32LE(1024 * 1024 + 1, 8);
+      oversized.writeUInt32LE(4 * 1024 * 1024 + 1, 8);
       const truncated = brokerFrame(1);
       truncated.writeUInt32LE(1, 8);
       const partialMultiChunk = brokerFrame(1, Buffer.alloc(4096));

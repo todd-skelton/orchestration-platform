@@ -31,7 +31,11 @@
 #undef QueryInformationJobObject
 #undef TerminateJobObject
 #undef WaitForSingleObject
+#undef WriteFile
 #undef ReadFile
+#undef CreateThread
+#undef ResumeThread
+#undef GetTickCount64
 #undef HeapFree
 #undef HeapAlloc
 #undef FreeSid
@@ -96,7 +100,7 @@ static BYTE fixture_admission_profiles[4];
 static BYTE fixture_admission_original[4][4];
 static BYTE fixture_admission_grant[4] = {9U, 8U, 7U, 6U};
 static BYTE fixture_admission_third[4] = {6U, 7U, 8U, 9U};
-static BYTE fixture_admission_order[64];
+static BYTE fixture_admission_order[128];
 static DWORD fixture_admission_order_count;
 static DWORD fixture_admission_fail_call;
 static DWORD fixture_admission_call;
@@ -133,6 +137,41 @@ static int fixture_admission_track_allocations;
 static DWORD fixture_admission_allocations;
 static DWORD fixture_admission_attribute_deletes;
 static DWORD fixture_admission_pipe_drains;
+static int fixture_admission_terminal_mode;
+static int fixture_admission_terminal_timeout;
+static int fixture_admission_terminal_killed;
+static DWORD fixture_admission_terminal_exit_code;
+static DWORD fixture_admission_resume_result;
+static DWORD fixture_admission_resume_count;
+static ULONGLONG fixture_admission_tick;
+static DWORD fixture_terminal_allocation_call;
+static DWORD fixture_terminal_allocation_failure;
+static DWORD fixture_terminal_thread_call;
+static DWORD fixture_terminal_thread_failure;
+static DWORD fixture_terminal_thread_zero_identifier;
+static HANDLE fixture_terminal_thread_handles[TERMINAL_WORKER_COUNT];
+static DWORD fixture_terminal_wait_failure_kind;
+static DWORD fixture_terminal_write_fault;
+static DWORD fixture_terminal_read_fault[2];
+static DWORD fixture_terminal_read_total[2];
+static HANDLE fixture_terminal_pipe_handles[TERMINAL_WORKER_COUNT];
+static LPVOID fixture_terminal_buffers[2];
+static DWORD fixture_terminal_buffer_frees;
+static DWORD fixture_terminal_tick_fault;
+static DWORD fixture_terminal_tick_call;
+static HANDLE fixture_terminal_response_handle;
+static DWORD fixture_terminal_response_fault;
+static int fixture_terminal_order_mode;
+static BYTE fixture_terminal_order[128];
+static DWORD fixture_terminal_order_count;
+static DWORD fixture_terminal_close_fault;
+static DWORD fixture_terminal_close_case;
+static DWORD fixture_terminal_pipe_close_calls[TERMINAL_WORKER_COUNT];
+static DWORD fixture_terminal_thread_close_calls[TERMINAL_WORKER_COUNT];
+static DWORD fixture_terminal_buffer_free_failure;
+static DWORD fixture_terminal_buffer_free_attempts[2];
+static DWORD fixture_terminal_requested_close_fault;
+static DWORD fixture_terminal_requested_buffer_free_failure;
 static const WCHAR fixture_admission_module_path[] =
     L"\\\\?\\C:\\fixture-broker.exe";
 static PROFILE_IDENTITY *fixture_admission_identity;
@@ -266,6 +305,26 @@ static int fixture_admission_access(ROOT_CUSTODY *root, HANDLE token,
   if (token != ADMISSION_FIXTURE_IMPERSONATION_TOKEN || object == NULL ||
       desired == 0U || (expected_allowed != 0 && expected_allowed != 1))
     return 0;
+  if (fixture_admission_terminal_mode) {
+    DWORD object_index = (ordinal - 1U) / 7U;
+    DWORD right_index = (ordinal - 1U) % 7U;
+    static const DWORD revoked_rights[] = {
+      GENERIC_READ, GENERIC_EXECUTE, GENERIC_WRITE, DELETE, WRITE_DAC,
+      WRITE_OWNER, ACCESS_SYSTEM_SECURITY
+    };
+    expected_object = object_index < EXECUTION_ROLE_COUNT
+                          ? fixture_admission_execution->targets[object_index].handle
+                          : fixture_admission_execution->root.handle;
+    expected_right = revoked_rights[right_index];
+    if (ordinal > 28U || object != expected_object || desired != expected_right ||
+        expected_allowed != 0)
+      return 0;
+    fixture_admission_access_count += 1U;
+    fixture_admission_order[fixture_admission_order_count++] = 93U;
+    if (fixture_terminal_order_mode)
+      fixture_terminal_order[fixture_terminal_order_count++] = 93U;
+    return fixture_admission_access_count != fixture_admission_access_fail;
+  }
   if (ordinal <= 21U) {
     DWORD role = (ordinal - 1U) / 7U;
     DWORD member = (ordinal - 1U) % 7U;
@@ -293,6 +352,10 @@ static int fixture_admission_access(ROOT_CUSTODY *root, HANDLE token,
       expected_allowed != expected_result)
     return 0;
   fixture_admission_access_count += 1U;
+  if (fixture_admission_terminal_mode && expected_allowed == 0)
+    fixture_admission_order[fixture_admission_order_count++] = 93U;
+  if (fixture_terminal_order_mode && expected_allowed == 0)
+    fixture_terminal_order[fixture_terminal_order_count++] = 93U;
   return fixture_admission_access_count != fixture_admission_access_fail;
 }
 
@@ -307,6 +370,27 @@ static int fixture_admission_open(PCWSTR path, DWORD access, int directory,
       (directory != 0 && directory != 1) ||
       (expected_allowed != 0 && expected_allowed != 1))
     return 0;
+  if (fixture_admission_terminal_mode) {
+    DWORD object_index = (ordinal - 1U) / 7U;
+    DWORD right_index = (ordinal - 1U) % 7U;
+    static const DWORD revoked_rights[] = {
+      GENERIC_READ, GENERIC_EXECUTE, GENERIC_WRITE, DELETE, WRITE_DAC,
+      WRITE_OWNER, ACCESS_SYSTEM_SECURITY
+    };
+    expected_path = object_index < EXECUTION_ROLE_COUNT
+                        ? fixture_admission_execution->targets[object_index].path
+                        : fixture_admission_execution->root.path;
+    expected_access = revoked_rights[right_index];
+    expected_directory = object_index == EXECUTION_ROLE_COUNT;
+    if (ordinal > 28U || path != expected_path || access != expected_access ||
+        directory != expected_directory || expected_allowed != 0)
+      return 0;
+    fixture_admission_open_count += 1U;
+    fixture_admission_order[fixture_admission_order_count++] = 94U;
+    if (fixture_terminal_order_mode)
+      fixture_terminal_order[fixture_terminal_order_count++] = 94U;
+    return fixture_admission_open_count != fixture_admission_open_fail;
+  }
   if (ordinal == 1U) {
     expected_path = fixture_admission_execution->root.path;
     expected_access = GENERIC_READ | GENERIC_EXECUTE;
@@ -349,6 +433,10 @@ static int fixture_admission_open(PCWSTR path, DWORD access, int directory,
       expected_allowed != expected_result)
     return 0;
   fixture_admission_open_count += 1U;
+  if (fixture_admission_terminal_mode && expected_allowed == 0)
+    fixture_admission_order[fixture_admission_order_count++] = 94U;
+  if (fixture_terminal_order_mode && expected_allowed == 0)
+    fixture_terminal_order[fixture_terminal_order_count++] = 94U;
   return fixture_admission_open_count != fixture_admission_open_fail;
 }
 
@@ -356,6 +444,10 @@ static int fixture_admission_scratch(ROOT_CUSTODY *root,
                                      const PROFILE_IDENTITY *identity) {
   (void)root;
   (void)identity;
+  if (fixture_admission_terminal_mode)
+    fixture_admission_order[fixture_admission_order_count++] = 83U;
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] = 83U;
   return fixture_admission_token_fault != 17U;
 }
 
@@ -507,6 +599,11 @@ static BOOL WINAPI fixture_admission_CreateProcessW(
 
 static BOOL WINAPI fixture_admission_GetExitCodeProcess(HANDLE process,
                                                         DWORD *code) {
+  if (fixture_admission_terminal_mode) {
+    if (process != ADMISSION_FIXTURE_PROCESS || code == NULL) return FALSE;
+    *code = fixture_admission_terminal_exit_code;
+    return TRUE;
+  }
   if (!fixture_admission_launch_step() ||
       process != ADMISSION_FIXTURE_PROCESS || code == NULL)
     return FALSE;
@@ -516,6 +613,30 @@ static BOOL WINAPI fixture_admission_GetExitCodeProcess(HANDLE process,
 
 static BOOL WINAPI fixture_admission_CloseHandle(HANDLE handle) {
   int resource_failure = 0;
+  if (fixture_admission_terminal_mode) {
+    for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U) {
+      if (handle == fixture_terminal_pipe_handles[index]) {
+        DWORD transient = index + 1U;
+        DWORD persistent = index + 4U;
+        fixture_terminal_pipe_close_calls[index] += 1U;
+        if (fixture_terminal_close_fault == transient) {
+          fixture_terminal_close_fault = 0U;
+          return FALSE;
+        }
+        if (fixture_terminal_close_fault == persistent) return FALSE;
+      }
+      if (handle == fixture_terminal_thread_handles[index]) {
+        DWORD transient = index + 7U;
+        DWORD persistent = index + 10U;
+        fixture_terminal_thread_close_calls[index] += 1U;
+        if (fixture_terminal_close_fault == transient) {
+          fixture_terminal_close_fault = 0U;
+          return FALSE;
+        }
+        if (fixture_terminal_close_fault == persistent) return FALSE;
+      }
+    }
+  }
   if ((fixture_admission_resource_kind == 3U ||
        fixture_admission_resource_kind == 4U) && handle != NULL &&
       handle != INVALID_HANDLE_VALUE) {
@@ -529,6 +650,15 @@ static BOOL WINAPI fixture_admission_CloseHandle(HANDLE handle) {
     if (fixture_admission_job_fault == 25U) return FALSE;
   }
   if (resource_failure) return FALSE;
+  if (fixture_admission_terminal_mode) {
+    if (handle == ADMISSION_FIXTURE_PROCESS ||
+        handle == ADMISSION_FIXTURE_THREAD ||
+        handle == ADMISSION_FIXTURE_JOB ||
+        handle == ADMISSION_FIXTURE_PROCESS_TOKEN ||
+        handle == ADMISSION_FIXTURE_IMPERSONATION_TOKEN)
+      return TRUE;
+    return CloseHandle(handle);
+  }
   return handle != NULL && handle != INVALID_HANDLE_VALUE &&
          fixture_admission_launch_step();
 }
@@ -960,15 +1090,43 @@ static BOOL WINAPI fixture_admission_QueryInformationJobObject(
 static BOOL WINAPI fixture_admission_TerminateJobObject(HANDLE job,
                                                         DWORD code) {
   if (job != ADMISSION_FIXTURE_JOB ||
-      code != EXIT_LIFECYCLE_NOT_IMPLEMENTED ||
+      (code != EXIT_LIFECYCLE_NOT_IMPLEMENTED &&
+       code != EXIT_PROTOCOL_REFUSED) ||
       fixture_admission_job_fault == 24U)
     return FALSE;
   fixture_admission_job_active = 0U;
+  fixture_admission_terminal_killed = 1;
+  if (fixture_admission_terminal_mode)
+    fixture_admission_order[fixture_admission_order_count++] = 82U;
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] = 82U;
   return TRUE;
 }
 
 static DWORD WINAPI fixture_admission_WaitForSingleObject(HANDLE handle,
                                                           DWORD timeout) {
+  if (fixture_admission_terminal_mode) {
+    if (handle == ADMISSION_FIXTURE_PROCESS) {
+      DWORD result = fixture_admission_terminal_timeout &&
+                             !fixture_admission_terminal_killed
+                         ? WAIT_TIMEOUT
+                         : WAIT_OBJECT_0;
+      return fixture_terminal_wait_failure_kind == 1U ? 0xffffffffU : result;
+    }
+    if (handle == ADMISSION_FIXTURE_JOB) return WAIT_OBJECT_0;
+    {
+      DWORD result = WaitForSingleObject(
+          handle, timeout < TERMINAL_CLEANUP_MILLISECONDS
+                      ? TERMINAL_CLEANUP_MILLISECONDS
+                      : timeout);
+      DWORD failure = 0U;
+      for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U)
+        if (handle == fixture_terminal_thread_handles[index])
+          failure = index + 2U;
+      return failure == fixture_terminal_wait_failure_kind ? 0xffffffffU :
+                                                              result;
+    }
+  }
   return handle == ADMISSION_FIXTURE_PROCESS && timeout == 5000U ?
              WAIT_OBJECT_0 :
              WAIT_TIMEOUT;
@@ -977,6 +1135,37 @@ static DWORD WINAPI fixture_admission_WaitForSingleObject(HANDLE handle,
 static BOOL WINAPI fixture_admission_ReadFile(HANDLE handle, LPVOID bytes,
                                               DWORD length, DWORD *read,
                                               LPVOID overlapped) {
+  if (fixture_admission_terminal_mode) {
+    DWORD stream = handle == fixture_terminal_pipe_handles[TERMINAL_WORKER_STDERR]
+                       ? 1U
+                       : 0U;
+    DWORD fault = fixture_terminal_read_fault[stream];
+    if (fault == 1U && length > 1U) length = 1U;
+    if (fault == 2U) {
+      *read = 0U;
+      return TRUE;
+    }
+    if (fault == 3U) {
+      *read = 0U;
+      SetLastError(ERROR_ACCESS_DENIED);
+      return FALSE;
+    }
+    if (fault == 4U || fault == 5U) {
+      DWORD bound = TERMINAL_STREAM_MAXIMUM + (fault == 4U ? 1U : 0U);
+      DWORD remaining = bound - fixture_terminal_read_total[stream];
+      DWORD returned = remaining < length ? remaining : length;
+      if (remaining == 0U) {
+        *read = 0U;
+        SetLastError(ERROR_BROKEN_PIPE);
+        return FALSE;
+      }
+      zero_bytes(bytes, returned);
+      fixture_terminal_read_total[stream] += returned;
+      *read = returned;
+      return TRUE;
+    }
+    return ReadFile(handle, bytes, length, read, overlapped);
+  }
   (void)bytes;
   (void)length;
   if (handle == NULL || read == NULL || overlapped != NULL ||
@@ -990,9 +1179,135 @@ static BOOL WINAPI fixture_admission_ReadFile(HANDLE handle, LPVOID bytes,
   return FALSE;
 }
 
+static BOOL WINAPI fixture_admission_WriteFile(HANDLE handle, LPCVOID bytes,
+                                               DWORD length, DWORD *written,
+                                               LPVOID overlapped) {
+  if (fixture_admission_terminal_mode &&
+      handle == fixture_terminal_pipe_handles[TERMINAL_WORKER_STDIN]) {
+    if (fixture_terminal_write_fault == 1U && length > 1U) length = 1U;
+    if (fixture_terminal_write_fault == 2U) {
+      *written = 0U;
+      return TRUE;
+    }
+    if (fixture_terminal_write_fault == 3U ||
+        fixture_terminal_write_fault == 4U) {
+      *written = 0U;
+      SetLastError(fixture_terminal_write_fault == 3U ? ERROR_BROKEN_PIPE :
+                                                        ERROR_ACCESS_DENIED);
+      return FALSE;
+    }
+    if (fixture_terminal_write_fault == 5U) {
+      *written = length > 4096U ? 4096U : length;
+      return TRUE;
+    }
+  }
+  if (fixture_admission_terminal_mode &&
+      handle == fixture_terminal_response_handle) {
+    if (fixture_terminal_response_fault == 1U && length > 1U) length = 1U;
+    if (fixture_terminal_response_fault == 2U) {
+      *written = 0U;
+      return TRUE;
+    }
+    if (fixture_terminal_response_fault == 3U) {
+      *written = 0U;
+      SetLastError(ERROR_ACCESS_DENIED);
+      return FALSE;
+    }
+  }
+  return WriteFile(handle, bytes, length, written, overlapped);
+}
+
+static HANDLE WINAPI fixture_admission_CreateThread(
+    SECURITY_ATTRIBUTES *attributes, SIZE_T stack_bytes,
+    LPTHREAD_START_ROUTINE routine, LPVOID context, DWORD flags,
+    DWORD *identifier) {
+  HANDLE thread;
+  if (fixture_admission_terminal_mode) {
+    DWORD call = ++fixture_terminal_thread_call;
+    if (call == fixture_terminal_thread_failure) return NULL;
+    thread = CreateThread(attributes, stack_bytes, routine, context, flags,
+                          identifier);
+    if (thread != NULL && context != NULL) {
+      TERMINAL_WORKER *worker = (TERMINAL_WORKER *)context;
+      fixture_terminal_thread_handles[worker->kind] = thread;
+    }
+    if (call == fixture_terminal_thread_zero_identifier && identifier != NULL)
+      *identifier = 0U;
+    return thread;
+  }
+  return CreateThread(attributes, stack_bytes, routine, context, flags,
+                      identifier);
+}
+
+static DWORD WINAPI fixture_admission_ResumeThread(HANDLE thread) {
+  if (!fixture_admission_terminal_mode) return ResumeThread(thread);
+  fixture_admission_resume_count += 1U;
+  return thread == ADMISSION_FIXTURE_THREAD ? fixture_admission_resume_result
+                                             : 0xffffffffU;
+}
+
+static ULONGLONG WINAPI fixture_admission_GetTickCount64(void) {
+  if (!fixture_admission_terminal_mode) return GetTickCount64();
+  fixture_terminal_tick_call += 1U;
+  if (fixture_terminal_tick_fault >= 2U &&
+      fixture_terminal_tick_fault <= 4U) {
+    if (fixture_terminal_tick_call == 1U) return 100U;
+    if (fixture_terminal_tick_call == 2U)
+      return fixture_terminal_tick_fault == 2U
+                 ? 5100U
+                 : (fixture_terminal_tick_fault == 3U ? 5099U : 5101U);
+    return 5099U;
+  }
+  if (fixture_terminal_tick_fault == 5U) {
+    if (fixture_terminal_tick_call == 1U) return 100U;
+    if (fixture_terminal_tick_call < 10U)
+      return 100U + fixture_terminal_tick_call;
+    if (fixture_terminal_tick_call == 10U) return 5099U;
+    return 5100U + fixture_terminal_tick_call - 11U;
+  }
+  if (fixture_terminal_tick_fault >= 6U &&
+      fixture_terminal_tick_fault <= 8U) {
+    if (fixture_terminal_tick_call == 1U) return 100U;
+    if (fixture_terminal_tick_call < 10U)
+      return 100U + fixture_terminal_tick_call;
+    if (fixture_terminal_tick_call == 10U) return 5098U;
+    if (fixture_terminal_tick_call == 11U) return 5099U;
+    if (fixture_terminal_tick_call == 12U)
+      return fixture_terminal_tick_fault == 6U
+                 ? 5100U
+                 : (fixture_terminal_tick_fault == 7U ? 5101U : 99U);
+    return 5100U + fixture_terminal_tick_call - 12U;
+  }
+  if (fixture_terminal_tick_fault >= 9U &&
+      fixture_terminal_tick_fault <= 10U) {
+    if (fixture_terminal_tick_call == 1U) return 100U;
+    if (fixture_terminal_tick_call == 2U) return 5099U;
+    if (fixture_terminal_tick_call == 3U)
+      return fixture_terminal_tick_fault == 9U ? 5100U : 5101U;
+    return 5100U + fixture_terminal_tick_call - 3U;
+  }
+  if (fixture_terminal_tick_fault == 1U && fixture_terminal_tick_call == 2U &&
+      fixture_admission_tick > 1U)
+    return fixture_admission_tick - 2U;
+  return fixture_admission_tick++;
+}
+
 static BOOL WINAPI fixture_admission_HeapFree(HANDLE heap, DWORD flags,
                                               LPVOID value) {
-  BOOL result = HeapFree(heap, flags, value);
+  BOOL result;
+  for (DWORD index = 0U; index < 2U; index += 1U)
+    if (fixture_admission_terminal_mode &&
+        value == fixture_terminal_buffers[index]) {
+      fixture_terminal_buffer_free_attempts[index] += 1U;
+      if (fixture_terminal_buffer_free_failure == index + 1U ||
+          fixture_terminal_buffer_free_failure == 3U)
+        return FALSE;
+    }
+  result = HeapFree(heap, flags, value);
+  if (fixture_admission_terminal_mode &&
+      (value == fixture_terminal_buffers[0] ||
+       value == fixture_terminal_buffers[1]))
+    fixture_terminal_buffer_frees += 1U;
   if (fixture_admission_resource_kind == 1U && value != NULL) {
     fixture_admission_resource_call += 1U;
     if (fixture_admission_resource_call ==
@@ -1004,8 +1319,16 @@ static BOOL WINAPI fixture_admission_HeapFree(HANDLE heap, DWORD flags,
 
 static LPVOID WINAPI fixture_admission_HeapAlloc(HANDLE heap, DWORD flags,
                                                  SIZE_T bytes) {
+  LPVOID value;
   if (fixture_admission_track_allocations)
     fixture_admission_allocations += 1U;
+  if (fixture_admission_terminal_mode && bytes == TERMINAL_STREAM_MAXIMUM) {
+    DWORD call = ++fixture_terminal_allocation_call;
+    if (call == fixture_terminal_allocation_failure) return NULL;
+    value = HeapAlloc(heap, flags, bytes);
+    if (call <= 2U) fixture_terminal_buffers[call - 1U] = value;
+    return value;
+  }
   return HeapAlloc(heap, flags, bytes);
 }
 
@@ -1057,6 +1380,9 @@ static int fixture_admission_persist(ROOT_CUSTODY *root,
   fixture_admission_persisted[fixture_admission_persisted_count++] = kind;
   fixture_admission_order[fixture_admission_order_count++] =
       (BYTE)(60U + kind);
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] =
+        (BYTE)(60U + kind);
   if (kind == fixture_admission_persist_failure) return 0;
   admission->phase = kind;
   admission->prior_digest[0] = kind;
@@ -1122,6 +1448,8 @@ static int fixture_admission_clear_pending(ROOT_CUSTODY *root,
   (void)root;
   (void)identity;
   fixture_admission_order[fixture_admission_order_count++] = 81U;
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] = 81U;
   return fixture_admission_component_failure != 7U;
 }
 
@@ -1133,6 +1461,10 @@ static int fixture_admission_cleanup_runtime(
   (void)plan;
   (void)runtime;
   fixture_admission_cleanup_count += 1U;
+  if (fixture_admission_terminal_mode)
+    fixture_admission_order[fixture_admission_order_count++] = 95U;
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] = 95U;
   return fixture_admission_component_failure != 5U;
 }
 
@@ -1141,6 +1473,12 @@ static int fixture_admission_restore(ROOT_CUSTODY *root,
   (void)root;
   (void)execution;
   fixture_admission_restore_count += 1U;
+  if (fixture_admission_terminal_mode) {
+    fixture_admission_order[fixture_admission_order_count++] = 96U;
+    zero_bytes(fixture_admission_profiles, sizeof(fixture_admission_profiles));
+  }
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] = 96U;
   return fixture_admission_component_failure != 6U;
 }
 
@@ -1148,6 +1486,8 @@ static int fixture_admission_release_plan(ROOT_CUSTODY *root,
                                           ADMISSION_PLAN *plan) {
   (void)root;
   fixture_admission_order[fixture_admission_order_count++] = 84U;
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] = 84U;
   zero_bytes(plan, sizeof(*plan));
   return 1;
 }
@@ -1205,6 +1545,8 @@ static int fixture_admission_scratch_absent(
   (void)root;
   (void)identity;
   fixture_admission_order[fixture_admission_order_count++] = 83U;
+  if (fixture_terminal_order_mode)
+    fixture_terminal_order[fixture_terminal_order_count++] = 83U;
   return 1;
 }
 
@@ -1472,6 +1814,77 @@ static int fixture_admission_launch_matrix(PROFILE_IDENTITY *identity) {
   return 1;
 }
 
+static int fixture_admission_expected_launch_digest(
+    ROOT_CUSTODY *root, const PROFILE_IDENTITY *identity,
+    const ADMISSION_CUSTODY *admission, const ADMISSION_PLAN *plan,
+    BYTE digest[32]) {
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  BYTE *material;
+  DWORD cursor = 0U;
+  DWORD command_units = (DWORD)wide_length(plan->command_line);
+  DWORD length;
+  zero_bytes(&limits, sizeof(limits));
+  limits.BasicLimitInformation.LimitFlags =
+      JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  length = (DWORD)ascii_length("op.windows-admission-launch/v1") + 1U +
+           32U + 2U + (DWORD)admission->job_name_units * 2U + 4U +
+           plan->job_security_length + 4U + sizeof(limits) + 4U +
+           (DWORD)wide_length(plan->application) * 2U + 4U +
+           command_units * 2U + 4U + (DWORD)wide_length(plan->cwd) * 2U +
+           4U + plan->environment_units * 2U + 20U + 4U;
+  material = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, length);
+  if (material == NULL) return 0;
+  copy_bytes(material + cursor, "op.windows-admission-launch/v1",
+             ascii_length("op.windows-admission-launch/v1") + 1U);
+  cursor += (DWORD)ascii_length("op.windows-admission-launch/v1") + 1U;
+  copy_bytes(material + cursor, identity->token, 32U);
+  cursor += 32U;
+  write_u16(material + cursor, admission->job_name_units);
+  cursor += 2U;
+  copy_bytes(material + cursor, admission->job_name,
+             (DWORD)admission->job_name_units * 2U);
+  cursor += (DWORD)admission->job_name_units * 2U;
+  write_u32(material + cursor, plan->job_security_length);
+  cursor += 4U;
+  copy_bytes(material + cursor, plan->job_security,
+             plan->job_security_length);
+  cursor += plan->job_security_length;
+  write_u32(material + cursor, sizeof(limits));
+  cursor += 4U;
+  copy_bytes(material + cursor, &limits, sizeof(limits));
+  cursor += sizeof(limits);
+  {
+    const WCHAR *values[3] = {
+      plan->application, fixture_admission_expected_command, plan->cwd
+    };
+    for (DWORD index = 0U; index < 3U; index += 1U) {
+      DWORD bytes = (DWORD)wide_length(values[index]) * 2U;
+      write_u32(material + cursor, bytes);
+      cursor += 4U;
+      copy_bytes(material + cursor, values[index], bytes);
+      cursor += bytes;
+    }
+  }
+  write_u32(material + cursor, plan->environment_units * 2U);
+  cursor += 4U;
+  copy_bytes(material + cursor, fixture_admission_expected_environment,
+             plan->environment_units * 2U);
+  cursor += plan->environment_units * 2U;
+  copy_bytes(material + cursor, "stdin\0stdout\0stderr", 20U);
+  cursor += 20U;
+  write_u32(material + cursor, plan->creation_flags);
+  cursor += 4U;
+  if (cursor != length || !sha256(material, length, digest,
+                                  &root->resource_ambiguous)) {
+    if (!HeapFree(GetProcessHeap(), 0U, material))
+      root->resource_ambiguous = 1;
+    return 0;
+  }
+  if (!HeapFree(GetProcessHeap(), 0U, material))
+    root->resource_ambiguous = 1;
+  return !root->resource_ambiguous;
+}
+
 static int fixture_admission_canonical_plan_matrix(
     PROFILE_IDENTITY *identity, PSID stable, DWORD stable_length) {
   ROOT_CUSTODY *root = &fixture_admission_test_root;
@@ -1488,6 +1901,7 @@ static int fixture_admission_canonical_plan_matrix(
   DWORD environment_cursor = 0U;
   WCHAR windows[PATH_MAX_UNITS + 1U];
   DWORD windows_units;
+  BYTE expected_launch_digest[32];
   int valid = 0;
   static const WCHAR *target_names[] = {
     L"node.exe", L"rpc-runner.mjs", L"candidate.mjs"
@@ -1559,6 +1973,9 @@ static int fixture_admission_canonical_plan_matrix(
       !append_wide(fixture_admission_expected_command, 4096U,
                    &command_cursor, execution->targets[0].path) ||
       !append_wide(fixture_admission_expected_command, 4096U,
+                   &command_cursor,
+                   L"\" \"--preserve-symlinks\" \"--preserve-symlinks-main") ||
+      !append_wide(fixture_admission_expected_command, 4096U,
                    &command_cursor, L"\" \"") ||
       !append_wide(fixture_admission_expected_command, 4096U,
                    &command_cursor, execution->targets[1].path) ||
@@ -1592,6 +2009,10 @@ static int fixture_admission_canonical_plan_matrix(
       !equal_bytes(plan->environment,
                    fixture_admission_expected_environment,
                    plan->environment_units * 2U))
+    goto done;
+  if (!fixture_admission_expected_launch_digest(
+          root, identity, &admission, plan, expected_launch_digest) ||
+      !equal_bytes(expected_launch_digest, admission.launch_digest, 32U))
     goto done;
   fixture_admission_matrix_stage = 184U;
   fixture_admission_identity = identity;
@@ -1915,11 +2336,11 @@ static int fixture_admission_outer_recovery_matrix(
   EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
   JOURNAL_GROUP group;
   static const BYTE recovery_order[] = {
-    86U, 87U, 88U, 85U, 89U, 81U, 66U, 82U, 20U, 21U, 22U,
+    86U, 87U, 88U, 85U, 89U, 82U, 81U, 66U, 20U, 21U, 22U,
     23U, 91U, 92U, 91U, 91U, 91U, 83U, 81U, 67U, 84U
   };
   static const BYTE durable_recovery_order[] = {
-    86U, 87U, 88U, 85U, 89U, 81U, 82U, 20U, 21U, 22U,
+    86U, 87U, 88U, 85U, 89U, 82U, 81U, 20U, 21U, 22U,
     23U, 91U, 92U, 91U, 91U, 91U, 83U, 81U, 67U, 84U
   };
   zero_bytes(root, sizeof(*root));
@@ -1977,6 +2398,740 @@ static int fixture_admission_outer_recovery_matrix(
   return 1;
 }
 
+static void fixture_terminal_fault_reset(void) {
+  fixture_admission_terminal_mode = 1;
+  fixture_admission_order_count = 0U;
+  fixture_terminal_allocation_call = 0U;
+  fixture_terminal_allocation_failure = 0U;
+  fixture_terminal_thread_call = 0U;
+  fixture_terminal_thread_failure = 0U;
+  fixture_terminal_thread_zero_identifier = 0U;
+  zero_bytes(fixture_terminal_thread_handles,
+             sizeof(fixture_terminal_thread_handles));
+  fixture_terminal_wait_failure_kind = 0U;
+  fixture_terminal_write_fault = 0U;
+  zero_bytes(fixture_terminal_read_fault, sizeof(fixture_terminal_read_fault));
+  zero_bytes(fixture_terminal_read_total, sizeof(fixture_terminal_read_total));
+  zero_bytes(fixture_terminal_pipe_handles,
+             sizeof(fixture_terminal_pipe_handles));
+  zero_bytes(fixture_terminal_buffers, sizeof(fixture_terminal_buffers));
+  fixture_terminal_buffer_frees = 0U;
+  fixture_terminal_tick_fault = 0U;
+  fixture_terminal_tick_call = 0U;
+  fixture_terminal_response_handle = NULL;
+  fixture_terminal_response_fault = 0U;
+  fixture_terminal_close_fault = fixture_terminal_requested_close_fault;
+  fixture_terminal_close_case = fixture_terminal_requested_close_fault;
+  zero_bytes(fixture_terminal_pipe_close_calls,
+             sizeof(fixture_terminal_pipe_close_calls));
+  zero_bytes(fixture_terminal_thread_close_calls,
+             sizeof(fixture_terminal_thread_close_calls));
+  fixture_terminal_buffer_free_failure =
+      fixture_terminal_requested_buffer_free_failure;
+  fixture_terminal_requested_close_fault = 0U;
+  fixture_terminal_requested_buffer_free_failure = 0U;
+  zero_bytes(fixture_terminal_buffer_free_attempts,
+             sizeof(fixture_terminal_buffer_free_attempts));
+  fixture_admission_persisted_count = 0U;
+  fixture_admission_cleanup_count = 0U;
+  fixture_admission_restore_count = 0U;
+  fixture_admission_terminal_timeout = 0;
+  fixture_admission_terminal_killed = 0;
+  fixture_admission_terminal_exit_code = 0U;
+  fixture_admission_resume_result = 1U;
+  fixture_admission_resume_count = 0U;
+  fixture_admission_tick = 100U;
+  fixture_admission_job_fault = 0U;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 0U;
+  fixture_admission_resource_kind = 0U;
+  fixture_admission_resource_call = 0U;
+  fixture_admission_resource_failure = 0U;
+}
+
+static int fixture_terminal_prepare(ACTIVE_ADMISSION *active,
+                                    ADMISSION_PLAN *plan,
+                                    HANDLE *child_stdin,
+                                    HANDLE *child_stdout,
+                                    HANDLE *child_stderr) {
+  zero_bytes(active, sizeof(*active));
+  zero_bytes(plan, sizeof(*plan));
+  plan->job_security = fixture_admission_grant;
+  plan->job_security_length = sizeof(fixture_admission_grant);
+  active->plan = plan;
+  active->opened = 1U;
+  active->runtime.job = ADMISSION_FIXTURE_JOB;
+  active->runtime.process.hProcess = ADMISSION_FIXTURE_PROCESS;
+  active->runtime.process.hThread = ADMISSION_FIXTURE_THREAD;
+  active->runtime.process.dwProcessId = 777U;
+  fixture_admission_job_plan = plan;
+  fixture_admission_job_identity = &active->custody;
+  if (!CreatePipe(child_stdin, &active->runtime.stdin_write, NULL, 0U) ||
+      !CreatePipe(&active->runtime.stdout_read, child_stdout, NULL, 0U) ||
+      !CreatePipe(&active->runtime.stderr_read, child_stderr, NULL, 0U))
+    return 0;
+  fixture_terminal_pipe_handles[TERMINAL_WORKER_STDIN] =
+      active->runtime.stdin_write;
+  fixture_terminal_pipe_handles[TERMINAL_WORKER_STDOUT] =
+      active->runtime.stdout_read;
+  fixture_terminal_pipe_handles[TERMINAL_WORKER_STDERR] =
+      active->runtime.stderr_read;
+  return 1;
+}
+
+static int fixture_terminal_fault_case(
+    DWORD allocation_failure, DWORD thread_failure,
+    DWORD zero_identifier, DWORD resume_result, DWORD write_fault,
+    DWORD stdout_fault, DWORD stderr_fault, DWORD wait_failure_kind,
+    DWORD job_fault, DWORD tick_fault, const BYTE *challenge,
+    DWORD challenge_length, int expected_result, BYTE expected_hard_abort,
+    DWORD expected_buffer_frees) {
+  static ROOT_CUSTODY root;
+  static ACTIVE_ADMISSION active;
+  static ADMISSION_PLAN plan;
+  static TERMINAL_OBSERVATION observation;
+  HANDLE child_stdin = NULL;
+  HANDLE child_stdout = NULL;
+  HANDLE child_stderr = NULL;
+  int result;
+  int valid;
+  zero_bytes(&root, sizeof(root));
+  zero_bytes(&observation, sizeof(observation));
+  fixture_terminal_fault_reset();
+  fixture_terminal_allocation_failure = allocation_failure;
+  fixture_terminal_thread_failure = thread_failure;
+  fixture_terminal_thread_zero_identifier = zero_identifier;
+  fixture_admission_resume_result = resume_result;
+  fixture_terminal_write_fault = write_fault;
+  fixture_terminal_read_fault[0] = stdout_fault;
+  fixture_terminal_read_fault[1] = stderr_fault;
+  fixture_terminal_wait_failure_kind = wait_failure_kind;
+  fixture_admission_job_fault = job_fault;
+  fixture_terminal_tick_fault = tick_fault;
+  if (!fixture_terminal_prepare(&active, &plan, &child_stdin, &child_stdout,
+                                &child_stderr))
+    return 0;
+  if (stdout_fault == 1U) {
+    static const BYTE bytes[] = {1U, 2U, 3U};
+    DWORD written = 0U;
+    if (!WriteFile(child_stdout, bytes, sizeof(bytes), &written, NULL) ||
+        written != sizeof(bytes))
+      return 0;
+  }
+  if (stdout_fault == 6U) {
+    static const BYTE byte = 7U;
+    DWORD written = 0U;
+    if (!WriteFile(child_stdout, &byte, 1U, &written, NULL) || written != 1U)
+      return 0;
+  }
+  if (stderr_fault == 1U) {
+    static const BYTE bytes[] = {4U, 5U, 6U};
+    DWORD written = 0U;
+    if (!WriteFile(child_stderr, bytes, sizeof(bytes), &written, NULL) ||
+        written != sizeof(bytes))
+      return 0;
+  }
+  if (stderr_fault == 6U) {
+    static const BYTE byte = 8U;
+    DWORD written = 0U;
+    if (!WriteFile(child_stderr, &byte, 1U, &written, NULL) || written != 1U)
+      return 0;
+  }
+  if (!CloseHandle(child_stdout) || !CloseHandle(child_stderr)) return 0;
+  child_stdout = NULL;
+  child_stderr = NULL;
+  result = run_active_terminal(&root, &active, challenge, challenge_length,
+                               &observation);
+  if (!CloseHandle(child_stdin)) return 0;
+  child_stdin = NULL;
+  valid = result == expected_result &&
+          active.hard_abort == expected_hard_abort &&
+          fixture_terminal_buffer_frees == expected_buffer_frees &&
+          (!!root.resource_ambiguous == !!expected_hard_abort);
+  if (fixture_terminal_close_case != 0U) {
+    DWORD selected;
+    int pipe_case = fixture_terminal_close_case <= 6U;
+    int transient = fixture_terminal_close_case <= 3U ||
+                    (fixture_terminal_close_case >= 7U &&
+                     fixture_terminal_close_case <= 9U);
+    selected = pipe_case ? (fixture_terminal_close_case - 1U) % 3U
+                         : (fixture_terminal_close_case - 7U) % 3U;
+    for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U) {
+      DWORD expected_pipe_calls =
+          pipe_case && index == selected ? (transient ? 2U : 3U) : 1U;
+      DWORD expected_thread_calls =
+          !pipe_case && index == selected ? 2U : 1U;
+      valid = valid &&
+              fixture_terminal_pipe_close_calls[index] ==
+                  expected_pipe_calls &&
+              fixture_terminal_thread_close_calls[index] ==
+                  expected_thread_calls;
+      if (!expected_hard_abort || index != selected) {
+        valid = valid && active.workers[index].pipe == NULL &&
+                active.workers[index].thread == NULL;
+      } else if (pipe_case) {
+        valid = valid && active.workers[index].pipe != NULL &&
+                active.workers[index].thread == NULL;
+      } else {
+        valid = valid && active.workers[index].pipe == NULL &&
+                active.workers[index].thread != NULL;
+      }
+    }
+    valid = valid && active.runtime.stdin_write == NULL &&
+            active.runtime.stdout_read == NULL &&
+            active.runtime.stderr_read == NULL;
+  }
+  if (fixture_terminal_buffer_free_failure != 0U)
+    valid = valid && fixture_terminal_buffer_free_attempts[0] == 1U &&
+            fixture_terminal_buffer_free_attempts[1] == 1U &&
+            (fixture_terminal_buffer_free_failure == 2U
+                 ? active.workers[TERMINAL_WORKER_STDOUT].output == NULL
+                 : active.workers[TERMINAL_WORKER_STDOUT].output ==
+                       fixture_terminal_buffers[0]) &&
+            (fixture_terminal_buffer_free_failure == 1U
+                 ? active.workers[TERMINAL_WORKER_STDERR].output == NULL
+                 : active.workers[TERMINAL_WORKER_STDERR].output ==
+                       fixture_terminal_buffers[1]);
+  if (expected_hard_abort)
+    valid = valid && fixture_admission_persisted_count == 0U &&
+            fixture_admission_cleanup_count == 0U &&
+            fixture_admission_restore_count == 0U;
+  if (result == 1 && stdout_fault == 1U)
+    valid = valid && observation.stdout_length == 3U;
+  if (result == 1 && stderr_fault == 1U)
+    valid = valid && observation.stderr_length == 3U;
+  if (result == 1 && stdout_fault == 6U)
+    valid = valid && observation.stdout_length == 1U;
+  if (result == 1 && stderr_fault == 6U)
+    valid = valid && observation.stderr_length == 1U;
+  if (result == 1 && stdout_fault == 5U)
+    valid = valid && observation.stdout_length == TERMINAL_STREAM_MAXIMUM;
+  if (result == 1 && stderr_fault == 5U)
+    valid = valid && observation.stderr_length == TERMINAL_STREAM_MAXIMUM;
+  if (result == 1 &&
+      (tick_fault == 2U || tick_fault == 4U || tick_fault == 5U ||
+       tick_fault == 6U || tick_fault == 7U || tick_fault == 9U ||
+       tick_fault == 10U))
+    valid = valid && observation.kind == TERMINAL_TIMEOUT;
+  if (expected_hard_abort) {
+    for (DWORD index = 0U; index < TERMINAL_WORKER_COUNT; index += 1U)
+      if (active.workers[index].thread != NULL)
+        (void)CloseHandle(active.workers[index].thread);
+    for (DWORD index = TERMINAL_WORKER_STDOUT;
+         index <= TERMINAL_WORKER_STDERR; index += 1U)
+      if (active.workers[index].output != NULL)
+        (void)HeapFree(GetProcessHeap(), 0U, active.workers[index].output);
+  } else {
+    release_terminal_observation(&root, &observation);
+  }
+  return valid;
+}
+
+static int fixture_admission_terminal_fault_matrix(void) {
+  static BYTE exact[MAX_PAYLOAD];
+  static const BYTE challenge[] = {'x', 'y'};
+  static ACTIVE_ADMISSION inactive;
+  static ROOT_CUSTODY root;
+  static TERMINAL_OBSERVATION observation;
+  zero_bytes(&inactive, sizeof(inactive));
+  zero_bytes(&root, sizeof(root));
+  zero_bytes(&observation, sizeof(observation));
+  inactive.opened = 1U;
+  for (DWORD tick = 9U; tick <= 10U; tick += 1U) {
+    fixture_terminal_fault_reset();
+    fixture_terminal_tick_fault = tick;
+    fixture_terminal_tick_call = 1U;
+    if (terminal_wait_before_deadline(ADMISSION_FIXTURE_PROCESS, 100U) != 0)
+      return 0;
+  }
+  if (run_active_terminal(&root, &inactive, challenge, 0U, &observation) != 0 ||
+      run_active_terminal(&root, &inactive, challenge, MAX_PAYLOAD + 1U,
+                          &observation) != 0)
+    return 0;
+  for (DWORD failure = 1U; failure <= 2U; failure += 1U)
+    if (!fixture_terminal_fault_case(failure, 0U, 0U, 1U, 0U, 0U, 0U,
+                                     0U, 0U, 0U, challenge,
+                                     sizeof(challenge), 0, 0U,
+                                     1U))
+      return 0;
+  for (DWORD failure = 1U; failure <= TERMINAL_WORKER_COUNT; failure += 1U) {
+    if (!fixture_terminal_fault_case(0U, failure, 0U, 1U, 0U, 0U, 0U,
+                                     0U, 0U, 0U, challenge,
+                                     sizeof(challenge), 0, 0U, 2U) ||
+        !fixture_terminal_fault_case(0U, 0U, failure, 1U, 0U, 0U, 0U,
+                                     0U, 0U, 0U, challenge,
+                                     sizeof(challenge), 0, 0U, 2U))
+      return 0;
+  }
+  for (DWORD resume = 0U; resume <= 2U; resume += 2U)
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, resume, 0U, 0U, 0U,
+                                     0U, 0U, 0U, challenge,
+                                     sizeof(challenge), 0, 0U, 2U))
+      return 0;
+  if (!fixture_terminal_fault_case(0U, 0U, 0U, 0xffffffffU, 0U, 0U, 0U,
+                                   0U, 0U, 0U, challenge,
+                                   sizeof(challenge), 0, 0U, 2U))
+    return 0;
+  if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 1U, 1U, 1U,
+                                   0U, 0U, 0U, challenge,
+                                   sizeof(challenge), 1, 0U, 0U))
+    return 0;
+  for (DWORD write_fault = 2U; write_fault <= 4U; write_fault += 1U)
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, write_fault, 0U, 0U,
+                                     0U, 0U, 0U, challenge,
+                                     sizeof(challenge), 0, 0U, 2U))
+      return 0;
+  for (DWORD stream = 0U; stream < 2U; stream += 1U) {
+    DWORD stdout_fault = stream == 0U ? 3U : 0U;
+    DWORD stderr_fault = stream == 1U ? 3U : 0U;
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U,
+                                     stdout_fault, stderr_fault, 0U, 0U, 0U,
+                                     challenge, sizeof(challenge), 0, 0U, 2U))
+      return 0;
+    stdout_fault = stream == 0U ? 2U : 0U;
+    stderr_fault = stream == 1U ? 2U : 0U;
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U,
+                                     stdout_fault, stderr_fault, 0U, 0U, 0U,
+                                     challenge, sizeof(challenge), 1, 0U, 0U))
+      return 0;
+    stdout_fault = stream == 0U ? 5U : 0U;
+    stderr_fault = stream == 1U ? 5U : 0U;
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U,
+                                     stdout_fault, stderr_fault, 0U, 0U, 0U,
+                                     challenge, sizeof(challenge), 1, 0U, 0U))
+      return 0;
+    stdout_fault = stream == 0U ? 6U : 0U;
+    stderr_fault = stream == 1U ? 6U : 0U;
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U,
+                                     stdout_fault, stderr_fault, 0U, 0U, 0U,
+                                     challenge, sizeof(challenge), 1, 0U, 0U))
+      return 0;
+    stdout_fault = stream == 0U ? 4U : 0U;
+    stderr_fault = stream == 1U ? 4U : 0U;
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U,
+                                     stdout_fault, stderr_fault, 0U, 0U, 0U,
+                                     challenge, sizeof(challenge), 0, 0U, 2U))
+      return 0;
+  }
+  if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 5U, 0U, 0U,
+                                   0U, 0U, 0U, exact, sizeof(exact),
+                                   1, 0U, 0U) ||
+      !fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 4U, 4U,
+                                   0U, 0U, 0U, challenge,
+                                   sizeof(challenge), 0, 0U, 2U))
+    return 0;
+  if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                   0U, 0U, 1U, challenge,
+                                   sizeof(challenge), -1, 0U, 2U))
+    return 0;
+  for (DWORD tick = 2U; tick <= 4U; tick += 1U)
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                     0U, 0U, tick, challenge,
+                                     sizeof(challenge), 1, 0U,
+                                     tick == 3U ? 0U : 2U))
+      return 0;
+  if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                   0U, 0U, 5U, challenge,
+                                   sizeof(challenge), 1, 0U, 2U))
+    return 0;
+  for (DWORD tick = 6U; tick <= 7U; tick += 1U)
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                     0U, 0U, tick, challenge,
+                                     sizeof(challenge), 1, 0U, 2U))
+      return 0;
+  if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                   0U, 0U, 8U, challenge,
+                                   sizeof(challenge), -1, 0U, 2U))
+    return 0;
+  for (DWORD tick = 9U; tick <= 10U; tick += 1U)
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                     0U, 0U, tick, challenge,
+                                     sizeof(challenge), 1, 0U, 2U))
+      return 0;
+  for (DWORD wait = 1U; wait <= TERMINAL_WORKER_COUNT + 1U; wait += 1U)
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                     wait, 0U, 0U, challenge,
+                                     sizeof(challenge), -1, 1U, 0U))
+      return 0;
+  if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                   0U, 6U, 0U, challenge,
+                                   sizeof(challenge), -1, 1U, 0U))
+    return 0;
+  for (DWORD close_fault = 1U; close_fault <= 12U; close_fault += 1U) {
+    int transient = close_fault <= 3U ||
+                    (close_fault >= 7U && close_fault <= 9U);
+    int transient_pipe = close_fault <= 3U;
+    fixture_terminal_requested_close_fault = close_fault;
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 0U, 0U, 0U,
+                                     0U, 0U, 0U, challenge,
+                                     sizeof(challenge),
+                                     transient ? (transient_pipe ? 0 : 1) : -1,
+                                     transient ? 0U : 1U,
+                                     transient_pipe ? 2U : 0U))
+      return 0;
+  }
+  for (DWORD buffer_failure = 1U; buffer_failure <= 3U;
+       buffer_failure += 1U) {
+    fixture_terminal_requested_buffer_free_failure = buffer_failure;
+    if (!fixture_terminal_fault_case(0U, 0U, 0U, 1U, 2U, 0U, 0U,
+                                     0U, 0U, 0U, challenge,
+                                     sizeof(challenge), 0, 1U,
+                                     buffer_failure == 3U ? 0U : 1U))
+      return 0;
+  }
+  return 1;
+}
+
+static int fixture_terminal_serializer_matrix(void) {
+  static BYTE stdout_bytes[] = {'O', 'P', 'W', 'B', 'x'};
+  static BYTE stderr_bytes[] = {'e', 'r', 'r'};
+  BYTE response[FRAME_BYTES + TERMINAL_METADATA_BYTES +
+                sizeof(stdout_bytes) + sizeof(stderr_bytes)];
+  TERMINAL_OBSERVATION observation;
+  HANDLE response_read = NULL;
+  HANDLE response_write = NULL;
+  DWORD read = 0U;
+  fixture_admission_terminal_mode = 1;
+  zero_bytes(&observation, sizeof(observation));
+  observation.kind = TERMINAL_EXITED;
+  observation.exit_code = 17U;
+  observation.stdout_bytes = stdout_bytes;
+  observation.stdout_length = sizeof(stdout_bytes);
+  observation.stderr_bytes = stderr_bytes;
+  observation.stderr_length = sizeof(stderr_bytes);
+  for (DWORD fault = 0U; fault <= 1U; fault += 1U) {
+    zero_bytes(response, sizeof(response));
+    if (!CreatePipe(&response_read, &response_write, NULL, 0U)) return 0;
+    fixture_terminal_response_handle = response_write;
+    fixture_terminal_response_fault = fault;
+    if (!send_terminal_response(response_write, &observation) ||
+        !CloseHandle(response_write) ||
+        !ReadFile(response_read, response, sizeof(response), &read, NULL) ||
+        read != sizeof(response) || !CloseHandle(response_read))
+      return 0;
+    response_read = NULL;
+    response_write = NULL;
+    if (response[7] != STATUS_OK ||
+        read_u32(response + 8U) != sizeof(response) - FRAME_BYTES ||
+        response[12] != 0U || response[13] != 0U || response[14] != 0U ||
+        response[15] != 0U || response[FRAME_BYTES] != TERMINAL_EXITED ||
+        response[FRAME_BYTES + 1U] != 0U ||
+        response[FRAME_BYTES + 2U] != 0U ||
+        response[FRAME_BYTES + 3U] != 0U ||
+        read_u32(response + FRAME_BYTES + 4U) != 17U ||
+        read_u32(response + FRAME_BYTES + 8U) != sizeof(stdout_bytes) ||
+        read_u32(response + FRAME_BYTES + 12U) != sizeof(stderr_bytes) ||
+        !equal_bytes(response + FRAME_BYTES + TERMINAL_METADATA_BYTES,
+                     stdout_bytes, sizeof(stdout_bytes)) ||
+        !equal_bytes(response + FRAME_BYTES + TERMINAL_METADATA_BYTES +
+                         sizeof(stdout_bytes),
+                     stderr_bytes, sizeof(stderr_bytes)))
+      return 0;
+  }
+  for (DWORD fault = 2U; fault <= 3U; fault += 1U) {
+    if (!CreatePipe(&response_read, &response_write, NULL, 0U)) return 0;
+    fixture_terminal_response_handle = response_write;
+    fixture_terminal_response_fault = fault;
+    if (send_terminal_response(response_write, &observation)) return 0;
+    if (!CloseHandle(response_write) || !CloseHandle(response_read)) return 0;
+    response_read = NULL;
+    response_write = NULL;
+  }
+  fixture_terminal_response_handle = NULL;
+  fixture_terminal_response_fault = 0U;
+  {
+    TERMINAL_OBSERVATION invalid = observation;
+    invalid.kind = 0U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    invalid = observation;
+    invalid.kind = 2U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    invalid = observation;
+    invalid.stdout_length = TERMINAL_STREAM_MAXIMUM + 1U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    invalid = observation;
+    invalid.stderr_length = TERMINAL_STREAM_MAXIMUM + 1U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    invalid = observation;
+    invalid.stdout_bytes = NULL;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    invalid = observation;
+    invalid.stderr_bytes = NULL;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    zero_bytes(&invalid, sizeof(invalid));
+    invalid.kind = TERMINAL_TIMEOUT;
+    invalid.exit_code = 1U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    zero_bytes(&invalid, sizeof(invalid));
+    invalid.kind = TERMINAL_TIMEOUT;
+    invalid.stdout_bytes = stdout_bytes;
+    invalid.stdout_length = 1U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    zero_bytes(&invalid, sizeof(invalid));
+    invalid.kind = TERMINAL_TIMEOUT;
+    invalid.stderr_bytes = stderr_bytes;
+    invalid.stderr_length = 1U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    zero_bytes(&invalid, sizeof(invalid));
+    invalid.kind = TERMINAL_TIMEOUT;
+    if (!CreatePipe(&response_read, &response_write, NULL, 0U) ||
+        !send_terminal_response(response_write, &invalid) ||
+        !CloseHandle(response_write) ||
+        !ReadFile(response_read, response, FRAME_BYTES + TERMINAL_METADATA_BYTES,
+                  &read, NULL) ||
+        read != FRAME_BYTES + TERMINAL_METADATA_BYTES ||
+        !CloseHandle(response_read))
+      return 0;
+  }
+  fixture_admission_terminal_mode = 0;
+  return 1;
+}
+
+static __attribute__((noinline)) int fixture_admission_terminal_matrix(void) {
+  static const BYTE challenge[] = {'x'};
+  static const BYTE stdout_bytes[] = {'o', 'k'};
+  static ROOT_CUSTODY root;
+  static ACTIVE_ADMISSION active;
+  static ADMISSION_PLAN plan;
+  static TERMINAL_OBSERVATION observation;
+  HANDLE child_stdin = NULL;
+  HANDLE child_stdout = NULL;
+  HANDLE child_stderr = NULL;
+  HANDLE response_read = NULL;
+  HANDLE response_write = NULL;
+  static BYTE response[FRAME_BYTES + TERMINAL_METADATA_BYTES +
+                       sizeof(stdout_bytes)];
+  DWORD written = 0U;
+  DWORD read = 0U;
+  int result;
+  BROKER_FRAME frame_probe;
+
+  zero_bytes(&frame_probe, sizeof(frame_probe));
+  frame_probe.operation = LAUNCH_OPERATION;
+  frame_probe.payload = (BYTE *)challenge;
+  frame_probe.length = 0U;
+  if (canonical_frame_payload(&frame_probe)) return 0;
+  frame_probe.length = 1U;
+  if (!canonical_frame_payload(&frame_probe)) return 0;
+  frame_probe.length = MAX_PAYLOAD;
+  if (!canonical_frame_payload(&frame_probe)) return 0;
+  frame_probe.length = MAX_PAYLOAD + 1U;
+  if (canonical_frame_payload(&frame_probe)) return 0;
+  frame_probe.operation = TEARDOWN_OPERATION;
+  frame_probe.length = 0U;
+  if (!canonical_frame_payload(&frame_probe)) return 0;
+  frame_probe.length = 1U;
+  if (canonical_frame_payload(&frame_probe)) return 0;
+
+  zero_bytes(&root, sizeof(root));
+  zero_bytes(&active, sizeof(active));
+  zero_bytes(&plan, sizeof(plan));
+  zero_bytes(&observation, sizeof(observation));
+  plan.job_security = fixture_admission_grant;
+  plan.job_security_length = sizeof(fixture_admission_grant);
+  active.plan = &plan;
+  active.opened = 1U;
+  active.runtime.job = ADMISSION_FIXTURE_JOB;
+  active.runtime.process.hProcess = ADMISSION_FIXTURE_PROCESS;
+  active.runtime.process.hThread = ADMISSION_FIXTURE_THREAD;
+  active.runtime.process.dwProcessId = 777U;
+  fixture_admission_job_plan = &plan;
+  fixture_admission_job_identity = &active.custody;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 0U;
+  fixture_admission_job_fault = 0U;
+  fixture_admission_terminal_mode = 1;
+  fixture_admission_terminal_timeout = 0;
+  fixture_admission_terminal_killed = 0;
+  fixture_admission_terminal_exit_code = 0U;
+  fixture_admission_resume_result = 1U;
+  fixture_admission_resume_count = 0U;
+  fixture_admission_tick = 100U;
+  if (!CreatePipe(&child_stdin, &active.runtime.stdin_write, NULL, 0U) ||
+      !CreatePipe(&active.runtime.stdout_read, &child_stdout, NULL, 0U) ||
+      !CreatePipe(&active.runtime.stderr_read, &child_stderr, NULL, 0U) ||
+      !WriteFile(child_stdout, stdout_bytes, sizeof(stdout_bytes), &written,
+                 NULL) ||
+      written != sizeof(stdout_bytes) || !CloseHandle(child_stdout) ||
+      !CloseHandle(child_stderr))
+    return 0;
+  child_stdout = NULL;
+  child_stderr = NULL;
+  result = run_active_terminal(&root, &active, challenge, sizeof(challenge),
+                               &observation);
+  if (!CloseHandle(child_stdin)) return 0;
+  child_stdin = NULL;
+  if (result != 1 || fixture_admission_resume_count != 1U ||
+      observation.kind != TERMINAL_EXITED || observation.exit_code != 0U ||
+      observation.stdout_length != sizeof(stdout_bytes) ||
+      !equal_bytes(observation.stdout_bytes, stdout_bytes,
+                   sizeof(stdout_bytes)) ||
+      observation.stderr_length != 0U || !active.terminal)
+    return 0;
+  if (!CreatePipe(&response_read, &response_write, NULL, 0U) ||
+      !send_terminal_response(response_write, &observation) ||
+      !CloseHandle(response_write) ||
+      !ReadFile(response_read, response, sizeof(response), &read, NULL) ||
+      read != sizeof(response) || !CloseHandle(response_read))
+    return 0;
+  response_read = NULL;
+  response_write = NULL;
+  if (response[0] != 'O' || response[1] != 'P' || response[2] != 'W' ||
+      response[3] != 'B' || response[4] != PROTOCOL_VERSION ||
+      response[5] != RESPONSE_KIND || response[6] != LAUNCH_OPERATION ||
+      response[7] != STATUS_OK ||
+      read_u32(response + 8U) != TERMINAL_METADATA_BYTES +
+                                      sizeof(stdout_bytes) ||
+      response[FRAME_BYTES] != TERMINAL_EXITED ||
+      read_u32(response + FRAME_BYTES + 4U) != 0U ||
+      read_u32(response + FRAME_BYTES + 8U) != sizeof(stdout_bytes) ||
+      read_u32(response + FRAME_BYTES + 12U) != 0U ||
+      !equal_bytes(response + FRAME_BYTES + TERMINAL_METADATA_BYTES,
+                   stdout_bytes, sizeof(stdout_bytes)))
+    return 0;
+  {
+    TERMINAL_OBSERVATION invalid = observation;
+    invalid.kind = 2U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+    invalid = observation;
+    invalid.kind = TERMINAL_TIMEOUT;
+    invalid.exit_code = 0U;
+    if (send_terminal_response(NULL, &invalid)) return 0;
+  }
+  release_terminal_observation(&root, &observation);
+  if (root.resource_ambiguous) return 0;
+
+  zero_bytes(&active, sizeof(active));
+  active.plan = &plan;
+  active.opened = 1U;
+  active.runtime.job = ADMISSION_FIXTURE_JOB;
+  active.runtime.process.hProcess = ADMISSION_FIXTURE_PROCESS;
+  active.runtime.process.hThread = ADMISSION_FIXTURE_THREAD;
+  active.runtime.process.dwProcessId = 777U;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 1U;
+  fixture_admission_terminal_timeout = 1;
+  fixture_admission_terminal_killed = 0;
+  fixture_admission_resume_result = 1U;
+  fixture_admission_resume_count = 0U;
+  fixture_admission_tick = 200U;
+  if (!CreatePipe(&child_stdin, &active.runtime.stdin_write, NULL, 0U) ||
+      !CreatePipe(&active.runtime.stdout_read, &child_stdout, NULL, 0U) ||
+      !CreatePipe(&active.runtime.stderr_read, &child_stderr, NULL, 0U) ||
+      !CloseHandle(child_stdout) || !CloseHandle(child_stderr))
+    return 0;
+  result = run_active_terminal(&root, &active, challenge, sizeof(challenge),
+                               &observation);
+  if (!CloseHandle(child_stdin)) return 0;
+  child_stdin = NULL;
+  if (result != 1 || observation.kind != TERMINAL_TIMEOUT ||
+      observation.exit_code != 0U || observation.stdout_length != 0U ||
+      observation.stderr_length != 0U || !fixture_admission_terminal_killed ||
+      fixture_admission_resume_count != 1U)
+    return 0;
+
+  zero_bytes(&active, sizeof(active));
+  active.plan = &plan;
+  active.opened = 1U;
+  active.runtime.job = ADMISSION_FIXTURE_JOB;
+  active.runtime.process.hProcess = ADMISSION_FIXTURE_PROCESS;
+  active.runtime.process.hThread = ADMISSION_FIXTURE_THREAD;
+  active.runtime.process.dwProcessId = 777U;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 1U;
+  fixture_admission_terminal_timeout = 0;
+  fixture_admission_terminal_killed = 0;
+  fixture_admission_resume_result = 0U;
+  fixture_admission_resume_count = 0U;
+  fixture_admission_tick = 300U;
+  if (!CreatePipe(&child_stdin, &active.runtime.stdin_write, NULL, 0U) ||
+      !CreatePipe(&active.runtime.stdout_read, &child_stdout, NULL, 0U) ||
+      !CreatePipe(&active.runtime.stderr_read, &child_stderr, NULL, 0U) ||
+      !CloseHandle(child_stdout) || !CloseHandle(child_stderr))
+    return 0;
+  result = run_active_terminal(&root, &active, challenge, sizeof(challenge),
+                               &observation);
+  if (!CloseHandle(child_stdin)) return 0;
+  if (result != 0 || fixture_admission_resume_count != 1U ||
+      !fixture_admission_terminal_killed || root.resource_ambiguous)
+    return 0;
+  fixture_admission_terminal_mode = 0;
+  return 1;
+}
+
+static int fixture_admission_live_revoke_matrix(
+    PROFILE_IDENTITY *identity) {
+  ROOT_CUSTODY *root = &fixture_admission_test_root;
+  EXECUTION_CUSTODY *execution = &fixture_admission_test_execution;
+  ACTIVE_ADMISSION active;
+  int outcome;
+  zero_bytes(root, sizeof(*root));
+  fixture_admission_objects(execution);
+  for (DWORD index = 0U; index < 4U; index += 1U)
+    fixture_admission_profiles[index] = 1U;
+  zero_bytes(&active, sizeof(active));
+  active.plan = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                          sizeof(*active.plan));
+  if (active.plan == NULL) return 0;
+  active.plan->grant_security = fixture_admission_grant;
+  active.plan->grant_security_length = sizeof(fixture_admission_grant);
+  active.plan->job_security = fixture_admission_grant;
+  active.plan->job_security_length = sizeof(fixture_admission_grant);
+  active.custody.phase = ADMISSION_PROVED;
+  active.custody.job_name[0] = L'J';
+  active.custody.job_name[1] = L'\0';
+  active.runtime.job = ADMISSION_FIXTURE_JOB;
+  active.runtime.process.hProcess = ADMISSION_FIXTURE_PROCESS;
+  active.runtime.process_token = ADMISSION_FIXTURE_PROCESS_TOKEN;
+  active.runtime.impersonation_token = ADMISSION_FIXTURE_IMPERSONATION_TOKEN;
+  active.opened = 1U;
+  fixture_admission_orchestration_reset();
+  fixture_admission_terminal_mode = 1;
+  fixture_admission_access_count = 0U;
+  fixture_admission_open_count = 0U;
+  fixture_admission_access_fail = 0U;
+  fixture_admission_open_fail = 0U;
+  fixture_admission_token_fault = 0U;
+  fixture_admission_job_fault = 0U;
+  fixture_admission_job_present = 1;
+  fixture_admission_job_active = 0U;
+  fixture_admission_job_plan = active.plan;
+  fixture_admission_job_identity = &active.custody;
+  fixture_admission_execution = execution;
+  fixture_admission_identity = identity;
+  fixture_admission_root = root;
+  fixture_terminal_order_mode = 1;
+  fixture_terminal_order_count = 0U;
+  zero_bytes(fixture_terminal_order, sizeof(fixture_terminal_order));
+  outcome = revoke_active_admission(root, identity, execution, &active, 1, 1);
+  fixture_terminal_order_mode = 0;
+  fixture_admission_terminal_mode = 0;
+  if (fixture_terminal_order_count != 65U ||
+      fixture_terminal_order[0] != 82U ||
+      fixture_terminal_order[1] != 81U ||
+      fixture_terminal_order[2] != 66U ||
+      fixture_terminal_order[3] != 96U ||
+      fixture_terminal_order[60] != 95U ||
+      fixture_terminal_order[61] != 83U ||
+      fixture_terminal_order[62] != 81U ||
+      fixture_terminal_order[63] != 67U ||
+      fixture_terminal_order[64] != 84U)
+    return 0;
+  for (DWORD index = 4U; index < 32U; index += 1U)
+    if (fixture_terminal_order[index] != 93U) return 0;
+  for (DWORD index = 32U; index < 60U; index += 1U)
+    if (fixture_terminal_order[index] != 94U) return 0;
+  return outcome == 1 && active.plan == NULL && active.opened == 0U &&
+         fixture_admission_persisted_count == 2U &&
+         fixture_admission_persisted[0] == ADMISSION_REVOKE_ATTEMPTED &&
+         fixture_admission_persisted[1] == ADMISSION_ABSENCE_PROVED &&
+         fixture_admission_access_count == 28U &&
+         fixture_admission_open_count == 28U &&
+         fixture_admission_cleanup_count == 1U &&
+         fixture_admission_restore_count == 1U &&
+         !fixture_admission_job_present && !root->resource_ambiguous;
+}
+
 __declspec(noreturn) void fixture_entry(void) {
   SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
   SID_IDENTIFIER_AUTHORITY package = {{0U, 0U, 0U, 0U, 0U, 15U}};
@@ -2011,7 +3166,15 @@ __declspec(noreturn) void fixture_entry(void) {
   valid = fixture_admission_lifecycle_matrix(&identity);
   if (!valid) ExitProcess(fixture_admission_matrix_stage);
   valid = fixture_admission_outer_recovery_matrix(&identity);
-  ExitProcess(valid ? 0U : 17U);
+  if (!valid) ExitProcess(17U);
+  valid = fixture_admission_terminal_matrix();
+  if (!valid) ExitProcess(18U);
+  valid = fixture_admission_terminal_fault_matrix();
+  if (!valid) ExitProcess(20U);
+  valid = fixture_terminal_serializer_matrix();
+  if (!valid) ExitProcess(21U);
+  valid = fixture_admission_live_revoke_matrix(&identity);
+  ExitProcess(valid ? 0U : 19U);
 }
 
 #elif defined(OP_WINDOWS_ADMISSION_FIXTURE)

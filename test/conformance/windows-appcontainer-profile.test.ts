@@ -6,6 +6,7 @@ import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
+import { createIss002WalkChallenge } from "../../packages/conformance/src/isolated-walk.js";
 
 const imagePath = resolve(
   import.meta.dirname,
@@ -13,6 +14,10 @@ const imagePath = resolve(
 );
 const buildPath = resolve(import.meta.dirname, "../../scripts/build/windows-isolation-broker.mjs");
 const fixturePath = resolve(import.meta.dirname, "windows-isolation-broker-fixture.c");
+const rpcRunnerSourcePath = resolve(
+  import.meta.dirname,
+  "../../packages/conformance/src/iss002-isolated-walk-child.mjs",
+);
 const clangPath = "C:/Program Files/LLVM/bin/clang-cl.exe";
 const linkerPath = "C:/Program Files/LLVM/bin/lld-link.exe";
 const sdkLibraryPath = "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.18362.0/um/x64";
@@ -353,8 +358,11 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
       const rpcSource = resolve(sourceRoot, "rpc-source.mjs");
       const candidateSource = resolve(sourceRoot, "candidate-source.mjs");
       await copyFile(process.execPath, runtimeSource);
-      await writeFile(rpcSource, "export default 'rpc';\n");
-      await writeFile(candidateSource, "export default 'candidate';\n");
+      await copyFile(rpcRunnerSourcePath, rpcSource);
+      const validCandidateSource =
+        "export function validateAuthorityHistoryChain() { return []; }\n";
+      await writeFile(candidateSource, validCandidateSource);
+      const challenge = Buffer.from(createIss002WalkChallenge().inputText, "utf8");
       const account = spawnSync("whoami.exe", { encoding: "utf8", windowsHide: true });
       expect(account.status).toBe(0);
       for (const path of [executionParent, sourceRoot, runtimeSource, rpcSource, candidateSource]) {
@@ -390,6 +398,7 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
         );
         const pauseAfterExecutionMkdir = resolve(toolRoot, "pause-after-execution-mkdir.exe");
         const pauseAfterExecutionCreated = resolve(toolRoot, "pause-after-execution-created.exe");
+        const forceTerminalJoinAmbiguity = resolve(toolRoot, "force-terminal-join-ambiguity.exe");
         const admissionCrashes = [
           {
             executable: resolve(toolRoot, "pause-after-admission-grant-attempted.exe"),
@@ -411,6 +420,16 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
             marker: "pause-after-admission-launch-created",
             variant: "pause-after-admission-launch-created",
           },
+          {
+            executable: resolve(toolRoot, "pause-after-admission-resume.exe"),
+            marker: "pause-after-admission-resume",
+            variant: "pause-after-admission-resume",
+          },
+          {
+            executable: resolve(toolRoot, "pause-after-admission-terminal-response.exe"),
+            marker: "pause-after-admission-terminal-response",
+            variant: "pause-after-admission-terminal-response",
+          },
         ] as const;
         execFileSync(process.execPath, [buildPath, pauseAfterAttempted, "pause-after-attempted"], {
           windowsHide: true,
@@ -429,6 +448,11 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
           execFileSync(process.execPath, [buildPath, crash.executable, crash.variant], {
             windowsHide: true,
           });
+        execFileSync(
+          process.execPath,
+          [buildPath, forceTerminalJoinAmbiguity, "force-terminal-join-ambiguity"],
+          { windowsHide: true },
+        );
         const first = spawn(imagePath, ["SERVE"], {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
@@ -486,9 +510,9 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
         });
         expect(executionAcl.status).toBe(0);
         expect(executionAcl.stdout).not.toContain(firstIdentity.sidText);
-        first.stdin.write(frame(2));
+        first.stdin.write(frame(2, challenge));
         const launch = await readResponse(first.stdout);
-        if (launch.header[7] !== 78) {
+        if (launch.header[7] !== 0) {
           const records = (await readdir(root)).sort();
           const executionAcl = spawnSync("icacls.exe", [firstIdentity.executionRoot], {
             encoding: "utf8",
@@ -500,12 +524,144 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
               `execution ACL:\n${executionAcl.stdout}${executionAcl.stderr}`,
           );
         }
-        expect([...launch.header.subarray(6, 12)]).toEqual([2, 78, 0, 0, 0, 0]);
-        expect(launch.payload).toEqual(Buffer.alloc(0));
-        first.stdin.end();
-        expect(await firstExit).toBe(78);
+        expect([...launch.header.subarray(6, 8)]).toEqual([2, 0]);
+        expect(launch.payload.byteLength).toBeGreaterThanOrEqual(16);
+        expect([...launch.payload.subarray(0, 4)]).toEqual([0, 0, 0, 0]);
+        expect(launch.payload.readUInt32LE(4)).toBe(0);
+        const stdoutLength = launch.payload.readUInt32LE(8);
+        const stderrLength = launch.payload.readUInt32LE(12);
+        expect(launch.payload.byteLength).toBe(16 + stdoutLength + stderrLength);
+        expect(launch.payload.subarray(16, 16 + stdoutLength).toString("utf8")).toBe(
+          '{"issues":[]}',
+        );
+        expect(stderrLength).toBe(0);
+        first.stdin.end(frame(3));
+        const teardown = await readResponse(first.stdout);
+        expect([...teardown.header.subarray(6, 12)]).toEqual([3, 0, 0, 0, 0, 0]);
+        expect(teardown.payload).toEqual(Buffer.alloc(0));
+        expect(await firstExit).toBe(0);
         activeBroker = undefined;
         assertNativeAbsence(verifier, firstIdentity);
+
+        const runTimeoutCandidate = async (source: string): Promise<void> => {
+          await writeFile(candidateSource, source);
+          const child = spawn(imagePath, ["SERVE"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          activeBroker = child;
+          const exited = closeProcess(child);
+          const diagnostics: Buffer[] = [];
+          child.stderr.on("data", (chunk: Buffer) => diagnostics.push(chunk));
+          child.stdin.write(frame(1, preparePayload));
+          const prepared = await readResponse(child.stdout);
+          if (prepared.header[7] !== 0)
+            throw new Error(
+              `timeout PREPARE ${prepared.header[7]}: ${Buffer.concat(diagnostics).toString("utf8")}`,
+            );
+          const identity = assertPreparePayload(prepared.payload);
+          child.stdin.write(frame(2, challenge));
+          const launch = await readResponse(child.stdout);
+          expect([...launch.header.subarray(6, 8)]).toEqual([2, 0]);
+          expect(launch.payload).toEqual(
+            Buffer.from([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+          );
+          child.stdin.end(frame(3));
+          const teardown = await readResponse(child.stdout);
+          expect([...teardown.header.subarray(6, 12)]).toEqual([3, 0, 0, 0, 0, 0]);
+          expect(await exited).toBe(0);
+          activeBroker = undefined;
+          assertNativeAbsence(verifier, identity);
+        };
+        const runRefusedCandidate = async (
+          source: string,
+          expectedDiagnostics: string,
+        ): Promise<void> => {
+          await writeFile(candidateSource, source);
+          const child = spawn(imagePath, ["SERVE"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          activeBroker = child;
+          const exited = closeProcess(child);
+          const diagnostics: Buffer[] = [];
+          child.stderr.on("data", (chunk: Buffer) => diagnostics.push(chunk));
+          child.stdin.write(frame(1, preparePayload));
+          const prepared = await readResponse(child.stdout);
+          expect(prepared.header[7]).toBe(0);
+          const identity = assertPreparePayload(prepared.payload);
+          child.stdin.write(frame(2, challenge));
+          const launch = await readResponse(child.stdout);
+          expect({
+            header: [...launch.header.subarray(6, 12)],
+            diagnostics: Buffer.concat(diagnostics).toString("utf8"),
+          }).toEqual({ header: [2, 65, 0, 0, 0, 0], diagnostics: expectedDiagnostics });
+          expect(launch.payload).toEqual(Buffer.alloc(0));
+          child.stdin.end(frame(3));
+          const teardown = await readResponse(child.stdout);
+          expect([...teardown.header.subarray(6, 12)]).toEqual([3, 0, 0, 0, 0, 0]);
+          expect(await exited).toBe(0);
+          activeBroker = undefined;
+          assertNativeAbsence(verifier, identity);
+        };
+        await runTimeoutCandidate(
+          "setInterval(() => {}, 1000);\nawait new Promise(() => {});\nexport function validateAuthorityHistoryChain() { return []; }\n",
+        );
+        await runTimeoutCandidate(
+          'import { spawn } from "node:child_process";\nconst child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });\nchild.unref();\nexport function validateAuthorityHistoryChain() { return []; }\n',
+        );
+        await runTimeoutCandidate(
+          'import { spawn } from "node:child_process";\nconst child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "inherit" });\nchild.unref();\nexport function validateAuthorityHistoryChain() { return []; }\n',
+        );
+        await runRefusedCandidate(
+          "await new Promise((resolve) => process.stdout.write(Buffer.alloc(4194305, 97), resolve));\nexport function validateAuthorityHistoryChain() { return []; }\n",
+          "windows-broker:terminal-stdin-failed:00000000\n" +
+            "windows-broker:terminal-stdout-failed:00000000\n" +
+            "windows-broker:terminal-stderr-failed:00000000\n" +
+            "windows-broker:terminal-stdout-overflow:00000001\n" +
+            "windows-broker:terminal-stderr-overflow:00000000\n",
+        );
+        await runRefusedCandidate(
+          "await new Promise((resolve) => process.stderr.write(Buffer.alloc(4194305, 98), resolve));\nexport function validateAuthorityHistoryChain() { return []; }\n",
+          "windows-broker:terminal-stdin-failed:00000000\n" +
+            "windows-broker:terminal-stdout-failed:00000000\n" +
+            "windows-broker:terminal-stderr-failed:00000000\n" +
+            "windows-broker:terminal-stdout-overflow:00000000\n" +
+            "windows-broker:terminal-stderr-overflow:00000001\n",
+        );
+        await writeFile(
+          candidateSource,
+          "setInterval(() => {}, 1000);\nawait new Promise(() => {});\nexport function validateAuthorityHistoryChain() { return []; }\n",
+        );
+        {
+          const interrupted = spawn(forceTerminalJoinAmbiguity, ["SERVE"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+          });
+          activeBroker = interrupted;
+          const interruptedExit = closeProcess(interrupted);
+          interrupted.stdin.write(frame(1, preparePayload));
+          const prepared = await readResponse(interrupted.stdout);
+          expect(prepared.header[7]).toBe(0);
+          const identity = assertPreparePayload(prepared.payload);
+          interrupted.stdin.end(frame(2, challenge));
+          expect(await interruptedExit).toBe(70);
+          activeBroker = undefined;
+          const recovered = spawnSync(imagePath, ["RECOVER"], {
+            input: frame(3, profileScope(extended)),
+            windowsHide: true,
+            timeout: 60_000,
+          });
+          expect({ status: recovered.status, stderr: recovered.stderr.toString("utf8") }).toEqual({
+            status: 0,
+            stderr: "",
+          });
+          const expected = frame(3);
+          expected[5] = 2;
+          expect(recovered.stdout).toEqual(expected);
+          assertNativeAbsence(verifier, identity);
+        }
+        await writeFile(candidateSource, validCandidateSource);
 
         for (const crash of [
           { executable: pauseAfterAttempted, marker: "pause-after-attempted" },
@@ -560,7 +716,7 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
           expect(prepared.header[7]).toBe(0);
           const interruptedIdentity = assertPreparePayload(prepared.payload);
           const paused = waitForDiagnostic(interrupted.stderr, crash.marker);
-          interrupted.stdin.write(frame(2));
+          interrupted.stdin.write(frame(2, challenge));
           await paused;
           expect(interrupted.kill()).toBe(true);
           await interruptedExit;
@@ -586,25 +742,25 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
         recoveryProved = true;
 
         const records = (await readdir(root)).sort();
-        expect(records).toHaveLength(105);
-        expect(records.filter((name) => name.endsWith("-00-used.opwj"))).toHaveLength(10);
+        expect(records).toHaveLength(233);
+        expect(records.filter((name) => name.endsWith("-00-used.opwj"))).toHaveLength(18);
         expect(
           records.filter((name) => name.endsWith("-04-profile-absence-proved.opwj")),
-        ).toHaveLength(10);
-        expect(records.filter((name) => name.endsWith("-00-attempted.opwx"))).toHaveLength(8);
-        expect(records.filter((name) => name.endsWith("-01-created.opwx"))).toHaveLength(6);
+        ).toHaveLength(18);
+        expect(records.filter((name) => name.endsWith("-00-attempted.opwx"))).toHaveLength(16);
+        expect(records.filter((name) => name.endsWith("-01-created.opwx"))).toHaveLength(14);
         expect(records.filter((name) => name.endsWith("-02-delete-attempted.opwx"))).toHaveLength(
-          8,
+          16,
         );
-        expect(records.filter((name) => name.endsWith("-03-absence-proved.opwx"))).toHaveLength(8);
+        expect(records.filter((name) => name.endsWith("-03-absence-proved.opwx"))).toHaveLength(16);
         for (const [suffix, count] of [
-          ["-00-grant-attempted.opwl", 5],
-          ["-01-granted.opwl", 4],
-          ["-02-job-attempted.opwl", 3],
-          ["-03-launch-attempted.opwl", 2],
-          ["-04-admission-proved.opwl", 1],
-          ["-05-revoke-attempted.opwl", 5],
-          ["-06-absence-proved.opwl", 5],
+          ["-00-grant-attempted.opwl", 13],
+          ["-01-granted.opwl", 12],
+          ["-02-job-attempted.opwl", 11],
+          ["-03-launch-attempted.opwl", 10],
+          ["-04-admission-proved.opwl", 9],
+          ["-05-revoke-attempted.opwl", 13],
+          ["-06-absence-proved.opwl", 13],
         ] as const) {
           expect(records.filter((name) => name.endsWith(suffix))).toHaveLength(count);
         }
@@ -632,6 +788,6 @@ describe("opt-in real Windows AppContainer profile custody diagnostic", () => {
         await rm(sourceRoot, { force: true, recursive: true });
       }
     },
-    300_000,
+    420_000,
   );
 });
