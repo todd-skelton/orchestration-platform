@@ -73,6 +73,11 @@ describe("protected conformance workflow structure", () => {
       "${{ runner.temp }}/conformance-aggregate",
       "stable/.conformance/aggregate",
     ],
+    [
+      "provider record output in the checkout",
+      "${{ runner.temp }}/conformance-record",
+      "stable/.conformance/conformance-record",
+    ],
     ["provider record archived", "archive: false", "archive: true"],
     [
       "fixed provider filename",
@@ -107,15 +112,6 @@ describe("protected conformance workflow structure", () => {
     expect(validateConformanceWorkflowSource(mutant)).toMatchObject({ ok: false });
   });
 
-  test.each(["record"])(
-    "keeps the %s hosted mode fail-closed until its implementation lands",
-    (mode) => {
-      const result = spawnSync(process.execPath, [hostedPath, mode], { encoding: "utf8" });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain(`HOSTED_CONFORMANCE_PENDING:${mode}`);
-    },
-  );
-
   test("refuses the implemented observation mode without provider inputs", () => {
     const result = spawnSync(process.execPath, [hostedPath, "observation"], {
       encoding: "utf8",
@@ -132,6 +128,15 @@ describe("protected conformance workflow structure", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("HOSTED_CONFORMANCE_REFUSED:aggregate");
     expect(result.stderr).not.toContain("HOSTED_CONFORMANCE_PENDING:aggregate");
+  });
+
+  test("refuses the implemented record mode without provider inputs", () => {
+    const result = spawnSync(process.execPath, [hostedPath, "record"], {
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("HOSTED_CONFORMANCE_REFUSED:record");
+    expect(result.stderr).not.toContain("HOSTED_CONFORMANCE_PENDING:record");
   });
 
   test.each(["plan-select", "plan-finalize"])(

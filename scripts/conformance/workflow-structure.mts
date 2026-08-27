@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export type WorkflowStructureResult =
   { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
 
-const expectedDigest = "94b1b6d881aa1e37015291defe88ed81f79863c1152b5b16b565cd8429334088";
+const expectedDigest = "2580f52381b98ec6efba35e053efb2d7cdfffa78b8b28ea7c082549a6bf6a585";
 const actionShaPattern =
   /^[ ]+uses: actions\/(?:checkout|setup-node|upload-artifact|download-artifact)@[0-9a-f]{40}$/;
 
@@ -20,7 +20,7 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
   if (digest !== expectedDigest) issues.push("workflow:reviewed-source-digest-mismatch");
 
   const uses = source.split("\n").filter((line) => line.trimStart().startsWith("uses:"));
-  if (uses.length !== 15 || uses.some((line) => !actionShaPattern.test(line))) {
+  if (uses.length !== 14 || uses.some((line) => !actionShaPattern.test(line))) {
     issues.push("workflow:remote-action-census-refused");
   }
   for (const forbidden of [
@@ -38,6 +38,7 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "actions/cache@",
     "stable/.conformance/observation",
     "stable/.conformance/aggregate",
+    "stable/.conformance/conformance-",
   ]) {
     if (source.includes(forbidden)) issues.push(`workflow:forbidden:${forbidden}`);
   }
@@ -65,6 +66,8 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "path: ${{ runner.temp }}/conformance-aggregate",
     "node scripts/conformance/hosted.mts aggregate",
     "node scripts/conformance/hosted.mts record",
+    "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-record",
+    "path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json",
   ]) {
     if (!source.includes(required)) issues.push(`workflow:required:${required}`);
   }

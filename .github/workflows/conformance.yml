@@ -167,23 +167,17 @@ jobs:
           corepack enable
           corepack prepare pnpm@11.22.0 --activate
           corepack pnpm install --frozen-lockfile
-      - name: Download current-attempt evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          pattern: conformance-${{ github.run_id }}-${{ github.run_attempt }}-*
-          path: stable/.conformance/downloads
-          merge-multiple: false
-          digest-mismatch: error
       - name: Write protected provider record
         working-directory: stable
         env:
+          CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-record
           CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/conformance/hosted.mts record
       - name: Upload exact provider record bytes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          path: stable/.conformance/conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json
+          path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json
           archive: false
           retention-days: 31
           if-no-files-found: error

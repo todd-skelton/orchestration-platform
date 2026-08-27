@@ -16,6 +16,9 @@ try {
   } else if (mode === "aggregate") {
     const aggregate = await import("./hosted-aggregate.mjs");
     await aggregate.runHostedAggregate();
+  } else if (mode === "record") {
+    const record = await import("./hosted-record.mjs");
+    await record.runHostedRecord();
   } else {
     throw new Error(`HOSTED_CONFORMANCE_PENDING:${mode}`);
   }
