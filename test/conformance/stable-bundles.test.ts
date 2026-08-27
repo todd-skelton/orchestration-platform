@@ -135,6 +135,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "scripts/conformance/hosted-candidate.mts",
       "scripts/conformance/hosted-plan.mts",
       "scripts/conformance/hosted.mts",
+      "scripts/conformance/iss002-executor.mts",
       "scripts/conformance/iss002-workspace.mts",
       "scripts/harness-test.mts",
     ]);
