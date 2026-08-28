@@ -9,6 +9,7 @@ import {
 } from "../../packages/conformance/src/iss002-native-candidate-walk.js";
 
 const roots: string[] = [];
+const stableRoot = resolve(import.meta.dirname, "../..");
 async function root(prefix: string): Promise<string> {
   const value = await mkdtemp(resolve(tmpdir(), prefix));
   roots.push(value);
@@ -57,6 +58,7 @@ describe("ISS-002 reviewed candidate fresh-child walk", () => {
       }),
       executionParent,
       materializationParent,
+      stableRoot,
     });
     expect(result.ok).toBe(true);
     expect(await readdir(executionParent)).toEqual([]);
@@ -101,6 +103,7 @@ describe("ISS-002 reviewed candidate fresh-child walk", () => {
       }),
       executionParent,
       materializationParent,
+      stableRoot,
     });
     expect(observed.ok).toBe(true);
     expect(observed.stdoutBytes.byteLength).toBeGreaterThan(0);
@@ -116,6 +119,7 @@ describe("ISS-002 reviewed candidate fresh-child walk", () => {
       candidateSubject: {},
       executionParent,
       materializationParent: await root("orchestration-materialization-refusal-"),
+      stableRoot,
     });
     expect(result).toEqual({ issues: ["candidate-walk:input-refused"], ok: false });
     expect(await readdir(executionParent)).toEqual([]);
@@ -138,5 +142,6 @@ describe("ISS-002 reviewed candidate fresh-child walk", () => {
       "broker",
     ])
       expect(source).not.toContain(term);
+    expect(source).not.toContain("import.meta.dirname");
   });
 });
