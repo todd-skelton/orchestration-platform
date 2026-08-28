@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, readFile, realpath, stat, statfs, type FileHandle } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
@@ -17,6 +17,8 @@ const existingLeafName = "existing-leaf";
 const absentLeafName = "absent-leaf";
 
 export type PortablePhysicalBaseCaseId = "PHYSICAL_ABSENT_LEAF" | "PHYSICAL_EXISTING";
+export type PortablePhysicalAliasCaseId = "PHYSICAL_CASE_ALIAS" | "PHYSICAL_UNICODE_ALIAS";
+export type PortablePhysicalCaseId = PortablePhysicalAliasCaseId | PortablePhysicalBaseCaseId;
 
 interface RootSnapshot {
   readonly filesystemType: bigint;
@@ -52,6 +54,18 @@ interface ExistingLeafSnapshot {
   readonly statMode: bigint;
 }
 
+export interface PortablePhysicalLeafObservationProvider {
+  readonly lstat: (path: string) => Promise<BigIntStats>;
+  readonly realpath: (path: string) => Promise<string>;
+  readonly stat: (path: string) => Promise<BigIntStats>;
+}
+
+const nodeLeafObservationProvider: PortablePhysicalLeafObservationProvider = Object.freeze({
+  lstat: (path: string) => lstat(path, { bigint: true }),
+  realpath,
+  stat: (path: string) => stat(path, { bigint: true }),
+});
+
 interface AbsentLeafSnapshot {
   readonly disposition: "ABSENT";
   readonly errorCode: "ENOENT";
@@ -78,6 +92,26 @@ export interface PortablePhysicalBaseRawFacts {
   readonly leafBefore: PortableLeafRawObservation;
   readonly leafStable: boolean;
   readonly operatingSystem: PortablePhysicalOperatingSystem;
+  readonly rootAfter: PortableRootRawObservation;
+  readonly rootBefore: PortableRootRawObservation;
+  readonly rootRealpathStable: boolean;
+  readonly rootStable: boolean;
+}
+
+export type PortablePhysicalAliasRelation = "DISTINCT_ABSENT" | "DISTINCT_EXISTING" | "IDENTICAL";
+
+export interface PortablePhysicalAliasRawFacts {
+  readonly caseId: PortablePhysicalAliasCaseId;
+  readonly leftAfter: PortableLeafRawObservation;
+  readonly leftBefore: PortableLeafRawObservation;
+  readonly leftStable: boolean;
+  readonly operatingSystem: PortablePhysicalOperatingSystem;
+  readonly relationAfter: PortablePhysicalAliasRelation;
+  readonly relationBefore: PortablePhysicalAliasRelation;
+  readonly relationStable: boolean;
+  readonly rightAfter: PortableLeafRawObservation;
+  readonly rightBefore: PortableLeafRawObservation;
+  readonly rightStable: boolean;
   readonly rootAfter: PortableRootRawObservation;
   readonly rootBefore: PortableRootRawObservation;
   readonly rootRealpathStable: boolean;
@@ -147,24 +181,14 @@ async function observeRoot(root: string, rootHandle: FileHandle): Promise<RootSn
   });
 }
 
-async function observeLeaf(
+async function observePresentLeaf(
   path: string,
-  caseId: PortablePhysicalBaseCaseId,
-): Promise<LeafSnapshot> {
-  if (caseId === "PHYSICAL_ABSENT_LEAF") {
-    try {
-      await lstat(path, { bigint: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return Object.freeze({ disposition: "ABSENT", errorCode: "ENOENT" });
-      throw error;
-    }
-    throw new Error("physicalLeaf:unexpected-presence");
-  }
-  const [linkIdentity, followedIdentity, resolvedLeaf] = await Promise.all([
-    lstat(path, { bigint: true }),
-    stat(path, { bigint: true }),
-    realpath(path),
+  linkIdentity: BigIntStats,
+  provider: PortablePhysicalLeafObservationProvider,
+): Promise<ExistingLeafSnapshot> {
+  const [followedIdentity, resolvedLeaf] = await Promise.all([
+    provider.stat(path),
+    provider.realpath(path),
   ]);
   if (
     !linkIdentity.isFile() ||
@@ -185,6 +209,39 @@ async function observeLeaf(
     statInode: followedIdentity.ino,
     statMode: followedIdentity.mode,
   });
+}
+
+async function observeExistingLeaf(
+  path: string,
+  provider: PortablePhysicalLeafObservationProvider = nodeLeafObservationProvider,
+): Promise<ExistingLeafSnapshot> {
+  const linkIdentity = await provider.lstat(path);
+  return observePresentLeaf(path, linkIdentity, provider);
+}
+
+export async function observePortablePhysicalOptionalLeaf(
+  path: string,
+  provider: PortablePhysicalLeafObservationProvider = nodeLeafObservationProvider,
+): Promise<LeafSnapshot> {
+  let linkIdentity: BigIntStats;
+  try {
+    linkIdentity = await provider.lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return Object.freeze({ disposition: "ABSENT", errorCode: "ENOENT" });
+    throw error;
+  }
+  return observePresentLeaf(path, linkIdentity, provider);
+}
+
+async function observeLeaf(
+  path: string,
+  caseId: PortablePhysicalBaseCaseId,
+): Promise<LeafSnapshot> {
+  if (caseId === "PHYSICAL_EXISTING") return observeExistingLeaf(path);
+  const observed = await observePortablePhysicalOptionalLeaf(path);
+  if (observed.disposition === "ABSENT") return observed;
+  throw new Error("physicalLeaf:unexpected-presence");
 }
 
 function publicRoot(snapshot: RootSnapshot): PortableRootRawObservation {
@@ -247,6 +304,53 @@ function leafIdentityStable(before: LeafSnapshot, after: LeafSnapshot): boolean 
   );
 }
 
+export function portablePhysicalAliasRelation(
+  left: ExistingLeafSnapshot,
+  right: LeafSnapshot,
+): PortablePhysicalAliasRelation {
+  if (right.disposition === "ABSENT") return "DISTINCT_ABSENT";
+  return left.statDevice === right.statDevice && left.statInode === right.statInode
+    ? "IDENTICAL"
+    : "DISTINCT_EXISTING";
+}
+
+async function executePortablePhysicalAliasCase(
+  root: string,
+  rootHandle: FileHandle,
+  caseId: PortablePhysicalAliasCaseId,
+): Promise<PortablePhysicalAliasRawFacts> {
+  const operatingSystem = physicalOperatingSystem();
+  const [leftName, rightName] = caseId === "PHYSICAL_CASE_ALIAS" ? ["A", "a"] : ["é", "é"];
+  const leftPath = resolve(root, leftName);
+  const rightPath = resolve(root, rightName);
+  const rootBefore = await observeRoot(root, rootHandle);
+  await createOnceSyncedFile(leftPath, new Uint8Array());
+  const leftBefore = await observeExistingLeaf(leftPath);
+  const rightBefore = await observePortablePhysicalOptionalLeaf(rightPath);
+  const relationBefore = portablePhysicalAliasRelation(leftBefore, rightBefore);
+  const rootAfter = await observeRoot(root, rootHandle);
+  const leftAfter = await observeExistingLeaf(leftPath);
+  const rightAfter = await observePortablePhysicalOptionalLeaf(rightPath);
+  const relationAfter = portablePhysicalAliasRelation(leftAfter, rightAfter);
+  return Object.freeze({
+    caseId,
+    leftAfter: publicLeaf(leftAfter),
+    leftBefore: publicLeaf(leftBefore),
+    leftStable: leafIdentityStable(leftBefore, leftAfter),
+    operatingSystem,
+    relationAfter,
+    relationBefore,
+    relationStable: relationBefore === relationAfter,
+    rightAfter: publicLeaf(rightAfter),
+    rightBefore: publicLeaf(rightBefore),
+    rightStable: leafIdentityStable(rightBefore, rightAfter),
+    rootAfter: publicRoot(rootAfter),
+    rootBefore: publicRoot(rootBefore),
+    rootRealpathStable: rootBefore.realpath === root && rootAfter.realpath === root,
+    rootStable: rootIdentityStable(rootBefore, rootAfter),
+  });
+}
+
 async function executePortablePhysicalBaseCase(
   root: string,
   rootHandle: FileHandle,
@@ -291,16 +395,33 @@ async function executePortablePhysicalBaseCase(
   });
 }
 
-export async function executePortablePhysicalBaseProbe(
+export async function executePortablePhysicalProbe(
   custodyRoot: string,
-): Promise<readonly [PortablePhysicalBaseRawFacts, PortablePhysicalBaseRawFacts]> {
+): Promise<
+  readonly [
+    PortablePhysicalBaseRawFacts,
+    PortablePhysicalBaseRawFacts,
+    PortablePhysicalAliasRawFacts,
+    PortablePhysicalAliasRawFacts,
+  ]
+> {
   const root = await canonicalPortablePrimitiveCustodyRoot(custodyRoot);
   const rootHandle = await open(root, constants.O_RDONLY);
   try {
     await initializePortableProbeCustodyNamespace(root);
     const existing = await executePortablePhysicalBaseCase(root, rootHandle, "PHYSICAL_EXISTING");
     const absent = await executePortablePhysicalBaseCase(root, rootHandle, "PHYSICAL_ABSENT_LEAF");
-    return Object.freeze([existing, absent] as const);
+    const caseAlias = await executePortablePhysicalAliasCase(
+      root,
+      rootHandle,
+      "PHYSICAL_CASE_ALIAS",
+    );
+    const unicodeAlias = await executePortablePhysicalAliasCase(
+      root,
+      rootHandle,
+      "PHYSICAL_UNICODE_ALIAS",
+    );
+    return Object.freeze([existing, absent, caseAlias, unicodeAlias] as const);
   } finally {
     await rootHandle.close();
   }
