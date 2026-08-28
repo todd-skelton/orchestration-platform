@@ -72,6 +72,9 @@ importers:
       '@orchestration-platform/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@orchestration-platform/portable-primitives':
+        specifier: workspace:*
+        version: link:../../probes/portable-primitives
       esbuild:
         specifier: 0.28.2
         version: 0.28.2

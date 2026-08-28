@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@orchestration-platform/contracts": "workspace:*",
+    "@orchestration-platform/portable-primitives": "workspace:*",
     "esbuild": "0.28.2"
   },
   "scripts": {

@@ -61,6 +61,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/iss002-bundle-paths.mts",
       "packages/conformance/src/iss002-handler.ts",
       "packages/conformance/src/iss002-native-candidate-walk.ts",
+      "packages/conformance/src/iss022-handler.ts",
       "packages/conformance/src/manifest.ts",
       "packages/conformance/src/observation.ts",
       "packages/conformance/src/reducer.ts",
@@ -93,7 +94,10 @@ describe("stable ISS-002 bundle path censuses", () => {
     expect(conformance.iss002TestBundlePaths).not.toContain("test/contracts/run-tests.mjs");
     expect(
       conformance.iss002TestBundlePaths.filter((path) => path.startsWith("test/conformance/")),
-    ).toEqual(["test/conformance/iss002-native-candidate-walk.test.ts"]);
+    ).toEqual([
+      "test/conformance/iss002-native-candidate-walk.test.ts",
+      "test/conformance/iss022-handler.test.ts",
+    ]);
     const portableSources = await filesBelow("probes/portable-primitives/src");
     expect(
       conformance.iss002HarnessPaths.filter((path) =>
