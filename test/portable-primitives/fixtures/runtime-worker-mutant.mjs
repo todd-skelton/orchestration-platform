@@ -15,9 +15,6 @@ process.once("message", (message) => {
     process.send(valid("0".repeat(64)));
   } else if (mode === "MALFORMED") {
     process.send({ event: "READY" });
-  } else if (mode === "MULTIPLE") {
-    process.send(valid(nonce));
-    process.send(valid(nonce));
   } else if (mode === "OVERFLOW") {
     process.stderr.write("x".repeat(64 * 1024 + 1));
   } else if (mode !== "TIMEOUT") {
