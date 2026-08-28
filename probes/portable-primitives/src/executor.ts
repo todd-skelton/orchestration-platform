@@ -196,6 +196,10 @@ export interface PortablePrimitiveLiveChild {
 
 const providerObservedClosedChildren = new WeakSet<ChildProcess>();
 
+export function portablePrimitiveChildProviderObservedClosed(child: ChildProcess): boolean {
+  return providerObservedClosedChildren.has(child);
+}
+
 export async function startPortablePrimitiveLockHolder(
   custodyRoot: string,
 ): Promise<PortablePrimitiveLiveChild> {
@@ -286,6 +290,219 @@ export async function terminatePortablePrimitiveChild(child: ChildProcess): Prom
   await completion;
 }
 
+const descriptorEventFields = Object.freeze([
+  "accessResult",
+  "errorCode",
+  "readbackHex",
+  "schemaVersion",
+] as const);
+
+export function parsePortablePrimitiveLockDescriptorChildEvent(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, descriptorEventFields);
+  if (!parsed.ok) return parsed;
+  const issues: string[] = [];
+  if (parsed.value.schemaVersion !== "portable-primitives-lock-descriptor-child-event/v1")
+    issues.push("schemaVersion:mismatch");
+  if (parsed.value.accessResult !== "REFUSED" && parsed.value.accessResult !== "ACCESSED")
+    issues.push("accessResult:invalid");
+  if (
+    parsed.value.errorCode !== null &&
+    !(typeof parsed.value.errorCode === "string" && errorCode.test(parsed.value.errorCode))
+  )
+    issues.push("errorCode:invalid");
+  if (
+    parsed.value.readbackHex !== null &&
+    !(
+      typeof parsed.value.readbackHex === "string" &&
+      /^(?:[0-9a-f]{2}){0,32}$/.test(parsed.value.readbackHex)
+    )
+  )
+    issues.push("readbackHex:invalid");
+  if (
+    parsed.value.accessResult === "REFUSED"
+      ? parsed.value.errorCode === null || parsed.value.readbackHex !== null
+      : parsed.value.errorCode !== null || parsed.value.readbackHex === null
+  )
+    issues.push("accessResult:arm-mismatch");
+  return issues.length === 0 ? parsed : failure(...issues);
+}
+
+async function observePortablePrimitiveChild(
+  child: ChildProcess,
+  parseEvent: (stdout: string) => ContractRecord | null,
+  killAfterFirstLine: boolean,
+  timedOut: () => boolean,
+): Promise<PortablePrimitiveChildExecution> {
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let byteLength = 0;
+  let outputLimitExceeded = false;
+  const collect = (target: Buffer[], chunk: Buffer) => {
+    byteLength += chunk.byteLength;
+    if (byteLength > 64 * 1024) {
+      outputLimitExceeded = true;
+      child.kill("SIGKILL");
+    } else target.push(chunk);
+  };
+  child.stdout!.on("data", (chunk: Buffer) => {
+    collect(stdout, chunk);
+    if (killAfterFirstLine && Buffer.concat(stdout).includes(0x0a)) child.kill("SIGKILL");
+  });
+  child.stderr!.on("data", (chunk: Buffer) => collect(stderr, chunk));
+  const completion = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolveCompletion, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolveCompletion({ code, signal }));
+    },
+  );
+  const stdoutText = Buffer.concat(stdout).toString("utf8");
+  const stderrText = Buffer.concat(stderr).toString("utf8");
+  return Object.freeze({
+    event: byteLength <= 64 * 1024 ? parseEvent(stdoutText) : null,
+    exitCode: completion.code,
+    outputLimitExceeded,
+    signal: completion.signal,
+    stderr: stderrText,
+    stdout: stdoutText,
+    timedOut: timedOut(),
+  });
+}
+
+async function observePortablePrimitiveChildWithoutKill(
+  child: ChildProcess,
+  parseEvent: (stdout: string) => ContractRecord | null,
+): Promise<PortablePrimitiveChildExecution> {
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let byteLength = 0;
+  let outputLimitExceeded = false;
+  const collect = (target: Buffer[], chunk: Buffer) => {
+    byteLength += chunk.byteLength;
+    if (byteLength > 64 * 1024) outputLimitExceeded = true;
+    else target.push(chunk);
+  };
+  child.stdout!.on("data", (chunk: Buffer) => collect(stdout, chunk));
+  child.stderr!.on("data", (chunk: Buffer) => collect(stderr, chunk));
+  const completion = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolveCompletion, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolveCompletion({ code, signal }));
+    },
+  );
+  const stdoutText = Buffer.concat(stdout).toString("utf8");
+  return Object.freeze({
+    event: outputLimitExceeded ? null : parseEvent(stdoutText),
+    exitCode: completion.code,
+    outputLimitExceeded,
+    signal: completion.signal,
+    stderr: Buffer.concat(stderr).toString("utf8"),
+    stdout: stdoutText,
+    timedOut: false,
+  });
+}
+
+function parseBoundChildOutput(
+  stdout: string,
+  mode: PortablePrimitiveWorkerMode,
+  arguments_: readonly string[],
+): ContractRecord | null {
+  return parseChildOutput(stdout, (input) =>
+    bindPortablePrimitiveRawChildEvent(input, mode, arguments_),
+  );
+}
+
+function parseDescriptorChildOutput(stdout: string): ContractRecord | null {
+  return parseChildOutput(stdout, parsePortablePrimitiveLockDescriptorChildEvent);
+}
+
+function parseChildOutput(
+  stdout: string,
+  parser: (input: unknown) => ParseResult,
+): ContractRecord | null {
+  try {
+    if (!stdout.endsWith("\n") || stdout.slice(0, -1).includes("\n")) return null;
+    const parsed = parser(JSON.parse(stdout));
+    return parsed.ok ? parsed.value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function observePortablePrimitiveChildWithTimer(
+  child: ChildProcess,
+  parseEvent: (stdout: string) => ContractRecord | null,
+  killAfterFirstLine = false,
+): Promise<PortablePrimitiveChildExecution> {
+  let didTimeOut = false;
+  const observation = observePortablePrimitiveChild(
+    child,
+    parseEvent,
+    killAfterFirstLine,
+    () => didTimeOut,
+  );
+  const timeout = setTimeout(() => {
+    didTimeOut = true;
+    child.kill("SIGKILL");
+  }, 10_000);
+  try {
+    return await observation;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function executePortablePrimitiveLockAttemptWithoutTimer(
+  custodyRoot: string,
+): Promise<PortablePrimitiveChildExecution> {
+  const realCustodyRoot = await canonicalPortablePrimitiveCustodyRoot(custodyRoot);
+  const mode = "LOCK_ATTEMPT";
+  const child = spawn(process.execPath, [portablePrimitiveWorkerPath, mode, realCustodyRoot], {
+    cwd: realCustodyRoot,
+    env: portablePrimitiveChildEnvironment(),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  return observePortablePrimitiveChildWithoutKill(child, (stdout) =>
+    parseBoundChildOutput(stdout, mode, []),
+  );
+}
+
+export async function executePortablePrimitiveLockDescriptorChild(
+  custodyRoot: string,
+  targetDescriptor: number,
+  descriptorToInherit: number | null,
+): Promise<PortablePrimitiveChildExecution> {
+  if (
+    !Number.isSafeInteger(targetDescriptor) ||
+    targetDescriptor < 3 ||
+    targetDescriptor > 99_999 ||
+    (descriptorToInherit !== null &&
+      (!Number.isSafeInteger(descriptorToInherit) || descriptorToInherit < 3))
+  )
+    throw new TypeError("descriptor:invalid");
+  const realCustodyRoot = await canonicalPortablePrimitiveCustodyRoot(custodyRoot);
+  const child = spawn(
+    process.execPath,
+    [
+      portablePrimitiveWorkerPath,
+      "LOCK_DESCRIPTOR_PROBE",
+      realCustodyRoot,
+      String(targetDescriptor),
+      "32",
+    ],
+    {
+      cwd: realCustodyRoot,
+      env: portablePrimitiveChildEnvironment(),
+      stdio:
+        descriptorToInherit === null
+          ? ["ignore", "pipe", "pipe"]
+          : ["ignore", "pipe", "pipe", descriptorToInherit],
+      windowsHide: true,
+    },
+  );
+  return observePortablePrimitiveChildWithTimer(child, parseDescriptorChildOutput);
+}
+
 export async function executePortablePrimitiveChild(
   mode: PortablePrimitiveWorkerMode,
   custodyRoot: string,
@@ -309,53 +526,9 @@ export async function executePortablePrimitiveChild(
       windowsHide: true,
     },
   );
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  let byteLength = 0;
-  let outputLimitExceeded = false;
-  let timedOut = false;
-  const collect = (target: Buffer[], chunk: Buffer) => {
-    byteLength += chunk.byteLength;
-    if (byteLength > 64 * 1024) {
-      outputLimitExceeded = true;
-      child.kill("SIGKILL");
-    } else target.push(chunk);
-  };
-  child.stdout.on("data", (chunk: Buffer) => {
-    collect(stdout, chunk);
-    if (mode === "REPLACE" && Buffer.concat(stdout).includes(0x0a)) child.kill("SIGKILL");
-  });
-  child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGKILL");
-  }, 10_000);
-  const completion = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (resolveCompletion, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, signal) => resolveCompletion({ code, signal }));
-    },
+  return observePortablePrimitiveChildWithTimer(
+    child,
+    (stdout) => parseBoundChildOutput(stdout, mode, arguments_),
+    mode === "REPLACE",
   );
-  clearTimeout(timeout);
-  const stdoutText = Buffer.concat(stdout).toString("utf8");
-  const stderrText = Buffer.concat(stderr).toString("utf8");
-  let event: ContractRecord | null = null;
-  try {
-    if (!stdoutText.endsWith("\n") || stdoutText.slice(0, -1).includes("\n"))
-      throw new TypeError("stdout:census");
-    const parsed = bindPortablePrimitiveRawChildEvent(JSON.parse(stdoutText), mode, arguments_);
-    if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
-    event = byteLength <= 64 * 1024 ? parsed.value : null;
-  } catch {
-    event = null;
-  }
-  return Object.freeze({
-    event,
-    exitCode: completion.code,
-    outputLimitExceeded,
-    signal: completion.signal,
-    stderr: stderrText,
-    stdout: stdoutText,
-    timedOut,
-  });
 }
