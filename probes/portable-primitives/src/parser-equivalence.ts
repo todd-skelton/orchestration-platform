@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { setTimeout as nodeDelay } from "node:timers/promises";
 import { build } from "esbuild";
 import {
   canonicalBytes,
@@ -129,12 +130,43 @@ function digest(bytes: Uint8Array): string {
 }
 
 export interface PortablePrimitiveParserChildObservation {
+  readonly closeCode: number | null;
+  readonly closeEventCount: number;
+  readonly closeSignal: NodeJS.Signals | null;
+  readonly errorEventCount: number;
   readonly exitCode: number | null;
+  readonly exitEventCount: number;
+  readonly exitSignal: NodeJS.Signals | null;
+  readonly killRefused: boolean;
+  readonly messageCount: number;
   readonly normalizedBytesMatch: boolean;
   readonly normalizedDigest: string | null;
   readonly outputAccepted: boolean;
-  readonly signal: NodeJS.Signals | null;
+  readonly postSignalDeadlineExpired: boolean;
+  readonly stderrOverflow: boolean;
+  readonly terminalEventsMatch: boolean;
+  readonly timedOut: boolean;
 }
+
+export interface PortablePrimitiveParserChildProvider {
+  readonly onClose: (
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ) => void;
+  readonly onError: (listener: () => void) => void;
+  readonly onExit: (listener: (code: number | null, signal: NodeJS.Signals | null) => void) => void;
+  readonly onMessage: (listener: (message: unknown) => void) => void;
+  readonly onStderr: (listener: (chunk: Uint8Array) => void) => void;
+  readonly send: (message: ContractRecord) => void;
+  readonly signal: () => boolean;
+}
+
+export interface PortablePrimitiveParserDeadline {
+  readonly cancel: () => void;
+  readonly elapsed: Promise<void>;
+}
+export type PortablePrimitiveParserDeadlineFactory = (
+  milliseconds: number,
+) => PortablePrimitiveParserDeadline;
 
 export interface PortablePrimitiveParserEquivalenceRawFacts {
   readonly caseId: "PARSER_EQUIVALENCE";
@@ -168,6 +200,142 @@ function parseChildResponse(input: unknown): Uint8Array | null {
   }
 }
 
+const parserDeadline: PortablePrimitiveParserDeadlineFactory = (milliseconds) => {
+  const cancellation = new AbortController();
+  return Object.freeze({
+    cancel: () => cancellation.abort(),
+    elapsed: nodeDelay(milliseconds, undefined, { signal: cancellation.signal }).catch(
+      (error: unknown) => {
+        if (!(error instanceof Error) || error.name !== "AbortError") throw error;
+      },
+    ),
+  });
+};
+
+export async function observePortablePrimitiveParserChild(
+  provider: PortablePrimitiveParserChildProvider,
+  parentNormalizedBytes: Uint8Array,
+  deadline: PortablePrimitiveParserDeadlineFactory = parserDeadline,
+): Promise<PortablePrimitiveParserChildObservation> {
+  let closeCode: number | null = null;
+  let closeEventCount = 0;
+  let closeSignal: NodeJS.Signals | null = null;
+  let errorEventCount = 0;
+  let exitCode: number | null = null;
+  let exitEventCount = 0;
+  let exitSignal: NodeJS.Signals | null = null;
+  let killRefused = false;
+  let messageCount = 0;
+  let postSignalDeadlineExpired = false;
+  let response: Uint8Array | null = null;
+  let stderrByteLength = 0;
+  let stderrOverflow = false;
+  let timedOut = false;
+  let terminalQueued = false;
+  let resolveTerminal!: () => void;
+  let resolveFailure!: () => void;
+  const terminal = new Promise<void>((accept) => (resolveTerminal = accept));
+  const failure = new Promise<void>((accept) => (resolveFailure = accept));
+  const maybeTerminal = () => {
+    if (!terminalQueued && exitEventCount > 0 && closeEventCount > 0) {
+      terminalQueued = true;
+      queueMicrotask(resolveTerminal);
+    }
+  };
+  provider.onMessage((message) => {
+    messageCount += 1;
+    response = messageCount === 1 ? parseChildResponse(message) : null;
+  });
+  provider.onStderr((chunk) => {
+    stderrByteLength = Math.min(64 * 1024 + 1, stderrByteLength + chunk.byteLength);
+    if (stderrByteLength > 64 * 1024 && !stderrOverflow) {
+      stderrOverflow = true;
+      resolveFailure();
+    }
+  });
+  provider.onError(() => {
+    errorEventCount += 1;
+    resolveFailure();
+  });
+  provider.onExit((code, signal) => {
+    exitEventCount += 1;
+    if (exitEventCount === 1) [exitCode, exitSignal] = [code, signal];
+    maybeTerminal();
+  });
+  provider.onClose((code, signal) => {
+    closeEventCount += 1;
+    if (closeEventCount === 1) [closeCode, closeSignal] = [code, signal];
+    maybeTerminal();
+  });
+  try {
+    provider.send(
+      Object.freeze({
+        corpus: portablePrimitiveParserCorpus,
+        schemaVersion: "portable-primitives-parser-child-request/v1",
+      }),
+    );
+  } catch {
+    errorEventCount += 1;
+    resolveFailure();
+  }
+  const executionDeadline = deadline(10_000);
+  const first = await Promise.race([
+    terminal.then(() => "TERMINAL" as const),
+    failure.then(() => "FAILURE" as const),
+    executionDeadline.elapsed.then(() => "TIMEOUT" as const),
+  ]);
+  executionDeadline.cancel();
+  timedOut = first === "TIMEOUT";
+  if (first !== "TERMINAL") {
+    try {
+      if (!provider.signal()) killRefused = true;
+    } catch {
+      killRefused = true;
+    }
+    const postSignalDeadline = deadline(1_000);
+    postSignalDeadlineExpired = !(await Promise.race([
+      terminal.then(() => true),
+      postSignalDeadline.elapsed.then(() => false),
+    ]));
+    postSignalDeadline.cancel();
+  }
+  const terminalEventsMatch =
+    errorEventCount === 0 &&
+    exitEventCount === 1 &&
+    closeEventCount === 1 &&
+    exitCode === closeCode &&
+    exitSignal === closeSignal;
+  const accepted =
+    terminalEventsMatch &&
+    exitCode === 0 &&
+    exitSignal === null &&
+    messageCount === 1 &&
+    response !== null &&
+    !timedOut &&
+    !stderrOverflow &&
+    !killRefused &&
+    !postSignalDeadlineExpired;
+  return Object.freeze({
+    closeCode,
+    closeEventCount,
+    closeSignal,
+    errorEventCount,
+    exitCode,
+    exitEventCount,
+    exitSignal,
+    killRefused,
+    messageCount,
+    normalizedBytesMatch:
+      accepted && Buffer.compare(Buffer.from(response!), Buffer.from(parentNormalizedBytes)) === 0,
+    normalizedDigest: accepted ? digest(response!) : null,
+    outputAccepted: accepted,
+    postSignalDeadlineExpired,
+    stderrOverflow,
+    terminalEventsMatch,
+    timedOut,
+  });
+}
+
 async function executeChild(
   childPath: string,
   parentNormalizedBytes: Uint8Array,
@@ -181,45 +349,16 @@ async function executeChild(
     stdio: ["ignore", "ignore", "pipe", "ipc"],
     windowsHide: true,
   });
-  let byteLength = 0;
-  let response: Uint8Array | null = null;
-  let messages = 0;
-  child.stderr!.on("data", (chunk: Buffer) => {
-    byteLength += chunk.byteLength;
-    if (byteLength > 64 * 1024) child.kill("SIGKILL");
-  });
-  child.on("message", (message) => {
-    messages += 1;
-    response = messages === 1 ? parseChildResponse(message) : null;
-  });
-  child.send(
-    Object.freeze({
-      corpus: portablePrimitiveParserCorpus,
-      schemaVersion: "portable-primitives-parser-child-request/v1",
-    }),
-  );
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
-  const completion = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (accept, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, signal) => accept({ code, signal }));
-    },
-  );
-  clearTimeout(timeout);
-  const accepted =
-    completion.code === 0 &&
-    completion.signal === null &&
-    messages === 1 &&
-    byteLength <= 64 * 1024 &&
-    response !== null;
-  return Object.freeze({
-    exitCode: completion.code,
-    normalizedBytesMatch:
-      accepted && Buffer.compare(Buffer.from(response!), Buffer.from(parentNormalizedBytes)) === 0,
-    normalizedDigest: accepted ? digest(response!) : null,
-    outputAccepted: accepted,
-    signal: completion.signal,
-  });
+  const provider: PortablePrimitiveParserChildProvider = {
+    onClose: (listener) => void child.on("close", listener),
+    onError: (listener) => void child.on("error", listener),
+    onExit: (listener) => void child.on("exit", listener),
+    onMessage: (listener) => void child.on("message", listener),
+    onStderr: (listener) => void child.stderr!.on("data", listener),
+    send: (message) => void child.send(message),
+    signal: () => child.kill("SIGKILL"),
+  };
+  return await observePortablePrimitiveParserChild(Object.freeze(provider), parentNormalizedBytes);
 }
 
 export function evaluatePortablePrimitiveParserEquivalence(
@@ -238,7 +377,7 @@ export function evaluatePortablePrimitiveParserEquivalence(
         (child) =>
           child.outputAccepted &&
           child.exitCode === 0 &&
-          child.signal === null &&
+          child.exitSignal === null &&
           child.normalizedBytesMatch &&
           child.normalizedDigest === parentNormalizedDigest,
       ),
@@ -249,16 +388,28 @@ export function evaluatePortablePrimitiveParserEquivalence(
 export async function executePortablePrimitiveParserEquivalenceProbe(
   stableRoot: string,
 ): Promise<PortablePrimitiveParserEquivalenceRawFacts> {
-  if (!isAbsolute(stableRoot) || resolve(stableRoot) !== stableRoot)
-    throw new TypeError("stableRoot:absolute-normalized-required");
-  const parentNormalizedBytes = normalizePortablePrimitiveParserCorpus(
-    portablePrimitiveParserCorpus,
-  );
-  const parentNormalizedDigest = digest(parentNormalizedBytes);
   const temporaryParent =
     process.env.RUNNER_TEMP && isAbsolute(process.env.RUNNER_TEMP)
       ? resolve(process.env.RUNNER_TEMP)
       : resolve(tmpdir());
+  return await executePortablePrimitiveParserEquivalenceProbeInTemporaryParent(
+    stableRoot,
+    temporaryParent,
+  );
+}
+
+export async function executePortablePrimitiveParserEquivalenceProbeInTemporaryParent(
+  stableRoot: string,
+  temporaryParent: string,
+): Promise<PortablePrimitiveParserEquivalenceRawFacts> {
+  if (!isAbsolute(stableRoot) || resolve(stableRoot) !== stableRoot)
+    throw new TypeError("stableRoot:absolute-normalized-required");
+  if (!isAbsolute(temporaryParent) || resolve(temporaryParent) !== temporaryParent)
+    throw new TypeError("temporaryParent:absolute-normalized-required");
+  const parentNormalizedBytes = normalizePortablePrimitiveParserCorpus(
+    portablePrimitiveParserCorpus,
+  );
+  const parentNormalizedDigest = digest(parentNormalizedBytes);
   await mkdir(temporaryParent, { recursive: true });
   const temporaryRoot = await mkdtemp(resolve(temporaryParent, "orchestration-parser-probe-"));
   try {
