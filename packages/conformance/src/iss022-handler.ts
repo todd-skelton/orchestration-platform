@@ -1,13 +1,15 @@
 import { types as nodeTypes } from "node:util";
-import { canonicalJson } from "@orchestration-platform/contracts";
+import { canonicalJson, type ContractRecord } from "@orchestration-platform/contracts";
 import {
   bindPortablePrimitiveRawChildEvent,
   derivePortablePhysicalIdentity,
   executePortablePrimitiveCreateOnceProbe,
   executePortablePrimitiveHandleConfinementProbe,
+  executePortablePrimitiveLockProbe,
   executePortablePrimitiveParserEquivalenceProbe,
   executePortablePrimitiveProcessProbe,
   executePortablePhysicalProbe,
+  parsePortablePrimitiveLockDescriptorChildEvent,
   type PortableLeafRawObservation,
   type PortablePhysicalAliasRawFacts,
   type PortablePhysicalBaseRawFacts,
@@ -17,6 +19,10 @@ import {
   type PortablePrimitiveChildExecution,
   type PortablePrimitiveCreateOnceRawFacts,
   type PortablePrimitiveHandleRawFacts,
+  type PortablePrimitiveLockContentionRawFacts,
+  type PortablePrimitiveLockHolderDeathRawFacts,
+  type PortablePrimitiveLockNonInheritanceRawFacts,
+  type PortablePrimitiveLockRawFacts,
   type PortablePrimitiveParserChildObservation,
   type PortablePrimitiveParserEquivalenceRawFacts,
   type PortablePrimitiveProcessRawFacts,
@@ -66,6 +72,16 @@ export interface Iss022CreateOnceVectorExecution {
 
 export type Iss022CreateOnceHandlerResult =
   | { readonly ok: true; readonly vectorExecutions: readonly [Iss022CreateOnceVectorExecution] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface Iss022LockVectorExecution {
+  readonly caseId: PortablePrimitiveLockRawFacts["caseId"];
+  readonly normalizedResult: PortablePrimitiveResult;
+  readonly rawFacts: PortablePrimitiveLockRawFacts;
+}
+
+export type Iss022LockHandlerResult =
+  | { readonly ok: true; readonly vectorExecutions: readonly Iss022LockVectorExecution[] }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 const caseIds = Object.freeze([
@@ -165,6 +181,26 @@ const createOnceChildFields = Object.freeze([
   "stdout",
   "timedOut",
 ] as const);
+const lockChildFields = createOnceChildFields;
+const lockContentionFields = Object.freeze(
+  "caseId contender holderCloseObserved holderEvent schemaVersion".split(" "),
+);
+const lockHolderDeathFields = Object.freeze(
+  "acquisitionAttemptCount caseId holderCloseObserved holderEvent postDeathAttempt prohibitedActions schemaVersion".split(
+    " ",
+  ),
+);
+const lockNonInheritanceFields = Object.freeze(
+  "caseId child parentReadbackHex probeNonceHex schemaVersion".split(" "),
+);
+const prohibitedLockActions = new Set([
+  "DELETE",
+  "RETRY",
+  "PID",
+  "AGE",
+  "LEASE",
+  "STALE_OWNER_INFERENCE",
+]);
 const rootFields = Object.freeze([
   "filesystemTypeBytes",
   "handleDeviceBytes",
@@ -1000,7 +1036,17 @@ function createOnceRefusal(...issues: readonly string[]): Iss022CreateOnceHandle
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
 
-function validCreateOnceChild(row: PortablePrimitiveChildExecution): boolean {
+function validFilesystemChild(
+  row: PortablePrimitiveChildExecution,
+  mode: "EXCLUSIVE_CREATE" | "LOCK_ATTEMPT",
+): boolean {
+  return (
+    validChildEnvelope(row) &&
+    (row.event === null || bindPortablePrimitiveRawChildEvent(row.event, mode, []).ok)
+  );
+}
+
+function validChildEnvelope(row: PortablePrimitiveChildExecution): boolean {
   return (
     exactKeys(row, createOnceChildFields) &&
     isParserTerminalCode(row.exitCode) &&
@@ -1009,12 +1055,11 @@ function validCreateOnceChild(row: PortablePrimitiveChildExecution): boolean {
     isBoolean(row.timedOut) &&
     typeof row.stderr === "string" &&
     typeof row.stdout === "string" &&
-    Buffer.byteLength(row.stderr) + Buffer.byteLength(row.stdout) <= 64 * 1024 &&
-    (row.event === null || bindPortablePrimitiveRawChildEvent(row.event, "EXCLUSIVE_CREATE", []).ok)
+    Buffer.byteLength(row.stderr) + Buffer.byteLength(row.stdout) <= 64 * 1024
   );
 }
 
-function coherentCreateOnceChild(row: PortablePrimitiveChildExecution): boolean {
+function coherentFilesystemChild(row: PortablePrimitiveChildExecution): boolean {
   return (
     !row.outputLimitExceeded &&
     !row.timedOut &&
@@ -1027,7 +1072,7 @@ function coherentCreateOnceChild(row: PortablePrimitiveChildExecution): boolean 
 }
 
 function createOnceResult(row: PortablePrimitiveCreateOnceRawFacts): PortablePrimitiveResult {
-  if (!row.contenders.every(coherentCreateOnceChild)) return "UNKNOWN";
+  if (!row.contenders.every(coherentFilesystemChild)) return "UNKNOWN";
   const created = row.contenders.filter(({ event }) => event?.event === "CREATED");
   const existing = row.contenders.filter(
     ({ event }) => event?.event === "ERROR" && event.errorCode === "EEXIST",
@@ -1077,7 +1122,7 @@ export function normalizeIss022CreateOnceProbe(input: unknown): Iss022CreateOnce
     )
       return createOnceRefusal("createOnce:record-refused");
     for (let index = 0; index < row.contenders.length; index += 1)
-      if (!validCreateOnceChild(row.contenders[index]!))
+      if (!validFilesystemChild(row.contenders[index]!, "EXCLUSIVE_CREATE"))
         return createOnceRefusal(`createOnce.contenders.${index}:record-refused`);
     return {
       ok: true,
@@ -1103,5 +1148,155 @@ export async function runIss022CreateOnceStableHandler(
     );
   } catch {
     return createOnceRefusal("createOnce:execution-refused");
+  }
+}
+
+function lockRefusal(...issues: readonly string[]): Iss022LockHandlerResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function validLockChild(row: PortablePrimitiveChildExecution): boolean {
+  return exactKeys(row, lockChildFields) && validFilesystemChild(row, "LOCK_ATTEMPT");
+}
+
+function validLockDescriptorChild(row: PortablePrimitiveChildExecution): boolean {
+  return (
+    validChildEnvelope(row) &&
+    (row.event === null || parsePortablePrimitiveLockDescriptorChildEvent(row.event).ok)
+  );
+}
+
+function validHolderEvent(event: ContractRecord): boolean {
+  return bindPortablePrimitiveRawChildEvent(event, "LOCK_HOLDER", []).ok;
+}
+
+function holderAcquired(event: ContractRecord): boolean {
+  return validHolderEvent(event) && event.event === "ACQUIRED";
+}
+
+function lockAttemptErrorCode(row: PortablePrimitiveChildExecution): string | null {
+  return row.event?.event === "ERROR" && typeof row.event.errorCode === "string"
+    ? row.event.errorCode
+    : null;
+}
+
+function contentionResult(row: PortablePrimitiveLockContentionRawFacts): PortablePrimitiveResult {
+  if (!row.holderCloseObserved || !holderAcquired(row.holderEvent)) return "UNKNOWN";
+  if (!coherentFilesystemChild(row.contender)) return "UNKNOWN";
+  const code = lockAttemptErrorCode(row.contender);
+  if (code === "EEXIST") return "PASS";
+  return code !== null && unsupportedOperationCodes.has(code) ? "UNSUPPORTED" : "UNKNOWN";
+}
+
+function holderDeathResult(row: PortablePrimitiveLockHolderDeathRawFacts): PortablePrimitiveResult {
+  if (
+    !row.holderCloseObserved ||
+    !holderAcquired(row.holderEvent) ||
+    row.acquisitionAttemptCount !== "1" ||
+    row.prohibitedActions.length !== 0 ||
+    !coherentFilesystemChild(row.postDeathAttempt)
+  )
+    return "UNKNOWN";
+  if (row.postDeathAttempt.event?.event === "ACQUIRED") return "PASS";
+  const code = lockAttemptErrorCode(row.postDeathAttempt);
+  if (code === "EEXIST" || (code !== null && unsupportedOperationCodes.has(code)))
+    return "UNSUPPORTED";
+  return "UNKNOWN";
+}
+
+function nonInheritanceResult(
+  row: PortablePrimitiveLockNonInheritanceRawFacts,
+): PortablePrimitiveResult {
+  if (row.parentReadbackHex !== row.probeNonceHex || !coherentFilesystemChild(row.child))
+    return "UNKNOWN";
+  const event = row.child.event;
+  if (event?.accessResult === "REFUSED" && event.errorCode === "EBADF") return "PASS";
+  if (
+    event?.accessResult === "REFUSED" &&
+    typeof event.errorCode === "string" &&
+    unsupportedOperationCodes.has(event.errorCode)
+  )
+    return "UNSUPPORTED";
+  return "UNKNOWN";
+}
+
+export function normalizeIss022LockProbe(input: unknown): Iss022LockHandlerResult {
+  try {
+    const snapshot = snapshotData(input);
+    if (
+      snapshot === invalidSnapshot ||
+      !Array.isArray(snapshot) ||
+      Object.getPrototypeOf(snapshot) !== Array.prototype ||
+      snapshot.length !== 3
+    )
+      return lockRefusal("lock:census-refused");
+    const [contention, holderDeath, nonInheritance] = snapshot as unknown as [
+      PortablePrimitiveLockContentionRawFacts,
+      PortablePrimitiveLockHolderDeathRawFacts,
+      PortablePrimitiveLockNonInheritanceRawFacts,
+    ];
+    if (
+      !exactKeys(contention, lockContentionFields) ||
+      contention.caseId !== "LOCK_TWO_UNRELATED_PROCESSES" ||
+      contention.schemaVersion !== "portable-primitives-lock-contention-raw/v1" ||
+      !isBoolean(contention.holderCloseObserved) ||
+      !validHolderEvent(contention.holderEvent) ||
+      !validLockChild(contention.contender)
+    )
+      return lockRefusal("lock.0:record-refused");
+    if (
+      !exactKeys(holderDeath, lockHolderDeathFields) ||
+      holderDeath.caseId !== "LOCK_HOLDER_DEATH" ||
+      holderDeath.schemaVersion !== "portable-primitives-lock-holder-death-raw/v1" ||
+      !isBoolean(holderDeath.holderCloseObserved) ||
+      !validHolderEvent(holderDeath.holderEvent) ||
+      !validLockChild(holderDeath.postDeathAttempt) ||
+      !["0", "1"].includes(holderDeath.acquisitionAttemptCount) ||
+      !Array.isArray(holderDeath.prohibitedActions) ||
+      new Set(holderDeath.prohibitedActions).size !== holderDeath.prohibitedActions.length ||
+      !holderDeath.prohibitedActions.every((action) => prohibitedLockActions.has(action))
+    )
+      return lockRefusal("lock.1:record-refused");
+    if (
+      !exactKeys(nonInheritance, lockNonInheritanceFields) ||
+      nonInheritance.caseId !== "LOCK_DEFAULT_NON_INHERITANCE" ||
+      nonInheritance.schemaVersion !== "portable-primitives-lock-non-inheritance-raw/v1" ||
+      !digest.test(nonInheritance.parentReadbackHex) ||
+      !digest.test(nonInheritance.probeNonceHex) ||
+      !validLockDescriptorChild(nonInheritance.child)
+    )
+      return lockRefusal("lock.2:record-refused");
+    return {
+      ok: true,
+      vectorExecutions: Object.freeze([
+        Object.freeze({
+          caseId: contention.caseId,
+          normalizedResult: contentionResult(contention),
+          rawFacts: contention,
+        }),
+        Object.freeze({
+          caseId: holderDeath.caseId,
+          normalizedResult: holderDeathResult(holderDeath),
+          rawFacts: holderDeath,
+        }),
+        Object.freeze({
+          caseId: nonInheritance.caseId,
+          normalizedResult: nonInheritanceResult(nonInheritance),
+          rawFacts: nonInheritance,
+        }),
+      ]),
+    };
+  } catch {
+    return lockRefusal("lock:unreadable");
+  }
+}
+
+export async function runIss022LockStableHandler(
+  custodyRoot: string,
+): Promise<Iss022LockHandlerResult> {
+  try {
+    return normalizeIss022LockProbe(await executePortablePrimitiveLockProbe(custodyRoot));
+  } catch {
+    return lockRefusal("lock:execution-refused");
   }
 }
