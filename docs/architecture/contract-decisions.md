@@ -1119,7 +1119,8 @@ subject, the stable harness/test bundles, and the complete required-job
 registry. Candidate code may be the subject under test. It never selects a
 job, expected vector, receipt writer, aggregate writer, capability, review, or
 promotion outcome. The only pre-ISS-029 hosted provenance admitted here is the
-GitHub provider record defined below plus independent review. It is deliberately
+GitHub provisional provider record, terminal-verifier PASS, and independent
+review defined below. They are deliberately
 non-promotional: no ISS-006 record can install, select, certify, promote, issue
 a live capability, or mutate authority.
 
@@ -1127,8 +1128,9 @@ The portable conformance core owns nine closed `v1` records in
 `@orchestration-platform/conformance`: bundle manifest, candidate subject,
 contract-version census, vector census, required-job registry, environment
 inventory, raw-artifact manifest, job receipt, and aggregate. The GitHub
-Actions adapter owns two additional closed records, protection snapshot and
-provider record, plus its provider-run digest. The core sees only the opaque
+Actions adapter owns three additional closed records: direct protected-ref,
+full protection snapshot, and provisional provider record, plus its provisional
+provider-run digest. The core sees only the opaque
 `providerRunDigest`; repository, workflow, revision, run, job, and artifact
 vocabulary never enters an engine-facing contract. ISS-002 continues to own
 the underlying platform schemas and golden values. ISS-006 owns only the
@@ -1429,17 +1431,19 @@ Daggregate = conformance-aggregate/v1(canonical aggregate bytes)
 ```
 
 An aggregate alone is never hosted authority. Downstream use requires the
-exact provider record whose `aggregateDigest` equals recomputed `Daggregate`
-and an independent reviewed capability decision owned by ISS-022. There is no
-signature, capability token, promotion verdict, certification state, or
-mutation handle in any core record.
+exact provisional provider record whose `aggregateDigest` equals recomputed
+`Daggregate`, a PASS from the administrator-authenticated post-terminal
+verifier, and an independent reviewed capability decision owned by ISS-022.
+There is no signature, capability token, promotion verdict, certification
+state, or mutation handle in any core record.
 
-#### Protected GitHub provider record and workflow topology
+#### Protected GitHub provisional provider record and workflow topology
 
-The approved pre-ISS-029 adapter authority is
-`github-conformance-provider-record/v1`. It remains in the GitHub Actions
-adapter and is never admitted to engine vocabulary. Its top-level members are
-exactly:
+The in-run adapter record is
+`github-conformance-provisional-provider-record/v1`. It is provisional input
+to the required post-terminal verifier, never authority by itself. It remains
+in the GitHub Actions adapter and is never admitted to engine vocabulary. Its
+top-level members are exactly:
 
 ```text
 aggregateDigest
@@ -1449,7 +1453,7 @@ candidateSubjectDigest
 event
 harnessBundleDigest
 jobs
-protectionSnapshotDigest
+protectedRefDigest
 recordedAt
 repositoryId
 requiredJobRegistryDigest
@@ -1469,22 +1473,41 @@ path, and `refs/heads/main`; candidate and workflow revisions are lowercase
 The record binds the canonical candidate source-manifest digest rather than
 treating a Git revision as a portable engine identity.
 
-`protectionSnapshotDigest` identifies the exact adapter projection
+`protectedRefDigest` identifies the distinct direct provider projection
+`github-conformance-protected-ref/v1`, whose members are exactly
+`refProtected`, `schemaVersion`, and `targetRef`. The only admitted values are
+`true`, `github-conformance-protected-ref/v1`, and `refs/heads/main`. Its
+identity is:
+
+```text
+DprotectedRef = github-conformance-protected-ref/v1(
+  canonical protected-ref projection bytes
+)
+```
+
+This marker proves only that GitHub reported protection for the triggering
+ref. The plan and record jobs independently require the literal provider
+environment value `GITHUB_REF_PROTECTED=true` and bind `DprotectedRef`; neither
+claims to observe the full policy or its bypass list.
+
+The post-terminal verifier alone projects
 `github-conformance-protection-snapshot/v1`, whose members are exactly
 `bypassActorCount`, `deletionBlocked`, `enforcement`,
 `nonFastForwardBlocked`, `pullRequestRequired`, `schemaVersion`, and
 `targetRef`. The only admitted values are canonical decimal `"0"`, booleans
 `true`, `ACTIVE`, and `refs/heads/main` respectively.
 
-The adapter reads the default-branch protection endpoint and every applicable
-repository/organization ruleset through terminal pagination. It rejects an
-unreadable page, inactive/unknown enforcement, an unmatched target, any bypass
-actor or administrator exemption, or effective rules that do not require pull
-requests and block deletion/non-fast-forward updates. Multiple applicable
-layers reduce by their effective union: a required restriction remains true if
-any active layer imposes it, while any bypass makes `bypassActorCount` nonzero
-and therefore refuses before projection. The accepted projection is unique and
-has the identity:
+Running outside Actions with an administrator-authenticated read, the verifier
+reads the default-branch protection endpoint, terminally paginates every
+repository/inherited ruleset summary, and fetches every ruleset detail. Summary
+rows are not policy evidence. It requires `bypass_actors` to be present and
+empty and rejects a hidden/omitted bypass field, unreadable detail/page,
+inactive/unknown enforcement, unmatched target, administrator exemption, or
+effective rules that do not require pull requests and block deletion/non-fast-
+forward updates. Multiple applicable layers reduce by their effective union:
+a required restriction remains true if any active layer imposes it, while any
+bypass refuses before projection. The accepted projection is unique and has
+the identity:
 
 ```text
 Dprotection = github-conformance-protection-snapshot/v1(
@@ -1492,9 +1515,12 @@ Dprotection = github-conformance-protection-snapshot/v1(
 )
 ```
 
-The plan job derives `Dprotection` and the record job independently re-derives
-it; movement during the run refuses. Immediately before canonical provider-
-record serialization, the record job performs its final current-attempt jobs
+`Dprotection` is terminal-only and is never inferred from `DprotectedRef`.
+Before returning PASS, the verifier requires both the exact provisional record
+and this full live projection. An unreadable policy, hidden bypass data, or
+weakened restriction refuses even if every run artifact is otherwise valid.
+Immediately before canonical provisional-provider-record serialization, the
+record job performs its final current-attempt jobs
 API GET and sets `recordedAt` to the canonical millisecond-UTC projection of
 that HTTPS response's provider `Date` header (whole seconds become `.000Z`). A
 missing, repeated, malformed, or non-UTC header refuses. Every artifact listed
@@ -1553,7 +1579,7 @@ download behavior and never treats an archive digest as an inner-record digest.
 The opaque core value is:
 
 ```text
-DproviderRun = github-conformance-provider-run/v1(
+DproviderRun = github-conformance-provisional-provider-run/v1(
   repositoryId,
   workflowPath,
   workflowRef,
@@ -1561,7 +1587,7 @@ DproviderRun = github-conformance-provider-run/v1(
   runId,
   runAttempt,
   event,
-  protectionSnapshotDigest,
+  protectedRefDigest,
   candidateRevision,
   candidateSubjectDigest,
   harnessBundleDigest,
@@ -1572,10 +1598,11 @@ DproviderRun = github-conformance-provider-run/v1(
 
 Every item is one framed text/raw-32 part in the shown order. The adapter
 recomputes this value and requires equality to every receipt and the aggregate.
-The provider-record identity is one canonical frame under
-`github-conformance-provider-record/v1`; it binds `Daggregate` but is not
-inserted into the aggregate, avoiding a digest cycle. Retrieval of the provider
-record itself is verified against the same run through the provider API.
+The provisional-provider-record identity is one canonical frame under
+`github-conformance-provisional-provider-record/v1`; it binds `Daggregate` but
+is not inserted into the aggregate, avoiding a digest cycle. Retrieval of the
+provider record itself is verified against the same run through the provider
+API.
 
 The sole authoritative hosted topology is:
 
@@ -1648,17 +1675,18 @@ The sole authoritative hosted topology is:
    writes receipts and at most one aggregate, uploaded with explicit
    `archive:true`. It never checks out or executes candidate code.
 6. A final stable-only record job queries the provider run, current-attempt job,
-   artifact, and ruleset APIs after aggregate upload, verifies the exact census,
-   unchanged zero-bypass protection snapshot, and at least 30 days remaining
-   retention for the already-listed artifacts, and writes then uploads with
-   explicit `archive:false` the provider record as exact artifact
+   and artifact APIs after aggregate upload, verifies the exact census, repeats
+   the direct `GITHUB_REF_PROTECTED=true` requirement, and verifies at least 30
+   days remaining retention for the already-listed artifacts. It writes then
+   uploads with explicit `archive:false` the provisional provider record as
+   exact artifact
    `conformance-<runId>-<runAttempt>-provider-record.json`; the source file has
    that exact basename and the upload step has no `name` input. Rerunning only a
    subset cannot combine attempts because every artifact name and API query is
    attempt-qualified.
 
-The provider record cannot attest its own completed writer job or artifact
-without a cycle. The required post-job verifier therefore takes only the
+The provisional provider record cannot attest its own completed writer job or
+artifact without a cycle. The required post-job verifier therefore takes only the
 expected repository ID, run ID, run attempt, and workflow revision, queries the
 provider after the whole run is terminal, and requires:
 
@@ -1669,9 +1697,10 @@ provider after the whole run is terminal, and requires:
   association, API SHA-256/length equal to downloaded canonical bytes, creation
   under `archive:false`, non-expired status, and `expiresAt` at least 30 days
   after the record's `recordedAt`;
-- the downloaded provider record, every listed job/artifact, `DproviderRun`,
-  `Dprotection`, and `Daggregate` all revalidate from live provider responses
-  and retained bytes.
+- the downloaded provisional provider record, every listed job/artifact,
+  `DproviderRun`, `DprotectedRef`, `Dprotection`, and `Daggregate` all
+  revalidate from live provider responses and retained bytes; ruleset summaries
+  are expanded to details and omitted `bypass_actors` refuses.
 
 The artifact API does not assert its uploader job. The constructive join is the
 immutable reviewed workflow's unique attempt-qualified upload step plus unique
@@ -1686,14 +1715,15 @@ record, so the chain terminates without a self-reference.
 Movement of the default branch after dispatch does not substitute bytes: the
 exact immutable `workflowRevision` remains the stable subject for the run.
 Deletion, expiry, API unreadability, protection loss, or absence of any raw
-artifact, receipt, aggregate, or provider record becomes `UNKNOWN`/unusable;
-it never normalizes to pass.
+artifact, receipt, aggregate, or provisional provider record becomes
+`UNKNOWN`/unusable; it never normalizes to pass.
 
 GitHub check names are presentation only. Required status checks cannot prove
 this topology because the provider does not bind a check name to one event or
 workflow. ISS-006 therefore creates no status authority. The independently
-reviewed provider record and protected-main ruleset snapshot are the bounded
-pre-ISS-029 evidence. ISS-029 may later replace this bounded provider evidence
+reviewed provisional provider record, terminal-verifier PASS, and protected-main
+full policy snapshot are the bounded pre-ISS-029 evidence. ISS-029 may later
+replace this bounded provider evidence
 with authenticated OIDC/artifact attestation; ISS-006 does not pre-claim that
 result.
 
@@ -1704,7 +1734,7 @@ whose first exact line is `ADVISORY CONFORMANCE RESULT`, then returns the
 closed exit mapping `0` only when every selected local suite reports PASS and
 `1` for FAIL, UNSUPPORTED, malformed input, or internal refusal. It cannot invoke a
 hosted serializer or provider verifier and never emits canonical job-receipt,
-aggregate, or provider-record bytes. Every hosted parser rejects the diagnostic
+aggregate, or provisional-provider-record bytes. Every hosted parser rejects the diagnostic
 stream before semantic reads. Local mode is deterministic development evidence
 only; deleting the marker or routing local output to a hosted parser is an
 executable refusal mutant.
@@ -1722,7 +1752,8 @@ time, timeout, overflow, refusal, or one slower
 interval makes the required job non-PASS. Checkpoints or indexes remain deleted
 until this exact fresh-process measurement fails on a supported hosted OS.
 
-Raw observations, job receipts, aggregate, provider record, stable manifests,
+Raw observations, job receipts, aggregate, provisional provider record, stable
+manifests,
 registry/census, provider metadata snapshot, and workflow-mutation outputs are
 retained for at least 30 days. The record job verifies already-listed artifact
 expiry; the post-job verifier independently verifies the provider-record

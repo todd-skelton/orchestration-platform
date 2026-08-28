@@ -17,11 +17,11 @@ import {
   parseConformanceRequiredJobRegistry,
 } from "../../packages/conformance/src/index.js";
 import {
+  computeGithubConformanceProtectedRefDigest,
   computeGithubProviderRunDigest,
-  parseGithubConformanceProtectionSnapshot,
+  parseGithubConformanceProtectedRef,
   parseGithubProviderRunContext,
   projectGithubCandidateSubject,
-  projectGithubProtectionSnapshot,
   type GithubProtectionApiInput,
 } from "../../packages/conformance/src/github-actions/index.js";
 
@@ -38,6 +38,7 @@ export type HostedPlanResult<T> =
 
 export interface HostedDispatchContext {
   readonly candidateRevision: string;
+  readonly protectedRef: ContractRecord;
   readonly repository: string;
   readonly repositoryId: string;
   readonly runAttempt: string;
@@ -49,17 +50,16 @@ export interface HostedDispatchContext {
 
 export interface HostedPlanSelection extends HostedDispatchContext {
   readonly event: "repository_dispatch";
-  readonly protectionSnapshot: ContractRecord;
-  readonly protectionSnapshotDigest: string;
+  readonly protectedRefDigest: string;
   readonly schemaVersion: "hosted-conformance-plan-selection/v1";
 }
 
-export interface HostedPlanContext extends HostedDispatchContext {
+export interface HostedPlanContext extends Omit<HostedDispatchContext, "protectedRef"> {
   readonly candidateSubjectDigest: string;
   readonly contractVersionsDigest: string;
   readonly event: "repository_dispatch";
   readonly harnessBundleDigest: string;
-  readonly protectionSnapshotDigest: string;
+  readonly protectedRefDigest: string;
   readonly providerRunDigest: string;
   readonly requiredJobRegistryDigest: string;
   readonly schemaVersion: "hosted-conformance-plan-context/v1";
@@ -68,11 +68,14 @@ export interface HostedPlanContext extends HostedDispatchContext {
 }
 
 export interface HostedPlanApi {
+  readonly resolveCommit: (repository: string, revision: string, token: string) => Promise<string>;
+}
+
+export interface HostedProtectionApi {
   readonly projectProtection: (
     repository: string,
     token: string,
   ) => Promise<GithubProtectionApiInput>;
-  readonly resolveCommit: (repository: string, revision: string, token: string) => Promise<string>;
 }
 
 export interface HostedCandidateSourceFile {
@@ -180,6 +183,11 @@ export function parseHostedDispatchContext(
           ok: true,
           value: Object.freeze({
             candidateRevision: candidateRevision as string,
+            protectedRef: Object.freeze({
+              refProtected: true,
+              schemaVersion: "github-conformance-protected-ref/v1",
+              targetRef: "refs/heads/main",
+            }),
             repository: repository as string,
             repositoryId: repositoryId as string,
             runAttempt: runAttempt as string,
@@ -202,21 +210,22 @@ export async function selectHostedPlan(
 ): Promise<HostedPlanResult<HostedPlanSelection>> {
   try {
     if (typeof token !== "string" || token.length === 0) return refusal("provider:token-required");
-    const [resolvedRevision, protectionInput] = await Promise.all([
-      api.resolveCommit(context.repository, context.candidateRevision, token),
-      api.projectProtection(context.repository, token),
-    ]);
+    const resolvedRevision = await api.resolveCommit(
+      context.repository,
+      context.candidateRevision,
+      token,
+    );
     if (resolvedRevision !== context.candidateRevision)
       return refusal("candidate:resolved-revision-mismatch");
-    const protection = projectGithubProtectionSnapshot(protectionInput);
-    if (!protection.ok) return refusal(...protection.issues.map((issue) => `protection.${issue}`));
+    const protectedRef = parseGithubConformanceProtectedRef(context.protectedRef);
+    if (!protectedRef.ok)
+      return refusal(...protectedRef.issues.map((issue) => `protectedRef.${issue}`));
     return {
       ok: true,
       value: Object.freeze({
         ...context,
         event: "repository_dispatch",
-        protectionSnapshot: protection.value,
-        protectionSnapshotDigest: protection.digest,
+        protectedRefDigest: computeGithubConformanceProtectedRefDigest(protectedRef.value),
         schemaVersion: "hosted-conformance-plan-selection/v1",
       }),
     };
@@ -515,7 +524,7 @@ export async function finalizeHostedPlan(input: {
       candidateSubjectDigest: candidate.value.digest,
       event: "repository_dispatch",
       harnessBundleDigest,
-      protectionSnapshotDigest: input.selection.protectionSnapshotDigest,
+      protectedRefDigest: input.selection.protectedRefDigest,
       repositoryId: input.selection.repositoryId,
       requiredJobRegistryDigest,
       runAttempt: input.selection.runAttempt,
@@ -533,7 +542,7 @@ export async function finalizeHostedPlan(input: {
       contractVersionsDigest,
       event: "repository_dispatch",
       harnessBundleDigest,
-      protectionSnapshotDigest: input.selection.protectionSnapshotDigest,
+      protectedRefDigest: input.selection.protectedRefDigest,
       providerRunDigest: computeGithubProviderRunDigest(parsedProviderRun.value),
       repository: input.selection.repository,
       repositoryId: input.selection.repositoryId,
@@ -555,8 +564,14 @@ export async function finalizeHostedPlan(input: {
   }
 }
 
-async function githubJson(url: string, token: string): Promise<Response> {
-  return fetch(url, {
+export type HostedGithubFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+async function githubJson(
+  url: string,
+  token: string,
+  fetcher: HostedGithubFetch = fetch,
+): Promise<Response> {
+  return fetcher(url, {
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
@@ -586,33 +601,82 @@ export const githubPlanApi: HostedPlanApi = Object.freeze({
       throw new Error("provider:commit-response-refused");
     return body.sha;
   },
-  async projectProtection(repository: string, token: string): Promise<GithubProtectionApiInput> {
-    const branchResponse = await githubJson(
-      `https://api.github.com/repos/${repository}/branches/main/protection`,
-      token,
+});
+
+function rulesetDetailUrl(input: unknown, repository: string): string {
+  const summary = plainRecord(input);
+  const links = summary && plainRecord(summary._links);
+  const self = links && plainRecord(links.self);
+  const href = self?.href;
+  const id = summary?.id;
+  if (typeof href !== "string" || typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)
+    throw new TypeError("provider:ruleset-summary-refused");
+  const url = new URL(href);
+  const [owner] = repository.split("/");
+  const acceptedPaths = new Set([
+    `/repos/${repository}/rulesets/${id}`,
+    `/orgs/${owner}/rulesets/${id}`,
+  ]);
+  if (
+    url.origin !== "https://api.github.com" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !acceptedPaths.has(url.pathname)
+  )
+    throw new TypeError("provider:ruleset-detail-url-refused");
+  return url.href;
+}
+
+export async function readGithubProtection(
+  repository: string,
+  token: string,
+  fetcher: HostedGithubFetch = fetch,
+): Promise<GithubProtectionApiInput> {
+  const branchResponse = await githubJson(
+    `https://api.github.com/repos/${repository}/branches/main/protection`,
+    token,
+    fetcher,
+  );
+  const branchProtectionStatus: GithubProtectionApiInput["branchProtectionStatus"] =
+    branchResponse.ok ? "FOUND" : branchResponse.status === 404 ? "NOT_FOUND" : "UNREADABLE";
+  const branchProtection = branchResponse.ok ? await branchResponse.json() : null;
+  const pages: unknown[][] = [];
+  let url: string | undefined =
+    `https://api.github.com/repos/${repository}/rulesets?includes_parents=true&per_page=100&page=1`;
+  for (let page = 0; url && page < 1024; page += 1) {
+    const response = await githubJson(url, token, fetcher);
+    if (!response.ok) throw new Error("provider:rulesets-unreadable");
+    const summaries = await response.json();
+    if (!Array.isArray(summaries)) throw new Error("provider:rulesets-page-refused");
+    const details = await Promise.all(
+      summaries.map(async (summary) => {
+        const detailResponse = await githubJson(
+          rulesetDetailUrl(summary, repository),
+          token,
+          fetcher,
+        );
+        if (!detailResponse.ok) throw new Error("provider:ruleset-detail-unreadable");
+        return await detailResponse.json();
+      }),
     );
-    const branchProtectionStatus: GithubProtectionApiInput["branchProtectionStatus"] =
-      branchResponse.ok ? "FOUND" : branchResponse.status === 404 ? "NOT_FOUND" : "UNREADABLE";
-    const branchProtection = branchResponse.ok ? await branchResponse.json() : null;
-    const pages: unknown[][] = [];
-    let url: string | undefined =
-      `https://api.github.com/repos/${repository}/rulesets?includes_parents=true&per_page=100&page=1`;
-    for (let page = 0; url && page < 1024; page += 1) {
-      const response = await githubJson(url, token);
-      if (!response.ok) throw new Error("provider:rulesets-unreadable");
-      const body = await response.json();
-      if (!Array.isArray(body)) throw new Error("provider:rulesets-page-refused");
-      pages.push(body);
-      url = nextLink(response.headers.get("link"));
-    }
-    if (url) throw new Error("provider:rulesets-pagination-over-bound");
-    return {
-      branchProtection,
-      branchProtectionStatus,
-      rulesetPages: pages,
-      rulesetPaginationTerminal: true,
-      targetRef: "refs/heads/main",
-    };
+    pages.push(details);
+    url = nextLink(response.headers.get("link"));
+  }
+  if (url) throw new Error("provider:rulesets-pagination-over-bound");
+  return Object.freeze({
+    branchProtection,
+    branchProtectionStatus,
+    rulesetPages: pages,
+    rulesetPaginationTerminal: true,
+    targetRef: "refs/heads/main",
+  });
+}
+
+export const githubProtectionApi: HostedProtectionApi = Object.freeze({
+  async projectProtection(repository: string, token: string): Promise<GithubProtectionApiInput> {
+    return await readGithubProtection(repository, token);
   },
 });
 
@@ -624,8 +688,8 @@ function parseSelection(input: unknown): HostedPlanResult<HostedPlanSelection> {
   const fields = [
     "candidateRevision",
     "event",
-    "protectionSnapshot",
-    "protectionSnapshotDigest",
+    "protectedRef",
+    "protectedRefDigest",
     "repository",
     "repositoryId",
     "runAttempt",
@@ -637,14 +701,15 @@ function parseSelection(input: unknown): HostedPlanResult<HostedPlanSelection> {
   ];
   const record = exactRecord(input, fields);
   if (!record) return refusal("selection:closed-record-refused");
-  const protection = parseGithubConformanceProtectionSnapshot(record.protectionSnapshot);
-  if (!protection.ok) return refusal(...protection.issues.map((issue) => `selection.${issue}`));
+  const protectedRef = parseGithubConformanceProtectedRef(record.protectedRef);
+  if (!protectedRef.ok) return refusal(...protectedRef.issues.map((issue) => `selection.${issue}`));
   const candidateRevision = record.candidateRevision;
   if (
     record.schemaVersion !== "hosted-conformance-plan-selection/v1" ||
     record.event !== "repository_dispatch" ||
     typeof candidateRevision !== "string" ||
-    !commitPattern.test(candidateRevision)
+    !commitPattern.test(candidateRevision) ||
+    record.protectedRefDigest !== computeGithubConformanceProtectedRefDigest(protectedRef.value)
   )
     return refusal("selection:scalar-refused");
   return { ok: true, value: record as unknown as HostedPlanSelection };

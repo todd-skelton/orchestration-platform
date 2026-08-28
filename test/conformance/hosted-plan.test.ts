@@ -8,12 +8,16 @@ import {
   finalizeHostedPlan,
   parseGitTreeOutput,
   parseHostedDispatchContext,
+  readGithubProtection,
   selectHostedPlan,
   type HostedDispatchContext,
   type HostedPlanApi,
   type HostedPlanSelection,
 } from "../../scripts/conformance/hosted-plan.mjs";
-import { projectGithubProtectionSnapshot } from "../../packages/conformance/src/github-actions/index.js";
+import {
+  computeGithubConformanceProtectedRefDigest,
+  projectGithubProtectionSnapshot,
+} from "../../packages/conformance/src/github-actions/index.js";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -53,19 +57,8 @@ function context(): HostedDispatchContext {
   return parsed.value;
 }
 
-function protectionInput() {
-  return {
-    branchProtection,
-    branchProtectionStatus: "FOUND" as const,
-    rulesetPages: [[]],
-    rulesetPaginationTerminal: true,
-    targetRef: "refs/heads/main",
-  };
-}
-
 function api(overrides: Partial<HostedPlanApi> = {}): HostedPlanApi {
   return {
-    projectProtection: async () => protectionInput(),
     resolveCommit: async (_repository, candidateRevision) => candidateRevision,
     ...overrides,
   };
@@ -95,12 +88,12 @@ describe("hosted conformance plan", () => {
       );
   });
 
-  test("selects only an exact resolved commit under zero-bypass protection", async () => {
+  test("selects only an exact resolved commit under the direct protected-ref marker", async () => {
     const selected = await selectHostedPlan(context(), "token", api());
     expect(selected.ok).toBe(true);
     if (!selected.ok) return;
     expect(selected.value.candidateRevision).toBe(revision);
-    expect(selected.value.protectionSnapshotDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(selected.value.protectedRefDigest).toMatch(/^[0-9a-f]{64}$/);
 
     expect(
       (
@@ -115,17 +108,9 @@ describe("hosted conformance plan", () => {
     expect(
       (
         await selectHostedPlan(
-          context(),
+          { ...context(), protectedRef: { ...context().protectedRef, refProtected: false } },
           "token",
-          api({
-            projectProtection: async () => ({
-              ...protectionInput(),
-              branchProtection: {
-                ...branchProtection,
-                enforce_admins: { enabled: false },
-              },
-            }),
-          }),
+          api(),
         )
       ).ok,
     ).toBe(false);
@@ -140,6 +125,47 @@ describe("hosted conformance plan", () => {
     ).toMatchObject({ ok: true });
     expect(parseGitTreeOutput(Buffer.from("bad\0", "utf8"))).toMatchObject({ ok: false });
     expect(parseGitTreeOutput(Uint8Array.from([0xff, 0]))).toMatchObject({ ok: false });
+  });
+
+  test("terminal protection reads replace ruleset summaries with authenticated details", async () => {
+    const rulesetId = 21694457;
+    const detail = {
+      bypass_actors: [],
+      conditions: { ref_name: { exclude: [], include: ["~DEFAULT_BRANCH"] } },
+      enforcement: "active",
+      rules: [{ type: "deletion" }, { type: "non_fast_forward" }, { type: "pull_request" }],
+      target: "branch",
+    };
+    const read = async (rulesetDetail: unknown) =>
+      await readGithubProtection(repository, "token", async (url) => {
+        if (url.endsWith("/branches/main/protection"))
+          return new Response(JSON.stringify(branchProtection), { status: 200 });
+        if (url.includes("/rulesets?"))
+          return new Response(
+            JSON.stringify([
+              {
+                _links: {
+                  self: {
+                    href: `https://api.github.com/repos/${repository}/rulesets/${rulesetId}`,
+                  },
+                },
+                id: rulesetId,
+              },
+            ]),
+            { status: 200 },
+          );
+        if (url.endsWith(`/rulesets/${rulesetId}`))
+          return new Response(JSON.stringify(rulesetDetail), { status: 200 });
+        return new Response(null, { status: 404 });
+      });
+    expect(projectGithubProtectionSnapshot(await read(detail)).ok).toBe(true);
+    const opaqueDetail = {
+      conditions: detail.conditions,
+      enforcement: detail.enforcement,
+      rules: detail.rules,
+      target: detail.target,
+    };
+    expect(projectGithubProtectionSnapshot(await read(opaqueDetail)).ok).toBe(false);
   });
 
   test("finalizes manifests, candidate subject, provider run, and registry-derived matrix", async () => {
@@ -159,14 +185,12 @@ describe("hosted conformance plan", () => {
       encoding: "utf8",
     });
     const candidateRevision = stdout.trim();
-    const projection = projectGithubProtectionSnapshot(protectionInput());
-    if (!projection.ok) throw new Error(projection.issues.join(","));
+    const dispatchContext = context();
     const selection: HostedPlanSelection = Object.freeze({
-      ...context(),
+      ...dispatchContext,
       candidateRevision,
       event: "repository_dispatch",
-      protectionSnapshot: projection.value,
-      protectionSnapshotDigest: projection.digest,
+      protectedRefDigest: computeGithubConformanceProtectedRefDigest(dispatchContext.protectedRef),
       schemaVersion: "hosted-conformance-plan-selection/v1",
       workflowRevision: candidateRevision,
     });

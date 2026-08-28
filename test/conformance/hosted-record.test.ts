@@ -113,27 +113,18 @@ const registry = Object.freeze({
     }),
   ]),
 });
-const protectionInput = Object.freeze({
-  branchProtection: Object.freeze({
-    allow_deletions: Object.freeze({ enabled: false }),
-    allow_force_pushes: Object.freeze({ enabled: false }),
-    enforce_admins: Object.freeze({ enabled: true }),
-    required_pull_request_reviews: Object.freeze({ bypass_pull_request_allowances: null }),
-  }),
-  branchProtectionStatus: "FOUND" as const,
-  rulesetPages: Object.freeze([Object.freeze([])]),
-  rulesetPaginationTerminal: true,
+const protectedRef = Object.freeze({
+  refProtected: true,
+  schemaVersion: "github-conformance-protected-ref/v1",
   targetRef: "refs/heads/main",
 });
-const protection = github.projectGithubProtectionSnapshot(protectionInput);
-if (!protection.ok) throw new Error(protection.issues.join(","));
 const context = Object.freeze({
   candidateRevision: revision("a"),
   candidateSubjectDigest: d("4"),
   contractVersionsDigest: d("5"),
   event: "repository_dispatch",
   harnessBundleDigest: d("6"),
-  protectionSnapshotDigest: protection.digest,
+  protectedRefDigest: github.computeGithubConformanceProtectedRefDigest(protectedRef),
   providerRunDigest: "",
   repository: "todd-skelton/orchestration-platform",
   repositoryId: "123",
@@ -156,7 +147,7 @@ const providerRun = Object.freeze({
   candidateSubjectDigest: context.candidateSubjectDigest,
   event: context.event,
   harnessBundleDigest: context.harnessBundleDigest,
-  protectionSnapshotDigest: context.protectionSnapshotDigest,
+  protectedRefDigest: context.protectedRefDigest,
   repositoryId: context.repositoryId,
   requiredJobRegistryDigest: context.requiredJobRegistryDigest,
   runAttempt: context.runAttempt,
@@ -252,7 +243,7 @@ function create(overrides: Readonly<Record<string, unknown>> = {}) {
   return createHostedProviderRecord({
     artifacts,
     context: boundContext,
-    currentProtection: protectionInput,
+    currentProtectedRef: protectedRef,
     jobs,
     recordedAt,
     registry,
@@ -279,19 +270,13 @@ describe("hosted provider-record composition", () => {
   });
 
   test("refuses moved protection, changed archive bytes, and incomplete provider evidence", () => {
-    const changedProtection = {
-      ...protectionInput,
-      branchProtection: {
-        ...protectionInput.branchProtection,
-        allow_deletions: { enabled: true },
-      },
-    };
+    const changedProtectedRef = { ...protectedRef, refProtected: false };
     const changedArtifact = {
       ...artifacts[0],
       archiveBytes: Uint8Array.from([...aggregateBytes, 0]),
     };
     for (const mutation of [
-      { currentProtection: changedProtection },
+      { currentProtectedRef: changedProtectedRef },
       { artifacts: [changedArtifact, artifacts[1]] },
       { artifacts: artifacts.slice(1) },
       { jobs: jobs.slice(1) },

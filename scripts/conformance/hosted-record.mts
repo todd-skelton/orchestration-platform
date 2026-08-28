@@ -7,13 +7,13 @@ import {
   parseConformanceRequiredJobRegistry,
 } from "../../packages/conformance/src/index.js";
 import {
+  computeGithubConformanceProtectedRefDigest,
+  parseGithubConformanceProtectedRef,
   parseGithubConformanceProviderRecord,
-  projectGithubProtectionSnapshot,
   validateGithubConformanceProviderRecord,
   verifyGithubAggregateArchive,
   verifyGithubArtifactIdentity,
   verifyGithubObservationArchive,
-  type GithubProtectionApiInput,
 } from "../../packages/conformance/src/github-actions/index.js";
 import { parseHostedObservationContext } from "./hosted-observation.mjs";
 import {
@@ -22,7 +22,6 @@ import {
   loadHostedIss002StableInputs,
   decodeHostedObservationContext,
 } from "./hosted-observation.mjs";
-import { githubPlanApi } from "./hosted-plan.mjs";
 import {
   readGithubHostedArtifacts,
   readGithubHostedJobs,
@@ -56,7 +55,7 @@ export interface HostedProviderArtifactInput {
 export interface HostedProviderRecordInput {
   readonly artifacts: unknown;
   readonly context: unknown;
-  readonly currentProtection: GithubProtectionApiInput;
+  readonly currentProtectedRef: unknown;
   readonly jobs: unknown;
   readonly recordedAt: unknown;
   readonly registry: unknown;
@@ -145,7 +144,7 @@ function providerRun(context: NonNullable<ReturnType<typeof parseHostedObservati
     candidateSubjectDigest: context.candidateSubjectDigest,
     event: context.event,
     harnessBundleDigest: context.harnessBundleDigest,
-    protectionSnapshotDigest: context.protectionSnapshotDigest,
+    protectedRefDigest: context.protectedRefDigest,
     repositoryId: context.repositoryId,
     requiredJobRegistryDigest: context.requiredJobRegistryDigest,
     runAttempt: context.runAttempt,
@@ -163,12 +162,15 @@ export function createHostedProviderRecord(
   try {
     const context = parseHostedObservationContext(input.context);
     const registry = parseConformanceRequiredJobRegistry(input.registry);
-    const protection = projectGithubProtectionSnapshot(input.currentProtection);
+    const protectedRef = parseGithubConformanceProtectedRef(input.currentProtectedRef);
     if (!context) return refusal("context:refused");
     if (!registry.ok) return refusal(...registry.issues.map((issue) => `registry.${issue}`));
-    if (!protection.ok) return refusal(...protection.issues.map((issue) => `protection.${issue}`));
-    if (protection.digest !== context.protectionSnapshotDigest)
-      return refusal("protectionSnapshotDigest:moved");
+    if (!protectedRef.ok)
+      return refusal(...protectedRef.issues.map((issue) => `protectedRef.${issue}`));
+    if (
+      computeGithubConformanceProtectedRefDigest(protectedRef.value) !== context.protectedRefDigest
+    )
+      return refusal("protectedRefDigest:moved");
     if (
       computeConformanceRecordDigest("conformance-required-job-registry/v1", registry.value) !==
       context.requiredJobRegistryDigest
@@ -312,13 +314,13 @@ export function createHostedProviderRecord(
       event: context.event,
       harnessBundleDigest: context.harnessBundleDigest,
       jobs: Object.freeze(jobs),
-      protectionSnapshotDigest: context.protectionSnapshotDigest,
+      protectedRefDigest: context.protectedRefDigest,
       recordedAt: input.recordedAt,
       repositoryId: context.repositoryId,
       requiredJobRegistryDigest: context.requiredJobRegistryDigest,
       runAttempt: context.runAttempt,
       runId: context.runId,
-      schemaVersion: "github-conformance-provider-record/v1",
+      schemaVersion: "github-conformance-provisional-provider-record/v1",
       testBundleDigest: context.testBundleDigest,
       workflowPath: context.workflowPath,
       workflowRef: context.workflowRef,
@@ -357,7 +359,6 @@ function environmentValue(
 }
 
 export interface HostedRecordRuntime {
-  readonly projectProtection: typeof githubPlanApi.projectProtection;
   readonly readArtifacts: (input: {
     readonly context: NonNullable<ReturnType<typeof parseHostedObservationContext>>;
     readonly registry: unknown;
@@ -383,7 +384,6 @@ export interface HostedRecordRuntime {
 }
 
 const githubRecordRuntime: HostedRecordRuntime = Object.freeze({
-  projectProtection: githubPlanApi.projectProtection,
   readArtifacts: readGithubHostedArtifacts,
   readJobs: readGithubHostedJobs,
 });
@@ -416,7 +416,6 @@ export async function runHostedRecord(
   if (!stable || !hostedIss002StableInputsMatchContext(stable, context))
     throw new Error("record:stable-inputs-moved");
 
-  const currentProtection = await runtime.projectProtection(context.repository, token);
   const artifacts = await runtime.readArtifacts({ context, registry: stable.registry, token });
   if (!artifacts.ok) throw new Error(artifacts.issues.join(","));
   const jobs = await runtime.readJobs({ context, registry: stable.registry, token });
@@ -424,7 +423,11 @@ export async function runHostedRecord(
   const record = createHostedProviderRecord({
     artifacts: artifacts.value,
     context,
-    currentProtection,
+    currentProtectedRef: Object.freeze({
+      refProtected: true,
+      schemaVersion: "github-conformance-protected-ref/v1",
+      targetRef: "refs/heads/main",
+    }),
     jobs: jobs.value.jobs,
     recordedAt: jobs.value.recordedAt,
     registry: stable.registry,

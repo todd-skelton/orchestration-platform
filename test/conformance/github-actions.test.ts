@@ -14,13 +14,18 @@ const protection = Object.freeze({
   schemaVersion: "github-conformance-protection-snapshot/v1",
   targetRef: "refs/heads/main",
 });
+const protectedRef = Object.freeze({
+  refProtected: true,
+  schemaVersion: "github-conformance-protected-ref/v1",
+  targetRef: "refs/heads/main",
+});
 
 const providerRun = Object.freeze({
   candidateRevision: revision("a"),
   candidateSubjectDigest: d("1"),
   event: "repository_dispatch",
   harnessBundleDigest: d("2"),
-  protectionSnapshotDigest: github.computeGithubConformanceProtectionDigest(protection),
+  protectedRefDigest: github.computeGithubConformanceProtectedRefDigest(protectedRef),
   repositoryId: "123456",
   requiredJobRegistryDigest: d("3"),
   runAttempt: "2",
@@ -111,13 +116,13 @@ const providerRecord = Object.freeze({
         }),
       ),
   ),
-  protectionSnapshotDigest: providerRecordRun.protectionSnapshotDigest,
+  protectedRefDigest: providerRecordRun.protectedRefDigest,
   recordedAt,
   repositoryId: providerRecordRun.repositoryId,
   requiredJobRegistryDigest: providerRecordRun.requiredJobRegistryDigest,
   runAttempt: providerRecordRun.runAttempt,
   runId: providerRecordRun.runId,
-  schemaVersion: "github-conformance-provider-record/v1",
+  schemaVersion: "github-conformance-provisional-provider-record/v1",
   testBundleDigest: providerRecordRun.testBundleDigest,
   workflowPath: providerRecordRun.workflowPath,
   workflowRef: providerRecordRun.workflowRef,
@@ -147,10 +152,23 @@ describe("GitHub Actions conformance adapter", () => {
       expect(github.parseGithubConformanceProtectionSnapshot(mutation).ok).toBe(false);
   });
 
+  test("keeps the direct protected-ref marker distinct from the full policy snapshot", () => {
+    expect(github.parseGithubConformanceProtectedRef(protectedRef).ok).toBe(true);
+    expect(github.computeGithubConformanceProtectedRefDigest(protectedRef)).not.toBe(
+      github.computeGithubConformanceProtectionDigest(protection),
+    );
+    for (const mutation of [
+      { ...protectedRef, refProtected: false },
+      { ...protectedRef, targetRef: "refs/heads/candidate" },
+      { ...protectedRef, extra: true },
+    ])
+      expect(github.parseGithubConformanceProtectedRef(mutation).ok).toBe(false);
+  });
+
   test("pins the provider-run join order and rejects ambient authority", () => {
     expect(github.parseGithubProviderRunContext(providerRun).ok).toBe(true);
     expect(github.computeGithubProviderRunDigest(providerRun)).toBe(
-      "dcbf1a1a7c354bff3c14a2d9a590f10ee2a52ece684b0878486ef0c32f888359",
+      "a8aad6f17514ab59aed88929abce3366e466eb7f5323cf2141aa15641ab62520",
     );
     expect(
       github.parseGithubProviderRunContext({ ...providerRun, triggeringActorId: "9" }).ok,
@@ -177,7 +195,7 @@ describe("GitHub Actions conformance adapter", () => {
       }).ok,
     ).toBe(true);
     expect(github.computeGithubConformanceProviderRecordDigest(providerRecord)).toBe(
-      "ba430406478ff2b1e97a91d376ed821befb92fcb6f83af054555bf1e27e19eaa",
+      "475f4d0f47403abc7100aac40da9f793680382ebdbbb996df8abd4131e49a262",
     );
     expect(
       github.validateGithubConformanceProviderRecord(

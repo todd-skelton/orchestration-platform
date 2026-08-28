@@ -21,8 +21,10 @@ import {
 
 export const githubConformanceProtectionSchemaVersion =
   "github-conformance-protection-snapshot/v1" as const;
+export const githubConformanceProtectedRefSchemaVersion =
+  "github-conformance-protected-ref/v1" as const;
 export const githubConformanceProviderRecordSchemaVersion =
-  "github-conformance-provider-record/v1" as const;
+  "github-conformance-provisional-provider-record/v1" as const;
 
 const protectionFields = Object.freeze([
   "bypassActorCount",
@@ -34,12 +36,14 @@ const protectionFields = Object.freeze([
   "targetRef",
 ] as const);
 
+const protectedRefFields = Object.freeze(["refProtected", "schemaVersion", "targetRef"] as const);
+
 const providerRunFields = Object.freeze([
   "candidateRevision",
   "candidateSubjectDigest",
   "event",
   "harnessBundleDigest",
-  "protectionSnapshotDigest",
+  "protectedRefDigest",
   "repositoryId",
   "requiredJobRegistryDigest",
   "runAttempt",
@@ -60,7 +64,7 @@ const providerRecordFields = Object.freeze([
   "event",
   "harnessBundleDigest",
   "jobs",
-  "protectionSnapshotDigest",
+  "protectedRefDigest",
   "recordedAt",
   "repositoryId",
   "requiredJobRegistryDigest",
@@ -136,6 +140,24 @@ export function computeGithubConformanceProtectionDigest(input: unknown): string
   return framedDigest(githubConformanceProtectionSchemaVersion, [frame.canonical(parsed.value)]);
 }
 
+export function parseGithubConformanceProtectedRef(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, protectedRefFields);
+  if (!parsed.ok) return parsed;
+  const value = parsed.value;
+  const issues: string[] = [];
+  if (value.refProtected !== true) issues.push("refProtected:required");
+  if (value.schemaVersion !== githubConformanceProtectedRefSchemaVersion)
+    issues.push("schemaVersion:mismatch");
+  if (value.targetRef !== "refs/heads/main") issues.push("targetRef:mismatch");
+  return issues.length === 0 ? accepted(value) : refusal(...issues);
+}
+
+export function computeGithubConformanceProtectedRefDigest(input: unknown): string {
+  const parsed = parseGithubConformanceProtectedRef(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest(githubConformanceProtectedRefSchemaVersion, [frame.canonical(parsed.value)]);
+}
+
 export function parseGithubProviderRunContext(input: unknown): ParseResult {
   const parsed = snapshotClosedRecord(input, providerRunFields);
   if (!parsed.ok) return parsed;
@@ -145,7 +167,7 @@ export function parseGithubProviderRunContext(input: unknown): ParseResult {
   for (const field of [
     "candidateSubjectDigest",
     "harnessBundleDigest",
-    "protectionSnapshotDigest",
+    "protectedRefDigest",
     "requiredJobRegistryDigest",
     "testBundleDigest",
   ] as const)
@@ -165,7 +187,7 @@ export function computeGithubProviderRunDigest(input: unknown): string {
   const parsed = parseGithubProviderRunContext(input);
   if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
   const value = parsed.value;
-  return framedDigest("github-conformance-provider-run/v1", [
+  return framedDigest("github-conformance-provisional-provider-run/v1", [
     frame.text(String(value.repositoryId)),
     frame.text(String(value.workflowPath)),
     frame.text(String(value.workflowRef)),
@@ -173,7 +195,7 @@ export function computeGithubProviderRunDigest(input: unknown): string {
     frame.text(String(value.runId)),
     frame.text(String(value.runAttempt)),
     frame.text(String(value.event)),
-    frame.raw32(String(value.protectionSnapshotDigest)),
+    frame.raw32(String(value.protectedRefDigest)),
     frame.text(String(value.candidateRevision)),
     frame.raw32(String(value.candidateSubjectDigest)),
     frame.raw32(String(value.harnessBundleDigest)),
@@ -291,7 +313,7 @@ export function parseGithubConformanceProviderRecord(input: unknown): ParseResul
     "aggregateDigest",
     "candidateSubjectDigest",
     "harnessBundleDigest",
-    "protectionSnapshotDigest",
+    "protectedRefDigest",
     "requiredJobRegistryDigest",
     "testBundleDigest",
   ] as const)
