@@ -23,6 +23,13 @@ describe("protected conformance workflow structure", () => {
     expect(validateConformanceWorkflowSource(await source())).toEqual({ ok: true });
   });
 
+  test("keeps the stable esbuild provider outside the temporary hosted bundle", async () => {
+    const runner = await readFile(hostedPath, "utf8");
+    expect(runner).toContain('name: "stable-esbuild-provider"');
+    expect(runner).toContain('pathToFileURL(stableRequire.resolve("esbuild")).href');
+    expect(runner).toContain("external: true");
+  });
+
   test.each([
     ["alternate event", "types: [conformance_candidate]", "types: [candidate]"],
     [
