@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { executePortablePhysicalBaseProbe } from "../../probes/portable-primitives/src/index.js";
+import { executePortablePhysicalProbe } from "../../probes/portable-primitives/src/index.js";
 
 const roots: string[] = [];
 
@@ -19,13 +19,15 @@ afterEach(async () => {
 describe("ISS-022 existing and constructed-absent physical observations", () => {
   test("runs both rows in ledger order through one namespace and retained root handle", async () => {
     const custodyRoot = await root("physical-base");
-    const facts = await executePortablePhysicalBaseProbe(custodyRoot);
+    const facts = await executePortablePhysicalProbe(custodyRoot);
     expect(facts.map(({ caseId }) => caseId)).toEqual([
       "PHYSICAL_EXISTING",
       "PHYSICAL_ABSENT_LEAF",
+      "PHYSICAL_CASE_ALIAS",
+      "PHYSICAL_UNICODE_ALIAS",
     ]);
-    const [existing, absent] = facts;
-    for (const observation of facts) {
+    const [existing, absent, caseAlias, unicodeAlias] = facts;
+    for (const observation of [existing, absent]) {
       expect(observation.rootStable).toBe(true);
       expect(observation.rootRealpathStable).toBe(true);
       expect(observation.leafStable).toBe(true);
@@ -35,6 +37,8 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
       expect(observation.derivation?.destinationDigest).toMatch(/^[0-9a-f]{64}$/);
     }
     expect(existing.rootAfter).toEqual(absent.rootBefore);
+    expect(absent.rootAfter).toEqual(caseAlias.rootBefore);
+    expect(caseAlias.rootAfter).toEqual(unicodeAlias.rootBefore);
     expect(existing.derivation?.hostCustodyNamespaceDigest).toBe(
       absent.derivation?.hostCustodyNamespaceDigest,
     );
@@ -48,7 +52,7 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
 
   test("observes the exact regular entry and constructed ENOENT arms", async () => {
     const custodyRoot = await root("physical-leaves");
-    const [existing, absent] = await executePortablePhysicalBaseProbe(custodyRoot);
+    const [existing, absent] = await executePortablePhysicalProbe(custodyRoot);
     expect(existing.leafBefore).toEqual(existing.leafAfter);
     expect(existing.leafBefore.disposition).toBe("EXISTING");
     expect(existing.derivation?.physicalDestinationIdentity.leafIdentityKind).toBe(
@@ -68,13 +72,13 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
 
   test("creates the session namespace exactly once and refuses root reuse or overlap", async () => {
     const custodyRoot = await root("physical-reuse");
-    await executePortablePhysicalBaseProbe(custodyRoot);
-    await expect(executePortablePhysicalBaseProbe(custodyRoot)).rejects.toMatchObject({
+    await executePortablePhysicalProbe(custodyRoot);
+    await expect(executePortablePhysicalProbe(custodyRoot)).rejects.toMatchObject({
       code: "EEXIST",
     });
-    await expect(executePortablePhysicalBaseProbe("relative")).rejects.toThrow();
+    await expect(executePortablePhysicalProbe("relative")).rejects.toThrow();
     await expect(
-      executePortablePhysicalBaseProbe(resolve(import.meta.dirname, "../..")),
+      executePortablePhysicalProbe(resolve(import.meta.dirname, "../..")),
     ).rejects.toThrow(/source-overlap/);
   });
 });
