@@ -9,7 +9,7 @@ import {
   type GithubProtectionApiInput,
   type GithubTerminalVerificationResult,
 } from "../../packages/conformance/src/github-actions/index.js";
-import { githubPlanApi } from "./hosted-plan.mjs";
+import { githubProtectionApi } from "./hosted-plan.mjs";
 import { loadHostedIss002StableInputs } from "./hosted-observation.mjs";
 import { canonicalGithubDateHeader, type GithubFetch } from "./hosted-record-api.mjs";
 
@@ -34,7 +34,7 @@ export interface HostedTerminalRuntime {
 
 const githubTerminalRuntime: HostedTerminalRuntime = Object.freeze({
   fetcher: fetch,
-  projectProtection: githubPlanApi.projectProtection,
+  projectProtection: githubProtectionApi.projectProtection,
 });
 
 function refusal(...issues: readonly string[]): GithubTerminalVerificationResult {
@@ -286,7 +286,7 @@ function providerRunFromRecord(record: ContractRecord): ContractRecord {
     candidateSubjectDigest: record.candidateSubjectDigest,
     event: record.event,
     harnessBundleDigest: record.harnessBundleDigest,
-    protectionSnapshotDigest: record.protectionSnapshotDigest,
+    protectedRefDigest: record.protectedRefDigest,
     repositoryId: record.repositoryId,
     requiredJobRegistryDigest: record.requiredJobRegistryDigest,
     runAttempt: record.runAttempt,

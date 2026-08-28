@@ -6,9 +6,9 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import { canonicalJson } from "../../packages/contracts/src/index.js";
 import {
+  computeGithubConformanceProtectedRefDigest,
   computeGithubProviderRunDigest,
   parseGithubProviderRunContext,
-  projectGithubProtectionSnapshot,
 } from "../../packages/conformance/src/github-actions/index.js";
 import {
   decodeHostedObservationContext,
@@ -47,7 +47,7 @@ function syntheticContext(): HostedPlanContext {
     candidateSubjectDigest: digest,
     event: "repository_dispatch",
     harnessBundleDigest: digest,
-    protectionSnapshotDigest: digest,
+    protectedRefDigest: digest,
     repositoryId: "1",
     requiredJobRegistryDigest: digest,
     runAttempt: "1",
@@ -64,7 +64,7 @@ function syntheticContext(): HostedPlanContext {
     contractVersionsDigest: digest,
     event: "repository_dispatch",
     harnessBundleDigest: digest,
-    protectionSnapshotDigest: digest,
+    protectedRefDigest: digest,
     providerRunDigest: computeGithubProviderRunDigest(provider.value),
     repository,
     repositoryId: "1",
@@ -138,24 +138,16 @@ describe("hosted ISS-002 observation runner", () => {
         encoding: "utf8",
       });
       const candidateRevision = stdout.trim();
-      const protection = projectGithubProtectionSnapshot({
-        branchProtection: {
-          allow_deletions: { enabled: false },
-          allow_force_pushes: { enabled: false },
-          enforce_admins: { enabled: true },
-          required_pull_request_reviews: { bypass_pull_request_allowances: null },
-        },
-        branchProtectionStatus: "FOUND",
-        rulesetPages: [[]],
-        rulesetPaginationTerminal: true,
+      const protectedRef = Object.freeze({
+        refProtected: true,
+        schemaVersion: "github-conformance-protected-ref/v1",
         targetRef: "refs/heads/main",
       });
-      if (!protection.ok) throw new Error(protection.issues.join(","));
       const selection: HostedPlanSelection = Object.freeze({
         candidateRevision,
         event: "repository_dispatch",
-        protectionSnapshot: protection.value,
-        protectionSnapshotDigest: protection.digest,
+        protectedRef,
+        protectedRefDigest: computeGithubConformanceProtectedRefDigest(protectedRef),
         repository,
         repositoryId: "1",
         runAttempt: "1",

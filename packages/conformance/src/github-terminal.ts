@@ -16,10 +16,11 @@ import {
 } from "./contracts.js";
 import { reduceConformanceAggregate } from "./reducer.js";
 import {
-  computeGithubConformanceProtectionDigest,
+  computeGithubConformanceProtectedRefDigest,
   computeGithubConformanceProviderRecordDigest,
   computeGithubProviderRunDigest,
   parseGithubConformanceProtectionSnapshot,
+  parseGithubConformanceProtectedRef,
   parseGithubConformanceProviderRecord,
   parseGithubProviderRunContext,
   validateGithubConformanceProviderRecord,
@@ -251,6 +252,11 @@ export function verifyGithubTerminalEvidence(
     const providerRun = parseGithubProviderRunContext(input.providerRun);
     const registry = parseConformanceRequiredJobRegistry(input.registry);
     const protection = parseGithubConformanceProtectionSnapshot(input.currentProtectionSnapshot);
+    const protectedRef = parseGithubConformanceProtectedRef({
+      refProtected: true,
+      schemaVersion: "github-conformance-protected-ref/v1",
+      targetRef: "refs/heads/main",
+    });
     const providerRecord = canonicalProviderRecordBytes(input.providerRecordBytes);
     const jobs = parsedRows(input.liveJobs, liveJobFields, 259);
     const artifacts = parsedRows(input.liveArtifacts, liveArtifactFields, 258);
@@ -261,6 +267,8 @@ export function verifyGithubTerminalEvidence(
       return refusal(...providerRun.issues.map((issue) => `providerRun.${issue}`));
     if (!registry.ok) return refusal(...registry.issues.map((issue) => `registry.${issue}`));
     if (!protection.ok) return refusal(...protection.issues.map((issue) => `protection.${issue}`));
+    if (!protectedRef.ok)
+      return refusal(...protectedRef.issues.map((issue) => `protectedRef.${issue}`));
     if (!providerRecord.ok) return refusal(...providerRecord.issues);
     if (!jobs) return refusal("liveJobs:closed-census-required");
     if (!artifacts) return refusal("liveArtifacts:closed-census-required");
@@ -279,10 +287,10 @@ export function verifyGithubTerminalEvidence(
     if (liveRun.value.status !== "COMPLETED") issues.push("liveRun.status:not-completed");
     if (liveRun.value.conclusion !== "SUCCESS") issues.push("liveRun.conclusion:not-success");
     if (
-      computeGithubConformanceProtectionDigest(protection.value) !==
-      providerRun.value.protectionSnapshotDigest
+      computeGithubConformanceProtectedRefDigest(protectedRef.value) !==
+      providerRun.value.protectedRefDigest
     )
-      issues.push("protectionSnapshotDigest:moved");
+      issues.push("protectedRefDigest:moved");
     const recordValidation = validateGithubConformanceProviderRecord(providerRecord.value, {
       aggregateDigest: String(providerRecord.value.aggregateDigest),
       providerRun: providerRun.value,

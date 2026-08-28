@@ -36,13 +36,13 @@ async function context(): Promise<HostedPlanContext> {
   if (!stable) throw new Error("stable inputs unavailable");
   const revision = "a".repeat(40);
   const candidateSubjectDigest = "b".repeat(64);
-  const protectionSnapshotDigest = "c".repeat(64);
+  const protectedRefDigest = "c".repeat(64);
   const provider = parseGithubProviderRunContext({
     candidateRevision: revision,
     candidateSubjectDigest,
     event: "repository_dispatch",
     harnessBundleDigest: stable.harnessBundleDigest,
-    protectionSnapshotDigest,
+    protectedRefDigest,
     repositoryId: "1",
     requiredJobRegistryDigest: stable.requiredJobRegistryDigest,
     runAttempt: "1",
@@ -59,7 +59,7 @@ async function context(): Promise<HostedPlanContext> {
     contractVersionsDigest: stable.contractVersionsDigest,
     event: "repository_dispatch",
     harnessBundleDigest: stable.harnessBundleDigest,
-    protectionSnapshotDigest,
+    protectedRefDigest,
     providerRunDigest: computeGithubProviderRunDigest(provider.value),
     repository,
     repositoryId: "1",

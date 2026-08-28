@@ -37,7 +37,7 @@ const providerRun = Object.freeze({
   candidateSubjectDigest: d("2"),
   event: "repository_dispatch",
   harnessBundleDigest: d("3"),
-  protectionSnapshotDigest: d("4"),
+  protectedRefDigest: d("4"),
   repositoryId: "123",
   requiredJobRegistryDigest: core.computeConformanceRecordDigest(
     "conformance-required-job-registry/v1",
