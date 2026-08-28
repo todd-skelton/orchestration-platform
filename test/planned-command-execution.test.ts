@@ -51,8 +51,13 @@ describe("planned verification command execution census", () => {
         if (!capability) continue;
         declared += 1;
         if (
-          issue === "ISS-006" &&
-          ["pnpm run harness:test", "pnpm run test:harness-workflow-mutations"].includes(command)
+          (issue === "ISS-002" &&
+            [
+              "pnpm --filter @orchestration-platform/contracts test",
+              "pnpm run contracts:compatibility-check",
+            ].includes(command)) ||
+          (issue === "ISS-006" &&
+            ["pnpm run harness:test", "pnpm run test:harness-workflow-mutations"].includes(command))
         ) {
           implemented += 1;
           continue;

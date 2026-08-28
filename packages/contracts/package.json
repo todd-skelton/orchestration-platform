@@ -13,6 +13,6 @@
     }
   },
   "scripts": {
-    "test": "node ../../scripts/capability-not-implemented.mjs ISS-002 @orchestration-platform/contracts:test"
+    "test": "pnpm --dir ../.. exec vitest run test/contracts"
   }
 }

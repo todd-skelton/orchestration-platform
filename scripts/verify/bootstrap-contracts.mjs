@@ -671,6 +671,8 @@ export async function validateBootstrapSnapshot(snapshot) {
     snapshot.rootPackage.packageManager !== "pnpm@11.22.0" ||
     snapshot.rootPackage.engines?.node !== ">=24 <25" ||
     snapshot.rootPackage.devDependencies?.esbuild !== "0.28.2" ||
+    snapshot.rootPackage.scripts?.["contracts:compatibility-check"] !==
+      "vitest run test/contracts/compatibility.test.ts" ||
     snapshot.rootPackage.scripts?.["harness:test"] !== "node scripts/harness-test.mts" ||
     snapshot.rootPackage.scripts?.["test:harness-workflow-mutations"] !==
       "vitest run test/conformance/workflow-structure.test.ts"
@@ -723,9 +725,11 @@ export async function validateBootstrapSnapshot(snapshot) {
       fail("@orchestration-platform/conformance esbuild pin mismatch");
     }
     const expectedTest =
-      name === "@orchestration-platform/conformance"
-        ? "node ../../scripts/harness-test.mts"
-        : `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
+      name === "@orchestration-platform/contracts"
+        ? "pnpm --dir ../.. exec vitest run test/contracts"
+        : name === "@orchestration-platform/conformance"
+          ? "node ../../scripts/harness-test.mts"
+          : `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
     if (manifest.scripts?.test !== expectedTest) fail(`${name} test placeholder owner mismatch`);
     for (const [exportKey, value] of Object.entries(manifest.exports)) {
       const expectedTarget =

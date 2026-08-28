@@ -108,6 +108,20 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "changed contracts compatibility entrypoint",
+      (snapshot: any) => {
+        snapshot.rootPackage.scripts["contracts:compatibility-check"] =
+          "node scripts/capability-not-implemented.mjs ISS-002 contracts:compatibility-check";
+      },
+    ],
+    [
+      "changed contracts package test entrypoint",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/contracts"].scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-002 @orchestration-platform/contracts:test";
+      },
+    ],
+    [
       "changed root harness entrypoint",
       (snapshot: any) => {
         snapshot.rootPackage.scripts["harness:test"] =
