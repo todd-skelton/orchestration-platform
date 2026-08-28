@@ -109,9 +109,6 @@ importers:
       '@orchestration-platform/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
 
 packages:
 
