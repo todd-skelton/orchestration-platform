@@ -39,12 +39,6 @@
 - **Dispatch brief**: Complete bounded work description for a fresh worker.
 - **Discrepancy**: Correlated incumbent/shadow result whose authority meaning has
   not yet reached a terminal explanation.
-- **Deletion test**: Comparison that removes a proposed or existing mechanism,
-  or substitutes a strictly smaller credible alternative, and checks whether
-  every required observable property still holds.
-- **Evidence proportionality**: Requirement that evidence name the observable
-  property and defect class it discriminates, then use the cheapest check that
-  distinguishes them from the control.
 - **Exact revision**: Immutable source identity examined by a worker or reviewer.
 - **Exact model identity**: Provider-authenticated immutable snapshot/version
   reported for one attempt, distinct from a requested selector or alias.
@@ -90,9 +84,6 @@
   adapter facts through a terminal action, refusal, or no-work receipt.
 - **Session**: Bounded interval in which one controller identity owns runtime
   authority.
-- **Simplification finding**: Advisory, evidence-backed identification of
-  removable or reducible surface; it does not change an authoritative verdict
-  or attempt-round accounting.
 - **Shadow mode**: Read-only execution compared against an incumbent authority.
 - **Self-hosting**: A stable released platform orchestrating implementation,
   review, and promotion of its successor.

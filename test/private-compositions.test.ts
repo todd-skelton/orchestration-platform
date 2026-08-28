@@ -54,7 +54,7 @@ describe("private composition build", () => {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(issue);
     }
-  }, 120_000);
+  }, 20_000);
 
   test("rejects build option and target arguments", () => {
     const result = spawnSync(process.execPath, [buildScript, "--target", "bootstrap"], {

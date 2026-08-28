@@ -15,31 +15,23 @@ interface OrchestrationModuleV1 {
 `module-descriptor/v1` binds the module ID/version, ABI `orchestration-module/v1`,
 accepted engine/adapter/contract ranges, closed input and output schema IDs,
 declared action kinds, whether an action needs worker/review, and required
-capability names. It also binds the finite `dispatchCatalog` defined by
-`contract-decisions.md`; catalog keys and accessors are reviewed static module
-metadata, not worker text. Its worker-required action/capability pair census
-exactly equals the catalog's distinct pair projection, and the catalog's
-four-part resolver keys are unique. `module-plan-input/v1` contains only
-canonical reduced facts, the adapter policy digest, current session/cycle
-identity, and the declared capability census. `module-plan-result/v1` is
-exactly one canonical `module-action-plan/v1`, `module-no-action/v1`, or typed
-refusal. An action plan carries the descriptor digest, action/capability pair,
-immutable subject, requested role, the exact `dispatch-action-core/v1` and its
-domain digest, and its closed `dispatch-brief/v1`; all equal-bind before the
-result is journaled. `plan` has no ambient filesystem, process, network, clock,
-random, credential, adapter, host, or mutation access; those effects remain
-with their owning packages.
+capability names. `module-plan-input/v1` contains only canonical reduced facts,
+the adapter policy digest, current session/cycle identity, and the declared
+capability census. `module-plan-result/v1` is exactly one canonical
+`module-action-plan/v1`, `module-no-action/v1`, or typed refusal. `plan` has no
+ambient filesystem, process, network, clock, random, credential, adapter, host,
+or mutation access; those effects remain with their owning packages.
 
 ## Static admission and loading
 
 `ISS-011` owns `modules/manifest.json` and these baseline entrypoints:
 
-| Module ID  | Source entrypoint               |
-| ---------- | ------------------------------- |
+| Module ID | Source entrypoint |
+| --- | --- |
 | `planning` | `modules/planning/src/index.ts` |
 | `delivery` | `modules/delivery/src/index.ts` |
-| `review`   | `modules/review/src/index.ts`   |
-| `repair`   | `modules/repair/src/index.ts`   |
+| `review` | `modules/review/src/index.ts` |
+| `repair` | `modules/repair/src/index.ts` |
 
 The manifest is an ordered closed list. For each row it records the source-tree
 digest, emitted-module digest, descriptor digest, ABI/schema IDs, and

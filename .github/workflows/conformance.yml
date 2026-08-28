@@ -1,0 +1,183 @@
+name: Conformance
+
+on:
+  repository_dispatch:
+    types: [conformance_candidate]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  plan:
+    name: plan
+    if: ${{ github.event_name == 'repository_dispatch' && github.event.action == 'conformance_candidate' }}
+    runs-on: ubuntu-latest
+    outputs:
+      candidateRevision: ${{ steps.select.outputs.candidateRevision }}
+      context: ${{ steps.finalize.outputs.context }}
+      matrix: ${{ steps.finalize.outputs.matrix }}
+    steps:
+      - name: Check out stable workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: stable
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Enable pinned package manager
+        working-directory: stable
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.22.0 --activate
+          corepack pnpm install --frozen-lockfile
+      - name: Select protected candidate
+        id: select
+        working-directory: stable
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/conformance/run-bundled.mts hosted plan-select
+      - name: Check out selected candidate revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.select.outputs.candidateRevision }}
+          path: candidate
+          persist-credentials: false
+      - name: Finalize stable registry plan
+        id: finalize
+        working-directory: stable
+        env:
+          CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/conformance/run-bundled.mts hosted plan-finalize
+
+  observation:
+    name: observation / ${{ matrix.jobId }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out stable workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: stable
+          persist-credentials: false
+      - name: Check out selected candidate revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.plan.outputs.candidateRevision }}
+          path: candidate
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Install stable frozen dependencies
+        working-directory: stable
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.22.0 --activate
+          corepack pnpm install --frozen-lockfile
+      - name: Run stable observation wrapper
+        working-directory: stable
+        env:
+          CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          CONFORMANCE_JOB_ID: ${{ matrix.jobId }}
+          CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-observation
+          CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
+          CONFORMANCE_RUNNER_TOKEN: ${{ matrix.runnerToken }}
+        run: node scripts/conformance/run-bundled.mts hosted observation
+      - name: Upload immutable observation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: conformance-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.jobId }}
+          path: ${{ runner.temp }}/conformance-observation
+          archive: true
+          retention-days: 31
+          if-no-files-found: error
+
+  aggregate:
+    name: aggregate
+    needs: [plan, observation]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out stable workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: stable
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Install stable frozen dependencies
+        working-directory: stable
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.22.0 --activate
+          corepack pnpm install --frozen-lockfile
+      - name: Download current-attempt observations
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: conformance-${{ github.run_id }}-${{ github.run_attempt }}-iss002-contracts-*
+          path: ${{ runner.temp }}/conformance-downloads
+          merge-multiple: false
+          digest-mismatch: error
+      - name: Reduce stable aggregate
+        working-directory: stable
+        env:
+          CONFORMANCE_DOWNLOAD_ROOT: ${{ runner.temp }}/conformance-downloads
+          CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-aggregate
+          CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
+        run: node scripts/conformance/run-bundled.mts hosted aggregate
+      - name: Upload immutable aggregate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: conformance-${{ github.run_id }}-${{ github.run_attempt }}-aggregate
+          path: ${{ runner.temp }}/conformance-aggregate
+          archive: true
+          retention-days: 31
+          if-no-files-found: error
+
+  record:
+    name: record
+    needs: [plan, observation, aggregate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out stable workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: stable
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Install stable frozen dependencies
+        working-directory: stable
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.22.0 --activate
+          corepack pnpm install --frozen-lockfile
+      - name: Write protected provider record
+        working-directory: stable
+        env:
+          CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-record
+          CONFORMANCE_PLAN_CONTEXT: ${{ needs.plan.outputs.context }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/conformance/run-bundled.mts hosted record
+      - name: Upload exact provider record bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json
+          archive: false
+          retention-days: 31
+          if-no-files-found: error

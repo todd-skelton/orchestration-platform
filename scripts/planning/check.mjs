@@ -145,6 +145,10 @@ function validateCommandCensus(snapshot) {
   const rootScripts = snapshot.rootPackage.scripts ?? {};
   const implementedRootScripts = new Map([
     ["ISS-006:harness:test", "node scripts/harness-test.mts"],
+    [
+      "ISS-006:test:harness-workflow-mutations",
+      "vitest run test/conformance/workflow-structure.test.ts",
+    ],
   ]);
   const expectedRootScripts = new Set([
     "build",

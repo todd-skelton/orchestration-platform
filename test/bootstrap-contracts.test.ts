@@ -115,6 +115,13 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "changed workflow mutation entrypoint",
+      (snapshot: any) => {
+        snapshot.rootPackage.scripts["test:harness-workflow-mutations"] =
+          "node scripts/capability-not-implemented.mjs ISS-006 test:harness-workflow-mutations";
+      },
+    ],
+    [
       "changed conformance harness entrypoint",
       (snapshot: any) => {
         snapshot.manifests["@orchestration-platform/conformance"].scripts.test =

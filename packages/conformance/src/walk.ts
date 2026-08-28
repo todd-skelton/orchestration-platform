@@ -6,6 +6,7 @@ import { promisify, types as nodeTypes } from "node:util";
 import { build, type Plugin } from "esbuild";
 
 const execFileAsync = promisify(execFile);
+const monotonicNanoseconds = process.hrtime.bigint.bind(process.hrtime);
 
 export interface Iss002WalkInput {
   readonly candidateModuleUrl: string;
@@ -28,8 +29,36 @@ export type Iss002WalkResult =
     }
   | { readonly ok: false; readonly issues: readonly string[] };
 
+export type Iss002WalkObservationResult =
+  | {
+      readonly ok: true;
+      readonly durationsNanoseconds: readonly string[];
+      readonly maximumWalkDurationNanoseconds: string;
+      readonly stderrBytes: Uint8Array;
+      readonly stdoutBytes: Uint8Array;
+    }
+  | {
+      readonly ok: false;
+      readonly issues: readonly string[];
+      readonly stderrBytes: Uint8Array;
+      readonly stdoutBytes: Uint8Array;
+    };
+
 function refusal(...issues: readonly string[]): Iss002WalkResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function observationRefusal(
+  stdout: readonly Uint8Array[],
+  stderr: readonly Uint8Array[],
+  ...issues: readonly string[]
+): Iss002WalkObservationResult {
+  return {
+    issues: Object.freeze([...new Set(issues)].sort()),
+    ok: false,
+    stderrBytes: Uint8Array.from(Buffer.concat(stderr.map((value) => Buffer.from(value)))),
+    stdoutBytes: Uint8Array.from(Buffer.concat(stdout.map((value) => Buffer.from(value)))),
+  };
 }
 
 function detachedWalkInput(input: unknown): Iss002WalkInput | undefined {
@@ -172,6 +201,7 @@ export async function bundleIss002ContractsCandidate(root: string, output: strin
     outfile: output,
     platform: "node",
     plugins: [confinedContractPlugin(packageRoot, realPackageRoot)],
+    preserveSymlinks: true,
     sourcemap: false,
     target: "node24",
     treeShaking: false,
@@ -208,46 +238,41 @@ for (const [key,value] of Object.entries(expected)) process.env[key]=value;
 }
 
 function parseChildOutput(
-  stdout: string,
-  stderr: string,
+  stdout: Uint8Array,
+  stderr: Uint8Array,
   index: number,
-):
-  | { readonly ok: true; readonly duration: string }
-  | { readonly ok: false; readonly issues: readonly string[] } {
-  if (stderr !== "") return { ok: false, issues: [`walk.${index}:stderr-nonempty`] };
+): { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] } {
+  if (stderr.byteLength !== 0) return { ok: false, issues: [`walk.${index}:stderr-nonempty`] };
   let input: unknown;
   try {
-    input = JSON.parse(stdout);
+    input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(stdout));
   } catch {
     return { ok: false, issues: [`walk.${index}:json-refused`] };
   }
   if (input === null || typeof input !== "object" || Array.isArray(input))
     return { ok: false, issues: [`walk.${index}:record-required`] };
   const record = input as Readonly<Record<string, unknown>>;
-  if (Object.keys(record).sort().join("\0") !== "durationNanoseconds\0issues\0recordCount")
+  if (Object.keys(record).sort().join("\0") !== "issues\0recordCount")
     return { ok: false, issues: [`walk.${index}:field-census-refused`] };
-  if (
-    record.recordCount !== "1000" ||
-    typeof record.durationNanoseconds !== "string" ||
-    !/^(?:0|[1-9][0-9]*)$/.test(record.durationNanoseconds) ||
-    !Number.isSafeInteger(Number(record.durationNanoseconds)) ||
-    !Array.isArray(record.issues) ||
-    record.issues.length !== 0
-  )
+  if (record.recordCount !== "1000" || !Array.isArray(record.issues) || record.issues.length !== 0)
     return { ok: false, issues: [`walk.${index}:result-refused`] };
-  if (BigInt(record.durationNanoseconds) > 5_000_000_000n)
-    return { ok: false, issues: [`walk.${index}:duration-limit-exceeded`] };
-  return { ok: true, duration: record.durationNanoseconds };
+  return { ok: true };
 }
 
-export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Iss002WalkResult> {
+export async function runIss002WalkObservation(
+  input: Iss002WalkInput,
+): Promise<Iss002WalkObservationResult> {
   const detached = detachedWalkInput(input);
-  if (!detached) return refusal("walk:input-refused");
-  if (!isAbsolute(detached.workingDirectory)) return refusal("workingDirectory:absolute-required");
+  if (!detached) return observationRefusal([], [], "walk:input-refused");
+  if (!isAbsolute(detached.workingDirectory))
+    return observationRefusal([], [], "workingDirectory:absolute-required");
   const durations: string[] = [];
+  const stderr: Uint8Array[] = [];
+  const stdout: Uint8Array[] = [];
   for (let index = 0; index < 3; index += 1) {
     try {
       const environment = childEnvironment(detached.workingDirectory);
+      const started = monotonicNanoseconds();
       const result = await execFileAsync(
         process.execPath,
         [
@@ -258,18 +283,28 @@ export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Is
         ],
         {
           cwd: detached.workingDirectory,
-          encoding: "utf8",
+          encoding: "buffer",
           env: environment,
           maxBuffer: 1024 * 1024,
           timeout: 15_000,
           windowsHide: true,
         },
       );
-      const parsed = parseChildOutput(result.stdout, result.stderr, index);
-      if (!parsed.ok) return refusal(...parsed.issues);
-      durations.push(parsed.duration);
-    } catch {
-      return refusal(`walk.${index}:child-failed`);
+      const durationNanoseconds = monotonicNanoseconds() - started;
+      const stdoutBytes = Uint8Array.from(result.stdout as unknown as Uint8Array);
+      const stderrBytes = Uint8Array.from(result.stderr as unknown as Uint8Array);
+      stdout.push(stdoutBytes);
+      stderr.push(stderrBytes);
+      const parsed = parseChildOutput(stdoutBytes, stderrBytes, index);
+      if (!parsed.ok) return observationRefusal(stdout, stderr, ...parsed.issues);
+      if (durationNanoseconds > 5_000_000_000n)
+        return observationRefusal(stdout, stderr, `walk.${index}:duration-limit-exceeded`);
+      durations.push(String(durationNanoseconds));
+    } catch (error) {
+      const output = error as { readonly stderr?: unknown; readonly stdout?: unknown };
+      if (output.stdout instanceof Uint8Array) stdout.push(Uint8Array.from(output.stdout));
+      if (output.stderr instanceof Uint8Array) stderr.push(Uint8Array.from(output.stderr));
+      return observationRefusal(stdout, stderr, `walk.${index}:child-failed`);
     }
   }
   return {
@@ -278,7 +313,20 @@ export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Is
     maximumWalkDurationNanoseconds: durations.reduce((maximum, value) =>
       BigInt(value) > BigInt(maximum) ? value : maximum,
     ),
+    stderrBytes: Uint8Array.from(Buffer.concat(stderr.map((value) => Buffer.from(value)))),
+    stdoutBytes: Uint8Array.from(Buffer.concat(stdout.map((value) => Buffer.from(value)))),
   };
+}
+
+export async function runIss002WalkIntervals(input: Iss002WalkInput): Promise<Iss002WalkResult> {
+  const observed = await runIss002WalkObservation(input);
+  return observed.ok
+    ? {
+        durationsNanoseconds: observed.durationsNanoseconds,
+        maximumWalkDurationNanoseconds: observed.maximumWalkDurationNanoseconds,
+        ok: true,
+      }
+    : refusal(...observed.issues);
 }
 
 export async function runIss002CrossRootWalk(

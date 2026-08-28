@@ -102,6 +102,13 @@ describe("planning contract", () => {
       },
     ],
     [
+      "reverted workflow mutation wrapper",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.rootPackage.scripts["test:harness-workflow-mutations"] =
+          "node scripts/capability-not-implemented.mjs ISS-006 test:harness-workflow-mutations";
+      },
+    ],
+    [
       "wrapper defaults",
       (snapshot: PlanningSnapshot) => {
         snapshot.rootPackage.scripts.bootstrap += " --state-root .state";

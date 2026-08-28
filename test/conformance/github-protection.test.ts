@@ -102,6 +102,18 @@ describe("GitHub protection projection", () => {
         },
       },
       { rulesetPages: [[ruleset(["deletion"], { bypass: [{ actor_id: 1 }] })]] },
+      {
+        rulesetPages: [
+          [
+            {
+              conditions: { ref_name: { exclude: [], include: ["~DEFAULT_BRANCH"] } },
+              enforcement: "active",
+              rules: [{ type: "deletion" }, { type: "non_fast_forward" }, { type: "pull_request" }],
+              target: "branch",
+            },
+          ],
+        ],
+      },
       { rulesetPages: [[ruleset(["deletion"], { enforcement: "evaluate" })]] },
       { rulesetPages: [[ruleset(["deletion"], { include: ["refs/heads/ma*"] })]] },
       { rulesetPaginationTerminal: false },

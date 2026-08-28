@@ -59,8 +59,10 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/github-terminal.ts",
       "packages/conformance/src/index.ts",
       "packages/conformance/src/iss002-bundle-paths.mts",
+      "packages/conformance/src/iss002-handler.ts",
       "packages/conformance/src/iss002-native-candidate-walk.ts",
       "packages/conformance/src/manifest.ts",
+      "packages/conformance/src/observation.ts",
       "packages/conformance/src/reducer.ts",
       "packages/conformance/src/stable-bundles.ts",
       "packages/conformance/src/stable.ts",
@@ -130,8 +132,27 @@ describe("stable ISS-002 bundle path censuses", () => {
       conformance.iss002HarnessPaths.filter((path) => path.endsWith("/tsconfig.json")),
     ).toEqual(["packages/conformance/tsconfig.json", "packages/contracts/tsconfig.json"]);
     expect(conformance.iss002HarnessPaths.filter((path) => path.startsWith("scripts/"))).toEqual([
+      "scripts/conformance/hosted-aggregate.mts",
+      "scripts/conformance/hosted-candidate.mts",
+      "scripts/conformance/hosted-observation.mts",
+      "scripts/conformance/hosted-plan.mts",
+      "scripts/conformance/hosted-record-api.mts",
+      "scripts/conformance/hosted-record.mts",
+      "scripts/conformance/hosted-terminal.mts",
+      "scripts/conformance/hosted.mts",
+      "scripts/conformance/iss002-executor.mts",
+      "scripts/conformance/iss002-workspace.mts",
+      "scripts/conformance/run-bundled.mts",
       "scripts/harness-test.mts",
     ]);
+  });
+
+  test("pins every stable bundle checkout byte to LF on every OS", async () => {
+    const paths = [...conformance.iss002HarnessPaths, ...conformance.iss002TestBundlePaths];
+    const { stdout } = await execFileAsync("git", ["check-attr", "eol", "--", ...paths], {
+      cwd: repositoryRoot,
+    });
+    expect(stdout.trim().split(/\r?\n/)).toEqual(paths.map((path) => `${path}: eol: lf`));
   });
 
   test("constructs both manifests only from the stable root", async () => {

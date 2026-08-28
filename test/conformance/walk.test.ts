@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -18,6 +19,7 @@ import { build } from "esbuild";
 import {
   runIss002CrossRootWalk,
   runIss002WalkIntervals,
+  runIss002WalkObservation,
 } from "../../packages/conformance/src/index.js";
 
 const walkIo = vi.hoisted(() => ({ refuseExecutionCleanup: false }));
@@ -45,8 +47,9 @@ const childScriptPath = resolve(
 
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(resolve(tmpdir(), "orchestration-iss002-walk-"));
-  temporaryRoots.push(root);
-  return root;
+  const canonicalRoot = await realpath(root);
+  temporaryRoots.push(canonicalRoot);
+  return canonicalRoot;
 }
 
 async function candidateRoot(): Promise<string> {
@@ -282,6 +285,54 @@ load("node:fs").writeFileSync(${JSON.stringify(resolve(candidate, "dynamic-requi
     );
   });
 
+  test("retains exact child stream bytes without changing the semantic result", async () => {
+    const root = await temporaryRoot();
+    const stdout = '{"issues":[],"recordCount":"1000"}';
+    const script = await child(root, `process.stdout.write(${JSON.stringify(stdout)});`);
+    const input = {
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: script,
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
+    };
+    const observed = await runIss002WalkObservation(input);
+    expect(observed.ok).toBe(true);
+    expect(Buffer.from(observed.stdoutBytes).equals(Buffer.from(stdout.repeat(3), "utf8"))).toBe(
+      true,
+    );
+    expect(observed.stderrBytes.byteLength).toBe(0);
+    const semantic = await runIss002WalkIntervals(input);
+    expect(semantic.ok).toBe(true);
+    expect(semantic).not.toHaveProperty("stdoutBytes");
+    expect(semantic).not.toHaveProperty("stderrBytes");
+  });
+
+  test("retains exact failed child streams and refuses invalid UTF-8", async () => {
+    const root = await temporaryRoot();
+    const script = await child(
+      root,
+      "process.stdout.write(Buffer.from([0xff])); process.stderr.write(Buffer.from([0x00,0xfe])); process.exit(1);",
+    );
+    const observed = await runIss002WalkObservation({
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: script,
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
+    });
+    expect(observed).toMatchObject({ issues: ["walk.0:child-failed"], ok: false });
+    expect([...observed.stdoutBytes]).toEqual([0xff]);
+    expect([...observed.stderrBytes]).toEqual([0x00, 0xfe]);
+
+    const invalidUtf8 = await runIss002WalkObservation({
+      candidateModuleUrl: pathToFileURL(resolve(root, "unused.mjs")).href,
+      childScriptPath: await child(root, "process.stdout.write(Buffer.from([0xff]));"),
+      stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
+      workingDirectory: root,
+    });
+    expect(invalidUtf8).toMatchObject({ issues: ["walk.0:json-refused"], ok: false });
+    expect([...invalidUtf8.stdoutBytes]).toEqual([0xff]);
+  });
+
   test("proves three distinct children and the exact child environment allowlist", async () => {
     const root = await temporaryRoot();
     const audit = resolve(root, "pids.txt");
@@ -304,7 +355,7 @@ appendFileSync(${JSON.stringify(audit)}, String(process.pid) + "\\n");
 const observed = Object.fromEntries(Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right)));
 const issues = JSON.stringify(observed) === ${JSON.stringify(JSON.stringify(expectedEnvironment))} ? [] : ["environment:census-mismatch"];
 if (process.cwd() !== ${JSON.stringify(root)}) issues.push("cwd:mismatch");
-process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:"1000"}));
+process.stdout.write(JSON.stringify({issues,recordCount:"1000"}));
 `,
     );
     const ambientKeys = [
@@ -403,7 +454,7 @@ process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:
     expect(proxyTrapCalls).toBe(0);
   });
 
-  test("publishes the exact maximum and keeps parse and validation inside the interval", async () => {
+  test("publishes the stable-parent maximum over complete launch-to-terminal intervals", async () => {
     const root = await temporaryRoot();
     const audit = resolve(root, "interval.txt");
     const script = await child(
@@ -412,8 +463,7 @@ process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues,recordCount:
 const path = ${JSON.stringify(audit)};
 const index = existsSync(path) ? Number(readFileSync(path, "utf8")) : 0;
 writeFileSync(path, String(index + 1));
-const values = ["1", "10", "100"];
-process.stdout.write(JSON.stringify({durationNanoseconds:values[index],issues:[],recordCount:"1000"}));
+process.stdout.write(JSON.stringify({issues:[],recordCount:"1000"}));
 `,
     );
     const result = await runIss002WalkIntervals({
@@ -422,21 +472,26 @@ process.stdout.write(JSON.stringify({durationNanoseconds:values[index],issues:[]
       stableModuleUrl: pathToFileURL(resolve(root, "stable-unused.mjs")).href,
       workingDirectory: root,
     });
-    expect(result).toMatchObject({
-      durationsNanoseconds: ["1", "10", "100"],
-      maximumWalkDurationNanoseconds: "100",
-      ok: true,
-    });
-    const source = await readFile(childScriptPath, "utf8");
-    expect(source.indexOf("const started = monotonicNanoseconds()")).toBeLessThan(
-      source.indexOf("const parsed = parseJson(inputText)"),
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.durationsNanoseconds).toHaveLength(3);
+    expect(result.durationsNanoseconds.every((value) => BigInt(value) > 0n)).toBe(true);
+    expect(result.maximumWalkDurationNanoseconds).toBe(
+      result.durationsNanoseconds.reduce((maximum, value) =>
+        BigInt(value) > BigInt(maximum) ? value : maximum,
+      ),
     );
-    expect(source.indexOf("const parsed = parseJson(inputText)")).toBeLessThan(
-      source.lastIndexOf("candidate.validateAuthorityHistoryChain"),
+    const parentSource = await readFile(
+      resolve(import.meta.dirname, "../../packages/conformance/src/walk.ts"),
+      "utf8",
     );
-    expect(source.lastIndexOf("candidate.validateAuthorityHistoryChain")).toBeLessThan(
-      source.indexOf("const durationNanoseconds"),
+    expect(parentSource.indexOf("const started = monotonicNanoseconds()")).toBeLessThan(
+      parentSource.indexOf("const result = await execFileAsync"),
     );
+    expect(parentSource.indexOf("const result = await execFileAsync")).toBeLessThan(
+      parentSource.indexOf("const durationNanoseconds = monotonicNanoseconds() - started"),
+    );
+    expect(await readFile(childScriptPath, "utf8")).not.toContain("durationNanoseconds");
   });
 
   test("keeps stable and candidate bytes separate and captures timing intrinsics", async () => {
@@ -501,12 +556,12 @@ export function validateAuthorityHistoryChain() { return []; }
     }
   });
 
-  test("refuses over-budget, stderr, semantic issues, and malformed output", async () => {
+  test("refuses forged duration, stderr, semantic issues, and malformed output", async () => {
     const root = await temporaryRoot();
     for (const source of [
       'process.stdout.write(JSON.stringify({durationNanoseconds:"5000000001",issues:[],recordCount:"1000"}));',
-      'process.stderr.write("diagnostic"); process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues:[],recordCount:"1000"}));',
-      'process.stdout.write(JSON.stringify({durationNanoseconds:"1",issues:["bad"],recordCount:"1000"}));',
+      'process.stderr.write("diagnostic"); process.stdout.write(JSON.stringify({issues:[],recordCount:"1000"}));',
+      'process.stdout.write(JSON.stringify({issues:["bad"],recordCount:"1000"}));',
       'process.stdout.write("not-json");',
     ]) {
       const result = await runIss002WalkIntervals({
