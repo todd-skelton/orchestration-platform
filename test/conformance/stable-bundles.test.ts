@@ -94,6 +94,18 @@ describe("stable ISS-002 bundle path censuses", () => {
     expect(
       conformance.iss002TestBundlePaths.filter((path) => path.startsWith("test/conformance/")),
     ).toEqual(["test/conformance/iss002-native-candidate-walk.test.ts"]);
+    const portableSources = await filesBelow("probes/portable-primitives/src");
+    expect(
+      conformance.iss002HarnessPaths.filter((path) =>
+        path.startsWith("probes/portable-primitives/src/"),
+      ),
+    ).toEqual(portableSources);
+    const portableTests = await filesBelow("test/portable-primitives");
+    expect(
+      conformance.iss002TestBundlePaths.filter((path) =>
+        path.startsWith("test/portable-primitives/"),
+      ),
+    ).toEqual(portableTests);
   });
 
   test("keeps parked isolation paths and compiled executables absent", async () => {
@@ -126,11 +138,19 @@ describe("stable ISS-002 bundle path censuses", () => {
       "vitest.config.ts",
     ]);
     expect(conformance.iss002HarnessPaths.filter((path) => path.endsWith("/package.json"))).toEqual(
-      ["packages/conformance/package.json", "packages/contracts/package.json"],
+      [
+        "packages/conformance/package.json",
+        "packages/contracts/package.json",
+        "probes/portable-primitives/package.json",
+      ],
     );
     expect(
       conformance.iss002HarnessPaths.filter((path) => path.endsWith("/tsconfig.json")),
-    ).toEqual(["packages/conformance/tsconfig.json", "packages/contracts/tsconfig.json"]);
+    ).toEqual([
+      "packages/conformance/tsconfig.json",
+      "packages/contracts/tsconfig.json",
+      "probes/portable-primitives/tsconfig.json",
+    ]);
     expect(conformance.iss002HarnessPaths.filter((path) => path.startsWith("scripts/"))).toEqual([
       "scripts/conformance/hosted-aggregate.mts",
       "scripts/conformance/hosted-candidate.mts",
@@ -157,8 +177,7 @@ describe("stable ISS-002 bundle path censuses", () => {
 
   test("constructs both manifests only from the stable root", async () => {
     const result = await conformance.createIss002StableBundleManifests(await stableSnapshot());
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) throw new Error(result.issues.join("\n"));
     expect(result.harnessManifest.purpose).toBe("HARNESS");
     expect(result.testBundleManifest.purpose).toBe("TEST_BUNDLE");
     expect(

@@ -1,9 +1,11 @@
 packages/contracts/src/** text eol=lf
 packages/conformance/src/** text eol=lf
+probes/portable-primitives/src/** text eol=lf
 .github/workflows/conformance.yml text eol=lf
 scripts/conformance/** text eol=lf
 test/contracts/** text eol=lf
 test/conformance/** text eol=lf
+test/portable-primitives/** text eol=lf
 scripts/harness-test.mts text eol=lf
 package.json text eol=lf
 pnpm-lock.yaml text eol=lf
@@ -15,3 +17,5 @@ packages/conformance/package.json text eol=lf
 packages/conformance/tsconfig.json text eol=lf
 packages/contracts/package.json text eol=lf
 packages/contracts/tsconfig.json text eol=lf
+probes/portable-primitives/package.json text eol=lf
+probes/portable-primitives/tsconfig.json text eol=lf

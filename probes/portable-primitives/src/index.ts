@@ -13,6 +13,12 @@ export {
 export * from "./profiles.js";
 export * from "./physical.js";
 export {
+  executePortablePrimitiveParserEquivalenceProbe,
+  portablePrimitiveParserCorpus,
+  type PortablePrimitiveParserChildObservation,
+  type PortablePrimitiveParserEquivalenceRawFacts,
+} from "./parser-equivalence.js";
+export {
   executePortablePrimitiveHandleConfinementProbe,
   executePortablePrimitiveProcessProbe,
   parsePortablePrimitiveProcessChildEvent,
