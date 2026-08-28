@@ -165,7 +165,7 @@ function within(root: string, path: string): boolean {
   return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
 }
 
-async function canonicalCustodyRoot(custodyRoot: string): Promise<string> {
+export async function canonicalPortablePrimitiveCustodyRoot(custodyRoot: string): Promise<string> {
   if (!isAbsolute(custodyRoot) || resolve(custodyRoot) !== custodyRoot)
     throw new TypeError("custodyRoot:absolute-normalized-required");
   const identity = await lstat(custodyRoot);
@@ -180,7 +180,7 @@ async function canonicalCustodyRoot(custodyRoot: string): Promise<string> {
   return realCustodyRoot;
 }
 
-function childEnvironment(): NodeJS.ProcessEnv {
+export function portablePrimitiveChildEnvironment(): NodeJS.ProcessEnv {
   return Object.freeze({
     SystemRoot: process.env.SystemRoot,
     WINDIR: process.env.WINDIR,
@@ -197,13 +197,13 @@ const providerObservedClosedChildren = new WeakSet<ChildProcess>();
 export async function startPortablePrimitiveLockHolder(
   custodyRoot: string,
 ): Promise<PortablePrimitiveLiveChild> {
-  const realCustodyRoot = await canonicalCustodyRoot(custodyRoot);
+  const realCustodyRoot = await canonicalPortablePrimitiveCustodyRoot(custodyRoot);
   const child = spawn(
     process.execPath,
     [portablePrimitiveWorkerPath, "LOCK_HOLDER", realCustodyRoot],
     {
       cwd: realCustodyRoot,
-      env: childEnvironment(),
+      env: portablePrimitiveChildEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
@@ -290,7 +290,7 @@ export async function executePortablePrimitiveChild(
   arguments_: readonly string[] = [],
 ): Promise<PortablePrimitiveChildExecution> {
   if (!portablePrimitiveWorkerModes.includes(mode)) throw new TypeError("mode:invalid");
-  const realCustodyRoot = await canonicalCustodyRoot(custodyRoot);
+  const realCustodyRoot = await canonicalPortablePrimitiveCustodyRoot(custodyRoot);
   const expectedArgumentCount = mode === "CAS" ? 2 : mode === "REPLACE" ? 1 : 0;
   if (
     arguments_.length !== expectedArgumentCount ||
@@ -302,7 +302,7 @@ export async function executePortablePrimitiveChild(
     [portablePrimitiveWorkerPath, mode, realCustodyRoot, ...arguments_],
     {
       cwd: realCustodyRoot,
-      env: childEnvironment(),
+      env: portablePrimitiveChildEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
