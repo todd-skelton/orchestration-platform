@@ -470,6 +470,7 @@ export async function runHostedIss002Observation(
                   candidateSubject,
                   executionParent,
                   materializationParent,
+                  stableRoot,
                 });
                 return {
                   normalizedResult: observed.ok ? "PASS" : "FAIL",
