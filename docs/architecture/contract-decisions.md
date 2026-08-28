@@ -1781,6 +1781,514 @@ unsupported jobs, forged candidate duration/PASS, a reintroduced privileged
 isolation operation or committed compiled executable, and a spoofed check name;
 all must refuse without producing hosted PASS evidence.
 
+## Portable primitives probe and capability ledger
+
+ISS-022 is one bounded Node 24 capability probe. It does not implement the
+runtime state service, persistent custody, a helper, or principal isolation.
+The stable ISS-006 parent owns the fresh runner-temp custody root, expected
+bytes, barriers, clocks, process handles, normalization, and receipts. Candidate
+output is hostile data. No candidate verdict or local result can select a
+profile.
+
+The exact candidates and selectable tokens are:
+
+| Capability               | Exact Node candidate                                                                                                  | PASS token                                     |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| physical identity        | `realpath`, `lstat/stat({bigint:true})`, `statfs({bigint:true})`, and the Unicode 15 canonical leaf decoder           | `NODE_REALPATH_BIGINT_STATFS_LEAF_V1`          |
+| create once              | `open(path, O_CREAT plus O_EXCL plus O_RDWR, 0o600)`, exact write, `FileHandle.sync()`, close, reopen/readback        | `NODE_OPEN_EXCL_SYNC_READBACK_V1`              |
+| atomic replace           | sibling `O_EXCL` temp, exact write, file sync, close, `rename`, parent-directory open/sync, reopen/readback           | `NODE_TEMP_SYNC_RENAME_DIRSYNC_V1`             |
+| destination/runtime lock | one `O_EXCL` lock-file handle; after holder death the same path is acquired once without deletion or retry            | `NODE_EXCL_OWNER_DEATH_LOCK_V1`                |
+| CAS                      | admitted lock, exact predecessor read, create-once proposal, admitted replace, exact readback                         | `NODE_LOCKED_READ_PROPOSE_REPLACE_READBACK_V1` |
+| process                  | direct non-detached `ChildProcess` handle, private IPC nonce, `kill("SIGTERM")`, and provider-observed `exit`/`close` | `NODE_DIRECT_CHILD_HANDLE_TERMINATION_V1`      |
+| handle confinement       | probe-local `WeakMap` plus 32-byte nonce callback handle                                                              | `NODE_WEAKMAP_NONCE_CALLBACK_V1`               |
+| absence                  | `lstat` returning `ENOENT` for two registered unused paths while the admitted lock is held                            | `NODE_LOCKED_LSTAT_ENOENT_V1`                  |
+| parser equivalence       | stable parent plus three fresh children parse the same ISS-002 canonical/hostile bytes                                | `NODE_FRESH_CHILD_CANONICAL_PARSE_V1`          |
+| helper                   | reviewed `process.execPath` bytes and Node 24 built-ins only                                                          | `NODE24_BUILTIN_FS_CHILD_PROCESS_V1`           |
+| helper ABI               | exact Node `modules` and `napi` version pair                                                                          | `NODE24_MODULES_NAPI_V1`                       |
+| custody                  | stable-parent exclusive root plus create-once namespace file and handle readback                                      | `STABLE_PARENT_EXCLUSIVE_NAMESPACE_FILE_V1`    |
+
+No token is a promise that Node supplies the property. A vector emits
+UNSUPPORTED when the exact candidate lacks it. In particular, an `O_EXCL` lock
+path that survives holder death and the absence of an independently observable
+grandchild handle are discriminating Node gaps; neither may be repaired by PID,
+age, IPC text, deletion, retry, shell commands, or an unreviewed helper.
+
+### Literal physical, helper, ABI, and custody derivation
+
+All multibyte integers below are fixed-width big-endian. `u64(x)` requires a
+nonnegative bigint below `2^64`; `u32(x)` requires a nonnegative bigint below
+`2^32`; an out-of-range or unreadable stat is UNKNOWN. `statfs.type` alone uses
+`u64(BigInt.asUintN(64,type))` so a provider's signed spelling has one byte
+projection. Every `fixed`, `text`, `raw32`, and `canonical` item below is the
+existing `framedDigest` frame of that type, in shown order.
+
+The stable parent creates an exclusive real custody root, opens it, and creates
+`.orchestration-custody-namespace` exactly once with 32 random bytes, file sync,
+close, and readback before candidate launch. The file is probe input, not a
+secret. Production may instantiate the same profile only in an independently
+admitted custody root and must preserve those bytes across helper/custody
+rotation. The probe target is exactly one canonical leaf below that root; for
+both existing and absent target rows, the root is the ancestor object. An absent
+target is never discovered by directory enumeration: the stable parent
+constructs the one path, requires the root to exist, and requires exactly
+`lstat -> ENOENT` for the leaf.
+
+```text
+DhostNamespace = portable-host-custody-namespace/v1(
+  fixed(namespace file's exact 32 bytes)
+)
+
+Dvolume = portable-physical-volume-identity/v1(
+  raw32(DhostNamespace), text(operatingSystem), u64(rootStat.dev)
+)
+
+Dfilesystem = portable-filesystem-identity/v1(
+  raw32(Dvolume), text(operatingSystem),
+  u64(BigInt.asUintN(64, rootStatfs.type))
+)
+
+Dancestor = portable-ancestor-object-identity/v1(
+  raw32(Dvolume), raw32(Dfilesystem), u64(rootStat.dev),
+  u64(rootStat.ino), u32(rootStat.mode)
+)
+
+DlogicalLocator = portable-logical-locator/v1(
+  raw32(DhostNamespace), fixed(canonicalPhysicalLeafBytes)
+)
+
+DresolvedLocatorReadback = portable-resolved-locator-readback/v1(
+  raw32(Dancestor), fixed(canonicalPhysicalLeafBytes)
+)
+
+DnativeIdentityReadback = portable-native-identity-readback/v1(
+  raw32(Dvolume), raw32(Dfilesystem), raw32(Dancestor),
+  text(leafIdentityKind)
+)
+```
+
+The stable parent retains the original root handle across every physical
+barrier and compares before/after `fstat` identity on that handle; it also
+reopens the locator and requires the same `realpath`, `dev`, `ino`, `mode`,
+`statfs.type`, and namespace bytes. Handle values themselves are never compared.
+A changed field is UNKNOWN. The exact
+`physical-destination-identity/v1` record uses `Dancestor`, the canonical leaf
+bytes, `Dfilesystem`, `DhostNamespace`, the observed leaf kind,
+`DARWIN|LINUX|WINDOWS`, and `Dvolume`; `Dphys` is then the already-landed
+`physical-destination-identity/v1` framed formula and
+`Ddest = bootstrap-destination-identity/v1(raw32(Dphys))`. The probe never
+invents a second physical formula.
+
+The stable parent resolves and reads `process.execPath` through one regular-file
+handle and hashes the exact bytes. It accepts only canonical Node `24.x.y` and
+canonical decimal `process.versions.modules` and `process.versions.napi`.
+
+```text
+Dabi = portable-node-abi/v1(
+  text(nodeVersion), text(modulesVersion), text(napiVersion)
+)
+
+Dhelper = portable-node-helper/v1(
+  raw32(sha256(exact executable bytes)), text(nodeVersion), raw32(Dabi)
+)
+
+DhelperProfile = portable-node-helper-profile/v1(
+  text(NODE24_BUILTIN_FS_CHILD_PROCESS_V1), raw32(Dhelper), raw32(Dabi)
+)
+
+DosProfile = portable-primitives-os-profile/v1(
+  text(operatingSystem), raw32(Dhelper), raw32(Dabi), u64(rootStat.dev),
+  u64(BigInt.asUintN(64, rootStatfs.type)), text(caseComparisonProfile),
+  text(unicodeNormalizationProfile), raw32(vectorCensusDigest)
+)
+
+DrootReadback = portable-custody-root-readback/v1(
+  raw32(DhostNamespace), raw32(Dvolume), raw32(Dfilesystem), raw32(Dancestor)
+)
+
+DcustodyInstance = portable-probe-custody-instance/v1(
+  raw32(DhostNamespace), raw32(Denv), raw32(DproviderRun), text(jobId),
+  raw32(DrootReadback)
+)
+
+DcustodyProfile = portable-custody-profile/v1(
+  text(STABLE_PARENT_EXCLUSIVE_NAMESPACE_FILE_V1)
+)
+```
+
+`portable-primitives-os-profile/v1` has exactly `caseComparisonProfile`,
+`filesystemTypeBytes`, `helperAbiDigest`, `helperDigest`, `operatingSystem`,
+`schemaVersion`, `statDeviceBytes`, `unicodeNormalizationProfile`, and
+`vectorCensusDigest`. Its two byte fields are the exact 8-byte values framed
+above; the remaining values use the existing closed environment/locator enums.
+
+`Dphys` in the custody receipt and admitted locator is only the
+`PHYSICAL_ABSENT_LEAF` row's identity; the other physical rows are hostile
+comparison evidence and never alternate the selected destination. The
+`portable-probe-custody-receipt/v1` has exactly `custodyInstanceDigest`,
+`helperAbiDigest`, `helperDigest`, `observedAt`, `osProfileDigest`,
+`physicalDestinationIdentityDigest`, `rootReadbackDigest`, and `schemaVersion`.
+Its identity is:
+
+```text
+DcustodyReceipt = portable-probe-custody-receipt/v1(
+  raw32(custodyInstanceDigest), raw32(physicalDestinationIdentityDigest),
+  raw32(helperDigest), raw32(helperAbiDigest), raw32(osProfileDigest),
+  raw32(rootReadbackDigest), text(observedAt), canonical(receipt)
+)
+```
+
+An ADMITTED synthetic
+`physical-destination-locator-observation-receipt/v1` uses `Dhelper`, canonical
+Node version, `DlogicalLocator`, `DresolvedLocatorReadback`, the OS-fixed case
+and Unicode profiles, `DcustodyInstance`, `DcustodyReceipt`, and
+`DnativeIdentityReadback`. Its `observedAt` is the stable-parent observation
+time, `validFrom` equals that exact timestamp, and `validUntil` is null; no other
+time bytes are valid. Any unstable or unsupported physical/custody input uses
+the existing all-null UNSUPPORTED/UNKNOWN observation arm and cannot select a
+profile. The suite's `conformance-environment/v1` uses
+`helperProfileDigest=DhelperProfile` and
+`custodyObservationDigest=DcustodyReceipt`. Consumers must create and verify
+their own actual custody instance and receipt; probe custody bytes never
+authorize a production destination.
+
+### Finite vectors and reduction
+
+The vector census is exactly this order:
+
+```text
+PHYSICAL_EXISTING
+PHYSICAL_ABSENT_LEAF
+PHYSICAL_CASE_ALIAS
+PHYSICAL_UNICODE_ALIAS
+PHYSICAL_SYMLINK_SWAP
+PHYSICAL_PARENT_SWAP
+CREATE_ONCE_32_CONTENDERS
+LOCK_TWO_UNRELATED_PROCESSES
+LOCK_HOLDER_DEATH
+LOCK_DEFAULT_NON_INHERITANCE
+REPLACE_BEFORE_CREATE
+REPLACE_AFTER_CREATE
+REPLACE_AFTER_FILE_SYNC
+REPLACE_AFTER_RENAME
+REPLACE_AFTER_DIRECTORY_SYNC
+CAS_PREDECESSOR_MISMATCH
+CAS_TWO_CONTENDERS
+ABSENCE_HEAD_PLUS_ONE_TWO
+PROCESS_DIRECT_CHILD_AND_GRANDCHILD_GAP
+HANDLE_CLONE_TRANSFER_REUSE
+PARSER_EQUIVALENCE
+```
+
+The one-component leaf corpus is exactly `existing-leaf`, `absent-leaf`, `A`,
+`a`, NFC bytes `c3a9`, NFD bytes `65cc81`, `link-leaf`, and `parent-leaf`.
+Symlink/junction and replaced-parent locators are hostile alternate routes to
+those leaves; they are never admitted as the real custody root. Link-target and
+parent replacement occur only at stable-parent barriers. An alias is PASS when
+stable observations prove the OS-expected identical or distinct result,
+UNSUPPORTED when identity cannot be proved, and UNKNOWN when observations move
+or contradict.
+
+File payloads are one byte: predecessor `41`, successor `42`. Barrier IDs are
+only `READY`, `ACQUIRED`, `AFTER_CREATE`, `AFTER_FILE_SYNC`, `AFTER_RENAME`, and
+`AFTER_DIRECTORY_SYNC`. Create once yields one `41` winner and 31 `EEXIST`
+losers. Lock contention yields one acquisition and one `EEXIST`.
+`LOCK_DEFAULT_NON_INHERITANCE` spawns with the default non-inherited descriptor
+set and refuses any child access to the stable holder; it never intentionally
+duplicates or transfers the holder. After provider-observed holder exit, the
+next lock acquisition is attempted exactly once. No cleanup or retry occurs.
+
+The replace target starts at `41`. Crashes before create, after create, and
+after file sync must reopen as `41`; crashes after rename and after directory
+sync must reopen as `42`. Two CAS contenders start behind one barrier; exactly
+one selects `42`, and the other observes predecessor mismatch. The process row
+uses only the direct `ChildProcess` handle returned to the stable parent. A
+grandchild identity supplied only by child IPC/stdout is hostile and therefore
+derives UNSUPPORTED; the probe does not force PID reuse or claim tree
+termination. Ten seconds is only a runner bound; expiry is UNKNOWN, never proof
+of death. Reboot, mount creation, cross-volume mutation, persistent-host
+re-entry, and native process enumeration belong to later reviewed selection.
+
+`EEXIST` is admitted only for the registered exclusive-creation loser and
+`ENOENT` only for registered absence. `ENOTSUP|EOPNOTSUPP|ENOSYS|EINVAL|EPERM|
+EACCES` is UNSUPPORTED for the exact attempted operation. Every other code,
+missing code, timeout, signal, malformed output, or unreadable observation is
+UNKNOWN. Neither status becomes PASS.
+
+`portable-primitives-vector-inputs/v1` has exactly `barriers`, `caseId`,
+`contenderCount`, `corpusDigest`, `crashPoint`, `expectedReadbackHex`,
+`operationToken`, `payloadHex`, `schemaVersion`, and `timeoutMilliseconds`.
+Unused scalar arms are null. Counts and milliseconds are canonical bounded
+decimals; byte values are `41|42`; barriers/crash points are the closed IDs
+above; operation tokens are the closed candidate tokens. `corpusDigest` is
+non-null only for physical rows and equals
+`portable-physical-leaf-corpus/v1(canonical ordered corpus above)`. The parser
+admits only the 21 literal rows fixed by this ledger; it is not a caller-filled
+matrix.
+
+```text
+DprimitiveInputs = portable-primitives-vector-inputs/v1(
+  text(caseId), canonical(input record)
+)
+```
+
+`portable-primitives-vector/v1` is a closed record with exactly `caseId`,
+`expectedResult`, `inputsDigest`, `profileToken`, and `schemaVersion`.
+`expectedResult` is the sole literal PASS; UNSUPPORTED/UNKNOWN are measured
+dispositions, not pre-authorized expectations.
+
+```text
+DprimitiveVector = portable-primitives-vector/v1(
+  text(caseId), text(profileToken), raw32(inputsDigest),
+  text(expectedResult), canonical(vector record)
+)
+```
+
+`portable-primitives-observation/v1` has exactly `caseId`, `detailsDigest`,
+`environmentDigest`, `normalizedResult`, `observedAt`, `operatingSystem`,
+`schemaVersion`, and `vectorDigest`; result is `PASS|UNSUPPORTED|UNKNOWN` and OS
+is `LINUX|MACOS|WINDOWS`. For each present vector,
+`detailsDigest = portable-primitives-observation-details/v1(raw32(Draw),
+text(caseId))`, where `Draw` is the already-recomputed raw artifact manifest
+digest whose report bytes contain the complete stable vector census and raw
+observations.
+
+```text
+DprimitiveObservation = portable-primitives-observation/v1(
+  text(caseId), text(operatingSystem), raw32(environmentDigest),
+  raw32(vectorDigest), text(normalizedResult), raw32(detailsDigest),
+  text(observedAt), canonical(observation record)
+)
+```
+
+The stable reducer emits at most the expected 63 observations in required-job
+registry order then vector order. It never synthesizes environment, time, or
+details for a missing job/artifact. Missing, extra, duplicate, malformed, or
+spoofed rows instead enter the authenticated diagnostic provider census below.
+
+### Capability decision and authenticated diagnostic arm
+
+`portable-primitives-capability-decision-core/v1` has exactly
+`aggregateDigest`, `candidateSubjectDigest`, `contractVersionsDigest`,
+`custodyProfileDigest`, `decision`, `decisionWriterDigest`,
+`diagnosticTerminalDigest`, `harnessBundleDigest`, `helperAbiDigests`,
+`helperDigests`, `observationDigests`, `osProfileDigests`, `profile`,
+`providerRunDigest`, `requiredJobRegistryDigest`, `schemaVersion`,
+`stableHarnessSubjectDigest`, and `testBundleDigest`. The three digest arrays
+have exactly three nullable SHA-256 slots in `LINUX`, `MACOS`, `WINDOWS`
+registry order and bind each OS's exact `Dabi`, `Dhelper`, and `DosProfile`.
+`custodyProfileDigest` must equal recomputed `DcustodyProfile` in both decision
+arms. `profile` is closed with keys `absence`, `atomicReplace`, `cas`,
+`createOnce`, `custody`, `destinationLock`, `handleConfinement`, `helper`,
+`helperAbi`, `parserEquivalence`, `physicalIdentity`, `process`, and
+`runtimeLock` and uses only this exact mapping or null:
+
+```text
+absence = NODE_LOCKED_LSTAT_ENOENT_V1
+atomicReplace = NODE_TEMP_SYNC_RENAME_DIRSYNC_V1
+cas = NODE_LOCKED_READ_PROPOSE_REPLACE_READBACK_V1
+createOnce = NODE_OPEN_EXCL_SYNC_READBACK_V1
+custody = STABLE_PARENT_EXCLUSIVE_NAMESPACE_FILE_V1
+destinationLock = NODE_EXCL_OWNER_DEATH_LOCK_V1
+handleConfinement = NODE_WEAKMAP_NONCE_CALLBACK_V1
+helper = NODE24_BUILTIN_FS_CHILD_PROCESS_V1
+helperAbi = NODE24_MODULES_NAPI_V1
+parserEquivalence = NODE_FRESH_CHILD_CANONICAL_PARSE_V1
+physicalIdentity = NODE_REALPATH_BIGINT_STATFS_LEAF_V1
+process = NODE_DIRECT_CHILD_HANDLE_TERMINATION_V1
+runtimeLock = NODE_EXCL_OWNER_DEATH_LOCK_V1
+```
+
+`decisionWriterDigest` is recomputed as:
+
+```text
+DstableHarnessSubject = portable-primitives-stable-harness-subject/v1(
+  raw32(harnessBundleDigest), raw32(testBundleDigest),
+  raw32(requiredJobRegistryDigest), raw32(contractVersionsDigest)
+)
+
+DprimitiveDecisionWriter = portable-primitives-decision-writer/v1(
+  raw32(DstableHarnessSubject), raw32(harnessBundleDigest),
+  raw32(testBundleDigest), raw32(contractVersionsDigest)
+)
+```
+
+The core's `stableHarnessSubjectDigest` must equal recomputed
+`DstableHarnessSubject` from the exact ISS-006 run identities. The
+administrator-authenticated terminal command must run from a protected-main
+checkout whose stable bundle, tests, registry, and contracts reproduce those
+same inputs; the candidate checkout cannot supply or replace them. PASS requires
+`aggregateDigest` non-null, `diagnosticTerminalDigest:null`, all 63 observation
+digests in exact order and PASS, every helper/ABI/OS-profile slot and profile
+token non-null, and per-OS equality from each slot through its environment,
+observations, locator, and custody receipt. BLOCK_REPLAN requires
+`aggregateDigest:null`, a non-null diagnostic terminal digest, every profile
+member null, zero through 63 available observation digests in stable subset
+order, nullable helper/ABI/OS-profile slots only where that OS evidence is
+missing, and at least one authenticated non-PASS/missing job, artifact, or row.
+A mixed profile, synthetic observation, or combined run is invalid. If neither
+terminal arm authenticates, no core bytes exist and the planning disposition is
+BLOCK_REPLAN.
+
+```text
+DprimitiveDecisionCore = portable-primitives-capability-decision-core/v1(
+  canonical decision-core bytes
+)
+```
+
+`portable-primitives-independent-review/v1` has exactly `decisionCoreDigest`,
+`providerReviewDigest`, `reviewDisposition`, `reviewedAt`,
+`reviewerSubjectDigest`, and `schemaVersion`. `reviewDisposition` is
+`AUTHORIZE_PASS|RECORD_BLOCK_REPLAN` and must equal the core's PASS or
+BLOCK_REPLAN arm respectively. Its identity is:
+
+```text
+DprimitiveReview = portable-primitives-independent-review/v1(
+  raw32(decisionCoreDigest), raw32(providerReviewDigest),
+  text(reviewDisposition), text(reviewedAt), raw32(reviewerSubjectDigest),
+  canonical review bytes
+)
+```
+
+The provider adapter for that receipt is
+`github-portable-primitives-independent-review/v1`, with exactly
+`candidateSubjectDigest`, `coreBytesDigest`, `corePath`,
+`corePullRequestAuthorId`, `decisionCoreDigest`, `mergeCommitRevision`,
+`providerRunDigest`, `pullRequestNumber`, `repositoryId`,
+`reviewCommitRevision`, `reviewId`, `reviewedAt`, `reviewerId`, `schemaVersion`,
+and `state`. Provider/review/actor/PR IDs are positive canonical decimals,
+revisions are lowercase 40-hex, digest fields are SHA-256, `state` is
+`APPROVED`, and
+`reviewerId != corePullRequestAuthorId`. The authenticated GitHub API must prove
+the review applies to `reviewCommitRevision`, that exact head contains only the
+canonical core file for this publication slice, and the reviewed head merged by
+PR into protected `main` before the receipt is projected. `corePath` is exactly
+`planning/decisions/ISS-022/<DprimitiveDecisionCore>/decision-core.json` and
+`coreBytesDigest` is SHA-256 of those exact bytes. The adapter identities are:
+
+```text
+DproviderReview = github-portable-primitives-independent-review/v1(
+  canonical provider review bytes
+)
+
+DreviewerSubject = github-reviewer-subject/v1(
+  text(repositoryId), text(reviewerId)
+)
+```
+
+The provider-neutral review requires `providerReviewDigest=DproviderReview`,
+`reviewerSubjectDigest=DreviewerSubject`, exact core/candidate/provider-run
+equality, and the provider `reviewedAt`. GitHub vocabulary never enters the
+engine record.
+
+`portable-primitives-capability-decision/v1` has exactly
+`decisionCoreDigest`, `independentReviewReceiptDigest`, and `schemaVersion`.
+
+```text
+DprimitiveDecision = portable-primitives-capability-decision/v1(
+  raw32(decisionCoreDigest), raw32(independentReviewReceiptDigest),
+  canonical decision bytes
+)
+```
+
+Publication is two reviewable protected-main PRs to avoid a digest cycle. The
+existing ISS-006 stable harness checkout, never the candidate checkout, first
+runs the exact command
+`node scripts/conformance/run-bundled.mts terminal
+portable-primitives-decision <repositoryId> <runId> <runAttempt>
+<workflowRevision>` with required absolute
+`PORTABLE_PRIMITIVES_OUTPUT_ROOT` outside every checkout. The four values after
+the mode are the same bounded terminal arguments already authenticated by
+ISS-006. Before writing, the stable bundle recomputes
+`DstableHarnessSubject` and requires equality to the run/core. It writes only
+`portable-primitives-<runId>-<runAttempt>-decision-core.json` below the output
+root. Those bytes must equal `DprimitiveDecisionCore` and are copied unchanged
+to the exact core path in the core-only PR.
+
+After that PR receives an APPROVED review from a different actor and merges,
+the same exact stable harness checkout runs
+`node scripts/conformance/run-bundled.mts terminal
+portable-primitives-review <repositoryId> <corePullRequestNumber>
+<decisionCoreDigest> <mergeCommitRevision>` with the same external-output and
+stable-subject checks. The four values after the mode are the only review
+arguments. It authenticates the live review and writes only
+`independent-review.json` and `decision.json`. A second PR adds those two
+files beside the core at the same digest-addressed directory; protected-main
+merge publishes the immutable three-file census. Any moved stable checkout,
+bundle/registry/contracts mismatch, extra decision file, source-tree terminal
+output, candidate writer, changed core, stale review, unmerged head,
+self-review, or alternate path refuses. No installed release or N0 state is a
+prerequisite.
+
+ISS-004, ISS-005, ISS-020, and ISS-031 read the three files only from their
+reviewed stable release, recompute all three digests, require PASS, select their
+own OS slot, hash their actual Node executable/ABI and filesystem/statfs/case/
+Unicode profile to the same `DosProfile`, and require their actual locator and
+custody receipt to equal-bind those values and `DcustodyProfile`. A diagnostic
+decision grants no mechanism or capability.
+
+The GitHub adapter adds
+`github-conformance-diagnostic-provider-record/v1` with exactly `artifacts`,
+`candidateRevision`, `candidateSubjectDigest`, `event`, `harnessBundleDigest`,
+`jobs`, `missingArtifactNames`, `missingLogicalJobIds`, `protectedRefDigest`,
+`recordedAt`, `repositoryId`, `requiredJobRegistryDigest`, `runAttempt`, `runId`,
+`schemaVersion`, `testBundleDigest`, `workflowPath`, `workflowRef`, and
+`workflowRevision`. It uses the successful provider record's exact scalar,
+protection, provider-run, job-name, artifact-name, digest/length, retention, and
+time rules. Job conclusions additionally admit only GitHub's terminal
+`FAILURE|CANCELLED|SKIPPED|TIMED_OUT|ACTION_REQUIRED|STARTUP_FAILURE|STALE|
+NEUTRAL`; present job and artifact rows are sorted exact subsets, while the two
+missing arrays are the sorted exact complements of the stable expected census.
+At least one non-SUCCESS conclusion or missing member is required.
+
+```text
+DdiagnosticProviderRecord = github-conformance-diagnostic-provider-record/v1(
+  canonical diagnostic provider record bytes
+)
+```
+
+The existing record job runs with `if:always()` after plan/observation/
+aggregate. It writes the existing provisional record only for a valid aggregate;
+otherwise it writes one attempt-qualified, `archive:false`
+`conformance-<runId>-<runAttempt>-diagnostic-provider-record.json`. It never
+executes candidate bytes. The workflow keeps the same plan, observation,
+aggregate, and record jobs, permissions, hosted runners, and isolation boundary.
+
+After the run is terminal, the administrator-authenticated diagnostic verifier
+takes the same four bounded arguments as the successful verifier. It requires
+overall run FAILURE, the exact protected workflow/ref/SHA and provider-run
+identity, a successful unique record job, the unique diagnostic artifact, full
+live ruleset detail with zero bypass, every live current-attempt job/artifact
+equal to the record's present/missing census, at least 30 days remaining
+retention for every present artifact, and the same inclusive writer time join.
+It outputs closed `github-conformance-diagnostic-terminal-verification/v1` with
+exactly `diagnosticProviderRecordDigest`, `protectionSnapshotDigest`,
+`providerRunDigest`, `repositoryId`, `runAttempt`, `runId`, `schemaVersion`,
+`verifiedAt`, and `workflowRevision`. `verifiedAt` is the canonical millisecond-
+UTC projection of the final authenticated provider response's HTTPS `Date`
+header; missing, repeated, malformed, or non-UTC dates refuse.
+
+```text
+DdiagnosticTerminal = github-conformance-diagnostic-terminal-verification/v1(
+  canonical verification bytes
+)
+```
+
+This record authenticates a failure census only; it never becomes PASS or
+promotion authority. If the diagnostic record job itself is absent or non-
+SUCCESS, the run remains unusable and produces no decision bytes. Exact
+workflow-structure, record/parser, terminal-API, artifact-layout, missing-row,
+writer-identity, protection, expiry, cross-run, and result-normalization mutants
+must refuse.
+
+The stable registry adds suite `iss022-portable-primitives`, owner package
+`@orchestration-platform/portable-primitives`, runner token
+`ISS022_PORTABLE_PRIMITIVES`, required helper and custody observations,
+`walkRequirement:NONE`, the vector census above, and exactly
+`iss022-portable-primitives-linux`, `-macos`, and `-windows`. All mutations stay
+under the provider-fresh runner-temp root and cleanup proves that root absent.
+No source-checkout write, compiled executable, native addon, broker, privilege,
+same-host principal, reboot, credential, cache, or secret is authorized.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
