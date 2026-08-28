@@ -147,6 +147,14 @@ describe("stable ISS-002 bundle path censuses", () => {
     ]);
   });
 
+  test("pins every stable bundle checkout byte to LF on every OS", async () => {
+    const paths = [...conformance.iss002HarnessPaths, ...conformance.iss002TestBundlePaths];
+    const { stdout } = await execFileAsync("git", ["check-attr", "eol", "--", ...paths], {
+      cwd: repositoryRoot,
+    });
+    expect(stdout.trim().split(/\r?\n/)).toEqual(paths.map((path) => `${path}: eol: lf`));
+  });
+
   test("constructs both manifests only from the stable root", async () => {
     const result = await conformance.createIss002StableBundleManifests(await stableSnapshot());
     expect(result.ok).toBe(true);
