@@ -1979,8 +1979,26 @@ HANDLE_CLONE_TRANSFER_REUSE
 PARSER_EQUIVALENCE
 ```
 
-The one-component leaf corpus is exactly `existing-leaf`, `absent-leaf`, `A`,
-`a`, NFC bytes `c3a9`, NFD bytes `65cc81`, `link-leaf`, and `parent-leaf`.
+The one-component leaf corpus is the following exact canonical JSON array of
+lowercase hexadecimal byte strings. Its canonical bytes include the final LF,
+and `DphysicalLeafCorpus = portable-physical-leaf-corpus/v1(canonical(array))`
+is exactly `f0e0569a39206775cf61c8f61ee916e00f5dd0ad41cb094aaf6c21f5221a84fe`.
+
+```json
+[
+  "6578697374696e672d6c656166",
+  "616273656e742d6c656166",
+  "41",
+  "61",
+  "c3a9",
+  "65cc81",
+  "6c696e6b2d6c656166",
+  "706172656e742d6c656166"
+]
+```
+
+The entries decode respectively to `existing-leaf`, `absent-leaf`, `A`, `a`,
+NFC `é`, NFD `e` plus combining acute, `link-leaf`, and `parent-leaf`.
 Symlink/junction and replaced-parent locators are hostile alternate routes to
 those leaves; they are never admitted as the real custody root. Link-target and
 parent replacement occur only at stable-parent barriers. An alias is PASS when
@@ -2016,14 +2034,44 @@ UNKNOWN. Neither status becomes PASS.
 
 `portable-primitives-vector-inputs/v1` has exactly `barriers`, `caseId`,
 `contenderCount`, `corpusDigest`, `crashPoint`, `expectedReadbackHex`,
-`operationToken`, `payloadHex`, `schemaVersion`, and `timeoutMilliseconds`.
+`operationToken`, `payloadHex`, `predecessorHex`, `schemaVersion`, and
+`timeoutMilliseconds`.
 Unused scalar arms are null. Counts and milliseconds are canonical bounded
 decimals; byte values are `41|42`; barriers/crash points are the closed IDs
 above; operation tokens are the closed candidate tokens. `corpusDigest` is
 non-null only for physical rows and equals
 `portable-physical-leaf-corpus/v1(canonical ordered corpus above)`. The parser
-admits only the 21 literal rows fixed by this ledger; it is not a caller-filled
-matrix.
+admits only the 21 literal rows below; it is not a caller-filled matrix.
+`predecessorHex` is non-null only for CAS: `42` deliberately mismatches the
+current `41` in `CAS_PREDECESSOR_MISMATCH`, while `41` is the shared predecessor
+for `CAS_TWO_CONTENDERS`.
+
+Each line below is one complete canonical record; key order and final LF are
+canonicalized by the landed ISS-002 rules.
+
+```text
+{"barriers":["READY"],"caseId":"PHYSICAL_EXISTING","contenderCount":null,"corpusDigest":"f0e0569a39206775cf61c8f61ee916e00f5dd0ad41cb094aaf6c21f5221a84fe","crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_REALPATH_BIGINT_STATFS_LEAF_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"PHYSICAL_ABSENT_LEAF","contenderCount":null,"corpusDigest":"f0e0569a39206775cf61c8f61ee916e00f5dd0ad41cb094aaf6c21f5221a84fe","crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_REALPATH_BIGINT_STATFS_LEAF_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"PHYSICAL_CASE_ALIAS","contenderCount":null,"corpusDigest":"f0e0569a39206775cf61c8f61ee916e00f5dd0ad41cb094aaf6c21f5221a84fe","crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_REALPATH_BIGINT_STATFS_LEAF_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"PHYSICAL_UNICODE_ALIAS","contenderCount":null,"corpusDigest":"f0e0569a39206775cf61c8f61ee916e00f5dd0ad41cb094aaf6c21f5221a84fe","crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_REALPATH_BIGINT_STATFS_LEAF_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"PHYSICAL_SYMLINK_SWAP","contenderCount":null,"corpusDigest":"f0e0569a39206775cf61c8f61ee916e00f5dd0ad41cb094aaf6c21f5221a84fe","crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_REALPATH_BIGINT_STATFS_LEAF_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"PHYSICAL_PARENT_SWAP","contenderCount":null,"corpusDigest":"f0e0569a39206775cf61c8f61ee916e00f5dd0ad41cb094aaf6c21f5221a84fe","crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_REALPATH_BIGINT_STATFS_LEAF_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"CREATE_ONCE_32_CONTENDERS","contenderCount":"32","corpusDigest":null,"crashPoint":null,"expectedReadbackHex":"41","operationToken":"NODE_OPEN_EXCL_SYNC_READBACK_V1","payloadHex":"41","predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY","ACQUIRED"],"caseId":"LOCK_TWO_UNRELATED_PROCESSES","contenderCount":"2","corpusDigest":null,"crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_EXCL_OWNER_DEATH_LOCK_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY","ACQUIRED"],"caseId":"LOCK_HOLDER_DEATH","contenderCount":null,"corpusDigest":null,"crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_EXCL_OWNER_DEATH_LOCK_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["ACQUIRED"],"caseId":"LOCK_DEFAULT_NON_INHERITANCE","contenderCount":null,"corpusDigest":null,"crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_EXCL_OWNER_DEATH_LOCK_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"REPLACE_BEFORE_CREATE","contenderCount":null,"corpusDigest":null,"crashPoint":"READY","expectedReadbackHex":"41","operationToken":"NODE_TEMP_SYNC_RENAME_DIRSYNC_V1","payloadHex":"42","predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY","AFTER_CREATE"],"caseId":"REPLACE_AFTER_CREATE","contenderCount":null,"corpusDigest":null,"crashPoint":"AFTER_CREATE","expectedReadbackHex":"41","operationToken":"NODE_TEMP_SYNC_RENAME_DIRSYNC_V1","payloadHex":"42","predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY","AFTER_CREATE","AFTER_FILE_SYNC"],"caseId":"REPLACE_AFTER_FILE_SYNC","contenderCount":null,"corpusDigest":null,"crashPoint":"AFTER_FILE_SYNC","expectedReadbackHex":"41","operationToken":"NODE_TEMP_SYNC_RENAME_DIRSYNC_V1","payloadHex":"42","predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY","AFTER_CREATE","AFTER_FILE_SYNC","AFTER_RENAME"],"caseId":"REPLACE_AFTER_RENAME","contenderCount":null,"corpusDigest":null,"crashPoint":"AFTER_RENAME","expectedReadbackHex":"42","operationToken":"NODE_TEMP_SYNC_RENAME_DIRSYNC_V1","payloadHex":"42","predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY","AFTER_CREATE","AFTER_FILE_SYNC","AFTER_RENAME","AFTER_DIRECTORY_SYNC"],"caseId":"REPLACE_AFTER_DIRECTORY_SYNC","contenderCount":null,"corpusDigest":null,"crashPoint":"AFTER_DIRECTORY_SYNC","expectedReadbackHex":"42","operationToken":"NODE_TEMP_SYNC_RENAME_DIRSYNC_V1","payloadHex":"42","predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["ACQUIRED"],"caseId":"CAS_PREDECESSOR_MISMATCH","contenderCount":null,"corpusDigest":null,"crashPoint":null,"expectedReadbackHex":"41","operationToken":"NODE_LOCKED_READ_PROPOSE_REPLACE_READBACK_V1","payloadHex":"42","predecessorHex":"42","schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY","ACQUIRED"],"caseId":"CAS_TWO_CONTENDERS","contenderCount":"2","corpusDigest":null,"crashPoint":null,"expectedReadbackHex":"42","operationToken":"NODE_LOCKED_READ_PROPOSE_REPLACE_READBACK_V1","payloadHex":"42","predecessorHex":"41","schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["ACQUIRED"],"caseId":"ABSENCE_HEAD_PLUS_ONE_TWO","contenderCount":null,"corpusDigest":null,"crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_LOCKED_LSTAT_ENOENT_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"PROCESS_DIRECT_CHILD_AND_GRANDCHILD_GAP","contenderCount":null,"corpusDigest":null,"crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_DIRECT_CHILD_HANDLE_TERMINATION_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":"10000"}
+{"barriers":["READY"],"caseId":"HANDLE_CLONE_TRANSFER_REUSE","contenderCount":null,"corpusDigest":null,"crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_WEAKMAP_NONCE_CALLBACK_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+{"barriers":["READY"],"caseId":"PARSER_EQUIVALENCE","contenderCount":null,"corpusDigest":null,"crashPoint":null,"expectedReadbackHex":null,"operationToken":"NODE_FRESH_CHILD_CANONICAL_PARSE_V1","payloadHex":null,"predecessorHex":null,"schemaVersion":"portable-primitives-vector-inputs/v1","timeoutMilliseconds":null}
+```
 
 ```text
 DprimitiveInputs = portable-primitives-vector-inputs/v1(
