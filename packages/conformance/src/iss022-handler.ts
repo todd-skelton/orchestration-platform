@@ -8,8 +8,10 @@ import {
   executePortablePrimitiveLockProbe,
   executePortablePrimitiveParserEquivalenceProbe,
   executePortablePrimitiveProcessProbe,
+  executePortablePrimitiveReplaceProbe,
   executePortablePhysicalProbe,
   parsePortablePrimitiveLockDescriptorChildEvent,
+  portablePrimitiveReplaceCases,
   type PortableLeafRawObservation,
   type PortablePhysicalAliasRawFacts,
   type PortablePhysicalBaseRawFacts,
@@ -26,6 +28,7 @@ import {
   type PortablePrimitiveParserChildObservation,
   type PortablePrimitiveParserEquivalenceRawFacts,
   type PortablePrimitiveProcessRawFacts,
+  type PortablePrimitiveReplaceRawFacts,
   type PortablePrimitiveResult,
   type PortableRootRawObservation,
 } from "@orchestration-platform/portable-primitives";
@@ -82,6 +85,16 @@ export interface Iss022LockVectorExecution {
 
 export type Iss022LockHandlerResult =
   | { readonly ok: true; readonly vectorExecutions: readonly Iss022LockVectorExecution[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface Iss022ReplaceVectorExecution {
+  readonly caseId: PortablePrimitiveReplaceRawFacts["caseId"];
+  readonly normalizedResult: PortablePrimitiveResult;
+  readonly rawFacts: PortablePrimitiveReplaceRawFacts;
+}
+
+export type Iss022ReplaceHandlerResult =
+  | { readonly ok: true; readonly vectorExecutions: readonly Iss022ReplaceVectorExecution[] }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 const caseIds = Object.freeze([
@@ -192,6 +205,11 @@ const lockHolderDeathFields = Object.freeze(
 );
 const lockNonInheritanceFields = Object.freeze(
   "caseId child parentReadbackHex probeNonceHex schemaVersion".split(" "),
+);
+const replaceFields = Object.freeze(
+  "caseId child finalReadbackErrorCode finalReadbackHex initialReadbackHex requestedBarrier schemaVersion".split(
+    " ",
+  ),
 );
 const prohibitedLockActions = new Set([
   "DELETE",
@@ -1038,11 +1056,12 @@ function createOnceRefusal(...issues: readonly string[]): Iss022CreateOnceHandle
 
 function validFilesystemChild(
   row: PortablePrimitiveChildExecution,
-  mode: "EXCLUSIVE_CREATE" | "LOCK_ATTEMPT",
+  mode: "EXCLUSIVE_CREATE" | "LOCK_ATTEMPT" | "REPLACE",
+  arguments_: readonly string[] = [],
 ): boolean {
   return (
     validChildEnvelope(row) &&
-    (row.event === null || bindPortablePrimitiveRawChildEvent(row.event, mode, []).ok)
+    (row.event === null || bindPortablePrimitiveRawChildEvent(row.event, mode, arguments_).ok)
   );
 }
 
@@ -1298,5 +1317,122 @@ export async function runIss022LockStableHandler(
     return normalizeIss022LockProbe(await executePortablePrimitiveLockProbe(custodyRoot));
   } catch {
     return lockRefusal("lock:execution-refused");
+  }
+}
+
+function replaceRefusal(...issues: readonly string[]): Iss022ReplaceHandlerResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function coherentReplaceBarrierChild(
+  row: PortablePrimitiveChildExecution,
+  requestedBarrier: PortablePrimitiveReplaceRawFacts["requestedBarrier"],
+): boolean {
+  return (
+    !row.outputLimitExceeded &&
+    !row.timedOut &&
+    row.exitCode === null &&
+    row.signal === "SIGKILL" &&
+    row.stderr === "" &&
+    row.event?.event === "REACHED_BARRIER" &&
+    row.event.barrier === requestedBarrier &&
+    row.stdout === canonicalJson(row.event)
+  );
+}
+
+function coherentReplaceErrorChild(row: PortablePrimitiveChildExecution): boolean {
+  return (
+    !row.outputLimitExceeded &&
+    !row.timedOut &&
+    row.stderr === "" &&
+    row.event?.event === "ERROR" &&
+    row.stdout === canonicalJson(row.event) &&
+    ((row.exitCode === 0 && row.signal === null) ||
+      (row.exitCode === null && row.signal === "SIGKILL"))
+  );
+}
+
+function replaceResult(row: PortablePrimitiveReplaceRawFacts): PortablePrimitiveResult {
+  const expectedReadback =
+    row.requestedBarrier === "AFTER_RENAME" || row.requestedBarrier === "AFTER_DIRECTORY_SYNC"
+      ? "42"
+      : "41";
+  if (row.child.event?.event === "REACHED_BARRIER")
+    return coherentReplaceBarrierChild(row.child, row.requestedBarrier) &&
+      row.finalReadbackErrorCode === null &&
+      row.finalReadbackHex === expectedReadback
+      ? "PASS"
+      : "UNKNOWN";
+  if (
+    row.child.event?.event !== "ERROR" ||
+    !coherentReplaceErrorChild(row.child) ||
+    typeof row.child.event.errorCode !== "string" ||
+    !unsupportedOperationCodes.has(row.child.event.errorCode) ||
+    row.requestedBarrier === "READY" ||
+    row.finalReadbackErrorCode !== null
+  )
+    return "UNKNOWN";
+  const reachableUnsupportedReadbacks =
+    row.requestedBarrier === "AFTER_DIRECTORY_SYNC" ? new Set(["41", "42"]) : new Set(["41"]);
+  return row.finalReadbackHex !== null && reachableUnsupportedReadbacks.has(row.finalReadbackHex)
+    ? "UNSUPPORTED"
+    : "UNKNOWN";
+}
+
+export function normalizeIss022ReplaceProbe(input: unknown): Iss022ReplaceHandlerResult {
+  try {
+    const snapshot = snapshotData(input);
+    if (
+      snapshot === invalidSnapshot ||
+      !Array.isArray(snapshot) ||
+      Object.getPrototypeOf(snapshot) !== Array.prototype ||
+      snapshot.length !== portablePrimitiveReplaceCases.length
+    )
+      return replaceRefusal("replace:census-refused");
+    const rows = snapshot as unknown as PortablePrimitiveReplaceRawFacts[];
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]!;
+      const definition = portablePrimitiveReplaceCases[index]!;
+      if (
+        !exactKeys(row, replaceFields) ||
+        row.caseId !== definition.caseId ||
+        row.requestedBarrier !== definition.requestedBarrier ||
+        row.schemaVersion !== "portable-primitives-replace-raw/v1" ||
+        row.initialReadbackHex !== "41" ||
+        (row.finalReadbackHex !== null &&
+          (typeof row.finalReadbackHex !== "string" ||
+            !/^[0-9a-f]{2}$/.test(row.finalReadbackHex))) ||
+        (row.finalReadbackErrorCode !== null &&
+          (typeof row.finalReadbackErrorCode !== "string" ||
+            !operationErrorCode.test(row.finalReadbackErrorCode))) ||
+        (row.finalReadbackHex === null) === (row.finalReadbackErrorCode === null) ||
+        !validFilesystemChild(row.child, "REPLACE", [row.requestedBarrier])
+      )
+        return replaceRefusal(`replace.${index}:record-refused`);
+    }
+    return {
+      ok: true,
+      vectorExecutions: Object.freeze(
+        rows.map((row) =>
+          Object.freeze({
+            caseId: row.caseId,
+            normalizedResult: replaceResult(row),
+            rawFacts: row,
+          }),
+        ),
+      ),
+    };
+  } catch {
+    return replaceRefusal("replace:unreadable");
+  }
+}
+
+export async function runIss022ReplaceStableHandler(
+  custodyRoot: string,
+): Promise<Iss022ReplaceHandlerResult> {
+  try {
+    return normalizeIss022ReplaceProbe(await executePortablePrimitiveReplaceProbe(custodyRoot));
+  } catch {
+    return replaceRefusal("replace:execution-refused");
   }
 }

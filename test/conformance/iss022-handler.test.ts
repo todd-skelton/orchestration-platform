@@ -7,20 +7,24 @@ import {
   normalizeIss022CreateOnceProbe,
   normalizeIss022PhysicalProbe,
   normalizeIss022ParserProbe,
+  normalizeIss022ReplaceProbe,
   normalizeIss022RuntimeProbe,
   runIss022PhysicalStableHandler,
   runIss022CreateOnceStableHandler,
   runIss022ParserStableHandler,
+  runIss022ReplaceStableHandler,
   runIss022RuntimeStableHandler,
 } from "../../packages/conformance/src/index.js";
 import {
   executePortablePhysicalProbe,
+  portablePrimitiveReplaceCases,
   type PortablePrimitiveChildExecution,
   type PortablePrimitiveCreateOnceRawFacts,
   type PortablePrimitiveParserChildObservation,
   type PortablePrimitiveParserEquivalenceRawFacts,
   type PortablePrimitiveHandleRawFacts,
   type PortablePrimitiveProcessRawFacts,
+  type PortablePrimitiveReplaceRawFacts,
   type PortablePhysicalAliasRawFacts,
   type PortablePhysicalBaseRawFacts,
   type PortablePhysicalSwapRawFacts,
@@ -169,6 +173,54 @@ function createOnceFacts(
     schemaVersion: "portable-primitives-create-once-raw/v1",
     ...mutation,
   };
+}
+
+function replaceEvent(
+  barrier: PortablePrimitiveReplaceRawFacts["requestedBarrier"] | null,
+  errorCode: string | null = null,
+): ContractRecord {
+  return Object.freeze({
+    barrier,
+    errorCode,
+    event: errorCode === null ? "REACHED_BARRIER" : "ERROR",
+    headPlusOneCode: null,
+    headPlusTwoCode: null,
+    mode: "REPLACE",
+    readbackHex: null,
+    schemaVersion: "portable-primitives-raw-child-event/v1",
+  });
+}
+
+function replaceChild(
+  event: ContractRecord | null,
+  mutation: Partial<PortablePrimitiveChildExecution> = {},
+): PortablePrimitiveChildExecution {
+  const reachedBarrier = event?.event === "REACHED_BARRIER";
+  return {
+    event,
+    exitCode: reachedBarrier ? null : 0,
+    outputLimitExceeded: false,
+    signal: reachedBarrier ? "SIGKILL" : null,
+    stderr: "",
+    stdout: event === null ? "" : canonicalJson(event),
+    timedOut: false,
+    ...mutation,
+  };
+}
+
+function replaceFacts(): PortablePrimitiveReplaceRawFacts[] {
+  return portablePrimitiveReplaceCases.map(({ caseId, requestedBarrier }) => ({
+    caseId,
+    child: replaceChild(replaceEvent(requestedBarrier)),
+    finalReadbackErrorCode: null,
+    finalReadbackHex:
+      requestedBarrier === "AFTER_RENAME" || requestedBarrier === "AFTER_DIRECTORY_SYNC"
+        ? "42"
+        : "41",
+    initialReadbackHex: "41",
+    requestedBarrier,
+    schemaVersion: "portable-primitives-replace-raw/v1",
+  }));
 }
 
 afterEach(async () => {
@@ -776,6 +828,167 @@ describe("stable ISS-022 parser-equivalence handler", () => {
       );
       if (!result.ok) throw new Error(result.issues.join(","));
       expect(result.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
+    }
+  });
+});
+
+describe("stable ISS-022 replace handler", () => {
+  test("executes and normalizes the exact five provider-owned crash rows", async () => {
+    const result = await runIss022ReplaceStableHandler(await custodyRoot());
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(
+      result.vectorExecutions.slice(0, 4).map(({ caseId, normalizedResult, rawFacts }) => ({
+        caseId,
+        finalReadbackHex: rawFacts.finalReadbackHex,
+        initialReadbackHex: rawFacts.initialReadbackHex,
+        normalizedResult,
+      })),
+    ).toEqual([
+      {
+        caseId: "REPLACE_BEFORE_CREATE",
+        finalReadbackHex: "41",
+        initialReadbackHex: "41",
+        normalizedResult: "PASS",
+      },
+      {
+        caseId: "REPLACE_AFTER_CREATE",
+        finalReadbackHex: "41",
+        initialReadbackHex: "41",
+        normalizedResult: "PASS",
+      },
+      {
+        caseId: "REPLACE_AFTER_FILE_SYNC",
+        finalReadbackHex: "41",
+        initialReadbackHex: "41",
+        normalizedResult: "PASS",
+      },
+      {
+        caseId: "REPLACE_AFTER_RENAME",
+        finalReadbackHex: "42",
+        initialReadbackHex: "41",
+        normalizedResult: "PASS",
+      },
+    ]);
+    expect(result.vectorExecutions[4]).toMatchObject({
+      caseId: "REPLACE_AFTER_DIRECTORY_SYNC",
+      rawFacts: { finalReadbackHex: "42", initialReadbackHex: "41" },
+    });
+    expect(["PASS", "UNSUPPORTED"]).toContain(result.vectorExecutions[4]!.normalizedResult);
+    expect(
+      result.vectorExecutions.every(({ rawFacts }) => !rawFacts.child.stdout.includes("PASS")),
+    ).toBe(true);
+  }, 60_000);
+
+  test("snapshots every child and event before disposition", () => {
+    const rows = replaceFacts();
+    const event = rows[0]!.child.event!;
+    const result = normalizeIss022ReplaceProbe(rows);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0]!.rawFacts).not.toBe(rows[0]);
+    expect(result.vectorExecutions[0]!.rawFacts.child).not.toBe(rows[0]!.child);
+    expect(result.vectorExecutions[0]!.rawFacts.child.event).not.toBe(event);
+    rows[0] = { ...rows[0]!, finalReadbackHex: "42" };
+    expect(result.vectorExecutions[0]!.normalizedResult).toBe("PASS");
+  });
+
+  test("refuses census, shape, type, accessor, proxy, and mixed-barrier mutants", () => {
+    const rows = replaceFacts();
+    const accessor = { ...rows[0]!.child };
+    Object.defineProperty(accessor, "stdout", {
+      enumerable: true,
+      get: () => canonicalJson(rows[0]!.child.event!),
+    });
+    const { initialReadbackHex: _missing, ...missing } = rows[0]!;
+    for (const mutant of [
+      rows.slice(0, -1),
+      [...rows, rows[0]],
+      [rows[1], rows[0], ...rows.slice(2)],
+      [missing, ...rows.slice(1)],
+      [{ ...rows[0], extra: true }, ...rows.slice(1)],
+      [{ ...rows[0], initialReadbackHex: 41 }, ...rows.slice(1)],
+      [{ ...rows[0], requestedBarrier: "AFTER_CREATE" }, ...rows.slice(1)],
+      [
+        {
+          ...rows[0],
+          child: replaceChild(replaceEvent("AFTER_CREATE")),
+        },
+        ...rows.slice(1),
+      ],
+      [{ ...rows[0], child: accessor }, ...rows.slice(1)],
+      [new Proxy(rows[0]!, {}), ...rows.slice(1)],
+      new Proxy(rows, {}),
+    ])
+      expect(normalizeIss022ReplaceProbe(mutant).ok).toBe(false);
+  });
+
+  test("keeps wrong readback and lifecycle contradictions non-PASS", () => {
+    for (const row of [
+      { ...replaceFacts()[0]!, finalReadbackHex: "42" },
+      {
+        ...replaceFacts()[1]!,
+        child: replaceChild(replaceFacts()[1]!.child.event, { exitCode: 0, signal: null }),
+      },
+      {
+        ...replaceFacts()[2]!,
+        child: replaceChild(replaceFacts()[2]!.child.event, { timedOut: true }),
+      },
+      {
+        ...replaceFacts()[3]!,
+        child: replaceChild(replaceFacts()[3]!.child.event, { outputLimitExceeded: true }),
+      },
+      {
+        ...replaceFacts()[4]!,
+        child: replaceChild(null, { stdout: "PASS\n" }),
+      },
+    ]) {
+      const rows = replaceFacts();
+      const index = portablePrimitiveReplaceCases.findIndex(({ caseId }) => caseId === row.caseId);
+      rows[index] = row;
+      const result = normalizeIss022ReplaceProbe(rows);
+      if (!result.ok) throw new Error(result.issues.join(","));
+      expect(result.vectorExecutions[index]!.normalizedResult).toBe("UNKNOWN");
+    }
+  });
+
+  test("admits only exact reachable unsupported operation evidence", () => {
+    const admitted = replaceFacts();
+    admitted[1] = {
+      ...admitted[1]!,
+      child: replaceChild(replaceEvent(null, "EPERM")),
+    };
+    admitted[4] = {
+      ...admitted[4]!,
+      child: replaceChild(replaceEvent(null, "ENOTSUP"), {
+        exitCode: null,
+        signal: "SIGKILL",
+      }),
+    };
+    const result = normalizeIss022ReplaceProbe(admitted);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[1]!.normalizedResult).toBe("UNSUPPORTED");
+    expect(result.vectorExecutions[4]!.normalizedResult).toBe("UNSUPPORTED");
+
+    for (const row of [
+      {
+        ...replaceFacts()[0]!,
+        child: replaceChild(replaceEvent(null, "EPERM")),
+      },
+      {
+        ...replaceFacts()[2]!,
+        child: replaceChild(replaceEvent(null, "EIO")),
+      },
+      {
+        ...replaceFacts()[3]!,
+        child: replaceChild(replaceEvent(null, "EACCES")),
+        finalReadbackHex: "42",
+      },
+    ]) {
+      const rows = replaceFacts();
+      const index = portablePrimitiveReplaceCases.findIndex(({ caseId }) => caseId === row.caseId);
+      rows[index] = row;
+      const reduced = normalizeIss022ReplaceProbe(rows);
+      if (!reduced.ok) throw new Error(reduced.issues.join(","));
+      expect(reduced.vectorExecutions[index]!.normalizedResult).toBe("UNKNOWN");
     }
   });
 });

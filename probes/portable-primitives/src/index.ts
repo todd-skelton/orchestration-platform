@@ -15,6 +15,7 @@ export {
   type PortableRootRawObservation,
 } from "./physical-executor.js";
 export * from "./profiles.js";
+export * from "./replace.js";
 export * from "./physical.js";
 export {
   executePortablePrimitiveParserEquivalenceProbe,
