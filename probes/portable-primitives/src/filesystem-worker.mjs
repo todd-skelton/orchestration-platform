@@ -8,6 +8,7 @@ const [mode, rootInput, first, second] = process.argv.slice(2);
 const modes = new Set([
   "ABSENCE",
   "CAS",
+  "CAS_BARRIER",
   "EXCLUSIVE_CREATE",
   "LOCK_ATTEMPT",
   "LOCK_DESCRIPTOR_PROBE",
@@ -36,11 +37,45 @@ function event(eventName, values = {}) {
     event: eventName,
     headPlusOneCode: values.headPlusOneCode ?? null,
     headPlusTwoCode: values.headPlusTwoCode ?? null,
-    mode,
+    mode: mode === "CAS_BARRIER" ? "CAS" : mode,
     readbackHex: values.readbackHex ?? null,
     schemaVersion: "portable-primitives-raw-child-event/v1",
   };
   process.stdout.write(`${JSON.stringify(record)}\n`);
+}
+
+async function casBarrier(barrier) {
+  if (typeof process.send !== "function") throw new TypeError("casBarrier:ipc-required");
+  await new Promise((resolveSend, reject) =>
+    process.send(
+      {
+        barrier,
+        predecessorHex: first,
+        proposalHex: second,
+        schemaVersion: "portable-primitives-cas-barrier-event/v1",
+      },
+      (error) => (error ? reject(error) : resolveSend()),
+    ),
+  );
+  if (barrier === "RELEASED") process.disconnect();
+}
+
+async function waitForCasRelease() {
+  await new Promise((resolveRelease, reject) => {
+    process.once("disconnect", () => reject(new Error("casBarrier:provider-disconnected")));
+    process.once("message", (message) => {
+      if (
+        message === null ||
+        typeof message !== "object" ||
+        Object.getPrototypeOf(message) !== Object.prototype ||
+        Object.keys(message).sort().join("\0") !== "command\0schemaVersion" ||
+        message.command !== "RELEASE" ||
+        message.schemaVersion !== "portable-primitives-cas-barrier-release/v1"
+      )
+        return reject(new TypeError("casBarrier:release-refused"));
+      resolveRelease();
+    });
+  });
 }
 
 function descriptorEvent(accessResult, values = {}) {
@@ -166,9 +201,14 @@ async function replaceAt(root) {
   }
 }
 
-async function cas(root) {
+async function cas(root, useBarrier = false) {
   if (!new Set(["41", "42"]).has(first) || second !== "42")
     throw new TypeError("cas:arguments-invalid");
+  if (useBarrier) {
+    await casBarrier("READY");
+    await waitForCasRelease();
+    await casBarrier("RELEASED");
+  }
   let lockHandle;
   try {
     lockHandle = await open(
@@ -198,8 +238,9 @@ async function cas(root) {
     const directory = await open(root, constants.O_RDONLY);
     await directory.sync();
     await directory.close();
+    const selectedReadback = (await readFile(target)).toString("hex");
     await lockHandle.close();
-    event("SELECTED", { readbackHex: (await readFile(target)).toString("hex") });
+    event("SELECTED", { readbackHex: selectedReadback });
   } catch (error) {
     event("ERROR", { errorCode: code(error) });
   }
@@ -238,7 +279,7 @@ try {
   else if (mode === "LOCK_DESCRIPTOR_PROBE") await lockDescriptorProbe();
   else if (mode === "LOCK_HOLDER") await lock(root, true);
   else if (mode === "REPLACE") await replaceAt(root);
-  else if (mode === "CAS") await cas(root);
+  else if (mode === "CAS" || mode === "CAS_BARRIER") await cas(root, mode === "CAS_BARRIER");
   else await absence(root);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

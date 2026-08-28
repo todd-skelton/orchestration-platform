@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   bindPortablePrimitiveRawChildEvent,
+  executePortablePrimitiveCasProbe,
   executePortablePrimitiveChild,
   executePortablePrimitiveCreateOnceProbe,
   executePortablePrimitiveLockDescriptorChild,
@@ -177,33 +178,72 @@ describe("ISS-022 raw filesystem executor", () => {
     },
   );
 
-  test("records CAS mismatch, selection, and persistent-lock contention as raw facts", async () => {
-    const mismatchRoot = await root("cas-mismatch");
-    await writeFile(resolve(mismatchRoot, "cas-target"), Buffer.from("41", "hex"));
-    const mismatch = await executePortablePrimitiveChild("CAS", mismatchRoot, ["42", "42"]);
-    expect(mismatch.event).toMatchObject({
+  test("records the exact provider-owned two-row CAS census", async () => {
+    const [mismatch, contention] = await executePortablePrimitiveCasProbe(await root("cas"));
+    expect(mismatch).toMatchObject({
+      caseId: "CAS_PREDECESSOR_MISMATCH",
+      finalReadbackHex: "41",
+      initialReadbackHex: "41",
+      predecessorHex: "42",
+      proposalHex: "42",
+    });
+    expect(mismatch.child.event).toMatchObject({
       event: "PREDECESSOR_MISMATCH",
       readbackHex: "41",
     });
-
-    const selectionRoot = await root("cas-selection");
-    await writeFile(resolve(selectionRoot, "cas-target"), Buffer.from("41", "hex"));
-    const results = await Promise.all([
-      executePortablePrimitiveChild("CAS", selectionRoot, ["41", "42"]),
-      executePortablePrimitiveChild("CAS", selectionRoot, ["41", "42"]),
-    ]);
-    expect(
-      results.filter(({ event }) => event?.event === "ERROR" && event.errorCode === "EEXIST"),
-    ).toHaveLength(1);
-    const winner = results.find(
-      ({ event }) => !(event?.event === "ERROR" && event.errorCode === "EEXIST"),
+    expect(contention).toMatchObject({
+      caseId: "CAS_TWO_CONTENDERS",
+      contenderCount: "2",
+      finalReadbackHex: "42",
+      initialReadbackHex: "41",
+      predecessorHex: "41",
+      proposalHex: "42",
+    });
+    expect(contention.barrierEventOrder[2]).toBe("RELEASE");
+    expect(new Set(contention.barrierEventOrder.slice(0, 2))).toEqual(
+      new Set(["CONTENDER_0_READY", "CONTENDER_1_READY"]),
     );
-    expect(winner?.event?.event === "SELECTED" || winner?.event?.event === "ERROR").toBe(true);
-    if (winner?.event?.event === "ERROR")
-      expect(["EACCES", "EINVAL", "EISDIR", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EPERM"]).toContain(
-        winner.event.errorCode,
-      );
-    expect(await readFile(resolve(selectionRoot, "cas-target"), "hex")).toBe("42");
+    expect(
+      contention.contenders.filter(
+        ({ terminal }) =>
+          terminal.event?.event === "ERROR" && terminal.event.errorCode === "EEXIST",
+      ),
+    ).toHaveLength(1);
+    const nonExisting = contention.contenders.find(
+      ({ terminal }) =>
+        !(terminal.event?.event === "ERROR" && terminal.event.errorCode === "EEXIST"),
+    )?.terminal;
+    expect(
+      nonExisting?.event?.event === "SELECTED" ||
+        (nonExisting?.event?.event === "ERROR" &&
+          ["EACCES", "EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EPERM"].includes(
+            String(nonExisting.event.errorCode),
+          )),
+    ).toBe(true);
+    expect(
+      [mismatch.child, ...contention.contenders.map(({ terminal }) => terminal)].every(
+        ({ stdout }) => !stdout.includes("PASS"),
+      ),
+    ).toBe(true);
+
+    const worker = await readFile(
+      resolve(import.meta.dirname, "../../probes/portable-primitives/src/filesystem-worker.mjs"),
+      "utf8",
+    );
+    const cas = worker.slice(
+      worker.indexOf("async function cas("),
+      worker.indexOf("async function absence("),
+    );
+    const selectedRead = cas.indexOf("const selectedReadback");
+    const selectedClose = cas.indexOf("await lockHandle.close()", selectedRead);
+    expect(selectedRead).toBeGreaterThan(-1);
+    expect(selectedClose).toBeGreaterThan(selectedRead);
+    expect(cas.indexOf('event("SELECTED"', selectedClose)).toBeGreaterThan(selectedClose);
+    const mismatchSource = cas.slice(cas.indexOf("const readback"), cas.indexOf("const proposal"));
+    expect(mismatchSource.indexOf("await readFile(target)")).toBeLessThan(
+      mismatchSource.indexOf("await lockHandle.close()"),
+    );
+    expect(mismatchSource).not.toMatch(/writeFile|rename/);
   });
 
   test("records exact head-plus-one and head-plus-two absence errno", async () => {

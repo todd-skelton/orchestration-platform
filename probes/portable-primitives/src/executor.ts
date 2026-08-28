@@ -46,6 +46,12 @@ const barriers = Object.freeze([
   "AFTER_DIRECTORY_SYNC",
 ] as const);
 const errorCode = /^[A-Z][A-Z0-9_]{0,63}$/;
+const casBarrierFields = Object.freeze([
+  "barrier",
+  "predecessorHex",
+  "proposalHex",
+  "schemaVersion",
+] as const);
 
 function failure(...issues: readonly string[]): ParseResult {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
@@ -121,6 +127,19 @@ export function parsePortablePrimitiveRawChildEvent(input: unknown): ParseResult
   return issues.length === 0 ? parsed : failure(...issues);
 }
 
+export function parsePortablePrimitiveCasBarrierEvent(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, casBarrierFields);
+  if (!parsed.ok) return parsed;
+  const issues: string[] = [];
+  if (parsed.value.schemaVersion !== "portable-primitives-cas-barrier-event/v1")
+    issues.push("schemaVersion:mismatch");
+  if (parsed.value.barrier !== "READY" && parsed.value.barrier !== "RELEASED")
+    issues.push("barrier:invalid");
+  if (parsed.value.predecessorHex !== "41") issues.push("predecessorHex:mismatch");
+  if (parsed.value.proposalHex !== "42") issues.push("proposalHex:mismatch");
+  return issues.length === 0 ? parsed : failure(...issues);
+}
+
 export function bindPortablePrimitiveRawChildEvent(
   input: unknown,
   requestedMode: PortablePrimitiveWorkerMode,
@@ -156,6 +175,12 @@ export interface PortablePrimitiveChildExecution {
   readonly stderr: string;
   readonly stdout: string;
   readonly timedOut: boolean;
+}
+
+export interface PortablePrimitiveLiveCasBarrierChild {
+  readonly execution: Promise<PortablePrimitiveChildExecution>;
+  readonly readyEvent: ContractRecord;
+  readonly release: () => Promise<ContractRecord>;
 }
 
 export const portablePrimitiveWorkerPath = fileURLToPath(
@@ -531,4 +556,75 @@ export async function executePortablePrimitiveChild(
     (stdout) => parseBoundChildOutput(stdout, mode, arguments_),
     mode === "REPLACE",
   );
+}
+
+function waitForCasBarrierEvent(
+  child: ChildProcess,
+  expectedBarrier: "READY" | "RELEASED",
+): Promise<ContractRecord> {
+  return new Promise((resolveEvent, reject) => {
+    const timeout = setTimeout(
+      () => finish(new Error(`cas-barrier:${expectedBarrier}:timeout`)),
+      10_000,
+    );
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.off("error", onError);
+      child.off("close", onClose);
+      child.off("message", onMessage);
+    };
+    const finish = (value: Error | ContractRecord) => {
+      cleanup();
+      value instanceof Error ? reject(value) : resolveEvent(value);
+    };
+    const onError = (error: Error) => finish(error);
+    const onClose = () => finish(new Error(`cas-barrier:${expectedBarrier}:closed`));
+    const onMessage = (message: unknown) => {
+      const parsed = parsePortablePrimitiveCasBarrierEvent(message);
+      if (!parsed.ok || parsed.value.barrier !== expectedBarrier)
+        return finish(new Error(`cas-barrier:${expectedBarrier}:event-refused`));
+      finish(parsed.value);
+    };
+    child.once("error", onError);
+    child.once("close", onClose);
+    child.once("message", onMessage);
+  });
+}
+
+export async function startPortablePrimitiveCasBarrierChild(
+  custodyRoot: string,
+): Promise<PortablePrimitiveLiveCasBarrierChild> {
+  const realCustodyRoot = await canonicalPortablePrimitiveCustodyRoot(custodyRoot);
+  const child = spawn(
+    process.execPath,
+    [portablePrimitiveWorkerPath, "CAS_BARRIER", realCustodyRoot, "41", "42"],
+    {
+      cwd: realCustodyRoot,
+      env: portablePrimitiveChildEnvironment(),
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      windowsHide: true,
+    },
+  );
+  const execution = observePortablePrimitiveChildWithTimer(child, (stdout) =>
+    parseBoundChildOutput(stdout, "CAS", ["41", "42"]),
+  );
+  const readyEvent = await waitForCasBarrierEvent(child, "READY");
+  return Object.freeze({
+    execution,
+    readyEvent,
+    release: async () => {
+      const released = waitForCasBarrierEvent(child, "RELEASED");
+      const sent = new Promise<void>((resolveSend, reject) =>
+        child.send(
+          {
+            command: "RELEASE",
+            schemaVersion: "portable-primitives-cas-barrier-release/v1",
+          },
+          (error) => (error ? reject(error) : resolveSend()),
+        ),
+      );
+      const [releaseEvent] = await Promise.all([released, sent]);
+      return releaseEvent;
+    },
+  });
 }

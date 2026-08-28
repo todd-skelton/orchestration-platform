@@ -50,6 +50,7 @@ export const iss002HarnessPaths = Object.freeze([
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "probes/portable-primitives/package.json",
+  "probes/portable-primitives/src/cas.ts",
   "probes/portable-primitives/src/create-once.ts",
   "probes/portable-primitives/src/executor.ts",
   "probes/portable-primitives/src/filesystem-worker.mjs",
