@@ -2,16 +2,21 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import {
+  normalizeIss022CreateOnceProbe,
   normalizeIss022PhysicalProbe,
   normalizeIss022ParserProbe,
   normalizeIss022RuntimeProbe,
   runIss022PhysicalStableHandler,
+  runIss022CreateOnceStableHandler,
   runIss022ParserStableHandler,
   runIss022RuntimeStableHandler,
 } from "../../packages/conformance/src/index.js";
 import {
   executePortablePhysicalProbe,
+  type PortablePrimitiveChildExecution,
+  type PortablePrimitiveCreateOnceRawFacts,
   type PortablePrimitiveParserChildObservation,
   type PortablePrimitiveParserEquivalenceRawFacts,
   type PortablePrimitiveHandleRawFacts,
@@ -116,6 +121,52 @@ function parserFacts(
     parentNormalizedDigest: "a".repeat(64),
     resultsMatch: true,
     schemaVersion: "portable-primitives-parser-equivalence-raw/v1",
+    ...mutation,
+  };
+}
+
+function createOnceEvent(event: "CREATED" | "ERROR", errorCode: string | null): ContractRecord {
+  return Object.freeze({
+    barrier: null,
+    errorCode,
+    event,
+    headPlusOneCode: null,
+    headPlusTwoCode: null,
+    mode: "EXCLUSIVE_CREATE",
+    readbackHex: event === "CREATED" ? "41" : null,
+    schemaVersion: "portable-primitives-raw-child-event/v1",
+  });
+}
+
+function createOnceChild(
+  event: ContractRecord | null,
+  mutation: Partial<PortablePrimitiveChildExecution> = {},
+): PortablePrimitiveChildExecution {
+  return {
+    event,
+    exitCode: 0,
+    outputLimitExceeded: false,
+    signal: null,
+    stderr: "",
+    stdout: event === null ? "" : canonicalJson(event),
+    timedOut: false,
+    ...mutation,
+  };
+}
+
+function createOnceFacts(
+  mutation: Partial<PortablePrimitiveCreateOnceRawFacts> = {},
+): PortablePrimitiveCreateOnceRawFacts {
+  return {
+    caseId: "CREATE_ONCE_32_CONTENDERS",
+    contenderCount: "32",
+    contenders: [
+      createOnceChild(createOnceEvent("CREATED", null)),
+      ...Array.from({ length: 31 }, () => createOnceChild(createOnceEvent("ERROR", "EEXIST"))),
+    ],
+    finalReadbackErrorCode: null,
+    finalReadbackHex: "41",
+    schemaVersion: "portable-primitives-create-once-raw/v1",
     ...mutation,
   };
 }
@@ -405,6 +456,137 @@ describe("stable ISS-022 process and handle handler", () => {
       const result = normalizeIss022RuntimeProbe([processFacts(), handle]);
       if (!result.ok) throw new Error(result.issues.join(","));
       expect(result.vectorExecutions[1]?.normalizedResult).toBe("UNKNOWN");
+    }
+  });
+});
+
+describe("stable ISS-022 create-once handler", () => {
+  test("executes and normalizes exactly one provider-owned 32-contender row", async () => {
+    const result = await runIss022CreateOnceStableHandler(await custodyRoot());
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions).toHaveLength(1);
+    expect(result.vectorExecutions[0]).toMatchObject({
+      caseId: "CREATE_ONCE_32_CONTENDERS",
+      normalizedResult: "PASS",
+    });
+    const raw = result.vectorExecutions[0].rawFacts;
+    expect(raw.contenders).toHaveLength(32);
+    expect(raw.contenders.filter(({ event }) => event?.event === "CREATED")).toHaveLength(1);
+    expect(
+      raw.contenders.filter(
+        ({ event }) => event?.event === "ERROR" && event.errorCode === "EEXIST",
+      ),
+    ).toHaveLength(31);
+    expect(raw.contenders.every(({ stdout }) => !stdout.includes("PASS"))).toBe(true);
+  }, 60_000);
+
+  test("snapshots the complete contender census before disposition", () => {
+    const facts = createOnceFacts();
+    const contenders = [...facts.contenders];
+    const input = { ...facts, contenders };
+    const result = normalizeIss022CreateOnceProbe(input);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0].rawFacts).not.toBe(input);
+    expect(result.vectorExecutions[0].rawFacts.contenders).not.toBe(contenders);
+    expect(result.vectorExecutions[0].rawFacts.contenders[0]).not.toBe(contenders[0]);
+    contenders[0] = createOnceChild(null, { stdout: "PASS\n" });
+    expect(result.vectorExecutions[0].normalizedResult).toBe("PASS");
+  });
+
+  test("refuses malformed, expanded, proxied, accessor, and typed raw facts", () => {
+    const facts = createOnceFacts();
+    const accessor = { ...facts.contenders[0] };
+    Object.defineProperty(accessor, "stdout", { enumerable: true, get: () => "PASS\n" });
+    const { contenderCount: _missing, ...missing } = facts;
+    for (const mutant of [
+      missing,
+      { ...facts, extra: true },
+      { ...facts, contenderCount: 32 },
+      { ...facts, finalReadbackHex: "4" },
+      { ...facts, finalReadbackErrorCode: "ENOENT" },
+      { ...facts, finalReadbackErrorCode: null, finalReadbackHex: null },
+      { ...facts, contenders: facts.contenders.slice(0, -1) },
+      { ...facts, contenders: [...facts.contenders, facts.contenders[0]] },
+      { ...facts, contenders: new Proxy([...facts.contenders], {}) },
+      { ...facts, contenders: [new Proxy(facts.contenders[0]!, {}), ...facts.contenders.slice(1)] },
+      { ...facts, contenders: [accessor, ...facts.contenders.slice(1)] },
+      {
+        ...facts,
+        contenders: [{ ...facts.contenders[0], timedOut: "false" }, ...facts.contenders.slice(1)],
+      },
+      {
+        ...facts,
+        contenders: [
+          {
+            ...facts.contenders[0],
+            event: { ...facts.contenders[0]!.event, mode: "CAS" },
+          },
+          ...facts.contenders.slice(1),
+        ],
+      },
+      new Proxy(facts, {}),
+    ])
+      expect(normalizeIss022CreateOnceProbe(mutant).ok).toBe(false);
+  });
+
+  test("requires one exact winner, 31 EEXIST losers, and final readback 41 for PASS", () => {
+    const facts = createOnceFacts();
+    const twoWinners = [
+      createOnceChild(createOnceEvent("CREATED", null)),
+      createOnceChild(createOnceEvent("CREATED", null)),
+      ...facts.contenders.slice(2),
+    ];
+    const terminalFailure = [...facts.contenders];
+    terminalFailure[4] = createOnceChild(null, {
+      exitCode: null,
+      signal: "SIGKILL",
+      timedOut: true,
+    });
+    const candidateClaim = [...facts.contenders];
+    candidateClaim[8] = createOnceChild(null, { stdout: "PASS\n" });
+    const outputOverflow = [...facts.contenders];
+    outputOverflow[12] = createOnceChild(null, {
+      outputLimitExceeded: true,
+      signal: "SIGKILL",
+    });
+    for (const mutant of [
+      { ...facts, contenders: twoWinners },
+      { ...facts, finalReadbackHex: "42" },
+      { ...facts, contenders: terminalFailure },
+      { ...facts, contenders: candidateClaim },
+      { ...facts, contenders: outputOverflow },
+    ]) {
+      const result = normalizeIss022CreateOnceProbe(mutant);
+      if (!result.ok) throw new Error(result.issues.join(","));
+      expect(result.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
+    }
+  });
+
+  test("admits only one coherent unsupported operation code", () => {
+    const unsupported = Array.from({ length: 32 }, () =>
+      createOnceChild(createOnceEvent("ERROR", "EPERM")),
+    );
+    const coherent = createOnceFacts({
+      contenders: unsupported,
+      finalReadbackErrorCode: "ENOENT",
+      finalReadbackHex: null,
+    });
+    const result = normalizeIss022CreateOnceProbe(coherent);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0].normalizedResult).toBe("UNSUPPORTED");
+
+    const mixedUnsupported = [...unsupported];
+    mixedUnsupported[3] = createOnceChild(createOnceEvent("ERROR", "EACCES"));
+    const nonAdmitted = [...unsupported];
+    nonAdmitted[3] = createOnceChild(createOnceEvent("ERROR", "EIO"));
+    for (const mutant of [
+      { ...coherent, contenders: mixedUnsupported },
+      { ...coherent, contenders: nonAdmitted },
+      { ...coherent, finalReadbackErrorCode: null, finalReadbackHex: "41" },
+    ]) {
+      const reduced = normalizeIss022CreateOnceProbe(mutant);
+      if (!reduced.ok) throw new Error(reduced.issues.join(","));
+      expect(reduced.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
     }
   });
 });
