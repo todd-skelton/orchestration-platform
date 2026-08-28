@@ -60,6 +60,7 @@ export const iss002HarnessPaths = Object.freeze([
   "probes/portable-primitives/src/physical-executor.ts",
   "probes/portable-primitives/src/physical.ts",
   "probes/portable-primitives/src/profiles.ts",
+  "probes/portable-primitives/src/replace.ts",
   "probes/portable-primitives/src/runtime-executor.ts",
   "probes/portable-primitives/src/runtime-worker.mjs",
   "probes/portable-primitives/src/vectors.ts",
