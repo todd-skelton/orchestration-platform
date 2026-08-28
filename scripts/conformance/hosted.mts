@@ -24,5 +24,9 @@ try {
   }
 } catch (error) {
   if (error instanceof Error && error.message === `HOSTED_CONFORMANCE_PENDING:${mode}`) throw error;
-  throw new Error(`HOSTED_CONFORMANCE_REFUSED:${mode}`);
+  const issue =
+    error instanceof Error && /^[A-Za-z][A-Za-z0-9:._,-]{0,511}$/.test(error.message)
+      ? error.message
+      : "closed-diagnostic";
+  throw new Error(`HOSTED_CONFORMANCE_REFUSED:${mode}:${issue}`);
 }
