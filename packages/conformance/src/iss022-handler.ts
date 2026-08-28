@@ -1,7 +1,9 @@
 import { types as nodeTypes } from "node:util";
 import { canonicalJson } from "@orchestration-platform/contracts";
 import {
+  bindPortablePrimitiveRawChildEvent,
   derivePortablePhysicalIdentity,
+  executePortablePrimitiveCreateOnceProbe,
   executePortablePrimitiveHandleConfinementProbe,
   executePortablePrimitiveParserEquivalenceProbe,
   executePortablePrimitiveProcessProbe,
@@ -12,6 +14,8 @@ import {
   type PortablePhysicalCaseId,
   type PortablePhysicalLocatorRawObservation,
   type PortablePhysicalSwapRawFacts,
+  type PortablePrimitiveChildExecution,
+  type PortablePrimitiveCreateOnceRawFacts,
   type PortablePrimitiveHandleRawFacts,
   type PortablePrimitiveParserChildObservation,
   type PortablePrimitiveParserEquivalenceRawFacts,
@@ -52,6 +56,16 @@ export interface Iss022ParserVectorExecution {
 
 export type Iss022ParserHandlerResult =
   | { readonly ok: true; readonly vectorExecutions: readonly [Iss022ParserVectorExecution] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface Iss022CreateOnceVectorExecution {
+  readonly caseId: "CREATE_ONCE_32_CONTENDERS";
+  readonly normalizedResult: PortablePrimitiveResult;
+  readonly rawFacts: PortablePrimitiveCreateOnceRawFacts;
+}
+
+export type Iss022CreateOnceHandlerResult =
+  | { readonly ok: true; readonly vectorExecutions: readonly [Iss022CreateOnceVectorExecution] }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 const caseIds = Object.freeze([
@@ -132,6 +146,23 @@ const parserChildFields = Object.freeze([
   "postSignalDeadlineExpired",
   "stderrOverflow",
   "terminalEventsMatch",
+  "timedOut",
+] as const);
+const createOnceFields = Object.freeze([
+  "caseId",
+  "contenderCount",
+  "contenders",
+  "finalReadbackErrorCode",
+  "finalReadbackHex",
+  "schemaVersion",
+] as const);
+const createOnceChildFields = Object.freeze([
+  "event",
+  "exitCode",
+  "outputLimitExceeded",
+  "signal",
+  "stderr",
+  "stdout",
   "timedOut",
 ] as const);
 const rootFields = Object.freeze([
@@ -962,5 +993,115 @@ export async function runIss022ParserStableHandler(
     );
   } catch {
     return parserRefusal("parser:execution-refused");
+  }
+}
+
+function createOnceRefusal(...issues: readonly string[]): Iss022CreateOnceHandlerResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function validCreateOnceChild(row: PortablePrimitiveChildExecution): boolean {
+  return (
+    exactKeys(row, createOnceChildFields) &&
+    isParserTerminalCode(row.exitCode) &&
+    (row.signal === null || row.signal === "SIGKILL") &&
+    isBoolean(row.outputLimitExceeded) &&
+    isBoolean(row.timedOut) &&
+    typeof row.stderr === "string" &&
+    typeof row.stdout === "string" &&
+    Buffer.byteLength(row.stderr) + Buffer.byteLength(row.stdout) <= 64 * 1024 &&
+    (row.event === null || bindPortablePrimitiveRawChildEvent(row.event, "EXCLUSIVE_CREATE", []).ok)
+  );
+}
+
+function coherentCreateOnceChild(row: PortablePrimitiveChildExecution): boolean {
+  return (
+    !row.outputLimitExceeded &&
+    !row.timedOut &&
+    row.exitCode === 0 &&
+    row.signal === null &&
+    row.stderr === "" &&
+    row.event !== null &&
+    row.stdout === canonicalJson(row.event)
+  );
+}
+
+function createOnceResult(row: PortablePrimitiveCreateOnceRawFacts): PortablePrimitiveResult {
+  if (!row.contenders.every(coherentCreateOnceChild)) return "UNKNOWN";
+  const created = row.contenders.filter(({ event }) => event?.event === "CREATED");
+  const existing = row.contenders.filter(
+    ({ event }) => event?.event === "ERROR" && event.errorCode === "EEXIST",
+  );
+  if (
+    created.length === 1 &&
+    existing.length === 31 &&
+    row.finalReadbackHex === "41" &&
+    row.finalReadbackErrorCode === null
+  )
+    return "PASS";
+  const unsupportedCodes = row.contenders.map(({ event }) =>
+    event?.event === "ERROR" && typeof event.errorCode === "string" ? event.errorCode : null,
+  );
+  if (
+    unsupportedCodes.every(
+      (code): code is string => code !== null && unsupportedOperationCodes.has(code),
+    ) &&
+    new Set(unsupportedCodes).size === 1 &&
+    row.finalReadbackHex === null &&
+    row.finalReadbackErrorCode === "ENOENT"
+  )
+    return "UNSUPPORTED";
+  return "UNKNOWN";
+}
+
+export function normalizeIss022CreateOnceProbe(input: unknown): Iss022CreateOnceHandlerResult {
+  try {
+    const snapshot = snapshotData(input);
+    if (snapshot === invalidSnapshot) return createOnceRefusal("createOnce:snapshot-refused");
+    const row = snapshot as PortablePrimitiveCreateOnceRawFacts;
+    if (
+      !exactKeys(row, createOnceFields) ||
+      row.caseId !== "CREATE_ONCE_32_CONTENDERS" ||
+      row.contenderCount !== "32" ||
+      row.schemaVersion !== "portable-primitives-create-once-raw/v1" ||
+      !Array.isArray(row.contenders) ||
+      Object.getPrototypeOf(row.contenders) !== Array.prototype ||
+      row.contenders.length !== 32 ||
+      (row.finalReadbackHex !== null &&
+        (typeof row.finalReadbackHex !== "string" ||
+          !/^(?:[0-9a-f]{2}){0,4096}$/.test(row.finalReadbackHex))) ||
+      (row.finalReadbackErrorCode !== null &&
+        (typeof row.finalReadbackErrorCode !== "string" ||
+          !operationErrorCode.test(row.finalReadbackErrorCode))) ||
+      (row.finalReadbackHex === null) === (row.finalReadbackErrorCode === null)
+    )
+      return createOnceRefusal("createOnce:record-refused");
+    for (let index = 0; index < row.contenders.length; index += 1)
+      if (!validCreateOnceChild(row.contenders[index]!))
+        return createOnceRefusal(`createOnce.contenders.${index}:record-refused`);
+    return {
+      ok: true,
+      vectorExecutions: Object.freeze([
+        Object.freeze({
+          caseId: "CREATE_ONCE_32_CONTENDERS",
+          normalizedResult: createOnceResult(row),
+          rawFacts: row,
+        }),
+      ]),
+    };
+  } catch {
+    return createOnceRefusal("createOnce:unreadable");
+  }
+}
+
+export async function runIss022CreateOnceStableHandler(
+  custodyRoot: string,
+): Promise<Iss022CreateOnceHandlerResult> {
+  try {
+    return normalizeIss022CreateOnceProbe(
+      await executePortablePrimitiveCreateOnceProbe(custodyRoot),
+    );
+  } catch {
+    return createOnceRefusal("createOnce:execution-refused");
   }
 }

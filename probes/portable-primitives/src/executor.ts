@@ -151,9 +151,11 @@ export function bindPortablePrimitiveRawChildEvent(
 export interface PortablePrimitiveChildExecution {
   readonly event: ContractRecord | null;
   readonly exitCode: number | null;
+  readonly outputLimitExceeded: boolean;
   readonly signal: NodeJS.Signals | null;
   readonly stderr: string;
   readonly stdout: string;
+  readonly timedOut: boolean;
 }
 
 export const portablePrimitiveWorkerPath = fileURLToPath(
@@ -310,17 +312,24 @@ export async function executePortablePrimitiveChild(
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   let byteLength = 0;
+  let outputLimitExceeded = false;
+  let timedOut = false;
   const collect = (target: Buffer[], chunk: Buffer) => {
     byteLength += chunk.byteLength;
-    if (byteLength > 64 * 1024) child.kill("SIGKILL");
-    else target.push(chunk);
+    if (byteLength > 64 * 1024) {
+      outputLimitExceeded = true;
+      child.kill("SIGKILL");
+    } else target.push(chunk);
   };
   child.stdout.on("data", (chunk: Buffer) => {
     collect(stdout, chunk);
     if (mode === "REPLACE" && Buffer.concat(stdout).includes(0x0a)) child.kill("SIGKILL");
   });
   child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGKILL");
+  }, 10_000);
   const completion = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
     (resolveCompletion, reject) => {
       child.once("error", reject);
@@ -343,8 +352,10 @@ export async function executePortablePrimitiveChild(
   return Object.freeze({
     event,
     exitCode: completion.code,
+    outputLimitExceeded,
     signal: completion.signal,
     stderr: stderrText,
     stdout: stdoutText,
+    timedOut,
   });
 }

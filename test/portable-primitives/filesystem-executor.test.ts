@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   bindPortablePrimitiveRawChildEvent,
   executePortablePrimitiveChild,
+  executePortablePrimitiveCreateOnceProbe,
   parsePortablePrimitiveRawChildEvent,
   startPortablePrimitiveLockHolder,
   terminatePortablePrimitiveChild,
@@ -25,11 +26,15 @@ afterEach(async () => {
 describe("ISS-022 raw filesystem executor", () => {
   test("records one winner and 31 raw EEXIST losers from 32 fresh child attempts", async () => {
     const custodyRoot = await root("create-once");
-    const results = await Promise.all(
-      Array.from({ length: 32 }, () =>
-        executePortablePrimitiveChild("EXCLUSIVE_CREATE", custodyRoot),
-      ),
-    );
+    const rawFacts = await executePortablePrimitiveCreateOnceProbe(custodyRoot);
+    const results = rawFacts.contenders;
+    expect(rawFacts).toMatchObject({
+      caseId: "CREATE_ONCE_32_CONTENDERS",
+      contenderCount: "32",
+      finalReadbackErrorCode: null,
+      finalReadbackHex: "41",
+      schemaVersion: "portable-primitives-create-once-raw/v1",
+    });
     expect(results.filter(({ event }) => event?.event === "CREATED")).toHaveLength(1);
     expect(
       results.filter(({ event }) => event?.event === "ERROR" && event.errorCode === "EEXIST"),
