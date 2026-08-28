@@ -144,10 +144,17 @@ export function verificationCommands(source) {
 function validateCommandCensus(snapshot) {
   const rootScripts = snapshot.rootPackage.scripts ?? {};
   const implementedRootScripts = new Map([
+    ["ISS-002:contracts:compatibility-check", "vitest run test/contracts/compatibility.test.ts"],
     ["ISS-006:harness:test", "node scripts/harness-test.mts"],
     [
       "ISS-006:test:harness-workflow-mutations",
       "vitest run test/conformance/workflow-structure.test.ts",
+    ],
+  ]);
+  const implementedFilteredScripts = new Map([
+    [
+      "ISS-002:@orchestration-platform/contracts:test",
+      "pnpm --dir ../.. exec vitest run test/contracts",
     ],
   ]);
   const expectedRootScripts = new Set([
@@ -185,7 +192,9 @@ function validateCommandCensus(snapshot) {
         if (!manifest?.scripts?.[filtered[2]]) {
           fail(`${key} filtered command ${filtered[1]} ${filtered[2]} does not resolve`);
         }
-        const expected = `node ../../scripts/capability-not-implemented.mjs ${key} ${filtered[1]}:${filtered[2]}`;
+        const expected =
+          implementedFilteredScripts.get(`${key}:${filtered[1]}:${filtered[2]}`) ??
+          `node ../../scripts/capability-not-implemented.mjs ${key} ${filtered[1]}:${filtered[2]}`;
         if (manifest.scripts[filtered[2]] !== expected) {
           fail(`${filtered[1]} ${filtered[2]} is not the exact ${key} placeholder`);
         }

@@ -95,6 +95,20 @@ describe("planning contract", () => {
       },
     ],
     [
+      "reverted implemented contracts wrapper",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.rootPackage.scripts["contracts:compatibility-check"] =
+          "node scripts/capability-not-implemented.mjs ISS-002 contracts:compatibility-check";
+      },
+    ],
+    [
+      "reverted implemented contracts package test",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.packageManifests["@orchestration-platform/contracts"]!.scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-002 @orchestration-platform/contracts:test";
+      },
+    ],
+    [
       "reverted implemented harness wrapper",
       (snapshot: PlanningSnapshot) => {
         snapshot.rootPackage.scripts["harness:test"] =

@@ -21,7 +21,7 @@
     "host-custody:bootstrap": "node packages/host-custody/bin/orchestration-host-custody-bootstrap.mjs",
     "inventory:check": "node scripts/capability-not-implemented.mjs ISS-001 inventory:check",
     "inventory:redaction-check": "node scripts/capability-not-implemented.mjs ISS-001 inventory:redaction-check",
-    "contracts:compatibility-check": "node scripts/capability-not-implemented.mjs ISS-002 contracts:compatibility-check",
+    "contracts:compatibility-check": "vitest run test/contracts/compatibility.test.ts",
     "test:cli-shell-matrix": "node scripts/capability-not-implemented.mjs ISS-003 test:cli-shell-matrix",
     "test:state-fault-matrix": "node scripts/capability-not-implemented.mjs ISS-004 test:state-fault-matrix",
     "test:process-matrix": "node scripts/capability-not-implemented.mjs ISS-005 test:process-matrix",
