@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
+import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +36,40 @@ function spawnMutant(mode: string, custodyRoot: string): ChildProcess {
     stdio: ["ignore", "ignore", "pipe", "ipc"],
     windowsHide: true,
   });
+}
+
+function multipleMessageChild(): ChildProcess {
+  const child = new EventEmitter() as EventEmitter & {
+    connected: boolean;
+    kill: (signal?: NodeJS.Signals | number) => boolean;
+    send: (message: unknown, callback?: (error: Error | null) => void) => boolean;
+    stderr: PassThrough;
+  };
+  child.connected = true;
+  child.stderr = new PassThrough();
+  let terminalSignal: NodeJS.Signals = "SIGTERM";
+  child.kill = (signal = "SIGTERM") => {
+    if (typeof signal === "string") terminalSignal = signal;
+    return true;
+  };
+  child.send = (message, callback) => {
+    const nonce = (message as { nonce: string }).nonce;
+    const event = {
+      event: "READY",
+      grandchildClaim: "1",
+      nonce,
+      schemaVersion: "portable-primitive-process-child-event/v1",
+    };
+    child.emit("message", event);
+    child.emit("message", event);
+    callback?.(null);
+    queueMicrotask(() => {
+      child.emit("exit", null, terminalSignal);
+      child.emit("close", null, terminalSignal);
+    });
+    return true;
+  };
+  return child as unknown as ChildProcess;
 }
 
 describe("ISS-022 raw process and handle probes", () => {
@@ -113,7 +148,6 @@ describe("ISS-022 raw process and handle probes", () => {
   test.each([
     ["NONCE_MISMATCH", "nonce"],
     ["MALFORMED", "malformed"],
-    ["MULTIPLE", "multiple"],
     ["OVERFLOW", "overflow"],
     ["TIMEOUT", "timeout"],
   ] as const)("retains and refuses the %s hostile process arm", async (mode, expected) => {
@@ -129,9 +163,20 @@ describe("ISS-022 raw process and handle probes", () => {
     expect(facts.grandchildClaimAcceptedAsAuthority).toBe(false);
     if (expected === "nonce") expect(facts.ipcNonceMatched).toBe(false);
     if (expected === "malformed") expect(facts.messageCount).toBe(1);
-    if (expected === "multiple") expect(facts.messageCount).toBe(2);
     if (expected === "overflow") expect(facts.outputLimitExceeded).toBe(true);
     if (expected === "timeout") expect(facts.timedOut).toBe(true);
+  });
+
+  test("refuses two provider-observed IPC messages before terminal close", async () => {
+    const facts = await collectPortablePrimitiveProcessFacts(
+      multipleMessageChild(),
+      randomBytes(32).toString("hex"),
+      { cleanupAfterMilliseconds: 500, timeoutMilliseconds: 2_000 },
+    );
+    expect(facts.messageCount).toBe(2);
+    expect(facts.responseAccepted).toBe(false);
+    expect(facts.forcedKillAccepted).toBe(true);
+    expect(facts.closeObserved).toBe(true);
   });
 
   test("rejects at the absolute deadline even when forced termination is refused", async () => {
