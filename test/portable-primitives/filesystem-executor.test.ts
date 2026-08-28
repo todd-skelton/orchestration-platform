@@ -163,12 +163,9 @@ describe("ISS-022 raw filesystem executor", () => {
     ).toBe(false);
     expect(bindPortablePrimitiveRawChildEvent(valid, "ABSENCE", []).ok).toBe(false);
     await expect(executePortablePrimitiveChild("ABSENCE", "relative")).rejects.toThrow();
-    const sourceOverlap = await executePortablePrimitiveChild(
-      "ABSENCE",
-      resolve(import.meta.dirname, "../.."),
-    );
-    expect(sourceOverlap.event).toBeNull();
-    expect(sourceOverlap.stderr).toContain("root:source-overlap");
+    await expect(
+      executePortablePrimitiveChild("ABSENCE", resolve(import.meta.dirname, "../..")),
+    ).rejects.toThrow(/source-overlap/);
     const custodyRoot = await root("arguments");
     await expect(
       executePortablePrimitiveChild("ABSENCE", custodyRoot, ["one", "two", "three"]),

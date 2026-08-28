@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { isAbsolute, resolve } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   snapshotClosedRecord,
@@ -159,6 +160,11 @@ export const portablePrimitiveWorkerPath = fileURLToPath(
   new URL("./filesystem-worker.mjs", import.meta.url),
 );
 
+function within(root: string, path: string): boolean {
+  const value = relative(root, path);
+  return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
+}
+
 export async function executePortablePrimitiveChild(
   mode: PortablePrimitiveWorkerMode,
   custodyRoot: string,
@@ -167,6 +173,15 @@ export async function executePortablePrimitiveChild(
   if (!portablePrimitiveWorkerModes.includes(mode)) throw new TypeError("mode:invalid");
   if (!isAbsolute(custodyRoot) || resolve(custodyRoot) !== custodyRoot)
     throw new TypeError("custodyRoot:absolute-normalized-required");
+  const identity = await lstat(custodyRoot);
+  if (!identity.isDirectory() || identity.isSymbolicLink())
+    throw new TypeError("custodyRoot:unsafe");
+  const [realCustodyRoot, realSourceRoot] = await Promise.all([
+    realpath(custodyRoot),
+    realpath(resolve(dirname(portablePrimitiveWorkerPath), "../../..")),
+  ]);
+  if (within(realSourceRoot, realCustodyRoot) || within(realCustodyRoot, realSourceRoot))
+    throw new TypeError("custodyRoot:source-overlap");
   const expectedArgumentCount = mode === "CAS" ? 2 : mode === "REPLACE" ? 1 : 0;
   if (
     arguments_.length !== expectedArgumentCount ||
@@ -175,9 +190,9 @@ export async function executePortablePrimitiveChild(
     throw new TypeError("arguments:invalid");
   const child = spawn(
     process.execPath,
-    [portablePrimitiveWorkerPath, mode, custodyRoot, ...arguments_],
+    [portablePrimitiveWorkerPath, mode, realCustodyRoot, ...arguments_],
     {
-      cwd: custodyRoot,
+      cwd: realCustodyRoot,
       env: Object.freeze({
         SystemRoot: process.env.SystemRoot,
         WINDIR: process.env.WINDIR,
