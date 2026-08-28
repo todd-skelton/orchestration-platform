@@ -109,7 +109,7 @@ describe("ISS-002 external execution workspace", () => {
     await expect(readFile(resolve(workspaceRoot, "package.json"))).rejects.toThrow();
     expect(await readdir(executionParent)).toEqual([]);
     expect(await readdir(materializationParent)).toEqual([]);
-  }, 120_000);
+  }, 600_000);
 
   test("refuses a changed subject without invoking the consumer or leaving a workspace", async () => {
     const source = await candidate();

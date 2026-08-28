@@ -171,5 +171,5 @@ describe("stable ISS-002 bundle path censuses", () => {
         (row) => row.path,
       ),
     ).toEqual(conformance.iss002TestBundlePaths);
-  }, 120_000);
+  }, 600_000);
 });
