@@ -1,7 +1,8 @@
-import { constants } from "node:fs";
+import { constants, read } from "node:fs";
 import { lstat, open, readFile, realpath, rename } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const [mode, rootInput, first, second] = process.argv.slice(2);
 const modes = new Set([
@@ -9,9 +10,11 @@ const modes = new Set([
   "CAS",
   "EXCLUSIVE_CREATE",
   "LOCK_ATTEMPT",
+  "LOCK_DESCRIPTOR_PROBE",
   "LOCK_HOLDER",
   "REPLACE",
 ]);
+const readDescriptor = promisify(read);
 const crashPoints = new Set([
   "READY",
   "AFTER_CREATE",
@@ -38,6 +41,17 @@ function event(eventName, values = {}) {
     schemaVersion: "portable-primitives-raw-child-event/v1",
   };
   process.stdout.write(`${JSON.stringify(record)}\n`);
+}
+
+function descriptorEvent(accessResult, values = {}) {
+  process.stdout.write(
+    `${JSON.stringify({
+      accessResult,
+      errorCode: values.errorCode ?? null,
+      readbackHex: values.readbackHex ?? null,
+      schemaVersion: "portable-primitives-lock-descriptor-child-event/v1",
+    })}\n`,
+  );
 }
 
 function code(error) {
@@ -109,6 +123,19 @@ async function lock(root, hold) {
     }
   } catch (error) {
     event("ERROR", { errorCode: code(error) });
+  }
+}
+
+async function lockDescriptorProbe() {
+  if (!/^(?:0|[1-9][0-9]{0,4})$/.test(first ?? "") || second !== "32")
+    throw new TypeError("lockDescriptor:arguments-invalid");
+  const descriptor = Number(first);
+  const readback = Buffer.alloc(32);
+  try {
+    const { bytesRead } = await readDescriptor(descriptor, readback, 0, readback.length, 0);
+    descriptorEvent("ACCESSED", { readbackHex: readback.subarray(0, bytesRead).toString("hex") });
+  } catch (error) {
+    descriptorEvent("REFUSED", { errorCode: code(error) });
   }
 }
 
@@ -208,6 +235,7 @@ try {
   const root = await checkedRoot(rootInput);
   if (mode === "EXCLUSIVE_CREATE") await exclusiveCreate(root);
   else if (mode === "LOCK_ATTEMPT") await lock(root, false);
+  else if (mode === "LOCK_DESCRIPTOR_PROBE") await lockDescriptorProbe();
   else if (mode === "LOCK_HOLDER") await lock(root, true);
   else if (mode === "REPLACE") await replaceAt(root);
   else if (mode === "CAS") await cas(root);

@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -6,6 +7,7 @@ import {
   bindPortablePrimitiveRawChildEvent,
   executePortablePrimitiveChild,
   executePortablePrimitiveCreateOnceProbe,
+  executePortablePrimitiveLockDescriptorChild,
   parsePortablePrimitiveRawChildEvent,
   startPortablePrimitiveLockHolder,
   terminatePortablePrimitiveChild,
@@ -67,6 +69,93 @@ describe("ISS-022 raw filesystem executor", () => {
       /lock-holder:not-acquired/,
     );
     await rm(custodyRoot, { recursive: true });
+  });
+
+  test("observes an explicitly mapped parent lock descriptor and its exact nonce", async () => {
+    const custodyRoot = await root("lock-explicit-descriptor");
+    const nonce = Buffer.from("cd".repeat(32), "hex");
+    const holder = await open(
+      resolve(custodyRoot, "owner-lock"),
+      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR,
+      0o600,
+    );
+    try {
+      await holder.write(nonce, 0, nonce.length, 0);
+      await holder.sync();
+      const result = await executePortablePrimitiveLockDescriptorChild(custodyRoot, 3, holder.fd);
+      expect(result.event).toMatchObject({
+        accessResult: "ACCESSED",
+        readbackHex: nonce.toString("hex"),
+      });
+    } finally {
+      await holder.close();
+    }
+  });
+
+  test("keeps the post-death lock attempt timer- and kill-free with one spawn", async () => {
+    const executorSource = await readFile(
+      resolve(import.meta.dirname, "../../probes/portable-primitives/src/executor.ts"),
+      "utf8",
+    );
+    const noTimer = executorSource.slice(
+      executorSource.indexOf(
+        "export async function executePortablePrimitiveLockAttemptWithoutTimer",
+      ),
+      executorSource.indexOf("export async function executePortablePrimitiveLockDescriptorChild"),
+    );
+    expect(noTimer).not.toMatch(
+      /setTimeout|clearTimeout|\.kill\(|executePortablePrimitiveChild(?:WithTimer)?|observePortablePrimitiveChild(?:WithTimer)?\(/,
+    );
+    expect(noTimer.match(/observePortablePrimitiveChildWithoutKill\(/g)).toHaveLength(1);
+    expect(noTimer.match(/\bspawn\(/g)).toHaveLength(1);
+    expect(noTimer.match(/"LOCK_ATTEMPT"/g)).toHaveLength(1);
+    const observerWithoutKill = executorSource.slice(
+      executorSource.indexOf("async function observePortablePrimitiveChildWithoutKill("),
+      executorSource.indexOf("function parseBoundChildOutput"),
+    );
+    expect(observerWithoutKill).not.toMatch(/setTimeout|clearTimeout|\.kill\(/);
+    expect(observerWithoutKill).toMatch(/outputLimitExceeded = true/);
+    expect(observerWithoutKill).toMatch(/else target\.push\(chunk\)/);
+
+    const reachableHelpers = [
+      [
+        "export async function canonicalPortablePrimitiveCustodyRoot",
+        "export function portablePrimitiveChildEnvironment",
+      ],
+      [
+        "export function portablePrimitiveChildEnvironment",
+        "export interface PortablePrimitiveLiveChild",
+      ],
+      [
+        "export function bindPortablePrimitiveRawChildEvent",
+        "export interface PortablePrimitiveChildExecution",
+      ],
+      ["function parseBoundChildOutput", "function parseDescriptorChildOutput"],
+      ["function parseChildOutput", "async function observePortablePrimitiveChildWithTimer"],
+    ]
+      .map(([start, end]) =>
+        executorSource.slice(executorSource.indexOf(start!), executorSource.indexOf(end!)),
+      )
+      .join("\n");
+    expect(reachableHelpers).not.toMatch(/setTimeout|clearTimeout|\.kill\(/);
+
+    const boundedObserver = executorSource.slice(
+      executorSource.indexOf("async function observePortablePrimitiveChild("),
+      executorSource.indexOf("async function observePortablePrimitiveChildWithoutKill("),
+    );
+    expect(boundedObserver).toMatch(/child\.kill\("SIGKILL"\)/);
+
+    const lockSource = await readFile(
+      resolve(import.meta.dirname, "../../probes/portable-primitives/src/lock.ts"),
+      "utf8",
+    );
+    const death = lockSource.slice(
+      lockSource.indexOf("async function executeHolderDeath"),
+      lockSource.indexOf("async function executeNonInheritance"),
+    );
+    expect(death).not.toMatch(/setTimeout|unlink|\brm\b|\bpid\b|\bage\b|\blease\b|stale/i);
+    expect(death.match(/executePortablePrimitiveLockAttemptWithoutTimer\(/g)).toHaveLength(1);
+    expect(death).not.toMatch(/executePortablePrimitiveChild\(/);
   });
 
   test.each([

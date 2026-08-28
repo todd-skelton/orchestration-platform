@@ -1,5 +1,6 @@
 export * from "./executor.js";
 export * from "./create-once.js";
+export * from "./lock.js";
 export {
   executePortablePhysicalProbe,
   type PortableLeafRawObservation,
