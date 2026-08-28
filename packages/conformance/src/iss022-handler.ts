@@ -3,6 +3,7 @@ import { canonicalJson } from "@orchestration-platform/contracts";
 import {
   derivePortablePhysicalIdentity,
   executePortablePrimitiveHandleConfinementProbe,
+  executePortablePrimitiveParserEquivalenceProbe,
   executePortablePrimitiveProcessProbe,
   executePortablePhysicalProbe,
   type PortableLeafRawObservation,
@@ -12,6 +13,8 @@ import {
   type PortablePhysicalLocatorRawObservation,
   type PortablePhysicalSwapRawFacts,
   type PortablePrimitiveHandleRawFacts,
+  type PortablePrimitiveParserChildObservation,
+  type PortablePrimitiveParserEquivalenceRawFacts,
   type PortablePrimitiveProcessRawFacts,
   type PortablePrimitiveResult,
   type PortableRootRawObservation,
@@ -39,6 +42,16 @@ export interface Iss022RuntimeVectorExecution {
 
 export type Iss022RuntimeHandlerResult =
   | { readonly ok: true; readonly vectorExecutions: readonly Iss022RuntimeVectorExecution[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface Iss022ParserVectorExecution {
+  readonly caseId: "PARSER_EQUIVALENCE";
+  readonly normalizedResult: PortablePrimitiveResult;
+  readonly rawFacts: PortablePrimitiveParserEquivalenceRawFacts;
+}
+
+export type Iss022ParserHandlerResult =
+  | { readonly ok: true; readonly vectorExecutions: readonly [Iss022ParserVectorExecution] }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 const caseIds = Object.freeze([
@@ -94,6 +107,32 @@ const handleFields = Object.freeze([
   "structuredCloneRejected",
   "workerTransferRejected",
   "wrappedFunctionRejected",
+] as const);
+const parserFields = Object.freeze([
+  "caseId",
+  "childCount",
+  "children",
+  "parentNormalizedDigest",
+  "resultsMatch",
+  "schemaVersion",
+] as const);
+const parserChildFields = Object.freeze([
+  "closeCode",
+  "closeEventCount",
+  "closeSignal",
+  "errorEventCount",
+  "exitCode",
+  "exitEventCount",
+  "exitSignal",
+  "killRefused",
+  "messageCount",
+  "normalizedBytesMatch",
+  "normalizedDigest",
+  "outputAccepted",
+  "postSignalDeadlineExpired",
+  "stderrOverflow",
+  "terminalEventsMatch",
+  "timedOut",
 ] as const);
 const rootFields = Object.freeze([
   "filesystemTypeBytes",
@@ -775,5 +814,153 @@ export async function runIss022RuntimeStableHandler(
     return normalizeIss022RuntimeProbe([process, handle]);
   } catch {
     return runtimeRefusal("runtime:execution-refused");
+  }
+}
+
+function parserRefusal(...issues: readonly string[]): Iss022ParserHandlerResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function isParserEventCount(input: unknown): input is number {
+  return Number.isSafeInteger(input) && Number(input) >= 0 && Number(input) <= 1;
+}
+
+function isParserMessageCount(input: unknown): input is number {
+  return Number.isSafeInteger(input) && Number(input) >= 0;
+}
+
+function isParserTerminalCode(input: unknown): input is number | null {
+  return input === null || (Number.isSafeInteger(input) && Number(input) >= 0);
+}
+
+function isParserSignal(input: unknown): input is "SIGKILL" | null {
+  return input === null || input === "SIGKILL";
+}
+
+function validParserChildRow(row: PortablePrimitiveParserChildObservation): boolean {
+  return (
+    exactKeys(row, parserChildFields) &&
+    isParserTerminalCode(row.closeCode) &&
+    isParserEventCount(row.closeEventCount) &&
+    isParserSignal(row.closeSignal) &&
+    isParserEventCount(row.errorEventCount) &&
+    isParserTerminalCode(row.exitCode) &&
+    isParserEventCount(row.exitEventCount) &&
+    isParserSignal(row.exitSignal) &&
+    isBoolean(row.killRefused) &&
+    isParserMessageCount(row.messageCount) &&
+    isBoolean(row.normalizedBytesMatch) &&
+    (row.normalizedDigest === null || digest.test(row.normalizedDigest)) &&
+    isBoolean(row.outputAccepted) &&
+    isBoolean(row.postSignalDeadlineExpired) &&
+    isBoolean(row.stderrOverflow) &&
+    isBoolean(row.terminalEventsMatch) &&
+    isBoolean(row.timedOut)
+  );
+}
+
+function coherentParserTerminalTuple(
+  eventCount: number,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): boolean {
+  return eventCount === 0
+    ? code === null && signal === null
+    : (code === null) !== (signal === null);
+}
+
+function coherentParserChild(row: PortablePrimitiveParserChildObservation): boolean {
+  if (
+    !coherentParserTerminalTuple(row.exitEventCount, row.exitCode, row.exitSignal) ||
+    !coherentParserTerminalTuple(row.closeEventCount, row.closeCode, row.closeSignal)
+  )
+    return false;
+  const terminalEventsMatch =
+    row.errorEventCount === 0 &&
+    row.exitEventCount === 1 &&
+    row.closeEventCount === 1 &&
+    row.exitCode === row.closeCode &&
+    row.exitSignal === row.closeSignal;
+  if (row.terminalEventsMatch !== terminalEventsMatch) return false;
+  const terminalPairComplete = row.exitEventCount === 1 && row.closeEventCount === 1;
+  const nonTerminalTrigger = row.errorEventCount === 1 || row.stderrOverflow || row.timedOut;
+  if (!terminalPairComplete && !(nonTerminalTrigger && row.postSignalDeadlineExpired)) return false;
+  const outputAccepted =
+    terminalEventsMatch &&
+    row.exitCode === 0 &&
+    row.exitSignal === null &&
+    row.messageCount === 1 &&
+    row.normalizedDigest !== null &&
+    !row.timedOut &&
+    !row.stderrOverflow &&
+    !row.killRefused &&
+    !row.postSignalDeadlineExpired;
+  if (row.outputAccepted !== outputAccepted) return false;
+  return row.outputAccepted || (!row.normalizedBytesMatch && row.normalizedDigest === null);
+}
+
+function parserResult(row: PortablePrimitiveParserEquivalenceRawFacts): PortablePrimitiveResult {
+  const childrenAccepted = row.children.every((child) => child.outputAccepted);
+  const exactEquality =
+    childrenAccepted &&
+    row.children.every(
+      (child) =>
+        child.normalizedBytesMatch && child.normalizedDigest === row.parentNormalizedDigest,
+    );
+  if (row.resultsMatch !== exactEquality) return "UNKNOWN";
+  if (exactEquality) return "PASS";
+  return childrenAccepted ? "UNSUPPORTED" : "UNKNOWN";
+}
+
+export function normalizeIss022ParserProbe(input: unknown): Iss022ParserHandlerResult {
+  try {
+    const snapshot = snapshotData(input);
+    if (snapshot === invalidSnapshot) return parserRefusal("parser:snapshot-refused");
+    const row = snapshot as PortablePrimitiveParserEquivalenceRawFacts;
+    if (
+      !exactKeys(row, parserFields) ||
+      row.caseId !== "PARSER_EQUIVALENCE" ||
+      row.childCount !== "3" ||
+      row.schemaVersion !== "portable-primitives-parser-equivalence-raw/v1" ||
+      !digest.test(row.parentNormalizedDigest) ||
+      !isBoolean(row.resultsMatch) ||
+      !Array.isArray(row.children) ||
+      Object.getPrototypeOf(row.children) !== Array.prototype ||
+      row.children.length !== 3
+    )
+      return parserRefusal("parser:record-refused");
+    for (let index = 0; index < row.children.length; index += 1) {
+      const child = row.children[index]!;
+      if (!validParserChildRow(child))
+        return parserRefusal(`parser.children.${index}:record-refused`);
+      if (!coherentParserChild(child))
+        return parserRefusal(`parser.children.${index}:terminal-refused`);
+      if (child.normalizedBytesMatch && child.normalizedDigest !== row.parentNormalizedDigest)
+        return parserRefusal(`parser.children.${index}:equality-refused`);
+    }
+    return {
+      ok: true,
+      vectorExecutions: Object.freeze([
+        Object.freeze({
+          caseId: "PARSER_EQUIVALENCE",
+          normalizedResult: parserResult(row),
+          rawFacts: row,
+        }),
+      ]),
+    };
+  } catch {
+    return parserRefusal("parser:unreadable");
+  }
+}
+
+export async function runIss022ParserStableHandler(
+  stableRoot: string,
+): Promise<Iss022ParserHandlerResult> {
+  try {
+    return normalizeIss022ParserProbe(
+      await executePortablePrimitiveParserEquivalenceProbe(stableRoot),
+    );
+  } catch {
+    return parserRefusal("parser:execution-refused");
   }
 }

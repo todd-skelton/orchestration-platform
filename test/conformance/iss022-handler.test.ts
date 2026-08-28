@@ -4,12 +4,16 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   normalizeIss022PhysicalProbe,
+  normalizeIss022ParserProbe,
   normalizeIss022RuntimeProbe,
   runIss022PhysicalStableHandler,
+  runIss022ParserStableHandler,
   runIss022RuntimeStableHandler,
 } from "../../packages/conformance/src/index.js";
 import {
   executePortablePhysicalProbe,
+  type PortablePrimitiveParserChildObservation,
+  type PortablePrimitiveParserEquivalenceRawFacts,
   type PortablePrimitiveHandleRawFacts,
   type PortablePrimitiveProcessRawFacts,
   type PortablePhysicalAliasRawFacts,
@@ -75,6 +79,44 @@ function handleFacts(): PortablePrimitiveHandleRawFacts {
     structuredCloneRejected: true,
     workerTransferRejected: true,
     wrappedFunctionRejected: true,
+  };
+}
+
+function parserChild(
+  mutation: Partial<PortablePrimitiveParserChildObservation> = {},
+): PortablePrimitiveParserChildObservation {
+  return {
+    closeCode: 0,
+    closeEventCount: 1,
+    closeSignal: null,
+    errorEventCount: 0,
+    exitCode: 0,
+    exitEventCount: 1,
+    exitSignal: null,
+    killRefused: false,
+    messageCount: 1,
+    normalizedBytesMatch: true,
+    normalizedDigest: "a".repeat(64),
+    outputAccepted: true,
+    postSignalDeadlineExpired: false,
+    stderrOverflow: false,
+    terminalEventsMatch: true,
+    timedOut: false,
+    ...mutation,
+  };
+}
+
+function parserFacts(
+  mutation: Partial<PortablePrimitiveParserEquivalenceRawFacts> = {},
+): PortablePrimitiveParserEquivalenceRawFacts {
+  return {
+    caseId: "PARSER_EQUIVALENCE",
+    childCount: "3",
+    children: [parserChild(), parserChild(), parserChild()],
+    parentNormalizedDigest: "a".repeat(64),
+    resultsMatch: true,
+    schemaVersion: "portable-primitives-parser-equivalence-raw/v1",
+    ...mutation,
   };
 }
 
@@ -363,6 +405,195 @@ describe("stable ISS-022 process and handle handler", () => {
       const result = normalizeIss022RuntimeProbe([processFacts(), handle]);
       if (!result.ok) throw new Error(result.issues.join(","));
       expect(result.vectorExecutions[1]?.normalizedResult).toBe("UNKNOWN");
+    }
+  });
+});
+
+describe("stable ISS-022 parser-equivalence handler", () => {
+  test("executes and normalizes the one exact parser-equivalence row", async () => {
+    const result = await runIss022ParserStableHandler(resolve(import.meta.dirname, "../.."));
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions).toHaveLength(1);
+    expect(result.vectorExecutions[0]).toMatchObject({
+      caseId: "PARSER_EQUIVALENCE",
+      normalizedResult: "PASS",
+    });
+    expect(result.vectorExecutions[0]?.rawFacts.children).toHaveLength(3);
+  });
+
+  test("snapshots the complete raw record before disposition", () => {
+    const children = [parserChild(), parserChild(), parserChild()];
+    const input = parserFacts({ children });
+    const result = normalizeIss022ParserProbe(input);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0].rawFacts).not.toBe(input);
+    expect(result.vectorExecutions[0].rawFacts.children).not.toBe(children);
+    expect(result.vectorExecutions[0].rawFacts.children[0]).not.toBe(children[0]);
+    children[0] = parserChild({ normalizedBytesMatch: false });
+    expect(result.vectorExecutions[0].normalizedResult).toBe("PASS");
+    expect(result.vectorExecutions[0].rawFacts.children[0]?.normalizedBytesMatch).toBe(true);
+  });
+
+  test("reduces observed parser differences to UNSUPPORTED and missing output to UNKNOWN", () => {
+    const difference = normalizeIss022ParserProbe(
+      parserFacts({
+        children: [
+          parserChild(),
+          parserChild({ normalizedBytesMatch: false, normalizedDigest: "b".repeat(64) }),
+          parserChild(),
+        ],
+        resultsMatch: false,
+      }),
+    );
+    const missingOutput = normalizeIss022ParserProbe(
+      parserFacts({
+        children: [
+          parserChild(),
+          parserChild({
+            messageCount: 0,
+            normalizedBytesMatch: false,
+            normalizedDigest: null,
+            outputAccepted: false,
+          }),
+          parserChild(),
+        ],
+        resultsMatch: false,
+      }),
+    );
+    if (!(difference.ok && missingOutput.ok)) throw new Error("parser:mutant-refused");
+    expect(difference.vectorExecutions[0].normalizedResult).toBe("UNSUPPORTED");
+    expect(missingOutput.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
+  });
+
+  test("recomputes equality instead of trusting the outer resultsMatch summary", () => {
+    const deniedPass = normalizeIss022ParserProbe(parserFacts({ resultsMatch: false }));
+    const deniedUnsupported = normalizeIss022ParserProbe(
+      parserFacts({
+        children: [
+          parserChild(),
+          parserChild({ normalizedBytesMatch: false, normalizedDigest: "b".repeat(64) }),
+          parserChild(),
+        ],
+        resultsMatch: true,
+      }),
+    );
+    if (!(deniedPass.ok && deniedUnsupported.ok)) throw new Error("parser:mutant-refused");
+    expect(deniedPass.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
+    expect(deniedUnsupported.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
+  });
+
+  test("refuses missing, expanded, proxied, accessor, and typed record mutants", () => {
+    const accessorChild = parserChild();
+    Object.defineProperty(accessorChild, "messageCount", { enumerable: true, get: () => 1 });
+    const { childCount: _childCount, ...missing } = parserFacts();
+    for (const mutant of [
+      missing,
+      { ...parserFacts(), childCount: 3 },
+      { ...parserFacts(), caseId: "PROCESS_DIRECT_CHILD_AND_GRANDCHILD_GAP" },
+      { ...parserFacts(), schemaVersion: "portable-primitives-parser-equivalence-raw/v2" },
+      { ...parserFacts(), path: "C:\\hostile" },
+      { ...parserFacts(), children: [parserChild(), parserChild()] },
+      { ...parserFacts(), children: [parserChild(), parserChild(), parserChild(), parserChild()] },
+      { ...parserFacts(), children: [parserChild(), { ...parserChild(), pid: 7 }, parserChild()] },
+      {
+        ...parserFacts(),
+        children: [parserChild(), { ...parserChild(), result: "PASS" }, parserChild()],
+      },
+      { ...parserFacts(), children: [parserChild(), new Proxy(parserChild(), {}), parserChild()] },
+      { ...parserFacts(), children: [parserChild(), accessorChild, parserChild()] },
+      { ...parserFacts(), children: new Proxy([parserChild(), parserChild(), parserChild()], {}) },
+      new Proxy(parserFacts(), {}),
+    ])
+      expect(normalizeIss022ParserProbe(mutant).ok).toBe(false);
+  });
+
+  test("refuses terminal and byte-digest contradictions", () => {
+    const noTerminalTrigger = parserChild({
+      closeCode: null,
+      closeEventCount: 0,
+      exitCode: null,
+      exitEventCount: 0,
+      normalizedBytesMatch: false,
+      normalizedDigest: null,
+      outputAccepted: false,
+      terminalEventsMatch: false,
+    });
+    const exitOnlyWithoutTrigger = parserChild({
+      closeCode: null,
+      closeEventCount: 0,
+      normalizedBytesMatch: false,
+      normalizedDigest: null,
+      outputAccepted: false,
+      terminalEventsMatch: false,
+    });
+    const closeOnlyWithoutTrigger = parserChild({
+      exitCode: null,
+      exitEventCount: 0,
+      normalizedBytesMatch: false,
+      normalizedDigest: null,
+      outputAccepted: false,
+      terminalEventsMatch: false,
+    });
+    for (const child of [
+      parserChild({ terminalEventsMatch: false }),
+      parserChild({ timedOut: true }),
+      parserChild({ exitSignal: "SIGKILL" }),
+      parserChild({ normalizedDigest: null }),
+      parserChild({ normalizedDigest: "b".repeat(64) }),
+      parserChild({ closeEventCount: 2 }),
+      noTerminalTrigger,
+      exitOnlyWithoutTrigger,
+      closeOnlyWithoutTrigger,
+    ])
+      expect(
+        normalizeIss022ParserProbe(parserFacts({ children: [parserChild(), child, parserChild()] }))
+          .ok,
+      ).toBe(false);
+  });
+
+  test("keeps incomplete terminal pairs UNKNOWN only with their recorded lifecycle trigger", () => {
+    const failedWithoutTerminal = parserChild({
+      closeCode: null,
+      closeEventCount: 0,
+      errorEventCount: 1,
+      exitCode: null,
+      exitEventCount: 0,
+      normalizedBytesMatch: false,
+      normalizedDigest: null,
+      outputAccepted: false,
+      postSignalDeadlineExpired: true,
+      terminalEventsMatch: false,
+    });
+    const timedOutAfterExit = parserChild({
+      closeCode: null,
+      closeEventCount: 0,
+      exitCode: null,
+      exitSignal: "SIGKILL",
+      normalizedBytesMatch: false,
+      normalizedDigest: null,
+      outputAccepted: false,
+      postSignalDeadlineExpired: true,
+      terminalEventsMatch: false,
+      timedOut: true,
+    });
+    const overflowedAfterClose = parserChild({
+      closeCode: null,
+      closeSignal: "SIGKILL",
+      exitCode: null,
+      exitEventCount: 0,
+      normalizedBytesMatch: false,
+      normalizedDigest: null,
+      outputAccepted: false,
+      postSignalDeadlineExpired: true,
+      stderrOverflow: true,
+      terminalEventsMatch: false,
+    });
+    for (const child of [failedWithoutTerminal, timedOutAfterExit, overflowedAfterClose]) {
+      const result = normalizeIss022ParserProbe(
+        parserFacts({ children: [parserChild(), child, parserChild()], resultsMatch: false }),
+      );
+      if (!result.ok) throw new Error(result.issues.join(","));
+      expect(result.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
     }
   });
 });
