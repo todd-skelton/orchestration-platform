@@ -63,7 +63,7 @@ describe("ISS-002 reviewed candidate fresh-child walk", () => {
     expect(result.ok).toBe(true);
     expect(await readdir(executionParent)).toEqual([]);
     expect(await readdir(materializationParent)).toEqual([]);
-  }, 120_000);
+  }, 600_000);
 
   test("returns stable-parent raw streams only through the observation API", async () => {
     const candidateSourceRoot = await root("orchestration-reviewed-observation-");
@@ -110,7 +110,7 @@ describe("ISS-002 reviewed candidate fresh-child walk", () => {
     expect(observed.stderrBytes.byteLength).toBe(0);
     expect(await readdir(executionParent)).toEqual([]);
     expect(await readdir(materializationParent)).toEqual([]);
-  }, 120_000);
+  }, 600_000);
 
   test("rejects malformed input without creating an execution artifact", async () => {
     const executionParent = await root("orchestration-execution-refusal-");

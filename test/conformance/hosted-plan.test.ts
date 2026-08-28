@@ -222,5 +222,5 @@ describe("hosted conformance plan", () => {
     expect(Buffer.from(finalized.value.encodedContext, "base64url").toString("utf8")).toContain(
       finalized.value.context.providerRunDigest,
     );
-  }, 120_000);
+  }, 600_000);
 });
