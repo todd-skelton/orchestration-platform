@@ -562,5 +562,5 @@ export async function runHostedObservation(): Promise<void> {
     runnerToken,
     stableRoot: process.cwd(),
   });
-  if (!result.ok) throw new Error("observation:execution-refused");
+  if (!result.ok) throw new Error(result.issues.join(","));
 }
