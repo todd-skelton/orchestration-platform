@@ -8,6 +8,8 @@ export {
   type PortablePhysicalBaseCaseId,
   type PortablePhysicalBaseRawFacts,
   type PortablePhysicalCaseId,
+  type PortablePhysicalLocatorRawObservation,
+  type PortablePhysicalSwapRawFacts,
   type PortableRootRawObservation,
 } from "./physical-executor.js";
 export * from "./profiles.js";
