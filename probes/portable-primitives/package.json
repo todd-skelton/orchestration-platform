@@ -1,0 +1,21 @@
+{
+  "name": "@orchestration-platform/portable-primitives",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@orchestration-platform/contracts": "workspace:*"
+  },
+  "scripts": {
+    "test": "node ../../scripts/capability-not-implemented.mjs ISS-022 @orchestration-platform/portable-primitives:test"
+  }
+}

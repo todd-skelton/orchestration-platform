@@ -36,6 +36,7 @@ export const packageContract = Object.freeze([
   ["@orchestration-platform/journal", "packages/journal", "ISS-010", ["."]],
   ["@orchestration-platform/routing", "packages/routing", "ISS-012", ["."]],
   ["@orchestration-platform/release", "packages/release", "ISS-014", ["."]],
+  ["@orchestration-platform/portable-primitives", "probes/portable-primitives", "ISS-022", ["."]],
   [
     "@orchestration-platform/host-codex",
     "packages/host-codex",
@@ -458,6 +459,9 @@ export async function loadBootstrapSnapshot(root = defaultRoot) {
   const adapterDirectories = (await readdir(resolve(root, "adapters"), { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => `adapters/${entry.name}`);
+  const probeDirectories = (await readdir(resolve(root, "probes"), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `probes/${entry.name}`);
   const cliRegistryUrl = `${pathToFileURL(resolve(root, "packages/cli/src/registry.mjs")).href}?census=${Date.now()}`;
   const bootstrapRegistryUrl = `${pathToFileURL(resolve(root, "bootstrap/src/command-registry.mjs")).href}?census=${Date.now()}`;
   const hostRegistryUrl = `${pathToFileURL(resolve(root, "packages/host-custody/src/bootstrap-command-registry.mjs")).href}?census=${Date.now()}`;
@@ -471,7 +475,7 @@ export async function loadBootstrapSnapshot(root = defaultRoot) {
     workspace: await readFile(resolve(root, "pnpm-workspace.yaml"), "utf8"),
     baseTsconfig: JSON.parse(await readFile(resolve(root, "tsconfig.base.json"), "utf8")),
     manifests,
-    packageDirectories: [...packageDirectories, ...adapterDirectories].sort(),
+    packageDirectories: [...packageDirectories, ...probeDirectories, ...adapterDirectories].sort(),
     buildConfiguration: JSON.parse(
       await readFile(resolve(root, "config/private-compositions.json"), "utf8"),
     ),
@@ -679,7 +683,7 @@ export async function validateBootstrapSnapshot(snapshot) {
   }
   if (
     normalizeContractText(snapshot.workspace) !==
-    'packages:\n  - "packages/*"\n  - "modules/*"\n  - "adapters/*"\n\nallowBuilds:\n  esbuild: true\n'
+    'packages:\n  - "packages/*"\n  - "probes/*"\n  - "modules/*"\n  - "adapters/*"\n\nallowBuilds:\n  esbuild: true\n'
   ) {
     fail("workspace globs are not the exact predeclared set");
   }
