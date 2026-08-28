@@ -25,8 +25,10 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
       "PHYSICAL_ABSENT_LEAF",
       "PHYSICAL_CASE_ALIAS",
       "PHYSICAL_UNICODE_ALIAS",
+      "PHYSICAL_SYMLINK_SWAP",
+      "PHYSICAL_PARENT_SWAP",
     ]);
-    const [existing, absent, caseAlias, unicodeAlias] = facts;
+    const [existing, absent, caseAlias, unicodeAlias, symlinkSwap, parentSwap] = facts;
     for (const observation of [existing, absent]) {
       expect(observation.rootStable).toBe(true);
       expect(observation.rootRealpathStable).toBe(true);
@@ -39,6 +41,8 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
     expect(existing.rootAfter).toEqual(absent.rootBefore);
     expect(absent.rootAfter).toEqual(caseAlias.rootBefore);
     expect(caseAlias.rootAfter).toEqual(unicodeAlias.rootBefore);
+    expect(unicodeAlias.rootAfter).toEqual(symlinkSwap.rootBefore);
+    expect(symlinkSwap.rootAfter).toEqual(parentSwap.rootBefore);
     expect(existing.derivation?.hostCustodyNamespaceDigest).toBe(
       absent.derivation?.hostCustodyNamespaceDigest,
     );

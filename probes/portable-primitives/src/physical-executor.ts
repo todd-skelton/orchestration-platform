@@ -1,7 +1,20 @@
 import { constants, type BigIntStats } from "node:fs";
-import { lstat, open, readFile, realpath, stat, statfs, type FileHandle } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  statfs,
+  symlink,
+  type FileHandle,
+} from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { canonicalPortablePrimitiveCustodyRoot } from "./executor.js";
 import {
   derivePortablePhysicalIdentity,
@@ -15,10 +28,14 @@ import {
 const namespaceFilename = ".orchestration-custody-namespace";
 const existingLeafName = "existing-leaf";
 const absentLeafName = "absent-leaf";
+const linkLeafName = "link-leaf";
+const parentLeafName = "parent-leaf";
 
 export type PortablePhysicalBaseCaseId = "PHYSICAL_ABSENT_LEAF" | "PHYSICAL_EXISTING";
 export type PortablePhysicalAliasCaseId = "PHYSICAL_CASE_ALIAS" | "PHYSICAL_UNICODE_ALIAS";
-export type PortablePhysicalCaseId = PortablePhysicalAliasCaseId | PortablePhysicalBaseCaseId;
+export type PortablePhysicalSwapCaseId = "PHYSICAL_PARENT_SWAP" | "PHYSICAL_SYMLINK_SWAP";
+export type PortablePhysicalCaseId =
+  PortablePhysicalAliasCaseId | PortablePhysicalBaseCaseId | PortablePhysicalSwapCaseId;
 
 interface RootSnapshot {
   readonly filesystemType: bigint;
@@ -51,6 +68,18 @@ interface ExistingLeafSnapshot {
   readonly realpath: string;
   readonly statDevice: bigint;
   readonly statInode: bigint;
+  readonly statMode: bigint;
+}
+
+interface LocatorSnapshot {
+  readonly lstatDevice: bigint;
+  readonly lstatInode: bigint;
+  readonly lstatKind: PortablePhysicalLocatorKind;
+  readonly lstatMode: bigint;
+  readonly realpath: string;
+  readonly statDevice: bigint;
+  readonly statInode: bigint;
+  readonly statKind: Exclude<PortablePhysicalLocatorKind, "SYMLINK">;
   readonly statMode: bigint;
 }
 
@@ -112,6 +141,34 @@ export interface PortablePhysicalAliasRawFacts {
   readonly rightAfter: PortableLeafRawObservation;
   readonly rightBefore: PortableLeafRawObservation;
   readonly rightStable: boolean;
+  readonly rootAfter: PortableRootRawObservation;
+  readonly rootBefore: PortableRootRawObservation;
+  readonly rootRealpathStable: boolean;
+  readonly rootStable: boolean;
+}
+
+export type PortablePhysicalLocatorKind = "DIRECTORY" | "REGULAR_FILE" | "SYMLINK";
+
+export interface PortablePhysicalLocatorRawObservation {
+  readonly lstatDeviceBytes: string;
+  readonly lstatInodeBytes: string;
+  readonly lstatKind: PortablePhysicalLocatorKind;
+  readonly lstatModeBytes: string;
+  readonly statDeviceBytes: string;
+  readonly statInodeBytes: string;
+  readonly statKind: Exclude<PortablePhysicalLocatorKind, "SYMLINK">;
+  readonly statModeBytes: string;
+}
+
+export interface PortablePhysicalSwapRawFacts {
+  readonly caseId: PortablePhysicalSwapCaseId;
+  readonly locatorAfter: PortablePhysicalLocatorRawObservation;
+  readonly locatorBefore: PortablePhysicalLocatorRawObservation;
+  readonly locatorStable: boolean;
+  readonly namespaceStable: boolean;
+  readonly operatingSystem: PortablePhysicalOperatingSystem;
+  readonly operationApplied: boolean;
+  readonly operationErrorCode: string | null;
   readonly rootAfter: PortableRootRawObservation;
   readonly rootBefore: PortableRootRawObservation;
   readonly rootRealpathStable: boolean;
@@ -244,6 +301,40 @@ async function observeLeaf(
   throw new Error("physicalLeaf:unexpected-presence");
 }
 
+function locatorKind(identity: BigIntStats, followed: boolean): PortablePhysicalLocatorKind {
+  if (identity.isFile()) return "REGULAR_FILE";
+  if (identity.isDirectory()) return "DIRECTORY";
+  if (!followed && identity.isSymbolicLink()) return "SYMLINK";
+  throw new Error("physicalLocator:kind-refused");
+}
+
+async function observeLocator(path: string): Promise<LocatorSnapshot> {
+  const linkIdentity = await lstat(path, { bigint: true });
+  const [followedIdentity, resolvedLeaf] = await Promise.all([
+    stat(path, { bigint: true }),
+    realpath(path),
+  ]);
+  return Object.freeze({
+    lstatDevice: linkIdentity.dev,
+    lstatInode: linkIdentity.ino,
+    lstatKind: locatorKind(linkIdentity, false),
+    lstatMode: linkIdentity.mode,
+    realpath: resolvedLeaf,
+    statDevice: followedIdentity.dev,
+    statInode: followedIdentity.ino,
+    statKind: locatorKind(followedIdentity, true) as Exclude<
+      PortablePhysicalLocatorKind,
+      "SYMLINK"
+    >,
+    statMode: followedIdentity.mode,
+  });
+}
+
+function operationErrorCode(error: unknown): string | null {
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,32}$/.test(code) ? code : null;
+}
+
 function publicRoot(snapshot: RootSnapshot): PortableRootRawObservation {
   return Object.freeze({
     filesystemTypeBytes: portableStatfsTypeU64Hex(snapshot.filesystemType),
@@ -267,6 +358,19 @@ function publicLeaf(snapshot: LeafSnapshot): PortableLeafRawObservation {
     statDeviceBytes: portableU64Hex(snapshot.statDevice, "leafStatDevice"),
     statInodeBytes: portableU64Hex(snapshot.statInode, "leafStatInode"),
     statModeBytes: portableU32Hex(snapshot.statMode, "leafStatMode"),
+  });
+}
+
+function publicLocator(snapshot: LocatorSnapshot): PortablePhysicalLocatorRawObservation {
+  return Object.freeze({
+    lstatDeviceBytes: portableU64Hex(snapshot.lstatDevice, "locatorLstatDevice"),
+    lstatInodeBytes: portableU64Hex(snapshot.lstatInode, "locatorLstatInode"),
+    lstatKind: snapshot.lstatKind,
+    lstatModeBytes: portableU32Hex(snapshot.lstatMode, "locatorLstatMode"),
+    statDeviceBytes: portableU64Hex(snapshot.statDevice, "locatorStatDevice"),
+    statInodeBytes: portableU64Hex(snapshot.statInode, "locatorStatInode"),
+    statKind: snapshot.statKind,
+    statModeBytes: portableU32Hex(snapshot.statMode, "locatorStatMode"),
   });
 }
 
@@ -299,6 +403,20 @@ function leafIdentityStable(before: LeafSnapshot, after: LeafSnapshot): boolean 
     before.lstatMode === after.lstatMode &&
     before.statDevice === after.statDevice &&
     before.statInode === after.statInode &&
+    before.statMode === after.statMode &&
+    before.realpath === after.realpath
+  );
+}
+
+function locatorIdentityStable(before: LocatorSnapshot, after: LocatorSnapshot): boolean {
+  return (
+    before.lstatDevice === after.lstatDevice &&
+    before.lstatInode === after.lstatInode &&
+    before.lstatKind === after.lstatKind &&
+    before.lstatMode === after.lstatMode &&
+    before.statDevice === after.statDevice &&
+    before.statInode === after.statInode &&
+    before.statKind === after.statKind &&
     before.statMode === after.statMode &&
     before.realpath === after.realpath
   );
@@ -349,6 +467,113 @@ async function executePortablePhysicalAliasCase(
     rootRealpathStable: rootBefore.realpath === root && rootAfter.realpath === root,
     rootStable: rootIdentityStable(rootBefore, rootAfter),
   });
+}
+
+async function executePortablePhysicalSymlinkSwap(
+  root: string,
+  rootHandle: FileHandle,
+): Promise<PortablePhysicalSwapRawFacts> {
+  const linkPath = resolve(root, linkLeafName);
+  const targetPath = resolve(root, ".orchestration-link-target");
+  await mkdir(targetPath);
+  await mkdir(linkPath);
+  const rootBefore = await observeRoot(root, rootHandle);
+  const locatorBefore = await observeLocator(linkPath);
+  let operationApplied = false;
+  let errorCode: string | null = null;
+  try {
+    await rm(linkPath, { recursive: true });
+    await symlink(targetPath, linkPath, process.platform === "win32" ? "junction" : "dir");
+    operationApplied = true;
+  } catch (error) {
+    errorCode = operationErrorCode(error);
+    try {
+      const identity = await lstat(linkPath, { bigint: true });
+      if (identity.isSymbolicLink()) operationApplied = true;
+    } catch (readbackError) {
+      if ((readbackError as NodeJS.ErrnoException).code !== "ENOENT") throw readbackError;
+      await mkdir(linkPath);
+    }
+  }
+  const rootAfter = await observeRoot(root, rootHandle);
+  const locatorAfter = await observeLocator(linkPath);
+  return Object.freeze({
+    caseId: "PHYSICAL_SYMLINK_SWAP",
+    locatorAfter: publicLocator(locatorAfter),
+    locatorBefore: publicLocator(locatorBefore),
+    locatorStable: locatorIdentityStable(locatorBefore, locatorAfter),
+    namespaceStable: rootBefore.namespaceFileHex === rootAfter.namespaceFileHex,
+    operatingSystem: physicalOperatingSystem(),
+    operationApplied,
+    operationErrorCode: operationApplied ? null : errorCode,
+    rootAfter: publicRoot(rootAfter),
+    rootBefore: publicRoot(rootBefore),
+    rootRealpathStable: rootBefore.realpath === root && rootAfter.realpath === root,
+    rootStable: rootIdentityStable(rootBefore, rootAfter),
+  });
+}
+
+async function executePortablePhysicalParentSwap(
+  root: string,
+  rootHandle: FileHandle,
+): Promise<PortablePhysicalSwapRawFacts> {
+  const leafPath = resolve(root, parentLeafName);
+  await createOnceSyncedFile(leafPath, new Uint8Array());
+  const namespaceBytes = await readFile(resolve(root, namespaceFilename));
+  const swapContainer = await mkdtemp(resolve(dirname(root), ".orchestration-parent-swap-"));
+  const originalPath = resolve(swapContainer, "original");
+  const replacementPath = resolve(swapContainer, "replacement");
+  let originalMoved = false;
+  let replacementInstalled = false;
+  const restore = async () => {
+    if (replacementInstalled) {
+      await rename(root, replacementPath);
+      replacementInstalled = false;
+    }
+    if (originalMoved) {
+      await rename(originalPath, root);
+      originalMoved = false;
+    }
+  };
+
+  try {
+    await mkdir(replacementPath);
+    await createOnceSyncedFile(resolve(replacementPath, namespaceFilename), namespaceBytes);
+    await createOnceSyncedFile(resolve(replacementPath, parentLeafName), new Uint8Array());
+    const rootBefore = await observeRoot(root, rootHandle);
+    const locatorBefore = await observeLocator(leafPath);
+    let operationApplied = false;
+    let errorCode: string | null = null;
+    try {
+      await rename(root, originalPath);
+      originalMoved = true;
+      await rename(replacementPath, root);
+      replacementInstalled = true;
+      operationApplied = true;
+    } catch (error) {
+      errorCode = operationErrorCode(error);
+      await restore();
+    }
+    const rootAfter = await observeRoot(root, rootHandle);
+    const locatorAfter = await observeLocator(leafPath);
+    return Object.freeze({
+      caseId: "PHYSICAL_PARENT_SWAP",
+      locatorAfter: publicLocator(locatorAfter),
+      locatorBefore: publicLocator(locatorBefore),
+      locatorStable: locatorIdentityStable(locatorBefore, locatorAfter),
+      namespaceStable: rootBefore.namespaceFileHex === rootAfter.namespaceFileHex,
+      operatingSystem: physicalOperatingSystem(),
+      operationApplied,
+      operationErrorCode: operationApplied ? null : errorCode,
+      rootAfter: publicRoot(rootAfter),
+      rootBefore: publicRoot(rootBefore),
+      rootRealpathStable: rootBefore.realpath === root && rootAfter.realpath === root,
+      rootStable: rootIdentityStable(rootBefore, rootAfter),
+    });
+  } finally {
+    await restore();
+    await rm(swapContainer, { force: true, recursive: true });
+  }
 }
 
 async function executePortablePhysicalBaseCase(
@@ -403,6 +628,8 @@ export async function executePortablePhysicalProbe(
     PortablePhysicalBaseRawFacts,
     PortablePhysicalAliasRawFacts,
     PortablePhysicalAliasRawFacts,
+    PortablePhysicalSwapRawFacts,
+    PortablePhysicalSwapRawFacts,
   ]
 > {
   const root = await canonicalPortablePrimitiveCustodyRoot(custodyRoot);
@@ -421,7 +648,16 @@ export async function executePortablePhysicalProbe(
       rootHandle,
       "PHYSICAL_UNICODE_ALIAS",
     );
-    return Object.freeze([existing, absent, caseAlias, unicodeAlias] as const);
+    const symlinkSwap = await executePortablePhysicalSymlinkSwap(root, rootHandle);
+    const parentSwap = await executePortablePhysicalParentSwap(root, rootHandle);
+    return Object.freeze([
+      existing,
+      absent,
+      caseAlias,
+      unicodeAlias,
+      symlinkSwap,
+      parentSwap,
+    ] as const);
   } finally {
     await rootHandle.close();
   }
