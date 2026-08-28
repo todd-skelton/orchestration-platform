@@ -39,7 +39,8 @@ function spawnMutant(mode: string, custodyRoot: string): ChildProcess {
 
 describe("ISS-022 raw process and handle probes", () => {
   test("binds termination only to the direct ChildProcess handle and provider terminal events", async () => {
-    const facts = await executePortablePrimitiveProcessProbe(await root("process"));
+    const custodyRoot = await root("process");
+    const facts = await executePortablePrimitiveProcessProbe(custodyRoot);
     expect(facts).toEqual({
       closeCode: null,
       closeObserved: true,
@@ -62,6 +63,8 @@ describe("ISS-022 raw process and handle probes", () => {
     });
     expect(Object.keys(facts)).not.toContain("grandchildPid");
     expect(JSON.stringify(facts)).not.toContain("PASS");
+    await rm(custodyRoot, { recursive: true });
+    roots.splice(roots.indexOf(custodyRoot), 1);
   });
 
   test("confines the probe-local callback handle to one WeakMap key and nonce lifetime", async () => {

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 
 const mode = process.argv[2];
 
@@ -25,6 +26,7 @@ if (mode === "GRANDCHILD") {
 } else if (mode === "PROCESS_TARGET") {
   receiveNonce((nonce) => {
     const grandchild = spawn(process.execPath, [import.meta.filename, "GRANDCHILD"], {
+      cwd: dirname(process.execPath),
       detached: false,
       stdio: "ignore",
       windowsHide: true,
