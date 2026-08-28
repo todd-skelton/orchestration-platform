@@ -52,10 +52,10 @@ describe("ISS-022 case and Unicode physical alias observations", () => {
     expect(JSON.stringify([caseAlias, unicodeAlias])).not.toContain(custodyRoot);
   });
 
-  test("releases the one retained root handle after all four rows", async () => {
+  test("releases the one retained root handle after all six rows", async () => {
     const custodyRoot = await root("physical-alias-cleanup");
     const facts = await executePortablePhysicalProbe(custodyRoot);
-    expect(facts).toHaveLength(4);
+    expect(facts).toHaveLength(6);
     await rm(custodyRoot, { recursive: true });
     roots.splice(roots.indexOf(custodyRoot), 1);
   });
