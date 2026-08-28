@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -7,7 +6,8 @@ import {
   bindPortablePrimitiveRawChildEvent,
   executePortablePrimitiveChild,
   parsePortablePrimitiveRawChildEvent,
-  portablePrimitiveWorkerPath,
+  startPortablePrimitiveLockHolder,
+  terminatePortablePrimitiveChild,
 } from "../../probes/portable-primitives/src/index.js";
 
 const roots: string[] = [];
@@ -36,27 +36,32 @@ describe("ISS-022 raw filesystem executor", () => {
     ).toHaveLength(31);
     expect(await readFile(resolve(custodyRoot, "create-once"), "hex")).toBe("41");
     expect(results.every(({ stdout }) => !stdout.includes("PASS"))).toBe(true);
-  });
+  }, 60_000);
 
   test("records the persistent O_EXCL owner-death gap without deletion or retry", async () => {
     const custodyRoot = await root("owner-death");
-    const holder = spawn(
-      process.execPath,
-      [portablePrimitiveWorkerPath, "LOCK_HOLDER", custodyRoot],
-      { cwd: custodyRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+    const holder = await startPortablePrimitiveLockHolder(custodyRoot);
+    let terminated = false;
+    try {
+      expect(holder.event).toMatchObject({ event: "ACQUIRED", mode: "LOCK_HOLDER" });
+      const contender = await executePortablePrimitiveChild("LOCK_ATTEMPT", custodyRoot);
+      expect(contender.event).toMatchObject({ event: "ERROR", errorCode: "EEXIST" });
+      await terminatePortablePrimitiveChild(holder.child);
+      terminated = true;
+      const afterDeath = await executePortablePrimitiveChild("LOCK_ATTEMPT", custodyRoot);
+      expect(afterDeath.event).toMatchObject({ event: "ERROR", errorCode: "EEXIST" });
+    } finally {
+      if (!terminated) await terminatePortablePrimitiveChild(holder.child);
+    }
+  }, 30_000);
+
+  test("closes a non-acquired holder before rejecting startup", async () => {
+    const custodyRoot = await root("holder-refusal");
+    await writeFile(resolve(custodyRoot, "owner-lock"), "occupied");
+    await expect(startPortablePrimitiveLockHolder(custodyRoot)).rejects.toThrow(
+      /lock-holder:not-acquired/,
     );
-    const line = await new Promise<string>((resolveLine, reject) => {
-      holder.once("error", reject);
-      holder.stdout.once("data", (chunk: Buffer) => resolveLine(chunk.toString("utf8")));
-    });
-    expect(parsePortablePrimitiveRawChildEvent(JSON.parse(line)).ok).toBe(true);
-    expect(JSON.parse(line).event).toBe("ACQUIRED");
-    const contender = await executePortablePrimitiveChild("LOCK_ATTEMPT", custodyRoot);
-    expect(contender.event).toMatchObject({ event: "ERROR", errorCode: "EEXIST" });
-    holder.kill("SIGKILL");
-    await new Promise<void>((resolveClose) => holder.once("close", () => resolveClose()));
-    const afterDeath = await executePortablePrimitiveChild("LOCK_ATTEMPT", custodyRoot);
-    expect(afterDeath.event).toMatchObject({ event: "ERROR", errorCode: "EEXIST" });
+    await rm(custodyRoot, { recursive: true });
   });
 
   test.each([

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,12 +165,7 @@ function within(root: string, path: string): boolean {
   return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
 }
 
-export async function executePortablePrimitiveChild(
-  mode: PortablePrimitiveWorkerMode,
-  custodyRoot: string,
-  arguments_: readonly string[] = [],
-): Promise<PortablePrimitiveChildExecution> {
-  if (!portablePrimitiveWorkerModes.includes(mode)) throw new TypeError("mode:invalid");
+async function canonicalCustodyRoot(custodyRoot: string): Promise<string> {
   if (!isAbsolute(custodyRoot) || resolve(custodyRoot) !== custodyRoot)
     throw new TypeError("custodyRoot:absolute-normalized-required");
   const identity = await lstat(custodyRoot);
@@ -182,6 +177,120 @@ export async function executePortablePrimitiveChild(
   ]);
   if (within(realSourceRoot, realCustodyRoot) || within(realCustodyRoot, realSourceRoot))
     throw new TypeError("custodyRoot:source-overlap");
+  return realCustodyRoot;
+}
+
+function childEnvironment(): NodeJS.ProcessEnv {
+  return Object.freeze({
+    SystemRoot: process.env.SystemRoot,
+    WINDIR: process.env.WINDIR,
+  }) as NodeJS.ProcessEnv;
+}
+
+export interface PortablePrimitiveLiveChild {
+  readonly child: ChildProcess;
+  readonly event: ContractRecord;
+}
+
+const providerObservedClosedChildren = new WeakSet<ChildProcess>();
+
+export async function startPortablePrimitiveLockHolder(
+  custodyRoot: string,
+): Promise<PortablePrimitiveLiveChild> {
+  const realCustodyRoot = await canonicalCustodyRoot(custodyRoot);
+  const child = spawn(
+    process.execPath,
+    [portablePrimitiveWorkerPath, "LOCK_HOLDER", realCustodyRoot],
+    {
+      cwd: realCustodyRoot,
+      env: childEnvironment(),
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
+  child.once("close", () => providerObservedClosedChildren.add(child));
+  const event = await new Promise<ContractRecord>((resolveEvent, reject) => {
+    let settled = false;
+    let byteLength = 0;
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(
+      () => void finishFailure(new Error("lock-holder:event-timeout")),
+      10_000,
+    );
+    const finishFailure = async (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        await terminatePortablePrimitiveChild(child);
+        reject(error);
+      } catch (cleanupError) {
+        reject(
+          new AggregateError([error, cleanupError], "lock-holder:start-failure-cleanup-refused"),
+        );
+      }
+    };
+    const finishSuccess = (value: ContractRecord) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveEvent(value);
+    };
+    child.once("error", (error) => void finishFailure(error));
+    child.once("close", () => void finishFailure(new Error(`lock-holder:closed:${stderr}`)));
+    child.stderr!.on("data", (chunk: Buffer) => {
+      byteLength += chunk.byteLength;
+      stderr += chunk.toString("utf8");
+      if (byteLength > 64 * 1024) void finishFailure(new Error("lock-holder:output-limit"));
+    });
+    child.stdout!.on("data", (chunk: Buffer) => {
+      byteLength += chunk.byteLength;
+      stdout += chunk.toString("utf8");
+      if (byteLength > 64 * 1024) return void finishFailure(new Error("lock-holder:output-limit"));
+      if (!stdout.includes("\n")) return;
+      if (!stdout.endsWith("\n") || stdout.slice(0, -1).includes("\n"))
+        return void finishFailure(new Error("lock-holder:stdout-census"));
+      try {
+        const parsed = bindPortablePrimitiveRawChildEvent(JSON.parse(stdout), "LOCK_HOLDER", []);
+        if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+        if (parsed.value.event !== "ACQUIRED")
+          return void finishFailure(new Error("lock-holder:not-acquired"));
+        finishSuccess(parsed.value);
+      } catch (error) {
+        void finishFailure(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  });
+  return Object.freeze({ child, event });
+}
+
+export async function terminatePortablePrimitiveChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || providerObservedClosedChildren.has(child)) return;
+  const completion = new Promise<void>((resolveCompletion, reject) => {
+    const timeout = setTimeout(() => reject(new Error("child:termination-timeout")), 10_000);
+    child.once("close", () => {
+      clearTimeout(timeout);
+      resolveCompletion();
+    });
+  });
+  if (
+    child.signalCode === null &&
+    !child.kill("SIGKILL") &&
+    child.exitCode === null &&
+    child.signalCode === null
+  )
+    throw new Error("child:termination-refused");
+  await completion;
+}
+
+export async function executePortablePrimitiveChild(
+  mode: PortablePrimitiveWorkerMode,
+  custodyRoot: string,
+  arguments_: readonly string[] = [],
+): Promise<PortablePrimitiveChildExecution> {
+  if (!portablePrimitiveWorkerModes.includes(mode)) throw new TypeError("mode:invalid");
+  const realCustodyRoot = await canonicalCustodyRoot(custodyRoot);
   const expectedArgumentCount = mode === "CAS" ? 2 : mode === "REPLACE" ? 1 : 0;
   if (
     arguments_.length !== expectedArgumentCount ||
@@ -193,10 +302,7 @@ export async function executePortablePrimitiveChild(
     [portablePrimitiveWorkerPath, mode, realCustodyRoot, ...arguments_],
     {
       cwd: realCustodyRoot,
-      env: Object.freeze({
-        SystemRoot: process.env.SystemRoot,
-        WINDIR: process.env.WINDIR,
-      }) as NodeJS.ProcessEnv,
+      env: childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
