@@ -1,5 +1,6 @@
 export * from "./executor.js";
 export * from "./profiles.js";
+export * from "./physical.js";
 export {
   executePortablePrimitiveHandleConfinementProbe,
   executePortablePrimitiveProcessProbe,
