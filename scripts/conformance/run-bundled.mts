@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const targets = Object.freeze({
@@ -19,6 +21,8 @@ if (
 
 const runnerTemp = process.env.RUNNER_TEMP;
 const parent = runnerTemp && isAbsolute(runnerTemp) ? resolve(runnerTemp) : resolve(tmpdir());
+const stableRequire = createRequire(resolve(process.cwd(), "package.json"));
+const stableEsbuildUrl = pathToFileURL(stableRequire.resolve("esbuild")).href;
 await mkdir(parent, { recursive: true });
 const root = await mkdtemp(resolve(parent, "orchestration-conformance-bundle-"));
 try {
@@ -36,6 +40,17 @@ try {
     minify: false,
     packages: "bundle",
     platform: "node",
+    plugins: [
+      {
+        name: "stable-esbuild-provider",
+        setup(context) {
+          context.onResolve({ filter: /^esbuild$/ }, () => ({
+            external: true,
+            path: stableEsbuildUrl,
+          }));
+        },
+      },
+    ],
     sourcemap: false,
     splitting: false,
     target: "node24",
