@@ -4,10 +4,14 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   normalizeIss022PhysicalProbe,
+  normalizeIss022RuntimeProbe,
   runIss022PhysicalStableHandler,
+  runIss022RuntimeStableHandler,
 } from "../../packages/conformance/src/index.js";
 import {
   executePortablePhysicalProbe,
+  type PortablePrimitiveHandleRawFacts,
+  type PortablePrimitiveProcessRawFacts,
   type PortablePhysicalAliasRawFacts,
   type PortablePhysicalBaseRawFacts,
   type PortablePhysicalSwapRawFacts,
@@ -34,6 +38,43 @@ function coherentUnsupportedSwap(row: PortablePhysicalSwapRawFacts): PortablePhy
     rootBefore: { ...row.rootBefore },
     rootRealpathStable: true,
     rootStable: true,
+  };
+}
+
+function processFacts(): PortablePrimitiveProcessRawFacts {
+  return {
+    closeCode: null,
+    closeObserved: true,
+    closeSignal: "SIGTERM",
+    directChildHandleOwned: true,
+    eventOrder: ["exit", "close"],
+    exitCode: null,
+    exitObserved: true,
+    exitSignal: "SIGTERM",
+    forcedKillAccepted: null,
+    grandchildClaimAcceptedAsAuthority: false,
+    grandchildClaimPresent: true,
+    ipcNonceMatched: true,
+    killAccepted: true,
+    killRequestedSignal: "SIGTERM",
+    messageCount: 1,
+    outputLimitExceeded: false,
+    responseAccepted: true,
+    timedOut: false,
+  };
+}
+
+function handleFacts(): PortablePrimitiveHandleRawFacts {
+  return {
+    callbackInvocations: 1,
+    crossProcessReplayRejected: true,
+    directInvocationAccepted: true,
+    nonceByteLength: 32,
+    reuseAfterReleaseRejected: true,
+    serializationRejected: true,
+    structuredCloneRejected: true,
+    workerTransferRejected: true,
+    wrappedFunctionRejected: true,
   };
 }
 
@@ -223,5 +264,105 @@ describe("stable ISS-022 physical handler", () => {
     if (!(symlink.ok && parent.ok)) throw new Error("mutant:census-refused");
     expect(symlink.vectorExecutions[4]?.normalizedResult).toBe("UNKNOWN");
     expect(parent.vectorExecutions[5]?.normalizedResult).toBe("UNKNOWN");
+  });
+});
+
+describe("stable ISS-022 process and handle handler", () => {
+  test("executes and normalizes the exact two-row provider-owned runtime census", async () => {
+    const result = await runIss022RuntimeStableHandler(await custodyRoot());
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(
+      result.vectorExecutions.map(({ caseId, normalizedResult }) => ({
+        caseId,
+        normalizedResult,
+      })),
+    ).toEqual([
+      {
+        caseId: "PROCESS_DIRECT_CHILD_AND_GRANDCHILD_GAP",
+        normalizedResult: "UNSUPPORTED",
+      },
+      { caseId: "HANDLE_CLONE_TRANSFER_REUSE", normalizedResult: "PASS" },
+    ]);
+  });
+
+  test("snapshots every row and nested terminal tuple before disposition", () => {
+    const eventOrder: ("close" | "exit")[] = ["exit", "close"];
+    const process = { ...processFacts(), eventOrder };
+    const handle = handleFacts();
+    const result = normalizeIss022RuntimeProbe([process, handle]);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0]?.rawFacts).not.toBe(process);
+    expect(
+      (result.vectorExecutions[0]?.rawFacts as PortablePrimitiveProcessRawFacts).eventOrder,
+    ).not.toBe(process.eventOrder);
+    eventOrder.splice(0);
+    expect(result.vectorExecutions[0]?.normalizedResult).toBe("UNSUPPORTED");
+  });
+
+  test("refuses missing, extra, proxied, accessor, and malformed nested facts", () => {
+    const process = processFacts();
+    const handle = handleFacts();
+    const extra = [process, handle] as unknown[] & { extra?: boolean };
+    extra.extra = true;
+    const accessor = processFacts() as PortablePrimitiveProcessRawFacts;
+    Object.defineProperty(accessor, "messageCount", { enumerable: true, get: () => 1 });
+    const { messageCount: _missing, ...missing } = process;
+    for (const mutant of [
+      [process],
+      extra,
+      new Proxy([process, handle], {}),
+      [new Proxy(process, {}), handle],
+      [{ ...process, eventOrder: new Proxy(["exit", "close"] as const, {}) }, handle],
+      [accessor, handle],
+      [missing, handle],
+      [{ ...process, extra: true }, handle],
+      [{ ...process, closeObserved: "true" }, handle],
+      [process, { ...handle, nonceByteLength: 32n }],
+    ])
+      expect(normalizeIss022RuntimeProbe(mutant).ok).toBe(false);
+  });
+
+  test("refuses values outside the closed signal and request enums", () => {
+    const handle = handleFacts();
+    expect(
+      normalizeIss022RuntimeProbe([{ ...processFacts(), exitSignal: "SIGPWN" }, handle]).ok,
+    ).toBe(false);
+    expect(
+      normalizeIss022RuntimeProbe([{ ...processFacts(), killRequestedSignal: "SIGKILL" }, handle])
+        .ok,
+    ).toBe(false);
+  });
+
+  test("recomputes response and terminal coherence instead of trusting flags", () => {
+    for (const process of [
+      { ...processFacts(), messageCount: 2 },
+      { ...processFacts(), responseAccepted: false },
+      { ...processFacts(), eventOrder: ["close", "exit"] as const },
+      { ...processFacts(), closeObserved: false },
+      { ...processFacts(), exitSignal: "SIGKILL" as const },
+      { ...processFacts(), grandchildClaimAcceptedAsAuthority: true },
+    ]) {
+      const result = normalizeIss022RuntimeProbe([process, handleFacts()]);
+      if (!result.ok) throw new Error(result.issues.join(","));
+      expect(result.vectorExecutions[0]?.normalizedResult).toBe("UNKNOWN");
+    }
+  });
+
+  test("requires every probe-local confinement fact for handle PASS", () => {
+    for (const handle of [
+      { ...handleFacts(), callbackInvocations: 2 },
+      { ...handleFacts(), nonceByteLength: 31 },
+      { ...handleFacts(), crossProcessReplayRejected: false },
+      { ...handleFacts(), directInvocationAccepted: false },
+      { ...handleFacts(), reuseAfterReleaseRejected: false },
+      { ...handleFacts(), serializationRejected: false },
+      { ...handleFacts(), structuredCloneRejected: false },
+      { ...handleFacts(), workerTransferRejected: false },
+      { ...handleFacts(), wrappedFunctionRejected: false },
+    ]) {
+      const result = normalizeIss022RuntimeProbe([processFacts(), handle]);
+      if (!result.ok) throw new Error(result.issues.join(","));
+      expect(result.vectorExecutions[1]?.normalizedResult).toBe("UNKNOWN");
+    }
   });
 });

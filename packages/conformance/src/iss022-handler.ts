@@ -2,6 +2,8 @@ import { types as nodeTypes } from "node:util";
 import { canonicalJson } from "@orchestration-platform/contracts";
 import {
   derivePortablePhysicalIdentity,
+  executePortablePrimitiveHandleConfinementProbe,
+  executePortablePrimitiveProcessProbe,
   executePortablePhysicalProbe,
   type PortableLeafRawObservation,
   type PortablePhysicalAliasRawFacts,
@@ -9,6 +11,8 @@ import {
   type PortablePhysicalCaseId,
   type PortablePhysicalLocatorRawObservation,
   type PortablePhysicalSwapRawFacts,
+  type PortablePrimitiveHandleRawFacts,
+  type PortablePrimitiveProcessRawFacts,
   type PortablePrimitiveResult,
   type PortableRootRawObservation,
 } from "@orchestration-platform/portable-primitives";
@@ -22,6 +26,19 @@ export interface Iss022PhysicalVectorExecution {
 
 export type Iss022PhysicalHandlerResult =
   | { readonly ok: true; readonly vectorExecutions: readonly Iss022PhysicalVectorExecution[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export type Iss022RuntimeCaseId =
+  "PROCESS_DIRECT_CHILD_AND_GRANDCHILD_GAP" | "HANDLE_CLONE_TRANSFER_REUSE";
+
+export interface Iss022RuntimeVectorExecution {
+  readonly caseId: Iss022RuntimeCaseId;
+  readonly normalizedResult: PortablePrimitiveResult;
+  readonly rawFacts: PortablePrimitiveHandleRawFacts | PortablePrimitiveProcessRawFacts;
+}
+
+export type Iss022RuntimeHandlerResult =
+  | { readonly ok: true; readonly vectorExecutions: readonly Iss022RuntimeVectorExecution[] }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 const caseIds = Object.freeze([
@@ -47,6 +64,37 @@ const digest = /^[0-9a-f]{64}$/;
 const operationErrorCode = /^[A-Z0-9_]{1,32}$/;
 const operatingSystems = new Set(["DARWIN", "LINUX", "WINDOWS"]);
 const invalidSnapshot = Symbol("invalid-snapshot");
+const processFields = Object.freeze([
+  "closeCode",
+  "closeObserved",
+  "closeSignal",
+  "directChildHandleOwned",
+  "eventOrder",
+  "exitCode",
+  "exitObserved",
+  "exitSignal",
+  "forcedKillAccepted",
+  "grandchildClaimAcceptedAsAuthority",
+  "grandchildClaimPresent",
+  "ipcNonceMatched",
+  "killAccepted",
+  "killRequestedSignal",
+  "messageCount",
+  "outputLimitExceeded",
+  "responseAccepted",
+  "timedOut",
+] as const);
+const handleFields = Object.freeze([
+  "callbackInvocations",
+  "crossProcessReplayRejected",
+  "directInvocationAccepted",
+  "nonceByteLength",
+  "reuseAfterReleaseRejected",
+  "serializationRejected",
+  "structuredCloneRejected",
+  "workerTransferRejected",
+  "wrappedFunctionRejected",
+] as const);
 const rootFields = Object.freeze([
   "filesystemTypeBytes",
   "handleDeviceBytes",
@@ -125,14 +173,36 @@ function refusal(...issues: readonly string[]): Iss022PhysicalHandlerResult {
 }
 
 function snapshotData(input: unknown, depth = 0): unknown | typeof invalidSnapshot {
-  if (input === null || typeof input === "string" || typeof input === "boolean") return input;
   if (
-    depth >= 8 ||
-    typeof input !== "object" ||
-    nodeTypes.isProxy(input) ||
-    ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+    input === null ||
+    typeof input === "string" ||
+    typeof input === "boolean" ||
+    (typeof input === "number" && Number.isSafeInteger(input))
   )
-    return invalidSnapshot;
+    return input;
+  if (depth >= 8 || typeof input !== "object" || nodeTypes.isProxy(input)) return invalidSnapshot;
+  if (Array.isArray(input)) {
+    if (Object.getPrototypeOf(input) !== Array.prototype || input.length > 64)
+      return invalidSnapshot;
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const expectedKeys = [...input.keys()].map(String).concat("length").sort();
+    if (
+      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+      (Reflect.ownKeys(descriptors) as string[]).sort().join("\0") !== expectedKeys.join("\0")
+    )
+      return invalidSnapshot;
+    const snapshot: unknown[] = [];
+    for (let index = 0; index < input.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true)
+        return invalidSnapshot;
+      const value = snapshotData(descriptor.value, depth + 1);
+      if (value === invalidSnapshot) return invalidSnapshot;
+      snapshot.push(value);
+    }
+    return Object.freeze(snapshot);
+  }
+  if (![Object.prototype, null].includes(Object.getPrototypeOf(input))) return invalidSnapshot;
   const descriptors = Object.getOwnPropertyDescriptors(input);
   const keys = Reflect.ownKeys(descriptors);
   if (
@@ -154,6 +224,104 @@ function snapshotData(input: unknown, depth = 0): unknown | typeof invalidSnapsh
     snapshot[key] = value;
   }
   return Object.freeze(snapshot);
+}
+
+function isBoolean(input: unknown): input is boolean {
+  return typeof input === "boolean";
+}
+
+function isTerminalCode(input: unknown): input is number | null {
+  return input === null || (typeof input === "number" && Number.isSafeInteger(input));
+}
+
+function isObservedSignal(input: unknown): input is "SIGKILL" | "SIGTERM" | null {
+  return input === null || input === "SIGKILL" || input === "SIGTERM";
+}
+
+function validProcessRow(row: PortablePrimitiveProcessRawFacts): boolean {
+  return (
+    exactKeys(row, processFields) &&
+    isTerminalCode(row.closeCode) &&
+    isBoolean(row.closeObserved) &&
+    isObservedSignal(row.closeSignal) &&
+    isBoolean(row.directChildHandleOwned) &&
+    Array.isArray(row.eventOrder) &&
+    row.eventOrder.length <= 2 &&
+    row.eventOrder.every((event) => event === "close" || event === "exit") &&
+    isTerminalCode(row.exitCode) &&
+    isBoolean(row.exitObserved) &&
+    isObservedSignal(row.exitSignal) &&
+    (row.forcedKillAccepted === null || isBoolean(row.forcedKillAccepted)) &&
+    isBoolean(row.grandchildClaimAcceptedAsAuthority) &&
+    isBoolean(row.grandchildClaimPresent) &&
+    isBoolean(row.ipcNonceMatched) &&
+    isBoolean(row.killAccepted) &&
+    row.killRequestedSignal === "SIGTERM" &&
+    Number.isSafeInteger(row.messageCount) &&
+    row.messageCount >= 0 &&
+    isBoolean(row.outputLimitExceeded) &&
+    isBoolean(row.responseAccepted) &&
+    isBoolean(row.timedOut)
+  );
+}
+
+function validHandleRow(row: PortablePrimitiveHandleRawFacts): boolean {
+  return (
+    exactKeys(row, handleFields) &&
+    Number.isSafeInteger(row.callbackInvocations) &&
+    row.callbackInvocations >= 0 &&
+    isBoolean(row.crossProcessReplayRejected) &&
+    isBoolean(row.directInvocationAccepted) &&
+    Number.isSafeInteger(row.nonceByteLength) &&
+    row.nonceByteLength >= 0 &&
+    isBoolean(row.reuseAfterReleaseRejected) &&
+    isBoolean(row.serializationRejected) &&
+    isBoolean(row.structuredCloneRejected) &&
+    isBoolean(row.workerTransferRejected) &&
+    isBoolean(row.wrappedFunctionRejected)
+  );
+}
+
+function processResult(row: PortablePrimitiveProcessRawFacts): PortablePrimitiveResult {
+  const responseAccepted =
+    row.messageCount === 1 &&
+    row.ipcNonceMatched &&
+    row.grandchildClaimPresent &&
+    row.killAccepted &&
+    !row.outputLimitExceeded &&
+    !row.timedOut;
+  const terminalEventsCoherent =
+    row.exitObserved === row.eventOrder.includes("exit") &&
+    row.closeObserved === row.eventOrder.includes("close");
+  return row.responseAccepted === responseAccepted &&
+    responseAccepted &&
+    terminalEventsCoherent &&
+    row.directChildHandleOwned &&
+    row.eventOrder.length === 2 &&
+    row.eventOrder[0] === "exit" &&
+    row.eventOrder[1] === "close" &&
+    row.exitCode === null &&
+    row.exitSignal === "SIGTERM" &&
+    row.closeCode === null &&
+    row.closeSignal === "SIGTERM" &&
+    row.forcedKillAccepted === null &&
+    !row.grandchildClaimAcceptedAsAuthority
+    ? "UNSUPPORTED"
+    : "UNKNOWN";
+}
+
+function handleResult(row: PortablePrimitiveHandleRawFacts): PortablePrimitiveResult {
+  return row.callbackInvocations === 1 &&
+    row.crossProcessReplayRejected &&
+    row.directInvocationAccepted &&
+    row.nonceByteLength === 32 &&
+    row.reuseAfterReleaseRejected &&
+    row.serializationRejected &&
+    row.structuredCloneRejected &&
+    row.workerTransferRejected &&
+    row.wrappedFunctionRejected
+    ? "PASS"
+    : "UNKNOWN";
 }
 
 function exactKeys(input: unknown, fields: readonly string[]): boolean {
@@ -542,5 +710,70 @@ export async function runIss022PhysicalStableHandler(
     return normalizeIss022PhysicalProbe(await executePortablePhysicalProbe(custodyRoot));
   } catch {
     return refusal("physical:execution-refused");
+  }
+}
+
+function runtimeRefusal(...issues: readonly string[]): Iss022RuntimeHandlerResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+export function normalizeIss022RuntimeProbe(input: unknown): Iss022RuntimeHandlerResult {
+  try {
+    if (
+      !Array.isArray(input) ||
+      nodeTypes.isProxy(input) ||
+      Object.getPrototypeOf(input) !== Array.prototype ||
+      input.length !== 2
+    )
+      return runtimeRefusal("runtime:census-refused");
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    if (
+      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+      (Reflect.ownKeys(descriptors) as string[]).sort().join("\0") !==
+        ["0", "1", "length"].sort().join("\0")
+    )
+      return runtimeRefusal("runtime:census-refused");
+    const snapshots: unknown[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true)
+        return runtimeRefusal(`runtime.${index}:descriptor-refused`);
+      const snapshot = snapshotData(descriptor.value);
+      if (snapshot === invalidSnapshot) return runtimeRefusal(`runtime.${index}:snapshot-refused`);
+      snapshots.push(snapshot);
+    }
+    const process = snapshots[0] as PortablePrimitiveProcessRawFacts;
+    const handle = snapshots[1] as PortablePrimitiveHandleRawFacts;
+    if (!validProcessRow(process)) return runtimeRefusal("runtime.0:record-refused");
+    if (!validHandleRow(handle)) return runtimeRefusal("runtime.1:record-refused");
+    return {
+      ok: true,
+      vectorExecutions: Object.freeze([
+        Object.freeze({
+          caseId: "PROCESS_DIRECT_CHILD_AND_GRANDCHILD_GAP",
+          normalizedResult: processResult(process),
+          rawFacts: process,
+        }),
+        Object.freeze({
+          caseId: "HANDLE_CLONE_TRANSFER_REUSE",
+          normalizedResult: handleResult(handle),
+          rawFacts: handle,
+        }),
+      ]),
+    };
+  } catch {
+    return runtimeRefusal("runtime:unreadable");
+  }
+}
+
+export async function runIss022RuntimeStableHandler(
+  custodyRoot: string,
+): Promise<Iss022RuntimeHandlerResult> {
+  try {
+    const process = await executePortablePrimitiveProcessProbe(custodyRoot);
+    const handle = await executePortablePrimitiveHandleConfinementProbe(custodyRoot);
+    return normalizeIss022RuntimeProbe([process, handle]);
+  } catch {
+    return runtimeRefusal("runtime:execution-refused");
   }
 }
