@@ -1330,12 +1330,17 @@ schemaVersion
 `LINUX|MACOS|WINDOWS`, and `runnerClass` is exactly `EPHEMERAL_HOSTED`.
 `nodeVersion` is canonical stable `24.x.y` semver and
 `packageManagerVersion` is canonical stable `11.x.y` semver with no prefix,
-prerelease, or build suffix. ABI, filesystem profile, and raw observed image
-inventory are required SHA-256 digests. Helper and custody digests are each
-null only when the stable suite registry declares that dimension unused; a
-suite that requires either dimension requires its digest. ISS-002 contract
-jobs require both null. Provider-native image text remains in bound raw bytes,
-not in the portable core.
+prerelease, or build suffix. ABI and raw observed image inventory are required
+SHA-256 digests. `filesystemProfileDigest` admits exactly SHA-256 or null, but
+generic parser success grants no filesystem profile: ISS-002 and every
+composition other than the exact ISS-022 diagnostic arm below continue to
+require a non-null digest in their suite-specific join. Helper and custody
+digests are each null only when the stable suite registry declares that
+dimension unused, except for the same closed ISS-022 diagnostic arm; a suite
+that requires either dimension otherwise requires its digest. ISS-002 contract
+jobs require helper and custody null and filesystem profile non-null.
+`osImageDigest` remains the digest of the exact provider-native raw environment
+inventory bytes and supplies no filesystem-profile authority.
 
 `conformance-raw-artifact-manifest/v1` has exactly `entries` and
 `schemaVersion`. It has exactly four entries, unique and sorted by name, and
@@ -1385,7 +1390,7 @@ vectorCensusDigest
 ```
 
 All identity members are SHA-256. `normalizedResult` is exactly
-`PASS|FAIL|UNSUPPORTED`. `maximumWalkDurationNanoseconds` is non-null canonical
+`PASS|FAIL|UNSUPPORTED|UNKNOWN`. `maximumWalkDurationNanoseconds` is non-null canonical
 safe-integer decimal only when the suite has `walkRequirement:WALK_1000` and
 the result is PASS; it is null for `walkRequirement:NONE` and every non-PASS
 receipt. A PASS walk value is the maximum of the three exact raw-report
@@ -1393,9 +1398,10 @@ intervals and must be at most 5,000,000,000. Only the stable aggregator writes
 a job receipt after re-reading provider metadata and raw observation bytes. A
 candidate job emits only an untrusted observation artifact; its JSON never
 parses as a receipt. Skipped, cancelled, timed-out, stale, neutral,
-action-required, unreadable, or missing jobs yield no valid receipt. `FAIL` and
-`UNSUPPORTED` receipts remain diagnostic evidence but cannot enter a successful
-aggregate.
+action-required, unreadable, or missing jobs yield no valid receipt. Every
+`FAIL`, `UNSUPPORTED`, or `UNKNOWN` receipt remains diagnostic-only evidence and
+cannot enter an aggregate; the aggregate reducer continues to require PASS for
+every required receipt and emits only result PASS.
 
 `conformance-aggregate/v1` has exactly these members:
 
@@ -1901,13 +1907,20 @@ DosProfile = portable-primitives-os-profile/v1(
   text(unicodeNormalizationProfile), raw32(vectorCensusDigest)
 )
 
+DpreCustodyEnvironment = portable-primitives-pre-custody-environment/v1(
+  raw32(Dabi), text(architecture), raw32(DosProfile),
+  raw32(DhelperProfile), text(nodeVersion), text(operatingSystem),
+  raw32(sha256(exact raw provider environment inventory bytes)),
+  text(packageManagerVersion), text(EPHEMERAL_HOSTED)
+)
+
 DrootReadback = portable-custody-root-readback/v1(
   raw32(DhostNamespace), raw32(Dvolume), raw32(Dfilesystem), raw32(Dancestor)
 )
 
 DcustodyInstance = portable-probe-custody-instance/v1(
-  raw32(DhostNamespace), raw32(Denv), raw32(DproviderRun), text(jobId),
-  raw32(DrootReadback)
+  raw32(DhostNamespace), raw32(DpreCustodyEnvironment),
+  raw32(DproviderRun), text(jobId), raw32(DrootReadback)
 )
 
 DcustodyProfile = portable-custody-profile/v1(
@@ -1920,6 +1933,10 @@ DcustodyProfile = portable-custody-profile/v1(
 `schemaVersion`, `statDeviceBytes`, `unicodeNormalizationProfile`, and
 `vectorCensusDigest`. Its two byte fields are the exact 8-byte values framed
 above; the remaining values use the existing closed environment/locator enums.
+`DpreCustodyEnvironment` is an identity only, not a record or selectable
+profile. It is recomputed from the exact values of every variable final
+environment member except `custodyObservationDigest`; `schemaVersion` is the
+fixed `conformance-environment/v1` literal. It is never accepted from a caller.
 
 `Dphys` in the custody receipt and admitted locator is only the
 `PHYSICAL_ABSENT_LEAF` row's identity; the other physical rows are hostile
@@ -1950,6 +1967,33 @@ profile. The suite's `conformance-environment/v1` uses
 `custodyObservationDigest=DcustodyReceipt`. Consumers must create and verify
 their own actual custody instance and receipt; probe custody bytes never
 authorize a production destination.
+
+The ISS-022 suite composition has exactly two environment arms, selected only
+after parsing the complete stable 21-row report. For `selection` non-null, the
+stable parent first derives `Dabi`, `DhelperProfile`, `DosProfile`, the exact raw
+environment inventory digest, and `DpreCustodyEnvironment`; then derives
+`DrootReadback`, `DcustodyInstance`, `DcustodyReceipt`, and the locator; then
+constructs the final environment with `abiDigest=Dabi`,
+`filesystemProfileDigest=DosProfile`,
+`helperProfileDigest=DhelperProfile`, and
+`custodyObservationDigest=DcustodyReceipt`; and only then computes `Denv` for
+the observation and job receipt. Every digest is non-null and equal-bound
+through the report, environment, locator, custody receipt, and job receipt.
+Neither `environmentDigest` nor `DpreCustodyEnvironment` is caller input. For
+`selection:null`, executable custody still requires exact non-null
+`abiDigest=Dabi` and `helperProfileDigest=DhelperProfile`, while
+`filesystemProfileDigest` and `custodyObservationDigest` are exactly null. That
+arm requires the complete ordered 21-row report, at least one of its six
+physical rows normalized `UNKNOWN|UNSUPPORTED`, and a non-PASS suite
+observation and job receipt. It selects no OS profile, custody receipt, locator
+observation, profile/custody/locator token, or decision-core OS-profile slot.
+
+The ISS-022 suite/job-receipt join, not the generic environment parser, enforces
+that correspondence. A caller-filled null, null paired with six PASS physical
+rows, null in ISS-002 or another suite, a mixed `selection`/environment arm, a
+sentinel digest, or synthetic environment, time, or details refuses. The arm
+adds no schema member and does not reinterpret `osImageDigest` as profile
+evidence.
 
 ### Finite vectors and reduction
 
@@ -2171,10 +2215,12 @@ token non-null, and per-OS equality from each slot through its environment,
 observations, locator, and custody receipt. BLOCK_REPLAN requires
 `aggregateDigest:null`, a non-null diagnostic terminal digest, every profile
 member null, zero through 63 available observation digests in stable subset
-order, nullable helper/ABI/OS-profile slots only where that OS evidence is
-missing, and at least one authenticated non-PASS/missing job, artifact, or row.
-A mixed profile, synthetic observation, or combined run is invalid. If neither
-terminal arm authenticates, no core bytes exist and the planning disposition is
+order, nullable helper/ABI slots only where that OS evidence is missing, every
+OS-profile slot null for a `selection:null` environment, and at least one
+authenticated non-PASS/missing job, artifact, or row. Exact helper/ABI evidence
+may remain non-null in that diagnostic arm but grants no profile. A mixed
+profile, synthetic observation, or combined run is invalid. If neither terminal
+arm authenticates, no core bytes exist and the planning disposition is
 BLOCK_REPLAN.
 
 ```text
