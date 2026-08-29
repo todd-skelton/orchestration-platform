@@ -15,6 +15,7 @@ import {
 } from "@orchestration-platform/portable-primitives";
 import {
   computeConformanceRecordDigest,
+  parseConformanceEnvironment,
   parseConformanceRequiredJobRegistry,
   parseConformanceVectorCensus,
 } from "./contracts.js";
@@ -37,20 +38,24 @@ import {
   runIss022RuntimeStableHandler,
 } from "./iss022-handler.js";
 import {
-  constructIss022ProfileArtifacts,
+  constructIss022EnvironmentAuthority,
   iss022CoordinateFields,
   parseIss022SuiteCoordinates,
   validateIss022ProfileArtifacts,
   withIss022ExecutableCustody,
 } from "./iss022-profile.js";
 const reportFields = Object.freeze([
+  "architecture",
   "environmentDigest",
   "executableCapture",
   "helperAbiDigest",
   "helperDigest",
   "helperProfileDigest",
   "jobId",
+  "normalizedResult",
   "observedAt",
+  "osImageDigest",
+  "packageManagerVersion",
   "providerRunDigest",
   "schemaVersion",
   "selection",
@@ -61,7 +66,14 @@ const reportFields = Object.freeze([
 const executionFields = Object.freeze(["caseId", "normalizedResult", "rawFacts"] as const);
 
 export type Iss022StableSuiteResult =
-  | { readonly ok: true; readonly report: ContractRecord; readonly reportBytes: Uint8Array }
+  | {
+      readonly environment: ContractRecord;
+      readonly environmentDigest: string;
+      readonly normalizedResult: "PASS" | "UNKNOWN" | "UNSUPPORTED";
+      readonly ok: true;
+      readonly report: ContractRecord;
+      readonly reportBytes: Uint8Array;
+    }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 function refusal(...issues: readonly string[]): Iss022StableSuiteResult {
@@ -214,7 +226,25 @@ export function parseIss022StableRawReport(
       iss022PortablePrimitiveVectorCensusDigest,
     );
     if (profileIssues.length > 0) return refusal(...profileIssues);
-    return { ok: true, report, reportBytes: canonicalBytes(report) };
+    const authority = constructIss022EnvironmentAuthority(
+      executions,
+      report.executableCapture,
+      expected.value,
+      iss022PortablePrimitiveVectorCensusDigest,
+    );
+    if (!authority.ok) return refusal(...authority.issues);
+    if (report.environmentDigest !== authority.value.environmentDigest)
+      return refusal("environmentDigest:mismatch");
+    if (report.normalizedResult !== authority.value.normalizedResult)
+      return refusal("normalizedResult:mismatch");
+    return {
+      environment: authority.value.environment,
+      environmentDigest: authority.value.environmentDigest,
+      normalizedResult: authority.value.normalizedResult,
+      ok: true,
+      report,
+      reportBytes: canonicalBytes(report),
+    };
   } catch {
     return refusal("report:unreadable");
   }
@@ -257,13 +287,16 @@ export async function runIss022PortablePrimitivesStableSuite(
       vectorExecutions.some((row, index) => row.caseId !== portablePrimitiveCaseIds[index])
     )
       return refusal("vectorExecutions:order-refused");
+    const observedAt = new Date().toISOString();
     const coordinates = Object.freeze({
-      environmentDigest: parsed.value.environmentDigest,
+      architecture: parsed.value.architecture,
       jobId: parsed.value.jobId,
-      observedAt: parsed.value.observedAt,
+      observedAt,
+      osImageDigest: parsed.value.osImageDigest,
+      packageManagerVersion: parsed.value.packageManagerVersion,
       providerRunDigest: parsed.value.providerRunDigest,
     });
-    const artifacts = constructIss022ProfileArtifacts(
+    const artifacts = constructIss022EnvironmentAuthority(
       vectorExecutions as unknown as ContractRecord[],
       executableCapture,
       coordinates,
@@ -271,11 +304,15 @@ export async function runIss022PortablePrimitivesStableSuite(
     );
     if (!artifacts.ok) return refusal(...artifacts.issues);
     const report = Object.freeze({
-      ...artifacts.value,
-      environmentDigest: parsed.value.environmentDigest,
+      ...artifacts.value.profile,
+      architecture: parsed.value.architecture,
+      environmentDigest: artifacts.value.environmentDigest,
       executableCapture,
       jobId: parsed.value.jobId,
-      observedAt: parsed.value.observedAt,
+      normalizedResult: artifacts.value.normalizedResult,
+      observedAt,
+      osImageDigest: parsed.value.osImageDigest,
+      packageManagerVersion: parsed.value.packageManagerVersion,
       providerRunDigest: parsed.value.providerRunDigest,
       schemaVersion: "portable-primitives-stable-raw-report/v1",
       vectorCensus: iss022PortablePrimitiveVectorCensus,
@@ -294,5 +331,41 @@ export async function runIss022PortablePrimitivesStableSuite(
       }
       if (!(await iss022CustodyRootIsAbsent(root))) return refusal("custodyRoot:cleanup-refused");
     }
+  }
+}
+
+export function parseCanonicalIss022StableRawReportBytes(
+  input: unknown,
+  environmentInput: unknown,
+  providerRunDigest: string,
+  jobId: string,
+): Iss022StableSuiteResult {
+  try {
+    if (!(input instanceof Uint8Array) || Object.getPrototypeOf(input) !== Uint8Array.prototype)
+      return refusal("reportBytes:exact-bytes-required");
+    const environment = parseConformanceEnvironment(environmentInput);
+    if (!environment.ok)
+      return refusal(...environment.issues.map((issue) => `environment.${issue}`));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(input);
+    const value = JSON.parse(text);
+    if (canonicalJson(value) !== text) return refusal("reportBytes:noncanonical");
+    const observedAt =
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? (value as Readonly<Record<string, unknown>>).observedAt
+        : undefined;
+    const parsed = parseIss022StableRawReport(value, {
+      architecture: environment.value.architecture,
+      jobId,
+      observedAt,
+      osImageDigest: environment.value.osImageDigest,
+      packageManagerVersion: environment.value.packageManagerVersion,
+      providerRunDigest,
+    });
+    if (!parsed.ok) return parsed;
+    if (canonicalJson(parsed.environment) !== canonicalJson(environment.value))
+      return refusal("environment:stable-report-mismatch");
+    return parsed;
+  } catch {
+    return refusal("reportBytes:unreadable");
   }
 }

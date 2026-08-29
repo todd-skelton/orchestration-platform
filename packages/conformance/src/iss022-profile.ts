@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import { open, realpath, stat, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
+import { types as nodeTypes } from "node:util";
 import {
   canonicalJson,
   computePhysicalLocatorObservationDigest,
@@ -10,33 +11,44 @@ import {
   parsePhysicalLocatorObservation,
   snapshotClosedRecord,
   type ContractRecord,
+  type ParseResult,
 } from "@orchestration-platform/contracts";
 import {
   computePortableNodeAbiDigest,
   computePortableNodeHelperDigest,
   computePortableNodeHelperProfileDigest,
   computePortablePrimitivesOsProfileDigest,
+  computePortablePrimitivesPreCustodyEnvironmentDigest,
   computePortableProbeCustodyInstanceDigest,
   computePortableProbeCustodyReceiptDigest,
   parsePortablePrimitivesOsProfile,
   parsePortableProbeCustodyReceipt,
+  portablePrimitiveCaseIds,
   portableU32Hex,
   portableU64Hex,
 } from "@orchestration-platform/portable-primitives";
+import {
+  computeConformanceRecordDigest,
+  parseConformanceEnvironment,
+  sha256Bytes,
+} from "./contracts.js";
 import { normalizeIss022PhysicalProbe } from "./iss022-handler.js";
 
 const inputFields = Object.freeze([
+  "architecture",
   "custodyParentRoot",
-  "environmentDigest",
+  "environmentBytes",
   "jobId",
-  "observedAt",
+  "packageManagerVersion",
   "providerRunDigest",
   "stableRoot",
 ] as const);
 const coordinateFields = Object.freeze([
-  "environmentDigest",
+  "architecture",
   "jobId",
   "observedAt",
+  "osImageDigest",
+  "packageManagerVersion",
   "providerRunDigest",
 ] as const);
 const captureFields = Object.freeze([
@@ -91,28 +103,132 @@ export type Iss022ProfileAuthority = Readonly<{
   helperProfileDigest: string;
   selection: Iss022ProfileSelection | null;
 }>;
+export type Iss022EnvironmentAuthority = Readonly<{
+  environment: ContractRecord;
+  environmentDigest: string;
+  normalizedResult: "PASS" | "UNKNOWN" | "UNSUPPORTED";
+  profile: Iss022ProfileAuthority;
+}>;
+type Iss022StableSuiteInput = Readonly<{
+  architecture: "ARM64" | "X64";
+  custodyParentRoot: string;
+  environmentBytes: Uint8Array;
+  jobId: string;
+  osImageDigest: string;
+  packageManagerVersion: string;
+  providerRunDigest: string;
+  stableRoot: string;
+}>;
+type Iss022StableSuiteInputResult =
+  { readonly ok: true; readonly value: Iss022StableSuiteInput } | ReturnType<typeof failure>;
 
 function failure(...issues: readonly string[]) {
   return { ok: false as const, issues: Object.freeze([...new Set(issues)].sort()) };
 }
 
-export function parseIss022SuiteCoordinates(input: unknown, includeRoots: boolean) {
-  const parsed = snapshotClosedRecord(input, includeRoots ? inputFields : coordinateFields);
+function exactRecord(
+  input: unknown,
+  fields: readonly string[],
+): Readonly<Record<string, unknown>> | undefined {
+  if (
+    input === null ||
+    typeof input !== "object" ||
+    nodeTypes.isProxy(input) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+  )
+    return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.some((key) => typeof key !== "string") ||
+    (keys as string[]).sort().join("\0") !== [...fields].sort().join("\0")
+  )
+    return undefined;
+  for (const field of fields) {
+    const descriptor = descriptors[field];
+    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) return undefined;
+  }
+  return input as Readonly<Record<string, unknown>>;
+}
+
+function exactBytes(input: unknown): input is Uint8Array {
+  return input instanceof Uint8Array && Object.getPrototypeOf(input) === Uint8Array.prototype;
+}
+
+function rawEnvironmentInventory(input: Uint8Array): boolean {
+  if (input.byteLength === 0) return false;
+  try {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input));
+    return (
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.getPrototypeOf(value) === Object.prototype
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function parseIss022SuiteCoordinates(
+  input: unknown,
+  includeRoots: true,
+): Iss022StableSuiteInputResult;
+export function parseIss022SuiteCoordinates(input: unknown, includeRoots: false): ParseResult;
+export function parseIss022SuiteCoordinates(
+  input: unknown,
+  includeRoots: boolean,
+): Iss022StableSuiteInputResult | ParseResult {
+  if (includeRoots) {
+    const record = exactRecord(input, inputFields);
+    if (!record) return failure("record:field-census-refused");
+    const issues: string[] = [];
+    if (!exactBytes(record.environmentBytes)) issues.push("environmentBytes:exact-bytes-required");
+    else if (!rawEnvironmentInventory(record.environmentBytes))
+      issues.push("environmentBytes:inventory-refused");
+    if (record.architecture !== "ARM64" && record.architecture !== "X64")
+      issues.push("architecture:invalid");
+    if (!/^11\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(String(record.packageManagerVersion)))
+      issues.push("packageManagerVersion:invalid");
+    if (typeof record.providerRunDigest !== "string" || !isSha256(record.providerRunDigest))
+      issues.push("providerRunDigest:invalid");
+    if (!jobId.test(String(record.jobId))) issues.push("jobId:invalid");
+    if (
+      (["custodyParentRoot", "stableRoot"] as const).some(
+        (field) =>
+          typeof record[field] !== "string" || resolve(String(record[field])) !== record[field],
+      )
+    )
+      issues.push("root:absolute-normalized-required");
+    if (issues.length > 0) return failure(...issues);
+    const environmentBytes = Uint8Array.from(record.environmentBytes as Uint8Array);
+    return {
+      ok: true as const,
+      value: Object.freeze({
+        architecture: record.architecture as "ARM64" | "X64",
+        custodyParentRoot: String(record.custodyParentRoot),
+        environmentBytes,
+        jobId: String(record.jobId),
+        osImageDigest: sha256Bytes(environmentBytes),
+        packageManagerVersion: String(record.packageManagerVersion),
+        providerRunDigest: String(record.providerRunDigest),
+        stableRoot: String(record.stableRoot),
+      }),
+    };
+  }
+  const parsed = snapshotClosedRecord(input, coordinateFields);
   if (!parsed.ok) return parsed;
   const issues: string[] = [];
-  if (!isSha256(parsed.value.environmentDigest)) issues.push("environmentDigest:invalid");
+  if (parsed.value.architecture !== "ARM64" && parsed.value.architecture !== "X64")
+    issues.push("architecture:invalid");
+  if (!isSha256(parsed.value.osImageDigest)) issues.push("osImageDigest:invalid");
+  if (
+    !/^11\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(String(parsed.value.packageManagerVersion))
+  )
+    issues.push("packageManagerVersion:invalid");
   if (!isSha256(parsed.value.providerRunDigest)) issues.push("providerRunDigest:invalid");
   if (!jobId.test(String(parsed.value.jobId))) issues.push("jobId:invalid");
   if (!isCanonicalTimestamp(parsed.value.observedAt)) issues.push("observedAt:invalid");
-  if (
-    includeRoots &&
-    (["custodyParentRoot", "stableRoot"] as const).some(
-      (field) =>
-        typeof parsed.value[field] !== "string" ||
-        resolve(String(parsed.value[field])) !== parsed.value[field],
-    )
-  )
-    issues.push("root:absolute-normalized-required");
   return issues.length === 0 ? parsed : failure(...issues);
 }
 
@@ -324,9 +440,19 @@ export function constructIss022ProfileArtifacts(
     });
     if (!parsePortablePrimitivesOsProfile(osProfile).ok) return failure("osProfile:invalid");
     const osProfileDigest = computePortablePrimitivesOsProfileDigest(osProfile);
+    const preCustodyEnvironmentDigest = computePortablePrimitivesPreCustodyEnvironmentDigest(
+      helperAbiDigest,
+      parsedCoordinates.value.architecture as "ARM64" | "X64",
+      osProfileDigest,
+      helperProfileDigest,
+      String(capture.nodeVersion),
+      profile.operatingSystem,
+      String(parsedCoordinates.value.osImageDigest),
+      String(parsedCoordinates.value.packageManagerVersion),
+    );
     const custodyInstanceDigest = computePortableProbeCustodyInstanceDigest(
       String(derivation.hostCustodyNamespaceDigest),
-      String(parsedCoordinates.value.environmentDigest),
+      preCustodyEnvironmentDigest,
       String(parsedCoordinates.value.providerRunDigest),
       String(parsedCoordinates.value.jobId),
       rootReadbackDigest,
@@ -383,6 +509,85 @@ export function constructIss022ProfileArtifacts(
   } catch {
     return failure("profile:unreadable");
   }
+}
+
+export function constructIss022EnvironmentAuthority(
+  executions: readonly ContractRecord[],
+  executableCapture: unknown,
+  coordinates: unknown,
+  vectorCensusDigest: string,
+): { readonly ok: true; readonly value: Iss022EnvironmentAuthority } | ReturnType<typeof failure> {
+  const parsedCoordinates = parseIss022SuiteCoordinates(coordinates, false);
+  if (!parsedCoordinates.ok) return failure(...parsedCoordinates.issues);
+  if (
+    executions.length !== portablePrimitiveCaseIds.length ||
+    executions.some(
+      (row, index) =>
+        row.caseId !== portablePrimitiveCaseIds[index] ||
+        !["PASS", "UNKNOWN", "UNSUPPORTED"].includes(String(row.normalizedResult)),
+    )
+  )
+    return failure("vectorExecutions:closed-census-required");
+  const profile = constructIss022ProfileArtifacts(
+    executions,
+    executableCapture,
+    parsedCoordinates.value,
+    vectorCensusDigest,
+  );
+  if (!profile.ok) return profile;
+  const physicalDiagnostic = executions
+    .slice(0, 6)
+    .some((row) => row.normalizedResult === "UNKNOWN" || row.normalizedResult === "UNSUPPORTED");
+  const normalizedResult = executions.some((row) => row.normalizedResult === "UNKNOWN")
+    ? "UNKNOWN"
+    : executions.some((row) => row.normalizedResult === "UNSUPPORTED")
+      ? "UNSUPPORTED"
+      : "PASS";
+  if ((profile.value.selection === null) !== physicalDiagnostic)
+    return failure("environment:selection-arm-mismatch");
+  if (profile.value.selection === null && normalizedResult === "PASS")
+    return failure("environment:diagnostic-result-required");
+  const expectedOperatingSystem: "LINUX" | "MACOS" | "WINDOWS" | undefined = (
+    {
+      "iss022-portable-primitives-linux": "LINUX",
+      "iss022-portable-primitives-macos": "MACOS",
+      "iss022-portable-primitives-windows": "WINDOWS",
+    } as Readonly<Record<string, "LINUX" | "MACOS" | "WINDOWS">>
+  )[String(parsedCoordinates.value.jobId)];
+  if (!expectedOperatingSystem) return failure("jobId:operating-system-mismatch");
+  if (
+    profile.value.selection !== null &&
+    profile.value.selection.operatingSystem !== expectedOperatingSystem
+  )
+    return failure("environment:operating-system-mismatch");
+  const environment = Object.freeze({
+    abiDigest: profile.value.helperAbiDigest,
+    architecture: parsedCoordinates.value.architecture,
+    custodyObservationDigest: profile.value.selection?.custodyReceiptDigest ?? null,
+    filesystemProfileDigest: profile.value.selection?.osProfileDigest ?? null,
+    helperProfileDigest: profile.value.helperProfileDigest,
+    nodeVersion: (executableCapture as ContractRecord).nodeVersion,
+    operatingSystem: expectedOperatingSystem,
+    osImageDigest: parsedCoordinates.value.osImageDigest,
+    packageManagerVersion: parsedCoordinates.value.packageManagerVersion,
+    runnerClass: "EPHEMERAL_HOSTED",
+    schemaVersion: "conformance-environment/v1",
+  });
+  const parsedEnvironment = parseConformanceEnvironment(environment);
+  if (!parsedEnvironment.ok)
+    return failure(...parsedEnvironment.issues.map((issue) => `environment.${issue}`));
+  return {
+    ok: true,
+    value: Object.freeze({
+      environment: parsedEnvironment.value,
+      environmentDigest: computeConformanceRecordDigest(
+        "conformance-environment/v1",
+        parsedEnvironment.value,
+      ),
+      normalizedResult,
+      profile: profile.value,
+    }),
+  };
 }
 
 export function validateIss022ProfileArtifacts(

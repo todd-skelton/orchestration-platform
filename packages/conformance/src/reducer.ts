@@ -17,6 +17,11 @@ import {
   parseConformanceRequiredJobRegistry,
   sha256Bytes,
 } from "./contracts.js";
+import {
+  parseCanonicalIss022StableRawReportBytes,
+  parseIss022RequiredJobRegistry,
+  type Iss022StableSuiteResult,
+} from "./iss022-suite.js";
 
 export interface ConformanceRawArtifacts {
   readonly environment: Uint8Array;
@@ -113,15 +118,26 @@ function validateEnvironmentForSuite(
   environment: ContractRecord,
   suite: ContractRecord,
   environmentFamily: JsonValue | undefined,
+  iss022Report?: Extract<Iss022StableSuiteResult, { readonly ok: true }>,
 ): readonly string[] {
   const issues: string[] = [];
+  const iss022Diagnostic =
+    suite.suiteId === "iss022-portable-primitives" &&
+    iss022Report?.report.selection === null &&
+    iss022Report.normalizedResult !== "PASS";
   if (environment.operatingSystem !== environmentFamily)
     issues.push("environment.operatingSystem:mismatch");
+  if (iss022Diagnostic && environment.filesystemProfileDigest !== null)
+    issues.push("environment.filesystemProfileDigest:must-be-null");
+  else if (!iss022Diagnostic && !isSha256(environment.filesystemProfileDigest))
+    issues.push("environment.filesystemProfileDigest:required");
   for (const [field, requirementField] of [
     ["custodyObservationDigest", "custodyRequirement"],
     ["helperProfileDigest", "helperRequirement"],
   ] as const) {
-    if (suite[requirementField] === "REQUIRED" && !isSha256(environment[field]))
+    if (field === "custodyObservationDigest" && iss022Diagnostic) {
+      if (environment[field] !== null) issues.push(`environment.${field}:must-be-null`);
+    } else if (suite[requirementField] === "REQUIRED" && !isSha256(environment[field]))
       issues.push(`environment.${field}:required`);
     if (suite[requirementField] === "UNUSED" && environment[field] !== null)
       issues.push(`environment.${field}:must-be-null`);
@@ -176,9 +192,8 @@ export function createConformanceJobEvidence(
     if (!job) return refusal("jobId:not-required");
     const suite = suiteFor(suites, String(job.suiteId));
     if (!suite) return refusal("suiteId:not-required");
-    const issues = [
-      ...validateEnvironmentForSuite(environment.value, suite, job.environmentFamily),
-    ];
+    let iss022Report: Extract<Iss022StableSuiteResult, { readonly ok: true }> | undefined;
+    const issues: string[] = [];
     if (sha256Bytes(input.rawArtifacts.environment) !== environment.value.osImageDigest)
       issues.push("rawArtifacts.environment:osImageDigest-mismatch");
     for (const [field, value] of Object.entries({
@@ -192,6 +207,28 @@ export function createConformanceJobEvidence(
     if (!portableId(input.jobId)) issues.push("jobId:invalid");
     if (!conformanceResults.includes(input.normalizedResult))
       issues.push("normalizedResult:invalid");
+    if (suite.suiteId === "iss022-portable-primitives") {
+      const exactRegistry = parseIss022RequiredJobRegistry(registry.value);
+      if (!exactRegistry.ok) issues.push("registry:iss022-census-mismatch");
+      else {
+        const parsedReport = parseCanonicalIss022StableRawReportBytes(
+          input.rawArtifacts.report,
+          environment.value,
+          input.providerRunDigest,
+          input.jobId,
+        );
+        if (!parsedReport.ok)
+          issues.push(...parsedReport.issues.map((issue) => `iss022Report.${issue}`));
+        else {
+          iss022Report = parsedReport;
+          if (input.normalizedResult !== parsedReport.normalizedResult)
+            issues.push("normalizedResult:iss022-report-mismatch");
+        }
+      }
+    }
+    issues.push(
+      ...validateEnvironmentForSuite(environment.value, suite, job.environmentFamily, iss022Report),
+    );
     const manifest = rawManifest(input.rawArtifacts);
     const receipt: ContractRecord = Object.freeze({
       candidateSubjectDigest: input.candidateSubjectDigest,

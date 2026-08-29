@@ -494,9 +494,13 @@ export function parseConformanceEnvironment(input: unknown): ParseResult {
   if (!parsed.ok) return parsed;
   const record = parsed.value;
   const issues: string[] = [];
-  for (const field of ["abiDigest", "filesystemProfileDigest", "osImageDigest"] as const)
+  for (const field of ["abiDigest", "osImageDigest"] as const)
     if (!isSha256(record[field])) issues.push(`${field}:invalid`);
-  for (const field of ["custodyObservationDigest", "helperProfileDigest"] as const)
+  for (const field of [
+    "custodyObservationDigest",
+    "filesystemProfileDigest",
+    "helperProfileDigest",
+  ] as const)
     if (!(record[field] === null || isSha256(record[field]))) issues.push(`${field}:invalid`);
   if (!enumValue(record.architecture, conformanceArchitectures))
     issues.push("architecture:invalid");
