@@ -1,4 +1,4 @@
-import { isUuidV7, type ContractDefinition, type ContractRecord } from "./runtime.js";
+import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { simplifiedAuthoritySchemaFields, simplifiedAuthoritySchemaVersions } from "./authority.js";
 import {
   commitRunPhases,
@@ -59,6 +59,12 @@ import {
   recoveryAttemptLogSchemaVersions,
   recoveryAttemptTerminalDispositions,
 } from "./attempt-log.js";
+import {
+  configurationSchemaFields,
+  configurationSchemaVersions,
+  orchestrationCommandCensus,
+  platformConfigurationScalarIssues,
+} from "./configuration.js";
 
 const platformConfiguration: ContractDefinition = Object.freeze({
   schemaVersion: "platform-configuration/v1",
@@ -73,35 +79,9 @@ const platformConfiguration: ContractDefinition = Object.freeze({
     "wallClockSkewMs",
   ]),
   validate(record: ContractRecord): readonly string[] {
-    const issues: string[] = [];
-    if (
-      typeof record.adapterId !== "string" ||
-      !/^[a-z0-9][a-z0-9._:@+-]{0,127}$/.test(record.adapterId)
-    )
-      issues.push("adapterId:invalid");
-    if (
-      !Array.isArray(record.capabilityNames) ||
-      record.capabilityNames.some((item) => typeof item !== "string")
-    )
-      issues.push("capabilityNames:invalid");
-    if (!isUuidV7(record.projectId)) issues.push("projectId:invalid");
+    const issues = [...platformConfigurationScalarIssues(record)];
     if (typeof record.stateRoot !== "string" || !record.stateRoot.startsWith("file:///"))
       issues.push("stateRoot:invalid");
-    for (const name of ["leaseFreshnessMs", "maximumSessionMs", "wallClockSkewMs"] as const)
-      if (
-        typeof record[name] !== "number" ||
-        !Number.isSafeInteger(record[name]) ||
-        Number(record[name]) < 0
-      )
-        issues.push(`${name}:invalid`);
-    if (
-      Number(record.leaseFreshnessMs) <= 0 ||
-      Number(record.leaseFreshnessMs) > Number(record.maximumSessionMs)
-    )
-      issues.push("leaseFreshnessMs:out-of-range");
-    if (Number(record.maximumSessionMs) <= 0 || Number(record.maximumSessionMs) > 86_400_000)
-      issues.push("maximumSessionMs:out-of-range");
-    if (Number(record.wallClockSkewMs) > 300_000) issues.push("wallClockSkewMs:out-of-range");
     return Object.freeze(issues);
   },
 });
@@ -605,10 +585,43 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
       fields: packetSchemaFields.packet,
       closedValues: Object.freeze(["HISTORICAL_READ", "MUTATION_COMMIT", ...pointerKinds]),
     }),
+    "platform-configuration-source/v1": Object.freeze({
+      schemaVersion: "platform-configuration-source/v1",
+      fields: configurationSchemaFields.source,
+    }),
+    "configuration-provenance/v1": Object.freeze({
+      schemaVersion: "configuration-provenance/v1",
+      fields: configurationSchemaFields.provenance,
+      closedValues: Object.freeze(["CLI", "DEFAULT", "ENVIRONMENT", "PROJECT"]),
+    }),
+    "configuration-paths/v1": Object.freeze({
+      schemaVersion: "configuration-paths/v1",
+      fields: configurationSchemaFields.paths,
+    }),
+    "orchestration-command-result/v1": Object.freeze({
+      schemaVersion: "orchestration-command-result/v1",
+      fields: configurationSchemaFields.commandResult,
+      closedValues: Object.freeze([
+        ...orchestrationCommandCensus.map(({ command }) => command),
+        "success",
+        "invalid-input",
+        "authority-refused",
+        "operation-failed",
+        "internal-error",
+        "ARGV_REFUSED",
+        "CONFIG_REFUSED",
+        "PROJECT_ROOT_REFUSED",
+        "PATH_REFUSED",
+        "FILESYSTEM_OPERATION_FAILED",
+        "CAPABILITY_NOT_IMPLEMENTED",
+        "INTERNAL_ERROR",
+      ]),
+    }),
   });
 export const schemaVersions = Object.freeze(
   [
     ...Object.keys(schemaDefinitions),
+    ...configurationSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,
