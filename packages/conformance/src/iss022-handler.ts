@@ -3,6 +3,7 @@ import { canonicalJson, type ContractRecord } from "@orchestration-platform/cont
 import {
   bindPortablePrimitiveRawChildEvent,
   derivePortablePhysicalIdentity,
+  executePortablePrimitiveCasProbe,
   executePortablePrimitiveCreateOnceProbe,
   executePortablePrimitiveHandleConfinementProbe,
   executePortablePrimitiveLockProbe,
@@ -10,6 +11,7 @@ import {
   executePortablePrimitiveProcessProbe,
   executePortablePrimitiveReplaceProbe,
   executePortablePhysicalProbe,
+  parsePortablePrimitiveCasBarrierEvent,
   parsePortablePrimitiveLockDescriptorChildEvent,
   portablePrimitiveReplaceCases,
   type PortableLeafRawObservation,
@@ -19,6 +21,10 @@ import {
   type PortablePhysicalLocatorRawObservation,
   type PortablePhysicalSwapRawFacts,
   type PortablePrimitiveChildExecution,
+  type PortablePrimitiveCasBarrierContenderRawFacts,
+  type PortablePrimitiveCasContentionRawFacts,
+  type PortablePrimitiveCasMismatchRawFacts,
+  type PortablePrimitiveCasRawFacts,
   type PortablePrimitiveCreateOnceRawFacts,
   type PortablePrimitiveHandleRawFacts,
   type PortablePrimitiveLockContentionRawFacts,
@@ -95,6 +101,16 @@ export interface Iss022ReplaceVectorExecution {
 
 export type Iss022ReplaceHandlerResult =
   | { readonly ok: true; readonly vectorExecutions: readonly Iss022ReplaceVectorExecution[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface Iss022CasVectorExecution {
+  readonly caseId: PortablePrimitiveCasRawFacts["caseId"];
+  readonly normalizedResult: PortablePrimitiveResult;
+  readonly rawFacts: PortablePrimitiveCasRawFacts;
+}
+
+export type Iss022CasHandlerResult =
+  | { readonly ok: true; readonly vectorExecutions: readonly Iss022CasVectorExecution[] }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 const caseIds = Object.freeze([
@@ -210,6 +226,19 @@ const replaceFields = Object.freeze(
   "caseId child finalReadbackErrorCode finalReadbackHex initialReadbackHex requestedBarrier schemaVersion".split(
     " ",
   ),
+);
+const casMismatchFields = Object.freeze(
+  "caseId child finalReadbackErrorCode finalReadbackHex initialReadbackHex predecessorHex proposalHex schemaVersion".split(
+    " ",
+  ),
+);
+const casContentionFields = Object.freeze(
+  "barrierEventOrder caseId contenderCount contenders finalReadbackErrorCode finalReadbackHex initialReadbackHex predecessorHex proposalHex schemaVersion".split(
+    " ",
+  ),
+);
+const casBarrierContenderFields = Object.freeze(
+  "contenderId readyEvent releaseEvent terminal".split(" "),
 );
 const prohibitedLockActions = new Set([
   "DELETE",
@@ -1056,7 +1085,7 @@ function createOnceRefusal(...issues: readonly string[]): Iss022CreateOnceHandle
 
 function validFilesystemChild(
   row: PortablePrimitiveChildExecution,
-  mode: "EXCLUSIVE_CREATE" | "LOCK_ATTEMPT" | "REPLACE",
+  mode: "CAS" | "EXCLUSIVE_CREATE" | "LOCK_ATTEMPT" | "REPLACE",
   arguments_: readonly string[] = [],
 ): boolean {
   return (
@@ -1434,5 +1463,185 @@ export async function runIss022ReplaceStableHandler(
     return normalizeIss022ReplaceProbe(await executePortablePrimitiveReplaceProbe(custodyRoot));
   } catch {
     return replaceRefusal("replace:execution-refused");
+  }
+}
+
+function casRefusal(...issues: readonly string[]): Iss022CasHandlerResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function validCasReadback(row: PortablePrimitiveCasRawFacts): boolean {
+  return (
+    (row.finalReadbackHex === null ||
+      (typeof row.finalReadbackHex === "string" && /^[0-9a-f]{2}$/.test(row.finalReadbackHex))) &&
+    (row.finalReadbackErrorCode === null ||
+      (typeof row.finalReadbackErrorCode === "string" &&
+        operationErrorCode.test(row.finalReadbackErrorCode))) &&
+    (row.finalReadbackHex === null) !== (row.finalReadbackErrorCode === null)
+  );
+}
+
+function validCasChild(row: PortablePrimitiveChildExecution, predecessorHex: "41" | "42"): boolean {
+  return validFilesystemChild(row, "CAS", [predecessorHex, "42"]);
+}
+
+function casErrorCode(row: PortablePrimitiveChildExecution): string | null {
+  return row.event?.event === "ERROR" && typeof row.event.errorCode === "string"
+    ? row.event.errorCode
+    : null;
+}
+
+function casMismatchResult(row: PortablePrimitiveCasMismatchRawFacts): PortablePrimitiveResult {
+  if (
+    !coherentFilesystemChild(row.child) ||
+    row.finalReadbackErrorCode !== null ||
+    row.finalReadbackHex !== "41"
+  )
+    return "UNKNOWN";
+  if (row.child.event?.event === "PREDECESSOR_MISMATCH" && row.child.event.readbackHex === "41")
+    return "PASS";
+  const code = casErrorCode(row.child);
+  return code !== null && unsupportedOperationCodes.has(code) ? "UNSUPPORTED" : "UNKNOWN";
+}
+
+function casContentionResult(row: PortablePrimitiveCasContentionRawFacts): PortablePrimitiveResult {
+  if (
+    !row.contenders.every(({ terminal }) => coherentFilesystemChild(terminal)) ||
+    row.finalReadbackErrorCode !== null
+  )
+    return "UNKNOWN";
+  const selected = row.contenders.filter(
+    ({ terminal }) => terminal.event?.event === "SELECTED" && terminal.event.readbackHex === "42",
+  );
+  const mismatched = row.contenders.filter(
+    ({ terminal }) =>
+      terminal.event?.event === "PREDECESSOR_MISMATCH" && terminal.event.readbackHex === "42",
+  );
+  const existing = row.contenders.filter(
+    ({ terminal }) => terminal.event?.event === "ERROR" && terminal.event.errorCode === "EEXIST",
+  );
+  if (selected.length === 1 && mismatched.length === 1 && row.finalReadbackHex === "42")
+    return "PASS";
+
+  if (selected.length === 1 && existing.length === 1 && row.finalReadbackHex === "42")
+    return "UNSUPPORTED";
+  const codes = row.contenders.map(({ terminal }) => casErrorCode(terminal));
+  const sameUnsupported =
+    codes.every((code): code is string => code !== null && unsupportedOperationCodes.has(code)) &&
+    new Set(codes).size === 1;
+  const oneUnsupported = codes.filter(
+    (code): code is string => code !== null && unsupportedOperationCodes.has(code),
+  ).length;
+  const oneExisting = codes.filter((code) => code === "EEXIST").length;
+  if (sameUnsupported && row.finalReadbackHex === "41") return "UNSUPPORTED";
+  if (
+    oneUnsupported === 1 &&
+    oneExisting === 1 &&
+    (row.finalReadbackHex === "41" || row.finalReadbackHex === "42")
+  )
+    return "UNSUPPORTED";
+  return "UNKNOWN";
+}
+
+function validCasBarrierContender(
+  row: PortablePrimitiveCasBarrierContenderRawFacts,
+  contenderId: "0" | "1",
+): boolean {
+  const ready = parsePortablePrimitiveCasBarrierEvent(row.readyEvent);
+  const released = parsePortablePrimitiveCasBarrierEvent(row.releaseEvent);
+  return (
+    exactKeys(row, casBarrierContenderFields) &&
+    row.contenderId === contenderId &&
+    ready.ok &&
+    ready.value.barrier === "READY" &&
+    released.ok &&
+    released.value.barrier === "RELEASED" &&
+    validCasChild(row.terminal, "41")
+  );
+}
+
+function validCasBarrierOrder(input: readonly string[]): boolean {
+  if (
+    !Array.isArray(input) ||
+    Object.getPrototypeOf(input) !== Array.prototype ||
+    input.length !== 3 ||
+    input[2] !== "RELEASE"
+  )
+    return false;
+  return (
+    (input[0] === "CONTENDER_0_READY" && input[1] === "CONTENDER_1_READY") ||
+    (input[0] === "CONTENDER_1_READY" && input[1] === "CONTENDER_0_READY")
+  );
+}
+
+export function normalizeIss022CasProbe(input: unknown): Iss022CasHandlerResult {
+  try {
+    const snapshot = snapshotData(input);
+    if (
+      snapshot === invalidSnapshot ||
+      !Array.isArray(snapshot) ||
+      Object.getPrototypeOf(snapshot) !== Array.prototype ||
+      snapshot.length !== 2
+    )
+      return casRefusal("cas:census-refused");
+    const [mismatch, contention] = snapshot as unknown as [
+      PortablePrimitiveCasMismatchRawFacts,
+      PortablePrimitiveCasContentionRawFacts,
+    ];
+    if (
+      !exactKeys(mismatch, casMismatchFields) ||
+      mismatch.caseId !== "CAS_PREDECESSOR_MISMATCH" ||
+      mismatch.initialReadbackHex !== "41" ||
+      mismatch.predecessorHex !== "42" ||
+      mismatch.proposalHex !== "42" ||
+      mismatch.schemaVersion !== "portable-primitives-cas-mismatch-raw/v1" ||
+      !validCasReadback(mismatch) ||
+      !validCasChild(mismatch.child, "42")
+    )
+      return casRefusal("cas.0:record-refused");
+    if (
+      !exactKeys(contention, casContentionFields) ||
+      contention.caseId !== "CAS_TWO_CONTENDERS" ||
+      contention.contenderCount !== "2" ||
+      contention.initialReadbackHex !== "41" ||
+      contention.predecessorHex !== "41" ||
+      contention.proposalHex !== "42" ||
+      contention.schemaVersion !== "portable-primitives-cas-contention-raw/v1" ||
+      !validCasReadback(contention) ||
+      !validCasBarrierOrder(contention.barrierEventOrder) ||
+      !Array.isArray(contention.contenders) ||
+      Object.getPrototypeOf(contention.contenders) !== Array.prototype ||
+      contention.contenders.length !== 2 ||
+      !validCasBarrierContender(contention.contenders[0], "0") ||
+      !validCasBarrierContender(contention.contenders[1], "1")
+    )
+      return casRefusal("cas.1:record-refused");
+    return {
+      ok: true,
+      vectorExecutions: Object.freeze([
+        Object.freeze({
+          caseId: mismatch.caseId,
+          normalizedResult: casMismatchResult(mismatch),
+          rawFacts: mismatch,
+        }),
+        Object.freeze({
+          caseId: contention.caseId,
+          normalizedResult: casContentionResult(contention),
+          rawFacts: contention,
+        }),
+      ]),
+    };
+  } catch {
+    return casRefusal("cas:unreadable");
+  }
+}
+
+export async function runIss022CasStableHandler(
+  custodyRoot: string,
+): Promise<Iss022CasHandlerResult> {
+  try {
+    return normalizeIss022CasProbe(await executePortablePrimitiveCasProbe(custodyRoot));
+  } catch {
+    return casRefusal("cas:execution-refused");
   }
 }
