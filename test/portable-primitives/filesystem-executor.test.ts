@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   bindPortablePrimitiveRawChildEvent,
+  executePortablePrimitiveAbsenceProbe,
   executePortablePrimitiveCasProbe,
   executePortablePrimitiveChild,
   executePortablePrimitiveCreateOnceProbe,
@@ -248,12 +249,45 @@ describe("ISS-022 raw filesystem executor", () => {
 
   test("records exact head-plus-one and head-plus-two absence errno", async () => {
     const custodyRoot = await root("absence");
-    const result = await executePortablePrimitiveChild("ABSENCE", custodyRoot);
-    expect(result.event).toMatchObject({
+    const rawFacts = await executePortablePrimitiveAbsenceProbe(custodyRoot);
+    expect(rawFacts).toMatchObject({
+      caseId: "ABSENCE_HEAD_PLUS_ONE_TWO",
+      headPlusOneLeaf: "authority-head-plus-one",
+      headPlusTwoLeaf: "authority-head-plus-two",
+      providerPostChildHeadPlusOneCode: "ENOENT",
+      providerPostChildHeadPlusTwoCode: "ENOENT",
+      schemaVersion: "portable-primitives-absence-raw/v1",
+    });
+    expect(rawFacts.child.event).toMatchObject({
       event: "ABSENCE_OBSERVED",
       headPlusOneCode: "ENOENT",
       headPlusTwoCode: "ENOENT",
     });
+
+    const worker = await readFile(
+      resolve(import.meta.dirname, "../../probes/portable-primitives/src/filesystem-worker.mjs"),
+      "utf8",
+    );
+    const absenceStart = worker.indexOf("async function absence(");
+    const absence = worker.slice(
+      absenceStart,
+      worker.indexOf("\ntry {\n  if (!modes.has", absenceStart),
+    );
+    const opened = absence.indexOf("lockHandle = await open(");
+    const first = absence.indexOf('await lstat(leaf(root, "authority-head-plus-one"))');
+    const second = absence.indexOf('await lstat(leaf(root, "authority-head-plus-two"))');
+    const closed = absence.indexOf("await lockHandle.close()");
+    expect(opened).toBeGreaterThan(-1);
+    expect(first).toBeGreaterThan(opened);
+    expect(second).toBeGreaterThan(first);
+    expect(closed).toBeGreaterThan(second);
+
+    const provider = await readFile(
+      resolve(import.meta.dirname, "../../probes/portable-primitives/src/absence.ts"),
+      "utf8",
+    );
+    expect(provider).toContain("lstatCode(resolve(rowRoot, headPlusOneLeaf))");
+    expect(provider).toContain("lstatCode(resolve(rowRoot, headPlusTwoLeaf))");
   });
 
   test("refuses malformed child events and arbitrary roots or argument widening", async () => {

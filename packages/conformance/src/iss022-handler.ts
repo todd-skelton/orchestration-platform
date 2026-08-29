@@ -3,6 +3,7 @@ import { canonicalJson, type ContractRecord } from "@orchestration-platform/cont
 import {
   bindPortablePrimitiveRawChildEvent,
   derivePortablePhysicalIdentity,
+  executePortablePrimitiveAbsenceProbe,
   executePortablePrimitiveCasProbe,
   executePortablePrimitiveCreateOnceProbe,
   executePortablePrimitiveHandleConfinementProbe,
@@ -21,6 +22,7 @@ import {
   type PortablePhysicalLocatorRawObservation,
   type PortablePhysicalSwapRawFacts,
   type PortablePrimitiveChildExecution,
+  type PortablePrimitiveAbsenceRawFacts,
   type PortablePrimitiveCasBarrierContenderRawFacts,
   type PortablePrimitiveCasContentionRawFacts,
   type PortablePrimitiveCasMismatchRawFacts,
@@ -111,6 +113,16 @@ export interface Iss022CasVectorExecution {
 
 export type Iss022CasHandlerResult =
   | { readonly ok: true; readonly vectorExecutions: readonly Iss022CasVectorExecution[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface Iss022AbsenceVectorExecution {
+  readonly caseId: "ABSENCE_HEAD_PLUS_ONE_TWO";
+  readonly normalizedResult: PortablePrimitiveResult;
+  readonly rawFacts: PortablePrimitiveAbsenceRawFacts;
+}
+
+export type Iss022AbsenceHandlerResult =
+  | { readonly ok: true; readonly vectorExecutions: readonly [Iss022AbsenceVectorExecution] }
   | { readonly ok: false; readonly issues: readonly string[] };
 
 const caseIds = Object.freeze([
@@ -239,6 +251,11 @@ const casContentionFields = Object.freeze(
 );
 const casBarrierContenderFields = Object.freeze(
   "contenderId readyEvent releaseEvent terminal".split(" "),
+);
+const absenceFields = Object.freeze(
+  "caseId child headPlusOneLeaf headPlusTwoLeaf providerPostChildHeadPlusOneCode providerPostChildHeadPlusTwoCode schemaVersion".split(
+    " ",
+  ),
 );
 const prohibitedLockActions = new Set([
   "DELETE",
@@ -1085,7 +1102,7 @@ function createOnceRefusal(...issues: readonly string[]): Iss022CreateOnceHandle
 
 function validFilesystemChild(
   row: PortablePrimitiveChildExecution,
-  mode: "CAS" | "EXCLUSIVE_CREATE" | "LOCK_ATTEMPT" | "REPLACE",
+  mode: "ABSENCE" | "CAS" | "EXCLUSIVE_CREATE" | "LOCK_ATTEMPT" | "REPLACE",
   arguments_: readonly string[] = [],
 ): boolean {
   return (
@@ -1643,5 +1660,85 @@ export async function runIss022CasStableHandler(
     return normalizeIss022CasProbe(await executePortablePrimitiveCasProbe(custodyRoot));
   } catch {
     return casRefusal("cas:execution-refused");
+  }
+}
+
+function absenceRefusal(...issues: readonly string[]): Iss022AbsenceHandlerResult {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function absenceResult(row: PortablePrimitiveAbsenceRawFacts): PortablePrimitiveResult {
+  if (!coherentFilesystemChild(row.child)) return "UNKNOWN";
+  const providerCodes = [
+    row.providerPostChildHeadPlusOneCode,
+    row.providerPostChildHeadPlusTwoCode,
+  ];
+  const event = row.child.event;
+  if (event?.event === "ERROR")
+    return typeof event.errorCode === "string" &&
+      unsupportedOperationCodes.has(event.errorCode) &&
+      providerCodes.every((code) => code === "ENOENT")
+      ? "UNSUPPORTED"
+      : "UNKNOWN";
+  if (event?.event !== "ABSENCE_OBSERVED") return "UNKNOWN";
+  const childCodes = [event.headPlusOneCode, event.headPlusTwoCode];
+  if (
+    childCodes.every((code) => code === "ENOENT") &&
+    providerCodes.every((code) => code === "ENOENT")
+  )
+    return "PASS";
+  for (const [observed, rechecked] of [
+    [childCodes, providerCodes],
+    [providerCodes, childCodes],
+  ] as const)
+    if (
+      observed.every(
+        (code): code is string => typeof code === "string" && unsupportedOperationCodes.has(code),
+      ) &&
+      new Set(observed).size === 1 &&
+      rechecked.every((code) => code === "ENOENT")
+    )
+      return "UNSUPPORTED";
+  return "UNKNOWN";
+}
+
+export function normalizeIss022AbsenceProbe(input: unknown): Iss022AbsenceHandlerResult {
+  try {
+    const snapshot = snapshotData(input);
+    if (snapshot === invalidSnapshot) return absenceRefusal("absence:snapshot-refused");
+    const row = snapshot as PortablePrimitiveAbsenceRawFacts;
+    if (
+      !exactKeys(row, absenceFields) ||
+      row.caseId !== "ABSENCE_HEAD_PLUS_ONE_TWO" ||
+      row.headPlusOneLeaf !== "authority-head-plus-one" ||
+      row.headPlusTwoLeaf !== "authority-head-plus-two" ||
+      row.schemaVersion !== "portable-primitives-absence-raw/v1" ||
+      !operationErrorCode.test(row.providerPostChildHeadPlusOneCode) ||
+      !operationErrorCode.test(row.providerPostChildHeadPlusTwoCode) ||
+      !validFilesystemChild(row.child, "ABSENCE")
+    )
+      return absenceRefusal("absence:record-refused");
+    return {
+      ok: true,
+      vectorExecutions: Object.freeze([
+        Object.freeze({
+          caseId: row.caseId,
+          normalizedResult: absenceResult(row),
+          rawFacts: row,
+        }),
+      ]),
+    };
+  } catch {
+    return absenceRefusal("absence:unreadable");
+  }
+}
+
+export async function runIss022AbsenceStableHandler(
+  custodyRoot: string,
+): Promise<Iss022AbsenceHandlerResult> {
+  try {
+    return normalizeIss022AbsenceProbe(await executePortablePrimitiveAbsenceProbe(custodyRoot));
+  } catch {
+    return absenceRefusal("absence:execution-refused");
   }
 }
