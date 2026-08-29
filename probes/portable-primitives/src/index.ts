@@ -1,4 +1,5 @@
 export * from "./executor.js";
+export * from "./cas.js";
 export * from "./create-once.js";
 export * from "./lock.js";
 export {
