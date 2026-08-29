@@ -4,9 +4,11 @@ import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { canonicalJson } from "../../packages/contracts/src/index.js";
 import {
+  createIss022RequiredJobRegistry,
   iss022PortablePrimitiveVectorCensus,
   iss022PortablePrimitiveVectorCensusDigest,
   iss022CustodyRootIsAbsent,
+  parseIss022RequiredJobRegistry,
   parseIss022StableRawReport,
   parseIss022SuiteCoordinates,
   runIss022PortablePrimitivesStableSuite,
@@ -50,6 +52,86 @@ afterAll(async () => {
 });
 
 describe("ISS-022 stable portable-primitives suite composer", () => {
+  test("binds the exact stable registry row and LINUX/MACOS/WINDOWS job order", () => {
+    const registry = createIss022RequiredJobRegistry();
+    expect(registry).toEqual({
+      jobs: [
+        {
+          environmentFamily: "LINUX",
+          jobId: "iss022-portable-primitives-linux",
+          requirement: "REQUIRED",
+          suiteId: "iss022-portable-primitives",
+        },
+        {
+          environmentFamily: "MACOS",
+          jobId: "iss022-portable-primitives-macos",
+          requirement: "REQUIRED",
+          suiteId: "iss022-portable-primitives",
+        },
+        {
+          environmentFamily: "WINDOWS",
+          jobId: "iss022-portable-primitives-windows",
+          requirement: "REQUIRED",
+          suiteId: "iss022-portable-primitives",
+        },
+      ],
+      schemaVersion: "conformance-required-job-registry/v1",
+      suites: [
+        {
+          custodyRequirement: "REQUIRED",
+          helperRequirement: "REQUIRED",
+          ownerPackage: "@orchestration-platform/portable-primitives",
+          runnerToken: "ISS022_PORTABLE_PRIMITIVES",
+          suiteId: "iss022-portable-primitives",
+          vectorCensusDigest: iss022PortablePrimitiveVectorCensusDigest,
+          walkRequirement: "NONE",
+        },
+      ],
+    });
+    expect(parseIss022RequiredJobRegistry(registry).ok).toBe(true);
+  });
+
+  test("refuses every registry census and stable-authority substitution", () => {
+    const registry = createIss022RequiredJobRegistry() as any;
+    const jobs = registry.jobs as any[];
+    const suite = registry.suites[0] as Record<string, unknown>;
+    for (const mutant of [
+      { ...registry, jobs: jobs.slice(0, 2) },
+      {
+        ...registry,
+        jobs: [
+          {
+            ...jobs[0],
+            jobId: "iss022-portable-primitives-extra",
+          },
+          ...jobs,
+        ],
+      },
+      { ...registry, jobs: [...jobs, jobs[0]] },
+      { ...registry, jobs: [...jobs].reverse() },
+      {
+        ...registry,
+        jobs: jobs.map((job, index) =>
+          index === 0 ? { ...job, jobId: "iss022-portable-primitives-a" } : job,
+        ),
+      },
+      {
+        ...registry,
+        jobs: jobs.map((job, index) =>
+          index === 0 ? { ...job, environmentFamily: "MACOS" } : job,
+        ),
+      },
+      { ...registry, suites: [{ ...suite, ownerPackage: "@orchestration-platform/contracts" }] },
+      { ...registry, suites: [{ ...suite, runnerToken: "ISS002_CONTRACTS" }] },
+      { ...registry, suites: [{ ...suite, vectorCensusDigest: digest("f") }] },
+      { ...registry, suites: [{ ...suite, custodyRequirement: "UNUSED" }] },
+      { ...registry, suites: [{ ...suite, helperRequirement: "UNUSED" }] },
+      { ...registry, suites: [{ ...suite, walkRequirement: "WALK_1000" }] },
+      { ...registry, suites: [...registry.suites, suite] },
+    ])
+      expect(parseIss022RequiredJobRegistry(mutant).ok).toBe(false);
+  });
+
   test("runs the eight stable groups once into one exact canonical raw report", async () => {
     expect(result.ok, result.ok ? undefined : result.issues.join(",")).toBe(true);
     if (!result.ok) return;

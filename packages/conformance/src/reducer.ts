@@ -32,7 +32,7 @@ export interface CreateConformanceJobEvidenceInput {
   readonly harnessBundleDigest: string;
   readonly jobId: string;
   readonly maximumWalkDurationNanoseconds: string | null;
-  readonly normalizedResult: "PASS" | "FAIL" | "UNSUPPORTED";
+  readonly normalizedResult: "PASS" | "FAIL" | "UNSUPPORTED" | "UNKNOWN";
   readonly providerRunDigest: string;
   readonly rawArtifacts: ConformanceRawArtifacts;
   readonly registry: unknown;

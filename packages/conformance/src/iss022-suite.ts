@@ -5,6 +5,7 @@ import {
   canonicalJson,
   snapshotClosedRecord,
   type ContractRecord,
+  type ParseResult,
 } from "@orchestration-platform/contracts";
 import {
   canonicalPortablePrimitiveCustodyRoot,
@@ -12,7 +13,11 @@ import {
   portablePrimitiveCaseIds,
   portablePrimitiveVectors,
 } from "@orchestration-platform/portable-primitives";
-import { computeConformanceRecordDigest, parseConformanceVectorCensus } from "./contracts.js";
+import {
+  computeConformanceRecordDigest,
+  parseConformanceRequiredJobRegistry,
+  parseConformanceVectorCensus,
+} from "./contracts.js";
 import {
   normalizeIss022AbsenceProbe,
   normalizeIss022CasProbe,
@@ -94,6 +99,56 @@ export const iss022PortablePrimitiveVectorCensusDigest = computeConformanceRecor
   "conformance-vector-census/v1",
   iss022PortablePrimitiveVectorCensus,
 );
+
+const iss022RequiredJobs = Object.freeze([
+  Object.freeze({
+    environmentFamily: "LINUX",
+    jobId: "iss022-portable-primitives-linux",
+    requirement: "REQUIRED",
+    suiteId: "iss022-portable-primitives",
+  }),
+  Object.freeze({
+    environmentFamily: "MACOS",
+    jobId: "iss022-portable-primitives-macos",
+    requirement: "REQUIRED",
+    suiteId: "iss022-portable-primitives",
+  }),
+  Object.freeze({
+    environmentFamily: "WINDOWS",
+    jobId: "iss022-portable-primitives-windows",
+    requirement: "REQUIRED",
+    suiteId: "iss022-portable-primitives",
+  }),
+]);
+
+export function createIss022RequiredJobRegistry(): ContractRecord {
+  const registry = Object.freeze({
+    jobs: iss022RequiredJobs,
+    schemaVersion: "conformance-required-job-registry/v1",
+    suites: Object.freeze([
+      Object.freeze({
+        custodyRequirement: "REQUIRED",
+        helperRequirement: "REQUIRED",
+        ownerPackage: "@orchestration-platform/portable-primitives",
+        runnerToken: "ISS022_PORTABLE_PRIMITIVES",
+        suiteId: "iss022-portable-primitives",
+        vectorCensusDigest: iss022PortablePrimitiveVectorCensusDigest,
+        walkRequirement: "NONE",
+      }),
+    ]),
+  });
+  const parsed = parseConformanceRequiredJobRegistry(registry);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return parsed.value;
+}
+
+export function parseIss022RequiredJobRegistry(input: unknown): ParseResult {
+  const parsed = parseConformanceRequiredJobRegistry(input);
+  if (!parsed.ok) return parsed;
+  return canonicalJson(parsed.value) === canonicalJson(createIss022RequiredJobRegistry())
+    ? parsed
+    : { ok: false, issues: Object.freeze(["registry:iss022-census-mismatch"]) };
+}
 
 function normalizedExecutions(input: unknown): readonly ContractRecord[] | undefined {
   if (!Array.isArray(input) || input.length !== portablePrimitiveCaseIds.length) return undefined;
