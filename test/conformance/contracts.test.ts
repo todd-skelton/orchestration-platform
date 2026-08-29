@@ -149,6 +149,13 @@ function createEvidence(
 
 describe("portable conformance contracts", () => {
   test("closes the exact nine-schema census and canonical identities", () => {
+    expect(conformance.conformanceResults).toEqual(["PASS", "FAIL", "UNSUPPORTED", "UNKNOWN"]);
+    expect(conformance.conformanceRunnerTokens).toEqual([
+      "ISS002_CONTRACTS",
+      "ISS022_PORTABLE_PRIMITIVES",
+    ]);
+    expect(conformance.conformanceRequirementKinds).toEqual(["REQUIRED", "UNUSED"]);
+    expect(conformance.conformanceWalkRequirements).toEqual(["NONE", "WALK_1000"]);
     expect(conformance.conformanceSchemaVersions).toEqual([
       "conformance-aggregate/v1",
       "conformance-bundle-manifest/v1",
@@ -332,6 +339,12 @@ describe("portable conformance contracts", () => {
         maximumWalkDurationNanoseconds: "5000000001",
       }).ok,
     ).toBe(false);
+    const unknownReceipt = {
+      ...created.receipt,
+      maximumWalkDurationNanoseconds: null,
+      normalizedResult: "UNKNOWN",
+    };
+    expect(conformance.parseConformanceJobReceipt(unknownReceipt).ok).toBe(true);
   });
 
   test("derives a complete PASS aggregate in stable registry order", () => {
@@ -358,6 +371,22 @@ describe("portable conformance contracts", () => {
     expect(aggregate.value.result).toBe("PASS");
     expect(aggregate.value.jobReceiptDigests).toHaveLength(3);
     expect(conformance.parseConformanceAggregate(aggregate.value).ok).toBe(true);
+    const unknownEvidence = evidence.map((row, index) =>
+      index === 1
+        ? {
+            ...row,
+            receipt: {
+              ...row.receipt,
+              maximumWalkDurationNanoseconds: null,
+              normalizedResult: "UNKNOWN",
+            },
+          }
+        : row,
+    );
+    const unknownAggregate = conformance.reduceConformanceAggregate(registry, unknownEvidence);
+    expect(unknownAggregate.ok).toBe(false);
+    if (!unknownAggregate.ok)
+      expect(unknownAggregate.issues).toContain("receipt.iss002-contracts-macos.result:not-pass");
     expect(conformance.reduceConformanceAggregate(registry, evidence.slice(0, 2)).ok).toBe(false);
     expect(
       conformance.reduceConformanceAggregate(registry, [

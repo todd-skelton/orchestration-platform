@@ -30,7 +30,12 @@ export const conformanceSchemaVersions = Object.freeze([
 
 export type ConformanceSchemaVersion = (typeof conformanceSchemaVersions)[number];
 export const conformanceBundlePurposes = Object.freeze(["HARNESS", "TEST_BUNDLE"] as const);
-export const conformanceResults = Object.freeze(["PASS", "FAIL", "UNSUPPORTED"] as const);
+export const conformanceResults = Object.freeze([
+  "PASS",
+  "FAIL",
+  "UNSUPPORTED",
+  "UNKNOWN",
+] as const);
 export const conformanceEnvironmentFamilies = Object.freeze(["LINUX", "MACOS", "WINDOWS"] as const);
 export const conformanceArchitectures = Object.freeze(["ARM64", "X64"] as const);
 export const conformanceFixtureDispositions = Object.freeze([
@@ -42,7 +47,10 @@ export const conformanceFixtureDispositions = Object.freeze([
 export const conformanceFixtureKinds = Object.freeze(["BYTES", "GENERATOR"] as const);
 export const conformanceRequirementKinds = Object.freeze(["REQUIRED", "UNUSED"] as const);
 export const conformanceWalkRequirements = Object.freeze(["NONE", "WALK_1000"] as const);
-export const conformanceRunnerTokens = Object.freeze(["ISS002_CONTRACTS"] as const);
+export const conformanceRunnerTokens = Object.freeze([
+  "ISS002_CONTRACTS",
+  "ISS022_PORTABLE_PRIMITIVES",
+] as const);
 
 const bundleFields = Object.freeze(["files", "purpose", "schemaVersion"] as const);
 const candidateFields = Object.freeze(["files", "schemaVersion"] as const);
