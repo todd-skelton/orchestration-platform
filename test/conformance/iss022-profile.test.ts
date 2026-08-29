@@ -123,7 +123,11 @@ describe("ISS-022 executable, profile, custody, and locator authority", () => {
       (_report: any, rows: any[]) => (rows[3].rawFacts.relationAfter = "DISTINCT_EXISTING"),
       (_report: any, rows: any[]) => (rows[2].normalizedResult = "UNSUPPORTED"),
       (report: any) => (report.selection.osProfile.filesystemTypeBytes = "f".repeat(16)),
-      (report: any) => (report.selection.osProfile.caseComparisonProfile = "CASE_SENSITIVE"),
+      (report: any) =>
+        (report.selection.osProfile.caseComparisonProfile =
+          report.selection.osProfile.caseComparisonProfile === "CASE_SENSITIVE"
+            ? "CASE_INSENSITIVE_LOWERCASE"
+            : "CASE_SENSITIVE"),
     ]) {
       const mutantReport = copyReport();
       const rows = copyExecutions();
