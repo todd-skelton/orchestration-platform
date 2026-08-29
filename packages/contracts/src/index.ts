@@ -36,6 +36,7 @@ import {
   computeRecoveryAuthorizationRevokeReceiptDigest,
   parseRecoveryAuthorizationContract,
 } from "./recovery.js";
+import { parseConfigurationContract } from "./configuration.js";
 
 export * from "./authority.js";
 export * from "./commit.js";
@@ -87,8 +88,20 @@ export {
   schemaVersions,
   schemaVocabularyDefinitions,
 } from "./registry.js";
+export {
+  computeConfigurationPathToken,
+  configurationSchemaFields,
+  configurationSchemaVersions,
+  orchestrationCommandCensus,
+  parseConfigurationPaths,
+  parseConfigurationProvenance,
+  parseOrchestrationCommandResult,
+  parsePlatformConfigurationSource,
+} from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const configuration = parseConfigurationContract(expectedSchemaVersion, input);
+  if (configuration) return configuration;
   const authority = parseSimplifiedAuthorityContract(expectedSchemaVersion, input);
   if (authority) return authority;
   const commit = parseCommitContract(expectedSchemaVersion, input);
