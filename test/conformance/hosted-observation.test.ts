@@ -6,6 +6,10 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import { canonicalJson } from "../../packages/contracts/src/index.js";
 import {
+  parseCanonicalConformanceBytes,
+  sha256Bytes,
+} from "../../packages/conformance/src/index.js";
+import {
   computeGithubConformanceProtectedRefDigest,
   computeGithubProviderRunDigest,
   parseGithubProviderRunContext,
@@ -13,7 +17,7 @@ import {
 import {
   decodeHostedObservationContext,
   parseHostedObservationContext,
-  runHostedIss002Observation,
+  runHostedIss022Observation,
 } from "../../scripts/conformance/hosted-observation.mjs";
 import {
   finalizeHostedPlan,
@@ -26,8 +30,7 @@ const roots: string[] = [];
 const repository = "todd-skelton/orchestration-platform";
 const workflowPath = ".github/workflows/conformance.yml" as const;
 const workflowRef = `${repository}/${workflowPath}@refs/heads/main`;
-const integrationTest =
-  process.env.ISS002_HOSTED_OBSERVATION_INTEGRATION === "1" ? test : test.skip;
+const integrationTest = test;
 
 async function temporaryRoot(prefix: string): Promise<string> {
   const root = await mkdtemp(resolve(tmpdir(), prefix));
@@ -97,7 +100,7 @@ function runnerEnvironment(): Readonly<Record<string, string>> {
   });
 }
 
-describe("hosted ISS-002 observation runner", () => {
+describe("hosted ISS-022 observation runner", () => {
   test("accepts only canonical closed plan context with a recomputed provider-run digest", () => {
     const context = syntheticContext();
     const encoded = Buffer.from(canonicalJson(context), "utf8").toString("base64url");
@@ -118,8 +121,31 @@ describe("hosted ISS-002 observation runner", () => {
     ).toBeUndefined();
   });
 
+  test("refuses a substituted job or stable runner token before any candidate execution", async () => {
+    const source = {
+      candidateRoot: resolve("candidate"),
+      context: syntheticContext(),
+      environment: runnerEnvironment(),
+      jobId: `iss022-portable-primitives-${
+        ({ darwin: "macos", linux: "linux", win32: "windows" } as const)[
+          process.platform as "darwin" | "linux" | "win32"
+        ]
+      }`,
+      outputRoot: resolve("output"),
+      runnerTemp: resolve("temp"),
+      runnerToken: "ISS022_PORTABLE_PRIMITIVES",
+      stableRoot: resolve("stable"),
+    };
+    expect(
+      (await runHostedIss022Observation({ ...source, runnerToken: "ISS002_CONTRACTS" })).ok,
+    ).toBe(false);
+    expect(
+      (await runHostedIss022Observation({ ...source, jobId: "iss002-contracts-linux" })).ok,
+    ).toBe(false);
+  });
+
   integrationTest(
-    "runs the authenticated candidate through the stable 22-row handler and writes six raw files",
+    "runs the exact registry-selected suite and writes only the six raw observation files",
     async () => {
       const stableRoot = resolve(import.meta.dirname, "../..");
       const parent = await temporaryRoot("op-hosted-observation-");
@@ -164,14 +190,14 @@ describe("hosted ISS-002 observation runner", () => {
       )[process.platform];
       if (!suffix) throw new Error(`unsupported test platform: ${process.platform}`);
       const outputRoot = resolve(runnerTemp, "observation");
-      const result = await runHostedIss002Observation({
+      const result = await runHostedIss022Observation({
         candidateRoot,
         context: finalized.value.context,
         environment: runnerEnvironment(),
-        jobId: `iss002-contracts-${suffix}`,
+        jobId: `iss022-portable-primitives-${suffix}`,
         outputRoot,
         runnerTemp,
-        runnerToken: "ISS002_CONTRACTS",
+        runnerToken: "ISS022_PORTABLE_PRIMITIVES",
         stableRoot,
       });
       expect((await readdir(outputRoot)).sort()).toEqual([
@@ -183,14 +209,42 @@ describe("hosted ISS-002 observation runner", () => {
         "stdout",
       ]);
       const report = JSON.parse(await readFile(resolve(outputRoot, "report"), "utf8"));
-      expect(report.executedVectors).toHaveLength(22);
+      expect(report.schemaVersion).toBe("portable-primitives-stable-raw-report/v1");
+      expect(report.vectorExecutions).toHaveLength(21);
+      expect(report.jobId).toBe(`iss022-portable-primitives-${suffix}`);
+      expect(["PASS", "UNKNOWN", "UNSUPPORTED"]).toContain(report.normalizedResult);
+      expect(result).toEqual({ normalizedResult: report.normalizedResult, ok: true });
+      const environmentBytes = Uint8Array.from(await readFile(resolve(outputRoot, "environment")));
+      const environmentRecordBytes = Uint8Array.from(
+        await readFile(resolve(outputRoot, "environment-record.json")),
+      );
+      const manifestBytes = Uint8Array.from(
+        await readFile(resolve(outputRoot, "raw-manifest.json")),
+      );
+      const parsedEnvironment = parseCanonicalConformanceBytes(
+        "conformance-environment/v1",
+        environmentRecordBytes,
+      );
+      const parsedManifest = parseCanonicalConformanceBytes(
+        "conformance-raw-artifact-manifest/v1",
+        manifestBytes,
+      );
+      expect(parsedEnvironment.ok).toBe(true);
+      expect(parsedManifest.ok).toBe(true);
+      if (!(parsedEnvironment.ok && parsedManifest.ok)) throw new Error("artifact parse failed");
+      expect(parsedEnvironment.value.osImageDigest).toBe(sha256Bytes(environmentBytes));
+      expect((parsedManifest.value.entries as any[]).map(({ name }) => name)).toEqual([
+        "environment",
+        "report",
+        "stderr",
+        "stdout",
+      ]);
       expect(
-        report.executedVectors.filter(
-          (row: Readonly<{ normalizedResult: string }>) => row.normalizedResult !== "PASS",
-        ),
-      ).toEqual([]);
-      expect(report.walkDurationsNanoseconds).toHaveLength(3);
-      expect(result).toEqual({ normalizedResult: "PASS", ok: true });
+        parseCanonicalConformanceBytes(
+          "conformance-job-receipt/v1",
+          Uint8Array.from(await readFile(resolve(outputRoot, "report"))),
+        ).ok,
+      ).toBe(false);
       expect(await readdir(runnerTemp)).toEqual(["observation"]);
     },
     900_000,

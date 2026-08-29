@@ -10,7 +10,7 @@ import {
   type GithubTerminalVerificationResult,
 } from "../../packages/conformance/src/github-actions/index.js";
 import { githubProtectionApi } from "./hosted-plan.mjs";
-import { loadHostedIss002StableInputs } from "./hosted-observation.mjs";
+import { loadHostedStableInputs } from "./hosted-observation.mjs";
 import { canonicalGithubDateHeader, type GithubFetch } from "./hosted-record-api.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -326,7 +326,7 @@ export async function verifyHostedTerminalFromGithub(
     const head = String(headResult.stdout).trim();
     if (head !== expected.workflowRevision) return refusal("stable:workflow-revision-mismatch");
     if (String(statusResult.stdout).length !== 0) return refusal("stable:checkout-not-clean");
-    const stable = await loadHostedIss002StableInputs(stableRoot);
+    const stable = await loadHostedStableInputs(stableRoot);
     if (!stable) return refusal("stable:inputs-refused");
     const repository = await repositoryName(expected, token, runtime);
     const [run, jobs, artifacts, protection] = await Promise.all([

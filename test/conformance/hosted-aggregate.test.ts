@@ -3,16 +3,27 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  canonicalJson,
+  schemaVersions,
+  type ContractRecord,
+} from "../../packages/contracts/src/index.js";
+import {
+  computeConformanceRecordDigest,
+  constructIss022EnvironmentAuthority,
+  createConformanceJobEvidence,
+  createIss002ContractVersions,
+  createIss022RequiredJobRegistry,
+  iss022PortablePrimitiveVectorCensusDigest,
+  runIss022PortablePrimitivesStableSuite,
+  serializeConformanceContract,
+  sha256Bytes,
+} from "../../packages/conformance/src/index.js";
+import {
   computeGithubProviderRunDigest,
   parseGithubProviderRunContext,
 } from "../../packages/conformance/src/github-actions/index.js";
-import {
-  createIss002ObservationArtifacts,
-  iss002VectorIds,
-  parseCanonicalConformanceBytes,
-} from "../../packages/conformance/src/index.js";
 import { runHostedAggregateComposition } from "../../scripts/conformance/hosted-aggregate.mjs";
-import { loadHostedIss002StableInputs } from "../../scripts/conformance/hosted-observation.mjs";
+import { loadHostedStableInputs } from "../../scripts/conformance/hosted-observation.mjs";
 import type { HostedPlanContext } from "../../scripts/conformance/hosted-plan.mjs";
 
 const roots: string[] = [];
@@ -32,7 +43,7 @@ afterEach(async () => {
 });
 
 async function context(): Promise<HostedPlanContext> {
-  const stable = await loadHostedIss002StableInputs(stableRoot);
+  const stable = await loadHostedStableInputs(stableRoot);
   if (!stable) throw new Error("stable inputs unavailable");
   const revision = "a".repeat(40);
   const candidateSubjectDigest = "b".repeat(64);
@@ -75,48 +86,119 @@ async function context(): Promise<HostedPlanContext> {
   });
 }
 
+function currentJobId(): string {
+  const suffix = ({ darwin: "macos", linux: "linux", win32: "windows" } as const)[
+    process.platform as "darwin" | "linux" | "win32"
+  ];
+  if (!suffix) throw new Error(`unsupported platform ${process.platform}`);
+  return `iss022-portable-primitives-${suffix}`;
+}
+
+async function diagnosticReport(plan: HostedPlanContext, runnerTemp: string) {
+  const environmentBytes = new TextEncoder().encode(
+    canonicalJson({
+      imageOS: "test",
+      imageVersion: "20260829.1",
+      runnerArchitecture: process.arch === "arm64" ? "ARM64" : "X64",
+      runnerOperatingSystem: process.platform,
+      schemaVersion: "github-hosted-environment-inventory/v1",
+    }),
+  );
+  const suite = await runIss022PortablePrimitivesStableSuite({
+    architecture: process.arch === "arm64" ? "ARM64" : "X64",
+    custodyParentRoot: runnerTemp,
+    environmentBytes,
+    jobId: currentJobId(),
+    packageManagerVersion: "11.22.0",
+    providerRunDigest: plan.providerRunDigest,
+    stableRoot,
+  });
+  if (!suite.ok) throw new Error(suite.issues.join(","));
+  expect(suite.report.selection).not.toBeNull();
+  const report = JSON.parse(canonicalJson(suite.report)) as Record<string, any>;
+  report.vectorExecutions[0].rawFacts.rootStable = false;
+  report.vectorExecutions[0].normalizedResult = "UNKNOWN";
+  return { environmentBytes, report };
+}
+
 async function observation(
   downloadRoot: string,
   plan: HostedPlanContext,
   operatingSystem: "LINUX" | "MACOS" | "WINDOWS",
+  base: Awaited<ReturnType<typeof diagnosticReport>>,
 ): Promise<string> {
-  const suffix = operatingSystem.toLowerCase();
-  const jobId = `iss002-contracts-${suffix}`;
-  const created = createIss002ObservationArtifacts({
-    abiBytes: new TextEncoder().encode('{"modules":"137","napi":"10"}'),
-    architecture: operatingSystem === "MACOS" ? "ARM64" : "X64",
-    environmentBytes: new TextEncoder().encode(
-      `{"imageOS":"${suffix}","imageVersion":"20260827.1"}`,
-    ),
-    filesystemProfileBytes: new TextEncoder().encode(
-      operatingSystem === "WINDOWS"
-        ? '{"caseSensitive":false,"separator":"\\\\"}'
-        : '{"caseSensitive":true,"separator":"/"}',
-    ),
+  const jobId = `iss022-portable-primitives-${operatingSystem.toLowerCase()}`;
+  const environmentBytes = new TextEncoder().encode(
+    canonicalJson({
+      imageOS: operatingSystem.toLowerCase(),
+      imageVersion: "20260829.1",
+      runnerArchitecture: process.arch === "arm64" ? "ARM64" : "X64",
+      runnerOperatingSystem: operatingSystem,
+      schemaVersion: "github-hosted-environment-inventory/v1",
+    }),
+  );
+  const report = JSON.parse(canonicalJson(base.report)) as Record<string, any>;
+  const coordinates = Object.freeze({
+    architecture: process.arch === "arm64" ? "ARM64" : "X64",
     jobId,
-    nodeVersion: "24.15.0",
-    operatingSystem,
+    observedAt: report.observedAt,
+    osImageDigest: sha256Bytes(environmentBytes),
     packageManagerVersion: "11.22.0",
-    runnerToken: "ISS002_CONTRACTS",
-    stderrBytes: new Uint8Array(),
-    stdoutBytes: new TextEncoder().encode(`${jobId}\n`),
-    suiteId: "iss002-contracts",
-    vectorExecutions: iss002VectorIds.map((fixtureId) => ({
-      fixtureId,
-      normalizedResult: "PASS" as const,
-    })),
-    walkDurationsNanoseconds: ["1", "2", "3"],
+    providerRunDigest: plan.providerRunDigest,
   });
-  if (!created.ok) throw new Error(created.issues.join(","));
+  const authority = constructIss022EnvironmentAuthority(
+    report.vectorExecutions as ContractRecord[],
+    report.executableCapture,
+    coordinates,
+    iss022PortablePrimitiveVectorCensusDigest,
+  );
+  if (!authority.ok) throw new Error(authority.issues.join(","));
+  Object.assign(report, authority.value.profile, coordinates, {
+    environmentDigest: authority.value.environmentDigest,
+    normalizedResult: authority.value.normalizedResult,
+  });
+  const reportBytes = new TextEncoder().encode(canonicalJson(report));
+  const rawArtifacts = Object.freeze({
+    environment: environmentBytes,
+    report: reportBytes,
+    stderr: new Uint8Array(),
+    stdout: new Uint8Array(),
+  });
+  const evidence = createConformanceJobEvidence({
+    candidateSubjectDigest: plan.candidateSubjectDigest,
+    contractVersionsDigest: computeConformanceRecordDigest(
+      "conformance-contract-versions/v1",
+      createIss002ContractVersions(schemaVersions),
+    ),
+    environment: authority.value.environment,
+    harnessBundleDigest: plan.harnessBundleDigest,
+    jobId,
+    maximumWalkDurationNanoseconds: null,
+    normalizedResult: "UNKNOWN",
+    providerRunDigest: plan.providerRunDigest,
+    rawArtifacts,
+    registry: createIss022RequiredJobRegistry(),
+    testBundleDigest: plan.testBundleDigest,
+  });
+  if (!evidence.ok) throw new Error(evidence.issues.join(","));
+  const environmentRecord = serializeConformanceContract(
+    "conformance-environment/v1",
+    evidence.environment,
+  );
+  const manifest = serializeConformanceContract(
+    "conformance-raw-artifact-manifest/v1",
+    evidence.rawArtifactManifest,
+  );
+  if (!(environmentRecord.ok && manifest.ok)) throw new Error("serialization refused");
   const directory = resolve(downloadRoot, `conformance-${plan.runId}-${plan.runAttempt}-${jobId}`);
   await mkdir(directory);
   for (const [name, bytes] of Object.entries({
-    environment: created.environmentBytes,
-    "environment-record.json": created.environmentRecordBytes,
-    "raw-manifest.json": created.rawManifestBytes,
-    report: created.reportBytes,
-    stderr: created.stderrBytes,
-    stdout: created.stdoutBytes,
+    environment: environmentBytes,
+    "environment-record.json": environmentRecord.bytes,
+    "raw-manifest.json": manifest.bytes,
+    report: reportBytes,
+    stderr: new Uint8Array(),
+    stdout: new Uint8Array(),
   }))
     await writeFile(resolve(directory, name), bytes);
   return directory;
@@ -128,16 +210,29 @@ async function fixture() {
   const outputRoot = resolve(runnerTemp, "aggregate");
   await mkdir(downloadRoot);
   const plan = await context();
+  const base = await diagnosticReport(plan, runnerTemp);
   const directories = await Promise.all(
     (["LINUX", "MACOS", "WINDOWS"] as const).map(
-      async (operatingSystem) => await observation(downloadRoot, plan, operatingSystem),
+      async (operatingSystem) => await observation(downloadRoot, plan, operatingSystem, base),
     ),
   );
   return { directories, downloadRoot, outputRoot, plan, runnerTemp };
 }
 
-describe("hosted stable aggregate composition", () => {
-  test("derives exact receipts and one PASS aggregate from the complete current-attempt census", async () => {
+async function replaceReport(directory: string, mutate: (report: any) => void) {
+  const report = JSON.parse(await readFile(resolve(directory, "report"), "utf8"));
+  mutate(report);
+  const reportBytes = new TextEncoder().encode(canonicalJson(report));
+  await writeFile(resolve(directory, "report"), reportBytes);
+  const manifest = JSON.parse(await readFile(resolve(directory, "raw-manifest.json"), "utf8"));
+  const row = manifest.entries.find((entry: any) => entry.name === "report");
+  row.byteLength = String(reportBytes.byteLength);
+  row.sha256Digest = sha256Bytes(reportBytes);
+  await writeFile(resolve(directory, "raw-manifest.json"), canonicalJson(manifest), "utf8");
+}
+
+describe("hosted stable ISS-022 aggregate composition", () => {
+  test("authenticates the null-arm reports, preserves exact UNKNOWN receipts, and emits no aggregate", async () => {
     const input = await fixture();
     const result = await runHostedAggregateComposition({
       context: input.plan,
@@ -146,19 +241,23 @@ describe("hosted stable aggregate composition", () => {
       runnerTemp: input.runnerTemp,
       stableRoot,
     });
-    expect(result.ok).toBe(true);
-    expect((await readdir(input.outputRoot)).sort()).toEqual(["aggregate.json", "receipts"]);
-    const aggregate = parseCanonicalConformanceBytes(
-      "conformance-aggregate/v1",
-      Uint8Array.from(await readFile(resolve(input.outputRoot, "aggregate.json"))),
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("non-PASS aggregate unexpectedly constructed");
+    expect(
+      result.receipts?.map(({ jobId, normalizedResult }) => ({ jobId, normalizedResult })),
+    ).toEqual(
+      (["linux", "macos", "windows"] as const).map((suffix) => ({
+        jobId: `iss022-portable-primitives-${suffix}`,
+        normalizedResult: "UNKNOWN",
+      })),
     );
-    if (!aggregate.ok) throw new Error(aggregate.issues.join(","));
-    expect(aggregate.value.result).toBe("PASS");
-    expect(aggregate.value.providerRunDigest).toBe(input.plan.providerRunDigest);
-    expect(await readdir(resolve(input.outputRoot, "receipts"))).toHaveLength(3);
+    expect(result.issues).toContain(
+      "aggregate.receipt.iss022-portable-primitives-linux.result:not-pass",
+    );
+    await expect(readdir(input.outputRoot)).rejects.toThrow();
   }, 600_000);
 
-  test("refuses a missing observation or changed bound report without leaving aggregate bytes", async () => {
+  test("refuses missing, extra, and cross-job observation artifacts", async () => {
     const missing = await fixture();
     await rm(missing.directories[0]!, { recursive: true });
     expect(
@@ -172,21 +271,53 @@ describe("hosted stable aggregate composition", () => {
         })
       ).ok,
     ).toBe(false);
-    await expect(readdir(missing.outputRoot)).rejects.toThrow();
 
-    const changed = await fixture();
-    await writeFile(resolve(changed.directories[1]!, "report"), "{}", "utf8");
+    const extra = await fixture();
+    await writeFile(resolve(extra.directories[0]!, "receipt.json"), "{}");
     expect(
       (
         await runHostedAggregateComposition({
-          context: changed.plan,
-          downloadRoot: changed.downloadRoot,
-          outputRoot: changed.outputRoot,
-          runnerTemp: changed.runnerTemp,
+          context: extra.plan,
+          downloadRoot: extra.downloadRoot,
+          outputRoot: extra.outputRoot,
+          runnerTemp: extra.runnerTemp,
           stableRoot,
         })
       ).ok,
     ).toBe(false);
-    await expect(readdir(changed.outputRoot)).rejects.toThrow();
+
+    const substituted = await fixture();
+    const linuxReport = await readFile(resolve(substituted.directories[0]!, "report"), "utf8");
+    await replaceReport(substituted.directories[1]!, (report) =>
+      Object.assign(report, JSON.parse(linuxReport)),
+    );
+    expect(
+      (
+        await runHostedAggregateComposition({
+          context: substituted.plan,
+          downloadRoot: substituted.downloadRoot,
+          outputRoot: substituted.outputRoot,
+          runnerTemp: substituted.runnerTemp,
+          stableRoot,
+        })
+      ).ok,
+    ).toBe(false);
+  }, 600_000);
+
+  test("refuses UNKNOWN laundering even when the substituted report digest is rebound", async () => {
+    const input = await fixture();
+    await replaceReport(input.directories[0]!, (report) => {
+      report.normalizedResult = "PASS";
+    });
+    const result = await runHostedAggregateComposition({
+      context: input.plan,
+      downloadRoot: input.downloadRoot,
+      outputRoot: input.outputRoot,
+      runnerTemp: input.runnerTemp,
+      stableRoot,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.receipts).toBeUndefined();
+    await expect(readdir(input.outputRoot)).rejects.toThrow();
   }, 600_000);
 });

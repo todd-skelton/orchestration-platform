@@ -67,7 +67,11 @@ describe("protected conformance workflow structure", () => {
       "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}",
       "matrix: { os: [ubuntu-latest] }",
     ],
-    ["excluded matrix row", "fail-fast: false", "exclude: [{ jobId: iss002-contracts-macos }]"],
+    [
+      "excluded matrix row",
+      "fail-fast: false",
+      "exclude: [{ jobId: iss022-portable-primitives-macos }]",
+    ],
     ["local-hosted substitution", "runs-on: ${{ matrix.runner }}", "runs-on: self-hosted"],
     [
       "aggregate writer in candidate job",

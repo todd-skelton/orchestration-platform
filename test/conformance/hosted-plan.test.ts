@@ -201,22 +201,22 @@ describe("hosted conformance plan", () => {
     expect(finalized.value.context.providerRunDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(finalized.value.matrix.include).toEqual([
       {
-        jobId: "iss002-contracts-linux",
+        jobId: "iss022-portable-primitives-linux",
         runner: "ubuntu-latest",
-        runnerToken: "ISS002_CONTRACTS",
-        suiteId: "iss002-contracts",
+        runnerToken: "ISS022_PORTABLE_PRIMITIVES",
+        suiteId: "iss022-portable-primitives",
       },
       {
-        jobId: "iss002-contracts-macos",
+        jobId: "iss022-portable-primitives-macos",
         runner: "macos-latest",
-        runnerToken: "ISS002_CONTRACTS",
-        suiteId: "iss002-contracts",
+        runnerToken: "ISS022_PORTABLE_PRIMITIVES",
+        suiteId: "iss022-portable-primitives",
       },
       {
-        jobId: "iss002-contracts-windows",
+        jobId: "iss022-portable-primitives-windows",
         runner: "windows-latest",
-        runnerToken: "ISS002_CONTRACTS",
-        suiteId: "iss002-contracts",
+        runnerToken: "ISS022_PORTABLE_PRIMITIVES",
+        suiteId: "iss022-portable-primitives",
       },
     ]);
     expect(Buffer.from(finalized.value.encodedContext, "base64url").toString("utf8")).toContain(
