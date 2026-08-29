@@ -3,6 +3,7 @@ export * from "./candidate-materialization.js";
 export * from "./iss002-handler.js";
 export * from "./iss022-handler.js";
 export * from "./iss022-profile.js";
+export * from "./iss022-suite.js";
 export * from "./observation.js";
 export * from "./reducer.js";
 export * from "./stable.js";
