@@ -173,7 +173,7 @@ const commandHandlerOwners = [
 
 const expectedCliCommands = [
   "config validate||",
-  "config paths||--reveal:false",
+  "config paths||",
   "session acquire|--request|",
   "session renew|--session|",
   "session inspect||--session:true",

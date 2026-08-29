@@ -13,12 +13,7 @@ export const commandHandlerRegistration = Object.freeze({
     {
       argv: ["config", "paths"],
       required: [],
-      optional: [
-        {
-          name: "--reveal",
-          takesValue: false,
-        },
-      ],
+      optional: [],
     },
   ],
 });
