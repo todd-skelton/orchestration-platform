@@ -4,11 +4,13 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import {
+  normalizeIss022CasProbe,
   normalizeIss022CreateOnceProbe,
   normalizeIss022PhysicalProbe,
   normalizeIss022ParserProbe,
   normalizeIss022ReplaceProbe,
   normalizeIss022RuntimeProbe,
+  runIss022CasStableHandler,
   runIss022PhysicalStableHandler,
   runIss022CreateOnceStableHandler,
   runIss022ParserStableHandler,
@@ -18,6 +20,9 @@ import {
 import {
   executePortablePhysicalProbe,
   portablePrimitiveReplaceCases,
+  type PortablePrimitiveCasContentionRawFacts,
+  type PortablePrimitiveCasBarrierContenderRawFacts,
+  type PortablePrimitiveCasMismatchRawFacts,
   type PortablePrimitiveChildExecution,
   type PortablePrimitiveCreateOnceRawFacts,
   type PortablePrimitiveParserChildObservation,
@@ -173,6 +178,84 @@ function createOnceFacts(
     schemaVersion: "portable-primitives-create-once-raw/v1",
     ...mutation,
   };
+}
+
+function casEvent(
+  event: "ERROR" | "PREDECESSOR_MISMATCH" | "SELECTED",
+  errorCode: string | null,
+  readbackHex: "41" | "42" | null,
+): ContractRecord {
+  return Object.freeze({
+    barrier: null,
+    errorCode,
+    event,
+    headPlusOneCode: null,
+    headPlusTwoCode: null,
+    mode: "CAS",
+    readbackHex,
+    schemaVersion: "portable-primitives-raw-child-event/v1",
+  });
+}
+
+function casChild(
+  event: ContractRecord | null,
+  mutation: Partial<PortablePrimitiveChildExecution> = {},
+): PortablePrimitiveChildExecution {
+  return createOnceChild(event, mutation);
+}
+
+function casBarrierEvent(barrier: "READY" | "RELEASED"): ContractRecord {
+  return Object.freeze({
+    barrier,
+    predecessorHex: "41",
+    proposalHex: "42",
+    schemaVersion: "portable-primitives-cas-barrier-event/v1",
+  });
+}
+
+function casContender(
+  contenderId: "0" | "1",
+  terminal: PortablePrimitiveChildExecution,
+): PortablePrimitiveCasBarrierContenderRawFacts {
+  return {
+    contenderId,
+    readyEvent: casBarrierEvent("READY"),
+    releaseEvent: casBarrierEvent("RELEASED"),
+    terminal,
+  };
+}
+
+function casFacts(): [
+  PortablePrimitiveCasMismatchRawFacts,
+  PortablePrimitiveCasContentionRawFacts,
+] {
+  return [
+    {
+      caseId: "CAS_PREDECESSOR_MISMATCH",
+      child: casChild(casEvent("PREDECESSOR_MISMATCH", null, "41")),
+      finalReadbackErrorCode: null,
+      finalReadbackHex: "41",
+      initialReadbackHex: "41",
+      predecessorHex: "42",
+      proposalHex: "42",
+      schemaVersion: "portable-primitives-cas-mismatch-raw/v1",
+    },
+    {
+      barrierEventOrder: ["CONTENDER_0_READY", "CONTENDER_1_READY", "RELEASE"],
+      caseId: "CAS_TWO_CONTENDERS",
+      contenderCount: "2",
+      contenders: [
+        casContender("0", casChild(casEvent("SELECTED", null, "42"))),
+        casContender("1", casChild(casEvent("PREDECESSOR_MISMATCH", null, "42"))),
+      ],
+      finalReadbackErrorCode: null,
+      finalReadbackHex: "42",
+      initialReadbackHex: "41",
+      predecessorHex: "41",
+      proposalHex: "42",
+      schemaVersion: "portable-primitives-cas-contention-raw/v1",
+    },
+  ];
 }
 
 function replaceEvent(
@@ -990,5 +1073,174 @@ describe("stable ISS-022 replace handler", () => {
       if (!reduced.ok) throw new Error(reduced.issues.join(","));
       expect(reduced.vectorExecutions[index]!.normalizedResult).toBe("UNKNOWN");
     }
+  });
+});
+
+describe("stable ISS-022 CAS handler", () => {
+  test("executes and normalizes the exact two provider-owned fresh-child rows", async () => {
+    const result = await runIss022CasStableHandler(await custodyRoot());
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(
+      result.vectorExecutions.map(({ caseId, rawFacts }) => ({
+        caseId,
+        finalReadbackHex: rawFacts.finalReadbackHex,
+        initialReadbackHex: rawFacts.initialReadbackHex,
+      })),
+    ).toEqual([
+      {
+        caseId: "CAS_PREDECESSOR_MISMATCH",
+        finalReadbackHex: "41",
+        initialReadbackHex: "41",
+      },
+      {
+        caseId: "CAS_TWO_CONTENDERS",
+        finalReadbackHex: "42",
+        initialReadbackHex: "41",
+      },
+    ]);
+    expect(result.vectorExecutions[0]!.normalizedResult).toBe("PASS");
+    expect(result.vectorExecutions[1]!.normalizedResult).toBe("UNSUPPORTED");
+    const [mismatch, contention] = result.vectorExecutions;
+    expect((mismatch!.rawFacts as PortablePrimitiveCasMismatchRawFacts).child.stdout).not.toContain(
+      "PASS",
+    );
+    expect(
+      (contention!.rawFacts as PortablePrimitiveCasContentionRawFacts).contenders.every(
+        ({ terminal }) => !terminal.stdout.includes("PASS"),
+      ),
+    ).toBe(true);
+  });
+
+  test("snapshots the complete census before disposition", () => {
+    const rows = casFacts();
+    const event = rows[0].child.event!;
+    const result = normalizeIss022CasProbe(rows);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0]!.rawFacts).not.toBe(rows[0]);
+    expect(
+      (result.vectorExecutions[0]!.rawFacts as PortablePrimitiveCasMismatchRawFacts).child.event,
+    ).not.toBe(event);
+    rows[0] = { ...rows[0], finalReadbackHex: "42" };
+    expect(result.vectorExecutions[0]!.normalizedResult).toBe("PASS");
+  });
+
+  test("refuses malformed census, requests, events, accessors, and proxies", () => {
+    const rows = casFacts();
+    const accessor = { ...rows[0] };
+    Object.defineProperty(accessor, "predecessorHex", { enumerable: true, get: () => "42" });
+    const { proposalHex: _missing, ...missing } = rows[0];
+    for (const mutant of [
+      rows.slice(0, 1),
+      [...rows, rows[0]],
+      [rows[1], rows[0]],
+      [missing, rows[1]],
+      [{ ...rows[0], extra: true }, rows[1]],
+      [{ ...rows[0], predecessorHex: "41" }, rows[1]],
+      [accessor, rows[1]],
+      [new Proxy(rows[0], {}), rows[1]],
+      new Proxy(rows, {}),
+      [rows[0], { ...rows[1], barrierEventOrder: ["CONTENDER_0_READY", "RELEASE"] }],
+      [
+        rows[0],
+        {
+          ...rows[1],
+          barrierEventOrder: ["CONTENDER_0_READY", "RELEASE", "CONTENDER_1_READY"],
+        },
+      ],
+      [
+        rows[0],
+        {
+          ...rows[1],
+          contenders: [
+            rows[1].contenders[0],
+            { ...rows[1].contenders[1], readyEvent: casBarrierEvent("RELEASED") },
+          ],
+        },
+      ],
+      [
+        rows[0],
+        {
+          ...rows[1],
+          contenders: [
+            {
+              ...rows[1].contenders[0],
+              readyEvent: { ...casBarrierEvent("READY"), predecessorHex: "42" },
+            },
+            rows[1].contenders[1],
+          ],
+        },
+      ],
+      [
+        rows[0],
+        {
+          ...rows[1],
+          contenders: [
+            casContender("0", casChild(casEvent("PREDECESSOR_MISMATCH", null, "41"))),
+            rows[1].contenders[1],
+          ],
+        },
+      ],
+    ])
+      expect(normalizeIss022CasProbe(mutant).ok).toBe(false);
+  });
+
+  test("keeps EEXIST non-PASS and admits only coherent exact operation errors", () => {
+    const resultAt = (rows: ReturnType<typeof casFacts>, index: 0 | 1) => {
+      const result = normalizeIss022CasProbe(rows);
+      if (!result.ok) throw new Error(result.issues.join(","));
+      return result.vectorExecutions[index]!.normalizedResult;
+    };
+    expect(resultAt(casFacts(), 1)).toBe("PASS");
+
+    const existing = casFacts();
+    existing[1] = {
+      ...existing[1],
+      contenders: [
+        casContender("0", casChild(casEvent("SELECTED", null, "42"))),
+        casContender("1", casChild(casEvent("ERROR", "EEXIST", null))),
+      ],
+    };
+    expect(resultAt(existing, 1)).toBe("UNSUPPORTED");
+
+    const unsupported = casFacts();
+    unsupported[0] = {
+      ...unsupported[0],
+      child: casChild(casEvent("ERROR", "EPERM", null)),
+    };
+    unsupported[1] = {
+      ...unsupported[1],
+      contenders: [
+        casContender("0", casChild(casEvent("ERROR", "EEXIST", null))),
+        casContender("1", casChild(casEvent("ERROR", "ENOTSUP", null))),
+      ],
+      finalReadbackHex: "41",
+    };
+    expect(resultAt(unsupported, 0)).toBe("UNSUPPORTED");
+    expect(resultAt(unsupported, 1)).toBe("UNSUPPORTED");
+
+    for (const [rows, index] of [
+      [[{ ...casFacts()[0], finalReadbackHex: "42" }, casFacts()[1]], 0],
+      [
+        [
+          casFacts()[0],
+          {
+            ...casFacts()[1],
+            contenders: [
+              casContender("0", casChild(casEvent("SELECTED", null, "42"))),
+              casContender("1", casChild(casEvent("ERROR", "EPERM", null))),
+            ],
+          },
+        ],
+        1,
+      ],
+      [
+        [
+          { ...casFacts()[0], child: casChild(casFacts()[0].child.event, { timedOut: true }) },
+          casFacts()[1],
+        ],
+        0,
+      ],
+    ] as readonly (readonly [ReturnType<typeof casFacts>, 0 | 1])[])
+      expect(resultAt(rows, index)).toBe("UNKNOWN");
   });
 });
