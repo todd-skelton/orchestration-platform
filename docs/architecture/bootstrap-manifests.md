@@ -143,7 +143,7 @@ and result schema families are exhaustive:
 | Canonical argv after global flags | Input schema | Result schema |
 |---|---|---|
 | `config validate` | project/config records | `configuration-provenance/v1` |
-| `config paths [--reveal]` | project/config records | `configuration-paths/v1` |
+| `config paths` | project/config records | `configuration-paths/v1` |
 | `session acquire --request <file>` | `session-acquire-request/v1` | `session-receipt/v1` |
 | `session renew --session <id>` | identity | `session-receipt/v1` |
 | `session inspect [--session <id>]` | optional identity | `session-health/v1` |
