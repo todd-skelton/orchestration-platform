@@ -258,17 +258,22 @@ async function absence(root) {
   } catch (error) {
     return event("ERROR", { errorCode: code(error) });
   }
-  const observed = [];
-  for (const name of ["authority-head-plus-one", "authority-head-plus-two"]) {
-    try {
-      await lstat(leaf(root, name));
-      observed.push("PRESENT");
-    } catch (error) {
-      observed.push(code(error));
-    }
+  let headPlusOneCode;
+  let headPlusTwoCode;
+  try {
+    await lstat(leaf(root, "authority-head-plus-one"));
+    headPlusOneCode = "PRESENT";
+  } catch (error) {
+    headPlusOneCode = code(error);
+  }
+  try {
+    await lstat(leaf(root, "authority-head-plus-two"));
+    headPlusTwoCode = "PRESENT";
+  } catch (error) {
+    headPlusTwoCode = code(error);
   }
   await lockHandle.close();
-  event("ABSENCE_OBSERVED", { headPlusOneCode: observed[0], headPlusTwoCode: observed[1] });
+  event("ABSENCE_OBSERVED", { headPlusOneCode, headPlusTwoCode });
 }
 
 try {

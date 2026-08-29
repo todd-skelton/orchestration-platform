@@ -4,12 +4,14 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import {
+  normalizeIss022AbsenceProbe,
   normalizeIss022CasProbe,
   normalizeIss022CreateOnceProbe,
   normalizeIss022PhysicalProbe,
   normalizeIss022ParserProbe,
   normalizeIss022ReplaceProbe,
   normalizeIss022RuntimeProbe,
+  runIss022AbsenceStableHandler,
   runIss022CasStableHandler,
   runIss022PhysicalStableHandler,
   runIss022CreateOnceStableHandler,
@@ -20,6 +22,7 @@ import {
 import {
   executePortablePhysicalProbe,
   portablePrimitiveReplaceCases,
+  type PortablePrimitiveAbsenceRawFacts,
   type PortablePrimitiveCasContentionRawFacts,
   type PortablePrimitiveCasBarrierContenderRawFacts,
   type PortablePrimitiveCasMismatchRawFacts,
@@ -256,6 +259,38 @@ function casFacts(): [
       schemaVersion: "portable-primitives-cas-contention-raw/v1",
     },
   ];
+}
+
+function absenceEvent(
+  headPlusOneCode: string | null = "ENOENT",
+  headPlusTwoCode: string | null = "ENOENT",
+  errorCode: string | null = null,
+): ContractRecord {
+  return Object.freeze({
+    barrier: null,
+    errorCode,
+    event: errorCode === null ? "ABSENCE_OBSERVED" : "ERROR",
+    headPlusOneCode: errorCode === null ? headPlusOneCode : null,
+    headPlusTwoCode: errorCode === null ? headPlusTwoCode : null,
+    mode: "ABSENCE",
+    readbackHex: null,
+    schemaVersion: "portable-primitives-raw-child-event/v1",
+  });
+}
+
+function absenceFacts(
+  mutation: Partial<PortablePrimitiveAbsenceRawFacts> = {},
+): PortablePrimitiveAbsenceRawFacts {
+  return {
+    caseId: "ABSENCE_HEAD_PLUS_ONE_TWO",
+    child: createOnceChild(absenceEvent()),
+    headPlusOneLeaf: "authority-head-plus-one",
+    headPlusTwoLeaf: "authority-head-plus-two",
+    providerPostChildHeadPlusOneCode: "ENOENT",
+    providerPostChildHeadPlusTwoCode: "ENOENT",
+    schemaVersion: "portable-primitives-absence-raw/v1",
+    ...mutation,
+  };
 }
 
 function replaceEvent(
@@ -1242,5 +1277,84 @@ describe("stable ISS-022 CAS handler", () => {
       ],
     ] as readonly (readonly [ReturnType<typeof casFacts>, 0 | 1])[])
       expect(resultAt(rows, index)).toBe("UNKNOWN");
+  });
+});
+
+describe("stable ISS-022 same-lock absence handler", () => {
+  test("executes the exact provider-owned row and requires both post-child ENOENT rechecks", async () => {
+    const result = await runIss022AbsenceStableHandler(await custodyRoot());
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0]).toMatchObject({
+      caseId: "ABSENCE_HEAD_PLUS_ONE_TWO",
+      normalizedResult: "PASS",
+      rawFacts: {
+        headPlusOneLeaf: "authority-head-plus-one",
+        headPlusTwoLeaf: "authority-head-plus-two",
+        providerPostChildHeadPlusOneCode: "ENOENT",
+        providerPostChildHeadPlusTwoCode: "ENOENT",
+      },
+    });
+    expect(result.vectorExecutions[0].rawFacts.child.stdout).not.toContain("PASS");
+  });
+
+  test("snapshots the complete raw row before disposition", () => {
+    const facts = absenceFacts();
+    const event = facts.child.event!;
+    const result = normalizeIss022AbsenceProbe(facts);
+    if (!result.ok) throw new Error(result.issues.join(","));
+    expect(result.vectorExecutions[0].rawFacts).not.toBe(facts);
+    expect(result.vectorExecutions[0].rawFacts.child.event).not.toBe(event);
+    expect(result.vectorExecutions[0].normalizedResult).toBe("PASS");
+  });
+
+  test("refuses substituted paths, malformed records, accessors, proxies, and widened census", () => {
+    const facts = absenceFacts();
+    const accessor = { ...facts };
+    Object.defineProperty(accessor, "headPlusOneLeaf", {
+      enumerable: true,
+      get: () => "authority-head-plus-one",
+    });
+    const { schemaVersion: _missing, ...missing } = facts;
+    for (const mutant of [
+      [],
+      [facts],
+      missing,
+      { ...facts, extra: true },
+      { ...facts, headPlusOneLeaf: "authority-head-plus-two" },
+      { ...facts, headPlusTwoLeaf: "authority-head-plus-one" },
+      { ...facts, providerPostChildHeadPlusOneCode: false },
+      { ...facts, child: createOnceChild({ ...absenceEvent(), mode: "CAS" }) },
+      accessor,
+      new Proxy(facts, {}),
+    ])
+      expect(normalizeIss022AbsenceProbe(mutant).ok).toBe(false);
+  });
+
+  test("keeps concurrent/later presence, unexpected errno, and lifecycle gaps non-PASS", () => {
+    for (const facts of [
+      absenceFacts({ providerPostChildHeadPlusOneCode: "PRESENT" }),
+      absenceFacts({ child: createOnceChild(absenceEvent("PRESENT", "ENOENT")) }),
+      absenceFacts({ child: createOnceChild(absenceEvent("EIO", "ENOENT")) }),
+      absenceFacts({ child: createOnceChild(absenceEvent(), { timedOut: true }) }),
+    ]) {
+      const result = normalizeIss022AbsenceProbe(facts);
+      if (!result.ok) throw new Error(result.issues.join(","));
+      expect(result.vectorExecutions[0].normalizedResult).toBe("UNKNOWN");
+    }
+  });
+
+  test("admits exact unsupported operation evidence but never promotes it to PASS", () => {
+    for (const facts of [
+      absenceFacts({ child: createOnceChild(absenceEvent(null, null, "EPERM")) }),
+      absenceFacts({ child: createOnceChild(absenceEvent("ENOTSUP", "ENOTSUP")) }),
+      absenceFacts({
+        providerPostChildHeadPlusOneCode: "EACCES",
+        providerPostChildHeadPlusTwoCode: "EACCES",
+      }),
+    ]) {
+      const result = normalizeIss022AbsenceProbe(facts);
+      if (!result.ok) throw new Error(result.issues.join(","));
+      expect(result.vectorExecutions[0].normalizedResult).toBe("UNSUPPORTED");
+    }
   });
 });
