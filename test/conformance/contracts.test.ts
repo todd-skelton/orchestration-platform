@@ -347,6 +347,64 @@ describe("portable conformance contracts", () => {
     expect(conformance.parseConformanceJobReceipt(unknownReceipt).ok).toBe(true);
   });
 
+  test("parses nullable filesystem syntax without weakening suite authority", () => {
+    const nullableEnvironment = { ...environment("LINUX"), filesystemProfileDigest: null };
+    expect(conformance.parseConformanceEnvironment(nullableEnvironment).ok).toBe(true);
+    for (const filesystemProfileDigest of ["0", "NULL", false, undefined])
+      expect(
+        conformance.parseConformanceEnvironment({
+          ...nullableEnvironment,
+          filesystemProfileDigest,
+        }).ok,
+      ).toBe(false);
+
+    const iss002 = conformance.createConformanceJobEvidence({
+      candidateSubjectDigest: d("1"),
+      contractVersionsDigest: d("2"),
+      environment: nullableEnvironment,
+      harnessBundleDigest: d("3"),
+      jobId: "iss002-contracts-linux",
+      maximumWalkDurationNanoseconds: "1000",
+      normalizedResult: "PASS",
+      providerRunDigest: d("4"),
+      rawArtifacts: rawArtifacts("LINUX"),
+      registry,
+      testBundleDigest: d("5"),
+    });
+    expect(iss002.ok).toBe(false);
+    if (!iss002.ok) expect(iss002.issues).toContain("environment.filesystemProfileDigest:required");
+
+    const valid = [
+      createEvidence(registry, "iss002-contracts-linux", "LINUX", "1000"),
+      createEvidence(registry, "iss002-contracts-macos", "MACOS", "1001"),
+      createEvidence(registry, "iss002-contracts-windows", "WINDOWS", "1002"),
+    ];
+    expect(valid.every((row) => row.ok)).toBe(true);
+    const aggregateInput = valid.flatMap((row, index) => {
+      if (!row.ok) return [];
+      const selectedEnvironment = index === 0 ? nullableEnvironment : row.environment;
+      return [
+        {
+          environment: selectedEnvironment,
+          rawArtifactManifest: row.rawArtifactManifest,
+          receipt: {
+            ...row.receipt,
+            environmentDigest: conformance.computeConformanceRecordDigest(
+              "conformance-environment/v1",
+              selectedEnvironment,
+            ),
+          },
+        },
+      ];
+    });
+    const aggregate = conformance.reduceConformanceAggregate(registry, aggregateInput);
+    expect(aggregate.ok).toBe(false);
+    if (!aggregate.ok)
+      expect(aggregate.issues).toContain(
+        "receipt.iss002-contracts-linux.environment.filesystemProfileDigest:required",
+      );
+  });
+
   test("derives a complete PASS aggregate in stable registry order", () => {
     const created = [
       createEvidence(registry, "iss002-contracts-linux", "LINUX", "1000"),
@@ -441,6 +499,26 @@ describe("portable conformance contracts", () => {
         : [],
     );
     expect(conformance.reduceConformanceAggregate(futureRegistry, evidence).ok).toBe(true);
+    const nullableFuture = createEvidence(futureRegistry, "future-suite-linux", "LINUX", null);
+    expect(nullableFuture.ok).toBe(true);
+    if (nullableFuture.ok) {
+      const refused = conformance.createConformanceJobEvidence({
+        candidateSubjectDigest: d("1"),
+        contractVersionsDigest: d("2"),
+        environment: { ...nullableFuture.environment, filesystemProfileDigest: null },
+        harnessBundleDigest: d("3"),
+        jobId: "future-suite-linux",
+        maximumWalkDurationNanoseconds: null,
+        normalizedResult: "PASS",
+        providerRunDigest: d("4"),
+        rawArtifacts: rawArtifacts("LINUX"),
+        registry: futureRegistry,
+        testBundleDigest: d("5"),
+      });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok)
+        expect(refused.issues).toContain("environment.filesystemProfileDigest:required");
+    }
   });
 
   test("is total for hostile public inputs", () => {

@@ -9,12 +9,15 @@ import {
 } from "../../packages/contracts/src/index.js";
 import {
   constructIss022ProfileArtifacts,
+  parseIss022SuiteCoordinates,
   runIss022PhysicalStableHandler,
   validateIss022ProfileArtifacts,
   validIss022ExecutableCapture,
   withIss022ExecutableCustody,
 } from "../../packages/conformance/src/index.js";
 import {
+  computePortablePrimitivesPreCustodyEnvironmentDigest,
+  computePortableProbeCustodyInstanceDigest,
   parsePortablePrimitivesOsProfile,
   parsePortableProbeCustodyReceipt,
 } from "../../probes/portable-primitives/src/index.js";
@@ -23,9 +26,11 @@ const digest = (value: string) => value.repeat(64);
 const operatingSystem =
   process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
 const coordinates = Object.freeze({
-  environmentDigest: digest("a"),
+  architecture: (process.arch === "arm64" ? "ARM64" : "X64") as "ARM64" | "X64",
   jobId: `iss022-portable-primitives-${operatingSystem}`,
   observedAt: "2026-08-28T18:00:00.000Z",
+  osImageDigest: digest("a"),
+  packageManagerVersion: "11.22.0",
   providerRunDigest: digest("b"),
 });
 let parentRoot: string;
@@ -40,7 +45,11 @@ function copyExecutions() {
   return JSON.parse(canonicalJson(executions)) as Record<string, any>[];
 }
 
-function accepted(input: ContractRecord, expected = coordinates, rows = executions): boolean {
+function accepted(
+  input: ContractRecord,
+  expected: unknown = coordinates,
+  rows = executions,
+): boolean {
   return validateIss022ProfileArtifacts(input, rows, expected, digest("c")).length === 0;
 }
 
@@ -136,7 +145,28 @@ describe("ISS-022 executable, profile, custody, and locator authority", () => {
     }
   });
 
-  test("equal-binds custody, locator, and all provider coordinates", () => {
+  test("derives the acyclic pre-custody identity and equal-binds all stable coordinates", () => {
+    const selection = report.selection as any;
+    const derivation = (executions[1]!.rawFacts as any).derivation;
+    const preCustodyEnvironmentDigest = computePortablePrimitivesPreCustodyEnvironmentDigest(
+      String(report.helperAbiDigest),
+      coordinates.architecture as "ARM64" | "X64",
+      String(selection.osProfileDigest),
+      String(report.helperProfileDigest),
+      String((report.executableCapture as any).nodeVersion),
+      selection.operatingSystem,
+      coordinates.osImageDigest,
+      coordinates.packageManagerVersion,
+    );
+    expect(
+      computePortableProbeCustodyInstanceDigest(
+        String(derivation.hostCustodyNamespaceDigest),
+        preCustodyEnvironmentDigest,
+        coordinates.providerRunDigest,
+        coordinates.jobId,
+        String(derivation.rootReadbackDigest),
+      ),
+    ).toBe(selection.custodyInstanceDigest);
     for (const mutate of [
       (report: any) => (report.selection.custodyInstanceDigest = digest("c")),
       (report: any) => (report.selection.custodyReceipt.helperDigest = digest("d")),
@@ -146,7 +176,25 @@ describe("ISS-022 executable, profile, custody, and locator authority", () => {
       mutate(report);
       expect(accepted(report)).toBe(false);
     }
-    expect(accepted(copyReport(), { ...coordinates, providerRunDigest: digest("c") })).toBe(false);
+    for (const coordinateMutant of [
+      { ...coordinates, architecture: coordinates.architecture === "X64" ? "ARM64" : "X64" },
+      { ...coordinates, osImageDigest: digest("c") },
+      { ...coordinates, packageManagerVersion: "11.23.0" },
+      { ...coordinates, providerRunDigest: digest("c") },
+    ])
+      expect(accepted(copyReport(), coordinateMutant)).toBe(false);
+  });
+
+  test("refuses caller-supplied final or pre-custody environment identities", () => {
+    expect(parseIss022SuiteCoordinates(coordinates, false).ok).toBe(true);
+    for (const input of [
+      { ...coordinates, environmentDigest: digest("d") },
+      { ...coordinates, preCustodyEnvironmentDigest: digest("e") },
+      { ...coordinates, architecture: "IA32" },
+      { ...coordinates, osImageDigest: null },
+      { ...coordinates, packageManagerVersion: "v11.22.0" },
+    ])
+      expect(parseIss022SuiteCoordinates(input, false).ok).toBe(false);
   });
 
   test("selects null for exact non-PASS physical diagnostics and refuses crossed arms", () => {

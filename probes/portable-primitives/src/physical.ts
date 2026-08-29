@@ -11,6 +11,8 @@ import { computePortableHostCustodyNamespaceDigest } from "./profiles.js";
 
 export type PortablePhysicalOperatingSystem = "DARWIN" | "LINUX" | "WINDOWS";
 export type PortableLeafIdentityKind = "ABSENT_DIRECTORY_ENTRY" | "EXISTING_DIRECTORY_ENTRY";
+export type PortableConformanceArchitecture = "ARM64" | "X64";
+export type PortableConformanceOperatingSystem = "LINUX" | "MACOS" | "WINDOWS";
 
 const jobIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const u32Limit = 1n << 32n;
@@ -159,9 +161,40 @@ export function computePortableCustodyRootReadbackDigest(
   ]);
 }
 
+export function computePortablePrimitivesPreCustodyEnvironmentDigest(
+  helperAbiDigest: string,
+  architecture: PortableConformanceArchitecture,
+  osProfileDigest: string,
+  helperProfileDigest: string,
+  nodeVersion: string,
+  os: PortableConformanceOperatingSystem,
+  osImageDigest: string,
+  packageManagerVersion: string,
+): string {
+  if (architecture !== "ARM64" && architecture !== "X64")
+    throw new TypeError("architecture:invalid");
+  if (os !== "LINUX" && os !== "MACOS" && os !== "WINDOWS")
+    throw new TypeError("operatingSystem:invalid");
+  if (!/^24\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(nodeVersion))
+    throw new TypeError("nodeVersion:invalid");
+  if (!/^11\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(packageManagerVersion))
+    throw new TypeError("packageManagerVersion:invalid");
+  return framedDigest("portable-primitives-pre-custody-environment/v1", [
+    frame.raw32(digest(helperAbiDigest, "helperAbiDigest")),
+    frame.text(architecture),
+    frame.raw32(digest(osProfileDigest, "osProfileDigest")),
+    frame.raw32(digest(helperProfileDigest, "helperProfileDigest")),
+    frame.text(nodeVersion),
+    frame.text(os),
+    frame.raw32(digest(osImageDigest, "osImageDigest")),
+    frame.text(packageManagerVersion),
+    frame.text("EPHEMERAL_HOSTED"),
+  ]);
+}
+
 export function computePortableProbeCustodyInstanceDigest(
   hostCustodyNamespaceDigest: string,
-  environmentDigest: string,
+  preCustodyEnvironmentDigest: string,
   providerRunDigest: string,
   jobId: string,
   rootReadbackDigest: string,
@@ -169,7 +202,7 @@ export function computePortableProbeCustodyInstanceDigest(
   if (typeof jobId !== "string" || !jobIdPattern.test(jobId)) throw new TypeError("jobId:invalid");
   return framedDigest("portable-probe-custody-instance/v1", [
     frame.raw32(digest(hostCustodyNamespaceDigest, "hostCustodyNamespaceDigest")),
-    frame.raw32(digest(environmentDigest, "environmentDigest")),
+    frame.raw32(digest(preCustodyEnvironmentDigest, "preCustodyEnvironmentDigest")),
     frame.raw32(digest(providerRunDigest, "providerRunDigest")),
     frame.text(jobId),
     frame.raw32(digest(rootReadbackDigest, "rootReadbackDigest")),

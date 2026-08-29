@@ -2,8 +2,11 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/index.js";
+import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import {
+  computeConformanceRecordDigest,
+  constructIss022EnvironmentAuthority,
+  createConformanceJobEvidence,
   createIss022RequiredJobRegistry,
   iss022PortablePrimitiveVectorCensus,
   iss022PortablePrimitiveVectorCensusDigest,
@@ -12,6 +15,7 @@ import {
   parseIss022StableRawReport,
   parseIss022SuiteCoordinates,
   runIss022PortablePrimitivesStableSuite,
+  sha256Bytes,
   type Iss022StableSuiteResult,
 } from "../../packages/conformance/src/index.js";
 import { portablePrimitiveCaseIds } from "../../probes/portable-primitives/src/index.js";
@@ -19,11 +23,23 @@ import { portablePrimitiveCaseIds } from "../../probes/portable-primitives/src/i
 const digest = (value: string) => value.repeat(64);
 const operatingSystem =
   process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
+const environmentBytes = new TextEncoder().encode(
+  '{"imageOS":"test","imageVersion":"1","schemaVersion":"test-environment/v1"}\n',
+);
 const coordinates = Object.freeze({
-  environmentDigest: digest("a"),
+  architecture: (process.arch === "arm64" ? "ARM64" : "X64") as "ARM64" | "X64",
   jobId: `iss022-portable-primitives-${operatingSystem}`,
   observedAt: "2026-08-28T18:00:00.000Z",
+  osImageDigest: sha256Bytes(environmentBytes),
+  packageManagerVersion: "11.22.0",
   providerRunDigest: digest("b"),
+});
+const suiteInput = Object.freeze({
+  architecture: coordinates.architecture,
+  environmentBytes,
+  jobId: coordinates.jobId,
+  packageManagerVersion: coordinates.packageManagerVersion,
+  providerRunDigest: coordinates.providerRunDigest,
 });
 const stableRoot = resolve(import.meta.dirname, "../..");
 let parentRoot: string;
@@ -34,8 +50,58 @@ function copyReport() {
   return JSON.parse(canonicalJson(result.report)) as Record<string, any>;
 }
 
-function accepted(input: unknown, expected: unknown = coordinates): boolean {
+function currentCoordinates() {
+  return result.ok ? { ...coordinates, observedAt: result.report.observedAt } : coordinates;
+}
+
+function accepted(input: unknown, expected: unknown = currentCoordinates()): boolean {
   return parseIss022StableRawReport(input, expected).ok;
+}
+
+function jobEvidence(
+  report: ContractRecord,
+  environment: ContractRecord,
+  normalizedResult: "PASS" | "UNKNOWN" | "UNSUPPORTED",
+) {
+  return createConformanceJobEvidence({
+    candidateSubjectDigest: digest("1"),
+    contractVersionsDigest: digest("2"),
+    environment,
+    harnessBundleDigest: digest("3"),
+    jobId: coordinates.jobId,
+    maximumWalkDurationNanoseconds: null,
+    normalizedResult,
+    providerRunDigest: coordinates.providerRunDigest,
+    rawArtifacts: {
+      environment: environmentBytes,
+      report: new TextEncoder().encode(canonicalJson(report)),
+      stderr: new Uint8Array(),
+      stdout: new Uint8Array(),
+    },
+    registry: createIss022RequiredJobRegistry(),
+    testBundleDigest: digest("4"),
+  });
+}
+
+function diagnosticAuthority() {
+  if (!result.ok) throw new Error(result.issues.join(","));
+  const report = copyReport();
+  const executions = report.vectorExecutions as Record<string, any>[];
+  executions[0]!.rawFacts.rootStable = false;
+  executions[0]!.normalizedResult = "UNKNOWN";
+  const authority = constructIss022EnvironmentAuthority(
+    executions as unknown as ContractRecord[],
+    report.executableCapture,
+    currentCoordinates(),
+    iss022PortablePrimitiveVectorCensusDigest,
+  );
+  if (!authority.ok) throw new Error(authority.issues.join(","));
+  Object.assign(report, authority.value.profile, {
+    environmentDigest: authority.value.environmentDigest,
+    normalizedResult: authority.value.normalizedResult,
+    vectorExecutions: executions,
+  });
+  return { authority: authority.value, report };
 }
 
 beforeAll(async () => {
@@ -43,7 +109,7 @@ beforeAll(async () => {
   result = await runIss022PortablePrimitivesStableSuite({
     custodyParentRoot: parentRoot,
     stableRoot,
-    ...coordinates,
+    ...suiteInput,
   });
 }, 180_000);
 
@@ -137,6 +203,8 @@ describe("ISS-022 stable portable-primitives suite composer", () => {
     if (!result.ok) return;
     expect(Buffer.from(result.reportBytes)).toEqual(Buffer.from(canonicalJson(result.report)));
     expect(result.report.schemaVersion).toBe("portable-primitives-stable-raw-report/v1");
+    expect(result.report.environmentDigest).toBe(result.environmentDigest);
+    expect(result.report).not.toHaveProperty("preCustodyEnvironmentDigest");
     expect(result.report).not.toHaveProperty("result");
     expect(result.report).not.toHaveProperty("candidateVerdict");
     expect((result.report.vectorExecutions as any[]).map(({ caseId }) => caseId)).toEqual(
@@ -157,8 +225,110 @@ describe("ISS-022 stable portable-primitives suite composer", () => {
     );
     expect((result.report.selection as any).operatingSystem).toBe(operatingSystem.toUpperCase());
     expect((result.report.selection as any).locatorObservation.disposition).toBe("ADMITTED");
-    expect(accepted(result.report)).toBe(true);
+    expect(
+      accepted(result.report, {
+        ...coordinates,
+        observedAt: result.report.observedAt,
+      }),
+    ).toBe(true);
     expect(await readdir(parentRoot)).toEqual([]);
+  });
+
+  test("constructs the selected final environment after custody and equal-binds its job receipt", () => {
+    expect(result.ok, result.ok ? undefined : result.issues.join(",")).toBe(true);
+    if (!result.ok) return;
+    const selection = result.report.selection as any;
+    expect(result.environment).toEqual({
+      abiDigest: result.report.helperAbiDigest,
+      architecture: coordinates.architecture,
+      custodyObservationDigest: selection.custodyReceiptDigest,
+      filesystemProfileDigest: selection.osProfileDigest,
+      helperProfileDigest: result.report.helperProfileDigest,
+      nodeVersion: (result.report.executableCapture as any).nodeVersion,
+      operatingSystem: operatingSystem.toUpperCase(),
+      osImageDigest: sha256Bytes(environmentBytes),
+      packageManagerVersion: coordinates.packageManagerVersion,
+      runnerClass: "EPHEMERAL_HOSTED",
+      schemaVersion: "conformance-environment/v1",
+    });
+    expect(result.environmentDigest).toBe(
+      computeConformanceRecordDigest("conformance-environment/v1", result.environment),
+    );
+    const created = jobEvidence(result.report, result.environment, result.normalizedResult);
+    expect(created.ok).toBe(true);
+    if (created.ok) expect(created.receipt.environmentDigest).toBe(result.environmentDigest);
+
+    const nullCustody = { ...result.environment, custodyObservationDigest: null };
+    expect(jobEvidence(result.report, nullCustody, result.normalizedResult).ok).toBe(false);
+    const substitutedDigest = copyReport();
+    substitutedDigest.environmentDigest = digest("f");
+    expect(jobEvidence(substitutedDigest, result.environment, result.normalizedResult).ok).toBe(
+      false,
+    );
+    const movedInventory = createConformanceJobEvidence({
+      candidateSubjectDigest: digest("1"),
+      contractVersionsDigest: digest("2"),
+      environment: result.environment,
+      harnessBundleDigest: digest("3"),
+      jobId: coordinates.jobId,
+      maximumWalkDurationNanoseconds: null,
+      normalizedResult: result.normalizedResult,
+      providerRunDigest: coordinates.providerRunDigest,
+      rawArtifacts: {
+        environment: new TextEncoder().encode('{"imageOS":"moved"}\n'),
+        report: result.reportBytes,
+        stderr: new Uint8Array(),
+        stdout: new Uint8Array(),
+      },
+      registry: createIss022RequiredJobRegistry(),
+      testBundleDigest: digest("4"),
+    });
+    expect(movedInventory.ok).toBe(false);
+  });
+
+  test("admits only the complete authenticated nullable diagnostic arm", () => {
+    const diagnostic = diagnosticAuthority();
+    expect(diagnostic.authority.normalizedResult).toBe("UNKNOWN");
+    expect(diagnostic.authority.profile.selection).toBe(null);
+    expect(diagnostic.authority.environment).toMatchObject({
+      abiDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      custodyObservationDigest: null,
+      filesystemProfileDigest: null,
+      helperProfileDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const created = jobEvidence(
+      diagnostic.report,
+      diagnostic.authority.environment,
+      diagnostic.authority.normalizedResult,
+    );
+    expect(created.ok).toBe(true);
+    if (created.ok) {
+      expect(created.receipt.normalizedResult).toBe("UNKNOWN");
+      expect(created.receipt.maximumWalkDurationNanoseconds).toBe(null);
+      expect(created.receipt.environmentDigest).toBe(diagnostic.authority.environmentDigest);
+    }
+
+    expect(jobEvidence(diagnostic.report, diagnostic.authority.environment, "PASS").ok).toBe(false);
+    const sentinelEnvironment = {
+      ...diagnostic.authority.environment,
+      filesystemProfileDigest: digest("0"),
+    };
+    expect(jobEvidence(diagnostic.report, sentinelEnvironment, "UNKNOWN").ok).toBe(false);
+    const mixed = {
+      ...diagnostic.report,
+      selection: result.ok ? (result.report as any).selection : null,
+    };
+    expect(jobEvidence(mixed, diagnostic.authority.environment, "UNKNOWN").ok).toBe(false);
+    if (result.ok) {
+      const callerFilledNull = {
+        ...result.report,
+        selection: null,
+        normalizedResult: "UNKNOWN",
+      };
+      expect(jobEvidence(callerFilledNull, diagnostic.authority.environment, "UNKNOWN").ok).toBe(
+        false,
+      );
+    }
   });
 
   test("refuses reordered, missing, extra, duplicated, or candidate-declared vector authority", () => {
@@ -185,9 +355,26 @@ describe("ISS-022 stable portable-primitives suite composer", () => {
       get: () => coordinates.providerRunDigest,
     });
     expect(accepted(report)).toBe(false);
-    const expected = { ...coordinates };
+    const expected = { ...currentCoordinates() };
     Object.defineProperty(expected, "jobId", { enumerable: true, get: () => coordinates.jobId });
     expect(accepted(copyReport(), expected)).toBe(false);
+    expect(
+      parseIss022SuiteCoordinates(
+        {
+          custodyParentRoot: parentRoot,
+          stableRoot,
+          ...suiteInput,
+          observedAt: coordinates.observedAt,
+        },
+        true,
+      ).ok,
+    ).toBe(false);
+    expect(
+      parseIss022SuiteCoordinates(
+        { custodyParentRoot: parentRoot, stableRoot, ...suiteInput, osImageDigest: digest("f") },
+        true,
+      ).ok,
+    ).toBe(false);
   });
 
   test("refuses a custody root that remains present after cleanup", async () => {

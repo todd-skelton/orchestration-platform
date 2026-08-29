@@ -6,6 +6,7 @@ import {
   computePortableLogicalLocatorDigest,
   computePortableNativeIdentityReadbackDigest,
   computePortablePhysicalVolumeDigest,
+  computePortablePrimitivesPreCustodyEnvironmentDigest,
   computePortableProbeCustodyInstanceDigest,
   computePortableResolvedLocatorReadbackDigest,
   derivePortablePhysicalIdentity,
@@ -156,9 +157,19 @@ describe("ISS-022 literal physical identity derivations", () => {
 
   test("binds root readback into the provider/job-specific custody instance", () => {
     const result = derivePortablePhysicalIdentity(input);
+    const preCustodyEnvironment = computePortablePrimitivesPreCustodyEnvironmentDigest(
+      d("1"),
+      "X64",
+      d("2"),
+      d("3"),
+      "24.15.0",
+      "LINUX",
+      d("4"),
+      "11.22.0",
+    );
     const custody = computePortableProbeCustodyInstanceDigest(
       result.hostCustodyNamespaceDigest,
-      d("1"),
+      preCustodyEnvironment,
       d("2"),
       "node24-linux",
       result.rootReadbackDigest,
@@ -167,7 +178,7 @@ describe("ISS-022 literal physical identity derivations", () => {
     expect(
       computePortableProbeCustodyInstanceDigest(
         result.hostCustodyNamespaceDigest,
-        d("1"),
+        preCustodyEnvironment,
         d("2"),
         "node24-windows",
         result.rootReadbackDigest,
@@ -176,7 +187,7 @@ describe("ISS-022 literal physical identity derivations", () => {
     expect(() =>
       computePortableProbeCustodyInstanceDigest(
         result.hostCustodyNamespaceDigest,
-        d("1"),
+        preCustodyEnvironment,
         d("2"),
         "bad job",
         result.rootReadbackDigest,
@@ -186,10 +197,41 @@ describe("ISS-022 literal physical identity derivations", () => {
       expect(() =>
         computePortableProbeCustodyInstanceDigest(
           result.hostCustodyNamespaceDigest,
-          d("1"),
+          preCustodyEnvironment,
           d("2"),
           invalid as never,
           result.rootReadbackDigest,
+        ),
+      ).toThrow();
+  });
+
+  test("pins the ordered pre-custody environment identity and rejects substitutions", () => {
+    const values = [d("1"), "X64", d("2"), d("3"), "24.15.0", "LINUX", d("4"), "11.22.0"] as const;
+    const baseline = computePortablePrimitivesPreCustodyEnvironmentDigest(...values);
+    expect(baseline).toBe("2369289b0401bfdfc69c5e41cd9565f3f1b7e12dca44d2512a8e362fad131a2a");
+    const mutants = [
+      [d("5"), ...values.slice(1)],
+      [values[0], "ARM64", ...values.slice(2)],
+      [...values.slice(0, 2), d("5"), ...values.slice(3)],
+      [...values.slice(0, 3), d("5"), ...values.slice(4)],
+      [...values.slice(0, 4), "24.16.0", ...values.slice(5)],
+      [...values.slice(0, 5), "WINDOWS", ...values.slice(6)],
+      [...values.slice(0, 6), d("5"), values[7]],
+      [...values.slice(0, 7), "11.23.0"],
+    ] as const;
+    for (const mutant of mutants)
+      expect(
+        computePortablePrimitivesPreCustodyEnvironmentDigest(...(mutant as typeof values)),
+      ).not.toBe(baseline);
+    for (const invalid of [
+      [d("1"), "IA32", d("2"), d("3"), "24.15.0", "LINUX", d("4"), "11.22.0"],
+      [d("1"), "X64", d("2"), d("3"), "v24.15.0", "LINUX", d("4"), "11.22.0"],
+      [d("1"), "X64", d("2"), d("3"), "24.15.0", "DARWIN", d("4"), "11.22.0"],
+      [d("1"), "X64", d("2"), d("3"), "24.15.0", "LINUX", d("4"), "11.22.0-beta"],
+    ])
+      expect(() =>
+        computePortablePrimitivesPreCustodyEnvironmentDigest(
+          ...(invalid as unknown as typeof values),
         ),
       ).toThrow();
   });
