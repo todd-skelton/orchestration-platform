@@ -16,6 +16,7 @@
     "@orchestration-platform/contracts": "workspace:*"
   },
   "scripts": {
+    "build:native:windows": "node ../../scripts/build/windows-reparse-fact.mjs",
     "test": "pnpm --dir ../.. exec vitest run test/config"
   }
 }

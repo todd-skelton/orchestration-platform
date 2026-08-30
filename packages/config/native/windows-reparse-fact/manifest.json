@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "windows-reparse-fact-build/v1",
+  "productionArtifact": ".artifacts/native/windows-reparse-fact/windows_reparse_fact.node",
+  "productionSources": [
+    "packages/config/native/windows-reparse-fact/addon.cc",
+    "packages/config/native/windows-reparse-fact/observation-core.h",
+    "packages/config/native/windows-reparse-fact/windows-reparse-fact.gyp"
+  ],
+  "testArtifact": ".artifacts/native/windows-reparse-fact/windows_reparse_fact_mutants.node",
+  "testSources": ["test/config/native/windows-reparse-fact-mutants.cc"]
+}
