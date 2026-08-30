@@ -33,6 +33,7 @@ import { loadHostedStableInputs } from "../../scripts/conformance/hosted-observa
 import type { HostedPlanContext } from "../../scripts/conformance/hosted-plan.mjs";
 import { createHostedDiagnosticProviderRecord } from "../../scripts/conformance/hosted-record.mjs";
 import { composePortablePrimitivesDecisionCore } from "../../packages/conformance/src/portable-primitives-decision-writer.js";
+import { derivePortablePhysicalIdentity } from "../../probes/portable-primitives/src/physical.js";
 
 const roots: string[] = [];
 const repository = "todd-skelton/orchestration-platform";
@@ -164,7 +165,7 @@ function currentJobId(): string {
   return `iss022-portable-primitives-${suffix}`;
 }
 
-async function diagnosticReport(plan: HostedPlanContext, runnerTemp: string) {
+async function diagnosticReport(plan: HostedPlanContext, runnerTemp: string, nullArm = true) {
   const environmentBytes = new TextEncoder().encode(
     canonicalJson({
       imageOS: "test",
@@ -186,8 +187,15 @@ async function diagnosticReport(plan: HostedPlanContext, runnerTemp: string) {
   if (!suite.ok) throw new Error(suite.issues.join(","));
   expect(suite.report.selection).not.toBeNull();
   const report = JSON.parse(canonicalJson(suite.report)) as Record<string, any>;
-  report.vectorExecutions[0].rawFacts.rootStable = false;
-  report.vectorExecutions[0].normalizedResult = "UNKNOWN";
+  if (nullArm) {
+    report.vectorExecutions[0].rawFacts.rootStable = false;
+    report.vectorExecutions[0].normalizedResult = "UNKNOWN";
+  } else {
+    expect(
+      report.vectorExecutions.slice(0, 6).every((row: any) => row.normalizedResult === "PASS"),
+    ).toBe(true);
+    expect(report.normalizedResult).toBe("UNSUPPORTED");
+  }
   return { environmentBytes, report };
 }
 
@@ -208,6 +216,38 @@ async function observation(
     }),
   );
   const report = JSON.parse(canonicalJson(base.report)) as Record<string, any>;
+  if (report.vectorExecutions.slice(0, 6).every((row: any) => row.normalizedResult === "PASS")) {
+    // Synthetic per-OS fixture projection, never hosted evidence. Recompute the
+    // OS-bound physical identities and aliases before the production validator.
+    for (const row of report.vectorExecutions.slice(0, 6)) {
+      const facts = row.rawFacts;
+      facts.operatingSystem = operatingSystem === "MACOS" ? "DARWIN" : operatingSystem;
+      if (facts.derivation) {
+        const identity = facts.derivation.physicalDestinationIdentity;
+        const root = facts.rootBefore;
+        facts.derivation = derivePortablePhysicalIdentity({
+          canonicalPhysicalLeafBytes: identity.canonicalPhysicalLeafBytes,
+          filesystemType: BigInt(`0x${root.filesystemTypeBytes}`),
+          leafIdentityKind: identity.leafIdentityKind,
+          namespaceFileHex: root.namespaceFileHex,
+          operatingSystem: facts.operatingSystem,
+          rootStatDevice: BigInt(`0x${root.handleDeviceBytes}`),
+          rootStatInode: BigInt(`0x${root.handleInodeBytes}`),
+          rootStatMode: BigInt(`0x${root.handleModeBytes}`),
+        });
+      }
+      if (row.caseId === "PHYSICAL_CASE_ALIAS" || row.caseId === "PHYSICAL_UNICODE_ALIAS") {
+        const identical =
+          row.caseId === "PHYSICAL_CASE_ALIAS"
+            ? operatingSystem !== "LINUX"
+            : operatingSystem === "MACOS";
+        facts.relationBefore = facts.relationAfter = identical ? "IDENTICAL" : "DISTINCT_ABSENT";
+        facts.rightBefore = facts.rightAfter = identical
+          ? { ...facts.leftBefore }
+          : { disposition: "ABSENT", errorCode: "ENOENT" };
+      }
+    }
+  }
   const coordinates = Object.freeze({
     architecture: process.arch === "arm64" ? "ARM64" : "X64",
     jobId,
@@ -244,7 +284,7 @@ async function observation(
     harnessBundleDigest: plan.harnessBundleDigest,
     jobId,
     maximumWalkDurationNanoseconds: null,
-    normalizedResult: "UNKNOWN",
+    normalizedResult: authority.value.normalizedResult,
     providerRunDigest: plan.providerRunDigest,
     rawArtifacts,
     registry: createIss022RequiredJobRegistry(),
@@ -274,13 +314,13 @@ async function observation(
   return directory;
 }
 
-async function fixture() {
+async function fixture(nullArm = true) {
   const runnerTemp = await root();
   const downloadRoot = resolve(runnerTemp, "downloads");
   const outputRoot = resolve(runnerTemp, "aggregate");
   await mkdir(downloadRoot);
   const plan = await context();
-  const base = await diagnosticReport(plan, runnerTemp);
+  const base = await diagnosticReport(plan, runnerTemp, nullArm);
   const directories = await Promise.all(
     (["LINUX", "MACOS", "WINDOWS"] as const).map(
       async (operatingSystem) => await observation(downloadRoot, plan, operatingSystem, base),
@@ -302,8 +342,8 @@ async function replaceReport(directory: string, mutate: (report: any) => void) {
 }
 
 describe("hosted stable ISS-022 aggregate composition", () => {
-  test("authenticates the null-arm reports, preserves exact UNKNOWN receipts, and emits no aggregate", async () => {
-    const input = await fixture();
+  const verifyDiagnostic = async (nullArm: boolean) => {
+    const input = await fixture(nullArm);
     const result = await runHostedAggregateComposition({
       context: input.plan,
       downloadRoot: input.downloadRoot,
@@ -318,7 +358,7 @@ describe("hosted stable ISS-022 aggregate composition", () => {
     ).toEqual(
       (["linux", "macos", "windows"] as const).map((suffix) => ({
         jobId: `iss022-portable-primitives-${suffix}`,
-        normalizedResult: "UNKNOWN",
+        normalizedResult: nullArm ? "UNKNOWN" : "UNSUPPORTED",
       })),
     );
     expect(result.issues).toContain(
@@ -373,6 +413,10 @@ describe("hosted stable ISS-022 aggregate composition", () => {
       registry: stable.registry,
       testBundleDigest: input.plan.testBundleDigest,
     });
+    for (const row of evidence) {
+      const report = JSON.parse(new TextDecoder().decode(row.rawArtifacts.report));
+      expect(report.selection === null).toBe(nullArm);
+    }
     const archive = zip(receiptEntries);
     const verified = verifyGithubDiagnosticAggregateArchive(archive, expectation);
     expect(verified.ok).toBe(true);
@@ -402,6 +446,26 @@ describe("hosted stable ISS-022 aggregate composition", () => {
         report: Uint8Array.from([...evidence[0]!.rawArtifacts.report, 0]),
       },
     };
+    const passClaim = JSON.parse(new TextDecoder().decode(evidence[0]!.rawArtifacts.report));
+    passClaim.normalizedResult = "PASS";
+    const passReport = new TextEncoder().encode(canonicalJson(passClaim));
+    const passEvidence = {
+      ...evidence[0],
+      rawArtifacts: { ...evidence[0]!.rawArtifacts, report: passReport },
+      rawArtifactManifest: {
+        ...evidence[0]!.rawArtifactManifest,
+        entries: (evidence[0]!.rawArtifactManifest.entries as readonly ContractRecord[]).map(
+          (row) =>
+            row.name === "report"
+              ? {
+                  ...row,
+                  byteLength: String(passReport.byteLength),
+                  sha256Digest: sha256Bytes(passReport),
+                }
+              : row,
+        ),
+      },
+    };
     const environmentMutant = {
       ...evidence[0],
       environment: { ...evidence[0]!.environment, osImageDigest: "d".repeat(64) },
@@ -423,6 +487,7 @@ describe("hosted stable ISS-022 aggregate composition", () => {
       ],
       [zip(receiptEntries), { ...expectation, evidence: [...evidence].reverse() }],
       [zip(receiptEntries), { ...expectation, evidence: [rawMutant, ...evidence.slice(1)] }],
+      [zip(receiptEntries), { ...expectation, evidence: [passEvidence, ...evidence.slice(1)] }],
       [
         zip(receiptEntries),
         { ...expectation, evidence: [environmentMutant, ...evidence.slice(1)] },
@@ -793,7 +858,18 @@ describe("hosted stable ISS-022 aggregate composition", () => {
       },
     ])
       expect(createRecord(mutation).ok).toBe(false);
-  }, 600_000);
+  };
+
+  test(
+    "authenticates null-arm diagnostics without a PASS aggregate",
+    () => verifyDiagnostic(true),
+    600_000,
+  );
+  test(
+    "authenticates non-physical diagnostics without a PASS aggregate",
+    () => verifyDiagnostic(false),
+    600_000,
+  );
 
   test("refuses missing, extra, and cross-job observation artifacts", async () => {
     const missing = await fixture();
