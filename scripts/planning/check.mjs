@@ -152,6 +152,7 @@ function validateCommandCensus(snapshot) {
     ],
   ]);
   const implementedFilteredScripts = new Map([
+    ["ISS-003:@orchestration-platform/config:test", "pnpm --dir ../.. exec vitest run test/config"],
     [
       "ISS-002:@orchestration-platform/contracts:test",
       "pnpm --dir ../.. exec vitest run test/contracts",
