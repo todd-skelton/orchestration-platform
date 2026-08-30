@@ -40,6 +40,9 @@ importers:
       '@orchestration-platform/config':
         specifier: workspace:*
         version: link:../config
+      '@orchestration-platform/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@orchestration-platform/credentials':
         specifier: workspace:*
         version: link:../credentials

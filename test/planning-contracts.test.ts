@@ -109,6 +109,13 @@ describe("planning contract", () => {
       },
     ],
     [
+      "reverted implemented CLI package test",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.packageManifests["@orchestration-platform/cli"]!.scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-003 @orchestration-platform/cli:test";
+      },
+    ],
+    [
       "reverted implemented config package test",
       (snapshot: PlanningSnapshot) => {
         snapshot.packageManifests["@orchestration-platform/config"]!.scripts.test =
