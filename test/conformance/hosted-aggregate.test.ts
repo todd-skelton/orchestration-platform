@@ -32,6 +32,7 @@ import { runHostedAggregateComposition } from "../../scripts/conformance/hosted-
 import { loadHostedStableInputs } from "../../scripts/conformance/hosted-observation.mjs";
 import type { HostedPlanContext } from "../../scripts/conformance/hosted-plan.mjs";
 import { createHostedDiagnosticProviderRecord } from "../../scripts/conformance/hosted-record.mjs";
+import { composePortablePrimitivesDecisionCore } from "../../packages/conformance/src/portable-primitives-decision-writer.js";
 
 const roots: string[] = [];
 const repository = "todd-skelton/orchestration-platform";
@@ -650,6 +651,54 @@ describe("hosted stable ISS-022 aggregate composition", () => {
     expect(parseGithubConformanceDiagnosticTerminal({ ...terminal.value, result: "PASS" }).ok).toBe(
       false,
     );
+    const decisionCore = composePortablePrimitivesDecisionCore({
+      aggregate: null,
+      contractVersions: stable.contractVersions,
+      diagnosticContractVersionsDigest: terminal.contractVersionsDigest,
+      diagnosticTerminal: terminal.value,
+      evidence,
+      harnessManifest: stable.bundles.harnessManifest,
+      providerRun: providerRun.value,
+      registry: stable.registry,
+      testBundleManifest: stable.bundles.testBundleManifest,
+    });
+    if (!decisionCore.ok) throw new Error(decisionCore.issues.join(","));
+    expect(decisionCore.ok).toBe(true);
+    expect(decisionCore.core.decision).toBe("BLOCK_REPLAN");
+    expect(decisionCore.core.aggregateDigest).toBeNull();
+    expect(decisionCore.core.diagnosticTerminalDigest).toBe(terminal.diagnosticTerminalDigest);
+    expect(decisionCore.core.observationDigests).toHaveLength(63);
+    expect(decisionCore.core.osProfileDigests).toEqual([null, null, null]);
+    expect(Object.values(decisionCore.core.profile as ContractRecord)).toEqual(
+      Array.from({ length: 13 }, () => null),
+    );
+    expect(decisionCore.bytes).toEqual(new TextEncoder().encode(canonicalJson(decisionCore.core)));
+    expect(
+      composePortablePrimitivesDecisionCore({
+        aggregate: null,
+        contractVersions: stable.contractVersions,
+        diagnosticContractVersionsDigest: terminal.contractVersionsDigest,
+        diagnosticTerminal: { ...terminal.value, providerRunDigest: "f".repeat(64) },
+        evidence,
+        harnessManifest: stable.bundles.harnessManifest,
+        providerRun: providerRun.value,
+        registry: stable.registry,
+        testBundleManifest: stable.bundles.testBundleManifest,
+      }).ok,
+    ).toBe(false);
+    expect(
+      composePortablePrimitivesDecisionCore({
+        aggregate: null,
+        contractVersions: stable.contractVersions,
+        diagnosticContractVersionsDigest: "e".repeat(64),
+        diagnosticTerminal: terminal.value,
+        evidence,
+        harnessManifest: stable.bundles.harnessManifest,
+        providerRun: providerRun.value,
+        registry: stable.registry,
+        testBundleManifest: stable.bundles.testBundleManifest,
+      }).ok,
+    ).toBe(false);
     const recordJob = liveJobs.at(-1)!;
     const recordJobWithoutStatus = Object.fromEntries(
       Object.entries(recordJob).filter(([name]) => name !== "status"),

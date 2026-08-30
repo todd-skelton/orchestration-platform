@@ -15,7 +15,9 @@ const [target, ...arguments_] = process.argv.slice(2);
 if (!target || !(target in targets)) throw new Error("CONFORMANCE_BUNDLE_TARGET_REFUSED");
 if (
   (target === "hosted" && arguments_.length !== 1) ||
-  (target === "terminal" && arguments_.length !== 4)
+  (target === "terminal" &&
+    arguments_.length !== 4 &&
+    !(arguments_.length === 5 && arguments_[0] === "portable-primitives-decision"))
 )
   throw new Error("CONFORMANCE_BUNDLE_ARGUMENTS_REFUSED");
 

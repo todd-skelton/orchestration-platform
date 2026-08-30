@@ -1,7 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
-import { describe, expect, test } from "vitest";
 import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
+import {
+  exerciseDecisionOutputCustodyForTest,
   parseHostedTerminalArguments,
   readGithubTerminalArtifacts,
   readGithubTerminalVerifiedAt,
@@ -19,6 +31,20 @@ const expected: HostedTerminalExpected = Object.freeze({
   workflowRevision: revision,
 });
 const repository = "todd-skelton/orchestration-platform";
+const stableRoot = resolve(import.meta.dirname, "../..");
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
+  );
+});
+
+async function temporaryRoot(): Promise<string> {
+  const root = await mkdtemp(resolve(tmpdir(), "op-decision-output-"));
+  temporaryRoots.push(root);
+  return root;
+}
 
 function json(value: unknown, withDate = false): Response {
   return new Response(JSON.stringify(value), {
@@ -64,6 +90,128 @@ describe("post-terminal GitHub API projection", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual({ issues: ["input:refused"], result: "REFUSED" });
+    const decision = spawnSync(
+      process.execPath,
+      [path, "terminal", "portable-primitives-decision", "123", "456", "2", revision],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_TOKEN: "token",
+          PORTABLE_PRIMITIVES_OUTPUT_ROOT: resolve(import.meta.dirname, "../.."),
+        },
+      },
+    );
+    expect(decision.status).toBe(1);
+    expect(decision.stderr).toBe("");
+    expect(JSON.parse(decision.stdout)).toEqual({
+      issues: ["decisionOutput:refused"],
+      result: "REFUSED",
+    });
+  }, 30_000);
+
+  test("commits one external file and refuses foreign checkout and canonical aliases", async () => {
+    const root = await temporaryRoot();
+    const output = resolve(root, "output");
+    await mkdir(output);
+    expect(await exerciseDecisionOutputCustodyForTest(output, stableRoot)).toEqual({ ok: true });
+    expect(await readdir(output)).toEqual(["custody-mechanics-probe.json"]);
+
+    const foreignDirectory = resolve(root, "foreign-directory");
+    const foreignDirectoryOutput = resolve(foreignDirectory, "output");
+    await mkdir(resolve(foreignDirectory, ".git"), { recursive: true });
+    await mkdir(foreignDirectoryOutput);
+    expect(await exerciseDecisionOutputCustodyForTest(foreignDirectoryOutput, stableRoot)).toEqual({
+      issues: ["decisionOutput:refused"],
+      ok: false,
+    });
+    expect(await readdir(foreignDirectoryOutput)).toEqual([]);
+
+    const foreignGitfile = resolve(root, "foreign-gitfile");
+    const foreignGitfileOutput = resolve(foreignGitfile, "output");
+    await mkdir(foreignGitfile);
+    await writeFile(resolve(foreignGitfile, ".git"), "gitdir: ../authority\n");
+    await mkdir(foreignGitfileOutput);
+    expect(await exerciseDecisionOutputCustodyForTest(foreignGitfileOutput, stableRoot)).toEqual({
+      issues: ["decisionOutput:refused"],
+      ok: false,
+    });
+
+    expect(
+      await exerciseDecisionOutputCustodyForTest(resolve(stableRoot, ".."), stableRoot),
+    ).toEqual({ issues: ["decisionOutput:refused"], ok: false });
+
+    const target = resolve(root, "symlink-target");
+    const alias = resolve(root, "symlink-alias");
+    await mkdir(target);
+    await symlink(target, alias, process.platform === "win32" ? "junction" : "dir");
+    expect(await exerciseDecisionOutputCustodyForTest(alias, stableRoot)).toEqual({
+      issues: ["decisionOutput:refused"],
+      ok: false,
+    });
+    expect(await readdir(target)).toEqual([]);
+  });
+
+  test("cleans its exact file after extra-entry refusal and surfaces moved-root cleanup refusal", async () => {
+    const root = await temporaryRoot();
+    const changedOutput = resolve(root, "changed-output");
+    await mkdir(changedOutput);
+    const changed = await exerciseDecisionOutputCustodyForTest(changedOutput, stableRoot, {
+      async afterFinalize(outputRoot, filename) {
+        await writeFile(resolve(outputRoot, filename), "changed");
+      },
+    });
+    expect(changed).toEqual({ issues: ["decisionOutput:refused"], ok: false });
+    expect(await readdir(changedOutput)).toEqual([]);
+
+    const extraOutput = resolve(root, "extra-output");
+    await mkdir(extraOutput);
+    const extra = await exerciseDecisionOutputCustodyForTest(extraOutput, stableRoot, {
+      async afterFinalize(outputRoot) {
+        await writeFile(resolve(outputRoot, "foreign-entry"), "foreign");
+      },
+    });
+    expect(extra).toEqual({ issues: ["decisionOutput:cleanup-refused"], ok: false });
+    expect(await readdir(extraOutput)).toEqual(["foreign-entry"]);
+
+    const collisionOutput = resolve(root, "collision-output");
+    await mkdir(collisionOutput);
+    const collision = await exerciseDecisionOutputCustodyForTest(collisionOutput, stableRoot, {
+      async afterPendingWrite(outputRoot) {
+        await writeFile(resolve(outputRoot, "custody-mechanics-probe.json"), "foreign");
+      },
+    });
+    expect(collision).toEqual({ issues: ["decisionOutput:cleanup-refused"], ok: false });
+    expect(await readdir(collisionOutput)).toEqual(["custody-mechanics-probe.json"]);
+    expect(await readFile(resolve(collisionOutput, "custody-mechanics-probe.json"), "utf8")).toBe(
+      "foreign",
+    );
+
+    const movedOutput = resolve(root, "moved-output");
+    const movedAside = resolve(root, "moved-aside");
+    await mkdir(movedOutput);
+    const moved = await exerciseDecisionOutputCustodyForTest(movedOutput, stableRoot, {
+      async afterPendingWrite(outputRoot) {
+        await rename(outputRoot, movedAside);
+        await mkdir(outputRoot);
+      },
+    });
+    expect(moved).toEqual({ issues: ["decisionOutput:cleanup-refused"], ok: false });
+    expect(await readdir(movedOutput)).toEqual([]);
+    expect(await readdir(movedAside)).toEqual([".custody-mechanics-probe.json.pending"]);
+
+    const finalizedOutput = resolve(root, "finalized-output");
+    const finalizedAside = resolve(root, "finalized-aside");
+    await mkdir(finalizedOutput);
+    const finalized = await exerciseDecisionOutputCustodyForTest(finalizedOutput, stableRoot, {
+      async afterFinalize(outputRoot) {
+        await rename(outputRoot, finalizedAside);
+        await mkdir(outputRoot);
+      },
+    });
+    expect(finalized).toEqual({ issues: ["decisionOutput:cleanup-refused"], ok: false });
+    expect(await readdir(finalizedOutput)).toEqual([]);
+    expect(await readdir(finalizedAside)).toEqual(["custody-mechanics-probe.json"]);
   });
 
   test("projects the completed protected workflow run", async () => {

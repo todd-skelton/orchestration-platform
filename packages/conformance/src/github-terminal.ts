@@ -59,6 +59,7 @@ export interface GithubTerminalVerificationInput {
 export type GithubDiagnosticTerminalVerificationResult =
   | {
       readonly ok: true;
+      readonly contractVersionsDigest: string;
       readonly diagnosticProviderRecordDigest: string;
       readonly diagnosticTerminalDigest: string;
       readonly providerRunDigest: string;
@@ -876,6 +877,7 @@ export function verifyGithubDiagnosticTerminalEvidence(
     if (!parsedTerminal.ok) return refusal(...parsedTerminal.issues);
     return {
       ok: true,
+      contractVersionsDigest: String(input.contractVersionsDigest),
       diagnosticProviderRecordDigest,
       diagnosticTerminalDigest: computeGithubConformanceDiagnosticTerminalDigest(
         parsedTerminal.value,
