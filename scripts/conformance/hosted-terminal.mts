@@ -4,8 +4,11 @@ import { promisify, types as nodeTypes } from "node:util";
 import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import {
   parseGithubConformanceProviderRecord,
+  parseGithubConformanceDiagnosticProviderRecord,
   projectGithubProtectionSnapshot,
   verifyGithubTerminalEvidence,
+  verifyGithubDiagnosticTerminalEvidence,
+  type GithubDiagnosticTerminalVerificationResult,
   type GithubProtectionApiInput,
   type GithubTerminalVerificationResult,
 } from "../../packages/conformance/src/github-actions/index.js";
@@ -16,6 +19,25 @@ import { canonicalGithubDateHeader, type GithubFetch } from "./hosted-record-api
 const execFileAsync = promisify(execFile);
 const revisionPattern = /^[0-9a-f]{40}$/;
 const digestPattern = /^sha256:([0-9a-f]{64})$/;
+const githubJobStatuses = Object.freeze([
+  "completed",
+  "in_progress",
+  "pending",
+  "queued",
+  "requested",
+  "waiting",
+] as const);
+const githubJobConclusions = Object.freeze([
+  "action_required",
+  "cancelled",
+  "failure",
+  "neutral",
+  "skipped",
+  "stale",
+  "startup_failure",
+  "success",
+  "timed_out",
+] as const);
 
 export interface HostedTerminalExpected {
   readonly repositoryId: string;
@@ -31,6 +53,9 @@ export interface HostedTerminalRuntime {
     token: string,
   ) => Promise<GithubProtectionApiInput>;
 }
+
+type HostedTerminalVerificationResult =
+  GithubTerminalVerificationResult | GithubDiagnosticTerminalVerificationResult;
 
 const githubTerminalRuntime: HostedTerminalRuntime = Object.freeze({
   fetcher: fetch,
@@ -134,11 +159,14 @@ export async function readGithubTerminalRun(
     typeof path === "string" ? path.replace(/@refs\/heads\/main$/, "") : undefined;
   return Object.freeze({
     conclusion: String(dataValue(row, "conclusion")).toUpperCase(),
+    createdAt: canonicalTimestamp(dataValue(row, "created_at")),
     event: dataValue(row, "event"),
     repositoryId: repositoryRecord && positiveDecimal(dataValue(repositoryRecord, "id")),
     runAttempt: positiveDecimal(dataValue(row, "run_attempt")),
     runId: positiveDecimal(dataValue(row, "id")),
+    runStartedAt: canonicalTimestamp(dataValue(row, "run_started_at")),
     status: String(dataValue(row, "status")).toUpperCase(),
+    updatedAt: canonicalTimestamp(dataValue(row, "updated_at")),
     workflowPath,
     workflowRef: `${repository}/.github/workflows/conformance.yml@refs/heads/main`,
     workflowRevision: dataValue(row, "head_sha"),
@@ -172,21 +200,31 @@ export async function readGithubTerminalJobs(
       const row = dataRecord(input);
       if (!row) throw new TypeError("provider:job-row-refused");
       const name = dataValue(row, "name");
+      const status = dataValue(row, "status");
+      const conclusion = dataValue(row, "conclusion");
       if (
         dataValue(row, "workflow_name") !== "Conformance" ||
         dataValue(row, "head_sha") !== expected.workflowRevision ||
         positiveDecimal(dataValue(row, "run_id")) !== expected.runId ||
         positiveDecimal(dataValue(row, "run_attempt")) !== expected.runAttempt ||
-        typeof name !== "string"
+        typeof name !== "string" ||
+        typeof status !== "string" ||
+        !(githubJobStatuses as readonly string[]).includes(status) ||
+        !(
+          conclusion === null ||
+          (typeof conclusion === "string" &&
+            (githubJobConclusions as readonly string[]).includes(conclusion))
+        )
       )
         throw new TypeError("provider:job-association-refused");
       rows.push(
         Object.freeze({
           completedAt: canonicalTimestamp(dataValue(row, "completed_at")),
-          conclusion: String(dataValue(row, "conclusion")).toUpperCase(),
+          conclusion: conclusion === null ? null : conclusion.toUpperCase(),
           providerJobId: positiveDecimal(dataValue(row, "id")),
           providerJobName: `Conformance / ${name}`,
           startedAt: canonicalTimestamp(dataValue(row, "started_at")),
+          status: status.toUpperCase(),
         }) as ContractRecord,
       );
     }
@@ -204,12 +242,14 @@ export async function readGithubTerminalArtifacts(
 ): Promise<{
   readonly artifacts: readonly ContractRecord[];
   readonly bytes: readonly Readonly<{ artifactId: string; bytes: Uint8Array }>[];
+  readonly diagnosticProviderRecordBytes?: Uint8Array;
   readonly providerRecordBytes: Uint8Array;
 }> {
   const prefix = `conformance-${expected.runId}-${expected.runAttempt}-`;
   const rows: ContractRecord[] = [];
   const downloads: Array<Readonly<{ artifactId: string; bytes: Uint8Array }>> = [];
   let providerRecordBytes: Uint8Array | undefined;
+  let diagnosticProviderRecordBytes: Uint8Array | undefined;
   let total: number | undefined;
   let collected = 0;
   for (let page = 1; page <= 1024; page += 1) {
@@ -267,16 +307,24 @@ export async function readGithubTerminalArtifacts(
       if (name === `${prefix}provider-record.json`) {
         if (providerRecordBytes) throw new TypeError("provider:record-artifact-duplicate");
         providerRecordBytes = bytes;
+      } else if (name === `${prefix}diagnostic-provider-record.json`) {
+        if (diagnosticProviderRecordBytes)
+          throw new TypeError("provider:diagnostic-record-artifact-duplicate");
+        diagnosticProviderRecordBytes = bytes;
       }
     }
     if (pageRows.length < 100) break;
   }
-  if (collected !== total || !providerRecordBytes)
+  if (
+    collected !== total ||
+    (providerRecordBytes === undefined) === (diagnosticProviderRecordBytes === undefined)
+  )
     throw new TypeError("provider:artifacts-terminal-census-refused");
   return Object.freeze({
     artifacts: Object.freeze(rows),
     bytes: Object.freeze(downloads),
-    providerRecordBytes,
+    ...(diagnosticProviderRecordBytes ? { diagnosticProviderRecordBytes } : {}),
+    providerRecordBytes: providerRecordBytes ?? diagnosticProviderRecordBytes!,
   });
 }
 
@@ -303,7 +351,7 @@ export async function verifyHostedTerminalFromGithub(
   token: string,
   stableRoot = process.cwd(),
   runtime: HostedTerminalRuntime = githubTerminalRuntime,
-): Promise<GithubTerminalVerificationResult> {
+): Promise<HostedTerminalVerificationResult> {
   try {
     if (
       !expectedDecimal(expected.repositoryId) ||
@@ -335,11 +383,35 @@ export async function verifyHostedTerminalFromGithub(
       readGithubTerminalArtifacts(repository, expected, token, runtime),
       runtime.projectProtection(repository, token),
     ]);
+    const projectedProtection = projectGithubProtectionSnapshot(protection);
+    if (!projectedProtection.ok) return refusal(...projectedProtection.issues);
+    if (run.conclusion === "FAILURE") {
+      if (!artifacts.diagnosticProviderRecordBytes)
+        return refusal("diagnosticProviderRecord:missing");
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(
+        artifacts.diagnosticProviderRecordBytes,
+      );
+      const parsedRecord = parseGithubConformanceDiagnosticProviderRecord(JSON.parse(text));
+      if (!parsedRecord.ok) return refusal(...parsedRecord.issues);
+      const verifiedAt = await readGithubTerminalVerifiedAt(repository, expected, token, runtime);
+      return verifyGithubDiagnosticTerminalEvidence({
+        artifactBytes: artifacts.bytes,
+        contractVersionsDigest: stable.contractVersionsDigest,
+        currentProtectionSnapshot: projectedProtection.value,
+        expected,
+        liveArtifacts: artifacts.artifacts,
+        liveJobs: jobs,
+        liveRun: run,
+        providerRecordBytes: artifacts.diagnosticProviderRecordBytes,
+        providerRun: providerRunFromRecord(parsedRecord.value),
+        registry: stable.registry,
+        verifiedAt,
+      });
+    }
+    if (!artifacts.providerRecordBytes) return refusal("providerRecord:missing");
     const text = new TextDecoder("utf-8", { fatal: true }).decode(artifacts.providerRecordBytes);
     const parsedRecord = parseGithubConformanceProviderRecord(JSON.parse(text));
     if (!parsedRecord.ok) return refusal(...parsedRecord.issues);
-    const projectedProtection = projectGithubProtectionSnapshot(protection);
-    if (!projectedProtection.ok) return refusal(...projectedProtection.issues);
     return verifyGithubTerminalEvidence({
       artifactBytes: artifacts.bytes,
       currentProtectionSnapshot: projectedProtection.value,
@@ -354,6 +426,46 @@ export async function verifyHostedTerminalFromGithub(
   } catch {
     return refusal("terminalProvider:unreadable");
   }
+}
+
+export async function readGithubTerminalVerifiedAt(
+  repository: string,
+  expected: HostedTerminalExpected,
+  token: string,
+  runtime: HostedTerminalRuntime,
+): Promise<string> {
+  const response = await request(
+    `https://api.github.com/repos/${repository}/actions/runs/${expected.runId}`,
+    token,
+    runtime,
+  );
+  const verifiedAt = canonicalGithubDateHeader(response.headers.get("date"));
+  const row = dataRecord(await response.json());
+  const createdAt = row && canonicalTimestamp(dataValue(row, "created_at"));
+  const runStartedAt = row && canonicalTimestamp(dataValue(row, "run_started_at"));
+  const updatedAt = row && canonicalTimestamp(dataValue(row, "updated_at"));
+  const verifiedAtMilliseconds =
+    verifiedAt === undefined ? undefined : new Date(verifiedAt).valueOf();
+  if (
+    !verifiedAt ||
+    !row ||
+    positiveDecimal(dataValue(row, "id")) !== expected.runId ||
+    positiveDecimal(dataValue(row, "run_attempt")) !== expected.runAttempt ||
+    dataValue(row, "head_sha") !== expected.workflowRevision ||
+    dataValue(row, "status") !== "completed" ||
+    dataValue(row, "conclusion") !== "failure" ||
+    !createdAt ||
+    !runStartedAt ||
+    !updatedAt ||
+    verifiedAtMilliseconds === undefined ||
+    !(
+      new Date(createdAt).valueOf() <= new Date(runStartedAt).valueOf() &&
+      new Date(runStartedAt).valueOf() <= new Date(updatedAt).valueOf() &&
+      new Date(updatedAt).valueOf() <= verifiedAtMilliseconds
+    )
+  )
+    throw new TypeError("provider:diagnostic-final-response-refused");
+  return verifiedAt;
 }
 
 export function parseHostedTerminalArguments(
@@ -392,6 +504,18 @@ export async function runHostedTerminalCli(
   if (!result.ok) {
     process.stdout.write(`${canonicalJson({ issues: result.issues, result: "REFUSED" })}\n`);
     return 1;
+  }
+  if ("diagnosticTerminalDigest" in result) {
+    process.stdout.write(
+      `${canonicalJson({
+        diagnosticProviderRecordDigest: result.diagnosticProviderRecordDigest,
+        diagnosticTerminal: result.value,
+        diagnosticTerminalDigest: result.diagnosticTerminalDigest,
+        providerRunDigest: result.providerRunDigest,
+        result: "BLOCK_REPLAN",
+      })}\n`,
+    );
+    return 0;
   }
   process.stdout.write(
     `${canonicalJson({

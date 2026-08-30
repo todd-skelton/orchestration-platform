@@ -20,10 +20,13 @@ import {
 } from "../../packages/conformance/src/index.js";
 import {
   computeGithubConformanceProtectedRefDigest,
+  computeGithubConformanceDiagnosticTerminalDigest,
   computeGithubProviderRunDigest,
   parseGithubConformanceDiagnosticProviderRecord,
+  parseGithubConformanceDiagnosticTerminal,
   parseGithubProviderRunContext,
   verifyGithubDiagnosticAggregateArchive,
+  verifyGithubDiagnosticTerminalEvidence,
 } from "../../packages/conformance/src/github-actions/index.js";
 import { runHostedAggregateComposition } from "../../scripts/conformance/hosted-aggregate.mjs";
 import { loadHostedStableInputs } from "../../scripts/conformance/hosted-observation.mjs";
@@ -514,6 +517,210 @@ describe("hosted stable ISS-022 aggregate composition", () => {
     expect(parseGithubConformanceDiagnosticProviderRecord(record.value).ok).toBe(true);
     expect(record.value.schemaVersion).toBe("github-conformance-diagnostic-provider-record/v1");
     expect("aggregateDigest" in record.value).toBe(false);
+
+    const providerRun = parseGithubProviderRunContext({
+      candidateRevision: input.plan.candidateRevision,
+      candidateSubjectDigest: input.plan.candidateSubjectDigest,
+      event: input.plan.event,
+      harnessBundleDigest: input.plan.harnessBundleDigest,
+      protectedRefDigest: input.plan.protectedRefDigest,
+      repositoryId: input.plan.repositoryId,
+      requiredJobRegistryDigest: input.plan.requiredJobRegistryDigest,
+      runAttempt: input.plan.runAttempt,
+      runId: input.plan.runId,
+      testBundleDigest: input.plan.testBundleDigest,
+      workflowPath: input.plan.workflowPath,
+      workflowRef: input.plan.workflowRef,
+      workflowRevision: input.plan.workflowRevision,
+    });
+    if (!providerRun.ok) throw new Error(providerRun.issues.join(","));
+    const recordBytes = new TextEncoder().encode(canonicalJson(record.value));
+    const recordArtifact = Object.freeze({
+      artifactDigest: sha256Bytes(recordBytes),
+      artifactId: "99",
+      artifactName: `${prefix}diagnostic-provider-record.json`,
+      byteLength: String(recordBytes.byteLength),
+      createdAt: "2026-08-29T12:00:00.500Z",
+      expired: false,
+      expiresAt,
+      runAttempt: input.plan.runAttempt,
+      runId: input.plan.runId,
+    });
+    const liveArtifacts = Object.freeze([
+      ...(record.value.artifacts as readonly ContractRecord[]).map((artifact) =>
+        Object.freeze({
+          artifactDigest: artifact.artifactDigest,
+          artifactId: artifact.artifactId,
+          artifactName: artifact.artifactName,
+          byteLength: artifact.byteLength,
+          createdAt: "2026-08-29T11:59:59.500Z",
+          expired: false,
+          expiresAt: artifact.expiresAt,
+          runAttempt: input.plan.runAttempt,
+          runId: input.plan.runId,
+        }),
+      ),
+      recordArtifact,
+    ]);
+    const liveJobs = Object.freeze([
+      ...providerJobs.map((job) =>
+        Object.freeze({
+          completedAt: "2026-08-29T11:59:59.900Z",
+          conclusion: job.conclusion,
+          providerJobId: job.providerJobId,
+          providerJobName: job.providerJobName,
+          startedAt: "2026-08-29T11:59:59.000Z",
+          status: "COMPLETED",
+        }),
+      ),
+      Object.freeze({
+        completedAt: "2026-08-29T12:00:01.000Z",
+        conclusion: "SUCCESS",
+        providerJobId: "99",
+        providerJobName: "Conformance / record",
+        startedAt: "2026-08-29T12:00:00.000Z",
+        status: "COMPLETED",
+      }),
+    ]);
+    const protection = Object.freeze({
+      bypassActorCount: "0",
+      deletionBlocked: true,
+      enforcement: "ACTIVE",
+      nonFastForwardBlocked: true,
+      pullRequestRequired: true,
+      schemaVersion: "github-conformance-protection-snapshot/v1",
+      targetRef: "refs/heads/main",
+    });
+    const terminalInput = Object.freeze({
+      artifactBytes: Object.freeze([
+        ...artifacts.map((artifact) =>
+          Object.freeze({ artifactId: artifact.artifactId, bytes: artifact.archiveBytes }),
+        ),
+        Object.freeze({ artifactId: "99", bytes: recordBytes }),
+      ]),
+      contractVersionsDigest: input.plan.contractVersionsDigest,
+      currentProtectionSnapshot: protection,
+      expected: Object.freeze({
+        repositoryId: input.plan.repositoryId,
+        runAttempt: input.plan.runAttempt,
+        runId: input.plan.runId,
+        workflowRevision: input.plan.workflowRevision,
+      }),
+      liveArtifacts,
+      liveJobs,
+      liveRun: Object.freeze({
+        conclusion: "FAILURE",
+        createdAt: "2026-08-29T11:59:58.000Z",
+        event: input.plan.event,
+        repositoryId: input.plan.repositoryId,
+        runAttempt: input.plan.runAttempt,
+        runId: input.plan.runId,
+        runStartedAt: "2026-08-29T11:59:58.500Z",
+        status: "COMPLETED",
+        updatedAt: "2026-08-29T12:00:01.500Z",
+        workflowPath: input.plan.workflowPath,
+        workflowRef: input.plan.workflowRef,
+        workflowRevision: input.plan.workflowRevision,
+      }),
+      providerRecordBytes: recordBytes,
+      providerRun: providerRun.value,
+      registry: stable.registry,
+      verifiedAt: "2026-08-29T12:00:02.000Z",
+    });
+    const terminal = verifyGithubDiagnosticTerminalEvidence(terminalInput);
+    expect(terminal.ok).toBe(true);
+    if (!terminal.ok) throw new Error(terminal.issues.join(","));
+    expect(terminal.value.schemaVersion).toBe(
+      "github-conformance-diagnostic-terminal-verification/v1",
+    );
+    expect(computeGithubConformanceDiagnosticTerminalDigest(terminal.value)).toBe(
+      terminal.diagnosticTerminalDigest,
+    );
+    expect(Object.keys(terminal.value).sort()).toEqual([
+      "diagnosticProviderRecordDigest",
+      "protectionSnapshotDigest",
+      "providerRunDigest",
+      "repositoryId",
+      "runAttempt",
+      "runId",
+      "schemaVersion",
+      "verifiedAt",
+      "workflowRevision",
+    ]);
+    expect(parseGithubConformanceDiagnosticTerminal({ ...terminal.value, result: "PASS" }).ok).toBe(
+      false,
+    );
+    const recordJob = liveJobs.at(-1)!;
+    const recordJobWithoutStatus = Object.fromEntries(
+      Object.entries(recordJob).filter(([name]) => name !== "status"),
+    );
+    for (const mutation of [
+      { ...terminalInput, contractVersionsDigest: "9".repeat(64) },
+      { ...terminalInput, verifiedAt: "2026-08-29T12:00:02Z" },
+      { ...terminalInput, verifiedAt: "2026-08-29T12:00:00.999Z" },
+      { ...terminalInput, liveRun: { ...terminalInput.liveRun, conclusion: "SUCCESS" } },
+      {
+        ...terminalInput,
+        liveRun: { ...terminalInput.liveRun, updatedAt: "2026-08-29T12:00:02.001Z" },
+      },
+      {
+        ...terminalInput,
+        currentProtectionSnapshot: { ...protection, bypassActorCount: "1" },
+      },
+      { ...terminalInput, liveJobs: liveJobs.slice(0, -1) },
+      {
+        ...terminalInput,
+        liveJobs: [...liveJobs.slice(0, -1), recordJobWithoutStatus],
+      },
+      {
+        ...terminalInput,
+        liveJobs: [...liveJobs.slice(0, -1), { ...recordJob, conclusion: "FAILURE" }],
+      },
+      {
+        ...terminalInput,
+        liveJobs: [...liveJobs.slice(0, -1), { ...recordJob, status: "IN_PROGRESS" }],
+      },
+      {
+        ...terminalInput,
+        liveJobs: [
+          ...liveJobs.slice(0, -1),
+          { ...recordJob, startedAt: "2026-08-29T12:00:00.001Z" },
+        ],
+      },
+      { ...terminalInput, liveArtifacts: liveArtifacts.slice(0, -1) },
+      {
+        ...terminalInput,
+        liveArtifacts: liveArtifacts.map((artifact) => ({
+          ...artifact,
+          expiresAt: "2026-09-01T12:00:00.000Z",
+        })),
+      },
+      {
+        ...terminalInput,
+        liveArtifacts: liveArtifacts.map((artifact, index) =>
+          index === 0 ? { ...artifact, runAttempt: "2" } : artifact,
+        ),
+      },
+      {
+        ...terminalInput,
+        artifactBytes: terminalInput.artifactBytes.map((entry, index) =>
+          index === 0 ? { ...entry, bytes: entry.bytes.slice(1) } : entry,
+        ),
+      },
+      ...(["IN_PROGRESS", "PENDING", "QUEUED", "REQUESTED", "WAITING", "UNKNOWN"] as const).map(
+        (status) => ({
+          ...terminalInput,
+          liveJobs: liveJobs.map((job, index) => (index === 0 ? { ...job, status } : job)),
+        }),
+      ),
+      {
+        ...terminalInput,
+        liveJobs: liveJobs.map((job, index) =>
+          index === 0 ? { ...job, conclusion: "UNKNOWN" } : job,
+        ),
+      },
+    ])
+      expect(verifyGithubDiagnosticTerminalEvidence(mutation).ok).toBe(false);
 
     const changedObservation = Uint8Array.from(observationArchives[0]!);
     changedObservation[0] = changedObservation[0]! ^ 1;

@@ -297,6 +297,7 @@ const liveJobs = Object.freeze([
       providerJobId: job.providerJobId,
       providerJobName: job.providerJobName,
       startedAt: "2026-08-24T00:00:00.100Z",
+      status: "COMPLETED",
     }),
   ),
   Object.freeze({
@@ -305,6 +306,7 @@ const liveJobs = Object.freeze([
     providerJobId: "29",
     providerJobName: "Conformance / record",
     startedAt: "2026-08-24T00:00:00.000Z",
+    status: "COMPLETED",
   }),
 ]);
 const baseline = Object.freeze({
@@ -324,11 +326,14 @@ const baseline = Object.freeze({
   liveJobs,
   liveRun: Object.freeze({
     conclusion: "SUCCESS",
+    createdAt: "2026-08-23T23:59:59.000Z",
     event: providerRun.event,
     repositoryId: providerRun.repositoryId,
     runAttempt: providerRun.runAttempt,
     runId: providerRun.runId,
+    runStartedAt: "2026-08-23T23:59:59.500Z",
     status: "COMPLETED",
+    updatedAt: "2026-08-24T00:00:03.000Z",
     workflowPath: providerRun.workflowPath,
     workflowRef: providerRun.workflowRef,
     workflowRevision: providerRun.workflowRevision,
