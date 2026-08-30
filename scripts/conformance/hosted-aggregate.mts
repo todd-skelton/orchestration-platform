@@ -364,6 +364,53 @@ async function writeAggregate(
   }
 }
 
+async function writeDiagnosticReceipts(
+  outputRoot: string,
+  jobs: readonly ContractRecord[],
+  evidence: readonly Readonly<{ readonly receipt: ContractRecord }>[],
+): Promise<boolean> {
+  let identity: BigIntStats | undefined;
+  let complete = false;
+  try {
+    await mkdir(outputRoot, { recursive: false });
+    identity = await lstat(outputRoot, { bigint: true });
+    if (!identity.isDirectory() || identity.isSymbolicLink()) return false;
+    const receiptsRoot = resolve(outputRoot, "receipts");
+    await mkdir(receiptsRoot);
+    for (let index = 0; index < jobs.length; index += 1) {
+      const jobId = String(jobs[index]!.jobId);
+      const receipt = serializeConformanceContract(
+        "conformance-job-receipt/v1",
+        evidence[index]!.receipt,
+      );
+      if (!receipt.ok) return false;
+      await writeFile(resolve(receiptsRoot, `${jobId}.json`), receipt.bytes, {
+        flag: "wx",
+        mode: 0o600,
+      });
+    }
+    complete =
+      (await readdir(outputRoot)).join("\0") === "receipts" &&
+      (await readdir(receiptsRoot)).sort().join("\0") ===
+        jobs
+          .map((job) => `${String(job.jobId)}.json`)
+          .sort()
+          .join("\0");
+    return complete;
+  } catch {
+    return false;
+  } finally {
+    if (identity && !complete)
+      try {
+        const current = await lstat(outputRoot, { bigint: true });
+        if (!sameDirectory(identity, current)) throw new TypeError("aggregate-output:moved");
+        await rm(outputRoot, { recursive: true });
+      } catch {
+        return false;
+      }
+  }
+}
+
 export async function runHostedAggregateComposition(
   input: HostedAggregateInput,
 ): Promise<HostedAggregateResult> {
@@ -423,12 +470,18 @@ export async function runHostedAggregateComposition(
     const stableAfter = await loadHostedStableInputs(stableRoot);
     if (!stableAfter || !hostedStableInputsMatchContext(stableAfter, context))
       return refusal("aggregate-runner:stable-recheck-refused");
-    if (!reduced.ok)
+    if (!reduced.ok) {
+      const diagnostic =
+        jobs.every((job) => job.suiteId === "iss022-portable-primitives") &&
+        evidence.some((value) => value.receipt.normalizedResult !== "PASS");
+      if (diagnostic && !(await writeDiagnosticReceipts(input.outputRoot, jobs, evidence)))
+        return refusal("aggregate-runner:diagnostic-output-refused");
       return {
         issues: Object.freeze(reduced.issues.map((issue) => `aggregate.${issue}`)),
         ok: false,
         receipts: Object.freeze(evidence.map((value) => value.receipt)),
       };
+    }
     if (!(await writeAggregate(input.outputRoot, jobs, reduced.value, evidence)))
       return refusal("aggregate-runner:output-refused");
     return { ok: true, aggregate: reduced.value };

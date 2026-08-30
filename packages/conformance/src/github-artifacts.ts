@@ -1,14 +1,21 @@
 import { inflateRawSync } from "node:zlib";
 import { types as nodeTypes } from "node:util";
+import { canonicalJson, isSha256, type ContractRecord } from "@orchestration-platform/contracts";
 import {
   computeConformanceRecordDigest,
   parseCanonicalConformanceBytes,
   parseConformanceAggregate,
+  parseConformanceEnvironment,
   parseConformanceJobReceipt,
+  parseConformanceRawArtifactManifest,
   parseConformanceRequiredJobRegistry,
   sha256Bytes,
 } from "./contracts.js";
-import type { ContractRecord } from "@orchestration-platform/contracts";
+import { createConformanceJobEvidence } from "./reducer.js";
+import {
+  parseCanonicalIss022StableRawReportBytes,
+  parseIss022RequiredJobRegistry,
+} from "./iss022-suite.js";
 
 const maximumEntries = 1024;
 const maximumFileBytes = 16 * 1024 * 1024;
@@ -38,6 +45,28 @@ export type GithubAggregateArchiveResult =
     }
   | { readonly ok: false; readonly issues: readonly string[] };
 
+export type GithubDiagnosticAggregateArchiveResult =
+  | { readonly ok: true; readonly receipts: readonly ContractRecord[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface GithubDiagnosticAggregateExpectation {
+  readonly candidateSubjectDigest: unknown;
+  readonly contractVersionsDigest: unknown;
+  readonly evidence: unknown;
+  readonly harnessBundleDigest: unknown;
+  readonly providerRunDigest: unknown;
+  readonly registry: unknown;
+  readonly testBundleDigest: unknown;
+}
+
+const diagnosticEvidenceFields = Object.freeze([
+  "environment",
+  "jobId",
+  "rawArtifactManifest",
+  "rawArtifacts",
+] as const);
+const rawArtifactFields = Object.freeze(["environment", "report", "stderr", "stdout"] as const);
+
 function refusal(...issues: readonly string[]): {
   readonly ok: false;
   readonly issues: readonly string[];
@@ -51,6 +80,68 @@ function exactBytes(input: unknown): Uint8Array | undefined {
     return input instanceof Uint8Array && Object.getPrototypeOf(input) === Uint8Array.prototype
       ? input
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function exactDataRecord(
+  input: unknown,
+  fields: readonly string[],
+): Readonly<Record<string, unknown>> | undefined {
+  try {
+    if (
+      input === null ||
+      typeof input !== "object" ||
+      nodeTypes.isProxy(input) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+    )
+      return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Reflect.ownKeys(descriptors);
+    if (
+      keys.some((key) => typeof key !== "string") ||
+      (keys as string[]).sort().join("\0") !== [...fields].sort().join("\0")
+    )
+      return undefined;
+    const value: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const field of fields) {
+      const descriptor = descriptors[field];
+      if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true)
+        return undefined;
+      value[field] = descriptor.value;
+    }
+    return Object.freeze(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function exactDataArray(input: unknown, length: number): readonly unknown[] | undefined {
+  try {
+    if (
+      !Array.isArray(input) ||
+      nodeTypes.isProxy(input) ||
+      Object.getPrototypeOf(input) !== Array.prototype ||
+      input.length !== length
+    )
+      return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Reflect.ownKeys(descriptors);
+    const expected = new Set([...Array.from({ length }, (_, index) => String(index)), "length"]);
+    if (
+      keys.some((key) => typeof key !== "string" || !expected.has(key)) ||
+      keys.length !== expected.size
+    )
+      return undefined;
+    const values: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true)
+        return undefined;
+      values.push(descriptor.value);
+    }
+    return Object.freeze(values);
   } catch {
     return undefined;
   }
@@ -447,4 +538,120 @@ export function verifyGithubAggregateArchive(
     receipts.push(parsed.value);
   }
   return { ok: true, aggregate: aggregate.value, receipts: Object.freeze(receipts) };
+}
+
+export function verifyGithubDiagnosticAggregateArchive(
+  input: unknown,
+  expectation: GithubDiagnosticAggregateExpectation,
+): GithubDiagnosticAggregateArchiveResult {
+  try {
+    const archive = extractGithubArtifactZip(input);
+    if (!archive.ok) return archive;
+    const registry = parseIss022RequiredJobRegistry(expectation.registry);
+    if (!registry.ok) return refusal(...registry.issues.map((issue) => `registry.${issue}`));
+    for (const [field, value] of Object.entries({
+      candidateSubjectDigest: expectation.candidateSubjectDigest,
+      contractVersionsDigest: expectation.contractVersionsDigest,
+      harnessBundleDigest: expectation.harnessBundleDigest,
+      providerRunDigest: expectation.providerRunDigest,
+      testBundleDigest: expectation.testBundleDigest,
+    }))
+      if (typeof value !== "string" || !isSha256(value)) return refusal(`${field}:invalid`);
+    const jobs = registry.value.jobs as readonly ContractRecord[];
+    if (jobs.length !== 3) return refusal("registry:exact-three-jobs-required");
+    const evidence = exactDataArray(expectation.evidence, jobs.length);
+    if (!evidence) return refusal("evidence:exact-three-row-array-required");
+    const registryDigest = computeConformanceRecordDigest(
+      "conformance-required-job-registry/v1",
+      registry.value,
+    );
+    const expectedReceipts: ContractRecord[] = [];
+    let physicalDiagnostic = false;
+    for (let index = 0; index < jobs.length; index += 1) {
+      const job = jobs[index]!;
+      const jobId = String(job.jobId);
+      const row = exactDataRecord(evidence[index], diagnosticEvidenceFields);
+      if (!row || row.jobId !== jobId) return refusal(`evidence.${index}:job-order-mismatch`);
+      const environment = parseConformanceEnvironment(row.environment);
+      const manifest = parseConformanceRawArtifactManifest(row.rawArtifactManifest);
+      const raw = exactDataRecord(row.rawArtifacts, rawArtifactFields);
+      if (!environment.ok)
+        return refusal(
+          ...environment.issues.map((issue) => `evidence.${jobId}.environment.${issue}`),
+        );
+      if (!manifest.ok)
+        return refusal(...manifest.issues.map((issue) => `evidence.${jobId}.manifest.${issue}`));
+      if (!raw || rawArtifactFields.some((name) => !exactBytes(raw[name])))
+        return refusal(`evidence.${jobId}.rawArtifacts:exact-census-required`);
+      const report = parseCanonicalIss022StableRawReportBytes(
+        raw.report,
+        environment.value,
+        String(expectation.providerRunDigest),
+        jobId,
+      );
+      if (!report.ok)
+        return refusal(...report.issues.map((issue) => `evidence.${jobId}.report.${issue}`));
+      const executions = report.report.vectorExecutions as readonly ContractRecord[];
+      if (
+        report.report.selection === null &&
+        executions
+          .slice(0, 6)
+          .some(
+            (execution) =>
+              execution.normalizedResult === "UNKNOWN" ||
+              execution.normalizedResult === "UNSUPPORTED",
+          )
+      )
+        physicalDiagnostic = true;
+      const created = createConformanceJobEvidence({
+        candidateSubjectDigest: String(expectation.candidateSubjectDigest),
+        contractVersionsDigest: String(expectation.contractVersionsDigest),
+        environment: environment.value,
+        harnessBundleDigest: String(expectation.harnessBundleDigest),
+        jobId,
+        maximumWalkDurationNanoseconds: null,
+        normalizedResult: report.normalizedResult,
+        providerRunDigest: String(expectation.providerRunDigest),
+        rawArtifacts: raw as unknown as {
+          readonly environment: Uint8Array;
+          readonly report: Uint8Array;
+          readonly stderr: Uint8Array;
+          readonly stdout: Uint8Array;
+        },
+        registry: registry.value,
+        testBundleDigest: String(expectation.testBundleDigest),
+      });
+      if (!created.ok)
+        return refusal(...created.issues.map((issue) => `evidence.${jobId}.receipt.${issue}`));
+      if (
+        created.receipt.requiredJobRegistryDigest !== registryDigest ||
+        canonicalJson(created.rawArtifactManifest) !== canonicalJson(manifest.value)
+      )
+        return refusal(`evidence.${jobId}:manifest-or-registry-mismatch`);
+      expectedReceipts.push(created.receipt);
+    }
+    if (!physicalDiagnostic) return refusal("diagnosticAggregate:physical-diagnostic-required");
+    const expectedNames = jobs.map((job) => `receipts/${String(job.jobId)}.json`);
+    if (!exactFileCensus(archive.files, expectedNames))
+      return refusal("diagnosticAggregate:file-census-mismatch");
+    const receipts: ContractRecord[] = [];
+    for (let index = 0; index < jobs.length; index += 1) {
+      const jobId = String(jobs[index]!.jobId);
+      const parsed = parseCanonicalConformanceBytes(
+        "conformance-job-receipt/v1",
+        archive.files.get(`receipts/${jobId}.json`),
+      );
+      if (!parsed.ok) return refusal(...parsed.issues.map((issue) => `receipt.${jobId}.${issue}`));
+      if (
+        computeConformanceRecordDigest("conformance-job-receipt/v1", parsed.value) !==
+          computeConformanceRecordDigest("conformance-job-receipt/v1", expectedReceipts[index]!) ||
+        canonicalJson(parsed.value) !== canonicalJson(expectedReceipts[index]!)
+      )
+        return refusal(`receipt.${jobId}:expected-evidence-mismatch`);
+      receipts.push(parsed.value);
+    }
+    return { ok: true, receipts: Object.freeze(receipts) };
+  } catch {
+    return refusal("diagnosticAggregate:unreadable");
+  }
 }

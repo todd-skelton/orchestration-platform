@@ -200,6 +200,17 @@ const aggregateZip = zip([
     name: "receipts/iss002-contracts-linux.json",
   },
 ]);
+const diagnosticReceipt = Object.freeze({
+  ...evidence.receipt,
+  maximumWalkDurationNanoseconds: null,
+  normalizedResult: "UNKNOWN",
+});
+const diagnosticAggregateZip = zip([
+  {
+    bytes: canonical("conformance-job-receipt/v1", diagnosticReceipt),
+    name: "receipts/iss002-contracts-linux.json",
+  },
+]);
 
 describe("GitHub artifact archives", () => {
   test("extracts and binds the exact observation layout", () => {
@@ -227,6 +238,20 @@ describe("GitHub artifact archives", () => {
     if (!verified.ok) return;
     expect(verified.aggregate).toEqual(aggregateResult.value);
     expect(verified.receipts).toEqual([evidence.receipt]);
+  });
+
+  test("refuses a generic ISS-002 receipts-only archive", () => {
+    expect(
+      github.verifyGithubDiagnosticAggregateArchive(diagnosticAggregateZip, {
+        candidateSubjectDigest: d("4"),
+        contractVersionsDigest: d("5"),
+        evidence: [],
+        harnessBundleDigest: d("6"),
+        providerRunDigest: d("7"),
+        registry,
+        testBundleDigest: d("8"),
+      }).ok,
+    ).toBe(false);
   });
 
   test("refuses unsafe ZIP structure and payload substitutions", () => {
@@ -338,6 +363,17 @@ describe("GitHub artifact archives", () => {
       expect(() => github.extractGithubArtifactZip(input)).not.toThrow();
       expect(() => github.verifyGithubObservationArchive(input)).not.toThrow();
       expect(() => github.verifyGithubAggregateArchive(input, registry)).not.toThrow();
+      expect(() =>
+        github.verifyGithubDiagnosticAggregateArchive(input, {
+          candidateSubjectDigest: d("4"),
+          contractVersionsDigest: d("5"),
+          evidence: [],
+          harnessBundleDigest: d("6"),
+          providerRunDigest: d("7"),
+          registry,
+          testBundleDigest: d("8"),
+        }),
+      ).not.toThrow();
       expect(() => github.verifyGithubArtifactIdentity(input, d("1"), "0")).not.toThrow();
     }
   });
