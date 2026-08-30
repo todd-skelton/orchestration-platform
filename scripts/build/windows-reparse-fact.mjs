@@ -16,10 +16,21 @@ function closedManifest(value) {
   const keys = Object.keys(value).sort();
   if (
     keys.join("\0") !==
-      ["productionArtifact", "productionSources", "schemaVersion", "testArtifact", "testSources"]
+      [
+        "coordinateMembers",
+        "identityMembers",
+        "productionArtifact",
+        "productionSources",
+        "schemaVersion",
+        "testArtifact",
+        "testSources",
+      ]
         .sort()
         .join("\0") ||
-    value.schemaVersion !== "windows-reparse-fact-build/v1" ||
+    value.schemaVersion !== "windows-reparse-fact-build/v2" ||
+    JSON.stringify(value.coordinateMembers) !== JSON.stringify(["decimal", "hexadecimal"]) ||
+    JSON.stringify(value.identityMembers) !==
+      JSON.stringify(["fileId", "nodeDevice", "nodeInode", "volumeSerialNumber"]) ||
     value.productionArtifact !==
       ".artifacts/native/windows-reparse-fact/windows_reparse_fact.node" ||
     value.testArtifact !==

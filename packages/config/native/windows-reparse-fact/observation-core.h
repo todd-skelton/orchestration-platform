@@ -13,6 +13,8 @@ struct Observation {
   bool directory;
   bool reparse_point;
   DWORD reparse_tag;
+  DWORD node_device;
+  std::uint64_t node_inode;
   std::uint64_t volume_serial_number;
   std::array<unsigned char, 16> file_id;
 };
@@ -24,9 +26,11 @@ inline std::wstring ExtendedLocalPath(const std::wstring& path) {
 inline bool ObserveHandle(HANDLE handle, Observation* observation) {
   FILE_ID_INFO identity{};
   FILE_ATTRIBUTE_TAG_INFO attributes{};
+  BY_HANDLE_FILE_INFORMATION node_identity{};
   if (!GetFileInformationByHandleEx(handle, FileIdInfo, &identity, sizeof(identity)) ||
       !GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &attributes,
-                                    sizeof(attributes))) {
+                                    sizeof(attributes)) ||
+      !GetFileInformationByHandle(handle, &node_identity)) {
     return false;
   }
 
@@ -34,6 +38,10 @@ inline bool ObserveHandle(HANDLE handle, Observation* observation) {
   observation->reparse_point =
       (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
   observation->reparse_tag = observation->reparse_point ? attributes.ReparseTag : 0;
+  observation->node_device = node_identity.dwVolumeSerialNumber;
+  observation->node_inode =
+      (static_cast<std::uint64_t>(node_identity.nFileIndexHigh) << 32) |
+      node_identity.nFileIndexLow;
   observation->volume_serial_number = identity.VolumeSerialNumber;
   for (std::size_t index = 0; index < observation->file_id.size(); ++index) {
     observation->file_id[index] = identity.FileId.Identifier[index];

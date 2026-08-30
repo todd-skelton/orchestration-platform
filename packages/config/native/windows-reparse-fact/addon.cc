@@ -57,6 +57,12 @@ std::string Hex64(std::uint64_t value) {
   return std::string(text.data(), 16);
 }
 
+std::string Hex32(std::uint32_t value) {
+  std::array<char, 9> text{};
+  std::snprintf(text.data(), text.size(), "%08lx", static_cast<unsigned long>(value));
+  return std::string(text.data(), 8);
+}
+
 std::string Hex128(const std::array<unsigned char, 16>& value) {
   constexpr char digits[] = "0123456789abcdef";
   std::string text(32, '0');
@@ -67,6 +73,16 @@ std::string Hex128(const std::array<unsigned char, 16>& value) {
   return text;
 }
 
+napi_value Coordinate(napi_env environment, std::uint64_t value, const std::string& hexadecimal) {
+  napi_value coordinate;
+  if (napi_create_object(environment, &coordinate) != napi_ok ||
+      !Set(environment, coordinate, "decimal", String(environment, std::to_string(value))) ||
+      !Set(environment, coordinate, "hexadecimal", String(environment, hexadecimal))) {
+    return nullptr;
+  }
+  return coordinate;
+}
+
 napi_value ToValue(napi_env environment, const Observation& observation) {
   napi_value result;
   napi_value identity;
@@ -74,6 +90,10 @@ napi_value ToValue(napi_env environment, const Observation& observation) {
   if (napi_create_object(environment, &result) != napi_ok ||
       napi_create_object(environment, &identity) != napi_ok ||
       !Set(environment, identity, "fileId", String(environment, Hex128(observation.file_id))) ||
+      !Set(environment, identity, "nodeDevice",
+           Coordinate(environment, observation.node_device, Hex32(observation.node_device))) ||
+      !Set(environment, identity, "nodeInode",
+           Coordinate(environment, observation.node_inode, Hex64(observation.node_inode))) ||
       !Set(environment, identity, "volumeSerialNumber",
            String(environment, Hex64(observation.volume_serial_number))) ||
       !Set(environment, result, "identity", identity) ||

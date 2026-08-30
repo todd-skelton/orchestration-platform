@@ -4,11 +4,18 @@ import { resolve, win32 } from "node:path";
 export type WindowsReparseFact = Readonly<{
   identity: Readonly<{
     fileId: string;
+    nodeDevice: UnsignedCoordinate;
+    nodeInode: UnsignedCoordinate;
     volumeSerialNumber: string;
   }>;
   kind: "DIRECTORY" | "FILE";
   reparsePoint: boolean;
   reparseTag: number | null;
+}>;
+
+export type UnsignedCoordinate = Readonly<{
+  decimal: string;
+  hexadecimal: string;
 }>;
 
 export type WindowsReparseFactResult =
@@ -55,14 +62,48 @@ function exactHex(value: unknown, length: number): value is string {
   return typeof value === "string" && value.length === length && /^[0-9a-f]+$/.test(value);
 }
 
+function parseCoordinate(
+  value: unknown,
+  hexadecimalLength: number,
+  maximum: bigint,
+): UnsignedCoordinate | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const coordinate = ownData(value, ["decimal", "hexadecimal"]);
+  const decimal = coordinate?.decimal?.value;
+  const hexadecimal = coordinate?.hexadecimal?.value;
+  if (
+    coordinate === undefined ||
+    typeof decimal !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(decimal) ||
+    decimal.length > 20 ||
+    !exactHex(hexadecimal, hexadecimalLength)
+  ) {
+    return undefined;
+  }
+  try {
+    const decimalValue = BigInt(decimal);
+    if (decimalValue > maximum || decimalValue !== BigInt(`0x${hexadecimal}`)) return undefined;
+  } catch {
+    return undefined;
+  }
+  return Object.freeze({ decimal, hexadecimal });
+}
+
 export function parseWindowsReparseFactForTesting(value: unknown): WindowsReparseFact | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const fact = ownData(value, ["identity", "kind", "reparsePoint", "reparseTag"]);
   if (fact === undefined) return undefined;
   const identityValue = fact.identity?.value;
   if (typeof identityValue !== "object" || identityValue === null) return undefined;
-  const identity = ownData(identityValue, ["fileId", "volumeSerialNumber"]);
+  const identity = ownData(identityValue, [
+    "fileId",
+    "nodeDevice",
+    "nodeInode",
+    "volumeSerialNumber",
+  ]);
   const fileId = identity?.fileId?.value;
+  const nodeDevice = parseCoordinate(identity?.nodeDevice?.value, 8, 0xffff_ffffn);
+  const nodeInode = parseCoordinate(identity?.nodeInode?.value, 16, 0xffff_ffff_ffff_ffffn);
   const volumeSerialNumber = identity?.volumeSerialNumber?.value;
   const kind = fact.kind?.value;
   const reparsePoint = fact.reparsePoint?.value;
@@ -70,7 +111,10 @@ export function parseWindowsReparseFactForTesting(value: unknown): WindowsRepars
   if (
     identity === undefined ||
     !exactHex(fileId, 32) ||
+    nodeDevice === undefined ||
+    nodeInode === undefined ||
     !exactHex(volumeSerialNumber, 16) ||
+    BigInt(nodeDevice.decimal) !== (BigInt(`0x${volumeSerialNumber}`) & 0xffff_ffffn) ||
     (kind !== "DIRECTORY" && kind !== "FILE") ||
     typeof reparsePoint !== "boolean" ||
     (reparsePoint
@@ -85,6 +129,8 @@ export function parseWindowsReparseFactForTesting(value: unknown): WindowsRepars
   return Object.freeze({
     identity: Object.freeze({
       fileId,
+      nodeDevice,
+      nodeInode,
       volumeSerialNumber,
     }),
     kind,

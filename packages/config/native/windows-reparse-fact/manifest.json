@@ -1,5 +1,7 @@
 {
-  "schemaVersion": "windows-reparse-fact-build/v1",
+  "coordinateMembers": ["decimal", "hexadecimal"],
+  "identityMembers": ["fileId", "nodeDevice", "nodeInode", "volumeSerialNumber"],
+  "schemaVersion": "windows-reparse-fact-build/v2",
   "productionArtifact": ".artifacts/native/windows-reparse-fact/windows_reparse_fact.node",
   "productionSources": [
     "packages/config/native/windows-reparse-fact/addon.cc",

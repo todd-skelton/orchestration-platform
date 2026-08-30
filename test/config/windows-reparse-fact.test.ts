@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -63,7 +63,12 @@ afterAll(async () => {
 describe("Windows reparse fact closed boundary", () => {
   test("refuses malformed native facts without retaining caller data", () => {
     const valid = {
-      identity: { fileId: "1".repeat(32), volumeSerialNumber: "2".repeat(16) },
+      identity: {
+        fileId: "1".repeat(32),
+        nodeDevice: { decimal: "1", hexadecimal: "00000001" },
+        nodeInode: { decimal: "2", hexadecimal: "0000000000000002" },
+        volumeSerialNumber: "0000000000000001",
+      },
       kind: "DIRECTORY",
       reparsePoint: false,
       reparseTag: null,
@@ -71,12 +76,36 @@ describe("Windows reparse fact closed boundary", () => {
     expect(fact(valid)).toEqual(valid);
     expect(Object.isFrozen(fact(valid))).toBe(true);
     expect(Object.isFrozen(fact(valid).identity)).toBe(true);
+    expect(Object.isFrozen(fact(valid).identity.nodeDevice)).toBe(true);
+    expect(Object.isFrozen(fact(valid).identity.nodeInode)).toBe(true);
 
     for (const malformed of [
       null,
       Object.create(null),
       { ...valid, extra: true },
       { ...valid, identity: { ...valid.identity, fileId: "A".repeat(32) } },
+      {
+        ...valid,
+        identity: { ...valid.identity, nodeDevice: { decimal: "01", hexadecimal: "00000001" } },
+      },
+      {
+        ...valid,
+        identity: { ...valid.identity, nodeDevice: { decimal: "2", hexadecimal: "00000002" } },
+      },
+      {
+        ...valid,
+        identity: {
+          ...valid.identity,
+          nodeInode: { decimal: "2", hexadecimal: "0000000000000003" },
+        },
+      },
+      {
+        ...valid,
+        identity: {
+          ...valid.identity,
+          nodeInode: { decimal: "18446744073709551616", hexadecimal: "0000000000000000" },
+        },
+      },
       { ...valid, reparsePoint: true },
       { ...valid, reparseTag: 1 },
       Object.defineProperty({ ...valid }, "kind", { enumerable: true, get: () => "DIRECTORY" }),
@@ -111,9 +140,11 @@ describe("Windows reparse fact closed boundary", () => {
     "observes an ordinary directory and an actual junction without following it",
     async () => {
       const ordinary = resolve(root, "ordinary");
+      const ordinaryFile = resolve(root, "ordinary-stat.txt");
       const target = resolve(root, "target");
       const junction = resolve(root, "junction");
       await mkdir(ordinary);
+      await writeFile(ordinaryFile, "ordinary", "utf8");
       await mkdir(target);
       await symlink(target, junction, "junction");
 
@@ -125,6 +156,20 @@ describe("Windows reparse fact closed boundary", () => {
         reparsePoint: false,
         reparseTag: null,
       });
+
+      const fileHandle = await open(ordinaryFile, "r");
+      try {
+        const nodeStat = await fileHandle.stat({ bigint: true });
+        const fileResult = adapter.observe(ordinaryFile);
+        expect(fileResult.ok).toBe(true);
+        if (!fileResult.ok) return;
+        expect(BigInt(fileResult.value.identity.nodeDevice.decimal)).toBe(nodeStat.dev);
+        expect(BigInt(`0x${fileResult.value.identity.nodeDevice.hexadecimal}`)).toBe(nodeStat.dev);
+        expect(BigInt(fileResult.value.identity.nodeInode.decimal)).toBe(nodeStat.ino);
+        expect(BigInt(`0x${fileResult.value.identity.nodeInode.hexadecimal}`)).toBe(nodeStat.ino);
+      } finally {
+        await fileHandle.close();
+      }
 
       const junctionResult = adapter.observe(junction);
       expect(junctionResult.ok).toBe(true);
