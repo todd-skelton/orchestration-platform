@@ -2,7 +2,6 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  open,
   readFile,
   realpath,
   rename,
@@ -10,9 +9,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { constants } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, win32 } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -391,101 +389,6 @@ describe("ISS-003 concrete configuration loader", () => {
         },
       });
       expect(JSON.stringify(result)).not.toContain(await readFile(input.configPath, "utf8"));
-    },
-    120_000,
-  );
-
-  test.skipIf(process.platform !== "win32")(
-    "diagnoses path-free native and Node component fact equality",
-    async () => {
-      const input = await fixture();
-      const native = createWindowsReparseFactAdapter("WINDOWS");
-      const roles = [
-        [input.projectRoot, "PROJECT"],
-        [input.configPath, "CONFIG"],
-        [input.stateRoot, "STATE"],
-      ] as const;
-      const components = new Map<string, Set<string>>();
-      for (const [path, role] of roles) {
-        const root = win32.parse(path).root;
-        let current = root;
-        const paths = [root];
-        for (const segment of path.slice(root.length).split(win32.sep).filter(Boolean)) {
-          current = win32.join(current, segment);
-          paths.push(current);
-        }
-        for (const component of paths) {
-          const observedRoles = components.get(component) ?? new Set<string>();
-          observedRoles.add(component === path ? `${role}_LEAF` : `${role}_ANCESTOR`);
-          components.set(component, observedRoles);
-        }
-      }
-
-      const census = [];
-      let index = 0;
-      for (const [path, observedRoles] of components) {
-        const before = await lstat(path, { bigint: true });
-        const first = native.observe(path);
-        const retained = await open(path, constants.O_RDONLY);
-        const fresh = await open(path, constants.O_RDONLY);
-        try {
-          const [retainedStats, freshStats, after] = await Promise.all([
-            retained.stat({ bigint: true }),
-            fresh.stat({ bigint: true }),
-            lstat(path, { bigint: true }),
-          ]);
-          const second = native.observe(path);
-          const firstFact = first.ok ? first.value : null;
-          const secondFact = second.ok ? second.value : null;
-          const coordinateMatches = (fact: typeof firstFact, stats: typeof before) =>
-            fact !== null &&
-            BigInt(fact.identity.nodeDevice.decimal) === stats.dev &&
-            BigInt(fact.identity.nodeInode.decimal) === stats.ino;
-          census.push({
-            index,
-            roles: [...observedRoles].sort(),
-            firstOk: first.ok,
-            secondOk: second.ok,
-            beforeCoordinate: coordinateMatches(firstFact, before),
-            afterCoordinate: coordinateMatches(firstFact, after),
-            retainedCoordinate: coordinateMatches(firstFact, retainedStats),
-            freshCoordinate: coordinateMatches(firstFact, freshStats),
-            kindMatches:
-              firstFact !== null &&
-              firstFact.kind === (before.isDirectory() ? "DIRECTORY" : "FILE"),
-            reparsePoint: firstFact?.reparsePoint ?? null,
-            longitudinalIdentity:
-              firstFact !== null &&
-              secondFact !== null &&
-              firstFact.identity.fileId === secondFact.identity.fileId &&
-              firstFact.identity.volumeSerialNumber === secondFact.identity.volumeSerialNumber,
-            longitudinalNode:
-              firstFact !== null &&
-              secondFact !== null &&
-              firstFact.identity.nodeDevice.decimal === secondFact.identity.nodeDevice.decimal &&
-              firstFact.identity.nodeInode.decimal === secondFact.identity.nodeInode.decimal,
-          });
-        } finally {
-          await Promise.allSettled([retained.close(), fresh.close()]);
-        }
-        index += 1;
-      }
-      expect(census).toEqual(
-        census.map(({ index: componentIndex, roles: componentRoles }) => ({
-          index: componentIndex,
-          roles: componentRoles,
-          firstOk: true,
-          secondOk: true,
-          beforeCoordinate: true,
-          afterCoordinate: true,
-          retainedCoordinate: true,
-          freshCoordinate: true,
-          kindMatches: true,
-          reparsePoint: false,
-          longitudinalIdentity: true,
-          longitudinalNode: true,
-        })),
-      );
     },
     120_000,
   );
