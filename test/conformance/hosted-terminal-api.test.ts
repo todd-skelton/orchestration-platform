@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import {
   parseHostedTerminalArguments,
   readGithubTerminalArtifacts,
+  readGithubTerminalVerifiedAt,
   readGithubTerminalJobs,
   readGithubTerminalRun,
   type HostedTerminalExpected,
@@ -73,23 +74,29 @@ describe("post-terminal GitHub API projection", () => {
       runtime(async () =>
         json({
           conclusion: "success",
+          created_at: "2026-08-27T11:59:00Z",
           event: "repository_dispatch",
           head_sha: revision,
           id: 456,
           path: ".github/workflows/conformance.yml",
           repository: { id: 123 },
           run_attempt: 2,
+          run_started_at: "2026-08-27T11:59:30Z",
           status: "completed",
+          updated_at: "2026-08-27T12:02:00Z",
         }),
       ),
     );
     expect(result).toEqual({
       conclusion: "SUCCESS",
+      createdAt: "2026-08-27T11:59:00.000Z",
       event: "repository_dispatch",
       repositoryId: "123",
       runAttempt: "2",
       runId: "456",
+      runStartedAt: "2026-08-27T11:59:30.000Z",
       status: "COMPLETED",
+      updatedAt: "2026-08-27T12:02:00.000Z",
       workflowPath: ".github/workflows/conformance.yml",
       workflowRef:
         "todd-skelton/orchestration-platform/.github/workflows/conformance.yml@refs/heads/main",
@@ -108,6 +115,7 @@ describe("post-terminal GitHub API projection", () => {
         run_attempt: 2,
         run_id: 456,
         started_at: "2026-08-27T12:00:00Z",
+        status: "completed",
         workflow_name: "Conformance",
       },
       {
@@ -119,6 +127,7 @@ describe("post-terminal GitHub API projection", () => {
         run_attempt: 2,
         run_id: 456,
         started_at: "2026-08-27T12:01:00Z",
+        status: "completed",
         workflow_name: "Conformance",
       },
     ];
@@ -135,6 +144,7 @@ describe("post-terminal GitHub API projection", () => {
         providerJobId: "10",
         providerJobName: "Conformance / plan",
         startedAt: "2026-08-27T12:00:00.000Z",
+        status: "COMPLETED",
       },
       {
         completedAt: "2026-08-27T12:02:00.000Z",
@@ -142,8 +152,42 @@ describe("post-terminal GitHub API projection", () => {
         providerJobId: "11",
         providerJobName: "Conformance / record",
         startedAt: "2026-08-27T12:01:00.000Z",
+        status: "COMPLETED",
       },
     ]);
+    const queued = await readGithubTerminalJobs(
+      repository,
+      expected,
+      "token",
+      runtime(async () =>
+        json(
+          {
+            jobs: [
+              {
+                ...rows[0],
+                completed_at: null,
+                conclusion: null,
+                status: "queued",
+              },
+            ],
+            total_count: 1,
+          },
+          true,
+        ),
+      ),
+    );
+    expect(queued[0]?.status).toBe("QUEUED");
+    expect(queued[0]?.conclusion).toBeNull();
+    await expect(
+      readGithubTerminalJobs(
+        repository,
+        expected,
+        "token",
+        runtime(async () =>
+          json({ jobs: [{ ...rows[0], status: "mystery" }], total_count: 1 }, true),
+        ),
+      ),
+    ).rejects.toThrow("provider:job-association-refused");
   });
 
   test("downloads the unique attempt-qualified non-archive provider record", async () => {
@@ -189,6 +233,88 @@ describe("post-terminal GitHub API projection", () => {
     ]);
   });
 
+  test("selects exactly one diagnostic provider artifact", async () => {
+    const name = "conformance-456-2-diagnostic-provider-record.json";
+    const bytes = new TextEncoder().encode("diagnostic-provider-record");
+    const result = await readGithubTerminalArtifacts(
+      repository,
+      expected,
+      "token",
+      runtime(async (url) => {
+        if (url.endsWith("/20/zip")) return new Response(bytes, { status: 200 });
+        return json({
+          artifacts: [
+            {
+              archive_download_url: `https://api.github.com/repos/${repository}/actions/artifacts/20/zip`,
+              created_at: "2026-08-27T12:01:30Z",
+              digest: `sha256:${"a".repeat(64)}`,
+              expired: false,
+              expires_at: "2026-09-27T12:00:00Z",
+              id: 20,
+              name,
+              size_in_bytes: bytes.byteLength,
+              workflow_run: { head_sha: revision, id: 456, repository_id: 123 },
+            },
+          ],
+          total_count: 1,
+        });
+      }),
+    );
+    expect(result.diagnosticProviderRecordBytes).toEqual(bytes);
+    expect(result.providerRecordBytes).toEqual(bytes);
+  });
+
+  test("takes diagnostic verifiedAt only from the final authenticated current-attempt response", async () => {
+    const run = Object.freeze({
+      conclusion: "failure",
+      created_at: "2026-08-27T11:59:00Z",
+      head_sha: revision,
+      id: 456,
+      run_attempt: 2,
+      run_started_at: "2026-08-27T11:59:30Z",
+      status: "completed",
+      updated_at: "2026-08-27T11:59:59Z",
+    });
+    const finalResponse = (value: unknown, date?: string) =>
+      new Response(JSON.stringify(value), {
+        headers: {
+          "content-type": "application/json",
+          ...(date ? { date } : {}),
+        },
+        status: 200,
+      });
+    const verifiedAt = await readGithubTerminalVerifiedAt(
+      repository,
+      expected,
+      "token",
+      runtime(async (_url, init) => {
+        expect(new Headers(init.headers).get("authorization")).toBe("Bearer token");
+        return finalResponse(run, "Thu, 27 Aug 2026 12:00:00 GMT");
+      }),
+    );
+    expect(verifiedAt).toBe("2026-08-27T12:00:00.000Z");
+    for (const [record, date] of [
+      [run, undefined],
+      [run, "Thu, 27 Aug 2026 12:00:00 UTC"],
+      [run, "Thu, 27 Aug 2026 12:00:00 GMT, Thu, 27 Aug 2026 12:00:01 GMT"],
+      [{ ...run, run_attempt: 1 }, "Thu, 27 Aug 2026 12:00:00 GMT"],
+      [{ ...run, head_sha: "c".repeat(40) }, "Thu, 27 Aug 2026 12:00:00 GMT"],
+      [{ ...run, status: "in_progress" }, "Thu, 27 Aug 2026 12:00:00 GMT"],
+      [{ ...run, conclusion: "success" }, "Thu, 27 Aug 2026 12:00:00 GMT"],
+      [{ ...run, updated_at: "2026-08-27T12:00:01Z" }, "Thu, 27 Aug 2026 12:00:00 GMT"],
+      [{ ...run, created_at: "2026-08-27T11:59:31Z" }, "Thu, 27 Aug 2026 12:00:00 GMT"],
+      [{ ...run, run_started_at: "2026-08-27T12:00:01Z" }, "Thu, 27 Aug 2026 12:00:00 GMT"],
+    ] as const)
+      await expect(
+        readGithubTerminalVerifiedAt(
+          repository,
+          expected,
+          "token",
+          runtime(async () => finalResponse(record, date)),
+        ),
+      ).rejects.toThrow("provider:diagnostic-final-response-refused");
+  });
+
   test("refuses a changed workflow association", async () => {
     await expect(
       readGithubTerminalJobs(
@@ -208,6 +334,7 @@ describe("post-terminal GitHub API projection", () => {
                   run_attempt: 2,
                   run_id: 456,
                   started_at: "2026-08-27T12:00:00Z",
+                  status: "completed",
                   workflow_name: "Conformance",
                 },
               ],

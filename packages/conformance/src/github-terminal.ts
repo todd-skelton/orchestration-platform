@@ -1,12 +1,15 @@
 import { types as nodeTypes } from "node:util";
 import {
   canonicalJson,
+  frame,
+  framedDigest,
   isCanonicalDecimal,
   isCanonicalTimestamp,
   isSha256,
   snapshotClosedArray,
   snapshotClosedRecord,
   type ContractRecord,
+  type ParseResult,
 } from "@orchestration-platform/contracts";
 import {
   addCompleteDays,
@@ -17,19 +20,25 @@ import {
 import { reduceConformanceAggregate } from "./reducer.js";
 import {
   computeGithubConformanceProtectedRefDigest,
+  computeGithubConformanceDiagnosticProviderRecordDigest,
+  computeGithubConformanceProtectionDigest,
   computeGithubConformanceProviderRecordDigest,
   computeGithubProviderRunDigest,
   parseGithubConformanceProtectionSnapshot,
+  parseGithubConformanceDiagnosticProviderRecord,
   parseGithubConformanceProtectedRef,
   parseGithubConformanceProviderRecord,
   parseGithubProviderRunContext,
   validateGithubConformanceProviderRecord,
+  validateGithubConformanceDiagnosticProviderRecord,
 } from "./github-actions.js";
 import {
   verifyGithubAggregateArchive,
   verifyGithubArtifactIdentity,
   verifyGithubObservationArchive,
+  verifyGithubDiagnosticAggregateArchive,
 } from "./github-artifacts.js";
+import { parseIss022RequiredJobRegistry } from "./iss022-suite.js";
 
 export type GithubTerminalVerificationResult =
   | { readonly ok: true; readonly providerRecordDigest: string; readonly providerRunDigest: string }
@@ -47,6 +56,33 @@ export interface GithubTerminalVerificationInput {
   readonly registry: unknown;
 }
 
+export type GithubDiagnosticTerminalVerificationResult =
+  | {
+      readonly ok: true;
+      readonly diagnosticProviderRecordDigest: string;
+      readonly diagnosticTerminalDigest: string;
+      readonly providerRunDigest: string;
+      readonly value: ContractRecord;
+    }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+export interface GithubDiagnosticTerminalVerificationInput extends GithubTerminalVerificationInput {
+  readonly contractVersionsDigest: unknown;
+  readonly verifiedAt: unknown;
+}
+
+const diagnosticTerminalFields = Object.freeze([
+  "diagnosticProviderRecordDigest",
+  "protectionSnapshotDigest",
+  "providerRunDigest",
+  "repositoryId",
+  "runAttempt",
+  "runId",
+  "schemaVersion",
+  "verifiedAt",
+  "workflowRevision",
+] as const);
+
 const expectedFields = Object.freeze([
   "repositoryId",
   "runAttempt",
@@ -55,11 +91,14 @@ const expectedFields = Object.freeze([
 ] as const);
 const runFields = Object.freeze([
   "conclusion",
+  "createdAt",
   "event",
   "repositoryId",
   "runAttempt",
   "runId",
+  "runStartedAt",
   "status",
+  "updatedAt",
   "workflowPath",
   "workflowRef",
   "workflowRevision",
@@ -70,6 +109,7 @@ const liveJobFields = Object.freeze([
   "providerJobId",
   "providerJobName",
   "startedAt",
+  "status",
 ] as const);
 const liveArtifactFields = Object.freeze([
   "artifactDigest",
@@ -83,8 +123,22 @@ const liveArtifactFields = Object.freeze([
   "runId",
 ] as const);
 const artifactBytesFields = Object.freeze(["artifactId", "bytes"] as const);
+const terminalJobConclusions = Object.freeze([
+  "ACTION_REQUIRED",
+  "CANCELLED",
+  "FAILURE",
+  "NEUTRAL",
+  "SKIPPED",
+  "STALE",
+  "STARTUP_FAILURE",
+  "SUCCESS",
+  "TIMED_OUT",
+] as const);
 
-function refusal(...issues: readonly string[]): GithubTerminalVerificationResult {
+function refusal(...issues: readonly string[]): {
+  readonly ok: false;
+  readonly issues: readonly string[];
+} {
   return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
 }
 
@@ -124,6 +178,68 @@ function canonicalProviderRecordBytes(
   if (canonicalJson(parsed.value) !== text)
     return { ok: false, issues: ["providerRecordBytes:noncanonical"] };
   return { ok: true, bytes, value: parsed.value };
+}
+
+function canonicalDiagnosticProviderRecordBytes(
+  input: unknown,
+):
+  | { readonly ok: true; readonly bytes: Uint8Array; readonly value: ContractRecord }
+  | { readonly ok: false; readonly issues: readonly string[] } {
+  const bytes = exactBytes(input);
+  if (!bytes) return { ok: false, issues: ["diagnosticProviderRecordBytes:exact-bytes-required"] };
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+  } catch {
+    return { ok: false, issues: ["diagnosticProviderRecordBytes:utf8-refused"] };
+  }
+  if (text.startsWith("\ufeff"))
+    return { ok: false, issues: ["diagnosticProviderRecordBytes:bom-refused"] };
+  let inputRecord: unknown;
+  try {
+    inputRecord = JSON.parse(text);
+  } catch {
+    return { ok: false, issues: ["diagnosticProviderRecordBytes:json-refused"] };
+  }
+  const parsed = parseGithubConformanceDiagnosticProviderRecord(inputRecord);
+  if (!parsed.ok) return parsed;
+  if (canonicalJson(parsed.value) !== text)
+    return { ok: false, issues: ["diagnosticProviderRecordBytes:noncanonical"] };
+  return { ok: true, bytes, value: parsed.value };
+}
+
+export function parseGithubConformanceDiagnosticTerminal(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, diagnosticTerminalFields);
+  if (!parsed.ok) return parsed;
+  const issues: string[] = [];
+  for (const field of [
+    "diagnosticProviderRecordDigest",
+    "protectionSnapshotDigest",
+    "providerRunDigest",
+  ] as const)
+    if (!isSha256(parsed.value[field])) issues.push(`${field}:invalid`);
+  if (!positiveDecimal(parsed.value.repositoryId)) issues.push("repositoryId:invalid");
+  if (!positiveDecimal(parsed.value.runAttempt)) issues.push("runAttempt:invalid");
+  if (!positiveDecimal(parsed.value.runId)) issues.push("runId:invalid");
+  if (parsed.value.schemaVersion !== "github-conformance-diagnostic-terminal-verification/v1")
+    issues.push("schemaVersion:mismatch");
+  if (!isCanonicalTimestamp(parsed.value.verifiedAt)) issues.push("verifiedAt:invalid");
+  if (
+    typeof parsed.value.workflowRevision !== "string" ||
+    !/^[0-9a-f]{40}$/.test(parsed.value.workflowRevision)
+  )
+    issues.push("workflowRevision:invalid");
+  return issues.length === 0
+    ? { ok: true, value: parsed.value }
+    : { ok: false, issues: Object.freeze(issues.sort()) };
+}
+
+export function computeGithubConformanceDiagnosticTerminalDigest(input: unknown): string {
+  const parsed = parseGithubConformanceDiagnosticTerminal(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest("github-conformance-diagnostic-terminal-verification/v1", [
+    frame.canonical(parsed.value),
+  ]);
 }
 
 function milliseconds(timestamp: unknown): number | undefined {
@@ -286,6 +402,16 @@ export function verifyGithubTerminalEvidence(
         issues.push(`liveRun.${field}:provider-run-mismatch`);
     if (liveRun.value.status !== "COMPLETED") issues.push("liveRun.status:not-completed");
     if (liveRun.value.conclusion !== "SUCCESS") issues.push("liveRun.conclusion:not-success");
+    const runCreatedAt = milliseconds(liveRun.value.createdAt);
+    const runStartedAt = milliseconds(liveRun.value.runStartedAt);
+    const runUpdatedAt = milliseconds(liveRun.value.updatedAt);
+    if (
+      runCreatedAt === undefined ||
+      runStartedAt === undefined ||
+      runUpdatedAt === undefined ||
+      !(runCreatedAt <= runStartedAt && runStartedAt <= runUpdatedAt)
+    )
+      issues.push("liveRun:timestamp-order-invalid");
     if (
       computeGithubConformanceProtectedRefDigest(protectedRef.value) !==
       providerRun.value.protectedRefDigest
@@ -309,7 +435,8 @@ export function verifyGithubTerminalEvidence(
       if (
         !live ||
         live.providerJobName !== expectedJob.providerJobName ||
-        live.conclusion !== "SUCCESS"
+        live.conclusion !== "SUCCESS" ||
+        live.status !== "COMPLETED"
       )
         return refusal(`liveJobs.${String(expectedJob.logicalJobId)}:mismatch`);
       if (
@@ -322,6 +449,7 @@ export function verifyGithubTerminalEvidence(
     if (
       recordJobs.length !== 1 ||
       recordJobs[0]!.conclusion !== "SUCCESS" ||
+      recordJobs[0]!.status !== "COMPLETED" ||
       !positiveDecimal(recordJobs[0]!.providerJobId)
     )
       return refusal("liveJobs:record-job-census-mismatch");
@@ -344,7 +472,7 @@ export function verifyGithubTerminalEvidence(
       return refusal("liveArtifacts:duplicate-provider-id");
     const observations = new Map<
       string,
-      { readonly environment: ContractRecord; readonly rawArtifactManifest: ContractRecord }
+      Extract<ReturnType<typeof verifyGithubObservationArchive>, { readonly ok: true }>
     >();
     let aggregate:
       | { readonly aggregate: ContractRecord; readonly receipts: readonly ContractRecord[] }
@@ -477,5 +605,285 @@ export function verifyGithubTerminalEvidence(
     };
   } catch {
     return refusal("terminalEvidence:unreadable");
+  }
+}
+
+export function verifyGithubDiagnosticTerminalEvidence(
+  input: GithubDiagnosticTerminalVerificationInput,
+): GithubDiagnosticTerminalVerificationResult {
+  try {
+    const expected = snapshotClosedRecord(input.expected, expectedFields);
+    const liveRun = snapshotClosedRecord(input.liveRun, runFields);
+    const providerRun = parseGithubProviderRunContext(input.providerRun);
+    const registry = parseIss022RequiredJobRegistry(input.registry);
+    const protection = parseGithubConformanceProtectionSnapshot(input.currentProtectionSnapshot);
+    const protectedRef = parseGithubConformanceProtectedRef({
+      refProtected: true,
+      schemaVersion: "github-conformance-protected-ref/v1",
+      targetRef: "refs/heads/main",
+    });
+    const providerRecord = canonicalDiagnosticProviderRecordBytes(input.providerRecordBytes);
+    const jobs = parsedRows(input.liveJobs, liveJobFields, 259);
+    const artifacts = parsedRows(input.liveArtifacts, liveArtifactFields, 258);
+    const bytesByArtifact = artifactByteMap(input.artifactBytes);
+    if (!expected.ok) return refusal(...expected.issues.map((issue) => `expected.${issue}`));
+    if (!liveRun.ok) return refusal(...liveRun.issues.map((issue) => `liveRun.${issue}`));
+    if (!providerRun.ok)
+      return refusal(...providerRun.issues.map((issue) => `providerRun.${issue}`));
+    if (!registry.ok) return refusal(...registry.issues.map((issue) => `registry.${issue}`));
+    if (!protection.ok) return refusal(...protection.issues.map((issue) => `protection.${issue}`));
+    if (!protectedRef.ok)
+      return refusal(...protectedRef.issues.map((issue) => `protectedRef.${issue}`));
+    if (!providerRecord.ok) return refusal(...providerRecord.issues);
+    if (!jobs) return refusal("liveJobs:closed-census-required");
+    if (!artifacts) return refusal("liveArtifacts:closed-census-required");
+    if (!bytesByArtifact) return refusal("artifactBytes:closed-census-required");
+    if (typeof input.contractVersionsDigest !== "string" || !isSha256(input.contractVersionsDigest))
+      return refusal("contractVersionsDigest:invalid");
+    if (typeof input.verifiedAt !== "string" || !isCanonicalTimestamp(input.verifiedAt))
+      return refusal("verifiedAt:invalid");
+
+    const issues: string[] = [];
+    for (const field of expectedFields) {
+      if (expected.value[field] !== providerRun.value[field])
+        issues.push(`expected.${field}:provider-run-mismatch`);
+      if (expected.value[field] !== liveRun.value[field])
+        issues.push(`expected.${field}:live-run-mismatch`);
+    }
+    for (const field of ["event", "workflowPath", "workflowRef"] as const)
+      if (liveRun.value[field] !== providerRun.value[field])
+        issues.push(`liveRun.${field}:provider-run-mismatch`);
+    if (liveRun.value.status !== "COMPLETED") issues.push("liveRun.status:not-completed");
+    if (liveRun.value.conclusion !== "FAILURE") issues.push("liveRun.conclusion:not-failure");
+    const runCreatedAt = milliseconds(liveRun.value.createdAt);
+    const runStartedAt = milliseconds(liveRun.value.runStartedAt);
+    const runUpdatedAt = milliseconds(liveRun.value.updatedAt);
+    const verifiedAt = milliseconds(input.verifiedAt);
+    if (
+      runCreatedAt === undefined ||
+      runStartedAt === undefined ||
+      runUpdatedAt === undefined ||
+      verifiedAt === undefined ||
+      !(runCreatedAt <= runStartedAt && runStartedAt <= runUpdatedAt && runUpdatedAt <= verifiedAt)
+    )
+      issues.push("liveRun:timestamp-order-invalid");
+    if (
+      computeGithubConformanceProtectedRefDigest(protectedRef.value) !==
+      providerRun.value.protectedRefDigest
+    )
+      issues.push("protectedRefDigest:moved");
+    const recordValidation = validateGithubConformanceDiagnosticProviderRecord(
+      providerRecord.value,
+      { providerRun: providerRun.value, registry: registry.value },
+    );
+    if (!recordValidation.ok)
+      issues.push(...recordValidation.issues.map((issue) => `diagnosticProviderRecord.${issue}`));
+    if (issues.length > 0) return refusal(...issues);
+
+    const providerJobs = providerRecord.value.jobs as readonly ContractRecord[];
+    if (jobs.length !== providerJobs.length + 1) return refusal("liveJobs:census-mismatch");
+    const jobById = new Map(jobs.map((job) => [String(job.providerJobId), job]));
+    if (jobById.size !== jobs.length) return refusal("liveJobs:duplicate-provider-id");
+    for (const expectedJob of providerJobs) {
+      const live = jobById.get(String(expectedJob.providerJobId));
+      if (
+        !live ||
+        live.providerJobName !== expectedJob.providerJobName ||
+        live.conclusion !== expectedJob.conclusion ||
+        live.status !== "COMPLETED" ||
+        !(terminalJobConclusions as readonly unknown[]).includes(live.conclusion)
+      )
+        return refusal(`liveJobs.${String(expectedJob.logicalJobId)}:mismatch`);
+      const startedAt = milliseconds(live.startedAt);
+      const completedAt = milliseconds(live.completedAt);
+      if (
+        startedAt === undefined ||
+        completedAt === undefined ||
+        startedAt > completedAt ||
+        completedAt > verifiedAt!
+      )
+        return refusal(`liveJobs.${String(expectedJob.logicalJobId)}:timestamp-invalid`);
+    }
+    const recordJobs = jobs.filter((job) => job.providerJobName === "Conformance / record");
+    if (
+      recordJobs.length !== 1 ||
+      recordJobs[0]!.conclusion !== "SUCCESS" ||
+      recordJobs[0]!.status !== "COMPLETED" ||
+      !positiveDecimal(recordJobs[0]!.providerJobId)
+    )
+      return refusal("liveJobs:record-job-census-mismatch");
+    const recordJob = recordJobs[0]!;
+    for (const job of jobs)
+      if (
+        !providerJobs.some((expectedJob) => expectedJob.providerJobId === job.providerJobId) &&
+        job !== recordJob
+      )
+        return refusal("liveJobs:unknown-job");
+
+    const providerArtifacts = providerRecord.value.artifacts as readonly ContractRecord[];
+    if (artifacts.length !== providerArtifacts.length + 1)
+      return refusal("liveArtifacts:census-mismatch");
+    if (bytesByArtifact.size !== artifacts.length) return refusal("artifactBytes:census-mismatch");
+    const artifactById = new Map(
+      artifacts.map((artifact) => [String(artifact.artifactId), artifact]),
+    );
+    if (artifactById.size !== artifacts.length)
+      return refusal("liveArtifacts:duplicate-provider-id");
+    const observations = new Map<
+      string,
+      Extract<ReturnType<typeof verifyGithubObservationArchive>, { readonly ok: true }>
+    >();
+    let diagnosticAggregateBytes: Uint8Array | undefined;
+    for (const expectedArtifact of providerArtifacts) {
+      const id = String(expectedArtifact.artifactId);
+      const live = artifactById.get(id);
+      const bytes = bytesByArtifact.get(id);
+      if (!live || !bytes) return refusal(`liveArtifacts.${id}:missing`);
+      for (const field of [
+        "artifactDigest",
+        "artifactId",
+        "artifactName",
+        "byteLength",
+        "expiresAt",
+      ] as const)
+        if (live[field] !== expectedArtifact[field])
+          return refusal(`liveArtifacts.${id}.${field}:mismatch`);
+      const createdAt = milliseconds(live.createdAt);
+      const recordedAt = milliseconds(providerRecord.value.recordedAt);
+      const artifactVerifiedAt = milliseconds(input.verifiedAt);
+      if (
+        live.runId !== providerRecord.value.runId ||
+        live.runAttempt !== providerRecord.value.runAttempt ||
+        live.expired !== false ||
+        createdAt === undefined ||
+        recordedAt === undefined ||
+        artifactVerifiedAt === undefined ||
+        createdAt > recordedAt ||
+        createdAt > artifactVerifiedAt ||
+        !retained(String(input.verifiedAt), live.expiresAt)
+      )
+        return refusal(`liveArtifacts.${id}:run-or-state-mismatch`);
+      const outer = verifyGithubArtifactIdentity(
+        bytes,
+        String(expectedArtifact.artifactDigest),
+        String(expectedArtifact.byteLength),
+      );
+      if (!outer.ok) return refusal(...outer.issues.map((issue) => `liveArtifacts.${id}.${issue}`));
+      if (expectedArtifact.role === "OBSERVATION") {
+        const verified = verifyGithubObservationArchive(bytes);
+        if (!verified.ok)
+          return refusal(...verified.issues.map((issue) => `liveArtifacts.${id}.${issue}`));
+        observations.set(String(expectedArtifact.logicalJobId), verified);
+      } else {
+        diagnosticAggregateBytes = bytes;
+      }
+    }
+    if (diagnosticAggregateBytes) {
+      const registryJobs = registry.value.jobs as readonly ContractRecord[];
+      const evidence: Array<Readonly<Record<string, unknown>>> = [];
+      for (const job of registryJobs) {
+        const observation = observations.get(String(job.jobId));
+        if (!observation) return refusal(`diagnosticReceipts.${String(job.jobId)}:missing`);
+        evidence.push(
+          Object.freeze({
+            environment: observation.environment,
+            jobId: String(job.jobId),
+            rawArtifactManifest: observation.rawArtifactManifest,
+            rawArtifacts: observation.rawArtifacts,
+          }),
+        );
+      }
+      const verified = verifyGithubDiagnosticAggregateArchive(diagnosticAggregateBytes, {
+        candidateSubjectDigest: providerRun.value.candidateSubjectDigest,
+        contractVersionsDigest: input.contractVersionsDigest,
+        evidence: Object.freeze(evidence),
+        harnessBundleDigest: providerRun.value.harnessBundleDigest,
+        providerRunDigest: computeGithubProviderRunDigest(providerRun.value),
+        registry: registry.value,
+        testBundleDigest: providerRun.value.testBundleDigest,
+      });
+      if (!verified.ok)
+        return refusal(...verified.issues.map((issue) => `diagnosticAggregate.${issue}`));
+    }
+
+    const recordArtifactName = `conformance-${String(providerRecord.value.runId)}-${String(
+      providerRecord.value.runAttempt,
+    )}-diagnostic-provider-record.json`;
+    const recordArtifacts = artifacts.filter(
+      (artifact) => artifact.artifactName === recordArtifactName,
+    );
+    if (recordArtifacts.length !== 1)
+      return refusal("diagnosticProviderRecordArtifact:census-mismatch");
+    const recordArtifact = recordArtifacts[0]!;
+    const recordArtifactId = String(recordArtifact.artifactId);
+    const recordBytes = bytesByArtifact.get(recordArtifactId);
+    if (!recordBytes || !Buffer.from(recordBytes).equals(Buffer.from(providerRecord.bytes)))
+      return refusal("diagnosticProviderRecordArtifact:bytes-object-mismatch");
+    if (
+      !positiveDecimal(recordArtifact.artifactId) ||
+      recordArtifact.artifactDigest !== sha256Bytes(providerRecord.bytes) ||
+      recordArtifact.byteLength !== String(providerRecord.bytes.byteLength) ||
+      recordArtifact.runId !== providerRecord.value.runId ||
+      recordArtifact.runAttempt !== providerRecord.value.runAttempt ||
+      recordArtifact.expired !== false ||
+      !retained(String(input.verifiedAt), recordArtifact.expiresAt)
+    )
+      return refusal("diagnosticProviderRecordArtifact:identity-or-retention-mismatch");
+    for (const artifact of artifacts)
+      if (
+        !providerArtifacts.some(
+          (expectedArtifact) => expectedArtifact.artifactId === artifact.artifactId,
+        ) &&
+        artifact !== recordArtifact
+      )
+        return refusal("liveArtifacts:unknown-artifact");
+
+    const started = milliseconds(recordJob.startedAt);
+    const recorded = milliseconds(providerRecord.value.recordedAt);
+    const created = milliseconds(recordArtifact.createdAt);
+    const completed = milliseconds(recordJob.completedAt);
+    const finalVerifiedAt = milliseconds(input.verifiedAt);
+    if (
+      started === undefined ||
+      recorded === undefined ||
+      created === undefined ||
+      completed === undefined ||
+      finalVerifiedAt === undefined ||
+      !(
+        started <= recorded &&
+        recorded <= created &&
+        created <= completed &&
+        completed <= finalVerifiedAt
+      )
+    )
+      return refusal("diagnosticProviderRecordArtifact:provider-time-order-mismatch");
+    const diagnosticProviderRecordDigest = computeGithubConformanceDiagnosticProviderRecordDigest(
+      providerRecord.value,
+    );
+    const providerRunDigest = computeGithubProviderRunDigest(providerRun.value);
+    const value = Object.freeze({
+      diagnosticProviderRecordDigest,
+      protectionSnapshotDigest: computeGithubConformanceProtectionDigest(protection.value),
+      providerRunDigest,
+      repositoryId: providerRecord.value.repositoryId,
+      runAttempt: providerRecord.value.runAttempt,
+      runId: providerRecord.value.runId,
+      schemaVersion: "github-conformance-diagnostic-terminal-verification/v1",
+      verifiedAt: input.verifiedAt,
+      workflowRevision: providerRecord.value.workflowRevision,
+    });
+    const parsedTerminal = parseGithubConformanceDiagnosticTerminal(value);
+    if (!parsedTerminal.ok) return refusal(...parsedTerminal.issues);
+    return {
+      ok: true,
+      diagnosticProviderRecordDigest,
+      diagnosticTerminalDigest: computeGithubConformanceDiagnosticTerminalDigest(
+        parsedTerminal.value,
+      ),
+      providerRunDigest,
+      value: parsedTerminal.value,
+    };
+  } catch {
+    return refusal("diagnosticTerminalEvidence:unreadable");
   }
 }
