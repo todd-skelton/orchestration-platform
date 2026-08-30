@@ -1,4 +1,14 @@
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -82,7 +92,7 @@ function invocation(
 }
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "orchestration-config-loader-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "orchestration-config-loader-")));
   roots.push(root);
   const projectRoot = resolve(root, "project");
   const configPath = resolve(projectRoot, ".orchestration", "project.json");
