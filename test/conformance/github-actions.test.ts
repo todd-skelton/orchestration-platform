@@ -128,6 +128,18 @@ const providerRecord = Object.freeze({
   workflowRef: providerRecordRun.workflowRef,
   workflowRevision: providerRecordRun.workflowRevision,
 });
+const { aggregateDigest: _aggregateDigest, ...providerRecordWithoutAggregate } = providerRecord;
+const diagnosticProviderRecord = Object.freeze({
+  ...providerRecordWithoutAggregate,
+  jobs: Object.freeze(
+    providerRecord.jobs.map((job) =>
+      job.logicalJobId === "aggregate" ? Object.freeze({ ...job, conclusion: "FAILURE" }) : job,
+    ),
+  ),
+  missingArtifactNames: Object.freeze([]),
+  missingLogicalJobIds: Object.freeze([]),
+  schemaVersion: "github-conformance-diagnostic-provider-record/v1",
+});
 
 describe("GitHub Actions conformance adapter", () => {
   test("keeps provider exports out of the portable core entrypoint", () => {
@@ -207,6 +219,39 @@ describe("GitHub Actions conformance adapter", () => {
         },
       ).ok,
     ).toBe(false);
+  });
+
+  test("closes diagnostic provider subsets, complements, and non-success evidence", () => {
+    expect(github.parseGithubConformanceDiagnosticProviderRecord(diagnosticProviderRecord).ok).toBe(
+      true,
+    );
+    expect(
+      github.validateGithubConformanceDiagnosticProviderRecord(diagnosticProviderRecord, {
+        providerRun: providerRecordRun,
+        registry,
+      }).ok,
+    ).toBe(true);
+    expect(
+      github.computeGithubConformanceDiagnosticProviderRecordDigest(diagnosticProviderRecord),
+    ).toMatch(/^[0-9a-f]{64}$/);
+    for (const mutation of [
+      { ...diagnosticProviderRecord, aggregateDigest: d("6") },
+      { ...diagnosticProviderRecord, jobs: providerRecord.jobs },
+      { ...diagnosticProviderRecord, missingArtifactNames: ["fixed"] },
+      { ...diagnosticProviderRecord, missingLogicalJobIds: ["aggregate"] },
+      {
+        ...diagnosticProviderRecord,
+        jobs: diagnosticProviderRecord.jobs.map((job) =>
+          job.logicalJobId === "aggregate" ? { ...job, conclusion: "UNKNOWN" } : job,
+        ),
+      },
+    ])
+      expect(
+        github.validateGithubConformanceDiagnosticProviderRecord(mutation, {
+          providerRun: providerRecordRun,
+          registry,
+        }).ok,
+      ).toBe(false);
   });
 
   test("refuses provider record census, naming, retention, and context substitutions", () => {

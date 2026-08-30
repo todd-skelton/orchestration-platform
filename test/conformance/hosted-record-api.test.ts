@@ -3,7 +3,9 @@ import * as core from "../../packages/conformance/src/index.js";
 import * as github from "../../packages/conformance/src/github-actions/index.js";
 import {
   canonicalGithubDateHeader,
+  readGithubHostedArtifactCensus,
   readGithubHostedArtifacts,
+  readGithubHostedJobCensus,
   readGithubHostedJobs,
   type GithubFetch,
 } from "../../scripts/conformance/hosted-record-api.mjs";
@@ -182,6 +184,34 @@ describe("hosted provider API projection", () => {
         })
       ).ok,
     ).toBe(false);
+  });
+
+  test("preserves terminal diagnostic conclusions and exact missing complements", async () => {
+    const failed = jobs.map((row) =>
+      row.name === "aggregate" ? { ...row, conclusion: "failure" } : row,
+    );
+    const jobResult = await readGithubHostedJobCensus({
+      context,
+      fetcher: jobsFetch(failed),
+      registry,
+      token: "token",
+    });
+    expect(jobResult.ok).toBe(true);
+    if (!jobResult.ok) throw new Error(jobResult.issues.join(","));
+    expect(jobResult.value.jobs.find((row) => row.providerJobId === "12")?.conclusion).toBe(
+      "FAILURE",
+    );
+    expect(jobResult.value.missingLogicalJobIds).toEqual([]);
+
+    const artifactResult = await readGithubHostedArtifactCensus({
+      context,
+      fetcher: artifactsFetch(artifacts.slice(1)),
+      registry,
+      token: "token",
+    });
+    expect(artifactResult.ok).toBe(true);
+    if (!artifactResult.ok) throw new Error(artifactResult.issues.join(","));
+    expect(artifactResult.value.missingArtifactNames).toEqual([`${prefix}aggregate`]);
   });
 
   test("projects and downloads only the attempt-qualified artifact census", async () => {

@@ -6,6 +6,7 @@ import {
   isCanonicalTimestamp,
   isContractRelativePath,
   isSha256,
+  snapshotClosedArray,
   snapshotClosedRecord,
   type ContractRecord,
   type JsonValue,
@@ -25,6 +26,8 @@ export const githubConformanceProtectedRefSchemaVersion =
   "github-conformance-protected-ref/v1" as const;
 export const githubConformanceProviderRecordSchemaVersion =
   "github-conformance-provisional-provider-record/v1" as const;
+export const githubConformanceDiagnosticProviderRecordSchemaVersion =
+  "github-conformance-diagnostic-provider-record/v1" as const;
 
 const protectionFields = Object.freeze([
   "bypassActorCount",
@@ -64,6 +67,27 @@ const providerRecordFields = Object.freeze([
   "event",
   "harnessBundleDigest",
   "jobs",
+  "protectedRefDigest",
+  "recordedAt",
+  "repositoryId",
+  "requiredJobRegistryDigest",
+  "runAttempt",
+  "runId",
+  "schemaVersion",
+  "testBundleDigest",
+  "workflowPath",
+  "workflowRef",
+  "workflowRevision",
+] as const);
+const diagnosticProviderRecordFields = Object.freeze([
+  "artifacts",
+  "candidateRevision",
+  "candidateSubjectDigest",
+  "event",
+  "harnessBundleDigest",
+  "jobs",
+  "missingArtifactNames",
+  "missingLogicalJobIds",
   "protectedRefDigest",
   "recordedAt",
   "repositoryId",
@@ -302,6 +326,257 @@ function providerArtifactIssues(
   )
     issues.push(`artifacts.${index}.artifactName:observation-mismatch`);
   return { value: row, issues };
+}
+
+const diagnosticConclusions = Object.freeze([
+  "ACTION_REQUIRED",
+  "CANCELLED",
+  "FAILURE",
+  "NEUTRAL",
+  "SKIPPED",
+  "STALE",
+  "STARTUP_FAILURE",
+  "SUCCESS",
+  "TIMED_OUT",
+] as const);
+
+function diagnosticProviderJobIssues(
+  input: JsonValue,
+  index: number,
+): { readonly value?: ContractRecord; readonly issues: readonly string[] } {
+  const parsed = snapshotClosedRecord(input, providerJobFields);
+  if (!parsed.ok) return { issues: parsed.issues.map((issue) => `jobs.${index}.${issue}`) };
+  const row = parsed.value;
+  const issues: string[] = [];
+  if (!diagnosticConclusions.includes(row.conclusion as (typeof diagnosticConclusions)[number]))
+    issues.push(`jobs.${index}.conclusion:invalid`);
+  if (!portableLogicalId(row.logicalJobId)) issues.push(`jobs.${index}.logicalJobId:invalid`);
+  if (!positiveDecimal(row.providerJobId)) issues.push(`jobs.${index}.providerJobId:invalid`);
+  if (typeof row.providerJobName !== "string" || row.providerJobName.length > 256)
+    issues.push(`jobs.${index}.providerJobName:invalid`);
+  if (!(row.role === "PLAN" || row.role === "OBSERVATION" || row.role === "AGGREGATE"))
+    issues.push(`jobs.${index}.role:invalid`);
+  if (row.role === "PLAN") {
+    if (row.logicalJobId !== "plan") issues.push(`jobs.${index}.logicalJobId:plan-mismatch`);
+    if (row.providerJobName !== "Conformance / plan")
+      issues.push(`jobs.${index}.providerJobName:plan-mismatch`);
+  } else if (row.role === "AGGREGATE") {
+    if (row.logicalJobId !== "aggregate")
+      issues.push(`jobs.${index}.logicalJobId:aggregate-mismatch`);
+    if (row.providerJobName !== "Conformance / aggregate")
+      issues.push(`jobs.${index}.providerJobName:aggregate-mismatch`);
+  } else if (
+    typeof row.logicalJobId === "string" &&
+    row.providerJobName !== `Conformance / observation / ${row.logicalJobId}`
+  )
+    issues.push(`jobs.${index}.providerJobName:observation-mismatch`);
+  return { value: row, issues };
+}
+
+function closedStringArray(
+  input: JsonValue | undefined,
+  maximum: number,
+): readonly string[] | undefined {
+  const parsed = snapshotClosedArray(input);
+  if (!parsed.ok || parsed.value.length > maximum) return undefined;
+  if (parsed.value.some((value) => typeof value !== "string")) return undefined;
+  return Object.freeze(parsed.value.map(String));
+}
+
+export function parseGithubConformanceDiagnosticProviderRecord(input: unknown): ParseResult {
+  const parsed = snapshotClosedRecord(input, diagnosticProviderRecordFields);
+  if (!parsed.ok) return parsed;
+  const record = parsed.value;
+  const issues: string[] = [];
+  for (const field of [
+    "candidateSubjectDigest",
+    "harnessBundleDigest",
+    "protectedRefDigest",
+    "requiredJobRegistryDigest",
+    "testBundleDigest",
+  ] as const)
+    if (!isSha256(record[field])) issues.push(`${field}:invalid`);
+  if (!commitRevision(record.candidateRevision)) issues.push("candidateRevision:invalid");
+  if (record.event !== "repository_dispatch") issues.push("event:mismatch");
+  if (!isCanonicalTimestamp(record.recordedAt)) issues.push("recordedAt:invalid");
+  if (!positiveDecimal(record.repositoryId)) issues.push("repositoryId:invalid");
+  if (!positiveDecimal(record.runAttempt)) issues.push("runAttempt:invalid");
+  if (!positiveDecimal(record.runId)) issues.push("runId:invalid");
+  if (record.schemaVersion !== githubConformanceDiagnosticProviderRecordSchemaVersion)
+    issues.push("schemaVersion:mismatch");
+  if (record.workflowPath !== ".github/workflows/conformance.yml")
+    issues.push("workflowPath:mismatch");
+  if (!githubWorkflowRef(record.workflowRef)) issues.push("workflowRef:invalid");
+  if (!commitRevision(record.workflowRevision)) issues.push("workflowRevision:invalid");
+
+  const jobs = record.jobs;
+  const logicalJobIds: string[] = [];
+  const providerJobIds: string[] = [];
+  let hasNonSuccess = false;
+  if (!Array.isArray(jobs) || jobs.length > 258) issues.push("jobs:census-bound-refused");
+  else
+    for (let index = 0; index < jobs.length; index += 1) {
+      const result = diagnosticProviderJobIssues(jobs[index]!, index);
+      issues.push(...result.issues);
+      if (typeof result.value?.logicalJobId === "string")
+        logicalJobIds.push(result.value.logicalJobId);
+      if (typeof result.value?.providerJobId === "string")
+        providerJobIds.push(result.value.providerJobId);
+      if (result.value?.conclusion !== "SUCCESS") hasNonSuccess = true;
+    }
+  if (
+    logicalJobIds.length === (Array.isArray(jobs) ? jobs.length : -1) &&
+    !utf8SortedUnique(logicalJobIds)
+  )
+    issues.push("jobs:logical-order-refused");
+  if (new Set(providerJobIds).size !== providerJobIds.length)
+    issues.push("jobs:provider-id-duplicate");
+
+  const artifacts = record.artifacts;
+  const artifactNames: string[] = [];
+  const artifactIds: string[] = [];
+  if (!Array.isArray(artifacts) || artifacts.length > 257)
+    issues.push("artifacts:census-bound-refused");
+  else
+    for (let index = 0; index < artifacts.length; index += 1) {
+      const result = providerArtifactIssues(
+        artifacts[index]!,
+        index,
+        String(record.runId),
+        String(record.runAttempt),
+        String(record.recordedAt),
+      );
+      issues.push(...result.issues);
+      if (typeof result.value?.artifactName === "string")
+        artifactNames.push(result.value.artifactName);
+      if (typeof result.value?.artifactId === "string") artifactIds.push(result.value.artifactId);
+    }
+  if (
+    artifactNames.length === (Array.isArray(artifacts) ? artifacts.length : -1) &&
+    !utf8SortedUnique(artifactNames)
+  )
+    issues.push("artifacts:name-order-refused");
+  if (new Set(artifactIds).size !== artifactIds.length)
+    issues.push("artifacts:provider-id-duplicate");
+
+  const missingArtifacts = closedStringArray(record.missingArtifactNames, 257);
+  const missingJobs = closedStringArray(record.missingLogicalJobIds, 258);
+  if (!missingArtifacts || !utf8SortedUnique(missingArtifacts))
+    issues.push("missingArtifactNames:closed-sorted-array-required");
+  if (
+    !missingJobs ||
+    missingJobs.some((value) => !portableLogicalId(value)) ||
+    !utf8SortedUnique(missingJobs)
+  )
+    issues.push("missingLogicalJobIds:closed-sorted-array-required");
+  if (!hasNonSuccess && missingArtifacts?.length === 0 && missingJobs?.length === 0)
+    issues.push("diagnostic:non-success-or-missing-required");
+  return issues.length === 0 ? accepted(record) : refusal(...issues);
+}
+
+export function validateGithubConformanceDiagnosticProviderRecord(
+  input: unknown,
+  expectation: { readonly providerRun: unknown; readonly registry: unknown },
+): ParseResult {
+  try {
+    const record = parseGithubConformanceDiagnosticProviderRecord(input);
+    if (!record.ok) return record;
+    const providerRun = parseGithubProviderRunContext(expectation.providerRun);
+    if (!providerRun.ok)
+      return refusal(...providerRun.issues.map((issue) => `providerRun.${issue}`));
+    const registry = parseConformanceRequiredJobRegistry(expectation.registry);
+    if (!registry.ok) return refusal(...registry.issues.map((issue) => `registry.${issue}`));
+    const issues: string[] = [];
+    for (const field of providerRunFields)
+      if (record.value[field] !== providerRun.value[field]) issues.push(`${field}:mismatch`);
+    if (
+      record.value.requiredJobRegistryDigest !==
+      computeConformanceRecordDigest("conformance-required-job-registry/v1", registry.value)
+    )
+      issues.push("requiredJobRegistryDigest:registry-mismatch");
+    const registryJobs = registry.value.jobs as readonly ContractRecord[];
+    const expectedJobs = [
+      { logicalJobId: "aggregate", providerJobName: "Conformance / aggregate", role: "AGGREGATE" },
+      ...registryJobs.map((job) => ({
+        logicalJobId: String(job.jobId),
+        providerJobName: `Conformance / observation / ${String(job.jobId)}`,
+        role: "OBSERVATION",
+      })),
+      { logicalJobId: "plan", providerJobName: "Conformance / plan", role: "PLAN" },
+    ].sort((left, right) =>
+      Buffer.compare(Buffer.from(left.logicalJobId), Buffer.from(right.logicalJobId)),
+    );
+    const jobs = record.value.jobs as readonly ContractRecord[];
+    const jobsById = new Map(jobs.map((job) => [String(job.logicalJobId), job]));
+    for (const job of jobs) {
+      const expected = expectedJobs.find(
+        (candidate) => candidate.logicalJobId === job.logicalJobId,
+      );
+      if (!expected) issues.push(`jobs.${String(job.logicalJobId)}:unexpected`);
+      else
+        for (const field of ["providerJobName", "role"] as const)
+          if (job[field] !== expected[field])
+            issues.push(`jobs.${String(job.logicalJobId)}.${field}:registry-mismatch`);
+    }
+    const missingJobs = expectedJobs
+      .filter((job) => !jobsById.has(job.logicalJobId))
+      .map((job) => job.logicalJobId)
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    if (
+      canonicalStringArray(record.value.missingLogicalJobIds) !== canonicalStringArray(missingJobs)
+    )
+      issues.push("missingLogicalJobIds:complement-mismatch");
+
+    const prefix = `conformance-${String(record.value.runId)}-${String(record.value.runAttempt)}-`;
+    const expectedArtifacts = [
+      { artifactName: `${prefix}aggregate`, logicalJobId: "aggregate", role: "AGGREGATE" },
+      ...registryJobs.map((job) => ({
+        artifactName: `${prefix}${String(job.jobId)}`,
+        logicalJobId: String(job.jobId),
+        role: "OBSERVATION",
+      })),
+    ].sort((left, right) =>
+      Buffer.compare(Buffer.from(left.artifactName), Buffer.from(right.artifactName)),
+    );
+    const artifacts = record.value.artifacts as readonly ContractRecord[];
+    const artifactsByName = new Map(
+      artifacts.map((artifact) => [String(artifact.artifactName), artifact]),
+    );
+    for (const artifact of artifacts) {
+      const expected = expectedArtifacts.find(
+        (candidate) => candidate.artifactName === artifact.artifactName,
+      );
+      if (!expected) issues.push(`artifacts.${String(artifact.artifactName)}:unexpected`);
+      else
+        for (const field of ["logicalJobId", "role"] as const)
+          if (artifact[field] !== expected[field])
+            issues.push(`artifacts.${String(artifact.artifactName)}.${field}:registry-mismatch`);
+    }
+    const missingArtifacts = expectedArtifacts
+      .filter((artifact) => !artifactsByName.has(artifact.artifactName))
+      .map((artifact) => artifact.artifactName)
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    if (
+      canonicalStringArray(record.value.missingArtifactNames) !==
+      canonicalStringArray(missingArtifacts)
+    )
+      issues.push("missingArtifactNames:complement-mismatch");
+    return issues.length === 0 ? record : refusal(...issues);
+  } catch {
+    return refusal("diagnosticProviderRecord:unreadable");
+  }
+}
+
+function canonicalStringArray(input: JsonValue | readonly string[] | undefined): string {
+  return Array.isArray(input) ? input.join("\0") : "<invalid>";
+}
+
+export function computeGithubConformanceDiagnosticProviderRecordDigest(input: unknown): string {
+  const parsed = parseGithubConformanceDiagnosticProviderRecord(input);
+  if (!parsed.ok) throw new TypeError(parsed.issues.join(","));
+  return framedDigest(githubConformanceDiagnosticProviderRecordSchemaVersion, [
+    frame.canonical(parsed.value),
+  ]);
 }
 
 export function parseGithubConformanceProviderRecord(input: unknown): ParseResult {

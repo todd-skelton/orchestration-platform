@@ -150,6 +150,7 @@ jobs:
   record:
     name: record
     needs: [plan, observation, aggregate]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out stable workflow revision
@@ -178,7 +179,7 @@ jobs:
       - name: Upload exact provider record bytes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json
+          path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.aggregate.result == 'success' && 'provider-record' || 'diagnostic-provider-record' }}.json
           archive: false
           retention-days: 31
           if-no-files-found: error

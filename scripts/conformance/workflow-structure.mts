@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export type WorkflowStructureResult =
   { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
 
-const expectedDigest = "2e9672aa408e9af483d5b6118dc041896cf80652e408c05498cbedd8f6e0e4c1";
+const expectedDigest = "5ace36a3d047cc2939e081354574fcfa3a9b968379fb61b78b1b07689b8391e2";
 const actionShaPattern =
   /^[ ]+uses: actions\/(?:checkout|setup-node|upload-artifact|download-artifact)@[0-9a-f]{40}$/;
 
@@ -69,7 +69,7 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "node scripts/conformance/run-bundled.mts hosted aggregate",
     "node scripts/conformance/run-bundled.mts hosted record",
     "CONFORMANCE_OUTPUT_ROOT: ${{ runner.temp }}/conformance-record",
-    "path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json",
+    "path: ${{ runner.temp }}/conformance-record/conformance-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.aggregate.result == 'success' && 'provider-record' || 'diagnostic-provider-record' }}.json",
   ]) {
     if (!source.includes(required)) issues.push(`workflow:required:${required}`);
   }

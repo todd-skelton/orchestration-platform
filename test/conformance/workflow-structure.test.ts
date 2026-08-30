@@ -98,7 +98,7 @@ describe("protected conformance workflow structure", () => {
     ["diagnostic aggregate upload disabled", "if: ${{ always() }}", "if: ${{ success() }}"],
     [
       "fixed provider filename",
-      "conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json",
+      "conformance-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.aggregate.result == 'success' && 'provider-record' || 'diagnostic-provider-record' }}.json",
       "provider-record.json",
     ],
     [
