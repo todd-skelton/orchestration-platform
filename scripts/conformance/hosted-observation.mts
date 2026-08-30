@@ -248,6 +248,7 @@ export async function loadHostedStableInputs(stableRoot: string) {
   const registry = createIss022RequiredJobRegistry();
   return Object.freeze({
     bundles,
+    contractVersions,
     contractVersionsDigest: computeConformanceRecordDigest(
       "conformance-contract-versions/v1",
       contractVersions,

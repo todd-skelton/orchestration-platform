@@ -67,6 +67,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/iss022-suite.ts",
       "packages/conformance/src/manifest.ts",
       "packages/conformance/src/observation.ts",
+      "packages/conformance/src/portable-primitives-decision-writer.ts",
       "packages/conformance/src/portable-primitives-decision.ts",
       "packages/conformance/src/reducer.ts",
       "packages/conformance/src/stable-bundles.ts",

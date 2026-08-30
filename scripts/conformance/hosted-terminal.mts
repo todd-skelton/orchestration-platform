@@ -1,17 +1,27 @@
 import { execFile } from "node:child_process";
+import type { BigIntStats } from "node:fs";
+import { link, lstat, open, readFile, readdir, realpath, unlink } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify, types as nodeTypes } from "node:util";
 import { canonicalJson, type ContractRecord } from "../../packages/contracts/src/index.js";
 import {
   parseGithubConformanceProviderRecord,
   parseGithubConformanceDiagnosticProviderRecord,
+  computeGithubConformanceDiagnosticProviderRecordDigest,
+  computeGithubConformanceProviderRecordDigest,
+  computeGithubProviderRunDigest,
   projectGithubProtectionSnapshot,
+  verifyGithubAggregateArchive,
+  verifyGithubArtifactIdentity,
+  verifyGithubObservationArchive,
   verifyGithubTerminalEvidence,
   verifyGithubDiagnosticTerminalEvidence,
   type GithubDiagnosticTerminalVerificationResult,
   type GithubProtectionApiInput,
   type GithubTerminalVerificationResult,
 } from "../../packages/conformance/src/github-actions/index.js";
+import { composePortablePrimitivesDecisionCore } from "../../packages/conformance/src/portable-primitives-decision-writer.js";
 import { githubProtectionApi } from "./hosted-plan.mjs";
 import { loadHostedStableInputs } from "./hosted-observation.mjs";
 import { canonicalGithubDateHeader, type GithubFetch } from "./hosted-record-api.mjs";
@@ -468,6 +478,395 @@ export async function readGithubTerminalVerifiedAt(
   return verifiedAt;
 }
 
+type DecisionCompositionResult = ReturnType<typeof composePortablePrimitivesDecisionCore>;
+
+function terminalFailure(
+  ...issues: readonly string[]
+): Extract<DecisionCompositionResult, { readonly ok: false }> {
+  return { ok: false, issues: Object.freeze([...new Set(issues)].sort()) };
+}
+
+function artifactBytesById(
+  artifacts: Awaited<ReturnType<typeof readGithubTerminalArtifacts>>,
+): ReadonlyMap<string, Uint8Array> {
+  return new Map(artifacts.bytes.map((row) => [row.artifactId, row.bytes]));
+}
+
+function providerArtifactBytes(
+  artifact: ContractRecord,
+  bytesById: ReadonlyMap<string, Uint8Array>,
+): Uint8Array | undefined {
+  const bytes = bytesById.get(String(artifact.artifactId));
+  if (!bytes) return undefined;
+  const identity = verifyGithubArtifactIdentity(
+    bytes,
+    String(artifact.artifactDigest),
+    String(artifact.byteLength),
+  );
+  return identity.ok ? bytes : undefined;
+}
+
+export async function composeHostedPortablePrimitivesDecisionCore(
+  expected: HostedTerminalExpected,
+  token: string,
+  stableRoot = process.cwd(),
+  runtime: HostedTerminalRuntime = githubTerminalRuntime,
+): Promise<DecisionCompositionResult> {
+  try {
+    const verified = await verifyHostedTerminalFromGithub(expected, token, stableRoot, runtime);
+    if (!verified.ok) return terminalFailure(...verified.issues);
+    const stable = await loadHostedStableInputs(stableRoot);
+    if (!stable) return terminalFailure("stable:inputs-refused");
+    const repository = await repositoryName(expected, token, runtime);
+    const artifacts = await readGithubTerminalArtifacts(repository, expected, token, runtime);
+    const recordBytes = artifacts.providerRecordBytes;
+    const recordText = new TextDecoder("utf-8", { fatal: true }).decode(recordBytes);
+    const bytesById = artifactBytesById(artifacts);
+    const evidence: Array<Readonly<Record<string, unknown>>> = [];
+    let aggregate: ContractRecord | null = null;
+    let diagnosticTerminal: ContractRecord | null = null;
+    let providerRun: ContractRecord;
+    let providerArtifacts: readonly ContractRecord[];
+    if ("diagnosticTerminalDigest" in verified) {
+      const parsed = parseGithubConformanceDiagnosticProviderRecord(JSON.parse(recordText));
+      if (!parsed.ok) return terminalFailure(...parsed.issues);
+      if (
+        computeGithubConformanceDiagnosticProviderRecordDigest(parsed.value) !==
+          verified.diagnosticProviderRecordDigest ||
+        computeGithubProviderRunDigest(providerRunFromRecord(parsed.value)) !==
+          verified.providerRunDigest
+      )
+        return terminalFailure("diagnosticProviderRecord:verified-identity-mismatch");
+      diagnosticTerminal = verified.value;
+      providerRun = providerRunFromRecord(parsed.value);
+      providerArtifacts = parsed.value.artifacts as readonly ContractRecord[];
+    } else {
+      const parsed = parseGithubConformanceProviderRecord(JSON.parse(recordText));
+      if (!parsed.ok) return terminalFailure(...parsed.issues);
+      if (
+        computeGithubConformanceProviderRecordDigest(parsed.value) !==
+          verified.providerRecordDigest ||
+        computeGithubProviderRunDigest(providerRunFromRecord(parsed.value)) !==
+          verified.providerRunDigest
+      )
+        return terminalFailure("providerRecord:verified-identity-mismatch");
+      providerRun = providerRunFromRecord(parsed.value);
+      providerArtifacts = parsed.value.artifacts as readonly ContractRecord[];
+      const aggregateRows = providerArtifacts.filter((row) => row.role === "AGGREGATE");
+      if (aggregateRows.length !== 1) return terminalFailure("aggregate:artifact-census-refused");
+      const aggregateBytes = providerArtifactBytes(aggregateRows[0]!, bytesById);
+      if (!aggregateBytes) return terminalFailure("aggregate:artifact-bytes-missing");
+      const parsedAggregate = verifyGithubAggregateArchive(aggregateBytes, stable.registry);
+      if (!parsedAggregate.ok)
+        return terminalFailure(...parsedAggregate.issues.map((issue) => `aggregate.${issue}`));
+      aggregate = parsedAggregate.aggregate;
+    }
+    if (
+      artifacts.bytes.length !== providerArtifacts.length + 1 ||
+      providerArtifacts.some((row) => !bytesById.has(String(row.artifactId)))
+    )
+      return terminalFailure("providerArtifacts:terminal-census-mismatch");
+    const jobs = stable.registry.jobs as readonly ContractRecord[];
+    for (const job of jobs) {
+      const jobId = String(job.jobId);
+      const rows = providerArtifacts.filter(
+        (row) => row.role === "OBSERVATION" && row.logicalJobId === jobId,
+      );
+      if (rows.length > 1) return terminalFailure(`evidence.${jobId}:duplicate-artifact`);
+      if (rows.length === 0) continue;
+      const bytes = providerArtifactBytes(rows[0]!, bytesById);
+      if (!bytes) return terminalFailure(`evidence.${jobId}:artifact-bytes-missing`);
+      const observation = verifyGithubObservationArchive(bytes);
+      if (!observation.ok)
+        return terminalFailure(...observation.issues.map((issue) => `evidence.${jobId}.${issue}`));
+      evidence.push(
+        Object.freeze({
+          environment: observation.environment,
+          jobId,
+          rawArtifactManifest: observation.rawArtifactManifest,
+          rawArtifacts: observation.rawArtifacts,
+        }),
+      );
+    }
+    return composePortablePrimitivesDecisionCore({
+      aggregate,
+      contractVersions: stable.contractVersions,
+      diagnosticContractVersionsDigest:
+        "diagnosticTerminalDigest" in verified ? verified.contractVersionsDigest : null,
+      diagnosticTerminal,
+      evidence: Object.freeze(evidence),
+      harnessManifest: stable.bundles.harnessManifest,
+      providerRun,
+      registry: stable.registry,
+      testBundleManifest: stable.bundles.testBundleManifest,
+    });
+  } catch {
+    return terminalFailure("decisionCoreTerminal:unreadable");
+  }
+}
+
+function within(root: string, path: string): boolean {
+  const value = relative(root, path);
+  return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
+}
+
+function sameDirectory(left: BigIntStats, right: BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
+}
+
+function sameFile(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    sameDirectory(left, right) &&
+    left.uid === right.uid &&
+    left.gid === right.gid &&
+    left.rdev === right.rdev
+  );
+}
+
+function absent(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+async function gitCustodyAncestor(root: string): Promise<boolean> {
+  let current = root;
+  for (let depth = 0; depth < 1024; depth += 1) {
+    try {
+      await lstat(resolve(current, ".git"), { bigint: true });
+      return true;
+    } catch (error) {
+      if (!absent(error)) return true;
+    }
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+  return true;
+}
+
+async function decisionOutputCustody(
+  outputRootInput: string,
+  stableRoot: string,
+): Promise<
+  | {
+      readonly before: BigIntStats;
+      readonly root: string;
+    }
+  | undefined
+> {
+  if (!isAbsolute(outputRootInput)) return undefined;
+  const requested = resolve(outputRootInput);
+  const [root, before, worktrees] = await Promise.all([
+    realpath(requested),
+    lstat(requested, { bigint: true }),
+    execFileAsync("git", ["-C", stableRoot, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+      windowsHide: true,
+    }),
+  ]);
+  if (
+    relative(resolve(root), requested) !== "" ||
+    !before.isDirectory() ||
+    before.isSymbolicLink() ||
+    (await gitCustodyAncestor(root))
+  )
+    return undefined;
+  const paths = String(worktrees.stdout)
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice("worktree ".length));
+  if (paths.length === 0) return undefined;
+  for (const path of paths) {
+    const checkout = await realpath(path);
+    if (within(checkout, root) || within(root, checkout)) return undefined;
+  }
+  if ((await readdir(root)).length !== 0) return undefined;
+  return Object.freeze({ before, root });
+}
+
+export interface DecisionOutputCustodyTestHooks {
+  readonly afterFinalize?: (root: string, filename: string) => Promise<void>;
+  readonly afterPendingWrite?: (root: string, pendingFilename: string) => Promise<void>;
+}
+
+type DecisionOutputResult =
+  { readonly ok: true } | { readonly issues: readonly string[]; readonly ok: false };
+
+async function exactOutputRoot(
+  custody: Readonly<{ readonly before: BigIntStats; readonly root: string }>,
+): Promise<boolean> {
+  try {
+    const [root, stat] = await Promise.all([
+      realpath(custody.root),
+      lstat(custody.root, { bigint: true }),
+    ]);
+    return (
+      relative(root, custody.root) === "" &&
+      stat.isDirectory() &&
+      !stat.isSymbolicLink() &&
+      sameDirectory(custody.before, stat)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function cleanupDecisionOutput(
+  custody: Readonly<{ readonly before: BigIntStats; readonly root: string }>,
+  pendingPath: string,
+  finalPath: string,
+  opened: BigIntStats,
+): Promise<boolean> {
+  try {
+    if (!(await exactOutputRoot(custody))) return false;
+    const retained: string[] = [];
+    for (const path of [pendingPath, finalPath]) {
+      try {
+        const stat = await lstat(path, { bigint: true });
+        if (sameFile(opened, stat) && stat.isFile() && !stat.isSymbolicLink()) retained.push(path);
+      } catch (error) {
+        if (!absent(error)) return false;
+      }
+    }
+    if (retained.length < 1 || retained.length > 2) return false;
+    for (const path of retained) {
+      const stat = await lstat(path, { bigint: true });
+      if (!sameFile(opened, stat)) return false;
+      await unlink(path);
+    }
+    if (!(await exactOutputRoot(custody))) return false;
+    if ((await readdir(custody.root)).length !== 0) return false;
+    for (const path of [pendingPath, finalPath]) {
+      try {
+        await lstat(path, { bigint: true });
+        return false;
+      } catch (error) {
+        if (!absent(error)) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function commitDecisionOutput(
+  custody: Readonly<{ readonly before: BigIntStats; readonly root: string }>,
+  filename: string,
+  bytes: Uint8Array,
+  hooks: DecisionOutputCustodyTestHooks = {},
+): Promise<DecisionOutputResult> {
+  const pendingFilename = `.${filename}.pending`;
+  const pendingPath = resolve(custody.root, pendingFilename);
+  const finalPath = resolve(custody.root, filename);
+  let opened: BigIntStats | undefined;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let created = false;
+  try {
+    if (!(await exactOutputRoot(custody)) || (await readdir(custody.root)).length !== 0)
+      return terminalFailure("decisionOutput:moved-or-populated");
+    handle = await open(pendingPath, "wx", 0o600);
+    created = true;
+    opened = await handle.stat({ bigint: true });
+    if (!opened.isFile()) throw new TypeError("decisionOutput:pending-not-file");
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await hooks.afterPendingWrite?.(custody.root, pendingFilename);
+    const [pendingStat, pendingBytes, entries] = await Promise.all([
+      lstat(pendingPath, { bigint: true }),
+      readFile(pendingPath),
+      readdir(custody.root),
+    ]);
+    if (
+      !(await exactOutputRoot(custody)) ||
+      !sameFile(opened, pendingStat) ||
+      !Buffer.from(pendingBytes).equals(Buffer.from(bytes)) ||
+      entries.length !== 1 ||
+      entries[0] !== pendingFilename
+    )
+      throw new TypeError("decisionOutput:pending-census-refused");
+    await link(pendingPath, finalPath);
+    await unlink(pendingPath);
+    await hooks.afterFinalize?.(custody.root, filename);
+    const [finalStat, finalBytes, finalEntries] = await Promise.all([
+      lstat(finalPath, { bigint: true }),
+      readFile(finalPath),
+      readdir(custody.root),
+    ]);
+    if (
+      !(await exactOutputRoot(custody)) ||
+      !sameFile(opened, finalStat) ||
+      !Buffer.from(finalBytes).equals(Buffer.from(bytes)) ||
+      finalEntries.length !== 1 ||
+      finalEntries[0] !== filename
+    )
+      throw new TypeError("decisionOutput:final-census-refused");
+    return { ok: true };
+  } catch {
+    let closeFailed = false;
+    try {
+      await handle?.close();
+    } catch {
+      closeFailed = true;
+    }
+    if (!created) return terminalFailure("decisionOutput:unreadable");
+    if (!opened) return terminalFailure("decisionOutput:cleanup-refused");
+    return !closeFailed && (await cleanupDecisionOutput(custody, pendingPath, finalPath, opened))
+      ? terminalFailure("decisionOutput:refused")
+      : terminalFailure("decisionOutput:cleanup-refused");
+  }
+}
+
+/** Exercises only the mechanical custody sink with a non-authority filename. */
+export async function exerciseDecisionOutputCustodyForTest(
+  outputRootInput: string,
+  stableRoot: string,
+  hooks: DecisionOutputCustodyTestHooks = {},
+): Promise<DecisionOutputResult> {
+  try {
+    const custody = await decisionOutputCustody(outputRootInput, stableRoot);
+    if (!custody) return terminalFailure("decisionOutput:refused");
+    return commitDecisionOutput(
+      custody,
+      "custody-mechanics-probe.json",
+      new TextEncoder().encode("{}"),
+      hooks,
+    );
+  } catch {
+    return terminalFailure("decisionOutput:refused");
+  }
+}
+
+export async function writeHostedPortablePrimitivesDecisionCore(
+  expected: HostedTerminalExpected,
+  token: string,
+  outputRootInput: string,
+  stableRoot = process.cwd(),
+  runtime: HostedTerminalRuntime = githubTerminalRuntime,
+): Promise<
+  | { readonly digest: string; readonly filename: string; readonly ok: true }
+  | { readonly issues: readonly string[]; readonly ok: false }
+> {
+  try {
+    const custody = await decisionOutputCustody(outputRootInput, stableRoot);
+    if (!custody) return terminalFailure("decisionOutput:refused");
+    const composed = await composeHostedPortablePrimitivesDecisionCore(
+      expected,
+      token,
+      stableRoot,
+      runtime,
+    );
+    if (!composed.ok) return composed;
+    const filename = `portable-primitives-${expected.runId}-${expected.runAttempt}-decision-core.json`;
+    const written = await commitDecisionOutput(custody, filename, composed.bytes);
+    if (!written.ok) return written;
+    return { digest: composed.digest, filename, ok: true };
+  } catch {
+    return terminalFailure("decisionOutput:unreadable");
+  }
+}
+
 export function parseHostedTerminalArguments(
   input: readonly string[],
 ): { readonly ok: true; readonly value: HostedTerminalExpected } | { readonly ok: false } {
@@ -527,7 +926,35 @@ export async function runHostedTerminalCli(
   return 0;
 }
 
+export async function runHostedTerminalEntrypoint(
+  arguments_: readonly string[] = process.argv.slice(2),
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<number> {
+  if (arguments_[0] !== "portable-primitives-decision")
+    return runHostedTerminalCli(arguments_, environment);
+  const parsed = parseHostedTerminalArguments(arguments_.slice(1));
+  const token = environment.GITHUB_TOKEN;
+  const outputRoot = environment.PORTABLE_PRIMITIVES_OUTPUT_ROOT;
+  if (!parsed.ok || !token || !outputRoot) {
+    process.stdout.write(`${canonicalJson({ issues: ["input:refused"], result: "REFUSED" })}\n`);
+    return 1;
+  }
+  const result = await writeHostedPortablePrimitivesDecisionCore(parsed.value, token, outputRoot);
+  if (!result.ok) {
+    process.stdout.write(`${canonicalJson({ issues: result.issues, result: "REFUSED" })}\n`);
+    return 1;
+  }
+  process.stdout.write(
+    `${canonicalJson({
+      decisionCoreDigest: result.digest,
+      filename: result.filename,
+      result: "WRITTEN",
+    })}\n`,
+  );
+  return 0;
+}
+
 const invokedPath = process.argv[1];
 if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
-  process.exitCode = await runHostedTerminalCli();
+  process.exitCode = await runHostedTerminalEntrypoint();
 }
