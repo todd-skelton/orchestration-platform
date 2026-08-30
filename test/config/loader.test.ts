@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -104,6 +104,158 @@ async function fixture() {
 }
 
 describe("ISS-003 concrete configuration loader", () => {
+  test("closes malformed OS scalars without coercion or caller canaries", async () => {
+    let calls = 0;
+    const canary = () => {
+      calls += 1;
+      throw new Error("CALLER_CANARY");
+    };
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const mutants = [
+      null,
+      undefined,
+      1,
+      1n,
+      true,
+      Symbol("os"),
+      Object.create(null),
+      { toString: canary },
+      { valueOf: canary },
+      { [Symbol.toPrimitive]: canary },
+      new Proxy({}, { get: canary, getPrototypeOf: canary }),
+      revoked.proxy,
+      Object.defineProperty({}, "toString", { get: canary }),
+      canary,
+    ];
+    const loader = createConfigurationLoader({ operatingSystem: "LINUX" });
+    for (const operatingSystem of mutants) {
+      const factory = createConfigurationLoader({ operatingSystem } as never);
+      await expect(factory({} as never)).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "INTERNAL_ERROR",
+          exitCode: 70,
+          message: "internal error",
+          outcome: "internal-error",
+        },
+      });
+      await expect(
+        loader({
+          ...invocation("LINUX", "/project", "/project/config.json", "/state"),
+          operatingSystem,
+        } as never),
+      ).resolves.toEqual({
+        ok: false,
+        error: {
+          code: "ARGV_REFUSED",
+          exitCode: 2,
+          message: "command line refused",
+          outcome: "invalid-input",
+        },
+      });
+    }
+    expect(calls).toBe(0);
+  });
+
+  test("CLI paths shadow relative environment paths but not malformed environment shapes", async () => {
+    const input = await fixture();
+    const operatingSystem = process.platform === "win32" ? "WINDOWS" : "LINUX";
+    const loader = createConfigurationLoader(
+      operatingSystem === "WINDOWS"
+        ? { operatingSystem, observeReparseFact: observedFact }
+        : createPortableConfigurationHostAdapter(operatingSystem),
+    );
+    const base = invocation(operatingSystem, input.projectRoot, input.configPath, input.stateRoot);
+    const fields = [
+      "ORCHESTRATION_PROJECT_ROOT",
+      "ORCHESTRATION_CONFIG",
+      "ORCHESTRATION_STATE_ROOT",
+    ] as const;
+    for (const field of fields) {
+      const shadowed = {
+        ...base,
+        environment: { ...base.environment, [field]: "relative-shadowed" },
+      };
+      await expect(loader(shadowed)).resolves.toMatchObject({ ok: true });
+      await expect(
+        loader({ ...shadowed, environment: { ...shadowed.environment, [field]: 1 } } as never),
+      ).resolves.toMatchObject({ ok: false, error: { code: "CONFIG_REFUSED" } });
+      const flag =
+        field === "ORCHESTRATION_PROJECT_ROOT"
+          ? "projectRoot"
+          : field === "ORCHESTRATION_CONFIG"
+            ? "configPath"
+            : "stateRoot";
+      await expect(
+        loader({ ...shadowed, flags: { ...base.flags, [flag]: null } }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "PATH_REFUSED" } });
+    }
+  });
+
+  test.skipIf(process.platform !== "win32")(
+    "refuses final-observation source writes, replacements and failed fresh reads",
+    async () => {
+      for (const mutation of [
+        "SOURCE_WRITE",
+        "LAST_WRITE",
+        "LAST_REPLACE",
+        "LAST_REMOVE",
+      ] as const) {
+        const input = await fixture();
+        const original = await lstat(input.configPath, { bigint: true });
+        const held = resolve(input.root, "held-source.json");
+        let configObservations = 0;
+        let mutated = false;
+        const loader = createConfigurationLoader({
+          operatingSystem: "WINDOWS",
+          async observeReparseFact(path: string) {
+            const fact = await observedFact(path);
+            if (path === input.configPath) configObservations += 1;
+            const atSource =
+              mutation === "SOURCE_WRITE" && path === input.configPath && configObservations === 2;
+            const atLast =
+              mutation !== "SOURCE_WRITE" &&
+              configObservations === 2 &&
+              path === win32.parse(input.configPath).root;
+            if (!mutated && (atSource || atLast)) {
+              mutated = true;
+              if (mutation === "LAST_REPLACE") {
+                await rename(input.configPath, held);
+                await writeFile(input.configPath, canonicalJson(source()), "utf8");
+              } else if (mutation === "LAST_REMOVE") {
+                await rm(input.configPath);
+              } else {
+                await writeFile(
+                  input.configPath,
+                  canonicalJson({ ...source(), adapterId: "altered.adapter" }),
+                  "utf8",
+                );
+                const changed = await lstat(input.configPath, { bigint: true });
+                expect(changed.ino).toBe(original.ino);
+                expect(changed.dev).toBe(original.dev);
+              }
+            }
+            return fact;
+          },
+        });
+        await expect(
+          loader(invocation("WINDOWS", input.projectRoot, input.configPath, input.stateRoot)),
+        ).resolves.toEqual({
+          ok: false,
+          error: {
+            code: "PATH_REFUSED",
+            exitCode: 3,
+            message: "path refused",
+            outcome: "authority-refused",
+          },
+        });
+        expect(mutated).toBe(true);
+        expect(configObservations).toBe(2);
+      }
+    },
+  );
+
   test("refuses malformed closed input before calling the host adapter", async () => {
     let calls = 0;
     const loader = createConfigurationLoader({

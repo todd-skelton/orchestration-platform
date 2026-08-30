@@ -203,7 +203,9 @@ function inspectAdapter(input: unknown): ConfigurationHostAdapter | null {
   const record = plainRecord(input, fields);
   if (
     record === null ||
-    !["WINDOWS", "MACOS", "LINUX"].includes(String(record.operatingSystem)) ||
+    (record.operatingSystem !== "WINDOWS" &&
+      record.operatingSystem !== "MACOS" &&
+      record.operatingSystem !== "LINUX") ||
     (record.operatingSystem === "WINDOWS" && typeof record.observeReparseFact !== "function")
   )
     return null;
@@ -570,6 +572,31 @@ function selected(primary: unknown, secondary: unknown): string | null {
   return typeof primary === "string" ? primary : typeof secondary === "string" ? secondary : null;
 }
 
+async function finalSourceCustody(source: RetainedPath, expectedDigest: string): Promise<void> {
+  let fresh: FileHandle | null = null;
+  try {
+    fresh = await open(source.captured.path, constants.O_RDONLY);
+    const matches = (stats: BigIntStats) =>
+      sameNodeFact(source.captured.fact, statsFact(stats, false)) &&
+      retainedCoordinatesMatch(source.captured.fact, stats);
+    if (
+      !matches(await source.handle.stat({ bigint: true })) ||
+      !matches(await fresh.stat({ bigint: true })) ||
+      (await fileDigest(source.handle)) !== expectedDigest ||
+      (await fileDigest(fresh)) !== expectedDigest ||
+      !matches(await source.handle.stat({ bigint: true })) ||
+      !matches(await fresh.stat({ bigint: true })) ||
+      !matches(await lstat(source.captured.path, { bigint: true })) ||
+      (await realpath(source.captured.path)) !== source.captured.physicalPath
+    )
+      throw new LoaderRefusal("PATH_REFUSED");
+  } catch {
+    throw new LoaderRefusal("PATH_REFUSED");
+  } finally {
+    await fresh?.close().catch(() => undefined);
+  }
+}
+
 function defaultStateRoot(
   operatingSystem: ConfigurationResolverOperatingSystem,
   environment: Record<string, unknown>,
@@ -625,7 +652,9 @@ function validateInvocation(input: unknown):
   if (
     flags === null ||
     typeof invocation.cwd !== "string" ||
-    !["WINDOWS", "MACOS", "LINUX"].includes(String(invocation.operatingSystem)) ||
+    (invocation.operatingSystem !== "WINDOWS" &&
+      invocation.operatingSystem !== "MACOS" &&
+      invocation.operatingSystem !== "LINUX") ||
     flagFields.some(
       (field) => flags[field] !== null && (typeof flags[field] !== "string" || flags[field] === ""),
     )
@@ -693,12 +722,6 @@ async function loadWithAdapter(
       typeof invocation.flags[field] === "string"
         ? !canonicalLocalPath(invocation.operatingSystem, invocation.flags[field])
         : false,
-    ) ||
-    ["ORCHESTRATION_CONFIG", "ORCHESTRATION_PROJECT_ROOT", "ORCHESTRATION_STATE_ROOT"].some(
-      (field) =>
-        typeof invocation.environment[field] === "string"
-          ? !canonicalLocalPath(invocation.operatingSystem, invocation.environment[field])
-          : false,
     )
   )
     return refused("PATH_REFUSED");
@@ -731,10 +754,9 @@ async function loadWithAdapter(
     const projectCaptured = await requiredPath(adapter, projectRoot, "DIRECTORY");
     const configCaptured = await requiredPath(adapter, configPath, "REGULAR_FILE");
     retained.push(...(await retainPaths([...projectCaptured, ...configCaptured])));
-    const configurationHandle = retained.find(
-      ({ captured }) => captured.path === configPath,
-    )?.handle;
-    if (!configurationHandle) throw new LoaderRefusal("INTERNAL_ERROR");
+    const configurationPath = retained.find(({ captured }) => captured.path === configPath);
+    if (!configurationPath) throw new LoaderRefusal("INTERNAL_ERROR");
+    const configurationHandle = configurationPath.handle;
     let sourceBytes: Uint8Array;
     try {
       sourceBytes = Uint8Array.from(await configurationHandle.readFile());
@@ -786,13 +808,13 @@ async function loadWithAdapter(
     });
     if (!result.ok) return result;
     const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
-    if ((await fileDigest(configurationHandle)) !== sourceDigest)
-      throw new LoaderRefusal("PATH_REFUSED");
     const absentPaths = [
       ...discovery.absentCandidates,
       ...(state.absentPath === null ? [] : [state.absentPath]),
     ];
     await finalCensus(adapter, retained, absentPaths);
+    // No adapter callbacks follow this final retained/fresh source byte and identity check.
+    await finalSourceCustody(configurationPath, sourceDigest);
     return result;
   } catch (error) {
     if (!(error instanceof LoaderRefusal)) return refused("INTERNAL_ERROR");
