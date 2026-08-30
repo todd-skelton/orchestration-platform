@@ -11,9 +11,9 @@ import {
 import {
   computeConformanceRecordDigest,
   createIss002ContractVersions,
-  createIss002RequiredJobRegistry,
   createIss002StableBundleManifests,
-  createIss002VectorCensus,
+  createIss022RequiredJobRegistry,
+  iss022PortablePrimitiveVectorCensus,
   parseConformanceRequiredJobRegistry,
 } from "../../packages/conformance/src/index.js";
 import {
@@ -491,12 +491,9 @@ export async function finalizeHostedPlan(input: {
     ]);
     if (!candidate.ok) return candidate;
     if (!bundles.ok) return refusal(...bundles.issues);
-    const generatorBytes = Uint8Array.from(
-      await readFile(resolve(stableRoot, "packages/conformance/src/iss002-vector-generator.mjs")),
-    );
-    const vectorCensus = createIss002VectorCensus(generatorBytes);
+    const vectorCensus = iss022PortablePrimitiveVectorCensus;
     const contractVersions = createIss002ContractVersions(schemaVersions);
-    const registry = createIss002RequiredJobRegistry(vectorCensus);
+    const registry = createIss022RequiredJobRegistry();
     const matrix = registryMatrix(registry);
     if (!matrix.ok) return matrix;
     const harnessBundleDigest = computeConformanceRecordDigest(

@@ -1,16 +1,6 @@
 import type { BigIntStats } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 import { types as nodeTypes } from "node:util";
 import {
   canonicalJson,
@@ -20,31 +10,25 @@ import {
 import {
   computeConformanceRecordDigest,
   createIss002ContractVersions,
-  createIss002ObservationArtifacts,
-  createIss002RequiredJobRegistry,
   createIss002StableBundleManifests,
-  createIss002VectorCensus,
-  runIss002StableHandler,
-  type Iss002ObservationArtifactsResult,
-  type Iss002StableHandlerResult,
+  createIss022RequiredJobRegistry,
+  iss022PortablePrimitiveVectorCensus,
+  parseConformanceRawArtifactManifest,
+  runIss022PortablePrimitivesStableSuite,
+  serializeConformanceContract,
+  sha256Bytes,
+  type Iss022StableSuiteResult,
 } from "../../packages/conformance/src/index.js";
-import { runIss002NativeCandidateObservation } from "../../packages/conformance/src/iss002-native-candidate-walk.js";
 import {
   computeGithubProviderRunDigest,
   parseGithubProviderRunContext,
 } from "../../packages/conformance/src/github-actions/index.js";
-import { withHostedCandidateSource } from "./hosted-candidate.mjs";
 import { loadHostedCandidateSnapshot, type HostedPlanContext } from "./hosted-plan.mjs";
-import {
-  executeIss002ContractSelection,
-  prepareIss002WorkspaceDependencies,
-} from "./iss002-executor.mjs";
-import { withIss002ExecutionWorkspace } from "./iss002-workspace.mjs";
 
 export type HostedObservationResult =
   | {
       readonly ok: true;
-      readonly normalizedResult: "FAIL" | "PASS" | "UNSUPPORTED";
+      readonly normalizedResult: "FAIL" | "PASS" | "UNKNOWN" | "UNSUPPORTED";
     }
   | { readonly ok: false; readonly issues: readonly string[] };
 
@@ -198,38 +182,13 @@ function sameDirectory(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
 }
 
-async function filesystemProfile(runnerTemp: string): Promise<Uint8Array> {
-  const root = await mkdtemp(resolve(runnerTemp, "orchestration-filesystem-profile-"));
-  const identity = await lstat(root, { bigint: true });
-  let caseSensitive: boolean;
-  try {
-    await writeFile(resolve(root, "Case-Probe"), "", { flag: "wx" });
-    try {
-      await lstat(resolve(root, "case-probe"));
-      caseSensitive = false;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      caseSensitive = true;
-    }
-  } finally {
-    const current = await lstat(root, { bigint: true });
-    if (!sameDirectory(identity, current)) throw new TypeError("filesystem-profile:root-moved");
-    await rm(root, { recursive: true });
-  }
-  return new TextEncoder().encode(canonicalJson({ caseSensitive, separator: sep }));
-}
-
 async function environmentInputs(
   environment: Readonly<Record<string, string | undefined>>,
-  runnerTemp: string,
   stableRoot: string,
 ): Promise<
   | {
-      readonly abiBytes: Uint8Array;
       readonly architecture: "ARM64" | "X64";
       readonly environmentBytes: Uint8Array;
-      readonly filesystemProfileBytes: Uint8Array;
-      readonly nodeVersion: string;
       readonly operatingSystem: "LINUX" | "MACOS" | "WINDOWS";
       readonly packageManagerVersion: string;
     }
@@ -266,9 +225,6 @@ async function environmentInputs(
   )
     return undefined;
   return Object.freeze({
-    abiBytes: new TextEncoder().encode(
-      canonicalJson({ modules: process.versions.modules, napi: process.versions.napi }),
-    ),
     architecture,
     environmentBytes: new TextEncoder().encode(
       canonicalJson({
@@ -279,22 +235,17 @@ async function environmentInputs(
         schemaVersion: "github-hosted-environment-inventory/v1",
       }),
     ),
-    filesystemProfileBytes: await filesystemProfile(runnerTemp),
-    nodeVersion: process.versions.node,
     operatingSystem,
     packageManagerVersion: packageManagerMatch[1]!,
   });
 }
 
-export async function loadHostedIss002StableInputs(stableRoot: string) {
+export async function loadHostedStableInputs(stableRoot: string) {
   const bundles = await createIss002StableBundleManifests(stableRoot);
   if (!bundles.ok) return undefined;
-  const generatorBytes = Uint8Array.from(
-    await readFile(resolve(stableRoot, "packages/conformance/src/iss002-vector-generator.mjs")),
-  );
-  const vectorCensus = createIss002VectorCensus(generatorBytes);
+  const vectorCensus = iss022PortablePrimitiveVectorCensus;
   const contractVersions = createIss002ContractVersions(schemaVersions);
-  const registry = createIss002RequiredJobRegistry(vectorCensus);
+  const registry = createIss022RequiredJobRegistry();
   return Object.freeze({
     bundles,
     contractVersionsDigest: computeConformanceRecordDigest(
@@ -322,8 +273,8 @@ export async function loadHostedIss002StableInputs(stableRoot: string) {
   });
 }
 
-export function hostedIss002StableInputsMatchContext(
-  stable: NonNullable<Awaited<ReturnType<typeof loadHostedIss002StableInputs>>>,
+export function hostedStableInputsMatchContext(
+  stable: NonNullable<Awaited<ReturnType<typeof loadHostedStableInputs>>>,
   context: HostedPlanContext,
 ): boolean {
   return (
@@ -337,7 +288,14 @@ export function hostedIss002StableInputsMatchContext(
 
 async function writeObservation(
   outputRoot: string,
-  artifacts: Extract<Iss002ObservationArtifactsResult, { readonly ok: true }>,
+  artifacts: Readonly<{
+    readonly environmentBytes: Uint8Array;
+    readonly environmentRecordBytes: Uint8Array;
+    readonly rawManifestBytes: Uint8Array;
+    readonly reportBytes: Uint8Array;
+    readonly stderrBytes: Uint8Array;
+    readonly stdoutBytes: Uint8Array;
+  }>,
 ): Promise<boolean> {
   let identity: BigIntStats | undefined;
   let complete = false;
@@ -373,11 +331,59 @@ async function writeObservation(
   }
 }
 
-export async function runHostedIss002Observation(
+function createIss022ObservationArtifacts(
+  environmentBytes: Uint8Array,
+  result: Extract<Iss022StableSuiteResult, { readonly ok: true }>,
+) {
+  const raw = Object.freeze({
+    environment: Uint8Array.from(environmentBytes),
+    report: Uint8Array.from(result.reportBytes),
+    stderr: new Uint8Array(),
+    stdout: new Uint8Array(),
+  });
+  const mediaTypes = Object.freeze({
+    environment: "APPLICATION_JSON",
+    report: "APPLICATION_JSON",
+    stderr: "TEXT_PLAIN",
+    stdout: "TEXT_PLAIN",
+  } as const);
+  const manifest = parseConformanceRawArtifactManifest(
+    Object.freeze({
+      entries: Object.freeze(
+        (Object.keys(raw) as readonly (keyof typeof raw)[]).map((name) =>
+          Object.freeze({
+            byteLength: String(raw[name].byteLength),
+            mediaType: mediaTypes[name],
+            name,
+            sha256Digest: sha256Bytes(raw[name]),
+          }),
+        ),
+      ),
+      schemaVersion: "conformance-raw-artifact-manifest/v1",
+    }),
+  );
+  const environment = serializeConformanceContract(
+    "conformance-environment/v1",
+    result.environment,
+  );
+  const rawManifest = manifest.ok
+    ? serializeConformanceContract("conformance-raw-artifact-manifest/v1", manifest.value)
+    : manifest;
+  return manifest.ok && environment.ok && rawManifest.ok
+    ? Object.freeze({
+        environmentBytes: raw.environment,
+        environmentRecordBytes: environment.bytes,
+        rawManifestBytes: rawManifest.bytes,
+        reportBytes: raw.report,
+        stderrBytes: raw.stderr,
+        stdoutBytes: raw.stdout,
+      })
+    : undefined;
+}
+
+export async function runHostedIss022Observation(
   input: HostedObservationInput,
 ): Promise<HostedObservationResult> {
-  let runtimeRoot: string | undefined;
-  let runtimeIdentity: BigIntStats | undefined;
   try {
     const context = parseHostedObservationContext(input.context);
     if (
@@ -385,8 +391,8 @@ export async function runHostedIss002Observation(
       ![input.candidateRoot, input.outputRoot, input.runnerTemp, input.stableRoot].every(
         (path) => typeof path === "string" && isAbsolute(path),
       ) ||
-      input.runnerToken !== "ISS002_CONTRACTS" ||
-      !/^iss002-contracts-(?:linux|macos|windows)$/.test(input.jobId)
+      input.runnerToken !== "ISS022_PORTABLE_PRIMITIVES" ||
+      !/^iss022-portable-primitives-(?:linux|macos|windows)$/.test(input.jobId)
     )
       return refusal("observation-runner:input-refused");
     const outputParentInput = resolve(input.outputRoot, "..");
@@ -412,109 +418,45 @@ export async function runHostedIss002Observation(
       within(stableRoot, input.outputRoot)
     )
       return refusal("observation-runner:root-separation-refused");
-    const environment = await environmentInputs(input.environment, runnerTemp, stableRoot);
+    const environment = await environmentInputs(input.environment, stableRoot);
     if (
       !environment ||
-      input.jobId !== `iss002-contracts-${environment.operatingSystem.toLowerCase()}`
+      input.jobId !== `iss022-portable-primitives-${environment.operatingSystem.toLowerCase()}`
     )
       return refusal("observation-runner:environment-refused");
-    const stable = await loadHostedIss002StableInputs(stableRoot);
-    if (!stable || !hostedIss002StableInputsMatchContext(stable, context))
+    const stable = await loadHostedStableInputs(stableRoot);
+    if (!stable || !hostedStableInputsMatchContext(stable, context))
       return refusal("observation-runner:stable-authority-refused");
     const candidate = await loadHostedCandidateSnapshot(candidateRoot, context.candidateRevision);
     if (!candidate.ok || candidate.value.digest !== context.candidateSubjectDigest)
       return refusal("observation-runner:candidate-authority-refused");
     const jobRows = stable.registry.jobs as readonly ContractRecord[];
     const job = jobRows.find((row) => row.jobId === input.jobId);
-    if (!job || job.suiteId !== "iss002-contracts")
+    if (
+      !job ||
+      job.suiteId !== "iss022-portable-primitives" ||
+      job.environmentFamily !== environment.operatingSystem
+    )
       return refusal("observation-runner:registry-selection-refused");
-    runtimeRoot = await mkdtemp(resolve(runnerTemp, "op-observation-"));
-    runtimeIdentity = await lstat(runtimeRoot, { bigint: true });
-    const sourceParent = resolve(runtimeRoot, "s");
-    const executionParent = resolve(runtimeRoot, "e");
-    const materializationParent = resolve(runtimeRoot, "m");
-    await Promise.all(
-      [sourceParent, executionParent, materializationParent].map(async (path) => {
-        await mkdir(path);
-      }),
-    );
-    const sourceResult = await withHostedCandidateSource(
-      candidate.value,
-      sourceParent,
-      stableRoot,
-      async (candidateSourceRoot, candidateSubject) =>
-        await withIss002ExecutionWorkspace({
-          candidateSourceRoot,
-          candidateSubject,
-          executionParent,
-          materializationParent,
-          stableRoot,
-          async consume(workspaceRoot): Promise<Iss002StableHandlerResult> {
-            const preparation = await prepareIss002WorkspaceDependencies(stableRoot, workspaceRoot);
-            if (!preparation.ok)
-              return {
-                issues: Object.freeze(["observation-runner:dependency-refused"]),
-                ok: false,
-              };
-            const generator = (await import(
-              pathToFileURL(
-                resolve(stableRoot, "packages/conformance/src/iss002-vector-generator.mjs"),
-              ).href
-            )) as { readonly generate: (parameters: unknown) => unknown };
-            return await runIss002StableHandler(stable.vectorCensus, {
-              executeContracts: async (selection) =>
-                await executeIss002ContractSelection(workspaceRoot, selection),
-              executeWalk: async () => {
-                const observed = await runIss002NativeCandidateObservation({
-                  candidateSourceRoot,
-                  candidateSubject,
-                  executionParent,
-                  materializationParent,
-                  stableRoot,
-                });
-                return {
-                  normalizedResult: observed.ok ? "PASS" : "FAIL",
-                  stderrBytes: observed.stderrBytes,
-                  stdoutBytes: observed.stdoutBytes,
-                  walkDurationsNanoseconds: observed.ok ? observed.durationsNanoseconds : null,
-                };
-              },
-              generate: generator.generate,
-            });
-          },
-        }),
-    );
-    if (!sourceResult.ok || !sourceResult.value.ok || !sourceResult.value.value.ok)
-      return refusal("observation-runner:execution-refused");
-    const handler = sourceResult.value.value;
-    const stableAfter = await loadHostedIss002StableInputs(stableRoot);
-    if (!stableAfter || !hostedIss002StableInputsMatchContext(stableAfter, context))
-      return refusal("observation-runner:stable-recheck-refused");
-    const artifacts = createIss002ObservationArtifacts({
-      ...environment,
+    const suite = await runIss022PortablePrimitivesStableSuite({
+      architecture: environment.architecture,
+      custodyParentRoot: runnerTemp,
+      environmentBytes: environment.environmentBytes,
       jobId: input.jobId,
-      runnerToken: "ISS002_CONTRACTS",
-      stderrBytes: handler.stderrBytes,
-      stdoutBytes: handler.stdoutBytes,
-      suiteId: "iss002-contracts",
-      vectorExecutions: handler.vectorExecutions,
-      walkDurationsNanoseconds: handler.walkDurationsNanoseconds,
+      packageManagerVersion: environment.packageManagerVersion,
+      providerRunDigest: context.providerRunDigest,
+      stableRoot,
     });
-    if (!artifacts.ok || !(await writeObservation(input.outputRoot, artifacts)))
+    if (!suite.ok) return refusal(...suite.issues.map((issue) => `suite.${issue}`));
+    const stableAfter = await loadHostedStableInputs(stableRoot);
+    if (!stableAfter || !hostedStableInputsMatchContext(stableAfter, context))
+      return refusal("observation-runner:stable-recheck-refused");
+    const artifacts = createIss022ObservationArtifacts(environment.environmentBytes, suite);
+    if (!artifacts || !(await writeObservation(input.outputRoot, artifacts)))
       return refusal("observation-runner:artifact-refused");
-    return { ok: true, normalizedResult: artifacts.normalizedResult };
+    return { ok: true, normalizedResult: suite.normalizedResult };
   } catch {
     return refusal("observation-runner:unreadable");
-  } finally {
-    if (runtimeRoot && runtimeIdentity)
-      try {
-        const current = await lstat(runtimeRoot, { bigint: true });
-        if (!sameDirectory(runtimeIdentity, current))
-          throw new TypeError("observation-runner:runtime-moved");
-        await rm(runtimeRoot, { recursive: true });
-      } catch {
-        return refusal("observation-runner:cleanup-refused");
-      }
   }
 }
 
@@ -553,7 +495,7 @@ export async function runHostedObservation(): Promise<void> {
     !runnerToken
   )
     throw new Error("observation:provider-context-refused");
-  const result = await runHostedIss002Observation({
+  const result = await runHostedIss022Observation({
     candidateRoot,
     context,
     environment: process.env,

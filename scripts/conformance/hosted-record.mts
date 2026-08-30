@@ -18,8 +18,8 @@ import {
 import { parseHostedObservationContext } from "./hosted-observation.mjs";
 import {
   hostedEnvironmentMatchesContext,
-  hostedIss002StableInputsMatchContext,
-  loadHostedIss002StableInputs,
+  hostedStableInputsMatchContext,
+  loadHostedStableInputs,
   decodeHostedObservationContext,
 } from "./hosted-observation.mjs";
 import {
@@ -412,8 +412,8 @@ export async function runHostedRecord(
     outputRoot === runnerTemp
   )
     throw new Error("record:external-output-root-required");
-  const stable = await loadHostedIss002StableInputs(stableRoot);
-  if (!stable || !hostedIss002StableInputsMatchContext(stable, context))
+  const stable = await loadHostedStableInputs(stableRoot);
+  if (!stable || !hostedStableInputsMatchContext(stable, context))
     throw new Error("record:stable-inputs-moved");
 
   const artifacts = await runtime.readArtifacts({ context, registry: stable.registry, token });

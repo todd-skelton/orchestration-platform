@@ -7,6 +7,7 @@ import {
   computeConformanceRecordDigest,
   createConformanceJobEvidence,
   iss002VectorIds,
+  parseCanonicalIss022StableRawReportBytes,
   parseCanonicalConformanceBytes,
   reduceConformanceAggregate,
   serializeConformanceContract,
@@ -15,15 +16,19 @@ import {
 import {
   decodeHostedObservationContext,
   hostedEnvironmentMatchesContext,
-  hostedIss002StableInputsMatchContext,
-  loadHostedIss002StableInputs,
+  hostedStableInputsMatchContext,
+  loadHostedStableInputs,
   parseHostedObservationContext,
 } from "./hosted-observation.mjs";
 import type { HostedPlanContext } from "./hosted-plan.mjs";
 
 export type HostedAggregateResult =
   | { readonly ok: true; readonly aggregate: ContractRecord }
-  | { readonly ok: false; readonly issues: readonly string[] };
+  | {
+      readonly ok: false;
+      readonly issues: readonly string[];
+      readonly receipts?: readonly ContractRecord[];
+    };
 
 export interface HostedAggregateInput {
   readonly context: unknown;
@@ -35,7 +40,7 @@ export interface HostedAggregateInput {
 
 interface ParsedReport {
   readonly maximumWalkDurationNanoseconds: string | null;
-  readonly normalizedResult: "FAIL" | "PASS" | "UNSUPPORTED";
+  readonly normalizedResult: "FAIL" | "PASS" | "UNKNOWN" | "UNSUPPORTED";
 }
 
 const observationFiles = Object.freeze([
@@ -120,7 +125,7 @@ function canonicalDecimal(value: unknown): value is string {
   );
 }
 
-function parseReport(bytes: Uint8Array, jobId: string): ParsedReport | undefined {
+function parseIss002Report(bytes: Uint8Array, jobId: string): ParsedReport | undefined {
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     const input: unknown = JSON.parse(text);
@@ -177,6 +182,29 @@ function parseReport(bytes: Uint8Array, jobId: string): ParsedReport | undefined
   }
 }
 
+function parseReport(
+  bytes: Uint8Array,
+  environment: ContractRecord,
+  jobId: string,
+  providerRunDigest: string,
+  suiteId: string,
+): ParsedReport | undefined {
+  if (suiteId === "iss002-contracts") return parseIss002Report(bytes, jobId);
+  if (suiteId !== "iss022-portable-primitives") return undefined;
+  const parsed = parseCanonicalIss022StableRawReportBytes(
+    bytes,
+    environment,
+    providerRunDigest,
+    jobId,
+  );
+  return parsed.ok
+    ? Object.freeze({
+        maximumWalkDurationNanoseconds: null,
+        normalizedResult: parsed.normalizedResult,
+      })
+    : undefined;
+}
+
 function within(root: string, path: string): boolean {
   const value = relative(root, path);
   return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
@@ -226,7 +254,17 @@ async function readObservationEvidence(
     "conformance-raw-artifact-manifest/v1",
     files.get("raw-manifest.json")!,
   );
-  const report = parseReport(files.get("report")!, jobId);
+  const jobs = registry.jobs as readonly ContractRecord[];
+  const job = jobs.find((row) => row.jobId === jobId);
+  const report = job
+    ? parseReport(
+        files.get("report")!,
+        environment.ok ? environment.value : Object.freeze({}),
+        jobId,
+        context.providerRunDigest,
+        String(job.suiteId),
+      )
+    : undefined;
   if (!environment.ok || !manifest.ok || !report) return undefined;
   const raw = Object.freeze({
     environment: files.get("environment")!,
@@ -358,8 +396,8 @@ export async function runHostedAggregateComposition(
       within(runnerTemp, stableRoot)
     )
       return refusal("aggregate-runner:root-separation-refused");
-    const stable = await loadHostedIss002StableInputs(stableRoot);
-    if (!stable || !hostedIss002StableInputsMatchContext(stable, context))
+    const stable = await loadHostedStableInputs(stableRoot);
+    if (!stable || !hostedStableInputsMatchContext(stable, context))
       return refusal("aggregate-runner:stable-authority-refused");
     const jobs = stable.registry.jobs as readonly ContractRecord[];
     const expectedDirectories = jobs.map(
@@ -382,10 +420,15 @@ export async function runHostedAggregateComposition(
       evidence.push(value);
     }
     const reduced = reduceConformanceAggregate(stable.registry, evidence);
-    if (!reduced.ok) return refusal(...reduced.issues.map((issue) => `aggregate.${issue}`));
-    const stableAfter = await loadHostedIss002StableInputs(stableRoot);
-    if (!stableAfter || !hostedIss002StableInputsMatchContext(stableAfter, context))
+    const stableAfter = await loadHostedStableInputs(stableRoot);
+    if (!stableAfter || !hostedStableInputsMatchContext(stableAfter, context))
       return refusal("aggregate-runner:stable-recheck-refused");
+    if (!reduced.ok)
+      return {
+        issues: Object.freeze(reduced.issues.map((issue) => `aggregate.${issue}`)),
+        ok: false,
+        receipts: Object.freeze(evidence.map((value) => value.receipt)),
+      };
     if (!(await writeAggregate(input.outputRoot, jobs, reduced.value, evidence)))
       return refusal("aggregate-runner:output-refused");
     return { ok: true, aggregate: reduced.value };

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export type WorkflowStructureResult =
   { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
 
-const expectedDigest = "fda0ed4c5fc23f560afa62cb20cc4ac059c1cd94d9feb76314ef3bb671683639";
+const expectedDigest = "80fe058ca2b07d8b4e1e3495cb63694aa1f78374be90f9fb41fa37e6c6499cbb";
 const actionShaPattern =
   /^[ ]+uses: actions\/(?:checkout|setup-node|upload-artifact|download-artifact)@[0-9a-f]{40}$/;
 
