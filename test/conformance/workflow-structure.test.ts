@@ -1,7 +1,11 @@
-import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { execFile, spawnSync } from "node:child_process";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
+import { buildConformanceBundle } from "../../scripts/conformance/run-bundled.mjs";
 import { validateConformanceWorkflowSource } from "../../scripts/conformance/workflow-structure.mjs";
 
 const workflowPath = resolve(import.meta.dirname, "../../.github/workflows/conformance.yml");
@@ -29,6 +33,69 @@ describe("protected conformance workflow structure", () => {
     expect(runner).toContain('pathToFileURL(stableRequire.resolve("esbuild")).href');
     expect(runner).toContain("external: true");
   });
+
+  test("keeps bundled filesystem and runtime workers bound to stable source paths", async () => {
+    const repositoryRoot = await realpath(resolve(import.meta.dirname, "../.."));
+    const root = await mkdtemp(resolve(tmpdir(), "orchestration-bundle-worker-paths-"));
+    try {
+      const output = resolve(root, "entry.mjs");
+      await writeFile(
+        output,
+        await buildConformanceBundle(
+          resolve(repositoryRoot, "probes/portable-primitives/src/index.ts"),
+        ),
+        { flag: "wx" },
+      );
+      const code = `
+        import * as probe from ${JSON.stringify(pathToFileURL(output).href)};
+        const root = ${JSON.stringify(root)};
+        const blocked = [];
+        for (const path of ${JSON.stringify([
+          repositoryRoot,
+          resolve(repositoryRoot, "probes"),
+          resolve(repositoryRoot, ".."),
+        ])}) {
+          try { await probe.canonicalPortablePrimitiveCustodyRoot(path); }
+          catch (error) { blocked.push(error.message); }
+        }
+        const admitted = await probe.canonicalPortablePrimitiveCustodyRoot(root);
+        const filesystem = await probe.executePortablePrimitiveChild("EXCLUSIVE_CREATE", root);
+        const runtime = await probe.executePortablePrimitiveHandleConfinementProbe(root);
+        process.stdout.write(JSON.stringify({ admitted, blocked, filesystem, runtime,
+          workerPath: probe.portablePrimitiveWorkerPath }));
+      `;
+      const { stdout, stderr } = await promisify(execFile)(
+        process.execPath,
+        ["--input-type=module", "--eval", code],
+        { cwd: root, timeout: 30_000, windowsHide: true },
+      );
+      expect(stderr).toBe("");
+      expect(JSON.parse(stdout)).toEqual({
+        admitted: await realpath(root),
+        blocked: Array(3).fill("custodyRoot:source-overlap"),
+        filesystem: expect.objectContaining({
+          event: expect.objectContaining({ event: "CREATED", readbackHex: "41" }),
+          exitCode: 0,
+          stderr: "",
+          timedOut: false,
+        }),
+        runtime: {
+          callbackInvocations: 1,
+          crossProcessReplayRejected: true,
+          directInvocationAccepted: true,
+          nonceByteLength: 32,
+          reuseAfterReleaseRejected: true,
+          serializationRejected: true,
+          structuredCloneRejected: true,
+          workerTransferRejected: true,
+          wrappedFunctionRejected: true,
+        },
+        workerPath: resolve(repositoryRoot, "probes/portable-primitives/src/filesystem-worker.mjs"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45_000);
 
   test.each([
     ["alternate event", "types: [conformance_candidate]", "types: [candidate]"],
