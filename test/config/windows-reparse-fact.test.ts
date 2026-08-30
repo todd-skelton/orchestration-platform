@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { buildWindowsReparseFact } from "../../scripts/build/windows-reparse-fact.mjs";
 import {
   createWindowsReparseFactAdapter,
   parseWindowsReparseFactForTesting,
@@ -43,15 +42,11 @@ function fact(value: unknown): WindowsReparseFact {
 }
 
 beforeAll(async () => {
-  const built = await buildWindowsReparseFact();
   if (process.platform === "win32") {
-    expect(built.status).toBe("BUILT");
     mutants = require(resolve(artifactRoot, "windows_reparse_fact_mutants.node")) as MutantBinding;
     root = await realpath(await mkdtemp(resolve(tmpdir(), "iss003-native-reparse-")));
-  } else {
-    expect(built.status).toBe("UNSUPPORTED");
   }
-}, 120_000);
+});
 
 afterAll(async () => {
   if (root !== "") {
@@ -215,6 +210,25 @@ describe("Windows reparse fact closed boundary", () => {
 });
 
 describe("Windows reparse fact source custody", () => {
+  test("builds once before workers and removes test artifacts after the run", async () => {
+    const [config = "", setup = "", worker = ""] = await Promise.all(
+      [
+        "vitest.config.ts",
+        "scripts/test/windows-reparse-fact-global-setup.mjs",
+        "test/config/windows-reparse-fact.test.ts",
+      ].map(async (path) =>
+        (await import("node:fs/promises")).readFile(resolve(repositoryRoot, path), "utf8"),
+      ),
+    );
+    expect(config).toContain(
+      'globalSetup: ["./scripts/test/windows-reparse-fact-global-setup.mjs"]',
+    );
+    expect(setup.match(/buildWindowsReparseFact\(\)/g)).toHaveLength(1);
+    expect(setup).toContain("await rm(artifactRoot, { force: true, recursive: true })");
+    expect(worker).not.toContain('from "../../scripts/build/windows-reparse-fact.mjs"');
+    expect(worker).not.toContain(["await", "buildWindowsReparseFact()"].join(" "));
+  });
+
   test("tracks reviewed source and no compiled native artifact", async () => {
     const tracked = (await execute("git", ["ls-files", "-z"], { cwd: repositoryRoot })).stdout
       .split("\0")
