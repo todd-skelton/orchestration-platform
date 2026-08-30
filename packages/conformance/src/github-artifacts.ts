@@ -582,7 +582,6 @@ export function verifyGithubDiagnosticAggregateArchive(
       registry.value,
     );
     const expectedReceipts: ContractRecord[] = [];
-    let physicalDiagnostic = false;
     for (let index = 0; index < jobs.length; index += 1) {
       const job = jobs[index]!;
       const jobId = String(job.jobId);
@@ -607,18 +606,6 @@ export function verifyGithubDiagnosticAggregateArchive(
       );
       if (!report.ok)
         return refusal(...report.issues.map((issue) => `evidence.${jobId}.report.${issue}`));
-      const executions = report.report.vectorExecutions as readonly ContractRecord[];
-      if (
-        report.report.selection === null &&
-        executions
-          .slice(0, 6)
-          .some(
-            (execution) =>
-              execution.normalizedResult === "UNKNOWN" ||
-              execution.normalizedResult === "UNSUPPORTED",
-          )
-      )
-        physicalDiagnostic = true;
       const created = createConformanceJobEvidence({
         candidateSubjectDigest: String(expectation.candidateSubjectDigest),
         contractVersionsDigest: String(expectation.contractVersionsDigest),
@@ -646,7 +633,8 @@ export function verifyGithubDiagnosticAggregateArchive(
         return refusal(`evidence.${jobId}:manifest-or-registry-mismatch`);
       expectedReceipts.push(created.receipt);
     }
-    if (!physicalDiagnostic) return refusal("diagnosticAggregate:physical-diagnostic-required");
+    if (expectedReceipts.every((receipt) => receipt.normalizedResult === "PASS"))
+      return refusal("diagnosticAggregate:non-pass-required");
     const expectedNames = jobs.map((job) => `receipts/${String(job.jobId)}.json`);
     if (!exactFileCensus(archive.files, expectedNames))
       return refusal("diagnosticAggregate:file-census-mismatch");
