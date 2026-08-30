@@ -6,6 +6,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/conformance/src/github-actions.ts",
   "packages/conformance/src/github-actions/index.ts",
   "packages/conformance/src/github-artifacts.ts",
+  "packages/conformance/src/github-portable-primitives-review.ts",
   "packages/conformance/src/github-protection.ts",
   "packages/conformance/src/github-terminal.ts",
   "packages/conformance/src/index.ts",
@@ -91,6 +92,7 @@ export const iss002HarnessPaths = Object.freeze([
 export const iss002TestBundlePaths = Object.freeze([
   "packages/conformance/src/iss002-vector-generator.mjs",
   "packages/conformance/src/iss002-walk-child.mjs",
+  "test/conformance/github-portable-primitives-review.test.ts",
   "test/conformance/iss002-native-candidate-walk.test.ts",
   "test/conformance/iss022-handler.test.ts",
   "test/conformance/iss022-profile.test.ts",
