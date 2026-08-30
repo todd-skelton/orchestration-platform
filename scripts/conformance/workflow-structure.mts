@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 export type WorkflowStructureResult =
   { readonly ok: true } | { readonly ok: false; readonly issues: readonly string[] };
 
-const expectedDigest = "80fe058ca2b07d8b4e1e3495cb63694aa1f78374be90f9fb41fa37e6c6499cbb";
+const expectedDigest = "2e9672aa408e9af483d5b6118dc041896cf80652e408c05498cbedd8f6e0e4c1";
 const actionShaPattern =
   /^[ ]+uses: actions\/(?:checkout|setup-node|upload-artifact|download-artifact)@[0-9a-f]{40}$/;
 
@@ -55,6 +55,7 @@ export function validateConformanceWorkflowSource(source: unknown): WorkflowStru
     "persist-credentials: false",
     "archive: true",
     "archive: false",
+    "if: ${{ always() }}",
     "retention-days: 31",
     "node scripts/conformance/run-bundled.mts hosted plan-select",
     "node scripts/conformance/run-bundled.mts hosted plan-finalize",

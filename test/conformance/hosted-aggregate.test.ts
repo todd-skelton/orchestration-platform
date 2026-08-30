@@ -18,6 +18,7 @@ import {
   serializeConformanceContract,
   sha256Bytes,
 } from "../../packages/conformance/src/index.js";
+import { verifyGithubDiagnosticAggregateArchive } from "../../packages/conformance/src/github-actions/index.js";
 import {
   computeGithubProviderRunDigest,
   parseGithubProviderRunContext,
@@ -31,6 +32,63 @@ const repository = "todd-skelton/orchestration-platform";
 const workflowPath = ".github/workflows/conformance.yml" as const;
 const workflowRef = `${repository}/${workflowPath}@refs/heads/main`;
 const stableRoot = resolve(import.meta.dirname, "../..");
+
+let crcTable: Uint32Array | undefined;
+function crc32(bytes: Uint8Array): number {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let index = 0; index < 256; index += 1) {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1)
+        value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      crcTable[index] = value >>> 0;
+    }
+  }
+  let value = 0xffffffff;
+  for (const byte of bytes) value = crcTable[(value ^ byte) & 0xff]! ^ (value >>> 8);
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function zip(entries: readonly Readonly<{ bytes: Uint8Array; name: string }>[]): Uint8Array {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name);
+    const bytes = Buffer.from(entry.bytes);
+    const checksum = crc32(entry.bytes);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(bytes.length, 18);
+    local.writeUInt32LE(bytes.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(0x0314, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(bytes.length, 20);
+    central.writeUInt32LE(bytes.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(0o100644 * 65_536, 38);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, name, bytes);
+    centrals.push(central, name);
+    offset += local.length + name.length + bytes.length;
+  }
+  const centralBytes = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBytes.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Uint8Array.from(Buffer.concat([...locals, centralBytes, end]));
+}
 
 async function root(): Promise<string> {
   const value = await mkdtemp(resolve(tmpdir(), "op-hosted-aggregate-"));
@@ -254,7 +312,121 @@ describe("hosted stable ISS-022 aggregate composition", () => {
     expect(result.issues).toContain(
       "aggregate.receipt.iss022-portable-primitives-linux.result:not-pass",
     );
-    await expect(readdir(input.outputRoot)).rejects.toThrow();
+    expect(await readdir(input.outputRoot)).toEqual(["receipts"]);
+    expect((await readdir(resolve(input.outputRoot, "receipts"))).sort()).toEqual(
+      (["linux", "macos", "windows"] as const).map(
+        (suffix) => `iss022-portable-primitives-${suffix}.json`,
+      ),
+    );
+    const stable = await loadHostedStableInputs(stableRoot);
+    if (!stable) throw new Error("stable inputs unavailable");
+    const jobs = stable.registry.jobs as readonly ContractRecord[];
+    const receiptEntries = await Promise.all(
+      jobs.map(async (job) => {
+        const jobId = String(job.jobId);
+        return {
+          bytes: Uint8Array.from(
+            await readFile(resolve(input.outputRoot, "receipts", `${jobId}.json`)),
+          ),
+          name: `receipts/${jobId}.json`,
+        };
+      }),
+    );
+    const evidence = await Promise.all(
+      jobs.map(async (job, index) => {
+        const directory = input.directories[index]!;
+        return Object.freeze({
+          environment: JSON.parse(
+            await readFile(resolve(directory, "environment-record.json"), "utf8"),
+          ),
+          jobId: String(job.jobId),
+          rawArtifactManifest: JSON.parse(
+            await readFile(resolve(directory, "raw-manifest.json"), "utf8"),
+          ),
+          rawArtifacts: Object.freeze({
+            environment: Uint8Array.from(await readFile(resolve(directory, "environment"))),
+            report: Uint8Array.from(await readFile(resolve(directory, "report"))),
+            stderr: Uint8Array.from(await readFile(resolve(directory, "stderr"))),
+            stdout: Uint8Array.from(await readFile(resolve(directory, "stdout"))),
+          }),
+        });
+      }),
+    );
+    const expectation = Object.freeze({
+      candidateSubjectDigest: input.plan.candidateSubjectDigest,
+      contractVersionsDigest: input.plan.contractVersionsDigest,
+      evidence: Object.freeze(evidence),
+      harnessBundleDigest: input.plan.harnessBundleDigest,
+      providerRunDigest: input.plan.providerRunDigest,
+      registry: stable.registry,
+      testBundleDigest: input.plan.testBundleDigest,
+    });
+    const archive = zip(receiptEntries);
+    const verified = verifyGithubDiagnosticAggregateArchive(archive, expectation);
+    expect(verified.ok).toBe(true);
+    if (!verified.ok) throw new Error(verified.issues.join(","));
+    expect(verified.receipts.map((receipt) => receipt.jobId)).toEqual(jobs.map((job) => job.jobId));
+
+    const launderedEntries = receiptEntries.map((entry, index) => {
+      if (index !== 0) return entry;
+      const receipt = JSON.parse(new TextDecoder().decode(entry.bytes));
+      receipt.normalizedResult = "PASS";
+      const serialized = serializeConformanceContract("conformance-job-receipt/v1", receipt);
+      if (!serialized.ok) throw new Error(serialized.issues.join(","));
+      return { ...entry, bytes: serialized.bytes };
+    });
+    const vectorEntries = receiptEntries.map((entry, index) => {
+      if (index !== 1) return entry;
+      const receipt = JSON.parse(new TextDecoder().decode(entry.bytes));
+      receipt.vectorCensusDigest = "e".repeat(64);
+      const serialized = serializeConformanceContract("conformance-job-receipt/v1", receipt);
+      if (!serialized.ok) throw new Error(serialized.issues.join(","));
+      return { ...entry, bytes: serialized.bytes };
+    });
+    const rawMutant = {
+      ...evidence[0],
+      rawArtifacts: {
+        ...evidence[0]!.rawArtifacts,
+        report: Uint8Array.from([...evidence[0]!.rawArtifacts.report, 0]),
+      },
+    };
+    const environmentMutant = {
+      ...evidence[0],
+      environment: { ...evidence[0]!.environment, osImageDigest: "d".repeat(64) },
+    };
+    const manifestMutant = {
+      ...evidence[0],
+      rawArtifactManifest: {
+        ...evidence[0]!.rawArtifactManifest,
+        entries: (evidence[0]!.rawArtifactManifest.entries as readonly ContractRecord[]).map(
+          (entry, index) => (index === 1 ? { ...entry, sha256Digest: "c".repeat(64) } : entry),
+        ),
+      },
+    };
+    for (const [archiveMutant, expectationMutant] of [
+      [zip(receiptEntries.slice(1)), expectation],
+      [
+        zip([...receiptEntries, { bytes: new TextEncoder().encode("{}"), name: "aggregate.json" }]),
+        expectation,
+      ],
+      [zip(receiptEntries), { ...expectation, evidence: [...evidence].reverse() }],
+      [zip(receiptEntries), { ...expectation, evidence: [rawMutant, ...evidence.slice(1)] }],
+      [
+        zip(receiptEntries),
+        { ...expectation, evidence: [environmentMutant, ...evidence.slice(1)] },
+      ],
+      [zip(receiptEntries), { ...expectation, evidence: [manifestMutant, ...evidence.slice(1)] }],
+      [zip(receiptEntries), { ...expectation, candidateSubjectDigest: "a".repeat(64) }],
+      [zip(receiptEntries), { ...expectation, contractVersionsDigest: "b".repeat(64) }],
+      [zip(receiptEntries), { ...expectation, harnessBundleDigest: "c".repeat(64) }],
+      [zip(receiptEntries), { ...expectation, providerRunDigest: "f".repeat(64) }],
+      [zip(receiptEntries), { ...expectation, testBundleDigest: "d".repeat(64) }],
+      [zip(launderedEntries), expectation],
+      [zip(vectorEntries), expectation],
+    ] as const)
+      expect(verifyGithubDiagnosticAggregateArchive(archiveMutant, expectationMutant).ok).toBe(
+        false,
+      );
   }, 600_000);
 
   test("refuses missing, extra, and cross-job observation artifacts", async () => {

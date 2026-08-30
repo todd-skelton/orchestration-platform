@@ -95,6 +95,7 @@ describe("protected conformance workflow structure", () => {
       "stable/.conformance/conformance-record",
     ],
     ["provider record archived", "archive: false", "archive: true"],
+    ["diagnostic aggregate upload disabled", "if: ${{ always() }}", "if: ${{ success() }}"],
     [
       "fixed provider filename",
       "conformance-${{ github.run_id }}-${{ github.run_attempt }}-provider-record.json",
