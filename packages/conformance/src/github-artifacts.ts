@@ -33,6 +33,12 @@ export type GithubObservationArchiveResult =
   | {
       readonly ok: true;
       readonly environment: ContractRecord;
+      readonly rawArtifacts: Readonly<{
+        readonly environment: Uint8Array;
+        readonly report: Uint8Array;
+        readonly stderr: Uint8Array;
+        readonly stdout: Uint8Array;
+      }>;
       readonly rawArtifactManifest: ContractRecord;
     }
   | { readonly ok: false; readonly issues: readonly string[] };
@@ -463,7 +469,17 @@ export function verifyGithubObservationArchive(input: unknown): GithubObservatio
   }
   if (rawEntries[0]?.sha256Digest !== environment.value.osImageDigest)
     return refusal("observation:environment-inventory-mismatch");
-  return { ok: true, environment: environment.value, rawArtifactManifest: manifest.value };
+  return {
+    ok: true,
+    environment: environment.value,
+    rawArtifacts: Object.freeze({
+      environment: archive.files.get("environment")!,
+      report: archive.files.get("report")!,
+      stderr: archive.files.get("stderr")!,
+      stdout: archive.files.get("stdout")!,
+    }),
+    rawArtifactManifest: manifest.value,
+  };
 }
 
 export function verifyGithubAggregateArchive(

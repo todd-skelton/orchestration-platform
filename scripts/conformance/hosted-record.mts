@@ -8,11 +8,14 @@ import {
 } from "../../packages/conformance/src/index.js";
 import {
   computeGithubConformanceProtectedRefDigest,
+  parseGithubConformanceDiagnosticProviderRecord,
   parseGithubConformanceProtectedRef,
   parseGithubConformanceProviderRecord,
+  validateGithubConformanceDiagnosticProviderRecord,
   validateGithubConformanceProviderRecord,
   verifyGithubAggregateArchive,
   verifyGithubArtifactIdentity,
+  verifyGithubDiagnosticAggregateArchive,
   verifyGithubObservationArchive,
 } from "../../packages/conformance/src/github-actions/index.js";
 import { parseHostedObservationContext } from "./hosted-observation.mjs";
@@ -23,8 +26,8 @@ import {
   decodeHostedObservationContext,
 } from "./hosted-observation.mjs";
 import {
-  readGithubHostedArtifacts,
-  readGithubHostedJobs,
+  readGithubHostedArtifactCensus,
+  readGithubHostedJobCensus,
   type GithubHostedArtifactEvidence,
   type GithubHostedJobEvidence,
 } from "./hosted-record-api.mjs";
@@ -59,6 +62,11 @@ export interface HostedProviderRecordInput {
   readonly jobs: unknown;
   readonly recordedAt: unknown;
   readonly registry: unknown;
+}
+
+export interface HostedDiagnosticProviderRecordInput extends HostedProviderRecordInput {
+  readonly missingArtifactNames: unknown;
+  readonly missingLogicalJobIds: unknown;
 }
 
 const jobFields = Object.freeze(["conclusion", "providerJobId", "providerJobName"] as const);
@@ -136,6 +144,42 @@ function exactBytes(input: unknown): Uint8Array | undefined {
 
 function utf8Compare(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function exactStringArray(input: unknown, maximum: number): readonly string[] | undefined {
+  if (!Array.isArray(input) || input.length > maximum) return undefined;
+  const values = exactArrayAllowEmpty(input, maximum);
+  return values && values.every((value) => typeof value === "string")
+    ? values.map(String)
+    : undefined;
+}
+
+function exactArrayAllowEmpty(input: unknown, maximum: number): readonly unknown[] | undefined {
+  if (
+    !Array.isArray(input) ||
+    nodeTypes.isProxy(input) ||
+    Object.getPrototypeOf(input) !== Array.prototype ||
+    input.length > maximum
+  )
+    return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const expected = new Set([
+    ...Array.from({ length: input.length }, (_, index) => String(index)),
+    "length",
+  ]);
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.some((key) => typeof key !== "string" || !expected.has(key)) ||
+    keys.length !== expected.size
+  )
+    return undefined;
+  const values: unknown[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !("value" in descriptor) || descriptor.enumerable !== true) return undefined;
+    values.push(descriptor.value);
+  }
+  return values;
 }
 
 function providerRun(context: NonNullable<ReturnType<typeof parseHostedObservationContext>>) {
@@ -345,6 +389,210 @@ export function createHostedProviderRecord(
   }
 }
 
+export function createHostedDiagnosticProviderRecord(
+  input: HostedDiagnosticProviderRecordInput,
+): HostedProviderRecordResult {
+  try {
+    const context = parseHostedObservationContext(input.context);
+    const registry = parseConformanceRequiredJobRegistry(input.registry);
+    const protectedRef = parseGithubConformanceProtectedRef(input.currentProtectedRef);
+    if (!context) return refusal("context:refused");
+    if (!registry.ok) return refusal(...registry.issues.map((issue) => `registry.${issue}`));
+    if (!protectedRef.ok)
+      return refusal(...protectedRef.issues.map((issue) => `protectedRef.${issue}`));
+    if (
+      computeGithubConformanceProtectedRefDigest(protectedRef.value) !== context.protectedRefDigest
+    )
+      return refusal("protectedRefDigest:moved");
+    if (
+      computeConformanceRecordDigest("conformance-required-job-registry/v1", registry.value) !==
+      context.requiredJobRegistryDigest
+    )
+      return refusal("requiredJobRegistryDigest:mismatch");
+
+    const registryJobs = registry.value.jobs as readonly ContractRecord[];
+    const expectedJobs = [
+      { logicalJobId: "aggregate", providerJobName: "Conformance / aggregate", role: "AGGREGATE" },
+      ...registryJobs.map((job) => ({
+        logicalJobId: String(job.jobId),
+        providerJobName: `Conformance / observation / ${String(job.jobId)}`,
+        role: "OBSERVATION",
+      })),
+      { logicalJobId: "plan", providerJobName: "Conformance / plan", role: "PLAN" },
+    ].sort((left, right) => utf8Compare(left.logicalJobId, right.logicalJobId));
+    const jobsInput = exactArrayAllowEmpty(input.jobs, 258);
+    const missingLogicalJobIds = exactStringArray(input.missingLogicalJobIds, 258);
+    if (!jobsInput || !missingLogicalJobIds) return refusal("jobs:closed-census-required");
+    const jobsByName = new Map<string, Readonly<Record<string, unknown>>>();
+    for (const rowInput of jobsInput) {
+      const row = exactRecord(rowInput, jobFields);
+      if (!row || typeof row.providerJobName !== "string" || jobsByName.has(row.providerJobName))
+        return refusal("jobs:closed-unique-census-required");
+      jobsByName.set(row.providerJobName, row);
+    }
+    const jobs: ContractRecord[] = [];
+    const missingJobs: string[] = [];
+    for (const expected of expectedJobs) {
+      const row = jobsByName.get(expected.providerJobName);
+      if (!row) {
+        missingJobs.push(expected.logicalJobId);
+        continue;
+      }
+      jobs.push(
+        Object.freeze({
+          conclusion: row.conclusion,
+          logicalJobId: expected.logicalJobId,
+          providerJobId: row.providerJobId,
+          providerJobName: row.providerJobName,
+          role: expected.role,
+        }) as ContractRecord,
+      );
+    }
+    if (jobsByName.size !== jobs.length) return refusal("jobs:unexpected-provider-row");
+    missingJobs.sort(utf8Compare);
+    if (missingJobs.join("\0") !== missingLogicalJobIds.join("\0"))
+      return refusal("missingLogicalJobIds:complement-mismatch");
+
+    const prefix = `conformance-${context.runId}-${context.runAttempt}-`;
+    const expectedArtifacts = [
+      { artifactName: `${prefix}aggregate`, logicalJobId: "aggregate", role: "AGGREGATE" },
+      ...registryJobs.map((job) => ({
+        artifactName: `${prefix}${String(job.jobId)}`,
+        logicalJobId: String(job.jobId),
+        role: "OBSERVATION",
+      })),
+    ].sort((left, right) => utf8Compare(left.artifactName, right.artifactName));
+    const artifactsInput = exactArrayAllowEmpty(input.artifacts, 257);
+    const missingArtifactNames = exactStringArray(input.missingArtifactNames, 257);
+    if (!artifactsInput || !missingArtifactNames)
+      return refusal("artifacts:closed-census-required");
+    const artifactsByName = new Map<string, Readonly<Record<string, unknown>>>();
+    for (const rowInput of artifactsInput) {
+      const row = exactRecord(rowInput, artifactFields);
+      if (!row || typeof row.artifactName !== "string" || artifactsByName.has(row.artifactName))
+        return refusal("artifacts:closed-unique-census-required");
+      artifactsByName.set(row.artifactName, row);
+    }
+    const artifacts: ContractRecord[] = [];
+    const observations = new Map<
+      string,
+      Extract<ReturnType<typeof verifyGithubObservationArchive>, { readonly ok: true }>
+    >();
+    let diagnosticAggregateBytes: Uint8Array | undefined;
+    const missingArtifacts: string[] = [];
+    for (const expected of expectedArtifacts) {
+      const row = artifactsByName.get(expected.artifactName);
+      if (!row) {
+        missingArtifacts.push(expected.artifactName);
+        continue;
+      }
+      const bytes = exactBytes(row.archiveBytes);
+      if (
+        !bytes ||
+        typeof row.artifactDigest !== "string" ||
+        typeof row.artifactId !== "string" ||
+        typeof row.byteLength !== "string" ||
+        typeof row.expiresAt !== "string"
+      )
+        return refusal(`artifacts.${expected.logicalJobId}:malformed`);
+      const identity = verifyGithubArtifactIdentity(bytes, row.artifactDigest, row.byteLength);
+      if (!identity.ok)
+        return refusal(
+          ...identity.issues.map((issue) => `artifacts.${expected.logicalJobId}.${issue}`),
+        );
+      if (expected.role === "AGGREGATE") {
+        diagnosticAggregateBytes = bytes;
+      } else {
+        const archive = verifyGithubObservationArchive(bytes);
+        if (!archive.ok)
+          return refusal(
+            ...archive.issues.map((issue) => `artifacts.${expected.logicalJobId}.${issue}`),
+          );
+        observations.set(expected.logicalJobId, archive);
+      }
+      artifacts.push(
+        Object.freeze({
+          artifactDigest: row.artifactDigest,
+          artifactId: row.artifactId,
+          artifactName: row.artifactName,
+          byteLength: row.byteLength,
+          expiresAt: row.expiresAt,
+          logicalJobId: expected.logicalJobId,
+          role: expected.role,
+        }) as ContractRecord,
+      );
+    }
+    if (artifactsByName.size !== artifacts.length)
+      return refusal("artifacts:unexpected-provider-row");
+    missingArtifacts.sort(utf8Compare);
+    if (missingArtifacts.join("\0") !== missingArtifactNames.join("\0"))
+      return refusal("missingArtifactNames:complement-mismatch");
+    if (diagnosticAggregateBytes) {
+      const evidence = registryJobs.map((job) => {
+        const jobId = String(job.jobId);
+        const observation = observations.get(jobId);
+        return observation
+          ? Object.freeze({
+              environment: observation.environment,
+              jobId,
+              rawArtifactManifest: observation.rawArtifactManifest,
+              rawArtifacts: observation.rawArtifacts,
+            })
+          : undefined;
+      });
+      const archive = verifyGithubDiagnosticAggregateArchive(diagnosticAggregateBytes, {
+        candidateSubjectDigest: context.candidateSubjectDigest,
+        contractVersionsDigest: context.contractVersionsDigest,
+        evidence,
+        harnessBundleDigest: context.harnessBundleDigest,
+        providerRunDigest: context.providerRunDigest,
+        registry: registry.value,
+        testBundleDigest: context.testBundleDigest,
+      });
+      if (!archive.ok)
+        return refusal(...archive.issues.map((issue) => `artifacts.aggregate.${issue}`));
+    }
+
+    const record = Object.freeze({
+      artifacts: Object.freeze(artifacts),
+      candidateRevision: context.candidateRevision,
+      candidateSubjectDigest: context.candidateSubjectDigest,
+      event: context.event,
+      harnessBundleDigest: context.harnessBundleDigest,
+      jobs: Object.freeze(jobs),
+      missingArtifactNames: Object.freeze(missingArtifacts),
+      missingLogicalJobIds: Object.freeze(missingJobs),
+      protectedRefDigest: context.protectedRefDigest,
+      recordedAt: input.recordedAt,
+      repositoryId: context.repositoryId,
+      requiredJobRegistryDigest: context.requiredJobRegistryDigest,
+      runAttempt: context.runAttempt,
+      runId: context.runId,
+      schemaVersion: "github-conformance-diagnostic-provider-record/v1",
+      testBundleDigest: context.testBundleDigest,
+      workflowPath: context.workflowPath,
+      workflowRef: context.workflowRef,
+      workflowRevision: context.workflowRevision,
+    });
+    const parsed = parseGithubConformanceDiagnosticProviderRecord(record);
+    if (!parsed.ok)
+      return refusal(...parsed.issues.map((issue) => `diagnosticProviderRecord.${issue}`));
+    const validated = validateGithubConformanceDiagnosticProviderRecord(parsed.value, {
+      providerRun: providerRun(context),
+      registry: registry.value,
+    });
+    if (!validated.ok)
+      return refusal(...validated.issues.map((issue) => `diagnosticProviderRecord.${issue}`));
+    return {
+      ok: true,
+      bytes: new TextEncoder().encode(canonicalJson(parsed.value)),
+      value: parsed.value,
+    };
+  } catch {
+    return refusal("diagnosticProviderRecord:unreadable");
+  }
+}
+
 function within(root: string, path: string): boolean {
   const value = relative(root, path);
   return value === "" || (!isAbsolute(value) && value !== ".." && !value.startsWith(`..${sep}`));
@@ -364,7 +612,13 @@ export interface HostedRecordRuntime {
     readonly registry: unknown;
     readonly token: string;
   }) => Promise<
-    | { readonly ok: true; readonly value: readonly GithubHostedArtifactEvidence[] }
+    | {
+        readonly ok: true;
+        readonly value: {
+          readonly artifacts: readonly GithubHostedArtifactEvidence[];
+          readonly missingArtifactNames: readonly string[];
+        };
+      }
     | { readonly ok: false; readonly issues: readonly string[] }
   >;
   readonly readJobs: (input: {
@@ -376,6 +630,7 @@ export interface HostedRecordRuntime {
         readonly ok: true;
         readonly value: {
           readonly jobs: readonly GithubHostedJobEvidence[];
+          readonly missingLogicalJobIds: readonly string[];
           readonly recordedAt: string;
         };
       }
@@ -384,8 +639,8 @@ export interface HostedRecordRuntime {
 }
 
 const githubRecordRuntime: HostedRecordRuntime = Object.freeze({
-  readArtifacts: readGithubHostedArtifacts,
-  readJobs: readGithubHostedJobs,
+  readArtifacts: readGithubHostedArtifactCensus,
+  readJobs: readGithubHostedJobCensus,
 });
 
 export async function runHostedRecord(
@@ -420,8 +675,8 @@ export async function runHostedRecord(
   if (!artifacts.ok) throw new Error(artifacts.issues.join(","));
   const jobs = await runtime.readJobs({ context, registry: stable.registry, token });
   if (!jobs.ok) throw new Error(jobs.issues.join(","));
-  const record = createHostedProviderRecord({
-    artifacts: artifacts.value,
+  let record = createHostedProviderRecord({
+    artifacts: artifacts.value.artifacts,
     context,
     currentProtectedRef: Object.freeze({
       refProtected: true,
@@ -432,6 +687,24 @@ export async function runHostedRecord(
     recordedAt: jobs.value.recordedAt,
     registry: stable.registry,
   });
+  let diagnostic = false;
+  if (!record.ok) {
+    record = createHostedDiagnosticProviderRecord({
+      artifacts: artifacts.value.artifacts,
+      context,
+      currentProtectedRef: Object.freeze({
+        refProtected: true,
+        schemaVersion: "github-conformance-protected-ref/v1",
+        targetRef: "refs/heads/main",
+      }),
+      jobs: jobs.value.jobs,
+      missingArtifactNames: artifacts.value.missingArtifactNames,
+      missingLogicalJobIds: jobs.value.missingLogicalJobIds,
+      recordedAt: jobs.value.recordedAt,
+      registry: stable.registry,
+    });
+    diagnostic = true;
+  }
   if (!record.ok) throw new Error(record.issues.join(","));
 
   let created = false;
@@ -441,7 +714,9 @@ export async function runHostedRecord(
     const identity = await lstat(outputRoot);
     if (!identity.isDirectory() || identity.isSymbolicLink())
       throw new Error("record:output-root-refused");
-    const filename = `conformance-${context.runId}-${context.runAttempt}-provider-record.json`;
+    const filename = `conformance-${context.runId}-${context.runAttempt}-${
+      diagnostic ? "diagnostic-provider-record" : "provider-record"
+    }.json`;
     await writeFile(resolve(outputRoot, filename), record.bytes, { flag: "wx" });
   } catch (error) {
     if (created) await rm(outputRoot, { recursive: true, force: false });

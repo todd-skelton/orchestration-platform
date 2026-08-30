@@ -17,7 +17,16 @@ export interface GithubHostedArtifactEvidence {
 }
 
 export interface GithubHostedJobEvidence {
-  readonly conclusion: "SUCCESS";
+  readonly conclusion:
+    | "ACTION_REQUIRED"
+    | "CANCELLED"
+    | "FAILURE"
+    | "NEUTRAL"
+    | "SKIPPED"
+    | "STALE"
+    | "STARTUP_FAILURE"
+    | "SUCCESS"
+    | "TIMED_OUT";
   readonly providerJobId: string;
   readonly providerJobName: string;
 }
@@ -89,17 +98,37 @@ async function githubRequest(url: string, token: string, fetcher: GithubFetch): 
   return response;
 }
 
-function expectedJobNames(registry: ContractRecord): ReadonlyMap<string, string> {
+function expectedJobNames(
+  registry: ContractRecord,
+): ReadonlyMap<string, Readonly<{ logicalJobId: string; role: string }>> {
   const rows = registry.jobs as readonly ContractRecord[];
   return new Map([
-    ["aggregate", "AGGREGATE"],
-    ...rows.map((row) => [`observation / ${String(row.jobId)}`, "OBSERVATION"] as const),
-    ["plan", "PLAN"],
-    ["record", "RECORD"],
+    ["aggregate", { logicalJobId: "aggregate", role: "AGGREGATE" }],
+    ...rows.map(
+      (row) =>
+        [
+          `observation / ${String(row.jobId)}`,
+          { logicalJobId: String(row.jobId), role: "OBSERVATION" },
+        ] as const,
+    ),
+    ["plan", { logicalJobId: "plan", role: "PLAN" }],
+    ["record", { logicalJobId: "record", role: "RECORD" }],
   ]);
 }
 
-export async function readGithubHostedJobs(input: {
+const terminalConclusions = new Set([
+  "ACTION_REQUIRED",
+  "CANCELLED",
+  "FAILURE",
+  "NEUTRAL",
+  "SKIPPED",
+  "STALE",
+  "STARTUP_FAILURE",
+  "SUCCESS",
+  "TIMED_OUT",
+] as const);
+
+export async function readGithubHostedJobCensus(input: {
   readonly context: HostedPlanContext;
   readonly fetcher?: GithubFetch;
   readonly registry: unknown;
@@ -107,6 +136,7 @@ export async function readGithubHostedJobs(input: {
 }): Promise<
   HostedRecordApiResult<{
     readonly jobs: readonly GithubHostedJobEvidence[];
+    readonly missingLogicalJobIds: readonly string[];
     readonly recordedAt: string;
   }>
 > {
@@ -169,12 +199,19 @@ export async function readGithubHostedJobs(input: {
             }),
           );
         } else {
-          if (status !== "completed" || conclusion !== "success")
-            return refusal("jobs:required-job-not-successful");
+          const normalizedConclusion =
+            typeof conclusion === "string" ? conclusion.toUpperCase() : "";
+          if (
+            status !== "completed" ||
+            !terminalConclusions.has(
+              normalizedConclusion as typeof terminalConclusions extends Set<infer T> ? T : never,
+            )
+          )
+            return refusal("jobs:required-job-not-terminal");
           found.set(
             name,
             Object.freeze({
-              conclusion: "SUCCESS",
+              conclusion: normalizedConclusion as GithubHostedJobEvidence["conclusion"],
               providerJobId: id,
               providerJobName: `Conformance / ${name}`,
             }),
@@ -184,16 +221,45 @@ export async function readGithubHostedJobs(input: {
       if (jobs.length < 100) break;
       if (page === 4) return refusal("jobs:pagination-over-bound");
     }
-    if (!finalDate || totalCount !== found.size || found.size !== expected.size)
+    if (!finalDate || totalCount !== found.size || !found.has("record"))
       return refusal("jobs:terminal-census-mismatch");
     found.delete("record");
+    const missingLogicalJobIds = [...expected.entries()]
+      .filter(([name]) => name !== "record" && !found.has(name))
+      .map(([, value]) => value.logicalJobId)
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
     return {
       ok: true,
-      value: Object.freeze({ jobs: Object.freeze([...found.values()]), recordedAt: finalDate }),
+      value: Object.freeze({
+        jobs: Object.freeze([...found.values()]),
+        missingLogicalJobIds: Object.freeze(missingLogicalJobIds),
+        recordedAt: finalDate,
+      }),
     };
   } catch {
     return refusal("jobs:unreadable");
   }
+}
+
+export async function readGithubHostedJobs(
+  input: Parameters<typeof readGithubHostedJobCensus>[0],
+): Promise<
+  HostedRecordApiResult<{
+    readonly jobs: readonly GithubHostedJobEvidence[];
+    readonly recordedAt: string;
+  }>
+> {
+  const result = await readGithubHostedJobCensus(input);
+  if (!result.ok) return result;
+  if (
+    result.value.missingLogicalJobIds.length !== 0 ||
+    result.value.jobs.some((job) => job.conclusion !== "SUCCESS")
+  )
+    return refusal("jobs:required-job-not-successful");
+  return {
+    ok: true,
+    value: Object.freeze({ jobs: result.value.jobs, recordedAt: result.value.recordedAt }),
+  };
 }
 
 function expectedArtifactNames(context: HostedPlanContext, registry: ContractRecord): Set<string> {
@@ -204,12 +270,17 @@ function expectedArtifactNames(context: HostedPlanContext, registry: ContractRec
   ]);
 }
 
-export async function readGithubHostedArtifacts(input: {
+export async function readGithubHostedArtifactCensus(input: {
   readonly context: HostedPlanContext;
   readonly fetcher?: GithubFetch;
   readonly registry: unknown;
   readonly token: string;
-}): Promise<HostedRecordApiResult<readonly GithubHostedArtifactEvidence[]>> {
+}): Promise<
+  HostedRecordApiResult<{
+    readonly artifacts: readonly GithubHostedArtifactEvidence[];
+    readonly missingArtifactNames: readonly string[];
+  }>
+> {
   try {
     const registry = parseConformanceRequiredJobRegistry(input.registry);
     if (!registry.ok) return refusal(...registry.issues.map((issue) => `registry.${issue}`));
@@ -232,7 +303,7 @@ export async function readGithubHostedArtifacts(input: {
       if (!body) return refusal("artifacts:response-record-refused");
       const count = dataValue(body, "total_count");
       const artifacts = dataValue(body, "artifacts");
-      if (!Number.isSafeInteger(count) || (count as number) < 1 || (count as number) > 4096)
+      if (!Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 4096)
         return refusal("artifacts:total-count-refused");
       if (totalCount === undefined) totalCount = count as number;
       else if (totalCount !== count) return refusal("artifacts:total-count-moved");
@@ -288,8 +359,7 @@ export async function readGithubHostedArtifacts(input: {
       if (artifacts.length < 100) break;
       if (page === 1024) return refusal("artifacts:pagination-over-bound");
     }
-    if (totalCount !== collectedCount || found.size !== expected.size)
-      return refusal("artifacts:terminal-census-mismatch");
+    if (totalCount !== collectedCount) return refusal("artifacts:terminal-census-mismatch");
     const evidence: GithubHostedArtifactEvidence[] = [];
     for (const row of found.values()) {
       const response = await githubRequest(row.downloadUrl, input.token, fetcher);
@@ -305,8 +375,27 @@ export async function readGithubHostedArtifacts(input: {
         }),
       );
     }
-    return { ok: true, value: Object.freeze(evidence) };
+    const missingArtifactNames = [...expected]
+      .filter((name) => !found.has(name))
+      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    return {
+      ok: true,
+      value: Object.freeze({
+        artifacts: Object.freeze(evidence),
+        missingArtifactNames: Object.freeze(missingArtifactNames),
+      }),
+    };
   } catch {
     return refusal("artifacts:unreadable");
   }
+}
+
+export async function readGithubHostedArtifacts(
+  input: Parameters<typeof readGithubHostedArtifactCensus>[0],
+): Promise<HostedRecordApiResult<readonly GithubHostedArtifactEvidence[]>> {
+  const result = await readGithubHostedArtifactCensus(input);
+  if (!result.ok) return result;
+  if (result.value.missingArtifactNames.length !== 0)
+    return refusal("artifacts:terminal-census-mismatch");
+  return { ok: true, value: result.value.artifacts };
 }

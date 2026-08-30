@@ -18,20 +18,28 @@ import {
   serializeConformanceContract,
   sha256Bytes,
 } from "../../packages/conformance/src/index.js";
-import { verifyGithubDiagnosticAggregateArchive } from "../../packages/conformance/src/github-actions/index.js";
 import {
+  computeGithubConformanceProtectedRefDigest,
   computeGithubProviderRunDigest,
+  parseGithubConformanceDiagnosticProviderRecord,
   parseGithubProviderRunContext,
+  verifyGithubDiagnosticAggregateArchive,
 } from "../../packages/conformance/src/github-actions/index.js";
 import { runHostedAggregateComposition } from "../../scripts/conformance/hosted-aggregate.mjs";
 import { loadHostedStableInputs } from "../../scripts/conformance/hosted-observation.mjs";
 import type { HostedPlanContext } from "../../scripts/conformance/hosted-plan.mjs";
+import { createHostedDiagnosticProviderRecord } from "../../scripts/conformance/hosted-record.mjs";
 
 const roots: string[] = [];
 const repository = "todd-skelton/orchestration-platform";
 const workflowPath = ".github/workflows/conformance.yml" as const;
 const workflowRef = `${repository}/${workflowPath}@refs/heads/main`;
 const stableRoot = resolve(import.meta.dirname, "../..");
+const protectedRef = Object.freeze({
+  refProtected: true,
+  schemaVersion: "github-conformance-protected-ref/v1",
+  targetRef: "refs/heads/main",
+});
 
 let crcTable: Uint32Array | undefined;
 function crc32(bytes: Uint8Array): number {
@@ -105,7 +113,7 @@ async function context(): Promise<HostedPlanContext> {
   if (!stable) throw new Error("stable inputs unavailable");
   const revision = "a".repeat(40);
   const candidateSubjectDigest = "b".repeat(64);
-  const protectedRefDigest = "c".repeat(64);
+  const protectedRefDigest = computeGithubConformanceProtectedRefDigest(protectedRef);
   const provider = parseGithubProviderRunContext({
     candidateRevision: revision,
     candidateSubjectDigest,
@@ -427,6 +435,108 @@ describe("hosted stable ISS-022 aggregate composition", () => {
       expect(verifyGithubDiagnosticAggregateArchive(archiveMutant, expectationMutant).ok).toBe(
         false,
       );
+
+    const recordedAt = "2026-08-29T12:00:00.000Z";
+    const expiresAt = "2026-09-29T12:00:00.000Z";
+    const prefix = `conformance-${input.plan.runId}-${input.plan.runAttempt}-`;
+    const observationArchives = await Promise.all(
+      input.directories.map(async (directory) =>
+        zip(
+          await Promise.all(
+            [
+              "environment",
+              "environment-record.json",
+              "raw-manifest.json",
+              "report",
+              "stderr",
+              "stdout",
+            ].map(async (name) => ({
+              bytes: Uint8Array.from(await readFile(resolve(directory, name))),
+              name,
+            })),
+          ),
+        ),
+      ),
+    );
+    const providerArtifact = (artifactName: string, artifactId: string, archiveBytes: Uint8Array) =>
+      Object.freeze({
+        archiveBytes,
+        artifactDigest: sha256Bytes(archiveBytes),
+        artifactId,
+        artifactName,
+        byteLength: String(archiveBytes.byteLength),
+        expiresAt,
+      });
+    const artifacts = Object.freeze([
+      providerArtifact(`${prefix}aggregate`, "20", archive),
+      ...jobs.map((job, index) =>
+        providerArtifact(
+          `${prefix}${String(job.jobId)}`,
+          String(21 + index),
+          observationArchives[index]!,
+        ),
+      ),
+    ]);
+    const providerJobs = Object.freeze([
+      Object.freeze({
+        conclusion: "FAILURE",
+        providerJobId: "10",
+        providerJobName: "Conformance / aggregate",
+      }),
+      ...jobs.map((job, index) =>
+        Object.freeze({
+          conclusion: "SUCCESS",
+          providerJobId: String(11 + index),
+          providerJobName: `Conformance / observation / ${String(job.jobId)}`,
+        }),
+      ),
+      Object.freeze({
+        conclusion: "SUCCESS",
+        providerJobId: "14",
+        providerJobName: "Conformance / plan",
+      }),
+    ]);
+    const createRecord = (overrides: Readonly<Record<string, unknown>> = {}) =>
+      createHostedDiagnosticProviderRecord({
+        artifacts,
+        context: input.plan,
+        currentProtectedRef: protectedRef,
+        jobs: providerJobs,
+        missingArtifactNames: [],
+        missingLogicalJobIds: [],
+        recordedAt,
+        registry: stable.registry,
+        ...overrides,
+      });
+    const record = createRecord();
+    expect(record.ok).toBe(true);
+    if (!record.ok) throw new Error(record.issues.join(","));
+    expect(parseGithubConformanceDiagnosticProviderRecord(record.value).ok).toBe(true);
+    expect(record.value.schemaVersion).toBe("github-conformance-diagnostic-provider-record/v1");
+    expect("aggregateDigest" in record.value).toBe(false);
+
+    const changedObservation = Uint8Array.from(observationArchives[0]!);
+    changedObservation[0] = changedObservation[0]! ^ 1;
+    for (const mutation of [
+      { jobs: providerJobs.map((job) => ({ ...job, conclusion: "SUCCESS" })) },
+      { missingArtifactNames: [`${prefix}aggregate`] },
+      { recordedAt: "2026-08-29T12:00:00Z" },
+      { currentProtectedRef: { ...protectedRef, refProtected: false } },
+      {
+        artifacts: [
+          artifacts[0],
+          providerArtifact(`${prefix}${String(jobs[0]!.jobId)}`, "21", changedObservation),
+          ...artifacts.slice(2),
+        ],
+      },
+      {
+        artifacts: artifacts.map((artifact) => ({
+          ...artifact,
+          expiresAt: "2026-08-30T12:00:00.000Z",
+        })),
+      },
+    ])
+      expect(createRecord(mutation).ok).toBe(false);
   }, 600_000);
 
   test("refuses missing, extra, and cross-job observation artifacts", async () => {
