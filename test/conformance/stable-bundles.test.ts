@@ -66,6 +66,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "packages/conformance/src/iss022-suite.ts",
       "packages/conformance/src/manifest.ts",
       "packages/conformance/src/observation.ts",
+      "packages/conformance/src/portable-primitives-decision.ts",
       "packages/conformance/src/reducer.ts",
       "packages/conformance/src/stable-bundles.ts",
       "packages/conformance/src/stable.ts",
@@ -101,6 +102,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "test/conformance/iss022-handler.test.ts",
       "test/conformance/iss022-profile.test.ts",
       "test/conformance/iss022-suite.test.ts",
+      "test/conformance/portable-primitives-decision.test.ts",
     ]);
     const portableSources = await filesBelow("probes/portable-primitives/src");
     expect(
