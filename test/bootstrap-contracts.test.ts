@@ -122,6 +122,13 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "changed CLI package test entrypoint",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/cli"].scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-003 @orchestration-platform/cli:test";
+      },
+    ],
+    [
       "changed config package test entrypoint",
       (snapshot: any) => {
         snapshot.manifests["@orchestration-platform/config"].scripts.test =

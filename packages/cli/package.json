@@ -14,9 +14,10 @@
     }
   },
   "scripts": {
-    "test": "node ../../scripts/capability-not-implemented.mjs ISS-003 @orchestration-platform/cli:test"
+    "test": "pnpm --dir ../.. exec vitest run test/cli"
   },
   "dependencies": {
+    "@orchestration-platform/contracts": "workspace:*",
     "@orchestration-platform/config": "workspace:*",
     "@orchestration-platform/session": "workspace:*",
     "@orchestration-platform/dispatch": "workspace:*",
