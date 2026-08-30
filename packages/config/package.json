@@ -12,7 +12,10 @@
       "default": "./src/index.ts"
     }
   },
+  "dependencies": {
+    "@orchestration-platform/contracts": "workspace:*"
+  },
   "scripts": {
-    "test": "node ../../scripts/capability-not-implemented.mjs ISS-003 @orchestration-platform/config:test"
+    "test": "pnpm --dir ../.. exec vitest run test/config"
   }
 }

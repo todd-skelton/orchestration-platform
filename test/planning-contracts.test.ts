@@ -109,6 +109,13 @@ describe("planning contract", () => {
       },
     ],
     [
+      "reverted implemented config package test",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.packageManifests["@orchestration-platform/config"]!.scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-003 @orchestration-platform/config:test";
+      },
+    ],
+    [
       "reverted implemented harness wrapper",
       (snapshot: PlanningSnapshot) => {
         snapshot.rootPackage.scripts["harness:test"] =

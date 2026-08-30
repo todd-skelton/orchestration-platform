@@ -122,6 +122,13 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "changed config package test entrypoint",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/config"].scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-003 @orchestration-platform/config:test";
+      },
+    ],
+    [
       "changed root harness entrypoint",
       (snapshot: any) => {
         snapshot.rootPackage.scripts["harness:test"] =
