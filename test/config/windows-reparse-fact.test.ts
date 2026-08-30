@@ -225,7 +225,9 @@ describe("Windows reparse fact source custody", () => {
     );
     expect(setup.match(/buildWindowsReparseFact\(\)/g)).toHaveLength(1);
     expect(setup).toContain("await rm(artifactRoot, { force: true, recursive: true })");
-    expect(worker).not.toContain('from "../../scripts/build/windows-reparse-fact.mjs"');
+    expect(worker).not.toContain(
+      ["from", '"../../scripts/build/windows-reparse-fact.mjs"'].join(" "),
+    );
     expect(worker).not.toContain(["await", "buildWindowsReparseFact()"].join(" "));
   });
 
