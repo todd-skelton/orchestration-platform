@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   symlink,
@@ -41,7 +42,7 @@ afterEach(async () => {
 });
 
 async function temporaryRoot(): Promise<string> {
-  const root = await mkdtemp(resolve(tmpdir(), "op-decision-output-"));
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "op-decision-output-")));
   temporaryRoots.push(root);
   return root;
 }
