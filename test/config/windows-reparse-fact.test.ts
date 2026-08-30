@@ -221,7 +221,7 @@ describe("Windows reparse fact source custody", () => {
       ),
     );
     expect(config).toContain(
-      'globalSetup: ["./scripts/test/windows-reparse-fact-global-setup.mjs"]',
+      'globalSetup: hasConfigSources ? ["./scripts/test/windows-reparse-fact-global-setup.mjs"] : []',
     );
     expect(setup.match(/buildWindowsReparseFact\(\)/g)).toHaveLength(1);
     expect(setup).toContain("await rm(artifactRoot, { force: true, recursive: true })");
