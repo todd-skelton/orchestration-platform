@@ -1,4 +1,9 @@
 import {
+  dispositionSchemaFields,
+  dispositionSchemaVersions,
+  dispositionClosedValues,
+} from "./disposition.js";
+import {
   projectPreflightSchemaFields,
   projectPreflightSchemaVersions,
   projectPreflightRefusalReasons,
@@ -138,6 +143,24 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    ...Object.fromEntries(
+      dispositionSchemaVersions.map((schemaVersion, index) => [
+        schemaVersion,
+        Object.freeze({
+          schemaVersion,
+          fields: [dispositionSchemaFields.disposition, dispositionSchemaFields.request][index]!,
+          closedValues: dispositionClosedValues,
+        }),
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(dispositionSchemaFields)
+        .filter(([key]) => !["disposition", "request"].includes(key))
+        .map(([key, fields]) => [
+          `action-disposition/v1#${key}`,
+          Object.freeze({ schemaVersion: "action-disposition/v1", fields }),
+        ]),
+    ),
     ...Object.fromEntries(
       dispatchLifecycleSchemaVersions.map((schemaVersion, index) => [
         schemaVersion,
@@ -1054,6 +1077,7 @@ export const schemaVersions = Object.freeze(
     ...routeSelectionSchemaVersions,
     ...projectPreflightSchemaVersions,
     ...dispatchLifecycleSchemaVersions,
+    ...dispositionSchemaVersions,
     ...reviewResultSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,

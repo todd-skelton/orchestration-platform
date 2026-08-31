@@ -3,12 +3,15 @@
 ## Closed runtime contract
 
 Portable modules implement `orchestration-module/v1`. Each source entrypoint
-exports exactly `descriptor` and `plan`:
+exports `descriptor` and `plan`. The bounded disposition proposal below permits
+one additional optional `disposition` export under its explicit admission rule;
+there are no other exports:
 
 ```ts
 interface OrchestrationModuleV1 {
   readonly descriptor: ModuleDescriptorV1;
   plan(input: Readonly<ModulePlanInputV1>): Promise<ModulePlanResultV1>;
+  disposition?(input: Readonly<ActionDispositionInputV1>): Promise<ActionDispositionV1>;
 }
 ```
 
@@ -30,6 +33,21 @@ is exactly one canonical
 `module-action-plan/v1`, `module-no-action/v1`, or typed refusal. `plan` has no
 ambient filesystem, process, network, clock, random, credential, adapter, host,
 or mutation access; those effects remain with their owning packages.
+
+The `Disposition and follow-up literal proposal` in `contract-decisions.md`
+explicitly adds the optional, statically source-owned disposition phase without
+changing plan input/output bytes. The descriptor's fixed inputSchemas and
+outputSchemas describe step 4 only. A disposition export is allowed only with
+nonempty dispositionCodes; it is not required merely to preserve a plan-only
+module's ABI validity. The inline ActionDispositionInputV1 is the ledger's
+closed tuple of actual existing records, not a new public JSON schema. This
+call has the same purity/effect restrictions as plan and is bound to one actual
+step-11 identity. Full-routine admission must prove this exact installed handler
+and code census before worker or workerless action effects. A plan-only module
+with no admitted handler remains a partial ABI implementation, not a full-cycle
+module. Code membership cannot resolve or load a function. Unknown exports,
+an export with empty codes, moved source or missing full-cycle handler refuse.
+This conditional export/callable replan requires independent review before code.
 
 ## Static admission and loading
 
