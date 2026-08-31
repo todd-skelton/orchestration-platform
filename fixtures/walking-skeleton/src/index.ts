@@ -11,7 +11,7 @@ export const descriptor = Object.freeze({
   abi: "orchestration-module/v1",
   moduleId: "fixture.contract-consumer",
   actionKind: "fixture.inspect",
-  capabilityName: "fixture.read",
+  capabilityName: "work.read",
   inputSchema: "dispatch-action-core/v1",
   outputSchema: "dispatch-brief/v1",
 });
