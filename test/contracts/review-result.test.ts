@@ -622,7 +622,6 @@ describe("review result evidence and claimed authority structural contracts", ()
       "review-finding/v1",
       "review-outcome/v1",
       "review-packet/v1",
-      "worker-terminal-receipt/v1",
       "event-journal/v1",
     ]) {
       expect(contracts.parseReviewResultContract(schema, fixture())).toBeNull();
@@ -630,6 +629,9 @@ describe("review result evidence and claimed authority structural contracts", ()
       expect(contracts.serializeContract(schema, fixture()).ok).toBe(false);
       expect(contracts.compatibilityDisposition(schema, schema)).toBe("refused");
     }
+    // The supported terminal family still refuses a review result as its body.
+    expect(contracts.parseContract("worker-terminal-receipt/v1", fixture()).ok).toBe(false);
+    expect(contracts.serializeContract("worker-terminal-receipt/v1", fixture()).ok).toBe(false);
   });
 
   test("binds the full decided/unknown result-kind and nullability matrix for all concrete targets", () => {
