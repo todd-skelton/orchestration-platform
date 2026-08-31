@@ -493,9 +493,14 @@ test("value/effect/observation literals close every byte and source-state arm", 
   }
   const too = copy(f.dry);
   too.result.resources = Array.from({ length: 65 }, (_, i) => ({
-    resourceId: `resource.${i}`,
+    resourceId: `resource.${String(i).padStart(3, "0")}`,
     value: value(null),
   }));
+  expect(
+    too.result.resources.every(
+      (row: M, i: number) => i === 0 || too.result.resources[i - 1]!.resourceId < row.resourceId,
+    ),
+  ).toBe(true);
   expect(c.parseProjectMutationObservation(too).ok).toBe(false);
 });
 
@@ -619,14 +624,63 @@ test("dry plan keeps observation null rules, source states and complete effect c
     p.observationDigest = c.computeProjectMutationObservationDigest(o);
     expect(planBind(f, o, p).ok).toBe(true);
   }
-  const over = copy(f.plan);
-  over.outcome.effects = Array(65).fill(over.outcome.effects[0]);
-  expect(c.parseProjectMutationPlan(over).ok).toBe(false);
+  const overEffects = copy(f.plan);
+  overEffects.outcome.effects = Array.from({ length: 65 }, (_, i) => ({
+    after: value("00"),
+    before: value(null),
+    kind: "COMPARE_REPLACE",
+    resourceId: `resource.${String(i).padStart(3, "0")}`,
+  }));
+  expect(overEffects.outcome.effects.every((row: M) => c.parseProjectMutationEffect(row).ok)).toBe(
+    true,
+  );
+  expect(
+    overEffects.outcome.effects.every(
+      (row: M, i: number) =>
+        i === 0 || overEffects.outcome.effects[i - 1]!.resourceId < row.resourceId,
+    ),
+  ).toBe(true);
+  expect(c.parseProjectMutationPlan(overEffects).ok).toBe(false);
+  const overIntents = copy(f.plan);
+  overIntents.outcome.resourceIntents = Array.from({ length: 65 }, (_, i) => ({
+    owner: "ADAPTER",
+    resourceIdentityDigest: i.toString(16).padStart(64, "0"),
+  }));
+  expect(c.parseDispatchResourceIntents(overIntents.outcome.resourceIntents).ok).toBe(true);
+  expect(c.parseProjectMutationPlan(overIntents).ok).toBe(false);
 });
 
 test("apply joins exact plan-id, transaction, allocations, ordered pre/postimages and progress", () => {
   const f = context();
   expect(applyBind(f)).toEqual({ ok: true, value: f.receipt });
+  const shorterPlan = copy(f.plan);
+  shorterPlan.outcome.resourceIntents.pop();
+  expect(planBind(f, f.dry, shorterPlan)).toEqual({ ok: true, value: shorterPlan });
+  const shorterReceipt = {
+    ...copy(f.receipt),
+    planDigest: c.computeProjectMutationPlanDigest(shorterPlan),
+    resources: copy(f.receipt.resources.slice(0, 2)),
+  };
+  const bindShorter = (receipt: unknown) =>
+    c.validateProjectApplyReceiptBinding(
+      f.dispositionInput,
+      null,
+      null,
+      f.disposition,
+      f.request,
+      f.dry,
+      shorterPlan,
+      c.computeProjectMutationPlanDigest(shorterPlan),
+      f.before,
+      f.after,
+      receipt,
+    );
+  expect(bindShorter(shorterReceipt)).toEqual({ ok: true, value: shorterReceipt });
+  for (const resources of [shorterReceipt.resources.slice(0, 1), copy(f.receipt.resources)]) {
+    const mismatched = { ...shorterReceipt, resources };
+    expect(c.parseProjectApplyReceipt(mismatched).ok).toBe(true);
+    expect(bindShorter(mismatched).ok).toBe(false);
+  }
   for (const field of ["planDigest", "requestDigest"]) {
     const r = copy(f.receipt);
     (r as Record<string, unknown>)[field] = "9".repeat(64);
