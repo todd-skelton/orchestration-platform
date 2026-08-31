@@ -5696,7 +5696,7 @@ observation identity is SHA256(C(the full observation)), without a new schema.
 
 | outcome.kind | Complete members / rules |
 | --- | --- |
-| PLANNED | `effects, kind`; complete nonempty effect list |
+| PLANNED | `effects, kind, resourceIntents`; complete nonempty effect list and the managed allocation census below |
 | REFUSED | `kind, reason`; TARGET_MOVED, CAPABILITY_REMOVED, POLICY_REFUSED, UNSUPPORTED_ACTION or RESOURCE_CONFLICT |
 | UNKNOWN | `kind, reason`; OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID, SOURCE_UNAVAILABLE, SOURCE_UNKNOWN or ADMISSION_UNPROVEN |
 
@@ -5730,7 +5730,7 @@ order and does not imply a multi-resource atomic primitive.
 
 `project-apply-receipt/v1` has exactly `afterObservationDigest,
 beforeObservationDigest, completedEffectCount, outcome, phase, planDigest,
-requestDigest, schemaVersion, transactionId`. Plan/request are Digest,
+requestDigest, resources, schemaVersion, transactionId`. Plan/request are Digest,
 transaction Uuid, literal schema; observation references are Digest or null by
 the cells below. completedEffectCount is a canonical decimal string0–64.
 Phase is BEFORE_WRITE, WRITING or AFTER_WRITE. An owner may claim WRITING even
@@ -5801,6 +5801,26 @@ transaction journal cannot establish that proof; actual public event/history
 and owner admission remain required. No production recovery primitive is
 selected here.
 
+Managed execution allocations are separate from project resources changed by
+the effects. A plan's resourceIntents reuse round398's complete sorted inline
+intent array, here restricted to ADAPTER and at most64 rows. Its owner is the
+actual bound project adapter. Every apply receipt additionally contains
+`resources`, the exact full round398 allocation-claim array in plan-intent
+order, with ownerTransactionId equal this mutation transactionId. All field,
+ID/state/null/uniqueness rules are reused. The apply relation requires exact
+intent/census equality, including refused/unattempted/uncertain rows; omission
+cannot prove no allocation. APPLIED requires every intent ALLOCATED. REFUSED
+permits an ALLOCATED prefix then NOT_ALLOCATED suffix, never UNKNOWN. UNKNOWN
+retains all claims and every known ID without granting absence. Partial
+allocation can therefore precede known no-project-write refusal, while
+ambiguous allocation cannot be a known refusal. Zero intents/claims are allowed
+only when the actual owner proves that this operation needs no managed
+allocation; empty arrays, read-only access or omitted effects do not prove it.
+The plan is still allocation-free; actual allocation occurs under the same
+owner before mutation in step13. Native handle closure remains its owner's
+duty. Step14 must join the full dispatch and mutation allocation censuses and
+cannot discard the latter after partial/unknown apply. These claims select no
+allocator or reclamation primitive and never certify their own completeness.
 Retained public evidence is not a worker allocation to delete. Actual resources
 allocated by dispatch/apply owners still require step14's complete reclaim
 receipt, including failed/unknown paths. APPLIED does not certify reclamation,
