@@ -24,7 +24,7 @@ import { descriptor, plan } from "./index.js";
 const currentPolicyVersion = "1.0.0";
 
 // Invoked only by the quarantined fixture. No process globals or package-export changes.
-export async function prepareObservation(
+export async function prepareModuleInput(
   adapter: ConfigurationHostAdapter,
   invocation: ConfigurationLoaderInvocation,
   adapterConfiguration: unknown,
@@ -78,6 +78,18 @@ export async function prepareObservation(
     schemaVersion: "module-plan-input/v1",
   });
   if (!retainedInput.ok) return retainedInput;
+  return { ok: true as const, input: retainedInput.value, stateRoot: loaded.value.stateRoot };
+}
+
+export async function prepareObservation(...args: Parameters<typeof prepareModuleInput>) {
+  const prepared = await prepareModuleInput(...args);
+  if (!prepared.ok) return prepared;
+  const retainedInput = { value: prepared.input };
+  const provenance = { value: prepared.input.configurationProvenance };
+  const configuration = { value: prepared.input.adapterConfiguration };
+  const facts = { value: prepared.input.projectFacts };
+  const breakerFacts = { value: prepared.input.policyFacts };
+  const request = { value: prepared.input.cycleRequest };
   let planned: unknown;
   try {
     planned = await plan(retainedInput.value);
@@ -110,7 +122,7 @@ export async function prepareObservation(
     if (!decoded.ok) throw new Error("fixture round-trip refused");
     return { name, bytes: encoded.bytes };
   });
-  return { ok: true as const, output, stateRoot: loaded.value.stateRoot };
+  return { ok: true as const, output, stateRoot: prepared.stateRoot };
 }
 
 // The original standalone observer continues to require an absent output directory.

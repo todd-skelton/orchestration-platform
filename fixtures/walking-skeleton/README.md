@@ -130,3 +130,33 @@ atomicity, native lease, production freshness, breaker permission, journal,
 resume guarantee, worker, review or terminal cycle is claimed. An observer call
 still merely constructs artifacts even when current policy reports TRIP.
 Both root skeleton commands remain placeholders pending the complete cycle.
+
+## Initial breaker observation
+
+`consumeInitialBreaker` is a separate partial consumer of the actual lease,
+configuration loader and SDK snapshot/current-policy readers. It calls the
+shared `prepareModuleInput` observation phase but never invokes the module.
+The session owner admits its first reduction only when this acquisition
+exclusively created a previously absent external root, retained an empty
+initial file census and now observes a healthy claim-only root. Its private
+`observeInitialRoot` operation consumes one attempt, including a refusal.
+A pre-existing empty root, a nonempty root, a repeated attempt or output reuse
+cannot establish genesis. No caller-supplied null, flag, hash or empty history
+is used as absence proof.
+
+From the actual complete policy decisions the fixture constructs the first
+CLOSED or OPEN checkpoint for each configured capability, then validates the
+complete public seven-input breaker relation with a null predecessor. TRIP
+retains its opening identities; NO_TRIP is initial CLOSED evidence only.
+This is a fresh disposable fixture observation, never a production reset or
+permission derived from a structurally valid receipt. No recovery or probe
+operation is attempted.
+
+Success writes nine public canonical records: cycle plan, acquisition, initial
+health, configuration provenance, adapter configuration, snapshot, policy
+facts, cycle request and breaker receipt. The checked claim alone is removed;
+outputs remain for inspection. Uncertain claims remain retained, partial
+writes are diagnostic and a later call refuses genesis on that existing root.
+The original observer and joined module consumer retain their behavior.
+No module dispatch, route, worker, review, public journal, terminal cycle or
+resume implementation is added. Both skeleton commands remain placeholders.
