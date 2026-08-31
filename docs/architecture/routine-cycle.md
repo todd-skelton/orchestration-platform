@@ -16,9 +16,9 @@ until the prior step has one terminal output.
 | 6 `project.preflight` | adapter SDK | action + route + subject | `project-preflight/v1` | immediately before ownership publication | eligible unchanged subject → 7; refused/moved → `FAILED_KNOWN`; unknown → `UNKNOWN` |
 | 7 `dispatch.plan` | dispatch | action + route + unchanged preflight + role/credential references + optional immutable review target | `dispatch-plan/v1` | immediately before ownership publication | plan → 8; refused/moved → typed skips through 14 then 15; unknown → `UNKNOWN` |
 | 8 `worker.dispatch` | dispatch/host | exact `dispatch-plan/v1` from step 7 | launch/ownership receipt | preflight and credential generation still current | live → 9; start refused → typed failure then 11 |
-| 9 `worker.observe` | process/dispatch | launch identity | terminal receipt + immutable `worker-result-subject/v1` for implementation/observer, or `review-attempt-result/v1` for review | exact process tree observation and result materialization | implementation result requiring review → 11 follow-up only; review result → 10; known failure → 11; identity conflict → `UNKNOWN` |
+| 9 `worker.observe` | process/dispatch | launch identity | terminal receipt + immutable `worker-result-subject/v1` for implementation/observer, or `review-attempt-result/v1` for review | exact process tree observation and result materialization | implementation/observer result requiring review → 11 follow-up only; review result → 10; known failure → 11; identity conflict → `UNKNOWN` |
 | 10 `review.reduce` | review | `review-request/v1` binding immutable `review-subject/v1` + exact `review-attempt-result/v1` | `review-authority/v1` binding the target subject digest | target and attempt bytes unchanged | accepted/rejected → 11; unknown → `UNKNOWN` |
-| 11 `disposition.plan` | portable module | action, exact action/review subject, worker terminal/attempt, and bound review authority or explicit skip | `action-disposition/v1` binding the same action-subject digest | exact subject/receipt digests | apply request → 12; review-needed/repair/failure/no-action → 14 with `follow-up-cycle-request/v1`; invalid → `UNKNOWN` |
+| 11 `disposition.plan` | admitted optional portable-module disposition callable | original action and exact resulting/reviewed subject, worker terminal/attempt, and bound review authority or actual skips | `action-disposition/v1` binding the exact downstream target and original action | exact subject/receipt digests | apply request → 12; known nonapply → typed 12–13 skips then 14, with follow-up only when explicitly requested; unknown/invalid → `UNKNOWN` |
 | 12 `mutation.plan` | adapter SDK or release owner selected by disposition | `action-disposition/v1` + same action-subject digest + fresh project/release facts | `project-mutation-plan/v1` or `release-operation-plan/v1` (`assemble-certify` or `promote`), binding that digest | immediately before apply preflight; promotion only after accepted candidate review | valid plan → 13; refused/moved → 14 with named refusal; unknown → `UNKNOWN` |
 | 13 `action.apply` | same adapter/release owner that issued step 12 | exact plan/digest + same action-subject digest + review required by operation kind | project apply, release candidate/certification, promotion, or refusal receipt binding the subject digest; successful promotion also emits mandatory successor-verification `follow-up-cycle-request/v1` | revalidate subject, plan, and every external authority immediately before first mutation | terminal → 14; interrupted known transaction → resume 13; stale/moved/substituted input → refuse then 14; unknown → `UNKNOWN` |
 | 14 `resource.reclaim` | dispatch coordinating exact adapter and host resource owners | all allocation, launch/process, terminal, disposition, and apply receipts | `resource-reclaim-receipt/v1` or retained-capacity refusal | exact process tree dead before owner-specific reclaim | reclaimed/no allocation → 15; live/unknown resource → retain capacity and `FAILED_KNOWN`/`UNKNOWN` |
@@ -28,9 +28,9 @@ The complete steps 7–10 block is skipped only for a typed action that requires
 no worker or review; the module manifest must declare that capability and step
 11's disposition schema must accept explicit skip receipts. After a step-8
 launch refusal, only result observation and review (9–10) are skipped. After a
-step-9 known worker failure, only review (10) is skipped. An implementation
-result that requires review cannot mutate in its cycle: step 10 is skipped and
-step 11 emits a later review-cycle request. A release promotion can never skip
+step-9 known worker failure, only review (10) is skipped. An implementation or
+observer result whose descriptor requires review cannot mutate in its cycle:
+step 10 is skipped and step 11 emits a later review-cycle request. A release promotion can never skip
 exact-candidate independent review.
 After successful promotion, step 13 records—but does not run—the successor-
 verification follow-up. Steps 14 and 15 finish under predecessor N. Step 15
@@ -86,6 +86,19 @@ passes step 6 preflight before its typed 7–10 skips. That route carries no
 selected host or mapping; it never skips ordinal 5 or substitutes a missing
 host for a genuinely worker-required action.
 
+The bounded disposition proposal explicitly preserves the original action's
+opaque target separately from a new immutable worker-result identity. Review
+actions already name the exact older target. A full routine must admit the
+optional source-owned disposition handler and nonempty code census before
+worker effects; plan-only ABI validity cannot bypass that gate. Explicit
+nonmutating COMPLETE and successful materialized REVIEW_NEEDED may finish
+COMPLETED after all required worker/review/reclaim and journal gates. This is
+not an applied mutation; applied completion still binds the actual apply
+receipt. NO_ACTION after an eligible action is declined/known failure, never
+proof of an empty frontier. Failure may explicitly request no retry; no-action
+and COMPLETE emit no follow-up. Rejection always requests a nonapplying later
+repair/replan/retry, and unknown never authorizes skips or further effects.
+
 ## Exhaustive terminal and skip routing
 
 `routine-step-skip/v1` binds cycle, skipped ordinal/kind, predecessor terminal
@@ -104,10 +117,11 @@ non-`UNKNOWN` outcome, these routes are exhaustive:
 | 7 dispatch plan refused/moved-known | skip 8–13; 14 no-allocation; 15 `FAILED_KNOWN` |
 | 8 launch refused | 9 no-worker-result; 10 no-review; 11 failure disposition; skip 12–13; 14 reclaim/no-allocation; 15 `FAILED_KNOWN` |
 | 9 worker known-failure | 10 no-review; 11 failure disposition; skip 12–13; 14 reclaim; 15 `FAILED_KNOWN` |
-| 9 implementation result requiring review | 10 no-review; 11 emits exact-target later review-cycle request; skip 12–13; 14 reclaim; 15 complete-follow-up |
+| 9 implementation/observer result requiring review | 10 no-review; 11 emits exact-target later review-cycle request; skip 12–13; 14 reclaim; 15 `COMPLETED` as complete-follow-up, not applied mutation |
 | 9 review-attempt result | 10 reduces authority for the pre-bound review target; continue through 11 |
 | 10 review rejected | 11 follow-up disposition; skip 12–13; 14 reclaim; 15 `FAILED_KNOWN` |
-| 11 repair/failure/no-action | skip 12–13; 14 reclaim/no-allocation; 15 known-failure/no-work |
+| 11 follow-up/failure/no-action after an eligible action | skip 12–13; 14 reclaim/no-allocation; 15 `FAILED_KNOWN` |
+| 11 explicit nonmutating COMPLETE | skip 12–13; 14 actual reclaim/no-allocation; 15 `COMPLETED` only after all required worker/review and journal gates |
 | 12 mutation plan refused-known | skip 13; 14 reclaim/no-allocation; 15 `FAILED_KNOWN` |
 | 13 apply terminal/refused | 14 reclaim/no-allocation; 15 complete/known-failure |
 | 14 reclaim terminal/refused | 15 complete/known-failure; live unknown resource makes 15 `UNKNOWN` |
@@ -122,7 +136,7 @@ Terminal mapping is fixed:
 - expected refusal with intact identity/resources → `FAILED_KNOWN` plus a typed
   repair, retry, or no-retry recommendation for a later cycle;
 - complete frontier with no eligible permitted action and no allocation → `COMPLETED_NO_WORK`;
-- applied terminal action and reclaimed/no-longer-needed resources → `COMPLETED`;
+- applied terminal action with its actual apply receipt, or explicit nonmutating COMPLETE/successful materialized REVIEW_NEEDED, with all required worker/review evidence, reclaimed/no-longer-needed resources and complete journal census → `COMPLETED`; only the first case claims applied mutation;
 - missing, contradictory, moved-after-authorization, false-prefix, or unowned
   side effect → `UNKNOWN`, which prevents the supervisor from starting a new
   mutation cycle.

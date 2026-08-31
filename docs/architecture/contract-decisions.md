@@ -3319,8 +3319,8 @@ have these same three members; branch-specific extra fields refuse.
 | `prior-known-terminal` | `"2"`–`"13"`                    | Exhaustive early-stop route after known terminal source 1–7; all remaining 2–13 ordinals as applicable. Also step 13 after step-12 known plan refusal. Never UNKNOWN                                                                                           |
 | `no-allocation`        | `"7"`                           | The existing allowed 7–10 skip block for an action whose admitted manifest/descriptor declares neither worker nor review; steps 1–6 otherwise reached their successful continuation. This literal assignment skips dispatch planning, not resource reclamation |
 | `no-worker`            | `"8"`, `"9"`                    | Steps 8–9 in that same declared no-worker/no-review block; or step 9 after an actual step-8 launch-refusal terminal                                                                                                                                            |
-| `no-review`            | `"10"`                          | Declared no-review action, launch refusal, known worker failure, or implementation result requiring a distinct later review cycle. An accepted review cannot be invented by this skip                                                                          |
-| `no-mutation`          | `"12"`, `"13"`                  | Step 11 actually produced its review-needed, repair, failure or no-action disposition, including a review-rejection follow-up; no same-cycle apply                                                                                                             |
+| `no-review`            | `"10"`                          | Declared no-review action, launch refusal, known worker failure, or implementation/observer result requiring a distinct later review cycle. An accepted review cannot be invented by this skip                                                                          |
+| `no-mutation`          | `"12"`, `"13"`                  | Step 11 actually produced its review-needed, repair/follow-up, failure, no-action or explicit nonmutating COMPLETE disposition, including a review-rejection follow-up; no same-cycle apply                                                                                                             |
 
 Known early-stop routing takes precedence over the action-specific block.
 A continuing worker path always has actual step-7 and step-8 terminals; launch
@@ -5310,6 +5310,296 @@ production authority or ISS-041 completion. Requiring another public family,
 credential service, process primitive or a larger resolver is a named replan
 boundary. Closed inline claims are smaller than those mechanisms; removing
 their actual-input joins or owner-admission gates would conceal uncertainty.
+
+### Disposition and follow-up literal proposal (ISS-002/011)
+
+This bounded proposal closes only `action-disposition/v1` and
+`follow-up-cycle-request/v1`, already in the routine census. Its current
+ISS-041 consumer seeds an earlier immutable author result and observes a
+distinct later review-cycle echo, then either a nonapplying rejection follow-up
+or explicitly declared nonmutating completion. Seeded history is fixture input,
+not evidence of an executed earlier cycle or effective production review.
+Independent literal review precedes code; no new public input family, runtime
+service, scheduler, mutation/release implementation or authority is supplied.
+
+#### Explicit callable and subject-phase replans
+
+The existing step-4 `descriptor`/`plan` exports, byte contracts and behavior
+remain valid. `inputSchemas` and `outputSchemas` describe that step-4 plan
+interface only. An additional statically source-owned export `disposition`
+may exist only when the descriptor's existing dispositionCodes is nonempty;
+it takes the complete closed inline input below and returns a native Promise
+of one complete action-disposition. No other export is admitted. Plan-only
+modules remain valid partial ABI implementations, including descriptors with
+nonempty codes; they cannot claim a full cycle requiring step 11. Full-routine
+admission must prove the exact installed callable and code census before
+worker effects or workerless action effects, not discover a missing handler
+after launch. Code strings neither locate code nor create an export.
+
+The callable has the same purity/effect prohibition as plan: no ambient
+filesystem, process, network, clock, randomness, credential, adapter, host or
+mutation access. Its one invocation is bound to the actual step-11 identity
+and detached canonical input: ordinal `"11"`, kind `"disposition.plan"`, actual cycle,
+inputDigest SHA256(C(input)), and the actual predecessor journal prefix under
+the existing step-identity contract. No copy of that identity is added to input.
+Throw/rejection/malformed return follows the
+owning caller's UNKNOWN path, never a fabricated regular disposition. This
+optional phase is an explicit ABI replan, not a silent enlargement of the
+existing module-plan-input/result unions or mandatory third export.
+
+The original action core's opaque pre-worker subject and the newly materialized
+worker-result identity are distinct. A worker-result embeds its later terminal
+reference and cannot be forced to equal its pre-worker core digest. Review
+actions already target the exact earlier concrete immutable subject. The
+rules below retain both the original action and the proper downstream target;
+no new subject wrapper/schema or circular result identity is introduced.
+
+Reuse `C`, `Digest`, `Uuid`, `Id`, `Name` and closed detached record/array rules.
+All fields are required, all listed member orders are canonical, and newly
+declared nulls exist only where stated; reused contracts retain their own
+rules. Name is the exact finding-code grammar `[a-z][a-z0-9._:-]{0,63}`;
+Id is `[a-z0-9][a-z0-9._:@+-]{0,127}`. Whole-string, exact-length digest/UUID
+rules apply. Unknown fields/versions/enums, omissions and hostile input refuse
+without running input code. No arbitrary prose, payload or expression is added.
+
+#### Complete inline input and supplied context relation
+
+The inline input has exactly `actionPlan, moduleInput, preflight, review,
+route, skips, worker`. The first three and route are the complete existing
+module-action-plan/module-plan-input/project-preflight/route-selection records.
+`worker` is null or exactly `launch, plan, resultSubject, terminal`: complete
+worker-launch-receipt, dispatch-plan and worker-terminal-receipt records, plus
+resultSubject null or a complete worker-result-subject (never a candidate).
+`review` is null or exactly `attempt, authority, request`: complete existing
+review-attempt-result or null, review-authority and review-request records.
+`skips` is a dense 0–4 array of complete routine-step-skip records, restricted
+to ordinals 7–10 in strictly increasing numeric ordinal order. There is no
+schemaVersion, caller phase/flag, currentness Boolean or self-digest on input.
+
+One pure context/disposition relation takes exactly
+`(input, stdoutBytesOrNull, stderrBytesOrNull, disposition)`. Intrinsic input
+shape covers all nested arms; the following comparisons additionally bind
+actual supplied records and classify which outcome cells may be used:
+
+1. Apply validateModulePlanBinding to the actual input/action. Require route
+   actionPlanDigest and preflight actionPlanDigest equal the action's actual
+   designated identity; preflight routeDigest equals the actual route identity;
+   require ELIGIBLE. Derive the unique action declaration and its role/worker/
+   review flags from the exact descriptor. SELECTED is required for worker
+   actions, NO_WORKER otherwise. Complete preparation/current mapping/source/
+   health/installed renderer admission remains upstream as in the launch
+   binder; these records are not substituted proof for its missing preimages.
+2. For a worker action require worker non-null and apply the actual terminal
+   supplied relation to worker.plan/launch/terminal and the two captured raw
+   byte arguments. Thus the actual plan/launch/terminal identities, attempt,
+   allocation/process census and stream length/hash joins all remain required.
+   Also require worker.plan action/preflight/route references equal the actual
+   context records. Non-worker requires worker:null and both raw arguments null.
+3. A non-null resultSubject requires an ordinary implementation/observer action,
+   authorCycleId equal the actual cycle, authorAttemptId equal worker.plan.attemptId,
+   and terminalReceiptDigest equal the actual terminal identity. Its baseSource
+   adapterId/projectId equal the actual module configuration. START_FAILED has
+   no resultSubject because step 9 did not run. The adapter/materializer still
+   proves the old opaque target's actual base and retained result bytes; no
+   revision-to-digest formula or equality to the new subject is fabricated.
+4. For non-null review require review role, worker non-null, resultSubject:null,
+   and apply validateReviewResultBinding to the actual request/attempt/authority.
+   Request cycle equals the current cycle; packet brief equals the actual action
+   brief and packet subject equals the actual concrete moduleInput.reviewSubject.
+   worker.plan reviewRequestDigest equals the request's designated identity.
+   Each non-null attempt additionally has the exact worker plan/launch/terminal
+   digests, current cycle and plan attemptId. Existing distinct author/assembly
+   cycle and worker-author attempt rules remain; no candidate author is invented.
+   Every finding code must be in the actual descriptor dispositionCodes, with
+   its moduleDescriptorDigest equal that descriptor and the request brief.
+   The entire finding/evidence census is retained, not just its first code.
+5. An ordinary action requires review:null and a null plan reviewRequestDigest
+   when a worker exists. A review action's plan retains non-null request identity
+   even if known start/process failure means no review reduction ran; that
+   failed branch carries review:null and actual skips rather than fake authority.
+   Actual request/preparation admission in that case remains its upstream owner.
+
+The complete route/skip census is fixed below. A successful process observation
+here means EXITED with EXIT_CODE value `"0"`; it is not semantic worker success.
+Nonzero EXIT_CODE or SIGNAL is a known process failure for this composition.
+This conservative classification does not turn exit zero into review acceptance.
+
+| Actual supplied path | Required review/result and exact skips |
+| --- | --- |
+| Declared workerless | worker/review null; skips 7 no-allocation, 8 no-worker, 9 no-worker, 10 no-review |
+| Known START_FAILED launch/terminal pair at step 8 | resultSubject/review null; skips 9 no-worker, 10 no-review |
+| Ordinary worker EXITED | review null; skip 10 no-review; a materialized result may be retained even for known process failure, without granting apply |
+| Review worker EXITED with code zero | review non-null, resultSubject null; skips empty |
+| Review worker EXITED with nonzero code or signal | review/resultSubject null; skip 10 no-review, no decided review |
+| UNKNOWN launch/terminal or TERMINATION_FAILED_LIVE | no skips, no known completion/failure route; any supplied review must still pass its joins; only UNKNOWN disposition can bind |
+
+Known early terminal at steps 1–7 does not enter this context or fabricate
+step 11. Review authority unknown permits only UNKNOWN disposition. These
+diagnostic supplied contexts cannot establish that routine step 11 was reached:
+runtime stops authoritative progression at an earlier UNKNOWN or live worker.
+No module call or journal padding repairs that earlier gate.
+
+For every supplied skip, require the actual cycle ID and the exact reason,
+ordinal and kind above. Its inputDigest references the immediately preceding
+actual primary output: Dpreflight at 6, Dlaunch at 8, Dterminal at 9, or the
+preceding Dskip. This explicitly fixes primary-output identity for composite
+steps: a step-8 known-failure event later binds both launch and its dependent
+terminal; a step-9 event later binds terminal and materialized subject/attempt.
+Neither requires a new output wrapper hash or a record back-reference. The
+actual predecessorJournalDigest still requires the complete public event/
+journal owner; this tuple cannot authenticate a supplied prefix or create a
+private journal. Missing/extra/cross-cycle/unjoined skips refuse.
+
+#### Complete disposition record and target/outcome matrix
+
+`action-disposition/v1` has exactly `actionPlanDigest, code, inputDigest,
+outcome, schemaVersion, subjectDigest, subjectKind`. References are Digest,
+code is Name, schemaVersion is its literal family. subjectKind is exactly
+ACTION, WORKER_RESULT or RELEASE_CANDIDATE. Recompute inputDigest as
+`SHA256(C(the complete inline input))`, with final LF and all nested records,
+not a schema/digest-name list. Require actionPlanDigest equal the actual action.
+Code must belong to the actual nonempty descriptor dispositionCodes. It is a
+module-owned decision key, not an engine policy or arbitrary function selector.
+
+The target is deterministic: if moduleInput.reviewSubject is non-null, use its
+concrete WORKER_RESULT/RELEASE_CANDIDATE kind and designated identity; otherwise
+if worker.resultSubject is non-null use its WORKER_RESULT identity; otherwise
+use ACTION and the original core immutableSubjectDigest. Original action/core
+identity remains separately committed, including when the downstream target
+differs. A caller-supplied expected target cannot replace this selection.
+
+| outcome.kind | Complete outcome members and literal constraints |
+| --- | --- |
+| APPLY | `kind, operation`; operation PROJECT, ASSEMBLE_CERTIFY or PROMOTE |
+| REVIEW_NEEDED | `followUp, kind`; non-null REVIEW intent below |
+| FOLLOW_UP | `followUp, kind`; non-null REPAIR, REPLAN or RETRY intent |
+| FAILURE | `followUp, kind`; followUp null (no retry requested), or REPAIR/REPLAN/RETRY intent |
+| NO_ACTION | `kind` only; a declined eligible action, not proof of an empty frontier |
+| COMPLETE | `kind` only; explicit nonmutating observer/review completion route, conditional on remaining owner/reclaim/journal gates, never inferred from a missing apply |
+| UNKNOWN | `kind, reason`; reason INPUT_UNPROVEN, RESULT_UNPROVEN, AUTHORITY_UNPROVEN or DISPOSITION_FAILED |
+
+Only REVIEW_NEEDED, FOLLOW_UP and FAILURE carry followUp; only FAILURE permits
+null. Intrinsic parsing
+closes this whole union and all inline intents; the supplied relation enforces
+the following ordered admissibility matrix, not the module's choice of code:
+
+| Bound evidence / action | Admissible disposition |
+| --- | --- |
+| Any earlier unknown/live-worker diagnostic or unknown review authority | UNKNOWN only; no follow-up/apply/skip permission |
+| Known start or process failure | FAILURE or UNKNOWN; no APPLY, COMPLETE or invented successful result |
+| Review rejected | FOLLOW_UP with REPAIR/REPLAN/RETRY, or UNKNOWN; never APPLY, COMPLETE, NO_ACTION or a waived follow-up |
+| Ordinary successful process, resultSubject null | UNKNOWN/RESULT_UNPROVEN only |
+| Ordinary successful materialized result, reviewRequired=true (implementation **or observer**) | REVIEW_NEEDED or UNKNOWN; no current-cycle apply/completion/waived review |
+| Other eligible workerless, ordinary successful materialized result with reviewRequired=false, or accepted review | Remaining cells subject to the restrictions below; REVIEW_NEEDED is not available here |
+
+COMPLETE at step 11 is a disposition, not proof that reclamation already ran.
+It is restricted to observer actions with reviewRequired=false, or review
+actions with accepted authority. Worker completion/materialization or genuine
+workerless skips above remain mandatory. APPLY/PROJECT permits ACTION or
+WORKER_RESULT target, never a candidate. APPLY/ASSEMBLE_CERTIFY requires the
+declared workerless observer/no-review path and ACTION target. APPLY/PROMOTE
+requires review role, accepted authority and the exact RELEASE_CANDIDATE
+target. No false flag waives candidate independent review. All other applying
+paths still need actual step-12 owner planning and step-13 fresh apply authority.
+These closed operation choices execute no project or release operation here.
+
+For every non-null follow-up intent, the kind-specific target below must equal
+the actual disposition target. REVIEW_NEEDED specifically carries the full
+actual new worker.resultSubject, preserving bytes/order/base/attempt/terminal.
+Rejected-review follow-ups keep the original reviewed target; they do not
+mutate it in the rejected cycle or inherit acceptance for a changed target.
+Module-owned runtime policy must substantiate regular COMPLETE/FAILURE/code
+claims; parsing a mechanically consistent record does not prove its issuance.
+
+#### Closed follow-up intents, request and acyclic causes
+
+The inline intent is exactly one of these shapes; no future cycle/session ID,
+lease, schedule, credential, arbitrary payload or execution path is included:
+
+| intent.kind | Complete members and constraints |
+| --- | --- |
+| REVIEW | `kind, moduleId, subject`; moduleId Id, subject the existing complete concrete worker-result or release-candidate record |
+| REPAIR / REPLAN / RETRY | `kind, moduleId, subjectDigest, subjectKind`; moduleId Id, Digest and the exact ACTION/WORKER_RESULT/RELEASE_CANDIDATE enum |
+| SUCCESSOR_VERIFICATION | `installationId, kind, promotionTransactionId, successorReleaseDigest`; two Uuids and Digest |
+
+REVIEW intent's target identity is the concrete subject's designated identity;
+other ordinary intents carry the kind/digest derived from actual supplied
+context. moduleId is desired later module intent, not installed admission or a
+loader key; the later owner must freshly select/admit source/configuration and
+allocate a distinct cycle/session as required. This group grants no repair,
+replan, retry or release-lane execution/intake. It chooses no retry policy.
+
+`follow-up-cycle-request/v1` has exactly `cause, intent, schemaVersion,
+sourceCycleId`; schemaVersion is literal `follow-up-cycle-request/v1`.
+sourceCycleId is Uuid of the causing cycle, never the future
+cycle. Cause is exactly `digest, kind`, with Digest and kind DISPOSITION or
+PROMOTION. DISPOSITION requires a REVIEW/REPAIR/REPLAN/RETRY intent; PROMOTION
+requires SUCCESSOR_VERIFICATION. There are no opposite-cause fields or nulls.
+Promotion cause digest names the actual owning promotion receipt under its
+own designated identity; no replacement hash, production release parser or
+opaque approval grant is invented. The complete structural arm is required
+by the finite census while release/promotion execution remains expressly out
+of ISS-041 scope. Its later owner must verify actual promotion/installation/
+transaction/successor preimages and scheduler/fence/broker/reclaim gates.
+
+A separate supplied relation takes `(input, stdoutBytesOrNull,
+stderrBytesOrNull, disposition, request)`, applies the complete disposition
+relation, requires a non-null disposition followUp, and requires DISPOSITION
+cause with digest Ddisposition, sourceCycleId equal the actual current cycle,
+and request.intent canonically identical to that inline intent. It refuses
+PROMOTION causes: the production promotion-cause binder remains with its later
+owner, not a partial generic release parser here. A disposition never contains
+DfollowUpRequest; inline intent precedes disposition, then the request names
+it. Source/target/code changes cannot reuse the old request identity.
+
+Ddisposition and DfollowUpRequest each use SHA-256 of
+`UTF8("orchestration-platform") || 00 || UTF8(its schemaVersion) || 00 ||
+u32be(1) || 07 || u64be(byteLength(C(record))) || C(record)`. Generic canonical
+serialization retains the concrete family and exact framed identity. Inline
+input/intent/cause records introduce no schema, union wrapper or digest domain.
+Only the full input has the explicit unframed commitment above.
+
+#### Explicit terminal amendment, evidence and footprint
+
+The applied-only terminal bullet conflicts with the existing complete-follow-up
+row and with completed read-only/review work. This proposal explicitly permits
+COMPLETE and a successful materialized REVIEW_NEEDED to reach COMPLETED only
+after all required worker/review and actual step-14 reclaim gates plus the
+complete journal/terminal census. That COMPLETED means nonmutating completion
+or complete-follow-up; it is not an applied action or mutation receipt. Applied
+completion still requires the actual step-13 apply receipt. FAILURE, FOLLOW_UP
+and NO_ACTION after an eligible action yield FAILED_KNOWN after their required
+reclaim; NO_ACTION is not COMPLETED_NO_WORK. That latter outcome retains its
+existing no-eligible-permitted-action/no-allocation proof requirement.
+
+All non-APPLY known dispositions require actual no-mutation skips at 12/13,
+including COMPLETE; skip 12 binds Ddisposition, skip 13 binds Dskip12. Runtime
+retains the real journal prefix at each edge. UNKNOWN issues no such skips;
+14/15 never skip. A successful review, no apply request, or empty array alone
+does not certify completion. Full project-mutation-request/plan/apply families
+and event/journal/reduced-state/cycle-receipt/reclaim groups remain required
+by the public census even when this fixture selects no mutation branch.
+
+| Acceptance/removal attack | Required future discriminating evidence |
+| --- | --- |
+| ABI/source boundary | Plan-only compatibility unchanged; optional export with empty codes, unknown export, missing full-cycle handler, wrong artifact/census or effectful call refuses before worker effects |
+| Complete literals | Every outcome/operation/follow-up/cause/target/null/code cell, hostile/missing/extra/type/enum inputs, 0/4/5 skip bounds and all reused record bounds; independent canonical bytes/full frames/digests plus inline input hash |
+| Actual context | Each module/action/route/preflight/plan/launch/terminal/raw stream/review/cycle/attempt reference substituted independently, with downstream rehash; exact joins or outcome matrix refuse |
+| Subject/code/flag separation | Original target differs from materialized result; current review target stays exact; unknown/foreign code, missing finding membership, observer reviewRequired bypass, candidate-as-worker apply and same-author attempt refuse |
+| Real skips | Workerless full 7–10 chain, same-step-8 start-failure pair, ordinary/review/process-failure paths; missing/extra/wrong primary digest/cycle/reason, old skip reused at 12/13 and UNKNOWN padding refuse |
+| No unauthorized completion | Accepted review can choose admitted COMPLETE without apply; rejection cannot apply/complete or discard its follow-up; live worker, absent result/reclaim/journal, NO_ACTION and mere absence of apply never claim applied/empty-frontier completion |
+| Follow-up causality | All five intent kinds parse; step-11 binder binds actual disposition/intent/source cycle, rejects mismatched cause/target and every PROMOTION cause; parsing successor verification schedules nothing |
+
+Footprint is this subsection and the older no-mutation qualifier, minimal
+module-ABI/routine corrections, additive owning ISS-002/011/009/013 notes and
+round 401. No code, manifests, roadmap/issue/edge, provider, probe, service,
+CLI, runtime mutation/release/scheduler or ISS-026 work. Prediction: two complete
+parsers/identities, one closed inline input/intent set and two supplied relations
+with focused tests and inseparable parser/census wiring after review. Host owns
+format/planning/whitespace verification, independent exact-head review and
+adjacent board reconciliation. Author claims no tests, self-PASS, production
+authority or ISS-041 completion. Another family, open payload or authority
+source is a named replan boundary, not permission to expand this packet.
 
 ## Release layout and root of trust
 
