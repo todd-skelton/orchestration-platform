@@ -756,7 +756,6 @@ describe("immutable review subjects", () => {
       "reduced-state/v1",
       "cycle-receipt/v1",
       "worker-terminal-receipt/v1",
-      "review-request/v1",
       "review-attempt-result/v1",
       "review-authority/v1",
       "worker-result-subject/v2",

@@ -1,6 +1,7 @@
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { cycleEntrySchemaFields, cycleEntrySchemaVersions } from "./cycle-entry.js";
 import { reviewSubjectSchemaFields, reviewSubjectSchemaVersions } from "./review-subject.js";
+import { reviewRequestSchemaFields, reviewRequestSchemaVersions } from "./review-request.js";
 import { projectSnapshotSchemaFields, projectSnapshotSchemaVersions } from "./project-snapshot.js";
 import {
   routineStepKinds,
@@ -105,6 +106,18 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "review-request/v1": Object.freeze({
+      schemaVersion: "review-request/v1",
+      fields: reviewRequestSchemaFields.request,
+    }),
+    "review-request/v1#packet": Object.freeze({
+      schemaVersion: "review-request/v1",
+      fields: reviewRequestSchemaFields.packet,
+    }),
+    "review-request/v1#content": Object.freeze({
+      schemaVersion: "review-request/v1",
+      fields: reviewRequestSchemaFields.content,
+    }),
     "worker-result-subject/v1": Object.freeze({
       schemaVersion: "worker-result-subject/v1",
       fields: reviewSubjectSchemaFields.worker,
@@ -821,6 +834,7 @@ export const schemaVersions = Object.freeze(
     ...routineStepSkipSchemaVersions,
     ...cycleEntrySchemaVersions,
     ...reviewSubjectSchemaVersions,
+    ...reviewRequestSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,

@@ -47,6 +47,7 @@ import {
   parseReviewSubjectContract,
   reviewSubjectSchemaVersions,
 } from "./review-subject.js";
+import { computeReviewRequestDigest, parseReviewRequestContract } from "./review-request.js";
 import {
   computeCyclePlanDigest,
   computeCycleRequestDigest,
@@ -81,6 +82,7 @@ export * from "./project-snapshot.js";
 export * from "./project-breaker-facts.js";
 export * from "./routine-step.js";
 export * from "./review-subject.js";
+export * from "./review-request.js";
 export * from "./cycle-entry.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
@@ -124,6 +126,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const reviewRequest = parseReviewRequestContract(expectedSchemaVersion, input);
+  if (reviewRequest) return reviewRequest;
   const reviewSubject = parseReviewSubjectContract(expectedSchemaVersion, input);
   if (reviewSubject) return reviewSubject;
   const cycleEntry = parseCycleEntryContract(expectedSchemaVersion, input);
@@ -199,6 +203,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "project-breaker-facts/v1" ||
       expectedSchemaVersion === "routine-step-skip/v1" ||
       expectedSchemaVersion === "review-subject/v1" ||
+      expectedSchemaVersion === "review-request/v1" ||
       (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (cycleEntrySchemaVersions as readonly string[]).includes(expectedSchemaVersion)
     ) {
@@ -265,6 +270,12 @@ export function serializeContract(
         parsed.value.schemaVersion === "worker-result-subject/v1"
           ? computeWorkerResultSubjectDigest(parsed.value)
           : computeReleaseCandidateSubjectDigest(parsed.value),
+    };
+  if (expectedSchemaVersion === "review-request/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeReviewRequestDigest(parsed.value),
     };
   const digest =
     expectedSchemaVersion === "cycle-plan/v1"
