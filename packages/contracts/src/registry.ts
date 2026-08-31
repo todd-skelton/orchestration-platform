@@ -1,4 +1,13 @@
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
+import {
+  breakerReceiptSchemaFields,
+  breakerReceiptSchemaVersions,
+  breakerCheckpointStates,
+  breakerUnknownReasons,
+  breakerOperationKinds,
+  breakerRecoveryDecisions,
+  breakerProbeOutcomes,
+} from "./breaker-receipt.js";
 import { cycleEntrySchemaFields, cycleEntrySchemaVersions } from "./cycle-entry.js";
 import { reviewSubjectSchemaFields, reviewSubjectSchemaVersions } from "./review-subject.js";
 import { reviewRequestSchemaFields, reviewRequestSchemaVersions } from "./review-request.js";
@@ -113,6 +122,31 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    // All suffixes describe inline records, never additional persisted families.
+    ...Object.fromEntries(
+      Object.entries(breakerReceiptSchemaFields).map(([key, fields]) => [
+        key === "receipt" ? "breaker-receipt/v1" : `breaker-receipt/v1#${key}`,
+        Object.freeze({
+          schemaVersion: "breaker-receipt/v1",
+          fields,
+          ...(key === "receipt"
+            ? {
+                closedValues: Object.freeze([
+                  ...new Set([
+                    "KNOWN",
+                    "UNKNOWN",
+                    ...breakerCheckpointStates,
+                    ...breakerUnknownReasons,
+                    ...breakerOperationKinds,
+                    ...breakerRecoveryDecisions,
+                    ...breakerProbeOutcomes,
+                  ]),
+                ]),
+              }
+            : {}),
+        }),
+      ]),
+    ),
     "module-descriptor/v1": Object.freeze({
       schemaVersion: "module-descriptor/v1",
       fields: modulePlanSchemaFields.descriptor,
@@ -930,6 +964,7 @@ export const schemaVersions = Object.freeze(
     ...configurationSchemaVersions,
     ...projectSnapshotSchemaVersions,
     ...projectBreakerFactsSchemaVersions,
+    ...breakerReceiptSchemaVersions,
     ...routineStepSkipSchemaVersions,
     ...cycleEntrySchemaVersions,
     ...reviewSubjectSchemaVersions,
