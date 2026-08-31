@@ -49,6 +49,12 @@ import {
 } from "./review-subject.js";
 import { computeReviewRequestDigest, parseReviewRequestContract } from "./review-request.js";
 import {
+  computeReviewAttemptResultDigest,
+  computeReviewAuthorityDigest,
+  parseReviewResultContract,
+  reviewResultSchemaVersions,
+} from "./review-result.js";
+import {
   computeCyclePlanDigest,
   computeCycleRequestDigest,
   computeSessionAcquireRequestDigest,
@@ -83,6 +89,7 @@ export * from "./project-breaker-facts.js";
 export * from "./routine-step.js";
 export * from "./review-subject.js";
 export * from "./review-request.js";
+export * from "./review-result.js";
 export * from "./cycle-entry.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
@@ -126,6 +133,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const reviewResult = parseReviewResultContract(expectedSchemaVersion, input);
+  if (reviewResult) return reviewResult;
   const reviewRequest = parseReviewRequestContract(expectedSchemaVersion, input);
   if (reviewRequest) return reviewRequest;
   const reviewSubject = parseReviewSubjectContract(expectedSchemaVersion, input);
@@ -204,6 +213,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "routine-step-skip/v1" ||
       expectedSchemaVersion === "review-subject/v1" ||
       expectedSchemaVersion === "review-request/v1" ||
+      (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (cycleEntrySchemaVersions as readonly string[]).includes(expectedSchemaVersion)
     ) {
@@ -276,6 +286,15 @@ export function serializeContract(
       ok: true,
       bytes: canonicalBytes(parsed.value),
       digest: computeReviewRequestDigest(parsed.value),
+    };
+  if ((reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest:
+        expectedSchemaVersion === "review-attempt-result/v1"
+          ? computeReviewAttemptResultDigest(parsed.value)
+          : computeReviewAuthorityDigest(parsed.value),
     };
   const digest =
     expectedSchemaVersion === "cycle-plan/v1"

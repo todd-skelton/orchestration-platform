@@ -15,7 +15,7 @@ or authority grant. The unchanged published protocol is
 | Restart/reclaim            | Unimplemented. Exclusive state-directory creation is not a lease, crash recovery, or exactly-once side-effect protocol.                                                                                                                                       |
 
 The executable gap census records `schemaVersion:unsupported` for
-`event-journal/v1`, `review-attempt-result/v1`, `review-authority/v1`,
+`event-journal/v1`,
 and `cycle-receipt/v1`. Those records must come from
 their owning public contracts before full-cycle parser evidence is possible;
 existing unrelated schemas are never repurposed to fill the gap. A producer
@@ -50,6 +50,11 @@ outside this fixture's evidence.
 Future echo/review work must target a seeded earlier result from a distinct
 author in a later review cycle. An implementation cannot approve its own result
 in the same cycle. This partial packet implements neither role nor acceptance.
+
+ISS-002 also supplies the complete structural review-attempt-result and claimed
+review-authority parsers, their canonical identities, and a pure supplied-record
+binding check. This fixture still has no actual review attempt, stable reduction,
+history admission, or effective authority; valid supplied claims prove none of them.
 
 Missing full acceptance: joined three-OS cycle journals, every-boundary
 crash/resume matrix, frontier/rejecting-review/concurrent-lease refusals, and a
