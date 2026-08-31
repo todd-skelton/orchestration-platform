@@ -6079,12 +6079,18 @@ pre-owner guard independently of the winning result/reason. If the supplied
 pre-reclaim process observation has any OPEN handle, or pre-reclaim session
 inspection is REFUSED, every owner after must be null, no owner may be
 RECLAIMED, and any owner UNKNOWN phase must be BEFORE_RECLAIM. If the overall
-result is UNKNOWN, every owner row must be UNKNOWN/BEFORE_RECLAIM. Known
-retained/no-allocation cells still follow the matrix below. This prevents an
-uncertain allocation or owner row from hiding an earlier no-delete gate;
-UNKNOWN allocation remains UNKNOWN and is never downgraded to known retention.
-Healthy, closed pre-reclaim contexts may still retain legitimate post-start
-partial/unknown owner work. After this independent guard, use first match:
+result is UNKNOWN under either pre-owner gate, each uncertain owner row must be
+UNKNOWN/BEFORE_RECLAIM; every remaining row is NOT_ALLOCATED or the matching
+RETAINED/HANDLES_OPEN or RETAINED/SESSION_UNHEALTHY cell, still with after null.
+Separately, an allocation whose original state is UNKNOWN always requires its
+own owner row UNKNOWN/BEFORE_RECLAIM with after null and forces the overall
+UNKNOWN; known rows cannot downgrade that uncertainty. These rules prevent an
+uncertain row from hiding a no-delete gate without rewriting unrelated known
+rows as UNKNOWN. In a HEALTHY context with closed process/stdio handles, a
+different known allocation may remain NOT_ALLOCATED or RECLAIMED while an
+owner-specific uncertain row retains its actual BEFORE_RECLAIM, RECLAIMING or
+AFTER_RECLAIM phase and makes the overall result UNKNOWN. After this independent
+guard, use first match:
 
 | Bound condition, in priority order | Only permitted result and row constraints |
 | --- | --- |
