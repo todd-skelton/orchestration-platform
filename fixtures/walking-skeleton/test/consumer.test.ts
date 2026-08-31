@@ -510,18 +510,16 @@ test("config and facts binding failures never plan or write", async () => {
   const spy = vi.spyOn(fixtureModule, "plan");
   const read = vi.fn(f.snapshot);
   expect(
-    (
-      await consume(
-        adapter,
-        f.invocation,
-        { ...f.configuration, projectId: uuid(99) },
-        read,
-        f.currentPolicy,
-        clocks,
-        f.cycleRequest,
-      )
-    ).ok,
-  ).toBe(false);
+    await consume(
+      adapter,
+      f.invocation,
+      { ...f.configuration, projectId: uuid(99) },
+      read,
+      f.currentPolicy,
+      clocks,
+      f.cycleRequest,
+    ),
+  ).toEqual({ ok: false, issues: ["projectId:binding-mismatch"] });
   expect(read).not.toHaveBeenCalled();
   const moved: Parameters<typeof consume>[3] = async (...args) => {
     const result = await f.snapshot(...args);
