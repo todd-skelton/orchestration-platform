@@ -1,3 +1,20 @@
+import {
+  computeActionDispositionDigest,
+  computeFollowUpCycleRequestDigest,
+  dispositionSchemaVersions,
+  parseDispositionContract,
+} from "./disposition.js";
+import {
+  computeProjectPreflightDigest,
+  parseProjectPreflightContract,
+} from "./project-preflight.js";
+import {
+  computeDispatchPlanDigest,
+  computeWorkerLaunchReceiptDigest,
+  computeWorkerTerminalReceiptDigest,
+  dispatchLifecycleSchemaVersions,
+  parseDispatchLifecycleContract,
+} from "./dispatch-lifecycle.js";
 import { types as nodeTypes } from "node:util";
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
 import {
@@ -38,8 +55,10 @@ import {
   parseRecoveryAuthorizationContract,
 } from "./recovery.js";
 import { parseConfigurationContract } from "./configuration.js";
+import { computeRouteSelectionDigest, parseRouteSelectionContract } from "./route-selection.js";
 import { parseProjectSnapshotContract } from "./project-snapshot.js";
 import { parseProjectBreakerFactsContract } from "./project-breaker-facts.js";
+import { computeBreakerReceiptDigest, parseBreakerReceiptContract } from "./breaker-receipt.js";
 import { computeRoutineStepSkipDigest, parseRoutineStepSkipContract } from "./routine-step.js";
 import {
   computeReleaseCandidateSubjectDigest,
@@ -73,9 +92,12 @@ import {
 } from "./cycle-entry.js";
 
 export * from "./authority.js";
+export * from "./breaker-receipt.js";
 export * from "./commit.js";
 export * from "./definitions.js";
 export * from "./dispatch.js";
+export * from "./dispatch-lifecycle.js";
+export * from "./disposition.js";
 export * from "./evidence.js";
 export * from "./packet.js";
 export * from "./external.js";
@@ -93,8 +115,10 @@ export * from "./recovery.js";
 export * from "./attempt.js";
 export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
+export * from "./project-preflight.js";
 export * from "./project-breaker-facts.js";
 export * from "./module-plan.js";
+export * from "./route-selection.js";
 export * from "./routine-step.js";
 export * from "./review-subject.js";
 export * from "./review-request.js";
@@ -142,6 +166,16 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const disposition = parseDispositionContract(expectedSchemaVersion, input);
+  if (disposition) return disposition;
+  const dispatchLifecycle = parseDispatchLifecycleContract(expectedSchemaVersion, input);
+  if (dispatchLifecycle) return dispatchLifecycle;
+  const preflight = parseProjectPreflightContract(expectedSchemaVersion, input);
+  if (preflight) return preflight;
+  const route = parseRouteSelectionContract(expectedSchemaVersion, input);
+  if (route) return route;
+  const breakerReceipt = parseBreakerReceiptContract(expectedSchemaVersion, input);
+  if (breakerReceipt) return breakerReceipt;
   const modulePlan = parseModulePlanContract(expectedSchemaVersion, input);
   if (modulePlan) return modulePlan;
   const reviewResult = parseReviewResultContract(expectedSchemaVersion, input);
@@ -222,10 +256,15 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "adapter-configuration/v1" ||
       expectedSchemaVersion === "project-facts/v1" ||
       expectedSchemaVersion === "project-breaker-facts/v1" ||
+      expectedSchemaVersion === "breaker-receipt/v1" ||
       expectedSchemaVersion === "routine-step-skip/v1" ||
       expectedSchemaVersion === "review-subject/v1" ||
       expectedSchemaVersion === "review-request/v1" ||
       expectedSchemaVersion === "module-plan-result/v1" ||
+      expectedSchemaVersion === "route-selection/v1" ||
+      expectedSchemaVersion === "project-preflight/v1" ||
+      (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
+      (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
@@ -240,6 +279,17 @@ export function parseCanonicalContractBytes(
         Object.getPrototypeOf(Uint8Array.prototype),
         "byteLength",
       )!.get!.call(bytes) as number;
+      if (
+        (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
+        (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
+      ) {
+        const buffer = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(Uint8Array.prototype),
+          "buffer",
+        )!.get!.call(bytes);
+        if (nodeTypes.isSharedArrayBuffer(buffer))
+          return { ok: false, issues: ["encoding:shared-bytes-refused"] };
+      }
       if (expectedSchemaVersion === "adapter-configuration/v1" && byteLength > 65536)
         return { ok: false, issues: ["encoding:limit-exceeded"] };
     } else if (!(bytes instanceof Uint8Array))
@@ -278,6 +328,38 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if ((dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest:
+        expectedSchemaVersion === "action-disposition/v1"
+          ? computeActionDispositionDigest(parsed.value)
+          : computeFollowUpCycleRequestDigest(parsed.value),
+    };
+  if ((dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest:
+        expectedSchemaVersion === "dispatch-plan/v1"
+          ? computeDispatchPlanDigest(parsed.value)
+          : expectedSchemaVersion === "worker-launch-receipt/v1"
+            ? computeWorkerLaunchReceiptDigest(parsed.value)
+            : computeWorkerTerminalReceiptDigest(parsed.value),
+    };
+  if (expectedSchemaVersion === "project-preflight/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeProjectPreflightDigest(parsed.value),
+    };
+  if (expectedSchemaVersion === "route-selection/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeRouteSelectionDigest(parsed.value),
+    };
   if (
     expectedSchemaVersion === "recovery-authorization-state/v1" ||
     expectedSchemaVersion === "recovery-attempt-reservation/v1"
@@ -300,6 +382,12 @@ export function serializeContract(
       ok: true,
       bytes: canonicalBytes(parsed.value),
       digest: computeReviewRequestDigest(parsed.value),
+    };
+  if (expectedSchemaVersion === "breaker-receipt/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeBreakerReceiptDigest(parsed.value),
     };
   if (
     expectedSchemaVersion === "module-plan-result/v1" ||

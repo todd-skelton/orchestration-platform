@@ -1,5 +1,14 @@
 import { type BigIntStats } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath, unlink, type FileHandle } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  unlink,
+  type FileHandle,
+} from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   canonicalDigest,
@@ -9,7 +18,9 @@ import {
   isCanonicalTimestamp,
   parseCanonicalContractBytes,
   parseCyclePlan,
+  parseSessionHealth,
   serializeContract,
+  snapshotClosedArray,
   validateCyclePlanBinding,
   validateSessionAcquireRequestBinding,
   validateSessionHealthBinding,
@@ -26,6 +37,7 @@ import {
   projectConfigurationPaths,
   projectConfigurationProvenance,
 } from "../../../packages/config/src/resolver.js";
+import { descriptor } from "./index.js";
 
 type Reason =
   | "STATE_UNREADABLE"
@@ -123,7 +135,10 @@ export async function acquireFixtureSession(
   sessionId: string,
   cycleId: string,
   clocks: FixtureSessionClocks,
+  allowedModuleIds: readonly string[] = [],
 ) {
+  const modules = snapshotClosedArray(allowedModuleIds);
+  if (!modules.ok) return modules;
   // Detach the caller's invocation before asynchronous work; it is still validated by the loader.
   const retained = {
     ...invocation,
@@ -158,20 +173,21 @@ export async function acquireFixtureSession(
       cycleId,
       sessionRequest: acquisitionRequest,
       adapterId: "fixture.branches",
-      allowedModuleIds: [],
+      allowedModuleIds: modules.value,
     },
   });
   if (!parsedPlan.ok) return parsedPlan;
-  // Empty static census: this separate session consumer invokes no module.
+  // Fixed fixture source census; the default separate session still requests no module.
   const plan = validateCyclePlanBinding(
     parsedPlan.value,
     admitted.source,
     admitted.provenance,
     admitted.paths,
-    [],
+    [descriptor.moduleId],
     computeCyclePlanDigest(parsedPlan.value),
   );
   if (!plan.ok) return plan;
+  const admittedPlan = plan.value;
   const evidence = [
     encoded("platform-configuration-source/v1", admitted.source),
     encoded("configuration-provenance/v1", admitted.provenance),
@@ -212,6 +228,9 @@ export async function acquireFixtureSession(
   let started: ReturnType<typeof clock>;
   let poisoned: Reason | null = null;
   let closed = false;
+  let freshRoot = false;
+  let initialEntries: readonly string[] = [];
+  let initialObserved = false;
 
   async function physical() {
     if (closed || !handle) throw new UnknownObservation("IDENTITY_CONFLICT");
@@ -251,10 +270,12 @@ export async function acquireFixtureSession(
     started = clock(clocks);
     try {
       await mkdir(root);
+      freshRoot = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     rootIdentity = await lstat(root, { bigint: true });
+    initialEntries = Object.freeze(await readdir(root));
     if (
       !rootIdentity.isDirectory() ||
       rootIdentity.isSymbolicLink() ||
@@ -313,6 +334,59 @@ export async function acquireFixtureSession(
       lease: null,
     };
   }
+  async function observeHealth(inspection = false): Promise<SessionHealth> {
+    let outcome: ContractRecord;
+    try {
+      if (poisoned) throw new UnknownObservation(poisoned);
+      await unchanged();
+      const now = clock(clocks);
+      const elapsed = now.mono - started.mono;
+      const wallElapsed = Date.parse(now.wall) - Date.parse(started.wall);
+      if (now.mono < lastClock.mono || Date.parse(now.wall) < Date.parse(lastClock.wall))
+        throw new UnknownObservation("CLOCK_ROLLBACK");
+      if (Math.abs(elapsed - wallElapsed) > Number(admitted.provenance.wallClockSkewMs))
+        throw new UnknownObservation("CLOCK_SKEW");
+      const stale = elapsed >= Number(admitted.provenance.leaseFreshnessMs);
+      lastClock = now;
+      outcome = {
+        holderSessionId: sessionId,
+        leaseState: stale ? "HELD_STALE" : "HELD_FRESH",
+        observedAt: now.wall,
+        outcome: stale ? "REFUSED" : "HEALTHY",
+        reason: stale ? "FRESHNESS_EXPIRED" : null,
+      };
+    } catch (error) {
+      poisoned = unknown(error);
+      outcome = {
+        holderSessionId: null,
+        leaseState: "UNKNOWN",
+        observedAt: null,
+        outcome: "UNKNOWN",
+        reason: poisoned,
+      };
+    }
+    const observed = {
+      ...outcome,
+      schemaVersion: "session-health/v1",
+      targetSessionId: sessionId,
+      step: inspection
+        ? null
+        : {
+            cycleId,
+            ordinal: "1",
+            kind: "session.verify",
+            inputDigest: computeCycleRequestDigest(admittedPlan.request),
+            predecessorJournalDigest: null,
+          },
+    };
+    const health = inspection
+      ? parseSessionHealth(observed)
+      : validateSessionHealthBinding(observed, admittedPlan);
+    if (!health.ok) throw new Error(health.issues.join(","));
+    encoded("session-health/v1", health.value);
+    return health.value;
+  }
+
   const acquisition = receipt("ACQUIRED", null, started.wall);
   let lastClock = started;
   return {
@@ -321,55 +395,42 @@ export async function acquireFixtureSession(
     evidence,
     acquisition,
     lease: {
-      async observe(): Promise<SessionHealth> {
-        let outcome: ContractRecord;
+      observe: () => observeHealth(),
+      inspect: () => observeHealth(true),
+      async retain(): Promise<"RETAINED_UNKNOWN"> {
+        poisoned = "STATE_UNREADABLE";
+        if (!closed) {
+          closed = true;
+          await handle!.close();
+        }
+        return "RETAINED_UNKNOWN";
+      },
+      async observeInitialRoot() {
+        // One private initial admission attempt, not a public history-complete token.
+        const alreadyObserved = initialObserved;
+        initialObserved = true;
+        const health = await observeHealth();
+        if (health.outcome !== "HEALTHY")
+          return { ok: false as const, reason: "SESSION_UNHEALTHY" as const, health };
+        if (alreadyObserved || !freshRoot || initialEntries.length !== 0)
+          return { ok: false as const, reason: "HISTORY_UNPROVEN" as const, health };
+        let entries: string[];
         try {
-          if (poisoned) throw new UnknownObservation(poisoned);
-          await unchanged();
-          const now = clock(clocks);
-          const elapsed = now.mono - started.mono;
-          const wallElapsed = Date.parse(now.wall) - Date.parse(started.wall);
-          if (now.mono < lastClock.mono || Date.parse(now.wall) < Date.parse(lastClock.wall))
-            throw new UnknownObservation("CLOCK_ROLLBACK");
-          if (Math.abs(elapsed - wallElapsed) > Number(admitted.provenance.wallClockSkewMs))
-            throw new UnknownObservation("CLOCK_SKEW");
-          const stale = elapsed >= Number(admitted.provenance.leaseFreshnessMs);
-          lastClock = now;
-          outcome = {
-            holderSessionId: sessionId,
-            leaseState: stale ? "HELD_STALE" : "HELD_FRESH",
-            observedAt: now.wall,
-            outcome: stale ? "REFUSED" : "HEALTHY",
-            reason: stale ? "FRESHNESS_EXPIRED" : null,
-          };
-        } catch (error) {
-          poisoned = unknown(error);
-          outcome = {
-            holderSessionId: null,
-            leaseState: "UNKNOWN",
-            observedAt: null,
-            outcome: "UNKNOWN",
-            reason: poisoned,
+          entries = await readdir(root);
+        } catch {
+          poisoned = "STATE_UNREADABLE";
+          return {
+            ok: false as const,
+            reason: "SESSION_UNHEALTHY" as const,
+            health: await observeHealth(),
           };
         }
-        const health = validateSessionHealthBinding(
-          {
-            ...outcome,
-            schemaVersion: "session-health/v1",
-            targetSessionId: sessionId,
-            step: {
-              cycleId,
-              ordinal: "1",
-              kind: "session.verify",
-              inputDigest: computeCycleRequestDigest(plan.value.request),
-              predecessorJournalDigest: null,
-            },
-          },
-          plan.value,
-        );
-        if (!health.ok) throw new Error(health.issues.join(","));
-        encoded("session-health/v1", health.value);
-        return health.value;
+        const after = await observeHealth();
+        if (after.outcome !== "HEALTHY")
+          return { ok: false as const, reason: "SESSION_UNHEALTHY" as const, health: after };
+        if (entries.length !== 1 || entries[0] !== "session-claim.json")
+          return { ok: false as const, reason: "HISTORY_UNPROVEN" as const, health: after };
+        return { ok: true as const, health: after };
       },
       async close(): Promise<"REMOVED" | "RETAINED_UNKNOWN"> {
         try {

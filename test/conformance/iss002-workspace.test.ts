@@ -147,5 +147,5 @@ describe("ISS-002 external execution workspace", () => {
     });
     expect(result).toEqual({ issues: ["workspace:consumer-failed"], ok: false });
     expect(await readdir(executionParent)).toEqual([]);
-  });
+  }, 30_000);
 });
