@@ -1,4 +1,5 @@
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
+import { cycleEntrySchemaFields, cycleEntrySchemaVersions } from "./cycle-entry.js";
 import { projectSnapshotSchemaFields, projectSnapshotSchemaVersions } from "./project-snapshot.js";
 import {
   routineStepKinds,
@@ -103,6 +104,77 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "session-acquire-request/v1": Object.freeze({
+      schemaVersion: "session-acquire-request/v1",
+      fields: cycleEntrySchemaFields.acquire,
+    }),
+    "cycle-request/v1": Object.freeze({
+      schemaVersion: "cycle-request/v1",
+      fields: cycleEntrySchemaFields.request,
+    }),
+    "cycle-plan/v1": Object.freeze({
+      schemaVersion: "cycle-plan/v1",
+      fields: cycleEntrySchemaFields.plan,
+      closedValues: Object.freeze(["routine-cycle/v1"]),
+    }),
+    "session-receipt/v1": Object.freeze({
+      schemaVersion: "session-receipt/v1",
+      fields: cycleEntrySchemaFields.receipt,
+      closedValues: Object.freeze([
+        "ACQUIRE",
+        "RENEW",
+        "RELEASE",
+        "ACQUIRED",
+        "RENEWED",
+        "RELEASED",
+        "REFUSED",
+        "UNKNOWN",
+        "SESSION_HELD",
+        "SESSION_STALE",
+        "HANDOFF_PENDING",
+        "CONFIGURATION_MISMATCH",
+        "SESSION_NOT_FOUND",
+        "SESSION_MISMATCH",
+        "SESSION_RELEASED",
+        "DURATION_EXCEEDED",
+        "STATE_UNREADABLE",
+        "IDENTITY_CONFLICT",
+        "CLOCK_ROLLBACK",
+        "CLOCK_SKEW",
+        "MONOTONIC_UNAVAILABLE",
+      ]),
+    }),
+    "session-health/v1": Object.freeze({
+      schemaVersion: "session-health/v1",
+      fields: cycleEntrySchemaFields.health,
+      closedValues: Object.freeze([
+        "AVAILABLE",
+        "HELD_FRESH",
+        "HELD_STALE",
+        "HANDOFF_PREPARED",
+        "RELEASED",
+        "UNKNOWN",
+        "HEALTHY",
+        "REFUSED",
+        "SESSION_NOT_FOUND",
+        "SESSION_MISMATCH",
+        "CONFIGURATION_MISMATCH",
+        "FRESHNESS_EXPIRED",
+        "DURATION_EXCEEDED",
+        "HANDOFF_PENDING",
+        "SESSION_RELEASED",
+        "STATE_UNREADABLE",
+        "IDENTITY_CONFLICT",
+        "CLOCK_ROLLBACK",
+        "CLOCK_SKEW",
+        "MONOTONIC_UNAVAILABLE",
+      ]),
+    }),
+    "session-health/v1#step": Object.freeze({
+      schemaVersion: "session-health/v1",
+      fields: routineStepSchemaFields.identity,
+      closedValues: Object.freeze(["1", "session.verify"]),
+    }),
     "routine-step-skip/v1": Object.freeze({
       schemaVersion: "routine-step-skip/v1",
       fields: routineStepSchemaFields.skip,
@@ -715,6 +787,7 @@ export const schemaVersions = Object.freeze(
     ...projectSnapshotSchemaVersions,
     ...projectBreakerFactsSchemaVersions,
     ...routineStepSkipSchemaVersions,
+    ...cycleEntrySchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,
