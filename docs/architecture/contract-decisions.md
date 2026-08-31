@@ -6160,13 +6160,25 @@ Malformed producer bytes never become a successful UNKNOWN wrapper.
 
 #### Events and complete project-path output union
 
-`orchestration-event/v1` has exactly `cycleId, phase, position,
-previousEventDigest, schemaVersion, step, output`. cycleId is Uuid; phase is
+`orchestration-event/v1` has exactly `cycleId, output, phase, position,
+previousEventDigest, previousPrefixDigest, retainedEvidence, schemaVersion,
+step`. cycleId is Uuid; phase is
 STARTED or TERMINAL; position is Dec(0,4095); previousEventDigest is null only
-at position0 and otherwise Digest; step is the complete existing routine step
+at position0 and otherwise Digest; previousPrefixDigest is the exact prefix
+before this event; step is the complete existing routine step
 identity. STARTED requires output:null. TERMINAL requires one output below.
 Every event cycle equals step.cycleId. Devent is the standard one-part framed
 digest in domain `orchestration-event/v1` over the complete event.
+
+retainedEvidence is0–5 rows, strictly kind-sorted and unique, each exactly
+`byteLength, contentDigest, encoding, kind`. Length is Dec(0,1048576), encoding
+RAW_BYTES or CANONICAL_JSON, and kind MAPPING_OBSERVATION,
+PREFLIGHT_OBSERVATION, RENDERED_INPUT, STDOUT or STDERR. The reader receives the
+matching closed bounded byte tuple, verifies length/hash and strictly decodes
+CANONICAL_JSON before the owning relation. Decode failure is usable only for
+that relation's existing invalid-observation UNKNOWN cell. References are not
+paths/payloads; missing bytes block replay. STARTED requires this census empty;
+each TERMINAL arm requires exactly its consumed kinds and forbids unrelated rows.
 
 The closed terminal output union uses these exact shapes. Each `kind` is also
 the only admitted step ordinal/kind shown; dependent records occur in the
@@ -6174,20 +6186,20 @@ listed order and retain their existing designated identities:
 
 | ordinal | output.kind | Exact members after kind |
 | --- | --- | --- |
-| 1 | SESSION | `health`; complete session-health |
-| 2 | PROJECT_FACTS | `facts`; complete project-facts |
-| 3 | BREAKER | `receipt`; complete breaker-receipt |
-| 4 | MODULE | `result`; complete module-action-plan or module-no-action |
-| 5 | ROUTE | `route`; complete route-selection |
-| 6 | PREFLIGHT | `preflight`; complete project-preflight |
-| 7 | DISPATCH_PLAN | `plan`; complete dispatch-plan |
-| 8 | LAUNCH | `launch, terminal`; terminal is the dependent complete START_FAILED terminal for known start failure, null for LIVE, and null or its actual dependent UNKNOWN terminal for UNKNOWN launch |
-| 9 | WORKER_TERMINAL | `attempt, resultSubject, terminal`; terminal is complete; review EXITED may have attempt/null subject, ordinary EXITED has null attempt/optional subject, and known failure or UNKNOWN/live terminal has both null |
-| 10 | REVIEW_AUTHORITY | `authority`; complete review-authority |
-| 11 | DISPOSITION | `disposition, followUp`; complete action-disposition and its exact cause-bound request or null |
-| 12 | MUTATION_PLAN | `plan`; complete project-mutation-plan |
-| 13 | PROJECT_APPLY | `receipt`; complete project-apply-receipt |
-| 14 | RECLAIM | `receipt`; complete resource-reclaim-receipt |
+| 1 | SESSION | `cyclePlan, health`; complete health relation |
+| 2 | PROJECT_FACTS | `configuration, facts`; complete facts relation |
+| 3 | BREAKER | `configuration, cycleRequest, policyFacts, prior, projectFacts, provenance, receipt`; full breaker tuple |
+| 4 | MODULE | `input, result`; complete input/descriptor/result binding |
+| 5 | ROUTE | `action, input, mapping, route`; full route tuple; invalid mapping uses retained evidence |
+| 6 | PREFLIGHT | `action, input, mapping, observation, preflight, route`; full preflight tuple; invalid observation uses retained evidence |
+| 7 | DISPATCH_PLAN | `action, cyclePlan, health, input, mapping, observation, plan, preflight, reviewRequest, route`; full tuple plus retained rendered bytes |
+| 8 | LAUNCH | `launch, plan, terminal`; full launch tuple and dependent terminal/null matrix |
+| 9 | WORKER_TERMINAL | `attempt, launch, plan, resultSubject, terminal`; full terminal tuple plus retained stdout/stderr; exact role/outcome null matrix |
+| 10 | REVIEW_AUTHORITY | `attempt, authority, request`; full review-result tuple |
+| 11 | DISPOSITION | `disposition, followUp, input`; full disposition/follow-up tuples plus retained terminal bytes |
+| 12 | MUTATION_PLAN | `disposition, dispositionInput, observation, plan, request`; full plan tuple plus retained terminal bytes |
+| 13 | PROJECT_APPLY | `afterObservation, beforeObservation, disposition, dispositionInput, dryObservation, expectedPlanDigest, plan, receipt, request`; full apply tuple plus retained terminal bytes |
+| 14 | RECLAIM | `context, receipt`; full reclaim tuple plus retained rendered/stdout/stderr bytes |
 | 15 | CYCLE_TERMINAL | `receipt`; complete cycle-receipt |
 | 2–13 | SKIP | `skip`; complete routine-step-skip whose ordinal equals event step |
 
@@ -6198,9 +6210,14 @@ skips, reclaim or cycle terminal. STARTED is an append observation only; it
 does not prove an external call occurred. A terminal event is admitted only by
 the owning supplied relation and exact output identity.
 
-For each step, the STARTED and TERMINAL event carry identical step bytes.
+Each arm replays its complete owning relation. Reused earlier values must be
+canonically identical, not copied digests; external evidence is verified first.
+For each step, STARTED and TERMINAL carry identical step bytes.
 Exactly one STARTED precedes at most one TERMINAL. STARTED's step
-predecessorJournalDigest equals the journal prefix before STARTED. Resume uses
+predecessorJournalDigest is exactly null at ordinal1; its event
+previousPrefixDigest separately binds the authentic header-only prefix at
+position0. Only ordinals2–15 put the before-STARTED prefix in the step field.
+Resume uses
 those same bytes after later appends. The terminal's previousEventDigest names
 the immediately preceding event, not the before-step prefix. Its primary output
 is the owning record named in routine: launch at8, terminal at9, authority at10,
@@ -6210,30 +6227,31 @@ at15. Composite dependents cannot be dropped, reordered or substituted.
 #### Persisted append-only journal and authentic beginning
 
 `event-journal/v1` is both a logical parsed record and a specialized persisted
-byte format. Its logical fields are exactly `cycleId, cyclePlanDigest, events,
+byte format. Its logical fields are exactly `cycleId, cyclePlan, cyclePlanDigest, events,
 genesisDigest, schemaVersion, sessionId`. events is0–4096 complete events in
 position order. The header preimage is exactly `cycleId, cyclePlanDigest,
-sessionId`; Dgenesis is `SHA256(UTF8("orchestration-platform") || 00 ||
+cyclePlan, sessionId`; Dgenesis is `SHA256(UTF8("orchestration-platform") || 00 ||
 UTF8("event-journal-genesis/v1") || 00 || C(header))`. This identity domain is not a
-fifth family. The header values bind the actual cycle-plan/request/session.
+fifth family. The complete plan and header values bind the actual request/session.
 
 Persisted bytes are exactly ASCII `OPJ1`, byte00, u32be(byteLength(C(logical
 header including schemaVersion and genesisDigest))), that canonical header,
 then for every event: u32be(byteLength(C(event))) followed by C(event). Lengths
-are unsigned, canonical and bounded by the family parsers. A partial header or
-frame, extra/trailing byte, invalid UTF-8, wrong length, position gap, duplicate,
-cycle mismatch or event after CYCLE_TERMINAL refuses the whole journal. Generic
+are unsigned, canonical and bounded by the family parsers. Invalid complete
+frames, extra bytes between frames, invalid UTF-8, wrong length, position gap,
+duplicate, cycle mismatch or event after CYCLE_TERMINAL are CORRUPT. Generic
 canonical JSON serialization is not used for this family; its public parser and
 serializer own this exact framing. NDJSON and rewritten JSON arrays are invalid.
 
 For any physical prefix ending on a complete frame, Dprefix is SHA256 of
 `UTF8("orchestration-platform") || 00 || UTF8("event-journal-prefix/v1") || 00
 || u64be(prefixByteLength) || exactPrefixBytes`. The header-only prefix is the
-ordinal1 predecessor. Djournal uses the same formula with domain
+ordinal1 event's previousPrefixDigest; ordinal1 step predecessor remains null.
+Djournal uses the same formula with domain
 `event-journal/v1` over the complete selected bytes. Every event position and
 previousEventDigest is recomputed; position0 previous is null, later previous
-equals Devent of the prior row. Every STARTED step predecessor equals Dprefix
-immediately before its own frame.
+equals Devent of the prior row. Every event previousPrefixDigest is recomputed.
+Only ordinal2–15 STARTED step predecessors equal the prefix before their frame.
 
 Genesis is authentic only when the journal owner create-once selects these
 bytes from an actual admitted cycle plan/session, the retained fresh-root
@@ -6250,8 +6268,15 @@ not claim global-history completeness.
 Append is compare-and-append against exact Dprefix and next position. If the
 same exact event is already the sole next frame, read-back is idempotent and
 returns the existing resulting prefix without another append. Different bytes,
-two next frames, suffix after terminal, moved prefix or ambiguous partial write
-is CORRUPT/UNKNOWN and grants no retry. Actual durable create/append/fsync/
+two next complete frames, suffix after terminal or moved prefix is
+CORRUPT/UNKNOWN and grants no retry. A partial final frame is retained as an
+unhealthy non-authoritative suffix over the longest complete JOURNAL_ONLY
+prefix; it is ignored for replay but forbids append/terminal authority until
+the append owner resolves that exact frame. It is never deleted or a complete
+event. Removing complete trailing frames is undetectable here: the remaining
+bytes are an earlier valid RUNNING prefix and cannot yield completion. Stronger
+rollback detection needs a future authenticated monotonic-tip replan, not a
+caller hash, private tip or fifth family. Actual durable create/append/fsync/
 read-back remains ISS010 implementation evidence, not parser authority.
 
 #### Deterministic reduced state
