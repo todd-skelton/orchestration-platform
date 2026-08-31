@@ -37,6 +37,7 @@ export const packageContract = Object.freeze([
   ["@orchestration-platform/routing", "packages/routing", "ISS-012", ["."]],
   ["@orchestration-platform/release", "packages/release", "ISS-014", ["."]],
   ["@orchestration-platform/portable-primitives", "probes/portable-primitives", "ISS-022", ["."]],
+  ["@orchestration-platform/walking-skeleton", "fixtures/walking-skeleton", "ISS-041", []],
   [
     "@orchestration-platform/host-codex",
     "packages/host-codex",
@@ -463,6 +464,9 @@ export async function loadBootstrapSnapshot(root = defaultRoot) {
   const probeDirectories = (await readdir(resolve(root, "probes"), { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => `probes/${entry.name}`);
+  const fixtureDirectories = (await readdir(resolve(root, "fixtures"), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `fixtures/${entry.name}`);
   const cliRegistryUrl = `${pathToFileURL(resolve(root, "packages/cli/src/registry.mjs")).href}?census=${Date.now()}`;
   const bootstrapRegistryUrl = `${pathToFileURL(resolve(root, "bootstrap/src/command-registry.mjs")).href}?census=${Date.now()}`;
   const hostRegistryUrl = `${pathToFileURL(resolve(root, "packages/host-custody/src/bootstrap-command-registry.mjs")).href}?census=${Date.now()}`;
@@ -476,7 +480,12 @@ export async function loadBootstrapSnapshot(root = defaultRoot) {
     workspace: await readFile(resolve(root, "pnpm-workspace.yaml"), "utf8"),
     baseTsconfig: JSON.parse(await readFile(resolve(root, "tsconfig.base.json"), "utf8")),
     manifests,
-    packageDirectories: [...packageDirectories, ...probeDirectories, ...adapterDirectories].sort(),
+    packageDirectories: [
+      ...packageDirectories,
+      ...probeDirectories,
+      ...adapterDirectories,
+      ...fixtureDirectories,
+    ].sort(),
     buildConfiguration: JSON.parse(
       await readFile(resolve(root, "config/private-compositions.json"), "utf8"),
     ),
@@ -727,7 +736,7 @@ export async function validateBootstrapSnapshot(snapshot) {
   }
   if (
     normalizeContractText(snapshot.workspace) !==
-    'packages:\n  - "packages/*"\n  - "probes/*"\n  - "modules/*"\n  - "adapters/*"\n\nallowBuilds:\n  esbuild: true\n'
+    'packages:\n  - "packages/*"\n  - "probes/*"\n  - "modules/*"\n  - "adapters/*"\n  - "fixtures/*"\n\nallowBuilds:\n  esbuild: true\n'
   ) {
     fail("workspace globs are not the exact predeclared set");
   }
@@ -745,6 +754,23 @@ export async function validateBootstrapSnapshot(snapshot) {
     fail("workspace package path census mismatch");
   for (const [name, path, issue, exportKeys] of packageContract) {
     const manifest = snapshot.manifests[name];
+    if (
+      name === "@orchestration-platform/walking-skeleton" &&
+      (manifest.private !== true ||
+        !equal(manifest.dependencies, { "@orchestration-platform/contracts": "workspace:*" }))
+    ) {
+      fail("walking skeleton must remain private with its real contracts workspace dependency");
+    }
+    for (const kind of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
+      if (manifest[kind]?.["@orchestration-platform/walking-skeleton"] !== undefined) {
+        fail("production packages must not depend on the walking skeleton");
+      }
+    }
     if (manifest.name !== name || manifest.version !== "0.0.0" || manifest.type !== "module") {
       fail(`${name} identity mismatch`);
     }
@@ -769,13 +795,15 @@ export async function validateBootstrapSnapshot(snapshot) {
     const expectedTest =
       name === "@orchestration-platform/contracts"
         ? "pnpm --dir ../.. exec vitest run test/contracts"
-        : name === "@orchestration-platform/config"
-          ? "pnpm --dir ../.. exec vitest run test/config"
-          : name === "@orchestration-platform/cli"
-            ? "pnpm --dir ../.. exec vitest run test/cli"
-            : name === "@orchestration-platform/conformance"
-              ? "node ../../scripts/harness-test.mts"
-              : `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
+        : name === "@orchestration-platform/walking-skeleton"
+          ? "pnpm --dir ../.. exec vitest run fixtures/walking-skeleton/test"
+          : name === "@orchestration-platform/config"
+            ? "pnpm --dir ../.. exec vitest run test/config"
+            : name === "@orchestration-platform/cli"
+              ? "pnpm --dir ../.. exec vitest run test/cli"
+              : name === "@orchestration-platform/conformance"
+                ? "node ../../scripts/harness-test.mts"
+                : `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
     if (manifest.scripts?.test !== expectedTest) fail(`${name} test placeholder owner mismatch`);
     for (const [exportKey, value] of Object.entries(manifest.exports)) {
       const expectedTarget =

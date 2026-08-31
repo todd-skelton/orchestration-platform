@@ -24,6 +24,7 @@ export const formatterTargets = Object.freeze([
   "scripts",
   "packages",
   "adapters",
+  "fixtures",
   "bootstrap",
   "modules",
   "config",
