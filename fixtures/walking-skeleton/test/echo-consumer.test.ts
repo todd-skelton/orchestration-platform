@@ -132,7 +132,7 @@ async function manifest(root: string, excluded: string | null = null): Promise<s
   await visit(root, "");
   return entries.sort();
 }
-function parsed<T>(value: c.ParseResult<T>): T {
+function parsed<T extends c.ContractRecord>(value: c.ParseResult<T>): T {
   if (!value.ok) throw new Error(value.issues.join(","));
   return value.value;
 }
