@@ -256,6 +256,24 @@ test("a live contender refuses before snapshot, module or output", async () => {
   expect((await holder.lease.observe()).outcome).toBe("HEALTHY");
 });
 
+test("session module intent is detached and restricted to the actual fixed fixture census", async () => {
+  const f = await fixture();
+  const before = await manifest(f.root);
+  const refused = await acquireFixtureSession(adapter, f.invocation, uuid(2), uuid(3), clocks, [
+    "fixture.other",
+  ]);
+  expect(refused).toEqual({ ok: false, issues: ["allowedModuleIds:not-in-supplied-census"] });
+  expect(await manifest(f.root)).toEqual(before);
+  const requested = [fixtureModule.descriptor.moduleId];
+  const pending = acquireFixtureSession(adapter, f.invocation, uuid(2), uuid(3), clocks, requested);
+  requested.push("fixture.other");
+  const held = await pending;
+  if (!held.ok || !held.lease) throw new Error("held session required");
+  leases.push(held.lease);
+  expect(held.plan.request.allowedModuleIds).toEqual([fixtureModule.descriptor.moduleId]);
+  expect((await held.lease.observe()).outcome).toBe("HEALTHY");
+});
+
 test("malformed frontier observation cleans up the owned claim without emitting plan artifacts", async () => {
   const f = await fixture();
   f.rows[0] = { ...f.rows[0]!, immutableSubjectDigest: "bad" };
