@@ -6,8 +6,10 @@ import {
   parseContract,
   serializeContract,
   validateAdapterConfigurationBinding,
+  validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
 } from "@orchestration-platform/contracts";
+import type { CurrentPolicyReader } from "../../../packages/adapter-sdk/src/current-policy.js";
 import type { SnapshotClocks, SnapshotReader } from "../../../packages/adapter-sdk/src/snapshot.js";
 import {
   createConfigurationLoader,
@@ -17,12 +19,16 @@ import {
 import { projectConfigurationProvenance } from "../../../packages/config/src/resolver.js";
 import { descriptor, plan } from "./index.js";
 
+// Matches the two statically composed SDK fixture policies, never input JSON.
+const currentPolicyVersion = "1.0.0";
+
 // Invoked only by the quarantined fixture. No process globals or package-export changes.
 export async function consume(
   adapter: ConfigurationHostAdapter,
   invocation: ConfigurationLoaderInvocation,
   adapterConfiguration: unknown,
   snapshot: SnapshotReader,
+  currentPolicy: CurrentPolicyReader,
   clocks: SnapshotClocks,
 ) {
   const loaded = await createConfigurationLoader(adapter)(invocation);
@@ -37,6 +43,26 @@ export async function consume(
   if (!facts.ok) return facts;
   if (facts.value.state !== "COMPLETE")
     return { ok: false as const, issues: [`fixture:snapshot:${facts.value.state}`] };
+  const policyObserved = await currentPolicy(
+    configuration.value,
+    provenance.value,
+    facts.value,
+    clocks,
+  );
+  if (!policyObserved.ok) return policyObserved;
+  const breakerFacts = validateProjectBreakerFactsBinding(
+    policyObserved.facts,
+    configuration.value,
+    facts.value,
+    currentPolicyVersion,
+  );
+  if (!breakerFacts.ok) return breakerFacts;
+  if (breakerFacts.value.state !== "COMPLETE")
+    return {
+      ok: false as const,
+      issues: [`fixture:current-policy:${breakerFacts.value.state}:${breakerFacts.value.reason}`],
+    };
+  // Retain detached observer evidence only: neither trip arm grants execution or hold authority.
   // Fixture policy only: choose the first eligible row in the validated, work-ID-sorted frontier.
   const selected = facts.value.frontier.find(
     (row) => row.readiness === "READY" && row.capabilityNames.includes(descriptor.capabilityName),
@@ -57,6 +83,7 @@ export async function consume(
     ["configuration.json", "configuration-provenance/v1", provenance.value],
     ["adapter-configuration.json", "adapter-configuration/v1", configuration.value],
     ["project-facts.json", "project-facts/v1", facts.value],
+    ["project-breaker-facts.json", "project-breaker-facts/v1", breakerFacts.value],
     ["action.json", descriptor.inputSchema, retainedAction.value],
     ["brief.json", descriptor.outputSchema, planned.value],
   ] as const;
