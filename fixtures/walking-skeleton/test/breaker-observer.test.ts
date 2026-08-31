@@ -381,6 +381,29 @@ test("private initial-root evidence is one-shot, including overlapping calls and
   expect(await next.lease.close()).toBe("REMOVED");
 });
 
+test("a refused initial-root attempt stays consumed after foreign evidence is removed", async () => {
+  const f = await fixture(),
+    held = await acquireFixtureSession(adapter, f.invocation, uuid(20), uuid(21), clocks);
+  if (!held.ok || !held.lease) throw new Error("holder required");
+  leases.push(held.lease);
+  const foreign = join(f.stateRoot, "foreign.txt");
+  await writeFile(foreign, "unadmitted history\n");
+  expect(await held.lease.observeInitialRoot()).toMatchObject({
+    ok: false,
+    reason: "HISTORY_UNPROVEN",
+    health: { outcome: "HEALTHY" },
+  });
+  await rm(foreign);
+  expect(await readdir(f.stateRoot)).toEqual(["session-claim.json"]);
+  expect(await held.lease.observeInitialRoot()).toMatchObject({
+    ok: false,
+    reason: "HISTORY_UNPROVEN",
+    health: { outcome: "HEALTHY" },
+  });
+  expect(await held.lease.close()).toBe("REMOVED");
+  expect(await readdir(f.stateRoot)).toEqual([]);
+});
+
 test("root mutation across the SDK await is retained, or actual Windows denial leaves the owned root intact", async () => {
   const f = await fixture(),
     originalPolicy = f.policy.getMockImplementation()!,
