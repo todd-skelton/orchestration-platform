@@ -133,3 +133,22 @@ replacement, not exactly-once replay; the observer may have repeated its pure
 read/plan work before that refusal. The concurrency/poison/frontier controls and
 outside-state manifests are bounded fixture evidence subject to host execution,
 independent review and three-OS CI, not production authority or isolation.
+
+## Initial breaker observation increment
+
+The separate `consumeInitialBreaker` path now executes a first reduction from
+real SDK facts under the actual fixture lease. The owner retains exclusive
+root creation and an initial empty census, then checks the live claim-only
+root before its one permitted genesis observation. Existing empty/nonempty
+roots, repeated observations and reused output refuse; a null predecessor
+record itself proves nothing. First NO_TRIP becomes CLOSED; first TRIP becomes
+OPEN with the exact cycle/policy opening digests. Both states round-trip through
+the public complete breaker parser and supplied seven-record relation.
+
+This resolves only fresh-fixture initial reduction. Generic history selection,
+public journal beginning/current-end proof, recovery/probes, continuing from
+held states and every-boundary resume remain absent. The separate module
+observer is unchanged and does not consume this receipt as permission. No
+complete routine cycle, installed authority, production genesis/reset or
+ISS-041 completion is claimed. The evidence root remains disposable and no
+production package imports the fixture.
