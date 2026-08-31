@@ -4780,6 +4780,238 @@ smaller than demanding a fictional host for an action that launches none.
 New required authority sources or families are named replan boundaries, not
 permission to expand this packet.
 
+### Project preflight literal proposal (ISS-013)
+
+This bounded consumer-led proposal closes only `project-preflight/v1`, the
+existing ISS-013-owned step-6 name excluded from ISS-002's additive census.
+It follows the complete module/route contracts and serves the current ISS-041
+consumer. Independent literal review precedes parser or fixture integration.
+It supplies no SDK service, dispatch/allocation/mutation contract, runtime
+authority, public observation family, journal substitute or candidate execution.
+
+#### Explicit interpretation and replan fence
+
+Step 6 consumes either an admitted selected worker route or the declared
+`NO_WORKER` route; workerless actions still undergo preflight before the
+existing 7–10 skips. Failed/unknown routes cannot enter preflight. The routine
+table's previously unnamed unknown preflight case is made explicit below;
+unknown still forbids authoritative continuation under its existing rule.
+
+“Eligible unchanged subject” is narrowed for ordinary frontier actions to
+the same READY work/subject/capability in an entirely unchanged canonical
+frontier. Unrelated row changes also refuse with `FRONTIER_CHANGED`. This is
+an explicit conservative replan: the module ABI permits arbitrary pure
+selection over the supplied frontier, so checking only the chosen row cannot
+prove the old choice survives other changes. Reinvoking the module or adding
+a dependency-expression language would be larger and belongs to a later
+reviewed proposal. The observation ID must differ as specified below while
+time/frontier bytes may remain identical; a snapshot digest is not a frontier
+digest or policy ID.
+
+Review actions instead re-observe their exact existing concrete immutable
+subject; they have no `workId` and cannot manufacture an ordinary frontier
+row. That subject's own source namespace remains unchanged. No equality
+between its source namespace and the invoking adapter configuration is newly
+imposed by this packet: actual source support/materialization admission stays
+with the existing responsible adapter/release owners. An adapter invocation
+does not gain candidate/certification authority by carrying those bytes.
+
+#### Complete public record and inline observations
+
+Reuse `C`, `Digest`, `Uuid`, `Time` and the detached, bounded closed-record
+rules above. Digest is 64 lowercase hex; Uuid is canonical lowercase UUIDv7;
+Time is the existing canonical UTC millisecond timestamp. Every listed field
+is required, each listed sequence is canonical key order, and all newly
+declared fields are non-null except `observationDigest` in the exact matrix
+cells below. Reused contracts retain all their existing null and array rules.
+Unknown versions/fields/enums, omissions, symbols, accessors, proxies, sparse
+or exotic arrays/records refuse without invoking input code. No free-form
+text, numeric fields or arrays are newly introduced by this family.
+
+`project-preflight/v1` has exactly five members:
+
+| Member | Exact rule |
+| --- | --- |
+| `actionPlanDigest` | Designated `Digest` of the complete actual `module-action-plan/v1` |
+| `observationDigest` | Full inline observation commitment below, or null only as specified |
+| `outcome` | One exact closed arm from the matrix below |
+| `routeDigest` | Designated `Digest` of the complete actual `route-selection/v1` |
+| `schemaVersion` | Literal `project-preflight/v1` |
+
+There is no copied cycle, work, capability, role, target, host, descriptor or
+configuration reference: those are bound through the actual action/input and
+route. The result contains no observation payload, self-digest, permission
+Boolean, allocation, ownership, freshness deadline or executable locator.
+
+The supplied observation is exactly one closed inline arm, not a persisted
+public schema or arbitrary payload:
+
+| `kind` | Complete member census and rules |
+| --- | --- |
+| `PROJECT` | `facts, kind`; `facts` is one complete existing `project-facts/v1` record, including all COMPLETE/UNAVAILABLE/UNKNOWN arms |
+| `REVIEW` | `adapterConfigurationDigest, kind, observationId, observedAt, result`; configuration reference is `Digest`, observation ID is `Uuid`, time is `Time`; result is the closed union below |
+
+The REVIEW result is exactly `{kind:"AVAILABLE", subject}` with a complete
+existing concrete `worker-result-subject/v1` or `release-candidate-subject/v1`,
+or exactly `{kind:"UNAVAILABLE"}`, or exactly `{kind:"UNKNOWN"}`. A missing
+subject/materialization is not an AVAILABLE record containing a bare digest.
+AVAILABLE claims only the observed concrete record; actual retained content
+and upstream evidence still require their owning admission. No alias-tagged
+`review-subject/v1` record, extra wrapper, replacement hash or null subject
+exists. UNAVAILABLE/UNKNOWN carry no subject or inferred partial identity.
+
+All PROJECT bounds/order are unchanged: 0–4096 strictly work-ID-sorted rows,
+0–256 strictly sorted capability names, full recomputed frontier digest, and
+only READY/NOT_READY rows in COMPLETE. REVIEW retains the complete subject
+union's TREE/ORDERED_PATCH_ARTIFACTS or candidate shapes, including its dense
+1–4096 ordered entries, repetition semantics and non-null candidate references.
+This packet adds no arrays and does not truncate, filter, deduplicate or sort
+an admitted nested sequence differently from its existing contract.
+
+The complete outcome/nullability matrix is:
+
+| `outcome.kind` | Complete outcome members and reason literals | `observationDigest` |
+| --- | --- | --- |
+| `ELIGIBLE` | `kind` only | Non-null |
+| `REFUSED` | `kind, reason`; exactly `WORK_MISSING`, `TARGET_CHANGED`, `CAPABILITY_REMOVED`, `NOT_READY`, or `FRONTIER_CHANGED` | Non-null |
+| `UNKNOWN` | `kind, reason`; exactly `OBSERVATION_UNAVAILABLE` | Null |
+| `UNKNOWN` | `kind, reason`; exactly `OBSERVATION_INVALID` | Null |
+| `UNKNOWN` | `kind, reason`; exactly `SOURCE_UNAVAILABLE` or `SOURCE_UNKNOWN` | Non-null |
+| `UNKNOWN` | `kind, reason`; exactly `ADMISSION_UNPROVEN` | Non-null |
+
+Branch-only fields are absent, not null. Intrinsic public parsing checks this
+entire shape and matrix; it does not independently establish any reason.
+`OBSERVATION_UNAVAILABLE` means no supplied observation could be obtained;
+source failure means a well-formed, correctly bound failure observation was
+obtained. Neither means known missing work. `ADMISSION_UNPROVEN` preserves
+uncertainty about actual source/currentness/materialization, even when claimed
+bytes look healthy. An invalid/unobtainable action, module input or route
+cannot yield invented digests; the caller takes its existing failure path
+without fabricating this record.
+
+#### Identities and exact supplied relation
+
+`Dobs = SHA256(C(observation))` over the full inline record, including every
+observation ID/time, failure arm and nested byte plus final LF. It is an
+unframed content commitment, not the existing Dsnapshot/Dfrontier, a policy
+identity, source receipt or new schema domain. Preserve nested designated
+subject identities; the REVIEW target is not hashed as an alias/wrapper.
+`Dpreflight` hashes exactly
+`UTF8("orchestration-platform") || 00 || UTF8("project-preflight/v1") || 00 ||
+u32be(1) || 07 || u64be(byteLength(C(preflight))) || C(preflight)`.
+Generic serialization returns those exact bytes and Dpreflight. The acyclic
+graph is module input/action and mapping, then route, then observation and
+preflight, then future dispatch/event outputs. No input references preflight
+or a future event; retaining these inline preimages creates no private journal.
+
+One pure relation takes exactly `(moduleInput, actionPlan, mappingInput,
+route, observationInput, preflight)`. Parse the existing full input/action/
+route and apply the complete route supplied relation, which includes module
+binding. Require route kind SELECTED or NO_WORKER; all other route outcomes
+refuse this relation. Require the parsed preflight's two references equal
+the designated identities of those actual action and route records. Derive
+ordinary/review context from `moduleInput.reviewSubject`, never caller flags.
+
+Define a *bound observation* solely by these structural checks, not live
+admission: its complete inline parser succeeds; PROJECT is required exactly
+when the input review subject is null, REVIEW otherwise. PROJECT facts must
+pass the existing full project-facts/configuration binding against the actual
+module configuration, including failure-arm project/configuration equality
+and COMPLETE capability subset. REVIEW's adapterConfigurationDigest must
+equal SHA256(C(the actual module configuration)). In either arm require the
+observation ID distinct from both original projectFacts.observationId and
+policyFacts.observationId. No timestamp ordering/age heuristic is added;
+distinct IDs and well-formed times do not prove a fresh read or invocation.
+
+The observation/null matrix in the supplied relation is exhaustive:
+
+- OBSERVATION_UNAVAILABLE requires `observationInput` exactly null, not
+  undefined, an empty record or an asserted absence digest.
+- OBSERVATION_INVALID requires non-null, non-undefined supplied input that
+  fails the bound-observation checks just defined. This includes malformed
+  bytes/shape, wrong context/configuration/project, extra capabilities, or
+  reused observation ID. Do not hash rejected input or repair a readable
+  subset. A wrong but syntactically valid observation cannot be ELIGIBLE.
+- Every other outcome requires the full bound observation and exact Dobs.
+  ADMISSION_UNPROVEN is allowed for any such observation as an external
+  uncertainty claim; the pure relation cannot establish its cause. For all
+  other outcomes the following deterministic table is mandatory.
+
+| Bound observation | Required outcome, evaluated in the listed order |
+| --- | --- |
+| PROJECT UNAVAILABLE / REVIEW UNAVAILABLE | UNKNOWN/SOURCE_UNAVAILABLE |
+| PROJECT UNKNOWN / REVIEW UNKNOWN | UNKNOWN/SOURCE_UNKNOWN |
+| PROJECT COMPLETE, action workId absent from its frontier | REFUSED/WORK_MISSING |
+| PROJECT COMPLETE, selected row's immutableSubjectDigest differs from action core | REFUSED/TARGET_CHANGED |
+| PROJECT COMPLETE, selected row lacks exact core capability | REFUSED/CAPABILITY_REMOVED |
+| PROJECT COMPLETE, selected row is NOT_READY | REFUSED/NOT_READY |
+| PROJECT COMPLETE, canonical complete frontier differs from original module input frontier | REFUSED/FRONTIER_CHANGED |
+| PROJECT COMPLETE, none of the preceding conditions | ELIGIBLE |
+| REVIEW AVAILABLE, subject concrete schema or designated digest differs from original review subject | REFUSED/TARGET_CHANGED |
+| REVIEW AVAILABLE, same concrete schema and designated digest | ELIGIBLE |
+
+The module relation already proves the original ordinary row is READY, the
+work ID/capability/target join, and the review role/null-work-ID/target join.
+No supplied expected digest replaces those preimages. A fresh observation ID
+and unchanged frontier can therefore produce a new Dobs and ELIGIBLE;
+rehashing a changed frontier must still trigger the specified refusal. For
+review, changed result ordering, base/source namespace, author/assembly cycle,
+terminal/candidate evidence or materialization references change the target.
+The full subject digest includes those fields; no subset comparison suffices.
+
+#### Owners, required evidence and proportionality
+
+ISS-013 owns actual project source reads and invocation/configuration
+admission. Its existing snapshot SDK's bounded fresh pagination is reusable
+for PROJECT; a caller-supplied COMPLETE record alone is not a fresh read.
+REVIEW materialization remains with the existing ISS-008/009/013/014 owners:
+the actual base/result/terminal or landed tree/candidate/manifest/test bundle/
+certification preimages must be obtained and verified before use. This packet
+defines data only, not a review-source callback, source resolver, release SDK
+service or candidate producer. Missing admission remains UNKNOWN, regardless
+of whether the supplied relation can be made coherent.
+
+ELIGIBLE here proves supplied consistency only. Runtime must still prove
+current breaker permission, session/module/route admission and unchanged
+observations at the existing authority point. It proves no free capacity,
+exclusive workspace, independent review, ownership or mutation permission.
+ISS-008's multiply-owned-resource refusal and immediate pre-publication and
+pre-launch checks remain mandatory; undefined allocation/dispatch literals
+are not replaced by a preflight Boolean. Workerless ELIGIBLE likewise grants
+no step-11 disposition, step-12 plan or step-13 apply authority. REFUSED uses
+the existing step-6 known-failure/skip route only after actual source admission;
+UNKNOWN stops authoritative continuation and does not fabricate skip receipts.
+
+| Acceptance/removal attack | Required future discriminating evidence |
+| --- | --- |
+| Full shape/dispatch | Every outcome/reason/null cell and PROJECT/REVIEW arm; all reused subject arms/failure states; required/extra/type/enum/hostile input mutations at every depth, no input code execution |
+| Canonical identity | Independently pinned bytes/full frame/digest for every public outcome cell, inline observation hashes for project/failure/worker TREE/ordered/candidate cases; insertion-order equivalence; noncanonical bytes and wrong domain/tag/count/LF or subset/metadata-free hashes refuse/differ |
+| Actual input/action/route | Independently mutate input, descriptor, work ID, subject, role, capability, action digest, mapping and route; rehash downstream records where needed; SELECTED and declared NO_WORKER pass, refused/unknown route and worker/workerless substitutions cannot enter step 6 |
+| Observation binding | Null versus undefined/malformed, wrong arm/config/project/capability census, reused original/policy ID, and valid source failures have the exact matrix outcomes; a new ID with identical time/frontier can pass structure without claiming freshness |
+| Ordinary refusal priority | Delete selected row; change subject; remove selected capability; mark NOT_READY; independently change/add/remove an unrelated row; combine mutations and require the first applicable reason; unchanged frontier passes, original empty frontier cannot bind an action |
+| Review target stability | Both worker result arms and candidate unchanged pass; valid opposite arm, reordered distinct entries, source/base/attempt/cycle/terminal/candidate-reference substitutions refuse TARGET_CHANGED even after Dobs rehash; repeated identical entries retain existing semantics |
+| Bounds and authority | Existing 0/1/4096/4097 frontier, 0/1/256/257 capability and 1/4096/0/4097 ordered-subject limits; detached results; coordinated forged inputs may satisfy structure but grant no fresh source, exclusive resource, breaker clearance or candidate authority |
+| Later consumer gate | Actual fixture-owned fresh read after route for worker and workerless actions; moved/unavailable/unknown input stops at step 6 with no allocation/launch; full journal/skip/runtime integration remains deferred until its public contracts exist |
+
+Scope/footprint is this subsection, the minimal step-6 unknown qualifier in
+routine-cycle, the owning ISS-013 draft note and round 395. No CLI/result
+mapping, ISS-002 scope change, registry/code, roadmap/issue/edge, provider,
+allocation/mutation family or ISS-026 work is included. Later implementation
+predicts one complete contracts parser, one framed identity, one inline
+observation helper/hash and one supplied relation with focused compatibility
+tests and inseparable supported-parser/census/harness amendments. No SDK
+runtime service is authorized by this literal packet. The host owns document
+format/planning/whitespace verification and independent exact-head review;
+this author claims no tests, runtime evidence, self-PASS or ISS-041 completion.
+
+This prediction is reviewed before parser/consumer integration. Removing the
+actual action/route/observation joins permits cross-cycle or stale-target
+substitution; comparing only the selected row silently trusts an unchanged
+module choice. One inline finite observation union is smaller than a second
+public receipt/request or arbitrary resolver. Needing additional ownership,
+provider, recovery or release authority is a concrete replan boundary, not
+permission to expand this packet.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
