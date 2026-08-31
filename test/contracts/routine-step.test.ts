@@ -583,7 +583,6 @@ describe("routine inline step identity and skip", () => {
       "event-journal/v1",
       "reduced-state/v1",
       "cycle-receipt/v1",
-      "breaker-receipt/v1",
       "action-disposition/v1",
       "follow-up-cycle-request/v1",
       "resource-reclaim-receipt/v1",
