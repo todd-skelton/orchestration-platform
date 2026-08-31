@@ -6,6 +6,11 @@ import {
   parseProjectMutationContract,
 } from "./project-mutation.js";
 import {
+  computeResourceReclaimReceiptDigest,
+  parseResourceReclaimContract,
+  resourceReclaimSchemaVersions,
+} from "./resource-reclaim.js";
+import {
   computeActionDispositionDigest,
   computeFollowUpCycleRequestDigest,
   dispositionSchemaVersions,
@@ -124,6 +129,7 @@ export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
 export * from "./project-preflight.js";
 export * from "./project-mutation.js";
+export * from "./resource-reclaim.js";
 export * from "./project-breaker-facts.js";
 export * from "./module-plan.js";
 export * from "./route-selection.js";
@@ -174,6 +180,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const reclaim = parseResourceReclaimContract(expectedSchemaVersion, input);
+  if (reclaim) return reclaim;
   const projectMutation = parseProjectMutationContract(expectedSchemaVersion, input);
   if (projectMutation) return projectMutation;
   const disposition = parseDispositionContract(expectedSchemaVersion, input);
@@ -274,6 +282,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "route-selection/v1" ||
       expectedSchemaVersion === "project-preflight/v1" ||
       (projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
+      (resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
@@ -293,7 +302,8 @@ export function parseCanonicalContractBytes(
       if (
         (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
         (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-        (projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
+        (projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
+        (resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
       ) {
         const buffer = Object.getOwnPropertyDescriptor(
           Object.getPrototypeOf(Uint8Array.prototype),
@@ -340,6 +350,12 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if ((resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeResourceReclaimReceiptDigest(parsed.value),
+    };
   if ((projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
     return {
       ok: true,
