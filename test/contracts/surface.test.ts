@@ -1,8 +1,22 @@
 import { describe, expect, test } from "vitest";
 import * as contracts from "../../packages/contracts/src/index.js";
 import * as projectSnapshot from "../../packages/contracts/src/project-snapshot.js";
+import * as projectBreakerFacts from "../../packages/contracts/src/project-breaker-facts.js";
 
 describe("current public surface", () => {
+  test("adds only the ISS-013 breaker fact family and pure supplied-content binding", () => {
+    expect(Object.keys(projectBreakerFacts).sort()).toEqual([
+      "parseProjectBreakerFacts",
+      "parseProjectBreakerFactsContract",
+      "projectBreakerFactsSchemaFields",
+      "projectBreakerFactsSchemaVersions",
+      "validateProjectBreakerFactsBinding",
+    ]);
+    for (const [name, value] of Object.entries(projectBreakerFacts))
+      expect(Object.entries(contracts).find(([exportName]) => exportName === name)?.[1]).toBe(
+        value,
+      );
+  });
   test("adds only the two ISS-013 snapshot contracts and pure supplied-record binding helpers", () => {
     expect(Object.keys(projectSnapshot).sort()).toEqual([
       "parseAdapterConfiguration",
