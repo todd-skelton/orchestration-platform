@@ -887,10 +887,10 @@ export function validateWorkerTerminalReceiptBinding(
   } else if (cell.kind !== "UNKNOWN" && prior.outcome.kind !== "LIVE")
     return invalid("outcome:live-launch-required");
   if (
-    cell.kind !== "UNKNOWN" &&
     prior.observedAt !== null &&
     row.observedAt !== null &&
-    row.observedAt < prior.observedAt
+    row.observedAt < prior.observedAt &&
+    !(cell.kind === "UNKNOWN" && cell.reason === "OBSERVATION_INVALID")
   )
     return invalid("observedAt:before-launch");
   const entries = new Map(row.processes.entries.map((item) => [item.processId, item]));
