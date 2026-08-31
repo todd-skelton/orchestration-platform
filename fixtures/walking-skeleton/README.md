@@ -160,6 +160,7 @@ writes are diagnostic and a later call refuses genesis on that existing root.
 The original observer and joined module consumer retain their behavior.
 No module dispatch, route, worker, review, public journal, terminal cycle or
 resume implementation is added. Both skeleton commands remain placeholders.
+
 # Echo execution increment (partial)
 
 `src/echo-consumer.ts` composes actual lease/fresh-root admission, SDK facts,

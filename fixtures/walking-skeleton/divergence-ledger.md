@@ -152,6 +152,7 @@ observer is unchanged and does not consume this receipt as permission. No
 complete routine cycle, installed authority, production genesis/reset or
 ISS-041 completion is claimed. The evidence root remains disposable and no
 production package imports the fixture.
+
 # Actual echo execution increment (partial)
 
 The separate echo composition joins steps 1–9 using the actual fresh-root
