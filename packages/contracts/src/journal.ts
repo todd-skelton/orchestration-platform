@@ -1151,6 +1151,7 @@ export function parseReducedState(input: unknown): ParseResult<ReducedState> {
       issues.push("outcome.reason:invalid");
   }
   if (row.pendingStep === null) {
+    if (kind === "WAITING_WORKER" || kind === "WAITING_REVIEW") issues.push("pendingStep:required");
     if (kind === "WAITING_ACTION" && outcome.value.dispositionDigest === null)
       issues.push("pendingStep:required");
     if (kind === "TERMINALIZING") issues.push("pendingStep:required");
@@ -1180,6 +1181,25 @@ export function parseReducedState(input: unknown): ParseResult<ReducedState> {
           started[0]!.stepDigest !== computeRoutineStepDigest(pendingStep.value))
       )
         issues.push("steps:pending-mismatch");
+      if (
+        pendingStep.ok &&
+        kind === "WAITING_WORKER" &&
+        pendingStep.value.ordinal !== "8" &&
+        pendingStep.value.ordinal !== "9"
+      )
+        issues.push("pendingStep:worker-ordinal-mismatch");
+      if (pendingStep.ok && kind === "WAITING_REVIEW" && pendingStep.value.ordinal !== "10")
+        issues.push("pendingStep:review-ordinal-mismatch");
+      if (pendingStep.ok && kind === "WAITING_ACTION" && pendingStep.value.ordinal !== "11")
+        issues.push("pendingStep:action-ordinal-mismatch");
+      if (pendingStep.ok && kind === "WAITING_ACTION" && outcome.value.dispositionDigest !== null)
+        issues.push("outcome.dispositionDigest:null-while-started-required");
+      if (
+        pendingStep.ok &&
+        kind === "TERMINALIZING" &&
+        outcome.value.terminalStepDigest !== computeRoutineStepDigest(pendingStep.value)
+      )
+        issues.push("outcome.terminalStepDigest:pending-mismatch");
     }
     if (
       member(kind, ["COMPLETED", "COMPLETED_NO_WORK", "FAILED_KNOWN"]) &&
@@ -1217,7 +1237,19 @@ export function parseCycleReceipt(input: unknown): ParseResult<CycleReceipt> {
   if (!member(row.reclaimOutcome, ["NO_ALLOCATION", "RECLAIMED", "RETAINED"]))
     issues.push("reclaimOutcome:invalid");
   nested(parseBindings(row.bindings), "bindings", issues);
-  nested(parseReducedSteps(row.steps, 15), "steps", issues);
+  const steps = parseReducedSteps(row.steps, 15);
+  nested(steps, "steps", issues);
+  if (steps.ok) {
+    const values = steps.value as unknown as readonly ReducedStep[];
+    if (
+      values.length !== 15 ||
+      values.slice(0, 14).some((step) => step.state === "STARTED") ||
+      values[0]?.state !== "TERMINAL" ||
+      values[13]?.state !== "TERMINAL" ||
+      values[14]?.state !== "STARTED"
+    )
+      issues.push("steps:terminalizing-census-required");
+  }
   return issues.length ? invalid(...issues) : { ok: true, value: row as unknown as CycleReceipt };
 }
 export function computeCycleReceiptDigest(input: unknown): string {
@@ -1982,12 +2014,13 @@ function continuityIssues(
   if (output.kind === "RECLAIM") {
     const context = output.context as ContractRecord;
     equal("context.cyclePlan", context.cyclePlan, journal.cyclePlan);
-    equal(
-      "context.adapterConfiguration",
-      context.adapterConfiguration,
-      outputs.get(2)?.configuration,
-    );
     const origin = context.origin as ContractRecord;
+    if (origin.kind !== "SESSION")
+      equal(
+        "context.adapterConfiguration",
+        context.adapterConfiguration,
+        outputs.get(2)?.configuration,
+      );
     if (Array.isArray(context.skips))
       for (const skip of context.skips) {
         const ordinal = Number(((skip as ContractRecord).step as ContractRecord).ordinal);
@@ -2227,15 +2260,7 @@ export function reduceEventJournal(
     const unknown = outputUnknown(output);
     if (unknown !== null) outcome = { kind: "UNKNOWN", reason: unknown };
     else if (outcome.kind !== "UNKNOWN") {
-      if (
-        output.kind === "LAUNCH" &&
-        ((output.launch as ContractRecord).outcome as ContractRecord).kind === "LIVE"
-      )
-        outcome = {
-          attemptId: (output.plan as ContractRecord).attemptId as string,
-          kind: "WAITING_WORKER",
-        };
-      else if (output.kind === "DISPOSITION")
+      if (output.kind === "DISPOSITION")
         outcome = {
           dispositionDigest: computeActionDispositionDigest(output.disposition),
           kind: "WAITING_ACTION",
