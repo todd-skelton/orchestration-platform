@@ -39,6 +39,7 @@ import {
 } from "./recovery.js";
 import { parseConfigurationContract } from "./configuration.js";
 import { parseProjectSnapshotContract } from "./project-snapshot.js";
+import { parseProjectBreakerFactsContract } from "./project-breaker-facts.js";
 
 export * from "./authority.js";
 export * from "./commit.js";
@@ -61,6 +62,7 @@ export * from "./recovery.js";
 export * from "./attempt.js";
 export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
+export * from "./project-breaker-facts.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
 export {
@@ -103,6 +105,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const projectBreakerFacts = parseProjectBreakerFactsContract(expectedSchemaVersion, input);
+  if (projectBreakerFacts) return projectBreakerFacts;
   const projectSnapshot = parseProjectSnapshotContract(expectedSchemaVersion, input);
   if (projectSnapshot) return projectSnapshot;
   const configuration = parseConfigurationContract(expectedSchemaVersion, input);
@@ -163,7 +167,8 @@ export function parseCanonicalContractBytes(
       return { ok: false, issues: ["schemaVersion:unsupported"] };
     if (
       expectedSchemaVersion === "adapter-configuration/v1" ||
-      expectedSchemaVersion === "project-facts/v1"
+      expectedSchemaVersion === "project-facts/v1" ||
+      expectedSchemaVersion === "project-breaker-facts/v1"
     ) {
       if (!nodeTypes.isUint8Array(bytes)) return { ok: false, issues: ["encoding:bytes-required"] };
       const prototype = Object.getPrototypeOf(bytes);
