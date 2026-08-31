@@ -512,12 +512,12 @@ test("request binds only PROJECT apply, actual context, target, owner and captur
     "subjectDigest",
   ]) {
     const r = copy(f.request);
-    r[field] = "9".repeat(64);
+    (r as Record<string, unknown>)[field] = "9".repeat(64);
     expect(requestBind(f, r).ok).toBe(false);
   }
   for (const field of ["sourceCycleId", "transactionId"]) {
     const r = copy(f.request);
-    r[field] = id(99);
+    (r as Record<string, unknown>)[field] = id(99);
     expect(requestBind(f, r).ok).toBe(field === "transactionId");
   }
   for (const outcome of [
@@ -625,7 +625,7 @@ test("apply joins exact plan-id, transaction, allocations, ordered pre/postimage
   expect(applyBind(f)).toEqual({ ok: true, value: f.receipt });
   for (const field of ["planDigest", "requestDigest"]) {
     const r = copy(f.receipt);
-    r[field] = "9".repeat(64);
+    (r as Record<string, unknown>)[field] = "9".repeat(64);
     expect(applyBind(f, f.before, f.after, r).ok).toBe(false);
   }
   for (const value of [null, "9".repeat(64), {}, id(99)])
@@ -633,7 +633,9 @@ test("apply joins exact plan-id, transaction, allocations, ordered pre/postimage
   for (const field of ["transactionId", "ownerTransactionId", "resourceIdentityDigest"]) {
     const r = copy(f.receipt);
     if (field === "transactionId") r.transactionId = id(99);
-    else r.resources[0][field] = field === "ownerTransactionId" ? id(99) : "9".repeat(64);
+    else
+      (r.resources[0]! as Record<string, unknown>)[field] =
+        field === "ownerTransactionId" ? id(99) : "9".repeat(64);
     expect(applyBind(f, f.before, f.after, r).ok).toBe(false);
   }
   for (const [before, after] of [
@@ -644,10 +646,10 @@ test("apply joins exact plan-id, transaction, allocations, ordered pre/postimage
   ])
     expect(applyBind(f, before, after).ok).toBe(false);
   const moved = copy(f.before);
-  moved.result.resources[0].value = value("ff");
+  moved.result.resources[0]!.value = value("ff");
   expect(applyBind(f, moved, f.after).ok).toBe(false);
   const wrong = copy(f.after);
-  wrong.result.resources[2].value = value("03");
+  wrong.result.resources[2]!.value = value("03");
   expect(applyBind(f, f.before, wrong).ok).toBe(false);
   const refused = {
     ...f.receipt,
