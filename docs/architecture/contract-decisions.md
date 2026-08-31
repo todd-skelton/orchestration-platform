@@ -1379,9 +1379,13 @@ introduce no CLI command, command diagnostic, envelope mapping, or registry
 amendment; the landed snapshot/plan/apply rows remain unchanged.
 
 The sole callback is `readCurrentPolicy(request)`, returning a native Promise
-of one response. The closed request is exactly `observationId, policyVersion,
-projectFacts`; these are the SDK's fresh ID, composed version, and detached
-admitted COMPLETE snapshot. Callback response common members are exactly
+of one response. The closed request is exactly `capabilityNames, observationId,
+policyVersion, projectFacts`. `capabilityNames` is a detached copy of the exact
+admitted configuration census, using the existing dense, strictly ASCII-sorted
+0–256 name-array shape; it is not inferred from frontier rows or a digest.
+The other members are the SDK's fresh ID, composed version, and detached
+admitted COMPLETE snapshot. The callback evaluates every requested capability.
+Callback response common members are exactly
 `observationId, policyVersion, projectFactsDigest, state`, plus:
 
 | State | Additional members and constraints |
@@ -1461,6 +1465,13 @@ Include all-ready, empty, missing capability, changed private source between
 snapshot and callback, and independent source UNKNOWN/UNAVAILABLE cases.
 Each fixture must prove a fresh source read on every callback and none after
 admission refusal; a source read counter is evidence, not a public field.
+For each fixture with a freshly observed empty frontier, admitted configuration
+`capabilityNames:[]` must supply request `capabilityNames:[]` and accept exactly
+`decisions:[]`; admitted configuration `capabilityNames:["work.read"]` must
+supply that same request census and accept exactly
+`decisions:[{capabilityName:"work.read",trip:"NO_TRIP"}]`. Swapping those decision
+censuses yields `UNKNOWN/INCOMPLETE_CAPABILITIES` in both directions. Neither
+case changes the empty frontier bytes or grants capability/hold clearance.
 
 Golden canonical bytes/digests must cover every fact arm. Mutation vectors
 must cover hostile nested input; every required field and scalar bound;
