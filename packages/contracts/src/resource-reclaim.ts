@@ -1032,11 +1032,7 @@ function bindOrigin(
       );
     if (origin.launch.outcome.kind === "LIVE" && origin.terminal === null)
       issues.push("origin.terminal:required-for-live-launch");
-    if (
-      origin.terminal?.outcome.kind === "UNKNOWN" ||
-      origin.terminal?.outcome.kind === "TERMINATION_FAILED_LIVE"
-    )
-      earlierUnknown = true;
+    if (origin.terminal?.outcome.kind === "UNKNOWN") earlierUnknown = true;
     if (
       origin.terminal?.outcome.kind === "EXITED" ||
       origin.terminal?.outcome.kind === "START_FAILED"
