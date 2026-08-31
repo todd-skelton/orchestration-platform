@@ -149,13 +149,14 @@ export async function acquireFixtureSession(
     admitted.paths,
   );
   if (!request.ok) return request;
+  const acquisitionRequest = request.value;
   const parsedPlan = parseCyclePlan({
     schemaVersion: "cycle-plan/v1",
     protocol: "routine-cycle/v1",
     request: {
       schemaVersion: "cycle-request/v1",
       cycleId,
-      sessionRequest: request.value,
+      sessionRequest: acquisitionRequest,
       adapterId: "fixture.branches",
       allowedModuleIds: [],
     },
@@ -175,7 +176,7 @@ export async function acquireFixtureSession(
     encoded("platform-configuration-source/v1", admitted.source),
     encoded("configuration-provenance/v1", admitted.provenance),
     encoded("configuration-paths/v1", admitted.paths),
-    encoded("session-acquire-request/v1", request.value),
+    encoded("session-acquire-request/v1", acquisitionRequest),
     encoded("cycle-request/v1", plan.value.request),
     encoded("cycle-plan/v1", plan.value),
   ];
@@ -187,7 +188,7 @@ export async function acquireFixtureSession(
     const result = validateSessionReceiptBinding(
       {
         schemaVersion: "session-receipt/v1",
-        acquireRequestDigest: computeSessionAcquireRequestDigest(request.value),
+        acquireRequestDigest: computeSessionAcquireRequestDigest(acquisitionRequest),
         operation: "ACQUIRE",
         sessionId,
         outcome,
@@ -196,7 +197,7 @@ export async function acquireFixtureSession(
       },
       "ACQUIRE",
       sessionId,
-      request.value,
+      acquisitionRequest,
     );
     if (!result.ok) throw new Error(result.issues.join(","));
     evidence.push(encoded("session-receipt/v1", result.value));
@@ -231,7 +232,7 @@ export async function acquireFixtureSession(
     const current = await context(adapter, retained);
     if (
       !validateSessionAcquireRequestBinding(
-        request.value,
+        acquisitionRequest,
         current.source,
         current.provenance,
         current.paths,
