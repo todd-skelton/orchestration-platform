@@ -807,15 +807,15 @@ export async function validateBootstrapSnapshot(snapshot) {
         ? "pnpm --dir ../.. exec vitest run test/contracts"
         : name === "@orchestration-platform/adapter-sdk"
           ? "pnpm --dir ../.. exec vitest run test/adapter-sdk"
-        : name === "@orchestration-platform/walking-skeleton"
-          ? "pnpm --dir ../.. exec vitest run fixtures/walking-skeleton/test"
-          : name === "@orchestration-platform/config"
-            ? "pnpm --dir ../.. exec vitest run test/config"
-            : name === "@orchestration-platform/cli"
-              ? "pnpm --dir ../.. exec vitest run test/cli"
-              : name === "@orchestration-platform/conformance"
-                ? "node ../../scripts/harness-test.mts"
-                : `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
+          : name === "@orchestration-platform/walking-skeleton"
+            ? "pnpm --dir ../.. exec vitest run fixtures/walking-skeleton/test"
+            : name === "@orchestration-platform/config"
+              ? "pnpm --dir ../.. exec vitest run test/config"
+              : name === "@orchestration-platform/cli"
+                ? "pnpm --dir ../.. exec vitest run test/cli"
+                : name === "@orchestration-platform/conformance"
+                  ? "node ../../scripts/harness-test.mts"
+                  : `node ../../scripts/capability-not-implemented.mjs ${issue} ${name}:test`;
     if (manifest.scripts?.test !== expectedTest) fail(`${name} test placeholder owner mismatch`);
     for (const [exportKey, value] of Object.entries(manifest.exports)) {
       const expectedTarget =
