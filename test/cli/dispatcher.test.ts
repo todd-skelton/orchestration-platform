@@ -61,7 +61,7 @@ function registrations(handler: unknown = configCommandHandler) {
     row.family !== "config"
       ? structuredClone(row)
       : {
-          ...structuredClone(row),
+          ...structuredClone({ ...row, handler: null }),
           implementation: "implemented",
           handler,
           commands: row.commands.map((shape) => ({
@@ -390,8 +390,12 @@ describe("ISS-003 pure dispatcher and config handler", () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
-  test("pure slice leaves live bootstrap/registry untouched and cannot write output", async () => {
-    expect(commandRegistry.every((row) => row.implementation === "placeholder")).toBe(true);
+  test("only config is implemented and pure dispatch cannot write output", async () => {
+    expect(
+      commandRegistry
+        .filter((row) => row.implementation === "implemented")
+        .map((row) => row.family),
+    ).toEqual(["config"]);
     for (const path of [
       "packages/cli/src/dispatcher.ts",
       "packages/config/src/config-command.ts",

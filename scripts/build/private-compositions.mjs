@@ -51,6 +51,11 @@ const expectedConfiguration = Object.freeze({
       entryPoint: "packages/host-custody/build/broker-service-composition.ts",
       output: "packages/host-custody/dist/orchestration-host-custody-broker.mjs",
     },
+    {
+      id: "cli",
+      entryPoint: "packages/cli/build/composition.ts",
+      output: "packages/cli/dist/orchestrate.mjs",
+    },
   ],
 });
 
@@ -105,10 +110,22 @@ function brokerComposeResolver(targetId) {
 }
 
 function removeSourcePathAnnotations(text) {
-  return text
-    .split("\n")
-    .filter((line) => !/^\/\/ [a-zA-Z0-9_.@/-]+\.[cm]?[jt]sx?$/.test(line))
-    .join("\n");
+  return (
+    text
+      .split("\n")
+      .filter((line) => !/^\/\/ [a-zA-Z0-9_.@/-]+\.[cm]?[jt]sx?$/.test(line))
+      // Lazy ESM initialization also labels its function with a source path.
+      // This key is only an esbuild initializer label, never a runtime record.
+      .map((line, index, lines) =>
+        /^var init_[a-zA-Z0-9_$]+ = __esm\(\{$/.test(lines[index - 1] ?? "")
+          ? line.replace(
+              /^(\s*)"(?:packages|adapters|bootstrap|modules)\/[a-zA-Z0-9_.@/-]+\.[cm]?[jt]sx?"\(\) \{$/,
+              '$1"bundled module"() {',
+            )
+          : line,
+      )
+      .join("\n")
+  );
 }
 
 async function buildTarget(target, options) {

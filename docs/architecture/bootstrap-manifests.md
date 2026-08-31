@@ -59,7 +59,11 @@ emits the production broker service executable; it cannot resolve
 `packages/host-custody/build/broker-service-composition.ts` (`ISS-038`), emits
 the pre-N0 reduced broker service containing only host-evidence core methods and
 no downstream operation registry or release/credential-verification client.
-No runtime import or dynamic composition exists.
+A sixth, `packages/cli/build/composition.ts` (`ISS-003`), composes the static
+CLI registry, config handler, loader, and process snapshot. It cannot resolve
+`#broker-compose`. The config registration defers only its fixed implementation
+import so the source registry can be inspected before building; bundling closes
+that import. No runtime discovery or dynamic composition exists.
 
 ## Private composition build contract
 
@@ -75,8 +79,9 @@ options. The configuration contains exactly these entries and outputs:
 | `credential-broker` | `bootstrap/build/broker-service-composition.ts` | `packages/credentials/dist/orchestration-credential-broker.mjs` |
 | `host-custody-bootstrap` | `packages/host-custody/build/composition.ts` | `packages/host-custody/dist/orchestration-host-custody-bootstrap.mjs` |
 | `host-custody-broker` | `packages/host-custody/build/broker-service-composition.ts` | `packages/host-custody/dist/orchestration-host-custody-broker.mjs` |
+| `cli` | `packages/cli/build/composition.ts` | `packages/cli/dist/orchestrate.mjs` |
 
-For all five targets the immutable options are `bundle: true`, `platform: "node"`,
+For all six targets the immutable options are `bundle: true`, `platform: "node"`,
 `format: "esm"`, `target: "node24"`, `splitting: false`, `sourcemap: false`,
 `minify: false`, `treeShaking: false`, `packages: "bundle"`, and
 `external: ["node:*"]`. The script rejects additional entries, outputs,
@@ -96,7 +101,13 @@ imports through the composition entrypoint. The broker resolver remains the
 only esbuild plugin. No module-list plugin, dynamic import, or hand-maintained
 adapter registry is permitted.
 
-The three-OS bootstrap suite rebuilds all five outputs from a clean checkout and
+The root `build` command runs `scripts/build/windows-reparse-fact.mjs` before
+`scripts/build/private-compositions.mjs`, sequentially. The native step is a
+no-op on macOS/Linux and builds reviewed source on Windows after test teardown;
+the private-composition builder itself never rebuilds native artifacts while
+test workers may hold them. The CLI bin statically imports its named output.
+
+The three-OS bootstrap suite rebuilds all six outputs from a clean checkout and
 compares byte hashes. It also runs third-entry, direct/deep import, alternate
 config/plugin, externalization, emitted-specifier, tarball, installed-file, and
 source-map mutants against this exact script. A general-purpose root `esbuild`
@@ -110,6 +121,11 @@ the CLI composes only those registrations declared here. `ISS-000` creates the
 registry declarations and placeholders, while the implementation issue replaces
 only its named placeholder. Runtime discovery, filesystem scanning, and
 last-registration-wins behavior are forbidden.
+
+The `ISS-003` amendment implements only `config`, with a native async handler
+and exact per-command result schemas. All other families retain their 31
+handler-free owner-bearing placeholders; `ISS-013` owns project result admission.
+The source registration census checks these closed shapes before any CLI build.
 
 | Command family | Handler owner |
 |---|---|

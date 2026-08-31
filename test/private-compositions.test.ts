@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { describe, expect, test } from "vitest";
+import { runInNewContext } from "node:vm";
+import { describe, expect, test, vi } from "vitest";
 
 const root = resolve(import.meta.dirname, "..");
 const buildScript = resolve(root, "scripts/build/private-compositions.mjs");
@@ -12,6 +13,7 @@ const outputs = [
   ["packages/credentials/dist/orchestration-credential-broker.mjs", "ISS-020"],
   ["packages/host-custody/dist/orchestration-host-custody-bootstrap.mjs", "ISS-038"],
   ["packages/host-custody/dist/orchestration-host-custody-broker.mjs", "ISS-038"],
+  ["packages/cli/dist/orchestrate.mjs", null],
 ] as const;
 
 function build() {
@@ -33,7 +35,63 @@ async function hashes() {
 }
 
 describe("private composition build", () => {
-  test("builds the five targets deterministically without private emitted specifiers", async () => {
+  test("annotation cleanup retains runtime data and refuses private path values", async () => {
+    const source = await readFile(buildScript, "utf8");
+    const cleanup = source.slice(
+      source.indexOf("function removeSourcePathAnnotations("),
+      source.indexOf("async function buildTarget("),
+    );
+    const targetBuilder = source.slice(
+      source.indexOf("async function buildTarget("),
+      source.indexOf("\nif (process.argv.length"),
+    );
+    const output = resolve(root, "packages/cli/dist/orchestrate.mjs");
+    for (const [emitted, expected] of [
+      [
+        'var init_config_command = __esm({\n  "packages/config/src/config-command.ts"() {\n    const value = "installation/bootstrap/core.json";\n  }\n});',
+        'var init_config_command = __esm({\n  "bundled module"() {\n    const value = "installation/bootstrap/core.json";\n  }\n});',
+      ],
+      ['const value = {\n  "packages/config/src/config-command.ts"() {\n  }\n};', null],
+      ['const value = "packages/config/src/config-command.ts";', null],
+      ['const value = "bootstrap/build/composition.ts";', null],
+      ['const value = "#broker-compose";', null],
+    ] as const) {
+      const write = vi.fn();
+      // Execute the actual cleanup and target inspection with an in-memory
+      // esbuild output; no source mutation or second bundler policy is needed.
+      const inspect = runInNewContext(`${cleanup}\n(${targetBuilder})`, {
+        repositoryRoot: root,
+        resolve,
+        TextEncoder,
+        assertInsideRepository: () => {},
+        brokerComposeResolver: () => ({}),
+        atomicWrite: write,
+        build: async () => ({
+          outputFiles: [{ path: output, text: emitted }],
+          metafile: { outputs: { [output]: {} } },
+        }),
+      });
+      const pending = inspect(
+        {
+          id: "cli",
+          entryPoint: "packages/cli/build/composition.ts",
+          output: "packages/cli/dist/orchestrate.mjs",
+        },
+        {},
+      );
+      if (expected === null) {
+        await expect(pending).rejects.toThrow(
+          "leaked a private specifier, source path, or source map",
+        );
+        expect(write).not.toHaveBeenCalled();
+      } else {
+        await pending;
+        expect(write).toHaveBeenCalledExactlyOnceWith(output, new TextEncoder().encode(expected));
+      }
+    }
+  });
+
+  test("builds the six targets deterministically without private emitted specifiers", async () => {
     const firstBuild = build();
     expect(firstBuild.status, firstBuild.stderr).toBe(0);
     const firstHashes = await hashes();
@@ -44,7 +102,8 @@ describe("private composition build", () => {
     for (const [path, issue] of outputs) {
       const bytes = await readFile(resolve(root, path), "utf8");
       expect(bytes).not.toContain("#broker-compose");
-      expect(bytes).not.toMatch(/(?:packages|adapters|bootstrap|modules)\//);
+      expect(bytes).not.toMatch(/(?:^|["'`])(?:packages|adapters|bootstrap|modules)\//m);
+      expect(bytes).not.toMatch(/\bimport\s*\(/);
       expect(bytes).not.toContain("sourceMappingURL");
       const result = spawnSync(process.execPath, [resolve(root, path)], {
         cwd: root,
@@ -52,7 +111,16 @@ describe("private composition build", () => {
         windowsHide: true,
       });
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain(issue);
+      if (issue === null) {
+        expect(result.status).toBe(2);
+        expect(result.stderr).toBe("");
+        expect(result.stdout).toBe(
+          '{"command":"","diagnostics":[{"code":"ARGV_REFUSED","message":"command line refused"}],"outcome":"invalid-input","result":null,"schemaVersion":"orchestration-command-result/v1"}\n',
+        );
+      } else {
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toContain(issue);
+      }
     }
   }, 20_000);
 
