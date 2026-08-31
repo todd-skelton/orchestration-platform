@@ -3632,6 +3632,190 @@ Durable session-state/handoff admission, journal-start and later-target
 composition are explicit remaining dependencies,
 not a claim of complete cycle execution or a change to issue prerequisites.
 
+### Third complete literal group: immutable review subjects
+
+The journal/replay/terminal census is not yet a complete literal group.
+`orchestration-event/v1` must close the breaker history/probe and actual typed
+step-output arms, including worker/review subjects and reclaim; `event-journal/v1`
+must bind those events, `reduced-state/v1` must fold their complete semantics,
+and `cycle-receipt/v1` must bind the resulting ordinal/resource census. A
+generic payload, unchecked schema-name/digest pair, or fixture-only event union
+would conceal those dependencies. None of those four families is defined or
+made parseable here. Their later ledger must also settle the acyclic terminal
+receipt/journal-prefix binding before implementation.
+
+This prerequisite group instead closes three names already in the finite
+census: `worker-result-subject/v1`, `release-candidate-subject/v1`, and the
+complete `review-subject/v1` union of those two concrete records. It fixes
+immutable targets only. Review requests, attempts, authority, event history,
+follow-up and step-9 output composition remain separate complete groups;
+neither a journal reducer nor a subject materializer is added. Independent
+literal review precedes the corresponding pure parser increment.
+
+#### Closed source reference and worker-result record
+
+`C`, `Uuid`, `Digest`, `Id`, and detached closed-record/array rules are as in
+the preceding groups. All members are required and non-null, including every
+nested member. Field sequences below are canonical key order. Unknown fields,
+versions, result kinds, missing values and input code execution refuse.
+
+An inline source reference has exactly `adapterId, projectId, revision`.
+`adapterId` and `revision` use `Id`; `projectId` is `Uuid` from the admitted
+project configuration. `revision` is an opaque immutable revision token in
+that adapter/project namespace, not a portable authority identity. A Git
+adapter supplies the exact lowercase full source commit SHA here; other
+adapters may supply their own immutable token under the same grammar. The
+parser cannot distinguish an immutable token from a branch-shaped string:
+actual immutable-source admission belongs to the adapter, and a mutable name,
+abbreviation, moved token or unresolved source never suffices for later use.
+No host path, repository URL, provider ID, schema tag, timestamp or extra
+payload enters this inline record. It is not a third persisted family.
+
+`worker-result-subject/v1` has exactly six members:
+
+| Member | Exact rule |
+| --- | --- |
+| `authorAttemptId` | `Uuid` of the exact implementation or observer attempt |
+| `authorCycleId` | `Uuid` of the cycle that observed that attempt's terminal result |
+| `baseSource` | complete inline source reference above, identifying the admitted immutable base |
+| `result` | complete two-arm inline materialization union below |
+| `schemaVersion` | literal `worker-result-subject/v1` |
+| `terminalReceiptDigest` | `Digest` of that attempt's actual `worker-terminal-receipt/v1` under its owning ledger's digest function |
+
+`result` is exactly one of these closed records. Opposite-arm members are
+absent, not null. There is no common optional payload or third arm.
+
+| `kind` | Complete member census and rules |
+| --- | --- |
+| `TREE` | exactly `kind, treeDigest`; `treeDigest` is `Digest` of the retained canonical result-tree materialization bytes |
+| `ORDERED_PATCH_ARTIFACTS` | exactly `entries, kind`; `entries` is a dense array of 1–4096 closed records, each exactly `contentDigest, kind`, with `contentDigest:Digest` and `kind` exactly `PATCH` or `ARTIFACT` |
+
+Tree and entry content digests are SHA-256 over the exact retained bytes, not
+a Git object ID, an unbound filename, or a hash of a digest's hex spelling.
+Those content bytes are not JSON payload fields and have no newly invented
+public schema. The responsible adapter/materializer owns their deterministic
+format and exact-base relation; this ledger does not authorize a format or
+materializer implementation. Content whose interpretation requires paths,
+names, ordering or other metadata must bind that information in the retained
+materialization bytes; a bare blob plus mutable out-of-band metadata does not
+prove an immutable target. The portable parser treats content as a reference,
+not executable patch instructions or a filesystem locator.
+
+Entry order is semantic and is never sorted or deduplicated. Repeated entries
+are structurally allowed and retain every occurrence: identical content may
+occur twice in an ordered result. A different kind, multiplicity or ordering
+changes the subject bytes; swapping two byte-identical entries changes
+nothing. A result tree identical to the base is allowed for an observer; the
+parser does not require a source change. An empty ordered result refuses;
+missing materialization cannot be repaired by fabricating a digest.
+
+#### Closed release-candidate record and wrapper-free union
+
+`release-candidate-subject/v1` has exactly eight members:
+
+| Member | Exact rule |
+| --- | --- |
+| `assemblyCycleId` | `Uuid` of the cycle that assembled/certified this candidate |
+| `candidateDigest` | `Digest` of the actual immutable `release-candidate/v1` |
+| `certificationDigest` | `Digest` of the actual complete `release-certification/v1` |
+| `landedSource` | complete inline source reference above for the final landed revision |
+| `landedTreeDigest` | `Digest`, SHA-256 of the exact retained canonical landed-tree materialization bytes |
+| `manifestDigest` | `Digest` of the actual `release-manifest/v1` |
+| `schemaVersion` | literal `release-candidate-subject/v1` |
+| `testBundleDigest` | `Digest` of the exact stable test bundle bound by that certification |
+
+Candidate, certification, manifest and test-bundle identities use their
+existing owning contracts; this group defines no replacement hash, release
+record, OS-receipt union or certification format. All four references are
+non-null even though this parser cannot authenticate their preimages. A
+pre-merge worker result or uncertified candidate is not a third subject arm.
+The assembly cycle is not a worker attempt: release assembly's existing
+no-worker/no-review route does not invent an author worker to fill a field.
+Actual build/assembly/certification producer identities must instead be
+obtained from the authentic referenced evidence for later independence checks.
+
+`review-subject/v1` is the exact union of the two concrete records above,
+discriminated solely by their existing `schemaVersion`. Its public union
+parser delegates to the corresponding complete concrete parser and returns
+the same detached value. Canonical byte parsing and serialization retain that
+concrete schema version. There is no JSON record whose `schemaVersion` is
+`review-subject/v1`, no `{kind,subject}` wrapper, no copied subject digest,
+and no separate union digest. Such an invented record refuses, including
+through generic parsing. Later request/authority fields must carry or name the
+concrete arm without granting worker-result review candidate authority.
+
+#### Digest graph, later joins, and admission boundary
+
+`DworkerSubject` and `DcandidateSubject` are SHA-256 of exactly
+`UTF8("orchestration-platform") || 00 || UTF8(domain) || 00 || u32be(1) ||
+07 || u64be(byteLength(C(subject))) || C(subject)`, under respectively
+`worker-result-subject/v1` and `release-candidate-subject/v1`. Each is one
+canonical-record part including the final LF; there are no field-wise or
+raw-32 parts. Generic serialization returns that concrete arm's bytes and
+framed digest. The union identity is that same digest, never a rehash under
+`review-subject/v1`. Nested source/result/entry bytes contribute in place;
+there are no separate source-reference, result-list or entry schema/digest
+families. No subject embeds its own identity, review, selecting journal
+prefix or downstream follow-up.
+
+The acyclic worker graph is actual launch/attempt and terminal observation,
+then immutable subject, then later review request/attempt/authority and
+disposition. `worker-terminal-receipt/v1` must not depend on the subject that
+references it; its future ledger must bind the actual observed attempt/result
+without including `DworkerSubject`. The step-9 composition later binds both
+terminal receipt and subject, not a replacement generic output. The candidate
+graph is landed source, candidate/manifest/test bundle and certification,
+then candidate subject, then independent candidate review and promotion.
+Upstream candidate/certification evidence must not depend on this downstream
+subject or its review. This adds no selection, signing or trust protocol.
+
+Before use, the owning ISS-008/009/013/014/026 compositions must obtain actual
+canonical records and retained content, recompute their designated identities,
+and equal-bind every reference. For a worker subject they prove the same
+attempt and author cycle through dispatch/launch/terminal evidence, the
+implementation/observer role, exact base adapter/project/revision and the
+actual materialized result. Review-role attempts produce the separate
+`review-attempt-result/v1`, never a worker subject to review themselves. For a
+candidate they prove assembly cycle, fresh final landed SHA/token and tree,
+unchanged candidate/manifest, the exact stable test bundle and authenticated
+complete three-OS certification. Matching digest-shaped strings is not proof.
+No copied field is independently trusted when its source record is missing.
+
+ISS-009 additionally proves a distinct later review cycle and attempt,
+unchanged concrete subject and review packet, complete attempt/history, and
+identity non-aliasing; unequal UUID text alone does not prove independent
+actors. Candidate reviewers must be independent of its actual producer
+identities, not merely of a nonexistent author worker. Optional code-host
+materialization must prove identical result bytes/tree immediately before
+review reduction and mutation; a moved revision or new materialization cannot
+inherit an earlier pass. Worker-result acceptance cannot certify a candidate.
+Stable promotion and current external authority remain mandatory. Parsing,
+serializing or retaining any subject neither accepts a review nor admits a
+module, launches a worker, mutates a project, certifies or promotes a release.
+
+#### Required future evidence and proportionality
+
+| Acceptance / removal attack | Cheapest discriminating evidence after separate review |
+| --- | --- |
+| Exact shapes and branches | Positive TREE, mixed PATCH/ARTIFACT, repeated-entry and candidate records; deletion/addition/rename/type/null mutants at every depth; crossed result fields/kinds and future versions refuse; hostile records/arrays invoke no input code |
+| Canonical identities | Independently pinned canonical bytes, full frame hex and expected digest for both worker arms and the candidate; shuffled input insertion is equivalent, noncanonical persisted bytes refuse; wrong domain/tag/count, raw-32 framing, missing LF, untagged and union-rehash alternatives differ/refuse |
+| Ordered result and bounds | 1/4096 entries succeed, 0/4097 refuse; swapping distinct entries, deleting an occurrence, PATCH-to-ARTIFACT, one-byte content or base/attempt/cycle/terminal substitution changes identity; swapping identical entries preserves it; no sorting or deduplication |
+| Complete union dispatch | Both concrete arms round-trip through their specialized, union and generic entry points with identical bytes/digest; a concrete parser refuses the opposite arm; alias-tagged records, wrappers, hybrid members and unknown versions refuse; later request binding rejects substitution of an otherwise valid opposite arm |
+| Actual subject joins, later composition | Independently replace each referenced record/content preimage, namespace, immutable revision, cycle, attempt, role or terminal; remove one comparison and the corresponding substitution must be admitted and fail the suite; parser-only shape success is not join evidence |
+| Independence and candidate gates, later owners | Same-cycle/same-attempt or aliased author-reviewer, review-role self-targeting, missing/partial certification, pre-merge/moved landed source, changed manifest/bundle/candidate, rematerialized result, and worker review reused for release all refuse; valid distinct later reviews remain possible |
+
+This documentation packet executes no vector. Prediction: two concrete record
+parsers, one existing-name union dispatcher, the inline source/result shapes,
+two framed identities and focused contract vectors suffice for the later pure
+increment. Removing a source/attempt/materialization/reference binding admits
+the named substitution; adding a wrapper, generic payload, event mechanism,
+copied trust verdict or new materialization family buys no discriminator here.
+Its footprint is this subsection and ISS-002's additive scope only. All four
+journal/replay/terminal families, breaker/module/route/dispatch/reclaim,
+review request/result/authority, disposition/follow-up and ISS-013's remaining
+project groups stay explicitly open. ISS-041 remains partial; production
+journal/state/runtime work and ISS-010/026 acceptance remain unchanged.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
