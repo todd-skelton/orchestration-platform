@@ -20,6 +20,11 @@ async function run(executable, args) {
     cwd: repositoryRoot,
     windowsHide: true,
     maxBuffer: 20 * 1024 * 1024,
+  }).catch(async (error) => {
+    // Drain captured output before Node renders (and may shorten) the original error.
+    if (error.stdout) await new Promise((done) => process.stdout.write(error.stdout, done));
+    if (error.stderr) await new Promise((done) => process.stderr.write(error.stderr, done));
+    throw error;
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
