@@ -123,8 +123,11 @@ export function requireLiveFacts(facts, operations, expectedIdentity, nativeHand
   )
     refuse();
   for (const fact of facts) {
+    // Native identification populates the snapshot before IDENTIFY is recorded;
+    // every later successful call retains it. Only the initial OPEN lacks it.
     if (
       fact.nativeHandle !== final.nativeHandle ||
+      (fact.operation !== "OPEN" && fact.identity === null) ||
       (fact.identity !== null && !sameIdentity(fact.identity, expectedIdentity))
     )
       refuse();
@@ -189,9 +192,12 @@ export function parseCustodyResult(value) {
     identity(parsed.identity);
     if (!operationsAre(facts, custodyOperations) || !facts.every(successful)) refuse();
     for (const fact of facts) {
-      if (fact.identity !== null && !sameIdentity(fact.identity, parsed.identity)) refuse();
+      if (
+        (fact.operation !== "OPEN" && fact.identity === null) ||
+        (fact.identity !== null && !sameIdentity(fact.identity, parsed.identity))
+      )
+        refuse();
     }
-    if (facts.at(-1).identity === null) refuse();
   }
   return Object.freeze({ identity: parsed.identity, facts });
 }

@@ -51,14 +51,18 @@ function fact(operation, changes = {}) {
 }
 const ready = (sequence = "0") => ({ sequence, name: "READY", configuration: {} });
 const command = (sequence, name) => ({ sequence, name });
-function syntheticAddon(acquisition = fact("TRY_LOCK")) {
+const openingFacts = () =>
+  openOperations.map((operation, index) =>
+    fact(operation, { nonInheritable: index === openOperations.length - 1 ? true : null }),
+  );
+function syntheticAddon(acquisition = fact("TRY_LOCK"), opening = openingFacts()) {
   const calls = [];
   const handle = Object.freeze({});
   const addon = Object.freeze({
     interfaceVersion,
     openFixedLock(path) {
       calls.push(["open", path]);
-      return { handle, facts: openOperations.map((operation) => fact(operation)) };
+      return { handle, facts: opening };
     },
     tryLock(actual) {
       assert.equal(actual, handle);
@@ -144,7 +148,7 @@ test("custody wrapper preserves null on successful metadata policy refusal and f
   const operations = windows
     ? ["OPEN", "IDENTIFY", "IDENTIFY", "CLOSE"]
     : ["OPEN", "IDENTIFY", "CLOSE"];
-  const facts = operations.map((operation) => fact(operation));
+  const facts = operations.map((operation) => fact(operation, { nonInheritable: null }));
   assert.equal(parseCustodyResult({ identity: null, facts }).identity, null);
   assert.equal(parseCustodyResult({ identity: id, facts }).identity.kind, id.kind);
   const closingFailed = [
@@ -155,6 +159,14 @@ test("custody wrapper preserves null on successful metadata policy refusal and f
   assert.throws(() => parseCustodyResult({ identity: id, facts: closingFailed }));
   assert.throws(() => parseCustodyResult({ identity: null, facts: [fact("TRY_LOCK")] }));
   assert.throws(() => parseCustodyResult({ identity: other, facts }));
+  // Successful native metadata carries its identity at that call, not merely
+  // in the later CLOSE snapshot or the accepted outer wrapper.
+  for (const [index, call] of facts.entries()) {
+    if (call.operation !== "IDENTIFY") continue;
+    const missing = facts.map((entry, i) => (i === index ? { ...entry, identity: null } : entry));
+    assert.deepEqual(missing.at(-1).identity, id);
+    assert.throws(() => parseCustodyResult({ identity: id, facts: missing }));
+  }
   const custody = {
     rootIdentity: other,
     leafIdentity: id,
@@ -211,6 +223,21 @@ test("synthetic session performs only one fixed call per command and no automati
     ["open", "try", "release", "close"],
   );
   assert.throws(() => session.run(command("13", "CLOSE")));
+});
+
+test("READY refuses each missing post-OPEN identity before any acquisition", () => {
+  const opening = openingFacts();
+  assert.equal(opening[0].identity, null); // Legitimate native OPEN snapshot.
+  for (let index = 1; index < opening.length; index++) {
+    const missing = opening.map((entry, i) => (i === index ? { ...entry, identity: null } : entry));
+    if (index < opening.length - 1) assert.deepEqual(missing.at(-1).identity, id);
+    const { addon, calls } = syntheticAddon(undefined, missing);
+    const session = candidateSession(addon, "/synthetic/native-lock", id);
+    assert.throws(() => session.run(ready()));
+    assert.equal(session.state, "FAILED");
+    assert.throws(() => session.run(command("1", "ACQUIRE")));
+    assert.deepEqual(calls, [["open", "/synthetic/native-lock"]]);
+  }
 });
 
 test("duplicate, wrong-state and forged commands invoke no extra native operation", () => {
