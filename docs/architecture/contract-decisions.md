@@ -6141,6 +6141,238 @@ independent tests. No source, SDK/CLI, provider, probe, new family or ISS026 wor
 Independent exact-head review precedes implementation. The author claims no
 PASS, resource vacancy or completed ISS041.
 
+### Complete project-cycle event, journal, replay and terminal literals (round 408)
+
+This proposal closes the four remaining ISS041 public names together:
+`orchestration-event/v1`, `event-journal/v1`, `reduced-state/v1` and
+`cycle-receipt/v1`. It is deliberately complete only for the admitted PROJECT
+routine path. Release ASSEMBLE_CERTIFY/PROMOTE outputs have no admitted producer
+family in this slice and cannot be encoded as project output, opaque payload or
+schema/digest pair. Adding them requires a versioned event/reducer replan after
+their independently reviewed producer families exist. No private journal,
+snapshot cache, command activation, scheduler or runtime authority is added.
+
+Reuse C, Digest, Uuid, canonical decimal strings and complete detached nested
+records. All fields are required, arrays dense and listed members canonical.
+Unknown fields/versions/enums, sparse/exotic objects, accessors, proxies,
+noncanonical UTF-8/BOM/CR/trailing bytes and malformed nested producers refuse.
+Malformed producer bytes never become a successful UNKNOWN wrapper.
+
+#### Events and complete project-path output union
+
+`orchestration-event/v1` has exactly `cycleId, phase, position,
+previousEventDigest, schemaVersion, step, output`. cycleId is Uuid; phase is
+STARTED or TERMINAL; position is Dec(0,4095); previousEventDigest is null only
+at position0 and otherwise Digest; step is the complete existing routine step
+identity. STARTED requires output:null. TERMINAL requires one output below.
+Every event cycle equals step.cycleId. Devent is the standard one-part framed
+digest in domain `orchestration-event/v1` over the complete event.
+
+The closed terminal output union uses these exact shapes. Each `kind` is also
+the only admitted step ordinal/kind shown; dependent records occur in the
+listed order and retain their existing designated identities:
+
+| ordinal | output.kind | Exact members after kind |
+| --- | --- | --- |
+| 1 | SESSION | `health`; complete session-health |
+| 2 | PROJECT_FACTS | `facts`; complete project-facts |
+| 3 | BREAKER | `receipt`; complete breaker-receipt |
+| 4 | MODULE | `result`; complete module-action-plan or module-no-action |
+| 5 | ROUTE | `route`; complete route-selection |
+| 6 | PREFLIGHT | `preflight`; complete project-preflight |
+| 7 | DISPATCH_PLAN | `plan`; complete dispatch-plan |
+| 8 | LAUNCH | `launch, terminal`; terminal is the dependent complete START_FAILED terminal for known start failure, null for LIVE, and null or its actual dependent UNKNOWN terminal for UNKNOWN launch |
+| 9 | WORKER_TERMINAL | `attempt, resultSubject, terminal`; terminal is complete; review EXITED may have attempt/null subject, ordinary EXITED has null attempt/optional subject, and known failure or UNKNOWN/live terminal has both null |
+| 10 | REVIEW_AUTHORITY | `authority`; complete review-authority |
+| 11 | DISPOSITION | `disposition, followUp`; complete action-disposition and its exact cause-bound request or null |
+| 12 | MUTATION_PLAN | `plan`; complete project-mutation-plan |
+| 13 | PROJECT_APPLY | `receipt`; complete project-apply-receipt |
+| 14 | RECLAIM | `receipt`; complete resource-reclaim-receipt |
+| 15 | CYCLE_TERMINAL | `receipt`; complete cycle-receipt |
+| 2–13 | SKIP | `skip`; complete routine-step-skip whose ordinal equals event step |
+
+There is no generic ERROR/output arm. Existing producer UNKNOWN/refusal cells
+remain inside their owning record. A diagnostic earlier UNKNOWN may have its
+own TERMINAL event and then ends authoritative progression without suffix
+skips, reclaim or cycle terminal. STARTED is an append observation only; it
+does not prove an external call occurred. A terminal event is admitted only by
+the owning supplied relation and exact output identity.
+
+For each step, the STARTED and TERMINAL event carry identical step bytes.
+Exactly one STARTED precedes at most one TERMINAL. STARTED's step
+predecessorJournalDigest equals the journal prefix before STARTED. Resume uses
+those same bytes after later appends. The terminal's previousEventDigest names
+the immediately preceding event, not the before-step prefix. Its primary output
+is the owning record named in routine: launch at8, terminal at9, authority at10,
+disposition at11, mutation plan at12, apply at13, reclaim at14 and cycle receipt
+at15. Composite dependents cannot be dropped, reordered or substituted.
+
+#### Persisted append-only journal and authentic beginning
+
+`event-journal/v1` is both a logical parsed record and a specialized persisted
+byte format. Its logical fields are exactly `cycleId, cyclePlanDigest, events,
+genesisDigest, schemaVersion, sessionId`. events is0–4096 complete events in
+position order. The header preimage is exactly `cycleId, cyclePlanDigest,
+sessionId`; Dgenesis is `SHA256(UTF8("orchestration-platform") || 00 ||
+UTF8("event-journal-genesis/v1") || 00 || C(header))`. This identity domain is not a
+fifth family. The header values bind the actual cycle-plan/request/session.
+
+Persisted bytes are exactly ASCII `OPJ1`, byte00, u32be(byteLength(C(logical
+header including schemaVersion and genesisDigest))), that canonical header,
+then for every event: u32be(byteLength(C(event))) followed by C(event). Lengths
+are unsigned, canonical and bounded by the family parsers. A partial header or
+frame, extra/trailing byte, invalid UTF-8, wrong length, position gap, duplicate,
+cycle mismatch or event after CYCLE_TERMINAL refuses the whole journal. Generic
+canonical JSON serialization is not used for this family; its public parser and
+serializer own this exact framing. NDJSON and rewritten JSON arrays are invalid.
+
+For any physical prefix ending on a complete frame, Dprefix is SHA256 of
+`UTF8("orchestration-platform") || 00 || UTF8("event-journal-prefix/v1") || 00
+|| u64be(prefixByteLength) || exactPrefixBytes`. The header-only prefix is the
+ordinal1 predecessor. Djournal uses the same formula with domain
+`event-journal/v1` over the complete selected bytes. Every event position and
+previousEventDigest is recomputed; position0 previous is null, later previous
+equals Devent of the prior row. Every STARTED step predecessor equals Dprefix
+immediately before its own frame.
+
+Genesis is authentic only when the journal owner create-once selects these
+bytes from an actual admitted cycle plan/session, the retained fresh-root
+initial census proves no prior history, and the dedicated journal file is
+created absent with read-back. Other fixture evidence files may already exist.
+Caller empty bytes, an empty events array, reset or truncate prove nothing.
+Production genesis/reset remains unavailable.
+The fixture journal is bounded to one cycle and4096 events; capacity exhaustion
+is a typed append refusal outside the journal, never truncation or terminal
+success. Global breaker/review reuse still requires the authenticated earlier
+public history supplied to their existing relations; this cycle-only file does
+not claim global-history completeness.
+
+Append is compare-and-append against exact Dprefix and next position. If the
+same exact event is already the sole next frame, read-back is idempotent and
+returns the existing resulting prefix without another append. Different bytes,
+two next frames, suffix after terminal, moved prefix or ambiguous partial write
+is CORRUPT/UNKNOWN and grants no retry. Actual durable create/append/fsync/
+read-back remains ISS010 implementation evidence, not parser authority.
+
+#### Deterministic reduced state
+
+`reduced-state/v1` has exactly `bindings, cycleId, cyclePlanDigest,
+journalPrefixDigest, outcome, pendingStep, schemaVersion, steps`. steps is a
+dense0–15 ordinal-ordered array. Each row is exactly `dependentDigests,
+ordinal, primaryDigest, state, stepDigest`: state STARTED, TERMINAL or SKIPPED;
+stepDigest is Dstep; primaryDigest is null only for STARTED; dependentDigests
+is a0–2 array in owning composite order and empty for noncomposites. SKIPPED
+primary is Dskip. No row exists for an unreached ordinal.
+
+bindings is exactly `actionDigest, applyDigest, followUpDigest,
+mutationPlanDigest, reclaimDigest, reviewAuthorityDigest, subjectDigest`.
+Each is Digest or null, derived from actual terminal outputs and retained once
+known. It is not an expected-digest input. pendingStep is null or the complete
+STARTED step identity; it identifies the only resumable observation and never
+allocates another attempt/transaction. journalPrefixDigest is the exact prefix
+folded, including the last event.
+
+Outcome is this closed union:
+
+| kind | Exact additional members |
+| --- | --- |
+| RUNNING | none |
+| WAITING_WORKER | `attemptId` Uuid |
+| WAITING_REVIEW | `requestDigest` Digest |
+| WAITING_ACTION | `dispositionDigest` Digest or null while step11 is STARTED |
+| TERMINALIZING | `terminalStepDigest` Digest |
+| COMPLETED / COMPLETED_NO_WORK / FAILED_KNOWN | `cycleReceiptDigest` Digest; only after the terminal event |
+| UNKNOWN | `reason`; EARLIER_UNKNOWN, PREFIX_CONFLICT, OUTPUT_CONFLICT, RESOURCE_UNKNOWN or HISTORY_UNPROVEN |
+
+Fold starts only from the authentic header and actual cycle plan. It consumes
+events in persisted order, recomputes every event/output/step/prefix identity,
+applies every existing producer relation, and emits one canonical state without
+clock, locale, directory order or advisory telemetry. STARTED without terminal
+sets pendingStep and the appropriate waiting state; replay never reruns an
+external effect merely because it is pending. Duplicate/conflicting terminal,
+wrong composite, false skip, moved target/transaction, unknown suffix, missing
+allocation, or wrong predecessor yields failure/UNKNOWN and no authority.
+
+Known routes require the exact1–14 terminal/skip census described by routine;
+ordinals1,14,15 never skip. Known early outputs chain every prior-known-terminal
+skip. Workerless and known start failure retain their special skips. UNKNOWN
+never pads. Reclaim NO_ALLOCATION/RECLAIMED permits terminalization; known
+RETAINED maps FAILED_KNOWN with capacity retained; live/unknown reclaim maps
+UNKNOWN and cannot start15. Complete follow-up and nonmutating COMPLETE may map
+COMPLETED only with actual reclaim. NO_ACTION after eligible work maps
+FAILED_KNOWN. Bindings/resource evidence stays in the journal even when the
+reduced state retains only designated identities. Reduced state is a supplied
+prefix claim, never source/session/resume authority or a snapshot cache.
+
+Dreduced is the standard one-part framed digest in domain `reduced-state/v1`.
+The parser closes every structural state; the deterministic reducer produces
+only states justified by a fully parsed prefix. Operational JOURNAL_ONLY,
+SNAPSHOT_CURRENT, SNAPSHOT_STALE and CORRUPT remain storage states: v1 ISS041 is
+JOURNAL_ONLY. No snapshot bytes or receipt are introduced; malformed storage is
+CORRUPT and does not become a valid reduced-state record.
+
+#### Acyclic terminal receipt and final replay
+
+Before step15, replay through the authoritative step14 terminal yields a
+reduced state eligible to terminalize. Ordinal15 step identity has inputDigest
+equal Dreduced of that pre-15 state and predecessorJournalDigest equal Dprefix
+before its STARTED event. Append STARTED with that immutable step. Replay
+through STARTED yields TERMINALIZING and the new prefix. Only then construct
+the receipt.
+
+`cycle-receipt/v1` has exactly `bindings, cycleId, cyclePlanDigest, outcome,
+reclaimOutcome, reducedStateDigest, schemaVersion, startedJournalPrefixDigest,
+sessionId, steps, terminalStepDigest`. sessionId equals the actual cycle request
+session. bindings and steps are canonically identical to the
+TERMINALIZING reduced state. reducedStateDigest is that state's Dreduced;
+startedJournalPrefixDigest is the exact Dprefix after STARTED and before the
+terminal event; terminalStepDigest is Dstep. reclaimOutcome is NO_ALLOCATION,
+RECLAIMED or RETAINED and exactly matches the actual known reclaim result.
+
+Receipt outcome is exactly COMPLETED, COMPLETED_NO_WORK or FAILED_KNOWN.
+COMPLETED requires applied mutation or explicit nonmutating/complete-follow-up
+plus actual reclaim. COMPLETED_NO_WORK requires the genuine no-eligible-action
+route and NO_ALLOCATION. FAILED_KNOWN retains its actual known terminal source,
+follow-up and any RETAINED capacity. An earlier UNKNOWN, live process or unknown
+reclaim never starts15 and produces no cycle receipt; its valid journal prefix
+reduces to UNKNOWN and blocks re-entry. This is an explicit correction to the
+readiness candidate matrix: adding an unreachable UNKNOWN receipt would pad the
+missing authoritative suffix. A future runtime needing a post-STARTED terminal
+unknown needs a versioned replan with a concrete upstream producer, not a v1
+escape arm. A receipt's steps contains exactly terminal/skip rows1–14 plus the
+STARTED row15.
+
+DcycleReceipt is the standard one-part frame in domain `cycle-receipt/v1`.
+The later ordinal15 TERMINAL event carries the complete receipt and its primary
+identity. The receipt never names DterminalEvent, the post-event Dprefix,
+Djournal or a final reduced state. Final replay may consume that event, verify
+the receipt against the immediately preceding TERMINALIZING prefix/state, and
+produce the corresponding completed state with cycleReceiptDigest. This DAG is
+`pre15 state -> step15 STARTED -> terminalizing state/prefix -> receipt ->
+terminal event -> final replay`; there is no self or future-prefix edge.
+
+The receipt is idempotent read evidence only. It does not release a lease,
+clear a fence, schedule follow-up, authenticate review, authorize mutation or
+establish physical absence beyond the bound reclaim record. Scheduler re-entry
+is a later authenticated tick.
+
+Required vectors include every phase/output/composite/skip/outcome/pending/null
+cell; independent canonical event/state/receipt frames and physical journal
+bytes; authentic versus caller-empty genesis;0/1/4096/4097 events; partial
+frame, truncation, duplicate/reorder/wrong cycle/prefix, append after terminal,
+STARTED-without-terminal and conflicting terminal; every early/worker/review/
+mutation/reclaim route; byte-identical replay on all OSes; and hash mutants that
+introduce receipt self/post-prefix cycles. Restart evidence must show unchanged
+external-effect counts.
+
+Scope is this ledger, minimal routine/journal ownership notes, ISS010/026/041
+drafts and round408. Predicted implementation is one bounded contracts module,
+specialized journal byte parser/serializer, pure reducer, registry/harness and
+independent tests. No code, commands, provider, private sidecar/index, snapshot,
+new family, release output or ISS026 implementation. Independent exact-head
+review precedes code. The author claims no PASS, durable append or completed
+ISS041.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable

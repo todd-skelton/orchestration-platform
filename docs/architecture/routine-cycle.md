@@ -149,3 +149,12 @@ Terminal mapping is fixed:
 The supervisor—not the engine cycle—owns re-entry. It invokes one tick at a time
 from an installed OS scheduler definition, proves the prior tick/cycle terminal
 or safely resumable, and records cadence/restart evidence.
+
+Round408 proposes the project-path event/journal/reduced/receipt literals.
+Every reached step appends STARTED then at most one TERMINAL event; its immutable
+step names the prefix before STARTED. At ordinal15, step14 replay produces the
+step input, STARTED produces the terminalizing prefix/state, the receipt binds
+only those upstream values, and TERMINAL carries it. The receipt never names
+its enclosing event or final prefix. Release-only outputs require a versioned
+later replan. These definitions remain pending review, not durable journal or
+resume authority.
