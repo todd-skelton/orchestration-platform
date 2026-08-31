@@ -492,6 +492,9 @@ test("pins complete disposition/intent/cause cells to independent bytes, full fr
     expect(hash(Buffer.from(golden.frameHex, "hex"))).toBe(golden.digest);
     expect(hash(golden.text)).not.toBe(golden.digest);
     expect(c.parseCanonicalContractBytes(golden.schema, bytes)).toEqual({ ok: true, value });
+    const shared = new Uint8Array(new SharedArrayBuffer(bytes.byteLength));
+    shared.set(bytes);
+    expect(c.parseCanonicalContractBytes(golden.schema, shared).ok).toBe(false);
     expect(
       c.serializeContract(golden.schema, Object.fromEntries(Object.entries(value).reverse())),
     ).toEqual({ ok: true, bytes, digest: golden.digest });
@@ -1184,21 +1187,31 @@ test("review request, attempt and every finding retain actual descriptor and wor
     },
     unknown(),
   );
-  // Preserve independence even when a failed review has no request/attempt preimage here.
+  // Same-cycle subjects already fail the reused module input boundary: do not hash invalid input.
   for (const [reviewIndex, field] of [
     [0, "authorCycleId"],
-    [0, "authorAttemptId"],
     [2, "assemblyCycleId"],
   ] as const) {
     const failed = context({ reviewIndex, failure: "1" });
+    const outcome = { kind: "FAILURE", followUp: null };
+    const result = disposition(failed.input, outcome);
+    expect(bind(failed, outcome, result).ok).toBe(true);
+    const input = copy(failed.input);
+    input.moduleInput.reviewSubject[field] = input.moduleInput.cycleRequest.cycleId;
+    expect(c.parseModulePlanInput(input.moduleInput).ok).toBe(false);
+    expect(c.parseDispositionInput(input).ok).toBe(false);
+    expect(c.validateActionDispositionBinding(input, failed.out, failed.err, result).ok).toBe(
+      false,
+    );
+  }
+  // The same author attempt remains intrinsically valid; isolate the new relation's check.
+  {
+    const failed = context({ reviewIndex: 0, failure: "1" });
     rejection(
       failed,
       (input) => {
         const target = copy(input.moduleInput.reviewSubject);
-        target[field] =
-          field === "authorAttemptId"
-            ? input.worker.plan.attemptId
-            : input.moduleInput.cycleRequest.cycleId;
+        target.authorAttemptId = input.worker.plan.attemptId;
         const a = upstream(true, target, copy(input.moduleInput));
         input.moduleInput = a.input;
         input.actionPlan = a.plan;
