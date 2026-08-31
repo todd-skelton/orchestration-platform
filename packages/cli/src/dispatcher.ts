@@ -47,16 +47,26 @@ const resultSchemas = new Map([
   ["config paths", "configuration-paths/v1"],
 ]);
 
-// Existing static metadata remains the sole owner/option registry. The ISS-003
-// composition replaces its config placeholder only after the build amendment.
+// Static registration remains the sole owner/option registry; detach only the
+// handler and result schema for the common command-shape comparison.
 const metadata = commandRegistry.map((registration) => {
-  const snapshot = snapshotClosedRecord(registration, registrationFields);
+  const { handler: _handler, ...data } = { handler: null, ...registration };
+  const snapshot = snapshotClosedRecord(
+    {
+      ...data,
+      commands: data.commands.map((shape) => {
+        const { resultSchema: _schema, ...command } = { resultSchema: null, ...shape };
+        return command;
+      }),
+    },
+    registrationFields,
+  );
   if (!snapshot.ok) throw new Error("dispatcher:static-registration-drift");
   return snapshot.value;
 });
 const commandShapes = new Map(
-  commandRegistry.flatMap((registration) =>
-    registration.commands.map((shape) => {
+  metadata.flatMap((registration) =>
+    (registration.commands as readonly { argv: readonly string[] }[]).map((shape) => {
       const snapshot = snapshotClosedRecord(shape, ["argv", "optional", "required"]);
       if (!snapshot.ok) throw new Error("dispatcher:static-command-drift");
       return [shape.argv.join(" "), snapshot.value] as const;

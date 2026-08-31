@@ -37,6 +37,11 @@
       "id": "host-custody-broker",
       "entryPoint": "packages/host-custody/build/broker-service-composition.ts",
       "output": "packages/host-custody/dist/orchestration-host-custody-broker.mjs"
+    },
+    {
+      "id": "cli",
+      "entryPoint": "packages/cli/build/composition.ts",
+      "output": "packages/cli/dist/orchestrate.mjs"
     }
   ]
 }

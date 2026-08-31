@@ -9,7 +9,13 @@ import { normalizeTrackedText } from "../scripts/tracked-text.mjs";
 let baseline: Awaited<ReturnType<typeof loadBootstrapSnapshot>>;
 
 function mutant(): any {
-  return structuredClone(baseline);
+  return {
+    ...structuredClone({ ...baseline, cliRegistry: [] }),
+    cliRegistry: baseline.cliRegistry.map((row: any) => {
+      const { handler, ...data } = row;
+      return { ...structuredClone(data), ...(Object.hasOwn(row, "handler") ? { handler } : {}) };
+    }),
+  };
 }
 
 function asCrLf(value: string) {
@@ -185,13 +191,28 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
-      "sixth build target",
+      "seventh build target",
       (snapshot: any) => {
         snapshot.buildConfiguration.targets.push({
           id: "extra",
           entryPoint: "extra.ts",
           output: "extra.mjs",
         });
+      },
+    ],
+    [
+      "missing native root build step",
+      (snapshot: any) => {
+        snapshot.rootPackage.scripts.build = "node scripts/build/private-compositions.mjs";
+      },
+    ],
+    [
+      "CLI broker alias admission",
+      (snapshot: any) => {
+        snapshot.buildScriptSource = snapshot.buildScriptSource.replace(
+          'const aliasTargets = new Set(["bootstrap", "self-host", "host-custody-bootstrap"]);',
+          'const aliasTargets = new Set(["bootstrap", "self-host", "host-custody-bootstrap", "cli"]);',
+        );
       },
     ],
     [
@@ -235,6 +256,37 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     ["missing CLI handler", (snapshot: any) => snapshot.cliRegistry.pop()],
+    ["missing config implementation", (snapshot: any) => delete snapshot.cliRegistry[0].handler],
+    ["non-function config handler", (snapshot: any) => (snapshot.cliRegistry[0].handler = null)],
+    ["extra config member", (snapshot: any) => (snapshot.cliRegistry[0].extra = true)],
+    [
+      "config placeholder regression",
+      (snapshot: any) => (snapshot.cliRegistry[0].implementation = "placeholder"),
+    ],
+    [
+      "placeholder handler injection",
+      (snapshot: any) => (snapshot.cliRegistry[5].handler = () => {}),
+    ],
+    [
+      "placeholder schema injection",
+      (snapshot: any) =>
+        (snapshot.cliRegistry[5].commands[0].resultSchema = "configuration-paths/v1"),
+    ],
+    [
+      "config result schema substitution",
+      (snapshot: any) =>
+        (snapshot.cliRegistry[0].commands[0].resultSchema = "configuration-paths/v1"),
+    ],
+    [
+      "config lazy import substitution",
+      (snapshot: any) => {
+        const file = "packages/config/src/command-handler.mjs";
+        snapshot.handlerSources[file] = snapshot.handlerSources[file].replace(
+          "./config-command.ts",
+          "./other.ts",
+        );
+      },
+    ],
     [
       "dynamic CLI registry discovery",
       (snapshot: any) => {
@@ -259,7 +311,7 @@ describe("bootstrap manifest graph", () => {
     [
       "duplicate CLI family",
       (snapshot: any) => {
-        snapshot.cliRegistry[1] = structuredClone(snapshot.cliRegistry[0]);
+        snapshot.cliRegistry[1] = { ...snapshot.cliRegistry[0] };
       },
     ],
     [
@@ -356,7 +408,6 @@ describe("bootstrap manifest graph", () => {
   });
 
   test.each([
-    ["CLI", "cliRegistry"],
     ["bootstrap", "bootstrapRegistry"],
     ["host-custody", "hostRegistry"],
   ])("accepts implemented %s handler registrations", async (_label, registryName) => {

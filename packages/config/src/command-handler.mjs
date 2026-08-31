@@ -3,17 +3,23 @@ export const commandHandlerRegistration = Object.freeze({
   family: "config",
   owner: "@orchestration-platform/config",
   issue: "ISS-003",
-  implementation: "placeholder",
+  implementation: "implemented",
+  handler: async (input) => {
+    const { configCommandHandler } = await import("./config-command.ts");
+    return configCommandHandler(input);
+  },
   commands: [
     {
       argv: ["config", "validate"],
       required: [],
       optional: [],
+      resultSchema: "configuration-provenance/v1",
     },
     {
       argv: ["config", "paths"],
       required: [],
       optional: [],
+      resultSchema: "configuration-paths/v1",
     },
   ],
 });
