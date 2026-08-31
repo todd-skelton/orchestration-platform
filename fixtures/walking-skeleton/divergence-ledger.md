@@ -57,3 +57,25 @@ complete ordinal census. Current tests cover only the partial consumer's
 records, malformed inputs, and bounded filesystem manifests. The ordinary
 root test command includes them for subsequent three-OS CI; no hosted result
 is asserted by this source ledger.
+
+## Bounded session increment
+
+The observer-only rows above remain unchanged for `consume.ts`. A separate
+`session.ts` consumer now acquires an actual quarantined create-once claim and
+produces public acquisition and step-1 health records from checked root/leaf
+identity, retained handle bytes, reloaded configuration and injected clock
+observations. Its source/provenance/paths, acquisition request, cycle request
+and no-module cycle plan use public canonical contracts. A second holder gets
+`REFUSED/SESSION_HELD`; malformed, missing, moved or conflicting observations
+produce unknown evidence and retain the claim rather than taking over or
+deleting another holder's state. This evidence is separate from the observer,
+not a newly completed route from step 1 to step 2.
+
+Known-current cleanup removes the checked claim and closes its handle; uncertain
+cleanup closes without deletion. These are private fixture outcomes, not public
+release receipts or native atomic deletion against hostile concurrent writers.
+No lease renewal, production freshness/state admission, process execution,
+journal start/replay, other ordinals or full crash/resume acceptance is claimed.
+The fixture's unrenewed clock window does not grant runtime authority. Its
+new session tests are authored evidence pending host execution and independent
+review. The full-cycle gaps and both root capability placeholders remain.

@@ -85,3 +85,44 @@ until engine integration. Removing the configuration/snapshot/policy joins, real
 SDK calls, or output manifest loses evidence of fresh exact-source binding and
 retention. Copying SDK threshold/deadline/hostile-input matrices or inventing a
 generic breaker reducer is larger; this slice tests only the observer handoff.
+
+## Separate session consumer
+
+`src/session.ts` adds a bounded create-once fixture lease; it does not change or
+compose the six-record observer above. It uses the real configuration loader,
+brackets that read with identical source bytes, and retains canonical source,
+provenance and paths alongside the public acquisition request, cycle request,
+cycle plan and acquisition receipt. The fixed adapter is `fixture.branches`;
+the plan's module census is empty because this consumer invokes no module.
+All returned records round-trip through the public workspace contract package.
+
+One `session-claim.json` under the admitted external state root is opened with
+`wx+` and contains the canonical acquisition request bytes. Its retained handle,
+physical root/leaf identity and exact bytes are checked before step-1 health;
+the configuration is loaded again and all three request bindings must still
+agree. The file is a private create-once claim, not a newly published durable
+lease schema or an acquisition receipt masquerading as lease state. Existing
+valid claims refuse a contender; malformed, missing, moved or changed evidence
+is unknown and never authorizes takeover. Once unknown, this handle cannot
+restore health or delete the claim. Cleanup closes the handle and retains
+uncertain state; normal cleanup removes only the checked claim, leaving the
+disposable directory to the external test harness.
+
+This is an isolated, cooperative fixture. It does not prove atomic safety
+against a hostile replacement between path checks and unlink, native exclusion,
+production selected state, renewal, recovery or clock authority. Injected clock
+observations bound the fixture's unrenewed lifetime and refuse rollback, skew or
+unavailability. Neither canonical success spelling nor a prior receipt replaces
+live observation. No public exports, production APIs, module admission, journal,
+complete ordinal census or terminal cycle are added; both skeleton commands
+remain placeholders and full ISS-041 remains open.
+
+The focused session tests cover the real claim and second-holder refusal,
+configuration/entry joins, moved/malformed/unavailable state, clock negatives,
+retention and cleanup. The healthy invocation compares tracked-checkout and
+external-sandbox manifests outside state, with exactly one state file. Interfering
+test setup and final sandbox removal are outside that measured invocation.
+Deleting the physical/byte checks or configuration reload permits stale evidence
+to appear healthy; the smaller implementation is this private handle and file,
+not a state service or native locking protocol. Tests are authored here; host
+verification and independent review supply execution/acceptance evidence.
