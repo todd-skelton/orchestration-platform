@@ -186,6 +186,7 @@ export async function acquireFixtureSession(
     computeCyclePlanDigest(parsedPlan.value),
   );
   if (!plan.ok) return plan;
+  const admittedPlan = plan.value;
   const evidence = [
     encoded("platform-configuration-source/v1", admitted.source),
     encoded("configuration-provenance/v1", admitted.provenance),
@@ -372,7 +373,7 @@ export async function acquireFixtureSession(
           cycleId,
           ordinal: "1",
           kind: "session.verify",
-          inputDigest: computeCycleRequestDigest(plan.value.request),
+          inputDigest: computeCycleRequestDigest(admittedPlan.request),
           predecessorJournalDigest: null,
         },
       },
