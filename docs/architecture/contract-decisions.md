@@ -1220,8 +1220,11 @@ malformed pages, non-native promises, out-of-bound rows, or digest disagreement
 yield UNKNOWN/MALFORMED_OBSERVATION. A callback throw/rejection yields
 UNAVAILABLE/SOURCE_UNAVAILABLE; SDK defects use the existing INTERNAL_ERROR.
 Validation checks closed shape and scalar limits before relational checks;
-an observed contradiction takes precedence over readiness failure. No later
-callback runs after a terminal failure, and no failure becomes empty success.
+among relational faults observable from the current page and accumulated
+prefix, the fixed priority is CHANGED_FRONTIER, then INCOMPLETE_FRONTIER, then
+MALFORMED_OBSERVATION. Readiness is evaluated only if none of those faults is
+present. No later callback is fetched to classify a fault or runs after a
+terminal failure, and no failure becomes empty success.
 
 #### CLI mapping and implementation boundary
 
