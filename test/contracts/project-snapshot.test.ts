@@ -493,6 +493,42 @@ describe("ISS-013 pure project snapshot contracts", () => {
     }
   });
 
+  test.each([configuration, complete])(
+    "refuses unsafe typed-byte prototypes for $schemaVersion",
+    (value) => {
+      let calls = 0;
+      const bytes = new Uint8Array();
+      Object.setPrototypeOf(
+        bytes,
+        new Proxy(Uint8Array.prototype, {
+          getPrototypeOf() {
+            calls += 1;
+            throw new Error("caller code");
+          },
+        }),
+      );
+      expect(contracts.parseCanonicalContractBytes(value.schemaVersion, bytes)).toEqual({
+        ok: false,
+        issues: ["encoding:bytes-required"],
+      });
+      expect(calls).toBe(0);
+      const forged = new Uint16Array();
+      Object.setPrototypeOf(forged, Uint8Array.prototype);
+      expect(
+        contracts.parseCanonicalContractBytes(value.schemaVersion, forged as unknown as Uint8Array),
+      ).toEqual({
+        ok: false,
+        issues: ["encoding:bytes-required"],
+      });
+      expect(
+        contracts.parseCanonicalContractBytes(
+          value.schemaVersion,
+          Buffer.from(contracts.canonicalJson(value)),
+        ),
+      ).toEqual({ ok: true, value });
+    },
+  );
+
   test("registers exactly two public families and keeps project command success unavailable", () => {
     expect(snapshot.projectSnapshotSchemaVersions).toEqual([
       "adapter-configuration/v1",

@@ -1,3 +1,4 @@
+import { types as nodeTypes } from "node:util";
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
 import {
   canonicalBytes,
@@ -164,6 +165,10 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "adapter-configuration/v1" ||
       expectedSchemaVersion === "project-facts/v1"
     ) {
+      if (!nodeTypes.isUint8Array(bytes)) return { ok: false, issues: ["encoding:bytes-required"] };
+      const prototype = Object.getPrototypeOf(bytes);
+      if (prototype !== Uint8Array.prototype && prototype !== Buffer.prototype)
+        return { ok: false, issues: ["encoding:bytes-required"] };
       // Use the native getter: caller-defined length accessors and proxies are not consulted.
       const byteLength = Object.getOwnPropertyDescriptor(
         Object.getPrototypeOf(Uint8Array.prototype),
@@ -171,8 +176,8 @@ export function parseCanonicalContractBytes(
       )!.get!.call(bytes) as number;
       if (expectedSchemaVersion === "adapter-configuration/v1" && byteLength > 65536)
         return { ok: false, issues: ["encoding:limit-exceeded"] };
-    }
-    if (!(bytes instanceof Uint8Array)) return { ok: false, issues: ["encoding:bytes-required"] };
+    } else if (!(bytes instanceof Uint8Array))
+      return { ok: false, issues: ["encoding:bytes-required"] };
     if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
       return { ok: false, issues: ["encoding:bom-refused"] };
     let text: string;
