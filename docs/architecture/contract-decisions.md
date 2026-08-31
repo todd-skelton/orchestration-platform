@@ -977,9 +977,11 @@ the suite.
   `requestedRole`. The projection excludes `dispatchBrief`, `actionCoreDigest`,
   rendered brief bytes/digest, dispatch/launch identity, host-renderer artifact
   digest, and every field derived from any of them; no other plan member enters
-  the digest. Before journaling step 4, the brief action's kind, capability,
-  immutable subject, descriptor digest, and action-core digest must equal that
-  projection. A moved plan, descriptor, subject, action, capability, member,
+  the digest. Before journaling step 4, when a worker-required action carries
+  a non-null brief, the brief action's kind, capability, immutable subject,
+  descriptor digest, and action-core digest must equal that projection.
+  A workerless action carries no brief; its core and other plan bindings
+  remain required. A moved plan, descriptor, subject, action, capability, member,
   frame, or order refuses without constructing a second plan or digest.
 - A release-reviewed module descriptor contains a finite, dense, unique
   `dispatchCatalog` of 1–256 closed entries. Each entry has exactly
@@ -4122,8 +4124,10 @@ breaker/history/recovery, routing and effect owners remain unchanged.
 
 Reuse `C, Uuid, Digest, Id` above and ISS-013's `Name, Version` without
 widening them. `Name` is also the finding-disposition code grammar
-`[a-z][a-z0-9._:-]{0,63}`. All fields are required and non-null except the
-three explicit null cells below. Every listed field sequence is canonical key
+`[a-z][a-z0-9._:-]{0,63}`. Newly declared members are required and non-null
+except the three explicit outer null cells below. Reused contracts retain
+all their existing nullability, including an ABSENT OPERATOR_ACTION directive's
+`code:null`. Every listed field sequence is canonical key
 order. Closed detached record/array rules apply recursively. Counts include
 both endpoints; tuple ordering is lexicographic comparison of the named ASCII
 strings, never numeric version ordering. Unknown fields, arms, versions,
@@ -4287,9 +4291,13 @@ values and requires `result.inputDigest = Dinput`. For an action additionally:
 
 1. Require core `moduleDescriptorDigest = Ddescriptor`; find exactly one
    declared action/capability pair and require identical requested role.
-2. Require core capability in the configured census. Require non-null brief
-   iff that action row requires a worker; validate the complete existing
-   core/brief/catalog binding against the descriptor's derived worker pairs.
+2. Require core capability in the configured census. For workerRequired true,
+   require a non-null brief and validate the complete existing core/brief/catalog
+   binding against the descriptor's derived worker pairs. For workerRequired
+   false, require observer role, reviewRequired false and null brief; do not
+   invoke the non-null brief binder or fabricate a brief. Descriptor catalog/
+   worker-pair validation and all core, action, target and capability bindings
+   remain required in both cases.
 3. If input reviewSubject is null, require non-null workId naming one actual
    READY frontier row, core capability in that row, and core subject equal
    that row's immutable subject. A review role refuses without a review subject.
@@ -4312,6 +4320,7 @@ the false flag cannot relax operation-specific mandatory candidate review.
 | Property / removal attack | Cheapest discriminating evidence after review |
 | --- | --- |
 | Complete structure | Every descriptor row/cell, ordinary and both review-subject inputs, worker/direct actions, no-action and both refusals; remove/add/rename/type-change every nested member; unknown versions, cross-arm fields, hostile arrays/records all refuse |
+| Reused nulls and workerless binding | Ordinary worker action with ABSENT OPERATOR_ACTION code:null succeeds; preserve all reused null rules and mutate each of the three new outer null cells. Workerless action in a valid mixed descriptor succeeds with null brief; core/role/review-flag/brief-null mutants refuse without invoking a non-null brief binder |
 | Canonical identity | Independently pinned bytes, complete frame hex and digest for four families/all result cells; union preserves concrete bytes/digest; insertion-order equivalence; noncanonical persisted bytes and wrong domain/tag/count/LF refuse or differ |
 | Bounds and catalog | Every 0/1/256/257 applicable boundary; ordered/duplicate compatibility/action/code lists; exact schema arrays; existing catalog duplicate-key/accessor/template and pair-census mutants; no empty catalog exception |
 | Input joins | Independently substitute config/provenance/project/snapshot metadata/frontier/policy version/decision census/cycle/module intent/compatibility component; actual scalar shapes remain valid and each removed equality has its own failing mutant |
