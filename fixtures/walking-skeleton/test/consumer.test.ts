@@ -576,7 +576,6 @@ test.each([
 
 test.each([
   "event-journal/v1",
-  "review-request/v1",
   "review-attempt-result/v1",
   "review-authority/v1",
   "cycle-receipt/v1",

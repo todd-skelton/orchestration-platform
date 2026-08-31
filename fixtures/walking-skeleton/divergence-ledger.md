@@ -15,7 +15,7 @@ or authority grant. The unchanged published protocol is
 | Restart/reclaim            | Unimplemented. Exclusive state-directory creation is not a lease, crash recovery, or exactly-once side-effect protocol.                                                                                                                                       |
 
 The executable gap census records `schemaVersion:unsupported` for
-`event-journal/v1`, `review-request/v1`, `review-attempt-result/v1`, `review-authority/v1`,
+`event-journal/v1`, `review-attempt-result/v1`, `review-authority/v1`,
 and `cycle-receipt/v1`. Those records must come from
 their owning public contracts before full-cycle parser evidence is possible;
 existing unrelated schemas are never repurposed to fill the gap. A producer
@@ -27,6 +27,9 @@ ISS-002 also supplies the complete `worker-result-subject/v1` and
 `review-subject/v1` union. Empty placeholder records remain invalid. This fixture
 still supplies no actual terminal/result materialization, subject production,
 source admission, candidate certification, review, or full-cycle evidence.
+ISS-002 also supplies pure `review-request/v1` parsing and request/inline-packet
+identities. This fixture produces no review request and executes no review;
+attempt results, authority, and all runtime evidence joins remain unimplemented.
 
 ISS-013 supplies the consumed SDK snapshot/current-policy observations and public
 configuration/facts binding. This fixture adds a private snapshot/policy-to-brief
