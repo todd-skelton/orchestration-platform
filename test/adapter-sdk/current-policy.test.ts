@@ -6,7 +6,7 @@ import {
   validateProjectBreakerFactsBinding,
   type AdapterConfiguration,
   type ProjectFrontierRow,
-} from "@orchestration-platform/contracts";
+} from "../../packages/contracts/src/index.js";
 import { createProjectCurrentPolicyReader } from "../../packages/adapter-sdk/src/current-policy.js";
 import {
   createBranchFixtureCurrentPolicy,
