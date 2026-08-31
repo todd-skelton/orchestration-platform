@@ -1,5 +1,6 @@
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { cycleEntrySchemaFields, cycleEntrySchemaVersions } from "./cycle-entry.js";
+import { reviewSubjectSchemaFields, reviewSubjectSchemaVersions } from "./review-subject.js";
 import { projectSnapshotSchemaFields, projectSnapshotSchemaVersions } from "./project-snapshot.js";
 import {
   routineStepKinds,
@@ -104,6 +105,37 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "worker-result-subject/v1": Object.freeze({
+      schemaVersion: "worker-result-subject/v1",
+      fields: reviewSubjectSchemaFields.worker,
+    }),
+    "worker-result-subject/v1#source": Object.freeze({
+      schemaVersion: "worker-result-subject/v1",
+      fields: reviewSubjectSchemaFields.source,
+    }),
+    "worker-result-subject/v1#TREE": Object.freeze({
+      schemaVersion: "worker-result-subject/v1",
+      fields: reviewSubjectSchemaFields.tree,
+      closedValues: Object.freeze(["TREE"]),
+    }),
+    "worker-result-subject/v1#ORDERED_PATCH_ARTIFACTS": Object.freeze({
+      schemaVersion: "worker-result-subject/v1",
+      fields: reviewSubjectSchemaFields.ordered,
+      closedValues: Object.freeze(["ORDERED_PATCH_ARTIFACTS"]),
+    }),
+    "worker-result-subject/v1#entry": Object.freeze({
+      schemaVersion: "worker-result-subject/v1",
+      fields: reviewSubjectSchemaFields.entry,
+      closedValues: Object.freeze(["PATCH", "ARTIFACT"]),
+    }),
+    "release-candidate-subject/v1": Object.freeze({
+      schemaVersion: "release-candidate-subject/v1",
+      fields: reviewSubjectSchemaFields.candidate,
+    }),
+    "release-candidate-subject/v1#source": Object.freeze({
+      schemaVersion: "release-candidate-subject/v1",
+      fields: reviewSubjectSchemaFields.source,
+    }),
     "session-acquire-request/v1": Object.freeze({
       schemaVersion: "session-acquire-request/v1",
       fields: cycleEntrySchemaFields.acquire,
@@ -788,6 +820,7 @@ export const schemaVersions = Object.freeze(
     ...projectBreakerFactsSchemaVersions,
     ...routineStepSkipSchemaVersions,
     ...cycleEntrySchemaVersions,
+    ...reviewSubjectSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,
@@ -818,6 +851,12 @@ export function compatibilityDisposition(
   expectedSchemaVersion: string,
   observedSchemaVersion: string | null,
 ): CompatibilityDisposition {
+  if (expectedSchemaVersion === "review-subject/v1")
+    return (reviewSubjectSchemaVersions as readonly (string | null)[]).includes(
+      observedSchemaVersion,
+    )
+      ? "readable"
+      : "refused";
   if (!schemaVersions.includes(expectedSchemaVersion)) return "refused";
   if (observedSchemaVersion === expectedSchemaVersion) return "readable";
   return "refused";
