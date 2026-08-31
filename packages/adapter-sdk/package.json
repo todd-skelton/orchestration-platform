@@ -14,5 +14,8 @@
   },
   "scripts": {
     "test": "node ../../scripts/capability-not-implemented.mjs ISS-013 @orchestration-platform/adapter-sdk:test"
+  },
+  "dependencies": {
+    "@orchestration-platform/contracts": "workspace:*"
   }
 }
