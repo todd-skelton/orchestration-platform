@@ -101,6 +101,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       conformance.iss002TestBundlePaths.filter((path) => path.startsWith("test/conformance/")),
     ).toEqual([
       "test/conformance/github-portable-primitives-review.test.ts",
+      "test/conformance/hosted-review-api.test.ts",
       "test/conformance/iss002-native-candidate-walk.test.ts",
       "test/conformance/iss022-handler.test.ts",
       "test/conformance/iss022-profile.test.ts",
@@ -171,6 +172,7 @@ describe("stable ISS-002 bundle path censuses", () => {
       "scripts/conformance/hosted-plan.mts",
       "scripts/conformance/hosted-record-api.mts",
       "scripts/conformance/hosted-record.mts",
+      "scripts/conformance/hosted-review-api.mts",
       "scripts/conformance/hosted-terminal.mts",
       "scripts/conformance/hosted.mts",
       "scripts/conformance/iss002-executor.mts",
