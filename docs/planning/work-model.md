@@ -61,6 +61,31 @@ returns to the ordinary independent exact-head review gate; there is no
 repeat-until-clean removal ritual. Complexity that only defends against threats
 the architecture excludes is a finding, not a safeguard.
 
+Process output is bounded by runtime evidence (Round 373). A replan may add
+contract or architecture prose for a surface only alongside a registered
+runtime consumer of that surface; extending the specification of a placeholder
+package whose consuming slice has not started is a proportionality finding,
+not preparation. Contention between runnable slices resolves toward the slice
+that first produces executable cycle evidence.
+
+Prose review is spent once per finding class (Round 373). A finding class that
+recurs across three or more pressure rounds is codified into a deterministic
+check or records a concrete non-codifiable reason; `ISS-046` owns the census
+and codification. Re-litigating a codified class in prose is a
+proportionality finding.
+
+Registration precedes elaboration (Round 373). A draft may register with
+context, scope boundary, and dependency edges alone; the full issue standard —
+acceptance evidence, verification plan, predicted footprint, and review packet
+seed — is due before the slice becomes runnable, not at registration.
+Full-standard planning spent on a slice that cannot be scheduled inside its
+milestone horizon is replan evidence.
+
+Release is not the terminal phase (Round 373). Once the kernel journal emits
+cycle facts, measured delivery telemetry is the platform's discovery intake
+(`ISS-047`); until then, intake is operator judgment and no anticipatory
+intake machinery is built.
+
 Delivery cadence is itself bounded (Round 234). Implementation merges to
 `main` through pull requests small enough for one independent review sitting;
 a branch that accumulates multiple slices or a diff beyond ordinary review is
