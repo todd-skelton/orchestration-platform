@@ -90,6 +90,36 @@ function fixture(arm: "PASS" | "BLOCK_REPLAN" = "BLOCK_REPLAN") {
 }
 
 describe("portable primitives publication layout and bytes only", () => {
+  test.each(["decision-core.json", "independent-review.json", "decision.json"] as const)(
+    "refuses forged Uint16Array byte brand for %s",
+    (name) => {
+      const f = fixture();
+      const forged = Uint16Array.from(f.files[name], (value) => value + 256);
+      Object.setPrototypeOf(forged, Uint8Array.prototype);
+      expect(
+        checkPortablePrimitivesPublication(f.directory, { ...f.files, [name]: forged }).ok,
+      ).toBe(false);
+    },
+  );
+
+  test.each(["decision-core.json", "independent-review.json", "decision.json"] as const)(
+    "refuses byte proxy for %s without invoking getPrototypeOf",
+    (name) => {
+      const f = fixture();
+      let calls = 0;
+      const proxy = new Proxy(f.files[name], {
+        getPrototypeOf() {
+          calls += 1;
+          throw new Error("byte proxy trap must not execute");
+        },
+      });
+      expect(
+        checkPortablePrimitivesPublication(f.directory, { ...f.files, [name]: proxy }).ok,
+      ).toBe(false);
+      expect(calls).toBe(0);
+    },
+  );
+
   test.each(["PASS", "BLOCK_REPLAN"] as const)(
     "checks synthetic %s consistency without admitting authority",
     (arm) => {

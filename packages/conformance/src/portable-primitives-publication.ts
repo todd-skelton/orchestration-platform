@@ -55,8 +55,8 @@ export function checkPortablePrimitivesPublication(
         throw new TypeError("publication:data-files-required");
       const input: unknown = descriptor.value;
       if (
-        !(input instanceof Uint8Array) ||
         nodeTypes.isProxy(input) ||
+        !nodeTypes.isUint8Array(input) ||
         Object.getPrototypeOf(input) !== Uint8Array.prototype
       )
         throw new TypeError("publication:bytes-required");
