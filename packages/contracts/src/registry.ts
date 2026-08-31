@@ -1,4 +1,9 @@
 import {
+  projectMutationSchemaFields,
+  projectMutationSchemaVersions,
+  projectMutationClosedValues,
+} from "./project-mutation.js";
+import {
   dispositionSchemaFields,
   dispositionSchemaVersions,
   dispositionClosedValues,
@@ -143,6 +148,28 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    ...Object.fromEntries(
+      projectMutationSchemaVersions.map((schemaVersion, index) => [
+        schemaVersion,
+        Object.freeze({
+          schemaVersion,
+          fields: [
+            projectMutationSchemaFields.request,
+            projectMutationSchemaFields.plan,
+            projectMutationSchemaFields.apply,
+          ][index]!,
+          closedValues: Object.freeze([...new Set(projectMutationClosedValues)]),
+        }),
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(projectMutationSchemaFields)
+        .filter(([key]) => !["request", "plan", "apply"].includes(key))
+        .map(([key, fields]) => [
+          `project-mutation-plan/v1#${key}`,
+          Object.freeze({ schemaVersion: "project-mutation-plan/v1", fields }),
+        ]),
+    ),
     ...Object.fromEntries(
       dispositionSchemaVersions.map((schemaVersion, index) => [
         schemaVersion,
@@ -1076,6 +1103,7 @@ export const schemaVersions = Object.freeze(
     ...modulePlanSchemaVersions,
     ...routeSelectionSchemaVersions,
     ...projectPreflightSchemaVersions,
+    ...projectMutationSchemaVersions,
     ...dispatchLifecycleSchemaVersions,
     ...dispositionSchemaVersions,
     ...reviewResultSchemaVersions,
