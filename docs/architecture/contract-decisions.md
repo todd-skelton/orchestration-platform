@@ -1159,11 +1159,11 @@ schemaVersion, state` plus only the arm's members below. The digest is
 configuration. The SDK supplies a fresh observation ID and injected-clock time
 when this invocation starts; pages echo that ID and the result retains both.
 
-| State         | Additional members and constraints                                                                                                              |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `COMPLETE`    | `frontier, frontierDigest`; frontier is a dense 0–4096 row array, strictly sorted by `workId`; digest is `Dfrontier` recomputed from that array |
-| `UNAVAILABLE` | `reason`, exactly `SOURCE_UNAVAILABLE` or `OBSERVATION_TIMEOUT`                                                                                 |
-| `UNKNOWN`     | `reason`, exactly `SOURCE_UNKNOWN`, `MALFORMED_OBSERVATION`, `INCOMPLETE_FRONTIER`, or `CHANGED_FRONTIER`                                       |
+| State | Additional members and constraints |
+| --- | --- |
+| `COMPLETE` | `frontier, frontierDigest`; frontier is a dense 0–4096 row array, strictly sorted by `workId`; digest is `Dfrontier` recomputed from that array |
+| `UNAVAILABLE` | `reason`, exactly `SOURCE_UNAVAILABLE` or `OBSERVATION_TIMEOUT` |
+| `UNKNOWN` | `reason`, exactly `SOURCE_UNKNOWN`, `MALFORMED_OBSERVATION`, `INCOMPLETE_FRONTIER`, or `CHANGED_FRONTIER` |
 
 Failure arms contain no frontier or digest, including no null or empty
 substitute. No other state or reason exists. A public parser accepts the full
@@ -1189,11 +1189,11 @@ Promise of one page arm. Its closed request is exactly `cursor, observationId`.
 The callback's configuration is bound once by static composition, not supplied
 again as mutable page data. Page arms are exactly:
 
-| State         | Complete member census                                               |
-| ------------- | -------------------------------------------------------------------- |
-| `COMPLETE`    | `cursor, frontier, frontierDigest, nextCursor, observationId, state` |
-| `UNAVAILABLE` | `observationId, reason, state`; reason is `SOURCE_UNAVAILABLE`       |
-| `UNKNOWN`     | `observationId, reason, state`; reason is `SOURCE_UNKNOWN`           |
+| State | Complete member census |
+| --- | --- |
+| `COMPLETE` | `cursor, frontier, frontierDigest, nextCursor, observationId, state` |
+| `UNAVAILABLE` | `observationId, reason, state`; reason is `SOURCE_UNAVAILABLE` |
+| `UNKNOWN` | `observationId, reason, state`; reason is `SOURCE_UNKNOWN` |
 
 A COMPLETE page has 0–64 frontier rows using the row shape above;
 `frontierDigest` is the declared digest of the entire observation's canonical
@@ -1235,13 +1235,13 @@ diagnostics. SDK failure arms map to the following closed diagnostics with
 Each diagnostic has exactly `code,message`, and each handler error retains
 ISS-003's exact `code,exitCode,message,outcome` shape. Messages contain no input.
 
-| Condition                                                            | Outcome / exit             | Code                            | Exact message                   |
-| -------------------------------------------------------------------- | -------------------------- | ------------------------------- | ------------------------------- |
-| invalid adapter configuration                                        | `invalid-input` / 2        | `ADAPTER_CONFIGURATION_REFUSED` | `adapter configuration refused` |
-| project/adapter/capability binding differs from loaded configuration | `authority-refused` / 3    | `ADAPTER_BINDING_REFUSED`       | `adapter binding refused`       |
-| unsupported static adapter, engine version, schema, or capability    | `authority-refused` / 3    | `ADAPTER_COMPATIBILITY_REFUSED` | `adapter compatibility refused` |
-| snapshot UNAVAILABLE                                                 | `external-unavailable` / 4 | `PROJECT_SNAPSHOT_UNAVAILABLE`  | `project snapshot unavailable`  |
-| snapshot UNKNOWN                                                     | `authority-unknown` / 3    | `PROJECT_SNAPSHOT_UNKNOWN`      | `project snapshot unknown`      |
+| Condition | Outcome / exit | Code | Exact message |
+| --- | --- | --- | --- |
+| invalid adapter configuration | `invalid-input` / 2 | `ADAPTER_CONFIGURATION_REFUSED` | `adapter configuration refused` |
+| project/adapter/capability binding differs from loaded configuration | `authority-refused` / 3 | `ADAPTER_BINDING_REFUSED` | `adapter binding refused` |
+| unsupported static adapter, engine version, schema, or capability | `authority-refused` / 3 | `ADAPTER_COMPATIBILITY_REFUSED` | `adapter compatibility refused` |
+| snapshot UNAVAILABLE | `external-unavailable` / 4 | `PROJECT_SNAPSHOT_UNAVAILABLE` | `project snapshot unavailable` |
+| snapshot UNKNOWN | `authority-unknown` / 3 | `PROJECT_SNAPSHOT_UNKNOWN` | `project snapshot unknown` |
 
 Earlier CLI/config-loader errors retain their existing rows. No configuration
 result, failed facts arm, or wrong-command result can satisfy snapshot success.
@@ -1311,11 +1311,11 @@ Every `project-breaker-facts/v1` arm has exactly
 `adapterConfigurationDigest, observationId, observedAt, policyVersion,
 projectFactsDigest, projectId, schemaVersion, state`, plus the arm's members:
 
-| State         | Additional members and constraints                                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `COMPLETE`    | `decisions`; dense 0–256 decision rows, strictly ASCII sorted by capability name                                               |
-| `UNAVAILABLE` | `reason`; exactly `SOURCE_UNAVAILABLE` or `OBSERVATION_TIMEOUT`                                                                |
-| `UNKNOWN`     | `reason`; exactly `SOURCE_UNKNOWN`, `MALFORMED_OBSERVATION`, `CHANGED_BINDING`, `CHANGED_SOURCE`, or `INCOMPLETE_CAPABILITIES` |
+| State | Additional members and constraints |
+| --- | --- |
+| `COMPLETE` | `decisions`; dense 0–256 decision rows, strictly ASCII sorted by capability name |
+| `UNAVAILABLE` | `reason`; exactly `SOURCE_UNAVAILABLE` or `OBSERVATION_TIMEOUT` |
+| `UNKNOWN` | `reason`; exactly `SOURCE_UNKNOWN`, `MALFORMED_OBSERVATION`, `CHANGED_BINDING`, `CHANGED_SOURCE`, or `INCOMPLETE_CAPABILITIES` |
 
 The schema literal is exactly `project-breaker-facts/v1`; configuration and
 project-facts digests are `Digest`; both identities are `UUID`; `observedAt`
@@ -1388,11 +1388,11 @@ admitted COMPLETE snapshot. The callback evaluates every requested capability.
 Callback response common members are exactly
 `observationId, policyVersion, projectFactsDigest, state`, plus:
 
-| State         | Additional members and constraints                                                                                                                 |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `COMPLETE`    | `decisions, frontier`; decisions use the public row shape; frontier uses the COMPLETE snapshot's 0–4096 strictly work-ID-sorted frontier row shape |
-| `UNAVAILABLE` | `reason`; exactly `SOURCE_UNAVAILABLE`                                                                                                             |
-| `UNKNOWN`     | `reason`; exactly `SOURCE_UNKNOWN`                                                                                                                 |
+| State | Additional members and constraints |
+| --- | --- |
+| `COMPLETE` | `decisions, frontier`; decisions use the public row shape; frontier uses the COMPLETE snapshot's 0–4096 strictly work-ID-sorted frontier row shape |
+| `UNAVAILABLE` | `reason`; exactly `SOURCE_UNAVAILABLE` |
+| `UNKNOWN` | `reason`; exactly `SOURCE_UNKNOWN` |
 
 Common scalars use the public grammars. Every response, including failure,
 must echo the request ID/version and the recomputed digest of its full
@@ -2836,13 +2836,13 @@ The stable fixture roots the object until explicit close or process death.
 Environment cleanup may best-effort close it, but the death case uses forced
 termination and must execute neither `release` nor a cleanup acknowledgement.
 
-| Boundary           | macOS and Linux                                                                                                                   | Windows                                                                                                                                                                                                                                                                                                                                        |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Open existing file | `open(path, O_RDWR                                                                                                                | O_CLOEXEC                                                                                                                                                                                                                                                                                                                                      | O_NOFOLLOW)`; no create/truncate flag; `fstat` must be regular with link count 1 | `CreateFileW(path, GENERIC_READ                                                                                                                          | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL)`; no delete sharing, overlapped I/O, delete-on-close, or inherited security attributes |
-| Identity           | `fstat` tuple `{kind:"POSIX",device,inode}` using full unsigned decimal `st_dev/st_ino`, plus regular-file/link-count/size checks | `GetFileInformationByHandleEx(FileIdInfo)` tuple `{kind:"WINDOWS",volumeSerialNumber,fileIdHex}`; volume is unsigned decimal, file ID is the 16 bytes in returned order as 32 lowercase hex digits; `FileStandardInfo` must report a non-directory, not delete-pending, link count 1, size 1; `FileAttributeTagInfo` must have no reparse flag |
-| Non-inheritance    | `fcntl(fd, F_GETFD)` must contain `FD_CLOEXEC`; no `dup`/`fork` operation in the binding                                          | `SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)` then `GetHandleInformation` must read that bit clear                                                                                                                                                                                                                                         |
-| Try exactly once   | `flock(fd, LOCK_EX                                                                                                                | LOCK_NB)`on the whole fixed file; do not substitute`fcntl` locks                                                                                                                                                                                                                                                                               | `LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK                                           | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)`; zero-initialize every `OVERLAPPED`field, including offset/high offset and event; range is exactly byte`[0,1)` |
-| Normal release     | `flock(fd, LOCK_UN)`, then separate `close(fd)`                                                                                   | `UnlockFileEx(h, 0, 1, 0, &ov)` with the same zero offset/range, then separate `CloseHandle(h)`                                                                                                                                                                                                                                                |
+| Boundary | macOS and Linux | Windows |
+| --- | --- | --- |
+| Open existing file | `open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)`; no create/truncate flag; `fstat` must be regular with link count 1 | `CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL)`; no delete sharing, overlapped I/O, delete-on-close, or inherited security attributes |
+| Identity | `fstat` tuple `{kind:"POSIX",device,inode}` using full unsigned decimal `st_dev/st_ino`, plus regular-file/link-count/size checks | `GetFileInformationByHandleEx(FileIdInfo)` tuple `{kind:"WINDOWS",volumeSerialNumber,fileIdHex}`; volume is unsigned decimal, file ID is the 16 bytes in returned order as 32 lowercase hex digits; `FileStandardInfo` must report a non-directory, not delete-pending, link count 1, size 1; `FileAttributeTagInfo` must have no reparse flag |
+| Non-inheritance | `fcntl(fd, F_GETFD)` must contain `FD_CLOEXEC`; no `dup`/`fork` operation in the binding | `SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)` then `GetHandleInformation` must read that bit clear |
+| Try exactly once | `flock(fd, LOCK_EX | LOCK_NB)` on the whole fixed file; do not substitute `fcntl` locks | `LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)`; zero-initialize every `OVERLAPPED` field, including offset/high offset and event; range is exactly byte `[0,1)` |
+| Normal release | `flock(fd, LOCK_UN)`, then separate `close(fd)` | `UnlockFileEx(h, 0, 1, 0, &ov)` with the same zero offset/range, then separate `CloseHandle(h)` |
 
 These are cooperating-process locks on the named resource, not hostile-writer
 isolation. Apple describes advisory exclusion and shared references after
@@ -2926,12 +2926,12 @@ requires candidate acquisition plus a stable witness's independently opened
 same-file `CONTENDED` result. Any missing prerequisite stops subsequent rows;
 it is recorded as missing evidence, never an invented observation.
 
-| Case ID                          | Stable-controlled chronology                                                                                                                                                                                                                                                                                                                                                                                                  | Required observation                                                                                                                                                                                                                |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NATIVE_UNRELATED_EXCLUSION`     | Two sibling children reach `READY`; command holder once; witness establishes `HELD`; command contender once while holder stays paused; inspect both identities; release/close holder normally                                                                                                                                                                                                                                 | Holder acquisition, stable contention, and contender contention on the identical file; no second holder, no open/share error disguised as lock contention                                                                           |
-| `NATIVE_NORMAL_RELEASE`          | Fresh holder reaches `HELD`; parent commands `release`, observes its return, then commands witness once **before holder exits**; unlock witness but retain its handle, close holder and observe clean holder terminal events                                                                                                                                                                                                  | Stable witness acquires after explicit unlock while the former holder is still alive; a release claim while retaining the lock fails                                                                                                |
+| Case ID | Stable-controlled chronology | Required observation |
+| --- | --- | --- |
+| `NATIVE_UNRELATED_EXCLUSION` | Two sibling children reach `READY`; command holder once; witness establishes `HELD`; command contender once while holder stays paused; inspect both identities; release/close holder normally | Holder acquisition, stable contention, and contender contention on the identical file; no second holder, no open/share error disguised as lock contention |
+| `NATIVE_NORMAL_RELEASE` | Fresh holder reaches `HELD`; parent commands `release`, observes its return, then commands witness once **before holder exits**; unlock witness but retain its handle, close holder and observe clean holder terminal events | Stable witness acquires after explicit unlock while the former holder is still alive; a release claim while retaining the lock fails |
 | `NATIVE_DEFAULT_NON_INHERITANCE` | Fresh holder reaches `HELD`; stable inspector in that holder reads its exported native handle/flags; the stable holder fixture spawns one default child using the options above; child loads only stable inspector/fixture bytes and inspects that numeric handle **before opening this file**; parent challenges exclusion again while both live; then stable fixture observes child clean exit and releases holder normally | Holder flags are non-inheritable; child's handle is invalid (`EBADF`/`ERROR_INVALID_HANDLE`) or belongs to a different file; same-file access or unreadable inspection refuses; witness still contends, proving no premature unlock |
-| `NATIVE_HOLDER_DEATH_ONCE`       | Fresh holder reaches `HELD`; parent witness already has its independently opened, identity-checked, unlocked handle; parent calls the exact holder `ChildProcess.kill("SIGKILL")`, waits for that handle's `exit` **and** `close`, then immediately performs one synchronous witness `tryLock`; record identity/result, unlock/close witness if acquired                                                                      | Exactly one post-death OS acquisition attempt on the same file, with no candidate unlock/close beforehand; witness acquisition is the observed property; contention after death is a violation, including on Windows                |
+| `NATIVE_HOLDER_DEATH_ONCE` | Fresh holder reaches `HELD`; parent witness already has its independently opened, identity-checked, unlocked handle; parent calls the exact holder `ChildProcess.kill("SIGKILL")`, waits for that handle's `exit` **and** `close`, then immediately performs one synchronous witness `tryLock`; record identity/result, unlock/close witness if acquired | Exactly one post-death OS acquisition attempt on the same file, with no candidate unlock/close beforehand; witness acquisition is the observed property; contention after death is a violation, including on Windows |
 
 The last row is last so no subsequent acquisition can obscure its one-attempt
 census. After `close`, the next operation is that one lock attempt: no sleep,
@@ -2980,10 +2980,10 @@ produce `UNSUPPORTED`, not installation or an OS-command lock fallback.
 The stable script owns these argument arrays, expanding only verified absolute
 input/include/output paths. No shell command construction or caller flags:
 
-| OS      | Compile/link recipe for each source                                                                                                                                                                                           |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux   | Resolved hosted `cc`: `-std=c11 -O2 -fPIC -shared -DNAPI_VERSION=8 -I <node-include> <source.c> -o <output.node>`                                                                                                             |
-| macOS   | Resolved hosted `clang`: `-std=c11 -O2 -fPIC -bundle -undefined dynamic_lookup -DNAPI_VERSION=8 -I <node-include> <source.c> -o <output.node>`                                                                                |
+| OS | Compile/link recipe for each source |
+| --- | --- |
+| Linux | Resolved hosted `cc`: `-std=c11 -O2 -fPIC -shared -DNAPI_VERSION=8 -I <node-include> <source.c> -o <output.node>` |
+| macOS | Resolved hosted `clang`: `-std=c11 -O2 -fPIC -bundle -undefined dynamic_lookup -DNAPI_VERSION=8 -I <node-include> <source.c> -o <output.node>` |
 | Windows | Resolved hosted `cl.exe`: `/nologo /TC /std:c11 /O2 /MD /LD /DNAPI_VERSION=8 /I<node-include> <source.c> <node.lib> kernel32.lib /link /OUT:<output.node>`; all intermediate output paths stay in that build's temp directory |
 
 Each build's working directory is its own temp directory; compiler environment
@@ -3048,15 +3048,15 @@ canonical decimal strings, and byte hashes are lowercase SHA-256. Unsupported
 or missing evidence has null **facts**, never a fabricated OS observation.
 The diagnostic report has exactly:
 
-| Member        | Closed contents                                                                                                                                                                                                                                                                                                                                                          |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `experiment`  | Literal `iss022-native-lock-experiment/v1`                                                                                                                                                                                                                                                                                                                               |
-| `coordinates` | `{repositoryId,runId,runAttempt,workflowRevision,candidateRevision,jobId,operatingSystem,architecture,nodeVersion,nodeModulesVersion,nodeNapiVersion}`; identities equal the stable plan/provider/actual process inputs, OS is `LINUX                                                                                                                                    | MACOS       | WINDOWS`                                                                                                        |
-| `builds`      | Two records in `STABLE_WITNESS,CANDIDATE_BINDING` order, each `{role,revision,inputs,argv,toolchain,outputs,loaded,result}`; inputs/outputs/loaded are sorted `{path,byteLength,sha256}` arrays binding retained files; `loaded` is exactly that role's `.node` output; `toolchain` is `{compilerPath,compilerVersion,sdkVersion}` from stable capture; result is `BUILT | UNSUPPORTED | UNKNOWN`; unavailable inputs/argv/toolchain/outputs/loaded are null, never invented; role/revision remain bound |
-| `custody`     | `{rootPath,leafName,initialIdentity,finalIdentity,initialByteHex,finalByteHex}`; leaf is `native-lock`, successful identities match, bytes are `41`; initial/final null is permitted only with the corresponding missing-evidence result                                                                                                                                 |
-| `cases`       | Four ordered `{caseId,events,result}` records, with exactly the case IDs above; an unexecuted row has `events:[]` and `result:"UNKNOWN"`, except a verified unsupported build/prerequisite propagates `UNSUPPORTED` without inventing an observation                                                                                                                     |
-| `controls`    | Ordered `{controlId,refused}` records for the finite census below; `refused` is Boolean, never a supplied PASS verdict                                                                                                                                                                                                                                                   |
-| `result`      | Stable recomputed `OBSERVED                                                                                                                                                                                                                                                                                                                                              | VIOLATED    | UNSUPPORTED                                                                                                     | UNKNOWN`; even `OBSERVED` selects nothing |
+| Member | Closed contents |
+| --- | --- |
+| `experiment` | Literal `iss022-native-lock-experiment/v1` |
+| `coordinates` | `{repositoryId,runId,runAttempt,workflowRevision,candidateRevision,jobId,operatingSystem,architecture,nodeVersion,nodeModulesVersion,nodeNapiVersion}`; identities equal the stable plan/provider/actual process inputs, OS is `LINUX|MACOS|WINDOWS` |
+| `builds` | Two records in `STABLE_WITNESS,CANDIDATE_BINDING` order, each `{role,revision,inputs,argv,toolchain,outputs,loaded,result}`; inputs/outputs/loaded are sorted `{path,byteLength,sha256}` arrays binding retained files; `loaded` is exactly that role's `.node` output; `toolchain` is `{compilerPath,compilerVersion,sdkVersion}` from stable capture; result is `BUILT|UNSUPPORTED|UNKNOWN`; unavailable inputs/argv/toolchain/outputs/loaded are null, never invented; role/revision remain bound |
+| `custody` | `{rootPath,leafName,initialIdentity,finalIdentity,initialByteHex,finalByteHex}`; leaf is `native-lock`, successful identities match, bytes are `41`; initial/final null is permitted only with the corresponding missing-evidence result |
+| `cases` | Four ordered `{caseId,events,result}` records, with exactly the case IDs above; an unexecuted row has `events:[]` and `result:"UNKNOWN"`, except a verified unsupported build/prerequisite propagates `UNSUPPORTED` without inventing an observation |
+| `controls` | Ordered `{controlId,refused}` records for the finite census below; `refused` is Boolean, never a supplied PASS verdict |
+| `result` | Stable recomputed `OBSERVED|VIOLATED|UNSUPPORTED|UNKNOWN`; even `OBSERVED` selects nothing |
 
 Every retained-file path is artifact-relative, unique and free of empty/dot/
 parent components; links and path escape refuse. The archive manifest covers
@@ -3131,20 +3131,20 @@ witness calls; all others mutate captured inputs to the actual guard/parser.
 They add no alternate native binary, intentional inheritance or additional
 holder-death run. Do not repeat the death case to find a favorable result.
 
-| Control ID                     | Cheapest discriminating evidence / required refusal                                                                                              |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `BYPASS_LOCK`                  | Candidate fixture claims acquisition without calling the lock; real stable witness acquires, so `HELD` refuses                                   |
-| `PREMATURE_UNLOCK`             | Candidate unlocks before the parent release/death command; witness challenge acquires and refuses                                                |
-| `RETAIN_AFTER_RELEASE`         | Candidate claims release while retaining its lock; real witness contends and refuses                                                             |
-| `INHERITABLE_FLAGS`            | Mutate stable inspection's read-back non-inheritance flag to false; guard refuses before child launch; do not intentionally transfer a live lock |
-| `INHERITED_IDENTITY`           | Mutate child inspection to same-file identity, even with claimed non-inherit flags; reducer refuses                                              |
-| `WRONG_CUSTODY`                | Substitute leaf/root native identity in a captured barrier; refuse before lock/death authority                                                   |
-| `WRONG_RANGE_OR_FLAGS`         | Mutate reviewed call/compile parameters; source/build census refuses; no blocking-lock fallback                                                  |
-| `BUILD_OR_LOADER_SUBSTITUTION` | Substitute candidate bytes for witness output or change a retained loaded byte; pre-load/retained-byte rehash refuses                            |
-| `MALFORMED_OR_FORGED_FACTS`    | Extra member, unknown error or candidate verdict in a pending call; hostile-safe parser refuses                                                  |
-| `FALSE_DEATH_OR_RETRY`         | Transcript lacks exact exit/close, moves attempt before close, or contains two post-death calls; reducer refuses                                 |
-| `MISSING_OR_MIXED_CENSUS`      | Missing/duplicate/extra case, control, OS archive or differing attempt/revision; diagnostic verifier refuses                                     |
-| `CAPABILITY_CONFUSION`         | Feed experiment report/OBSERVED into existing profile/core/publication parsers; unchanged parsers refuse                                         |
+| Control ID | Cheapest discriminating evidence / required refusal |
+| --- | --- |
+| `BYPASS_LOCK` | Candidate fixture claims acquisition without calling the lock; real stable witness acquires, so `HELD` refuses |
+| `PREMATURE_UNLOCK` | Candidate unlocks before the parent release/death command; witness challenge acquires and refuses |
+| `RETAIN_AFTER_RELEASE` | Candidate claims release while retaining its lock; real witness contends and refuses |
+| `INHERITABLE_FLAGS` | Mutate stable inspection's read-back non-inheritance flag to false; guard refuses before child launch; do not intentionally transfer a live lock |
+| `INHERITED_IDENTITY` | Mutate child inspection to same-file identity, even with claimed non-inherit flags; reducer refuses |
+| `WRONG_CUSTODY` | Substitute leaf/root native identity in a captured barrier; refuse before lock/death authority |
+| `WRONG_RANGE_OR_FLAGS` | Mutate reviewed call/compile parameters; source/build census refuses; no blocking-lock fallback |
+| `BUILD_OR_LOADER_SUBSTITUTION` | Substitute candidate bytes for witness output or change a retained loaded byte; pre-load/retained-byte rehash refuses |
+| `MALFORMED_OR_FORGED_FACTS` | Extra member, unknown error or candidate verdict in a pending call; hostile-safe parser refuses |
+| `FALSE_DEATH_OR_RETRY` | Transcript lacks exact exit/close, moves attempt before close, or contains two post-death calls; reducer refuses |
+| `MISSING_OR_MIXED_CENSUS` | Missing/duplicate/extra case, control, OS archive or differing attempt/revision; diagnostic verifier refuses |
+| `CAPABILITY_CONFUSION` | Feed experiment report/OBSERVED into existing profile/core/publication parsers; unchanged parsers refuse |
 
 These mutation rows also cover their named structural variants deterministically
 in one test invocation; no fuzz campaign, transfer mechanism or new security
