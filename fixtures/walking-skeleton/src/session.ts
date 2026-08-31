@@ -10,6 +10,7 @@ import {
   parseCanonicalContractBytes,
   parseCyclePlan,
   serializeContract,
+  snapshotClosedArray,
   validateCyclePlanBinding,
   validateSessionAcquireRequestBinding,
   validateSessionHealthBinding,
@@ -26,6 +27,7 @@ import {
   projectConfigurationPaths,
   projectConfigurationProvenance,
 } from "../../../packages/config/src/resolver.js";
+import { descriptor } from "./index.js";
 
 type Reason =
   | "STATE_UNREADABLE"
@@ -123,7 +125,10 @@ export async function acquireFixtureSession(
   sessionId: string,
   cycleId: string,
   clocks: FixtureSessionClocks,
+  allowedModuleIds: readonly string[] = [],
 ) {
+  const modules = snapshotClosedArray(allowedModuleIds);
+  if (!modules.ok) return modules;
   // Detach the caller's invocation before asynchronous work; it is still validated by the loader.
   const retained = {
     ...invocation,
@@ -158,17 +163,17 @@ export async function acquireFixtureSession(
       cycleId,
       sessionRequest: acquisitionRequest,
       adapterId: "fixture.branches",
-      allowedModuleIds: [],
+      allowedModuleIds: modules.value,
     },
   });
   if (!parsedPlan.ok) return parsedPlan;
-  // Empty static census: this separate session consumer invokes no module.
+  // Fixed fixture source census; the default separate session still requests no module.
   const plan = validateCyclePlanBinding(
     parsedPlan.value,
     admitted.source,
     admitted.provenance,
     admitted.paths,
-    [],
+    [descriptor.moduleId],
     computeCyclePlanDigest(parsedPlan.value),
   );
   if (!plan.ok) return plan;

@@ -1,73 +1,125 @@
 import {
-  canonicalDigest,
   computeDispatchActionCoreDigest,
+  computeModuleDescriptorDigest,
+  computeModulePlanInputDigest,
   dispatchDirectiveKinds,
-  parseContract,
-  validateDispatchBriefBinding,
+  parseDispatchActionCore,
+  parseModuleDescriptor,
+  parseModulePlanInput,
+  validateModulePlanBinding,
+  type ModulePlanInput,
+  type ModulePlanResult,
 } from "@orchestration-platform/contracts";
 
-// Fixture descriptor only: not a module-descriptor/v1 or registry admission.
-export const descriptor = Object.freeze({
-  abi: "orchestration-module/v1",
-  moduleId: "fixture.contract-consumer",
+const actionPair = Object.freeze({
   actionKind: "fixture.inspect",
   capabilityName: "work.read",
-  inputSchema: "dispatch-action-core/v1",
-  outputSchema: "dispatch-brief/v1",
 });
-
-// The descriptor/async-plan shape exercises composition, not the full module ABI.
-export async function plan(input: unknown) {
-  const parsed = parseContract(descriptor.inputSchema, input);
-  if (!parsed.ok) return parsed;
-  const core = parsed.value;
-  if (
-    core.moduleDescriptorDigest !== canonicalDigest(descriptor) ||
-    core.actionKind !== descriptor.actionKind ||
-    core.capabilityName !== descriptor.capabilityName ||
-    core.requestedRole !== "observer"
-  )
-    return { ok: false as const, issues: ["fixture:input-binding"] };
-  const pair = {
-    actionKind: descriptor.actionKind,
-    capabilityName: descriptor.capabilityName,
-  };
-  const catalog = dispatchDirectiveKinds
-    .filter((kind) => kind !== "OPERATOR_ACTION")
-    .map((directiveKind) => ({
-      ...pair,
-      code: directiveKind.toLowerCase(),
-      directiveKind,
-      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
-      templateId: `fixture.${directiveKind.toLowerCase()}`,
-    }));
-  const brief = {
-    action: {
-      ...pair,
-      actionCoreDigest: computeDispatchActionCoreDigest(core),
-      immutableSubjectDigest: core.immutableSubjectDigest,
-      moduleDescriptorDigest: core.moduleDescriptorDigest,
-      schemaVersion: "dispatch-brief-action/v1",
-    },
-    directives: dispatchDirectiveKinds.map((directiveKind) => ({
-      code: directiveKind === "OPERATOR_ACTION" ? null : directiveKind.toLowerCase(),
-      directiveKind,
-      presence: directiveKind === "OPERATOR_ACTION" ? "ABSENT" : "PRESENT",
-      schemaVersion: "dispatch-brief-directive/v1",
-      subjectDigest: core.immutableSubjectDigest,
-    })),
-    footprint: [
-      {
-        access: "READ",
-        resourceIdentityDigest: core.immutableSubjectDigest,
-        schemaVersion: "dispatch-brief-resource/v1",
-      },
+function fixtureDescriptor() {
+  const parsed = parseModuleDescriptor({
+    abi: "orchestration-module/v1",
+    actions: [
+      { ...actionPair, requestedRole: "observer", reviewRequired: false, workerRequired: true },
     ],
-    role: core.requestedRole,
-    schemaVersion: descriptor.outputSchema,
-  };
-  const issues = validateDispatchBriefBinding(brief, core, catalog, [pair]);
-  return issues.length
-    ? { ok: false as const, issues }
-    : parseContract(descriptor.outputSchema, brief);
+    compatibility: ["fixture.branches", "fixture.queue"].map((adapterId) => ({
+      adapterId,
+      adapterVersion: "1.0.0",
+      engineVersion: "0.0.0",
+      policyVersion: "1.0.0",
+    })),
+    dispatchCatalog: dispatchDirectiveKinds
+      .filter((kind) => kind !== "OPERATOR_ACTION")
+      .map((directiveKind) => ({
+        ...actionPair,
+        code: directiveKind.toLowerCase(),
+        directiveKind,
+        planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+        templateId: `fixture.${directiveKind.toLowerCase()}`,
+      })),
+    dispositionCodes: [],
+    inputSchemas: ["module-plan-input/v1"],
+    moduleId: "fixture.contract-consumer",
+    moduleVersion: "1.0.0",
+    outputSchemas: ["module-action-plan/v1", "module-no-action/v1"],
+    schemaVersion: "module-descriptor/v1",
+  });
+  if (!parsed.ok) throw new Error("fixture descriptor refused");
+  return parsed.value;
+}
+// Public structural descriptor only; this is not installed registry admission.
+export const descriptor = fixtureDescriptor();
+
+function boundResult(input: ModulePlanInput, value: unknown): ModulePlanResult {
+  const result = validateModulePlanBinding(input, value);
+  if (!result.ok) throw new Error("fixture result binding refused");
+  return result.value;
+}
+
+// This quarantined observer call produces records, never executes a worker or clears a hold.
+export async function plan(input: ModulePlanInput): Promise<ModulePlanResult> {
+  const parsed = parseModulePlanInput(input);
+  if (!parsed.ok) throw new Error("fixture input refused");
+  const retained = parsed.value;
+  const inputDigest = computeModulePlanInputDigest(retained);
+  if (
+    computeModuleDescriptorDigest(retained.descriptor) !==
+      computeModuleDescriptorDigest(descriptor) ||
+    retained.reviewSubject !== null
+  )
+    return boundResult(retained, {
+      inputDigest,
+      outcome: "REFUSED",
+      reason: "INPUT_REFUSED",
+      schemaVersion: "module-no-action/v1",
+    });
+  const selected = retained.projectFacts.frontier.find(
+    (row) => row.readiness === "READY" && row.capabilityNames.includes(actionPair.capabilityName),
+  );
+  if (!selected)
+    return boundResult(retained, {
+      inputDigest,
+      outcome: "NO_ACTION",
+      reason: "NO_ELIGIBLE_ACTION",
+      schemaVersion: "module-no-action/v1",
+    });
+  const parsedCore = parseDispatchActionCore({
+    ...actionPair,
+    immutableSubjectDigest: selected.immutableSubjectDigest,
+    moduleDescriptorDigest: computeModuleDescriptorDigest(descriptor),
+    requestedRole: "observer",
+    schemaVersion: "dispatch-action-core/v1",
+  });
+  if (!parsedCore.ok) throw new Error("fixture core refused");
+  const core = parsedCore.value;
+  return boundResult(retained, {
+    actionCore: core,
+    dispatchBrief: {
+      action: {
+        ...actionPair,
+        actionCoreDigest: computeDispatchActionCoreDigest(core),
+        immutableSubjectDigest: core.immutableSubjectDigest,
+        moduleDescriptorDigest: core.moduleDescriptorDigest,
+        schemaVersion: "dispatch-brief-action/v1",
+      },
+      directives: dispatchDirectiveKinds.map((directiveKind) => ({
+        code: directiveKind === "OPERATOR_ACTION" ? null : directiveKind.toLowerCase(),
+        directiveKind,
+        presence: directiveKind === "OPERATOR_ACTION" ? "ABSENT" : "PRESENT",
+        schemaVersion: "dispatch-brief-directive/v1",
+        subjectDigest: core.immutableSubjectDigest,
+      })),
+      footprint: [
+        {
+          access: "READ",
+          resourceIdentityDigest: core.immutableSubjectDigest,
+          schemaVersion: "dispatch-brief-resource/v1",
+        },
+      ],
+      role: core.requestedRole,
+      schemaVersion: "dispatch-brief/v1",
+    },
+    inputDigest,
+    schemaVersion: "module-action-plan/v1",
+    workId: selected.workId,
+  });
 }
