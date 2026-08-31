@@ -8,9 +8,13 @@ import {
   canonicalDigest,
   canonicalJson,
   computeDispatchActionCoreDigest,
+  computeModuleDescriptorDigest,
+  computeModulePlanInputDigest,
   dispatchDirectiveKinds,
   parseCanonicalContractBytes,
   parseContract,
+  parseCycleRequest,
+  validateModulePlanBinding,
   validateDispatchBriefBinding,
   validateAdapterConfigurationBinding,
   validateProjectBreakerFactsBinding,
@@ -32,11 +36,16 @@ import {
 } from "../../../packages/adapter-sdk/src/snapshot.js";
 import {
   createPortableConfigurationHostAdapter,
+  createConfigurationLoader,
   createWindowsConfigurationHostAdapter,
   type ConfigurationLoaderInvocation,
 } from "../../../packages/config/src/loader.js";
+import {
+  projectConfigurationPaths,
+  projectConfigurationProvenance,
+} from "../../../packages/config/src/resolver.js";
 import { consume } from "../src/consume.js";
-import { descriptor } from "../src/index.js";
+import { actionPair, descriptor } from "../src/index.js";
 import * as fixtureModule from "../src/index.js";
 
 const checkout = resolve(import.meta.dirname, "../../..");
@@ -58,10 +67,9 @@ const adapter =
     ? createWindowsConfigurationHostAdapter()
     : createPortableConfigurationHostAdapter(operatingSystem);
 const action = {
-  actionKind: descriptor.actionKind,
-  capabilityName: descriptor.capabilityName,
+  ...actionPair,
   immutableSubjectDigest: "a".repeat(64),
-  moduleDescriptorDigest: canonicalDigest(descriptor),
+  moduleDescriptorDigest: computeModuleDescriptorDigest(descriptor),
   requestedRole: "observer",
   schemaVersion: "dispatch-action-core/v1",
 };
@@ -162,7 +170,27 @@ async function fixture(kind: "branches" | "queue" = "branches", rows = frontier(
           return "state" in input ? input : queueInput(input);
         }),
   );
+  const loaded = await createConfigurationLoader(adapter)(invocation);
+  if (!loaded.ok) throw new Error("fixture setup configuration refused");
+  const provenance = projectConfigurationProvenance(loaded.value);
+  const paths = projectConfigurationPaths(loaded.value);
+  if (!provenance.ok || !paths.ok) throw new Error("fixture setup projection refused");
+  const request = parseCycleRequest({
+    adapterId: configuration.adapterId,
+    allowedModuleIds: [descriptor.moduleId],
+    cycleId: uuid(10),
+    schemaVersion: "cycle-request/v1",
+    sessionRequest: {
+      configurationPathsDigest: canonicalDigest(paths.value),
+      configurationProvenanceDigest: canonicalDigest(provenance.value),
+      configurationSourceDigest: canonicalDigest({ ...source, adapterId: configuration.adapterId }),
+      schemaVersion: "session-acquire-request/v1",
+      sessionId: uuid(11),
+    },
+  });
+  if (!request.ok) throw new Error("fixture setup request refused");
   return {
+    cycleRequest: request.value,
     root,
     configPath,
     stateRoot,
@@ -243,7 +271,15 @@ test("both real SDK policies retain contrasting facts with the same observer bri
     const f = await fixture(kind);
     const outsideBefore = await manifest(f.root, f.stateRoot);
     expect(
-      await consume(adapter, f.invocation, f.configuration, f.snapshot, f.currentPolicy, clocks),
+      await consume(
+        adapter,
+        f.invocation,
+        f.configuration,
+        f.snapshot,
+        f.currentPolicy,
+        clocks,
+        f.cycleRequest,
+      ),
     ).toEqual({
       ok: true,
       files: [
@@ -251,6 +287,10 @@ test("both real SDK policies retain contrasting facts with the same observer bri
         "adapter-configuration.json",
         "project-facts.json",
         "project-breaker-facts.json",
+        "cycle-request.json",
+        "module-descriptor.json",
+        "module-input.json",
+        "module-result.json",
         "action.json",
         "brief.json",
       ],
@@ -260,6 +300,10 @@ test("both real SDK policies retain contrasting facts with the same observer bri
       "adapter-configuration.json",
       "brief.json",
       "configuration.json",
+      "cycle-request.json",
+      "module-descriptor.json",
+      "module-input.json",
+      "module-result.json",
       "project-breaker-facts.json",
       "project-facts.json",
     ]);
@@ -269,6 +313,27 @@ test("both real SDK policies retain contrasting facts with the same observer bri
     const breakerFacts = await output(f, "project-breaker-facts.json", "project-breaker-facts/v1");
     const core = await output(f, "action.json", "dispatch-action-core/v1");
     const brief = await output(f, "brief.json", "dispatch-brief/v1");
+    const input = await output(f, "module-input.json", "module-plan-input/v1");
+    const result = await output(f, "module-result.json", "module-plan-result/v1");
+    expect(await output(f, "module-descriptor.json", "module-descriptor/v1")).toEqual(descriptor);
+    expect(await output(f, "cycle-request.json", "cycle-request/v1")).toEqual(f.cycleRequest);
+    expect(input).toMatchObject({
+      configurationProvenance: provenance,
+      adapterConfiguration: configuration,
+      projectFacts: facts,
+      policyFacts: breakerFacts,
+      descriptor,
+      cycleRequest: f.cycleRequest,
+      reviewSubject: null,
+    });
+    expect(result).toEqual({
+      actionCore: core,
+      dispatchBrief: brief,
+      inputDigest: computeModulePlanInputDigest(input),
+      schemaVersion: "module-action-plan/v1",
+      workId: uuid(3),
+    });
+    expect(validateModulePlanBinding(input, result).ok).toBe(true);
     expect(validateAdapterConfigurationBinding(configuration, provenance).ok).toBe(true);
     expect(validateProjectFactsBinding(facts, configuration).ok).toBe(true);
     expect(validateProjectBreakerFactsBinding(breakerFacts, configuration, facts, "1.0.0").ok).toBe(
@@ -307,8 +372,17 @@ test("fresh changed subjects change both core and brief without using the fronti
     rows[2] = { ...rows[2]!, immutableSubjectDigest: digest };
     const f = await fixture("branches", rows);
     expect(
-      (await consume(adapter, f.invocation, f.configuration, f.snapshot, f.currentPolicy, clocks))
-        .ok,
+      (
+        await consume(
+          adapter,
+          f.invocation,
+          f.configuration,
+          f.snapshot,
+          f.currentPolicy,
+          clocks,
+          f.cycleRequest,
+        )
+      ).ok,
     ).toBe(true);
     const core = await output(f, "action.json", "dispatch-action-core/v1");
     const brief = await output(f, "brief.json", "dispatch-brief/v1");
@@ -346,7 +420,17 @@ test("retains policy facts and selected action across the plan await", async () 
     return result;
   });
   expect(
-    (await consume(adapter, f.invocation, f.configuration, f.snapshot, currentPolicy, clocks)).ok,
+    (
+      await consume(
+        adapter,
+        f.invocation,
+        f.configuration,
+        f.snapshot,
+        currentPolicy,
+        clocks,
+        f.cycleRequest,
+      )
+    ).ok,
   ).toBe(true);
   expect(spy).toHaveBeenCalledTimes(1);
   const core = await output(f, "action.json", "dispatch-action-core/v1");
@@ -362,7 +446,7 @@ test("retains policy facts and selected action across the plan await", async () 
   expect(f.policySource).toHaveBeenCalledTimes(1);
   expect(core).toEqual(action);
   expect(core.immutableSubjectDigest).not.toBe(rows[2]!.immutableSubjectDigest);
-  const pair = { actionKind: descriptor.actionKind, capabilityName: descriptor.capabilityName };
+  const pair = actionPair;
   const catalog = dispatchDirectiveKinds
     .filter((kind) => kind !== "OPERATOR_ACTION")
     .map((directiveKind) => ({
@@ -375,45 +459,50 @@ test("retains policy facts and selected action across the plan await", async () 
   expect(validateDispatchBriefBinding(brief, core, catalog, [pair])).toEqual([]);
 });
 
-test.each(["UNKNOWN", "UNAVAILABLE", "NO_READY", "NO_CAPABILITY"] as const)(
-  "%s never plans or writes",
-  async (state) => {
-    const rows: ProjectFrontierRow[] = [
-      {
-        ...frontier()[2]!,
-        readiness: state === "NO_READY" ? "NOT_READY" : "READY",
-        capabilityNames: state === "NO_CAPABILITY" ? [] : ["work.read"],
-      },
-    ];
-    const f = await fixture("branches", rows);
-    const before = await manifest(f.root);
-    const spy = vi.spyOn(fixtureModule, "plan");
-    const snapshot = sdk(async (request) => {
-      if (state === "UNKNOWN" || state === "UNAVAILABLE")
-        return {
-          state,
-          observationId: request.observationId,
-          reason: state === "UNKNOWN" ? "SOURCE_UNKNOWN" : "SOURCE_UNAVAILABLE",
-        };
+test.each(["UNKNOWN", "UNAVAILABLE"] as const)("%s never plans or writes", async (state) => {
+  const rows: ProjectFrontierRow[] = [
+    {
+      ...frontier()[2]!,
+      readiness: "READY",
+      capabilityNames: ["work.read"],
+    },
+  ];
+  const f = await fixture("branches", rows);
+  const before = await manifest(f.root);
+  const spy = vi.spyOn(fixtureModule, "plan");
+  const snapshot = sdk(async (request) => {
+    if (state === "UNKNOWN" || state === "UNAVAILABLE")
       return {
-        ...request,
-        state: "COMPLETE",
-        nextCursor: null,
-        frontier: rows,
-        frontierDigest: canonicalDigest(rows),
+        state,
+        observationId: request.observationId,
+        reason: state === "UNKNOWN" ? "SOURCE_UNKNOWN" : "SOURCE_UNAVAILABLE",
       };
-    });
-    expect(
-      await consume(adapter, f.invocation, f.configuration, snapshot, f.currentPolicy, clocks),
-    ).toEqual({
-      ok: false,
-      issues: [state.startsWith("NO_") ? "fixture:no-eligible-work" : `fixture:snapshot:${state}`],
-    });
-    expect(spy).not.toHaveBeenCalled();
-    expect(f.policySource).toHaveBeenCalledTimes(state.startsWith("NO_") ? 1 : 0);
-    expect(await manifest(f.root)).toEqual(before);
-  },
-);
+    return {
+      ...request,
+      state: "COMPLETE",
+      nextCursor: null,
+      frontier: rows,
+      frontierDigest: canonicalDigest(rows),
+    };
+  });
+  expect(
+    await consume(
+      adapter,
+      f.invocation,
+      f.configuration,
+      snapshot,
+      f.currentPolicy,
+      clocks,
+      f.cycleRequest,
+    ),
+  ).toEqual({
+    ok: false,
+    issues: [`fixture:snapshot:${state}`],
+  });
+  expect(spy).not.toHaveBeenCalled();
+  expect(f.policySource).toHaveBeenCalledTimes(0);
+  expect(await manifest(f.root)).toEqual(before);
+});
 
 test("config and facts binding failures never plan or write", async () => {
   const f = await fixture();
@@ -439,7 +528,15 @@ test("config and facts binding failures never plan or write", async () => {
     return { ok: true, facts: { ...result.facts, adapterConfigurationDigest: "f".repeat(64) } };
   };
   expect(
-    await consume(adapter, f.invocation, f.configuration, moved, f.currentPolicy, clocks),
+    await consume(
+      adapter,
+      f.invocation,
+      f.configuration,
+      moved,
+      f.currentPolicy,
+      clocks,
+      f.cycleRequest,
+    ),
   ).toEqual({
     ok: false,
     issues: ["adapterConfigurationDigest:binding-mismatch"],
@@ -456,7 +553,15 @@ test("malformed config preserves the loader refusal with no output", async () =>
   const read = vi.fn(f.snapshot);
   const spy = vi.spyOn(fixtureModule, "plan");
   expect(
-    await consume(adapter, f.invocation, f.configuration, read, f.currentPolicy, clocks),
+    await consume(
+      adapter,
+      f.invocation,
+      f.configuration,
+      read,
+      f.currentPolicy,
+      clocks,
+      f.cycleRequest,
+    ),
   ).toEqual({
     ok: false,
     error: {
@@ -493,7 +598,15 @@ test.each(["branches", "queue"] as const)(
         return result;
       };
       expect(
-        await consume(adapter, f.invocation, f.configuration, snapshot, f.currentPolicy, clocks),
+        await consume(
+          adapter,
+          f.invocation,
+          f.configuration,
+          snapshot,
+          f.currentPolicy,
+          clocks,
+          f.cycleRequest,
+        ),
       ).toEqual({
         ok: false,
         issues: [
@@ -520,7 +633,15 @@ test("preserves a real policy SDK admission refusal before plan/state", async ()
   const sourceRead = vi.fn(() => []);
   const wrongAdapterPolicy = createQueueFixtureCurrentPolicy(sourceRead);
   expect(
-    await consume(adapter, f.invocation, f.configuration, f.snapshot, wrongAdapterPolicy, clocks),
+    await consume(
+      adapter,
+      f.invocation,
+      f.configuration,
+      f.snapshot,
+      wrongAdapterPolicy,
+      clocks,
+      f.cycleRequest,
+    ),
   ).toEqual({ ok: false, code: "ADAPTER_COMPATIBILITY_REFUSED" });
   expect(sourceRead).not.toHaveBeenCalled();
   expect(spy).not.toHaveBeenCalled();
@@ -564,7 +685,15 @@ test.each([
     };
   };
   expect(
-    await consume(adapter, f.invocation, f.configuration, f.snapshot, currentPolicy, clocks),
+    await consume(
+      adapter,
+      f.invocation,
+      f.configuration,
+      f.snapshot,
+      currentPolicy,
+      clocks,
+      f.cycleRequest,
+    ),
   ).toEqual({
     ok: false,
     issues: [issue],
@@ -583,3 +712,156 @@ test.each(["event-journal/v1", "cycle-receipt/v1"])(
     });
   },
 );
+
+test.each(["NO_READY", "NO_CAPABILITY"] as const)(
+  "%s records a bound public no-action without a fabricated core or brief",
+  async (kind) => {
+    const rows = [
+      {
+        ...frontier()[2]!,
+        readiness: kind === "NO_READY" ? ("NOT_READY" as const) : ("READY" as const),
+        capabilityNames: kind === "NO_CAPABILITY" ? [] : ["work.read"],
+      },
+    ];
+    const f = await fixture("branches", rows);
+    const before = await manifest(f.root, f.stateRoot);
+    const spy = vi.spyOn(fixtureModule, "plan");
+    const run = await consume(
+      adapter,
+      f.invocation,
+      f.configuration,
+      f.snapshot,
+      f.currentPolicy,
+      clocks,
+      f.cycleRequest,
+    );
+    expect(run.ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const input = await output(f, "module-input.json", "module-plan-input/v1");
+    const result = await output(f, "module-result.json", "module-plan-result/v1");
+    expect(result).toEqual({
+      inputDigest: computeModulePlanInputDigest(input),
+      outcome: "NO_ACTION",
+      reason: "NO_ELIGIBLE_ACTION",
+      schemaVersion: "module-no-action/v1",
+    });
+    expect(validateModulePlanBinding(input, result).ok).toBe(true);
+    expect((await readdir(f.stateRoot)).sort()).toEqual([
+      "adapter-configuration.json",
+      "configuration.json",
+      "cycle-request.json",
+      "module-descriptor.json",
+      "module-input.json",
+      "module-result.json",
+      "project-breaker-facts.json",
+      "project-facts.json",
+    ]);
+    expect(await manifest(f.root, f.stateRoot)).toEqual(before);
+  },
+);
+
+test.each(["PROVENANCE", "ADAPTER", "MODULE_INTENT"] as const)(
+  "refuses substituted %s cycle intent before invoking the module or writing",
+  async (kind) => {
+    const f = await fixture();
+    const before = await manifest(f.root);
+    const request = structuredClone(f.cycleRequest);
+    const changed =
+      kind === "PROVENANCE"
+        ? {
+            ...request,
+            sessionRequest: {
+              ...request.sessionRequest,
+              configurationProvenanceDigest: "f".repeat(64),
+            },
+          }
+        : kind === "ADAPTER"
+          ? { ...request, adapterId: "fixture.queue" }
+          : { ...request, allowedModuleIds: [] };
+    const spy = vi.spyOn(fixtureModule, "plan");
+    expect(
+      (
+        await consume(
+          adapter,
+          f.invocation,
+          f.configuration,
+          f.snapshot,
+          f.currentPolicy,
+          clocks,
+          changed,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+    expect(await manifest(f.root)).toEqual(before);
+  },
+);
+
+test.each(["INPUT_DIGEST", "OTHER_WORK", "MALFORMED"] as const)(
+  "rejects %s returned across the module await before any output write",
+  async (kind) => {
+    const f = await fixture();
+    const before = await manifest(f.root);
+    const original = fixtureModule.plan;
+    vi.spyOn(fixtureModule, "plan").mockImplementation(async (input) => {
+      const result = await original(input);
+      if (!result.ok || result.value.schemaVersion !== "module-action-plan/v1")
+        throw new Error("fixture action required");
+      return {
+        ok: true,
+        value: {
+          ...result.value,
+          ...(kind === "INPUT_DIGEST"
+            ? { inputDigest: "f".repeat(64) }
+            : kind === "OTHER_WORK"
+              ? { workId: uuid(4) }
+              : { extra: true }),
+        },
+      };
+    });
+    expect(
+      (
+        await consume(
+          adapter,
+          f.invocation,
+          f.configuration,
+          f.snapshot,
+          f.currentPolicy,
+          clocks,
+          f.cycleRequest,
+        )
+      ).ok,
+    ).toBe(false);
+    expect(await manifest(f.root)).toEqual(before);
+  },
+);
+
+test("detaches cycle intent before asynchronous observation and binds the retained input used by the module", async () => {
+  const f = await fixture();
+  const request = structuredClone(f.cycleRequest);
+  const before = canonicalJson(request);
+  const snapshot: Parameters<typeof consume>[3] = async (...args) => {
+    Object.assign(request, { adapterId: "fixture.queue", allowedModuleIds: [] });
+    return f.snapshot(...args);
+  };
+  expect(
+    (
+      await consume(
+        adapter,
+        f.invocation,
+        f.configuration,
+        snapshot,
+        f.currentPolicy,
+        clocks,
+        request,
+      )
+    ).ok,
+  ).toBe(true);
+  const persisted = await output(f, "cycle-request.json", "cycle-request/v1");
+  expect(canonicalJson(persisted)).toBe(before);
+  expect(canonicalJson(persisted)).not.toBe(canonicalJson(request));
+  const input = await output(f, "module-input.json", "module-plan-input/v1");
+  const result = await output(f, "module-result.json", "module-plan-result/v1");
+  expect(input.cycleRequest).toEqual(persisted);
+  expect(validateModulePlanBinding(input, result).ok).toBe(true);
+});
