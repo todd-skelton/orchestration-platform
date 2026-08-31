@@ -6074,7 +6074,17 @@ no UUID grants current progress or permission to retry. Outcome is:
 One supplied relation takes `(context, renderedInputBytesOrNull,
 stdoutBytesOrNull, stderrBytesOrNull, receipt)`. It parses complete context and
 receipt, reapplies the origin relations and raw byte bindings, recomputes
-context/cycle/transaction/census equalities, then uses this first-match matrix:
+context/cycle/transaction/census equalities, and enforces the following
+pre-owner guard independently of the winning result/reason. If the supplied
+pre-reclaim process observation has any OPEN handle, or pre-reclaim session
+inspection is REFUSED, every owner after must be null, no owner may be
+RECLAIMED, and any owner UNKNOWN phase must be BEFORE_RECLAIM. If the overall
+result is UNKNOWN, every owner row must be UNKNOWN/BEFORE_RECLAIM. Known
+retained/no-allocation cells still follow the matrix below. This prevents an
+uncertain allocation or owner row from hiding an earlier no-delete gate;
+UNKNOWN allocation remains UNKNOWN and is never downgraded to known retention.
+Healthy, closed pre-reclaim contexts may still retain legitimate post-start
+partial/unknown owner work. After this independent guard, use first match:
 
 | Bound condition, in priority order | Only permitted result and row constraints |
 | --- | --- |
