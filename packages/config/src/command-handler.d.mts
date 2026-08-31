@@ -1,7 +1,10 @@
+import type { CommandHandler } from "./config-command.js";
+
 export interface CommandShape {
   readonly argv: readonly [string, string];
   readonly required: readonly string[];
   readonly optional: readonly { readonly name: string; readonly takesValue: boolean }[];
+  readonly resultSchema: "configuration-provenance/v1" | "configuration-paths/v1";
 }
 
 export declare const commandHandlerRegistration: Readonly<{
@@ -9,6 +12,7 @@ export declare const commandHandlerRegistration: Readonly<{
   family: string;
   owner: string;
   issue: string;
-  implementation: "placeholder" | "implemented";
+  implementation: "implemented";
+  handler: CommandHandler;
   commands: readonly CommandShape[];
 }>;

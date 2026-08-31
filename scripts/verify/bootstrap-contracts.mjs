@@ -100,6 +100,7 @@ const expectedBuildConfiguration = {
       "packages/host-custody/build/broker-service-composition.ts",
       "packages/host-custody/dist/orchestration-host-custody-broker.mjs",
     ],
+    ["cli", "packages/cli/build/composition.ts", "packages/cli/dist/orchestrate.mjs"],
   ].map(([id, entryPoint, output]) => ({ id, entryPoint, output })),
 };
 
@@ -516,10 +517,34 @@ function assertRegistry(registry, expected, label) {
     }
     if (seenFamilies.has(family)) fail(`${label} duplicate family ${family}`);
     seenFamilies.add(family);
+    if (label === "CLI") {
+      const implemented = family === "config";
+      const fields = ["commands", "family", "implementation", "issue", "owner", "schemaVersion"];
+      if (implemented) fields.push("handler");
+      if (
+        !equal(Object.keys(observed).sort(), fields.sort()) ||
+        observed.implementation !== (implemented ? "implemented" : "placeholder") ||
+        (implemented && typeof observed.handler !== "function")
+      )
+        fail(`${label} closed handler registration mismatch for ${family}`);
+    }
     for (const command of observed.commands) {
       const key = command.argv.join(" ");
       if (seenCommands.has(key)) fail(`${label} duplicate command ${key}`);
       if (label === "CLI" && command.argv[0] !== family) fail(`${label} moved command ${key}`);
+      if (label === "CLI") {
+        const fields = ["argv", "optional", "required"];
+        if (family === "config") fields.push("resultSchema");
+        if (
+          !equal(Object.keys(command).sort(), fields.sort()) ||
+          (family === "config" &&
+            command.resultSchema !==
+              (key === "config validate"
+                ? "configuration-provenance/v1"
+                : "configuration-paths/v1"))
+        )
+          fail(`${label} result schema registration mismatch for ${key}`);
+      }
       seenCommands.add(key);
     }
   }
@@ -558,7 +583,18 @@ function validateHandlerSources(handlerFiles, handlerSources) {
   for (const file of expectedFiles.filter((path) => path.endsWith(".mjs"))) {
     const source = handlerSources[file];
     if (typeof source !== "string") fail(`missing command handler source ${file}`);
-    const normalized = source.replace(/\r\n/g, "\n");
+    let normalized = source.replace(/\r\n/g, "\n");
+    if (file === "packages/config/src/command-handler.mjs") {
+      // Only this fixed implementation import is deferred until invocation, so
+      // the source registration census does not need TypeScript resolution.
+      const handler = `  handler: async (input) => {
+    const { configCommandHandler } = await import("./config-command.ts");
+    return configCommandHandler(input);
+  },
+`;
+      if (!normalized.includes(handler)) fail("config handler implementation binding mismatch");
+      normalized = normalized.replace(handler, "");
+    }
     if (
       !normalized.startsWith("export const commandHandlerRegistration = Object.freeze({\n") ||
       !normalized.endsWith("});\n") ||
@@ -671,6 +707,8 @@ export async function validateBootstrapSnapshot(snapshot) {
     snapshot.rootPackage.packageManager !== "pnpm@11.22.0" ||
     snapshot.rootPackage.engines?.node !== ">=24 <25" ||
     snapshot.rootPackage.devDependencies?.esbuild !== "0.28.2" ||
+    snapshot.rootPackage.scripts?.build !==
+      "node scripts/build/windows-reparse-fact.mjs && node scripts/build/private-compositions.mjs" ||
     snapshot.rootPackage.scripts?.["contracts:compatibility-check"] !==
       "vitest run test/contracts/compatibility.test.ts" ||
     snapshot.rootPackage.scripts?.["harness:test"] !== "node scripts/harness-test.mts" ||

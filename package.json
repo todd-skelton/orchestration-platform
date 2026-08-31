@@ -9,7 +9,7 @@
     "pnpm": ">=11 <12"
   },
   "scripts": {
-    "build": "node scripts/build/private-compositions.mjs",
+    "build": "node scripts/build/windows-reparse-fact.mjs && node scripts/build/private-compositions.mjs",
     "format": "node scripts/format.mjs write",
     "format:check": "node scripts/format.mjs check",
     "typecheck": "tsc --noEmit -p tsconfig.json",
