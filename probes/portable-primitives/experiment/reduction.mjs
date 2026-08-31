@@ -313,27 +313,48 @@ export function reduceCaseTranscripts(value) {
     const rows = array(input.cases);
     if (rows.length !== caseIds.length) refuse();
     let sequence = 0,
-      previous = "OBSERVED";
+      previous = "OBSERVED",
+      parsingStopped = false;
     for (const [index, caseId] of caseIds.entries()) {
       const start = failures.length;
+      let malformedEvent = false;
       try {
-        const row = record(rows[index], ["caseId", "events", "result"]);
-        if (row.caseId !== caseId || !results.includes(row.result)) refuse();
-        // Submitted result is checked for vocabulary only, never trusted.
-        const events = array(row.events).map((entry) => event(entry, sequence++));
-        for (const e of events)
-          if (e.kind === "WATCHDOG") fail("UNKNOWN", "watchdog expired", caseId);
-        if (!events.length) {
-          fail(previous === "UNSUPPORTED" ? "UNSUPPORTED" : "UNKNOWN", "unexecuted row", caseId);
+        if (parsingStopped) {
+          fail("UNKNOWN", "row beyond malformed transcript boundary", caseId);
         } else {
-          if (previous !== "OBSERVED")
-            fail("UNKNOWN", "row executed after failed prerequisite", caseId);
-          checkRow(events, index, input, (result, reason) => fail(result, reason, caseId));
+          const row = record(rows[index], ["caseId", "events", "result"]);
+          if (row.caseId !== caseId || !results.includes(row.result)) refuse();
+          // Submitted result is checked for vocabulary only, never trusted.
+          // Validate incrementally: a malformed suffix must not discard native
+          // failures established by the independently valid, context-checked
+          // prefix. Neither this row's suffix nor later rows are interpreted.
+          const events = [];
+          for (const entry of array(row.events)) {
+            try {
+              events.push(event(entry, sequence));
+              sequence++;
+            } catch {
+              malformedEvent = parsingStopped = true;
+              break;
+            }
+          }
+          for (const e of events)
+            if (e.kind === "WATCHDOG") fail("UNKNOWN", "watchdog expired", caseId);
+          if (!events.length) {
+            fail(previous === "UNSUPPORTED" ? "UNSUPPORTED" : "UNKNOWN", "unexecuted row", caseId);
+          } else {
+            if (previous !== "OBSERVED")
+              fail("UNKNOWN", "row executed after failed prerequisite", caseId);
+            checkRow(events, index, input, (result, reason) => fail(result, reason, caseId));
+          }
         }
       } catch (error) {
-        if (error !== completedFailure)
+        if (error !== completedFailure) {
+          parsingStopped = true;
           fail("UNKNOWN", "missing, malformed or out-of-order transcript", caseId);
+        }
       }
+      if (malformedEvent) fail("UNKNOWN", "malformed event boundary", caseId);
       const rowFailures = failures.slice(start);
       previous = reduceResults(
         rowFailures.length ? rowFailures.map((entry) => entry.result) : ["OBSERVED"],

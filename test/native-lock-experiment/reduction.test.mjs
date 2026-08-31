@@ -435,6 +435,98 @@ test("watchdog/structural failures preserve already visible violations and apply
   assert.equal(reduceResults(["PASS"]), "UNKNOWN");
 });
 
+test("ordinary malformed suffixes retain earlier death contention and add structural UNKNOWN", () => {
+  for (const corrupt of [
+    (events) =>
+      events.push({
+        actor: "PARENT",
+        kind: "WATCHDOG",
+        data: { limitMilliseconds: "10000", elapsedNanoseconds: "10000000000" },
+        extra: true,
+      }),
+    (events) =>
+      events.push({
+        actor: "PARENT",
+        kind: "WATCHDOG",
+        data: { limitMilliseconds: "10000", elapsedNanoseconds: "10000000000", extra: true },
+      }),
+    (events) => {
+      events.at(-1).extra = true;
+    },
+    (events) => {
+      events.at(-1).data.extra = true;
+    },
+    (events) => {
+      events.at(-1).sequence = "00";
+    },
+    (events) => {
+      events.at(-1).sequence = events.at(-2).sequence;
+    },
+  ]) {
+    const input = fixture();
+    const events = input.cases[3].events;
+    Object.assign(events.filter(is("PARENT", "CALL", "TRY_LOCK"))[1].data, {
+      returnValue: process.platform === "win32" ? "0" : "-1",
+      errorCode: process.platform === "win32" ? "33" : String(constants.errno.EWOULDBLOCK),
+    });
+    // Only newly appended events need numbering; leave sequence mutants intact.
+    const priorLength = events.length;
+    corrupt(events);
+    if (events.length > priorLength)
+      events.at(-1).sequence = String(BigInt(events.at(-2).sequence) + 1n);
+    const output = reduceCaseTranscripts(input);
+    assert.equal(rowResult(output, 3), "UNKNOWN");
+    assert.equal(output.result, "UNKNOWN");
+    assert.ok(
+      output.cases[3].failures.some(
+        (failure) =>
+          failure.result === "VIOLATED" &&
+          failure.reason === "PARENT:expected ACQUIRED, saw CONTENDED",
+      ),
+    );
+    assert.ok(
+      output.cases[3].failures.some(
+        (failure) => failure.result === "UNKNOWN" && failure.reason === "malformed event boundary",
+      ),
+    );
+  }
+});
+
+test("native claims after a malformed event or in later rows are not interpreted", () => {
+  const input = fixture();
+  const events = input.cases[3].events;
+  const index = events.findIndex(is("HOLDER", "CLOSE")) + 1;
+  events.splice(index, 0, {
+    actor: "PARENT",
+    kind: "WATCHDOG",
+    data: { limitMilliseconds: "10000", elapsedNanoseconds: "10000000000" },
+    extra: true,
+  });
+  Object.assign(events[index + 1].data, {
+    returnValue: process.platform === "win32" ? "0" : "-1",
+    errorCode: process.platform === "win32" ? "33" : String(constants.errno.EWOULDBLOCK),
+  });
+  const output = reduceCaseTranscripts(renumber(input));
+  assert.equal(rowResult(output, 3), "UNKNOWN");
+  assert.ok(!output.failures.some((failure) => failure.result === "VIOLATED"));
+
+  const laterRows = fixture();
+  laterRows.cases[0].events.at(-1).extra = true;
+  Object.assign(laterRows.cases[1].events.filter(is("PARENT", "CALL", "TRY_LOCK"))[1].data, {
+    returnValue: process.platform === "win32" ? "0" : "-1",
+    errorCode: process.platform === "win32" ? "33" : String(constants.errno.EWOULDBLOCK),
+  });
+  const stopped = reduceCaseTranscripts(laterRows);
+  assert.equal(stopped.transcriptResult, "UNKNOWN");
+  assert.ok(!stopped.failures.some((failure) => failure.result === "VIOLATED"));
+  for (const row of stopped.cases.slice(1)) {
+    assert.equal(row.transcriptResult, "UNKNOWN");
+    assert.ok(
+      row.failures.some((failure) => failure.reason === "row beyond malformed transcript boundary"),
+    );
+  }
+});
+
 test("hostile input snapshot does not invoke accessors or proxy traps", () => {
   let invoked = false;
   const getter = Object.defineProperty({}, "cases", {
@@ -455,5 +547,10 @@ test("hostile input snapshot does not invoke accessors or proxy traps", () => {
   );
   for (const input of [getter, proxy, null, [], { ...fixture(), cases: new Array(4) }])
     assert.equal(reduceCaseTranscripts(input).transcriptResult, "UNKNOWN");
+  for (const suffix of [getter, proxy]) {
+    const input = fixture();
+    input.cases[3].events.push(suffix);
+    assert.equal(reduceCaseTranscripts(input).transcriptResult, "UNKNOWN");
+  }
   assert.equal(invoked, false);
 });
