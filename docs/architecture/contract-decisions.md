@@ -5601,6 +5601,258 @@ adjacent board reconciliation. Author claims no tests, self-PASS, production
 authority or ISS-041 completion. Another family, open payload or authority
 source is a named replan boundary, not permission to expand this packet.
 
+### Complete project mutation request, plan and apply literals (round 404)
+
+This proposal closes the three existing project families together. It selects
+no SDK executor, provider, credential, native primitive, runtime journal or
+release operation. The ISS-041 COMPLETE path still takes genuine skips 12/13;
+its complete event union must nevertheless parse every declared project arm.
+Project records cannot represent ASSEMBLE_CERTIFY or PROMOTE. Those operation
+choices retain their release owner and must refuse the project supplied binder.
+
+#### Bounded operation representation and owner boundary
+
+The previously unspecified inspectable operation is explicitly a bounded
+`COMPARE_REPLACE` of a complete adapter-owned byte resource. This is a proposal
+for v1's finite representation, not a generic program, shell command, JSON patch
+or production filesystem protocol. The adapter's admitted source maps opaque
+resource IDs to its complete replaceable project records and performs semantic
+validation. A branch-record adapter and queue-record adapter can expose their
+complete canonical records as bytes; neither engine nor JSON chooses a path,
+provider, parser, method or executable. An adapter lacking that complete mapping
+must refuse UNSUPPORTED_ACTION. Partial projections, credential/authority state,
+installation/release pointers and effects omitted from the census cannot enter
+this protocol. Larger or different operations require a versioned replan, not
+an unbounded payload or external digest whose preimage is unspecified.
+
+Reuse closed detached records/dense arrays, C with final LF, Digest, Uuid, Time,
+Name and Id as in round401. Scalar grammars match the whole string; unknown
+fields, symbols, accessors, proxies, sparse arrays and wrong versions refuse
+without input code. Hex means lowercase hexadecimal pairs, 0–4096 decoded
+bytes (0–8192 characters); empty bytes differ from absence. All fields are
+required; new nulls occur only in named cells. This deliberately small complete
+byte preimage is inspectable before writes; a hash or path cannot replace it.
+
+An inline value is exactly `{kind:"ABSENT"}` or `{bytes:Hex,kind:"PRESENT"}`.
+A resource observation is exactly `resourceId, value`, with resourceId Id and
+value that union. An effect is exactly `after, before, kind, resourceId`, kind
+COMPARE_REPLACE, before/after complete values. At least one is PRESENT and the
+two values must differ canonically: absence→presence creates, presence→absence
+removes, presence→different presence replaces. Resource lists/effects are
+strictly ASCII resourceId-sorted and unique, at most64 entries. Planned effects
+are nonempty. Resource identity is the pair of the actual adapter configuration
+identity and resourceId; the string alone is never a global resource or path.
+
+No relation proves that supplied bytes came from a project, exhaust all effects,
+encode a semantically valid record or materialize the exact worker result.
+Actual adapter/source admission must prove the entire mapping, scope and bytes
+before planning/apply. This explicit authority boundary cannot be replaced by
+boolean claims, familiar ID spellings, matching hashes or empty arrays.
+
+#### Complete request and fresh observation
+
+`project-mutation-request/v1` has exactly `actionPlanDigest,
+adapterConfigurationDigest, dispositionDigest, schemaVersion, sourceCycleId,
+subjectDigest, subjectKind, transactionId`. The four digest fields are Digest; schemaVersion is its literal; sourceCycleId and
+transactionId are Uuid; subjectKind is ACTION or WORKER_RESULT, never candidate.
+The mutation owner allocates transactionId once before plan, retains one
+immutable request/plan for it and never issues a fresh transaction to disguise
+an interrupted apply. It is neither a dispatch attempt nor a future cycle.
+
+The request relation takes `(dispositionInput, stdoutBytesOrNull,
+stderrBytesOrNull, disposition, request)`. Apply the complete round401 disposition
+relation, require APPLY/PROJECT, and bind actionPlanDigest/dispositionDigest to
+the actual designated identities. Bind adapterConfigurationDigest to the actual
+moduleInput adapter configuration, sourceCycleId to its cycle, and subject kind/
+digest to the bound disposition target. The same old-action/new-result and
+review joins remain. Nonapplying/wrong-owner/rejected/unknown/candidate contexts
+refuse before a project request can be admitted. Allocation/current transaction
+uniqueness and actual source/credential authority remain the caller's duty.
+
+An inline mutation observation has exactly `adapterConfigurationDigest,
+observationId, observedAt, result`. It uses Digest, Uuid, Time and this union:
+
+| result.kind | Complete members |
+| --- | --- |
+| COMPLETE | `kind, projectFacts, resources`; complete existing project-facts/v1 in state COMPLETE, plus the complete sorted 0–64 resource observations |
+| UNAVAILABLE | `kind, reason`; SOURCE_UNAVAILABLE or OBSERVATION_TIMEOUT |
+| UNKNOWN | `kind, reason`; SOURCE_UNKNOWN or OBSERVATION_INVALID |
+
+The nested project facts use their own actual source observation identity;
+outer observationId identifies the complete resource read. Each observation's
+outer and nested IDs must differ, and both must differ from the original module
+snapshot/policy IDs and every earlier dry/pre/post observation ID supplied to
+the relation. The outer configuration digest and actual project-facts binding
+must equal the request's actual configuration/project. A complete resource
+observation is a supplied full census for this operation, not a global source
+census. New source IDs/times and exact bytes still do not prove currentness.
+
+#### Complete dry-run plan
+
+`project-mutation-plan/v1` has exactly `observationDigest, outcome, requestDigest,
+schemaVersion, transactionId`. Request is Digest, transaction Uuid, literal
+schema; observationDigest is Digest except the two null cases below. Inline
+observation identity is SHA256(C(the full observation)), without a new schema.
+
+| outcome.kind | Complete members / rules |
+| --- | --- |
+| PLANNED | `effects, kind, resourceIntents`; complete nonempty effect list and the managed allocation census below |
+| REFUSED | `kind, reason`; TARGET_MOVED, CAPABILITY_REMOVED, POLICY_REFUSED, UNSUPPORTED_ACTION or RESOURCE_CONFLICT |
+| UNKNOWN | `kind, reason`; OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID, SOURCE_UNAVAILABLE, SOURCE_UNKNOWN or ADMISSION_UNPROVEN |
+
+UNKNOWN/OBSERVATION_UNAVAILABLE and UNKNOWN/OBSERVATION_INVALID alone require
+observationDigest:null; all other cells require Digest. Opposite-arm fields are
+absent. The full plan relation takes `(dispositionInput, stdoutBytesOrNull,
+stderrBytesOrNull, disposition, request, observationOrNull, plan)` and applies
+the request relation. Plan requestDigest/transactionId equal the actual request.
+For OBSERVATION_UNAVAILABLE require observation input exactly null. For
+OBSERVATION_INVALID require present non-null input that fails observation shape
+or configuration/ID binding. A valid observation cannot claim that reason.
+All other outcomes require its actual bound full observation and equal digest.
+
+UNAVAILABLE observations permit only UNKNOWN/SOURCE_UNAVAILABLE; UNKNOWN
+observations permit only UNKNOWN/SOURCE_UNKNOWN. A COMPLETE observation permits
+PLANNED, REFUSED or UNKNOWN/ADMISSION_UNPROVEN. For PLANNED, its resource IDs must
+exactly equal the effects' complete census and each actual value must equal
+that effect's before value. The original action capability must still be present
+in the configuration; a complete observation with no effect cannot masquerade
+as a plan. Semantics of the target/code-to-effect mapping and refusal diagnostics
+are source-owner claims, never granted by matching this relation. They must be
+substantiated before the real owner acts. The entire actual worker-result
+materialization/review/context remains bound through the request relation.
+
+This plan contains every before/after byte preimage before the first write.
+It is a dry run, not permission, a successful apply, or a new project snapshot
+claiming an unobserved future state. Effect order is the canonical resource
+order and does not imply a multi-resource atomic primitive.
+
+#### Complete exact-plan apply receipt and interrupted effects
+
+`project-apply-receipt/v1` has exactly `afterObservationDigest,
+beforeObservationDigest, completedEffectCount, outcome, phase, planDigest,
+requestDigest, resources, schemaVersion, transactionId`. Plan/request are Digest,
+transaction Uuid, literal schema; observation references are Digest or null by
+the cells below. completedEffectCount is a canonical decimal string0–64.
+Phase is BEFORE_WRITE, WRITING or AFTER_WRITE. An owner may claim WRITING even
+before the first effect completes; an attempted uncertain write is not a
+proven no-write refusal. Completed count records a claimed known contiguous
+prefix in canonical effect order; it is not independent progress authority.
+
+| outcome.kind | Complete members / exact phase and observation constraints |
+| --- | --- |
+| APPLIED | `kind`; AFTER_WRITE, both observation references non-null, count equals the entire planned effect length |
+| REFUSED | `kind, reason`; PRECONDITION_MOVED, POLICY_REFUSED, SESSION_UNHEALTHY, CREDENTIALS_REFUSED or PLAN_REFUSED; BEFORE_WRITE, count0, before reference non-null, after reference null |
+| UNKNOWN | `kind, reason`; OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID, AUTHORITY_UNPROVEN, WRITE_UNPROVEN, READBACK_UNPROVEN or PROGRESS_UNPROVEN; BEFORE_WRITE requires count0 and after:null; WRITING/AFTER_WRITE permit either observation null; all phases retain any supplied observations |
+
+UNKNOWN AFTER_WRITE requires count equal effect length, while WRITING permits
+0 through length. REFUSED diagnoses a proven no-write stop; possibly issued or
+partial effects can only be UNKNOWN. No FAILED/APPLIED_WITH_WARNINGS or false
+success cell hides partial mutations. Unknown counts and phases are retained
+claims, not a right to retry, reclaim resources or complete the cycle.
+
+The apply relation takes `(dispositionInput, stdoutBytesOrNull,
+stderrBytesOrNull, disposition, request, dryObservationOrNull, plan,
+expectedPlanDigest, beforeObservationOrNull, afterObservationOrNull, receipt)`.
+First apply the full plan relation, require PLANNED, recompute the exact actual
+plan identity and equal it to the supplied canonical expectedPlanDigest (the
+future CLI --plan-id). Bind receipt plan/request identities and transaction to
+those actual records; count cannot exceed effect length. No fresh plan is
+created by this relation. Missing/moved/wrong-owner upstream data refuses
+without fabricating receipt references.
+
+Every present before/after observation must pass its complete intrinsic and
+configuration/ID binding, with IDs distinct across all supplied earlier phases;
+its digest must equal the corresponding receipt reference. A null observation
+requires a null reference and conversely. An unparseable observation may be
+reported only as omitted evidence in UNKNOWN; its private diagnostic bytes
+cannot obtain a canonical observation identity. Known observations' outer
+clock order is dry<=before<=after whenever both compared records are present;
+contradictory ordering refuses rather than manufacturing elapsed time.
+
+APPLIED requires COMPLETE before and after observations. Before projectFacts'
+frontierDigest equals the dry-run COMPLETE project's full frontierDigest;
+before resource census/values equal the entire dry-run census. After census is
+exactly the effect IDs with each value equal its planned after value. Its actual
+complete projectFacts is retained and bound to the same owner/project, never
+computed from the effects as though observed. The adapter must additionally
+prove those complete project facts faithfully reflect all actual resource
+changes and the immutable subject. Matching postimage alone does not prove
+this transaction performed it, nor permit a receipt from another transaction.
+
+REFUSED requires a COMPLETE before observation. PRECONDITION_MOVED requires
+its full project frontier or resource census/values differ from dry-run.
+Other refusal reasons may have unchanged bytes but require actual external
+owner evidence of their named gate and proof no write was attempted; pure
+structure does not establish that evidence. An unavailable/unknown before
+observation cannot yield known refusal. UNKNOWN may retain any intrinsically
+valid observation state or omit unavailable evidence; it grants no effect,
+absence, completion or recovery permission even if every byte matches.
+
+Runtime must revalidate the exact plan/target, live session, breaker, installed
+source, complete materialization/review and current credential generation/scope
+immediately before its first effect. Review workers never receive mutation
+credentials; the actual project adapter owner executes. On interruption the
+same transaction/plan may continue only from authentic current known progress;
+completed effects are read back and never reapplied. An already committed
+transaction returns its identical immutable receipt/preimages, not a new
+application. Unknown progress, unowned change or possibly repeated effect
+refuses/retains UNKNOWN. Caller counts, arrays, directories, IDs or a private
+transaction journal cannot establish that proof; actual public event/history
+and owner admission remain required. No production recovery primitive is
+selected here.
+
+Managed execution allocations are separate from project resources changed by
+the effects. A plan's resourceIntents reuse round398's complete sorted inline
+intent array, here restricted to ADAPTER and at most64 rows. Its owner is the
+actual bound project adapter. Every apply receipt additionally contains
+`resources`, the exact full round398 allocation-claim array in plan-intent
+order, with ownerTransactionId equal this mutation transactionId. All field,
+ID/state/null/uniqueness rules are reused. The apply relation requires exact
+intent/census equality, including refused/unattempted/uncertain rows; omission
+cannot prove no allocation. APPLIED requires every intent ALLOCATED. REFUSED
+permits an ALLOCATED prefix then NOT_ALLOCATED suffix, never UNKNOWN. UNKNOWN
+retains all claims and every known ID without granting absence. Partial
+allocation can therefore precede known no-project-write refusal, while
+ambiguous allocation cannot be a known refusal. Zero intents/claims are allowed
+only when the actual owner proves that this operation needs no managed
+allocation; empty arrays, read-only access or omitted effects do not prove it.
+The plan is still allocation-free; actual allocation occurs under the same
+owner before mutation in step13. Native handle closure remains its owner's
+duty. Step14 must join the full dispatch and mutation allocation censuses and
+cannot discard the latter after partial/unknown apply. These claims select no
+allocator or reclamation primitive and never certify their own completeness.
+Retained public evidence is not a worker allocation to delete. Actual resources
+allocated by dispatch/apply owners still require step14's complete reclaim
+receipt, including failed/unknown paths. APPLIED does not certify reclamation,
+release activation, independent review or final-cycle authority.
+
+#### Canonical identities, verification and footprint
+
+All three family identities are SHA256 of
+`UTF8("orchestration-platform") || 00 || UTF8(schemaVersion) || 00 || u32be(1)
+|| 07 || u64be(byteLength(C(record))) || C(record)`.
+Nested value/effect/observation records introduce no public family or wrapper.
+The request→plan→receipt graph is acyclic; none embeds its own ID or a downstream
+receipt. Complete canonical serializers/parsers retain every refusal/unknown
+arm and all actual inline byte preimages.
+
+This group's predicted implementation is one bounded contract file, generic
+parser/registry/harness wiring and independently authored compatibility tests.
+Required vectors include all create/remove/replace/value/observation/phase/
+outcome/null cells; unknown fields/versions/scalars/hostile objects; empty and
+maximum byte/effect bounds; independently generated complete frames/hashes;
+actual context/raw-review/target/request/config/plan-id/transaction/observation
+substitutions; exact pre/post values; known no-write versus partial UNKNOWN;
+and wrong release-owner/candidate admission. Runtime idempotency, complete
+source/effect mapping and authority are explicit later execution gates, not
+claimed by structural vectors.
+
+The source proposal touches this ledger, an additive ISS013 note and round404
+only. No runtime, dependency, command, service, provider, compiler/probe,
+production apply or ISS026 work. Independent literal review and host planning/
+format/board checks precede code/landing. The author claims no self-PASS or
+completed ISS041. Unknown projection semantics or another public family is a
+named replan boundary rather than permission to invent an executor.
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
