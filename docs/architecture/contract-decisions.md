@@ -1066,13 +1066,16 @@ the suite.
   bytes, applies the same total relation to the read-back, and binds it to the
   selected active release. A candidate, host, or worker cannot add, choose, or
   attest a row.
-- At step 5, ISS-012 alone emits `route-selection/v1` with one
+- For worker-required actions, at step 5 ISS-012 alone emits a selected
+  `route-selection/v1` with one
   `workerHostIdentityDigest` selected from the complete installed active-release
   mapping after applying the same total admission relation. The selected row's
   `capabilityNames` must contain the action core's exact case-sensitive
   `capabilityName`; zero, duplicate, unknown, stale, moved, or capability-
   incompatible rows refuse routing. Provider/model evidence may refine a route
   but cannot manufacture or substitute the opaque host identity.
+  Workerless actions use the explicit `NO_WORKER` route arm below; they
+  retain step 5 and preflight at step 6 without inventing a host.
 - There is no separate template-registry digest. Before rendering or ownership
   publication, step 7 uses the route-selected `workerHostIdentityDigest` to
   select exactly one installed active-release mapping row, proves its executing
@@ -4614,6 +4617,168 @@ a second history mechanism. If complete closure needs another public family or
 runtime authority source, stop and replan rather than broaden this packet.
 Independent exact-head review and host document verification precede code;
 the author claims no verifier, test, build, probe or self-PASS.
+
+### Route selection literal proposal and workerless amendment (ISS-002)
+
+This bounded prerequisite closes only the existing `route-selection/v1`
+census family. Its registered consumer is ISS-041's active module-input/action
+observer continuation, followed by a supplied-host-mapping handoff. It does
+not implement ISS-012 routing, installed host admission or a routine cycle.
+Independent exact-head review precedes parser implementation.
+
+#### Explicit workerless amendment and record census
+
+The old unconditional selected-host requirement conflicts with the admitted
+module action whose `workerRequired` is false. This amendment restricts that
+requirement to selected worker routes and adds the terminal `NO_WORKER` arm.
+Step 5 still executes, then step 6 still preflights the same action/subject.
+The existing declared workerless skips at 7–10 remain mandatory. No new skip
+at 5, synthetic worker, host identity, launch or accepted review is introduced.
+
+Reuse `C`, `Digest` and detached closed-record rules above; `Digest` is exactly
+64 lowercase hexadecimal characters. Every newly listed member is required;
+null is allowed only for `hostMappingDigest` in the specified arms. Every
+listed member sequence is canonical key order. Unknown/extra/omitted members,
+versions, enum cells, symbols, accessors, proxies and exotic values refuse
+without running input code. `route-selection/v1` has exactly four members:
+
+| Member | Exact rule |
+| --- | --- |
+| `actionPlanDigest` | Non-null designated identity of the actual complete `module-action-plan/v1` |
+| `hostMappingDigest` | Non-null `Digest` of the complete ordered supplied mapping, or null per the matrix below |
+| `outcome` | Exactly one closed inline arm below |
+| `schemaVersion` | Literal `route-selection/v1` |
+
+The complete outcome/nullability matrix is:
+
+| `outcome.kind` | Complete outcome members and literals | `hostMappingDigest` |
+| --- | --- | --- |
+| `SELECTED` | `kind, workerHostIdentityDigest`; non-null `Digest` | Non-null |
+| `REFUSED` | `kind, reason`; reason exactly `NO_SUPPORTED_HOST` | Non-null |
+| `UNKNOWN` | `kind, reason`; reason exactly `MAPPING_UNAVAILABLE` | Null |
+| `UNKNOWN` | `kind, reason`; reason exactly `MAPPING_INVALID` | Null |
+| `UNKNOWN` | `kind, reason`; reason exactly `ADMISSION_UNPROVEN` | Non-null |
+| `NO_WORKER` | `kind` only | Null |
+
+Branch-only members are absent, never null. Selected identity appears exactly
+once, inside the selected arm. No other arm carries a host, artifact, provider,
+model, selector, executable/path, credential or renderer proof. The route
+copies no capability, role, subject, descriptor, cycle or configuration fields
+already bound by the actual action plan and its input. There is no output
+self-digest, arbitrary evidence payload, timestamp or completeness Boolean.
+
+`MAPPING_UNAVAILABLE` reports no obtainable mapping observation. `MAPPING_INVALID`
+reports a supplied observation refused by the existing total mapping parser;
+it is not an admitted empty census. `ADMISSION_UNPROVEN` reports structurally
+valid mapping bytes whose installed/current-release/artifact/renderer
+admission is missing, stale, moved or contradictory. These are claimed
+diagnostics; actual observations remain with their runtime owners. No arm
+turns parser success or a diagnostic spelling into authority. Unobtainable or
+invalid module input/action cannot yield a fabricated `actionPlanDigest`:
+the owning caller uses its existing failure path without a route record.
+
+#### Identities and exact supplied relation
+
+`Dmapping = SHA256(C(mapping))` uses the actual complete ordered array of
+`worker-host-renderer-artifact/v1` rows, including final LF. Preserve array
+order; do not sort, filter, deduplicate or hash just the selected row. This is
+one inline content commitment, not a new schema, manifest or identity domain.
+Each row retains its existing artifact digest and designated worker-host
+identity formula; no route-local rehash replaces that identity.
+
+`Droute` hashes exactly
+`UTF8("orchestration-platform") || 00 || UTF8("route-selection/v1") || 00 ||
+u32be(1) || 07 || u64be(byteLength(C(route))) || C(route)`.
+Generic serialization returns those canonical record bytes and `Droute`.
+The graph is module input/action and supplied mapping, then route; none of
+its inputs references the route. No union wrapper or additional digest exists.
+
+One pure relation takes exactly `(moduleInput, actionPlan, mappingInput, route)`.
+The first two must parse under their complete existing families and pass
+`validateModulePlanBinding`; a no-action/refusal module result is not an action
+plan and cannot enter step 5. Parse the route and recompute its plan reference
+from the actual detached action plan. Derive the unique action declaration
+and capability from that exact bound descriptor/core, never caller flags.
+
+For `workerRequired:false`, require `NO_WORKER`, `mappingInput:null`, observer
+role, `reviewRequired:false`, and the module relation's null brief. Perform
+no host lookup; irrelevant mapping failure cannot block this route. Conversely
+every other route arm requires `workerRequired:true`. `NO_WORKER` cannot be
+used because a worker host or required observation is missing.
+
+For worker-required arms, the following cases are exhaustive:
+
+- `MAPPING_UNAVAILABLE`: require `mappingInput` exactly null, not undefined,
+  an empty array or an asserted absence digest.
+- `MAPPING_INVALID`: require non-null, non-undefined supplied input on which
+  the existing `parseWorkerHostRendererArtifacts` total parser fails. Do not canonicalize
+  or hash rejected input into `Dmapping`, repair rows or select a readable
+  subset. The route remains a valid unknown diagnostic, not usable host facts.
+- `SELECTED`, `REFUSED`, or `ADMISSION_UNPROVEN`: require the entire supplied
+  mapping to pass that parser and require `hostMappingDigest = Dmapping`.
+  Its existing 1–16 bound, unique identity keys, complete closed rows, sorted
+  1–256 capability census and identity recomputation are unchanged. An empty
+  mapping is invalid, never `NO_SUPPORTED_HOST`.
+- For `SELECTED`, apply the existing `selectWorkerHostForCapability` relation
+  to that whole mapping, the selected digest and the exact core capability.
+  For `NO_SUPPORTED_HOST`, require zero rows whose capability census contains
+  that exact case-sensitive capability. `ADMISSION_UNPROVEN` makes no host
+  choice and asserts neither zero eligible rows nor a particular live defect.
+
+All mismatches refuse the supplied relation. Passing it establishes supplied
+structure/identity only, not completeness against installed state, currency,
+renderer coverage, capability permission, a deterministic routing algorithm or
+effective issuance. A fixture may choose its first compatible supplied row
+deterministically; that fixture policy is not imposed by the public parser.
+Provider/model evidence may refine ISS-012's later choice but never constructs
+a host key or changes these joins; telemetry outages remain advisory.
+
+#### Runtime owners, acceptance evidence and bounded footprint
+
+ISS-021/045 own exact host package artifact bytes, compiled renderer tables
+and fixed templates. ISS-020/014 own complete release-manifest membership,
+install read-back and selected active-release binding. The supplied host row
+contains no literal template coverage or installed proof. Those owners must
+obtain and validate actual preimages before ISS-012 issues a usable selected
+route or known no-supported-host refusal; coordinated forged rows can pass
+this pure relation and grant nothing.
+Missing currentness/admission stays unknown, never a known empty installation.
+
+ISS-013 still owns step-6 preflight. For a selected worker route, ISS-008 must
+freshly re-admit the same mapping/identity, executing artifact, requested/brief
+role and exact rendered bytes before step-7 ownership publication. Steps 8–9
+still require actual launch, process and terminal observations, plus the exact
+review request/subject when applicable. The route cannot substitute for any
+of those missing literals or producers, breaker permission or journal evidence.
+Parsing `NO_WORKER` grants no preflight, mutation, reclamation or review skip
+authority; only the actual admitted declared action permits the existing route.
+
+| Acceptance/removal attack | Required future discriminating evidence |
+| --- | --- |
+| Complete shape | All six matrix rows, each required member/type/null cell, crossed arm members, future schema and hostile record/array refusals |
+| Bytes and identities | Independently pinned canonical bytes/full frames/digests for every arm; insertion-order equivalence; noncanonical bytes, wrong domain/tag/count/LF and selected-row-only or reordered mapping commitments refuse/differ |
+| Actual plan relation | Substitute module input, action plan, result family, descriptor/core role/capability or action identity independently; no copied expected digest replaces actual preimages |
+| Complete host census | First/two-host selections; valid 1/16 and invalid 0/17 mappings; missing/extra/duplicate/case-substituted capabilities and coordinated host/artifact changes against the retained mapping fail the relevant join |
+| Outcome separation | Unknown selected key, unsupported capability, supported row with no-host refusal, malformed/null/empty mapping exchanged between unknown arms, and valid mapping whose admission is unproven never fabricate selected authority |
+| Workerless continuation | Mixed descriptor's declared workerless action produces `NO_WORKER` without host lookup; worker-required action, non-null mapping/brief or role substitution refuses; the future composition retains 5/6 then typed skips 7–10 |
+| Authority boundary | Structurally coherent forged mapping may parse but supplies no installed/currentness/renderer proof; later runtime admission must reject missing, moved, stale and candidate-supplied preimages |
+
+Scope here is this subsection, the selected-host qualifier above, minimal
+routine-cycle/ISS-012 workerless wording, ISS-002's additive note and round 389.
+No code, CLI mapping, registry, new family, issue/edge, model router, provider,
+pricing, credential, host probe, state service or release/ISS-026 implementation
+is included. Host verification is planning/board reconciliation, targeted
+formatting and whitespace checks; the author runs no verifier, tests, builds
+or probes and claims no independent PASS or ISS-041 completion.
+
+Prediction: one complete parser, one framed identity, the inline mapping hash
+and one supplied relation suffice before the next observer handoff. Review
+that footprint at parser/consumer review. Deleting the plan/full-mapping joins
+permits cross-plan/partial-census substitution; adding a request schema or
+generic proof service provides no additional discriminator. `NO_WORKER` is
+smaller than demanding a fictional host for an action that launches none.
+New required authority sources or families are named replan boundaries, not
+permission to expand this packet.
 
 ## Release layout and root of trust
 

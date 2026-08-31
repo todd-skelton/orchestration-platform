@@ -12,7 +12,7 @@ until the prior step has one terminal output.
 | 2 `project.snapshot` | adapter SDK | adapter configuration | `project-facts/v1` | live, paginated observation now | complete → 3; unavailable → named terminal |
 | 3 `breaker.reduce` | breaker | facts + breaker history | breaker holds/receipt | same facts/policy version | permitted capabilities → 4; all held → 14 no-work; unknown → `UNKNOWN` |
 | 4 `module.plan` | portable module | eligible opaque facts/capabilities | `module-action-plan/v1` | exact snapshot digest | action → 5; no eligible action → 14 no-work; invalid → `FAILED_KNOWN` |
-| 5 `route.select` | routing | action capability + evidence snapshot | `route-selection/v1` | immediately before dispatch plan | route → 6; no supported route → `FAILED_KNOWN`; identity unknown → `UNKNOWN` |
+| 5 `route.select` | routing | action capability + evidence snapshot | `route-selection/v1` | immediately before dispatch plan | selected worker route or declared `NO_WORKER` → 6; no supported worker route → `FAILED_KNOWN`; identity unknown → `UNKNOWN` |
 | 6 `project.preflight` | adapter SDK | action + route + subject | `project-preflight/v1` | immediately before ownership publication | eligible unchanged subject → 7; refused/moved → `FAILED_KNOWN` |
 | 7 `dispatch.plan` | dispatch | action + route + unchanged preflight + role/credential references + optional immutable review target | `dispatch-plan/v1` | immediately before ownership publication | plan → 8; refused/moved → typed skips through 14 then 15; unknown → `UNKNOWN` |
 | 8 `worker.dispatch` | dispatch/host | exact `dispatch-plan/v1` from step 7 | launch/ownership receipt | preflight and credential generation still current | live → 9; start refused → typed failure then 11 |
@@ -80,6 +80,11 @@ landed-source subject and emits the immutable release-candidate subject plus
 three-OS certification before terminal/reclaim. It cannot promote. A later
 review cycle targets that candidate; only its accepted receipt permits a
 `release-operation-plan/v1` of kind `promote` for the unchanged candidate.
+
+A declared workerless action still produces step 5's `NO_WORKER` route and
+passes step 6 preflight before its typed 7–10 skips. That route carries no
+selected host or mapping; it never skips ordinal 5 or substitutes a missing
+host for a genuinely worker-required action.
 
 ## Exhaustive terminal and skip routing
 
