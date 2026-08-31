@@ -1,3 +1,4 @@
+import { parseProjectFacts } from "./project-snapshot.js";
 import {
   frame,
   framedDigest,
@@ -93,7 +94,7 @@ export const orchestrationCommandCensus: readonly OrchestrationCommandCensusRow[
       ["journal append", "ISS-010"],
       ["journal reduce", "ISS-010"],
       ["journal snapshot", "ISS-010"],
-      ["project snapshot", "ISS-013"],
+      ["project snapshot", null],
       ["project plan", "ISS-013"],
       ["project apply", "ISS-013"],
       ["release assemble", "ISS-014"],
@@ -132,6 +133,26 @@ const failureRows = Object.freeze({
   FILESYSTEM_OPERATION_FAILED: Object.freeze({
     outcome: "operation-failed",
     message: "filesystem operation failed",
+  }),
+  ADAPTER_CONFIGURATION_REFUSED: Object.freeze({
+    outcome: "invalid-input",
+    message: "adapter configuration refused",
+  }),
+  ADAPTER_BINDING_REFUSED: Object.freeze({
+    outcome: "authority-refused",
+    message: "adapter binding refused",
+  }),
+  ADAPTER_COMPATIBILITY_REFUSED: Object.freeze({
+    outcome: "authority-refused",
+    message: "adapter compatibility refused",
+  }),
+  PROJECT_SNAPSHOT_UNAVAILABLE: Object.freeze({
+    outcome: "external-unavailable",
+    message: "project snapshot unavailable",
+  }),
+  PROJECT_SNAPSHOT_UNKNOWN: Object.freeze({
+    outcome: "authority-unknown",
+    message: "project snapshot unknown",
   }),
   INTERNAL_ERROR: Object.freeze({ outcome: "internal-error", message: "internal error" }),
 } as const);
@@ -319,6 +340,11 @@ function diagnosticIssues(
   if (!parsed.ok) return prefixed("diagnostics.0", parsed.issues);
   const row = failureRows[code as keyof typeof failureRows];
   const issues: string[] = [];
+  if (
+    (code.startsWith("ADAPTER_") || code.startsWith("PROJECT_SNAPSHOT_")) &&
+    commandRow?.command !== "project snapshot"
+  )
+    issues.push("command:diagnostic-mismatch");
   if (outcome !== row.outcome) issues.push("outcome:mismatch");
   if (parsed.value.message !== row.message) issues.push("message:mismatch");
   return prefixed("diagnostics.0", issues);
@@ -337,7 +363,10 @@ export function parseOrchestrationCommandResult(input: unknown): ParseResult {
   const diagnostics = snapshotClosedArray(record.diagnostics);
   if (!diagnostics.ok) issues.push(...prefixed("diagnostics", diagnostics.issues));
   if (record.outcome === "success") {
-    if (!configCommands.includes(record.command as (typeof configCommands)[number]))
+    if (
+      record.command !== "project snapshot" &&
+      !configCommands.includes(record.command as (typeof configCommands)[number])
+    )
       issues.push("command:unsupported-result");
     if (diagnostics.ok && diagnostics.value.length !== 0) issues.push("diagnostics:not-empty");
     const result =
@@ -345,7 +374,11 @@ export function parseOrchestrationCommandResult(input: unknown): ParseResult {
         ? parseConfigurationProvenance(record.result)
         : record.command === "config paths"
           ? parseConfigurationPaths(record.result)
-          : invalid("command:unsupported-result");
+          : record.command === "project snapshot"
+            ? parseProjectFacts(record.result)
+            : invalid("command:unsupported-result");
+    if (record.command === "project snapshot" && result.ok && result.value.state !== "COMPLETE")
+      issues.push("result:not-complete");
     if (!result.ok) issues.push(...prefixed("result", result.issues));
   } else {
     if (record.result !== null) issues.push("result:not-null");

@@ -646,6 +646,13 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
         "FILESYSTEM_OPERATION_FAILED",
         "CAPABILITY_NOT_IMPLEMENTED",
         "INTERNAL_ERROR",
+        "authority-unknown",
+        "external-unavailable",
+        "ADAPTER_CONFIGURATION_REFUSED",
+        "ADAPTER_BINDING_REFUSED",
+        "ADAPTER_COMPATIBILITY_REFUSED",
+        "PROJECT_SNAPSHOT_UNAVAILABLE",
+        "PROJECT_SNAPSHOT_UNKNOWN",
       ]),
     }),
   });

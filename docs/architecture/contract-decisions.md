@@ -1099,8 +1099,9 @@ the suite.
 This subsection is a proposal for independent review, not authority conferred
 by its author. It defines the read-only observation union for the existing
 `project snapshot --adapter <file>` row. It does not complete ISS-013, define
-step-3 breaker policy or step-4 module authorization, or authorize a partial
-project command-family registration. Those existing outcomes remain open.
+step-3 breaker policy or step-4 module authorization. The bounded mixed-row
+registration amendment below addresses snapshot publication only; other
+existing outcomes remain open.
 
 There are exactly two proposed public schema families:
 `adapter-configuration/v1` and `project-facts/v1`. The frontier row and SDK
@@ -1247,13 +1248,27 @@ result, failed facts arm, or wrong-command result can satisfy snapshot success.
 The eventual implementation must amend the supported parsers, serializer,
 envelope mapping, diagnostics, and every affected census together under ISS-013.
 
-OPEN integration prerequisite: ISS-003 currently marks an entire command family
-implemented or placeholder. Publishing only snapshot cannot silently add fake
-plan/apply schemas or pretend the current registration accepts mixed rows.
-ISS-013 must separately obtain bounded independent review of the concrete
-registration representation change; until then this ledger does not authorize
-snapshot publication. Existing plan/apply and other command outcomes remain
-unchanged. No amendment to shared scaffold is made by this proposal.
+ISS-013's bounded representation amendment retains registration v1. An
+implemented family contains at least one executable command and exactly one
+handler. The reviewed public command census fixes each expected row before
+candidate metadata is inspected: snapshot has null `placeholderOwner` and
+exact `resultSchema:"project-facts/v1"`; plan/apply retain owner ISS-013 and
+their exact schema-free shapes. Executable rows require the family handler;
+placeholder rows receive no handler and derive their refusal owner from that
+same admitted registration. Missing/null/future/mismatched schemas, missing
+handlers, downgraded family state, and extra row handlers refuse the registry;
+none becomes a placeholder. Config and all other rows remain unchanged.
+No row-state field, new version, second registry, or plan/apply schema exists.
+The amendment updates ISS-003, ISS-013, ISS-000 and every existing census in
+one ordinary independently reviewed change; its author cannot certify it.
+
+The concrete adapter-file port uses the supplied host path, relative to the
+invocation cwd when relative, for an ordinary read-only regular-file read. It
+reads at most 65537 bytes to enforce the 65536-byte cap before canonical parsing
+and closes its handle on every path. File failures use the existing filesystem
+row. No root containment, symlink/reparse authority, executable input, or fixture
+path is added. Only the fixed fixture IDs and their current immutable source
+inputs are composed; each initial SDK page obtains a fresh detached snapshot.
 
 Two statically composed fixture adapters must exercise this same SDK callback,
 aggregation, parser, and CLI path: one may represent source-control work

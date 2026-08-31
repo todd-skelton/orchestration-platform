@@ -5,7 +5,12 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import { canonicalJson, computeConfigurationPathToken } from "../packages/contracts/src/index.js";
+import {
+  canonicalDigest,
+  canonicalJson,
+  computeConfigurationPathToken,
+  parseOrchestrationCommandResult,
+} from "../packages/contracts/src/index.js";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -115,6 +120,74 @@ describe("live config CLI composition", () => {
       expect(result.stdout).not.toContain("cli-path-canary");
       await expect(lstat(stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(configPath, "utf8")).toBe(canonicalJson(source));
+    },
+  );
+
+  test.each(["fixture.branches", "fixture.queue"])(
+    "live project snapshot reads %s through its actual SDK fixture",
+    async (adapterId) => {
+      const adapterPath = resolve(projectRoot, "adapter.json");
+      const configuration = {
+        adapterId,
+        adapterVersion: "1.0.0",
+        capabilityNames: ["work.read"],
+        engineVersion: "0.0.0",
+        projectId: source.projectId,
+        schemaVersion: "adapter-configuration/v1",
+      };
+      const bytes = canonicalJson(configuration);
+      await writeFile(
+        configPath,
+        canonicalJson({ ...source, adapterId, capabilityNames: ["work.read"] }),
+      );
+      await writeFile(adapterPath, bytes);
+      try {
+        // Relative host paths resolve against this real invocation's cwd.
+        const result = cli([
+          "--output",
+          "json",
+          "project",
+          "snapshot",
+          "--adapter",
+          "adapter.json",
+        ]);
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stderr).toBe("");
+        const record = JSON.parse(result.stdout);
+        expect(parseOrchestrationCommandResult(record).ok).toBe(true);
+        expect(result.stdout).toBe(canonicalJson(record));
+        expect(record.result.state).toBe("COMPLETE");
+        expect(record.result.projectId).toBe(source.projectId);
+        const expectedRows =
+          adapterId === "fixture.branches"
+            ? [
+                ["11", "a", "READY"],
+                ["12", "b", "NOT_READY"],
+                ["13", "c", "READY"],
+              ]
+            : [
+                ["21", "d", "READY"],
+                ["22", "e", "NOT_READY"],
+              ];
+        expect(record.result.frontier).toEqual(
+          expectedRows.map(([id, digest, readiness]) => ({
+            capabilityNames: ["work.read"],
+            immutableSubjectDigest: digest!.repeat(64),
+            readiness,
+            workId: `018f0f4d-7b2d-7a11-8a2b-0000000000${id}`,
+          })),
+        );
+        expect(record.result.frontierDigest).toBe(canonicalDigest(record.result.frontier));
+        expect(record.result.adapterConfigurationDigest).toBe(canonicalDigest(configuration));
+        expect(result.stdout).not.toContain("cli-path-canary");
+        const next = cli(["project", "snapshot", "--adapter", adapterPath]);
+        expect(next.status).toBe(0);
+        expect(JSON.parse(next.stdout).result.observationId).not.toBe(record.result.observationId);
+        expect(await readFile(adapterPath, "utf8")).toBe(bytes);
+        await expect(lstat(stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await writeFile(configPath, canonicalJson(source));
+      }
     },
   );
 

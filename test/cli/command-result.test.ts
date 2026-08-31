@@ -93,6 +93,26 @@ function canonicalEmission(prepared: PreparedCommandEmission) {
 }
 
 describe("prepared canonical CLI emission (no I/O)", () => {
+  test.each([
+    ["ADAPTER_CONFIGURATION_REFUSED", 2, "adapter configuration refused", "invalid-input"],
+    ["ADAPTER_BINDING_REFUSED", 3, "adapter binding refused", "authority-refused"],
+    ["ADAPTER_COMPATIBILITY_REFUSED", 3, "adapter compatibility refused", "authority-refused"],
+    ["PROJECT_SNAPSHOT_UNAVAILABLE", 4, "project snapshot unavailable", "external-unavailable"],
+    ["PROJECT_SNAPSHOT_UNKNOWN", 3, "project snapshot unknown", "authority-unknown"],
+  ] as const)(
+    "project %s has exact closed bytes and cannot escape its command",
+    (code, exitCode, message, outcome) => {
+      const value = { ok: false, error: { code, exitCode, message, outcome } };
+      expect(prepareCommandResult("project snapshot", value)).toEqual({
+        exitCode,
+        stderr: "",
+        stdout: goldenFailure("project snapshot", code, message, outcome),
+      });
+      expect(prepareCommandResult("config paths", value)).toEqual(internal());
+      expect(prepareCommandResult("project plan", value)).toEqual(internal("project plan"));
+    },
+  );
+
   test("pre-command argv refusal is fixed and contains no untrusted command", () => {
     const prepared = prepareArgvRefusal();
     expect(prepared).toEqual({
@@ -132,6 +152,7 @@ describe("prepared canonical CLI emission (no I/O)", () => {
       if (registration.family === "config") continue;
       for (const shape of registration.commands) {
         const command = shape.argv.join(" ");
+        if (command === "project snapshot") continue;
         const prepared = preparePlaceholderResult(command, registration.issue);
         expect(prepared).toEqual({
           stdout: `{"command":"${command}","diagnostics":[{"code":"CAPABILITY_NOT_IMPLEMENTED","owner":"${registration.issue}"}],"outcome":"operation-failed","result":null,"schemaVersion":"orchestration-command-result/v1"}\n`,
@@ -142,7 +163,7 @@ describe("prepared canonical CLI emission (no I/O)", () => {
         count += 1;
       }
     }
-    expect(count).toBe(31);
+    expect(count).toBe(30);
   });
 
   test("placeholder owner cannot be substituted or supplied by an implemented handler", () => {

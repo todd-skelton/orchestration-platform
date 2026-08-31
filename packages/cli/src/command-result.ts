@@ -11,7 +11,7 @@ import {
 export interface PreparedCommandEmission {
   readonly stdout: string;
   readonly stderr: "";
-  readonly exitCode: 0 | 2 | 3 | 5 | 70;
+  readonly exitCode: 0 | 2 | 3 | 4 | 5 | 70;
 }
 
 const failureRows = Object.freeze({
@@ -44,6 +44,36 @@ const failureRows = Object.freeze({
     exitCode: 5,
     message: "filesystem operation failed",
     outcome: "operation-failed",
+  }),
+  ADAPTER_CONFIGURATION_REFUSED: Object.freeze({
+    code: "ADAPTER_CONFIGURATION_REFUSED",
+    exitCode: 2,
+    message: "adapter configuration refused",
+    outcome: "invalid-input",
+  }),
+  ADAPTER_BINDING_REFUSED: Object.freeze({
+    code: "ADAPTER_BINDING_REFUSED",
+    exitCode: 3,
+    message: "adapter binding refused",
+    outcome: "authority-refused",
+  }),
+  ADAPTER_COMPATIBILITY_REFUSED: Object.freeze({
+    code: "ADAPTER_COMPATIBILITY_REFUSED",
+    exitCode: 3,
+    message: "adapter compatibility refused",
+    outcome: "authority-refused",
+  }),
+  PROJECT_SNAPSHOT_UNAVAILABLE: Object.freeze({
+    code: "PROJECT_SNAPSHOT_UNAVAILABLE",
+    exitCode: 4,
+    message: "project snapshot unavailable",
+    outcome: "external-unavailable",
+  }),
+  PROJECT_SNAPSHOT_UNKNOWN: Object.freeze({
+    code: "PROJECT_SNAPSHOT_UNKNOWN",
+    exitCode: 3,
+    message: "project snapshot unknown",
+    outcome: "authority-unknown",
   }),
   INTERNAL_ERROR: Object.freeze({
     code: "INTERNAL_ERROR",
