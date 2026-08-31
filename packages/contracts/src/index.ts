@@ -40,6 +40,7 @@ import {
 import { parseConfigurationContract } from "./configuration.js";
 import { parseProjectSnapshotContract } from "./project-snapshot.js";
 import { parseProjectBreakerFactsContract } from "./project-breaker-facts.js";
+import { computeBreakerReceiptDigest, parseBreakerReceiptContract } from "./breaker-receipt.js";
 import { computeRoutineStepSkipDigest, parseRoutineStepSkipContract } from "./routine-step.js";
 import {
   computeReleaseCandidateSubjectDigest,
@@ -73,6 +74,7 @@ import {
 } from "./cycle-entry.js";
 
 export * from "./authority.js";
+export * from "./breaker-receipt.js";
 export * from "./commit.js";
 export * from "./definitions.js";
 export * from "./dispatch.js";
@@ -142,6 +144,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const breakerReceipt = parseBreakerReceiptContract(expectedSchemaVersion, input);
+  if (breakerReceipt) return breakerReceipt;
   const modulePlan = parseModulePlanContract(expectedSchemaVersion, input);
   if (modulePlan) return modulePlan;
   const reviewResult = parseReviewResultContract(expectedSchemaVersion, input);
@@ -222,6 +226,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "adapter-configuration/v1" ||
       expectedSchemaVersion === "project-facts/v1" ||
       expectedSchemaVersion === "project-breaker-facts/v1" ||
+      expectedSchemaVersion === "breaker-receipt/v1" ||
       expectedSchemaVersion === "routine-step-skip/v1" ||
       expectedSchemaVersion === "review-subject/v1" ||
       expectedSchemaVersion === "review-request/v1" ||
@@ -300,6 +305,12 @@ export function serializeContract(
       ok: true,
       bytes: canonicalBytes(parsed.value),
       digest: computeReviewRequestDigest(parsed.value),
+    };
+  if (expectedSchemaVersion === "breaker-receipt/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeBreakerReceiptDigest(parsed.value),
     };
   if (
     expectedSchemaVersion === "module-plan-result/v1" ||
