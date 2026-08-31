@@ -3,13 +3,15 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
   canonicalDigest,
   canonicalJson,
   computeDispatchActionCoreDigest,
+  dispatchDirectiveKinds,
   parseCanonicalContractBytes,
   parseContract,
+  validateDispatchBriefBinding,
 } from "@orchestration-platform/contracts";
 import {
   createPortableConfigurationHostAdapter,
@@ -18,6 +20,7 @@ import {
 } from "../../../packages/config/src/loader.js";
 import { consume } from "../src/consume.js";
 import { descriptor } from "../src/index.js";
+import * as fixtureModule from "../src/index.js";
 
 const checkout = resolve(import.meta.dirname, "../../..");
 const roots: string[] = [];
@@ -155,6 +158,48 @@ test("consumes real contracts and pure configuration without writing outside adm
   expect(await manifest(f.root, f.stateRoot)).toEqual(outsideBefore);
   expect(await checkoutManifest()).toEqual(sourceBefore);
 }, 30_000);
+
+test("retains action-brief binding when the caller mutates its action across plan await", async () => {
+  const f = await fixture();
+  const callerAction = { ...action };
+  const originalPlan = fixtureModule.plan;
+  const spy = vi.spyOn(fixtureModule, "plan").mockImplementation(async (input) => {
+    const result = await originalPlan(input);
+    callerAction.immutableSubjectDigest = "f".repeat(64);
+    return result;
+  });
+  try {
+    expect((await consume(adapter, f.invocation, callerAction)).ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(callerAction.immutableSubjectDigest).not.toBe(action.immutableSubjectDigest);
+    const persistedAction = parseCanonicalContractBytes(
+      "dispatch-action-core/v1",
+      await readFile(join(f.stateRoot, "action.json")),
+    );
+    const persistedBrief = parseCanonicalContractBytes(
+      "dispatch-brief/v1",
+      await readFile(join(f.stateRoot, "brief.json")),
+    );
+    expect(persistedAction.ok && persistedBrief.ok).toBe(true);
+    if (!persistedAction.ok || !persistedBrief.ok) throw new Error("public parser refused output");
+    expect(persistedAction.value).toEqual(action);
+    const pair = { actionKind: descriptor.actionKind, capabilityName: descriptor.capabilityName };
+    const catalog = dispatchDirectiveKinds
+      .filter((kind) => kind !== "OPERATOR_ACTION")
+      .map((directiveKind) => ({
+        ...pair,
+        code: directiveKind.toLowerCase(),
+        directiveKind,
+        planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+        templateId: `fixture.${directiveKind.toLowerCase()}`,
+      }));
+    expect(
+      validateDispatchBriefBinding(persistedBrief.value, persistedAction.value, catalog, [pair]),
+    ).toEqual([]);
+  } finally {
+    spy.mockRestore();
+  }
+});
 
 test("malformed action and changed descriptor refuse before state creation", async () => {
   const f = await fixture();

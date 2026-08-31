@@ -1,6 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseCanonicalContractBytes, serializeContract } from "@orchestration-platform/contracts";
+import {
+  parseCanonicalContractBytes,
+  parseContract,
+  serializeContract,
+} from "@orchestration-platform/contracts";
 import {
   createConfigurationLoader,
   type ConfigurationHostAdapter,
@@ -17,13 +21,15 @@ export async function consume(
 ) {
   const loaded = await createConfigurationLoader(adapter)(invocation);
   if (!loaded.ok) return loaded;
-  const planned = await plan(action);
+  const retainedAction = parseContract(descriptor.inputSchema, action);
+  if (!retainedAction.ok) return retainedAction;
+  const planned = await plan(retainedAction.value);
   if (!planned.ok) return planned;
   const provenance = projectConfigurationProvenance(loaded.value);
   if (!provenance.ok) return provenance;
   const records = [
     ["configuration.json", "configuration-provenance/v1", provenance.value],
-    ["action.json", descriptor.inputSchema, action],
+    ["action.json", descriptor.inputSchema, retainedAction.value],
     ["brief.json", descriptor.outputSchema, planned.value],
   ] as const;
   const output = records.map(([name, schema, value]) => {
