@@ -132,9 +132,12 @@ function opened(addon, path) {
   }
   if (!windows) {
     const metadata = statSync(path, { bigint: true });
+    // Darwin's signed dev_t carries an unsigned 32-bit identity. Preserve all
+    // Linux device/inode bits; never round these native identities via Number.
+    const device = process.platform === "darwin" ? BigInt.asUintN(32, metadata.dev) : metadata.dev;
     assert.deepEqual(last.identity, {
       kind: "POSIX",
-      device: metadata.dev.toString(),
+      device: device.toString(),
       inode: metadata.ino.toString(),
     });
   }

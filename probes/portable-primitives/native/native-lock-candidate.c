@@ -34,6 +34,29 @@ typedef HANDLE native_handle;
 typedef int native_handle;
 #define NO_HANDLE (-1)
 #define THREAD_LOCAL _Thread_local
+/* Darwin dev_t is signed 32-bit: widen its unsigned bits, not its sign.
+ * Linux device and both platforms' inode values retain their native width.
+ * These file-local expressions also drive the host-build numerical checks.
+ */
+#ifdef __APPLE__
+#define POSIX_DEVICE_BITS(value) ((uintmax_t)(uint32_t)(value))
+_Static_assert(sizeof(dev_t) == sizeof(uint32_t), "Darwin device width changed");
+_Static_assert(POSIX_DEVICE_BITS((dev_t)(-INT32_C(2147483647) - 1)) == UINTMAX_C(2147483648),
+               "Darwin high device bit must not sign-extend");
+_Static_assert(POSIX_DEVICE_BITS((dev_t)-1) == UINTMAX_C(4294967295),
+               "Darwin device identity retains all 32 unsigned bits");
+#else
+#define POSIX_DEVICE_BITS(value) ((uintmax_t)(value))
+_Static_assert(POSIX_DEVICE_BITS((dev_t)UINT64_C(9007199254740993)) == UINTMAX_C(9007199254740993),
+               "Linux device identity must retain bits beyond JavaScript Number precision");
+_Static_assert(POSIX_DEVICE_BITS((dev_t)UINT64_C(0x8000000000000001)) == UINT64_C(0x8000000000000001),
+               "Linux device identity must retain the full 64-bit width");
+#endif
+#define POSIX_INODE_BITS(value) ((uintmax_t)(value))
+_Static_assert(POSIX_INODE_BITS((ino_t)UINT64_C(9007199254740993)) == UINTMAX_C(9007199254740993),
+               "Inode identity must retain bits beyond JavaScript Number precision");
+_Static_assert(POSIX_INODE_BITS((ino_t)UINT64_C(0x8000000000000001)) == UINT64_C(0x8000000000000001),
+               "Inode identity must retain the full 64-bit width");
 #endif
 
 enum state { UNOPENED, OPEN, LOCKED, CLOSED };
@@ -165,8 +188,8 @@ static bool inspect(context *ctx, facts *out, bool opening) {
   int value = fstat(ctx->native, &status);
   int error = value == 0 ? 0 : errno;
   if (value == 0) {
-    unsigned_text(ctx->device, (uintmax_t)status.st_dev);
-    unsigned_text(ctx->file, (uintmax_t)status.st_ino);
+    unsigned_text(ctx->device, POSIX_DEVICE_BITS(status.st_dev));
+    unsigned_text(ctx->file, POSIX_INODE_BITS(status.st_ino));
     ctx->identity_known = true;
   }
   record(ctx, out, "IDENTIFY", value, error);
