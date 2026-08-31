@@ -1,13 +1,16 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  canonicalDigest,
   parseCanonicalContractBytes,
-  parseContract,
+  parseCycleRequest,
+  parseModulePlanInput,
   serializeContract,
   validateAdapterConfigurationBinding,
   validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
+  validateModulePlanBinding,
+  type ModuleDescriptor,
+  type ReviewSubject,
 } from "@orchestration-platform/contracts";
 import type { CurrentPolicyReader } from "../../../packages/adapter-sdk/src/current-policy.js";
 import type { SnapshotClocks, SnapshotReader } from "../../../packages/adapter-sdk/src/snapshot.js";
@@ -18,19 +21,25 @@ import {
 } from "../../../packages/config/src/loader.js";
 import { projectConfigurationProvenance } from "../../../packages/config/src/resolver.js";
 import { descriptor, plan } from "./index.js";
+import { descriptor as reviewDescriptor } from "./review-module.js";
 
 // Matches the two statically composed SDK fixture policies, never input JSON.
 const currentPolicyVersion = "1.0.0";
 
 // Invoked only by the quarantined fixture. No process globals or package-export changes.
-export async function consume(
+async function prepareInput(
+  selectedDescriptor: ModuleDescriptor,
+  reviewSubject: ReviewSubject | null,
   adapter: ConfigurationHostAdapter,
   invocation: ConfigurationLoaderInvocation,
   adapterConfiguration: unknown,
   snapshot: SnapshotReader,
   currentPolicy: CurrentPolicyReader,
   clocks: SnapshotClocks,
+  cycleRequest: unknown,
 ) {
+  const request = parseCycleRequest(cycleRequest);
+  if (!request.ok) return request;
   const loaded = await createConfigurationLoader(adapter)(invocation);
   if (!loaded.ok) return loaded;
   const provenance = projectConfigurationProvenance(loaded.value);
@@ -62,30 +71,73 @@ export async function consume(
       ok: false as const,
       issues: [`fixture:current-policy:${breakerFacts.value.state}:${breakerFacts.value.reason}`],
     };
-  // Retain detached observer evidence only: neither trip arm grants execution or hold authority.
-  // Fixture policy only: choose the first eligible row in the validated, work-ID-sorted frontier.
-  const selected = facts.value.frontier.find(
-    (row) => row.readiness === "READY" && row.capabilityNames.includes(descriptor.capabilityName),
-  );
-  if (!selected) return { ok: false as const, issues: ["fixture:no-eligible-work"] };
-  const retainedAction = parseContract(descriptor.inputSchema, {
-    actionKind: descriptor.actionKind,
-    capabilityName: selected.capabilityNames.find((name) => name === descriptor.capabilityName),
-    immutableSubjectDigest: selected.immutableSubjectDigest,
-    moduleDescriptorDigest: canonicalDigest(descriptor),
-    requestedRole: "observer",
-    schemaVersion: descriptor.inputSchema,
+  // Retain the exact public input across the call. Both trip arms remain observations only.
+  const retainedInput = parseModulePlanInput({
+    adapterConfiguration: configuration.value,
+    configurationProvenance: provenance.value,
+    cycleRequest: request.value,
+    descriptor: selectedDescriptor,
+    policyFacts: breakerFacts.value,
+    projectFacts: facts.value,
+    reviewSubject,
+    schemaVersion: "module-plan-input/v1",
   });
-  if (!retainedAction.ok) return retainedAction;
-  const planned = await plan(retainedAction.value);
-  if (!planned.ok) return planned;
+  if (!retainedInput.ok) return retainedInput;
+  return { ok: true as const, input: retainedInput.value, stateRoot: loaded.value.stateRoot };
+}
+
+type PreparationArgs = [
+  adapter: ConfigurationHostAdapter,
+  invocation: ConfigurationLoaderInvocation,
+  adapterConfiguration: unknown,
+  snapshot: SnapshotReader,
+  currentPolicy: CurrentPolicyReader,
+  clocks: SnapshotClocks,
+  cycleRequest: unknown,
+];
+
+export async function prepareModuleInput(...args: PreparationArgs) {
+  return prepareInput(descriptor, null, ...args);
+}
+
+// Statically composed second fixture module; no caller-selectable descriptor or module resolver.
+export async function prepareReviewModuleInput(subject: ReviewSubject, ...args: PreparationArgs) {
+  return prepareInput(reviewDescriptor, subject, ...args);
+}
+
+export async function prepareObservation(...args: Parameters<typeof prepareModuleInput>) {
+  const prepared = await prepareModuleInput(...args);
+  if (!prepared.ok) return prepared;
+  const retainedInput = { value: prepared.input };
+  const provenance = { value: prepared.input.configurationProvenance };
+  const configuration = { value: prepared.input.adapterConfiguration };
+  const facts = { value: prepared.input.projectFacts };
+  const breakerFacts = { value: prepared.input.policyFacts };
+  const request = { value: prepared.input.cycleRequest };
+  let planned: unknown;
+  try {
+    planned = await plan(retainedInput.value);
+  } catch {
+    return { ok: false as const, issues: ["fixture:planning-failed"] };
+  }
+  // Recheck even this fixed fixture function's returned binding across an await.
+  const result = validateModulePlanBinding(retainedInput.value, planned);
+  if (!result.ok) return result;
   const records = [
     ["configuration.json", "configuration-provenance/v1", provenance.value],
     ["adapter-configuration.json", "adapter-configuration/v1", configuration.value],
     ["project-facts.json", "project-facts/v1", facts.value],
     ["project-breaker-facts.json", "project-breaker-facts/v1", breakerFacts.value],
-    ["action.json", descriptor.inputSchema, retainedAction.value],
-    ["brief.json", descriptor.outputSchema, planned.value],
+    ["cycle-request.json", "cycle-request/v1", request.value],
+    ["module-descriptor.json", "module-descriptor/v1", descriptor],
+    ["module-input.json", "module-plan-input/v1", retainedInput.value],
+    ["module-result.json", "module-plan-result/v1", result.value],
+    ...(result.value.schemaVersion === "module-action-plan/v1"
+      ? ([
+          ["action.json", "dispatch-action-core/v1", result.value.actionCore],
+          ["brief.json", "dispatch-brief/v1", result.value.dispatchBrief],
+        ] as const)
+      : []),
   ] as const;
   const output = records.map(([name, schema, value]) => {
     const encoded = serializeContract(schema, value);
@@ -94,10 +146,17 @@ export async function consume(
     if (!decoded.ok) throw new Error("fixture round-trip refused");
     return { name, bytes: encoded.bytes };
   });
+  return { ok: true as const, output, stateRoot: prepared.stateRoot };
+}
+
+// The original standalone observer continues to require an absent output directory.
+export async function consume(...input: Parameters<typeof prepareObservation>) {
+  const prepared = await prepareObservation(...input);
+  if (!prepared.ok) return prepared;
   // mkdir without recursive/force also refuses reuse; this is not a lease protocol.
-  await mkdir(loaded.value.stateRoot);
-  for (const { name, bytes } of output) {
-    await writeFile(join(loaded.value.stateRoot, name), bytes, { flag: "wx" });
+  await mkdir(prepared.stateRoot);
+  for (const { name, bytes } of prepared.output) {
+    await writeFile(join(prepared.stateRoot, name), bytes, { flag: "wx" });
   }
-  return { ok: true as const, files: output.map(({ name }) => name) };
+  return { ok: true as const, files: prepared.output.map(({ name }) => name) };
 }

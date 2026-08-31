@@ -755,7 +755,6 @@ describe("immutable review subjects", () => {
       "event-journal/v1",
       "reduced-state/v1",
       "cycle-receipt/v1",
-      "worker-terminal-receipt/v1",
       "worker-result-subject/v2",
       "release-candidate-subject/v2",
       "review-subject/v2",
@@ -767,6 +766,13 @@ describe("immutable review subjects", () => {
       expect(contracts.serializeContract(schema, fixture()).ok).toBe(false);
       expect(contracts.compatibilityDisposition(schema, schema)).toBe("refused");
     }
+    // Supporting terminal receipts never permits using subject bytes as a terminal receipt.
+    expect(contracts.parseContract("worker-terminal-receipt/v1", fixture()).ok).toBe(false);
+    expect(
+      contracts.parseCanonicalContractBytes("worker-terminal-receipt/v1", encode(goldens[0].text))
+        .ok,
+    ).toBe(false);
+    expect(contracts.serializeContract("worker-terminal-receipt/v1", fixture()).ok).toBe(false);
     // The old private prototype's empty record must not become a public subject.
     refuse(workerSchema, { schemaVersion: workerSchema });
   });
