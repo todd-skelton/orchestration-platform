@@ -230,9 +230,16 @@ export function createCommandDispatcher(
       const globals = parseOptions(tokens.slice(0, offset), globalFlags);
       if (!globals || (globals["--output"] !== null && globals["--output"] !== "json"))
         return prepareArgvRefusal();
-      const selected = tokens.slice(offset, offset + 2).join(" ");
+      const commandTokens = tokens.slice(offset, offset + 2);
+      const selected = commandTokens.join(" ");
       const shape = commandShapes.get(selected);
       if (!shape) return prepareArgvRefusal();
+      const expectedTokens = shape.argv as readonly string[];
+      if (
+        commandTokens.length !== expectedTokens.length ||
+        commandTokens.some((token, index) => token !== expectedTokens[index])
+      )
+        return prepareArgvRefusal();
       command = selected;
       const required = shape.required as readonly string[];
       const optional = shape.optional as readonly { name: string; takesValue: boolean }[];

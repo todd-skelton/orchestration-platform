@@ -168,6 +168,8 @@ describe("ISS-003 pure dispatcher and config handler", () => {
 
   test.each([
     [[], ""],
+    [["config paths"], ""],
+    [["config validate"], ""],
     [["unknown", "private-canary"], ""],
     [["--output", "text", "config", "paths"], ""],
     [["--config"], ""],
@@ -179,11 +181,13 @@ describe("ISS-003 pure dispatcher and config handler", () => {
     [["project", "apply", "--plan", "p"], "project apply"],
     [["project", "snapshot", "--adapter", "a", "--adapter", "b"], "project snapshot"],
   ] as const)("argv refusal %j", async (argv, command) => {
-    const { load, dispatch } = setup();
+    const handler = vi.fn(configCommandHandler);
+    const { load, dispatch } = setup(handler);
     expect(await dispatch(argv, context)).toEqual(
       expectedFailure(command, "ARGV_REFUSED", 2, "command line refused", "invalid-input"),
     );
     expect(load).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
   });
 
   test("closed argv and context never invoke caller code and classify environment separately", async () => {
