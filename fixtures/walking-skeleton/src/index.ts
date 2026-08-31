@@ -7,9 +7,11 @@ import {
   parseModuleDescriptor,
   parseModulePlanInput,
   validateModulePlanBinding,
+  type ModulePlanInput,
+  type ModulePlanResult,
 } from "@orchestration-platform/contracts";
 
-export const actionPair = Object.freeze({
+const actionPair = Object.freeze({
   actionKind: "fixture.inspect",
   capabilityName: "work.read",
 });
@@ -47,23 +49,34 @@ function fixtureDescriptor() {
 // Public structural descriptor only; this is not installed registry admission.
 export const descriptor = fixtureDescriptor();
 
+function boundResult(input: ModulePlanInput, value: unknown): ModulePlanResult {
+  const result = validateModulePlanBinding(input, value);
+  if (!result.ok) throw new Error("fixture result binding refused");
+  return result.value;
+}
+
 // This quarantined observer call produces records, never executes a worker or clears a hold.
-export async function plan(input: unknown) {
+export async function plan(input: ModulePlanInput): Promise<ModulePlanResult> {
   const parsed = parseModulePlanInput(input);
-  if (!parsed.ok) return parsed;
+  if (!parsed.ok) throw new Error("fixture input refused");
   const retained = parsed.value;
+  const inputDigest = computeModulePlanInputDigest(retained);
   if (
     computeModuleDescriptorDigest(retained.descriptor) !==
       computeModuleDescriptorDigest(descriptor) ||
     retained.reviewSubject !== null
   )
-    return { ok: false as const, issues: ["fixture:input-binding"] };
-  const inputDigest = computeModulePlanInputDigest(retained);
+    return boundResult(retained, {
+      inputDigest,
+      outcome: "REFUSED",
+      reason: "INPUT_REFUSED",
+      schemaVersion: "module-no-action/v1",
+    });
   const selected = retained.projectFacts.frontier.find(
     (row) => row.readiness === "READY" && row.capabilityNames.includes(actionPair.capabilityName),
   );
   if (!selected)
-    return validateModulePlanBinding(retained, {
+    return boundResult(retained, {
       inputDigest,
       outcome: "NO_ACTION",
       reason: "NO_ELIGIBLE_ACTION",
@@ -76,9 +89,9 @@ export async function plan(input: unknown) {
     requestedRole: "observer",
     schemaVersion: "dispatch-action-core/v1",
   });
-  if (!parsedCore.ok) return parsedCore;
+  if (!parsedCore.ok) throw new Error("fixture core refused");
   const core = parsedCore.value;
-  return validateModulePlanBinding(retained, {
+  return boundResult(retained, {
     actionCore: core,
     dispatchBrief: {
       action: {

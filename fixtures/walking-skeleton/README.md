@@ -12,6 +12,9 @@ and no disposition codes. Its inline async plan takes `module-plan-input/v1`
 and returns the concrete action or no-action arm of `module-plan-result/v1`.
 The union has no stored wrapper. No installed registry or module admission is
 claimed, and the declared worker-required action never launches a process here.
+The callable exports only `descriptor` and `plan`, whose native Promise resolves
+to a concrete public result, not a parser-result wrapper. Thrown calls become a
+named fixture failure before output; malformed or wrapped returns are rejected.
 
 `consume` still invokes the actual configuration loader and SDK snapshot/current-
 policy readers. It validates the exact configuration/provenance, full snapshot,

@@ -78,10 +78,14 @@ export async function consume(
     schemaVersion: "module-plan-input/v1",
   });
   if (!retainedInput.ok) return retainedInput;
-  const planned = await plan(retainedInput.value);
-  if (!planned.ok) return planned;
+  let planned: unknown;
+  try {
+    planned = await plan(retainedInput.value);
+  } catch {
+    return { ok: false as const, issues: ["fixture:planning-failed"] };
+  }
   // Recheck even this fixed fixture function's returned binding across an await.
-  const result = validateModulePlanBinding(retainedInput.value, planned.value);
+  const result = validateModulePlanBinding(retainedInput.value, planned);
   if (!result.ok) return result;
   const records = [
     ["configuration.json", "configuration-provenance/v1", provenance.value],

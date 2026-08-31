@@ -100,6 +100,9 @@ opaque work ID and subject; both the planner and caller bind the returned action
 against the exact input. Missing eligible work produces public no-action with
 no core or brief. Ten action outputs or eight no-action outputs round-trip;
 setup and teardown remain outside the measured observer invocation.
+The callable's only exports are descriptor/plan and its native Promise resolves
+to the concrete public result. Parser-result wrappers remain internal; thrown
+calls and malformed/wrapped results refuse before any observer output.
 
 This explicitly follows the independently reviewed module ABI replan in the
 contract ledger: actual observations replace undefined reduced facts, the

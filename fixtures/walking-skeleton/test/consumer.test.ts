@@ -14,6 +14,7 @@ import {
   parseCanonicalContractBytes,
   parseContract,
   parseCycleRequest,
+  parseModulePlanInput,
   validateModulePlanBinding,
   validateDispatchBriefBinding,
   validateAdapterConfigurationBinding,
@@ -45,10 +46,11 @@ import {
   projectConfigurationProvenance,
 } from "../../../packages/config/src/resolver.js";
 import { consume } from "../src/consume.js";
-import { actionPair, descriptor } from "../src/index.js";
+import { descriptor } from "../src/index.js";
 import * as fixtureModule from "../src/index.js";
 
 const checkout = resolve(import.meta.dirname, "../../..");
+const actionPair = { actionKind: "fixture.inspect", capabilityName: "work.read" };
 const roots: string[] = [];
 const source = {
   adapterId: "fixture.branches",
@@ -804,18 +806,15 @@ test.each(["INPUT_DIGEST", "OTHER_WORK", "MALFORMED"] as const)(
     const original = fixtureModule.plan;
     vi.spyOn(fixtureModule, "plan").mockImplementation(async (input) => {
       const result = await original(input);
-      if (!result.ok || result.value.schemaVersion !== "module-action-plan/v1")
+      if (result.schemaVersion !== "module-action-plan/v1")
         throw new Error("fixture action required");
       return {
-        ok: true,
-        value: {
-          ...result.value,
-          ...(kind === "INPUT_DIGEST"
-            ? { inputDigest: "f".repeat(64) }
-            : kind === "OTHER_WORK"
-              ? { workId: uuid(4) }
-              : { extra: true }),
-        },
+        ...result,
+        ...(kind === "INPUT_DIGEST"
+          ? { inputDigest: "f".repeat(64) }
+          : kind === "OTHER_WORK"
+            ? { workId: uuid(4) }
+            : { extra: true }),
       };
     });
     expect(
@@ -863,4 +862,76 @@ test("detaches cycle intent before asynchronous observation and binds the retain
   const result = await output(f, "module-result.json", "module-plan-result/v1");
   expect(input.cycleRequest).toEqual(persisted);
   expect(validateModulePlanBinding(input, result).ok).toBe(true);
+});
+
+test.each(["THROWN", "WRAPPED"] as const)(
+  "%s module return refuses without creating state",
+  async (kind) => {
+    const f = await fixture();
+    const before = await manifest(f.root);
+    const original = fixtureModule.plan;
+    vi.spyOn(fixtureModule, "plan").mockImplementation(async (input) => {
+      if (kind === "THROWN") throw new Error("fixture injected module failure");
+      return { ok: true, value: await original(input) } as unknown as Awaited<
+        ReturnType<typeof fixtureModule.plan>
+      >;
+    });
+    const result = await consume(
+      adapter,
+      f.invocation,
+      f.configuration,
+      f.snapshot,
+      f.currentPolicy,
+      clocks,
+      f.cycleRequest,
+    );
+    expect(result.ok).toBe(false);
+    if (kind === "THROWN")
+      expect(result).toEqual({ ok: false, issues: ["fixture:planning-failed"] });
+    expect(await manifest(f.root)).toEqual(before);
+  },
+);
+
+test("exports only the ABI descriptor and native-Promise plan with a concrete result", async () => {
+  expect(Object.keys(fixtureModule).sort()).toEqual(["descriptor", "plan"]);
+  const f = await fixture();
+  let actualReturn: Awaited<ReturnType<typeof fixtureModule.plan>> | undefined;
+  const original = fixtureModule.plan;
+  vi.spyOn(fixtureModule, "plan").mockImplementation((input) => {
+    const promise = original(input);
+    expect(promise).toBeInstanceOf(Promise);
+    return promise.then((value) => {
+      actualReturn = value;
+      return value;
+    });
+  });
+  expect(
+    (
+      await consume(
+        adapter,
+        f.invocation,
+        f.configuration,
+        f.snapshot,
+        f.currentPolicy,
+        clocks,
+        f.cycleRequest,
+      )
+    ).ok,
+  ).toBe(true);
+  const persisted = await output(f, "module-result.json", "module-plan-result/v1");
+  expect(actualReturn).toEqual(persisted);
+  expect(actualReturn).not.toHaveProperty("ok");
+  expect(actualReturn).not.toHaveProperty("value");
+  const input = await output(f, "module-input.json", "module-plan-input/v1");
+  const changed = parseModulePlanInput({
+    ...input,
+    descriptor: { ...descriptor, moduleVersion: "2.0.0" },
+  });
+  if (!changed.ok) throw new Error("valid alternate descriptor required");
+  expect(await original(changed.value)).toEqual({
+    inputDigest: computeModulePlanInputDigest(changed.value),
+    outcome: "REFUSED",
+    reason: "INPUT_REFUSED",
+    schemaVersion: "module-no-action/v1",
+  });
 });
