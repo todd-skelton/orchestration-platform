@@ -1094,6 +1094,177 @@ the suite.
   worktree, label, milestone, queue, deployment, consumer product terms, and
   their registered abbreviations fail the contracts build or runtime admission.
 
+### Project snapshot literal ledger proposal (ISS-013)
+
+This subsection is a proposal for independent review, not authority conferred
+by its author. It defines the read-only observation union for the existing
+`project snapshot --adapter <file>` row. It does not complete ISS-013, define
+step-3 breaker policy or step-4 module authorization, or authorize a partial
+project command-family registration. Those existing outcomes remain open.
+
+There are exactly two proposed public schema families:
+`adapter-configuration/v1` and `project-facts/v1`. The frontier row and SDK
+request/page shapes below are closed inline records, not separately versioned
+schemas. There is no adapter descriptor, plugin registry, open settings/policy
+payload, runtime import, provider selector, credential, state, or process field.
+
+#### Scalars, canonical bytes, and adapter configuration
+
+The closed-record/array rules above apply to every entry point. Every shown
+member is required; absent, extra, wrong-type, or null members refuse unless
+null is explicitly admitted. `UUID` means lowercase UUIDv7; `Digest` means
+lowercase SHA-256 hex; `Time` uses the canonical UTC millisecond timestamp
+above. `Name` matches `[a-z][a-z0-9._:-]{0,63}`. A name array is dense, contains
+0–256 names, and is strictly ASCII sorted, hence unique. `Version` is a string
+of at most 63 ASCII bytes matching `(0|[1-9][0-9]*)` three times separated by
+literal dots; no range, alias, prerelease, build suffix, or numeric conversion
+is admitted. These bounds are parser limits, not adapter policy.
+
+`C(x)` is UTF-8 canonical JSON with lexicographically sorted object keys, no
+BOM or insignificant whitespace, and exactly one final LF. Arrays retain their
+specified order. `Dconfig = SHA256(C(configuration))`; `Dfrontier =
+SHA256(C(frontier))`; `Dsnapshot = SHA256(C(projectFacts))`. The latter hashes
+the entire result, including its schema, state, and observation bindings; it
+is not an embedded self-digest. These are content identities, not attestations.
+
+`adapter-configuration/v1` has exactly `adapterId, adapterVersion,
+capabilityNames, engineVersion, projectId, schemaVersion` in canonical order.
+`schemaVersion` is literal `adapter-configuration/v1`; `adapterId` reuses the
+landed configuration grammar `[a-z0-9][a-z0-9._:@+-]{0,127}`; both versions use
+`Version`; `projectId` is `UUID`; and `capabilityNames` is a name array. The
+`--adapter` file contains exactly these canonical bytes, at most 65536 bytes.
+It supplies data, never an executable or a path to adapter code or fixture data.
+No field is nullable. File read failure uses the existing filesystem failure;
+noncanonical or malformed bytes use `ADAPTER_CONFIGURATION_REFUSED` below.
+
+Before the first adapter callback, the SDK compares project/adapter identities
+and capability census with the successful ISS-003 configuration; all must
+equal exactly. It then requires the requested engine version to equal the
+executing build's version and the requested adapter ID/version to equal the
+statically composed adapter's constants. That adapter's reviewed source must
+explicitly support this exact engine version, both schema literals, and every
+requested capability. These finite source constants are not another public
+record or registry. Unknown, missing, incompatible, or duplicate selections
+refuse without invoking the adapter. Exact-version support is the complete
+negotiation for this slice; there is no range inference or version fallback.
+
+#### Complete observation union and pagination
+
+`project-facts/v1` has the following exhaustive union. Every arm has exactly
+`adapterConfigurationDigest, observationId, observedAt, projectId,
+schemaVersion, state` plus only the arm's members below. The digest is
+`Dconfig`, both identities are `UUID`, `observedAt` is `Time`, and
+`schemaVersion` is literal `project-facts/v1`. `projectId` equals the admitted
+configuration. The SDK supplies a fresh observation ID and injected-clock time
+when this invocation starts; pages echo that ID and the result retains both.
+
+| State | Additional members and constraints |
+| --- | --- |
+| `COMPLETE` | `frontier, frontierDigest`; frontier is a dense 0–4096 row array, strictly sorted by `workId`; digest is `Dfrontier` recomputed from that array |
+| `UNAVAILABLE` | `reason`, exactly `SOURCE_UNAVAILABLE` or `OBSERVATION_TIMEOUT` |
+| `UNKNOWN` | `reason`, exactly `SOURCE_UNKNOWN`, `MALFORMED_OBSERVATION`, `INCOMPLETE_FRONTIER`, or `CHANGED_FRONTIER` |
+
+Failure arms contain no frontier or digest, including no null or empty
+substitute. No other state or reason exists. A public parser accepts the full
+union structurally, but cannot establish that any observation was fresh or
+authoritative. It verifies the COMPLETE digest and row census, not live source
+provenance. The SDK additionally proves the invocation and page bindings.
+
+Each frontier row has exactly `capabilityNames, immutableSubjectDigest,
+readiness, workId`. `capabilityNames` is a name array and a subset of the
+admitted configuration's capabilities; `immutableSubjectDigest` is `Digest`;
+`workId` is `UUID`; and `readiness` is exactly `READY|NOT_READY|UNAVAILABLE|UNKNOWN`.
+Work and immutable-subject identities are adapter-supplied opaque facts. Branch,
+worktree, repository location, priority rules, CI, deployment, and provider
+objects do not cross this boundary. An empty capability array grants nothing.
+COMPLETE admits only READY/NOT_READY rows: a returned UNKNOWN row makes the
+whole observation UNKNOWN/SOURCE_UNKNOWN; otherwise an UNAVAILABLE row makes
+it UNAVAILABLE/SOURCE_UNAVAILABLE. Partial known rows are discarded on failure.
+
+The sole observation callback is `readPage(request)`, returning a native
+Promise of one page arm. Its closed request is exactly `cursor, observationId`.
+`cursor` is null initially, otherwise a 1–256 ASCII byte token matching
+`[A-Za-z0-9._:-]+`; tokens are opaque and never interpreted as paths or queries.
+The callback's configuration is bound once by static composition, not supplied
+again as mutable page data. Page arms are exactly:
+
+| State | Complete member census |
+| --- | --- |
+| `COMPLETE` | `cursor, frontier, frontierDigest, nextCursor, observationId, state` |
+| `UNAVAILABLE` | `observationId, reason, state`; reason is `SOURCE_UNAVAILABLE` |
+| `UNKNOWN` | `observationId, reason, state`; reason is `SOURCE_UNKNOWN` |
+
+A COMPLETE page has 0–64 frontier rows using the row shape above;
+`frontierDigest` is the declared digest of the entire observation's canonical
+sorted frontier, not just this page. Cursor values use the request grammar;
+`nextCursor` is null only for the terminal page. The initial callback must
+observe the fixture's current immutable input anew; every continuation belongs
+to that same complete input. It must not return a cached prior invocation.
+The SDK checks matching observation ID and requested cursor, one unchanged
+frontier digest across pages, no repeated continuation token, unique work IDs
+across all pages, and one terminal null continuation. It sorts the accumulated
+rows by work ID and recomputes the declared digest before emitting COMPLETE.
+An empty frontier succeeds only after a terminal page and the exact empty-array
+digest have been checked. It is not by itself a routine-cycle no-work decision.
+
+The invocation is bounded to 64 callbacks, 4096 total rows, and 5000 integer
+milliseconds measured by an injected monotonic clock; the timeout bounds the
+whole invocation, not each page. A pending callback past the deadline yields
+UNAVAILABLE/OBSERVATION_TIMEOUT and is never resumed or used. Late completion
+cannot replace a terminal result. These are fixed fixture-slice limits; no
+provider timeout or retry policy is introduced. A non-null continuation at the
+page limit, repeated cursor, or absent terminal census yields
+UNKNOWN/INCOMPLETE_FRONTIER. Changed digest, duplicate work identity, or
+wrong observation/request binding yields UNKNOWN/CHANGED_FRONTIER. Other
+malformed pages, non-native promises, out-of-bound rows, or digest disagreement
+yield UNKNOWN/MALFORMED_OBSERVATION. A callback throw/rejection yields
+UNAVAILABLE/SOURCE_UNAVAILABLE; SDK defects use the existing INTERNAL_ERROR.
+Validation checks closed shape and scalar limits before relational checks;
+among relational faults observable from the current page and accumulated
+prefix, the fixed priority is CHANGED_FRONTIER, then INCOMPLETE_FRONTIER, then
+MALFORMED_OBSERVATION. Readiness is evaluated only if none of those faults is
+present. No later callback is fetched to classify a fault or runs after a
+terminal failure, and no failure becomes empty success.
+
+#### CLI mapping and implementation boundary
+
+Only COMPLETE maps to `success`/0 with a `project-facts/v1` result and empty
+diagnostics. SDK failure arms map to the following closed diagnostics with
+`result:null`; the SDK union remains available to its in-process consumer.
+Each diagnostic has exactly `code,message`, and each handler error retains
+ISS-003's exact `code,exitCode,message,outcome` shape. Messages contain no input.
+
+| Condition | Outcome / exit | Code | Exact message |
+| --- | --- | --- | --- |
+| invalid adapter configuration | `invalid-input` / 2 | `ADAPTER_CONFIGURATION_REFUSED` | `adapter configuration refused` |
+| project/adapter/capability binding differs from loaded configuration | `authority-refused` / 3 | `ADAPTER_BINDING_REFUSED` | `adapter binding refused` |
+| unsupported static adapter, engine version, schema, or capability | `authority-refused` / 3 | `ADAPTER_COMPATIBILITY_REFUSED` | `adapter compatibility refused` |
+| snapshot UNAVAILABLE | `external-unavailable` / 4 | `PROJECT_SNAPSHOT_UNAVAILABLE` | `project snapshot unavailable` |
+| snapshot UNKNOWN | `authority-unknown` / 3 | `PROJECT_SNAPSHOT_UNKNOWN` | `project snapshot unknown` |
+
+Earlier CLI/config-loader errors retain their existing rows. No configuration
+result, failed facts arm, or wrong-command result can satisfy snapshot success.
+The eventual implementation must amend the supported parsers, serializer,
+envelope mapping, diagnostics, and every affected census together under ISS-013.
+
+OPEN integration prerequisite: ISS-003 currently marks an entire command family
+implemented or placeholder. Publishing only snapshot cannot silently add fake
+plan/apply schemas or pretend the current registration accepts mixed rows.
+ISS-013 must separately obtain bounded independent review of the concrete
+registration representation change; until then this ledger does not authorize
+snapshot publication. Existing plan/apply and other command outcomes remain
+unchanged. No amendment to shared scaffold is made by this proposal.
+
+Two statically composed fixture adapters must exercise this same SDK callback,
+aggregation, parser, and CLI path: one may represent source-control work
+internally; the other has no branch/worktree concepts. Their closed page
+transcripts are fixture input, not live provider evidence. Neither input JSON,
+adapter-returned digests, nor pure parser success grants session, module,
+review, mutation, or promotion authority. Future provider observations still
+require their owner's actual fresh-authority evidence. Policy/breaker facts
+and module admission remain undefined here; no opaque digest substitutes for
+those missing literal contracts or claims completion of routine steps 3–4.
+
 ## Proportionality and schema lifecycle
 
 - State-mutation contracts defend exactly two boundaries: the single-writer,
