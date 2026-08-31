@@ -1,3 +1,9 @@
+import {
+  projectPreflightSchemaFields,
+  projectPreflightSchemaVersions,
+  projectPreflightRefusalReasons,
+  projectPreflightUnknownReasons,
+} from "./project-preflight.js";
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import {
   breakerReceiptSchemaFields,
@@ -127,6 +133,25 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "project-preflight/v1": Object.freeze({
+      schemaVersion: "project-preflight/v1",
+      fields: projectPreflightSchemaFields.preflight,
+      closedValues: Object.freeze([
+        "ELIGIBLE",
+        "REFUSED",
+        "UNKNOWN",
+        ...projectPreflightRefusalReasons,
+        ...projectPreflightUnknownReasons,
+      ]),
+    }),
+    ...Object.fromEntries(
+      Object.entries(projectPreflightSchemaFields)
+        .filter(([key]) => key !== "preflight")
+        .map(([key, fields]) => [
+          `project-preflight/v1#${key}`,
+          Object.freeze({ schemaVersion: "project-preflight/v1", fields }),
+        ]),
+    ),
     "route-selection/v1": Object.freeze({
       schemaVersion: "route-selection/v1",
       fields: routeSelectionSchemaFields.route,
@@ -1000,6 +1025,7 @@ export const schemaVersions = Object.freeze(
     ...reviewRequestSchemaVersions,
     ...modulePlanSchemaVersions,
     ...routeSelectionSchemaVersions,
+    ...projectPreflightSchemaVersions,
     ...reviewResultSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
