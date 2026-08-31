@@ -3816,6 +3816,273 @@ review request/result/authority, disposition/follow-up and ISS-013's remaining
 project groups stay explicitly open. ISS-041 remains partial; production
 journal/state/runtime work and ISS-010/026 acceptance remain unchanged.
 
+### Fourth complete literal group: review evidence records
+
+This bounded proposal closes the literal records for `review-request/v1`,
+`review-attempt-result/v1`, and `review-authority/v1` in the approved census.
+Independent review precedes their pure implementation. The preceding subject
+group's exclusions describe that earlier tranche, not permission to implement
+this one without review. This packet defines structural evidence and claimed
+authority records; it does not implement issuance, history reduction, dispatch,
+journal propagation, identity authentication, or a review CLI.
+
+#### Scalars, retained evidence, and immutable request
+
+Reuse `C`, `Uuid`, `Digest`, `Id` and all detached closed-record/array rules.
+All members are required and non-null unless a matrix explicitly permits null.
+Every field sequence below is canonical key order. Unknown fields, versions,
+enum arms, omitted/undefined members and hostile nested values refuse.
+
+An inline retained-content reference has exactly `byteLength, contentDigest`.
+`byteLength` is a canonical decimal string from `"0"` to
+`"9007199254740991"`; validate grammar/range before numeric conversion.
+`contentDigest:Digest` is SHA-256 of the exact retained bytes, including zero
+bytes when length is zero. It is neither a framed record identity nor a hash
+of a filename or digest spelling. A content list is a dense ordered array of
+these references. Bounds are specified at each use; repeats remain present,
+and lists are never sorted or deduplicated. Changing order/multiplicity changes
+bytes except when interchanging byte-identical entries. There is no content
+schema tag, locator, media-type override, executable instruction, or open JSON
+payload. Retained bytes may document evidence; reading them grants no authority
+and never authorizes executing a reproduced procedure.
+
+`review-request/v1` has exactly `packet, reviewCycleId, schemaVersion`.
+`schemaVersion` is literal `review-request/v1`; `reviewCycleId:Uuid` names
+the intended later review cycle. `packet` is the complete closed inline record
+`brief, evidence, subject`:
+
+| Member | Exact rule |
+| --- | --- |
+| `brief` | Existing complete `dispatch-brief/v1`; `role` must be `review` |
+| `evidence` | Content list of 0–256 retained supplemental review inputs; empty means none |
+| `subject` | Concrete worker-result or release-candidate record admitted by the existing wrapper-free `review-subject/v1` parser |
+
+Let `Dsubject` be the concrete subject's existing framed identity, never a
+union rehash. Require `packet.brief.action.immutableSubjectDigest = Dsubject`;
+the brief's existing directive/subject and complete shape rules also apply.
+Require `reviewCycleId != subject.authorCycleId` for a worker target, or
+`reviewCycleId != subject.assemblyCycleId` for a candidate. This inequality
+refuses same-cycle review but proves neither chronology nor independence.
+No synthetic author attempt is added to a candidate.
+
+The packet deliberately consists of these three components together. It is
+not just a prompt, a dispatch brief, a rendered byte string, or a provider
+artifact. `Dpacket = SHA256(C(packet))`, including the final LF, is its sole
+inline identity; there is no `review-packet/v1` schema or framed domain.
+Subject and brief bytes are carried, not replaced by copied expected digests.
+Supplemental inputs carry exact byte references; the subject's existing
+materialization/certification references remain mandatory even with an empty
+supplemental list. This packet adds no new rendering, materialization, or
+evidence interpretation format. The responsible module/adapter must admit
+the retained content's meaning and availability before review use.
+
+The request is immutable and exists before its step-7 dispatch plan. It
+contains no dispatch, launch, attempt-result, authority, rendered-byte,
+journal, or self digest. Retries may bind the same request only through
+distinct admitted attempts; complete-history rules cannot be bypassed by
+issuing another request for the same target. A changed subject, brief, input
+byte reference/order, or intended cycle requires a new request identity.
+
+#### Complete attempt-result and blocking finding shapes
+
+`review-attempt-result/v1` has exactly these ten members:
+
+| Member | Exact rule |
+| --- | --- |
+| `attemptId` | `Uuid` of the actual review-role attempt |
+| `cycleId` | `Uuid` of that review cycle |
+| `dispatchPlanDigest` | `Digest` of its actual `dispatch-plan/v1` |
+| `launchReceiptDigest` | `Digest` of its actual `worker-launch-receipt/v1` |
+| `packetDigest` | `Digest`, equal to the request's `Dpacket` on binding |
+| `requestDigest` | `Digest`, equal to the request's `DreviewRequest` on binding |
+| `result` | Exactly one complete inline arm below |
+| `schemaVersion` | Literal `review-attempt-result/v1` |
+| `subjectDigest` | `Digest`, equal to the same concrete `Dsubject` on binding |
+| `terminalReceiptDigest` | `Digest` of this attempt's actual `worker-terminal-receipt/v1` |
+
+The dispatch/launch/terminal digests use their owning ledgers' designated
+functions; no substitute hash is specified here. Those literal ledgers and
+actual preimages remain deferred; their absence does not make these required
+references nullable or give a shape parser provenance evidence.
+
+| `result.kind` | Complete member census | Required content |
+| --- | --- | --- |
+| `SWEEP_COMPLETE` | `evidence, kind` | `evidence`: content list 1–256 documenting a completed sweep with no blocking finding |
+| `BLOCKED` | `evidence, findings, kind` | `evidence`: content list 1–256 documenting the completed sweep; `findings`: 1–256 findings below |
+| `INCOMPLETE` | `evidence, kind` | `evidence`: content list 1–256 documenting a sweep that did not complete |
+| `FAILED` | `evidence, kind` | `evidence`: content list 1–256 documenting the known failed review attempt |
+| `MALFORMED` | `evidence, kind` | `evidence`: content list 1–256 retaining the exact invalid worker output plus any capture diagnosis |
+
+Opposite-arm members are absent, never null. No findings, partial blocking
+receipt, reason string, severity flag, or authority verdict may be added to
+the other four arms. An unfinished sweep with a suspected block is
+`INCOMPLETE`; its retained report may record that suspicion but cannot become
+a `BLOCKED` receipt. `SWEEP_COMPLETE` is worker evidence, not acceptance.
+`BLOCKED` does not select repair/replan or authorize a mutation.
+
+Each finding is exactly `disposition, evidence, findingId`.
+`findingId:Id` is an immutable module-assigned key scoped to this packet and
+the brief's module descriptor. Findings must be strictly ascending ASCII
+`findingId` order, hence unique. A repeated key with changed finding bytes
+within that scope is conflicting evidence, not a replacement of an old block;
+cross-attempt stability/conflict admission belongs to the later history owner.
+`disposition` is exactly `code, moduleDescriptorDigest`: `code` matches
+`[a-z][a-z0-9._:-]{0,63}`; `moduleDescriptorDigest:Digest` must equal the
+request brief's `action.moduleDescriptorDigest` on binding. The code is an
+opaque bounded lookup key owned by that reviewed module, never engine repair/
+replan vocabulary, free prose, an arbitrary payload, or a dynamic loader.
+The later module ledger must declare/admit its finite disposition-code census;
+no descriptor field or runtime dispatch behavior is guessed here.
+
+Finding `evidence` is exactly `expected, observed, procedure`, each one
+retained-content reference. The bytes bind the expected requirement/result,
+actual reproduced observation, and reproduction procedure respectively for
+this exact target. Hash-shaped strings alone do not prove reproduction; the
+later admitted reviewer/evidence owner verifies these bytes and their relation.
+The packet/report content lists and this three-reference record are distinct
+shapes; substituting one for the other refuses. Optional advisory findings,
+including ISS-039 simplification advice, remain module-owned non-blocking
+telemetry outside these authority records. They cannot change a result kind.
+
+Step 9's stable observation/materialization owner produces the record from
+the actual review attempt and retained output; worker bytes cannot declare
+the enclosing attempt/launch/terminal identities trusted. `MALFORMED` is a
+valid capture of invalid worker output, not permission to repair or admit a
+malformed `review-attempt-result/v1` record. Missing/unreadable/contradictory
+launch or terminal evidence cannot be replaced by a fabricated digest: no
+usable attempt result exists, and later reduction remains unknown. Pre-launch
+refusal follows the existing dispatch/skip path, not a synthetic review attempt.
+
+#### Claimed authority record and complete unknown arm
+
+`review-authority/v1` has exactly
+`outcome, packetDigest, requestDigest, schemaVersion, subjectDigest`.
+The three digest members are `Digest` of that exact packet, request and
+concrete subject; `schemaVersion` is literal `review-authority/v1`.
+`outcome` is exactly one of these closed records:
+
+| `outcome.kind` | Complete member census and rules |
+| --- | --- |
+| `accepted` | `attemptResultDigest, kind`; non-null `Digest` of an exact bound `SWEEP_COMPLETE` result |
+| `rejected` | `attemptResultDigest, kind`; non-null `Digest` of an exact bound `BLOCKED` result including every finding |
+| `unknown` | `attemptResultDigest, evidence, kind, reason`; nullable result reference as below; `evidence` is content list 1–256 of retained diagnostic observations |
+
+No uppercase lifecycle state, fourth verdict, copied findings, caller
+completeness flag, issuer assertion, signature-shaped string, or promotion
+permission is admitted. The unknown arm's exact reason/nullability census is:
+
+| `reason` | `attemptResultDigest` | Meaning of the retained diagnostic evidence |
+| --- | --- | --- |
+| `RESULT_UNAVAILABLE` | null | No readable attempt result available |
+| `RESULT_INVALID` | null | Supplied result bytes fail parsing or request/target/packet binding |
+| `RESULT_NONCOMPLETE` | non-null `Digest` | Exactly bound `INCOMPLETE`, `FAILED` or `MALFORMED` result |
+| `HISTORY_UNPROVEN` | null | Missing, truncated, conflicting, future-version, or ambiguously ordered history; no row selected as authoritative |
+| `INDEPENDENCE_UNPROVEN` | `Digest` or null | Later-cycle/actor/credential non-aliasing admission unavailable or failed |
+| `TARGET_CHANGED` | `Digest` or null | Actual immutable target or required immediate materialization no longer matches |
+| `EVIDENCE_UNPROVEN` | `Digest` or null | Any other missing, unauthenticated, stale, contradictory or mismatched required evidence join |
+
+Every non-null reference names a structurally valid, exactly bound result;
+invalid/unbound bytes can only be retained as diagnostic content, never
+referenced as an admitted result. Null means no result selected, not an
+assertion that none ever existed. More than one unresolved obligation may
+exist; `reason` names one supported failure, with no priority rule or claim
+that others passed. Diagnostic evidence must be an actual retained observation
+of the problem, never a hash of asserted absence. If the request itself is
+invalid or cannot be obtained, no bound authority record is fabricated;
+the owning operation refuses with unknown authority through its failure path.
+
+The stable reducer alone may issue an effective accepted/rejected receipt
+after every admission below. A supplied literal of either kind remains only
+a claimed record. Unknown grants nothing even when its shape is valid.
+This group defines no provenance proof for the authority producer, history
+commitment, signing key, selected current receipt, or runtime issuance API.
+
+#### Canonical identities, exact supplied relations, and deferred admission
+
+`DreviewRequest`, `DreviewAttempt`, and `DreviewAuthority` each hash exactly
+`UTF8("orchestration-platform") || 00 || UTF8(domain) || 00 || u32be(1) ||
+07 || u64be(byteLength(C(record))) || C(record)`. The respective domains are
+`review-request/v1`, `review-attempt-result/v1`, and `review-authority/v1`.
+These are one canonical-record part including LF, with no field-wise/raw-32
+parts. Generic serialization returns canonical bytes and that framed digest.
+Nested records hash in place; none embeds its own digest. `Dpacket` remains
+the explicitly unframed inline hash above, not a fourth family.
+
+A later pure supplied-record relation takes exactly the tuple
+`(request, attemptResult|null, authority)`, parses every supplied record, and
+recomputes identities from those actual detached values. Require all three
+authority references to equal the request's derived request/packet/subject
+identities. Require null attempt input iff `outcome.attemptResultDigest` is
+null; otherwise recompute `DreviewAttempt` and require equality. For any
+non-null result, require its request/packet/subject references to equal those
+same derived identities, `cycleId = request.reviewCycleId`, and, for a worker
+subject, `attemptId != subject.authorAttemptId`. Require every finding's
+module descriptor equality above. Apply the accepted/rejected/noncomplete
+kind matrix; other unknown reasons permit any of the five bound result kinds.
+Absent/malformed/substituted input or any mismatch refuses the relation.
+This optional later relation checks supplied structure only, not history
+completeness, authenticity, chronology, stable issuance, or live authority.
+
+Before real use, ISS-008/005/009/026 must obtain actual plan, launch, terminal,
+cycle and retained output evidence and recompute each owning identity. The
+step-7 plan must prebind this request, packet, concrete target, review cycle
+and attempt, with role `review`; the action core and packet brief must equal
+the actual admitted core/brief, and installed host/rendered-byte bindings must
+pass unchanged. Those owners must close their literal evidence fields before
+such joins can run. A record echoing expected digests supplies no preimage.
+
+The graph is subject/packet/request, then dispatch plan, launch and terminal
+observation, then review-attempt result, then authority and disposition.
+The terminal receipt must not include the downstream review-attempt digest;
+later step-9 composition binds both. Neither request nor packet depends on its
+dispatch plan or result. Actual role/credential/actor evidence must prove
+reviewer independence and a distinct later cycle, with no attempt reuse across
+requests or targets; replay may observe the same bound attempt. UUID
+inequality/order and worker-host artifact identity cannot prove actors
+are independent. Candidate admission uses real build/assembly/certification
+producer identities, never a fabricated author attempt.
+
+ISS-009 and history owners still owe a closed complete-history input census,
+authenticated beginning/end, ordering, duplicate/conflict/reuse rules and
+discovery of all relevant attempts, requests and supersessions. No latest-row
+selection, UUID sorting, caller completeness Boolean, or this tuple relation
+closes that obligation. Full stable reduction remains parked until those
+inputs and actual identity/provenance sources have reviewed contracts.
+Request/subject content and finding/report/diagnostic bytes must be obtained,
+length/hash verified and semantically admitted by their actual owners.
+Unavailable or contradictory joins yield unknown, never fixture acceptance.
+
+Optional code-host materialization still proves identical retained target
+immediately before reduction and mutation. Worker review cannot become
+candidate authority. Existing external review, authenticated certification,
+stable promotion and current authority gates remain unchanged; this packet
+adds no account or provider-review requirement. Internal exact-head review
+does not substitute for required external authority.
+
+#### Required future vectors and bounded implementation prediction
+
+| Acceptance / removal attack | Discriminating evidence after independent review |
+| --- | --- |
+| Complete shapes | Valid requests for TREE, ordered worker and candidate targets; all five result kinds, both decided outcomes, and every unknown reason/nullability row; deleting/adding/renaming/type-changing every nested member, cross-arm fields, future schemas and hostile records/arrays refuse |
+| Bytes and identities | Independently pinned canonical bytes, full frame hex and expected digest for each family/arm plus inline packet hash; insertion order equivalent, persisted noncanonical bytes refuse; wrong domain/tag/count, LF, untagged family hash or framed packet differs/refuses |
+| Content and finding bounds | Packet lists 0/256, other lists 1/256 and findings 1/256 succeed; below/above bounds refuse; decimal zero/max succeed, padded/negative/unsafe values refuse; repeated content retained, reordered distinct references change identity; duplicate/unsorted finding IDs refuse |
+| Supplied target chain | Independently substitute each request, concrete subject arm, packet brief/input, cycle, attempt, authority/result digest and finding module descriptor; each mismatch refuses; same author attempt/cycle refuses while candidate needs no author field |
+| Result/authority separation | Complete sweep binds accepted and block binds rejected; swap either to another kind or noncomplete reason to a complete kind and refuse; malformed worker capture parses, malformed enclosing record refuses; null result with decided outcome or non-null result with null-only reason refuses |
+| Actual joins, later owners | Replace each retained byte/length, plan/core/brief/rendered input, launch, terminal, identity or provenance source independently; remove the corresponding equality/admission and require its discriminator to fail |
+| History and stable gates, later owners | Truncated/missing/forked/future/duplicate/conflicting/reordered history, reused attempt, aliased reviewer, earlier review cycle, moved materialization, worker-to-candidate reuse and candidate self-review never grant authority |
+
+Prediction: three total record parsers, their inline unions, three framed
+identities, the inline packet hash and focused structural vectors suffice;
+the optional supplied-record relation adds only the exact comparisons above.
+Coordinated forged records may satisfy structure but never prove issuance.
+Each implemented equality requires its own removal mutant. Runtime tests
+cannot be replaced by these shape vectors or a supplied accepted record.
+The footprint here is this subsection and ISS-002's additive note only; no
+tests, build, probe or executed acceptance is claimed. Host verification and
+independent exact-head review remain required. Journal/replay/terminal,
+dispatch/process/module/reclaim/disposition and identity/history issuance
+contracts remain separate; ISS-002's addition and ISS-041 are not complete.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
