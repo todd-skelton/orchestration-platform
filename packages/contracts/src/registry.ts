@@ -1,6 +1,12 @@
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { projectSnapshotSchemaFields, projectSnapshotSchemaVersions } from "./project-snapshot.js";
 import {
+  routineStepKinds,
+  routineStepSchemaFields,
+  routineStepSkipOrdinals,
+  routineStepSkipSchemaVersions,
+} from "./routine-step.js";
+import {
   projectBreakerFactsSchemaFields,
   projectBreakerFactsSchemaVersions,
 } from "./project-breaker-facts.js";
@@ -97,6 +103,20 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "routine-step-skip/v1": Object.freeze({
+      schemaVersion: "routine-step-skip/v1",
+      fields: routineStepSchemaFields.skip,
+      closedValues: Object.freeze(Object.keys(routineStepSkipOrdinals)),
+    }),
+    // Inline vocabulary only: step identity is not a standalone schema family.
+    "routine-step-skip/v1#step": Object.freeze({
+      schemaVersion: "routine-step-skip/v1",
+      fields: routineStepSchemaFields.identity,
+      closedValues: Object.freeze([
+        ...Object.keys(routineStepKinds),
+        ...Object.values(routineStepKinds),
+      ]),
+    }),
     // ISS-013: one public family; decision rows are inline vocabulary, not a schema.
     "project-breaker-facts/v1#COMPLETE": Object.freeze({
       schemaVersion: "project-breaker-facts/v1",
@@ -694,6 +714,7 @@ export const schemaVersions = Object.freeze(
     ...configurationSchemaVersions,
     ...projectSnapshotSchemaVersions,
     ...projectBreakerFactsSchemaVersions,
+    ...routineStepSkipSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,

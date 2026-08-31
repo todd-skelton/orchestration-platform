@@ -17,10 +17,12 @@ or authority grant. The unchanged published protocol is
 The executable gap census records `schemaVersion:unsupported` for
 `event-journal/v1`, `worker-result-subject/v1`,
 `review-request/v1`, `review-attempt-result/v1`, `review-authority/v1`,
-`routine-step-skip/v1`, and `cycle-receipt/v1`. Those records must come from
+and `cycle-receipt/v1`. Those records must come from
 their owning public contracts before full-cycle parser evidence is possible;
 existing unrelated schemas are never repurposed to fill the gap. A producer
 adding support should update this gap test and ledger with its actual evidence.
+ISS-002 now supplies pure structural `routine-step-skip/v1` parsing and digests;
+this fixture still executes no skips and has no route, journal, or cycle authority.
 
 ISS-013 supplies the consumed SDK snapshot/current-policy observations and public
 configuration/facts binding. This fixture adds a private snapshot/policy-to-brief
