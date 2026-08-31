@@ -1,9 +1,30 @@
 import { createHash } from "node:crypto";
-import { describe, expect, test } from "vitest";
+import { spawnSync } from "node:child_process";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { canonicalBytes } from "../../packages/contracts/src/index.js";
 import * as decision from "../../packages/conformance/src/portable-primitives-decision.js";
 import * as provider from "../../packages/conformance/src/github-portable-primitives-review.js";
 import { readGithubHostedPortablePrimitivesReview } from "../../scripts/conformance/hosted-review-api.mjs";
+import { loadHostedStableInputs } from "../../scripts/conformance/hosted-observation.mjs";
+import { writeHostedPortablePrimitivesReview } from "../../scripts/conformance/hosted-terminal.mjs";
+import {
+  iss002HarnessPaths,
+  iss002TestBundlePaths,
+} from "../../packages/conformance/src/stable-bundles.js";
+import type { GithubFetch } from "../../scripts/conformance/hosted-record-api.mjs";
 
 const digest = (value: string) => value.repeat(64);
 const head = "a".repeat(40);
@@ -49,7 +70,6 @@ const core = {
   testBundleDigest: digest("4"),
 };
 const coreDigest = decision.computePortablePrimitivesCapabilityDecisionCoreDigest(core);
-const corePath = `planning/decisions/ISS-022/${coreDigest}/decision-core.json`;
 const expected = {
   repositoryId: "123",
   pullRequestNumber: "19",
@@ -68,7 +88,8 @@ const treeSha = (index: number) => String(index + 1).padStart(40, "0");
 const treePath = (index: number) => `${root}/git/trees/${treeSha(index)}`;
 const object = (value: unknown) => value as Record<string, unknown>;
 
-function fixture(bytes: Uint8Array = canonicalBytes(core)) {
+function fixture(bytes: Uint8Array = canonicalBytes(core), reviewExpected = expected) {
+  const corePath = `planning/decisions/ISS-022/${reviewExpected.decisionCoreDigest}/decision-core.json`;
   const blobSha = createHash("sha1")
     .update(`blob ${bytes.byteLength}\0`)
     .update(bytes)
@@ -143,30 +164,31 @@ function fixture(bytes: Uint8Array = canonicalBytes(core)) {
   const row = (path: string) => object(routes.get(path));
   const rows = (path: string) => routes.get(path) as Record<string, unknown>[];
   let change: ((path: string, value: unknown, count: number) => unknown) | undefined;
+  const fetcher: GithubFetch = async (url, init) => {
+    expect(init.method).toBe("GET");
+    expect(init.redirect).toBe("error");
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer fixture-token");
+    const path = url.slice("https://api.github.com".length);
+    requests.push(path);
+    const count = (counts.get(path) ?? 0) + 1;
+    counts.set(path, count);
+    if (!routes.has(path)) throw new Error("unexpected fixture request");
+    const value = change
+      ? await change(path, structuredClone(routes.get(path)), count)
+      : routes.get(path);
+    if (value instanceof Response) return value;
+    return new Response(JSON.stringify(value), {
+      status: 200,
+      headers: { date: "Sun, 30 Aug 2026 12:01:00 GMT", ...headers.get(path) },
+    });
+  };
   const run = (
     overrides: Partial<Parameters<typeof readGithubHostedPortablePrimitivesReview>[0]> = {},
   ) =>
     readGithubHostedPortablePrimitivesReview({
-      expected,
+      expected: reviewExpected,
       token: "fixture-token",
-      fetcher: async (url, init) => {
-        expect(init.method).toBe("GET");
-        expect(init.redirect).toBe("error");
-        expect(new Headers(init.headers).get("authorization")).toBe("Bearer fixture-token");
-        const path = url.slice("https://api.github.com".length);
-        requests.push(path);
-        const count = (counts.get(path) ?? 0) + 1;
-        counts.set(path, count);
-        if (!routes.has(path)) throw new Error("unexpected fixture request");
-        const value = change
-          ? change(path, structuredClone(routes.get(path)), count)
-          : routes.get(path);
-        if (value instanceof Response) return value;
-        return new Response(JSON.stringify(value), {
-          status: 200,
-          headers: { date: "Sun, 30 Aug 2026 12:01:00 GMT", ...headers.get(path) },
-        });
-      },
+      fetcher,
       ...overrides,
     });
   return {
@@ -177,6 +199,7 @@ function fixture(bytes: Uint8Array = canonicalBytes(core)) {
     row,
     rows,
     run,
+    fetcher,
     mutate: (callback: NonNullable<typeof change>) => {
       change = callback;
     },
@@ -425,4 +448,228 @@ describe("authenticated portable primitives review projection", () => {
     date.headers.set(prPath, { date: "not a date" });
     expect((await date.run()).ok).toBe(false);
   });
+});
+
+describe("stable review terminal publication", () => {
+  let temporary: string;
+  let checkout: string;
+  let checkoutHead: string;
+  let stableInputs: NonNullable<Awaited<ReturnType<typeof loadHostedStableInputs>>>;
+  const git = (...args: string[]): string => {
+    const result = spawnSync("git", ["-C", checkout, ...args], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.status !== 0) throw new Error(result.stderr);
+    return result.stdout.trim();
+  };
+  beforeAll(async () => {
+    temporary = await realpath(await mkdtemp(resolve(tmpdir(), "op-review-terminal-")));
+    checkout = resolve(temporary, "stable");
+    await mkdir(checkout);
+    for (const path of new Set([...iss002HarnessPaths, ...iss002TestBundlePaths])) {
+      const destination = resolve(checkout, path);
+      await mkdir(dirname(destination), { recursive: true });
+      await copyFile(resolve(import.meta.dirname, "../..", path), destination);
+    }
+    git("init");
+    git("config", "core.autocrlf", "false");
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=Review Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-m",
+      "stable fixture",
+    );
+    checkoutHead = git("rev-parse", "HEAD");
+    const loaded = await loadHostedStableInputs(checkout);
+    if (!loaded) throw new Error("stable fixture inputs refused");
+    stableInputs = loaded;
+  }, 30_000);
+  afterAll(async () => {
+    if (temporary) await rm(temporary, { recursive: true, force: true });
+  });
+
+  async function terminalFixture(
+    arm: "PASS" | "BLOCK_REPLAN" = "BLOCK_REPLAN",
+    changed: Record<string, string> = {},
+  ) {
+    const identities = {
+      harnessBundleDigest: stableInputs.harnessBundleDigest,
+      testBundleDigest: stableInputs.testBundleDigest,
+      requiredJobRegistryDigest: stableInputs.requiredJobRegistryDigest,
+      contractVersionsDigest: stableInputs.contractVersionsDigest,
+      ...changed,
+    };
+    const subject = decision.computePortablePrimitivesStableHarnessSubjectDigest(
+      identities.harnessBundleDigest,
+      identities.testBundleDigest,
+      identities.requiredJobRegistryDigest,
+      identities.contractVersionsDigest,
+    );
+    const terminalCore = {
+      ...core,
+      ...identities,
+      decision: arm,
+      stableHarnessSubjectDigest: subject,
+      decisionWriterDigest: decision.computePortablePrimitivesDecisionWriterDigest(
+        subject,
+        identities.harnessBundleDigest,
+        identities.testBundleDigest,
+        identities.contractVersionsDigest,
+      ),
+      ...(arm === "PASS"
+        ? {
+            aggregateDigest: digest("9"),
+            diagnosticTerminalDigest: null,
+            helperAbiDigests: [digest("1"), digest("2"), digest("3")],
+            helperDigests: [digest("4"), digest("5"), digest("6")],
+            osProfileDigests: [digest("7"), digest("8"), digest("9")],
+            observationDigests: Array.from({ length: 63 }, (_, index) =>
+              (index + 1).toString(16).padStart(64, "0"),
+            ),
+            profile: decision.portablePrimitivesCapabilityProfile,
+          }
+        : {}),
+    };
+    const terminalExpected = {
+      ...expected,
+      decisionCoreDigest:
+        decision.computePortablePrimitivesCapabilityDecisionCoreDigest(terminalCore),
+    };
+    const f = fixture(canonicalBytes(terminalCore), terminalExpected);
+    const comparisonPath = `${root}/compare/${checkoutHead}...${main}`;
+    f.routes.set(comparisonPath, {
+      status: "ahead",
+      base_commit: { sha: checkoutHead },
+      merge_base_commit: { sha: checkoutHead },
+    });
+    const output = await mkdtemp(resolve(temporary, "output-"));
+    return {
+      ...f,
+      output,
+      terminalCore,
+      terminalExpected,
+      comparisonPath,
+      write: (outputRoot = output, stableRoot = checkout) =>
+        writeHostedPortablePrimitivesReview(
+          terminalExpected,
+          "fixture-token",
+          outputRoot,
+          stableRoot,
+          f.fetcher,
+        ),
+    };
+  }
+
+  test.each(["PASS", "BLOCK_REPLAN"] as const)(
+    "publishes only the exact %s review/decision pair and never overwrites it",
+    async (arm) => {
+      const f = await terminalFixture(arm);
+      const result = await f.write();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(await readdir(f.output)).toEqual(["decision.json", "independent-review.json"]);
+      const reviewBytes = await readFile(resolve(f.output, "independent-review.json"));
+      const decisionBytes = await readFile(resolve(f.output, "decision.json"));
+      const reviewRecord = JSON.parse(reviewBytes.toString());
+      const decisionRecord = JSON.parse(decisionBytes.toString());
+      expect(reviewRecord.reviewDisposition).toBe(
+        arm === "PASS" ? "AUTHORIZE_PASS" : "RECORD_BLOCK_REPLAN",
+      );
+      expect(reviewBytes).toEqual(Buffer.from(canonicalBytes(reviewRecord)));
+      expect(decisionBytes).toEqual(Buffer.from(canonicalBytes(decisionRecord)));
+      expect(
+        decision.validatePortablePrimitivesCapabilityDecision(
+          decisionRecord,
+          f.terminalCore,
+          reviewRecord,
+        ).ok,
+      ).toBe(true);
+      expect(decision.computePortablePrimitivesIndependentReviewDigest(reviewRecord)).toBe(
+        result.independentReviewReceiptDigest,
+      );
+      expect(decision.computePortablePrimitivesCapabilityDecisionDigest(decisionRecord)).toBe(
+        result.decisionDigest,
+      );
+      expect((await f.write()).ok).toBe(false);
+      expect(await readFile(resolve(f.output, "independent-review.json"))).toEqual(reviewBytes);
+      expect(await readFile(resolve(f.output, "decision.json"))).toEqual(decisionBytes);
+      expect(git("status", "--porcelain=v1", "--untracked-files=all")).toBe("");
+      expect(f.requests.some((path) => path.includes("/actions/"))).toBe(false);
+    },
+    30_000,
+  );
+
+  test.each([
+    "harnessBundleDigest",
+    "testBundleDigest",
+    "requiredJobRegistryDigest",
+    "contractVersionsDigest",
+  ])(
+    "refuses a consistently rehashed foreign %s",
+    async (field) => {
+      const f = await terminalFixture("BLOCK_REPLAN", { [field]: digest("e") });
+      expect(await f.write()).toEqual({ ok: false, issues: ["reviewStable:subject-mismatch"] });
+      expect(await readdir(f.output)).toEqual([]);
+    },
+    30_000,
+  );
+
+  test("refuses unmerged/self-reviewed cores, foreign stable ancestry and source output", async () => {
+    for (const mode of ["unmerged", "self", "ancestry", "source"]) {
+      const f = await terminalFixture();
+      if (mode === "unmerged") f.row(prPath).merged = false;
+      if (mode === "self") f.routes.set(reviewsPath, [{ ...review, user: { id: 41 } }]);
+      if (mode === "ancestry") f.row(f.comparisonPath).status = "diverged";
+      expect((await f.write(mode === "source" ? checkout : f.output)).ok).toBe(false);
+      expect(await readdir(f.output)).toEqual([]);
+      expect(git("status", "--porcelain=v1", "--untracked-files=all")).toBe("");
+    }
+  }, 30_000);
+
+  test("refuses dirty, changed-head and physically moved stable checkouts before output", async () => {
+    const dirty = resolve(checkout, "untracked-fixture");
+    const initial = await terminalFixture();
+    await writeFile(dirty, "dirty");
+    expect((await initial.write()).ok).toBe(false);
+    expect(initial.requests).toEqual([]);
+    await rm(dirty);
+    for (const mode of ["dirty", "head", "physical"]) {
+      const f = await terminalFixture();
+      const aside = `${checkout}-aside`;
+      f.mutate(async (path, value) => {
+        if (path !== f.comparisonPath) return value;
+        if (mode === "dirty") await writeFile(dirty, "dirty");
+        if (mode === "head")
+          git(
+            "-c",
+            "user.name=Review Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "moved",
+          );
+        if (mode === "physical") await rename(checkout, aside);
+        return value;
+      });
+      try {
+        expect((await f.write()).ok).toBe(false);
+        expect(await readdir(f.output)).toEqual([]);
+      } finally {
+        if (mode === "dirty") await rm(dirty);
+        if (mode === "head") git("checkout", "--detach", checkoutHead);
+        if (mode === "physical") await rename(aside, checkout);
+      }
+    }
+  }, 30_000);
 });

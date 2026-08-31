@@ -16,6 +16,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   exerciseDecisionOutputCustodyForTest,
   parseHostedTerminalArguments,
+  parseHostedReviewArguments,
   readGithubTerminalArtifacts,
   readGithubTerminalVerifiedAt,
   readGithubTerminalJobs,
@@ -82,6 +83,29 @@ describe("post-terminal GitHub API projection", () => {
       expect(parseHostedTerminalArguments(arguments_)).toEqual({ ok: false });
   });
 
+  test("accepts exactly four review arguments with no run locator or proof", () => {
+    const args = ["123", "19", "c".repeat(64), revision];
+    expect(parseHostedReviewArguments(args)).toEqual({
+      ok: true,
+      value: {
+        repositoryId: "123",
+        pullRequestNumber: "19",
+        decisionCoreDigest: "c".repeat(64),
+        mergeCommitRevision: revision,
+      },
+    });
+    for (const values of [
+      [],
+      args.slice(0, 3),
+      [...args, "run"],
+      ["0123", ...args.slice(1)],
+      ["123", "0", ...args.slice(2)],
+      ["123", "19", "C".repeat(64), revision],
+      ["123", "19", args[2]!, "refs/heads/main"],
+    ])
+      expect(parseHostedReviewArguments(values)).toEqual({ ok: false });
+  });
+
   test("the direct entrypoint emits only a refusal result without authority inputs", () => {
     const path = resolve(import.meta.dirname, "../../scripts/conformance/run-bundled.mts");
     const result = spawnSync(process.execPath, [path, "terminal", "123", "456", "2", revision], {
@@ -109,7 +133,84 @@ describe("post-terminal GitHub API projection", () => {
       issues: ["decisionOutput:refused"],
       result: "REFUSED",
     });
+    for (const environment of [
+      { GITHUB_TOKEN: "", PORTABLE_PRIMITIVES_OUTPUT_ROOT: "" },
+      { GITHUB_TOKEN: "token", PORTABLE_PRIMITIVES_OUTPUT_ROOT: "" },
+      { GITHUB_TOKEN: "token", PORTABLE_PRIMITIVES_OUTPUT_ROOT: stableRoot },
+    ]) {
+      const review = spawnSync(
+        process.execPath,
+        [path, "terminal", "portable-primitives-review", "123", "19", "c".repeat(64), revision],
+        {
+          encoding: "utf8",
+          env: { ...process.env, ...environment },
+          windowsHide: true,
+        },
+      );
+      expect(review.status).toBe(1);
+      expect(review.stderr).toBe("");
+      expect(JSON.parse(review.stdout)).toEqual({
+        issues: [
+          environment.PORTABLE_PRIMITIVES_OUTPUT_ROOT ? "decisionOutput:refused" : "input:refused",
+        ],
+        result: "REFUSED",
+      });
+    }
   }, 30_000);
+
+  test("the same custody sink commits a pair, rolls back both, and preserves foreign collisions", async () => {
+    const root = await temporaryRoot();
+    const first = "custody-mechanics-probe.json";
+    const second = "custody-mechanics-second.json";
+    for (const mode of ["success", "changed-second", "collision", "extra", "moved"]) {
+      const output = resolve(root, mode);
+      await mkdir(output);
+      const result = await exerciseDecisionOutputCustodyForTest(
+        output,
+        stableRoot,
+        {
+          async afterPendingWrite(path, name) {
+            if (mode === "collision" && name === `.${second}.pending`)
+              await writeFile(resolve(path, second), "foreign");
+          },
+          async afterFinalize(path, name) {
+            if (name !== second) return;
+            if (mode === "changed-second") await writeFile(resolve(path, second), "changed");
+            if (mode === "extra") await writeFile(resolve(path, "foreign"), "foreign");
+            if (mode === "moved") {
+              await rename(path, `${path}-aside`);
+              await mkdir(path);
+            }
+          },
+        },
+        true,
+      );
+      expect(result).toEqual(
+        mode === "success"
+          ? { ok: true }
+          : {
+              ok: false,
+              issues: [
+                mode === "changed-second"
+                  ? "decisionOutput:refused"
+                  : "decisionOutput:cleanup-refused",
+              ],
+            },
+      );
+      expect(await readdir(output)).toEqual(
+        mode === "success"
+          ? [first, second]
+          : mode === "extra"
+            ? ["foreign"]
+            : mode === "collision"
+              ? [second]
+              : [],
+      );
+      if (mode === "collision")
+        expect(await readFile(resolve(output, second), "utf8")).toBe("foreign");
+      if (mode === "moved") expect(await readdir(`${output}-aside`)).toEqual([first, second]);
+    }
+  });
 
   test("commits one external file and refuses foreign checkout and canonical aliases", async () => {
     const root = await temporaryRoot();

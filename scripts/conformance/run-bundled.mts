@@ -77,7 +77,10 @@ async function main(): Promise<void> {
     (target === "hosted" && arguments_.length !== 1) ||
     (target === "terminal" &&
       arguments_.length !== 4 &&
-      !(arguments_.length === 5 && arguments_[0] === "portable-primitives-decision"))
+      !(
+        arguments_.length === 5 &&
+        ["portable-primitives-decision", "portable-primitives-review"].includes(arguments_[0]!)
+      ))
   )
     throw new Error("CONFORMANCE_BUNDLE_ARGUMENTS_REFUSED");
 
