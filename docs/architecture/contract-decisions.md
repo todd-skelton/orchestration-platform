@@ -4337,6 +4337,284 @@ ISS-002 additive note, the explicit ABI correction and round 381 only.
 Independent exact-head review precedes implementation; the author claims no
 tests, builds, probes, runtime acceptance or ISS-041 completion.
 
+### Sixth literal group proposal: breaker checkpoints and recovery observations
+
+This bounded proposal closes only `breaker-receipt/v1`, the existing step-3
+census name. It explicitly replans the underspecified breaker instance,
+transition, recovery-input and history boundaries; independent review precedes
+implementation. Per-capability checkpoints inside one project receipt are the
+smallest match for the existing complete capability decision census. No new
+public family, production reducer, SDK callback, probe, journal or authority
+is delivered. The first consumer remains the quarantined fresh-root fixture.
+
+#### Model, history boundary and explicit replans
+
+The five known states apply separately to each configured capability.
+UNKNOWN is a whole-reduction result: every capability is blocked, including
+unreadable historical scope. It retains the exact readable predecessor by
+reference, never replaces its holds with an empty successful census. This is
+a representation of the existing sixth state, not a new recovery state.
+All configuration or policy-identity changes become UNKNOWN; this conservative
+boundary deliberately defines no migration/reset path. A removed capability
+cannot disappear from retained evidence. Policy migration remains external
+diagnosis and separately reviewed future work, not an inferred CLOSED edge.
+
+Each new checkpoint advances at most one recovery phase per capability and
+uses a distinct cycle from its predecessor. This makes interruption/replay
+unambiguous for the current consumer: a resume re-observes the same immutable
+receipt from its original inputs; it does not allocate another transaction,
+probe or step output. RECOVERY_PENDING and PROBE_IN_FLIGHT remain held between
+cycles. CLOSED_RECOVERED is retained recovery evidence; ordinary capability
+use waits for the next cycle's fresh policy evaluation and CLOSED checkpoint.
+
+The actual public journal prefix selects the predecessor; selected facts and
+that predecessor produce a receipt; a later `orchestration-event/v1` carries
+that receipt. The receipt never names its own enclosing event or self digest.
+There is no private history array, second history family or history-complete
+Boolean. The later complete event/journal union must carry these exact closed
+receipts and operation observations, prove beginning/current end and discover
+all transaction/probe reuse. This packet adds no partial event parser.
+
+Null predecessor is a claimed initial checkpoint, not absence authority.
+Only the quarantined fixture's actual exclusive creation of a previously absent
+disposable root, lease ownership and retained initial file census may admit
+its first genesis observation. A caller's null, empty array, GENESIS token or
+hash of asserted absence is insufficient. Reuse/nonempty-root controls must
+refuse; resume cannot create a replacement root or select genesis again.
+Production root creation never erases project holds. Production genesis,
+history selection/currentness and reset remain unavailable through this packet.
+
+#### Scalars and complete receipt envelope
+
+Reuse `C, Uuid, Digest, Id, Time, Name, Version` and all existing detached rules.
+Every newly listed member is required and non-null except priorReceiptDigest;
+reused public records retain their own nullability. Field sequences are
+canonical key order; arrays are dense. Unknown/extra/future members or arms,
+wrong types, hostile records/arrays and noncanonical persisted bytes refuse.
+
+`breaker-receipt/v1` has exactly:
+
+| Member | Rule |
+| --- | --- |
+| `adapterConfigurationDigest` | Existing unframed `Dconfig` of actual adapter configuration |
+| `cycleId` | `Uuid` of the reduction cycle |
+| `cycleRequestDigest` | Existing designated identity of the actual complete cycle request |
+| `operations` | 0–256 closed operation rows below, strictly ASCII sorted and unique by capabilityName |
+| `policyFactsDigest` | Existing unframed identity of actual `project-breaker-facts/v1`, including failure arms |
+| `policyIdentity` | Exactly `adapterId, adapterVersion, policyVersion`: existing `Id, Version, Version`; tuple identity, not a digest or selector |
+| `priorReceiptDigest` | Null when no readable predecessor is selected; otherwise `Digest` of the actual parsed preceding breaker receipt |
+| `result` | One complete result arm below |
+| `schemaVersion` | Literal `breaker-receipt/v1` |
+| `sessionId` | `Uuid`, equal to the cycle request's nested session ID |
+
+KNOWN result is exactly `capabilities, kind`, with literal kind `KNOWN`
+and 0–256 checkpoint rows, strictly ASCII sorted and unique by capabilityName.
+Its name census equals the actual configuration census. UNKNOWN result is
+exactly `blockedCapabilityNames, kind, reason`: literal kind `UNKNOWN`,
+0–512 strictly sorted unique Names, and one reason from the matrix below.
+The names are the union of current configured names and all names in a
+readable KNOWN predecessor. They are the known affected names, not a claim
+that unreadable history has no others; UNKNOWN globally prevents step 4.
+With no readable predecessor only the current names can be enumerated.
+No fresh receipt binds an UNKNOWN predecessor: retain that terminal unknown
+and use the existing failure path until separately admitted diagnosis.
+
+Checkpoint rows contain exactly the members for their state:
+
+| State | Complete member census |
+| --- | --- |
+| CLOSED | `capabilityName, state` |
+| OPEN | `capabilityName, opening, state` |
+| RECOVERY_PENDING | `capabilityName, opening, recovery, state` |
+| PROBE_IN_FLIGHT | `capabilityName, opening, probe, recovery, state` |
+| CLOSED_RECOVERED | `capabilityName, completion, opening, probe, recovery, state` |
+
+capabilityName is `Name`; state is its exact table literal. Opposite-state
+members are absent, not null. Opening is exactly
+`cycleRequestDigest, policyFactsDigest`, both Digests. A new opening copies
+the actual current envelope identities for a TRIP decision on that capability.
+Its identical bytes survive OPEN and both recovery states, failed probes,
+and CLOSED_RECOVERED. It is not a hash of an asserted opening or a self-reference.
+The birth receipt and its actual policy preimages remain discoverable through
+the later selected public history, never inferred from these two strings.
+
+#### Closed operations and paired ISS-013 observation literals
+
+Each operation is exactly `capabilityName, kind, observation`; its name is
+configured, and at most one operation names a capability in a receipt.
+kind is `REQUEST_RECOVERY|START_PROBE|FINISH_PROBE`; observation is the
+corresponding complete record below. No operation means retain/evaluate by
+the transition table, not an omitted history event or permission.
+
+REQUEST_RECOVERY observation is exactly
+`adapterConfigurationDigest, capabilityName, decision, observationId,
+observedAt, openReceiptDigest, policyIdentity, projectFactsDigest, transactionId`.
+Digests use existing identities; names/time/UUIDs and policyIdentity use the
+rules above. decision is `ALLOW_RECOVERY|KEEP_HOLD|UNAVAILABLE|UNKNOWN`.
+A successful permission observation is itself the complete inline recovery
+transaction evidence: the checkpoint's recovery is this unchanged record with
+decision ALLOW_RECOVERY. No separate transaction schema or copied wrapper exists.
+`Drecovery = SHA256(C(recovery))` identifies those exact inline bytes only.
+
+ISS-013 owns this project observation and its later source/policy admission.
+Its closed in-process request is exactly
+`adapterConfiguration, capabilityName, observationId, openReceipt,
+policyIdentity, projectFacts, transactionId`, using complete existing public
+records and this receipt family; openReceipt must be a KNOWN receipt with an
+OPEN row for the requested capability. The response is the complete observation
+above. Every response, including UNAVAILABLE/UNKNOWN, binds the request ID,
+transaction, capability, policy tuple, actual open-receipt identity and
+recomputed configuration/snapshot identities. observedAt records the actual
+observation; its observationId differs from snapshot/current-policy observation
+IDs. Missing, malformed, substituted or unavailable source evidence cannot be
+repaired into permission.
+
+This defines data, not callback execution or a new public family. The future
+SDK owner must statically bind a reviewed adapter/policy implementation, obtain
+a fresh current source observation for that exact request and semantically
+admit its response. Existing trip-only fixture policies do not acquire recovery
+semantics by keeping their version. Adding/changing recovery or probe semantics
+requires reviewed policy source and an appropriate policy-version change.
+NO_TRIP is never converted to ALLOW_RECOVERY. No predicate, threshold,
+loader, provider algorithm or current-policy record extension is invented here.
+
+START_PROBE observation is exactly `probeId, recoveryDigest, startedAt`:
+Uuid, Digest and Time. FINISH_PROBE observation is exactly
+`finishedAt, outcome, probeId, recoveryDigest, startedAt`; outcome is
+`SUCCEEDED|FAILED|UNKNOWN`, with the same other scalars and Time finishedAt.
+Require inclusive startedAt <= finishedAt. Probe IDs identify the actual one
+probe under the exact transaction; recoveryDigest equals actual Drecovery.
+The checkpoint's probe and completion retain those exact observed records.
+
+Intrinsic parsing requires every checkpoint recovery to have ALLOW_RECOVERY
+and its containing capabilityName. Its probe recoveryDigest must equal the
+actual inline Drecovery; a CLOSED_RECOVERED completion must be SUCCEEDED and
+copy its probe ID, recoveryDigest and startedAt. Operations retain their actual
+observations; cross-input/phase mismatches are handled by the supplied relation,
+not repaired during parsing. These checks require no history or source lookup.
+
+The generic recovery owner captures actual start/completion evidence and checks
+it against the actual adapter-defined probe invocation. SUCCESS cannot come
+from a caller's desired outcome or from the permission observation. Actual
+probe semantics/source provenance, one-call execution, interruption and terminal
+observation remain their owners' runtime obligations. No process, credential,
+executable instruction or second probe is supplied by these JSON records.
+A missing/unreadable completion is unknown authority, never fabricated success.
+
+#### Exact supplied tuple, transition and refusal matrix
+
+The pure supplied relation takes exactly
+`(configurationProvenance, adapterConfiguration, cycleRequest, projectFacts,
+policyFacts, priorReceipt|null, receipt)`. Parse every record; malformed input
+refuses the operation rather than fabricating a bound receipt. Project facts
+must be COMPLETE (otherwise step 2 already terminalizes). Reuse configuration/
+provenance, project/configuration and complete policy/configuration/snapshot
+validators unchanged, including policy observation distinction and exact
+capability coverage. A policy failure arm is retained, not an empty decision list.
+
+Require actual config/project/policy identities and tuple components to equal
+the receipt references. Bind receipt cycle/session to the complete request;
+bind its adapter and nested provenance digest to the supplied configuration/
+provenance, exactly as for module input. Recompute priorReceiptDigest from the
+actual selected parsed predecessor, or require null for null input.
+Actual predecessor selection, authentic genesis, source freshness and complete
+history cannot be proved by this tuple. A known transition below is only a
+structural claim until those external obligations pass.
+
+For any readable prior, require new cycleId != prior.cycleId. Same original
+inputs may reproduce the same receipt; a newly allocated same-cycle receipt
+refuses. Compare current Dconfig and the full policy tuple with the KNOWN prior.
+Only equal configuration/policy and COMPLETE current facts permit KNOWN output.
+For each current capability, apply exactly one row below; any invalid operation
+or unresolved observation makes the whole result UNKNOWN, never partial KNOWN.
+
+| Prior checkpoint | Current input/operation | Exact next checkpoint |
+| --- | --- | --- |
+| No predecessor, externally admitted initial history | COMPLETE policy, no operations | NO_TRIP → CLOSED; TRIP → new OPEN |
+| CLOSED | no operation | NO_TRIP → CLOSED; TRIP → new OPEN |
+| OPEN | no operation | same OPEN under either trip value |
+| OPEN | REQUEST_RECOVERY, ALLOW_RECOVERY | RECOVERY_PENDING, preserving opening and adding exact recovery observation |
+| OPEN | REQUEST_RECOVERY, KEEP_HOLD | same OPEN |
+| RECOVERY_PENDING | no operation | same RECOVERY_PENDING |
+| RECOVERY_PENDING | START_PROBE | PROBE_IN_FLIGHT with unchanged opening/recovery and exact start observation |
+| PROBE_IN_FLIGHT | no operation | same PROBE_IN_FLIGHT; hold retained, not probe restart |
+| PROBE_IN_FLIGHT | FINISH_PROBE, SUCCEEDED | CLOSED_RECOVERED with unchanged opening/recovery/probe and exact completion |
+| PROBE_IN_FLIGHT | FINISH_PROBE, FAILED | OPEN with unchanged opening; failed completion remains in operations/history |
+| CLOSED_RECOVERED | next cycle, no operation | fresh NO_TRIP → CLOSED; fresh TRIP → new OPEN |
+| UNKNOWN predecessor | any fresh request | no new receipt or clearance; retain existing UNKNOWN and fail closed |
+| Any unlisted state/operation pair | structurally valid but wrong-phase input | UNKNOWN / INVALID_TRANSITION |
+
+Current TRIP/NO_TRIP never clears OPEN or either recovery state. Recovery
+permission/probe success are independent adapter-owned evidence; a completed
+recovery still waits for the next cycle's fresh policy before ordinary use.
+Within KNOWN, only CLOSED rows may supply the step-3 permitted set; all other
+rows remain unavailable to ordinary action selection in this packet.
+
+REQUEST_RECOVERY must name the exact prior OPEN receipt and same capability,
+current Dconfig, policy tuple and Dsnapshot; its transaction is stable and
+must not be reused from another recovery under the later complete history.
+START_PROBE binds the prior recovery's actual Drecovery and has
+startedAt >= recovery.observedAt. FINISH_PROBE exactly preserves the prior
+probe's ID, recoveryDigest and startedAt and has finishedAt >= startedAt.
+Retained checkpoint members must be byte-identical canonical values. History
+must separately refuse any non-adjacent transaction/probe reuse, fork, truncation
+or conflicting replay; local UUID inequality cannot prove those properties.
+
+UNKNOWN reasons are exactly the following. If several supplied failures apply,
+use the first applicable structural row in this order; external missing-history
+admission takes precedence. A claimed external reason must be supported by the
+actual owner before any use; the pure parser cannot authenticate it.
+
+| Reason | Condition / retained effect |
+| --- | --- |
+| HISTORY_UNPROVEN | No admitted initial/selected current prefix, unreadable/contradictory history or missing actual predecessor; no selected predecessor may be invented |
+| CONFIGURATION_CHANGED | Actual Dconfig differs from readable KNOWN predecessor; retain predecessor including removed capabilities |
+| POLICY_CHANGED | Full policy tuple differs from readable KNOWN predecessor |
+| INPUT_UNAVAILABLE | Existing current-policy arm UNAVAILABLE |
+| INPUT_UNKNOWN | Existing current-policy arm UNKNOWN |
+| INVALID_TRANSITION | Wrong phase/capability, mismatched operation joins, cross-record causal time mismatch or any unlisted transition |
+| RECOVERY_UNAVAILABLE | Correctly bound permission observation decision UNAVAILABLE |
+| RECOVERY_UNKNOWN | Correctly bound permission observation decision UNKNOWN |
+| PROBE_UNKNOWN | Correctly bound completion outcome UNKNOWN, or actual probe evidence admission unavailable |
+
+All new receipt fields still require valid scalar/record shape. Invalid
+enclosing records refuse parsing; UNKNOWN is not permission to admit malformed
+JSON, replace failed joins with expected hashes or issue a terminal probe.
+A non-null predecessor reference always names an actual parsed supplied
+receipt. If it is unavailable, only HISTORY_UNPROVEN with null reference and
+the current known capability census is constructible; global UNKNOWN retains
+the unresolved hold obligation rather than certifying historical absence.
+
+#### Evidence, footprint and proportionality
+
+Required future vectors cover every state/transition/reason and cross-arm null/
+field mutant, 0/1/256/257 bounds (UNKNOWN union additionally 512/513), sorted/
+duplicate capability/operation censuses, exact config and all policy components,
+opening persistence, failed and contradictory probes, actual-preimage/digest
+substitution, two recovered-next-cycle trip outcomes, non-adjacent reuse,
+and changed config that removes a held capability. Independently pin canonical
+bytes/full frames/digests for all receipt arms. Replaying a proper prefix cannot
+stand in for authenticated current-end evidence. Each implemented equality
+gets a removal mutant; actual fresh-root and re-entry guards get real fixture
+controls after separate implementation review.
+
+Dreceipt is SHA-256 of the existing one-canonical-record frame with domain
+`breaker-receipt/v1`, including final LF. Inline operations/checkpoints hash
+in place; Drecovery alone is the explicit unframed inline identity. No receipt
+can certify its own history, producer, fresh source, recovery or live authority.
+The expected first increment is a complete shape/parser plus exact supplied
+transition comparisons; the fixture initially uses only actual fresh-root
+genesis. Recovery execution and complete public event/replay remain gated.
+
+Footprint is this ledger, the minimal lifecycle clarification, bounded
+ISS-002/013/025 ownership notes and round 387. No code, manifests, CLI, new
+family/issue/edge, provider/probe, authority grant or ISS-041 completion.
+This explicit per-capability/fail-closed model avoids a policy interpreter and
+a second history mechanism. If complete closure needs another public family or
+runtime authority source, stop and replan rather than broaden this packet.
+Independent exact-head review and host document verification precede code;
+the author claims no verifier, test, build, probe or self-PASS.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
