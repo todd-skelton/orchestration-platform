@@ -494,6 +494,30 @@ test("closed observation decisions, probe outcomes, scalar bounds and inclusive 
     false,
   );
   expect(c.parseBreakerRecoveryRequest({ ...openRequest, permission: true }).ok).toBe(false);
+  const wrongConfiguration = structuredClone(openRequest);
+  wrongConfiguration.openReceipt.adapterConfigurationDigest = "9".repeat(64);
+  expect(c.parseBreakerReceipt(wrongConfiguration.openReceipt).ok).toBe(true);
+  expect(c.parseBreakerRecoveryRequest(wrongConfiguration).ok).toBe(false);
+  for (const field of ["adapterId", "adapterVersion", "policyVersion"]) {
+    const changed = structuredClone(openRequest);
+    changed.openReceipt.policyIdentity[field] = field === "adapterId" ? "fixture.other" : "2.0.0";
+    expect(c.parseBreakerReceipt(changed.openReceipt).ok).toBe(true);
+    expect(c.parseBreakerRecoveryRequest(changed).ok, `open policy:${field}`).toBe(false);
+  }
+  for (const field of ["adapterId", "adapterVersion"] as const) {
+    const changed = structuredClone(openRequest);
+    changed.policyIdentity = { ...changed.policyIdentity };
+    changed.policyIdentity[field] = field === "adapterId" ? "fixture.other" : "2.0.0";
+    changed.openReceipt.policyIdentity = { ...changed.policyIdentity };
+    expect(c.parseBreakerReceipt(changed.openReceipt).ok).toBe(true);
+    expect(c.parseBreakerRecoveryRequest(changed).ok, `configuration policy:${field}`).toBe(false);
+  }
+  expect(
+    c.parseBreakerRecoveryRequest({
+      ...openRequest,
+      observationId: openRequest.projectFacts.observationId,
+    }).ok,
+  ).toBe(false);
 });
 
 test("every known checkpoint advances one recovery phase and a recovered capability waits for a fresh cycle", () => {
@@ -638,6 +662,68 @@ test("UNKNOWN reason matrix and precedence retain all known affected capabilitie
   ).toBe(true);
   const falseInput = unknownReceipt(s.recoveryContext, s.open, "INPUT_UNKNOWN");
   expect(bind(s.recoveryContext, s.open, falseInput).ok).toBe(false);
+});
+
+test("competing operation failures use reason priority independently of capability order", () => {
+  const priority = [
+    "INVALID_TRANSITION",
+    "RECOVERY_UNAVAILABLE",
+    "RECOVERY_UNKNOWN",
+    "PROBE_UNKNOWN",
+  ];
+  const s = scenario();
+  for (let high = 0; high < priority.length; high++)
+    for (let low = high + 1; low < priority.length; low++)
+      for (const reasons of [
+        [priority[high]!, priority[low]!],
+        [priority[low]!, priority[high]!],
+      ]) {
+        const names = ["work.a", "work.b"],
+          before = context(70, names, "TRIP"),
+          v = context(71, names);
+        const rows = reasons.map((reason, index) => {
+          const capabilityName = names[index]!;
+          if (reason !== "PROBE_UNKNOWN")
+            return { capabilityName, opening: opening(before), state: "OPEN" };
+          // Prior checkpoint structure is supplied evidence; no complete-history claim.
+          const row = structuredClone(s.flight.result.capabilities[0]);
+          row.capabilityName = capabilityName;
+          row.recovery.capabilityName = capabilityName;
+          row.probe.recoveryDigest = c.computeBreakerRecoveryDigest(row.recovery);
+          return row;
+        });
+        const prior = receipt(before, null, rows);
+        const ops = reasons.map((reason, index) => {
+          const capabilityName = names[index]!;
+          if (reason === "INVALID_TRANSITION")
+            return operation("START_PROBE", s.probe, capabilityName);
+          if (reason === "PROBE_UNKNOWN")
+            return operation(
+              "FINISH_PROBE",
+              { ...rows[index].probe, finishedAt: s.completion.finishedAt, outcome: "UNKNOWN" },
+              capabilityName,
+            );
+          return operation(
+            "REQUEST_RECOVERY",
+            {
+              ...permission(
+                v,
+                prior,
+                reason === "RECOVERY_UNAVAILABLE" ? "UNAVAILABLE" : "UNKNOWN",
+              ),
+              capabilityName,
+            },
+            capabilityName,
+          );
+        });
+        // Each operation independently derives its stated reason before they compete.
+        for (let index = 0; index < ops.length; index++)
+          expect(bind(v, prior, unknownReceipt(v, prior, reasons[index]!, [ops[index]!])).ok).toBe(
+            true,
+          );
+        expect(bind(v, prior, unknownReceipt(v, prior, priority[high]!, ops)).ok).toBe(true);
+        expect(bind(v, prior, unknownReceipt(v, prior, priority[low]!, ops)).ok).toBe(false);
+      }
 });
 
 test("wrong phase, wrong capability and mismatched recovery/probe observations become global UNKNOWN", () => {
@@ -845,16 +931,25 @@ test("receipt/preimage/cycle/step joins and retained transaction/opening bytes r
   }
   for (const field of ["transactionId", "observationId", "observedAt"]) {
     const output = structuredClone(s.pending);
+    // structuredClone preserves aliases between checkpoint and operation observations.
+    output.result.capabilities[0].recovery = { ...output.result.capabilities[0].recovery };
     (output.result.capabilities[0] as ReturnType<typeof literal>).recovery[field] =
       field === "observedAt" ? "2026-08-31T01:00:01.001Z" : id(999);
+    expect(output.operations).toEqual(s.pending.operations);
     rejectsKnown(s.recoveryContext, s.open, output);
   }
   const movedStart = structuredClone(s.flight);
+  movedStart.result.capabilities[0].probe = { ...movedStart.result.capabilities[0].probe };
   (movedStart.result.capabilities[0] as ReturnType<typeof literal>).probe.probeId = id(999);
+  expect(movedStart.operations).toEqual(s.flight.operations);
   rejectsKnown(s.probeContext, s.pending, movedStart);
   const movedCompletion = structuredClone(s.recovered);
+  movedCompletion.result.capabilities[0].completion = {
+    ...movedCompletion.result.capabilities[0].completion,
+  };
   (movedCompletion.result.capabilities[0] as ReturnType<typeof literal>).completion.finishedAt =
     "2026-08-31T01:00:03.001Z";
+  expect(movedCompletion.operations).toEqual(s.recovered.operations);
   rejectsKnown(s.finishContext, s.flight, movedCompletion);
 });
 
