@@ -19,12 +19,22 @@ for the current observation, not an automatically recoverable state.
 |---|---|---|---|---|
 | `PLANNED` | dispatching session | validated plan, no ownership yet | discard without vacancy claim | publish ownership |
 | `STARTING` | exact launch | create-once ownership before/with native launch | inspect exact child identity | confirm liveness |
-| `START_FAILED` | reducer | launch failure before live identity plus terminal receipt | no live owner; ownership is terminal | workspace eligibility may be re-evaluated |
+| `START_FAILED` | reducer | known no child or known exit before confirmed LIVE, plus terminal receipt | retain allocated resources until owner-specific reclaim | workspace eligibility may be re-evaluated after reclaim |
 | `LIVE` | exact launch | liveness binds process tree and workspace subject | terminate exact tree or observe exit | monitor progress |
 | `TERMINATING` | exact launch | bounded termination request | continue bounded observation | confirm exit |
 | `TERMINATION_FAILED_LIVE` | exact launch | bounded termination expired while exact owner or descendant remains live | retain ownership and capacity claim; retry or diagnose exact tree | retry bounded termination or monitor |
-| `EXITED` | reducer | exact owner terminal observation | idempotent read | workspace may become eligible |
+| `EXITED` | reducer | exact owner terminal observation | idempotent read | reclaim resources before workspace eligibility |
 | `UNKNOWN` | none | conflicting, partial, or aliased identity | external diagnosis | capacity refuses |
+
+The bounded dispatch/launch/terminal literal proposal in `contract-decisions.md`
+uses one attempt ID as the dispatch transaction/launch-attempt key. A known
+start failure emits its launch and then terminal records at step 8, with no
+launch-to-terminal back-reference and no fabricated step 9. Possibly started
+or unidentifiable children remain UNKNOWN. “Terminal receipt” describes a
+completed observation/termination operation: TERMINATION_FAILED_LIVE and
+UNKNOWN do not certify worker death. Closed process/resource claims, including
+completeness and empty arrays, require actual owner evidence and grant no
+native process identity, absence, capacity release or resume authority.
 
 ## Session lease
 
