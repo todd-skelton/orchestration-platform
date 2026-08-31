@@ -93,8 +93,9 @@ function requireSuccessful(journal, actor, facts) {
 }
 
 function liveFacts(journal, actor, facts, operations, expectedIdentity, nativeHandle) {
+  if (!operationsAre(facts, operations))
+    journal.stop("UNKNOWN", `${actor}:wrong operation context`);
   requireSuccessful(journal, actor, facts);
-  if (!operationsAre(facts, operations)) refuse();
   for (const fact of facts) {
     if (fact.operation !== "OPEN" && fact.identity === null)
       journal.fail("UNKNOWN", `${actor}:missing native identity`);
@@ -109,6 +110,41 @@ function liveFacts(journal, actor, facts, operations, expectedIdentity, nativeHa
     journal.fail("VIOLATED", `${actor}:native handle/flags changed`);
   journal.assert();
   return requireLiveFacts(facts, operations, expectedIdentity, nativeHandle);
+}
+
+function failedOpenShape(facts) {
+  const first = facts[0];
+  if (first.operation !== "OPEN" || first.identity !== null || first.nonInheritable !== null)
+    return false;
+  if (!successful(first))
+    return (
+      facts.length === 1 &&
+      first.nativeHandle === null &&
+      first.identity === null &&
+      first.nonInheritable === null
+    );
+  // open_fixed inspects once and closes once when inspection fails. A policy
+  // refusal can retain successful metadata returns; no synthetic call/error is
+  // added by the native source. Earlier inspection calls must have succeeded.
+  const prefix = facts.slice(0, -1);
+  if (
+    facts.at(-1).operation !== "CLOSE" ||
+    facts.at(-1).nonInheritable !== null ||
+    prefix.length < 2 ||
+    prefix.length > openOperations.length ||
+    !operationsAre(prefix, openOperations.slice(0, prefix.length)) ||
+    !prefix.slice(0, -1).every(successful) ||
+    prefix.some((fact) => fact.nativeHandle !== first.nativeHandle)
+  )
+    return false;
+  const last = prefix.at(-1);
+  if (!successful(last)) return true;
+  // POSIX fstat policy; Windows FileStandardInfo/FileAttributeTagInfo policy;
+  // or the final inheritance readback. FileIdInfo alone cannot refuse policy.
+  return (
+    (last.operation === "IDENTIFY" && (process.platform !== "win32" || prefix.length >= 3)) ||
+    (prefix.length === openOperations.length && last.nonInheritable === false)
+  );
 }
 
 export function expectLock(journal, actor, value, expectedIdentity, nativeHandle, expected) {
@@ -136,25 +172,39 @@ export function candidateReply(journal, actor, value, command, expectedIdentity,
   if (reply.sequence !== command.sequence || reply.name !== command.name) refuse();
   const facts = retainCalls(journal, actor, reply.facts);
   if (command.name === "READY") {
-    const handle = liveFacts(journal, actor, facts, openOperations, expectedIdentity);
-    if (reply.state !== "OPEN") refuse();
-    return handle;
+    if (reply.state === "OPEN" && operationsAre(facts, openOperations) && facts.every(successful))
+      return liveFacts(journal, actor, facts, openOperations, expectedIdentity);
+    if (reply.state !== "FAILED" || !failedOpenShape(facts))
+      journal.stop("UNKNOWN", `${actor}:invalid READY operation sequence/state`);
+    if (facts.length > 1 && successful(facts.at(-2)))
+      journal.fail("UNKNOWN", `${actor}:READY metadata/flags policy refusal`);
+    requireSuccessful(journal, actor, facts);
+    journal.stop("UNKNOWN", `${actor}:missing successful READY`);
   }
   if (command.name === "ACQUIRE") {
+    if (!operationsAre(facts, ["TRY_LOCK"]))
+      journal.stop("UNKNOWN", `${actor}:wrong operation context`);
     const disposition = lockDisposition(facts);
     const expectedState =
       disposition === "ACQUIRED" ? "LOCKED" : disposition === "CONTENDED" ? "OPEN" : "FAILED";
-    if (reply.state !== expectedState) refuse();
+    if (reply.state !== expectedState) journal.stop("UNKNOWN", `${actor}:invalid ACQUIRE state`);
   } else {
     const operation =
       command.name === "RELEASE" ? "UNLOCK" : command.name === "CLOSE" ? "CLOSE" : null;
-    if (!operation || !operationsAre(facts, [operation])) refuse();
+    if (!operation || !operationsAre(facts, [operation]))
+      journal.stop("UNKNOWN", `${actor}:wrong operation context`);
+    const expectedState = facts.every(successful)
+      ? operation === "UNLOCK"
+        ? "OPEN"
+        : "CLOSED"
+      : "FAILED";
+    if (reply.state !== expectedState)
+      journal.stop("UNKNOWN", `${actor}:invalid ${command.name} state`);
     requireSuccessful(journal, actor, facts);
     if (operation === "UNLOCK")
       liveFacts(journal, actor, facts, [operation], expectedIdentity, nativeHandle);
     else if (facts[0].identity === null || !sameIdentity(facts[0].identity, expectedIdentity))
       refuse();
-    if (reply.state !== (operation === "UNLOCK" ? "OPEN" : "CLOSED")) refuse();
   }
   return facts;
 }

@@ -207,6 +207,7 @@ test("native context preserves each failure and precedence without accepting ope
               : "-1",
             errorCode: windows ? "5" : String(constants.errno.EACCES),
             nativeHandle: null,
+            nonInheritable: null,
           }),
         ],
       },
@@ -215,6 +216,148 @@ test("native context preserves each failure and precedence without accepting ope
     ),
   );
   assert.equal(open.freeze(), "UNSUPPORTED");
+});
+
+function denied(operation, changes = {}) {
+  return fact(operation, {
+    returnValue: windows
+      ? operation === "OPEN"
+        ? process.arch === "ia32"
+          ? "4294967295"
+          : "18446744073709551615"
+        : "0"
+      : "-1",
+    errorCode: windows ? "5" : String(constants.errno.EACCES),
+    identity: null,
+    nativeHandle: null,
+    nonInheritable: null,
+    ...changes,
+  });
+}
+function failedOpening(index) {
+  if (index === 0) return [denied("OPEN")];
+  const prefix = openOperations
+    .slice(0, index + 1)
+    .map((operation, i) =>
+      i === index
+        ? denied(operation, { nativeHandle: "37", identity: i === 1 ? null : id })
+        : fact(operation, { nonInheritable: null }),
+    );
+  return [...prefix, fact("CLOSE", { identity: prefix.at(-1).identity, nonInheritable: null })];
+}
+
+test("READY context and state refuse before an unrelated access-denied error can normalize", () => {
+  const opening = fact("OPEN", { nonInheritable: null });
+  const closing = fact("CLOSE", { identity: null, nonInheritable: null });
+  const failed = failedOpening(1);
+  const mutants = [
+    { state: "FAILED", facts: [denied("TRY_LOCK")] },
+    { state: "FAILED", facts: [denied("UNLOCK")] },
+    { state: "UNOPENED", facts: [denied("TRY_LOCK")] },
+    ...["UNOPENED", "OPEN", "LOCKED"].map((state) => ({ state, facts: [denied("OPEN")] })),
+    { state: "FAILED", facts: [denied("OPEN"), closing] },
+    { state: "FAILED", facts: [opening, closing] },
+    { state: "FAILED", facts: failed.slice(0, -1) },
+    { state: "FAILED", facts: [...failed.slice(0, -1), fact("FLAGS"), closing] },
+    { state: "FAILED", facts: [opening, denied("UNLOCK", { nativeHandle: "37" }), closing] },
+    { state: "FAILED", facts: openOperations.map((operation) => fact(operation)) },
+  ];
+  for (const mutant of mutants) {
+    const journal = measurement();
+    assert.throws(() =>
+      candidateReply(journal, "HOLDER", { ...command("READY"), ...mutant }, command("READY"), id),
+    );
+    assert.equal(journal.freeze(), "UNKNOWN");
+    assert.ok(journal.failures.every((failure) => failure.result === "UNKNOWN"));
+    assert.equal(
+      journal.events.filter((event) => event.kind === "CALL").length,
+      mutant.facts.length,
+    );
+  }
+});
+
+test("actual failed-open inspection prefixes keep access denial and every cleanup failure", () => {
+  for (let index = 0; index < openOperations.length; index++) {
+    const journal = measurement();
+    assert.throws(() =>
+      candidateReply(
+        journal,
+        "HOLDER",
+        { ...command("READY"), state: "FAILED", facts: failedOpening(index) },
+        command("READY"),
+        id,
+      ),
+    );
+    assert.equal(journal.freeze(), "UNSUPPORTED", `failed native open step ${index}`);
+  }
+  const journal = measurement();
+  const facts = failedOpening(1);
+  facts[facts.length - 1] = denied("CLOSE", { errorCode: "999999" });
+  assert.throws(() =>
+    candidateReply(
+      journal,
+      "HOLDER",
+      { ...command("READY"), state: "FAILED", facts },
+      command("READY"),
+      id,
+    ),
+  );
+  assert.deepEqual(
+    journal.failures.map((failure) => failure.result),
+    ["UNSUPPORTED", "UNKNOWN"],
+  );
+  assert.equal(journal.freeze(), "UNKNOWN");
+  const policy = measurement();
+  const metadataLength = windows ? 3 : 2;
+  const policyFacts = openOperations
+    .slice(0, metadataLength)
+    .map((operation) => fact(operation, { nonInheritable: null }));
+  policyFacts.push(fact("CLOSE", { nonInheritable: null }));
+  assert.throws(() =>
+    candidateReply(
+      policy,
+      "HOLDER",
+      { ...command("READY"), state: "FAILED", facts: policyFacts },
+      command("READY"),
+      id,
+    ),
+  );
+  assert.equal(policy.freeze(), "UNKNOWN");
+  assert.ok(
+    policy.failures.some((failure) => failure.reason.includes("metadata/flags policy refusal")),
+  );
+});
+
+test("failed release and close validate the session reply state before error meaning", () => {
+  for (const [name, operation, invalidState] of [
+    ["RELEASE", "UNLOCK", "OPEN"],
+    ["CLOSE", "CLOSE", "CLOSED"],
+  ]) {
+    const facts = [
+      denied(operation, {
+        identity: id,
+        nativeHandle: operation === "CLOSE" ? null : "37",
+        nonInheritable: operation === "CLOSE" ? null : true,
+      }),
+    ];
+    for (const [state, result] of [
+      [invalidState, "UNKNOWN"],
+      ["FAILED", "UNSUPPORTED"],
+    ]) {
+      const journal = measurement();
+      assert.throws(() =>
+        candidateReply(
+          journal,
+          "HOLDER",
+          { ...command(name), state, facts },
+          command(name),
+          id,
+          "37",
+        ),
+      );
+      assert.equal(journal.freeze(), result);
+    }
+  }
 });
 
 test("candidate READY validates actual fact shapes; candidate verdict and replaced identity refuse", () => {
