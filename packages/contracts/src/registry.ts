@@ -3,6 +3,7 @@ import {
   projectMutationSchemaVersions,
   projectMutationClosedValues,
 } from "./project-mutation.js";
+import { journalClosedValues, journalSchemaFields, journalSchemaVersions } from "./journal.js";
 import {
   resourceReclaimClosedValues,
   resourceReclaimSchemaFields,
@@ -153,6 +154,29 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    ...Object.fromEntries(
+      journalSchemaVersions.map((schemaVersion, index) => [
+        schemaVersion,
+        Object.freeze({
+          schemaVersion,
+          fields: [
+            journalSchemaFields.event,
+            journalSchemaFields.journal,
+            journalSchemaFields.reduced,
+            journalSchemaFields.cycleReceipt,
+          ][index]!,
+          closedValues: journalClosedValues,
+        }),
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(journalSchemaFields)
+        .filter(([key]) => !["event", "journal", "reduced", "cycleReceipt"].includes(key))
+        .map(([key, fields]) => [
+          `orchestration-event/v1#${key}`,
+          Object.freeze({ schemaVersion: "orchestration-event/v1", fields }),
+        ]),
+    ),
     "resource-reclaim-receipt/v1": Object.freeze({
       schemaVersion: "resource-reclaim-receipt/v1",
       fields: resourceReclaimSchemaFields.receipt,
@@ -1122,6 +1146,7 @@ export const schemaVersions = Object.freeze(
     ...routeSelectionSchemaVersions,
     ...projectPreflightSchemaVersions,
     ...projectMutationSchemaVersions,
+    ...journalSchemaVersions,
     ...resourceReclaimSchemaVersions,
     ...dispatchLifecycleSchemaVersions,
     ...dispositionSchemaVersions,
