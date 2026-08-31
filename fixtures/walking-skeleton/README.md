@@ -119,7 +119,12 @@ remain placeholders and full ISS-041 remains open.
 
 The focused session tests cover the real claim and second-holder refusal,
 configuration/entry joins, moved/malformed/unavailable state, clock negatives,
-retention and cleanup. The healthy invocation compares tracked-checkout and
+retention and cleanup. Root replacement must execute on POSIX. If Windows
+actually denies that rename with `EPERM` while the claim remains open, the test
+instead proves unchanged physical identities and bytes, healthy ownership and
+normal cleanup; that denial is not replacement/poisoning evidence. A successful
+rename on any OS still requires unknown retention, and the other poison mutants
+remain mandatory on Windows. The healthy invocation compares tracked-checkout and
 external-sandbox manifests outside state, with exactly one state file. Interfering
 test setup and final sandbox removal are outside that measured invocation.
 Deleting the physical/byte checks or configuration reload permits stale evidence

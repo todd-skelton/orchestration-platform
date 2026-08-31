@@ -79,3 +79,10 @@ journal start/replay, other ordinals or full crash/resume acceptance is claimed.
 The fixture's unrenewed clock window does not grant runtime authority. Its
 new session tests are authored evidence pending host execution and independent
 review. The full-cycle gaps and both root capability placeholders remain.
+
+The root-replacement control distinguishes an executed replacement from an
+actual Windows `EPERM` rename denial while the claim is open. Executed replacement
+requires unknown retention; observed denial requires exact unchanged identity
+and bytes, healthy observation and normal cleanup. POSIX must execute the
+replacement; Windows still executes the other poison controls. No handle is
+dropped to force a mutation, and no denied mutation is labeled successful tampering.

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -222,7 +223,7 @@ test("second holder receives typed refusal without changing the actual holder", 
   expect((await owner.lease.observe()).outcome).toBe("HEALTHY");
 });
 
-test.each(["malformed", "replacement", "missing", "directory", "root", "configuration"])(
+test.each(["malformed", "replacement", "missing", "directory", "configuration"])(
   "%s observation poisons the claim and retains uncertain state instead of reacquiring or deleting",
   async (change) => {
     const f = await fixture();
@@ -237,11 +238,6 @@ test.each(["malformed", "replacement", "missing", "directory", "root", "configur
     if (change === "directory") {
       await rm(f.claim);
       await mkdir(f.claim);
-    }
-    if (change === "root") {
-      await rename(f.state, `${f.state}-original`);
-      await mkdir(f.state);
-      await writeFile(f.claim, bytes);
     }
     if (change === "configuration")
       await writeFile(f.configPath, canonicalJson({ ...source, wallClockSkewMs: 999 }));
@@ -259,6 +255,62 @@ test.each(["malformed", "replacement", "missing", "directory", "root", "configur
       );
   },
 );
+
+test("root replacement poisons ownership, or an actual Windows denial preserves the unchanged holder", async () => {
+  const f = await fixture();
+  const owner = await acquired(f);
+  const bytes = await readFile(f.claim);
+  const rootBefore = await lstat(f.state, { bigint: true });
+  const claimBefore = await lstat(f.claim, { bigint: true });
+  const original = `${f.state}-original`;
+  try {
+    await rename(f.state, original);
+  } catch (error) {
+    // Windows can deny moving a directory with this retained claim open. That is
+    // an observed no-mutation outcome, not an executed replacement or a skipped test.
+    if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM")
+      throw error;
+    expect(error).toMatchObject({
+      code: "EPERM",
+      syscall: "rename",
+      path: f.state,
+      dest: original,
+    });
+    expect(await lstat(f.state, { bigint: true })).toMatchObject({
+      dev: rootBefore.dev,
+      ino: rootBefore.ino,
+      mode: rootBefore.mode,
+    });
+    expect(await lstat(f.claim, { bigint: true })).toMatchObject({
+      dev: claimBefore.dev,
+      ino: claimBefore.ino,
+      mode: claimBefore.mode,
+    });
+    expect(await readdir(f.state)).toEqual(["session-claim.json"]);
+    expect(await readFile(f.claim)).toEqual(bytes);
+    await expect(lstat(original)).rejects.toHaveProperty("code", "ENOENT");
+    expect(await owner.lease.observe()).toMatchObject({
+      outcome: "HEALTHY",
+      leaseState: "HELD_FRESH",
+      holderSessionId: uuid(2),
+      targetSessionId: uuid(2),
+    });
+    expect(await owner.lease.close()).toBe("REMOVED");
+    expect(await readdir(f.state)).toEqual([]);
+    return;
+  }
+  // POSIX must reach this executed replacement; Windows does too if rename succeeds.
+  await mkdir(f.state);
+  await writeFile(f.claim, bytes);
+  expect(await owner.lease.observe()).toMatchObject({
+    outcome: "UNKNOWN",
+    holderSessionId: null,
+    leaseState: "UNKNOWN",
+  });
+  expect(await owner.lease.close()).toBe("RETAINED_UNKNOWN");
+  expect(await readFile(f.claim)).toEqual(bytes);
+  expect(await readFile(join(original, "session-claim.json"))).toEqual(bytes);
+});
 
 test("a malformed existing claim is UNKNOWN, never a known holder or permission to remove it", async () => {
   const f = await fixture();
