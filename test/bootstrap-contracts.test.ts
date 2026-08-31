@@ -83,6 +83,20 @@ describe("bootstrap manifest graph", () => {
   test.each([
     ["extra package path", (snapshot: any) => snapshot.packageDirectories.push("packages/extra")],
     [
+      "fixture dependency removed",
+      (snapshot: any) => {
+        delete snapshot.manifests["@orchestration-platform/walking-skeleton"].dependencies;
+      },
+    ],
+    [
+      "production consumes fixture",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/contracts"].dependencies = {
+          "@orchestration-platform/walking-skeleton": "workspace:*",
+        };
+      },
+    ],
+    [
       "missing export",
       (snapshot: any) =>
         delete snapshot.manifests["@orchestration-platform/adapter-self"].exports["./workspace"],

@@ -1,0 +1,16 @@
+{
+  "name": "@orchestration-platform/walking-skeleton",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {},
+  "dependencies": {
+    "@orchestration-platform/contracts": "workspace:*"
+  },
+  "scripts": {
+    "test": "pnpm --dir ../.. exec vitest run fixtures/walking-skeleton/test"
+  }
+}

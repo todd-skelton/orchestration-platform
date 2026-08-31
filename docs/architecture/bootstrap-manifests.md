@@ -28,6 +28,15 @@ reviewed planning decision rather than an implementation-lane choice.
 | `@orchestration-platform/host-codex` | `packages/host-codex/` | exports exactly `.`, `./bootstrap-canaries`; Codex CLI discovery, launch, identity, terminal receipts | `ISS-021` |
 | `@orchestration-platform/adapter-self` | `adapters/self/` | exports exactly `.`, `./workspace`, `./code-host`, `./certification`, `./bootstrap-canaries`, `./broker-operations`; platform-repository frontier, workspace, GitHub/CI, certification, and mutation policy | `ISS-000`, `ISS-033` |
 | `@orchestration-platform/adapter-first-consumer` | `adapters/first-consumer/` | first-consumer composition plus `./shadow`, `./import`, `./mutation` | `ISS-000`, `ISS-028` |
+| `@orchestration-platform/walking-skeleton` | `fixtures/walking-skeleton/` | none; private disposable contract consumer, never a release artifact | `ISS-041` |
+
+The coordinated ISS-041 scaffold amendment adds `fixtures/*` alongside
+`packages/*`, `probes/*`, `modules/*`, and `adapters/*`. Its fixture test is
+included in normal root Vitest runs and its sources/tests in root TypeScript
+checks; the formatter includes `fixtures/`. Package/directory/export/test
+censuses and the frozen lock importer carry the same registration. No build
+target or production dependency on the fixture is admitted. The two root
+`skeleton:*` commands remain placeholders until full-cycle acceptance exists.
 
 Portable workflow modules live under `modules/` and are release-manifest
 artifacts rather than npm library exports. Their exact static entrypoints,

@@ -9,7 +9,7 @@ const hasConfigSources = existsSync(
 
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts"],
+    include: ["test/**/*.test.ts", "fixtures/*/test/**/*.test.ts"],
     globalSetup: hasConfigSources ? ["./scripts/test/windows-reparse-fact-global-setup.mjs"] : [],
     environment: "node",
     passWithNoTests: false,
