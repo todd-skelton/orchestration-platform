@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,7 +15,8 @@ import {
   type ConfigurationLoaderInvocation,
 } from "../../../packages/config/src/loader.js";
 import { consumeEcho } from "../src/echo-consumer.js";
-import { echoMapping } from "../src/echo-worker.js";
+import * as echoWorker from "../src/echo-worker.js";
+import * as fixtureModule from "../src/index.js";
 import { acquireFixtureSession } from "../src/session.js";
 
 const roots: string[] = [],
@@ -222,7 +224,7 @@ test("real fixed echo binds the entire preparation/launch/terminal tuple and ret
   expect(facts.observedAt).toBe(input.projectFacts.observedAt);
   if (facts.state !== "COMPLETE") throw new Error("complete preflight required");
   expect(facts.frontier).toEqual(input.projectFacts.frontier);
-  expect(host).toEqual(echoMapping[0]);
+  expect(host).toEqual(echoWorker.echoMapping[0]);
   expect(
     c.validateProjectPreflightBinding(input, action, [host], route, observation, preflight).ok,
   ).toBe(true);
@@ -321,6 +323,7 @@ test.each(["malformed", "trip", "no-action", "moved"] as const)(
   async (control) => {
     const f = await fixture(),
       outside = await manifest(f.root, f.stateRoot);
+    const planning = control === "trip" ? vi.spyOn(fixtureModule, "plan") : null;
     if (control === "malformed") f.rows[0] = { ...f.rows[0]!, immutableSubjectDigest: "bad" };
     if (control === "trip") f.rows.push({ ...f.rows[0]!, workId: uuid(5), readiness: "NOT_READY" });
     if (control === "no-action") f.rows.splice(0);
@@ -349,10 +352,13 @@ test.each(["malformed", "trip", "no-action", "moved"] as const)(
       expect(f.policy).not.toHaveBeenCalled();
       expect(await readdir(f.stateRoot)).toEqual([]);
     }
-    if (control === "trip")
+    if (control === "trip") {
+      expect(planning).not.toHaveBeenCalled();
+      expect(await readdir(f.stateRoot)).not.toContain("module-result.json");
       expect(await record(f, "breaker-receipt.json")).toMatchObject({
         result: { kind: "KNOWN", capabilities: [{ state: "OPEN" }] },
       });
+    }
     if (control === "moved")
       expect(await record(f, "project-preflight.json")).toMatchObject({
         outcome: { kind: "REFUSED", reason: "TARGET_CHANGED" },
@@ -389,6 +395,51 @@ test("foreign input allocation collision retains uncertainty and never overwrite
   const before = await manifest(f.root);
   expect(await f.run()).toMatchObject({ ok: false, reason: "SESSION_NOT_ACQUIRED" });
   expect(await manifest(f.root)).toEqual(before);
+});
+
+test("a lease becoming stale after input allocation prevents ownership publication and retains uncertainty", async () => {
+  const f = await fixture(),
+    inputPath = join(f.stateRoot, "echo-input.bin");
+  // The real file creation selects this clock transition; earlier inspections stay fresh.
+  vi.spyOn(clocks, "monotonicNow").mockImplementation(() => (existsSync(inputPath) ? 30000 : 0));
+  vi.spyOn(clocks, "wallNow").mockImplementation(() =>
+    existsSync(inputPath) ? "2026-08-31T01:00:30.000Z" : "2026-08-31T01:00:00.000Z",
+  );
+  const execution = vi.spyOn(echoWorker, "runEcho"); // Calls the real driver unchanged.
+  expect(await f.run()).toMatchObject({
+    ok: false,
+    reason: "SESSION_RETAINED_UNKNOWN",
+    cleanup: "RETAINED_UNKNOWN",
+    health: { outcome: "REFUSED", reason: "FRESHNESS_EXPIRED", step: null },
+  });
+  expect(execution).toHaveBeenCalledTimes(1);
+  expect(await execution.mock.results[0]!.value).toMatchObject({
+    retained: true,
+    terminal: null,
+    stdout: null,
+    stderr: null,
+    launch: {
+      outcome: { kind: "UNKNOWN", reason: "STARTUP_UNPROVEN" },
+      ownership: "UNPUBLISHED",
+      processes: { completeness: "COMPLETE", entries: [] },
+      resources: [{ state: "ALLOCATED" }],
+    },
+  });
+  const action = parsed(c.parseModuleActionPlan(await record(f, "module-result.json")));
+  expect(await readFile(inputPath, "utf8")).toBe(c.canonicalJson(action.dispatchBrief));
+  expect(await record(f, "session-claim.json")).toMatchObject({
+    schemaVersion: "session-acquire-request/v1",
+    sessionId: uuid(2),
+  });
+  const names = await readdir(f.stateRoot);
+  for (const name of [
+    "echo-ownership.json",
+    "worker-launch.json",
+    "worker-terminal.json",
+    "stdout.bin",
+    "stderr.bin",
+  ])
+    expect(names).not.toContain(name);
 });
 
 test("NODE_OPTIONS cannot inject a preload into the real fixed echo child", async () => {
