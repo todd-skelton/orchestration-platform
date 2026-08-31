@@ -977,9 +977,11 @@ the suite.
   `requestedRole`. The projection excludes `dispatchBrief`, `actionCoreDigest`,
   rendered brief bytes/digest, dispatch/launch identity, host-renderer artifact
   digest, and every field derived from any of them; no other plan member enters
-  the digest. Before journaling step 4, the brief action's kind, capability,
-  immutable subject, descriptor digest, and action-core digest must equal that
-  projection. A moved plan, descriptor, subject, action, capability, member,
+  the digest. Before journaling step 4, when a worker-required action carries
+  a non-null brief, the brief action's kind, capability, immutable subject,
+  descriptor digest, and action-core digest must equal that projection.
+  A workerless action carries no brief; its core and other plan bindings
+  remain required. A moved plan, descriptor, subject, action, capability, member,
   frame, or order refuses without constructing a second plan or digest.
 - A release-reviewed module descriptor contains a finite, dense, unique
   `dispatchCatalog` of 1–256 closed entries. Each entry has exactly
@@ -4082,6 +4084,258 @@ tests, build, probe or executed acceptance is claimed. Host verification and
 independent exact-head review remain required. Journal/replay/terminal,
 dispatch/process/module/reclaim/disposition and identity/history issuance
 contracts remain separate; ISS-002's addition and ISS-041 are not complete.
+
+### Fifth complete literal group proposal: portable module structures
+
+This packet proposes the five module census names only. It is an explicit
+bounded ABI replan, subject to independent review before implementation.
+The existing fixture already consumes admitted configuration, snapshot and
+current-policy facts and produces a real action core and brief; its inline
+descriptor is not a public descriptor or installed module. Replacing those
+fixture seams with closed supplied records is useful without inventing a
+breaker receipt, history, registry, runtime invocation or complete cycle.
+
+#### Explicit replan and unchanged authority boundary
+
+The ABI's undefined "canonical reduced facts" input is replaced here with
+actual complete ISS-013 project observations, named as such, plus their actual
+configuration and provenance. They are not `reduced-state/v1`. Its undefined
+"adapter policy digest" is replaced with the existing exact policy tuple
+`(adapterId, adapterVersion, policyVersion)` and the complete observed policy
+fact record. The fact digest identifies an observation, never policy code.
+Compatibility "ranges" mean the finite exact-version tuples below, not a new
+range interpreter; this deliberately narrows the earlier summary. Host
+compatibility uses the existing worker capability/renderer contracts, without
+inventing host version fields. These choices require approval as replans,
+not inference from the earlier ABI prose.
+
+The ordinary planner receives the full configured capability census, not a
+caller-asserted permitted subset. Neither COMPLETE nor NO_TRIP grants a
+capability or overrides TRIP or prior holds. Actual routine invocation still
+requires step 3's current authenticated breaker reduction, exact session,
+adapter-authorized module choice, and installed static registry admission.
+Result use must also pass that actual capability gate. None is encoded by a
+Boolean, empty history, copied digest or parsed descriptor here. Missing
+authority remains fail-closed; the quarantined observer fixture is not an
+exception permitting routine execution. Production manifest/generator/loading,
+breaker/history/recovery, routing and effect owners remain unchanged.
+
+#### Shared scalars and complete descriptor
+
+Reuse `C, Uuid, Digest, Id` above and ISS-013's `Name, Version` without
+widening them. `Name` is also the finding-disposition code grammar
+`[a-z][a-z0-9._:-]{0,63}`. Newly declared members are required and non-null
+except the three explicit outer null cells below. Reused contracts retain
+all their existing nullability, including an ABSENT OPERATOR_ACTION directive's
+`code:null`. Every listed field sequence is canonical key
+order. Closed detached record/array rules apply recursively. Counts include
+both endpoints; tuple ordering is lexicographic comparison of the named ASCII
+strings, never numeric version ordering. Unknown fields, arms, versions,
+symbols, accessors, proxies, holes and exotic values refuse without input code.
+
+`module-descriptor/v1` has exactly:
+
+| Member | Complete rule |
+| --- | --- |
+| `abi` | literal `orchestration-module/v1` |
+| `actions` | dense 1–256 action rows below; strictly sorted by `(actionKind, capabilityName)`, hence unique by that pair |
+| `compatibility` | dense 1–256 compatibility rows below; strictly sorted by `(adapterId, adapterVersion, engineVersion, policyVersion)`, hence unique |
+| `dispatchCatalog` | existing complete dense 1–256 catalog; preserve order; exact existing resolver-key uniqueness and row rules |
+| `dispositionCodes` | dense 0–256 `Name` strings, strictly ASCII sorted and unique; empty declares no blocking disposition code |
+| `inputSchemas` | exactly `["module-plan-input/v1"]` |
+| `moduleId` | `Id` |
+| `moduleVersion` | `Version` |
+| `outputSchemas` | exactly `["module-action-plan/v1","module-no-action/v1"]` |
+| `schemaVersion` | literal `module-descriptor/v1` |
+
+Each compatibility row is exactly
+`adapterId, adapterVersion, engineVersion, policyVersion`: `Id` followed by
+three `Version` strings. Rows enumerate supported whole tuples; components
+from different rows cannot be combined. These are descriptor claims, not a
+policy implementation selector or evidence that installed code matches them.
+The fixed input/output schemas and their complete nested v1 contracts close
+schema compatibility; arbitrary schema IDs, fallback versions and payloads
+are absent. All declared lookup values retain the existing vocabulary checks.
+
+Each action row is exactly
+`actionKind, capabilityName, requestedRole, reviewRequired, workerRequired`.
+The first two are `Name`; role is the unchanged
+`implementation|review|observer`; the last two are literal Booleans:
+
+| `workerRequired` | `requestedRole` | `reviewRequired` |
+| --- | --- | --- |
+| true | implementation or observer | true or false |
+| true | review | false |
+| false | observer | false |
+
+No other cell is valid. In the no-worker cell, observer is the least-authority
+requested-role value in the unchanged mandatory action core; it does not
+assert a worker exists. The cell requires explicit downstream skips, never a
+synthetic launch. A review action already performs review; its false flag
+does not authorize skipping that review or promoting an unreviewed candidate.
+
+Project `actions` to exact `{actionKind,capabilityName}` pairs for rows with
+`workerRequired:true`; require equality with the catalog's distinct pair
+projection under the existing catalog validator. There is no second copied
+worker-pair array. Catalog bounds remain 1–256, so at least one worker pair
+must exist even if other declared actions are workerless; this proposal does
+not silently permit an empty-catalog, workerless-only descriptor. Required
+capability names are the distinct projection of all action rows. Host
+compatibility for worker actions requires the same capability in an admitted
+existing worker-host identity and exact renderer coverage for this catalog;
+actual host selection and installed artifact proof remain the routing owner.
+
+A code in `dispositionCodes` has only module-owned lookup meaning. When the
+later review owner admits a blocking finding, its code must be in this exact
+descriptor's list and its module descriptor digest must equal this descriptor's
+computed identity. No engine repair/replan enumeration, dynamic loader or
+interpretation of retained procedure bytes is introduced.
+
+#### One complete module input
+
+`module-plan-input/v1` has exactly these eight members:
+
+| Member | Complete rule |
+| --- | --- |
+| `adapterConfiguration` | existing complete `adapter-configuration/v1` |
+| `configurationProvenance` | existing complete `configuration-provenance/v1` |
+| `cycleRequest` | existing complete `cycle-request/v1`, including its session request |
+| `descriptor` | complete descriptor above, not an expected digest |
+| `policyFacts` | existing `project-breaker-facts/v1`, restricted to COMPLETE |
+| `projectFacts` | existing `project-facts/v1`, restricted to COMPLETE |
+| `reviewSubject` | null for ordinary frontier planning; otherwise one complete existing concrete worker-result or release-candidate subject |
+| `schemaVersion` | literal `module-plan-input/v1` |
+
+Input parsing performs the existing configuration/provenance equality,
+project-facts/configuration binding and policy-facts/configuration/snapshot
+binding, recomputing actual `Dconfig, Dsnapshot, Dfrontier`. Policy decisions
+must cover exactly the full configuration capability census; their TRIP values
+are retained unchanged. Require `cycleRequest.adapterId` equal the actual
+configuration adapter; require its nested
+`sessionRequest.configurationProvenanceDigest = SHA256(C(configurationProvenance))`.
+Other session-request configuration preimages and real lease/currentness
+remain the session owner; their digests are not reinterpreted here.
+
+Require one descriptor compatibility row equal the actual configuration's
+adapter ID/version and engine version plus `policyFacts.policyVersion`.
+Require its module ID in `cycleRequest.allowedModuleIds` and all its required
+capabilities in the configuration census. Those comparisons prove supplied
+intent/compatibility only. Empty allowed modules refuses this input. Actual
+loaded descriptor equality and adapter module authorization remain external.
+
+For a non-null review subject, require `cycleRequest.cycleId` distinct from
+its author cycle or candidate assembly cycle, exactly as for review requests.
+This added existing-subject slot is necessary to carry a later review target;
+a frontier digest cannot replace it. Its actual follow-up provenance and
+independent reviewer admission remain the existing later owners. There is no
+new follow-up family or fabricated candidate author attempt. Ordinary input
+contains no review target, and no input embeds its own digest or a plan result.
+
+#### Complete action, no-action and typed refusal results
+
+`module-action-plan/v1` has exactly
+`actionCore, dispatchBrief, inputDigest, schemaVersion, workId`.
+`actionCore` is the unchanged complete `dispatch-action-core/v1`;
+`inputDigest:Digest` references the exact complete input; `schemaVersion`
+is literal `module-action-plan/v1`. `dispatchBrief` is null or an existing
+complete `dispatch-brief/v1`; `workId` is null or `Uuid`.
+
+Intrinsic parsing requires null brief only with core role observer. Every
+non-null brief must equal the core's action kind, capability, immutable
+subject, descriptor digest and designated action-core digest, and its role
+must equal requestedRole; existing brief directive/subject rules also apply.
+No rendered bytes, host/route, dispatch, launch, result, authority, mutation,
+advisory prose or output self-digest appears.
+
+`module-no-action/v1` has exactly
+`inputDigest, outcome, reason, schemaVersion`. The input reference is non-null
+`Digest`; schema is literal `module-no-action/v1`; only these cells exist:
+
+| `outcome` | `reason` | Claimed result |
+| --- | --- | --- |
+| NO_ACTION | NO_ELIGIBLE_ACTION | This module found no eligible action in the supplied input |
+| REFUSED | INPUT_REFUSED | Valid structural input was not usable by the module's reviewed planning rules |
+| REFUSED | PLANNING_FAILED | The module reports known inability to produce a valid plan |
+
+This is an explicit naming choice: the no-action family contains both normal
+absence of an action and typed refusal; they are never equivalent terminal
+outcomes. It closes all three required result cases without adding a sixth
+schema. None asserts a complete history, clearance, resource reclamation or
+successful cycle. Malformed/unobtainable input cannot yield a fabricated
+input digest or bound refusal; the owning caller uses its existing failure
+path. A thrown call or malformed return is not silently repaired into one of
+these literals. No outcome/reason is nullable.
+
+`module-plan-result/v1` is the wrapper-free union of those two concrete
+families, with action, no-action and both refusal cells above. Its public union
+parser, canonical byte parser and serializer dispatch solely on the concrete
+`schemaVersion`, return/persist that same concrete value, and use its identity.
+No record is tagged `module-plan-result/v1`; no wrapper, generic payload,
+union digest or separate registry persistence row exists. Future/unknown arms
+refuse. Concrete-family parsers refuse the opposite family.
+
+#### Identities and exact supplied relations
+
+Each of the four concrete families above has one identity:
+`UTF8("orchestration-platform") || 00 || UTF8(schemaVersion) || 00 ||
+u32be(1) || 07 || u64be(byteLength(C(record))) || C(record)`, hashed by SHA-256.
+Generic serialization returns that canonical record and framed identity.
+The union uses its concrete identity. Existing action-core, subject, snapshot,
+configuration and policy-fact identities retain their designated functions;
+in particular policy facts remain unframed observation content identities.
+The graph is descriptor/configuration/observations/cycle/optional subject,
+then input, then result; descriptor/catalog never reference downstream plans.
+
+A pure supplied relation takes exactly `(input, result)`, parses both detached
+values and requires `result.inputDigest = Dinput`. For an action additionally:
+
+1. Require core `moduleDescriptorDigest = Ddescriptor`; find exactly one
+   declared action/capability pair and require identical requested role.
+2. Require core capability in the configured census. For workerRequired true,
+   require a non-null brief and validate the complete existing core/brief/catalog
+   binding against the descriptor's derived worker pairs. For workerRequired
+   false, require observer role, reviewRequired false and null brief; do not
+   invoke the non-null brief binder or fabricate a brief. Descriptor catalog/
+   worker-pair validation and all core, action, target and capability bindings
+   remain required in both cases.
+3. If input reviewSubject is null, require non-null workId naming one actual
+   READY frontier row, core capability in that row, and core subject equal
+   that row's immutable subject. A review role refuses without a review subject.
+4. If input reviewSubject is non-null, require null workId, review role and
+   workerRequired true; core subject equals the concrete subject's designated
+   digest. Worker-result and candidate targets never cross-bind.
+
+No-action/refusal output has no action or target field. The relation does not
+prove the module's reason or reproduce its planning algorithm. A result may
+refer to well-formed invented facts and still satisfy structure; no freshness,
+history, installed-source identity, reviewer independence, deterministic call,
+effect isolation or runtime authority is thereby established. Runtime must
+prove the exact descriptor and input used by its one invocation, current
+breaker permission and all existing downstream gates before using any action.
+Review-required flags retain their existing distinct later review behavior;
+the false flag cannot relax operation-specific mandatory candidate review.
+
+#### Required vectors, footprint and replan boundary
+
+| Property / removal attack | Cheapest discriminating evidence after review |
+| --- | --- |
+| Complete structure | Every descriptor row/cell, ordinary and both review-subject inputs, worker/direct actions, no-action and both refusals; remove/add/rename/type-change every nested member; unknown versions, cross-arm fields, hostile arrays/records all refuse |
+| Reused nulls and workerless binding | Ordinary worker action with ABSENT OPERATOR_ACTION code:null succeeds; preserve all reused null rules and mutate each of the three new outer null cells. Workerless action in a valid mixed descriptor succeeds with null brief; core/role/review-flag/brief-null mutants refuse without invoking a non-null brief binder |
+| Canonical identity | Independently pinned bytes, complete frame hex and digest for four families/all result cells; union preserves concrete bytes/digest; insertion-order equivalence; noncanonical persisted bytes and wrong domain/tag/count/LF refuse or differ |
+| Bounds and catalog | Every 0/1/256/257 applicable boundary; ordered/duplicate compatibility/action/code lists; exact schema arrays; existing catalog duplicate-key/accessor/template and pair-census mutants; no empty catalog exception |
+| Input joins | Independently substitute config/provenance/project/snapshot metadata/frontier/policy version/decision census/cycle/module intent/compatibility component; actual scalar shapes remain valid and each removed equality has its own failing mutant |
+| Output joins | Recompute outer result references when mutating descriptor/core/brief/row/work/capability/role/subject bindings; test both null cells, non-READY work, swapped review target and same subject cycle; delete each equality independently |
+| Evidence versus authority | Both TRIP and NO_TRIP retain their factual values; structural acceptance never supplies breaker permission; no module invocation, registry admission, host loading, scheduling or mutation follows from a literal |
+| Actual fixture continuation | After parser review/implementation, replace only its private descriptor/input/result seam and preserve both real SDK adapters, retained exact rows and canonical outputs; this is observer evidence, not completion of routine steps 3–4 |
+
+Prediction: four concrete parsers, one union dispatcher, four framed identities
+and one supplied-input/result relation suffice. No general resolver, expression
+language, manifest generator, new schema, issue edge or owner is needed.
+A required new authority source or contract outside this boundary is replan
+evidence, not permission to expand it. Footprint is this subsection, the
+ISS-002 additive note, the explicit ABI correction and round 381 only.
+Independent exact-head review precedes implementation; the author claims no
+tests, builds, probes, runtime acceptance or ISS-041 completion.
 
 ### Sixth literal group proposal: breaker checkpoints and recovery observations
 
