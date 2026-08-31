@@ -166,6 +166,10 @@ function validateCommandCensus(snapshot) {
       "ISS-002:@orchestration-platform/contracts:test",
       "pnpm --dir ../.. exec vitest run test/contracts",
     ],
+    [
+      "ISS-013:@orchestration-platform/adapter-sdk:test",
+      "pnpm --dir ../.. exec vitest run test/adapter-sdk",
+    ],
   ]);
   const expectedRootScripts = new Set([
     "build",
