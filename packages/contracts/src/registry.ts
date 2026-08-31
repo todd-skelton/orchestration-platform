@@ -2,6 +2,12 @@ import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { cycleEntrySchemaFields, cycleEntrySchemaVersions } from "./cycle-entry.js";
 import { reviewSubjectSchemaFields, reviewSubjectSchemaVersions } from "./review-subject.js";
 import { reviewRequestSchemaFields, reviewRequestSchemaVersions } from "./review-request.js";
+import {
+  reviewAuthorityUnknownReasons,
+  reviewResultKinds,
+  reviewResultSchemaFields,
+  reviewResultSchemaVersions,
+} from "./review-result.js";
 import { projectSnapshotSchemaFields, projectSnapshotSchemaVersions } from "./project-snapshot.js";
 import {
   routineStepKinds,
@@ -106,6 +112,54 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "review-attempt-result/v1": Object.freeze({
+      schemaVersion: "review-attempt-result/v1",
+      fields: reviewResultSchemaFields.attempt,
+    }),
+    "review-attempt-result/v1#result": Object.freeze({
+      schemaVersion: "review-attempt-result/v1",
+      fields: reviewResultSchemaFields.result,
+      closedValues: Object.freeze(reviewResultKinds.filter((kind) => kind !== "BLOCKED")),
+    }),
+    "review-attempt-result/v1#BLOCKED": Object.freeze({
+      schemaVersion: "review-attempt-result/v1",
+      fields: reviewResultSchemaFields.blocked,
+      closedValues: Object.freeze(["BLOCKED"]),
+    }),
+    "review-attempt-result/v1#finding": Object.freeze({
+      schemaVersion: "review-attempt-result/v1",
+      fields: reviewResultSchemaFields.finding,
+    }),
+    "review-attempt-result/v1#disposition": Object.freeze({
+      schemaVersion: "review-attempt-result/v1",
+      fields: reviewResultSchemaFields.disposition,
+    }),
+    "review-attempt-result/v1#finding-evidence": Object.freeze({
+      schemaVersion: "review-attempt-result/v1",
+      fields: reviewResultSchemaFields.findingEvidence,
+    }),
+    "review-attempt-result/v1#content": Object.freeze({
+      schemaVersion: "review-attempt-result/v1",
+      fields: reviewRequestSchemaFields.content,
+    }),
+    "review-authority/v1": Object.freeze({
+      schemaVersion: "review-authority/v1",
+      fields: reviewResultSchemaFields.authority,
+    }),
+    "review-authority/v1#decided": Object.freeze({
+      schemaVersion: "review-authority/v1",
+      fields: reviewResultSchemaFields.decided,
+      closedValues: Object.freeze(["accepted", "rejected"]),
+    }),
+    "review-authority/v1#unknown": Object.freeze({
+      schemaVersion: "review-authority/v1",
+      fields: reviewResultSchemaFields.unknown,
+      closedValues: Object.freeze(["unknown", ...reviewAuthorityUnknownReasons]),
+    }),
+    "review-authority/v1#content": Object.freeze({
+      schemaVersion: "review-authority/v1",
+      fields: reviewRequestSchemaFields.content,
+    }),
     "review-request/v1": Object.freeze({
       schemaVersion: "review-request/v1",
       fields: reviewRequestSchemaFields.request,
@@ -835,6 +889,7 @@ export const schemaVersions = Object.freeze(
     ...cycleEntrySchemaVersions,
     ...reviewSubjectSchemaVersions,
     ...reviewRequestSchemaVersions,
+    ...reviewResultSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,

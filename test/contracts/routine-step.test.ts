@@ -593,8 +593,6 @@ describe("routine inline step identity and skip", () => {
       "dispatch-plan/v1",
       "worker-launch-receipt/v1",
       "worker-terminal-receipt/v1",
-      "review-attempt-result/v1",
-      "review-authority/v1",
       "action-disposition/v1",
       "follow-up-cycle-request/v1",
       "resource-reclaim-receipt/v1",
