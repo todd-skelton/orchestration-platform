@@ -13,13 +13,19 @@ import {
   parseContract,
   validateDispatchBriefBinding,
   validateAdapterConfigurationBinding,
+  validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
+  type ProjectBreakerFacts,
   type ProjectFrontierRow,
 } from "@orchestration-platform/contracts";
 import {
+  createBranchFixtureCurrentPolicy,
   createBranchFixtureSnapshot,
+  createQueueFixtureCurrentPolicy,
   createQueueFixtureSnapshot,
+  type FixturePolicySourceFailure,
 } from "../../../packages/adapter-sdk/src/fixtures.js";
+import type { CurrentPolicyReader } from "../../../packages/adapter-sdk/src/current-policy.js";
 import {
   createProjectSnapshotReader,
   type SnapshotReadPage,
@@ -121,24 +127,52 @@ async function fixture(kind: "branches" | "queue" = "branches", rows = frontier(
     projectId: source.projectId,
     schemaVersion: "adapter-configuration/v1",
   };
-  const snapshot =
+  const branchInput = (input: readonly ProjectFrontierRow[]) =>
+    input.map((row) => ({
+      workId: row.workId,
+      branch: "fixture/opaque",
+      revisionDigest: row.immutableSubjectDigest,
+      blocked: row.readiness !== "READY",
+      capabilityNames: row.capabilityNames,
+    }));
+  const queueInput = (input: readonly ProjectFrontierRow[]) =>
+    input.map((row) => ({
+      ticketId: row.workId,
+      documentDigest: row.immutableSubjectDigest,
+      admitted: row.readiness === "READY",
+      capabilityNames: row.capabilityNames,
+    }));
+  const snapshotSource = vi.fn(() => rows);
+  const policySource = vi.fn<() => readonly ProjectFrontierRow[] | FixturePolicySourceFailure>(
+    () => rows,
+  );
+  const snapshot = vi.fn(
     kind === "branches"
-      ? createBranchFixtureSnapshot(() =>
-          rows.map((row) => ({
-            workId: row.workId,
-            branch: "fixture/opaque",
-            revisionDigest: row.immutableSubjectDigest,
-            blocked: row.readiness !== "READY",
-          })),
-        )
-      : createQueueFixtureSnapshot(() =>
-          rows.map((row) => ({
-            ticketId: row.workId,
-            documentDigest: row.immutableSubjectDigest,
-            admitted: row.readiness === "READY",
-          })),
-        );
-  return { root, configPath, stateRoot, invocation, configuration, snapshot };
+      ? createBranchFixtureSnapshot(() => branchInput(snapshotSource()))
+      : createQueueFixtureSnapshot(() => queueInput(snapshotSource())),
+  );
+  const currentPolicy = vi.fn(
+    kind === "branches"
+      ? createBranchFixtureCurrentPolicy(() => {
+          const input = policySource();
+          return "state" in input ? input : branchInput(input);
+        })
+      : createQueueFixtureCurrentPolicy(() => {
+          const input = policySource();
+          return "state" in input ? input : queueInput(input);
+        }),
+  );
+  return {
+    root,
+    configPath,
+    stateRoot,
+    invocation,
+    configuration,
+    snapshot,
+    currentPolicy,
+    snapshotSource,
+    policySource,
+  };
 }
 
 afterEach(async () => {
@@ -202,18 +236,21 @@ async function output(f: Awaited<ReturnType<typeof fixture>>, file: string, sche
   return parsed.value;
 }
 
-test("both real SDK fixtures bind equivalent opaque work to the same canonical brief", async () => {
+test("both real SDK policies retain contrasting facts with the same observer brief", async () => {
   const sourceBefore = await checkoutManifest();
   const briefs: unknown[] = [];
   for (const kind of ["branches", "queue"] as const) {
     const f = await fixture(kind);
     const outsideBefore = await manifest(f.root, f.stateRoot);
-    expect(await consume(adapter, f.invocation, f.configuration, f.snapshot, clocks)).toEqual({
+    expect(
+      await consume(adapter, f.invocation, f.configuration, f.snapshot, f.currentPolicy, clocks),
+    ).toEqual({
       ok: true,
       files: [
         "configuration.json",
         "adapter-configuration.json",
         "project-facts.json",
+        "project-breaker-facts.json",
         "action.json",
         "brief.json",
       ],
@@ -223,15 +260,36 @@ test("both real SDK fixtures bind equivalent opaque work to the same canonical b
       "adapter-configuration.json",
       "brief.json",
       "configuration.json",
+      "project-breaker-facts.json",
       "project-facts.json",
     ]);
     const provenance = await output(f, "configuration.json", "configuration-provenance/v1");
     const configuration = await output(f, "adapter-configuration.json", "adapter-configuration/v1");
     const facts = await output(f, "project-facts.json", "project-facts/v1");
+    const breakerFacts = await output(f, "project-breaker-facts.json", "project-breaker-facts/v1");
     const core = await output(f, "action.json", "dispatch-action-core/v1");
     const brief = await output(f, "brief.json", "dispatch-brief/v1");
     expect(validateAdapterConfigurationBinding(configuration, provenance).ok).toBe(true);
     expect(validateProjectFactsBinding(facts, configuration).ok).toBe(true);
+    expect(validateProjectBreakerFactsBinding(breakerFacts, configuration, facts, "1.0.0").ok).toBe(
+      true,
+    );
+    expect(f.currentPolicy).toHaveBeenCalledTimes(1);
+    expect(f.currentPolicy.mock.calls[0]).toEqual([configuration, provenance, facts, clocks]);
+    expect(f.snapshotSource).toHaveBeenCalledTimes(1);
+    expect(f.policySource).toHaveBeenCalledTimes(1);
+    expect(f.snapshotSource.mock.invocationCallOrder[0]).toBeLessThan(
+      f.policySource.mock.invocationCallOrder[0]!,
+    );
+    const observed = await f.currentPolicy.mock.results[0]!.value;
+    if (!observed.ok) throw new Error("real SDK policy refused");
+    expect(canonicalJson(breakerFacts)).toBe(canonicalJson(observed.facts));
+    expect(breakerFacts.projectFactsDigest).toBe(canonicalDigest(facts));
+    expect(breakerFacts.observationId).not.toBe(facts.observationId);
+    expect(breakerFacts).toMatchObject({
+      state: "COMPLETE",
+      decisions: [{ capabilityName: "work.read", trip: kind === "branches" ? "TRIP" : "NO_TRIP" }],
+    });
     expect(core).toEqual(action);
     expect(core.immutableSubjectDigest).not.toBe(facts.frontierDigest);
     expect(brief.action).toMatchObject({ actionCoreDigest: computeDispatchActionCoreDigest(core) });
@@ -248,9 +306,10 @@ test("fresh changed subjects change both core and brief without using the fronti
     const rows = frontier();
     rows[2] = { ...rows[2]!, immutableSubjectDigest: digest };
     const f = await fixture("branches", rows);
-    expect((await consume(adapter, f.invocation, f.configuration, f.snapshot, clocks)).ok).toBe(
-      true,
-    );
+    expect(
+      (await consume(adapter, f.invocation, f.configuration, f.snapshot, f.currentPolicy, clocks))
+        .ok,
+    ).toBe(true);
     const core = await output(f, "action.json", "dispatch-action-core/v1");
     const brief = await output(f, "brief.json", "dispatch-brief/v1");
     expect(core.immutableSubjectDigest).toBe(digest);
@@ -264,20 +323,43 @@ test("fresh changed subjects change both core and brief without using the fronti
   expect(results[0]![1]).not.toBe(results[1]![1]);
 });
 
-test("retains the selected action when source work changes across the plan await", async () => {
+test("retains policy facts and selected action across the plan await", async () => {
   const rows = frontier();
   const f = await fixture("branches", rows);
   const originalPlan = fixtureModule.plan;
+  let returnedFacts: ProjectBreakerFacts | undefined;
+  let retainedPolicyBytes: string | undefined;
+  const currentPolicy: CurrentPolicyReader = async (...args) => {
+    const result = await f.currentPolicy(...args);
+    if (!result.ok) return result;
+    returnedFacts = structuredClone(result.facts);
+    retainedPolicyBytes = canonicalJson(returnedFacts);
+    return { ok: true, facts: returnedFacts };
+  };
   const spy = vi.spyOn(fixtureModule, "plan").mockImplementation(async (input) => {
     expect(Object.isFrozen(input)).toBe(true);
     const result = await originalPlan(input);
     rows[2] = { ...rows[2]!, immutableSubjectDigest: "f".repeat(64) };
+    if (returnedFacts?.state !== "COMPLETE") throw new Error("policy must precede plan");
+    Object.assign(returnedFacts.decisions[0]!, { trip: "NO_TRIP" });
+    Object.assign(returnedFacts, { projectFactsDigest: "f".repeat(64) });
     return result;
   });
-  expect((await consume(adapter, f.invocation, f.configuration, f.snapshot, clocks)).ok).toBe(true);
+  expect(
+    (await consume(adapter, f.invocation, f.configuration, f.snapshot, currentPolicy, clocks)).ok,
+  ).toBe(true);
   expect(spy).toHaveBeenCalledTimes(1);
   const core = await output(f, "action.json", "dispatch-action-core/v1");
   const brief = await output(f, "brief.json", "dispatch-brief/v1");
+  const facts = await output(f, "project-facts.json", "project-facts/v1");
+  const breakerFacts = await output(f, "project-breaker-facts.json", "project-breaker-facts/v1");
+  expect(canonicalJson(breakerFacts)).toBe(retainedPolicyBytes);
+  expect(canonicalJson(breakerFacts)).not.toBe(canonicalJson(returnedFacts!));
+  expect(breakerFacts.projectFactsDigest).toBe(canonicalDigest(facts));
+  expect(validateProjectBreakerFactsBinding(breakerFacts, f.configuration, facts, "1.0.0").ok).toBe(
+    true,
+  );
+  expect(f.policySource).toHaveBeenCalledTimes(1);
   expect(core).toEqual(action);
   expect(core.immutableSubjectDigest).not.toBe(rows[2]!.immutableSubjectDigest);
   const pair = { actionKind: descriptor.actionKind, capabilityName: descriptor.capabilityName };
@@ -296,7 +378,14 @@ test("retains the selected action when source work changes across the plan await
 test.each(["UNKNOWN", "UNAVAILABLE", "NO_READY", "NO_CAPABILITY"] as const)(
   "%s never plans or writes",
   async (state) => {
-    const f = await fixture();
+    const rows: ProjectFrontierRow[] = [
+      {
+        ...frontier()[2]!,
+        readiness: state === "NO_READY" ? "NOT_READY" : "READY",
+        capabilityNames: state === "NO_CAPABILITY" ? [] : ["work.read"],
+      },
+    ];
+    const f = await fixture("branches", rows);
     const before = await manifest(f.root);
     const spy = vi.spyOn(fixtureModule, "plan");
     const snapshot = sdk(async (request) => {
@@ -306,13 +395,6 @@ test.each(["UNKNOWN", "UNAVAILABLE", "NO_READY", "NO_CAPABILITY"] as const)(
           observationId: request.observationId,
           reason: state === "UNKNOWN" ? "SOURCE_UNKNOWN" : "SOURCE_UNAVAILABLE",
         };
-      const rows = [
-        {
-          ...frontier()[2]!,
-          readiness: state === "NO_READY" ? "NOT_READY" : "READY",
-          capabilityNames: state === "NO_CAPABILITY" ? [] : ["work.read"],
-        },
-      ];
       return {
         ...request,
         state: "COMPLETE",
@@ -321,11 +403,14 @@ test.each(["UNKNOWN", "UNAVAILABLE", "NO_READY", "NO_CAPABILITY"] as const)(
         frontierDigest: canonicalDigest(rows),
       };
     });
-    expect(await consume(adapter, f.invocation, f.configuration, snapshot, clocks)).toEqual({
+    expect(
+      await consume(adapter, f.invocation, f.configuration, snapshot, f.currentPolicy, clocks),
+    ).toEqual({
       ok: false,
       issues: [state.startsWith("NO_") ? "fixture:no-eligible-work" : `fixture:snapshot:${state}`],
     });
     expect(spy).not.toHaveBeenCalled();
+    expect(f.policySource).toHaveBeenCalledTimes(state.startsWith("NO_") ? 1 : 0);
     expect(await manifest(f.root)).toEqual(before);
   },
 );
@@ -342,21 +427,25 @@ test("config and facts binding failures never plan or write", async () => {
         f.invocation,
         { ...f.configuration, projectId: uuid(99) },
         read,
+        f.currentPolicy,
         clocks,
       )
     ).ok,
   ).toBe(false);
   expect(read).not.toHaveBeenCalled();
-  const moved: typeof f.snapshot = async (...args) => {
+  const moved: Parameters<typeof consume>[3] = async (...args) => {
     const result = await f.snapshot(...args);
     if (!result.ok) return result;
     return { ok: true, facts: { ...result.facts, adapterConfigurationDigest: "f".repeat(64) } };
   };
-  expect(await consume(adapter, f.invocation, f.configuration, moved, clocks)).toEqual({
+  expect(
+    await consume(adapter, f.invocation, f.configuration, moved, f.currentPolicy, clocks),
+  ).toEqual({
     ok: false,
     issues: ["adapterConfigurationDigest:binding-mismatch"],
   });
   expect(spy).not.toHaveBeenCalled();
+  expect(f.currentPolicy).not.toHaveBeenCalled();
   expect(await manifest(f.root)).toEqual(before);
 });
 
@@ -366,7 +455,9 @@ test("malformed config preserves the loader refusal with no output", async () =>
   const before = await manifest(f.root);
   const read = vi.fn(f.snapshot);
   const spy = vi.spyOn(fixtureModule, "plan");
-  expect(await consume(adapter, f.invocation, f.configuration, read, clocks)).toEqual({
+  expect(
+    await consume(adapter, f.invocation, f.configuration, read, f.currentPolicy, clocks),
+  ).toEqual({
     ok: false,
     error: {
       code: "CONFIG_REFUSED",
@@ -376,6 +467,109 @@ test("malformed config preserves the loader refusal with no output", async () =>
     },
   });
   expect(read).not.toHaveBeenCalled();
+  expect(f.currentPolicy).not.toHaveBeenCalled();
+  expect(spy).not.toHaveBeenCalled();
+  expect(await manifest(f.root)).toEqual(before);
+});
+
+test.each(["branches", "queue"] as const)(
+  "%s freshly rereads policy source and refuses changed or unresolved evidence before plan/state",
+  async (kind) => {
+    for (const state of ["CHANGED_SOURCE", "UNKNOWN", "UNAVAILABLE"] as const) {
+      const rows = frontier();
+      const f = await fixture(kind, rows);
+      const before = await manifest(f.root);
+      const spy = vi.spyOn(fixtureModule, "plan");
+      const snapshot: Parameters<typeof consume>[3] = async (...args) => {
+        const result = await f.snapshot(...args);
+        if (state === "CHANGED_SOURCE")
+          rows[2] = { ...rows[2]!, immutableSubjectDigest: "f".repeat(64) };
+        else
+          f.policySource.mockReturnValue(
+            state === "UNKNOWN"
+              ? { state, reason: "SOURCE_UNKNOWN" }
+              : { state, reason: "SOURCE_UNAVAILABLE" },
+          );
+        return result;
+      };
+      expect(
+        await consume(adapter, f.invocation, f.configuration, snapshot, f.currentPolicy, clocks),
+      ).toEqual({
+        ok: false,
+        issues: [
+          state === "CHANGED_SOURCE"
+            ? "fixture:current-policy:UNKNOWN:CHANGED_SOURCE"
+            : `fixture:current-policy:${state}:SOURCE_${state}`,
+        ],
+      });
+      expect(f.snapshotSource).toHaveBeenCalledTimes(1);
+      expect(f.policySource).toHaveBeenCalledTimes(1);
+      expect(f.snapshotSource.mock.invocationCallOrder[0]).toBeLessThan(
+        f.policySource.mock.invocationCallOrder[0]!,
+      );
+      expect(spy).not.toHaveBeenCalled();
+      expect(await manifest(f.root)).toEqual(before);
+    }
+  },
+);
+
+test("preserves a real policy SDK admission refusal before plan/state", async () => {
+  const f = await fixture("branches");
+  const before = await manifest(f.root);
+  const spy = vi.spyOn(fixtureModule, "plan");
+  const sourceRead = vi.fn(() => []);
+  const wrongAdapterPolicy = createQueueFixtureCurrentPolicy(sourceRead);
+  expect(
+    await consume(adapter, f.invocation, f.configuration, f.snapshot, wrongAdapterPolicy, clocks),
+  ).toEqual({ ok: false, code: "ADAPTER_COMPATIBILITY_REFUSED" });
+  expect(sourceRead).not.toHaveBeenCalled();
+  expect(spy).not.toHaveBeenCalled();
+  expect(await manifest(f.root)).toEqual(before);
+});
+
+test.each([
+  ["CONFIGURATION", "adapterConfigurationDigest:binding-mismatch"],
+  ["SNAPSHOT_METADATA", "projectFactsDigest:binding-mismatch"],
+  ["POLICY_VERSION", "policyVersion:binding-mismatch"],
+] as const)("refuses substituted %s policy binding before plan/state", async (field, issue) => {
+  const f = await fixture();
+  const before = await manifest(f.root);
+  const spy = vi.spyOn(fixtureModule, "plan");
+  const currentPolicy: CurrentPolicyReader = async (configuration, provenance, facts, clock) => {
+    const snapshot = parseContract("project-facts/v1", facts);
+    if (!snapshot.ok) throw new Error("snapshot required");
+    // A real SDK result bound to different snapshot metadata must not bind the retained snapshot.
+    const result = await f.currentPolicy(
+      configuration,
+      provenance,
+      field === "SNAPSHOT_METADATA"
+        ? { ...snapshot.value, observedAt: "2026-08-30T01:02:04.004Z" }
+        : facts,
+      clock,
+    );
+    if (!result.ok || field === "SNAPSHOT_METADATA") return result;
+    return {
+      ok: true,
+      facts: {
+        ...result.facts,
+        ...(field === "CONFIGURATION"
+          ? {
+              adapterConfigurationDigest: canonicalDigest({
+                ...f.configuration,
+                adapterVersion: "2.0.0",
+              }),
+            }
+          : { policyVersion: "2.0.0" }),
+      },
+    };
+  };
+  expect(
+    await consume(adapter, f.invocation, f.configuration, f.snapshot, currentPolicy, clocks),
+  ).toEqual({
+    ok: false,
+    issues: [issue],
+  });
+  expect(f.policySource).toHaveBeenCalledTimes(1);
   expect(spy).not.toHaveBeenCalled();
   expect(await manifest(f.root)).toEqual(before);
 });
