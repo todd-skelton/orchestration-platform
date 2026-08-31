@@ -623,7 +623,7 @@ test("ordinary consumeEcho still ignores seeded-review files and preserves its o
   expect(f.snapshot).toHaveBeenCalledTimes(2);
   expect(await record(f, "module-input.json")).toMatchObject({
     reviewSubject: null,
-    descriptor: { moduleId: "fixture.walking-skeleton" },
+    descriptor: { moduleId: "fixture.contract-consumer" },
   });
   expect(await record(f, "dispatch-plan.json")).toMatchObject({ reviewRequestDigest: null });
   const names = await readdir(f.stateRoot);
