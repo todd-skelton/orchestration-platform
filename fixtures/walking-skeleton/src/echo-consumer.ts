@@ -16,6 +16,7 @@ import {
   validateProjectPreflightBinding,
   validateRouteSelectionBinding,
   type ParseResult,
+  type ContractRecord,
   type ProjectPreflight,
   type SessionHealth,
 } from "@orchestration-platform/contracts";
@@ -25,7 +26,7 @@ import { initialBreaker } from "./initial-breaker.js";
 import { descriptor, plan } from "./index.js";
 import { acquireFixtureSession } from "./session.js";
 
-const required = <T>(result: ParseResult<T>): T => {
+const required = <T extends ContractRecord>(result: ParseResult<T>): T => {
   if (!result.ok) throw new Error(result.issues.join(","));
   return result.value;
 };
@@ -139,7 +140,10 @@ export async function consumeEcho(
     if (!current.ok)
       return { ok: false as const, reason: "PREFLIGHT_OBSERVATION_REFUSED", observation: current };
     const observation = { kind: "PROJECT" as const, facts: current.facts };
-    const row = current.facts.frontier.find((item) => item.workId === action.workId);
+    const row =
+      current.facts.state === "COMPLETE"
+        ? current.facts.frontier.find((item) => item.workId === action.workId)
+        : undefined;
     let outcome: ProjectPreflight["outcome"];
     if (current.facts.state === "UNAVAILABLE")
       outcome = { kind: "UNKNOWN", reason: "SOURCE_UNAVAILABLE" };
