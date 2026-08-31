@@ -580,14 +580,17 @@ test("a seed moved after the real child exits retains only unknown review author
   const t = await tuple(f),
     authority = await record(f, "review-authority.json");
   expect(c.validateReviewResultBinding(t.request, null, authority).ok).toBe(true);
-  for (const name of [
-    "review-attempt.json",
-    "seed-artifact.bin",
-    "review-expected.bin",
-    "review-procedure.bin",
-    "session-claim.json",
-  ])
+  for (const name of ["review-attempt.json", "session-claim.json"])
     expect(await readdir(f.stateRoot)).not.toContain(name);
+  expect(await readFile(join(f.stateRoot, "seed-artifact.bin"))).toEqual(
+    Buffer.from("fixture reviewed artifact v1\n"),
+  );
+  expect(await readFile(join(f.stateRoot, "review-expected.bin"))).toEqual(
+    Buffer.from("fixture reviewed artifact v1\n"),
+  );
+  expect(await readFile(join(f.stateRoot, "review-procedure.bin"), "utf8")).toBe(
+    "fixture-only review: compare the retained artifact with the fixed expected bytes\n",
+  );
   expect(await manifest(f.root, f.stateRoot)).toEqual(changed);
 }, 30000);
 
