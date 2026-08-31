@@ -37,6 +37,7 @@ import {
   parseRecoveryAuthorizationContract,
 } from "./recovery.js";
 import { parseConfigurationContract } from "./configuration.js";
+import { parseProjectSnapshotContract } from "./project-snapshot.js";
 
 export * from "./authority.js";
 export * from "./commit.js";
@@ -58,6 +59,7 @@ export * from "./pointer.js";
 export * from "./recovery.js";
 export * from "./attempt.js";
 export * from "./attempt-log.js";
+export * from "./project-snapshot.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
 export {
@@ -100,6 +102,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const projectSnapshot = parseProjectSnapshotContract(expectedSchemaVersion, input);
+  if (projectSnapshot) return projectSnapshot;
   const configuration = parseConfigurationContract(expectedSchemaVersion, input);
   if (configuration) return configuration;
   const authority = parseSimplifiedAuthorityContract(expectedSchemaVersion, input);
@@ -156,6 +160,18 @@ export function parseCanonicalContractBytes(
     if (definition) return parseCanonicalBytes(definition, bytes);
     if (!schemaVersions.includes(expectedSchemaVersion))
       return { ok: false, issues: ["schemaVersion:unsupported"] };
+    if (
+      expectedSchemaVersion === "adapter-configuration/v1" ||
+      expectedSchemaVersion === "project-facts/v1"
+    ) {
+      // Use the native getter: caller-defined length accessors and proxies are not consulted.
+      const byteLength = Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(Uint8Array.prototype),
+        "byteLength",
+      )!.get!.call(bytes) as number;
+      if (expectedSchemaVersion === "adapter-configuration/v1" && byteLength > 65536)
+        return { ok: false, issues: ["encoding:limit-exceeded"] };
+    }
     if (!(bytes instanceof Uint8Array)) return { ok: false, issues: ["encoding:bytes-required"] };
     if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
       return { ok: false, issues: ["encoding:bom-refused"] };
