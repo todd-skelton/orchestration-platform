@@ -1,13 +1,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  canonicalDigest,
   parseCanonicalContractBytes,
-  parseContract,
+  parseCycleRequest,
+  parseModulePlanInput,
   serializeContract,
   validateAdapterConfigurationBinding,
   validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
+  validateModulePlanBinding,
 } from "@orchestration-platform/contracts";
 import type { CurrentPolicyReader } from "../../../packages/adapter-sdk/src/current-policy.js";
 import type { SnapshotClocks, SnapshotReader } from "../../../packages/adapter-sdk/src/snapshot.js";
@@ -30,7 +31,10 @@ export async function consume(
   snapshot: SnapshotReader,
   currentPolicy: CurrentPolicyReader,
   clocks: SnapshotClocks,
+  cycleRequest: unknown,
 ) {
+  const request = parseCycleRequest(cycleRequest);
+  if (!request.ok) return request;
   const loaded = await createConfigurationLoader(adapter)(invocation);
   if (!loaded.ok) return loaded;
   const provenance = projectConfigurationProvenance(loaded.value);
@@ -62,30 +66,42 @@ export async function consume(
       ok: false as const,
       issues: [`fixture:current-policy:${breakerFacts.value.state}:${breakerFacts.value.reason}`],
     };
-  // Retain detached observer evidence only: neither trip arm grants execution or hold authority.
-  // Fixture policy only: choose the first eligible row in the validated, work-ID-sorted frontier.
-  const selected = facts.value.frontier.find(
-    (row) => row.readiness === "READY" && row.capabilityNames.includes(descriptor.capabilityName),
-  );
-  if (!selected) return { ok: false as const, issues: ["fixture:no-eligible-work"] };
-  const retainedAction = parseContract(descriptor.inputSchema, {
-    actionKind: descriptor.actionKind,
-    capabilityName: selected.capabilityNames.find((name) => name === descriptor.capabilityName),
-    immutableSubjectDigest: selected.immutableSubjectDigest,
-    moduleDescriptorDigest: canonicalDigest(descriptor),
-    requestedRole: "observer",
-    schemaVersion: descriptor.inputSchema,
+  // Retain the exact public input across the call. Both trip arms remain observations only.
+  const retainedInput = parseModulePlanInput({
+    adapterConfiguration: configuration.value,
+    configurationProvenance: provenance.value,
+    cycleRequest: request.value,
+    descriptor,
+    policyFacts: breakerFacts.value,
+    projectFacts: facts.value,
+    reviewSubject: null,
+    schemaVersion: "module-plan-input/v1",
   });
-  if (!retainedAction.ok) return retainedAction;
-  const planned = await plan(retainedAction.value);
-  if (!planned.ok) return planned;
+  if (!retainedInput.ok) return retainedInput;
+  let planned: unknown;
+  try {
+    planned = await plan(retainedInput.value);
+  } catch {
+    return { ok: false as const, issues: ["fixture:planning-failed"] };
+  }
+  // Recheck even this fixed fixture function's returned binding across an await.
+  const result = validateModulePlanBinding(retainedInput.value, planned);
+  if (!result.ok) return result;
   const records = [
     ["configuration.json", "configuration-provenance/v1", provenance.value],
     ["adapter-configuration.json", "adapter-configuration/v1", configuration.value],
     ["project-facts.json", "project-facts/v1", facts.value],
     ["project-breaker-facts.json", "project-breaker-facts/v1", breakerFacts.value],
-    ["action.json", descriptor.inputSchema, retainedAction.value],
-    ["brief.json", descriptor.outputSchema, planned.value],
+    ["cycle-request.json", "cycle-request/v1", request.value],
+    ["module-descriptor.json", "module-descriptor/v1", descriptor],
+    ["module-input.json", "module-plan-input/v1", retainedInput.value],
+    ["module-result.json", "module-plan-result/v1", result.value],
+    ...(result.value.schemaVersion === "module-action-plan/v1"
+      ? ([
+          ["action.json", "dispatch-action-core/v1", result.value.actionCore],
+          ["brief.json", "dispatch-brief/v1", result.value.dispatchBrief],
+        ] as const)
+      : []),
   ] as const;
   const output = records.map(([name, schema, value]) => {
     const encoded = serializeContract(schema, value);
