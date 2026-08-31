@@ -377,7 +377,9 @@ describe("review request structural contract", () => {
     Object.defineProperty(accessorArray, "0", { enumerable: true, get: invoked });
     const revocable = Proxy.revocable([entry], {});
     revocable.revoke();
-    class SubArray extends Array {}
+    class SubArray extends Array<Mutable> {}
+    const subclass = new SubArray();
+    subclass.push(entry);
     for (const evidence of [
       new Array(1),
       accessorArray,
@@ -385,7 +387,7 @@ describe("review request structural contract", () => {
       revocable.proxy,
       Object.assign([entry], { extra: true }),
       Object.assign([entry], { [Symbol.iterator]: invoked }),
-      new SubArray(entry),
+      subclass,
       runInNewContext("[]"),
     ])
       refusePacket({ ...packet(fixture()), evidence });
