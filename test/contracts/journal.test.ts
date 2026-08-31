@@ -675,9 +675,7 @@ test("reduces deterministic complete preimages and refuses missing, substituted 
 
   const broken = copy(f.journal);
   broken.events[3]!.output.skip.step.inputDigest = "0".repeat(64);
-  expect(c.parseEventJournal(broken).ok).toBe(true);
-  const unknown = c.reduceEventJournal(broken, f.evidence);
-  expect(unknown).toMatchObject({ ok: true, value: { outcome: { kind: "UNKNOWN" } } });
+  expect(c.parseEventJournal(broken).ok).toBe(false);
 });
 
 test("represents JOURNAL_ONLY restart evidence without inventing rerun authority", () => {
