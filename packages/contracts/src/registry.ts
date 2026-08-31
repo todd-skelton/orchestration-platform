@@ -4,6 +4,11 @@ import {
   projectPreflightRefusalReasons,
   projectPreflightUnknownReasons,
 } from "./project-preflight.js";
+import {
+  dispatchLifecycleSchemaFields,
+  dispatchLifecycleSchemaVersions,
+  dispatchLifecycleClosedValues,
+} from "./dispatch-lifecycle.js";
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import {
   breakerReceiptSchemaFields,
@@ -133,6 +138,28 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    ...Object.fromEntries(
+      dispatchLifecycleSchemaVersions.map((schemaVersion, index) => [
+        schemaVersion,
+        Object.freeze({
+          schemaVersion,
+          fields: [
+            dispatchLifecycleSchemaFields.plan,
+            dispatchLifecycleSchemaFields.launch,
+            dispatchLifecycleSchemaFields.terminal,
+          ][index]!,
+          closedValues: Object.freeze([...new Set(dispatchLifecycleClosedValues)]),
+        }),
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(dispatchLifecycleSchemaFields)
+        .filter(([key]) => !["plan", "launch", "terminal"].includes(key))
+        .map(([key, fields]) => [
+          `dispatch-plan/v1#${key}`,
+          Object.freeze({ schemaVersion: "dispatch-plan/v1", fields }),
+        ]),
+    ),
     "project-preflight/v1": Object.freeze({
       schemaVersion: "project-preflight/v1",
       fields: projectPreflightSchemaFields.preflight,
@@ -1026,6 +1053,7 @@ export const schemaVersions = Object.freeze(
     ...modulePlanSchemaVersions,
     ...routeSelectionSchemaVersions,
     ...projectPreflightSchemaVersions,
+    ...dispatchLifecycleSchemaVersions,
     ...reviewResultSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,

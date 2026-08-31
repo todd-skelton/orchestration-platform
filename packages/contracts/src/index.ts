@@ -2,6 +2,13 @@ import {
   computeProjectPreflightDigest,
   parseProjectPreflightContract,
 } from "./project-preflight.js";
+import {
+  computeDispatchPlanDigest,
+  computeWorkerLaunchReceiptDigest,
+  computeWorkerTerminalReceiptDigest,
+  dispatchLifecycleSchemaVersions,
+  parseDispatchLifecycleContract,
+} from "./dispatch-lifecycle.js";
 import { types as nodeTypes } from "node:util";
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
 import {
@@ -83,6 +90,7 @@ export * from "./breaker-receipt.js";
 export * from "./commit.js";
 export * from "./definitions.js";
 export * from "./dispatch.js";
+export * from "./dispatch-lifecycle.js";
 export * from "./evidence.js";
 export * from "./packet.js";
 export * from "./external.js";
@@ -151,6 +159,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const dispatchLifecycle = parseDispatchLifecycleContract(expectedSchemaVersion, input);
+  if (dispatchLifecycle) return dispatchLifecycle;
   const preflight = parseProjectPreflightContract(expectedSchemaVersion, input);
   if (preflight) return preflight;
   const route = parseRouteSelectionContract(expectedSchemaVersion, input);
@@ -244,6 +254,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "module-plan-result/v1" ||
       expectedSchemaVersion === "route-selection/v1" ||
       expectedSchemaVersion === "project-preflight/v1" ||
+      (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
@@ -258,6 +269,14 @@ export function parseCanonicalContractBytes(
         Object.getPrototypeOf(Uint8Array.prototype),
         "byteLength",
       )!.get!.call(bytes) as number;
+      if ((dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion)) {
+        const buffer = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(Uint8Array.prototype),
+          "buffer",
+        )!.get!.call(bytes);
+        if (nodeTypes.isSharedArrayBuffer(buffer))
+          return { ok: false, issues: ["encoding:shared-bytes-refused"] };
+      }
       if (expectedSchemaVersion === "adapter-configuration/v1" && byteLength > 65536)
         return { ok: false, issues: ["encoding:limit-exceeded"] };
     } else if (!(bytes instanceof Uint8Array))
@@ -296,6 +315,17 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if ((dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest:
+        expectedSchemaVersion === "dispatch-plan/v1"
+          ? computeDispatchPlanDigest(parsed.value)
+          : expectedSchemaVersion === "worker-launch-receipt/v1"
+            ? computeWorkerLaunchReceiptDigest(parsed.value)
+            : computeWorkerTerminalReceiptDigest(parsed.value),
+    };
   if (expectedSchemaVersion === "project-preflight/v1")
     return {
       ok: true,
