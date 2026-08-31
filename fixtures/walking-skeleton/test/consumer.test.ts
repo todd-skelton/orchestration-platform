@@ -580,7 +580,6 @@ test.each([
   "review-request/v1",
   "review-attempt-result/v1",
   "review-authority/v1",
-  "routine-step-skip/v1",
   "cycle-receipt/v1",
 ])("keeps missing %s visible instead of fabricating full-cycle evidence", (schemaVersion) => {
   expect(parseContract(schemaVersion, { schemaVersion })).toEqual({

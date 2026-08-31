@@ -40,6 +40,7 @@ import {
 import { parseConfigurationContract } from "./configuration.js";
 import { parseProjectSnapshotContract } from "./project-snapshot.js";
 import { parseProjectBreakerFactsContract } from "./project-breaker-facts.js";
+import { computeRoutineStepSkipDigest, parseRoutineStepSkipContract } from "./routine-step.js";
 
 export * from "./authority.js";
 export * from "./commit.js";
@@ -63,6 +64,7 @@ export * from "./attempt.js";
 export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
 export * from "./project-breaker-facts.js";
+export * from "./routine-step.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
 export {
@@ -105,6 +107,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const routineStepSkip = parseRoutineStepSkipContract(expectedSchemaVersion, input);
+  if (routineStepSkip) return routineStepSkip;
   const projectBreakerFacts = parseProjectBreakerFactsContract(expectedSchemaVersion, input);
   if (projectBreakerFacts) return projectBreakerFacts;
   const projectSnapshot = parseProjectSnapshotContract(expectedSchemaVersion, input);
@@ -168,7 +172,8 @@ export function parseCanonicalContractBytes(
     if (
       expectedSchemaVersion === "adapter-configuration/v1" ||
       expectedSchemaVersion === "project-facts/v1" ||
-      expectedSchemaVersion === "project-breaker-facts/v1"
+      expectedSchemaVersion === "project-breaker-facts/v1" ||
+      expectedSchemaVersion === "routine-step-skip/v1"
     ) {
       if (!nodeTypes.isUint8Array(bytes)) return { ok: false, issues: ["encoding:bytes-required"] };
       const prototype = Object.getPrototypeOf(bytes);
@@ -223,23 +228,25 @@ export function serializeContract(
   )
     return { ok: false, issues: ["serialization:pointer-context-required"] };
   const digest =
-    expectedSchemaVersion === "attempt-log/v1"
-      ? computeRecoveryAttemptLogRecordDigest(parsed.value)
-      : expectedSchemaVersion === "recovery-attempt-descriptor/v1"
-        ? computeRecoveryAttemptDescriptorDigest(parsed.value)
-        : expectedSchemaVersion === "recovery-authorization-archive/v1"
-          ? computeRecoveryAuthorizationArchiveDigest(parsed.value)
-          : expectedSchemaVersion === "recovery-authorization-core/v1"
-            ? computeRecoveryAuthorizationCoreDigest(parsed.value)
-            : expectedSchemaVersion === "native-consume-receipt/v1"
-              ? computeNativeConsumeReceiptDigest(parsed.value)
-              : expectedSchemaVersion === "native-removal-receipt/v1"
-                ? computeNativeRemovalReceiptDigest(parsed.value)
-                : expectedSchemaVersion === "recovery-authorization-consume-receipt/v1"
-                  ? computeRecoveryAuthorizationConsumeReceiptDigest(parsed.value)
-                  : expectedSchemaVersion === "recovery-authorization-revoke-receipt/v1"
-                    ? computeRecoveryAuthorizationRevokeReceiptDigest(parsed.value)
-                    : canonicalDigest(parsed.value);
+    expectedSchemaVersion === "routine-step-skip/v1"
+      ? computeRoutineStepSkipDigest(parsed.value)
+      : expectedSchemaVersion === "attempt-log/v1"
+        ? computeRecoveryAttemptLogRecordDigest(parsed.value)
+        : expectedSchemaVersion === "recovery-attempt-descriptor/v1"
+          ? computeRecoveryAttemptDescriptorDigest(parsed.value)
+          : expectedSchemaVersion === "recovery-authorization-archive/v1"
+            ? computeRecoveryAuthorizationArchiveDigest(parsed.value)
+            : expectedSchemaVersion === "recovery-authorization-core/v1"
+              ? computeRecoveryAuthorizationCoreDigest(parsed.value)
+              : expectedSchemaVersion === "native-consume-receipt/v1"
+                ? computeNativeConsumeReceiptDigest(parsed.value)
+                : expectedSchemaVersion === "native-removal-receipt/v1"
+                  ? computeNativeRemovalReceiptDigest(parsed.value)
+                  : expectedSchemaVersion === "recovery-authorization-consume-receipt/v1"
+                    ? computeRecoveryAuthorizationConsumeReceiptDigest(parsed.value)
+                    : expectedSchemaVersion === "recovery-authorization-revoke-receipt/v1"
+                      ? computeRecoveryAuthorizationRevokeReceiptDigest(parsed.value)
+                      : canonicalDigest(parsed.value);
   return { ok: true, bytes: canonicalBytes(parsed.value), digest };
 }
 
