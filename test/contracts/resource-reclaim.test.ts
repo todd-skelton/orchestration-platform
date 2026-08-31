@@ -636,7 +636,7 @@ function unknownObservation(reason = "OBSERVATION_UNAVAILABLE") {
 }
 
 function ownerRow(
-  allocation: ReturnType<typeof workerFixture>["launch"]["resources"][number],
+  allocation: unknown,
   source: "DISPATCH" | "MUTATION",
   reclaimTransactionId: string,
   outcome: Record<string, unknown>,
@@ -893,7 +893,7 @@ test("admits exactly the bounded combined 256 dispatch plus 64 mutation census",
   over.observations.push(rows("MUTATION", 1, 2_000)[0]!);
   expect(c.parseResourceReclaimReceipt(over).ok).toBe(false);
   const duplicate = copy(receipt);
-  duplicate.observations[1] = copy(duplicate.observations[0]);
+  duplicate.observations[1] = copy(duplicate.observations[0]!);
   expect(c.parseResourceReclaimReceipt(duplicate).ok).toBe(false);
 });
 
@@ -1002,7 +1002,7 @@ test("keeps OPEN and REFUSED pre-owner guards global and effect-free", () => {
   const worker = workerFixture(),
     open = receiptForWorker(worker);
   open.process.handles.stdin = "OPEN";
-  open.observations = open.observations.map((row) => ({
+  open.observations = open.observations.map((row: Record<string, unknown>) => ({
     ...row,
     after: null,
     outcome: { kind: "RETAINED", reason: "HANDLES_OPEN" },
@@ -1011,7 +1011,7 @@ test("keeps OPEN and REFUSED pre-owner guards global and effect-free", () => {
   expect(bindWorker(worker, open)).toEqual({ ok: true, value: open });
   const mixedOpen = copy(open);
   mixedOpen.observations[0] = ownerRow(
-    worker.launch.resources[0],
+    worker.launch.resources[0]!,
     "DISPATCH",
     open.reclaimTransactionId,
     { kind: "RECLAIMED" },
@@ -1034,7 +1034,7 @@ test("keeps OPEN and REFUSED pre-owner guards global and effect-free", () => {
   );
   const refused = receiptForMutation(mutation);
   refused.contextDigest = c.computeResourceReclaimContextDigest(mutation.context);
-  refused.observations = refused.observations.map((row) => ({
+  refused.observations = refused.observations.map((row: Record<string, unknown>) => ({
     ...row,
     after: null,
     outcome: { kind: "RETAINED", reason: "SESSION_UNHEALTHY" },
@@ -1045,7 +1045,7 @@ test("keeps OPEN and REFUSED pre-owner guards global and effect-free", () => {
   ).toEqual({ ok: true, value: refused });
   const mixedRefused = copy(refused);
   mixedRefused.observations[0] = ownerRow(
-    mutation.allocations[0],
+    mutation.allocations[0]!,
     "MUTATION",
     refused.reclaimTransactionId,
     { kind: "RECLAIMED" },
