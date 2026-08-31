@@ -60,8 +60,18 @@ interprets the project reason or threshold.
 | `OPEN` | reducer | adapter trip fact plus affected opaque capability set | persist across restart | refuse affected capability; evaluate recovery policy |
 | `RECOVERY_PENDING` | exact recovery transaction | current adapter recovery fact binds open receipt and policy version | resume same transaction only | run bounded recovery probe |
 | `PROBE_IN_FLIGHT` | exact recovery transaction | one recovery probe identity | retain hold on interruption | classify probe |
-| `CLOSED_RECOVERED` | readers/exact session | successful probe and recovery receipt | reduce to ordinary `CLOSED` on next cycle | next routine cycle reevaluates policy |
+| `CLOSED_RECOVERED` | readers; ordinary capability use waits for next-cycle evaluation | successful probe and recovery receipt | reduce to ordinary `CLOSED` on next cycle | next routine cycle reevaluates policy |
 | `UNKNOWN` | none | malformed history, stale policy, moved open receipt, or contradictory probe | external diagnosis | affected capability remains blocked |
+
+The sixth literal-group proposal in `contract-decisions.md` explicitly closes
+the formerly unspecified representation: per-capability known checkpoints in
+one project receipt, with whole-reduction UNKNOWN retaining the predecessor
+and blocking every capability. It conservatively makes any configuration or
+policy-tuple change UNKNOWN; removed capabilities are not cleared. New
+checkpoints advance at most one recovery phase per capability in a distinct
+cycle; resume re-observes identical original evidence. There is no automatic
+UNKNOWN exit, migration or production-root reset. These are proposed bounded
+replans requiring independent review, not authority derived from this table.
 
 ## Review authority
 

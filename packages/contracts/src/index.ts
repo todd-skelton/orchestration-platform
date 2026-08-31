@@ -49,6 +49,14 @@ import {
 } from "./review-subject.js";
 import { computeReviewRequestDigest, parseReviewRequestContract } from "./review-request.js";
 import {
+  computeModuleActionPlanDigest,
+  computeModuleDescriptorDigest,
+  computeModuleNoActionDigest,
+  computeModulePlanInputDigest,
+  modulePlanSchemaVersions,
+  parseModulePlanContract,
+} from "./module-plan.js";
+import {
   computeReviewAttemptResultDigest,
   computeReviewAuthorityDigest,
   parseReviewResultContract,
@@ -86,6 +94,7 @@ export * from "./attempt.js";
 export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
 export * from "./project-breaker-facts.js";
+export * from "./module-plan.js";
 export * from "./routine-step.js";
 export * from "./review-subject.js";
 export * from "./review-request.js";
@@ -133,6 +142,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const modulePlan = parseModulePlanContract(expectedSchemaVersion, input);
+  if (modulePlan) return modulePlan;
   const reviewResult = parseReviewResultContract(expectedSchemaVersion, input);
   if (reviewResult) return reviewResult;
   const reviewRequest = parseReviewRequestContract(expectedSchemaVersion, input);
@@ -203,6 +214,7 @@ export function parseCanonicalContractBytes(
     if (definition) return parseCanonicalBytes(definition, bytes);
     if (
       expectedSchemaVersion !== "review-subject/v1" &&
+      expectedSchemaVersion !== "module-plan-result/v1" &&
       !schemaVersions.includes(expectedSchemaVersion)
     )
       return { ok: false, issues: ["schemaVersion:unsupported"] };
@@ -213,6 +225,8 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "routine-step-skip/v1" ||
       expectedSchemaVersion === "review-subject/v1" ||
       expectedSchemaVersion === "review-request/v1" ||
+      expectedSchemaVersion === "module-plan-result/v1" ||
+      (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (cycleEntrySchemaVersions as readonly string[]).includes(expectedSchemaVersion)
@@ -287,6 +301,20 @@ export function serializeContract(
       bytes: canonicalBytes(parsed.value),
       digest: computeReviewRequestDigest(parsed.value),
     };
+  if (
+    expectedSchemaVersion === "module-plan-result/v1" ||
+    (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
+  ) {
+    const digest =
+      parsed.value.schemaVersion === "module-descriptor/v1"
+        ? computeModuleDescriptorDigest(parsed.value)
+        : parsed.value.schemaVersion === "module-plan-input/v1"
+          ? computeModulePlanInputDigest(parsed.value)
+          : parsed.value.schemaVersion === "module-action-plan/v1"
+            ? computeModuleActionPlanDigest(parsed.value)
+            : computeModuleNoActionDigest(parsed.value);
+    return { ok: true, bytes: canonicalBytes(parsed.value), digest };
+  }
   if ((reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
     return {
       ok: true,
@@ -335,21 +363,26 @@ export interface CompatibilityRow {
   readonly disposition: "readable" | "refused";
 }
 export const compatibilityMatrix: readonly CompatibilityRow[] = Object.freeze(
-  [...schemaVersions, "review-subject/v1"].flatMap((expectedSchemaVersion) => {
-    const family = expectedSchemaVersion.slice(0, expectedSchemaVersion.lastIndexOf("/"));
-    const observedVersions: readonly (string | null)[] = [
-      ...(expectedSchemaVersion === "review-subject/v1" ? reviewSubjectSchemaVersions : []),
-      expectedSchemaVersion,
-      `${family}/v0-fixture`,
-      `${family}/v999`,
-      null,
-    ];
-    return observedVersions.map((observedSchemaVersion) =>
-      Object.freeze({
+  [...schemaVersions, "review-subject/v1", "module-plan-result/v1"].flatMap(
+    (expectedSchemaVersion) => {
+      const family = expectedSchemaVersion.slice(0, expectedSchemaVersion.lastIndexOf("/"));
+      const observedVersions: readonly (string | null)[] = [
+        ...(expectedSchemaVersion === "review-subject/v1" ? reviewSubjectSchemaVersions : []),
+        ...(expectedSchemaVersion === "module-plan-result/v1"
+          ? ["module-action-plan/v1", "module-no-action/v1"]
+          : []),
         expectedSchemaVersion,
-        observedSchemaVersion,
-        disposition: compatibilityDisposition(expectedSchemaVersion, observedSchemaVersion),
-      }),
-    );
-  }),
+        `${family}/v0-fixture`,
+        `${family}/v999`,
+        null,
+      ];
+      return observedVersions.map((observedSchemaVersion) =>
+        Object.freeze({
+          expectedSchemaVersion,
+          observedSchemaVersion,
+          disposition: compatibilityDisposition(expectedSchemaVersion, observedSchemaVersion),
+        }),
+      );
+    },
+  ),
 );
