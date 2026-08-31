@@ -2,6 +2,7 @@ import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { cycleEntrySchemaFields, cycleEntrySchemaVersions } from "./cycle-entry.js";
 import { reviewSubjectSchemaFields, reviewSubjectSchemaVersions } from "./review-subject.js";
 import { reviewRequestSchemaFields, reviewRequestSchemaVersions } from "./review-request.js";
+import { modulePlanSchemaFields, modulePlanSchemaVersions } from "./module-plan.js";
 import { projectSnapshotSchemaFields, projectSnapshotSchemaVersions } from "./project-snapshot.js";
 import {
   routineStepKinds,
@@ -106,6 +107,50 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "module-descriptor/v1": Object.freeze({
+      schemaVersion: "module-descriptor/v1",
+      fields: modulePlanSchemaFields.descriptor,
+      closedValues: Object.freeze([
+        "orchestration-module/v1",
+        "module-plan-input/v1",
+        "module-action-plan/v1",
+        "module-no-action/v1",
+      ]),
+    }),
+    "module-descriptor/v1#action": Object.freeze({
+      schemaVersion: "module-descriptor/v1",
+      fields: modulePlanSchemaFields.action,
+      closedValues: dispatchRoles,
+    }),
+    "module-descriptor/v1#compatibility": Object.freeze({
+      schemaVersion: "module-descriptor/v1",
+      fields: modulePlanSchemaFields.compatibility,
+    }),
+    "module-descriptor/v1#dispatchCatalog": Object.freeze({
+      schemaVersion: "module-descriptor/v1",
+      fields: dispatchSchemaFields.catalog,
+      closedValues: Object.freeze([...dispatchDirectiveKinds, ...dispatchPlanAccessors]),
+    }),
+    "module-plan-input/v1": Object.freeze({
+      schemaVersion: "module-plan-input/v1",
+      fields: modulePlanSchemaFields.input,
+      closedValues: Object.freeze(["COMPLETE"]),
+    }),
+    "module-action-plan/v1": Object.freeze({
+      schemaVersion: "module-action-plan/v1",
+      fields: modulePlanSchemaFields.plan,
+    }),
+    "module-no-action/v1": Object.freeze({
+      schemaVersion: "module-no-action/v1",
+      fields: modulePlanSchemaFields.noAction,
+      closedValues: Object.freeze([
+        "NO_ACTION",
+        "NO_ELIGIBLE_ACTION",
+        "REFUSED",
+        "INPUT_REFUSED",
+        "PLANNING_FAILED",
+      ]),
+    }),
     "review-request/v1": Object.freeze({
       schemaVersion: "review-request/v1",
       fields: reviewRequestSchemaFields.request,
@@ -835,6 +880,7 @@ export const schemaVersions = Object.freeze(
     ...cycleEntrySchemaVersions,
     ...reviewSubjectSchemaVersions,
     ...reviewRequestSchemaVersions,
+    ...modulePlanSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,
@@ -865,6 +911,11 @@ export function compatibilityDisposition(
   expectedSchemaVersion: string,
   observedSchemaVersion: string | null,
 ): CompatibilityDisposition {
+  if (expectedSchemaVersion === "module-plan-result/v1")
+    return observedSchemaVersion === "module-action-plan/v1" ||
+      observedSchemaVersion === "module-no-action/v1"
+      ? "readable"
+      : "refused";
   if (expectedSchemaVersion === "review-subject/v1")
     return (reviewSubjectSchemaVersions as readonly (string | null)[]).includes(
       observedSchemaVersion,
