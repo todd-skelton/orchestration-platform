@@ -84,14 +84,10 @@ function pagination(response: Response, url: string, count: number): void {
 }
 
 /** Read-only review authentication, not certification of the core's run evidence or writer.
- * The later stable terminal must supply its independently authenticated run/candidate bindings.
+ * Candidate and run identities come from the authenticated canonical reviewed core.
  */
 export async function readGithubHostedPortablePrimitivesReview(input: {
   readonly expected: HostedReviewExpected;
-  readonly bindings: {
-    readonly candidateSubjectDigest: string;
-    readonly providerRunDigest: string;
-  };
   readonly token: string;
   readonly fetcher?: GithubFetch;
 }): Promise<
@@ -103,7 +99,7 @@ export async function readGithubHostedPortablePrimitivesReview(input: {
   }>
 > {
   try {
-    const { expected, bindings, token } = input;
+    const { expected, token } = input;
     requireFact(
       typeof token === "string" &&
         token.length > 0 &&
@@ -113,11 +109,7 @@ export async function readGithubHostedPortablePrimitivesReview(input: {
         ),
     );
     revision(expected.mergeCommitRevision);
-    requireFact(
-      isSha256(expected.decisionCoreDigest) &&
-        isSha256(bindings.candidateSubjectDigest) &&
-        isSha256(bindings.providerRunDigest),
-    );
+    requireFact(isSha256(expected.decisionCoreDigest));
     const fetcher = input.fetcher ?? fetch;
     let repository = "";
     const guardedFetch: GithubFetch = async (url, init) => {
@@ -259,10 +251,6 @@ export async function readGithubHostedPortablePrimitivesReview(input: {
       serialized.ok &&
         serialized.digest === expected.decisionCoreDigest &&
         Buffer.from(serialized.bytes).equals(Buffer.from(coreBytes)),
-    );
-    requireFact(
-      core.candidateSubjectDigest === bindings.candidateSubjectDigest &&
-        core.providerRunDigest === bindings.providerRunDigest,
     );
 
     const reviews = async () => {

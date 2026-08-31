@@ -56,10 +56,6 @@ const expected = {
   decisionCoreDigest: coreDigest,
   mergeCommitRevision: merge,
 };
-const bindings = {
-  candidateSubjectDigest: core.candidateSubjectDigest,
-  providerRunDigest: core.providerRunDigest,
-};
 const review = {
   id: 81,
   user: { id: 42 },
@@ -152,7 +148,6 @@ function fixture(bytes: Uint8Array = canonicalBytes(core)) {
   ) =>
     readGithubHostedPortablePrimitivesReview({
       expected,
-      bindings,
       token: "fixture-token",
       fetcher: async (url, init) => {
         expect(init.method).toBe("GET");
@@ -189,7 +184,7 @@ function fixture(bytes: Uint8Array = canonicalBytes(core)) {
 }
 
 describe("authenticated portable primitives review projection", () => {
-  test("projects the exact core-only reviewed merge and joins the existing portable record", async () => {
+  test("projects the exact reviewed core using only the four review arguments and authentication", async () => {
     const f = fixture();
     const result = await f.run();
     expect(result.ok).toBe(true);
@@ -206,6 +201,8 @@ describe("authenticated portable primitives review projection", () => {
       decisionCoreDigest: coreDigest,
     });
     expect(result.value.coreBytes).toEqual(canonicalBytes(core));
+    expect(projected.candidateSubjectDigest).toBe(result.value.core.candidateSubjectDigest);
+    expect(projected.providerRunDigest).toBe(result.value.core.providerRunDigest);
     expect(
       provider.joinGithubPortablePrimitivesIndependentReviewRecords(
         projected,
@@ -305,6 +302,7 @@ describe("authenticated portable primitives review projection", () => {
     for (const bytes of [
       new TextEncoder().encode(`${JSON.stringify(core)}\n`),
       canonicalBytes({ ...core, candidateSubjectDigest: digest("8") }),
+      canonicalBytes({ ...core, providerRunDigest: digest("8") }),
       new Uint8Array([255]),
     ]) {
       expect((await fixture(bytes).run()).ok).toBe(false);
@@ -318,12 +316,7 @@ describe("authenticated portable primitives review projection", () => {
     expect((await merged.run()).ok).toBe(false);
   });
 
-  test("refuses candidate and provider-run substitution and invalid arguments before reads", async () => {
-    for (const key of ["candidateSubjectDigest", "providerRunDigest"]) {
-      expect((await fixture().run({ bindings: { ...bindings, [key]: digest("8") } })).ok).toBe(
-        false,
-      );
-    }
+  test("refuses invalid arguments before reads", async () => {
     for (const override of [
       { token: "" },
       { expected: { ...expected, repositoryId: "0123" } },
