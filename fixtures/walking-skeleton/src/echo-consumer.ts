@@ -14,6 +14,7 @@ import {
   computeWorkerResultSubjectDigest,
   computeReviewPacketDigest,
   parseReviewRequest,
+  parseProjectPreflightObservation,
   validateReviewResultBinding,
   parseCanonicalContractBytes,
   serializeContract,
@@ -256,6 +257,17 @@ async function consumeFixed(reviewMode: boolean, ...args: CycleArgs) {
         "worker-result-subject/v1",
         observation.result.subject,
       );
+    if (observation.kind === "REVIEW") {
+      // Public closed inline observation: retain its actual random ID/time, without a new schema wrapper.
+      const retainedObservation = required(parseProjectPreflightObservation(observation));
+      if (!(await inspect())) throw new Error("session changed before review preflight evidence");
+      await writeFile(
+        join(prepared.stateRoot, "preflight-review-observation.json"),
+        canonicalJson(retainedObservation),
+        { flag: "wx" },
+      );
+      files.push("preflight-review-observation.json");
+    }
     await record("project-preflight.json", "project-preflight/v1", preflight);
     if (preflight.outcome.kind !== "ELIGIBLE")
       return { ok: false as const, reason: "PREFLIGHT_NOT_ELIGIBLE", preflight };
