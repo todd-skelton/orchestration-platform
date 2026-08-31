@@ -577,7 +577,11 @@ test("refuses a second terminal, a complete suffix conflict and append after cyc
 
   const conflicting = copy(f.journal);
   conflicting.events.at(-1)!.output.receipt.outcome = "COMPLETED";
-  expect(c.parseEventJournal(conflicting).ok).toBe(false);
+  expect(c.parseEventJournal(conflicting).ok).toBe(true);
+  expect(c.reduceEventJournal(conflicting, f.evidence)).toMatchObject({
+    ok: true,
+    value: { outcome: { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" } },
+  });
   const duplicated = { ...f.journal, events: [...f.journal.events, copy(prior)] };
   expect(c.parseEventJournal(duplicated).ok).toBe(false);
 });
@@ -664,7 +668,10 @@ test("reduces deterministic complete preimages and refuses missing, substituted 
   expect(c.reduceEventJournal(f.journal, f.evidence.slice(1)).ok).toBe(false);
   const substituted = copy(f.evidence);
   substituted[0] = [{ kind: "STDOUT", bytes: Uint8Array.of(1) }];
-  expect(c.reduceEventJournal(f.journal, substituted).ok).toBe(false);
+  expect(c.reduceEventJournal(f.journal, substituted)).toMatchObject({
+    ok: true,
+    value: { outcome: { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" } },
+  });
 
   const broken = copy(f.journal);
   broken.events[3]!.output.skip.step.inputDigest = "0".repeat(64);
