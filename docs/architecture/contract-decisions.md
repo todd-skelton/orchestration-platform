@@ -5853,6 +5853,278 @@ production apply or ISS026 work. Independent literal review and host planning/
 format/board checks precede code/landing. The author claims no self-PASS or
 completed ISS041. Unknown projection semantics or another public family is a
 named replan boundary rather than permission to invent an executor.
+
+### Complete resource reclaim literal proposal (round 405)
+
+This proposal closes only existing `resource-reclaim-receipt/v1`. Round404's
+`4b9a2e2` definitions are reused unchanged; their independent review completed
+after this worktree was created. No allocator, deletion API, native primitive,
+SDK callback, journal, release operation or runtime authority is selected.
+ISS041 may substantiate its one private HOST input using its actual retained
+root and fixed ChildProcess source; the evidence cannot generalize to arbitrary
+workspaces, descendants, PIDs or production ownership.
+
+#### Explicit value, scope and routing replans
+
+Known managed resources in v1 are deliberately complete small byte resources:
+reuse round404's exact `{kind:"ABSENT"}` or `{bytes:Hex,kind:"PRESENT"}` value,
+with lowercase even Hex decoding to0–4096 bytes. This resolves the previously
+opaque absence statement. Actual admitted owner source maps the opaque
+allocation to that complete resource and proves ownership and physical
+before/delete/read-back semantics. Directory/tree/workspace projections,
+oversize content or unsupported owner semantics remain UNKNOWN with
+UNSUPPORTED_RESOURCE; no path, generic resolver or partial inventory is added.
+Equal bytes, allocation IDs and absence labels prove none of that admission.
+
+Project mutation effects are not managed temporary allocations. Retained
+journal, public receipt, raw capture and ownership records are not allocations
+to erase. The current fixture's one HOST allocation is `echo-input.bin`;
+`echo-ownership.json`, plans, stdout/stderr and receipts remain evidence.
+Its private lease-claim removal is not worker reclamation or session-release
+authority. Native process/stdio closure is a separate claim below.
+
+This proposal explicitly resolves routine14's ambiguous live/unknown mapping:
+known dead processes with open handles or an owner refusing cleanup can yield
+known retained capacity/FAILED_KNOWN. A live process or unknown/contradictory
+identity yields UNKNOWN. Both retain capacity. Earlier UNKNOWN/live diagnostics
+never authorize a new step14, owner deletion, fabricated skips or full cycle.
+All known terminal paths still require the real step14, including no allocation.
+
+Reuse C with final LF, Digest, Uuid, Time and complete detached record/dense
+array rules. Every field is required and newly declared nulls occur only where
+stated; reused records keep their rules. Listed fields are in canonical order.
+Unknown fields/versions/enums, wrong scalars, sparse/exotic objects, accessors,
+proxies and noncanonical bytes refuse without running input code.
+
+#### Complete closed input and actual stop relation
+
+The inline context has exactly `adapterConfiguration, configurationProvenance,
+cyclePlan, origin, sessionHealth, skips`. These are complete existing records
+except the inline origin and skips below. Bind configuration to provenance,
+cyclePlan.request.adapterId to it, and the request session's provenance digest
+to the actual provenance. Every nested module input's configuration/provenance
+and cycle request are canonically equal to these actual values.
+sessionHealth is a complete step:null inspection with targetSessionId equal
+the cycle's session. HEALTHY additionally requires holder equality. A known
+REFUSED health may support no-allocation or retained capacity but no deletion;
+UNKNOWN health permits only UNKNOWN. Actual source/lease freshness remains the
+owner's responsibility, not a consequence of time or a prior healthy record.
+This inspection is the supplied pre-reclaim observation, not a replacement
+post-failure observation used to justify earlier effects.
+
+Origin is this entire closed union; all named records use their existing
+complete parser, never an arbitrary schema-name/payload pair:
+
+| kind | Complete members and relation |
+| --- | --- |
+| SESSION | `health, kind`; actual ordinal1 session-health bound to cyclePlan; REFUSED or UNKNOWN only |
+| SNAPSHOT | `facts, kind`; actual configuration-bound project-facts in UNAVAILABLE or UNKNOWN |
+| BREAKER | `facts, kind, policyFacts, prior, receipt`; full existing breaker supplied tuple; prior is receipt or null; receipt UNKNOWN, or KNOWN with every capability state other than CLOSED |
+| MODULE | `input, kind, result`; full module-plan-input and module-no-action, with their supplied binding |
+| PREPARATION | `action, input, kind, launch, mapping, observation, plan, preflight, reviewRequest, route, sessionHealth, terminal`; exact null/producer matrix below |
+| ACTION | `disposition, dispositionInput, followUp, kind, mutation`; full round401 disposition context/result and optional round404 tuple below |
+
+PREPARATION input/action/route are non-null. Mapping is the actual complete
+worker-host mapping or null under the existing route relation. Preflight
+observation is the complete existing inline observation or its named null.
+Reapply module and route binding, then each reached preflight/dispatch/terminal
+binding using actual records and raw byte arguments. Exact presence is:
+
+| First stop | Remaining members / required producer state |
+| --- | --- |
+| Route5 | route REFUSED/UNKNOWN; observation, preflight, plan, reviewRequest, sessionHealth, launch, terminal all null |
+| Preflight6 | SELECTED/NO_WORKER route and REFUSED/UNKNOWN preflight; plan, reviewRequest, sessionHealth, launch, terminal null |
+| Plan7 | SELECTED + ELIGIBLE; actual REFUSED/UNKNOWN dispatch plan, its non-null inspection and role-bound reviewRequest; launch/terminal null |
+| Launch8/observe9 diagnostic | SELECTED + ELIGIBLE + PLANNED; actual launch and its full allocations; UNKNOWN launch allows null or UNKNOWN terminal, LIVE launch requires UNKNOWN/TERMINATION_FAILED_LIVE terminal; inspection and role-bound reviewRequest retained |
+
+NO_WORKER/ELIGIBLE and known START_FAILED/EXITED must continue through ACTION,
+not omit real disposition or mutation evidence. For every reached dispatch
+plan, reviewRequest is complete for review role and null otherwise; its actual
+identity/brief/subject are joined by the existing plan relation. Rendered bytes
+are present only for PLANNED. Unreached observations are null, not manufactured
+UNKNOWN records. If an earlier malformed input cannot be retained as a complete
+canonical owning preimage, the supplied reclaim relation refuses; the earlier
+UNKNOWN remains the stop. No rejected-input payload or later receipt is invented
+to bypass that absence. Canonically representable diagnostic tuples remain
+possible but confer no permission to progress. Outside PREPARATION with a
+PLANNED dispatch, renderedInputBytesOrNull must be null. Stdout/stderr are
+exactly the existing terminal capture byte/null arguments for a supplied
+terminal, including ACTION's worker terminal; with no terminal both are null.
+
+ACTION reuses the exact round401 disposition relation, including raw captures,
+actual result/review identities, all finding codes and nested7–10 skips.
+followUp is exactly the complete cause-bound request when disposition has a
+non-null followUp intent, otherwise null. mutation is null for non-APPLY, and
+exactly `afterObservation, beforeObservation, dryObservation, plan, receipt,
+request` for APPLY/PROJECT. Reapply the complete round404 request/plan/apply
+relations; expectedPlanDigest is recomputed from the actual plan, not another
+caller value. REFUSED/UNKNOWN mutation plan requires before/after/receipt null;
+PLANNED requires its actual apply receipt and its exact observation null cells.
+Release ASSEMBLE_CERTIFY/PROMOTE refuses this project/ISS041 supplied relation;
+no fake release plan or promotion receipt is introduced.
+
+Context skips is a dense0–12 array of complete routine-step-skip records in
+strict numeric ordinal order. For known SESSION/SNAPSHOT/BREAKER/MODULE and
+known PREPARATION stops, require every remaining ordinal through13 with
+prior-known-terminal. For ACTION known non-APPLY require12/13 no-mutation;
+known mutation-plan refusal requires13 prior-known-terminal; known apply has
+none. Their inputDigest chain begins at the actual stop's designated output,
+Ddisposition or DmutationPlan respectively, then each preceding Dskip. All
+cycle IDs and ordinal/kind/reason pairs must match. Nested round401 skips are
+not duplicated. Any earlier UNKNOWN/live origin requires empty context skips.
+The actual earlier prefix remains the future public event/journal owner's
+gate, not an inline private journal or proof from this suffix.
+
+#### Combined allocation census and complete owner observations
+
+One owner row is exactly `after, allocation, before, outcome,
+reclaimTransactionId, source`. Source is DISPATCH or MUTATION; reclaim ID is
+Uuid. allocation is the full existing round398 allocation row, including its
+original ownerTransactionId, opaque resource identity, state and allocationId
+null cell. before/after are null or the closed observation below.
+Rows are dense0–320, strictly ASCII sorted by
+`(source,owner,resourceIdentityDigest)`. They equal the full actual launch
+census plus round404 apply census, each in original plan order, including
+unattempted, refused and UNKNOWN rows. Sources absent on the derived path
+contribute zero rows. A plan without an actual allocation operation contributes
+no allocation rows; its actual known-stop/skips still must bind.
+
+Cross-source rows naming the same owner/resource are retained distinctly, never
+merged. That collision, repeated non-null allocation IDs across sources, or
+the same ownerTransactionId used by dispatch and mutation forces
+UNKNOWN/IDENTITY_CONFLICT before any reclaim. Original IDs are not replaced
+by reclaimTransactionId. The adapter/selected-host identity is obtained from
+the actual bound configuration/dispatch plan, not the owner enum alone.
+
+An owner observation is exactly `observationId, observedAt, result`.
+COMPLETE result is exactly `kind, value`, with the full ABSENT/PRESENT byte
+value; observationId is Uuid and observedAt Time. UNKNOWN result is exactly
+`kind, reason`, reason OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID,
+IDENTITY_CONFLICT or UNSUPPORTED_RESOURCE. Its ID/time are either both null
+when no canonical observation exists or both valid retained values. Non-null
+observation IDs are unique throughout the receipt, including the process
+observation. A known row's before time is <= its after time; a contradictory
+pair is retained only in UNKNOWN/OBSERVATION_INVALID. No new time or ID proves
+freshness, and no digest substitutes for complete bytes.
+
+Owner-row outcome is this complete union:
+
+| kind | Complete members and exact cells |
+| --- | --- |
+| NOT_ALLOCATED | `kind`; allocation state NOT_ALLOCATED/null ID, before COMPLETE/ABSENT, after null |
+| RECLAIMED | `kind`; allocation ALLOCATED/non-null ID, before COMPLETE/PRESENT, after COMPLETE/ABSENT |
+| RETAINED | `kind, reason`; ALLOCATED identity retained, no delete and after null; reason HANDLES_OPEN, OWNER_REFUSED, PROCESS_LIVE or SESSION_UNHEALTHY; before COMPLETE/PRESENT or null if the reason is not OWNER_REFUSED |
+| UNKNOWN | `kind, phase, reason`; phase BEFORE_RECLAIM, RECLAIMING or AFTER_RECLAIM; reason AUTHORITY_UNPROVEN, OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID, IDENTITY_CONFLICT, RECLAIM_UNPROVEN or UNSUPPORTED_RESOURCE; before/after retain any actual observation or null; BEFORE_RECLAIM requires after null |
+
+UNKNOWN allocation can only yield UNKNOWN owner outcome. Already-absent before
+an allocated reclaim or present after its claimed completion can only be
+UNKNOWN/IDENTITY_CONFLICT, never adopted as a prior successful transaction.
+Unsupported resources retain their full allocation with UNKNOWN outcome and
+UNSUPPORTED_RESOURCE reason, not fake bytes. RECLAIMED requires the actual
+same owner transaction, physical deletion, absence read-back and owner-handle
+closure. Resume can return identical immutable receipt/preimages for that
+reclaim transaction; matching after bytes cannot authorize repeating deletion
+or allocating a fresh transaction. Partial/unknown reclaim retains phase and
+all evidence, not a rollback or a fabricated known refusal.
+
+Zero/all NOT_ALLOCATED rows are only structural claims. Actual owner scope
+admission and the complete selected public history must additionally establish
+that nothing was omitted. The fixture may demonstrate its fresh root/initial
+census and its one source-owned input; caller arrays, read-only footprint,
+workerless status and omitted project effects prove none of that.
+
+#### Separate process closure, result and identity
+
+Inline process is exactly `{kind:"NOT_LAUNCHED"}`, `{kind:"UNKNOWN",reason}`,
+or `handles, kind, observationId, observedAt, processes` for kind OBSERVED.
+UNKNOWN reason is OBSERVATION_UNAVAILABLE, IDENTITY_CONFLICT or HANDLE_LOST.
+OBSERVED is the pre-reclaim observation; it has Uuid, Time, the full existing
+process census, and handles exactly
+`process, stderr, stdin, stdout`, each NOT_CREATED/CLOSED/OPEN/UNKNOWN.
+Process handle status covers every process-observation handle in the complete
+census; stream statuses cover the actual launch stdio. These closed labels are
+source-owner claims, never serialized native handles or absence authority.
+
+NOT_LAUNCHED is required exactly for a derived no-launch path, including
+workerless mutation. Every actual launch, including proven no-child START_FAILED, instead requires
+OBSERVED or UNKNOWN. Bind OBSERVED incarnation/parent census to the actual
+terminal census (or launch when terminal is unavailable); dropping or adding
+identities, changing parents or dead-to-live reversal is an identity conflict.
+Known closure requires COMPLETE, all DEAD, process handle CLOSED for nonempty
+entries (CLOSED/NOT_CREATED for empty), and every stream CLOSED/NOT_CREATED.
+Known times cannot precede the terminal/launch time when non-null. Raw captures
+still bind through the existing terminal relation. The fixed fixture must
+substantiate its one retained direct child and handle closure from real source/
+close observations. No PID adoption, descendant probe or empty-census inference.
+
+`resource-reclaim-receipt/v1` has exactly `contextDigest, cycleId, observations,
+outcome, process, reclaimTransactionId, schemaVersion`. Context digest is
+SHA256(C(the entire inline context)); IDs are Uuid and schema is its literal.
+Reclaim ID is owner-created once before observations, distinct from every
+original allocation ownerTransactionId, and equals every row's reclaim ID;
+no UUID grants current progress or permission to retry. Outcome is:
+
+| kind | Complete members |
+| --- | --- |
+| NO_ALLOCATION | `kind` |
+| RECLAIMED | `kind` |
+| RETAINED | `kind, reason`; HANDLES_OPEN, OWNER_REFUSED or SESSION_UNHEALTHY |
+| UNKNOWN | `kind, reason`; EARLIER_UNKNOWN, PROCESS_LIVE, PROCESS_UNPROVEN, IDENTITY_CONFLICT, OWNER_UNPROVEN, RECLAIM_UNPROVEN or AUTHORITY_UNPROVEN |
+
+One supplied relation takes `(context, renderedInputBytesOrNull,
+stdoutBytesOrNull, stderrBytesOrNull, receipt)`. It parses complete context and
+receipt, reapplies the origin relations and raw byte bindings, recomputes
+context/cycle/transaction/census equalities, then uses this first-match matrix:
+
+| Bound condition, in priority order | Only permitted result and row constraints |
+| --- | --- |
+| Earlier UNKNOWN origin (including authority/plan/apply) | UNKNOWN/EARLIER_UNKNOWN; every owner row UNKNOWN/BEFORE_RECLAIM, after null, no reclaim effects |
+| Earlier or currently observed exact live process without an identity contradiction | UNKNOWN/PROCESS_LIVE; rows UNKNOWN/BEFORE_RECLAIM, RETAINED/PROCESS_LIVE or NOT_ALLOCATED only, after null, no reclaim effects |
+| Combined allocation collision or process-observation identity/time contradiction | UNKNOWN/IDENTITY_CONFLICT; retain both preimages; no reclaim effects |
+| Current session inspection UNKNOWN | UNKNOWN/AUTHORITY_UNPROVEN; no new reclaim effects |
+| Process UNKNOWN, incomplete census, UNKNOWN handle or NOT_CREATED process handle with nonempty entries | UNKNOWN/PROCESS_UNPROVEN; no reclaim effects |
+| Any owner UNKNOWN row | UNKNOWN/RECLAIM_UNPROVEN if any such phase is RECLAIMING/AFTER_RECLAIM; otherwise UNKNOWN/OWNER_UNPROVEN |
+| Known open handle | RETAINED/HANDLES_OPEN; each allocated row RETAINED/HANDLES_OPEN; no RECLAIMED row |
+| Known unhealthy current session and at least one allocated row | RETAINED/SESSION_UNHEALTHY; each allocated row RETAINED/SESSION_UNHEALTHY; no RECLAIMED row |
+| At least one RETAINED/OWNER_REFUSED row and every other row NOT_ALLOCATED, RECLAIMED or RETAINED/OWNER_REFUSED | RETAINED/OWNER_REFUSED; partial completed owner cleanup stays recorded; capacity remains retained |
+| Every row NOT_ALLOCATED, including zero rows, and known process closure/no launch | NO_ALLOCATION |
+| At least one RECLAIMED, all others NOT_ALLOCATED/RECLAIMED, current session healthy and known process closure | RECLAIMED |
+
+No unmatched combination binds. Except the explicitly listed live-process row,
+the identity/authority/process UNKNOWN gates preceding owner work require
+owner UNKNOWN/BEFORE_RECLAIM rows with after null,
+retaining any already available before observation. Owner-specific identity,
+clock, read-back or newly lost authority encountered during cleanup instead
+uses that row's UNKNOWN reason/phase, preserving earlier RECLAIMED rows and all
+observations. These uncertainties do not authorize further effects or repeats.
+RETAINED/HANDLES_OPEN or SESSION_UNHEALTHY cannot conceal a delete.
+Known retained results map to FAILED_KNOWN while
+capacity stays held; UNKNOWN prevents complete-cycle or new-cycle authority.
+Diagnostic data on an earlier UNKNOWN/live prefix is not a regular step14
+event. The later public journal owner must reject that invented progression.
+
+Dreclaim is SHA256 of `UTF8("orchestration-platform") || 00 ||
+UTF8("resource-reclaim-receipt/v1") || 00 || u32be(1) || 07 ||
+u64be(byteLength(C(receipt))) || C(receipt)`. Dcontext is the explicit unframed full
+context commitment. Inline observations introduce no schema or digest domain.
+Receipt→future event→journal→cycle receipt is acyclic; no new private history.
+
+Required vectors cover every union/null/phase/reason/handle/value/source cell,
+0/1/320/321 rows and4096/4097 bytes, hostile input and independent canonical
+bytes/full frames/digests; every early/workless/start-failed/exited/review/apply
+path, genuine skips, dropped UNKNOWN rows, collisions, stale owner/lease,
+borrowed absence, open stdio, unsupported resources and interrupted reclaim.
+Runtime evidence must separately show same-transaction read-back without new
+effects, exact physical absence and retained evidence. Parser consistency
+certifies neither source admission nor real death/absence/history.
+
+Scope is this ledger, narrow routine clarification, necessary ISS005/008/013
+notes and round405. Predicted implementation is one complete family parser and
+identity, closed helpers/supplied relations, registry/harness integration and
+independent tests. No source, SDK/CLI, provider, probe, new family or ISS026 work.
+Independent exact-head review precedes implementation. The author claims no
+PASS, resource vacancy or completed ISS041.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable

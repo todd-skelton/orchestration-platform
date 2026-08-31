@@ -21,7 +21,7 @@ until the prior step has one terminal output.
 | 11 `disposition.plan` | admitted optional portable-module disposition callable | original action and exact resulting/reviewed subject, worker terminal/attempt, and bound review authority or actual skips | `action-disposition/v1` binding the exact downstream target and original action | exact subject/receipt digests | apply request → 12; known nonapply → typed 12–13 skips then 14, with follow-up only when explicitly requested; unknown/invalid → `UNKNOWN` |
 | 12 `mutation.plan` | adapter SDK or release owner selected by disposition | `action-disposition/v1` + same action-subject digest + fresh project/release facts | `project-mutation-plan/v1` or `release-operation-plan/v1` (`assemble-certify` or `promote`), binding that digest | immediately before apply preflight; promotion only after accepted candidate review | valid plan → 13; refused/moved → 14 with named refusal; unknown → `UNKNOWN` |
 | 13 `action.apply` | same adapter/release owner that issued step 12 | exact plan/digest + same action-subject digest + review required by operation kind | project apply, release candidate/certification, promotion, or refusal receipt binding the subject digest; successful promotion also emits mandatory successor-verification `follow-up-cycle-request/v1` | revalidate subject, plan, and every external authority immediately before first mutation | terminal → 14; interrupted known transaction → resume 13; stale/moved/substituted input → refuse then 14; unknown → `UNKNOWN` |
-| 14 `resource.reclaim` | dispatch coordinating exact adapter and host resource owners | all allocation, launch/process, terminal, disposition, and apply receipts | `resource-reclaim-receipt/v1` or retained-capacity refusal | exact process tree dead before owner-specific reclaim | reclaimed/no allocation → 15; live/unknown resource → retain capacity and `FAILED_KNOWN`/`UNKNOWN` |
+| 14 `resource.reclaim` | dispatch coordinating exact adapter and host resource owners | all allocation, launch/process, terminal, disposition, and apply receipts | `resource-reclaim-receipt/v1`, including no-allocation and retained-capacity outcomes | exact process tree dead and process/stdio handles closed before owner-specific reclaim | reclaimed/no allocation → 15; known owner/handle/session refusal → retained capacity and `FAILED_KNOWN`; live or unknown identity → `UNKNOWN` |
 | 15 `cycle.terminal` | engine/journal, with supervisor monitor for a recovery launch | all step/skip receipts + resource state + optional promotion fence/follow-up/recovery-launch pointer | `cycle-receipt/v1`; exact recovery-launch-terminal and fence-clear receipts are monitor outputs when a launch is attached | journal prefix, resource census, promotion/broker read-back | complete/failure/no-work → current tick exits after its applicable fence handshake, then supervisor may schedule next tick; contradiction or uncleared required fence → `UNKNOWN` |
 
 The complete steps 7–10 block is skipped only for a typed action that requires
@@ -51,9 +51,14 @@ remaining inapplicable ordinal, while step 14 always emits either a no-allocatio
 receipt or an owner-specific reclaim result. The terminal receipt therefore
 binds a complete ordinal census even for snapshot, routing, or preflight refusal.
 
-Every allocation path passes step 14 before step 15, including pre-launch
+Every known terminal allocation path passes step 14 before step 15, including pre-launch
 refusal, start failure, worker failure, review rejection, stale mutation plan,
-and interrupted apply. Review rejection cannot mutate in the same cycle: step 11
+and an interrupted apply whose same transaction later reaches a known terminal.
+An earlier UNKNOWN/live-worker observation stops authoritative progression;
+diagnostic reclaim data cannot manufacture step14, skipped ordinals or a final
+cycle. Round405's proposed literal makes this distinction explicit. A known
+owner/handle/session refusal retains capacity; it does not report vacancy.
+Review rejection cannot mutate in the same cycle: step 11
 may emit only a `follow-up-cycle-request/v1`, which a later cycle replans from
 fresh facts. Step 13 accepts only the step-12 plan identity from the same cycle;
 a pre-worker/module plan, missing plan, moved subject, or stale external
@@ -124,7 +129,7 @@ non-`UNKNOWN` outcome, these routes are exhaustive:
 | 11 explicit nonmutating COMPLETE | skip 12–13; 14 actual reclaim/no-allocation; 15 `COMPLETED` only after all required worker/review and journal gates |
 | 12 mutation plan refused-known | skip 13; 14 reclaim/no-allocation; 15 `FAILED_KNOWN` |
 | 13 apply terminal/refused | 14 reclaim/no-allocation; 15 complete/known-failure |
-| 14 reclaim terminal/refused | 15 complete/known-failure; live unknown resource makes 15 `UNKNOWN` |
+| 14 reclaim terminal/refused | 15 complete/known-failure with known retained capacity explicitly preserved; any live process or unknown resource/identity makes 15 `UNKNOWN` |
 
 An `UNKNOWN` output journals that contradiction when the prefix remains safely
 appendable and forbids further authoritative steps; it never fabricates skip
