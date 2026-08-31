@@ -1,4 +1,10 @@
 import {
+  computeActionDispositionDigest,
+  computeFollowUpCycleRequestDigest,
+  dispositionSchemaVersions,
+  parseDispositionContract,
+} from "./disposition.js";
+import {
   computeProjectPreflightDigest,
   parseProjectPreflightContract,
 } from "./project-preflight.js";
@@ -91,6 +97,7 @@ export * from "./commit.js";
 export * from "./definitions.js";
 export * from "./dispatch.js";
 export * from "./dispatch-lifecycle.js";
+export * from "./disposition.js";
 export * from "./evidence.js";
 export * from "./packet.js";
 export * from "./external.js";
@@ -159,6 +166,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const disposition = parseDispositionContract(expectedSchemaVersion, input);
+  if (disposition) return disposition;
   const dispatchLifecycle = parseDispatchLifecycleContract(expectedSchemaVersion, input);
   if (dispatchLifecycle) return dispatchLifecycle;
   const preflight = parseProjectPreflightContract(expectedSchemaVersion, input);
@@ -254,6 +263,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "module-plan-result/v1" ||
       expectedSchemaVersion === "route-selection/v1" ||
       expectedSchemaVersion === "project-preflight/v1" ||
+      (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
@@ -269,7 +279,10 @@ export function parseCanonicalContractBytes(
         Object.getPrototypeOf(Uint8Array.prototype),
         "byteLength",
       )!.get!.call(bytes) as number;
-      if ((dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion)) {
+      if (
+        (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
+        (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
+      ) {
         const buffer = Object.getOwnPropertyDescriptor(
           Object.getPrototypeOf(Uint8Array.prototype),
           "buffer",
@@ -315,6 +328,15 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if ((dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest:
+        expectedSchemaVersion === "action-disposition/v1"
+          ? computeActionDispositionDigest(parsed.value)
+          : computeFollowUpCycleRequestDigest(parsed.value),
+    };
   if ((dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
     return {
       ok: true,
