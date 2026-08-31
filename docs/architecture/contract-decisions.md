@@ -2893,6 +2893,22 @@ the full identity tuple, and close that temporary metadata handle once. Only
 this fixed parent is accepted; ancestor checks reuse the existing stable
 root/chain checks. This adds no arbitrary-path filesystem operation.
 
+`describeCustody()` returns exactly `{identity, facts}`. Its `facts` array uses
+the unchanged six-member native-call records and retains every actual call in
+order, including close. `identity` is the full directory identity tuple only
+after every required native call, ordinary-directory/non-reparse policy check,
+and close succeeds; otherwise it is null. Every successful temporary open is
+paired with one close on every return path, including a metadata policy
+refusal; no resource handle escapes this operation. A successful metadata call
+that reveals a policy mismatch keeps its actual successful return/error values
+in `facts`; do not synthesize errno, append a fake native call, or encode policy
+failure in exception properties. Null identity cannot be recovered from a
+successful identity-bearing call in `facts`: the stable parent records null in
+the existing `CUSTODY.rootIdentity` slot, refuses the barrier, and yields
+`UNKNOWN`. A failed close is retained and likewise forbids success, without
+retry. This wrapper is specific to the stable witness's custody operation;
+candidate `openFixedLock` and `describe` result shapes remain unchanged.
+
 Stable-authored JS fixtures control the holder and contender lifecycle; the
 candidate contributes only the addon. All paths, launch options, expected
 results and barriers come from the stable parent. Spawn Node directly, with
