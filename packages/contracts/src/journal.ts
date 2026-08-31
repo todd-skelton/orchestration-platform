@@ -1889,13 +1889,13 @@ function waitingOutcome(
     const plan = outputs.get(7)?.plan as ContractRecord | undefined;
     return plan && uuid(plan.attemptId)
       ? { attemptId: plan.attemptId, kind: "WAITING_WORKER" }
-      : { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
+      : { kind: "RUNNING" };
   }
   if (ordinal === 10) {
     const plan = outputs.get(7)?.plan as ContractRecord | undefined;
     return plan && digest(plan.reviewRequestDigest)
       ? { kind: "WAITING_REVIEW", requestDigest: plan.reviewRequestDigest }
-      : { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
+      : { kind: "RUNNING" };
   }
   if (ordinal === 11) return { dispositionDigest: null, kind: "WAITING_ACTION" };
   if (ordinal === 15)
