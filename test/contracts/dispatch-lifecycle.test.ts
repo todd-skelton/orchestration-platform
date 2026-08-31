@@ -296,6 +296,20 @@ test("pins every plan/launch/terminal outcome cell to independent canonical byte
   }
 });
 
+test("generic canonical parsing refuses shared backing for each complete lifecycle family", () => {
+  for (const index of [0, 8, 18]) {
+    const golden = goldens[index]!,
+      bytes = new TextEncoder().encode(golden.text);
+    expect(c.parseCanonicalContractBytes(golden.schema, bytes)).toEqual({
+      ok: true,
+      value: JSON.parse(golden.text),
+    });
+    const shared = new Uint8Array(new SharedArrayBuffer(bytes.byteLength));
+    shared.set(bytes);
+    expect(c.parseCanonicalContractBytes(golden.schema, shared).ok).toBe(false);
+  }
+});
+
 test("every new nested record closes required fields, enums, types and back-references", () => {
   const paths: Array<[number, readonly (string | number)[]]> = [
     ...[0, 1, 5, 8, 9, 13, 18, 20, 23, 24].flatMap(
@@ -647,6 +661,43 @@ test("raw content length/hash and byte identity are distinct from briefs, decode
     expect(c.parseDispatchContentReference({ byteLength, contentDigest: "a".repeat(64) }).ok).toBe(
       false,
     );
+});
+
+test("native and Buffer offset views bind only their visible bytes, never backing slack", () => {
+  const f = fixture(),
+    started = launch(f.plan),
+    ended = terminal(f.plan, started);
+  for (const bufferView of [false, true]) {
+    const padded = (bytes: Uint8Array) => {
+      const backing = new Uint8Array(bytes.byteLength + 8).fill(0x7e);
+      backing.set(bytes, 3);
+      const view = bufferView
+        ? Buffer.from(backing.buffer, 3, bytes.byteLength)
+        : new Uint8Array(backing.buffer, 3, bytes.byteLength);
+      expect(view.byteOffset).toBe(3);
+      expect(view.buffer.byteLength).toBeGreaterThan(view.byteLength);
+      return { backing, view };
+    };
+    const rendered = padded(raw()),
+      out = padded(stdout()),
+      err = padded(stderr());
+    for (const [observed, expected] of [
+      [rendered, ref(raw())],
+      [out, ref(stdout())],
+      [err, ref(stderr())],
+    ] as const) {
+      expect(c.computeDispatchContentReference(observed.view)).toEqual(expected);
+      observed.backing[0] = 0x42;
+      observed.backing[observed.backing.length - 1] = 0x43;
+      expect(c.computeDispatchContentReference(observed.view)).toEqual(expected);
+    }
+    expect(planBind(f, f.plan, rendered.view).ok).toBe(true);
+    expect(terminalBind(f.plan, started, ended, out.view, err.view).ok).toBe(true);
+    rendered.view[0] = rendered.view[0]! ^ 0xff;
+    out.view[0] = out.view[0]! ^ 0xff;
+    expect(planBind(f, f.plan, rendered.view).ok).toBe(false);
+    expect(terminalBind(f.plan, started, ended, out.view, err.view).ok).toBe(false);
+  }
 });
 
 test("launch preserves every requested allocation and the allocate-publish-spawn failure chronology", () => {
