@@ -288,6 +288,18 @@ async function consumeFixed(reviewMode: boolean, ...args: CycleArgs) {
         )
       : null;
     if (reviewRequest) await record("review-request.json", "review-request/v1", reviewRequest);
+    if (seed) {
+      // Retain referenced evidence before the external child effect, so a crash cannot lose its preimages.
+      for (const [name, bytes] of [
+        ["seed-artifact.bin", seed.artifact],
+        ["review-expected.bin", seed.expected],
+        ["review-procedure.bin", seed.procedure],
+      ] as const) {
+        if (!(await inspect())) throw new Error("session changed before review evidence");
+        await writeFile(join(prepared.stateRoot, name), bytes, { flag: "wx" });
+        files.push(name);
+      }
+    }
     const rendered = Buffer.from(canonicalJson(reviewRequest?.packet ?? action.dispatchBrief));
     const attemptId = fixtureId();
     const dispatch = required(
@@ -388,15 +400,6 @@ async function consumeFixed(reviewMode: boolean, ...args: CycleArgs) {
       );
       await record("review-attempt.json", "review-attempt-result/v1", review.attempt);
       await record("review-authority.json", "review-authority/v1", review.authority);
-      for (const [name, bytes] of [
-        ["seed-artifact.bin", seed.artifact],
-        ["review-expected.bin", seed.expected],
-        ["review-procedure.bin", seed.procedure],
-      ] as const) {
-        if (!(await inspect())) throw new Error("session changed during review evidence");
-        await writeFile(join(prepared.stateRoot, name), bytes, { flag: "wx" });
-        files.push(name);
-      }
       if (review.authority.outcome.kind === "rejected")
         return { ok: false as const, reason: "REVIEW_REJECTED", review };
       return { ok: true as const, worker, preflight, route, dispatch, review };
