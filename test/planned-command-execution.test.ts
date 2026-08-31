@@ -61,6 +61,8 @@ describe("planned verification command execution census", () => {
               "pnpm --filter @orchestration-platform/config test",
               "pnpm --filter @orchestration-platform/cli test",
             ].includes(command)) ||
+          (issue === "ISS-013" &&
+            command === "pnpm --filter @orchestration-platform/adapter-sdk test") ||
           (issue === "ISS-006" &&
             ["pnpm run harness:test", "pnpm run test:harness-workflow-mutations"].includes(
               command,

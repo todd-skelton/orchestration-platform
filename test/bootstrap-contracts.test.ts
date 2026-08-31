@@ -156,6 +156,13 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "changed adapter SDK package test entrypoint",
+      (snapshot: any) => {
+        snapshot.manifests["@orchestration-platform/adapter-sdk"].scripts.test =
+          "node ../../scripts/capability-not-implemented.mjs ISS-013 @orchestration-platform/adapter-sdk:test";
+      },
+    ],
+    [
       "changed root harness entrypoint",
       (snapshot: any) => {
         snapshot.rootPackage.scripts["harness:test"] =
