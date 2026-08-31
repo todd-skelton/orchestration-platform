@@ -28,6 +28,12 @@ importers:
 
   adapters/self: {}
 
+  fixtures/walking-skeleton:
+    dependencies:
+      '@orchestration-platform/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+
   packages/adapter-sdk: {}
 
   packages/breaker: {}

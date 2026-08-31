@@ -3,6 +3,7 @@ packages:
   - "probes/*"
   - "modules/*"
   - "adapters/*"
+  - "fixtures/*"
 
 allowBuilds:
   esbuild: true
