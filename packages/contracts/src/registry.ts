@@ -4,6 +4,11 @@ import {
   projectMutationClosedValues,
 } from "./project-mutation.js";
 import {
+  resourceReclaimClosedValues,
+  resourceReclaimSchemaFields,
+  resourceReclaimSchemaVersions,
+} from "./resource-reclaim.js";
+import {
   dispositionSchemaFields,
   dispositionSchemaVersions,
   dispositionClosedValues,
@@ -148,6 +153,19 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "resource-reclaim-receipt/v1": Object.freeze({
+      schemaVersion: "resource-reclaim-receipt/v1",
+      fields: resourceReclaimSchemaFields.receipt,
+      closedValues: resourceReclaimClosedValues,
+    }),
+    ...Object.fromEntries(
+      Object.entries(resourceReclaimSchemaFields)
+        .filter(([key]) => key !== "receipt")
+        .map(([key, fields]) => [
+          `resource-reclaim-receipt/v1#${key}`,
+          Object.freeze({ schemaVersion: "resource-reclaim-receipt/v1", fields }),
+        ]),
+    ),
     ...Object.fromEntries(
       projectMutationSchemaVersions.map((schemaVersion, index) => [
         schemaVersion,
@@ -1104,6 +1122,7 @@ export const schemaVersions = Object.freeze(
     ...routeSelectionSchemaVersions,
     ...projectPreflightSchemaVersions,
     ...projectMutationSchemaVersions,
+    ...resourceReclaimSchemaVersions,
     ...dispatchLifecycleSchemaVersions,
     ...dispositionSchemaVersions,
     ...reviewResultSchemaVersions,
