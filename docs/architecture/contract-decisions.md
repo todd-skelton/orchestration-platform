@@ -2777,6 +2777,406 @@ under the provider-fresh runner-temp root and cleanup proves that root absent.
 No source-checkout write, compiled executable, native addon, broker, privilege,
 same-host principal, reboot, credential, cache, or secret is authorized.
 
+### Bounded native-lock experiment (ISS-022, selected 2026-08-31)
+
+Todd approved the source-built in-process binding experiment on 2026-08-31.
+This subsection closes that experiment's interface and evidence, subject to
+independent literal-ledger review before implementation. It grants no production
+selection. It does not amend the original Node-only candidates, 21 vectors,
+63-observation PASS join, or capability/review/publication records above.
+Run `33350413483` and core
+`2e08babc6c141ef071eb26e1de399a603ec35f433473d3b60bcf7aa78da62a92`
+remain evidence of the prior `BLOCK_REPLAN`; PR #158 and the frozen e827 writer
+and its physical path remain separate and unchanged.
+
+#### Interface, ownership, and OS operations
+
+The experiment interface identifier is `iss022-native-lock-experiment/v1`,
+not a selectable helper, ABI, custody, or capability token. Use Node 24 and
+the C Node-API at `NAPI_VERSION=8`; no C++ wrapper dependency, FFI package,
+background thread, helper process, or native installation. Node-API's ABI
+stability does not establish this experiment's behavioral compatibility;
+record the actual Node executable/version/modules/napi/architecture and build
+inputs on each OS. [Node-API documentation](https://nodejs.org/download/release/latest-v24.x/docs/api/n-api.html)
+
+The candidate module exports exactly `interfaceVersion`, `openFixedLock(path)`,
+`tryLock(handle)`, `release(handle)`, `close(handle)`, and `describe(handle)`.
+The stable fixture supplies the one exact absolute path; the module admits one
+open handle per Node environment and does not accept another path during that
+environment's lifetime. The handle is a branded, environment-bound native
+object, never a caller-supplied descriptor. No create, write, rename, unlink,
+duplication, transfer, range, blocking, retry, or process operation is exported.
+Invalid arity/type, NUL, relative path, foreign/copied/stale handle, double
+open, reentrant call, or invalid state throws `TypeError` before an OS call.
+
+`openFixedLock` returns `{handle, facts}` (handle null on failure); other
+operations return `facts`. Facts are an ordered array of native-call records,
+each having exactly `operation`, `returnValue`, `errorCode`, `identity`,
+`nativeHandle`, and `nonInheritable`. `operation` is
+`OPEN|IDENTIFY|FLAGS|TRY_LOCK|UNLOCK|CLOSE|DESCRIBE`, naming the failed internal
+operation when opening/describing cannot finish. Return/error values are exact
+decimal strings captured at the OS call (error `0` on success); no errno text,
+exception message, or candidate-derived verdict is authority. `identity` is
+the tuple below or null if unavailable. `nativeHandle` is its unsigned decimal
+descriptor/HANDLE value only while open, otherwise null; it is diagnostic data,
+never an input accepted by this candidate interface. `nonInheritable` is the
+read-back Boolean or null when unavailable. No partial open publishes a handle:
+close a newly opened resource on an identity/flags error, append that close's
+record even if it too fails, and refuse the case. Successful try/release/close
+returns one call record; open/describe record each fixed identity/flags call
+in source order. No unlisted OS operation or output record is admitted.
+
+The state machine is `UNOPENED -> OPEN -> LOCKED -> OPEN -> CLOSED`.
+Only `OPEN` admits one `tryLock` per parent command; contention leaves `OPEN`.
+`release` admits only `LOCKED`, performs the exact unlock once, and leaves
+`OPEN` only on success. `close` admits only `OPEN`, invalidates the brand before
+closing once, and never retries a failed/ambiguous close. A failed operation
+ends the case; exception/GC/finalizer cleanup cannot count as observed release.
+The stable fixture roots the object until explicit close or process death.
+Environment cleanup may best-effort close it, but the death case uses forced
+termination and must execute neither `release` nor a cleanup acknowledgement.
+
+| Boundary | macOS and Linux | Windows |
+| --- | --- | --- |
+| Open existing file | `open(path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)`; no create/truncate flag; `fstat` must be regular with link count 1 | `CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL)`; no delete sharing, overlapped I/O, delete-on-close, or inherited security attributes |
+| Identity | `fstat` tuple `{kind:"POSIX",device,inode}` using full unsigned decimal `st_dev/st_ino`, plus regular-file/link-count/size checks | `GetFileInformationByHandleEx(FileIdInfo)` tuple `{kind:"WINDOWS",volumeSerialNumber,fileIdHex}`; volume is unsigned decimal, file ID is the 16 bytes in returned order as 32 lowercase hex digits; `FileStandardInfo` must report a non-directory, not delete-pending, link count 1, size 1; `FileAttributeTagInfo` must have no reparse flag |
+| Non-inheritance | `fcntl(fd, F_GETFD)` must contain `FD_CLOEXEC`; no `dup`/`fork` operation in the binding | `SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)` then `GetHandleInformation` must read that bit clear |
+| Try exactly once | `flock(fd, LOCK_EX | LOCK_NB)` on the whole fixed file; do not substitute `fcntl` locks | `LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)`; zero-initialize every `OVERLAPPED` field, including offset/high offset and event; range is exactly byte `[0,1)` |
+| Normal release | `flock(fd, LOCK_UN)`, then separate `close(fd)` | `UnlockFileEx(h, 0, 1, 0, &ov)` with the same zero offset/range, then separate `CloseHandle(h)` |
+
+These are cooperating-process locks on the named resource, not hostile-writer
+isolation. Apple describes advisory exclusion and shared references after
+duplication/fork; Linux documents the distinction from `fcntl` locks.
+[Apple flock](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/flock.2.html),
+[Linux flock](https://man7.org/linux/man-pages/man2/flock.2.html),
+[Linux locking notes](https://docs.kernel.org/filesystems/locks.html).
+Windows uses the full file ID and volume pair to compare independently opened
+handles. Lock release after termination can lag observed process termination:
+one post-death attempt may fail. That is a finding, never permission to delay,
+retry, delete, or infer stale ownership.
+[FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info),
+[LockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex),
+[UnlockFileEx](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-unlockfileex).
+
+#### Stable custody, witnesses, and the finite case census
+
+Stable N creates one exclusive child of provider `runner.temp`, outside every
+checkout/build source root, and one fixed `native-lock` leaf containing byte
+`41`. All four cases on that OS reuse this exact file, without replacement,
+truncation, rename, or deletion. The parent retains its witness's non-inherited
+independently opened handle through all four rows, compares native identity
+through that witness, and rechecks the root/ancestor chain, leaf identity,
+type, link count and size before
+each barrier and after terminal events. For the death row only, the post-close
+custody read occurs immediately **after** the single acquisition, so metadata
+work cannot insert a release-timing workaround. Moving/unreadable custody refuses.
+Do not read byte zero through another Windows handle while it is locked;
+initial and final unlocked byte readback must both be `41`.
+
+The stable native witness is a separately authored, independently reviewed
+small C Node-API source with the same OS operations and identity inspection.
+It is built from stable N, never candidate source, and loaded in the stable
+parent. Candidate bytes are loaded only in candidate children. The stable
+witness also has one diagnostic `inspectNativeHandle(decimal)` operation for
+the stable holder/child fixtures: read identity and inheritance flags or the
+native invalid-handle error, without opening, closing, locking, or duplicating
+that handle. This is a test-only inspector, not a production interface. Its
+source and tests cannot share candidate implementation authorship.
+For stable custody readback only, witness `describeCustody()` takes no argument
+and inspects the already-bound fixed file's parent directory: POSIX opens it
+with `O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW`, then `fstat`; Windows
+uses `CreateFileW` with `FILE_READ_ATTRIBUTES`, read/write sharing, null security
+attributes, `OPEN_EXISTING`, and
+`FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`, then `FileIdInfo`
+and `FileAttributeTagInfo`. Require an ordinary non-reparse directory, capture
+the full identity tuple, and close that temporary metadata handle once. Only
+this fixed parent is accepted; ancestor checks reuse the existing stable
+root/chain checks. This adds no arbitrary-path filesystem operation.
+
+Stable-authored JS fixtures control the holder and contender lifecycle; the
+candidate contributes only the addon. All paths, launch options, expected
+results and barriers come from the stable parent. Spawn Node directly, with
+`shell:false`, `detached:false`, `windowsHide:true` and
+`stdio:["ignore","pipe","pipe","ipc"]`; clear `NODE_OPTIONS`, `NODE_PATH`,
+loader/preload variables and inherited candidate environment. No holder
+descriptor is included in stdio or a Windows handle list. Candidate stdout,
+facts and addon state remain claims challenged by stable native calls.
+
+Execute these rows in this order, once per OS. Fresh holder/contender processes
+use independent opens, never an inherited lock description. Parent-owned
+monotonic sequence numbers order all commands, calls and terminal events.
+`READY` means module/handle/identity/flags checked and process paused; `HELD`
+requires candidate acquisition plus a stable witness's independently opened
+same-file `CONTENDED` result. Any missing prerequisite stops subsequent rows;
+it is recorded as missing evidence, never an invented observation.
+
+| Case ID | Stable-controlled chronology | Required observation |
+| --- | --- | --- |
+| `NATIVE_UNRELATED_EXCLUSION` | Two sibling children reach `READY`; command holder once; witness establishes `HELD`; command contender once while holder stays paused; inspect both identities; release/close holder normally | Holder acquisition, stable contention, and contender contention on the identical file; no second holder, no open/share error disguised as lock contention |
+| `NATIVE_NORMAL_RELEASE` | Fresh holder reaches `HELD`; parent commands `release`, observes its return, then commands witness once **before holder exits**; unlock witness but retain its handle, close holder and observe clean holder terminal events | Stable witness acquires after explicit unlock while the former holder is still alive; a release claim while retaining the lock fails |
+| `NATIVE_DEFAULT_NON_INHERITANCE` | Fresh holder reaches `HELD`; stable inspector in that holder reads its exported native handle/flags; the stable holder fixture spawns one default child using the options above; child loads only stable inspector/fixture bytes and inspects that numeric handle **before opening this file**; parent challenges exclusion again while both live; then stable fixture observes child clean exit and releases holder normally | Holder flags are non-inheritable; child's handle is invalid (`EBADF`/`ERROR_INVALID_HANDLE`) or belongs to a different file; same-file access or unreadable inspection refuses; witness still contends, proving no premature unlock |
+| `NATIVE_HOLDER_DEATH_ONCE` | Fresh holder reaches `HELD`; parent witness already has its independently opened, identity-checked, unlocked handle; parent calls the exact holder `ChildProcess.kill("SIGKILL")`, waits for that handle's `exit` **and** `close`, then immediately performs one synchronous witness `tryLock`; record identity/result, unlock/close witness if acquired | Exactly one post-death OS acquisition attempt on the same file, with no candidate unlock/close beforehand; witness acquisition is the observed property; contention after death is a violation, including on Windows |
+
+The last row is last so no subsequent acquisition can obscure its one-attempt
+census. After `close`, the next operation is that one lock attempt: no sleep,
+timer gate, polling, fresh process startup, retry, or pre-attempt cleanup. The
+pre-opened witness is a separate open description, never a duplicate of the
+holder resource. A failed termination request, inconsistent terminal sequence,
+unexpected natural exit, missing close event, or watchdog expiry is `UNKNOWN`,
+not evidence of death. A 10,000 ms parent watchdog bounds each row; it grants
+no ownership authority and does not postpone the post-death attempt.
+
+The default-child row observes only inheritance under this reviewed fixture.
+The stable holder fixture owns that child's handle and forwards its stable
+inspection/terminal transcript; candidate PID/IPC text cannot substitute for
+it. No independent process-tree identity, hostile-native isolation, surviving
+descendant cleanup proof, or ISS-005 reclamation claim follows. Intentional
+handle transfer is not tested or added to the threat model. After final
+observations are frozen and all known fixture handles are closed, normal
+runner-temp cleanup may occur; cleanup failure stays visible and cannot repair
+a failed measurement or trigger another acquisition.
+
+#### Build identity and hosted execution
+
+Ordinary source review first lands the stable observer, witness, driver,
+negative controls and their complete bundle/dispatch censuses. That protected
+revision is N for the experiment; the independently reviewed candidate source
+revision is N+1. N may build/test N+1 without installing or selecting it.
+Until N contains the independently authored witness and tests, hosted execution
+is not ready. Candidate native bytes never enter N's parent, reducer, record
+job, or loader search path. This ordering adds no release bootstrap or grant.
+The holder fixture may load N's inspector alongside the candidate addon solely
+to inspect that holder's native handle; the default child loads only N's
+inspector. This does not load candidate bytes into any stable-only process.
+
+Use a single stable build script with two explicit inputs: stable witness C
+source and candidate binding C source. Materialize the latter through the
+existing authenticated candidate-file/consume-delete path; never run a
+candidate build script, package lifecycle hook, compiler flag or dependency
+resolver. Compile from source into separate fresh runner-temp build directories.
+The Node headers (and Windows architecture-matching `node.lib`) must be from
+the official distribution matching the **actual exact** Node version used for
+the run, checked against its retained `SHASUMS256.txt` bytes. No prebuilt addon,
+downloaded executable helper, package-native install, cache or committed binary.
+Use the hosted image's unprivileged compiler/SDK; unavailable prerequisites
+produce `UNSUPPORTED`, not installation or an OS-command lock fallback.
+
+The stable script owns these argument arrays, expanding only verified absolute
+input/include/output paths. No shell command construction or caller flags:
+
+| OS | Compile/link recipe for each source |
+| --- | --- |
+| Linux | Resolved hosted `cc`: `-std=c11 -O2 -fPIC -shared -DNAPI_VERSION=8 -I <node-include> <source.c> -o <output.node>` |
+| macOS | Resolved hosted `clang`: `-std=c11 -O2 -fPIC -bundle -undefined dynamic_lookup -DNAPI_VERSION=8 -I <node-include> <source.c> -o <output.node>` |
+| Windows | Resolved hosted `cl.exe`: `/nologo /TC /std:c11 /O2 /MD /LD /DNAPI_VERSION=8 /I<node-include> <source.c> <node.lib> kernel32.lib /link /OUT:<output.node>`; all intermediate output paths stay in that build's temp directory |
+
+Each build's working directory is its own temp directory; compiler environment
+comes only from the captured hosted toolchain. Clear inherited `CC`, `CFLAGS`,
+`CPPFLAGS`, `LDFLAGS`, `CL`, `_CL_` and loader injection variables. Stable code
+sets required SDK/include/library paths explicitly. No mutable candidate PATH
+entry participates in compiler, linker or module resolution.
+
+Record exact source bytes/revisions, stable JS fixture/build/loader bytes,
+Node header/archive/import-library bytes, command argv, compiler/SDK versions,
+Node executable identity and output bytes. Keep a sorted complete input and
+output file census; retain referenced source/header/output bytes alongside the
+report, recomputing every length and SHA-256 from them. Compiler/SDK version
+strings describe the provider image assumption, not a toolchain attestation or
+reproducible-build claim. Only the two expected `.node` outputs can load;
+intermediates are non-executable diagnostic build outputs, never candidates.
+Rehash each module from an identity-checked regular file immediately before
+absolute-path load and after the case census; refuse source/output changes,
+extra loadable files, wrong architecture/Node ABI, dynamic external package
+resolution, missing source, changed flags, or a moved parent. N's reviewed
+loader resolves no candidate-relative dependencies. No system-library trust
+framework or same-principal tamper isolation is claimed.
+
+Reuse ISS-006's protected-main dispatch, stable/candidate separation,
+provider-fresh VM, manifest and materialization checks and four-job topology.
+Add only an explicit experiment action `iss022_native_lock_experiment`, a
+literal diagnostic runner `ISS022_NATIVE_LOCK_EXPERIMENT`, and its fixed
+`iss022-native-lock-experiment-{linux,macos,windows}` required-job census.
+The ordinary `conformance_candidate` action, original registry and report
+remain unchanged. No input-supplied matrix, candidate registry, optional OS,
+single-OS inference or mixed attempt is admitted. The experiment arm never
+calls a capability receipt/core/profile serializer or the frozen writer.
+
+Each observation job uploads one immutable
+`iss022-native-lock-<runId>-<runAttempt>-<os>` diagnostic archive, with its report
+and retained build/transcript bytes (`os` is `linux|macos|windows`). A stable-only aggregate runs even when a
+row fails, downloads exactly those three archives, and reduces them without
+loading native or candidate code. The stable-only record job retains the
+existing provider adapters' run/job/artifact/protection responses, including
+digest/length, attempt, terminal conclusions and expiry. After the run is
+terminal, N's diagnostic verifier reuses those adapters to check the exact
+reviewed workflow/action/revisions, three observation jobs, artifact bytes,
+at least 30 days remaining retention, and successful collector/record jobs.
+There is no new provider receipt, signature, certification or authority join:
+these retained inputs support independent review of an exploratory result only.
+Missing provider evidence is `UNKNOWN`; success of diagnostic collection says
+nothing about whether the lock property held. The implementation's single
+scaffold amendment updates dispatch/registry/build/bundle/artifact censuses and
+their existing refusal tests together, naming ISS-022.
+The aggregate and record archives use that same prefix with suffix `aggregate`
+and `record`: exactly five archives in the attempt, with no inner executable
+loaded by either job. The terminal diagnostic reduction is written outside
+the checkout after rereading the completed record job; it does not attempt
+to attest its own output or amend an existing canonical decision.
+
+#### Inline records, normalization, and refusal controls
+
+Use complete inline experiment records, not new public schema families or
+opaque details digests. JSON uses existing canonical encoding; all record
+members below are exact, arrays have the specified order, integers are
+canonical decimal strings, and byte hashes are lowercase SHA-256. Unsupported
+or missing evidence has null **facts**, never a fabricated OS observation.
+The diagnostic report has exactly:
+
+| Member | Closed contents |
+| --- | --- |
+| `experiment` | Literal `iss022-native-lock-experiment/v1` |
+| `coordinates` | `{repositoryId,runId,runAttempt,workflowRevision,candidateRevision,jobId,operatingSystem,architecture,nodeVersion,nodeModulesVersion,nodeNapiVersion}`; identities equal the stable plan/provider/actual process inputs, OS is `LINUX|MACOS|WINDOWS` |
+| `builds` | Two records in `STABLE_WITNESS,CANDIDATE_BINDING` order, each `{role,revision,inputs,argv,toolchain,outputs,loaded,result}`; inputs/outputs/loaded are sorted `{path,byteLength,sha256}` arrays binding retained files; `loaded` is exactly that role's `.node` output; `toolchain` is `{compilerPath,compilerVersion,sdkVersion}` from stable capture; result is `BUILT|UNSUPPORTED|UNKNOWN`; unavailable inputs/argv/toolchain/outputs/loaded are null, never invented; role/revision remain bound |
+| `custody` | `{rootPath,leafName,initialIdentity,finalIdentity,initialByteHex,finalByteHex}`; leaf is `native-lock`, successful identities match, bytes are `41`; initial/final null is permitted only with the corresponding missing-evidence result |
+| `cases` | Four ordered `{caseId,events,result}` records, with exactly the case IDs above; an unexecuted row has `events:[]` and `result:"UNKNOWN"`, except a verified unsupported build/prerequisite propagates `UNSUPPORTED` without inventing an observation |
+| `controls` | Ordered `{controlId,refused}` records for the finite census below; `refused` is Boolean, never a supplied PASS verdict |
+| `result` | Stable recomputed `OBSERVED|VIOLATED|UNSUPPORTED|UNKNOWN`; even `OBSERVED` selects nothing |
+
+Every retained-file path is artifact-relative, unique and free of empty/dot/
+parent components; links and path escape refuse. The archive manifest covers
+the report and every referenced file; hashes never substitute for retained
+bytes. Native error numbers are interpreted using stable OS constants, never
+a candidate-provided name-to-number table.
+
+Every event has exactly `{sequence,actor,kind,data}`. Sequence starts at `0`
+and increases by one across that report. Actor is
+`PARENT|HOLDER|CONTENDER|DEFAULT_CHILD`; instances are scoped to the case and
+the parent's exact captured process handles, never caller-selected PIDs.
+`kind` closes `data` as follows: `COMMAND` has `{name}` from that row's
+`READY|ACQUIRE|RELEASE|SPAWN_DEFAULT_CHILD|TERMINATE|CLOSE` sequence;
+`CALL` has the six native facts fields above; `CUSTODY` has
+`{rootIdentity,leafIdentity,regularFile,linkCount,size}` with full OS identity
+tuples and literal expected `true,"1","1"`; `EXIT` and `CLOSE` have
+`{exitCode,signal}` from the captured ChildProcess events (nullable canonical
+integer/literal signal); `TERMINATION` has `{signal,accepted}` with literal
+`SIGKILL` and the actual Boolean return from the parent's kill request;
+`WATCHDOG` has `{limitMilliseconds,elapsedNanoseconds}` with literal `"10000"`
+and the parent monotonic measurement, and always forces `UNKNOWN`;
+`INSPECTION` has
+`{nativeHandle,identity,nonInheritable,errorCode}` from stable inspector code.
+Each barrier carries a fresh `CUSTODY` read. Root identity is the same OS tuple
+shape as the leaf but must denote the original directory; chain verification
+failure refuses before a barrier. Captured stdout/stderr are retained raw
+files, not event sources unless the stable fixture parses the exact expected
+native facts/inspection message at the pending command. Unexpected message,
+ordering, duplicate, extra field, or trailing bytes refuses. No event can
+authorize a command that the stable parent did not issue.
+The death row requires one accepted `TERMINATION` after its command and before
+the expected forced-exit/close events; an absent, rejected or natural-exit
+sequence refuses. Signal/exit interpretation follows the stable Node 24
+ChildProcess adapter on that OS, never a candidate PID or reported status.
+
+Reduce raw calls as follows. A successful try is `ACQUIRED`; only
+`EWOULDBLOCK` (including its `EAGAIN` alias) from POSIX `flock`, or Windows
+`ERROR_LOCK_VIOLATION` (`33`) from `LockFileEx`, is `CONTENDED`. Neither an
+open/share error nor `EEXIST` is contention. `ENOSYS|ENOTSUP|EOPNOTSUPP` and
+Windows `ERROR_NOT_SUPPORTED` (`50`)/`ERROR_INVALID_FUNCTION` (`1`) mean
+`UNSUPPORTED` for the attempted fixed operation. Access denial
+`EACCES|EPERM`/`ERROR_ACCESS_DENIED` (`5`) means environment `UNSUPPORTED`,
+never proof of exclusion. Every other failure, including `EINTR`, `EINVAL`,
+`ERROR_IO_PENDING` (`997`), missing/malformed code, ABI/load failure, timing or
+unreadable identity, is `UNKNOWN`; no EINTR retry. Invalid-handle codes are
+accepted only for the child-inspection observation. Unexpected success,
+identity/range/flag mismatch or a valid `CONTENDED` after release/death is
+`VIOLATED`. Reducers check operation/context before assigning any meaning.
+
+The whole report/reduction uses precedence
+`UNKNOWN > VIOLATED > UNSUPPORTED > OBSERVED`, retaining every individual
+failure even when a higher-precedence failure exists. `OBSERVED` requires all
+four rows observed, every refusal control refused and intact identity/build
+evidence in that OS report. The final inline reduction has exactly
+`{experiment,reports,providerEvidence,result}`; reports are the complete three
+records in `LINUX,MACOS,WINDOWS` order (a missing report is a null slot and
+forces `UNKNOWN`, never a synthesized report), providerEvidence is a sorted array of
+the same retained-file `{path,byteLength,sha256}` entries for the already
+parsed provider/workflow/manifest inputs, and experiment has the same literal
+identifier. The verifier rereads/revalidates those bytes rather than trusting
+their hashes. Its `OBSERVED` additionally requires the complete same-attempt
+three-OS/provider census and equal revisions. A well-formed
+control that is not refused is `VIOLATED`; a missing/unreadable control is
+`UNKNOWN`. No candidate-normalized result is accepted.
+
+The bounded control census is exactly the following order on each OS. Stable
+tests use one fixture or captured-record mutant per row, retaining its input
+and stable rejection. Run these controls before the four observation rows,
+releasing their known resources on the same fixed file before the next fixture.
+The first three use stable-authored JS call-interception fixtures and real
+witness calls; all others mutate captured inputs to the actual guard/parser.
+They add no alternate native binary, intentional inheritance or additional
+holder-death run. Do not repeat the death case to find a favorable result.
+
+| Control ID | Cheapest discriminating evidence / required refusal |
+| --- | --- |
+| `BYPASS_LOCK` | Candidate fixture claims acquisition without calling the lock; real stable witness acquires, so `HELD` refuses |
+| `PREMATURE_UNLOCK` | Candidate unlocks before the parent release/death command; witness challenge acquires and refuses |
+| `RETAIN_AFTER_RELEASE` | Candidate claims release while retaining its lock; real witness contends and refuses |
+| `INHERITABLE_FLAGS` | Mutate stable inspection's read-back non-inheritance flag to false; guard refuses before child launch; do not intentionally transfer a live lock |
+| `INHERITED_IDENTITY` | Mutate child inspection to same-file identity, even with claimed non-inherit flags; reducer refuses |
+| `WRONG_CUSTODY` | Substitute leaf/root native identity in a captured barrier; refuse before lock/death authority |
+| `WRONG_RANGE_OR_FLAGS` | Mutate reviewed call/compile parameters; source/build census refuses; no blocking-lock fallback |
+| `BUILD_OR_LOADER_SUBSTITUTION` | Substitute candidate bytes for witness output or change a retained loaded byte; pre-load/retained-byte rehash refuses |
+| `MALFORMED_OR_FORGED_FACTS` | Extra member, unknown error or candidate verdict in a pending call; hostile-safe parser refuses |
+| `FALSE_DEATH_OR_RETRY` | Transcript lacks exact exit/close, moves attempt before close, or contains two post-death calls; reducer refuses |
+| `MISSING_OR_MIXED_CENSUS` | Missing/duplicate/extra case, control, OS archive or differing attempt/revision; diagnostic verifier refuses |
+| `CAPABILITY_CONFUSION` | Feed experiment report/OBSERVED into existing profile/core/publication parsers; unchanged parsers refuse |
+
+These mutation rows also cover their named structural variants deterministically
+in one test invocation; no fuzz campaign, transfer mechanism or new security
+framework is required. They must fail if their corresponding guard is deleted.
+An incomplete control census cannot yield `OBSERVED`.
+Retained control inputs and observed rejection transcripts have fixed paths
+`controls/<controlId>/input.json` and `controls/<controlId>/observation.json`;
+case stdout/stderr use `transcripts/<caseId>/<actor>.stdout` and `.stderr` for
+that case's actual child actors. The stable collector derives this finite
+file census from the report, builds and fixtures, hashes every retained file
+using the existing artifact manifest, and refuses missing/extra files. A
+`refused` Boolean without its replayable guard input or real witness transcript
+is missing evidence. Guard replay uses stable code and data only; native
+process measurements are not rerun by the reducer.
+
+#### Disposition, proportionality, and stop boundary
+
+The prediction is falsifiable at the first complete three-OS reduction:
+these fixed-file native locks may remove the exclusive-create residue while
+still failing the unchanged immediate one-attempt owner-death property.
+`OBSERVED` is exploratory evidence only. All selectable capability/profile
+slots remain null; ISS-004/005/020/031 remain blocked until their existing full
+selection requirements are met. CAS, replacement, same-lock absence, process
+tree ownership, production custody, reboot/network-filesystem behavior and
+credentials are not inferred. ISS-004's fixed lock/singleton/revocable handles/
+CAS/readback/fail-closed recovery and ISS-005's exact descendant-death
+requirement remain intact.
+
+The measured threat is lost exclusion after holder death. Removing the native
+binding restores residue failure; removing the independent witness allows
+bypassed locks to self-report success. Retaining `BLOCK_REPLAN` is the smallest
+alternative; a JavaScript mutex cannot test unrelated-process exclusion.
+The two small independently authored native sources are justified by that
+specific witness need, not by a reusable helper platform. Scope permits only
+the binding, witness, stable driver/build/fixtures, and inseparable existing
+harness/registry/census amendments. No service, sidecar, global sequencer,
+general filesystem API, privileged setup, new account, installed release or
+committed binary. Round 234's isolation remains parked until ISS-019.
+
+One bounded pressure round and at most one after a named blocker repair apply.
+A larger diff than one review sitting, unavailable independent witness,
+required privilege/general helper, changed native primitive, relaxed death
+property, or need for retries is a concrete replan boundary. Source/build/loader
+substitution, false holder identity, inheritance, Windows release lag, forged
+barriers and evidence-to-authority confusion are the review attack surface.
+Independent review decides acceptance of this ledger; the author does not
+certify it. This docs packet executes no build, probe, hosted run or publication.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
