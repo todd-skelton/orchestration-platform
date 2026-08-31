@@ -43,7 +43,7 @@ describe("local advisory conformance entrypoint", () => {
     const expected = iss002TestBundlePaths.filter((path) => path.startsWith("test/contracts/"));
     expect(arguments_.slice(2, 2 + expected.length)).toEqual(expected);
     expect(arguments_).not.toContain("test/contracts");
-    expect(arguments_.filter((value) => value.startsWith("test/contracts/"))).toHaveLength(38);
+    expect(arguments_.filter((value) => value.startsWith("test/contracts/"))).toHaveLength(39);
   });
 
   test("starts with the exact marker, emits no hosted record, and returns zero only for all-pass", async () => {
