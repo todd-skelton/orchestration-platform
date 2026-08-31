@@ -443,8 +443,6 @@ describe("review request structural contract", () => {
     for (const unsupported of [
       "review-packet/v1",
       "retained-content-reference/v1",
-      "review-attempt-result/v1",
-      "review-authority/v1",
       "review-request/v2",
       "event-journal/v1",
       "orchestration-event/v1",

@@ -15,7 +15,7 @@ or authority grant. The unchanged published protocol is
 | Restart/reclaim            | Unimplemented. Exclusive state-directory creation is not a lease, crash recovery, or exactly-once side-effect protocol.                                                                                                                                       |
 
 The executable gap census records `schemaVersion:unsupported` for
-`event-journal/v1`, `review-attempt-result/v1`, `review-authority/v1`,
+`event-journal/v1`,
 and `cycle-receipt/v1`. Those records must come from
 their owning public contracts before full-cycle parser evidence is possible;
 existing unrelated schemas are never repurposed to fill the gap. A producer
@@ -51,9 +51,43 @@ Future echo/review work must target a seeded earlier result from a distinct
 author in a later review cycle. An implementation cannot approve its own result
 in the same cycle. This partial packet implements neither role nor acceptance.
 
+ISS-002 also supplies the complete structural review-attempt-result and claimed
+review-authority parsers, their canonical identities, and a pure supplied-record
+binding check. This fixture still has no actual review attempt, stable reduction,
+history admission, or effective authority; valid supplied claims prove none of them.
+
 Missing full acceptance: joined three-OS cycle journals, every-boundary
 crash/resume matrix, frontier/rejecting-review/concurrent-lease refusals, and a
 complete ordinal census. Current tests cover only the partial consumer's
 records, malformed inputs, and bounded filesystem manifests. The ordinary
 root test command includes them for subsequent three-OS CI; no hosted result
 is asserted by this source ledger.
+
+## Bounded session increment
+
+The observer-only rows above remain unchanged for `consume.ts`. A separate
+`session.ts` consumer now acquires an actual quarantined create-once claim and
+produces public acquisition and step-1 health records from checked root/leaf
+identity, retained handle bytes, reloaded configuration and injected clock
+observations. Its source/provenance/paths, acquisition request, cycle request
+and no-module cycle plan use public canonical contracts. A second holder gets
+`REFUSED/SESSION_HELD`; malformed, missing, moved or conflicting observations
+produce unknown evidence and retain the claim rather than taking over or
+deleting another holder's state. This evidence is separate from the observer,
+not a newly completed route from step 1 to step 2.
+
+Known-current cleanup removes the checked claim and closes its handle; uncertain
+cleanup closes without deletion. These are private fixture outcomes, not public
+release receipts or native atomic deletion against hostile concurrent writers.
+No lease renewal, production freshness/state admission, process execution,
+journal start/replay, other ordinals or full crash/resume acceptance is claimed.
+The fixture's unrenewed clock window does not grant runtime authority. Its
+new session tests are authored evidence pending host execution and independent
+review. The full-cycle gaps and both root capability placeholders remain.
+
+The root-replacement control distinguishes an executed replacement from an
+actual Windows `EPERM` rename denial while the claim is open. Executed replacement
+requires unknown retention; observed denial requires exact unchanged identity
+and bytes, healthy observation and normal cleanup. POSIX must execute the
+replacement; Windows still executes the other poison controls. No handle is
+dropped to force a mutation, and no denied mutation is labeled successful tampering.
