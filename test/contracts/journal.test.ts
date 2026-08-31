@@ -593,12 +593,12 @@ test("binds STARTED and the actual SESSION and RECLAIM evidence tuples", () => {
     ]).ok,
   ).toBe(false);
 
-  const moved = copy(f.journal.events[1]);
+  const moved = copy(f.journal.events[1]!);
   moved.output.health.step.inputDigest = "0".repeat(64);
   expect(c.parseOrchestrationEvent(moved).ok).toBe(true);
   expect(c.validateOrchestrationEventBinding(moved, []).ok).toBe(false);
 
-  const movedContext = copy(f.journal.events.at(-1));
+  const movedContext = copy(f.journal.events.at(-1)!);
   movedContext.output.context.cyclePlan.request.cycleId = id(90);
   expect(c.validateOrchestrationEventBinding(movedContext, []).ok).toBe(false);
 });
@@ -667,7 +667,7 @@ test("reduces deterministic complete preimages and refuses missing, substituted 
   expect(c.reduceEventJournal(f.journal, substituted).ok).toBe(false);
 
   const broken = copy(f.journal);
-  broken.events[3].output.skip.step.inputDigest = "0".repeat(64);
+  broken.events[3]!.output.skip.step.inputDigest = "0".repeat(64);
   expect(c.parseEventJournal(broken).ok).toBe(true);
   const unknown = c.reduceEventJournal(broken, f.evidence);
   expect(unknown).toMatchObject({ ok: true, value: { outcome: { kind: "UNKNOWN" } } });
