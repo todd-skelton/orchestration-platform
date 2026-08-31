@@ -126,7 +126,8 @@ export function parseProjectPreflightObservation(
     if (!facts.ok) issues.push(...prefixed("facts", facts.issues));
   } else {
     if (!digest(row.adapterConfigurationDigest)) issues.push("adapterConfigurationDigest:invalid");
-    if (!isUuidV7(row.observationId)) issues.push("observationId:invalid");
+    if (!isUuidV7(row.observationId) || row.observationId.length !== 36)
+      issues.push("observationId:invalid");
     if (!isCanonicalTimestamp(row.observedAt)) issues.push("observedAt:invalid");
     const result = detachedRecord(row.result);
     if (!result.ok) issues.push(...prefixed("result", result.issues));
