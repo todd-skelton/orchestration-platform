@@ -5,14 +5,14 @@ context for the later ISS-026 independent review, not a correctness dependency
 or authority grant. The unchanged published protocol is
 `docs/architecture/routine-cycle.md`.
 
-| Protocol surface           | Current evidence and missing acceptance                                                                                                                                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Configuration before cycle | Existing pure loader admits external roots; provenance uses the public parser. No state service or lease is implemented.                                                                                                                                      |
-| 2 project.snapshot         | Real branch and document-queue SDK fixtures produce configuration-bound project facts. No external provider or project CLI evidence is claimed.                                                                                                               |
-| Input for 3                | Real SDK policy readers freshly observe source after a bound COMPLETE snapshot; six canonical outputs now include project-breaker-facts/v1. This is observer evidence only, not implementation of routine step 3, generic breaker state/history, or recovery. |
-| 4 module.plan              | Fixture policy selects one eligible READY work.read row from COMPLETE facts and retains its subject in the real action core/brief. No module descriptor, input/result admission, or module-action-plan is claimed.                                            |
-| 1, 3, 5–15                 | Unimplemented. No ordinal receipts, typed skips, terminal cycle, process execution, review reduction, mutation, or journal exists here.                                                                                                                       |
-| Restart/reclaim            | Unimplemented. Exclusive state-directory creation is not a lease, crash recovery, or exactly-once side-effect protocol.                                                                                                                                       |
+| Protocol surface           | Current evidence and missing acceptance                                                                                                                                                                                                                        |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Configuration before cycle | Existing pure loader admits external roots; provenance uses the public parser. No state service or lease is implemented.                                                                                                                                       |
+| 2 project.snapshot         | Real branch and document-queue SDK fixtures produce configuration-bound project facts. No external provider or project CLI evidence is claimed.                                                                                                                |
+| Input for 3                | Real SDK policy readers freshly observe source after a bound COMPLETE snapshot; Canonical outputs include project-breaker-facts/v1. This is observer evidence only, not implementation of routine step 3, generic breaker state/history, or recovery.          |
+| 4 module.plan              | The public module descriptor/input/result seam binds actual COMPLETE observations, cycle intent, selected work ID and exact core/brief; normal no-action is a concrete public result. This is structural observer evidence, not authorized routine invocation. |
+| 1, 3, 5–15                 | Unimplemented. No ordinal receipts, typed skips, terminal cycle, process execution, review reduction, mutation, or journal exists here.                                                                                                                        |
+| Restart/reclaim            | Unimplemented. Exclusive state-directory creation is not a lease, crash recovery, or exactly-once side-effect protocol.                                                                                                                                        |
 
 The executable gap census records `schemaVersion:unsupported` for
 `event-journal/v1`,
@@ -32,12 +32,10 @@ identities. This fixture produces no review request and executes no review;
 attempt results, authority, and all runtime evidence joins remain unimplemented.
 
 ISS-013 supplies the consumed SDK snapshot/current-policy observations and public
-configuration/facts binding. This fixture adds a private snapshot/policy-to-brief
-handoff, not a new snapshot-to-action public contract. The fixture copies the chosen row's actual
+configuration/facts binding. This fixture now consumes the public module input/result handoff; the SDK facts remain unchanged. The fixture copies the chosen row's actual
 immutable subject and work.read capability; it never substitutes frontierDigest
 or adds a snapshot-digest field. Snapshot or policy UNKNOWN/UNAVAILABLE, fresh
-changed source, substituted configuration/snapshot/policy binding, or no eligible
-work produce no plan call or state output. Tests retain exact canonical SDK policy
+changed source, or substituted configuration/snapshot/policy binding produce no plan call or state output. Complete observations with no eligible work now produce a bound public no-action result. Tests retain exact canonical SDK policy
 facts alongside the admitted full snapshot across the plan await. Branch and queue
 policies may produce contrasting facts with identical observer briefs: NO_TRIP is
 never permission, recovery, module admission, or capability use, and TRIP is not a
@@ -91,3 +89,47 @@ requires unknown retention; observed denial requires exact unchanged identity
 and bytes, healthy observation and normal cleanup. POSIX must execute the
 replacement; Windows still executes the other poison controls. No handle is
 dropped to force a mutation, and no denied mutation is labeled successful tampering.
+
+## Public module seam increment
+
+The observer replaces its private descriptor and core-to-brief call with the
+complete public descriptor, input and wrapper-free result union. Its retained
+input contains the actual configuration/provenance/snapshot/policy records,
+caller cycle request and fixed descriptor. The one inline call chooses a READY
+opaque work ID and subject; both the planner and caller bind the returned action
+against the exact input. Missing eligible work produces public no-action with
+no core or brief. Ten action outputs or eight no-action outputs round-trip;
+setup and teardown remain outside the measured observer invocation.
+The callable's only exports are descriptor/plan and its native Promise resolves
+to the concrete public result. Parser-result wrappers remain internal; thrown
+calls and malformed/wrapped results refuse before any observer output.
+
+This explicitly follows the independently reviewed module ABI replan in the
+contract ledger: actual observations replace undefined reduced facts, the
+existing policy tuple replaces an undefined policy-code digest, and exact
+compatibility tuples replace unspecified ranges. These records never assert
+breaker permission, installed code identity, adapter module authorization,
+worker launch, review or mutation. The separate session consumer is still not
+composed with the observer. No private journal, partial public union, skip for
+a missing parser, or complete-cycle claim is added. Current source checks are
+subject to independent review and actual host/three-OS execution evidence.
+
+## Joined session and observer increment
+
+The new session-observer composition consumes its actual acquired cycle request
+in the real snapshot/current-policy/public-module handoff. The fixed fixture
+module census bounds requested IDs; default acquisition remains no-module.
+Its initial public step-1 health record and a new live observation after the
+async planner prevent using an altered claim for output. Only a claim-only root
+can receive the thirteen action or eleven no-action canonical records. Cleanup
+removes the known claim, retains unknown state and never removes other records.
+This replaces the prior separation only for this new joined entrypoint; the
+standalone observer and separate session APIs remain available and tested.
+
+These records are not a journal and the post-call health observation does not
+invent a later routine ordinal. No breaker reduction, worker, review, skip,
+terminal or boundary-resume claim is made. Reused output refuses without
+replacement, not exactly-once replay; the observer may have repeated its pure
+read/plan work before that refusal. The concurrency/poison/frontier controls and
+outside-state manifests are bounded fixture evidence subject to host execution,
+independent review and three-OS CI, not production authority or isolation.
