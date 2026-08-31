@@ -422,7 +422,7 @@ function parseMutationTuple(input: unknown): ParseResult<ReclaimMutationTuple> {
     issues,
   );
   const receipt = nullable(row.receipt, parseProjectApplyReceipt, "receipt", issues);
-  if (issues.length) return invalid(...issues);
+  if (!request.ok || !plan.ok || issues.length) return invalid(...issues);
   return {
     ok: true,
     value: {
