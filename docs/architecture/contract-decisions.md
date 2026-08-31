@@ -5012,6 +5012,305 @@ public receipt/request or arbitrary resolver. Needing additional ownership,
 provider, recovery or release authority is a concrete replan boundary, not
 permission to expand this packet.
 
+### Dispatch, launch and terminal literal proposal (ISS-002)
+
+This consumer-led group closes only the three existing step-7/8/9 families
+`dispatch-plan/v1`, `worker-launch-receipt/v1` and
+`worker-terminal-receipt/v1`. The current ISS-041 consumer is its fixed
+worker-required observer echo action. Every role and outcome is structurally
+closed, but no production process, credential, ownership or resume authority
+is selected. Independent literal review precedes code. Step 14's existing
+`resource-reclaim-receipt/v1` remains a separate complete group.
+
+#### Explicit bounded replans and scalar rules
+
+One `attemptId:Uuid`, allocated before planning by the actual dispatch owner,
+is also this dispatch transaction/launch-attempt key. No additional launch UUID
+is invented. Runtime must create it once, bind one immutable plan, refuse reuse
+for another launch, and retain the exact native observation handles. Equal UUID
+text alone proves none of that. Plan resource intents precede allocation;
+allocation claims bind the attempt and enter the launch record, never its plan
+preimage. This resolves the previously unspecified transaction chronology.
+
+Process records below are complete *supplied claims*: an opaque incarnation
+ID, parent relation and declared census/state, not a PID, OS birth token or
+serializable native handle. No ID, completeness label or empty array grants
+process death, absence, exclusive ownership or resume authority. Generic
+descendant observation remains ISS-005-owned and unselected by this packet.
+The fixture may execute only its fixed reviewed source using one retained
+direct ChildProcess handle, no shell and no child-spawning code. It may claim
+one direct process only while its owner observes that exact handle and source;
+lost handles/crash or possible unknown children produce UNKNOWN, never PID
+adoption, a fresh attempt, descendant probing or an inferred empty census.
+
+The fixed reviewed echo host requires no credentials and forbids credential
+injection. NONE below is a claim requiring that source/environment evidence;
+observer role and `[]` do not establish it. Nonempty reference rows are bounded
+claims only, not a partial credential-reference parser or ISS-032 service.
+Rendered/captured bytes are retained separately from validated immutable
+worker materialization or review results. Process exit never certifies either.
+
+Reuse `C`, `Digest`, `Uuid`, `Time`, canonical decimal strings and existing
+detached closed-record/array rules. Every field is required; sequences below
+are canonical key order. Newly declared nulls are only the enumerated cells;
+reused contracts preserve their own nulls. Unknown fields/versions/enums,
+missing values, symbols, accessors, proxies and sparse/exotic values refuse
+without invoking input code. `Name` is `[a-z][a-z0-9._:-]{0,63}`; `Dec(a,b)`
+is an unsigned canonical decimal string, inclusively bounded by a and b.
+Every stated string grammar matches the whole string, with no trailing bytes.
+Intrinsic parsers enforce every local shape/null/bound/outcome rule below;
+predicates naming another actual record are enforced by the supplied relations.
+
+An inline content reference is exactly `byteLength, contentDigest`, with
+byteLength `Dec(0,1048576)` and contentDigest SHA-256 of the exact retained raw
+bytes. Rendered input additionally requires nonzero length. It is not the
+canonical brief hash or a path. All arrays below are dense, at most 256 rows;
+only explicitly stated nonempty arrays have a lower bound of one.
+
+#### Complete preparation and dispatch plan
+
+A resource intent is exactly `owner, resourceIdentityDigest`, owner being
+ADAPTER or HOST and the identity Digest. Intents are strictly sorted by the
+ASCII pair `(owner,resourceIdentityDigest)`, with no repeated pair. ADAPTER
+means the actual bound project configuration's owner; HOST means the actual
+selected host. This census requests allocations; the existing brief READ/
+CREATE/MODIFY/DELETE footprint is intended access and is not an allocation.
+Existing resources accessed read-only do not thereby become new allocations.
+The census covers owner-managed execution workspaces/temporary artifacts;
+zero rows do not assert that no OS resources exist. Native process/stdio handle
+closure remains the process owner's duty; retained journal/evidence records
+are not worker allocations to erase. Actual owners admit the requested scope.
+
+Credentials are exactly `{kind:"NONE"}` or `{kind:"REFERENCES", references}`.
+REFERENCES has 1–256 rows strictly sorted/unique by credentialId. Each row is
+exactly `access, capabilityNames, credentialId, generation, referenceDigest,
+role`: access is READ_ONLY or PROJECT_MUTATION; capabilityNames is 1–256
+strictly ASCII-sorted unique Names; credentialId is Uuid; generation is
+Dec(0,9007199254740991); referenceDigest is Digest; role is the unchanged
+implementation/review/observer enum. Only implementation may claim
+PROJECT_MUTATION. There is no release/promotion-administration access arm.
+Role/capability/access are requests/claims to equal-bind against actual
+ISS-032 authority before use, not authority inferred from Name spelling.
+referenceDigest uses its future owning credential contract's identity; no
+replacement hash or backend/secret payload is specified or accepted here.
+
+`dispatch-plan/v1` has exactly `actionPlanDigest, attemptId, outcome,
+preflightDigest, reviewRequestDigest, routeDigest, schemaVersion,
+sessionHealthDigest`. All references are Digest except reviewRequestDigest,
+which is Digest or null. The schema literal is `dispatch-plan/v1`.
+
+| outcome.kind | Complete outcome members and exact rules |
+| --- | --- |
+| PLANNED | `credentials, hostRendererArtifactDigest, kind, renderedInput, resourceIntents, workerHostIdentityDigest`; credentials/intent census/content reference as above; both host fields Digest |
+| REFUSED | `kind, reason`; reason PRECONDITION_MOVED, RENDERING_REFUSED, CREDENTIALS_REFUSED or RESOURCES_REFUSED |
+| UNKNOWN | `kind, reason`; reason OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID or ADMISSION_UNPROVEN |
+
+Opposite-arm fields are absent, never null. Refusal reasons are diagnosed
+producer claims after a valid input handoff, not mechanically proved by their
+spelling. Invalid/missing upstream records cannot yield fabricated references.
+This closed failure union does not authorize invoking the preparation owner.
+
+The full plan relation takes `(moduleInput, actionPlan, mappingInput, route,
+observationInput, preflight, cyclePlan, health, reviewRequestOrNull,
+renderedInputBytesOrNull, plan)`. Reuse the complete preflight supplied relation;
+require ELIGIBLE and SELECTED, hence a declared worker-required action. NO_WORKER
+instead takes the existing typed 7–10 skips, never a null-host plan. Require:
+
+1. The actual cyclePlan parses and its request is canonically identical to
+   moduleInput.cycleRequest. The actual health parses as HEALTHY with step:null,
+   targetSessionId and holderSessionId both equal
+   moduleInput.cycleRequest.sessionRequest.sessionId.
+   Initial ordinal-1 health cannot be relabeled or borrowed as this inspection.
+   Plan sessionHealthDigest equals its designated identity; actual fresh lease/
+   source/path/configuration authority remains the session owner's duty.
+2. Plan action/preflight/route references equal their actual designated
+   identities. Core requested role equals brief role by the reused module
+   binder. For review require the complete actual review-request, its cycle
+   equal the actual cycle, packet.brief canonically equal the actual brief,
+   and packet.subject canonically equal the actual concrete input/preflight
+   target. For a worker-result review require plan.attemptId distinct from the
+   subject's authorAttemptId, reusing the review-result rule; no fictional
+   author attempt is imposed on a candidate. Bind reviewRequestDigest to the
+   actual request's designated identity. For implementation/observer require
+   reviewRequestOrNull and reviewRequestDigest both null.
+3. For PLANNED, use the actual selected mapping row: both host identities
+   equal that row, with its existing capability/identity recomputation. Every
+   credential row role equals the core/brief role. Require actual owned raw
+   rendered bytes and recompute the full reference, including byte length.
+   Renderer determinism, installed artifact equality, admitted credentials and
+   completeness/eligibility of resource intents remain producer admission.
+   For REFUSED/UNKNOWN require renderedInputBytesOrNull exactly null; no
+   partial successful preparation is smuggled into those arms.
+
+Raw byte arguments throughout are detached copies of actual bounded native
+Uint8Array bytes, without shared backing or executable input hooks; null is
+allowed only where named, never undefined. No unparsed JSON record, caller
+expected digest or decoded/re-encoded text replaces the actual raw bytes.
+
+#### Allocation, ownership and process claims at launch
+
+An allocation row is exactly `allocationId, owner, ownerTransactionId,
+resourceIdentityDigest, state`. Owner/identity reuse the intent; transaction
+is Uuid and equals plan.attemptId. State is NOT_ALLOCATED, ALLOCATED or UNKNOWN.
+NOT_ALLOCATED requires allocationId:null; ALLOCATED requires Uuid; UNKNOWN
+allows Uuid or null and retains any known ID. Non-null IDs are unique within
+the census. Rows preserve the exact full sorted intent census, including
+unattempted/refused resources: omission cannot establish absence. IDs are
+owner-issued opaque allocation claims stable through later reclaim.
+
+A process census is exactly `completeness, entries`. Completeness is COMPLETE
+or UNKNOWN. Each entry is exactly `parentProcessId, processId, state`:
+processId is Uuid, parentProcessId is Uuid or null, state LIVE, DEAD or UNKNOWN.
+Entries are strictly processId-sorted/unique. A nonempty census has exactly
+one null-parent root; every other parent names another entry, no self-edge or
+cycle. COMPLETE forbids UNKNOWN entry states. Empty COMPLETE means a supplied
+no-process claim; empty UNKNOWN means no trustworthy census. Neither is proof.
+The fixture's only admitted nonempty census has one null-parent entry backed
+by its retained handle; the parser may structurally admit larger claims but
+does not grant a descendant primitive or a history/currentness proof.
+
+`worker-launch-receipt/v1` has exactly `attemptId, dispatchPlanDigest,
+observedAt, outcome, ownership, processes, resources, schemaVersion`.
+attemptId is Uuid, plan reference Digest; processes/resources use the complete
+inline shapes above. Ownership is UNPUBLISHED, PUBLISHED or UNKNOWN, meaning
+the exact attempt's create-once ownership claim. observedAt is Time, or null
+only for UNKNOWN. Schema is literal `worker-launch-receipt/v1`.
+
+| outcome.kind | Complete members and exact supplied constraints |
+| --- | --- |
+| LIVE | `kind`; PUBLISHED, every resource ALLOCATED, nonempty COMPLETE process census whose root is LIVE |
+| START_FAILED | `kind, reason`; reason ALLOCATION_REFUSED, OWNERSHIP_REFUSED, SPAWN_REFUSED or STARTUP_EXITED; exact matrix below |
+| UNKNOWN | `kind, reason`; reason OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID, IDENTITY_CONFLICT, STARTUP_UNPROVEN or HANDLE_LOST; retain all known claims, grant no vacancy |
+
+The explicit step-8 sequence is allocate intents in canonical order, publish
+ownership once, then native launch/observe. This is a bounded chronology
+replan, not an allocation or filesystem primitive selection. START_FAILED is:
+
+| reason | Resources / ownership / process census |
+| --- | --- |
+| ALLOCATION_REFUSED | nonempty census: zero or more ALLOCATED rows then one or more NOT_ALLOCATED; UNPUBLISHED; empty COMPLETE processes |
+| OWNERSHIP_REFUSED | all ALLOCATED; UNPUBLISHED; empty COMPLETE processes |
+| SPAWN_REFUSED | all ALLOCATED; PUBLISHED; empty COMPLETE processes |
+| STARTUP_EXITED | all ALLOCATED; PUBLISHED; nonempty COMPLETE, every process DEAD |
+
+These are supplied claims only. Possibly created processes, conflicting owner
+publication or unknown allocation cannot become a known start failure. No
+empty census substitutes for observing that no native child was created.
+The launch relation `(plan, launch)` requires a PLANNED plan, its actual
+designated digest, equal attempt ID and the exact intent/allocation census,
+then enforces the matrices. It does not replay the full preparation tuple;
+the consumer must additionally pass that relation and actual owner admission.
+
+#### Complete terminal observation, capture and acyclic failure
+
+An exit cause is exactly `{kind:"EXIT_CODE", value}` with value
+Dec(0,4294967295), or `{kind:"SIGNAL", value}` with value matching
+`SIG[A-Z0-9]{1,16}`. This bounded signal token is a source claim, not a portable
+termination API or inference from a platform's conventional exit code. Missing,
+contradictory or unadmitted code/signal remains UNKNOWN/EXIT_UNPROVEN.
+A stream capture is exactly `{content, kind}` for kind COMPLETE or TRUNCATED,
+with the full content reference above, or exactly `{kind:"UNAVAILABLE"}`.
+TRUNCATED retains the actual bounded prefix, not a claimed complete output.
+Capture is exactly `stderr, stdout`; the streams are never merged or reordered.
+
+`worker-terminal-receipt/v1` has exactly `attemptId, capture,
+dispatchPlanDigest, launchReceiptDigest, observedAt, outcome, processes,
+schemaVersion`. References are Digest; attemptId Uuid; capture/processes are
+the closed shapes above. Time is non-null except UNKNOWN may use null.
+Schema is literal `worker-terminal-receipt/v1`.
+
+| outcome.kind | Complete members and exact supplied constraints |
+| --- | --- |
+| EXITED | `exit, kind`; exit is a complete cause; launch was LIVE; nonempty COMPLETE process census, all DEAD |
+| START_FAILED | `exit, kind`; launch was START_FAILED; canonically identical process census; exit:null for proven no-child reasons, complete exit cause for STARTUP_EXITED |
+| TERMINATION_FAILED_LIVE | `kind, termination`; launch was LIVE; COMPLETE census with at least one LIVE process; termination exactly `elapsedMilliseconds, limitMilliseconds`, respectively Dec(1,86400000) and Dec(1,60000), elapsed >= limit |
+| UNKNOWN | `kind, reason`; reason OBSERVATION_UNAVAILABLE, OBSERVATION_INVALID, IDENTITY_CONFLICT, HANDLE_LOST, PROCESS_TREE_UNPROVEN or EXIT_UNPROVEN; no death or vacancy claim |
+
+“Terminal” names the completed observation/termination operation, not automatic
+worker death. TERMINATION_FAILED_LIVE and UNKNOWN retain capacity; later
+bounded observation may continue only under actual ownership. Runtime preserves
+at most one immutable final EXITED/START_FAILED record per attempt; repeated
+reads return it. Live/unknown diagnostic observations never stand in for that
+final record, and these pure relations do not establish history or retry rights.
+
+For known start failure, step 8 first emits its launch record, then this
+START_FAILED terminal referencing it. It emits no step-9 receipt: 9/10 remain
+typed skips and disposition proceeds at 11. A future complete event union may
+bind both step-8 records. Launch never references terminal; terminal never
+references downstream worker subject/review result. A possibly started child
+instead yields UNKNOWN and cannot take that known-failure skip route.
+
+The terminal relation `(plan, launch, stdoutBytesOrNull, stderrBytesOrNull,
+terminal)` applies the launch relation, exact plan/launch digests and attempt
+equality. Every launch process ID/parent remains in terminal, with no DEAD to
+LIVE reversal; new descendant entries may be added under the same root,
+never a substituted root. An empty launch census cannot acquire a root except
+for UNKNOWN terminal claims (no known finality is inferred). Known terminal
+time must be >= known launch time; clock contradiction remains an
+UNKNOWN/OBSERVATION_INVALID observation, not a fabricated monotonic duration.
+START_FAILED/no-child requires
+both captures UNAVAILABLE; other outcomes permit every capture arm independently.
+For UNAVAILABLE require the corresponding byte argument exactly null; for
+COMPLETE/TRUNCATED require actual bytes and recompute length/hash. Capture
+failure does not negate known process exit, but cannot supply a complete worker
+result. Actual bounded termination timing requires the owner's monotonic
+observation; these numeric claims alone prove no timeout or termination action.
+
+#### Owner gates, required evidence and footprint
+
+ISS-008 owns plan/ownership/attempt uniqueness and the complete resource claim;
+ISS-013 and the selected host own their actual allocations and eventual absence;
+ISS-005 owns actual native process observation; ISS-032 retains credential
+admission. Session, breaker, installed module/route/renderer and exact review
+request/target admission remain mandatory immediately before publication and
+launch. Shape, closed claims, scalar order or digest equality grants none.
+No production tree identity, native lease, broker, backend, credential family,
+workspace resolver, command argv, worker-health/CLI implementation or private
+history is supplied. The later step-14 family must consume the same intent,
+allocation, owner transaction, launch and process references plus actual
+disposition/apply and owner absence records; EXITED and caller `[]` cannot
+clear it. No-worker and pre-launch failure still require actual step 14.
+
+The fixture launches only its fixed reviewed no-child-spawning echo source,
+with native argument array, bounded rendered bytes written to stdin then
+closed, separately piped/capped stdout and stderr and exact handle exit/close
+observation. It never evaluates received bytes or injects credentials.
+Source/handle identity, true zero allocations and absence of credential
+injection require fixture-owned evidence;
+none is asserted by a caller flag. Unavailable handles, uncertain descendants,
+ambiguous exit or interrupted observation give named UNKNOWN/refusal with no
+redispatch/adoption. Runtime/capture source and full crash-boundary evidence
+remain separate reviewed implementation; this packet runs no child or probe.
+
+| Acceptance/removal attack | Required future discriminating evidence |
+| --- | --- |
+| Complete families | Every plan/launch/terminal reason, null/ownership/census/exit/capture cell; all three roles; remove/add/type/enum/hostile nested mutations refuse |
+| Identity graph | Independently pinned canonical bytes/full frames/digests for every outcome cell; inline claim mutations change identity; no launch-to-terminal or terminal-to-subject/review-result back-reference; noncanonical bytes and wrong framing differ/refuse |
+| Supplied preparation | Valid SELECTED/ELIGIBLE full tuple; NO_WORKER, failed preflight/route, old ordinal-1 health, wrong session/cycle/request/brief/host/role/rendered bytes and coordinated single-edge substitutions refuse |
+| Credentials/resources | NONE versus nonempty claims; role/access/generation/capability bounds; exact sorted intent/allocated census, prefix refusal, missing/extra/duplicate IDs, wrong owner/transaction and UNKNOWN-to-NOT_ALLOCATED substitutions |
+| Process and terminal | 0/1/256/257, duplicate/root/parent/cycle/UNKNOWN-state cases; root substitution, dropped known child, DEAD-to-LIVE, live child with dead root, false no-child, start-failure step-8 pair and retained-capacity deadline cases |
+| Bytes versus results | 0/1/1048576/1048577 byte bounds; stdout/stderr swap, truncation/absence, UTF-8 re-encoding and hash/length mutations; exit zero never fabricates worker subject or completed review |
+| Actual fixture boundary | Fixed source/handle and closed stdin; argument echo/stream capture; possible start, lost handle/crash and foreign PID/UUID claims refuse without adoption; genuine zero allocation/credentials independently observed, never inferred from arrays |
+
+Each family's designated identity is SHA-256 of
+`UTF8("orchestration-platform") || 00 || UTF8(its schemaVersion) || 00 ||
+u32be(1) || 07 || u64be(byteLength(C(record))) || C(record)`; generic
+serialization returns that exact concrete record and digest. Inline claims
+have no new schema or digest domain. Upstream identities remain their existing
+designated functions; retained byte references use raw SHA-256 as above.
+
+Footprint now is this bounded subsection, the minimal worker-state clarification,
+additive owning ISS-002/005/008/013/032 notes and round 398. Later implementation
+predicts three complete parsers/identities and three supplied relations with
+bounded inline helpers/tests plus inseparable registry/census/harness updates.
+No runtime/CLI/shared manifest/roadmap/issue/provider/native case changes occur
+here. Host owns planning/format/whitespace checks, independent exact-head
+review and adjacent board reconciliation; author claims no tests, self-PASS,
+production authority or ISS-041 completion. Requiring another public family,
+credential service, process primitive or a larger resolver is a named replan
+boundary. Closed inline claims are smaller than those mechanisms; removing
+their actual-input joins or owner-admission gates would conceal uncertainty.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
