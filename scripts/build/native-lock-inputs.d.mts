@@ -37,7 +37,11 @@ export interface NativeLockToolchainCapture {
   nodeVersion: string;
   state: "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN";
   toolchain: NativeLockBuildRequest["toolchain"];
-  /** At most two ordered observations, with unique COMPILER/SDK purposes. */
+  /**
+   * At most two ordered observations, with unique COMPILER/SDK purposes.
+   * AVAILABLE requires a successful retained COMPILER COMMAND tied to compilerPath;
+   * LOOKUP cannot supply compiler-version evidence. Failed LOOKUP may prove absence.
+   */
   observations: NativeLockToolchainObservation[];
 }
 export interface NativeLockInputRequest {

@@ -27,6 +27,7 @@ type Call = {
 const faults = vi.hoisted(() => ({
   calls: [] as Call[],
   buildCreates: 0,
+  buildRoot: "",
   missingStable: "",
   changedStable: false,
   onCompile: null as ((call: Call) => Promise<void>) | null,
@@ -59,8 +60,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     mkdir: async (...args: Parameters<typeof actual.mkdir>) => {
-      if (String(args[0]).endsWith(`${(await import("node:path")).sep}build`))
-        faults.buildCreates++;
+      if (String(args[0]) === faults.buildRoot) faults.buildCreates++;
       return actual.mkdir(...args);
     },
     readdir: async (...args: Parameters<typeof actual.readdir>) => {
@@ -96,6 +96,9 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 const roots: string[] = [];
+// Host isolation measured ~6s for real executable retention/readback (no C execution).
+// Only full preparation cases use this deadline; production and global timing stay unchanged.
+const integrationTimeout = 30_000;
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const ref = (path: string, bytes: Buffer | string) => ({
   path,
@@ -174,6 +177,7 @@ async function fixture(available = false) {
   const candidateRoot = resolve(base, "candidate"),
     runnerTemp = resolve(base, "runner"),
     sdk = resolve(base, "sdk");
+  faults.buildRoot = resolve(runnerTemp, "build");
   await mkdir(runnerTemp);
   await mkdir(sdk);
   const sourcePath = "probes/portable-primitives/native/native-lock-candidate.c" as const;
@@ -263,6 +267,7 @@ async function fixture(available = false) {
 beforeEach(() => {
   faults.calls.length = 0;
   faults.buildCreates = 0;
+  faults.buildRoot = "";
   faults.missingStable = "";
   faults.changedStable = false;
   faults.onCompile = null;
@@ -279,96 +284,145 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 describe("private composed preparation, synthetic evidence only", () => {
-  test("real unavailable builder retains two roles and exact stable/input census, pending outer deletion", async () => {
-    const { input } = await fixture();
-    const result = await prepareNativeLockBuild(input);
-    expect(result.status).toBe("PENDING_CANDIDATE_CONSUME");
-    expect(faults.buildCreates).toBe(1);
-    expect(faults.calls).toHaveLength(0);
-    expect(
-      result.helper.builds.map((row) => [
-        row.role,
-        row.revision,
-        row.result,
-        row.argv,
-        row.toolchain,
-        row.outputs,
-        row.loaded,
-      ]),
-    ).toEqual([
-      ["STABLE_WITNESS", input.stableRevision, "UNSUPPORTED", null, null, null, null],
-      ["CANDIDATE_BINDING", input.candidateRevision, "UNSUPPORTED", null, null, null, null],
-    ]);
-    expect(result.helper.node).toMatchObject({
-      executablePath: process.execPath,
-      version: process.version,
-      architecture: process.arch,
-    });
-    expect(result.buildRoot).toBe(resolve(input.runnerTemp, "build"));
-    expect(result.buildPathPrefix).toBe("build/");
-    expect(await readdir(input.runnerTemp)).toEqual(["build", "preparation"]);
-    expect(result.stableFiles.map((row) => row.path)).toEqual([
-      "packages/contracts/src/runtime.ts",
-      "probes/portable-primitives/experiment/facts.mjs",
-      "probes/portable-primitives/experiment/fixture.mjs",
-      "probes/portable-primitives/experiment/io.mjs",
-      "probes/portable-primitives/experiment/session.mjs",
-      "scripts/build/native-lock-distribution.mjs",
-      "scripts/build/native-lock-experiment.mjs",
-      "scripts/build/native-lock-headers.mjs",
-      "scripts/build/native-lock-inputs.mjs",
-    ]);
-    expect(result.extraction.headers.map((row) => row.path)).toContain("config.gypi");
-    expect(result.extraction.headers.map((row) => row.path)).toContain("extra.h");
-    expect(result.retainedFiles.map((row) => row.path)).toEqual(
-      result.retainedFiles.map((row) => row.path).sort(),
-    );
-    for (const row of result.retainedFiles)
-      expect(ref(row.path, await readFile(resolve(input.runnerTemp, row.path)))).toEqual(row);
-    expect(result.retainedFiles.some((row) => row.path === "preparation/capture.json")).toBe(true);
-    expect(
-      result.retainedFiles.filter((row) => row.path.startsWith("build/inputs/stable/")),
-    ).toHaveLength(9);
-    expect(
-      await readFile(
-        resolve(result.buildRoot, "inputs/CANDIDATE_BINDING/native-lock-candidate.c"),
-        "utf8",
-      ),
-    ).toContain("distinct synthetic candidate");
-  });
-  test("available capture composes two fixed synthetic invocations with no ambient influence or load", async () => {
-    const { input } = await fixture(true);
-    for (const key of [
-      "PATH",
-      "CC",
-      "CFLAGS",
-      "CPPFLAGS",
-      "LDFLAGS",
-      "CL",
-      "_CL_",
-      "NODE_OPTIONS",
-      "NODE_PATH",
-      "LD_PRELOAD",
-      "DYLD_INSERT_LIBRARIES",
-    ])
-      vi.stubEnv(key, "candidate-injection");
-    const result = await prepareNativeLockBuild(input);
-    expect(faults.calls).toHaveLength(2);
-    expect(new Set(faults.calls.map((call) => call.options.cwd)).size).toBe(2);
-    for (const [index, call] of faults.calls.entries()) {
-      expect(call.file).toBe(process.execPath);
-      expect(call.argv).toEqual(result.helper.builds[index]!.argv);
-      expect(call.options).toMatchObject({ shell: false, windowsHide: true });
-      expect(Object.values(call.options.env)).not.toContain("candidate-injection");
-      expect(result.helper.builds[index]).toMatchObject({ result: "BUILT", loaded: null });
-      expect(call.argv).toContain(
-        process.platform === "win32" ? "/DNAPI_VERSION=8" : "-DNAPI_VERSION=8",
+  test(
+    "real unavailable builder retains two roles and exact stable/input census, pending outer deletion",
+    async () => {
+      const { input } = await fixture();
+      const result = await prepareNativeLockBuild(input);
+      expect(result.status).toBe("PENDING_CANDIDATE_CONSUME");
+      expect(faults.buildCreates).toBe(1);
+      expect(faults.calls).toHaveLength(0);
+      expect(
+        result.helper.builds.map((row) => [
+          row.role,
+          row.revision,
+          row.result,
+          row.argv,
+          row.toolchain,
+          row.outputs,
+          row.loaded,
+        ]),
+      ).toEqual([
+        ["STABLE_WITNESS", input.stableRevision, "UNSUPPORTED", null, null, null, null],
+        ["CANDIDATE_BINDING", input.candidateRevision, "UNSUPPORTED", null, null, null, null],
+      ]);
+      expect(result.helper.node).toMatchObject({
+        executablePath: process.execPath,
+        version: process.version,
+        architecture: process.arch,
+      });
+      expect(result.buildRoot).toBe(resolve(input.runnerTemp, "build"));
+      expect(result.buildPathPrefix).toBe("build/");
+      expect(await readdir(input.runnerTemp)).toEqual(["build", "preparation"]);
+      expect(result.stableFiles.map((row) => row.path)).toEqual([
+        "packages/contracts/src/runtime.ts",
+        "probes/portable-primitives/experiment/facts.mjs",
+        "probes/portable-primitives/experiment/fixture.mjs",
+        "probes/portable-primitives/experiment/io.mjs",
+        "probes/portable-primitives/experiment/session.mjs",
+        "scripts/build/native-lock-distribution.mjs",
+        "scripts/build/native-lock-experiment.mjs",
+        "scripts/build/native-lock-headers.mjs",
+        "scripts/build/native-lock-inputs.mjs",
+      ]);
+      expect(result.extraction.headers.map((row) => row.path)).toContain("config.gypi");
+      expect(result.extraction.headers.map((row) => row.path)).toContain("extra.h");
+      expect(result.retainedFiles.map((row) => row.path)).toEqual(
+        result.retainedFiles.map((row) => row.path).sort(),
       );
-    }
-    expect(
-      result.retainedFiles.filter((row) => /compiler\.(stdout|stderr)$/.test(row.path)),
-    ).toHaveLength(6);
+      for (const row of result.retainedFiles)
+        expect(ref(row.path, await readFile(resolve(input.runnerTemp, row.path)))).toEqual(row);
+      expect(result.retainedFiles.some((row) => row.path === "preparation/capture.json")).toBe(
+        true,
+      );
+      expect(
+        result.retainedFiles.filter((row) => row.path.startsWith("build/inputs/stable/")),
+      ).toHaveLength(9);
+      expect(
+        await readFile(
+          resolve(result.buildRoot, "inputs/CANDIDATE_BINDING/native-lock-candidate.c"),
+          "utf8",
+        ),
+      ).toContain("distinct synthetic candidate");
+    },
+    integrationTimeout,
+  );
+  test(
+    "available capture composes two fixed synthetic invocations with no ambient influence or load",
+    async () => {
+      const { input } = await fixture(true);
+      for (const key of [
+        "PATH",
+        "CC",
+        "CFLAGS",
+        "CPPFLAGS",
+        "LDFLAGS",
+        "CL",
+        "_CL_",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+      ])
+        vi.stubEnv(key, "candidate-injection");
+      const result = await prepareNativeLockBuild(input);
+      expect(faults.calls).toHaveLength(2);
+      expect(new Set(faults.calls.map((call) => call.options.cwd)).size).toBe(2);
+      for (const [index, call] of faults.calls.entries()) {
+        expect(call.file).toBe(process.execPath);
+        expect(call.argv).toEqual(result.helper.builds[index]!.argv);
+        expect(call.options).toMatchObject({ shell: false, windowsHide: true });
+        expect(Object.values(call.options.env)).not.toContain("candidate-injection");
+        expect(result.helper.builds[index]).toMatchObject({ result: "BUILT", loaded: null });
+        expect(call.argv).toContain(
+          process.platform === "win32" ? "/DNAPI_VERSION=8" : "-DNAPI_VERSION=8",
+        );
+      }
+      expect(
+        result.retainedFiles.filter((row) => /compiler\.(stdout|stderr)$/.test(row.path)),
+      ).toHaveLength(6);
+    },
+    integrationTimeout,
+  );
+  test("AVAILABLE compiler lookup cannot replace retained command/version evidence", async () => {
+    const { input, capture, capturePath } = await fixture(true);
+    capture.observations[0] = {
+      kind: "LOOKUP",
+      purpose: "COMPILER",
+      searchDirectories: [dirname(process.execPath)],
+      selectedPath: process.execPath,
+      errorCode: null,
+    };
+    await writeFile(capturePath, JSON.stringify(capture));
+    await expect(prepareNativeLockBuild(input)).rejects.toThrow();
+    expect(faults.calls).toHaveLength(0);
+    expect(faults.buildCreates).toBe(0);
   });
+  test.each(["build", "runner"])(
+    "late %s addition after final build enumeration refuses and remains diagnostic",
+    async (target) => {
+      const { input } = await fixture(true);
+      const preparationRoot = resolve(input.runnerTemp, "preparation");
+      const latePath = resolve(
+        input.runnerTemp,
+        ...(target === "build" ? ["build"] : []),
+        "late-extra",
+      );
+      let reads = 0;
+      faults.onReadDirectory = async (path) => {
+        if (path === preparationRoot && ++reads === 2)
+          await writeFile(latePath, "late diagnostic bytes");
+      };
+      await expect(prepareNativeLockBuild(input)).rejects.toMatchObject({
+        message: "native-lock-inputs:preparation-refused",
+      });
+      expect(reads).toBe(2);
+      expect(await readFile(latePath, "utf8")).toBe("late diagnostic bytes");
+      expect(await readdir(input.runnerTemp)).not.toContain("headers");
+      expect(faults.calls).toHaveLength(2);
+    },
+    integrationTimeout,
+  );
   test.each(["node", "stableRoot", "stableFiles", "argv", "build", "loader"])(
     "rejects caller-selected %s before effects",
     async (key) => {
@@ -486,7 +540,7 @@ describe("private composed preparation, synthetic evidence only", () => {
     await expect(prepareNativeLockBuild(input)).rejects.toThrow();
     expect(faults.calls).toHaveLength(0);
   });
-  test.each(["before", "during"])(
+  test.each(["before", "during", "during-addition"])(
     "empty directory mutation %s builder poisons composed result",
     async (when) => {
       const { input } = await fixture(true),
@@ -500,11 +554,15 @@ describe("private composed preparation, synthetic evidence only", () => {
       } else
         faults.onCompile = async () => {
           faults.onCompile = null;
-          await rmdir(empty);
+          if (when === "during-addition") await mkdir(resolve(empty, "new-empty"));
+          else await rmdir(empty);
         };
       await expect(prepareNativeLockBuild(input)).rejects.toThrow();
       if (when === "before") expect(faults.calls).toHaveLength(0);
-      else expect(faults.calls).toHaveLength(2); // Builder's file-only census cannot see this mutation.
+      // The builder binds known directory identities: deletion stops its next invocation.
+      else if (when === "during") expect(faults.calls).toHaveLength(1);
+      // An added empty directory leaves its file census unchanged; headers still refuse it.
+      else expect(faults.calls).toHaveLength(2);
     },
   );
   test.each(["capture", "retained", "extra", "header", "stable", "cleanup"])(

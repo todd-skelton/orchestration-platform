@@ -345,11 +345,8 @@ export async function prepareNativeLockBuild(input) {
     for (const value of [toolchain.sdkRoot, toolchain.systemRoot])
       if (value !== null) directory(value);
     const compiler = purposes.get("COMPILER").value;
-    if (
-      (compiler.kind === "COMMAND" ? compiler.executablePath : compiler.selectedPath) !==
-      toolchain.compilerPath
-    )
-      refuse();
+    // A lookup can establish absence, but cannot replace retained version-command evidence.
+    if (compiler.kind !== "COMMAND" || compiler.executablePath !== toolchain.compilerPath) refuse();
   } else if (capture.toolchain !== null) refuse();
   const stableFiles = stablePaths.map((name) => entry(name, read(resolve(stableRoot, name))));
   const stableSource = entry(
@@ -392,7 +389,19 @@ export async function prepareNativeLockBuild(input) {
     if (observed.sha256 !== hash(bytes) || observed.byteLength !== String(bytes.length)) refuse();
     retained.set(observed.path, observed);
   }
-  async function census() {
+  async function census(disposed = false) {
+    // The shared guard binds directory identity, not contents. Seal each directory
+    // before enumeration, then check all seals after the complete retained readback.
+    // Each census starts after our own writes/disposal; unexpected entries stay put.
+    const sealedDirectories = new Map();
+    const contentStamp = (stat) => `${stat.mtimeNs}:${stat.ctimeNs}`;
+    function seal(directory) {
+      guard.parents(directory);
+      sealedDirectories.set(directory, contentStamp(guard.metadata(directory, true)));
+    }
+    seal(request.runnerTemp);
+    const children = (await readdir(request.runnerTemp)).sort().join("\0");
+    if (children !== (disposed ? "build\0preparation" : "build\0headers\0preparation")) refuse();
     const expected = new Map(retained);
     for (const build of helper.builds)
       for (const file of [...(build.inputs ?? []), ...(build.outputs ?? [])]) {
@@ -407,8 +416,7 @@ export async function prepareNativeLockBuild(input) {
     let count = 0;
     async function visit(directory, prefix, depth) {
       if (++count > 24000 || depth > 24) refuse();
-      guard.parents(directory);
-      guard.metadata(directory, true);
+      seal(directory);
       for (const child of await readdir(directory, { withFileTypes: true })) {
         if (++count > 24000 || child.isSymbolicLink()) refuse();
         const name = `${prefix}/${child.name}`,
@@ -433,6 +441,8 @@ export async function prepareNativeLockBuild(input) {
     await visit(preparationRoot, "preparation", 0);
     if (seen.size !== expected.size) refuse();
     verify();
+    for (const [directory, stamp] of sealedDirectories)
+      if (contentStamp(guard.metadata(directory, true)) !== stamp) refuse();
     return files.sort(order);
   }
   try {
@@ -488,8 +498,7 @@ export async function prepareNativeLockBuild(input) {
     await census();
     disposalAttempted = true;
     await headers.dispose();
-    if ((await readdir(request.runnerTemp)).sort().join("\0") !== "build\0preparation") refuse();
-    const retainedFiles = await census();
+    const retainedFiles = await census(true);
     // The caller must keep this pending inside consume(...): only its successful
     // authenticated outer consume/delete result permits later collection/acceptance.
     return {
