@@ -34,7 +34,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/contracts
 
-  packages/adapter-sdk: {}
+  packages/adapter-sdk:
+    dependencies:
+      '@orchestration-platform/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/breaker: {}
 
