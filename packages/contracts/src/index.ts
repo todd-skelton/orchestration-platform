@@ -38,6 +38,7 @@ import {
   parseRecoveryAuthorizationContract,
 } from "./recovery.js";
 import { parseConfigurationContract } from "./configuration.js";
+import { computeRouteSelectionDigest, parseRouteSelectionContract } from "./route-selection.js";
 import { parseProjectSnapshotContract } from "./project-snapshot.js";
 import { parseProjectBreakerFactsContract } from "./project-breaker-facts.js";
 import { computeBreakerReceiptDigest, parseBreakerReceiptContract } from "./breaker-receipt.js";
@@ -97,6 +98,7 @@ export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
 export * from "./project-breaker-facts.js";
 export * from "./module-plan.js";
+export * from "./route-selection.js";
 export * from "./routine-step.js";
 export * from "./review-subject.js";
 export * from "./review-request.js";
@@ -144,6 +146,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const route = parseRouteSelectionContract(expectedSchemaVersion, input);
+  if (route) return route;
   const breakerReceipt = parseBreakerReceiptContract(expectedSchemaVersion, input);
   if (breakerReceipt) return breakerReceipt;
   const modulePlan = parseModulePlanContract(expectedSchemaVersion, input);
@@ -231,6 +235,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "review-subject/v1" ||
       expectedSchemaVersion === "review-request/v1" ||
       expectedSchemaVersion === "module-plan-result/v1" ||
+      expectedSchemaVersion === "route-selection/v1" ||
       (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
@@ -283,6 +288,12 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if (expectedSchemaVersion === "route-selection/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeRouteSelectionDigest(parsed.value),
+    };
   if (
     expectedSchemaVersion === "recovery-authorization-state/v1" ||
     expectedSchemaVersion === "recovery-attempt-reservation/v1"

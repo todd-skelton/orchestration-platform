@@ -13,6 +13,11 @@ import { reviewSubjectSchemaFields, reviewSubjectSchemaVersions } from "./review
 import { reviewRequestSchemaFields, reviewRequestSchemaVersions } from "./review-request.js";
 import { modulePlanSchemaFields, modulePlanSchemaVersions } from "./module-plan.js";
 import {
+  routeSelectionSchemaFields,
+  routeSelectionSchemaVersions,
+  routeUnknownReasons,
+} from "./route-selection.js";
+import {
   reviewAuthorityUnknownReasons,
   reviewResultKinds,
   reviewResultSchemaFields,
@@ -122,6 +127,30 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "route-selection/v1": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.route,
+    }),
+    "route-selection/v1#selected": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.selected,
+      closedValues: Object.freeze(["SELECTED"]),
+    }),
+    "route-selection/v1#refused": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.refused,
+      closedValues: Object.freeze(["REFUSED", "NO_SUPPORTED_HOST"]),
+    }),
+    "route-selection/v1#unknown": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.refused,
+      closedValues: Object.freeze(["UNKNOWN", ...routeUnknownReasons]),
+    }),
+    "route-selection/v1#no-worker": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.noWorker,
+      closedValues: Object.freeze(["NO_WORKER"]),
+    }),
     // All suffixes describe inline records, never additional persisted families.
     ...Object.fromEntries(
       Object.entries(breakerReceiptSchemaFields).map(([key, fields]) => [
@@ -970,6 +999,7 @@ export const schemaVersions = Object.freeze(
     ...reviewSubjectSchemaVersions,
     ...reviewRequestSchemaVersions,
     ...modulePlanSchemaVersions,
+    ...routeSelectionSchemaVersions,
     ...reviewResultSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
