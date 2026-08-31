@@ -1,3 +1,7 @@
+import {
+  computeProjectPreflightDigest,
+  parseProjectPreflightContract,
+} from "./project-preflight.js";
 import { types as nodeTypes } from "node:util";
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
 import {
@@ -94,6 +98,7 @@ export * from "./recovery.js";
 export * from "./attempt.js";
 export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
+export * from "./project-preflight.js";
 export * from "./project-breaker-facts.js";
 export * from "./module-plan.js";
 export * from "./route-selection.js";
@@ -144,6 +149,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const preflight = parseProjectPreflightContract(expectedSchemaVersion, input);
+  if (preflight) return preflight;
   const route = parseRouteSelectionContract(expectedSchemaVersion, input);
   if (route) return route;
   const modulePlan = parseModulePlanContract(expectedSchemaVersion, input);
@@ -231,6 +238,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "review-request/v1" ||
       expectedSchemaVersion === "module-plan-result/v1" ||
       expectedSchemaVersion === "route-selection/v1" ||
+      expectedSchemaVersion === "project-preflight/v1" ||
       (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
@@ -283,6 +291,12 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if (expectedSchemaVersion === "project-preflight/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeProjectPreflightDigest(parsed.value),
+    };
   if (expectedSchemaVersion === "route-selection/v1")
     return {
       ok: true,
