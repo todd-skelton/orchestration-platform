@@ -62,7 +62,14 @@ describe("planned verification command execution census", () => {
               "pnpm --filter @orchestration-platform/cli test",
             ].includes(command)) ||
           (issue === "ISS-006" &&
-            ["pnpm run harness:test", "pnpm run test:harness-workflow-mutations"].includes(command))
+            ["pnpm run harness:test", "pnpm run test:harness-workflow-mutations"].includes(
+              command,
+            )) ||
+          (issue === "ISS-022" &&
+            [
+              "pnpm run probe:portable-primitives",
+              "pnpm run probe:portable-primitives:verify-receipts",
+            ].includes(command))
         ) {
           implemented += 1;
           continue;

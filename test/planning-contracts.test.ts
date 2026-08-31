@@ -130,6 +130,20 @@ describe("planning contract", () => {
       },
     ],
     [
+      "reverted ISS-022 probe wrapper",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.rootPackage.scripts["probe:portable-primitives"] =
+          "node scripts/capability-not-implemented.mjs ISS-022 probe:portable-primitives";
+      },
+    ],
+    [
+      "reverted ISS-022 receipt verification wrapper",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.rootPackage.scripts["probe:portable-primitives:verify-receipts"] =
+          "node scripts/capability-not-implemented.mjs ISS-022 probe:portable-primitives:verify-receipts";
+      },
+    ],
+    [
       "reverted workflow mutation wrapper",
       (snapshot: PlanningSnapshot) => {
         snapshot.rootPackage.scripts["test:harness-workflow-mutations"] =
