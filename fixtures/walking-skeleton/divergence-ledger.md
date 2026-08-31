@@ -152,3 +152,29 @@ observer is unchanged and does not consume this receipt as permission. No
 complete routine cycle, installed authority, production genesis/reset or
 ISS-041 completion is claimed. The evidence root remains disposable and no
 production package imports the fixture.
+
+# Actual echo execution increment (partial)
+
+The separate echo composition joins steps 1–9 using the actual fresh-root
+owner gate, SDK observations, public inline module and complete route,
+preflight and dispatch contracts. Preflight reads the source again and keeps
+its distinct observation ID. Dispatch health is a new physical/configuration/
+clock inspection with `step:null`, never a retagged initial health record.
+Only the fixed reviewed source may claim a one-child census, using its retained
+native handle. All caller bytes are stdin data; the environment excludes
+credential and Node preload injection (Windows SystemRoot alone is retained).
+
+One host-owned input allocation and a create-once canonical plan ownership
+claim precede spawn. Process launch/exit and captured bytes use the published
+contracts, with both streams bound independently. Unknown observations retain
+the session claim and do not grant another launch. Reusing the state root
+refuses before another external worker effect. These source-owned fixture
+gates do not establish installed-release or generic process-tree authority.
+
+This explicitly extends the earlier separate observer/breaker compositions;
+their entrypoints remain unchanged. Files are still standalone canonical
+evidence, not a private substitute for the missing public journal. The actual
+worker allocation is retained, so no step-14 reclaim or step-15 completion is
+claimed. Review, disposition, full event/reduced-state/cycle families,
+boundary-matrix execution and the root commands remain outstanding. Tests and
+host execution must establish this bounded source slice independently.
