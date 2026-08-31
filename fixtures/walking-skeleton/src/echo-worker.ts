@@ -116,10 +116,12 @@ export async function runEcho(
     retained: true as const,
   });
   try {
+    if (!(await inspect())) return unknownLaunch();
     // The one host allocation is the actual input file, not the read-only project footprint.
     rows[0] = { ...rows[0]!, state: "UNKNOWN" };
     await createOnce(join(root, "echo-input.bin"), rendered);
     rows[0] = { ...rows[0]!, state: "ALLOCATED", allocationId: fixtureId() };
+    if (!(await inspect())) return unknownLaunch();
     const encoded = serializeContract("dispatch-plan/v1", plan);
     if (!encoded.ok) throw new Error("ownership encoding refused");
     ownership = "UNKNOWN";

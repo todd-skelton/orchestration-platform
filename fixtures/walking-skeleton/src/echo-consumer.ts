@@ -104,6 +104,17 @@ export async function consumeEcho(
     await record("project-facts.json", "project-facts/v1", input.projectFacts);
     await record("project-breaker-facts.json", "project-breaker-facts/v1", input.policyFacts);
     await record("breaker-receipt.json", "breaker-receipt/v1", breaker);
+    if (
+      breaker.result.kind !== "KNOWN" ||
+      !descriptor.actions.some(
+        (declaration) =>
+          breaker.result.kind === "KNOWN" &&
+          breaker.result.capabilities.some(
+            (row) => row.capabilityName === declaration.capabilityName && row.state === "CLOSED",
+          ),
+      )
+    )
+      return { ok: false as const, reason: "BREAKER_NOT_CLOSED" };
     phase = "PLAN_REFUSED";
     const action = required(validateModulePlanBinding(input, await plan(input)));
     await record("module-descriptor.json", "module-descriptor/v1", descriptor);
