@@ -108,6 +108,66 @@ function loadWitness() {
   return { addon, before };
 }
 
+function assertPosixStatIdentity(identity, expected, platform) {
+  assert.ok(platform === "darwin" || platform === "linux", "unknown native identity width");
+  assert.equal(typeof expected.dev, "bigint");
+  assert.equal(typeof expected.ino, "bigint");
+  // Normalize only independently read stat values, never the addon's claims.
+  // Darwin dev_t is 32 bits; Linux dev_t and both platforms' ino_t are 64 bits.
+  const device = BigInt.asUintN(platform === "darwin" ? 32 : 64, expected.dev).toString();
+  const inode = BigInt.asUintN(64, expected.ino).toString();
+  assert.equal(identity.device, device);
+  assert.equal(identity.inode, inode);
+}
+
+function assertStatIdentityOracleBoundaries() {
+  // Synthetic oracle regressions, not native filesystem/property observations.
+  // Expected decimal strings are literals independent of the conversion above.
+  const accepted = [
+    ["darwin", -2147483648n, 1n, "2147483648", "1"],
+    ["darwin", -1n, 1n, "4294967295", "1"],
+    ["darwin", 4294967295n, 1n, "4294967295", "1"],
+    ["darwin", 1n, -9223372036854775808n, "1", "9223372036854775808"],
+    ["linux", 1n, -9223372036854775808n, "1", "9223372036854775808"],
+    ["linux", -9223372036854775808n, 1n, "9223372036854775808", "1"],
+    ["linux", -1n, -1n, "18446744073709551615", "18446744073709551615"],
+    ["linux", 9007199254740993n, 9007199254740993n, "9007199254740993", "9007199254740993"],
+    [
+      "linux",
+      18446744073709551615n,
+      18446744073709551615n,
+      "18446744073709551615",
+      "18446744073709551615",
+    ],
+    ["darwin", 1n, 9007199254740993n, "1", "9007199254740993"],
+    ["darwin", 1n, -1n, "1", "18446744073709551615"],
+  ];
+  for (const [platform, dev, ino, device, inode] of accepted) {
+    const identity = Object.freeze({ kind: "POSIX", device, inode });
+    assertPosixStatIdentity(identity, { dev, ino }, platform);
+  }
+  // Signed, sign-extended, narrowed, rounded, out-of-range and non-string claims
+  // must remain wrong; normalizing the addon's claims would hide these defects.
+  const refused = [
+    ["darwin", -1n, 1n, "-1", "1"],
+    ["darwin", -1n, 1n, "18446744073709551615", "1"],
+    ["linux", -1n, 1n, "4294967295", "1"],
+    ["linux", 9007199254740993n, 1n, "9007199254740992", "1"],
+    ["darwin", 1n, 9007199254740993n, "1", "9007199254740992"],
+    ["darwin", 1n, -9223372036854775808n, "1", "-9223372036854775808"],
+    ["linux", 1n, -1n, "1", "36893488147419103231"],
+    ["darwin", -1n, 1n, 4294967295n, "1"],
+    ["linux", 1n, 1n, "2", "1"],
+    ["darwin", 1n, 1n, "1", "2"],
+  ];
+  for (const [platform, dev, ino, device, inode] of refused) {
+    const identity = Object.freeze({ kind: "POSIX", device, inode });
+    assert.throws(() => assertPosixStatIdentity(identity, { dev, ino }, platform), {
+      code: "ERR_ASSERTION",
+    });
+  }
+}
+
 function assertIdentity(identity, path) {
   assert.ok(identity && typeof identity === "object");
   if (windows) {
@@ -123,8 +183,7 @@ function assertIdentity(identity, path) {
     assert.match(identity.inode, unsigned);
     if (path) {
       const expected = statSync(path, { bigint: true });
-      assert.equal(identity.device, String(expected.dev));
-      assert.equal(identity.inode, String(expected.ino));
+      assertPosixStatIdentity(identity, expected, process.platform);
     }
   }
 }
@@ -234,6 +293,9 @@ function withFixture(callback) {
 }
 
 const cases = {
+  stat_identity_oracle() {
+    assertStatIdentityOracleBoundaries();
+  },
   interface(addon) {
     assert.deepEqual(
       Object.keys(addon).sort(),
