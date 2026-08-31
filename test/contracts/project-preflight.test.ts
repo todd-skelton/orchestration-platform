@@ -617,7 +617,18 @@ test("full reused frontier, capability and ordered-subject bounds have positive 
       ...copy(a.input.projectFacts.frontier[0]),
       workId: id(n + 2),
     }));
-    refrontier(obs);
+    // Construct these trusted fixture rows in literal canonical key order using stdlib only;
+    // the production canonicalizer correctly refuses the 4097-row negative before hashing.
+    obs.facts.frontierDigest = hash(
+      JSON.stringify(
+        obs.facts.frontier.map((row: ReturnType<typeof fresh>) => ({
+          capabilityNames: row.capabilityNames,
+          immutableSubjectDigest: row.immutableSubjectDigest,
+          readiness: row.readiness,
+          workId: row.workId,
+        })),
+      ) + "\n",
+    );
     expect(c.parseProjectPreflightObservation(obs).ok, `frontier:${count}`).toBe(count <= 4096);
     if (count <= 4096)
       valid(
