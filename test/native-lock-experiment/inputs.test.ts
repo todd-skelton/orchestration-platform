@@ -565,30 +565,33 @@ describe("private composed preparation, synthetic evidence only", () => {
       else expect(faults.calls).toHaveLength(2);
     },
   );
-  test.each(["capture", "retained", "extra", "header", "stable", "cleanup"])(
-    "post-build %s failure cannot escape as pending success",
-    async (mutation) => {
-      const { input, capturePath } = await fixture(true);
-      faults.onCompile = async () => {
-        faults.onCompile = null;
-        if (mutation === "capture") await writeFile(capturePath, "changed");
-        if (mutation === "retained")
-          await writeFile(resolve(input.runnerTemp, "preparation/compiler.stdout"), "changed");
-        if (mutation === "extra")
-          await writeFile(resolve(input.runnerTemp, "preparation/unexpected"), "extra");
-        if (mutation === "header")
-          await writeFile(
-            resolve(input.runnerTemp, `headers/node-${process.version}/include/node/config.gypi`),
-            "changed",
-          );
-        if (mutation === "stable") faults.changedStable = true;
-        if (mutation === "cleanup") faults.cleanupFailure = true;
-      };
-      await expect(prepareNativeLockBuild(input)).rejects.toMatchObject({
-        message: "native-lock-inputs:preparation-refused",
-        residualPaths: expect.arrayContaining([resolve(input.runnerTemp, "headers")]),
-      });
-      expect(faults.calls.length).toBeGreaterThan(0);
-    },
-  );
+  for (const mutation of ["capture", "retained", "extra", "header", "stable", "cleanup"]) {
+    test(
+      `post-build ${mutation} failure cannot escape as pending success`,
+      async () => {
+        const { input, capturePath } = await fixture(true);
+        faults.onCompile = async () => {
+          faults.onCompile = null;
+          if (mutation === "capture") await writeFile(capturePath, "changed");
+          if (mutation === "retained")
+            await writeFile(resolve(input.runnerTemp, "preparation/compiler.stdout"), "changed");
+          if (mutation === "extra")
+            await writeFile(resolve(input.runnerTemp, "preparation/unexpected"), "extra");
+          if (mutation === "header")
+            await writeFile(
+              resolve(input.runnerTemp, `headers/node-${process.version}/include/node/config.gypi`),
+              "changed",
+            );
+          if (mutation === "stable") faults.changedStable = true;
+          if (mutation === "cleanup") faults.cleanupFailure = true;
+        };
+        await expect(prepareNativeLockBuild(input)).rejects.toMatchObject({
+          message: "native-lock-inputs:preparation-refused",
+          residualPaths: expect.arrayContaining([resolve(input.runnerTemp, "headers")]),
+        });
+        expect(faults.calls.length).toBeGreaterThan(0);
+      },
+      mutation === "extra" || mutation === "cleanup" ? integrationTimeout : undefined,
+    );
+  }
 });
