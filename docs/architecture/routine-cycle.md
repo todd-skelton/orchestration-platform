@@ -21,7 +21,7 @@ until the prior step has one terminal output.
 | 11 `disposition.plan` | admitted optional portable-module disposition callable | original action and exact resulting/reviewed subject, worker terminal/attempt, and bound review authority or actual skips | `action-disposition/v1` binding the exact downstream target and original action | exact subject/receipt digests | apply request → 12; known nonapply → typed 12–13 skips then 14, with follow-up only when explicitly requested; unknown/invalid → `UNKNOWN` |
 | 12 `mutation.plan` | adapter SDK or release owner selected by disposition | `action-disposition/v1` + same action-subject digest + fresh project/release facts | `project-mutation-plan/v1` or `release-operation-plan/v1` (`assemble-certify` or `promote`), binding that digest | immediately before apply preflight; promotion only after accepted candidate review | valid plan → 13; refused/moved → 14 with named refusal; unknown → `UNKNOWN` |
 | 13 `action.apply` | same adapter/release owner that issued step 12 | exact plan/digest + same action-subject digest + review required by operation kind | project apply, release candidate/certification, promotion, or refusal receipt binding the subject digest; successful promotion also emits mandatory successor-verification `follow-up-cycle-request/v1` | revalidate subject, plan, and every external authority immediately before first mutation | terminal → 14; interrupted known transaction → resume 13; stale/moved/substituted input → refuse then 14; unknown → `UNKNOWN` |
-| 14 `resource.reclaim` | dispatch coordinating exact adapter and host resource owners | all allocation, launch/process, terminal, disposition, and apply receipts | `resource-reclaim-receipt/v1`, including no-allocation and retained-capacity outcomes | exact process tree dead and process/stdio handles closed before owner-specific reclaim | reclaimed/no allocation → 15; known owner/handle/session refusal → retained capacity and `FAILED_KNOWN`; live or unknown identity → `UNKNOWN` |
+| 14 `resource.reclaim` | dispatch coordinating exact adapter and host resource owners | all allocation, launch/process, terminal, disposition, and apply receipts | `resource-reclaim-receipt/v1`, including no-allocation and retained-capacity outcomes | exact process tree dead and process/stdio handles closed before owner-specific reclaim | reclaimed/no allocation/known retained capacity → 15; live or unknown/uncertain identity ends at 14 as `UNKNOWN`, with no 15 or cycle receipt |
 | 15 `cycle.terminal` | engine/journal, with supervisor monitor for a recovery launch | all step/skip receipts + resource state + optional promotion fence/follow-up/recovery-launch pointer | `cycle-receipt/v1`; exact recovery-launch-terminal and fence-clear receipts are monitor outputs when a launch is attached | journal prefix, resource census, promotion/broker read-back | complete/failure/no-work → current tick exits after its applicable fence handshake, then supervisor may schedule next tick; contradiction or uncleared required fence → `UNKNOWN` |
 
 The complete steps 7–10 block is skipped only for a typed action that requires
@@ -129,7 +129,7 @@ non-`UNKNOWN` outcome, these routes are exhaustive:
 | 11 explicit nonmutating COMPLETE | skip 12–13; 14 actual reclaim/no-allocation; 15 `COMPLETED` only after all required worker/review and journal gates |
 | 12 mutation plan refused-known | skip 13; 14 reclaim/no-allocation; 15 `FAILED_KNOWN` |
 | 13 apply terminal/refused | 14 reclaim/no-allocation; 15 complete/known-failure |
-| 14 reclaim terminal/refused | 15 complete/known-failure with known retained capacity explicitly preserved; any live process or unknown resource/identity makes 15 `UNKNOWN` |
+| 14 reclaim terminal/refused | known reclaimed/no-allocation/retained capacity proceeds to15 complete/known-failure; any live process or unknown resource/identity ends at14 `UNKNOWN`, with no15 or cycle receipt |
 
 An `UNKNOWN` output journals that contradiction when the prefix remains safely
 appendable and forbids further authoritative steps; it never fabricates skip
@@ -149,3 +149,13 @@ Terminal mapping is fixed:
 The supervisor—not the engine cycle—owns re-entry. It invokes one tick at a time
 from an installed OS scheduler definition, proves the prior tick/cycle terminal
 or safely resumable, and records cadence/restart evidence.
+
+Round408 proposes the project-path event/journal/reduced/receipt literals.
+Every reached step appends STARTED then at most one TERMINAL event. Ordinal1's
+step predecessor stays null and its event/header bind the initial prefix;
+ordinals2–15 name the prefix before STARTED. At ordinal15, step14 replay produces the
+step input, STARTED produces the terminalizing prefix/state, the receipt binds
+only those upstream values, and TERMINAL carries it. The receipt never names
+its enclosing event or final prefix. Release-only outputs require a versioned
+later replan. These definitions remain pending review, not durable journal or
+resume authority.
