@@ -152,7 +152,7 @@ export async function consumeEcho(
     else if (!row) outcome = { kind: "REFUSED", reason: "WORK_MISSING" };
     else if (row.immutableSubjectDigest !== action.actionCore.immutableSubjectDigest)
       outcome = { kind: "REFUSED", reason: "TARGET_CHANGED" };
-    else if (!row.capabilityNames.includes(action.actionCore.capabilityName))
+    else if (!row.capabilityNames.includes(action.actionCore.capabilityName as string))
       outcome = { kind: "REFUSED", reason: "CAPABILITY_REMOVED" };
     else if (row.readiness !== "READY") outcome = { kind: "REFUSED", reason: "NOT_READY" };
     else if (current.facts.frontierDigest !== input.projectFacts.frontierDigest)
