@@ -574,12 +574,12 @@ test.each([
   expect(await manifest(f.root)).toEqual(before);
 });
 
-test.each([
-  "event-journal/v1",
-  "cycle-receipt/v1",
-])("keeps missing %s visible instead of fabricating full-cycle evidence", (schemaVersion) => {
-  expect(parseContract(schemaVersion, { schemaVersion })).toEqual({
-    ok: false,
-    issues: ["schemaVersion:unsupported"],
-  });
-});
+test.each(["event-journal/v1", "cycle-receipt/v1"])(
+  "keeps missing %s visible instead of fabricating full-cycle evidence",
+  (schemaVersion) => {
+    expect(parseContract(schemaVersion, { schemaVersion })).toEqual({
+      ok: false,
+      issues: ["schemaVersion:unsupported"],
+    });
+  },
+);
