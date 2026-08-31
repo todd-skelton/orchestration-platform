@@ -518,6 +518,7 @@ test("config and facts binding failures never plan or write", async () => {
         read,
         f.currentPolicy,
         clocks,
+        f.cycleRequest,
       )
     ).ok,
   ).toBe(false);
