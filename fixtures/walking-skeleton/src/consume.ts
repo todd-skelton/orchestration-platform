@@ -24,7 +24,7 @@ import { descriptor, plan } from "./index.js";
 const currentPolicyVersion = "1.0.0";
 
 // Invoked only by the quarantined fixture. No process globals or package-export changes.
-export async function consume(
+export async function prepareObservation(
   adapter: ConfigurationHostAdapter,
   invocation: ConfigurationLoaderInvocation,
   adapterConfiguration: unknown,
@@ -110,10 +110,17 @@ export async function consume(
     if (!decoded.ok) throw new Error("fixture round-trip refused");
     return { name, bytes: encoded.bytes };
   });
+  return { ok: true as const, output, stateRoot: loaded.value.stateRoot };
+}
+
+// The original standalone observer continues to require an absent output directory.
+export async function consume(...input: Parameters<typeof prepareObservation>) {
+  const prepared = await prepareObservation(...input);
+  if (!prepared.ok) return prepared;
   // mkdir without recursive/force also refuses reuse; this is not a lease protocol.
-  await mkdir(loaded.value.stateRoot);
-  for (const { name, bytes } of output) {
-    await writeFile(join(loaded.value.stateRoot, name), bytes, { flag: "wx" });
+  await mkdir(prepared.stateRoot);
+  for (const { name, bytes } of prepared.output) {
+    await writeFile(join(prepared.stateRoot, name), bytes, { flag: "wx" });
   }
-  return { ok: true as const, files: output.map(({ name }) => name) };
+  return { ok: true as const, files: prepared.output.map(({ name }) => name) };
 }
