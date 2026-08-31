@@ -2777,6 +2777,194 @@ under the provider-fresh runner-temp root and cleanup proves that root absent.
 No source-checkout write, compiled executable, native addon, broker, privilege,
 same-host principal, reboot, credential, cache, or secret is authorized.
 
+## Routine contract census and first literal ledger (ISS-002 additive scope)
+
+This section is the first bounded ledger for Todd's additive ISS-002 scope
+approved 2026-08-31. It preserves ISS-002's original completion. It is subject
+to independent review before implementation; no parser, cycle, or authority
+is delivered by this documentation packet. Sources are `routine-cycle.md`'s
+15-step protocol, `module-abi.md`, `bootstrap-manifests.md`'s consumer contracts,
+the existing engine/adapter decisions above, and ISS-041's unchanged acceptance.
+
+### Finite consumer census before coding
+
+The table exhausts the non-project contract surfaces needed for the accepted
+fixture's session acquisition, complete ordinal journal/replay, echo-worker
+and distinct later review paths, rejection/malformed-frontier/concurrent-lease
+controls, and boundary resume. “Remaining” names an entire future literal
+group, not an open payload or supported partial schema. Each group requires
+its own independent literal review before its code. A fixture cannot substitute
+private records for these public contracts and claim complete acceptance.
+
+| Step / consumer         | Already defined and reused unchanged                                                                                                                          | Remaining named surface and actual consumer                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cycle entry / 1         | `platform-configuration/v1`, `platform-configuration-source/v1`, `configuration-provenance/v1`, `configuration-paths/v1` as applicable configuration inputs   | `cycle-request/v1`, `cycle-plan/v1`, `session-acquire-request/v1`, `session-receipt/v1`, `session-health/v1`: ISS-041's lease acquisition/refusal and session check; ISS-007/026 are runtime owners                                                                                                                                                                                                                 |
+| All steps / replay / 15 | closed-record, canonical-byte, digest primitives                                                                                                              | `orchestration-event/v1`, `event-journal/v1`, `reduced-state/v1`, `cycle-receipt/v1`: ISS-041 append/replay, boundary resume and complete terminal census; ISS-010/026 own production                                                                                                                                                                                                                               |
+| 3                       | project current-policy facts are supplied by ISS-013, not generic breaker authority                                                                           | `breaker-receipt/v1`: the newly named generic reduction output, with its closed hold/history evidence; ISS-041 step 3 and ISS-025/026. History entries belong to the event union, not a second breaker-history family                                                                                                                                                                                               |
+| 4                       | `dispatch-action-core/v1`; `dispatch-brief/v1` and its `dispatch-brief-action/v1`, `dispatch-brief-directive/v1`, `dispatch-brief-resource/v1` nested records | `module-descriptor/v1`, `module-plan-input/v1`, `module-plan-result/v1`, `module-action-plan/v1`, `module-no-action/v1`: inline module input, declared effects, complete action/no-action/refusal output; ISS-041 and ISS-011/026                                                                                                                                                                                   |
+| 5                       | `worker-host-identity/v1`, `worker-host-renderer-artifact/v1`, their existing closed mapping and membership relation                                          | `route-selection/v1`: exact opaque host choice/refusal; ISS-041 and ISS-012/008                                                                                                                                                                                                                                                                                                                                     |
+| 7–9                     | unchanged action-core/brief/host contracts                                                                                                                    | `dispatch-plan/v1`, `worker-launch-receipt/v1`, `worker-terminal-receipt/v1`: bound plan, launch/ownership, terminal observation and refusal; ISS-041 and ISS-008/005. Allocation/process/credential-reference evidence needs closed inline shapes here, not new generic envelope families                                                                                                                          |
+| 9–10                    | existing canonical identity primitives; no review authority is reusable from a worker                                                                         | `worker-result-subject/v1`, `review-subject/v1`, `release-candidate-subject/v1`, `review-request/v1`, `review-attempt-result/v1`, `review-authority/v1`: exact worker target, distinct later review attempt and accepted/rejected/unknown result; ISS-041 and ISS-009. Candidate subject is required only to close the already specified review-subject union; no candidate execution or release operation is added |
+| 11                      | exact action-core and immutable review/worker target from preceding rows                                                                                      | `action-disposition/v1`, `follow-up-cycle-request/v1`: apply/no-action/refusal or later exact-target review/repair request; ISS-041 and ISS-011/026. Every existing follow-up kind must be structurally closed, including successor verification; parsing it does not schedule it                                                                                                                                   |
+| 14                      | exact preceding plan, owner, terminal and disposition evidence                                                                                                | `resource-reclaim-receipt/v1`: full reclaimed/no-allocation/retained-capacity result; ISS-041 and ISS-008, coordinating ISS-013/005 owners                                                                                                                                                                                                                                                                          |
+| Skipped ordinals        | no existing public skip family                                                                                                                                | `routine-step-skip/v1` plus the inline identity below: ISS-041 complete ordinal census and later ISS-010/026 replay                                                                                                                                                                                                                                                                                                 |
+
+Step 2's `adapter-configuration/v1`, `project-facts/v1`, and
+`project-breaker-facts/v1` are already public ISS-013 families. Steps 6, 12 and
+13 require ISS-013's remaining `project-preflight/v1`,
+`project-mutation-request/v1`, `project-mutation-plan/v1`, and
+`project-apply-receipt/v1`, plus its allocation/reclaim facts where consumed.
+They stay outside this addition, even when the fixture needs their refusal
+arms. A typed skip cannot be used merely because a required parser is missing.
+
+`routine-cycle/v1` is the fixed protocol identifier and
+`orchestration-module/v1` the callable ABI, not additional JSON envelopes.
+`module-plan-result/v1` denotes the complete action/no-action/typed-refusal
+union; `review-subject/v1` denotes the complete worker-result/candidate union.
+Their later ledgers must fix their public parse/serialization dispatch without
+inventing duplicate wrapper records. Refusals, finding rows, ownership/resource
+censuses, breaker history/probe evidence, route evidence, and follow-up reasons
+must be closed inline shapes or existing union arms, never arbitrary objects,
+schema-name strings permitting arbitrary payloads, or new convenience families.
+
+The census excludes optional CLI-only `worker-health/v1`,
+`journal-append-receipt/v1`, and `snapshot-receipt/v1`: the fixture uses terminal
+observations, the actual journal rows, and full replay, not those commands or
+snapshot caching. Session renewal/handoff command families, production module
+manifest/registry admission, release assembly/certification/promotion/recovery
+records, recovery-launch/fence supervision, and broker/physical authority
+families are not executed by ISS-041. Their existing owners and gates remain.
+In particular no `release-operation-plan/v1` or promotion receipt is needed by
+the admitted project path; closing candidate-subject/follow-up union arms does
+not admit that alternate path. The existing command-result envelope and command
+census remain unchanged: public parser support cannot activate a CLI command.
+
+### First complete literal group: identity and skip
+
+`C(x)` is the existing canonical UTF-8 JSON encoding: recursively sorted keys,
+no insignificant whitespace or BOM, one final LF, no CR, duplicate keys, or
+noncanonical number/string encoding. Existing detached closed-record rules
+apply at every entry point and nested record; no input code is invoked.
+`Uuid` matches lowercase UUIDv7
+`[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`;
+`Digest` matches exactly `[0-9a-f]{64}`. All fields below are required; absent,
+extra, wrong-case, wrong-type, or null fields refuse except the stated null cell.
+
+The step identity preimage is one inline closed record with exactly these
+five members in canonical order. It has no `schemaVersion`, timestamp,
+attempt counter, self digest, result, or extension member and is not a new
+persisted/public schema family.
+
+| Member                     | Exact rule                                                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `cycleId`                  | `Uuid`                                                                                                                               |
+| `inputDigest`              | non-null `Digest`; identity of the exact admitted input; for a skip it is the immediately preceding ordinal's terminal output digest |
+| `kind`                     | the exact literal paired with `ordinal` below                                                                                        |
+| `ordinal`                  | one canonical decimal string `"1"` through `"15"`; numbers, zero, signs, padding and fractions refuse                                |
+| `predecessorJournalDigest` | null exactly at ordinal `"1"`; otherwise non-null `Digest` of the exact journal prefix before this step's first event                |
+
+| `ordinal` | `kind`             | `ordinal` | `kind`              | `ordinal` | `kind`             |
+| --------- | ------------------ | --------- | ------------------- | --------- | ------------------ |
+| `"1"`     | `session.verify`   | `"6"`     | `project.preflight` | `"11"`    | `disposition.plan` |
+| `"2"`     | `project.snapshot` | `"7"`     | `dispatch.plan`     | `"12"`    | `mutation.plan`    |
+| `"3"`     | `breaker.reduce`   | `"8"`     | `worker.dispatch`   | `"13"`    | `action.apply`     |
+| `"4"`     | `module.plan`      | `"9"`     | `worker.observe`    | `"14"`    | `resource.reclaim` |
+| `"5"`     | `route.select`     | `"10"`    | `review.reduce`     | `"15"`    | `cycle.terminal`   |
+
+`Dstep = SHA256(C(step))`, lowercase hex, is exactly the existing routine
+protocol's untagged preimage hash; do not silently add a domain frame or include
+a derived `Dstep`. Resume retains these same bytes and identity, including the
+original prefix, even after an observation has appended more journal rows.
+There is no new identity until the preceding step has one terminal output.
+The later journal ledger owns the literal prefix digest and initial cycle-start
+binding; null is initial position, not proof of a healthy session or empty disk.
+
+`routine-step-skip/v1` has exactly three members in this canonical order:
+
+| Member          | Exact rule                                                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `reason`        | one literal in the complete five-row union below; non-null                                                                   |
+| `schemaVersion` | literal `routine-step-skip/v1`                                                                                               |
+| `step`          | the exact five-member non-null inline record above, restricted to ordinals `"2"` through `"13"` and the reason's ordinal set |
+
+The predecessor terminal output digest is precisely `step.inputDigest`; no
+second copied digest, cycle ID or ordinal is stored. For a skip following a
+skip, this is the prior skip's `Dskip`, not the original failure's digest.
+There are no other nested records or arrays in this family. All reason arms
+have these same three members; branch-specific extra fields refuse.
+
+| `reason`               | Structurally allowed ordinal(s) | Exact later composition requirement                                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prior-known-terminal` | `"2"`–`"13"`                    | Exhaustive early-stop route after known terminal source 1–7; all remaining 2–13 ordinals as applicable. Also step 13 after step-12 known plan refusal. Never UNKNOWN                                                                                           |
+| `no-allocation`        | `"7"`                           | The existing allowed 7–10 skip block for an action whose admitted manifest/descriptor declares neither worker nor review; steps 1–6 otherwise reached their successful continuation. This literal assignment skips dispatch planning, not resource reclamation |
+| `no-worker`            | `"8"`, `"9"`                    | Steps 8–9 in that same declared no-worker/no-review block; or step 9 after an actual step-8 launch-refusal terminal                                                                                                                                            |
+| `no-review`            | `"10"`                          | Declared no-review action, launch refusal, known worker failure, or implementation result requiring a distinct later review cycle. An accepted review cannot be invented by this skip                                                                          |
+| `no-mutation`          | `"12"`, `"13"`                  | Step 11 actually produced its review-needed, repair, failure or no-action disposition, including a review-rejection follow-up; no same-cycle apply                                                                                                             |
+
+Known early-stop routing takes precedence over the action-specific block.
+A continuing worker path always has actual step-7 and step-8 terminals; launch
+refusal skips only 9–10 before actual disposition. Every route still produces
+an actual step-14 `resource-reclaim-receipt/v1` (including no allocation), then
+step 15. None of 1, 14 or 15 can be a skip. `no-allocation` does not declare
+resources absent. This assignment closes the previously unnamed reason choice
+inside the existing step-7 skip edge; it adds no edge or resource authority.
+
+`Dskip` is SHA-256 over exactly
+`UTF8("orchestration-platform") || 00 || UTF8("routine-step-skip/v1") || 00 ||
+u32be(1) || 07 || u64be(byteLength(C(skip))) || C(skip)`.
+This is one existing canonical-record framed part under the literal family
+domain, including nested step bytes and the final LF. It contains no raw-32 or
+field-wise parts. Generic serialization returns these bytes and `Dskip`, never
+the untagged canonical hash. The bytes contain neither `Dskip` nor `Dstep`.
+Object insertion order may differ on input; persisted byte parsing requires
+exact canonical order/encoding. Future/unknown schema versions refuse.
+
+For example the following is the complete canonical byte spelling of a
+structurally valid skip, with exactly one LF following the final `}`:
+
+<!-- prettier-ignore -->
+```json
+{"reason":"prior-known-terminal","schemaVersion":"routine-step-skip/v1","step":{"cycleId":"01900000-0000-7000-8000-000000000001","inputDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","kind":"project.snapshot","ordinal":"2","predecessorJournalDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+```
+
+The hashes in that example are structural values, not claims that their
+preimages exist. Before a future consumer uses a skip, it must parse the actual
+predecessor terminal and journal, recompute both identities, prove the same
+cycle and immediate predecessor ordinal, and equal-bind both digests. It must
+also check the actual earlier source output and descriptor/action/role/review
+evidence for the table's route; digest-shaped assertions are insufficient.
+A same-identity different output, skipped/moved prefix, missing terminal,
+illegal reason, or UNKNOWN source refuses continuation. A skip grants no
+mutation/review/capacity authority and never repairs an incomplete prefix.
+Those composed validators wait for the later literal groups; this first group
+can implement only total inline/skip parsing, `Dstep`, `Dskip`, canonical
+serialization and the local ordinal/kind/reason restrictions.
+
+### Acceptance vectors and proportionality
+
+Prediction: the five-member inline record and three-member skip suffice, with
+no standalone identity envelope or generic payload. Review this prediction
+before its parser packet; review each remaining group's literal shapes and
+bindings before any corresponding code. This packet claims no executed vector.
+
+| Future vector                                   | Required observation / deletion attack                                                                                                                                                                                                                |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Closed inputs                                   | remove/add/rename/null/cross-type each outer and nested member; proxies, inherited fields, accessors and exotic records refuse without input-code execution                                                                                           |
+| Identity census                                 | all 15 exact pairs; cross every other ordinal/kind pairing; reject numeric/zero/16/padded ordinals and wrong UUID/digest grammar; null prefix succeeds only at 1                                                                                      |
+| Complete skip union                             | pin one canonical byte/digest golden per reason and each permitted ordinal; cross every reason against 1–15; no unsupported arm disguised as a successful v1 parser                                                                                   |
+| Canonical identity                              | shuffled object insertion preserves bytes; persisted shuffle, CRLF, BOM, whitespace, duplicate key or missing LF refuses; one changed preimage member changes Dstep; field-wise/wrong-domain/untagged Dskip framing disagrees                         |
+| Repeated skips and resume                       | recompute each immediate prior terminal digest, never reuse the initial stop digest through a chain; identical replay retains Dstep/Dskip, changed input/cycle/prefix/ordinal/result refuses later binding                                            |
+| Route separation, when later groups exist       | no-allocation at 14, no-worker at 7, launch refusal skipping disposition, no-review substituting for mandatory later review, no-mutation without actual disposition, malformed/missing descriptor, and UNKNOWN padded to a complete census all refuse |
+| Immutable later review, when later groups exist | same-cycle/same-attempt author-reviewer, changed target, rejected review followed by apply, and worker-result acceptance reused as candidate acceptance refuse; structural parse alone never grants authority                                         |
+
+The concrete threat is fabricated complete-cycle evidence or substitution of
+a skip for work, review or reclaim. Deleting closure/digest/binding checks
+admits those mutations. The smaller alternative to a new step-identity family
+is the inline preimage used here; the smaller alternative to full runtime
+machinery is pure contracts followed by ISS-041's disposable consumer. No new
+planner, test framework, filesystem path, process service, module admission,
+CLI mapping, schema ownership, or release authority is introduced.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
