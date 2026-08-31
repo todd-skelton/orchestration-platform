@@ -585,13 +585,17 @@ test("dry plan keeps observation null rules, source states and complete effect c
     [(p: M) => (p.outcome.effects[0].before = value("ff")), true],
     [(p: M) => p.outcome.effects.reverse(), false],
     [(p: M) => (p.outcome.resourceIntents[0].owner = "HOST"), false],
-    [(p: M) => p.outcome.resourceIntents.pop(), true],
   ] as const) {
     const p = copy(f.plan);
     mutate(p);
     expect(c.parseProjectMutationPlan(p).ok).toBe(shapeOk);
     expect(planBind(f, f.dry, p).ok).toBe(false);
   }
+  const fewerIntents = copy(f.plan);
+  fewerIntents.outcome.resourceIntents.pop();
+  // Effect mapping and managed-intent completeness are separate owner claims at this boundary.
+  expect(c.parseProjectMutationPlan(fewerIntents).ok).toBe(true);
+  expect(planBind(f, f.dry, fewerIntents)).toEqual({ ok: true, value: fewerIntents });
   const empty = copy(f.plan);
   empty.outcome.effects = [];
   expect(c.parseProjectMutationPlan(empty).ok).toBe(false);
@@ -713,12 +717,14 @@ test("closed nested records and hostile inputs refuse without input code", () =>
     [c.parseProjectApplyReceipt, f.receipt, [[], ["outcome"]]],
   ] as M[]) {
     for (const path of paths) {
+      let pristine = row;
+      for (const key of path) pristine = pristine[key];
       const extra = copy(row);
       let at = extra;
       for (const key of path) at = at[key];
       at.extra = true;
       expect(parse(extra).ok).toBe(false);
-      for (const key of Object.keys(at)) {
+      for (const key of Object.keys(pristine)) {
         const missing = copy(row);
         let target = missing;
         for (const part of path) target = target[part];
