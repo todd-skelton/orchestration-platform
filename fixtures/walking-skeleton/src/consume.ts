@@ -9,6 +9,8 @@ import {
   validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
   validateModulePlanBinding,
+  type ModuleDescriptor,
+  type ReviewSubject,
 } from "@orchestration-platform/contracts";
 import type { CurrentPolicyReader } from "../../../packages/adapter-sdk/src/current-policy.js";
 import type { SnapshotClocks, SnapshotReader } from "../../../packages/adapter-sdk/src/snapshot.js";
@@ -19,12 +21,15 @@ import {
 } from "../../../packages/config/src/loader.js";
 import { projectConfigurationProvenance } from "../../../packages/config/src/resolver.js";
 import { descriptor, plan } from "./index.js";
+import { descriptor as reviewDescriptor } from "./review-module.js";
 
 // Matches the two statically composed SDK fixture policies, never input JSON.
 const currentPolicyVersion = "1.0.0";
 
 // Invoked only by the quarantined fixture. No process globals or package-export changes.
-export async function prepareModuleInput(
+async function prepareInput(
+  selectedDescriptor: ModuleDescriptor,
+  reviewSubject: ReviewSubject | null,
   adapter: ConfigurationHostAdapter,
   invocation: ConfigurationLoaderInvocation,
   adapterConfiguration: unknown,
@@ -71,14 +76,33 @@ export async function prepareModuleInput(
     adapterConfiguration: configuration.value,
     configurationProvenance: provenance.value,
     cycleRequest: request.value,
-    descriptor,
+    descriptor: selectedDescriptor,
     policyFacts: breakerFacts.value,
     projectFacts: facts.value,
-    reviewSubject: null,
+    reviewSubject,
     schemaVersion: "module-plan-input/v1",
   });
   if (!retainedInput.ok) return retainedInput;
   return { ok: true as const, input: retainedInput.value, stateRoot: loaded.value.stateRoot };
+}
+
+type PreparationArgs = [
+  adapter: ConfigurationHostAdapter,
+  invocation: ConfigurationLoaderInvocation,
+  adapterConfiguration: unknown,
+  snapshot: SnapshotReader,
+  currentPolicy: CurrentPolicyReader,
+  clocks: SnapshotClocks,
+  cycleRequest: unknown,
+];
+
+export async function prepareModuleInput(...args: PreparationArgs) {
+  return prepareInput(descriptor, null, ...args);
+}
+
+// Statically composed second fixture module; no caller-selectable descriptor or module resolver.
+export async function prepareReviewModuleInput(subject: ReviewSubject, ...args: PreparationArgs) {
+  return prepareInput(reviewDescriptor, subject, ...args);
 }
 
 export async function prepareObservation(...args: Parameters<typeof prepareModuleInput>) {
