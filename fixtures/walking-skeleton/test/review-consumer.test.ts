@@ -284,6 +284,17 @@ test.each([true, false])(
     const f = await fixture(artifact),
       outside = await manifest(f.root, f.stateRoot),
       decision = vi.spyOn(reviewModule, "disposition");
+    const realEcho = echoWorker.runEcho,
+      execution = vi.spyOn(echoWorker, "runEcho").mockImplementation(async (...args) => {
+        expect(await readFile(join(f.stateRoot, "seed-artifact.bin"))).toEqual(artifact);
+        expect(await readFile(join(f.stateRoot, "review-expected.bin"))).toEqual(
+          Buffer.from("fixture reviewed artifact v1\n"),
+        );
+        expect(await readFile(join(f.stateRoot, "review-procedure.bin"), "utf8")).toBe(
+          "fixture-only review: compare the retained artifact with the fixed expected bytes\n",
+        );
+        return realEcho(...args);
+      });
     const result = await f.run();
     expect(result).toMatchObject({
       ok: accepted,
@@ -294,6 +305,7 @@ test.each([true, false])(
       review: { authority: { outcome: { kind: accepted ? "accepted" : "rejected" } } },
     });
     expect(decision).not.toHaveBeenCalled();
+    expect(execution).toHaveBeenCalledTimes(1);
     expect(f.snapshot).toHaveBeenCalledTimes(1);
     expect(f.policy).toHaveBeenCalledTimes(1);
     expect(f.snapshot.mock.invocationCallOrder[0]).toBeLessThan(
