@@ -529,7 +529,7 @@ describe("ISS-013 pure project snapshot contracts", () => {
     },
   );
 
-  test("registers exactly two public families and keeps project command success unavailable", () => {
+  test("registers exactly two public families and admits only COMPLETE snapshot success", () => {
     expect(snapshot.projectSnapshotSchemaVersions).toEqual([
       "adapter-configuration/v1",
       "project-facts/v1",
@@ -566,6 +566,6 @@ describe("ISS-013 pure project snapshot contracts", () => {
           result,
           schemaVersion: "orchestration-command-result/v1",
         }).ok,
-      ).toBe(false);
+      ).toBe(result.state === "COMPLETE");
   });
 });

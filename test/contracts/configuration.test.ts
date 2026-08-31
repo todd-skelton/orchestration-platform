@@ -340,13 +340,16 @@ describe("ISS-003 public configuration contracts", () => {
       );
     }
     const placeholder = {
-      command: "project snapshot",
+      command: "project plan",
       diagnostics: [{ code: "CAPABILITY_NOT_IMPLEMENTED", owner: "ISS-013" }],
       outcome: "operation-failed",
       result: null,
       schemaVersion: "orchestration-command-result/v1",
     };
     expect(parseOrchestrationCommandResult(placeholder).ok).toBe(true);
+    expect(
+      parseOrchestrationCommandResult({ ...placeholder, command: "project snapshot" }).ok,
+    ).toBe(false);
     expect(
       parseOrchestrationCommandResult({
         ...placeholder,
@@ -408,11 +411,25 @@ describe("ISS-003 public configuration contracts", () => {
     const observed = registrations.flatMap((registration) =>
       registration.commands.map((command) => ({
         command: command.argv.join(" "),
-        placeholderOwner: registration.family === "config" ? null : registration.issue,
+        placeholderOwner:
+          registration.family === "config" || command.argv.join(" ") === "project snapshot"
+            ? null
+            : registration.issue,
       })),
     );
     expect(orchestrationCommandCensus).toEqual(observed);
     const definition = schemaVocabularyDefinitions["orchestration-command-result/v1"]!;
+    expect(definition.closedValues).toEqual(
+      expect.arrayContaining([
+        "authority-unknown",
+        "external-unavailable",
+        "ADAPTER_CONFIGURATION_REFUSED",
+        "ADAPTER_BINDING_REFUSED",
+        "ADAPTER_COMPATIBILITY_REFUSED",
+        "PROJECT_SNAPSHOT_UNAVAILABLE",
+        "PROJECT_SNAPSHOT_UNKNOWN",
+      ]),
+    );
     const censusCommands = orchestrationCommandCensus.map(({ command }) => command);
     expect(definition.closedValues?.filter((value) => value.includes(" "))).toEqual(censusCommands);
     for (const row of orchestrationCommandCensus) {
@@ -469,13 +486,13 @@ describe("ISS-003 public configuration contracts", () => {
       [
         "orchestration-command-result/v1",
         {
-          command: "project snapshot",
+          command: "project plan",
           diagnostics: [{ code: "CAPABILITY_NOT_IMPLEMENTED", owner: "ISS-013" }],
           outcome: "operation-failed",
           result: null,
           schemaVersion: "orchestration-command-result/v1",
         },
-        `{"command":"project snapshot","diagnostics":[{"code":"CAPABILITY_NOT_IMPLEMENTED","owner":"ISS-013"}],"outcome":"operation-failed","result":null,"schemaVersion":"orchestration-command-result/v1"}\n`,
+        `{"command":"project plan","diagnostics":[{"code":"CAPABILITY_NOT_IMPLEMENTED","owner":"ISS-013"}],"outcome":"operation-failed","result":null,"schemaVersion":"orchestration-command-result/v1"}\n`,
       ],
     ] as const;
     for (const [version, value, golden] of fixtures) {

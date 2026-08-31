@@ -279,12 +279,11 @@ describe("bootstrap manifest graph", () => {
     ],
     [
       "placeholder handler injection",
-      (snapshot: any) => (snapshot.cliRegistry[5].handler = () => {}),
+      (snapshot: any) => (snapshot.cliRegistry[1].handler = () => {}),
     ],
     [
       "placeholder schema injection",
-      (snapshot: any) =>
-        (snapshot.cliRegistry[5].commands[0].resultSchema = "configuration-paths/v1"),
+      (snapshot: any) => (snapshot.cliRegistry[5].commands[1].resultSchema = "project-facts/v1"),
     ],
     [
       "config result schema substitution",
@@ -297,6 +296,25 @@ describe("bootstrap manifest graph", () => {
         const file = "packages/config/src/command-handler.mjs";
         snapshot.handlerSources[file] = snapshot.handlerSources[file].replace(
           "./config-command.ts",
+          "./other.ts",
+        );
+      },
+    ],
+    ["missing project handler", (snapshot: any) => delete snapshot.cliRegistry[5].handler],
+    [
+      "missing snapshot schema",
+      (snapshot: any) => delete snapshot.cliRegistry[5].commands[0].resultSchema,
+    ],
+    [
+      "project downgrade",
+      (snapshot: any) => (snapshot.cliRegistry[5].implementation = "placeholder"),
+    ],
+    [
+      "project lazy import substitution",
+      (snapshot: any) => {
+        const file = "packages/adapter-sdk/src/command-handler.mjs";
+        snapshot.handlerSources[file] = snapshot.handlerSources[file].replace(
+          "./project-command.ts",
           "./other.ts",
         );
       },

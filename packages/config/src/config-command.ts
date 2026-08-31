@@ -13,7 +13,38 @@ export interface CommandHandlerInput {
   readonly options: Readonly<Record<string, string | boolean | null>>;
 }
 
-export type CommandFailure = Extract<ConfigurationLoadResult, { ok: false }>["error"];
+export type CommandFailure =
+  | Extract<ConfigurationLoadResult, { ok: false }>["error"]
+  | Readonly<{
+      code: "ADAPTER_CONFIGURATION_REFUSED";
+      exitCode: 2;
+      message: "adapter configuration refused";
+      outcome: "invalid-input";
+    }>
+  | Readonly<{
+      code: "ADAPTER_BINDING_REFUSED";
+      exitCode: 3;
+      message: "adapter binding refused";
+      outcome: "authority-refused";
+    }>
+  | Readonly<{
+      code: "ADAPTER_COMPATIBILITY_REFUSED";
+      exitCode: 3;
+      message: "adapter compatibility refused";
+      outcome: "authority-refused";
+    }>
+  | Readonly<{
+      code: "PROJECT_SNAPSHOT_UNAVAILABLE";
+      exitCode: 4;
+      message: "project snapshot unavailable";
+      outcome: "external-unavailable";
+    }>
+  | Readonly<{
+      code: "PROJECT_SNAPSHOT_UNKNOWN";
+      exitCode: 3;
+      message: "project snapshot unknown";
+      outcome: "authority-unknown";
+    }>;
 export type CommandHandlerResult =
   Readonly<{ ok: true; result: ContractRecord }> | Readonly<{ ok: false; error: CommandFailure }>;
 export type CommandHandler = (input: CommandHandlerInput) => Promise<CommandHandlerResult>;
