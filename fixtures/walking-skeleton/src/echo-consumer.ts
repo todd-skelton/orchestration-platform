@@ -1,7 +1,8 @@
 import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   canonicalJson,
+  canonicalDigest,
   computeDispatchContentReference,
   computeModuleActionPlanDigest,
   computeProjectPreflightDigest,
@@ -9,6 +10,11 @@ import {
   computeRouteMappingDigest,
   computeRouteSelectionDigest,
   computeSessionHealthDigest,
+  computeReviewRequestDigest,
+  computeWorkerResultSubjectDigest,
+  computeReviewPacketDigest,
+  parseReviewRequest,
+  validateReviewResultBinding,
   parseCanonicalContractBytes,
   serializeContract,
   validateDispatchPlanBinding,
@@ -19,11 +25,19 @@ import {
   type ContractRecord,
   type ProjectPreflight,
   type SessionHealth,
+  type ProjectPreflightObservation,
 } from "@orchestration-platform/contracts";
-import { prepareModuleInput } from "./consume.js";
+import { prepareModuleInput, prepareReviewModuleInput } from "./consume.js";
 import { echoMapping, echoResource, fixtureId, runEcho } from "./echo-worker.js";
 import { initialBreaker } from "./initial-breaker.js";
 import { descriptor, plan } from "./index.js";
+import { descriptor as reviewDescriptor, plan as reviewPlan } from "./review-module.js";
+import {
+  readReviewSeed,
+  reduceFixtureReview,
+  reviewEvidence,
+  type ReviewSeed,
+} from "./review-source.js";
 import { acquireFixtureSession } from "./session.js";
 
 const required = <T extends ContractRecord>(result: ParseResult<T>): T => {
@@ -31,11 +45,25 @@ const required = <T extends ContractRecord>(result: ParseResult<T>): T => {
   return result.value;
 };
 type OmitLast<T extends readonly unknown[]> = T extends [...infer Rest, unknown] ? Rest : never;
+type CycleArgs = [
+  ...OmitLast<Parameters<typeof prepareModuleInput>>,
+  sessionId: string,
+  cycleId: string,
+];
 
 /** Actual fixture-only execution through worker exit. No review, journal, replay or final cycle. */
-export async function consumeEcho(
-  ...args: [...OmitLast<Parameters<typeof prepareModuleInput>>, sessionId: string, cycleId: string]
-) {
+export async function consumeEcho(...args: CycleArgs) {
+  return consumeFixed(false, ...args);
+}
+
+/** Separate seeded review fixture. No caller-supplied module, renderer or review policy. */
+export async function consumeReview(...args: CycleArgs) {
+  return consumeFixed(true, ...args);
+}
+
+async function consumeFixed(reviewMode: boolean, ...args: CycleArgs) {
+  const selectedDescriptor = reviewMode ? reviewDescriptor : descriptor;
+  const selectedPlan = reviewMode ? reviewPlan : plan;
   const [adapter, invocation, configuration, snapshot, policy, clocks, sessionId, cycleId] = args;
   const retained = {
     ...invocation,
@@ -43,7 +71,7 @@ export async function consumeEcho(
     environment: { ...invocation.environment },
   };
   const session = await acquireFixtureSession(adapter, retained, sessionId, cycleId, clocks, [
-    descriptor.moduleId,
+    selectedDescriptor.moduleId,
   ]);
   if (!session.ok) return session;
   if (!session.lease)
@@ -68,7 +96,13 @@ export async function consumeEcho(
   const execute = async () => {
     health = await lease.observe();
     if (health.outcome !== "HEALTHY") return { ok: false as const, reason: "SESSION_UNHEALTHY" };
-    const prepared = await prepareModuleInput(
+    let seed: ReviewSeed | null = null;
+    if (reviewMode) {
+      if (!retained.flags.projectRoot || !isAbsolute(retained.flags.projectRoot))
+        return { ok: false as const, reason: "REVIEW_SOURCE_REFUSED" };
+      seed = await readReviewSeed(retained.flags.projectRoot);
+    }
+    const preparationArgs = [
       adapter,
       retained,
       configuration,
@@ -76,12 +110,21 @@ export async function consumeEcho(
       policy,
       clocks,
       session.plan.request,
-    );
+    ] as const;
+    const prepared = seed
+      ? await prepareReviewModuleInput(seed.subject, ...preparationArgs)
+      : await prepareModuleInput(...preparationArgs);
     if (!prepared.ok)
       return { ok: false as const, reason: "OBSERVATION_REFUSED", observation: prepared };
     const initial = await lease.observeInitialRoot();
     if (!initial.ok) return { ok: false as const, reason: initial.reason };
     const input = prepared.input;
+    if (
+      seed &&
+      (seed.subject.baseSource.adapterId !== input.adapterConfiguration.adapterId ||
+        seed.subject.baseSource.projectId !== input.adapterConfiguration.projectId)
+    )
+      return { ok: false as const, reason: "REVIEW_SOURCE_REFUSED" };
     const record = async (name: string, schema: string, value: unknown) => {
       if (!(await inspect())) throw new Error("fixture session changed");
       const encoded = serializeContract(schema, value);
@@ -106,7 +149,7 @@ export async function consumeEcho(
     await record("breaker-receipt.json", "breaker-receipt/v1", breaker);
     if (
       breaker.result.kind !== "KNOWN" ||
-      !descriptor.actions.some(
+      !selectedDescriptor.actions.some(
         (declaration) =>
           breaker.result.kind === "KNOWN" &&
           breaker.result.capabilities.some(
@@ -116,8 +159,8 @@ export async function consumeEcho(
     )
       return { ok: false as const, reason: "BREAKER_NOT_CLOSED" };
     phase = "PLAN_REFUSED";
-    const action = required(validateModulePlanBinding(input, await plan(input)));
-    await record("module-descriptor.json", "module-descriptor/v1", descriptor);
+    const action = required(validateModulePlanBinding(input, await selectedPlan(input)));
+    await record("module-descriptor.json", "module-descriptor/v1", selectedDescriptor);
     await record("module-input.json", "module-plan-input/v1", input);
     await record("module-result.json", "module-plan-result/v1", action);
     if (action.schemaVersion !== "module-action-plan/v1")
@@ -143,32 +186,59 @@ export async function consumeEcho(
     await record("route-selection.json", "route-selection/v1", route);
     await record("worker-host.json", "worker-host-renderer-artifact/v1", echoMapping[0]);
     phase = "PREFLIGHT_REFUSED";
-    const current = await snapshot(
-      input.adapterConfiguration,
-      input.configurationProvenance,
-      clocks,
-    );
-    if (!current.ok)
-      return { ok: false as const, reason: "PREFLIGHT_OBSERVATION_REFUSED", observation: current };
-    const observation = { kind: "PROJECT" as const, facts: current.facts };
-    const row =
-      current.facts.state === "COMPLETE"
-        ? current.facts.frontier.find((item) => item.workId === action.workId)
-        : undefined;
+    let observation: ProjectPreflightObservation;
     let outcome: ProjectPreflight["outcome"];
-    if (current.facts.state === "UNAVAILABLE")
-      outcome = { kind: "UNKNOWN", reason: "SOURCE_UNAVAILABLE" };
-    else if (current.facts.state === "UNKNOWN")
-      outcome = { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" };
-    else if (!row) outcome = { kind: "REFUSED", reason: "WORK_MISSING" };
-    else if (row.immutableSubjectDigest !== action.actionCore.immutableSubjectDigest)
-      outcome = { kind: "REFUSED", reason: "TARGET_CHANGED" };
-    else if (!row.capabilityNames.includes(action.actionCore.capabilityName as string))
-      outcome = { kind: "REFUSED", reason: "CAPABILITY_REMOVED" };
-    else if (row.readiness !== "READY") outcome = { kind: "REFUSED", reason: "NOT_READY" };
-    else if (current.facts.frontierDigest !== input.projectFacts.frontierDigest)
-      outcome = { kind: "REFUSED", reason: "FRONTIER_CHANGED" };
-    else outcome = { kind: "ELIGIBLE" };
+    if (seed) {
+      let current: ReviewSeed | null = null;
+      try {
+        current = await readReviewSeed(retained.flags.projectRoot!);
+      } catch {
+        /* typed source uncertainty */
+      }
+      observation = {
+        adapterConfigurationDigest: canonicalDigest(input.adapterConfiguration),
+        kind: "REVIEW",
+        observationId: fixtureId(),
+        observedAt: clocks.wallNow(),
+        result: current ? { kind: "AVAILABLE", subject: current.subject } : { kind: "UNKNOWN" },
+      };
+      outcome = current
+        ? computeWorkerResultSubjectDigest(current.subject) ===
+          computeWorkerResultSubjectDigest(seed.subject)
+          ? { kind: "ELIGIBLE" }
+          : { kind: "REFUSED", reason: "TARGET_CHANGED" }
+        : { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" };
+    } else {
+      const current = await snapshot(
+        input.adapterConfiguration,
+        input.configurationProvenance,
+        clocks,
+      );
+      if (!current.ok)
+        return {
+          ok: false as const,
+          reason: "PREFLIGHT_OBSERVATION_REFUSED",
+          observation: current,
+        };
+      observation = { kind: "PROJECT" as const, facts: current.facts };
+      const row =
+        current.facts.state === "COMPLETE"
+          ? current.facts.frontier.find((item) => item.workId === action.workId)
+          : undefined;
+      if (current.facts.state === "UNAVAILABLE")
+        outcome = { kind: "UNKNOWN", reason: "SOURCE_UNAVAILABLE" };
+      else if (current.facts.state === "UNKNOWN")
+        outcome = { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" };
+      else if (!row) outcome = { kind: "REFUSED", reason: "WORK_MISSING" };
+      else if (row.immutableSubjectDigest !== action.actionCore.immutableSubjectDigest)
+        outcome = { kind: "REFUSED", reason: "TARGET_CHANGED" };
+      else if (!row.capabilityNames.includes(action.actionCore.capabilityName as string))
+        outcome = { kind: "REFUSED", reason: "CAPABILITY_REMOVED" };
+      else if (row.readiness !== "READY") outcome = { kind: "REFUSED", reason: "NOT_READY" };
+      else if (current.facts.frontierDigest !== input.projectFacts.frontierDigest)
+        outcome = { kind: "REFUSED", reason: "FRONTIER_CHANGED" };
+      else outcome = { kind: "ELIGIBLE" };
+    }
     const preflight = required(
       validateProjectPreflightBinding(input, action, echoMapping, route, observation, {
         actionPlanDigest: computeModuleActionPlanDigest(action),
@@ -178,14 +248,35 @@ export async function consumeEcho(
         schemaVersion: "project-preflight/v1",
       }),
     );
-    await record("preflight-project-facts.json", "project-facts/v1", current.facts);
+    if (observation.kind === "PROJECT")
+      await record("preflight-project-facts.json", "project-facts/v1", observation.facts);
+    else if (observation.result.kind === "AVAILABLE")
+      await record(
+        "preflight-review-subject.json",
+        "worker-result-subject/v1",
+        observation.result.subject,
+      );
     await record("project-preflight.json", "project-preflight/v1", preflight);
     if (preflight.outcome.kind !== "ELIGIBLE")
       return { ok: false as const, reason: "PREFLIGHT_NOT_ELIGIBLE", preflight };
     if (!(await inspect())) return { ok: false as const, reason: "SESSION_UNHEALTHY" };
     const inspection = health!;
     if (action.dispatchBrief === null) throw new Error("fixed echo needs brief");
-    const rendered = Buffer.from(canonicalJson(action.dispatchBrief));
+    const reviewRequest = seed
+      ? required(
+          parseReviewRequest({
+            packet: {
+              brief: action.dispatchBrief,
+              evidence: reviewEvidence(seed),
+              subject: seed.subject,
+            },
+            reviewCycleId: input.cycleRequest.cycleId,
+            schemaVersion: "review-request/v1",
+          }),
+        )
+      : null;
+    if (reviewRequest) await record("review-request.json", "review-request/v1", reviewRequest);
+    const rendered = Buffer.from(canonicalJson(reviewRequest?.packet ?? action.dispatchBrief));
     const attemptId = fixtureId();
     const dispatch = required(
       validateDispatchPlanBinding(
@@ -197,7 +288,7 @@ export async function consumeEcho(
         preflight,
         session.plan,
         inspection,
-        null,
+        reviewRequest,
         rendered,
         {
           actionPlanDigest: computeModuleActionPlanDigest(action),
@@ -211,7 +302,7 @@ export async function consumeEcho(
             workerHostIdentityDigest: echoMapping[0]!.workerHostIdentityDigest,
           },
           preflightDigest: computeProjectPreflightDigest(preflight),
-          reviewRequestDigest: null,
+          reviewRequestDigest: reviewRequest ? computeReviewRequestDigest(reviewRequest) : null,
           routeDigest: computeRouteSelectionDigest(route),
           schemaVersion: "dispatch-plan/v1",
           sessionHealthDigest: computeSessionHealthDigest(inspection),
@@ -244,6 +335,60 @@ export async function consumeEcho(
       worker.stderr.length !== 0
     )
       return { ok: false as const, reason: "ECHO_RESULT_REFUSED", worker };
+    if (seed && reviewRequest) {
+      phase = "REVIEW_OBSERVATION_UNPROVEN";
+      let current: ReviewSeed | null = null;
+      try {
+        current = await readReviewSeed(retained.flags.projectRoot!);
+      } catch {
+        /* unknown target */
+      }
+      if (
+        !current ||
+        computeWorkerResultSubjectDigest(current.subject) !==
+          computeWorkerResultSubjectDigest(seed.subject)
+      ) {
+        const authority = required(
+          validateReviewResultBinding(reviewRequest, null, {
+            outcome: {
+              attemptResultDigest: null,
+              evidence: reviewEvidence(seed),
+              kind: "unknown",
+              reason: "TARGET_CHANGED",
+            },
+            packetDigest: computeReviewPacketDigest(reviewRequest.packet),
+            requestDigest: computeReviewRequestDigest(reviewRequest),
+            schemaVersion: "review-authority/v1",
+            subjectDigest: computeWorkerResultSubjectDigest(seed.subject),
+          }),
+        );
+        await record("review-authority.json", "review-authority/v1", authority);
+        return { ok: false as const, reason: "REVIEW_TARGET_CHANGED", authority };
+      }
+      const review = reduceFixtureReview(
+        seed,
+        reviewRequest,
+        dispatch,
+        worker.launch,
+        worker.terminal,
+        worker.stdout!,
+        worker.stderr!,
+      );
+      await record("review-attempt.json", "review-attempt-result/v1", review.attempt);
+      await record("review-authority.json", "review-authority/v1", review.authority);
+      for (const [name, bytes] of [
+        ["seed-artifact.bin", seed.artifact],
+        ["review-expected.bin", seed.expected],
+        ["review-procedure.bin", seed.procedure],
+      ] as const) {
+        if (!(await inspect())) throw new Error("session changed during review evidence");
+        await writeFile(join(prepared.stateRoot, name), bytes, { flag: "wx" });
+        files.push(name);
+      }
+      if (review.authority.outcome.kind === "rejected")
+        return { ok: false as const, reason: "REVIEW_REJECTED", review };
+      return { ok: true as const, worker, preflight, route, dispatch, review };
+    }
     return { ok: true as const, worker, preflight, route, dispatch };
   };
   let result;

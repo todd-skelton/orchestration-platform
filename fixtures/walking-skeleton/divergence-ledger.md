@@ -178,3 +178,26 @@ worker allocation is retained, so no step-14 reclaim or step-15 completion is
 claimed. Review, disposition, full event/reduced-state/cycle families,
 boundary-matrix execution and the root commands remain outstanding. Tests and
 host execution must establish this bounded source slice independently.
+
+## Seeded immutable review and independent stub reduction
+
+A separate fixed review module and source reader now continue actual echo
+execution into public review-attempt-result/review-authority records. The earlier
+author subject/artifact is explicitly seeded input, never evidence that an
+unobserved author cycle executed. The source validates its one bounded ARTIFACT
+preimage and namespace, rereads the target for REVIEW preflight and after the
+real child exit, and retains actual procedure/expected/observed bytes. The
+review request joins the public module/preparation/worker identities; a separate
+fixed stub policy reduces the observed result without letting the echo worker
+certify itself. These are quarantined claimed review outcomes, not effective
+production authority or arbitrary callback policy supplied by JSON.
+
+This resolves only the seeded review observation increment. The ordinary echo
+path's behavior stays intact. The new module declares a pure disposition export,
+but this partial consumer does not invoke it without an actual step11 journal
+prefix. Rejected review is a typed refusal; its eventual nonapplying follow-up
+still requires the reviewed disposition and journal composition. Step14 resource
+reclaim, step15 terminal, complete event/journal/reduced-state parsing, boundary
+fault matrix and both root commands remain outstanding. Native generic hostile
+filesystem or process-tree isolation is not claimed; the existing cooperative
+fixture and retained direct-child source/handle limits remain.

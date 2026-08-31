@@ -184,3 +184,28 @@ authority or all-boundary crash/resume. Root skeleton commands remain reserved
 until those public families and the complete cycle are implemented. Evidence
 requires independent review and host/three-OS verification; source never
 certifies itself.
+
+## Seeded review continuation (partial)
+
+The separate consumeReview path selects a second statically composed pure module
+and reads explicit fixture-review-subject.json plus fixture-review-artifact.bin
+from the admitted absolute project root. These files seed an earlier immutable
+worker result; they do not claim an earlier cycle actually ran. The admitted
+fixture materialization is one ARTIFACT with exact retained bytes and a fixed
+fixture.seed.v1 source revision. Files are bounded, ordinary, single-link and
+physically bracketed under the cooperative fixture assumptions.
+
+The review target is reread for real REVIEW preflight and after actual echo
+exit. A moved/unreadable target never gets a decided review. The exact public
+review request is joined to preparation and the retained child records. A
+separate fixed stub reduction compares the retained artifact with fixed expected
+bytes, creating public attempt/claimed-authority records. Rejection returns
+REVIEW_REJECTED; accepted is fixture evidence only, never effective production
+review or permission. Both outcomes retain their raw finding/procedure evidence.
+
+Existing consumeEcho remains the ordinary observer path. The optional pure
+review-module disposition export is present but is not invoked by this partial
+consumer: the actual step11 journal-prefix admission is still absent. This
+increment still does not complete disposition/follow-up, reclaim, public journal
+append/replay, final cycle or all-boundary acceptance. No root command is
+activated and production imports no fixture.

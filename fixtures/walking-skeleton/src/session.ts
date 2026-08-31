@@ -38,6 +38,7 @@ import {
   projectConfigurationProvenance,
 } from "../../../packages/config/src/resolver.js";
 import { descriptor } from "./index.js";
+import { descriptor as reviewDescriptor } from "./review-module.js";
 
 type Reason =
   | "STATE_UNREADABLE"
@@ -183,7 +184,7 @@ export async function acquireFixtureSession(
     admitted.source,
     admitted.provenance,
     admitted.paths,
-    [descriptor.moduleId],
+    [descriptor.moduleId, reviewDescriptor.moduleId],
     computeCyclePlanDigest(parsedPlan.value),
   );
   if (!plan.ok) return plan;
