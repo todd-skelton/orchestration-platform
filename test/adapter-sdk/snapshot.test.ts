@@ -7,14 +7,16 @@ import {
   validateProjectFactsBinding,
   type ProjectFacts,
 } from "../../packages/contracts/src/index.js";
+import { createProjectSnapshotReader } from "../../packages/adapter-sdk/src/snapshot.js";
 import {
-  createProjectSnapshotReader,
   createBranchFixtureSnapshot,
   createQueueFixtureSnapshot,
-  type SnapshotClocks,
-  type SnapshotReadPage,
-  type SnapshotRequest,
-  type SnapshotResult,
+} from "../../packages/adapter-sdk/src/fixtures.js";
+import type {
+  SnapshotClocks,
+  SnapshotReadPage,
+  SnapshotRequest,
+  SnapshotResult,
 } from "../../packages/adapter-sdk/src/index.js";
 
 const uuid = (index: number) => `018f0f4d-7b2d-7a11-8a2b-${index.toString(16).padStart(12, "0")}`;
