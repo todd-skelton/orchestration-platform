@@ -340,13 +340,16 @@ describe("ISS-003 public configuration contracts", () => {
       );
     }
     const placeholder = {
-      command: "project snapshot",
+      command: "project plan",
       diagnostics: [{ code: "CAPABILITY_NOT_IMPLEMENTED", owner: "ISS-013" }],
       outcome: "operation-failed",
       result: null,
       schemaVersion: "orchestration-command-result/v1",
     };
     expect(parseOrchestrationCommandResult(placeholder).ok).toBe(true);
+    expect(
+      parseOrchestrationCommandResult({ ...placeholder, command: "project snapshot" }).ok,
+    ).toBe(false);
     expect(
       parseOrchestrationCommandResult({
         ...placeholder,

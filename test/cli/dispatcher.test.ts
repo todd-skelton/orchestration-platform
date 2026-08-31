@@ -393,12 +393,12 @@ describe("ISS-003 pure dispatcher and config handler", () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
-  test("only config is implemented and pure dispatch cannot write output", async () => {
+  test("config and project are the implemented families and pure dispatch cannot write output", async () => {
     expect(
       commandRegistry
         .filter((row) => row.implementation === "implemented")
         .map((row) => row.family),
-    ).toEqual(["config"]);
+    ).toEqual(["config", "project"]);
     for (const path of [
       "packages/cli/src/dispatcher.ts",
       "packages/config/src/config-command.ts",
