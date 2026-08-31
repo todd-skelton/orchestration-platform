@@ -395,6 +395,18 @@ function workerFixture() {
     },
     schemaVersion: "worker-terminal-receipt/v1",
   };
+  const resultSubject = {
+    authorAttemptId: dispatchPlan.attemptId,
+    authorCycleId: upstream.input.cycleRequest.cycleId,
+    baseSource: {
+      adapterId: upstream.input.adapterConfiguration.adapterId,
+      projectId: upstream.input.adapterConfiguration.projectId,
+      revision: "abcdef0123456789abcdef0123456789abcdef01",
+    },
+    result: { kind: "TREE", treeDigest: "a".repeat(64) },
+    schemaVersion: "worker-result-subject/v1",
+    terminalReceiptDigest: c.computeWorkerTerminalReceiptDigest(terminal),
+  };
   const dispositionInput = {
     actionPlan: copy(upstream.plan),
     moduleInput: copy(upstream.input),
@@ -412,7 +424,7 @@ function workerFixture() {
     worker: {
       launch,
       plan: dispatchPlan,
-      resultSubject: null,
+      resultSubject,
       terminal,
     },
   };
@@ -422,8 +434,8 @@ function workerFixture() {
     inputDigest: c.computeDispositionInputDigest(dispositionInput),
     outcome: { kind: "NO_ACTION" },
     schemaVersion: "action-disposition/v1",
-    subjectDigest: dispositionInput.actionPlan.actionCore.immutableSubjectDigest,
-    subjectKind: "ACTION",
+    subjectDigest: c.computeWorkerResultSubjectDigest(resultSubject),
+    subjectKind: "WORKER_RESULT",
   };
   const context = {
     adapterConfiguration: copy(upstream.input.adapterConfiguration),
