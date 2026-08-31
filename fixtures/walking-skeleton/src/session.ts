@@ -377,7 +377,7 @@ export async function acquireFixtureSession(
           predecessorJournalDigest: null,
         },
       },
-      plan.value,
+      admittedPlan,
     );
     if (!health.ok) throw new Error(health.issues.join(","));
     encoded("session-health/v1", health.value);
