@@ -87,6 +87,8 @@
     { "key": "ISS-042", "file": "planning/drafts/ISS-042.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-010"] },
     { "key": "ISS-043", "file": "planning/drafts/ISS-043.md", "milestone": "M3", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-009", "ISS-021"] },
     { "key": "ISS-044", "file": "planning/drafts/ISS-044.md", "milestone": "M4", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-021"] },
-    { "key": "ISS-045", "file": "planning/drafts/ISS-045.md", "milestone": "M4", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-044"] }
+    { "key": "ISS-045", "file": "planning/drafts/ISS-045.md", "milestone": "M4", "parent": "EPIC-ADOPTION", "blockedBy": ["ISS-044"] },
+    { "key": "ISS-046", "file": "planning/drafts/ISS-046.md", "milestone": "M2", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-000"] },
+    { "key": "ISS-047", "file": "planning/drafts/ISS-047.md", "milestone": "M3", "parent": "EPIC-MODULES", "blockedBy": ["ISS-010", "ISS-011"] }
   ]
 }

@@ -39,9 +39,14 @@
 - **Dispatch brief**: Complete bounded work description for a fresh worker.
 - **Discrepancy**: Correlated incumbent/shadow result whose authority meaning has
   not yet reached a terminal explanation.
+- **Discovery intake**: Advisory record reduced from measured delivery telemetry
+  that proposes candidate platform work for operator disposition; evidence,
+  never authority.
 - **Exact revision**: Immutable source identity examined by a worker or reviewer.
 - **Exact model identity**: Provider-authenticated immutable snapshot/version
   reported for one attempt, distinct from a requested selector or alias.
+- **Finding class**: Named, recurring category of independent-review finding
+  whose structural form can be recognized across review rounds.
 - **Frontier snapshot**: Adapter-produced, provenance-bound set of work facts
   available at one observation point.
 - **Host custody**: Enrolled binding of canonical host, current user, state root,

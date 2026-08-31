@@ -16,6 +16,7 @@ children:
     ISS-032,
     ISS-035,
     ISS-038,
+    ISS-046,
   ]
 ---
 
@@ -39,7 +40,8 @@ extends that foundation for cold-session self-hosting without ambient secrets.
   `ISS-031 → ISS-035`;
   `ISS-032, ISS-035, ISS-036 → ISS-038`;
   `ISS-022 → ISS-004`;
-  `ISS-022 → ISS-005`.
+  `ISS-022 → ISS-005`;
+  `ISS-000 → ISS-046`.
 - Gate: the capability probe must prove the selected implementation can meet
   every required OS guarantee before state or process work dispatches.
 - Parked: standalone native binaries and remote worker hosts; un-park after the
@@ -64,3 +66,4 @@ extends that foundation for cold-session self-hosting without ambient secrets.
 - `ISS-032` — Implement confined credential broker and recovery authorization.
 - `ISS-035` — Probe cross-platform host custody and reboot evidence.
 - `ISS-038` — Implement host custody and signed reboot evidence.
+- `ISS-046` — Codify recurring review findings into deterministic planning checks.

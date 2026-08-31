@@ -94,7 +94,9 @@
     "probe:host-claude": "node scripts/capability-not-implemented.mjs ISS-044 probe:host-claude",
     "probe:host-claude:verify": "node scripts/capability-not-implemented.mjs ISS-044 probe:host-claude:verify",
     "host:claude:conformance": "node scripts/capability-not-implemented.mjs ISS-045 host:claude:conformance",
-    "host:claude:probe": "node scripts/capability-not-implemented.mjs ISS-045 host:claude:probe"
+    "host:claude:probe": "node scripts/capability-not-implemented.mjs ISS-045 host:claude:probe",
+    "planning:finding-census-check": "node scripts/capability-not-implemented.mjs ISS-046 planning:finding-census-check",
+    "test:discovery-intake-module": "node scripts/capability-not-implemented.mjs ISS-047 test:discovery-intake-module"
   },
   "devDependencies": {
     "@types/node": "26.2.0",
