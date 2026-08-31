@@ -1,4 +1,5 @@
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
+import { projectSnapshotSchemaFields, projectSnapshotSchemaVersions } from "./project-snapshot.js";
 import { simplifiedAuthoritySchemaFields, simplifiedAuthoritySchemaVersions } from "./authority.js";
 import {
   commitRunPhases,
@@ -92,6 +93,36 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    "adapter-configuration/v1": Object.freeze({
+      schemaVersion: "adapter-configuration/v1",
+      fields: projectSnapshotSchemaFields.configuration,
+    }),
+    "project-facts/v1#COMPLETE": Object.freeze({
+      schemaVersion: "project-facts/v1",
+      fields: projectSnapshotSchemaFields.complete,
+      closedValues: Object.freeze(["COMPLETE"]),
+    }),
+    "project-facts/v1#UNAVAILABLE": Object.freeze({
+      schemaVersion: "project-facts/v1",
+      fields: projectSnapshotSchemaFields.failure,
+      closedValues: Object.freeze(["UNAVAILABLE", "SOURCE_UNAVAILABLE", "OBSERVATION_TIMEOUT"]),
+    }),
+    "project-facts/v1#UNKNOWN": Object.freeze({
+      schemaVersion: "project-facts/v1",
+      fields: projectSnapshotSchemaFields.failure,
+      closedValues: Object.freeze([
+        "UNKNOWN",
+        "SOURCE_UNKNOWN",
+        "MALFORMED_OBSERVATION",
+        "INCOMPLETE_FRONTIER",
+        "CHANGED_FRONTIER",
+      ]),
+    }),
+    "project-facts/v1#frontier-row": Object.freeze({
+      schemaVersion: "project-facts/v1",
+      fields: projectSnapshotSchemaFields.frontierRow,
+      closedValues: Object.freeze(["READY", "NOT_READY"]),
+    }),
     "physical-destination-identity/v1": Object.freeze({
       schemaVersion: "physical-destination-identity/v1",
       fields: externalSchemaFields.physicalIdentity,
@@ -622,6 +653,7 @@ export const schemaVersions = Object.freeze(
   [
     ...Object.keys(schemaDefinitions),
     ...configurationSchemaVersions,
+    ...projectSnapshotSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
     ...commitSchemaVersions,
