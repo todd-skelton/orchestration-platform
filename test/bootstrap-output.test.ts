@@ -75,6 +75,10 @@ process.on("uncaughtExceptionMonitor", (error) => {
 describe("bootstrap child output", () => {
   test.each([false, true])("preserves complete streams with failing child=%s", async (fail) => {
     const { temporary, repository, ledger, launcher, fatalError, monitor } = await fixture(fail);
+    // Windows selects the first case-insensitive key; remove inherited aliases before overriding.
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "npm_execpath"),
+    );
     const result = spawnSync(
       process.execPath,
       [
@@ -85,7 +89,7 @@ describe("bootstrap child output", () => {
       {
         // The wrapper must choose its own repository cwd, not inherit this directory.
         cwd: temporary,
-        env: { ...process.env, npm_execpath: launcher },
+        env: { ...environment, npm_execpath: launcher },
         encoding: "utf8",
         windowsHide: true,
         maxBuffer: 2 * 1024 * 1024,
@@ -93,9 +97,9 @@ describe("bootstrap child output", () => {
     );
     expect(result.error).toBeUndefined();
     expect(result.signal).toBeNull();
-    expect(result.status).toBe(fail ? 1 : 0);
+    expect(result.status, result.stderr).toBe(fail ? 1 : 0);
     const executed = fail ? stages.slice(0, 4) : stages;
-    expect(await readFile(ledger, "utf8")).toBe(executed.join("\n") + "\n");
+    expect(await readFile(ledger, "utf8"), result.stderr).toBe(executed.join("\n") + "\n");
     const stdout = executed.map((stage) => outputs[stage]!.stdout).join("");
     const stderr = executed.map((stage) => outputs[stage]!.stderr).join("");
     expect(result.stdout).toBe(
