@@ -38,6 +38,31 @@ typedef char path_char;
 #define INTERFACE "iss022-native-lock-experiment/v1"
 #define FACT_LIMIT 8
 #define DECIMAL_SIZE (sizeof(uintmax_t) * 3 + 3)
+/* Preserve the unsigned bit pattern at the native field's width. In particular,
+ * widening Darwin's signed 32-bit dev_t directly would sign-extend its high bit.
+ * The value is evaluated once; sizeof retains its type before integer promotion.
+ */
+#define NATIVE_UNSIGNED(value) \
+  ((uintmax_t)(value) & \
+   (UINTMAX_MAX >> ((sizeof(uintmax_t) - sizeof(value)) * CHAR_BIT)))
+#ifndef _WIN32
+_Static_assert(sizeof(((struct stat *)0)->st_dev) <= sizeof(uintmax_t),
+               "Native device identity must fit uintmax_t");
+_Static_assert(sizeof(((struct stat *)0)->st_ino) <= sizeof(uintmax_t),
+               "Native inode identity must fit uintmax_t");
+#endif
+/* Regression assertions exercise the actual conversion used by observe().
+ * They become evidence only when the reviewed source is compiled by the host.
+ */
+_Static_assert(NATIVE_UNSIGNED((int32_t)INT32_MIN) == UINTMAX_C(2147483648),
+               "A signed 32-bit device high bit must not sign-extend");
+_Static_assert(NATIVE_UNSIGNED((int32_t)-1) == UINTMAX_C(4294967295),
+               "A signed 32-bit all-ones device must retain exactly 32 bits");
+_Static_assert(NATIVE_UNSIGNED((uint64_t)UINT64_C(9007199254740993)) ==
+               UINTMAX_C(9007199254740993),
+               "A full-width identity above 2^53 must remain exact");
+_Static_assert(NATIVE_UNSIGNED((uint64_t)UINT64_MAX) == UINT64_MAX,
+               "A full-width unsigned identity must not narrow to 32 bits");
 typedef enum { UNOPENED, OPEN, LOCKED, CLOSED } phase;
 typedef enum { FIXED_FILE, INSPECTION, PARENT_DIRECTORY } purpose;
 typedef struct {
@@ -200,8 +225,8 @@ static bool observe(view *current, transcript *out, purpose use, bool set_flags)
   int result = fstat(current->handle, &metadata);
   int error = result == 0 ? 0 : errno;
   if (result == 0) {
-    unsigned_decimal(current->first, (uintmax_t)metadata.st_dev);
-    unsigned_decimal(current->second, (uintmax_t)metadata.st_ino);
+    unsigned_decimal(current->first, NATIVE_UNSIGNED(metadata.st_dev));
+    unsigned_decimal(current->second, NATIVE_UNSIGNED(metadata.st_ino));
     current->identified = true;
   }
   signed_fact(out, "IDENTIFY", result, (uintmax_t)error, current);
