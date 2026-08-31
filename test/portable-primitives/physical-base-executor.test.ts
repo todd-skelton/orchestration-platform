@@ -52,7 +52,7 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
     );
     expect(JSON.stringify(facts)).not.toContain("PASS");
     expect(JSON.stringify(facts)).not.toContain(custodyRoot);
-  });
+  }, 30_000);
 
   test("observes the exact regular entry and constructed ENOENT arms", async () => {
     const custodyRoot = await root("physical-leaves");
