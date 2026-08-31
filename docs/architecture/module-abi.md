@@ -13,11 +13,20 @@ interface OrchestrationModuleV1 {
 ```
 
 `module-descriptor/v1` binds the module ID/version, ABI `orchestration-module/v1`,
-accepted engine/adapter/contract ranges, closed input and output schema IDs,
+accepted engine/adapter/contract compatibility, closed input and output schema IDs,
 declared action kinds, whether an action needs worker/review, and required
-capability names. `module-plan-input/v1` contains only canonical reduced facts,
-the adapter policy digest, current session/cycle identity, and the declared
-capability census. `module-plan-result/v1` is exactly one canonical
+capability names. The fifth literal-group proposal in `contract-decisions.md`
+explicitly replans the previously undefined "canonical reduced facts" and
+"adapter policy digest": `module-plan-input/v1` carries the actual complete
+ISS-013 snapshot/current-policy observations, configuration/provenance,
+cycle/session request, descriptor and nullable concrete review subject.
+Snapshot facts are not `reduced-state/v1`; the existing policy tuple identifies
+the policy, while a policy-fact digest identifies only its observation.
+Compatibility uses finite exact-version tuples instead of an undefined range
+interpreter; host compatibility retains the existing capability/renderer
+contracts. These proposed corrections require independent review and grant
+no breaker clearance or installed module admission. `module-plan-result/v1`
+is exactly one canonical
 `module-action-plan/v1`, `module-no-action/v1`, or typed refusal. `plan` has no
 ambient filesystem, process, network, clock, random, credential, adapter, host,
 or mutation access; those effects remain with their owning packages.
