@@ -7,6 +7,7 @@ export * from "./iss022-suite.js";
 export * from "./observation.js";
 export * from "./portable-primitives-decision.js";
 export * from "./portable-primitives-decision-writer.js";
+export * from "./portable-primitives-publication.js";
 export * from "./reducer.js";
 export * from "./stable.js";
 export * from "./stable-bundles.js";

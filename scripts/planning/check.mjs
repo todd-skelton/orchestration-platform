@@ -147,6 +147,14 @@ function validateCommandCensus(snapshot) {
     ["ISS-002:contracts:compatibility-check", "vitest run test/contracts/compatibility.test.ts"],
     ["ISS-006:harness:test", "node scripts/harness-test.mts"],
     [
+      "ISS-022:probe:portable-primitives",
+      "node scripts/conformance/portable-primitives-verification.mts probe",
+    ],
+    [
+      "ISS-022:probe:portable-primitives:verify-receipts",
+      "node scripts/conformance/portable-primitives-verification.mts receipts",
+    ],
+    [
       "ISS-006:test:harness-workflow-mutations",
       "vitest run test/conformance/workflow-structure.test.ts",
     ],

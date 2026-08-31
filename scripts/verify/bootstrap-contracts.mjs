@@ -674,6 +674,10 @@ export async function validateBootstrapSnapshot(snapshot) {
     snapshot.rootPackage.scripts?.["contracts:compatibility-check"] !==
       "vitest run test/contracts/compatibility.test.ts" ||
     snapshot.rootPackage.scripts?.["harness:test"] !== "node scripts/harness-test.mts" ||
+    snapshot.rootPackage.scripts?.["probe:portable-primitives"] !==
+      "node scripts/conformance/portable-primitives-verification.mts probe" ||
+    snapshot.rootPackage.scripts?.["probe:portable-primitives:verify-receipts"] !==
+      "node scripts/conformance/portable-primitives-verification.mts receipts" ||
     snapshot.rootPackage.scripts?.["test:harness-workflow-mutations"] !==
       "vitest run test/conformance/workflow-structure.test.ts"
   ) {

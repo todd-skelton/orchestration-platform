@@ -143,6 +143,20 @@ describe("bootstrap manifest graph", () => {
       },
     ],
     [
+      "changed ISS-022 probe entrypoint",
+      (snapshot: any) => {
+        snapshot.rootPackage.scripts["probe:portable-primitives"] =
+          "node scripts/capability-not-implemented.mjs ISS-022 probe:portable-primitives";
+      },
+    ],
+    [
+      "changed ISS-022 receipt verification entrypoint",
+      (snapshot: any) => {
+        snapshot.rootPackage.scripts["probe:portable-primitives:verify-receipts"] =
+          "node scripts/capability-not-implemented.mjs ISS-022 probe:portable-primitives:verify-receipts";
+      },
+    ],
+    [
       "changed workflow mutation entrypoint",
       (snapshot: any) => {
         snapshot.rootPackage.scripts["test:harness-workflow-mutations"] =
