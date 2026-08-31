@@ -300,11 +300,12 @@ describe("authenticated portable primitives review projection", () => {
       expect((await f.run()).ok).toBe(false);
     }
     for (const bytes of [
-      new TextEncoder().encode(`${JSON.stringify(core)}\n`),
+      new TextEncoder().encode(JSON.stringify(core)),
       canonicalBytes({ ...core, candidateSubjectDigest: digest("8") }),
       canonicalBytes({ ...core, providerRunDigest: digest("8") }),
       new Uint8Array([255]),
     ]) {
+      expect(bytes).not.toEqual(canonicalBytes(core));
       expect((await fixture(bytes).run()).ok).toBe(false);
     }
     const blob = fixture();
