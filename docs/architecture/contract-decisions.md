@@ -1280,6 +1280,203 @@ require their owner's actual fresh-authority evidence. Policy/breaker facts
 and module admission remain undefined here; no opaque digest substitutes for
 those missing literal contracts or claims completion of routine steps 3–4.
 
+### Project current-policy/trip literal ledger proposal (ISS-013)
+
+This bounded proposal supplies project-side inputs for ISS-025 and routine
+step 3. It does not implement that step or confer authority by authoring a
+ledger. It adds exactly one public family, `project-breaker-facts/v1`, and
+closed inline SDK records. The snapshot subsection's exclusion of breaker
+facts still applies to snapshot itself; this subsection defines only current
+policy evaluation and trip observations over its complete neutral frontier.
+No project threshold or recovery criterion enters an engine schema.
+
+Generic breaker history, open receipts, recovery transactions, probes, and
+recovery receipts remain **UNDEFINED** literal contracts owned by ISS-025.
+Recovery observations are excluded until ISS-025 defines their complete
+receipt bytes, validation, policy binding, replay, and transition conditions;
+ISS-013 must then define the project recovery-fact binding against them. An
+opaque receipt digest cannot replace those definitions or count as verified
+receipt authority. No arm below requests recovery, clears a hold, or establishes
+`CLOSED`/`CLOSED_RECOVERED`. ISS-013 AC7 remains incomplete.
+
+#### One closed fact union
+
+Reuse `UUID`, `Digest`, `Time`, `Name`, `Version`, name arrays, `C`, `Dconfig`,
+`Dfrontier`, and `Dsnapshot` from the snapshot ledger without widening their
+bounds. All records/arrays obey the detached closed rules above. Every listed
+member is required, and no member below is nullable. Unknown members, enums,
+schemas, nulls, hostile descriptors, and out-of-range values refuse.
+
+Every `project-breaker-facts/v1` arm has exactly
+`adapterConfigurationDigest, observationId, observedAt, policyVersion,
+projectFactsDigest, projectId, schemaVersion, state`, plus the arm's members:
+
+| State | Additional members and constraints |
+| --- | --- |
+| `COMPLETE` | `decisions`; dense 0–256 decision rows, strictly ASCII sorted by capability name |
+| `UNAVAILABLE` | `reason`; exactly `SOURCE_UNAVAILABLE` or `OBSERVATION_TIMEOUT` |
+| `UNKNOWN` | `reason`; exactly `SOURCE_UNKNOWN`, `MALFORMED_OBSERVATION`, `CHANGED_BINDING`, `CHANGED_SOURCE`, or `INCOMPLETE_CAPABILITIES` |
+
+The schema literal is exactly `project-breaker-facts/v1`; configuration and
+project-facts digests are `Digest`; both identities are `UUID`; `observedAt`
+is `Time`; and `policyVersion` is `Version`. The SDK supplies a fresh
+observation ID and start time for this invocation, distinct from the snapshot
+observation ID. `projectFactsDigest` is recomputed `Dsnapshot` over the exact
+admitted COMPLETE `project-facts/v1`, including its observation metadata;
+`adapterConfigurationDigest` is recomputed `Dconfig`; `projectId` equals both
+configuration and snapshot. None is a caller-selected expected hash.
+
+Each decision row has exactly `capabilityName, trip`. `capabilityName` is
+`Name`; `trip` is exactly `TRIP|NO_TRIP`. The SDK requires exactly one row for
+every configured capability, including capabilities with no frontier rows;
+no omission, duplicate, extra capability, or subset succeeds. With an empty
+configured census only an empty decision array succeeds. `NO_TRIP` means
+only that the current adapter policy did not request a trip. It grants no
+capability, overrides no existing hold, and is not recovery evidence. `TRIP`
+identifies an affected opaque capability for the later generic reducer, not
+a durable open receipt. Failure arms contain no decisions, even empty/null
+substitutes; the consumer must treat the entire configured census as
+unresolved, never as permission. No reducer or persistence behavior is added.
+
+`DbreakerFacts = SHA256(C(projectBreakerFacts))` hashes every member of every
+arm; no self-digest is embedded. A public parser/serializer checks exact shape,
+scalar bounds, decision ordering/uniqueness, and produces these canonical
+bytes. Cross-record equality and exact capability coverage require the SDK's
+configuration and snapshot inputs. Neither parsing nor matching content hashes
+proves freshness, policy execution, history validity, or production authority.
+
+The policy identity is the exact tuple `(adapterId, adapterVersion,
+policyVersion)`: the first two come from the admitted configuration and the
+last from statically composed reviewed source. Each tuple names exactly one
+policy implementation; changing its semantics requires a new policy version
+and reviewed source change. The tuple is not a policy payload, algorithm
+selector supplied by input JSON, or substitute for a policy definition.
+There is no policy digest: the two fixture algorithms below are the complete
+definitions for the only proposed implementations. Other policies require
+their own reviewed adapter source, not engine-schema edits.
+
+#### SDK admission, fresh source binding, and bounded callback
+
+The in-process reader takes configuration, successful loaded configuration
+provenance, a COMPLETE project snapshot, and injected clocks. Static composition
+binds one callback, adapter ID/version, current policy version, and finite
+engine/schema/capability support constants; none comes from runtime payloads.
+Reapply the snapshot SDK's exact configuration/provenance and compatibility
+checks before invoking the callback, additionally requiring explicit support
+for `project-breaker-facts/v1` and the composed current policy version. A valid
+snapshot must bind this project/configuration, have its frontier digest
+recomputed, and use only configured capabilities. Failure/partial snapshots
+cannot enter the callback. No generic descriptor or registry is introduced.
+
+The SDK returns exactly `{ok:true,facts}` for any public fact arm, or exactly
+`{code,ok:false}` for local admission/SDK failure. Codes are checked in this
+order: `ADAPTER_CONFIGURATION_REFUSED`, `ADAPTER_BINDING_REFUSED`,
+`ADAPTER_COMPATIBILITY_REFUSED`, `PROJECT_SNAPSHOT_REFUSED`; the last includes
+malformed/non-COMPLETE snapshots and snapshot/configuration relational
+mismatches. Clock/identity-generation defects use `INTERNAL_ERROR`, never a
+fact arm. Admission failure causes zero adapter calls. These inline outcomes
+introduce no CLI command, command diagnostic, envelope mapping, or registry
+amendment; the landed snapshot/plan/apply rows remain unchanged.
+
+The sole callback is `readCurrentPolicy(request)`, returning a native Promise
+of one response. The closed request is exactly `observationId, policyVersion,
+projectFacts`; these are the SDK's fresh ID, composed version, and detached
+admitted COMPLETE snapshot. Callback response common members are exactly
+`observationId, policyVersion, projectFactsDigest, state`, plus:
+
+| State | Additional members and constraints |
+| --- | --- |
+| `COMPLETE` | `decisions, frontier`; decisions use the public row shape; frontier uses the COMPLETE snapshot's 0–4096 strictly work-ID-sorted frontier row shape |
+| `UNAVAILABLE` | `reason`; exactly `SOURCE_UNAVAILABLE` |
+| `UNKNOWN` | `reason`; exactly `SOURCE_UNKNOWN` |
+
+Common scalars use the public grammars. Every response, including failure,
+must echo the request ID/version and the recomputed digest of its full
+`projectFacts`. A COMPLETE callback freshly reads its own current immutable
+fixture input once, maps its complete neutral frontier, and evaluates the
+current policy on that same detached frontier. No cached prior invocation,
+partial input, or separate source read for the decisions is allowed. The SDK
+checks the returned frontier against the admitted snapshot's canonical
+frontier bytes and recomputed digest before accepting decisions; a changed
+work identity, subject, readiness, capability, or census is `CHANGED_SOURCE`.
+The callback frontier is invocation-local evidence, not a second public schema
+or persisted source record. Returning its literal rows lets the SDK recompute
+the source binding; a substituted opaque source digest is insufficient.
+
+Freshness here is that new bounded source read and policy evaluation for this
+request, not a timestamp age heuristic. An older snapshot with still-identical
+frontier may bind a fresh evaluation; moving even only its metadata changes
+`Dsnapshot` and therefore the required echo/result binding. `observedAt` records
+invocation start, not lease expiry or hold-clearance time. Reusing the result in
+a later cycle is not fresh evaluation. The future routine consumer must obtain
+a new invocation and validate its own current history/policy relation; this
+proposal cannot prove those undefined contracts. A callback echo is checked
+binding evidence under the reviewed fixture source, not provider attestation.
+
+Allow exactly one callback, no pagination/retry, and 5000 integer milliseconds
+from invocation start through source validation, measured by an injected
+monotonic clock. Monotonic readings must be nonnegative safe integers and
+nondecreasing; wall time must satisfy `Time` and UUIDv7 construction bounds.
+Observe elapsed time before callback entry and before accepting its result;
+elapsed time **at least** 5000 wins as `UNAVAILABLE/OBSERVATION_TIMEOUT`.
+Never invoke a callback after the deadline. Synchronous throw or Promise
+rejection before it yields `UNAVAILABLE/SOURCE_UNAVAILABLE`; a non-native
+Promise/thenable is `UNKNOWN/MALFORMED_OBSERVATION` without invoking its `then`.
+At most one terminal result is returned, with no late replacement or retry.
+Pending native rejections must be observed after timeout to avoid an unhandled
+rejection. This deadline bounds result admission, not preemption of arbitrary
+synchronous code; only the bounded reviewed fixture callback is in scope.
+
+After the deadline check, closed shape/scalar validation precedes relations.
+For well-shaped replies the fixed order is `CHANGED_BINDING` (any echo differs),
+`CHANGED_SOURCE` (COMPLETE frontier differs), then `INCOMPLETE_CAPABILITIES`
+(COMPLETE decision census differs). Duplicate/unsorted/oversized rows or a
+wrong trip enum fail shape as `MALFORMED_OBSERVATION`; a sorted omitted or
+extra valid capability fails census. Only after these checks does the SDK
+accept a callback failure reason or COMPLETE. All public bindings on failure
+are SDK-owned expected values, never the substituted response values. No
+success, source failure, or timeout authorizes use of an already held capability.
+
+#### Two executable-test-shaped policy fixtures
+
+Extend the already composed `fixture.branches` and `fixture.queue` adapters at
+adapter version `1.0.0`, with initial policy version `1.0.0` in each. They share
+the same SDK and neutral records. Their existing private source models remain
+private; `fixture.queue` has no Git, branch, or worktree concept. For each
+configured capability, the branch fixture trips when **at least one** current
+frontier row bearing it is `NOT_READY`; the queue fixture trips when **at least
+two** such rows are `NOT_READY`. Otherwise each returns `NO_TRIP`. The count is
+of distinct work rows in the validated frontier, not capability occurrences;
+READY rows and rows without the capability do not count. These thresholds are
+fixture adapter policy only, not engine limits or recommended consumer policy.
+Zero matching rows yields `NO_TRIP` without claiming work/capability permission.
+
+Use matching neutral frontiers (same work IDs, subjects, capability arrays, and
+readiness) translated into the two private source models. For capability
+`work.read`, 0/1/2 NOT_READY rows must yield respectively
+`NO_TRIP/NO_TRIP`, `TRIP/NO_TRIP`, and `TRIP/TRIP` (branch/queue), with identical
+frontier canonical bytes and schema/member census across adapters. Complete
+fact digests differ as expected because each configuration binds its adapter.
+Include all-ready, empty, missing capability, changed private source between
+snapshot and callback, and independent source UNKNOWN/UNAVAILABLE cases.
+Each fixture must prove a fresh source read on every callback and none after
+admission refusal; a source read counter is evidence, not a public field.
+
+Golden canonical bytes/digests must cover every fact arm. Mutation vectors
+must cover hostile nested input; every required field and scalar bound;
+config/project/adapter/version/capability/snapshot substitution; every callback
+arm with moved echoes; sorted missing/extra versus duplicate/unsorted decisions;
+changed current frontier; and a valid wrong echo combined with changed source
+and missing decisions (exactly `UNKNOWN/CHANGED_BINDING`). Clock vectors cover
+4999/5000 milliseconds, regression, invalid wall time, rejection, thenables,
+and late settlement. Identical fixture transcripts must yield identical bytes
+on Windows, macOS, and Linux. These are future compatibility/SDK acceptance
+evidence, not tests claimed executed by this documentation packet.
+
+This contract deliberately supplies no recovery fixture arm: testing actual
+trip/recovery lifecycle contrast and replay belongs to the later ISS-013 /
+ISS-025 composition after the undefined generic contracts are resolved.
+
 ## Proportionality and schema lifecycle
 
 - State-mutation contracts defend exactly two boundaries: the single-writer,
