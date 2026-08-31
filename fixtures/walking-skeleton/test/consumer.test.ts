@@ -232,7 +232,6 @@ test("malformed config preserves the loader refusal with no output", async () =>
 
 test.each([
   "event-journal/v1",
-  "project-facts/v1",
   "worker-result-subject/v1",
   "review-request/v1",
   "review-attempt-result/v1",

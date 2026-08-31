@@ -13,12 +13,16 @@ or authority grant. The unchanged published protocol is
 | Restart/reclaim            | Unimplemented. Exclusive state-directory creation is not a lease, crash recovery, or exactly-once side-effect protocol.                                                          |
 
 The executable gap census records `schemaVersion:unsupported` for
-`event-journal/v1`, `project-facts/v1`, `worker-result-subject/v1`,
+`event-journal/v1`, `worker-result-subject/v1`,
 `review-request/v1`, `review-attempt-result/v1`, `review-authority/v1`,
 `routine-step-skip/v1`, and `cycle-receipt/v1`. Those records must come from
 their owning public contracts before full-cycle parser evidence is possible;
 existing unrelated schemas are never repurposed to fill the gap. A producer
 adding support should update this gap test and ledger with its actual evidence.
+
+ISS-013 supplies structural parsing and supplied-configuration binding for
+`project-facts/v1`. This fixture does not yet consume it or prove fresh adapter
+observations, pagination, project command success, or a full cycle.
 
 Future echo/review work must target a seeded earlier result from a distinct
 author in a later review cycle. An implementation cannot approve its own result
