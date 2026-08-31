@@ -1,95 +1,66 @@
-# Partial walking-skeleton contract consumer
+# Partial walking-skeleton contract consumers
 
-This is a disposable ISS-041 integration fixture, not a cycle implementation.
-ISS-041 remains open. Nothing here certifies a worker, review, release, or
-mutation. No production package may import it; it has no public exports and
-never enters a release bundle.
+This disposable ISS-041 fixture produces integration evidence, never authority.
+ISS-041 remains open. Production packages must not import it; it has no public
+exports and is excluded from release bundles. Run the fixture workspace tests
+or ordinary root `pnpm test`; both skeleton capability commands remain placeholders.
 
-Run `pnpm --filter @orchestration-platform/walking-skeleton test`, or ordinary
-root `pnpm test`. The existing Vitest transformer handles source `.js` imports;
-there is no resolver hook, new build target, or added production export.
+The observer imports `@orchestration-platform/contracts` by workspace name.
+Its fixed descriptor is now a complete public `module-descriptor/v1`, with
+literal branch/queue compatibility, observer action, read-only brief catalog,
+and no disposition codes. Its inline async plan takes `module-plan-input/v1`
+and returns the concrete action or no-action arm of `module-plan-result/v1`.
+The union has no stored wrapper. No installed registry or module admission is
+claimed, and the declared worker-required action never launches a process here.
+The callable exports only `descriptor` and `plan`, whose native Promise resolves
+to a concrete public result, not a parser-result wrapper. Thrown calls become a
+named fixture failure before output; malformed or wrapped returns are rejected.
 
-The fixture imports `@orchestration-platform/contracts` by name through a real
-`workspace:*` dependency. Its inline descriptor and async `plan` have the
-`orchestration-module/v1` entrypoint shape but do not claim its unpublished
-descriptor/input/result schemas or registry admission. The input is a real
-`dispatch-action-core/v1`; output is a real `dispatch-brief/v1`, checked by
-`validateDispatchBriefBinding` against a fixed fixture catalog. The role is
-observer, with a declared read-only footprint; no worker is launched.
+`consume` still invokes the actual configuration loader and SDK snapshot/current-
+policy readers. It validates the exact configuration/provenance, full snapshot,
+and freshly read policy facts before constructing a public module input. The
+caller supplies a cycle request, detached before any asynchronous observation;
+the input parser binds its adapter, allowed module intent and provenance digest.
+The separate session owner remains responsible for its source/path preimages
+and live lease. This observer does not claim session acquisition or step 1.
+Internal loader/SDK imports retain the existing fixture source-import pattern;
+no production export, dependency, or CLI fallback is added.
 
-The consumer now joins actual loaded configuration provenance to an
-`adapter-configuration/v1` using `validateAdapterConfigurationBinding`, calls
-the landed SDK snapshot reader, and checks the resulting `project-facts/v1`
-with `validateProjectFactsBinding`. After a bound `COMPLETE` snapshot, it invokes
-the real SDK current-policy reader, whose fixed fixture composition selects
-policy version `1.0.0`, and binds its `project-breaker-facts/v1` to that exact
-configuration and full snapshot with `validateProjectBreakerFactsBinding` and
-the same static expected version. Only `COMPLETE` policy facts reach fixture
-selection: the first `READY` row in the sorted frontier that supports `work.read`.
-The selected row's capability and `immutableSubjectDigest` become the action
-core. Selection is fixture policy, not a new public binding or authority rule.
-The frontier digest is never used as the action subject, and no snapshot digest
-field or module-input schema is invented. One parsed frozen action is retained
-for both planning and persistence across the asynchronous plan call. The bound
-policy facts are also detached and retained before that await.
+One detached public input is retained across the plan await. The fixed planner
+checks its descriptor identity, selects the first READY work.read row in the
+sorted frontier, and binds its exact work ID and immutable subject to the core
+and brief. It never uses frontierDigest as the action subject. The caller then
+revalidates the result against the retained input before any state output.
+No eligible row produces the public NO_ACTION/NO_ELIGIBLE_ACTION result with
+no invented core or brief; it is not a terminal cycle receipt. Malformed input,
+unknown/unavailable observations or mismatched returned records refuse.
 
-Both `TRIP` and `NO_TRIP` can be recorded under this unchanged observer contract.
-`NO_TRIP` grants no permission, recovery, module admission, or capability use;
-`TRIP` is not a durable open receipt. Requiring `COMPLETE` facts here admits only
-observer artifact construction, never dispatch or execution. No generic breaker
-state, history, hold transition, or recovery behavior is inferred.
+The healthy action writes ten canonical files under one absent external state
+root: provenance, adapter configuration, snapshot, policy facts, cycle request,
+module descriptor, module input, concrete module result, action core and brief.
+A no-action writes the first eight. Each round-trips through public serialization
+and canonical-byte parsing. Both SDK adapters retain contrasting TRIP/NO_TRIP
+facts with identical observer briefs. Neither fact grants permission or clears
+history; generic breaker reduction and ISS-013 recovery remain absent.
 
-`consume` calls the existing pure `createConfigurationLoader(adapter)` entrypoint
-from `packages/config/src/loader.ts` through a direct test source import. The
-fixture boundary supplies the host adapter and closed invocation; the consumer
-does not read process globals. The existing pure provenance projection in
-`resolver.ts` keeps raw resolved paths out of persisted configuration evidence.
-These internal source imports are not a claim of a published config package
-export. Production exports remain unchanged, and no CLI fallback is used.
-The test imports both landed branch and document-queue SDK snapshot and policy
-fixture adapters from their fixed source paths, using the same private
-source-import pattern.
-The package still depends only on contracts; no SDK export or dependency changes.
+Tests retain the actual SDK source/metadata and policy-binding checks, compare
+tracked checkout and external-sandbox manifests outside state, and verify the
+exact output census. They also check no-action, cycle intent substitution,
+caller mutation during observation, and malformed/wrong-input/wrong-work results
+across the plan await. Setup and final cleanup are outside the measured call;
+this is bounded filesystem evidence, not OS-wide isolation. Source execution,
+independent review and three-OS CI are separate acceptance gates.
 
-The test prepares canonical input in an external temporary project, then the
-consumer admits a separate absent state root and writes exactly six canonical
-files there: configuration provenance, adapter configuration, project facts,
-project breaker facts, action core, and dispatch brief. Every
-output goes through public serialization and byte parsing. Before/after hashes
-cover tracked checkout files and the external fixture sandbox outside state;
-the state directory has an exact output census. Config/snapshot/policy binding
-failures, malformed configuration, snapshot or policy `UNKNOWN`/`UNAVAILABLE`,
-changed policy source, and no eligible work return
-without invoking plan or creating state. Equivalent opaque work from both real
-SDK adapters produces identical briefs alongside contrasting policy facts. Tests
-check a new policy source read after the snapshot, exact full-snapshot binding
-(including metadata), and canonical identity with the actual SDK result. A changed
-subject changes the core and brief. Source or returned-policy-object mutation
-across the plan await does not change retained records. SDK policy thresholds,
-hostile-input cases, and deadlines remain covered by the SDK's own tests.
-Setup and cleanup are outside
-that measured invocation. Cleanup removes the external sandbox. This is bounded
-filesystem evidence, not OS-wide isolation or a claim about unrelated processes.
-
-The existing root `skeleton:cycle` and `skeleton:negative-controls` remain
-owner-bearing placeholders. Complete cycle transcripts, leases, echo workers,
-review, journal replay, and crash/resume remain missing acceptance evidence.
-Routine step 3 and ISS-013 AC7 remain incomplete; this fact consumer supplies
-neither generic breaker history nor recovery contracts.
-See [the divergence ledger](divergence-ledger.md), advisory context for ISS-026.
-
-## Proportionality
-
-The current threat is a broken snapshot/current-policy-to-plan handoff hidden
-until engine integration. Removing the configuration/snapshot/policy joins, real
-SDK calls, or output manifest loses evidence of fresh exact-source binding and
-retention. Copying SDK threshold/deadline/hostile-input matrices or inventing a
-generic breaker reducer is larger; this slice tests only the observer handoff.
+Routine step 3, actual worker/review execution, journal append/replay, complete
+ordinal/terminal census and every-boundary restart evidence remain missing.
+See [the divergence ledger](divergence-ledger.md). Replacing only the private
+module seam preserves the existing running consumer; a registry, general
+loader, breaker reducer or process service would exceed this increment.
 
 ## Separate session consumer
 
 `src/session.ts` adds a bounded create-once fixture lease; it does not change or
-compose the six-record observer above. It uses the real configuration loader,
+compose the observer above. It uses the real configuration loader,
 brackets that read with identical source bytes, and retains canonical source,
 provenance and paths alongside the public acquisition request, cycle request,
 cycle plan and acquisition receipt. The fixed adapter is `fixture.branches`;
@@ -131,3 +102,110 @@ Deleting the physical/byte checks or configuration reload permits stale evidence
 to appear healthy; the smaller implementation is this private handle and file,
 not a state service or native locking protocol. Tests are authored here; host
 verification and independent review supply execution/acceptance evidence.
+
+## Joined session and observer
+
+`consumeUnderSession` now joins the existing claim and observer in one bounded
+runtime call. Acquisition requests only the fixed observer module ID from the
+source-owned fixture census; the separate acquisition API still defaults to an
+empty intent. The exact acquired cycle request becomes the public module input.
+The session is observed before snapshot/policy/plan and checked again afterward,
+before any output write. A second live holder therefore prevents all observation
+and planning. The standalone `consume` retains its absent-directory behavior;
+its read/plan/encode phase is shared without adding a second implementation.
+
+After a healthy post-call check, the output root must contain only the held
+claim. The joined writer creates cycle-plan, acquisition and initial step-1
+health records alongside the existing observer records: thirteen for an action,
+eleven for no-action. All use public canonical contracts, and writes are
+create-once. Known cleanup removes only the checked claim. Unknown claim or
+configuration identity retains the claim; partial output remains diagnostic.
+A reused/nonempty output root refuses instead of overwriting or claiming replay.
+
+Tests execute claim presence during the real module call, matching cycle intent,
+public output joins, containment manifests, contender refusal before callbacks,
+malformed frontier cleanup, changed claim across the plan await, no-action and
+repeat-output refusal. This is cooperative fixture behavior: no hostile-writer
+atomicity, native lease, production freshness, breaker permission, journal,
+resume guarantee, worker, review or terminal cycle is claimed. An observer call
+still merely constructs artifacts even when current policy reports TRIP.
+Both root skeleton commands remain placeholders pending the complete cycle.
+
+## Initial breaker observation
+
+`consumeInitialBreaker` is a separate partial consumer of the actual lease,
+configuration loader and SDK snapshot/current-policy readers. It calls the
+shared `prepareModuleInput` observation phase but never invokes the module.
+The session owner admits its first reduction only when this acquisition
+exclusively created a previously absent external root, retained an empty
+initial file census and now observes a healthy claim-only root. Its private
+`observeInitialRoot` operation consumes one attempt, including a refusal.
+A pre-existing empty root, a nonempty root, a repeated attempt or output reuse
+cannot establish genesis. No caller-supplied null, flag, hash or empty history
+is used as absence proof.
+
+From the actual complete policy decisions the fixture constructs the first
+CLOSED or OPEN checkpoint for each configured capability, then validates the
+complete public seven-input breaker relation with a null predecessor. TRIP
+retains its opening identities; NO_TRIP is initial CLOSED evidence only.
+This is a fresh disposable fixture observation, never a production reset or
+permission derived from a structurally valid receipt. No recovery or probe
+operation is attempted.
+
+Success writes nine public canonical records: cycle plan, acquisition, initial
+health, configuration provenance, adapter configuration, snapshot, policy
+facts, cycle request and breaker receipt. The checked claim alone is removed;
+outputs remain for inspection. Uncertain claims remain retained, partial
+writes are diagnostic and a later call refuses genesis on that existing root.
+The original observer and joined module consumer retain their behavior.
+No module dispatch, route, worker, review, public journal, terminal cycle or
+resume implementation is added. Both skeleton commands remain placeholders.
+
+# Echo execution increment (partial)
+
+`src/echo-consumer.ts` composes actual lease/fresh-root admission, SDK facts,
+initial breaker reduction, the inline public module, fixed host routing, a
+second source observation for preflight and a fresh live session inspection.
+The fixed Node child echoes stdin without a shell, imports, filesystem access,
+credentials or descendants. Its owner retains the exact ChildProcess handle;
+launch/terminal records bind the public plan and separately captured raw bytes.
+No PID adoption or repeated launch is allowed on retained/reused roots.
+
+The host allocates one input file and publishes the canonical dispatch plan
+once as its ownership claim before spawn. These are cooperative disposable
+fixture operations, not hostile-writer atomic primitives. Known exit permits
+claim cleanup; unknown process/lease observations retain the claim. The input,
+ownership and other evidence files remain diagnostic output for later reclaim
+composition. Existing standalone entrypoints retain their behavior.
+
+This increment stops at worker exit. It does not provide review reduction,
+disposition, public event journaling/replay, reclaim receipts, final-cycle
+authority or all-boundary crash/resume. Root skeleton commands remain reserved
+until those public families and the complete cycle are implemented. Evidence
+requires independent review and host/three-OS verification; source never
+certifies itself.
+
+## Seeded review continuation (partial)
+
+The separate consumeReview path selects a second statically composed pure module
+and reads explicit fixture-review-subject.json plus fixture-review-artifact.bin
+from the admitted absolute project root. These files seed an earlier immutable
+worker result; they do not claim an earlier cycle actually ran. The admitted
+fixture materialization is one ARTIFACT with exact retained bytes and a fixed
+fixture.seed.v1 source revision. Files are bounded, ordinary, single-link and
+physically bracketed under the cooperative fixture assumptions.
+
+The review target is reread for real REVIEW preflight and after actual echo
+exit. A moved/unreadable target never gets a decided review. The exact public
+review request is joined to preparation and the retained child records. A
+separate fixed stub reduction compares the retained artifact with fixed expected
+bytes, creating public attempt/claimed-authority records. Rejection returns
+REVIEW_REJECTED; accepted is fixture evidence only, never effective production
+review or permission. Both outcomes retain their raw finding/procedure evidence.
+
+Existing consumeEcho remains the ordinary observer path. The optional pure
+review-module disposition export is present but is not invoked by this partial
+consumer: the actual step11 journal-prefix admission is still absent. This
+increment still does not complete disposition/follow-up, reclaim, public journal
+append/replay, final cycle or all-boundary acceptance. No root command is
+activated and production imports no fixture.

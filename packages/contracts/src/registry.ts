@@ -1,8 +1,38 @@
+import {
+  dispositionSchemaFields,
+  dispositionSchemaVersions,
+  dispositionClosedValues,
+} from "./disposition.js";
+import {
+  projectPreflightSchemaFields,
+  projectPreflightSchemaVersions,
+  projectPreflightRefusalReasons,
+  projectPreflightUnknownReasons,
+} from "./project-preflight.js";
+import {
+  dispatchLifecycleSchemaFields,
+  dispatchLifecycleSchemaVersions,
+  dispatchLifecycleClosedValues,
+} from "./dispatch-lifecycle.js";
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
+import {
+  breakerReceiptSchemaFields,
+  breakerReceiptSchemaVersions,
+  breakerCheckpointStates,
+  breakerUnknownReasons,
+  breakerOperationKinds,
+  breakerRecoveryDecisions,
+  breakerProbeOutcomes,
+} from "./breaker-receipt.js";
 import { cycleEntrySchemaFields, cycleEntrySchemaVersions } from "./cycle-entry.js";
 import { reviewSubjectSchemaFields, reviewSubjectSchemaVersions } from "./review-subject.js";
 import { reviewRequestSchemaFields, reviewRequestSchemaVersions } from "./review-request.js";
 import { modulePlanSchemaFields, modulePlanSchemaVersions } from "./module-plan.js";
+import {
+  routeSelectionSchemaFields,
+  routeSelectionSchemaVersions,
+  routeUnknownReasons,
+} from "./route-selection.js";
 import {
   reviewAuthorityUnknownReasons,
   reviewResultKinds,
@@ -113,6 +143,114 @@ export const schemaDefinitions: Readonly<Record<string, ContractDefinition>> = O
 export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefinition>> =
   Object.freeze({
     ...schemaDefinitions,
+    ...Object.fromEntries(
+      dispositionSchemaVersions.map((schemaVersion, index) => [
+        schemaVersion,
+        Object.freeze({
+          schemaVersion,
+          fields: [dispositionSchemaFields.disposition, dispositionSchemaFields.request][index]!,
+          closedValues: dispositionClosedValues,
+        }),
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(dispositionSchemaFields)
+        .filter(([key]) => !["disposition", "request"].includes(key))
+        .map(([key, fields]) => [
+          `action-disposition/v1#${key}`,
+          Object.freeze({ schemaVersion: "action-disposition/v1", fields }),
+        ]),
+    ),
+    ...Object.fromEntries(
+      dispatchLifecycleSchemaVersions.map((schemaVersion, index) => [
+        schemaVersion,
+        Object.freeze({
+          schemaVersion,
+          fields: [
+            dispatchLifecycleSchemaFields.plan,
+            dispatchLifecycleSchemaFields.launch,
+            dispatchLifecycleSchemaFields.terminal,
+          ][index]!,
+          closedValues: Object.freeze([...new Set(dispatchLifecycleClosedValues)]),
+        }),
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(dispatchLifecycleSchemaFields)
+        .filter(([key]) => !["plan", "launch", "terminal"].includes(key))
+        .map(([key, fields]) => [
+          `dispatch-plan/v1#${key}`,
+          Object.freeze({ schemaVersion: "dispatch-plan/v1", fields }),
+        ]),
+    ),
+    "project-preflight/v1": Object.freeze({
+      schemaVersion: "project-preflight/v1",
+      fields: projectPreflightSchemaFields.preflight,
+      closedValues: Object.freeze([
+        "ELIGIBLE",
+        "REFUSED",
+        "UNKNOWN",
+        ...projectPreflightRefusalReasons,
+        ...projectPreflightUnknownReasons,
+      ]),
+    }),
+    ...Object.fromEntries(
+      Object.entries(projectPreflightSchemaFields)
+        .filter(([key]) => key !== "preflight")
+        .map(([key, fields]) => [
+          `project-preflight/v1#${key}`,
+          Object.freeze({ schemaVersion: "project-preflight/v1", fields }),
+        ]),
+    ),
+    "route-selection/v1": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.route,
+    }),
+    "route-selection/v1#selected": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.selected,
+      closedValues: Object.freeze(["SELECTED"]),
+    }),
+    "route-selection/v1#refused": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.refused,
+      closedValues: Object.freeze(["REFUSED", "NO_SUPPORTED_HOST"]),
+    }),
+    "route-selection/v1#unknown": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.refused,
+      closedValues: Object.freeze(["UNKNOWN", ...routeUnknownReasons]),
+    }),
+    "route-selection/v1#no-worker": Object.freeze({
+      schemaVersion: "route-selection/v1",
+      fields: routeSelectionSchemaFields.noWorker,
+      closedValues: Object.freeze(["NO_WORKER"]),
+    }),
+    // All suffixes describe inline records, never additional persisted families.
+    ...Object.fromEntries(
+      Object.entries(breakerReceiptSchemaFields).map(([key, fields]) => [
+        key === "receipt" ? "breaker-receipt/v1" : `breaker-receipt/v1#${key}`,
+        Object.freeze({
+          schemaVersion: "breaker-receipt/v1",
+          fields,
+          ...(key === "receipt"
+            ? {
+                closedValues: Object.freeze([
+                  ...new Set([
+                    "KNOWN",
+                    "UNKNOWN",
+                    ...breakerCheckpointStates,
+                    ...breakerUnknownReasons,
+                    ...breakerOperationKinds,
+                    ...breakerRecoveryDecisions,
+                    ...breakerProbeOutcomes,
+                  ]),
+                ]),
+              }
+            : {}),
+        }),
+      ]),
+    ),
     "module-descriptor/v1": Object.freeze({
       schemaVersion: "module-descriptor/v1",
       fields: modulePlanSchemaFields.descriptor,
@@ -930,11 +1068,16 @@ export const schemaVersions = Object.freeze(
     ...configurationSchemaVersions,
     ...projectSnapshotSchemaVersions,
     ...projectBreakerFactsSchemaVersions,
+    ...breakerReceiptSchemaVersions,
     ...routineStepSkipSchemaVersions,
     ...cycleEntrySchemaVersions,
     ...reviewSubjectSchemaVersions,
     ...reviewRequestSchemaVersions,
     ...modulePlanSchemaVersions,
+    ...routeSelectionSchemaVersions,
+    ...projectPreflightSchemaVersions,
+    ...dispatchLifecycleSchemaVersions,
+    ...dispositionSchemaVersions,
     ...reviewResultSchemaVersions,
     ...pointerGraphSchemaVersions,
     ...simplifiedAuthoritySchemaVersions,
