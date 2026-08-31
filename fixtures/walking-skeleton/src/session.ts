@@ -18,6 +18,7 @@ import {
   isCanonicalTimestamp,
   parseCanonicalContractBytes,
   parseCyclePlan,
+  parseSessionHealth,
   serializeContract,
   snapshotClosedArray,
   validateCyclePlanBinding,
@@ -333,7 +334,7 @@ export async function acquireFixtureSession(
       lease: null,
     };
   }
-  async function observeHealth(): Promise<SessionHealth> {
+  async function observeHealth(inspection = false): Promise<SessionHealth> {
     let outcome: ContractRecord;
     try {
       if (poisoned) throw new UnknownObservation(poisoned);
@@ -364,21 +365,23 @@ export async function acquireFixtureSession(
         reason: poisoned,
       };
     }
-    const health = validateSessionHealthBinding(
-      {
-        ...outcome,
-        schemaVersion: "session-health/v1",
-        targetSessionId: sessionId,
-        step: {
-          cycleId,
-          ordinal: "1",
-          kind: "session.verify",
-          inputDigest: computeCycleRequestDigest(admittedPlan.request),
-          predecessorJournalDigest: null,
-        },
-      },
-      admittedPlan,
-    );
+    const observed = {
+      ...outcome,
+      schemaVersion: "session-health/v1",
+      targetSessionId: sessionId,
+      step: inspection
+        ? null
+        : {
+            cycleId,
+            ordinal: "1",
+            kind: "session.verify",
+            inputDigest: computeCycleRequestDigest(admittedPlan.request),
+            predecessorJournalDigest: null,
+          },
+    };
+    const health = inspection
+      ? parseSessionHealth(observed)
+      : validateSessionHealthBinding(observed, admittedPlan);
     if (!health.ok) throw new Error(health.issues.join(","));
     encoded("session-health/v1", health.value);
     return health.value;
@@ -392,7 +395,16 @@ export async function acquireFixtureSession(
     evidence,
     acquisition,
     lease: {
-      observe: observeHealth,
+      observe: () => observeHealth(),
+      inspect: () => observeHealth(true),
+      async retain(): Promise<"RETAINED_UNKNOWN"> {
+        poisoned = "STATE_UNREADABLE";
+        if (!closed) {
+          closed = true;
+          await handle!.close();
+        }
+        return "RETAINED_UNKNOWN";
+      },
       async observeInitialRoot() {
         // One private initial admission attempt, not a public history-complete token.
         const alreadyObserved = initialObserved;

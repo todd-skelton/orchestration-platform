@@ -160,3 +160,26 @@ writes are diagnostic and a later call refuses genesis on that existing root.
 The original observer and joined module consumer retain their behavior.
 No module dispatch, route, worker, review, public journal, terminal cycle or
 resume implementation is added. Both skeleton commands remain placeholders.
+# Echo execution increment (partial)
+
+`src/echo-consumer.ts` composes actual lease/fresh-root admission, SDK facts,
+initial breaker reduction, the inline public module, fixed host routing, a
+second source observation for preflight and a fresh live session inspection.
+The fixed Node child echoes stdin without a shell, imports, filesystem access,
+credentials or descendants. Its owner retains the exact ChildProcess handle;
+launch/terminal records bind the public plan and separately captured raw bytes.
+No PID adoption or repeated launch is allowed on retained/reused roots.
+
+The host allocates one input file and publishes the canonical dispatch plan
+once as its ownership claim before spawn. These are cooperative disposable
+fixture operations, not hostile-writer atomic primitives. Known exit permits
+claim cleanup; unknown process/lease observations retain the claim. The input,
+ownership and other evidence files remain diagnostic output for later reclaim
+composition. Existing standalone entrypoints retain their behavior.
+
+This increment stops at worker exit. It does not provide review reduction,
+disposition, public event journaling/replay, reclaim receipts, final-cycle
+authority or all-boundary crash/resume. Root skeleton commands remain reserved
+until those public families and the complete cycle are implemented. Evidence
+requires independent review and host/three-OS verification; source never
+certifies itself.

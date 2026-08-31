@@ -1,11 +1,9 @@
+import { initialBreaker } from "./initial-breaker.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  canonicalDigest,
-  computeCycleRequestDigest,
   parseCanonicalContractBytes,
   serializeContract,
-  validateBreakerReceiptBinding,
   type BreakerReceipt,
   type SessionHealth,
 } from "@orchestration-platform/contracts";
@@ -71,48 +69,7 @@ export async function consumeInitialBreaker(
           result = { ok: false, reason: genesis.reason };
         } else {
           const input = prepared.input;
-          const cycleDigest = computeCycleRequestDigest(input.cycleRequest);
-          const policyDigest = canonicalDigest(input.policyFacts);
-          if (input.policyFacts.state !== "COMPLETE")
-            throw new Error("fixture policy not complete");
-          const breaker = validateBreakerReceiptBinding(
-            input.configurationProvenance,
-            input.adapterConfiguration,
-            input.cycleRequest,
-            input.projectFacts,
-            input.policyFacts,
-            null,
-            {
-              adapterConfigurationDigest: canonicalDigest(input.adapterConfiguration),
-              cycleId: input.cycleRequest.cycleId,
-              cycleRequestDigest: cycleDigest,
-              operations: [],
-              policyFactsDigest: policyDigest,
-              policyIdentity: {
-                adapterId: input.adapterConfiguration.adapterId,
-                adapterVersion: input.adapterConfiguration.adapterVersion,
-                policyVersion: input.policyFacts.policyVersion,
-              },
-              priorReceiptDigest: null,
-              result: {
-                kind: "KNOWN",
-                capabilities: input.policyFacts.decisions.map((decision) =>
-                  decision.trip === "TRIP"
-                    ? {
-                        capabilityName: decision.capabilityName,
-                        opening: {
-                          cycleRequestDigest: cycleDigest,
-                          policyFactsDigest: policyDigest,
-                        },
-                        state: "OPEN",
-                      }
-                    : { capabilityName: decision.capabilityName, state: "CLOSED" },
-                ),
-              },
-              schemaVersion: "breaker-receipt/v1",
-              sessionId: input.cycleRequest.sessionRequest.sessionId,
-            },
-          );
+          const breaker = initialBreaker(input);
           if (!breaker.ok) throw new Error("fixture initial reduction refused");
           const records = [
             encoded("cycle-plan.json", "cycle-plan/v1", session.plan),
