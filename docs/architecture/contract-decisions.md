@@ -3381,6 +3381,257 @@ machinery is pure contracts followed by ISS-041's disposable consumer. No new
 planner, test framework, filesystem path, process service, module admission,
 CLI mapping, schema ownership, or release authority is introduced.
 
+### Second complete literal group: cycle entry and session observations
+
+This bounded proposal closes the five cycle-entry names in the census:
+`cycle-request/v1`, `cycle-plan/v1`, `session-acquire-request/v1`,
+`session-receipt/v1`, and `session-health/v1`. Independent literal review is
+required before their parser increment. The first identity/skip group's
+delivered parsing is unchanged. Nothing here implements a lease, journal,
+state transition, command, or native gate. The receipt union includes acquire,
+renew, and release because the existing CLI census already returns this same
+family for all three; supporting only acquisition would publish a partial v1.
+It adds no renewal/handoff request family or handoff receipt, no CLI mapping,
+and no production execution to ISS-041.
+
+#### Exact input and plan records
+
+`C`, `Uuid`, `Digest`, and detached closed-record/array rules are as above.
+Every member below is required; no extra, absent, undefined, or null value is
+accepted except an explicit null cell. `Time` is a real Gregorian UTC instant
+with exact spelling `YYYY-MM-DDTHH:mm:ss.sssZ`, four-digit year 0001–9999,
+no leap second, offset, rollover, or alternative precision. `Id` uses the
+existing adapter grammar `[a-z0-9][a-z0-9._:@+-]{0,127}`; module IDs use that
+same opaque grammar, not a policy vocabulary. All listed field sequences are
+canonical key order; every nested record is closed by its named definition.
+
+`session-acquire-request/v1` has exactly five members:
+
+| Member | Exact rule |
+| --- | --- |
+| `configurationPathsDigest` | non-null `Digest` of the existing `configuration-paths/v1` record |
+| `configurationProvenanceDigest` | non-null `Digest` of the existing `configuration-provenance/v1` record |
+| `configurationSourceDigest` | non-null `Digest` of the existing `platform-configuration-source/v1` record |
+| `schemaVersion` | literal `session-acquire-request/v1` |
+| `sessionId` | `Uuid`, the requested durable session identity |
+
+Those three configuration identities are each `SHA256(C(record))`, using the
+existing generic configuration serialization, not newly framed aliases.
+The source is the admitted project source record before effective resolution;
+its nullable `stateRoot` and provenance's existing `fieldSources` retain their
+current meaning. Do not substitute the older resolved
+`platform-configuration/v1` for that source. No copied clock settings, project
+ID, absolute host path, credentials, holder PID, expiry claim, or caller-chosen
+state namespace enters this request. The configuration record definitions and
+their path redaction/token algorithm remain unchanged.
+
+`cycle-request/v1` has exactly five members:
+
+| Member | Exact rule |
+| --- | --- |
+| `adapterId` | non-null `Id` |
+| `allowedModuleIds` | dense array of 0–64 non-null `Id` strings, strictly ascending ASCII order and therefore unique; empty permits no module invocation |
+| `cycleId` | non-null `Uuid` |
+| `schemaVersion` | literal `cycle-request/v1` |
+| `sessionRequest` | complete non-null `session-acquire-request/v1` record above |
+
+`cycle-plan/v1` has exactly `protocol, request, schemaVersion` in that order:
+`protocol` is literal `routine-cycle/v1`; `request` is the complete non-null
+`cycle-request/v1`; `schemaVersion` is literal `cycle-plan/v1`. No other plan
+arm exists. Rejection produces no plan; a future CLI owner uses its existing
+failure channel. The nested request supplies all cycle/session request,
+adapter/module and configuration identities without copied digests or IDs.
+This plan contains no live facts, breaker decision, route, preflight,
+dispatch/result/review subject, follow-up payload, mutation plan, active
+release, epoch, or authority evidence. Later review/follow-up targets remain
+the census's separate subject/request families and their later ledger's
+step-input/journal binding; an entry plan cannot authorize or erase a target.
+
+#### Complete session operation receipt union
+
+`session-receipt/v1` has exactly these seven members in every arm. It reports
+an operation result, not the durable lease record or a pointer CAS receipt.
+There are no nested payloads, arrays, message strings, or extension objects.
+
+| Member | Exact rule |
+| --- | --- |
+| `acquireRequestDigest` | non-null `Digest` of the input request for `ACQUIRE`; exactly null for `RENEW/RELEASE`, whose existing command inputs are session identities rather than acquisition requests |
+| `operation` | exactly `ACQUIRE`, `RENEW`, or `RELEASE` |
+| `outcome` | exactly `ACQUIRED`, `RENEWED`, `RELEASED`, `REFUSED`, or `UNKNOWN`, with only the pairings below |
+| `reason` | null on success; otherwise exactly one matrix reason |
+| `recordedAt` | `Time`, except null is permitted only for `UNKNOWN` |
+| `schemaVersion` | literal `session-receipt/v1` |
+| `sessionId` | non-null `Uuid` of the requested session, including refusal/unknown |
+
+The following is the complete operation/outcome/reason matrix. A comma means
+separate permitted literals, not an array. All unlisted combinations refuse.
+
+| `operation` | `outcome` | `reason` |
+| --- | --- | --- |
+| `ACQUIRE` | `ACQUIRED` | null |
+| `RENEW` | `RENEWED` | null |
+| `RELEASE` | `RELEASED` | null |
+| `ACQUIRE` | `REFUSED` | `SESSION_HELD`, `SESSION_STALE`, `HANDOFF_PENDING`, `CONFIGURATION_MISMATCH` |
+| `RENEW` | `REFUSED` | `SESSION_NOT_FOUND`, `SESSION_MISMATCH`, `SESSION_RELEASED`, `SESSION_STALE`, `DURATION_EXCEEDED`, `HANDOFF_PENDING`, `CONFIGURATION_MISMATCH` |
+| `RELEASE` | `REFUSED` | `SESSION_NOT_FOUND`, `SESSION_MISMATCH`, `HANDOFF_PENDING`, `CONFIGURATION_MISMATCH` |
+| any of the three | `UNKNOWN` | `STATE_UNREADABLE`, `IDENTITY_CONFLICT`, `CLOCK_ROLLBACK`, `CLOCK_SKEW`, `MONOTONIC_UNAVAILABLE` |
+
+`CONFIGURATION_MISMATCH` means admitted input configuration disagrees with the
+operation's bound context; `SESSION_NOT_FOUND` means no matching lease exists;
+`SESSION_MISMATCH` means a different holder is selected. Held/stale/released/
+handoff reasons report those existing lease states, and `DURATION_EXCEEDED`
+reports the maximum-duration bound. An unreadable or contradictory state is
+unknown, never not-found. Missing monotonic evidence or clock discontinuity
+uses the corresponding unknown reason, never a freshness extension. Choosing
+between simultaneously applicable known refusals does not grant a transition;
+the runtime owner must prove the selected reason from actual observations.
+
+For `ACQUIRE`, the input digest stays non-null even on refusal or unknown:
+the caller supplied a structurally valid acquisition request. Its actual bytes
+must later rederive that digest and equal-bind `sessionId`. A malformed input
+cannot become this family by inventing either value; it fails parsing before
+an operation receipt. For `RENEW/RELEASE`, the operation and requested session
+are the entire input identity exposed by the existing command contract; null
+does not assert absent acquisition evidence or permission to create a session.
+`UNKNOWN` never changes to `REFUSED` merely because some identity fields were
+syntactically readable.
+
+This result contains no predecessor, lease-value, or handoff-proof digest.
+Durable-state evidence has its own owner and admission boundary; requiring an
+acquisition receipt for every holder would exclude a legitimate handoff
+successor. Later ISS-007/004 admission must independently
+prove the actual selected lease/predecessor, exact holder, clock bounds and
+allowed transition; none is derivable from `Dsession`. Receipt sequences are
+not a lease state machine. The existing runtime owners retain renewal/retry
+identity and idempotence, release races, stale handoff, and their actual state
+contracts. A known contender's refusal cannot select a successor or change
+the other holder. Recording or replaying any outcome never reacquires,
+renews, releases, or extends a lease.
+
+#### Complete session health union and step-1 binding
+
+`session-health/v1` has exactly eight members in every arm:
+
+| Member | Exact rule |
+| --- | --- |
+| `holderSessionId` | observed holder `Uuid` or null, as below |
+| `leaseState` | exactly `AVAILABLE`, `HELD_FRESH`, `HELD_STALE`, `HANDOFF_PREPARED`, `RELEASED`, or `UNKNOWN` |
+| `observedAt` | `Time`; only `UNKNOWN` may instead use null |
+| `outcome` | exactly `HEALTHY`, `REFUSED`, or `UNKNOWN`, paired below |
+| `reason` | null or one exact matrix reason |
+| `schemaVersion` | literal `session-health/v1` |
+| `step` | null for read-only session inspection, otherwise the complete five-member inline step identity from the first group, restricted to ordinal `"1"`, kind `session.verify`, and null predecessor prefix |
+| `targetSessionId` | `Uuid` or null; null only when `step` is null and inspection did not request an identity |
+
+`holderSessionId` is null for `AVAILABLE/UNKNOWN` and non-null for the other
+four states; for `RELEASED` it identifies the released holder and for
+`HANDOFF_PREPARED` the stale predecessor. For `UNKNOWN`, dropping the untrusted
+holder assertion is deliberate; a syntactically valid caller's target and
+step remain bound even when observed identity cannot be trusted. There is no
+free-form evidence payload or opaque "health proof" standing in for a missing
+contract, and no assumption that a holder came from acquire rather than handoff.
+
+| `leaseState` | `outcome` | `reason` and target relation |
+| --- | --- | --- |
+| `AVAILABLE` | `REFUSED` | `SESSION_NOT_FOUND` |
+| `HELD_FRESH` | `HEALTHY` | null; target is null or equals holder and bound configuration agrees at runtime |
+| `HELD_FRESH` | `REFUSED` | `SESSION_MISMATCH`; non-null target differs from holder |
+| `HELD_FRESH` | `REFUSED` | `CONFIGURATION_MISMATCH`; target is null or equals holder but admitted configuration disagrees with the lease's bound context |
+| `HELD_STALE` | `REFUSED` | `FRESHNESS_EXPIRED` or `DURATION_EXCEEDED` when target is null or equals holder; otherwise `SESSION_MISMATCH` |
+| `HANDOFF_PREPARED` | `REFUSED` | `HANDOFF_PENDING` when target is null or equals holder; otherwise `SESSION_MISMATCH` |
+| `RELEASED` | `REFUSED` | `SESSION_RELEASED` when target is null or equals holder; otherwise `SESSION_MISMATCH` |
+| `UNKNOWN` | `UNKNOWN` | `STATE_UNREADABLE`, `IDENTITY_CONFLICT`, `CLOCK_ROLLBACK`, `CLOCK_SKEW`, or `MONOTONIC_UNAVAILABLE` |
+
+Only the matrix's enums, nullability, and target/holder equality are structural
+checks. State, configuration, time and health claims require later admission;
+the parser does not read external state to accept or reject either fresh arm.
+
+These states are the complete existing lease-state census; an inspection of
+handoff-prepared state does not execute handoff or define its request/receipt.
+Later composition equal-binds the health record's step to the actual step-1
+identity: `step.cycleId = plan.request.cycleId` and `step.inputDigest = Drequest`.
+`targetSessionId` equals `plan.request.sessionRequest.sessionId`. A healthy
+continuation additionally requires the holder to equal that target and actual
+runtime admission of its current lease under the bound configuration. Neither
+an old acquisition/renewal receipt nor an earlier healthy observation can
+substitute for that check. An inspector record with null step cannot be
+relabeled as step-1 output. `HEALTHY` allows step 2 only
+after fresh runtime admission; known refusal takes existing skips 2–13,
+actual step 14, then failed-known step 15. `UNKNOWN` follows the existing
+unknown rule and cannot be padded with skips. No ordinal or edge changes.
+
+#### Framing, composition boundary, and required evidence
+
+For each row below the only digest is SHA-256 of exactly
+`UTF8("orchestration-platform") || 00 || UTF8(domain) || 00 || u32be(1) ||
+07 || u64be(byteLength(C(record))) || C(record)`. Each is one canonical-record
+part including the final LF, not field-wise parts or an untagged hash.
+
+| Symbol | Exact domain and record family |
+| --- | --- |
+| `Dacquire` | `session-acquire-request/v1` |
+| `Drequest` | `cycle-request/v1` |
+| `Dplan` | `cycle-plan/v1` |
+| `Dsession` | `session-receipt/v1` |
+| `Dhealth` | `session-health/v1` |
+
+All five are standalone structural records eligible for generic canonical
+serialization after review/implementation; no pointer context or path is
+invented. Serialization returns exact canonical bytes and the row's framed
+digest, never an embedded self-digest. Nested request bytes contribute in
+place; they do not carry their separate derived digest. `Dstep` stays the
+existing untagged inline hash. Future cycle-run admission compares its supplied
+plan ID to `Dplan`; the journal ledger must bind this plan and step-1
+`Drequest/Dstep/Dhealth` without creating a cycle in the digest graph. Storage
+paths, initial journal-prefix encoding, and selected-state discovery remain
+the existing runtime/journal owners' work, not implicit parser features.
+
+Before any future use, ISS-007/026 obtain the actual source/provenance/paths
+records, recompute all three existing configuration hashes, and equal-bind the
+request. The admitted loader must prove source-to-effective provenance and
+path-token bindings with its actual configuration/path resolution; matching
+digest-shaped strings is insufficient. Adapter ID equals admitted provenance;
+project identity, capabilities, clock limits, and state root come only from
+that admission. Requested module IDs must be a subset of the installed,
+reviewed static registry and later current policy; a request never installs,
+chooses a version, dynamically loads, or proves eligibility for a module.
+
+ISS-007/026 and ISS-004 retain actual lease acquisition/renewal/release, selected
+state, state-root containment, currentness, fresh injected UTC/monotonic clock
+checks, one-session/one-cycle concurrency, native exclusion, and external
+stable mutation authority. Missing observations, rollback, excessive skew,
+unreadable state, or conflicting identity cannot extend freshness or duration.
+A supplied `HEALTHY/ACQUIRED/RENEWED` spelling is not evidence that those checks
+ran. No public parser, serializer, or local equality check may grant health,
+ownership, a lease, epoch, or mutation authority. ISS-041 may demonstrate its
+existing quarantined create-once lease/refusal; it cannot certify those runtime
+gates. Renew/release schema arms add no such fixture acceptance requirement.
+
+Required future executable evidence, after independent review:
+
+| Vector / removal attack | Required result |
+| --- | --- |
+| Complete closed census | member deletion/addition/rename/null/type mutants at every depth; scalar grammar boundaries; all 0/1/64 module-list bounds plus 65, unsorted/duplicate entries, holes/proxies/accessors/exotic inputs; no input code invoked |
+| Input/plan goldens | fixed canonical byte, complete frame-hex and expected digest goldens for each of acquisition request, cycle request and cycle plan, with nested request equality, empty/nonempty module lists and the three actual configuration preimages; expected values are pinned independently of the serializer under test |
+| Complete union | canonical bytes and fixed expected digest goldens for every operation/outcome/reason row and every health state/reason/target relation, including acquire refusal, renewal/release, handoff observation, and all unknown reasons; crossed operation/outcome/reason, holder nullability and invented arms refuse |
+| Timestamp/refusal cells | valid calendar/precision endpoints, invalid leap day/rollover/leap second/offset; null timestamp only unknown; every operation/input-digest nullability cell tested independently; malformed input never becomes a receipt |
+| Canonical binding | shuffled object insertion preserves bytes/digest; persisted shuffled keys, BOM, CRLF, duplicate keys, whitespace, missing/extra LF or future version refuse; pin full preimage frame hex and expected digest, reject wrong family/tag/part count/raw-32/untagged framing; single-field and nested-field changes alter the appropriate identity |
+| Configuration and plan composition | independently swap source/provenance/paths, redact-token binding, adapter, module, session or cycle; removing any actual-byte/hash/equality/admission check permits a mutant and fails the later composition suite; an unknown module or a different supplied Dplan never runs |
+| Receipt and observation binding | swap acquire request bytes/session ID; swap operation or requested session on renewal/release; later admission rejects acquisition over a held/stale predecessor, a supplied receipt in place of current lease evidence, and a healthy record borrowed from another request/cycle or null-step inspector; valid handoff successors are not rejected merely for lacking an acquisition receipt |
+| Runtime separation and routing | later consumer tests reject fabricated healthy fields without fresh state/clock/authority, clock discontinuity, concurrent acquisition, moved selected state, unknown-to-refused coercion, and UNKNOWN padded to 15; parser-only evidence cannot satisfy any of these runtime tests |
+
+This documentation packet runs no vector. Prediction: five closed records,
+one existing inline step shape and the existing configuration records suffice;
+no generic lease-evidence payload, new envelope, native receipt or execution
+type is needed. Removing a configuration/receipt/step binding admits a concrete
+substitution, while removing copied live proof fields loses nothing because
+none are added. Remaining census groups are journal/replay/terminal, breaker,
+module planning, route selection, dispatch/worker, immutable subjects/review,
+disposition/follow-up, and reclaim; ISS-013's project groups remain separate.
+Durable session-state/handoff admission, journal-start and later-target
+composition are explicit remaining dependencies,
+not a claim of complete cycle execution or a change to issue prerequisites.
+
 ## Release layout and root of trust
 
 - Before runtime state exists, ISS-022 derives immutable
