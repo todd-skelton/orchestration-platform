@@ -200,6 +200,8 @@ export function createProjectSnapshotReader(
           reason: remaining() <= 0 ? "OBSERVATION_TIMEOUT" : reason,
         }),
       });
+      // Initial clock failure must terminate synchronously, before readPage.
+      const initialDelay = remaining();
       const timeout = new Promise<Settlement>((resolve) => {
         const check = () => {
           try {
@@ -210,7 +212,8 @@ export function createProjectSnapshotReader(
             resolve({ kind: "INTERNAL" });
           }
         };
-        check();
+        if (initialDelay <= 0) resolve({ kind: "TIMEOUT" });
+        else timer = setTimeout(check, initialDelay);
       });
       const frontier: ProjectFrontierRow[] = [];
       const workIds = new Set<string>();

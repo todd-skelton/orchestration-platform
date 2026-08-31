@@ -449,6 +449,22 @@ describe("ISS-013 read-only SDK snapshot subset, not full adapter conformance", 
     },
   );
 
+  test("initial deadline clock failure is INTERNAL_ERROR before any adapter callback", async () => {
+    let clockCalls = 0;
+    const read = vi.fn(() => {
+      throw new Error("adapter must not run");
+    });
+    const result = await bind(read)(config, provenance(), {
+      ...clocks,
+      monotonicNow: () => {
+        if (++clockCalls === 2) throw new Error("initial deadline check failed");
+        return 0;
+      },
+    });
+    expect(result).toEqual({ ok: false, code: "INTERNAL_ERROR" });
+    expect(read).not.toHaveBeenCalled();
+  });
+
   test("synchronous elapsed deadline and invalid clocks cannot produce COMPLETE", async () => {
     let now = 0;
     expect(
