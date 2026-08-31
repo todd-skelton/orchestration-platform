@@ -42,6 +42,12 @@ import { parseProjectSnapshotContract } from "./project-snapshot.js";
 import { parseProjectBreakerFactsContract } from "./project-breaker-facts.js";
 import { computeRoutineStepSkipDigest, parseRoutineStepSkipContract } from "./routine-step.js";
 import {
+  computeReleaseCandidateSubjectDigest,
+  computeWorkerResultSubjectDigest,
+  parseReviewSubjectContract,
+  reviewSubjectSchemaVersions,
+} from "./review-subject.js";
+import {
   computeCyclePlanDigest,
   computeCycleRequestDigest,
   computeSessionAcquireRequestDigest,
@@ -74,6 +80,7 @@ export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
 export * from "./project-breaker-facts.js";
 export * from "./routine-step.js";
+export * from "./review-subject.js";
 export * from "./cycle-entry.js";
 export * from "./vocabulary.js";
 export type * from "./runtime.js";
@@ -117,6 +124,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const reviewSubject = parseReviewSubjectContract(expectedSchemaVersion, input);
+  if (reviewSubject) return reviewSubject;
   const cycleEntry = parseCycleEntryContract(expectedSchemaVersion, input);
   if (cycleEntry) return cycleEntry;
   const routineStepSkip = parseRoutineStepSkipContract(expectedSchemaVersion, input);
@@ -179,13 +188,18 @@ export function parseCanonicalContractBytes(
   const definition = schemaDefinitions[expectedSchemaVersion];
   try {
     if (definition) return parseCanonicalBytes(definition, bytes);
-    if (!schemaVersions.includes(expectedSchemaVersion))
+    if (
+      expectedSchemaVersion !== "review-subject/v1" &&
+      !schemaVersions.includes(expectedSchemaVersion)
+    )
       return { ok: false, issues: ["schemaVersion:unsupported"] };
     if (
       expectedSchemaVersion === "adapter-configuration/v1" ||
       expectedSchemaVersion === "project-facts/v1" ||
       expectedSchemaVersion === "project-breaker-facts/v1" ||
       expectedSchemaVersion === "routine-step-skip/v1" ||
+      expectedSchemaVersion === "review-subject/v1" ||
+      (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (cycleEntrySchemaVersions as readonly string[]).includes(expectedSchemaVersion)
     ) {
       if (!nodeTypes.isUint8Array(bytes)) return { ok: false, issues: ["encoding:bytes-required"] };
@@ -240,6 +254,18 @@ export function serializeContract(
     expectedSchemaVersion === "recovery-attempt-reservation/v1"
   )
     return { ok: false, issues: ["serialization:pointer-context-required"] };
+  if (
+    expectedSchemaVersion === "review-subject/v1" ||
+    (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
+  )
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest:
+        parsed.value.schemaVersion === "worker-result-subject/v1"
+          ? computeWorkerResultSubjectDigest(parsed.value)
+          : computeReleaseCandidateSubjectDigest(parsed.value),
+    };
   const digest =
     expectedSchemaVersion === "cycle-plan/v1"
       ? computeCyclePlanDigest(parsed.value)
@@ -279,15 +305,21 @@ export interface CompatibilityRow {
   readonly disposition: "readable" | "refused";
 }
 export const compatibilityMatrix: readonly CompatibilityRow[] = Object.freeze(
-  schemaVersions.flatMap((expectedSchemaVersion) => {
+  [...schemaVersions, "review-subject/v1"].flatMap((expectedSchemaVersion) => {
     const family = expectedSchemaVersion.slice(0, expectedSchemaVersion.lastIndexOf("/"));
-    return [expectedSchemaVersion, `${family}/v0-fixture`, `${family}/v999`, null].map(
-      (observedSchemaVersion) =>
-        Object.freeze({
-          expectedSchemaVersion,
-          observedSchemaVersion,
-          disposition: compatibilityDisposition(expectedSchemaVersion, observedSchemaVersion),
-        }),
+    const observedVersions: readonly (string | null)[] = [
+      ...(expectedSchemaVersion === "review-subject/v1" ? reviewSubjectSchemaVersions : []),
+      expectedSchemaVersion,
+      `${family}/v0-fixture`,
+      `${family}/v999`,
+      null,
+    ];
+    return observedVersions.map((observedSchemaVersion) =>
+      Object.freeze({
+        expectedSchemaVersion,
+        observedSchemaVersion,
+        disposition: compatibilityDisposition(expectedSchemaVersion, observedSchemaVersion),
+      }),
     );
   }),
 );
