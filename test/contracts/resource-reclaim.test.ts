@@ -476,7 +476,17 @@ function workerFixture() {
     true,
   );
   expect(c.validateActionDispositionBinding(dispositionInput, out, err, disposition).ok).toBe(true);
-  return { context, rendered, out, err, launch, terminal };
+  return {
+    context,
+    rendered,
+    out,
+    err,
+    launch,
+    terminal,
+    upstream,
+    planHealth,
+    dispatchPlan,
+  };
 }
 
 function workerlessMutationFixture() {
@@ -720,6 +730,252 @@ function bindWorker(
   err: unknown = fixture.err,
 ) {
   return c.validateResourceReclaimReceiptBinding(fixture.context, rendered, out, err, receipt);
+}
+
+function retainedContext(
+  input: ReturnType<typeof moduleInput>,
+  origin: unknown,
+  skips: readonly unknown[] = [],
+  health: unknown = inspectionHealth(input),
+) {
+  return {
+    adapterConfiguration: copy(input.adapterConfiguration),
+    configurationProvenance: copy(input.configurationProvenance),
+    cyclePlan: cyclePlan(input),
+    origin: copy(origin),
+    sessionHealth: copy(health),
+    skips: copy(skips),
+  };
+}
+
+function emptyReceipt(context: ReturnType<typeof retainedContext>, outcome: unknown) {
+  return {
+    contextDigest: c.computeResourceReclaimContextDigest(context),
+    cycleId: context.cyclePlan.request.cycleId,
+    observations: [],
+    outcome: copy(outcome),
+    process: { kind: "NOT_LAUNCHED" },
+    reclaimTransactionId: id(850),
+    schemaVersion: "resource-reclaim-receipt/v1",
+  };
+}
+
+function rebindContext(context: unknown, receipt: unknown) {
+  const rebound = JSON.parse(JSON.stringify(receipt));
+  rebound.contextDigest = c.computeResourceReclaimContextDigest(context);
+  return rebound;
+}
+
+function unknownFacts(input: ReturnType<typeof moduleInput>) {
+  return {
+    adapterConfigurationDigest: c.canonicalDigest(input.adapterConfiguration),
+    observationId: id(860),
+    observedAt: "2026-08-31T01:00:00.250Z",
+    projectId: input.adapterConfiguration.projectId,
+    reason: "SOURCE_UNKNOWN",
+    schemaVersion: "project-facts/v1",
+    state: "UNKNOWN",
+  };
+}
+
+function unknownBreakerReceipt(input: ReturnType<typeof moduleInput>) {
+  return {
+    adapterConfigurationDigest: c.canonicalDigest(input.adapterConfiguration),
+    cycleId: input.cycleRequest.cycleId,
+    cycleRequestDigest: c.computeCycleRequestDigest(input.cycleRequest),
+    operations: [],
+    policyFactsDigest: c.canonicalDigest(input.policyFacts),
+    policyIdentity: {
+      adapterId: input.adapterConfiguration.adapterId,
+      adapterVersion: input.adapterConfiguration.adapterVersion,
+      policyVersion: input.policyFacts.policyVersion,
+    },
+    priorReceiptDigest: null,
+    result: {
+      blockedCapabilityNames: ["work.read"],
+      kind: "UNKNOWN",
+      reason: "HISTORY_UNPROVEN",
+    },
+    schemaVersion: "breaker-receipt/v1",
+    sessionId: input.cycleRequest.sessionRequest.sessionId,
+  };
+}
+
+function routeStopFixture() {
+  const upstream = preflightFixture(true);
+  const stoppedRoute = {
+    actionPlanDigest: c.computeModuleActionPlanDigest(upstream.plan),
+    hostMappingDigest: null,
+    outcome: { kind: "UNKNOWN", reason: "MAPPING_UNAVAILABLE" },
+    schemaVersion: "route-selection/v1",
+  };
+  const origin = {
+    action: copy(upstream.plan),
+    input: copy(upstream.input),
+    kind: "PREPARATION",
+    launch: null,
+    mapping: null,
+    observation: null,
+    plan: null,
+    preflight: null,
+    reviewRequest: null,
+    route: stoppedRoute,
+    sessionHealth: null,
+    terminal: null,
+  };
+  const context = retainedContext(upstream.input, origin);
+  return {
+    context,
+    receipt: emptyReceipt(context, { kind: "UNKNOWN", reason: "EARLIER_UNKNOWN" }),
+    upstream,
+  };
+}
+
+function preparationLiveFixture() {
+  const worker = workerFixture();
+  const terminal = JSON.parse(JSON.stringify(worker.terminal));
+  terminal.outcome = {
+    kind: "TERMINATION_FAILED_LIVE",
+    termination: { elapsedMilliseconds: "1000", limitMilliseconds: "1000" },
+  };
+  terminal.processes = copy(worker.launch.processes);
+  const origin = {
+    action: copy(worker.upstream.plan),
+    input: copy(worker.upstream.input),
+    kind: "PREPARATION",
+    launch: copy(worker.launch),
+    mapping: copy(worker.upstream.mapping),
+    observation: copy(worker.upstream.observation),
+    plan: copy(worker.dispatchPlan),
+    preflight: copy(worker.upstream.preflight),
+    reviewRequest: null,
+    route: copy(worker.upstream.selected),
+    sessionHealth: copy(worker.planHealth),
+    terminal,
+  };
+  const context = retainedContext(worker.upstream.input, origin);
+  const reclaimTransactionId = id(851);
+  const observations = worker.launch.resources.map((allocation, index) => ({
+    ...ownerRow(
+      allocation,
+      "DISPATCH",
+      reclaimTransactionId,
+      { kind: "RETAINED", reason: "PROCESS_LIVE" },
+      index + 30,
+    ),
+    after: null,
+  }));
+  const receipt = {
+    contextDigest: c.computeResourceReclaimContextDigest(context),
+    cycleId: context.cyclePlan.request.cycleId,
+    observations,
+    outcome: { kind: "UNKNOWN", reason: "PROCESS_LIVE" },
+    process: {
+      handles: { process: "CLOSED", stderr: "CLOSED", stdin: "CLOSED", stdout: "CLOSED" },
+      kind: "OBSERVED",
+      observationId: id(852),
+      observedAt: "2026-08-31T01:00:03.000Z",
+      processes: copy(terminal.processes),
+    },
+    reclaimTransactionId,
+    schemaVersion: "resource-reclaim-receipt/v1",
+  };
+  return { worker, context, receipt, terminal };
+}
+
+function strictUnknownReceipt(
+  fixture: ReturnType<typeof workerFixture>,
+  context: unknown,
+  reason: string,
+) {
+  const receipt = receiptForWorker(fixture);
+  receipt.contextDigest = c.computeResourceReclaimContextDigest(context);
+  receipt.observations = receipt.observations.map((row: Record<string, unknown>) => ({
+    ...row,
+    after: null,
+    outcome: { kind: "UNKNOWN", phase: "BEFORE_RECLAIM", reason: "AUTHORITY_UNPROVEN" },
+  }));
+  receipt.outcome = { kind: "UNKNOWN", reason };
+  return receipt;
+}
+
+function combinedFixture(collision: "OWNER_RESOURCE" | "ALLOCATION_ID" | "OWNER_TRANSACTION") {
+  const worker = workerFixture();
+  const seed = workerlessMutationFixture();
+  const disposition = {
+    ...copy(worker.context.origin.disposition),
+    outcome: { kind: "APPLY", operation: "PROJECT" },
+  };
+  const mutation = JSON.parse(JSON.stringify(seed.context.origin.mutation));
+  mutation.request.actionPlanDigest = c.computeModuleActionPlanDigest(
+    worker.context.origin.dispositionInput.actionPlan,
+  );
+  mutation.request.adapterConfigurationDigest = c.canonicalDigest(
+    worker.context.origin.dispositionInput.moduleInput.adapterConfiguration,
+  );
+  mutation.request.dispositionDigest = c.computeActionDispositionDigest(disposition);
+  mutation.request.sourceCycleId = worker.context.cyclePlan.request.cycleId;
+  mutation.request.subjectDigest = disposition.subjectDigest;
+  mutation.request.subjectKind = disposition.subjectKind;
+  if (collision === "OWNER_TRANSACTION")
+    mutation.request.transactionId = worker.launch.resources[0]!.ownerTransactionId;
+  mutation.plan.requestDigest = c.computeProjectMutationRequestDigest(mutation.request);
+  mutation.plan.transactionId = mutation.request.transactionId;
+  if (collision === "OWNER_RESOURCE") {
+    mutation.plan.outcome.resourceIntents[0].owner = worker.launch.resources[0]!.owner;
+    mutation.plan.outcome.resourceIntents[0].resourceIdentityDigest =
+      worker.launch.resources[0]!.resourceIdentityDigest;
+  }
+  mutation.receipt.requestDigest = c.computeProjectMutationRequestDigest(mutation.request);
+  mutation.receipt.transactionId = mutation.request.transactionId;
+  mutation.receipt.resources.forEach((row: Record<string, unknown>) => {
+    row.ownerTransactionId = mutation.request.transactionId;
+  });
+  if (collision === "OWNER_RESOURCE") {
+    mutation.receipt.resources[0].owner = mutation.plan.outcome.resourceIntents[0].owner;
+    mutation.receipt.resources[0].resourceIdentityDigest =
+      mutation.plan.outcome.resourceIntents[0].resourceIdentityDigest;
+  }
+  if (collision === "ALLOCATION_ID")
+    mutation.receipt.resources[0].allocationId = worker.launch.resources[0]!.allocationId;
+  mutation.receipt.planDigest = c.computeProjectMutationPlanDigest(mutation.plan);
+  const context = JSON.parse(JSON.stringify(worker.context));
+  context.origin.disposition = disposition;
+  context.origin.mutation = mutation;
+  context.skips = [];
+  const reclaimTransactionId = id(853);
+  const observations = [
+    ...worker.launch.resources.map((allocation, index) => ({
+      ...ownerRow(
+        allocation,
+        "DISPATCH",
+        reclaimTransactionId,
+        { kind: "UNKNOWN", phase: "BEFORE_RECLAIM", reason: "IDENTITY_CONFLICT" },
+        index + 40,
+      ),
+      after: null,
+    })),
+    ...mutation.receipt.resources.map((allocation: unknown, index: number) => ({
+      ...ownerRow(
+        allocation,
+        "MUTATION",
+        reclaimTransactionId,
+        { kind: "UNKNOWN", phase: "BEFORE_RECLAIM", reason: "IDENTITY_CONFLICT" },
+        index + 50,
+      ),
+      after: null,
+    })),
+  ];
+  const receipt = {
+    contextDigest: c.computeResourceReclaimContextDigest(context),
+    cycleId: context.cyclePlan.request.cycleId,
+    observations,
+    outcome: { kind: "UNKNOWN", reason: "IDENTITY_CONFLICT" },
+    process: closedProcess(worker),
+    reclaimTransactionId,
+    schemaVersion: "resource-reclaim-receipt/v1",
+  };
+  return { worker, context, receipt };
 }
 
 test("pins canonical bytes, full frame, digest, generic parser and serializer routing", () => {
@@ -1099,4 +1355,422 @@ test("retains row-local uncertainty while unrelated healthy closed rows stay pos
   unsupported.observations[1].before = unknownObservation("UNSUPPORTED_RESOURCE");
   unsupported.outcome = { kind: "UNKNOWN", reason: "OWNER_UNPROVEN" };
   expect(bindWorker(fixture, unsupported)).toEqual({ ok: true, value: unsupported });
+});
+
+test("binds SESSION, SNAPSHOT, BREAKER, MODULE and route-stop PREPARATION tuples", () => {
+  const input = moduleInput();
+
+  const session = retainedContext(input, { health: originHealth(input), kind: "SESSION" });
+  const sessionReceipt = emptyReceipt(session, { kind: "UNKNOWN", reason: "EARLIER_UNKNOWN" });
+  expect(
+    c.validateResourceReclaimReceiptBinding(session, null, null, null, sessionReceipt),
+  ).toEqual({ ok: true, value: sessionReceipt });
+  const badSession = JSON.parse(JSON.stringify(session));
+  badSession.origin.health.step.inputDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badSession).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badSession,
+      null,
+      null,
+      null,
+      rebindContext(badSession, sessionReceipt),
+    ).ok,
+  ).toBe(false);
+  expect(
+    c.validateResourceReclaimReceiptBinding(session, raw(), null, null, sessionReceipt).ok,
+  ).toBe(false);
+  const skippedSession = JSON.parse(JSON.stringify(session));
+  skippedSession.skips = [
+    skip(
+      input.cycleRequest.cycleId,
+      2,
+      c.computeSessionHealthDigest(skippedSession.origin.health),
+      "prior-known-terminal",
+    ),
+  ];
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      skippedSession,
+      null,
+      null,
+      null,
+      rebindContext(skippedSession, sessionReceipt),
+    ).ok,
+  ).toBe(false);
+  const wrongEarly = copy(sessionReceipt);
+  wrongEarly.outcome = { kind: "UNKNOWN", reason: "OWNER_UNPROVEN" };
+  expect(c.validateResourceReclaimReceiptBinding(session, null, null, null, wrongEarly).ok).toBe(
+    false,
+  );
+
+  const facts = unknownFacts(input);
+  const snapshot = retainedContext(input, { facts, kind: "SNAPSHOT" });
+  const snapshotReceipt = emptyReceipt(snapshot, { kind: "UNKNOWN", reason: "EARLIER_UNKNOWN" });
+  expect(
+    c.validateResourceReclaimReceiptBinding(snapshot, null, null, null, snapshotReceipt),
+  ).toEqual({ ok: true, value: snapshotReceipt });
+  const badSnapshot = JSON.parse(JSON.stringify(snapshot));
+  badSnapshot.origin.facts.adapterConfigurationDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badSnapshot).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badSnapshot,
+      null,
+      null,
+      null,
+      rebindContext(badSnapshot, snapshotReceipt),
+    ).ok,
+  ).toBe(false);
+  expect(
+    c.validateResourceReclaimReceiptBinding(snapshot, null, Uint8Array.of(1), null, snapshotReceipt)
+      .ok,
+  ).toBe(false);
+  const skippedSnapshot = JSON.parse(JSON.stringify(snapshot));
+  skippedSnapshot.skips = [
+    skip(input.cycleRequest.cycleId, 2, "8".repeat(64), "prior-known-terminal"),
+  ];
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      skippedSnapshot,
+      null,
+      null,
+      null,
+      rebindContext(skippedSnapshot, snapshotReceipt),
+    ).ok,
+  ).toBe(false);
+
+  const breakerReceipt = unknownBreakerReceipt(input);
+  const breaker = retainedContext(input, {
+    facts: input.projectFacts,
+    kind: "BREAKER",
+    policyFacts: input.policyFacts,
+    prior: null,
+    receipt: breakerReceipt,
+  });
+  const breakerStop = emptyReceipt(breaker, { kind: "UNKNOWN", reason: "EARLIER_UNKNOWN" });
+  expect(c.validateResourceReclaimReceiptBinding(breaker, null, null, null, breakerStop)).toEqual({
+    ok: true,
+    value: breakerStop,
+  });
+  const badBreaker = JSON.parse(JSON.stringify(breaker));
+  badBreaker.origin.receipt.cycleRequestDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badBreaker).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badBreaker,
+      null,
+      null,
+      null,
+      rebindContext(badBreaker, breakerStop),
+    ).ok,
+  ).toBe(false);
+  expect(c.validateResourceReclaimReceiptBinding(breaker, null, null, raw(), breakerStop).ok).toBe(
+    false,
+  );
+  const skippedBreaker = JSON.parse(JSON.stringify(breaker));
+  skippedBreaker.skips = [
+    skip(input.cycleRequest.cycleId, 4, "8".repeat(64), "prior-known-terminal"),
+  ];
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      skippedBreaker,
+      null,
+      null,
+      null,
+      rebindContext(skippedBreaker, breakerStop),
+    ).ok,
+  ).toBe(false);
+
+  const moduleResult = {
+    inputDigest: c.computeModulePlanInputDigest(input),
+    outcome: "NO_ACTION",
+    reason: "NO_ELIGIBLE_ACTION",
+    schemaVersion: "module-no-action/v1",
+  };
+  const moduleSkips = skipChain(
+    input.cycleRequest.cycleId,
+    [5, 6, 7, 8, 9, 10, 11, 12, 13],
+    c.computeModuleNoActionDigest(moduleResult),
+    "prior-known-terminal",
+  );
+  const module = retainedContext(
+    input,
+    { input, kind: "MODULE", result: moduleResult },
+    moduleSkips,
+  );
+  const noAllocation = emptyReceipt(module, { kind: "NO_ALLOCATION" });
+  expect(c.validateResourceReclaimReceiptBinding(module, null, null, null, noAllocation)).toEqual({
+    ok: true,
+    value: noAllocation,
+  });
+  const badModule = JSON.parse(JSON.stringify(module));
+  badModule.origin.result.inputDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badModule).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badModule,
+      null,
+      null,
+      null,
+      rebindContext(badModule, noAllocation),
+    ).ok,
+  ).toBe(false);
+  const badModuleSkip = JSON.parse(JSON.stringify(module));
+  badModuleSkip.skips[0].step.inputDigest = "9".repeat(64);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badModuleSkip,
+      null,
+      null,
+      null,
+      rebindContext(badModuleSkip, noAllocation),
+    ).ok,
+  ).toBe(false);
+  const wrongNoAllocation = copy(noAllocation);
+  wrongNoAllocation.outcome = { kind: "UNKNOWN", reason: "OWNER_UNPROVEN" };
+  expect(
+    c.validateResourceReclaimReceiptBinding(module, null, null, null, wrongNoAllocation).ok,
+  ).toBe(false);
+  expect(c.validateResourceReclaimReceiptBinding(module, null, raw(), null, noAllocation).ok).toBe(
+    false,
+  );
+
+  const routeStop = routeStopFixture();
+  expect(
+    c.validateResourceReclaimReceiptBinding(routeStop.context, null, null, null, routeStop.receipt),
+  ).toEqual({ ok: true, value: routeStop.receipt });
+  const badRoute = JSON.parse(JSON.stringify(routeStop.context));
+  badRoute.origin.route.actionPlanDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badRoute).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badRoute,
+      null,
+      null,
+      null,
+      rebindContext(badRoute, routeStop.receipt),
+    ).ok,
+  ).toBe(false);
+  const badRouteStop = JSON.parse(JSON.stringify(routeStop.context));
+  badRouteStop.origin.preflight = copy(routeStop.upstream.preflight);
+  expect(c.parseResourceReclaimContext(badRouteStop).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badRouteStop,
+      null,
+      null,
+      null,
+      rebindContext(badRouteStop, routeStop.receipt),
+    ).ok,
+  ).toBe(false);
+  expect(
+    c.validateResourceReclaimReceiptBinding(routeStop.context, raw(), null, null, routeStop.receipt)
+      .ok,
+  ).toBe(false);
+  const skippedRoute = JSON.parse(JSON.stringify(routeStop.context));
+  skippedRoute.skips = [
+    skip(
+      skippedRoute.cyclePlan.request.cycleId,
+      6,
+      c.computeRouteSelectionDigest(skippedRoute.origin.route),
+      "prior-known-terminal",
+    ),
+  ];
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      skippedRoute,
+      null,
+      null,
+      null,
+      rebindContext(skippedRoute, routeStop.receipt),
+    ).ok,
+  ).toBe(false);
+});
+
+test("binds PROCESS_LIVE and the remaining ordered reducer cells", () => {
+  const live = preparationLiveFixture();
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      live.context,
+      live.worker.rendered,
+      live.worker.out,
+      live.worker.err,
+      live.receipt,
+    ),
+  ).toEqual({ ok: true, value: live.receipt });
+  const liveEffect = copy(live.receipt);
+  liveEffect.observations[0] = ownerRow(
+    live.worker.launch.resources[0]!,
+    "DISPATCH",
+    live.receipt.reclaimTransactionId,
+    { kind: "RECLAIMED" },
+    30,
+  );
+  expect(c.parseResourceReclaimReceipt(liveEffect).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      live.context,
+      live.worker.rendered,
+      live.worker.out,
+      live.worker.err,
+      liveEffect,
+    ).ok,
+  ).toBe(false);
+  const wrongLive = copy(live.receipt);
+  wrongLive.outcome = { kind: "UNKNOWN", reason: "EARLIER_UNKNOWN" };
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      live.context,
+      live.worker.rendered,
+      live.worker.out,
+      live.worker.err,
+      wrongLive,
+    ).ok,
+  ).toBe(false);
+  const badLaunch = JSON.parse(JSON.stringify(live.context));
+  badLaunch.origin.launch.dispatchPlanDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badLaunch).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badLaunch,
+      live.worker.rendered,
+      live.worker.out,
+      live.worker.err,
+      rebindContext(badLaunch, live.receipt),
+    ).ok,
+  ).toBe(false);
+  const badTerminal = JSON.parse(JSON.stringify(live.context));
+  badTerminal.origin.terminal.launchReceiptDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badTerminal).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badTerminal,
+      live.worker.rendered,
+      live.worker.out,
+      live.worker.err,
+      rebindContext(badTerminal, live.receipt),
+    ).ok,
+  ).toBe(false);
+  const badPlan = JSON.parse(JSON.stringify(live.context));
+  badPlan.origin.plan.actionPlanDigest = "9".repeat(64);
+  expect(c.parseResourceReclaimContext(badPlan).ok).toBe(true);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      badPlan,
+      live.worker.rendered,
+      live.worker.out,
+      live.worker.err,
+      rebindContext(badPlan, live.receipt),
+    ).ok,
+  ).toBe(false);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      live.context,
+      null,
+      live.worker.out,
+      live.worker.err,
+      live.receipt,
+    ).ok,
+  ).toBe(false);
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      live.context,
+      live.worker.rendered,
+      Uint8Array.of(1),
+      live.worker.err,
+      live.receipt,
+    ).ok,
+  ).toBe(false);
+
+  const worker = workerFixture();
+  const processUnknown = strictUnknownReceipt(worker, worker.context, "PROCESS_UNPROVEN");
+  processUnknown.process = { kind: "UNKNOWN", reason: "OBSERVATION_UNAVAILABLE" };
+  expect(bindWorker(worker, processUnknown)).toEqual({ ok: true, value: processUnknown });
+  const wrongProcess = copy(processUnknown);
+  wrongProcess.outcome = { kind: "UNKNOWN", reason: "OWNER_UNPROVEN" };
+  expect(bindWorker(worker, wrongProcess).ok).toBe(false);
+
+  const authorityContext = copy(worker.context);
+  authorityContext.sessionHealth = inspectionHealth(
+    worker.context.origin.dispositionInput.moduleInput,
+    "UNKNOWN",
+  );
+  const authority = strictUnknownReceipt(worker, authorityContext, "AUTHORITY_UNPROVEN");
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      authorityContext,
+      null,
+      worker.out,
+      worker.err,
+      authority,
+    ),
+  ).toEqual({ ok: true, value: authority });
+  const wrongAuthority = copy(authority);
+  wrongAuthority.outcome = { kind: "UNKNOWN", reason: "PROCESS_UNPROVEN" };
+  expect(
+    c.validateResourceReclaimReceiptBinding(
+      authorityContext,
+      null,
+      worker.out,
+      worker.err,
+      wrongAuthority,
+    ).ok,
+  ).toBe(false);
+
+  const ownerRefused = receiptForWorker(worker);
+  ownerRefused.observations = ownerRefused.observations.map((row: Record<string, unknown>) => ({
+    ...row,
+    after: null,
+    outcome: { kind: "RETAINED", reason: "OWNER_REFUSED" },
+  }));
+  ownerRefused.outcome = { kind: "RETAINED", reason: "OWNER_REFUSED" };
+  expect(bindWorker(worker, ownerRefused)).toEqual({ ok: true, value: ownerRefused });
+  const wrongOwner = copy(ownerRefused);
+  wrongOwner.outcome = { kind: "RECLAIMED" };
+  expect(bindWorker(worker, wrongOwner).ok).toBe(false);
+});
+
+test("binds all three cross-source identity collisions with both censuses retained", () => {
+  for (const collision of ["OWNER_RESOURCE", "ALLOCATION_ID", "OWNER_TRANSACTION"] as const) {
+    const fixture = combinedFixture(collision);
+    expect(fixture.receipt.observations.map((row: { source: string }) => row.source)).toEqual([
+      "DISPATCH",
+      "DISPATCH",
+      "MUTATION",
+      "MUTATION",
+    ]);
+    expect(
+      c.validateResourceReclaimReceiptBinding(
+        fixture.context,
+        null,
+        fixture.worker.out,
+        fixture.worker.err,
+        fixture.receipt,
+      ),
+    ).toEqual({ ok: true, value: fixture.receipt });
+    const omitted = copy(fixture.receipt);
+    omitted.observations.pop();
+    expect(c.parseResourceReclaimReceipt(omitted).ok).toBe(true);
+    expect(
+      c.validateResourceReclaimReceiptBinding(
+        fixture.context,
+        null,
+        fixture.worker.out,
+        fixture.worker.err,
+        omitted,
+      ).ok,
+    ).toBe(false);
+    const wrongReason = copy(fixture.receipt);
+    wrongReason.outcome = { kind: "UNKNOWN", reason: "OWNER_UNPROVEN" };
+    expect(
+      c.validateResourceReclaimReceiptBinding(
+        fixture.context,
+        null,
+        fixture.worker.out,
+        fixture.worker.err,
+        wrongReason,
+      ).ok,
+    ).toBe(false);
+  }
 });
