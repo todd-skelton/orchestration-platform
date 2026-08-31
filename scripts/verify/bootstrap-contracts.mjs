@@ -805,6 +805,8 @@ export async function validateBootstrapSnapshot(snapshot) {
     const expectedTest =
       name === "@orchestration-platform/contracts"
         ? "pnpm --dir ../.. exec vitest run test/contracts"
+        : name === "@orchestration-platform/adapter-sdk"
+          ? "pnpm --dir ../.. exec vitest run test/adapter-sdk"
         : name === "@orchestration-platform/walking-skeleton"
           ? "pnpm --dir ../.. exec vitest run fixtures/walking-skeleton/test"
           : name === "@orchestration-platform/config"
