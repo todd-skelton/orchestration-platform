@@ -392,9 +392,10 @@ export function parseModuleNoAction(input: unknown): ParseResult<ModuleNoAction>
 export function parseModulePlanResult(input: unknown): ParseResult<ModulePlanResult> {
   const snapshot = snapshotJson(input);
   if (!snapshot.ok) return snapshot;
-  const record = snapshot.value;
-  if (record === null || typeof record !== "object" || Array.isArray(record))
+  const value = snapshot.value;
+  if (value === null || typeof value !== "object" || Array.isArray(value))
     return invalid("record:object-required");
+  const record = value as ContractRecord;
   if (record.schemaVersion === "module-action-plan/v1") return parseModuleActionPlan(record);
   if (record.schemaVersion === "module-no-action/v1") return parseModuleNoAction(record);
   return invalid("schemaVersion:unsupported");
