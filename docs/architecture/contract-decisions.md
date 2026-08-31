@@ -6170,15 +6170,36 @@ identity. STARTED requires output:null. TERMINAL requires one output below.
 Every event cycle equals step.cycleId. Devent is the standard one-part framed
 digest in domain `orchestration-event/v1` over the complete event.
 
-retainedEvidence is0–5 rows, strictly kind-sorted and unique, each exactly
+retainedEvidence is0–6 rows, strictly kind-sorted and unique, each exactly
 `byteLength, contentDigest, encoding, kind`. Length is Dec(0,1048576), encoding
 RAW_BYTES or CANONICAL_JSON, and kind MAPPING_OBSERVATION,
-PREFLIGHT_OBSERVATION, RENDERED_INPUT, STDOUT or STDERR. The reader receives the
+MUTATION_OBSERVATION, PREFLIGHT_OBSERVATION, RENDERED_INPUT, STDOUT or STDERR. The reader receives the
 matching closed bounded byte tuple, verifies length/hash and strictly decodes
 CANONICAL_JSON before the owning relation. Decode failure is usable only for
 that relation's existing invalid-observation UNKNOWN cell. References are not
 paths/payloads; missing bytes block replay. STARTED requires this census empty;
 each TERMINAL arm requires exactly its consumed kinds and forbids unrelated rows.
+
+Invalid-input branches use this closed null/evidence matrix. CANONICAL_JSON
+bytes are exactly C(the complete observed JSON value), so strict decoding
+reconstructs the same detached value passed to the owning relation; it must fail
+that relation's expected parser/binding. Non-JSON/proxy/accessor input has no
+canonical retained form and cannot produce a later event.
+
+| Owning cell | Typed member | Required evidence |
+| --- | --- | --- |
+| ROUTE UNKNOWN/MAPPING_INVALID | mapping null | exactly one MAPPING_OBSERVATION/CANONICAL_JSON row; decoded value is the actual invalid mapping argument |
+| ROUTE other cells | complete typed mapping, or existing MAPPING_UNAVAILABLE null | no MAPPING_OBSERVATION row |
+| PREFLIGHT UNKNOWN/OBSERVATION_INVALID | observation null | exactly one PREFLIGHT_OBSERVATION/CANONICAL_JSON row; decoded value is the actual invalid observation argument |
+| PREFLIGHT other cells | complete typed observation, or existing OBSERVATION_UNAVAILABLE null | no PREFLIGHT_OBSERVATION row |
+| MUTATION_PLAN UNKNOWN/OBSERVATION_INVALID | observation null | exactly one MUTATION_OBSERVATION/CANONICAL_JSON row; decoded value is the actual invalid dry-observation argument |
+| MUTATION_PLAN other cells | complete typed observation, or existing OBSERVATION_UNAVAILABLE null | no MUTATION_OBSERVATION row |
+
+DISPATCH_PLAN/OBSERVATION_INVALID retains its valid typed preflight observation:
+that existing relation has no separate invalid observation argument; this is a
+dispatch-owner claim and rendered input remains null. It cannot borrow another
+evidence kind. Length/hash, encoding/kind and strict decode reconstruct the
+invalid argument without an invalid typed member, generic payload/path/sidecar.
 
 The closed terminal output union uses these exact shapes. Each `kind` is also
 the only admitted step ordinal/kind shown; dependent records occur in the

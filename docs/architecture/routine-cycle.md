@@ -129,7 +129,7 @@ non-`UNKNOWN` outcome, these routes are exhaustive:
 | 11 explicit nonmutating COMPLETE | skip 12–13; 14 actual reclaim/no-allocation; 15 `COMPLETED` only after all required worker/review and journal gates |
 | 12 mutation plan refused-known | skip 13; 14 reclaim/no-allocation; 15 `FAILED_KNOWN` |
 | 13 apply terminal/refused | 14 reclaim/no-allocation; 15 complete/known-failure |
-| 14 reclaim terminal/refused | 15 complete/known-failure with known retained capacity explicitly preserved; any live process or unknown resource/identity makes 15 `UNKNOWN` |
+| 14 reclaim terminal/refused | known reclaimed/no-allocation/retained capacity proceeds to15 complete/known-failure; any live process or unknown resource/identity ends at14 `UNKNOWN`, with no15 or cycle receipt |
 
 An `UNKNOWN` output journals that contradiction when the prefix remains safely
 appendable and forbids further authoritative steps; it never fabricates skip
