@@ -420,6 +420,10 @@ const invalid = <T extends ContractRecord>(...issues: readonly string[]): ParseR
   ok: false,
   issues: Object.freeze([...new Set(issues)].sort()),
 });
+const specializedFailure = (...issues: readonly string[]) => ({
+  ok: false as const,
+  issues: Object.freeze([...new Set(issues)].sort()),
+});
 const prefixed = (label: string, issues: readonly string[]) =>
   issues.map((issue) => `${label}.${issue}`);
 const digest = (value: JsonValue | undefined): value is string =>
@@ -998,12 +1002,12 @@ export function planEventJournalAppend(
   eventInput: unknown,
 ): EventJournalAppendPlan {
   const bytes = rawBytes(prefixInput);
-  if (!bytes) return invalid("prefix:bytes-required");
+  if (!bytes) return specializedFailure("prefix:bytes-required");
   const inspected = inspectEventJournalBytes(bytes);
-  if (!inspected.ok) return invalid(...inspected.issues);
-  if (inspected.value.partialSuffix) return invalid("prefix:partial-final-frame");
+  if (!inspected.ok) return specializedFailure(...inspected.issues);
+  if (inspected.value.partialSuffix) return specializedFailure("prefix:partial-final-frame");
   const event = parseOrchestrationEvent(eventInput);
-  if (!event.ok) return invalid(...prefixed("event", event.issues));
+  if (!event.ok) return specializedFailure(...prefixed("event", event.issues));
   const journal = inspected.value.journal,
     prior = journal.events[journal.events.length - 1];
   if (prior && event.value.position === prior.position) {
@@ -1016,21 +1020,21 @@ export function planEventJournalAppend(
             status: "IDEMPOTENT",
           },
         }
-      : invalid("event:position-conflict");
+      : specializedFailure("event:position-conflict");
   }
-  if (journal.events.length >= 4096) return invalid("journal:capacity-exhausted");
+  if (journal.events.length >= 4096) return specializedFailure("journal:capacity-exhausted");
   if (prior?.phase === "TERMINAL" && (prior.output as ContractRecord).kind === "CYCLE_TERMINAL")
-    return invalid("event:after-cycle-terminal");
+    return specializedFailure("event:after-cycle-terminal");
   if (
     event.value.position !== String(journal.events.length) ||
     event.value.previousPrefixDigest !== computeEventJournalPrefixDigest(bytes) ||
     event.value.previousEventDigest !== (prior ? computeOrchestrationEventDigest(prior) : null)
   )
-    return invalid("event:prefix-mismatch");
+    return specializedFailure("event:prefix-mismatch");
   const eventBytes = canonicalBytes(event.value),
     resulting = concat([bytes, u32(eventBytes.byteLength), eventBytes]);
   const candidate = parseEventJournal({ ...journal, events: [...journal.events, event.value] });
-  if (!candidate.ok) return invalid(...prefixed("event", candidate.issues));
+  if (!candidate.ok) return specializedFailure(...prefixed("event", candidate.issues));
   return {
     ok: true,
     value: {
@@ -1277,16 +1281,16 @@ function bindEvidence(
       Object.getPrototypeOf(input) !== Array.prototype ||
       input.length !== expectedKinds.length
     )
-      return invalid("retainedEvidenceInput:length-mismatch");
+      return specializedFailure("retainedEvidenceInput:length-mismatch");
     inputs = input;
   } catch {
-    return invalid("retainedEvidenceInput:unreadable");
+    return specializedFailure("retainedEvidenceInput:unreadable");
   }
   if (
     event.retainedEvidence.length !== expectedKinds.length ||
     event.retainedEvidence.some((row, index) => row.kind !== expectedKinds[index])
   )
-    return invalid("retainedEvidence:census-mismatch");
+    return specializedFailure("retainedEvidence:census-mismatch");
   const bytes = new Map<RetainedEvidenceKind, Uint8Array>();
   const decoded = new Map<RetainedEvidenceKind, unknown>();
   const issues: string[] = [];
@@ -1341,7 +1345,7 @@ function bindEvidence(
     }
     bytes.set(expectedKind, raw);
   }
-  return issues.length ? invalid(...issues) : { ok: true, value: { bytes, decoded } };
+  return issues.length ? specializedFailure(...issues) : { ok: true, value: { bytes, decoded } };
 }
 function captureKinds(terminal: ContractRecord): RetainedEvidenceKind[] {
   const capture = terminal.capture as ContractRecord;
