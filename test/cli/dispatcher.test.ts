@@ -59,7 +59,9 @@ function configuration() {
 function registrations(handler: unknown = configCommandHandler) {
   return commandRegistry.map((row) =>
     row.family !== "config"
-      ? structuredClone(row)
+      ? "handler" in row
+        ? { ...structuredClone({ ...row, handler: null }), handler: row.handler }
+        : structuredClone(row)
       : {
           ...structuredClone({ ...row, handler: null }),
           implementation: "implemented",
@@ -238,13 +240,14 @@ describe("ISS-003 pure dispatcher and config handler", () => {
     expect(load).not.toHaveBeenCalled();
   });
 
-  test("all 31 placeholders retain their owner golden after configuration admission", async () => {
+  test("all 30 placeholders retain their owner golden after configuration admission", async () => {
     const handler = vi.fn(configCommandHandler);
     const { load, dispatch } = setup(handler);
     let count = 0;
     for (const row of commandRegistry.filter((entry) => entry.family !== "config")) {
       for (const shape of row.commands) {
         const command = shape.argv.join(" ");
+        if (command === "project snapshot") continue;
         const output = await dispatch(
           [...shape.argv, ...shape.required.flatMap((name) => [name, "value"])],
           context,
@@ -257,8 +260,8 @@ describe("ISS-003 pure dispatcher and config handler", () => {
         count += 1;
       }
     }
-    expect(count).toBe(31);
-    expect(load).toHaveBeenCalledTimes(31);
+    expect(count).toBe(30);
+    expect(load).toHaveBeenCalledTimes(30);
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -300,7 +303,7 @@ describe("ISS-003 pure dispatcher and config handler", () => {
     ],
     ["owner substitution", (rows: any[]) => (rows[1].issue = "ISS-999")],
     ["option substitution", (rows: any[]) => (rows[1].commands[0].required = [])],
-    ["placeholder handler", (rows: any[]) => (rows[5].handler = configCommandHandler)],
+    ["placeholder handler", (rows: any[]) => (rows[1].handler = configCommandHandler)],
     [
       "project config success",
       (rows: any[]) => {

@@ -132,9 +132,15 @@ only its named placeholder. Runtime discovery, filesystem scanning, and
 last-registration-wins behavior are forbidden.
 
 The `ISS-003` amendment implements only `config`, with a native async handler
-and exact per-command result schemas. All other families retain their 31
-handler-free owner-bearing placeholders; `ISS-013` owns project result admission.
-The source registration census checks these closed shapes before any CLI build.
+and exact per-command result schemas. The ISS-013 amendment additionally
+implements `project snapshot` with `project-facts/v1` through one project family
+handler. Its plan/apply rows and the remaining 28 commands retain their exact
+owner-bearing placeholders (30 total). The existing public command census
+fixes each row's expected executable/placeholder arm before candidate metadata;
+missing implementation metadata refuses rather than falling back. No version,
+row-state field, or second registry is added. The source registration census
+checks these closed shapes and fixed deferred config/project handler imports
+before any CLI build; the ordinary bundle closes those imports.
 
 | Command family | Handler owner |
 |---|---|

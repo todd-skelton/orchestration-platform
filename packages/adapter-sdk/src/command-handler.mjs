@@ -3,10 +3,15 @@ export const commandHandlerRegistration = Object.freeze({
   family: "project",
   owner: "@orchestration-platform/adapter-sdk",
   issue: "ISS-013",
-  implementation: "placeholder",
+  implementation: "implemented",
+  handler: async (input) => {
+    const { projectSnapshotCommandHandler } = await import("./project-command.ts");
+    return projectSnapshotCommandHandler(input);
+  },
   commands: [
     {
       argv: ["project", "snapshot"],
+      resultSchema: "project-facts/v1",
       required: ["--adapter"],
       optional: [],
     },

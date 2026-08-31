@@ -13,13 +13,17 @@ test("native pre-build CLI registry imports SDK metadata without loading its run
 process.stdout.write(JSON.stringify({
   frozen: Object.isFrozen(commandRegistry),
   project: commandRegistry.filter((entry) => entry.family === "project"),
+  projectHandlerType: typeof commandRegistry.find((entry) => entry.family === "project").handler,
 }));`,
     ],
     { encoding: "utf8", timeout: 10000, env: { ...process.env, NODE_OPTIONS: "" } },
   );
   expect(result.status, result.stderr).toBe(0);
+  const { handler, ...metadata } = commandHandlerRegistration;
+  expect(typeof handler).toBe("function");
   expect(JSON.parse(result.stdout)).toEqual({
     frozen: true,
-    project: [commandHandlerRegistration],
+    project: [metadata],
+    projectHandlerType: "function",
   });
 });

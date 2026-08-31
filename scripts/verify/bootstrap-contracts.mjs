@@ -527,7 +527,7 @@ function assertRegistry(registry, expected, label) {
     if (seenFamilies.has(family)) fail(`${label} duplicate family ${family}`);
     seenFamilies.add(family);
     if (label === "CLI") {
-      const implemented = family === "config";
+      const implemented = family === "config" || family === "project";
       const fields = ["commands", "family", "implementation", "issue", "owner", "schemaVersion"];
       if (implemented) fields.push("handler");
       if (
@@ -543,14 +543,18 @@ function assertRegistry(registry, expected, label) {
       if (label === "CLI" && command.argv[0] !== family) fail(`${label} moved command ${key}`);
       if (label === "CLI") {
         const fields = ["argv", "optional", "required"];
-        if (family === "config") fields.push("resultSchema");
+        const resultSchema =
+          key === "config validate"
+            ? "configuration-provenance/v1"
+            : key === "config paths"
+              ? "configuration-paths/v1"
+              : key === "project snapshot"
+                ? "project-facts/v1"
+                : null;
+        if (resultSchema !== null) fields.push("resultSchema");
         if (
           !equal(Object.keys(command).sort(), fields.sort()) ||
-          (family === "config" &&
-            command.resultSchema !==
-              (key === "config validate"
-                ? "configuration-provenance/v1"
-                : "configuration-paths/v1"))
+          (resultSchema !== null && command.resultSchema !== resultSchema)
         )
           fail(`${label} result schema registration mismatch for ${key}`);
       }
@@ -593,15 +597,21 @@ function validateHandlerSources(handlerFiles, handlerSources) {
     const source = handlerSources[file];
     if (typeof source !== "string") fail(`missing command handler source ${file}`);
     let normalized = source.replace(/\r\n/g, "\n");
-    if (file === "packages/config/src/command-handler.mjs") {
-      // Only this fixed implementation import is deferred until invocation, so
+    if (
+      file === "packages/config/src/command-handler.mjs" ||
+      file === "packages/adapter-sdk/src/command-handler.mjs"
+    ) {
+      // These two fixed implementation imports defer execution until invocation;
       // the source registration census does not need TypeScript resolution.
+      const project = file === "packages/adapter-sdk/src/command-handler.mjs";
+      const binding = project ? "projectSnapshotCommandHandler" : "configCommandHandler";
+      const target = project ? "project-command" : "config-command";
       const handler = `  handler: async (input) => {
-    const { configCommandHandler } = await import("./config-command.ts");
-    return configCommandHandler(input);
+    const { ${binding} } = await import("./${target}.ts");
+    return ${binding}(input);
   },
 `;
-      if (!normalized.includes(handler)) fail("config handler implementation binding mismatch");
+      if (!normalized.includes(handler)) fail("command handler implementation binding mismatch");
       normalized = normalized.replace(handler, "");
     }
     if (

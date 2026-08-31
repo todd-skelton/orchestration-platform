@@ -42,9 +42,11 @@ const environmentFields = [
   "ORCHESTRATION_STATE_ROOT",
   "XDG_STATE_HOME",
 ];
+const expectedCommands = new Map(orchestrationCommandCensus.map((row) => [row.command, row]));
 const resultSchemas = new Map([
   ["config validate", "configuration-provenance/v1"],
   ["config paths", "configuration-paths/v1"],
+  ["project snapshot", "project-facts/v1"],
 ]);
 
 // Static registration remains the sole owner/option registry; detach only the
@@ -141,7 +143,9 @@ function admitRegistry(input: unknown): ReadonlyMap<string, RegisteredCommand> |
       families.add(record.family);
       const expected = metadata.find((row) => row.family === record.family);
       if (!expected) return null;
-      const implemented = record.family === "config";
+      const implemented = orchestrationCommandCensus.some(
+        (row) => row.command.split(" ")[0] === record.family && row.placeholderOwner === null,
+      );
       if (
         record.implementation !== (implemented ? "implemented" : "placeholder") ||
         (implemented
@@ -160,17 +164,31 @@ function admitRegistry(input: unknown): ReadonlyMap<string, RegisteredCommand> |
       if (!observedCommands.ok) return null;
       const strippedCommands = [];
       for (const candidate of observedCommands.value) {
+        // The reviewed census, never absent candidate metadata, chooses the row arm.
+        const fields =
+          ownData(candidate, ["argv", "optional", "required", "resultSchema"]) ??
+          ownData(candidate, ["argv", "optional", "required"]);
+        if (!fields) return null;
+        const argv = snapshotClosedArray(fields.argv);
+        if (!argv.ok || argv.value.some((part) => typeof part !== "string")) return null;
+        const command = argv.value.join(" ");
+        const expectedCommand = expectedCommands.get(command);
+        if (!expectedCommand) return null;
+        const executable = expectedCommand.placeholderOwner === null;
         const shape = snapshotClosedRecord(
           candidate,
-          implemented
+          executable
             ? ["argv", "optional", "required", "resultSchema"]
             : ["argv", "optional", "required"],
         );
-        if (!shape.ok || !Array.isArray(shape.value.argv)) return null;
-        const command = shape.value.argv.join(" ");
         if (
+          !shape.ok ||
           commands.has(command) ||
-          (implemented && shape.value.resultSchema !== resultSchemas.get(command))
+          (executable
+            ? !implemented ||
+              !resultSchemas.has(command) ||
+              shape.value.resultSchema !== resultSchemas.get(command)
+            : expectedCommand.placeholderOwner !== record.issue)
         )
           return null;
         const { resultSchema: _schema, ...stripped } = shape.value;
@@ -179,7 +197,7 @@ function admitRegistry(input: unknown): ReadonlyMap<string, RegisteredCommand> |
           command,
           Object.freeze({
             issue: String(record.issue),
-            handler: implemented ? (record.handler as CommandHandler) : null,
+            handler: executable ? (record.handler as CommandHandler) : null,
           }),
         );
       }
