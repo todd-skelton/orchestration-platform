@@ -17,6 +17,17 @@ descriptor/input/result schemas or registry admission. The input is a real
 `validateDispatchBriefBinding` against a fixed fixture catalog. The role is
 observer, with a declared read-only footprint; no worker is launched.
 
+The consumer now joins actual loaded configuration provenance to an
+`adapter-configuration/v1` using `validateAdapterConfigurationBinding`, calls
+the landed SDK snapshot reader, and checks the resulting `project-facts/v1`
+with `validateProjectFactsBinding`. Only `COMPLETE` observations reach fixture
+selection: the first `READY` row in the sorted frontier that supports `work.read`.
+The selected row's capability and `immutableSubjectDigest` become the action
+core. Selection is fixture policy, not a new public binding or authority rule.
+The frontier digest is never used as the action subject, and no snapshot digest
+field or module-input schema is invented. One parsed frozen action is retained
+for both planning and persistence across the asynchronous plan call.
+
 `consume` calls the existing pure `createConfigurationLoader(adapter)` entrypoint
 from `packages/config/src/loader.ts` through a direct test source import. The
 fixture boundary supplies the host adapter and closed invocation; the consumer
@@ -24,14 +35,22 @@ does not read process globals. The existing pure provenance projection in
 `resolver.ts` keeps raw resolved paths out of persisted configuration evidence.
 These internal source imports are not a claim of a published config package
 export. Production exports remain unchanged, and no CLI fallback is used.
+The test imports both landed branch and document-queue SDK fixture adapters
+from their fixed source paths, using the same private source-import pattern.
+The package still depends only on contracts; no SDK export or dependency changes.
 
 The test prepares canonical input in an external temporary project, then the
-consumer admits a separate absent state root and writes exactly three canonical
-files there: configuration provenance, action core, and dispatch brief. Every
+consumer admits a separate absent state root and writes exactly five canonical
+files there: configuration provenance, adapter configuration, project facts,
+action core, and dispatch brief. Every
 output goes through public serialization and byte parsing. Before/after hashes
 cover tracked checkout files and the external fixture sandbox outside state;
-the state directory has an exact output census. Malformed config/action and a
-changed descriptor refuse before state creation. Setup and cleanup are outside
+the state directory has an exact output census. Config/facts binding failures,
+malformed configuration, `UNKNOWN`, `UNAVAILABLE`, and no eligible work return
+without invoking plan or creating state. Equivalent opaque work from both real
+SDK adapters produces identical briefs; a changed subject changes the core and
+brief. Source mutation across the plan await does not change retained records.
+Setup and cleanup are outside
 that measured invocation. Cleanup removes the external sandbox. This is bounded
 filesystem evidence, not OS-wide isolation or a claim about unrelated processes.
 
@@ -42,7 +61,7 @@ See [the divergence ledger](divergence-ledger.md), advisory context for ISS-026.
 
 ## Proportionality
 
-The current threat is an unusable contract/configuration boundary hidden until
-engine integration. Removing the by-name dependency, loader call, binding check,
-or output manifest loses that evidence. A full fixture engine would invent
-unsupported records and is larger; this small consumer is the bounded alternative.
+The current threat is an unusable snapshot-to-plan boundary hidden until engine
+integration. Removing the configuration/facts joins, real SDK calls, or output
+manifest loses that evidence. Copying the SDK's hostile pagination matrix or
+inventing a full fixture engine is larger; this slice tests only the handoff.
