@@ -102,3 +102,31 @@ Deleting the physical/byte checks or configuration reload permits stale evidence
 to appear healthy; the smaller implementation is this private handle and file,
 not a state service or native locking protocol. Tests are authored here; host
 verification and independent review supply execution/acceptance evidence.
+
+## Joined session and observer
+
+`consumeUnderSession` now joins the existing claim and observer in one bounded
+runtime call. Acquisition requests only the fixed observer module ID from the
+source-owned fixture census; the separate acquisition API still defaults to an
+empty intent. The exact acquired cycle request becomes the public module input.
+The session is observed before snapshot/policy/plan and checked again afterward,
+before any output write. A second live holder therefore prevents all observation
+and planning. The standalone `consume` retains its absent-directory behavior;
+its read/plan/encode phase is shared without adding a second implementation.
+
+After a healthy post-call check, the output root must contain only the held
+claim. The joined writer creates cycle-plan, acquisition and initial step-1
+health records alongside the existing observer records: thirteen for an action,
+eleven for no-action. All use public canonical contracts, and writes are
+create-once. Known cleanup removes only the checked claim. Unknown claim or
+configuration identity retains the claim; partial output remains diagnostic.
+A reused/nonempty output root refuses instead of overwriting or claiming replay.
+
+Tests execute claim presence during the real module call, matching cycle intent,
+public output joins, containment manifests, contender refusal before callbacks,
+malformed frontier cleanup, changed claim across the plan await, no-action and
+repeat-output refusal. This is cooperative fixture behavior: no hostile-writer
+atomicity, native lease, production freshness, breaker permission, journal,
+resume guarantee, worker, review or terminal cycle is claimed. An observer call
+still merely constructs artifacts even when current policy reports TRIP.
+Both root skeleton commands remain placeholders pending the complete cycle.

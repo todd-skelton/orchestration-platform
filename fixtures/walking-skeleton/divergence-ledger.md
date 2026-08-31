@@ -113,3 +113,23 @@ worker launch, review or mutation. The separate session consumer is still not
 composed with the observer. No private journal, partial public union, skip for
 a missing parser, or complete-cycle claim is added. Current source checks are
 subject to independent review and actual host/three-OS execution evidence.
+
+## Joined session and observer increment
+
+The new session-observer composition consumes its actual acquired cycle request
+in the real snapshot/current-policy/public-module handoff. The fixed fixture
+module census bounds requested IDs; default acquisition remains no-module.
+Its initial public step-1 health record and a new live observation after the
+async planner prevent using an altered claim for output. Only a claim-only root
+can receive the thirteen action or eleven no-action canonical records. Cleanup
+removes the known claim, retains unknown state and never removes other records.
+This replaces the prior separation only for this new joined entrypoint; the
+standalone observer and separate session APIs remain available and tested.
+
+These records are not a journal and the post-call health observation does not
+invent a later routine ordinal. No breaker reduction, worker, review, skip,
+terminal or boundary-resume claim is made. Reused output refuses without
+replacement, not exactly-once replay; the observer may have repeated its pure
+read/plan work before that refusal. The concurrency/poison/frontier controls and
+outside-state manifests are bounded fixture evidence subject to host execution,
+independent review and three-OS CI, not production authority or isolation.
