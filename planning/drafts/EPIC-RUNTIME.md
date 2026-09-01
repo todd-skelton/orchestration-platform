@@ -9,6 +9,7 @@ children:
     ISS-002,
     ISS-003,
     ISS-006,
+    ISS-048,
     ISS-022,
     ISS-004,
     ISS-005,
@@ -34,7 +35,8 @@ extends that foundation for cold-session self-hosting without ambient secrets.
   `ISS-001 → ISS-002`;
   `ISS-006 → ISS-003`;
   `ISS-002 → ISS-006`;
-  `ISS-006 → ISS-022`;
+  `ISS-006 → ISS-048`;
+  `ISS-048 → ISS-022`;
   `ISS-022 → ISS-031`;
   `ISS-003, ISS-004, ISS-031 → ISS-032`;
   `ISS-031 → ISS-035`;
@@ -59,6 +61,7 @@ extends that foundation for cold-session self-hosting without ambient secrets.
 - `ISS-002` — Define versioned configuration, state, and receipt contracts.
 - `ISS-003` — Build the portable CLI and configuration loader.
 - `ISS-006` — Establish the trusted cross-platform test harness.
+- `ISS-048` — Run the hosted native-lock compilation and diagnostic experiment.
 - `ISS-022` — Probe portable filesystem and process guarantees.
 - `ISS-004` — Implement atomic state, locking, and recovery primitives.
 - `ISS-005` — Implement portable process ownership and termination.
