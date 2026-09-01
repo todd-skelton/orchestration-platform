@@ -205,7 +205,7 @@ test("executes one distinct-author accepted cycle as an exact physical 15-step O
   const inspected = c.inspectEventJournalBytes(journalBytes);
   expect(inspected).toMatchObject({ ok: true, value: { partialSuffix: false } });
   const physical = parsed(c.parseEventJournalBytes(journalBytes));
-  expect(c.serializeEventJournal(physical)).toEqual(journalBytes);
+  expect(Buffer.from(c.serializeEventJournal(physical)).equals(journalBytes)).toBe(true);
   expect(c.computeEventJournalDigest(physical)).toBe(command.result.journalDigest);
   expect(physical.events).toHaveLength(30);
   const retained = await evidenceFor(f.stateRoot, physical);
