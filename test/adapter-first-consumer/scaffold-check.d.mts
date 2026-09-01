@@ -4,3 +4,4 @@ export function runFirstConsumerScaffoldCheck(): Promise<
 export function runFirstConsumerFootprintCollisionCheck(): Promise<
   Readonly<{ paths: readonly string[]; outcome: "PASS" }>
 >;
+export function runFirstConsumerPackageBoundaryCheck(): Promise<Readonly<{ outcome: "PASS" }>>;
