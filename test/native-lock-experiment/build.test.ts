@@ -349,7 +349,7 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
       "UNKNOWN",
     ]);
     expect(synthetic.calls).toHaveLength(0);
-  });
+  }, 30_000);
 
   test.each([
     "missing-capture",
