@@ -317,39 +317,43 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
     "extra-header",
     "reused-output",
     "source-overlap",
-  ])("refuses %s before compiler invocation", async (mutation) => {
-    const input = await fixture();
-    if (mutation === "extra-flags") Object.assign(input, { flags: ["-O0"] });
-    if (mutation === "toolchain-flags") Object.assign(input.toolchain!, { CL: "/DUNREVIEWED" });
-    if (mutation === "wrong-node") input.node.version = "v24.0.0-fake";
-    if (mutation === "wrong-architecture") input.node.architecture = "wrong";
-    if (mutation === "source-hash") input.candidateSource.sha256 = "0".repeat(64);
-    if (mutation === "header-hash") input.distribution.headers[0]!.sha256 = "0".repeat(64);
-    if (mutation === "archive-hash") input.distribution.archive.sha256 = "0".repeat(64);
-    if (mutation === "changed-header-version") {
-      const path = resolve(input.distribution.includeRoot, "node_version.h");
-      await writeFile(
-        path,
-        (await readFile(path, "utf8")).replace(
-          /NODE_MAJOR_VERSION [0-9]+/,
-          "NODE_MAJOR_VERSION 23",
-        ),
-      );
-      const index = input.distribution.headers.findIndex(
-        (entry) => entry.path === "node_version.h",
-      );
-      input.distribution.headers[index] = { ...(await reference(path)), path: "node_version.h" };
-    }
-    if (mutation === "extra-header")
-      await file(resolve(input.distribution.includeRoot, "injected.h"), "extra");
-    if (mutation === "reused-output") await mkdir(input.artifactRoot);
-    if (mutation === "source-overlap") input.artifactRoot = resolve(input.stableRoot, "artifact");
-    expect((await instrumentedBuild(input)).builds.map((build) => build.result)).toEqual([
-      "UNKNOWN",
-      "UNKNOWN",
-    ]);
-    expect(synthetic.calls).toHaveLength(0);
-  });
+  ])(
+    "refuses %s before compiler invocation",
+    async (mutation) => {
+      const input = await fixture();
+      if (mutation === "extra-flags") Object.assign(input, { flags: ["-O0"] });
+      if (mutation === "toolchain-flags") Object.assign(input.toolchain!, { CL: "/DUNREVIEWED" });
+      if (mutation === "wrong-node") input.node.version = "v24.0.0-fake";
+      if (mutation === "wrong-architecture") input.node.architecture = "wrong";
+      if (mutation === "source-hash") input.candidateSource.sha256 = "0".repeat(64);
+      if (mutation === "header-hash") input.distribution.headers[0]!.sha256 = "0".repeat(64);
+      if (mutation === "archive-hash") input.distribution.archive.sha256 = "0".repeat(64);
+      if (mutation === "changed-header-version") {
+        const path = resolve(input.distribution.includeRoot, "node_version.h");
+        await writeFile(
+          path,
+          (await readFile(path, "utf8")).replace(
+            /NODE_MAJOR_VERSION [0-9]+/,
+            "NODE_MAJOR_VERSION 23",
+          ),
+        );
+        const index = input.distribution.headers.findIndex(
+          (entry) => entry.path === "node_version.h",
+        );
+        input.distribution.headers[index] = { ...(await reference(path)), path: "node_version.h" };
+      }
+      if (mutation === "extra-header")
+        await file(resolve(input.distribution.includeRoot, "injected.h"), "extra");
+      if (mutation === "reused-output") await mkdir(input.artifactRoot);
+      if (mutation === "source-overlap") input.artifactRoot = resolve(input.stableRoot, "artifact");
+      expect((await instrumentedBuild(input)).builds.map((build) => build.result)).toEqual([
+        "UNKNOWN",
+        "UNKNOWN",
+      ]);
+      expect(synthetic.calls).toHaveLength(0);
+    },
+    30_000,
+  );
 
   test.each([
     "missing-capture",

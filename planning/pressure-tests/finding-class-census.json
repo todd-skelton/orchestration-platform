@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "finding-class-census/v1",
+  "corpus": {
+    "classIdsDigest": "70a2eb9977577de938d017edcad5300f5063635579c0f112484466a6f79d09e9",
+    "roundRecordCount": 177,
+    "roundRecordNamesDigest": "2c0067c9673ac8282ee430e7d5d3f7c1d360d04b9349e9022da5e7706b5651e8",
+    "roundRecordSourcesDigest": "b2049a95a620268a27df769e5dd2fa2f84ed10a88e0f4c20136afbed41928191"
+  },
+  "classes": [
+    {
+      "id": "authority-claim-on-nonauthoritative-input",
+      "description": "A parser, candidate report, or incomplete observation is treated as authority that its admitted provenance cannot establish.",
+      "recurrenceCount": 3,
+      "occurrences": [
+        {
+          "source": "planning/pressure-tests/2026-08-28-round-249.md",
+          "evidence": "The claimed literal rows are not authoritative:"
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-28-round-290.md",
+          "evidence": "The contention PASS oracle contradicts the authoritative ledger."
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-29-round-299.md",
+          "evidence": "The generic nullable parser is otherwise explicitly non-authoritative;"
+        }
+      ],
+      "codification": {
+        "kind": "NON_CODIFIABLE",
+        "boundary": "Authority depends on the public contract, admitted provenance, and producer for the reviewed surface, rather than a shared prose token.",
+        "falsePositive": "A lexical rule would reject correct warnings that explicitly say a surface is non-authoritative.",
+        "falseNegative": "The same defect can grant authority implicitly without using authority vocabulary, so a text rule would miss it."
+      }
+    },
+    {
+      "id": "evidence-does-not-discriminate-criterion",
+      "description": "The proposed evidence remains green when the criterion's essential equality, ordering, or boundary is removed.",
+      "recurrenceCount": 4,
+      "occurrences": [
+        {
+          "source": "planning/pressure-tests/2026-08-15-round-1.md",
+          "evidence": "OP-PT-011 several acceptance methods were non-discriminating"
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-28-round-250.md",
+          "evidence": "The required byte-equality deletion test is still not closed:"
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-30-round-327.md",
+          "evidence": "lower-priority values and cannot discriminate this defect"
+        },
+        {
+          "source": "planning/pressure-tests/2026-09-01-round-423.md",
+          "evidence": "A checker-owned immutable manifest must anchor the complete expected class"
+        }
+      ],
+      "codification": {
+        "kind": "NON_CODIFIABLE",
+        "boundary": "Discrimination requires comparing executable behavior after removing the specific criterion under review.",
+        "falsePositive": "Counting tests, mutants, or evidence labels would reject compact proofs whose single vector removes the governing equality.",
+        "falseNegative": "A large suite can contain the expected words while every assertion still survives deletion of the criterion."
+      }
+    },
+    {
+      "id": "fail-open-missing-snapshot-evidence",
+      "description": "A failed-open prefix with missing required snapshot identity evidence is classified as UNSUPPORTED instead of UNKNOWN.",
+      "recurrenceCount": 1,
+      "occurrences": [
+        {
+          "source": "external:github-issue-182/comment-5481438849",
+          "evidence": "The B1 finding class is filed into the ISS-046 census now"
+        }
+      ],
+      "codification": {
+        "kind": "CANDIDATE",
+        "nextEvidence": "A second independently filed occurrence can continue this candidate; Decision #182 keeps the source parked at attempt 8 and admits no attempts 9 or 10 before its concrete gate."
+      }
+    },
+    {
+      "id": "missing-negative-controls",
+      "description": "Acceptance or review evidence names a positive path but omits a concrete removal, substitution, refusal, or hostile-input control.",
+      "recurrenceCount": 4,
+      "occurrences": [
+        {
+          "source": "planning/pressure-tests/2026-08-15-round-1.md",
+          "evidence": "OP-PT-011 several acceptance methods were non-discriminating"
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-28-round-258.md",
+          "evidence": "they contain no nonce-mismatch, malformed/multiple, overflow, timeout, or kill-refusal mutant"
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-28-round-286.md",
+          "evidence": "A structural negative control must traverse the called"
+        },
+        {
+          "source": "planning/pressure-tests/2026-09-01-round-423.md",
+          "evidence": "The review-seed discriminator must reject negated verbs, negated or empty"
+        }
+      ],
+      "codification": {
+        "kind": "CHECK",
+        "checkId": "review-attack-object/v1",
+        "fixtureId": "round-1-op-pt-011"
+      }
+    },
+    {
+      "id": "scope-fence-drift",
+      "description": "A packet adds a mechanism without a named consumer or retains work beyond the admitted threat and review boundary.",
+      "recurrenceCount": 3,
+      "occurrences": [
+        {
+          "source": "planning/pressure-tests/2026-08-27-round-234.md",
+          "evidence": "delete from ISS-006; park with unpark condition at `ISS-019`"
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-28-round-270.md",
+          "evidence": "adds terminal capability machinery needed by neither named ISS-041 nor ISS-013 consumer"
+        },
+        {
+          "source": "planning/pressure-tests/2026-08-29-round-300.md",
+          "evidence": "parked architecture sentence is not a current command."
+        }
+      ],
+      "codification": {
+        "kind": "NON_CODIFIABLE",
+        "boundary": "Scope is decided by the admitted threat, consuming dependency, and smallest credible alternative for the specific packet.",
+        "falsePositive": "A path or heading rule would reject necessary cross-layer contract changes that are named by an actual consumer.",
+        "falseNegative": "An unnecessary mechanism can stay inside predicted files and use complete In and Out headings while still widening scope."
+      }
+    }
+  ]
+}
