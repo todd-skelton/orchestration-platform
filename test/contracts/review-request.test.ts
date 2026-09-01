@@ -444,10 +444,6 @@ describe("review request structural contract", () => {
       "review-packet/v1",
       "retained-content-reference/v1",
       "review-request/v2",
-      "event-journal/v1",
-      "orchestration-event/v1",
-      "reduced-state/v1",
-      "cycle-receipt/v1",
     ]) {
       expect(contracts.schemaVersions).not.toContain(unsupported);
       expect(contracts.schemaVocabularyDefinitions[unsupported]).toBeUndefined();
@@ -461,6 +457,18 @@ describe("review request structural contract", () => {
       );
       expect(contracts.serializeContract(unsupported, fixture()).ok).toBe(false);
       expect(contracts.compatibilityDisposition(unsupported, unsupported)).toBe("refused");
+    }
+    for (const journalSchema of [
+      "orchestration-event/v1",
+      "event-journal/v1",
+      "reduced-state/v1",
+      "cycle-receipt/v1",
+    ]) {
+      expect(contracts.schemaVersions).toContain(journalSchema);
+      expect(contracts.parseReviewRequestContract(journalSchema, fixture())).toBeNull();
+      expect(contracts.parseContract(journalSchema, fixture()).ok).toBe(false);
+      expect(contracts.serializeContract(journalSchema, fixture()).ok).toBe(false);
+      expect(contracts.compatibilityDisposition(journalSchema, journalSchema)).toBe("readable");
     }
   });
 });

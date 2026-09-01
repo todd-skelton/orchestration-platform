@@ -579,10 +579,6 @@ describe("routine inline step identity and skip", () => {
       "routine-cycle/v1",
       "orchestration-module/v1",
       "routine-step-skip/v2",
-      "orchestration-event/v1",
-      "event-journal/v1",
-      "reduced-state/v1",
-      "cycle-receipt/v1",
     ]) {
       expect(contracts.schemaVersions).not.toContain(family);
       expect(contracts.parseRoutineStepSkipContract(family, skip())).toBeNull();
@@ -595,6 +591,18 @@ describe("routine inline step identity and skip", () => {
       ).toBe(false);
       expect(contracts.serializeContract(family, skip()).ok).toBe(false);
       expect(contracts.compatibilityDisposition(family, family)).toBe("refused");
+    }
+    for (const journalSchema of [
+      "orchestration-event/v1",
+      "event-journal/v1",
+      "reduced-state/v1",
+      "cycle-receipt/v1",
+    ]) {
+      expect(contracts.schemaVersions).toContain(journalSchema);
+      expect(contracts.parseRoutineStepSkipContract(journalSchema, skip())).toBeNull();
+      expect(contracts.parseContract(journalSchema, skip()).ok).toBe(false);
+      expect(contracts.serializeContract(journalSchema, skip()).ok).toBe(false);
+      expect(contracts.compatibilityDisposition(journalSchema, journalSchema)).toBe("readable");
     }
   });
 });

@@ -751,10 +751,6 @@ describe("immutable review subjects", () => {
       "worker-result/v1",
       "worker-result-entry/v1",
       "result-tree/v1",
-      "orchestration-event/v1",
-      "event-journal/v1",
-      "reduced-state/v1",
-      "cycle-receipt/v1",
       "worker-result-subject/v2",
       "release-candidate-subject/v2",
       "review-subject/v2",
@@ -765,6 +761,18 @@ describe("immutable review subjects", () => {
       expect(contracts.parseCanonicalContractBytes(schema, encode(goldens[0].text)).ok).toBe(false);
       expect(contracts.serializeContract(schema, fixture()).ok).toBe(false);
       expect(contracts.compatibilityDisposition(schema, schema)).toBe("refused");
+    }
+    for (const journalSchema of [
+      "orchestration-event/v1",
+      "event-journal/v1",
+      "reduced-state/v1",
+      "cycle-receipt/v1",
+    ]) {
+      expect(contracts.schemaVersions).toContain(journalSchema);
+      expect(subjects.parseReviewSubjectContract(journalSchema, fixture())).toBeNull();
+      expect(contracts.parseContract(journalSchema, fixture()).ok).toBe(false);
+      expect(contracts.serializeContract(journalSchema, fixture()).ok).toBe(false);
+      expect(contracts.compatibilityDisposition(journalSchema, journalSchema)).toBe("readable");
     }
     // Supporting terminal receipts never permits using subject bytes as a terminal receipt.
     expect(contracts.parseContract("worker-terminal-receipt/v1", fixture()).ok).toBe(false);
