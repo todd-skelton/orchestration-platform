@@ -254,7 +254,8 @@ function terminalCycle() {
   const step15 = step(15, c.computeReducedStateDigest(pre15.value), prefixHash(f.bytes));
   f.add("STARTED", step15, null);
   const startedJournal = { ...f.journal, events: copy(f.journal.events) };
-  const terminalizing = c.reduceEventJournal(startedJournal, f.evidence);
+  const startedEvidence = f.evidence.map((rows) => [...rows]);
+  const terminalizing = c.reduceEventJournal(startedJournal, startedEvidence);
   expect(terminalizing.ok).toBe(true);
   if (!terminalizing.ok) throw new Error(terminalizing.issues.join(","));
   const receipt = {
@@ -271,7 +272,7 @@ function terminalCycle() {
     terminalStepDigest: c.computeRoutineStepDigest(step15),
   };
   f.add("TERMINAL", step15, { kind: "CYCLE_TERMINAL", receipt });
-  return { ...f, receipt, startedJournal, step15, terminalizing };
+  return { ...f, receipt, startedEvidence, startedJournal, step15, terminalizing };
 }
 
 function rechain(journal: Row) {
@@ -1431,13 +1432,24 @@ test("refuses individually valid producer substitutions that sever prior-output 
       terminalIndex = startIndex + 1,
       output = p.journal.events[terminalIndex]!.output;
     attack.mutate(output);
-    const inputDigests: Record<number, string> = {
-      4: c.computeModulePlanInputDigest(output.input),
-      5: c.computeModuleActionPlanDigest(output.action),
-      7: c.computeProjectPreflightDigest(output.preflight),
-      13: c.computeProjectMutationPlanDigest(output.plan),
-    };
-    p.journal.events[startIndex]!.step.inputDigest = inputDigests[attack.ordinal]!;
+    let inputDigest: string;
+    switch (attack.ordinal) {
+      case 4:
+        inputDigest = c.computeModulePlanInputDigest(output.input);
+        break;
+      case 5:
+        inputDigest = c.computeModuleActionPlanDigest(output.action);
+        break;
+      case 7:
+        inputDigest = c.computeProjectPreflightDigest(output.preflight);
+        break;
+      case 13:
+        inputDigest = c.computeProjectMutationPlanDigest(output.plan);
+        break;
+      default:
+        throw new Error(`unhandled attack ordinal ${attack.ordinal}`);
+    }
+    p.journal.events[startIndex]!.step.inputDigest = inputDigest;
     rechain(p.journal);
     expect(
       c.validateOrchestrationEventBinding(
@@ -1865,10 +1877,14 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
     }).ok,
   ).toBe(false);
   expect(
-    c.validateCycleReceiptBinding(f.startedJournal, f.terminalizing.value, f.receipt, f.evidence)
-      .ok,
+    c.validateCycleReceiptBinding(
+      f.startedJournal,
+      f.terminalizing.value,
+      f.receipt,
+      f.startedEvidence,
+    ).ok,
   ).toBe(true);
-  const substitutedReplayEvidence = f.evidence.map((rows) => [...rows]);
+  const substitutedReplayEvidence = f.startedEvidence.map((rows) => [...rows]);
   substitutedReplayEvidence[0] = [{ bytes: Uint8Array.of(1), kind: "STDOUT" }];
   expect(
     c.validateCycleReceiptBinding(
@@ -1931,9 +1947,9 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
       steps: copy(state.steps),
       terminalStepDigest: c.computeRoutineStepDigest(state.pendingStep),
     };
-    expect(c.validateCycleReceiptBinding(f.startedJournal, state, matching, f.evidence).ok).toBe(
-      false,
-    );
+    expect(
+      c.validateCycleReceiptBinding(f.startedJournal, state, matching, f.startedEvidence).ok,
+    ).toBe(false);
   }
   const withoutStarted15 = {
     ...f.startedJournal,
@@ -1941,8 +1957,12 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
   };
   expect(c.parseEventJournal(withoutStarted15).ok).toBe(true);
   expect(
-    c.validateCycleReceiptBinding(withoutStarted15, f.terminalizing.value, f.receipt, f.evidence)
-      .ok,
+    c.validateCycleReceiptBinding(
+      withoutStarted15,
+      f.terminalizing.value,
+      f.receipt,
+      f.startedEvidence,
+    ).ok,
   ).toBe(false);
 
   const forgedStarted: Row = {
@@ -1977,7 +1997,7 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
   expect(c.parseReducedState(forgedState).ok).toBe(true);
   expect(c.parseCycleReceipt(forgedReceipt).ok).toBe(true);
   expect(
-    c.validateCycleReceiptBinding(forgedStarted, forgedState, forgedReceipt, f.evidence).ok,
+    c.validateCycleReceiptBinding(forgedStarted, forgedState, forgedReceipt, f.startedEvidence).ok,
   ).toBe(false);
 
   const forgedFinal = copy(f.journal);
@@ -2021,7 +2041,12 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
     { ...f.receipt, steps: f.receipt.steps.slice(0, 14) },
   ])
     expect(
-      c.validateCycleReceiptBinding(f.startedJournal, f.terminalizing.value, mutant, f.evidence).ok,
+      c.validateCycleReceiptBinding(
+        f.startedJournal,
+        f.terminalizing.value,
+        mutant,
+        f.startedEvidence,
+      ).ok,
     ).toBe(false);
 });
 
