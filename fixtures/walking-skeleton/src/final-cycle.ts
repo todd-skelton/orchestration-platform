@@ -918,7 +918,11 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
     journal = null;
     const cleanup = await lease.close();
     if (cleanup !== "REMOVED") throw new Error("fixture session cleanup refused");
-    await signal("SESSION_CLOSED");
+    await signal("SESSION_CLOSED", {
+      byteLength: persisted.value.bytes.byteLength,
+      prefixDigest: computeEventJournalPrefixDigest(persisted.value.bytes),
+      reduced: persisted.value.reduced,
+    });
     const outsideAfter = await manifest(roots.disposableRoot, roots.stateRoot);
     if (canonicalJson(outsideAfter) !== canonicalJson(outsideBefore))
       throw new Error("fixture outside-state manifest changed");
