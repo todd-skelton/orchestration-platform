@@ -269,6 +269,21 @@ test("executes one distinct-author accepted cycle as an exact physical 15-step O
   }
 
   const terminal = (ordinal: number) => physical.events[(ordinal - 1) * 2 + 1]!.output as Row;
+  const step6 = terminal(6);
+  expect(step6).toMatchObject({
+    observation: { kind: "REVIEW", result: { kind: "AVAILABLE", subject: f.subject } },
+    preflight: { outcome: { kind: "ELIGIBLE" } },
+  });
+  expect(
+    c.validateProjectPreflightBinding(
+      step6.input,
+      step6.action,
+      step6.mapping,
+      step6.route,
+      step6.observation,
+      step6.preflight,
+    ),
+  ).toEqual({ ok: true, value: step6.preflight });
   const expectedInputs = [
     c.computeCycleRequestDigest(physical.cyclePlan.request),
     c.canonicalDigest(terminal(2).configuration),
