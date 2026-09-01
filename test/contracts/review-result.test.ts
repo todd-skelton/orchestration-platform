@@ -622,12 +622,22 @@ describe("review result evidence and claimed authority structural contracts", ()
       "review-finding/v1",
       "review-outcome/v1",
       "review-packet/v1",
-      "event-journal/v1",
     ]) {
       expect(contracts.parseReviewResultContract(schema, fixture())).toBeNull();
       expect(contracts.parseContract(schema, fixture()).ok).toBe(false);
       expect(contracts.serializeContract(schema, fixture()).ok).toBe(false);
       expect(contracts.compatibilityDisposition(schema, schema)).toBe("refused");
+    }
+    for (const journalSchema of [
+      "orchestration-event/v1",
+      "event-journal/v1",
+      "reduced-state/v1",
+      "cycle-receipt/v1",
+    ]) {
+      expect(contracts.parseReviewResultContract(journalSchema, fixture())).toBeNull();
+      expect(contracts.parseContract(journalSchema, fixture()).ok).toBe(false);
+      expect(contracts.serializeContract(journalSchema, fixture()).ok).toBe(false);
+      expect(contracts.compatibilityDisposition(journalSchema, journalSchema)).toBe("readable");
     }
     // The supported terminal family still refuses a review result as its body.
     expect(contracts.parseContract("worker-terminal-receipt/v1", fixture()).ok).toBe(false);

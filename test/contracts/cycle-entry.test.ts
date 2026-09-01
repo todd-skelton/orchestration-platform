@@ -1307,10 +1307,17 @@ describe("cycle entry and session structural contracts", () => {
       "session-renew-request/v1",
       "session-handoff-request/v1",
       "session-handoff-receipt/v1",
-      "cycle-receipt/v1",
-      "event-journal/v1",
     ])
       expect(contracts.schemaVersions).not.toContain(schema);
+    for (const schema of [
+      "orchestration-event/v1",
+      "event-journal/v1",
+      "reduced-state/v1",
+      "cycle-receipt/v1",
+    ]) {
+      expect(contracts.schemaVersions).toContain(schema);
+      expect(contracts.compatibilityDisposition(schema, schema)).toBe("readable");
+    }
     expect(contracts.engineVocabularyFindings(contracts.schemaVocabularyDefinitions)).toEqual([]);
   });
 });

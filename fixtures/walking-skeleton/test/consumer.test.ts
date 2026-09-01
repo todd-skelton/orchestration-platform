@@ -705,12 +705,11 @@ test.each([
 });
 
 test.each(["event-journal/v1", "cycle-receipt/v1"])(
-  "keeps missing %s visible instead of fabricating full-cycle evidence",
+  "routes public %s without treating a fixture record as runtime evidence",
   (schemaVersion) => {
-    expect(parseContract(schemaVersion, { schemaVersion })).toEqual({
-      ok: false,
-      issues: ["schemaVersion:unsupported"],
-    });
+    const parsed = parseContract(schemaVersion, { schemaVersion });
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.issues).not.toContain("schemaVersion:unsupported");
   },
 );
 

@@ -6,6 +6,16 @@ import {
   parseProjectMutationContract,
 } from "./project-mutation.js";
 import {
+  computeCycleReceiptDigest,
+  computeEventJournalDigest,
+  computeOrchestrationEventDigest,
+  computeReducedStateDigest,
+  journalSchemaVersions,
+  parseEventJournalBytes,
+  parseJournalContract,
+  serializeEventJournal,
+} from "./journal.js";
+import {
   computeResourceReclaimReceiptDigest,
   parseResourceReclaimContract,
   resourceReclaimSchemaVersions,
@@ -129,6 +139,7 @@ export * from "./attempt-log.js";
 export * from "./project-snapshot.js";
 export * from "./project-preflight.js";
 export * from "./project-mutation.js";
+export * from "./journal.js";
 export * from "./resource-reclaim.js";
 export * from "./project-breaker-facts.js";
 export * from "./module-plan.js";
@@ -180,6 +191,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const journal = parseJournalContract(expectedSchemaVersion, input);
+  if (journal) return journal;
   const reclaim = parseResourceReclaimContract(expectedSchemaVersion, input);
   if (reclaim) return reclaim;
   const projectMutation = parseProjectMutationContract(expectedSchemaVersion, input);
@@ -261,6 +274,7 @@ export function parseCanonicalContractBytes(
   expectedSchemaVersion: string,
   bytes: Uint8Array,
 ): ParseResult {
+  if (expectedSchemaVersion === "event-journal/v1") return parseEventJournalBytes(bytes);
   const definition = schemaDefinitions[expectedSchemaVersion];
   try {
     if (definition) return parseCanonicalBytes(definition, bytes);
@@ -282,6 +296,7 @@ export function parseCanonicalContractBytes(
       expectedSchemaVersion === "route-selection/v1" ||
       expectedSchemaVersion === "project-preflight/v1" ||
       (projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
+      (journalSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
       (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
@@ -303,6 +318,7 @@ export function parseCanonicalContractBytes(
         (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
         (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
         (projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
+        (journalSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
         (resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
       ) {
         const buffer = Object.getOwnPropertyDescriptor(
@@ -350,6 +366,24 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if ((journalSchemaVersions as readonly string[]).includes(expectedSchemaVersion)) {
+    const bytes =
+      expectedSchemaVersion === "event-journal/v1"
+        ? serializeEventJournal(parsed.value)
+        : canonicalBytes(parsed.value);
+    return {
+      ok: true,
+      bytes,
+      digest:
+        expectedSchemaVersion === "orchestration-event/v1"
+          ? computeOrchestrationEventDigest(parsed.value)
+          : expectedSchemaVersion === "event-journal/v1"
+            ? computeEventJournalDigest(parsed.value)
+            : expectedSchemaVersion === "reduced-state/v1"
+              ? computeReducedStateDigest(parsed.value)
+              : computeCycleReceiptDigest(parsed.value),
+    };
+  }
   if ((resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion))
     return {
       ok: true,
