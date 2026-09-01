@@ -236,6 +236,10 @@ test.each(boundaries)(
       beforeJournal = await readFile(journalPath),
       beforeState = await manifest(row.stateRoot),
       restart = await runSkeletonRestartCommand(row.input);
+    expect(targets[0]!.snapshot.journalByteLength).toBe(beforeJournal.byteLength);
+    expect(targets[0]!.snapshot.journalPrefixDigest).toBe(
+      c.computeEventJournalPrefixDigest(beforeJournal),
+    );
     expect(restart).toMatchObject({ command: "skeleton:restart", exitCode: 0 });
     if (boundary === "SESSION_CLOSED") {
       expect(restart.result).toMatchObject({

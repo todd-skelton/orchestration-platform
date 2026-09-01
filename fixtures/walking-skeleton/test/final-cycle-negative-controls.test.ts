@@ -28,6 +28,7 @@ import {
 } from "../src/final-cycle-cli.js";
 import { consumeFinalReviewCycle } from "../src/final-cycle.js";
 import { FixtureJournalOwner, replayFixtureJournal } from "../src/journal-owner.js";
+import * as echoWorker from "../src/echo-worker.js";
 
 type Row = Record<string, any>;
 const roots: string[] = [];
@@ -399,6 +400,49 @@ test("post-child target mutation records only UNKNOWN authority and cannot use t
     "follow-up-cycle-request.json",
     "routine-step-skip-12.json",
     "routine-step-skip-13.json",
+    "resource-reclaim-receipt.json",
+    "cycle-receipt.json",
+  ])
+    expect(names).not.toContain(name);
+}, 30_000);
+
+test("dispatch attempt collision with the seeded author fails before every worker or authority effect", async () => {
+  const f = await fixture({ id: 50 });
+  const identities = [uuid(999), f.subject.authorAttemptId];
+  const execution = vi.spyOn(echoWorker, "runEcho");
+  const result = await consumeFinalReviewCycle({
+    ...f.input,
+    identity: () => identities.shift() ?? uuid(998),
+  });
+  expect(result).toMatchObject({
+    boundary: "STARTED:7",
+    cleanup: "RETAINED_UNKNOWN",
+    ok: false,
+    reason: "CYCLE_REFUSED",
+  });
+  expect(identities).toEqual([]);
+  expect(execution).not.toHaveBeenCalled();
+  const journalBytes = await readFile(join(f.stateRoot, "cycle.opj"));
+  const journal = parsed(c.parseEventJournalBytes(journalBytes));
+  expect(journal.events).toHaveLength(13);
+  expect(journal.events.at(-1)).toMatchObject({
+    output: null,
+    phase: "STARTED",
+    step: { ordinal: "7" },
+  });
+  expect(c.reduceEventJournal(journal, journal.events.map(() => []))).toMatchObject({
+    ok: true,
+    value: { outcome: { kind: "RUNNING" }, pendingStep: { ordinal: "7" } },
+  });
+  const names = await readdir(f.stateRoot);
+  for (const name of [
+    "echo-input.bin",
+    "echo-ownership.json",
+    "worker-launch.json",
+    "worker-terminal.json",
+    "review-attempt.json",
+    "review-authority.json",
+    "action-disposition.json",
     "resource-reclaim-receipt.json",
     "cycle-receipt.json",
   ])
