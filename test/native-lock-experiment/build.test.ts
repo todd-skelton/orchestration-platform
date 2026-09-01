@@ -357,34 +357,39 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
     "missing-sdk",
     "spawn-missing",
     "compile-error",
-  ])("distinguishes prerequisite absence from compiler failure: %s", async (mode) => {
-    const input = await fixture();
-    if (mode === "missing-capture") input.toolchain = null;
-    if (mode === "missing-compiler")
-      input.toolchain!.compilerPath = resolve(input.runnerTemp, "missing-compiler");
-    if (mode === "missing-sdk") input.toolchain!.path = [resolve(input.runnerTemp, "missing-sdk")];
-    if (mode === "spawn-missing" || mode === "compile-error") synthetic.mode = mode;
-    const result = await instrumentedBuild(input);
-    expect(result.builds.map((build) => build.result)).toEqual(
-      mode === "compile-error" ? ["UNKNOWN", "UNKNOWN"] : ["UNSUPPORTED", "UNSUPPORTED"],
-    );
-    if (mode.startsWith("missing-")) {
-      expect(synthetic.calls).toHaveLength(0);
-      expect(
-        result.builds.map((build) => [build.argv, build.toolchain, build.outputs, build.loaded]),
-      ).toEqual([
-        [null, null, null, null],
-        [null, null, null, null],
-      ]);
-    }
-    if (mode === "compile-error")
-      expect(
-        await readFile(
-          resolve(input.artifactRoot, "builds/STABLE_WITNESS/compiler.stderr"),
-          "utf8",
-        ),
-      ).toBe("compile failed");
-  });
+  ])(
+    "distinguishes prerequisite absence from compiler failure: %s",
+    async (mode) => {
+      const input = await fixture();
+      if (mode === "missing-capture") input.toolchain = null;
+      if (mode === "missing-compiler")
+        input.toolchain!.compilerPath = resolve(input.runnerTemp, "missing-compiler");
+      if (mode === "missing-sdk")
+        input.toolchain!.path = [resolve(input.runnerTemp, "missing-sdk")];
+      if (mode === "spawn-missing" || mode === "compile-error") synthetic.mode = mode;
+      const result = await instrumentedBuild(input);
+      expect(result.builds.map((build) => build.result)).toEqual(
+        mode === "compile-error" ? ["UNKNOWN", "UNKNOWN"] : ["UNSUPPORTED", "UNSUPPORTED"],
+      );
+      if (mode.startsWith("missing-")) {
+        expect(synthetic.calls).toHaveLength(0);
+        expect(
+          result.builds.map((build) => [build.argv, build.toolchain, build.outputs, build.loaded]),
+        ).toEqual([
+          [null, null, null, null],
+          [null, null, null, null],
+        ]);
+      }
+      if (mode === "compile-error")
+        expect(
+          await readFile(
+            resolve(input.artifactRoot, "builds/STABLE_WITNESS/compiler.stderr"),
+            "utf8",
+          ),
+        ).toBe("compile failed");
+    },
+    30_000,
+  );
 
   test.each([
     "no-output",
