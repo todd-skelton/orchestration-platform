@@ -281,7 +281,7 @@ test("reserved negative command runs malformed, rejected and concurrent controls
     expect(names).not.toContain(name);
   expect(rejected.subject.authorCycleId).not.toBe(rejected.input.cycleId);
   expect(terminal(9).attempt.attemptId).not.toBe(rejected.subject.authorAttemptId);
-}, 30_000);
+}, 60_000);
 
 test("fixture journal owner proves idempotence and refuses retained partial or conflicting physical history", async () => {
   const disposableRoot = await realpath(

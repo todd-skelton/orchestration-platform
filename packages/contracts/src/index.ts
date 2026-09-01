@@ -37,13 +37,13 @@ import {
   dispatchLifecycleSchemaVersions,
   parseDispatchLifecycleContract,
 } from "./dispatch-lifecycle.js";
-import { types as nodeTypes } from "node:util";
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
 import {
   canonicalBytes,
   canonicalDigest,
   canonicalJson,
   parseCanonicalBytes,
+  snapshotBytes,
   validateDefinition,
   type ParseResult,
 } from "./runtime.js";
@@ -277,66 +277,24 @@ export function parseCanonicalContractBytes(
   if (expectedSchemaVersion === "event-journal/v1") return parseEventJournalBytes(bytes);
   const definition = schemaDefinitions[expectedSchemaVersion];
   try {
-    if (definition) return parseCanonicalBytes(definition, bytes);
     if (
+      !definition &&
       expectedSchemaVersion !== "review-subject/v1" &&
       expectedSchemaVersion !== "module-plan-result/v1" &&
       !schemaVersions.includes(expectedSchemaVersion)
     )
       return { ok: false, issues: ["schemaVersion:unsupported"] };
-    if (
-      expectedSchemaVersion === "adapter-configuration/v1" ||
-      expectedSchemaVersion === "project-facts/v1" ||
-      expectedSchemaVersion === "project-breaker-facts/v1" ||
-      expectedSchemaVersion === "breaker-receipt/v1" ||
-      expectedSchemaVersion === "routine-step-skip/v1" ||
-      expectedSchemaVersion === "review-subject/v1" ||
-      expectedSchemaVersion === "review-request/v1" ||
-      expectedSchemaVersion === "module-plan-result/v1" ||
-      expectedSchemaVersion === "route-selection/v1" ||
-      expectedSchemaVersion === "project-preflight/v1" ||
-      (projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (journalSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (modulePlanSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (reviewResultSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (reviewSubjectSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-      (cycleEntrySchemaVersions as readonly string[]).includes(expectedSchemaVersion)
-    ) {
-      if (!nodeTypes.isUint8Array(bytes)) return { ok: false, issues: ["encoding:bytes-required"] };
-      const prototype = Object.getPrototypeOf(bytes);
-      if (prototype !== Uint8Array.prototype && prototype !== Buffer.prototype)
-        return { ok: false, issues: ["encoding:bytes-required"] };
-      // Use the native getter: caller-defined length accessors and proxies are not consulted.
-      const byteLength = Object.getOwnPropertyDescriptor(
-        Object.getPrototypeOf(Uint8Array.prototype),
-        "byteLength",
-      )!.get!.call(bytes) as number;
-      if (
-        (dispatchLifecycleSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-        (dispositionSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-        (projectMutationSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-        (journalSchemaVersions as readonly string[]).includes(expectedSchemaVersion) ||
-        (resourceReclaimSchemaVersions as readonly string[]).includes(expectedSchemaVersion)
-      ) {
-        const buffer = Object.getOwnPropertyDescriptor(
-          Object.getPrototypeOf(Uint8Array.prototype),
-          "buffer",
-        )!.get!.call(bytes);
-        if (nodeTypes.isSharedArrayBuffer(buffer))
-          return { ok: false, issues: ["encoding:shared-bytes-refused"] };
-      }
-      if (expectedSchemaVersion === "adapter-configuration/v1" && byteLength > 65536)
-        return { ok: false, issues: ["encoding:limit-exceeded"] };
-    } else if (!(bytes instanceof Uint8Array))
-      return { ok: false, issues: ["encoding:bytes-required"] };
-    if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    if (definition) return parseCanonicalBytes(definition, bytes);
+    const snapshot = snapshotBytes(bytes);
+    if (!snapshot.ok) return snapshot;
+    const stableBytes = snapshot.value;
+    if (expectedSchemaVersion === "adapter-configuration/v1" && stableBytes.byteLength > 65536)
+      return { ok: false, issues: ["encoding:limit-exceeded"] };
+    if (stableBytes[0] === 0xef && stableBytes[1] === 0xbb && stableBytes[2] === 0xbf)
       return { ok: false, issues: ["encoding:bom-refused"] };
     let text: string;
     try {
-      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(stableBytes);
     } catch {
       return { ok: false, issues: ["encoding:invalid-utf8"] };
     }
