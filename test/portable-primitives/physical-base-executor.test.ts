@@ -1,25 +1,38 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { executePortablePhysicalProbe } from "../../probes/portable-primitives/src/index.js";
+import { createPhaseWatchdog } from "../support/phase-watchdog.js";
 
 const roots: string[] = [];
+const phases = createPhaseWatchdog("physical-base-executor");
 
 async function root(label: string) {
-  const value = await mkdtemp(resolve(tmpdir(), `orchestration-${label}-`));
+  const value = await phases.within(`root.create:${label}`, () =>
+    mkdtemp(resolve(tmpdir(), `orchestration-${label}-`)),
+  );
   roots.push(value);
   return value;
 }
 
+beforeEach((context) => phases.start(context.task.name));
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((value) => rm(value, { recursive: true, force: true })));
+  phases.mark("afterEach.cleanup:start");
+  try {
+    await Promise.all(roots.splice(0).map((value) => rm(value, { recursive: true, force: true })));
+    phases.mark("afterEach.cleanup:complete");
+  } finally {
+    phases.finish();
+  }
 });
 
 describe("ISS-022 existing and constructed-absent physical observations", () => {
   test("runs both rows in ledger order through one namespace and retained root handle", async () => {
     const custodyRoot = await root("physical-base");
-    const facts = await executePortablePhysicalProbe(custodyRoot);
+    const facts = await phases.within("probe.snapshot-materialize-readback", () =>
+      executePortablePhysicalProbe(custodyRoot),
+    );
     expect(facts.map(({ caseId }) => caseId)).toEqual([
       "PHYSICAL_EXISTING",
       "PHYSICAL_ABSENT_LEAF",
@@ -56,7 +69,9 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
 
   test("observes the exact regular entry and constructed ENOENT arms", async () => {
     const custodyRoot = await root("physical-leaves");
-    const [existing, absent] = await executePortablePhysicalProbe(custodyRoot);
+    const [existing, absent] = await phases.within("probe.snapshot-materialize-readback", () =>
+      executePortablePhysicalProbe(custodyRoot),
+    );
     expect(existing.leafBefore).toEqual(existing.leafAfter);
     expect(existing.leafBefore.disposition).toBe("EXISTING");
     expect(existing.derivation?.physicalDestinationIdentity.leafIdentityKind).toBe(
@@ -70,16 +85,20 @@ describe("ISS-022 existing and constructed-absent physical observations", () => 
     expect(absent.derivation?.physicalDestinationIdentity.canonicalPhysicalLeafBytes).toBe(
       Buffer.from("absent-leaf", "utf8").toString("base64url"),
     );
-    await rm(custodyRoot, { recursive: true });
+    await phases.within("source.cleanup", () => rm(custodyRoot, { recursive: true }));
     roots.splice(roots.indexOf(custodyRoot), 1);
   });
 
   test("creates the session namespace exactly once and refuses root reuse or overlap", async () => {
     const custodyRoot = await root("physical-reuse");
-    await executePortablePhysicalProbe(custodyRoot);
-    await expect(executePortablePhysicalProbe(custodyRoot)).rejects.toMatchObject({
-      code: "EEXIST",
-    });
+    await phases.within("probe.snapshot-materialize-readback", () =>
+      executePortablePhysicalProbe(custodyRoot),
+    );
+    await phases.within("probe.reuse-refusal", () =>
+      expect(executePortablePhysicalProbe(custodyRoot)).rejects.toMatchObject({
+        code: "EEXIST",
+      }),
+    );
     await expect(executePortablePhysicalProbe("relative")).rejects.toThrow();
     await expect(
       executePortablePhysicalProbe(resolve(import.meta.dirname, "../..")),
