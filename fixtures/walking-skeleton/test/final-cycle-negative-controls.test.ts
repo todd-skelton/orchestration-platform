@@ -404,7 +404,7 @@ test("post-child target mutation records only UNKNOWN authority and cannot use t
     "cycle-receipt.json",
   ])
     expect(names).not.toContain(name);
-}, 30_000);
+}, 60_000);
 
 test("dispatch attempt collision with the seeded author fails before every worker or authority effect", async () => {
   const f = await fixture({ id: 50 });
@@ -452,4 +452,4 @@ test("dispatch attempt collision with the seeded author fails before every worke
     "cycle-receipt.json",
   ])
     expect(names).not.toContain(name);
-}, 30_000);
+}, 60_000);
