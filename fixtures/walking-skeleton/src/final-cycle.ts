@@ -114,6 +114,7 @@ export type FinalCycleInvocation = Readonly<{
   currentPolicy: CurrentPolicyReader;
   cycleId: string;
   disposableRoot: string;
+  identity?: () => string;
   invocation: ConfigurationLoaderInvocation;
   sessionId: string;
   snapshot: SnapshotReader;
@@ -266,6 +267,7 @@ function checkRoots(input: FinalCycleInvocation) {
  */
 export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
   const roots = checkRoots(input);
+  const nextIdentity = input.identity ?? fixtureId;
   const journalPath = join(roots.stateRoot, "cycle.opj");
   const outsideBefore = await manifest(roots.disposableRoot, roots.stateRoot);
   const session = await acquireFixtureSession(
@@ -456,7 +458,7 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
       parseProjectPreflightObservation({
         adapterConfigurationDigest: canonicalDigest(moduleInput.adapterConfiguration),
         kind: "REVIEW",
-        observationId: fixtureId(),
+        observationId: nextIdentity(),
         observedAt: input.clocks.wallNow(),
         result:
           computeWorkerResultSubjectDigest(currentSeed.subject) ===
@@ -534,7 +536,7 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
       await createOnce(join(roots.stateRoot, name), bytes);
       files.push(name);
     }
-    const attemptId = fixtureId();
+    const attemptId = nextIdentity();
     if (seed.subject.authorAttemptId === attemptId)
       throw new Error("fixture distinct review author attempt refused");
     const dispatch = required(
@@ -825,7 +827,7 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
     const beforeBytes = await retainedFile(resourcePath);
     if (!beforeBytes.equals(rendered)) throw new Error("fixture reclaim input mismatch");
     await signal("RECLAIM_BEFORE_DELETE");
-    const before = observation(fixtureId(), input.clocks.wallNow(), beforeBytes);
+    const before = observation(nextIdentity(), input.clocks.wallNow(), beforeBytes);
     await unlink(resourcePath);
     try {
       await lstat(resourcePath);
@@ -834,8 +836,8 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     await signal("RECLAIM_AFTER_DELETE");
-    const after = observation(fixtureId(), input.clocks.wallNow(), null);
-    const reclaimTransactionId = fixtureId();
+    const after = observation(nextIdentity(), input.clocks.wallNow(), null);
+    const reclaimTransactionId = nextIdentity();
     const reclaim = required(
       validateResourceReclaimReceiptBinding(context, null, worker.stdout, worker.stderr, {
         contextDigest: computeResourceReclaimContextDigest(context),
