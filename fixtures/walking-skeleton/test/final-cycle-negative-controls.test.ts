@@ -206,14 +206,16 @@ test("reserved negative command runs malformed, rejected and concurrent controls
   };
   const command = await runSkeletonNegativeControlsCommand(input);
   expect(command).toMatchObject({ command: "skeleton:negative-controls", exitCode: 0, ok: true });
-  expect(command.controls.malformed).toMatchObject({
+  const malformedControl = command.controls.malformed;
+  expect(malformedControl).toMatchObject({
     cleanup: "REMOVED",
     facts: { reason: "MALFORMED_OBSERVATION", state: "UNKNOWN" },
     ok: false,
     reason: "MALFORMED_FRONTIER",
   });
-  expect(command.controls.malformed.files).not.toContain("cycle.opj");
-  expect(command.controls.malformed.files).not.toContain("session-claim.json");
+  if (!("files" in malformedControl)) throw new Error("typed malformed control required");
+  expect(malformedControl.files).not.toContain("cycle.opj");
+  expect(malformedControl.files).not.toContain("session-claim.json");
   expect(malformed.snapshot).toHaveBeenCalledTimes(1);
   expect(malformed.currentPolicy).not.toHaveBeenCalled();
   expect(await manifest(malformed.disposableRoot)).toEqual(malformedBefore);
