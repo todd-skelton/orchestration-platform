@@ -451,7 +451,7 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
     const step6 = journal.step(6, computeRouteSelectionDigest(route));
     await journal.start(step6);
     const currentSeed = await readReviewSeed(roots.projectRoot);
-    const observation = required(
+    const preflightObservation = required(
       parseProjectPreflightObservation({
         adapterConfigurationDigest: canonicalDigest(moduleInput.adapterConfiguration),
         kind: "REVIEW",
@@ -465,36 +465,44 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
       }),
     );
     const preflight = required(
-      validateProjectPreflightBinding(moduleInput, action, echoMapping, route, observation, {
-        actionPlanDigest: computeModuleActionPlanDigest(action),
-        observationDigest: computeProjectPreflightObservationDigest(observation),
-        outcome:
-          observation.kind === "REVIEW" && observation.result.kind === "AVAILABLE"
-            ? { kind: "ELIGIBLE" }
-            : { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" },
-        routeDigest: computeRouteSelectionDigest(route),
-        schemaVersion: "project-preflight/v1",
-      }),
+      validateProjectPreflightBinding(
+        moduleInput,
+        action,
+        echoMapping,
+        route,
+        preflightObservation,
+        {
+          actionPlanDigest: computeModuleActionPlanDigest(action),
+          observationDigest: computeProjectPreflightObservationDigest(preflightObservation),
+          outcome:
+            preflightObservation.kind === "REVIEW" &&
+            preflightObservation.result.kind === "AVAILABLE"
+              ? { kind: "ELIGIBLE" }
+              : { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" },
+          routeDigest: computeRouteSelectionDigest(route),
+          schemaVersion: "project-preflight/v1",
+        },
+      ),
     );
     await journal.terminal(step6, {
       action,
       input: moduleInput,
       kind: "PREFLIGHT",
       mapping: echoMapping,
-      observation,
+      observation: preflightObservation,
       preflight,
       route,
     });
     await createOnce(
       join(roots.stateRoot, "preflight-review-observation.json"),
-      Buffer.from(canonicalJson(observation)),
+      Buffer.from(canonicalJson(preflightObservation)),
     );
     files.push("preflight-review-observation.json");
-    if (observation.kind === "REVIEW" && observation.result.kind === "AVAILABLE")
+    if (preflightObservation.kind === "REVIEW" && preflightObservation.result.kind === "AVAILABLE")
       await writeRecord(
         "preflight-review-subject.json",
         "worker-result-subject/v1",
-        observation.result.subject,
+        preflightObservation.result.subject,
       );
     await writeRecord("project-preflight.json", "project-preflight/v1", preflight);
     if (preflight.outcome.kind !== "ELIGIBLE") throw new Error("fixture preflight refused");
@@ -532,7 +540,7 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
         action,
         echoMapping,
         route,
-        observation,
+        preflightObservation,
         preflight,
         session.plan,
         dispatchHealth,
@@ -566,7 +574,7 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
         input: moduleInput,
         kind: "DISPATCH_PLAN",
         mapping: echoMapping,
-        observation,
+        observation: preflightObservation,
         plan: dispatch,
         preflight,
         reviewRequest: request,
