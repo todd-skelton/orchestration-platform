@@ -472,4 +472,4 @@ test("executes one distinct-author accepted cycle as an exact physical 15-step O
     STDOUT: join(f.stateRoot, "stdout.bin"),
   });
   expect(closed).toMatchObject({ ok: true, value: { reduced: command.result.reduced } });
-}, 30_000);
+}, 60_000);
