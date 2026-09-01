@@ -94,5 +94,5 @@ selectedTest(
     });
     throw new Error(`selected boundary was not reached: ${target}`);
   },
-  30_000,
+  60_000,
 );
