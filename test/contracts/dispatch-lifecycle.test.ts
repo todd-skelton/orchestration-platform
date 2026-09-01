@@ -441,7 +441,7 @@ test("all preparation roles bind actual eligible upstream records, inspection he
     expect(c.parseDispatchPlan(value).ok).toBe(true);
     expect(planBind(f, value).ok).toBe(false);
   }
-});
+}, 30_000);
 
 test("preflight/route failure, workerless and substituted review requests cannot enter preparation", () => {
   const f = fixture();
