@@ -87,6 +87,46 @@ const expectedClasses = Object.freeze([
     ],
   ]),
 ]);
+const expectedRows = (rows) => Object.freeze(rows.map((row) => Object.freeze(row)));
+const expectedGrammarNegatives = expectedRows([
+  ["no-attack-provided", "No attack is provided."],
+  ["do-not-attack", "Do not attack the census."],
+  ["bare-attack-period", "Attack."],
+  ["bare-attack", "Attack"],
+  ["no-target", "Attack no target."],
+  ["nothing-target", "Attack nothing."],
+  ["empty-target", "Attack the empty target."],
+  ["replace-nothing", "Replace nothing."],
+  ["attack-not-provided", "Attack is not provided."],
+  ["attack-is-missing", "Attack is missing."],
+  ["attack-a-missing-target", "Attack a missing target."],
+  ["attack-neither-target", "Attack neither target."],
+  ["remove-without-target", "Remove without a target."],
+  ["vague-it", "Attack it."],
+  ["noun-attack-surface", "Review the attack surface."],
+]);
+const expectedCensusMutants = expectedRows([
+  ["coordinated-class-deletion", "COORDINATED_CLASS_DELETION"],
+  ["coordinated-occurrence-deletion", "COORDINATED_OCCURRENCE_DELETION"],
+  ["missing-round", "MISSING_ROUND"],
+  ["missed-cited-class", "MISSED_CITED_CLASS"],
+  ["missing-recurring-disposition", "MISSING_RECURRING_DISPOSITION"],
+  ["wrong-recurrence-count", "WRONG_RECURRENCE_COUNT"],
+  ["b1-duplication", "B1_DUPLICATION"],
+]);
+const expectedFixtureMutants = expectedRows([
+  ["stale-row-digest", "STALE_ROW_DIGEST"],
+  ["unrelated-repaired-form", "UNRELATED_REPAIRED_FORM"],
+  ["stale-decision-timestamp", "STALE_DECISION_TIMESTAMP"],
+  ["admit-decision-and-rehash", "ADMIT_DECISION_AND_REHASH"],
+]);
+const concreteGrammarPositives = Object.freeze([
+  "Attack census counts that cite no source rounds.",
+  "Delete a duplicated finding-class occurrence.",
+  "Remove stale authority rows.",
+  "Substitute the exact digest and refuse a mismatch.",
+  "Mutate the selected row while retaining the unrelated row.",
+]);
 
 function fail(message) {
   throw new Error(`FINDING_CENSUS_MISMATCH: ${message}`);
@@ -143,7 +183,7 @@ function section(source, heading) {
 const actionClause =
   /(?:^|[.!?;\n])\s*(?:[-*]\s+|\d+[.)]\s+)?(attack(?:ed|ing|s)?|delet(?:e|ed|es|ing)|remov(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|substitut(?:e|ed|es|ing)|refus(?:e|ed|es|ing)|mutat(?:e|ed|es|ing))\b([^.!?;\n]*)/gi;
 const emptyObject =
-  /^(?:(?:a|an|the)\s+)?(?:no|not|never|none|nothing|without|absent|empty|null|undefined|zero|0|n\/a)\b/i;
+  /^(?:(?:a|an|the)\s+(?:no|not|never|neither|none|nothing|without|absent|empty|missing|null|undefined|zero|0|n\/a)|(?:no|not|never|neither|none|nothing|without|absent|empty|null|undefined|zero|0|n\/a))\b/i;
 const vagueObject = /^(?:it|this|that|something|anything|everything|provided)\b/i;
 export function validateReviewAttackObject(body, label) {
   if (typeof body !== "string" || body === "") fail(`${label} is empty`);
@@ -154,7 +194,9 @@ export function validateReviewAttackObject(body, label) {
       /[\p{L}\p{N}`]/u.test(target) &&
       !emptyObject.test(target) &&
       !vagueObject.test(target) &&
-      !/^(?:is|are|was|were|be|been|being)\s+(?:not|never)\b/i.test(target)
+      !/^(?:is|are|was|were|be|been|being)\s+(?:not|never|neither|absent|empty|missing|none|nothing)\b/i.test(
+        target,
+      )
     )
       return;
   }
@@ -314,6 +356,19 @@ function validateHistoricalPair(pair, census, context) {
   validateReviewAttackObject(pair.repaired, "historical repaired form");
 }
 
+function validateEvidenceRows(rows, valueKey, expected, label) {
+  if (!Array.isArray(rows)) fail(`${label} is not an array`);
+  const projection = [];
+  for (const [index, row] of rows.entries()) {
+    exactKeys(row, ["id", valueKey], `${label}[${index}]`);
+    const id = nonempty(row.id, `${label}[${index}].id`);
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) fail(`${label}[${index}].id is malformed`);
+    projection.push([id, nonempty(row[valueKey], `${label}[${index}].${valueKey}`)]);
+  }
+  if (JSON.stringify(projection) !== JSON.stringify(expected))
+    fail(`${label} differs from its checker-owned immutable evidence census`);
+}
+
 function validateFixture(fixture, census, context) {
   exactKeys(
     fixture,
@@ -338,23 +393,26 @@ function validateFixture(fixture, census, context) {
   }
   validateCensus(census, fixture, context);
   validateHistoricalPair(fixture.historicalPair, census, context);
-  if (
-    !Array.isArray(fixture.grammarNegatives) ||
-    !Array.isArray(fixture.censusMutants) ||
-    !Array.isArray(fixture.fixtureMutants)
-  )
-    fail("fixture mutant censuses are malformed");
-  for (const [label, values] of [
-    ["grammarNegatives", fixture.grammarNegatives],
-    ["censusMutants", fixture.censusMutants],
-    ["fixtureMutants", fixture.fixtureMutants],
-  ])
-    if (new Set(values).size !== values.length) fail(`${label} contains a duplicate`);
-  for (const [index, body] of fixture.grammarNegatives.entries())
+  validateEvidenceRows(
+    fixture.grammarNegatives,
+    "body",
+    expectedGrammarNegatives,
+    "grammarNegatives",
+  );
+  validateEvidenceRows(fixture.censusMutants, "operation", expectedCensusMutants, "censusMutants");
+  validateEvidenceRows(
+    fixture.fixtureMutants,
+    "operation",
+    expectedFixtureMutants,
+    "fixtureMutants",
+  );
+  for (const [index, row] of fixture.grammarNegatives.entries())
     expectRefusal(
-      () => validateReviewAttackObject(body, `grammarNegatives[${index}]`),
-      `grammar negative ${index}`,
+      () => validateReviewAttackObject(row.body, `grammarNegatives.${row.id}`),
+      `grammar negative ${row.id}`,
     );
+  for (const [index, body] of concreteGrammarPositives.entries())
+    validateReviewAttackObject(body, `concreteGrammarPositives[${index}]`);
 }
 
 function applyCensusMutant(census, fixture, operation) {
@@ -418,6 +476,15 @@ function expectRefusal(action, label) {
   fail(`${label} did not refuse`);
 }
 
+function validateEvidenceDeletionPins(fixture, census, context) {
+  for (const key of ["grammarNegatives", "censusMutants", "fixtureMutants"])
+    for (const [index, row] of fixture[key].entries()) {
+      const mutant = clone(fixture);
+      mutant[key].splice(index, 1);
+      expectRefusal(() => validateFixture(mutant, census, context), `${key} deletion ${row.id}`);
+    }
+}
+
 async function loadSources(root, directoryName, pattern) {
   const directory = resolve(root, directoryName);
   const names = (await readdir(directory)).filter((name) => pattern.test(name)).sort();
@@ -442,17 +509,18 @@ export async function runFindingCensusCheck(root = defaultRoot) {
   const fixture = JSON.parse(fixtureText);
   const context = { roundSources, draftSources };
   validateFixture(fixture, census, context);
-  for (const operation of fixture.censusMutants) {
-    const mutant = applyCensusMutant(census, fixture, operation);
+  validateEvidenceDeletionPins(fixture, census, context);
+  for (const row of fixture.censusMutants) {
+    const mutant = applyCensusMutant(census, fixture, row.operation);
     expectRefusal(
       () => validateFixture(mutant.fixture, mutant.census, context),
-      `census mutant ${operation}`,
+      `census mutant ${row.id}`,
     );
   }
-  for (const operation of fixture.fixtureMutants)
+  for (const row of fixture.fixtureMutants)
     expectRefusal(
-      () => validateFixture(applyFixtureMutant(fixture, operation), census, context),
-      `fixture mutant ${operation}`,
+      () => validateFixture(applyFixtureMutant(fixture, row.operation), census, context),
+      `fixture mutant ${row.id}`,
     );
   for (const [path, source] of draftSources) validateDraftReviewSeed(source, path);
   const result = {

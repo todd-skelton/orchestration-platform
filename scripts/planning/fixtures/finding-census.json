@@ -39,32 +39,53 @@
     }
   ],
   "grammarNegatives": [
-    "No attack is provided.",
-    "Do not attack the census.",
-    "Attack.",
-    "Attack",
-    "Attack no target.",
-    "Attack nothing.",
-    "Attack the empty target.",
-    "Replace nothing.",
-    "Attack is not provided.",
-    "Remove without a target.",
-    "Attack it.",
-    "Review the attack surface."
+    { "id": "no-attack-provided", "body": "No attack is provided." },
+    { "id": "do-not-attack", "body": "Do not attack the census." },
+    { "id": "bare-attack-period", "body": "Attack." },
+    { "id": "bare-attack", "body": "Attack" },
+    { "id": "no-target", "body": "Attack no target." },
+    { "id": "nothing-target", "body": "Attack nothing." },
+    { "id": "empty-target", "body": "Attack the empty target." },
+    { "id": "replace-nothing", "body": "Replace nothing." },
+    { "id": "attack-not-provided", "body": "Attack is not provided." },
+    { "id": "attack-is-missing", "body": "Attack is missing." },
+    { "id": "attack-a-missing-target", "body": "Attack a missing target." },
+    { "id": "attack-neither-target", "body": "Attack neither target." },
+    { "id": "remove-without-target", "body": "Remove without a target." },
+    { "id": "vague-it", "body": "Attack it." },
+    { "id": "noun-attack-surface", "body": "Review the attack surface." }
   ],
   "censusMutants": [
-    "COORDINATED_CLASS_DELETION",
-    "COORDINATED_OCCURRENCE_DELETION",
-    "MISSING_ROUND",
-    "MISSED_CITED_CLASS",
-    "MISSING_RECURRING_DISPOSITION",
-    "WRONG_RECURRENCE_COUNT",
-    "B1_DUPLICATION"
+    {
+      "id": "coordinated-class-deletion",
+      "operation": "COORDINATED_CLASS_DELETION"
+    },
+    {
+      "id": "coordinated-occurrence-deletion",
+      "operation": "COORDINATED_OCCURRENCE_DELETION"
+    },
+    { "id": "missing-round", "operation": "MISSING_ROUND" },
+    { "id": "missed-cited-class", "operation": "MISSED_CITED_CLASS" },
+    {
+      "id": "missing-recurring-disposition",
+      "operation": "MISSING_RECURRING_DISPOSITION"
+    },
+    { "id": "wrong-recurrence-count", "operation": "WRONG_RECURRENCE_COUNT" },
+    { "id": "b1-duplication", "operation": "B1_DUPLICATION" }
   ],
   "fixtureMutants": [
-    "STALE_ROW_DIGEST",
-    "UNRELATED_REPAIRED_FORM",
-    "STALE_DECISION_TIMESTAMP",
-    "ADMIT_DECISION_AND_REHASH"
+    { "id": "stale-row-digest", "operation": "STALE_ROW_DIGEST" },
+    {
+      "id": "unrelated-repaired-form",
+      "operation": "UNRELATED_REPAIRED_FORM"
+    },
+    {
+      "id": "stale-decision-timestamp",
+      "operation": "STALE_DECISION_TIMESTAMP"
+    },
+    {
+      "id": "admit-decision-and-rehash",
+      "operation": "ADMIT_DECISION_AND_REHASH"
+    }
   ]
 }
