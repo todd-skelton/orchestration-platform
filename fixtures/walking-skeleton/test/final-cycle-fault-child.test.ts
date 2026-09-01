@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import {
@@ -20,15 +21,12 @@ const target = process.env.ORCHESTRATION_ISS041_FAULT_BOUNDARY as SkeletonBounda
 const sessionId = process.env.ORCHESTRATION_ISS041_FAULT_SESSION;
 const cycleId = process.env.ORCHESTRATION_ISS041_FAULT_CYCLE;
 const projectId = process.env.ORCHESTRATION_ISS041_FAULT_PROJECT;
-const enabled = Boolean(
-  disposableRoot && target && sessionId && cycleId && projectId && process.send,
-);
+const enabled = Boolean(disposableRoot && target && sessionId && cycleId && projectId);
 const selectedTest = enabled ? test : test.skip;
+const marker = "@@ORCHESTRATION_ISS041_BOUNDARY@@";
 
 function notify(value: unknown) {
-  return new Promise<void>((resolve, reject) => {
-    process.send!(value, (error) => (error ? reject(error) : resolve()));
-  });
+  writeSync(1, `${marker}${JSON.stringify(value)}\n`);
 }
 
 function reallyExit(code: number): never {

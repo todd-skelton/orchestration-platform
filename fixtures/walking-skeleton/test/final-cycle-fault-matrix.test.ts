@@ -31,6 +31,7 @@ const checkout = resolve(import.meta.dirname, "../../.."),
   childFile = resolve(import.meta.dirname, "final-cycle-fault-child.test.ts"),
   vitest = resolve(checkout, "node_modules/vitest/vitest.mjs"),
   roots: string[] = [];
+const marker = "@@ORCHESTRATION_ISS041_BOUNDARY@@";
 const uuid = (n: number) => `01900000-0000-7000-8000-${n.toString(16).padStart(12, "0")}`;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const boundaries: SkeletonBoundary[] = [
@@ -169,7 +170,7 @@ function runChild(
   boundary: SkeletonBoundary,
 ): Promise<{ code: number | null; messages: Message[]; stderr: string }> {
   return new Promise((resolveRun, reject) => {
-    const messages: Message[] = [],
+    const stdout: Buffer[] = [],
       stderr: Buffer[] = [];
     const child = spawn(
       process.execPath,
@@ -184,16 +185,21 @@ function runChild(
           ORCHESTRATION_ISS041_FAULT_ROOT: row.disposableRoot,
           ORCHESTRATION_ISS041_FAULT_SESSION: row.sessionId,
         },
-        stdio: ["ignore", "ignore", "pipe", "ipc"],
+        stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       },
     );
+    child.stdout!.on("data", (bytes: Buffer) => stdout.push(Buffer.from(bytes)));
     child.stderr!.on("data", (bytes: Buffer) => stderr.push(Buffer.from(bytes)));
-    child.on("message", (message) => messages.push(message as Message));
     child.once("error", reject);
-    child.once("close", (code) =>
-      resolveRun({ code, messages, stderr: Buffer.concat(stderr).toString("utf8") }),
-    );
+    child.once("close", (code) => {
+      const messages = Buffer.concat(stdout)
+        .toString("utf8")
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith(marker))
+        .map((line) => JSON.parse(line.slice(marker.length)) as Message);
+      resolveRun({ code, messages, stderr: Buffer.concat(stderr).toString("utf8") });
+    });
   });
 }
 

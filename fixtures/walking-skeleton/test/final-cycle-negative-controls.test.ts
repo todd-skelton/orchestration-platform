@@ -138,12 +138,13 @@ async function fixture(options: { artifact?: Buffer; malformed?: boolean; id: nu
   };
 }
 
-async function manifest(root: string): Promise<string[]> {
+async function manifest(root: string, excluded: string | null = null): Promise<string[]> {
   const rows: string[] = [];
   async function visit(path: string, prefix: string) {
     for (const entry of await readdir(path, { withFileTypes: true })) {
       const absolute = join(path, entry.name),
         name = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (absolute === excluded) continue;
       if (entry.isDirectory()) {
         rows.push(`directory:${name}`);
         await visit(absolute, name);
@@ -194,8 +195,8 @@ test("reserved negative command runs malformed, rejected and concurrent controls
   const malformed = await fixture({ id: 10, malformed: true }),
     rejected = await fixture({ artifact: Buffer.from("mismatching reviewed artifact\n"), id: 20 }),
     concurrent = await fixture({ id: 30 });
-  const malformedBefore = await manifest(malformed.disposableRoot),
-    concurrentBefore = await manifest(concurrent.disposableRoot);
+  const malformedBefore = await manifest(malformed.disposableRoot, malformed.stateRoot),
+    concurrentBefore = await manifest(concurrent.disposableRoot, concurrent.stateRoot);
   const input: SkeletonNegativeControlInput = {
     concurrent: {
       contender: { cycleId: uuid(333), sessionId: uuid(332) },
@@ -218,7 +219,8 @@ test("reserved negative command runs malformed, rejected and concurrent controls
   expect(malformedControl.files).not.toContain("session-claim.json");
   expect(malformed.snapshot).toHaveBeenCalledTimes(1);
   expect(malformed.currentPolicy).not.toHaveBeenCalled();
-  expect(await manifest(malformed.disposableRoot)).toEqual(malformedBefore);
+  expect(await manifest(malformed.disposableRoot, malformed.stateRoot)).toEqual(malformedBefore);
+  expect(await readdir(malformed.stateRoot)).toEqual([]);
 
   expect(command.controls.concurrent).toMatchObject({
     cleanup: "REMOVED",
@@ -229,7 +231,8 @@ test("reserved negative command runs malformed, rejected and concurrent controls
   });
   expect(concurrent.snapshot).not.toHaveBeenCalled();
   expect(concurrent.currentPolicy).not.toHaveBeenCalled();
-  expect(await manifest(concurrent.disposableRoot)).toEqual(concurrentBefore);
+  expect(await manifest(concurrent.disposableRoot, concurrent.stateRoot)).toEqual(concurrentBefore);
+  expect(await readdir(concurrent.stateRoot)).toEqual([]);
 
   const result = command.controls.rejected;
   expect(result).toMatchObject({
