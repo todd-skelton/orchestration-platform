@@ -123,20 +123,18 @@ describe("hosted raw Git candidate source", () => {
       ],
     };
     let calls = 0;
-    expect(
-      (
-        await withHostedCandidateSource(tampered, externalParent, stableRoot, async () => {
-          calls += 1;
-        })
-      ).ok,
-    ).toBe(false);
-    expect(
-      (
-        await withHostedCandidateSource(loaded.value, externalParent, externalParent, async () => {
-          calls += 1;
-        })
-      ).ok,
-    ).toBe(false);
+    const changedSnapshot = await phases.within("source.refusal.changed-snapshot", () =>
+      withHostedCandidateSource(tampered, externalParent, stableRoot, async () => {
+        calls += 1;
+      }),
+    );
+    expect(changedSnapshot.ok).toBe(false);
+    const overlappingRoot = await phases.within("source.refusal.overlapping-root", () =>
+      withHostedCandidateSource(loaded.value, externalParent, externalParent, async () => {
+        calls += 1;
+      }),
+    );
+    expect(overlappingRoot.ok).toBe(false);
     expect(calls).toBe(0);
     expect(await readdir(externalParent)).toEqual([]);
   });

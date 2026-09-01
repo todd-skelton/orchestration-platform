@@ -18,9 +18,9 @@ type Invocation = {
 };
 const synthetic = vi.hoisted(() => ({
   calls: [] as Invocation[],
+  marks: new Map<string, (phase: string) => void>(),
   mode: "output" as "output" | "compile-error" | "spawn-missing" | "no-output" | "extra-output",
   mutate: null as ((call: Invocation) => Promise<void>) | null,
-  phase: "not-started",
 }));
 
 // A scoped synthetic compiler adapter exercises the real builder and real files.
@@ -35,7 +35,10 @@ vi.mock("node:child_process", async () => {
     },
     {
       [promisify.custom]: async (file: string, argv: string[], options: Invocation["options"]) => {
-        synthetic.phase = "compiler.callback:start";
+        const mark =
+          [...synthetic.marks.entries()].find(([root]) => options.cwd.startsWith(root))?.[1] ??
+          (() => undefined);
+        mark("compiler.callback:start");
         const call = { file, argv: [...argv], options };
         synthetic.calls.push(call);
         if (synthetic.mode === "spawn-missing")
@@ -51,11 +54,11 @@ vi.mock("node:child_process", async () => {
         if (synthetic.mode === "extra-output")
           await writeFile(resolve(options.cwd, "unexpected.node"), "extra");
         if (synthetic.mutate) {
-          synthetic.phase = "compiler.callback.mutation:start";
+          mark("compiler.callback.mutation:start");
           await synthetic.mutate(call);
-          synthetic.phase = "compiler.callback.mutation:complete";
+          mark("compiler.callback.mutation:complete");
         }
-        synthetic.phase = "compiler.callback:complete";
+        mark("compiler.callback:complete");
         return { stdout: Buffer.from("synthetic invocation only"), stderr: Buffer.alloc(0) };
       },
     },
@@ -64,9 +67,7 @@ vi.mock("node:child_process", async () => {
 });
 
 const roots: string[] = [];
-const phases = createPhaseWatchdog("native-lock-build", 4_000, () => ({
-  compilerPhase: synthetic.phase,
-}));
+const phases = createPhaseWatchdog("native-lock-build");
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 async function reference(path: string): Promise<NativeLockBuildFile> {
   const bytes = await readFile(path);
@@ -167,11 +168,19 @@ async function fixture(): Promise<NativeLockBuildRequest> {
 }
 
 async function instrumentedBuild(input: NativeLockBuildRequest) {
-  synthetic.phase = "build.invoke";
-  const result = await phases.within("build.invoke", () => buildNativeLockExperiment(input));
-  synthetic.phase = "build.source-cleanup:complete";
-  phases.mark("build.source-cleanup:complete");
-  return result;
+  const mark = phases.scoped();
+  synthetic.marks.set(input.artifactRoot, mark);
+  mark("build.invoke:start");
+  try {
+    const result = await buildNativeLockExperiment(input);
+    mark("build.source-cleanup:complete");
+    return result;
+  } catch (error) {
+    mark("build.invoke:error");
+    throw error;
+  } finally {
+    synthetic.marks.delete(input.artifactRoot);
+  }
 }
 
 beforeEach((context) => {
@@ -179,7 +188,6 @@ beforeEach((context) => {
   synthetic.calls.length = 0;
   synthetic.mode = "output";
   synthetic.mutate = null;
-  synthetic.phase = "beforeEach:complete";
 });
 afterEach(async () => {
   phases.mark("afterEach.cleanup:start");
