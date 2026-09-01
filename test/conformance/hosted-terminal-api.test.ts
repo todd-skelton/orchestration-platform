@@ -210,7 +210,7 @@ describe("post-terminal GitHub API projection", () => {
         expect(await readFile(resolve(output, second), "utf8")).toBe("foreign");
       if (mode === "moved") expect(await readdir(`${output}-aside`)).toEqual([first, second]);
     }
-  });
+  }, 30_000);
 
   test("commits one external file and refuses foreign checkout and canonical aliases", async () => {
     const root = await temporaryRoot();

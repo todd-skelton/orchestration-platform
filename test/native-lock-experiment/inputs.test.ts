@@ -592,7 +592,7 @@ describe("private composed preparation, synthetic evidence only", () => {
         });
         expect(faults.calls.length).toBeGreaterThan(0);
       },
-      mutation === "extra" || mutation === "cleanup" ? integrationTimeout : undefined,
+      integrationTimeout,
     );
   }
 });

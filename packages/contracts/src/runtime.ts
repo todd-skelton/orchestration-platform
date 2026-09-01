@@ -120,6 +120,33 @@ export function snapshotJson(input: unknown): SnapshotResult<JsonValue> {
   return snapshotValue(input, new Set(), 0);
 }
 
+export function snapshotBytes(input: unknown): SnapshotResult<Uint8Array> {
+  try {
+    if (!nodeTypes.isUint8Array(input) || nodeTypes.isProxy(input))
+      return fail("encoding:bytes-required");
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Uint8Array.prototype && prototype !== Buffer.prototype)
+      return fail("encoding:bytes-required");
+    const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+    const buffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")!.get!.call(input);
+    if (nodeTypes.isSharedArrayBuffer(buffer)) return fail("encoding:shared-bytes-refused");
+    const byteLength = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      "byteLength",
+    )!.get!.call(input) as number;
+    const byteOffset = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      "byteOffset",
+    )!.get!.call(input) as number;
+    return {
+      ok: true,
+      value: new Uint8Array(buffer as ArrayBuffer, byteOffset, byteLength).slice(),
+    };
+  } catch {
+    return fail("encoding:bytes-required");
+  }
+}
+
 export function snapshotClosedArray(input: unknown): SnapshotResult<readonly JsonValue[]> {
   const snapshot = snapshotJson(input);
   return snapshot.ok && Array.isArray(snapshot.value)
@@ -272,12 +299,14 @@ export function parseCanonicalBytes(
   definition: ContractDefinition,
   bytes: Uint8Array,
 ): ParseResult {
-  if (!(bytes instanceof Uint8Array)) return { ok: false, issues: ["encoding:bytes-required"] };
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+  const snapshot = snapshotBytes(bytes);
+  if (!snapshot.ok) return snapshot;
+  const stableBytes = snapshot.value;
+  if (stableBytes[0] === 0xef && stableBytes[1] === 0xbb && stableBytes[2] === 0xbf)
     return { ok: false, issues: ["encoding:bom-refused"] };
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(stableBytes);
   } catch {
     return { ok: false, issues: ["encoding:invalid-utf8"] };
   }

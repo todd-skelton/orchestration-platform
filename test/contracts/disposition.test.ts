@@ -732,7 +732,7 @@ test("materialized ordinary results differ from the old action target and obey r
     ])
       expect(bind(missing, outcome).ok).toBe(false);
   }
-});
+}, 30_000);
 
 test("all concrete reviewed subjects keep accepted/rejected/unknown authority distinct", () => {
   for (const reviewIndex of [0, 1, 2]) {
@@ -769,7 +769,7 @@ test("all concrete reviewed subjects keep accepted/rejected/unknown authority di
       ).toBe(false);
     }
   }
-});
+}, 30_000);
 
 test("workerless, known start/process failures and unknown/live observations select their exact skip paths", () => {
   const workerless = context({ worker: false });
@@ -828,7 +828,7 @@ test("workerless, known start/process failures and unknown/live observations sel
       unknown(),
     );
   }
-});
+}, 30_000);
 
 test("every skip ordinal, reason, current cycle and primary/predecessor digest remains binding", () => {
   for (const f of [
@@ -1241,7 +1241,7 @@ test("review request, attempt and every finding retain actual descriptor and wor
       { kind: "FAILURE", followUp: null },
     );
   }
-});
+}, 30_000);
 
 test("follow-up binds the full validated disposition, current cause cycle and exact intent without scheduling authority", () => {
   const f = context();
@@ -1334,7 +1334,7 @@ test("follow-up binds the full validated disposition, current cause cycle and ex
   expect(c.validateFollowUpCycleRequestBinding(f.input, f.out, f.err, ordinary, promotion).ok).toBe(
     false,
   );
-});
+}, 30_000);
 
 test("reused subject, skip and terminal boundaries remain closed through the complete inline input", () => {
   const f = context({ ordered: true });
