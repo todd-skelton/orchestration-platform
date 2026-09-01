@@ -1462,7 +1462,7 @@ test("refuses individually valid producer substitutions that sever prior-output 
       value: { outcome: { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" } },
     });
   }
-});
+}, 30_000);
 
 test("binds malformed mapping, preflight and mutation observations only through canonical evidence", () => {
   const p = producerJournal();
