@@ -174,7 +174,7 @@ function runChild(
       stderr: Buffer[] = [];
     const child = spawn(
       process.execPath,
-      [vitest, "run", childFile, "--reporter=dot", "--pool=threads", "--maxWorkers=1"],
+      [vitest, "run", childFile, "--reporter=dot", "--pool=forks", "--maxWorkers=1"],
       {
         cwd: checkout,
         env: {
@@ -213,13 +213,17 @@ afterEach(async () => {
   }
 });
 
-test("every physical boundary kills once and restart is read-only SESSION_HELD or terminal completion", async () => {
-  expect(boundaries).toHaveLength(38);
-  for (const [index, boundary] of boundaries.entries()) {
+test.each(boundaries)(
+  "%s kills one fork and restart is read-only SESSION_HELD or terminal completion",
+  async (boundary) => {
+    const index = boundaries.indexOf(boundary);
+    expect(boundaries).toHaveLength(38);
+    expect(index).toBeGreaterThanOrEqual(0);
     const row = await setup(index),
       outsideBefore = await manifest(row.disposableRoot, row.stateRoot),
       child = await runChild(row, boundary);
-    expect(child.code, `${boundary}: ${child.stderr}`).toBe(86);
+    expect(child.code, `${boundary}: ${child.stderr}`).toBe(1);
+    expect(child.stderr).toContain("Worker exited unexpectedly");
     const targets = child.messages.filter((message) => message.kind === "TARGET");
     expect(targets, boundary).toHaveLength(1);
     expect(targets[0]!.snapshot.boundary).toBe(boundary);
@@ -260,5 +264,6 @@ test("every physical boundary kills once and restart is read-only SESSION_HELD o
     else if (boundary === "STARTED:15") expect(observed).toBe("TERMINALIZING");
     else if (boundary === "TERMINAL:15" || boundary === "SESSION_CLOSED")
       expect(observed).toBe("COMPLETED");
-  }
-}, 300_000);
+  },
+  60_000,
+);
