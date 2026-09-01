@@ -1878,7 +1878,7 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
       substitutedReplayEvidence,
     ).ok,
   ).toBe(false);
-  const stateMutants = [
+  const stateMutants: Row[] = [
     { ...f.terminalizing.value, cyclePlanDigest: "0".repeat(64) },
     { ...f.terminalizing.value, journalPrefixDigest: "0".repeat(64) },
     {
@@ -1892,16 +1892,34 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
       ),
     },
   ];
-  const movedPending = copy(f.terminalizing.value);
-  movedPending.pendingStep.inputDigest = "0".repeat(64);
-  movedPending.steps[14].stepDigest = c.computeRoutineStepDigest(movedPending.pendingStep);
-  movedPending.outcome.terminalStepDigest = c.computeRoutineStepDigest(movedPending.pendingStep);
+  const movedPendingStep = {
+    ...copy(f.terminalizing.value.pendingStep!),
+    inputDigest: "0".repeat(64),
+  };
+  const movedPendingDigest = c.computeRoutineStepDigest(movedPendingStep);
+  const movedPending: Row = {
+    ...copy(f.terminalizing.value),
+    outcome: { ...copy(f.terminalizing.value.outcome), terminalStepDigest: movedPendingDigest },
+    pendingStep: movedPendingStep,
+    steps: f.terminalizing.value.steps.map((row: Row, index: number) =>
+      index === 14 ? { ...copy(row), stepDigest: movedPendingDigest } : copy(row),
+    ),
+  };
   stateMutants.push(movedPending);
-  const foreignCycle = copy(f.terminalizing.value);
-  foreignCycle.cycleId = id(90);
-  foreignCycle.pendingStep.cycleId = id(90);
-  foreignCycle.steps[14].stepDigest = c.computeRoutineStepDigest(foreignCycle.pendingStep);
-  foreignCycle.outcome.terminalStepDigest = c.computeRoutineStepDigest(foreignCycle.pendingStep);
+  const foreignPending = {
+    ...copy(f.terminalizing.value.pendingStep!),
+    cycleId: id(90),
+  };
+  const foreignPendingDigest = c.computeRoutineStepDigest(foreignPending);
+  const foreignCycle: Row = {
+    ...copy(f.terminalizing.value),
+    cycleId: id(90),
+    outcome: { ...copy(f.terminalizing.value.outcome), terminalStepDigest: foreignPendingDigest },
+    pendingStep: foreignPending,
+    steps: f.terminalizing.value.steps.map((row: Row, index: number) =>
+      index === 14 ? { ...copy(row), stepDigest: foreignPendingDigest } : copy(row),
+    ),
+  };
   stateMutants.push(foreignCycle);
   for (const state of stateMutants) {
     expect(c.parseReducedState(state).ok).toBe(true);
@@ -1927,14 +1945,26 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
       .ok,
   ).toBe(false);
 
-  const forgedStarted = copy(f.startedJournal);
-  forgedStarted.events.at(-1)!.step.inputDigest = "0".repeat(64);
+  const forgedStarted: Row = {
+    ...copy(f.startedJournal),
+    events: f.startedJournal.events.map((event: Row, index: number) =>
+      index === f.startedJournal.events.length - 1
+        ? { ...copy(event), step: { ...copy(event.step), inputDigest: "0".repeat(64) } }
+        : copy(event),
+    ),
+  };
   const forgedBytes = rechain(forgedStarted);
-  const forgedState = copy(f.terminalizing.value);
-  forgedState.pendingStep = copy(forgedStarted.events.at(-1)!.step);
-  forgedState.steps[14].stepDigest = c.computeRoutineStepDigest(forgedState.pendingStep);
-  forgedState.outcome.terminalStepDigest = c.computeRoutineStepDigest(forgedState.pendingStep);
-  forgedState.journalPrefixDigest = prefixHash(forgedBytes);
+  const forgedPending = copy(forgedStarted.events.at(-1)!.step);
+  const forgedPendingDigest = c.computeRoutineStepDigest(forgedPending);
+  const forgedState: Row = {
+    ...copy(f.terminalizing.value),
+    journalPrefixDigest: prefixHash(forgedBytes),
+    outcome: { ...copy(f.terminalizing.value.outcome), terminalStepDigest: forgedPendingDigest },
+    pendingStep: forgedPending,
+    steps: f.terminalizing.value.steps.map((row: Row, index: number) =>
+      index === 14 ? { ...copy(row), stepDigest: forgedPendingDigest } : copy(row),
+    ),
+  };
   const forgedReceipt = {
     ...f.receipt,
     bindings: copy(forgedState.bindings),
