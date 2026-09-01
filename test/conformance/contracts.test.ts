@@ -152,6 +152,7 @@ describe("portable conformance contracts", () => {
     expect(conformance.conformanceResults).toEqual(["PASS", "FAIL", "UNSUPPORTED", "UNKNOWN"]);
     expect(conformance.conformanceRunnerTokens).toEqual([
       "ISS002_CONTRACTS",
+      "ISS022_NATIVE_LOCK_EXPERIMENT",
       "ISS022_PORTABLE_PRIMITIVES",
     ]);
     expect(conformance.conformanceRequirementKinds).toEqual(["REQUIRED", "UNUSED"]);
@@ -279,6 +280,12 @@ describe("portable conformance contracts", () => {
         suites: [{ ...registry.suites[0], runnerToken: "CANDIDATE_SELECTED" }],
       }).ok,
     ).toBe(false);
+    expect(
+      conformance.parseConformanceRequiredJobRegistry({
+        ...registry,
+        suites: [{ ...registry.suites[0], runnerToken: "ISS022_NATIVE_LOCK_EXPERIMENT" }],
+      }).ok,
+    ).toBe(true);
   });
 
   test("builds exact raw evidence and refuses moved environment bytes", () => {
