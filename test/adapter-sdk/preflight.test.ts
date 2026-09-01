@@ -1,6 +1,9 @@
 import { expect, test, vi } from "vitest";
 import * as c from "../../packages/contracts/src/index.js";
-import { observeProjectPreflight } from "../../packages/adapter-sdk/src/preflight.js";
+import {
+  observeProjectPreflight,
+  observeWorkerResultPreflight,
+} from "../../packages/adapter-sdk/src/preflight.js";
 import type { SnapshotReader } from "../../packages/adapter-sdk/src/snapshot.js";
 
 const id = (n: number) => `01900000-0000-7000-8000-${n.toString(16).padStart(12, "0")}`;
@@ -222,6 +225,88 @@ function context(worker = false) {
   expect(c.validateRouteSelectionBinding(input, action, mapping, route).ok).toBe(true);
   return { input, action, mapping, route };
 }
+const workerSubject = (terminalReceiptDigest = "6".repeat(64)) => ({
+  authorAttemptId: id(70),
+  authorCycleId: id(71),
+  baseSource: {
+    adapterId: configuration.adapterId,
+    projectId: configuration.projectId,
+    revision: "fixture.seed.v1",
+  },
+  result: {
+    entries: [{ contentDigest: "7".repeat(64), kind: "ARTIFACT" as const }],
+    kind: "ORDERED_PATCH_ARTIFACTS" as const,
+  },
+  schemaVersion: "worker-result-subject/v1" as const,
+  terminalReceiptDigest,
+});
+const releaseSubject = (): c.ReleaseCandidateSubject => ({
+  assemblyCycleId: id(72),
+  candidateDigest: "1".repeat(64),
+  certificationDigest: "2".repeat(64),
+  landedSource: {
+    adapterId: configuration.adapterId,
+    projectId: configuration.projectId,
+    revision: "fixture.candidate.v1",
+  },
+  landedTreeDigest: "3".repeat(64),
+  manifestDigest: "4".repeat(64),
+  schemaVersion: "release-candidate-subject/v1",
+  testBundleDigest: "5".repeat(64),
+});
+function reviewContext(subject: c.ReviewSubject = workerSubject()) {
+  const worker = context(true);
+  if (worker.mapping === null || worker.action.dispatchBrief === null)
+    throw new Error("worker context required");
+  const selectedDescriptor = {
+    ...worker.input.descriptor,
+    actions: worker.input.descriptor.actions.map((declaration) =>
+      declaration.actionKind === "fixture.inspect"
+        ? { ...declaration, requestedRole: "review" as const }
+        : declaration,
+    ),
+  };
+  const input = {
+    ...worker.input,
+    descriptor: selectedDescriptor,
+    reviewSubject: subject,
+  };
+  const actionCore = {
+    ...worker.action.actionCore,
+    immutableSubjectDigest:
+      subject.schemaVersion === "worker-result-subject/v1"
+        ? c.computeWorkerResultSubjectDigest(subject)
+        : c.computeReleaseCandidateSubjectDigest(subject),
+    moduleDescriptorDigest: c.computeModuleDescriptorDigest(selectedDescriptor),
+    requestedRole: "review" as const,
+  };
+  const action = {
+    ...worker.action,
+    actionCore,
+    dispatchBrief: {
+      ...worker.action.dispatchBrief,
+      action: {
+        ...worker.action.dispatchBrief.action,
+        actionCoreDigest: c.computeDispatchActionCoreDigest(actionCore),
+        immutableSubjectDigest: actionCore.immutableSubjectDigest,
+        moduleDescriptorDigest: actionCore.moduleDescriptorDigest,
+      },
+      directives: worker.action.dispatchBrief.directives.map((directive) => ({
+        ...directive,
+        subjectDigest: actionCore.immutableSubjectDigest,
+      })),
+      role: "review" as const,
+    },
+    inputDigest: c.computeModulePlanInputDigest(input),
+    workId: null,
+  };
+  const route = {
+    ...worker.route,
+    actionPlanDigest: c.computeModuleActionPlanDigest(action),
+  };
+  expect(c.validateRouteSelectionBinding(input, action, worker.mapping, route).ok).toBe(true);
+  return { input, action, mapping: worker.mapping, route, subject };
+}
 const reader = (value: unknown) => vi.fn(async () => value) as unknown as SnapshotReader;
 
 test("fresh project facts produce one fully bound preflight without granting authority", async () => {
@@ -407,6 +492,192 @@ test("admitted module and action inputs are detached before the source await", a
   mutableInput.projectFacts.frontier[0]!.immutableSubjectDigest = "b".repeat(64);
   mutableAction.actionCore.immutableSubjectDigest = "b".repeat(64);
   settle({ ok: true, facts: facts() });
+  await expect(pending).resolves.toMatchObject({
+    ok: true,
+    preflight: { outcome: { kind: "ELIGIBLE" } },
+  });
+});
+
+test("fresh worker-result target produces one bound review preflight without authority", async () => {
+  const { input, action, mapping, route, subject } = reviewContext();
+  const read = vi.fn(async () => subject),
+    identity = vi.fn(() => id(90));
+  const result = await observeWorkerResultPreflight(
+    input,
+    action,
+    mapping,
+    route,
+    read,
+    identity,
+    clocks,
+  );
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(identity).toHaveBeenCalledTimes(1);
+  expect(result).toMatchObject({
+    ok: true,
+    observation: { observationId: id(90), result: { kind: "AVAILABLE", subject } },
+    preflight: { outcome: { kind: "ELIGIBLE" } },
+  });
+  if (!result.ok) throw new Error(result.code);
+  expect(
+    c.validateProjectPreflightBinding(
+      input,
+      action,
+      mapping,
+      route,
+      result.observation,
+      result.preflight,
+    ),
+  ).toEqual({ ok: true, value: result.preflight });
+  expect(result.preflight).not.toHaveProperty("authority");
+});
+
+test("a valid changed worker-result target is refused rather than hidden as unavailable", async () => {
+  const { input, action, mapping, route } = reviewContext();
+  const changed = workerSubject("8".repeat(64));
+  const result = await observeWorkerResultPreflight(
+    input,
+    action,
+    mapping,
+    route,
+    async () => changed,
+    () => id(90),
+    clocks,
+  );
+  expect(result).toMatchObject({
+    ok: true,
+    observation: { result: { kind: "AVAILABLE", subject: changed } },
+    preflight: { outcome: { kind: "REFUSED", reason: "TARGET_CHANGED" } },
+  });
+});
+
+test("thrown, rejected, malformed and thenable review sources retain typed uncertainty", async () => {
+  const { input, action, mapping, route } = reviewContext();
+  const sources = [
+    () => {
+      throw new Error("private source failure");
+    },
+    async () => {
+      throw new Error("private rejection");
+    },
+    async () => null,
+    () => ({ then: (resolve: (value: unknown) => void) => resolve(workerSubject()) }),
+  ];
+  for (const read of sources)
+    expect(
+      await observeWorkerResultPreflight(input, action, mapping, route, read, () => id(90), clocks),
+    ).toMatchObject({
+      ok: true,
+      observation: { result: { kind: "UNKNOWN" } },
+      preflight: { outcome: { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" } },
+    });
+});
+
+test("invalid review admission refuses before the source callback", async () => {
+  const review = reviewContext(),
+    project = context(true),
+    release = reviewContext(releaseSubject());
+  for (const tuple of [
+    [project.input, project.action, project.mapping, project.route],
+    [release.input, release.action, release.mapping, release.route],
+    [review.input, { ...review.action, workId: id(99) }, review.mapping, review.route],
+    [
+      review.input,
+      review.action,
+      review.mapping,
+      { ...review.route, actionPlanDigest: "f".repeat(64) },
+    ],
+  ] as const) {
+    const read = vi.fn(async () => review.subject);
+    expect(
+      await observeWorkerResultPreflight(
+        tuple[0],
+        tuple[1],
+        tuple[2],
+        tuple[3],
+        read,
+        () => id(90),
+        clocks,
+      ),
+    ).toEqual({
+      ok: false,
+      code: "PREFLIGHT_ADMISSION_REFUSED",
+      observation: null,
+    });
+    expect(read).not.toHaveBeenCalled();
+  }
+});
+
+test.each([id(4), id(5)])("review observation identity %s cannot reuse prior facts", async (id) => {
+  const { input, action, mapping, route, subject } = reviewContext();
+  expect(
+    await observeWorkerResultPreflight(
+      input,
+      action,
+      mapping,
+      route,
+      async () => subject,
+      () => id,
+      clocks,
+    ),
+  ).toMatchObject({ ok: false, code: "PREFLIGHT_OBSERVATION_REFUSED" });
+});
+
+test("invalid review observation identity or time fails closed", async () => {
+  const { input, action, mapping, route, subject } = reviewContext();
+  for (const [identity, sourceClocks] of [
+    [() => "not-a-uuid", clocks],
+    [() => id(90), { wallNow: () => "2026-09-01T01:00:00Z" }],
+    [
+      () => {
+        throw new Error("identity failure");
+      },
+      clocks,
+    ],
+  ] as const)
+    expect(
+      await observeWorkerResultPreflight(
+        input,
+        action,
+        mapping,
+        route,
+        async () => subject,
+        identity,
+        sourceClocks,
+      ),
+    ).toMatchObject({ ok: false, code: "PREFLIGHT_OBSERVATION_REFUSED" });
+});
+
+test("review input, action and selected mapping are retained before the source await", async () => {
+  const original = reviewContext(),
+    input = structuredClone(original.input),
+    action = structuredClone(original.action),
+    mapping = structuredClone(original.mapping);
+  let settle!: (value: unknown) => void;
+  const read = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+  );
+  const pending = observeWorkerResultPreflight(
+    input,
+    action,
+    mapping,
+    original.route,
+    read,
+    () => id(90),
+    clocks,
+  );
+  const mutableInput = input as unknown as {
+      reviewSubject: { terminalReceiptDigest: string };
+    },
+    mutableAction = action as unknown as { actionCore: { immutableSubjectDigest: string } },
+    mutableMapping = mapping as unknown as Array<{ capabilityNames: string[] }>;
+  mutableInput.reviewSubject.terminalReceiptDigest = "8".repeat(64);
+  mutableAction.actionCore.immutableSubjectDigest = "9".repeat(64);
+  mutableMapping[0]!.capabilityNames.length = 0;
+  settle(original.subject);
   await expect(pending).resolves.toMatchObject({
     ok: true,
     preflight: { outcome: { kind: "ELIGIBLE" } },
