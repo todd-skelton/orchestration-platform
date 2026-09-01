@@ -9,6 +9,7 @@ import {
   type NativeLockBuildFile,
   type NativeLockBuildRequest,
 } from "../../scripts/build/native-lock-experiment.mjs";
+import { createPhaseWatchdog } from "../support/phase-watchdog.js";
 
 type Invocation = {
   file: string;
@@ -19,6 +20,7 @@ const synthetic = vi.hoisted(() => ({
   calls: [] as Invocation[],
   mode: "output" as "output" | "compile-error" | "spawn-missing" | "no-output" | "extra-output",
   mutate: null as ((call: Invocation) => Promise<void>) | null,
+  phase: "not-started",
 }));
 
 // A scoped synthetic compiler adapter exercises the real builder and real files.
@@ -33,6 +35,7 @@ vi.mock("node:child_process", async () => {
     },
     {
       [promisify.custom]: async (file: string, argv: string[], options: Invocation["options"]) => {
+        synthetic.phase = "compiler.callback:start";
         const call = { file, argv: [...argv], options };
         synthetic.calls.push(call);
         if (synthetic.mode === "spawn-missing")
@@ -47,7 +50,12 @@ vi.mock("node:child_process", async () => {
         if (synthetic.mode !== "no-output") await writeFile(output, "synthetic output; never load");
         if (synthetic.mode === "extra-output")
           await writeFile(resolve(options.cwd, "unexpected.node"), "extra");
-        if (synthetic.mutate) await synthetic.mutate(call);
+        if (synthetic.mutate) {
+          synthetic.phase = "compiler.callback.mutation:start";
+          await synthetic.mutate(call);
+          synthetic.phase = "compiler.callback.mutation:complete";
+        }
+        synthetic.phase = "compiler.callback:complete";
         return { stdout: Buffer.from("synthetic invocation only"), stderr: Buffer.alloc(0) };
       },
     },
@@ -56,6 +64,9 @@ vi.mock("node:child_process", async () => {
 });
 
 const roots: string[] = [];
+const phases = createPhaseWatchdog("native-lock-build", 4_000, () => ({
+  compilerPhase: synthetic.phase,
+}));
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 async function reference(path: string): Promise<NativeLockBuildFile> {
   const bytes = await readFile(path);
@@ -68,12 +79,15 @@ async function file(path: string, content: string) {
 }
 
 async function fixture(): Promise<NativeLockBuildRequest> {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), "native-build-synthetic-")));
+  const root = await phases.within("root.create", async () =>
+    realpath(await mkdtemp(resolve(tmpdir(), "native-build-synthetic-"))),
+  );
   roots.push(root);
   const stableRoot = resolve(root, "stable");
   const candidateRoot = resolve(root, "candidate");
   const runnerTemp = resolve(root, "runner");
   const sdk = resolve(root, "sdk");
+  phases.mark("fixture.materialize:start");
   await mkdir(runnerTemp);
   await mkdir(sdk);
   const stableSource = await file(
@@ -116,7 +130,8 @@ async function fixture(): Promise<NativeLockBuildRequest> {
     resolve(root, "distribution/SHASUMS256.txt"),
     `${archive.sha256}  node-${process.version}-headers.tar.gz\n${importLibrary ? `${importLibrary.sha256}  win-${process.arch}/node.lib\n` : ""}`,
   );
-  const executable = await reference(process.execPath);
+  phases.mark("fixture.materialize:complete");
+  const executable = await phases.within("fixture.readback", () => reference(process.execPath));
   return {
     runnerTemp,
     artifactRoot: resolve(runnerTemp, "artifact"),
@@ -151,20 +166,36 @@ async function fixture(): Promise<NativeLockBuildRequest> {
   };
 }
 
-beforeEach(() => {
+async function instrumentedBuild(input: NativeLockBuildRequest) {
+  synthetic.phase = "build.invoke";
+  const result = await phases.within("build.invoke", () => buildNativeLockExperiment(input));
+  synthetic.phase = "build.source-cleanup:complete";
+  phases.mark("build.source-cleanup:complete");
+  return result;
+}
+
+beforeEach((context) => {
+  phases.start(context.task.name);
   synthetic.calls.length = 0;
   synthetic.mode = "output";
   synthetic.mutate = null;
+  synthetic.phase = "beforeEach:complete";
 });
 afterEach(async () => {
+  phases.mark("afterEach.cleanup:start");
   vi.unstubAllEnvs();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  try {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    phases.mark("afterEach.cleanup:complete");
+  } finally {
+    phases.finish();
+  }
 });
 
 describe("native-lock private builder: synthetic invocation and byte-custody controls", () => {
   test("uses both fixed role recipes in fresh directories, retains complete bytes, and never marks a load", async () => {
     const input = await fixture();
-    const result = await buildNativeLockExperiment(input);
+    const result = await instrumentedBuild(input);
     expect(
       result.builds.map((build) => [build.role, build.revision, build.result, build.loaded]),
     ).toEqual([
@@ -246,9 +277,7 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
     ])
       vi.stubEnv(name, "candidate-injection");
     expect(
-      (await buildNativeLockExperiment(await fixture())).builds.every(
-        (build) => build.result === "BUILT",
-      ),
+      (await instrumentedBuild(await fixture())).builds.every((build) => build.result === "BUILT"),
     ).toBe(true);
     for (const call of synthetic.calls) {
       expect(JSON.stringify(call.options.env)).not.toContain("candidate-injection");
@@ -307,7 +336,7 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
       await file(resolve(input.distribution.includeRoot, "injected.h"), "extra");
     if (mutation === "reused-output") await mkdir(input.artifactRoot);
     if (mutation === "source-overlap") input.artifactRoot = resolve(input.stableRoot, "artifact");
-    expect((await buildNativeLockExperiment(input)).builds.map((build) => build.result)).toEqual([
+    expect((await instrumentedBuild(input)).builds.map((build) => build.result)).toEqual([
       "UNKNOWN",
       "UNKNOWN",
     ]);
@@ -327,7 +356,7 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
       input.toolchain!.compilerPath = resolve(input.runnerTemp, "missing-compiler");
     if (mode === "missing-sdk") input.toolchain!.path = [resolve(input.runnerTemp, "missing-sdk")];
     if (mode === "spawn-missing" || mode === "compile-error") synthetic.mode = mode;
-    const result = await buildNativeLockExperiment(input);
+    const result = await instrumentedBuild(input);
     expect(result.builds.map((build) => build.result)).toEqual(
       mode === "compile-error" ? ["UNKNOWN", "UNKNOWN"] : ["UNSUPPORTED", "UNSUPPORTED"],
     );
@@ -374,7 +403,7 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
         await mkdir(parent);
         await writeFile(input.candidateSource.path, "/* synthetic candidate source */");
       };
-    const result = await buildNativeLockExperiment(input);
+    const result = await instrumentedBuild(input);
     expect(result.builds.map((build) => build.result)).toEqual(["UNKNOWN", "UNKNOWN"]);
     expect(result.builds.every((build) => build.loaded === null)).toBe(true);
   });
