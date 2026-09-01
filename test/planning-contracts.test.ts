@@ -158,6 +158,20 @@ describe("planning contract", () => {
       },
     ],
     [
+      "reverted ISS-041 cycle wrapper",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.rootPackage.scripts["skeleton:cycle"] =
+          "node scripts/capability-not-implemented.mjs ISS-041 skeleton:cycle";
+      },
+    ],
+    [
+      "reverted ISS-041 negative-controls wrapper",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.rootPackage.scripts["skeleton:negative-controls"] =
+          "node scripts/capability-not-implemented.mjs ISS-041 skeleton:negative-controls";
+      },
+    ],
+    [
       "wrapper defaults",
       (snapshot: PlanningSnapshot) => {
         snapshot.rootPackage.scripts.bootstrap += " --state-root .state";

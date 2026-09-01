@@ -357,34 +357,39 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
     "missing-sdk",
     "spawn-missing",
     "compile-error",
-  ])("distinguishes prerequisite absence from compiler failure: %s", async (mode) => {
-    const input = await fixture();
-    if (mode === "missing-capture") input.toolchain = null;
-    if (mode === "missing-compiler")
-      input.toolchain!.compilerPath = resolve(input.runnerTemp, "missing-compiler");
-    if (mode === "missing-sdk") input.toolchain!.path = [resolve(input.runnerTemp, "missing-sdk")];
-    if (mode === "spawn-missing" || mode === "compile-error") synthetic.mode = mode;
-    const result = await instrumentedBuild(input);
-    expect(result.builds.map((build) => build.result)).toEqual(
-      mode === "compile-error" ? ["UNKNOWN", "UNKNOWN"] : ["UNSUPPORTED", "UNSUPPORTED"],
-    );
-    if (mode.startsWith("missing-")) {
-      expect(synthetic.calls).toHaveLength(0);
-      expect(
-        result.builds.map((build) => [build.argv, build.toolchain, build.outputs, build.loaded]),
-      ).toEqual([
-        [null, null, null, null],
-        [null, null, null, null],
-      ]);
-    }
-    if (mode === "compile-error")
-      expect(
-        await readFile(
-          resolve(input.artifactRoot, "builds/STABLE_WITNESS/compiler.stderr"),
-          "utf8",
-        ),
-      ).toBe("compile failed");
-  });
+  ])(
+    "distinguishes prerequisite absence from compiler failure: %s",
+    async (mode) => {
+      const input = await fixture();
+      if (mode === "missing-capture") input.toolchain = null;
+      if (mode === "missing-compiler")
+        input.toolchain!.compilerPath = resolve(input.runnerTemp, "missing-compiler");
+      if (mode === "missing-sdk")
+        input.toolchain!.path = [resolve(input.runnerTemp, "missing-sdk")];
+      if (mode === "spawn-missing" || mode === "compile-error") synthetic.mode = mode;
+      const result = await instrumentedBuild(input);
+      expect(result.builds.map((build) => build.result)).toEqual(
+        mode === "compile-error" ? ["UNKNOWN", "UNKNOWN"] : ["UNSUPPORTED", "UNSUPPORTED"],
+      );
+      if (mode.startsWith("missing-")) {
+        expect(synthetic.calls).toHaveLength(0);
+        expect(
+          result.builds.map((build) => [build.argv, build.toolchain, build.outputs, build.loaded]),
+        ).toEqual([
+          [null, null, null, null],
+          [null, null, null, null],
+        ]);
+      }
+      if (mode === "compile-error")
+        expect(
+          await readFile(
+            resolve(input.artifactRoot, "builds/STABLE_WITNESS/compiler.stderr"),
+            "utf8",
+          ),
+        ).toBe("compile failed");
+    },
+    30_000,
+  );
 
   test.each([
     "no-output",
@@ -392,27 +397,31 @@ describe("native-lock private builder: synthetic invocation and byte-custody con
     "changed-source",
     "changed-staged-source",
     "moved-parent",
-  ])("refuses %s without treating it as native evidence", async (mode) => {
-    const input = await fixture();
-    if (mode === "no-output" || mode === "extra-output") synthetic.mode = mode;
-    if (mode === "changed-source")
-      synthetic.mutate = async () => {
-        await writeFile(input.candidateSource.path, "changed source");
-      };
-    if (mode === "changed-staged-source")
-      synthetic.mutate = async (call) => {
-        const path = call.argv.find((arg) => arg.endsWith(".c"))!;
-        await writeFile(path, "changed staged source");
-      };
-    if (mode === "moved-parent")
-      synthetic.mutate = async () => {
-        const parent = dirname(input.candidateSource.path);
-        await rename(parent, `${parent}-moved`);
-        await mkdir(parent);
-        await writeFile(input.candidateSource.path, "/* synthetic candidate source */");
-      };
-    const result = await instrumentedBuild(input);
-    expect(result.builds.map((build) => build.result)).toEqual(["UNKNOWN", "UNKNOWN"]);
-    expect(result.builds.every((build) => build.loaded === null)).toBe(true);
-  });
+  ])(
+    "refuses %s without treating it as native evidence",
+    async (mode) => {
+      const input = await fixture();
+      if (mode === "no-output" || mode === "extra-output") synthetic.mode = mode;
+      if (mode === "changed-source")
+        synthetic.mutate = async () => {
+          await writeFile(input.candidateSource.path, "changed source");
+        };
+      if (mode === "changed-staged-source")
+        synthetic.mutate = async (call) => {
+          const path = call.argv.find((arg) => arg.endsWith(".c"))!;
+          await writeFile(path, "changed staged source");
+        };
+      if (mode === "moved-parent")
+        synthetic.mutate = async () => {
+          const parent = dirname(input.candidateSource.path);
+          await rename(parent, `${parent}-moved`);
+          await mkdir(parent);
+          await writeFile(input.candidateSource.path, "/* synthetic candidate source */");
+        };
+      const result = await instrumentedBuild(input);
+      expect(result.builds.map((build) => build.result)).toEqual(["UNKNOWN", "UNKNOWN"]);
+      expect(result.builds.every((build) => build.loaded === null)).toBe(true);
+    },
+    30_000,
+  );
 });

@@ -1,35 +1,28 @@
 # ISS-041 divergence ledger
 
-Status: partial evidence only; full ISS-041 remains open. This is advisory
+Status: final composition, process-level tests, exact-head independent review
+and the complete Node 24 Linux bootstrap pass. Three-OS hosted execution remains
+the acceptance gate, so ISS-041 stays open. This is advisory
 context for the later ISS-026 independent review, not a correctness dependency
 or authority grant. The unchanged published protocol is
-`docs/architecture/routine-cycle.md`.
+`docs/architecture/routine-cycle.md` and the fixture census is recorded in
+`step-table.md`.
 
-| Protocol surface           | Current evidence and missing acceptance                                                                                                                                                                                                                        |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Configuration before cycle | Existing pure loader admits external roots; provenance uses the public parser. No state service or lease is implemented.                                                                                                                                       |
-| 2 project.snapshot         | Real branch and document-queue SDK fixtures produce configuration-bound project facts. No external provider or project CLI evidence is claimed.                                                                                                                |
-| Input for 3                | Real SDK policy readers freshly observe source after a bound COMPLETE snapshot; Canonical outputs include project-breaker-facts/v1. This is observer evidence only, not implementation of routine step 3, generic breaker state/history, or recovery.          |
-| 4 module.plan              | The public module descriptor/input/result seam binds actual COMPLETE observations, cycle intent, selected work ID and exact core/brief; normal no-action is a concrete public result. This is structural observer evidence, not authorized routine invocation. |
-| 1, 3, 5–15                 | Unimplemented. No ordinal receipts, typed skips, terminal cycle, process execution, review reduction, mutation, or journal exists here.                                                                                                                        |
-| Restart/reclaim            | Unimplemented. Exclusive state-directory creation is not a lease, crash recovery, or exactly-once side-effect protocol.                                                                                                                                        |
+| Protocol surface      | Current source and missing acceptance                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Configuration/session | Existing loader and create-once claim are composed under one caller-provided disposable root. This remains cooperative fixture evidence, not a production state service or recoverable lease.                                                                                                                                                                                                    |
+| 1–7                   | The final review path stages actual health, snapshot, policy/breaker, module, route, preflight and dispatch between physical STARTED/TERMINAL appends. NO_TRIP is still observation, never permission by itself.                                                                                                                                                                                 |
+| 8–11                  | The fixed direct child is split at launch/terminal boundaries; a distinct-author seeded subject produces an attempt, claimed review authority and reviewed disposition. Accepted reaches explicit COMPLETE; rejected reaches FOLLOW_UP/REPLAN.                                                                                                                                                   |
+| 12–15                 | The nonmutating path emits exact skips 12/13, actually deletes and rereads the one managed input allocation, binds closed process/stdio evidence, then follows the acyclic reduced-state/receipt terminal graph.                                                                                                                                                                                 |
+| Journal/restart       | A fixture-local retained-handle owner performs OPJ1 create-once, append, sync, read-back, strict parse and replay. The injection seam covers every event and owner boundary. Pre-cleanup killed owners are not adopted: restart may read/reduce but must refuse `SESSION_HELD` before effects. The sole complete-terminal/claim-absent row returns `CYCLE_ALREADY_TERMINAL` without acquisition. |
+| Remaining evidence    | The exact root commands, process-level fault matrix and manifest comparisons pass under the complete Node 24 Linux bootstrap. Windows/macOS/Linux hosted transcripts remain required before completion.                                                                                                                                                                                          |
 
-The executable gap census records `schemaVersion:unsupported` for
-`event-journal/v1`,
-and `cycle-receipt/v1`. Those records must come from
-their owning public contracts before full-cycle parser evidence is possible;
-existing unrelated schemas are never repurposed to fill the gap. A producer
-adding support should update this gap test and ledger with its actual evidence.
-ISS-002 now supplies pure structural `routine-step-skip/v1` parsing and digests;
-this fixture still executes no skips and has no route, journal, or cycle authority.
-ISS-002 also supplies the complete `worker-result-subject/v1` and
-`release-candidate-subject/v1` structural parsers and their wrapper-free
-`review-subject/v1` union. Empty placeholder records remain invalid. This fixture
-still supplies no actual terminal/result materialization, subject production,
-source admission, candidate certification, review, or full-cycle evidence.
-ISS-002 also supplies pure `review-request/v1` parsing and request/inline-packet
-identities. This fixture produces no review request and executes no review;
-attempt results, authority, and all runtime evidence joins remain unimplemented.
+The earlier unsupported census is closed by the reviewed public journal,
+reduced-state, cycle-receipt, reclaim, review, disposition and skip contracts.
+The fixture consumes those families by workspace package name and does not
+repurpose an unrelated schema, add a fifth journal family, or create a private
+history array. Release-candidate and release-only output arms remain outside
+this PROJECT review path.
 
 ISS-013 supplies the consumed SDK snapshot/current-policy observations and public
 configuration/facts binding. This fixture now consumes the public module input/result handoff; the SDK facts remain unchanged. The fixture copies the chosen row's actual
@@ -45,21 +38,28 @@ SDK pagination, threshold, hostile-input, and deadline coverage remains with its
 owner; project command success and full-cycle behavior remain
 outside this fixture's evidence.
 
-Future echo/review work must target a seeded earlier result from a distinct
-author in a later review cycle. An implementation cannot approve its own result
-in the same cycle. This partial packet implements neither role nor acceptance.
+The final path targets a seeded earlier result from a distinct author cycle and
+attempt. The current echo/review attempt cannot author that subject. Accepted
+authority remains fixture evidence and permits only the explicit nonmutating
+COMPLETE disposition; it is not effective production review authority.
 
-ISS-002 also supplies the complete structural review-attempt-result and claimed
-review-authority parsers, their canonical identities, and a pure supplied-record
-binding check. This fixture still has no actual review attempt, stable reduction,
-history admission, or effective authority; valid supplied claims prove none of them.
+ISS-002 supplies the structural review and journal parsers and pure supplied
+bindings. The final source supplies their actual fixture preimages and physical
+journal read-back, but valid supplied claims still prove no production history,
+session, review, mutation, process-tree or release authority.
 
-Missing full acceptance: joined three-OS cycle journals, every-boundary
-crash/resume matrix, frontier/rejecting-review/concurrent-lease refusals, and a
-complete ordinal census. Current tests cover only the partial consumer's
-records, malformed inputs, and bounded filesystem manifests. The ordinary
-root test command includes them for subsequent three-OS CI; no hosted result
-is asserted by this source ledger.
+Local execution now exercises the complete ordinal/evidence census,
+malformed-frontier, rejecting-review, target-mutation, attempt-collision and
+concurrent-lease controls, every-boundary process restart, unchanged manifests
+and the two root commands. Round415 independently passes the composition and
+Round416 passes the bounded test-only timing repairs. No hosted result is
+asserted by this source ledger; the three-OS PR and merged-main checks remain.
+
+No divergence from the published routine ordinal order or terminal graph was
+observed. The fixture-specific SESSION_HELD restart branch, seeded immutable
+review subject and direct-child process limit are declared scope bounds rather
+than silent changes to `routine-cycle.md`; they grant no generic lease recovery,
+repository history or process-tree authority.
 
 ## Bounded session increment
 
@@ -81,7 +81,8 @@ No lease renewal, production freshness/state admission, process execution,
 journal start/replay, other ordinals or full crash/resume acceptance is claimed.
 The fixture's unrenewed clock window does not grant runtime authority. Its
 new session tests are authored evidence pending host execution and independent
-review. The full-cycle gaps and both root capability placeholders remain.
+review. Those gaps were still open at this bounded-session increment; the final
+composition above owns the now-activated root commands.
 
 The root-replacement control distinguishes an executed replacement from an
 actual Windows `EPERM` rename denial while the claim is open. Executed replacement

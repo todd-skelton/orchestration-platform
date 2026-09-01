@@ -104,6 +104,29 @@ export function reduceFixtureReview(
   stdout: Uint8Array,
   stderr: Uint8Array,
 ) {
+  const attempt = observeFixtureReviewAttempt(
+    seed,
+    request,
+    plan,
+    launch,
+    terminal,
+    stdout,
+    stderr,
+  );
+  const authority = reduceFixtureReviewAuthority(seed, request, attempt);
+  return { request, attempt, authority };
+}
+
+/** Step-9 materialization only; it does not decide review authority. */
+export function observeFixtureReviewAttempt(
+  seed: ReviewSeed,
+  request: ReviewRequest,
+  plan: DispatchPlan,
+  launch: WorkerLaunchReceipt,
+  terminal: WorkerTerminalReceipt,
+  stdout: Uint8Array,
+  stderr: Uint8Array,
+) {
   if (
     canonicalJson(request.packet.subject) !== canonicalJson(seed.subject) ||
     !validateWorkerTerminalReceiptBinding(plan, launch, stdout, stderr, terminal).ok ||
@@ -149,14 +172,28 @@ export function reduceFixtureReview(
     terminalReceiptDigest: computeWorkerTerminalReceiptDigest(terminal),
   });
   if (!attempt.ok) throw new Error(attempt.issues.join(","));
-  const authority = validateReviewResultBinding(request, attempt.value, {
+  return attempt.value;
+}
+
+/** Step-10 fixed independent reduction over an already retained attempt. */
+export function reduceFixtureReviewAuthority(
+  seed: ReviewSeed,
+  request: ReviewRequest,
+  attempt: ReturnType<typeof observeFixtureReviewAttempt>,
+) {
+  const identities = {
+    packetDigest: computeReviewPacketDigest(request.packet),
+    requestDigest: computeReviewRequestDigest(request),
+    subjectDigest: computeWorkerResultSubjectDigest(seed.subject),
+  };
+  const authority = validateReviewResultBinding(request, attempt, {
     ...identities,
     outcome: {
-      attemptResultDigest: computeReviewAttemptResultDigest(attempt.value),
-      kind: accepted ? "accepted" : "rejected",
+      attemptResultDigest: computeReviewAttemptResultDigest(attempt),
+      kind: attempt.result.kind === "SWEEP_COMPLETE" ? "accepted" : "rejected",
     },
     schemaVersion: "review-authority/v1",
   });
   if (!authority.ok) throw new Error(authority.issues.join(","));
-  return { request, attempt: attempt.value, authority: authority.value };
+  return authority.value;
 }

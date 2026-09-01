@@ -67,6 +67,8 @@ describe("planned verification command execution census", () => {
             ["pnpm run harness:test", "pnpm run test:harness-workflow-mutations"].includes(
               command,
             )) ||
+          (issue === "ISS-041" &&
+            ["pnpm run skeleton:cycle", "pnpm run skeleton:negative-controls"].includes(command)) ||
           (issue === "ISS-022" &&
             [
               "pnpm run probe:portable-primitives",

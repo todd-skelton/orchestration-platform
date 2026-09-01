@@ -158,6 +158,11 @@ function validateCommandCensus(snapshot) {
       "ISS-006:test:harness-workflow-mutations",
       "vitest run test/conformance/workflow-structure.test.ts",
     ],
+    ["ISS-041:skeleton:cycle", "vitest run fixtures/walking-skeleton/test/final-cycle.test.ts"],
+    [
+      "ISS-041:skeleton:negative-controls",
+      "vitest run fixtures/walking-skeleton/test/final-cycle-negative-controls.test.ts fixtures/walking-skeleton/test/final-cycle-fault-matrix.test.ts",
+    ],
   ]);
   const implementedFilteredScripts = new Map([
     ["ISS-003:@orchestration-platform/cli:test", "pnpm --dir ../.. exec vitest run test/cli"],

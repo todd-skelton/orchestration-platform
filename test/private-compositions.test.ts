@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, test, vi } from "vitest";
@@ -35,6 +35,40 @@ async function hashes() {
 }
 
 describe("private composition build", () => {
+  test("production sources cannot import or export the fixture-only final cycle", async () => {
+    const files: string[] = [];
+    async function visit(path: string) {
+      for (const entry of await readdir(resolve(root, path), { withFileTypes: true })) {
+        const child = `${path}/${entry.name}`;
+        if (entry.isDirectory()) await visit(child);
+        else if (/\.(?:[cm]?[jt]s|json)$/.test(entry.name)) files.push(child);
+      }
+    }
+    for (const directory of ["packages", "adapters", "bootstrap", "modules"])
+      await visit(directory);
+    for (const path of files) {
+      const source = await readFile(resolve(root, path), "utf8");
+      expect(source, path).not.toMatch(
+        /fixtures[\\/]walking-skeleton|walking-skeleton[\\/](?:src[\\/])?(?:final-cycle|journal-owner)/,
+      );
+    }
+    const fixturePackage = JSON.parse(
+      await readFile(resolve(root, "fixtures/walking-skeleton/package.json"), "utf8"),
+    );
+    expect(fixturePackage).toMatchObject({ private: true, exports: {} });
+    expect(
+      (await readFile(resolve(root, "packages/journal/src/index.ts"), "utf8")).replace(
+        /\r\n/g,
+        "\n",
+      ),
+    ).toBe('export { commandHandlerRegistration } from "./command-handler.mjs";\n');
+    expect(
+      JSON.stringify(
+        JSON.parse(await readFile(resolve(root, "config/private-compositions.json"), "utf8")),
+      ),
+    ).not.toMatch(/walking-skeleton|final-cycle|journal-owner/);
+  });
+
   test("annotation cleanup retains runtime data and refuses private path values", async () => {
     const source = await readFile(buildScript, "utf8");
     const cleanup = source.slice(
