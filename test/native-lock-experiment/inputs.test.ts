@@ -564,6 +564,7 @@ describe("private composed preparation, synthetic evidence only", () => {
       // An added empty directory leaves its file census unchanged; headers still refuse it.
       else expect(faults.calls).toHaveLength(2);
     },
+    integrationTimeout,
   );
   for (const mutation of ["capture", "retained", "extra", "header", "stable", "cleanup"]) {
     test(
