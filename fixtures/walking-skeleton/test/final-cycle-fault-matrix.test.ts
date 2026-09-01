@@ -28,7 +28,7 @@ type Message = Readonly<{
   }>;
 }>;
 const checkout = resolve(import.meta.dirname, "../../.."),
-  childFile = resolve(import.meta.dirname, "final-cycle-fault-child.test.ts"),
+  childConfig = "fixtures/walking-skeleton/vitest.fault.config.ts",
   vitest = resolve(checkout, "node_modules/vitest/vitest.mjs"),
   roots: string[] = [];
 const marker = "@@ORCHESTRATION_ISS041_BOUNDARY@@";
@@ -174,7 +174,7 @@ function runChild(
       stderr: Buffer[] = [];
     const child = spawn(
       process.execPath,
-      [vitest, "run", childFile, "--reporter=dot", "--pool=forks", "--maxWorkers=1"],
+      [vitest, "run", "--config", childConfig, "--reporter=dot"],
       {
         cwd: checkout,
         env: {
