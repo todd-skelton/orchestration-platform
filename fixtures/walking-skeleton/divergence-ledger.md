@@ -1,7 +1,8 @@
 # ISS-041 divergence ledger
 
-Status: final composition source authored; independent tests, exact-head review
-and three-OS execution remain pending, so ISS-041 stays open. This is advisory
+Status: final composition, process-level tests, exact-head independent review
+and the complete Node 24 Linux bootstrap pass. Three-OS hosted execution remains
+the acceptance gate, so ISS-041 stays open. This is advisory
 context for the later ISS-026 independent review, not a correctness dependency
 or authority grant. The unchanged published protocol is
 `docs/architecture/routine-cycle.md` and the fixture census is recorded in
@@ -14,7 +15,7 @@ or authority grant. The unchanged published protocol is
 | 8–11                  | The fixed direct child is split at launch/terminal boundaries; a distinct-author seeded subject produces an attempt, claimed review authority and reviewed disposition. Accepted reaches explicit COMPLETE; rejected reaches FOLLOW_UP/REPLAN.                                                                                                                                                   |
 | 12–15                 | The nonmutating path emits exact skips 12/13, actually deletes and rereads the one managed input allocation, binds closed process/stdio evidence, then follows the acyclic reduced-state/receipt terminal graph.                                                                                                                                                                                 |
 | Journal/restart       | A fixture-local retained-handle owner performs OPJ1 create-once, append, sync, read-back, strict parse and replay. The injection seam covers every event and owner boundary. Pre-cleanup killed owners are not adopted: restart may read/reduce but must refuse `SESSION_HELD` before effects. The sole complete-terminal/claim-absent row returns `CYCLE_ALREADY_TERMINAL` without acquisition. |
-| Remaining evidence    | Independent vectors, process-level fault execution, exact manifests, root-command runs and Windows/macOS/Linux transcripts. Source text alone is not PASS.                                                                                                                                                                                                                                       |
+| Remaining evidence    | The exact root commands, process-level fault matrix and manifest comparisons pass under the complete Node 24 Linux bootstrap. Windows/macOS/Linux hosted transcripts remain required before completion.                                                                                                                                                                                          |
 
 The earlier unsupported census is closed by the reviewed public journal,
 reduced-state, cycle-receipt, reclaim, review, disposition and skip contracts.
@@ -47,10 +48,18 @@ bindings. The final source supplies their actual fixture preimages and physical
 journal read-back, but valid supplied claims still prove no production history,
 session, review, mutation, process-tree or release authority.
 
-Missing full acceptance is execution evidence: independent tests must exercise
-the complete ordinal/evidence census, malformed-frontier, rejecting-review and
+Local execution now exercises the complete ordinal/evidence census,
+malformed-frontier, rejecting-review, target-mutation, attempt-collision and
 concurrent-lease controls, every-boundary process restart, unchanged manifests
-and the two root commands. No hosted result is asserted by this source ledger.
+and the two root commands. Round415 independently passes the composition and
+Round416 passes the bounded test-only timing repairs. No hosted result is
+asserted by this source ledger; the three-OS PR and merged-main checks remain.
+
+No divergence from the published routine ordinal order or terminal graph was
+observed. The fixture-specific SESSION_HELD restart branch, seeded immutable
+review subject and direct-child process limit are declared scope bounds rather
+than silent changes to `routine-cycle.md`; they grant no generic lease recovery,
+repository history or process-tree authority.
 
 ## Bounded session increment
 
