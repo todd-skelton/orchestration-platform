@@ -246,6 +246,229 @@ function failedOpening(index) {
   return [...prefix, fact("CLOSE", { identity: prefix.at(-1).identity, nonInheritable: null })];
 }
 
+function successfulOpening() {
+  return openOperations.map((operation, index) =>
+    fact(operation, {
+      identity: index === 0 ? null : id,
+      nonInheritable: index === openOperations.length - 1 ? true : null,
+    }),
+  );
+}
+
+function readyFailure(facts, expected) {
+  const journal = measurement();
+  assert.throws(() =>
+    candidateReply(
+      journal,
+      "HOLDER",
+      { ...command("READY"), state: "FAILED", facts },
+      command("READY"),
+      id,
+    ),
+  );
+  assert.equal(journal.freeze(), expected);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        journal.events.filter((event) => event.kind === "CALL").map((event) => event.data),
+      ),
+    ),
+    facts,
+  );
+  return journal;
+}
+
+function failureProjection(journal) {
+  return journal.failures.map(({ result, reason }) => ({ result, reason }));
+}
+
+test("failed READY keeps valid native denial but missing identity evidence dominates", () => {
+  const failedIndex = 2;
+  const valid = failedOpening(failedIndex);
+  const validJournal = readyFailure(valid, "UNSUPPORTED");
+  assert.deepEqual(
+    validJournal.failures.map((entry) => entry.result),
+    ["UNSUPPORTED"],
+  );
+
+  const missingFirst = structuredClone(valid);
+  missingFirst[1].identity = null;
+  const missingJournal = readyFailure(missingFirst, "UNKNOWN");
+  assert.ok(
+    missingJournal.failures.some((entry) => entry.reason.includes("missing first successful")),
+  );
+  assert.ok(missingJournal.failures.some((entry) => entry.result === "UNSUPPORTED"));
+
+  const missingSuffix = structuredClone(valid);
+  for (const call of missingSuffix) if (call.operation !== "OPEN") call.identity = null;
+  const suffixJournal = readyFailure(missingSuffix, "UNKNOWN");
+  assert.ok(suffixJournal.failures.some((entry) => entry.result === "UNSUPPORTED"));
+
+  const missingClose = structuredClone(valid);
+  missingClose.at(-1).identity = null;
+  const closeJournal = readyFailure(missingClose, "UNKNOWN");
+  assert.ok(closeJournal.failures.some((entry) => entry.reason.includes("CLOSE identity")));
+  assert.ok(closeJournal.failures.some((entry) => entry.result === "UNSUPPORTED"));
+});
+
+test("failed READY identity lifetime distinguishes consistent mismatch from discontinuity", () => {
+  const valid = failedOpening(2);
+  const consistentMismatch = structuredClone(valid);
+  for (const call of consistentMismatch) if (call.identity !== null) call.identity = other;
+  const mismatchJournal = readyFailure(consistentMismatch, "VIOLATED");
+  assert.ok(mismatchJournal.failures.some((entry) => entry.result === "VIOLATED"));
+  assert.ok(mismatchJournal.failures.some((entry) => entry.result === "UNSUPPORTED"));
+  assert.ok(!mismatchJournal.failures.some((entry) => entry.reason.includes("discontinuity")));
+
+  const discontinuity = structuredClone(valid);
+  discontinuity[2].identity = other;
+  const discontinuityJournal = readyFailure(discontinuity, "UNKNOWN");
+  assert.ok(
+    discontinuityJournal.failures.some((entry) => entry.reason.includes("discontinuity")),
+  );
+  assert.ok(discontinuityJournal.failures.some((entry) => entry.result === "UNSUPPORTED"));
+
+  const premature = failedOpening(1);
+  premature[1].identity = other;
+  premature.at(-1).identity = other;
+  const prematureJournal = readyFailure(premature, "UNKNOWN");
+  assert.ok(prematureJournal.failures.some((entry) => entry.reason.includes("premature")));
+});
+
+test("failed READY validates handle and flag lifetimes before native error meaning", () => {
+  const valid = failedOpening(2);
+  for (let index = 1; index < valid.length - 1; index++) {
+    for (const nativeHandle of [null, "38"]) {
+      const mutant = structuredClone(valid);
+      mutant[index].nativeHandle = nativeHandle;
+      const journal = readyFailure(mutant, "UNKNOWN");
+      assert.ok(journal.failures.some((entry) => entry.reason.includes("handle lifetime")));
+      assert.ok(journal.failures.some((entry) => entry.result === "UNSUPPORTED"));
+    }
+  }
+  for (let index = 0; index < valid.length - 1; index++) {
+    const mutant = structuredClone(valid);
+    mutant[index].nonInheritable = true;
+    const journal = readyFailure(mutant, "UNKNOWN");
+    assert.ok(
+      journal.failures.some(
+        (entry) => entry.reason.includes("flag readback") || entry.reason.includes("OPEN snapshot"),
+      ),
+    );
+  }
+
+  const openPublishedHandle = [denied("OPEN", { nativeHandle: "37" })];
+  const journal = readyFailure(openPublishedHandle, "UNKNOWN");
+  assert.ok(journal.failures.some((entry) => entry.reason.includes("OPEN handle lifetime")));
+  assert.ok(journal.failures.every((entry) => entry.result === "UNKNOWN"));
+});
+
+test("all failed native slots classify stable denial separately from malformed error pairs", () => {
+  for (let index = 0; index < openOperations.length; index++) {
+    readyFailure(failedOpening(index), "UNSUPPORTED");
+
+    const unknownCode = failedOpening(index);
+    unknownCode[index].errorCode = "999999";
+    const unknownJournal = readyFailure(unknownCode, "UNKNOWN");
+    assert.ok(unknownJournal.failures.some((entry) => entry.reason.endsWith(":999999")));
+
+    const zeroCode = failedOpening(index);
+    zeroCode[index].errorCode = "0";
+    const zeroJournal = readyFailure(zeroCode, "UNKNOWN");
+    assert.ok(zeroJournal.failures.some((entry) => entry.reason.endsWith(":0")));
+  }
+
+  const misplacedContention = failedOpening(2);
+  misplacedContention[2].errorCode = windows
+    ? "33"
+    : String(constants.errno.EWOULDBLOCK ?? constants.errno.EAGAIN);
+  readyFailure(misplacedContention, "UNKNOWN");
+});
+
+test("cleanup failures remain ordered with snapshot and initial native failures", () => {
+  const base = failedOpening(2);
+  for (const [errorCode, expected] of [
+    [windows ? "5" : String(constants.errno.EACCES), "UNSUPPORTED"],
+    ["999999", "UNKNOWN"],
+  ]) {
+    const facts = structuredClone(base);
+    facts.at(-1).returnValue = windows ? "0" : "-1";
+    facts.at(-1).errorCode = errorCode;
+    const journal = readyFailure(facts, expected);
+    assert.deepEqual(
+      journal.failures.filter((entry) => entry.reason.includes(":IDENTIFY:")).length,
+      1,
+    );
+    assert.deepEqual(
+      journal.failures.filter((entry) => entry.reason.includes(":CLOSE:")).length,
+      1,
+    );
+
+    const missing = structuredClone(facts);
+    missing[1].identity = null;
+    const missingJournal = readyFailure(missing, "UNKNOWN");
+    assert.ok(missingJournal.failures.some((entry) => entry.result === "UNSUPPORTED"));
+    assert.ok(missingJournal.failures.some((entry) => entry.reason.includes(":CLOSE:")));
+  }
+});
+
+test("successful metadata and flag policy stops stay UNKNOWN without synthetic errno", () => {
+  const policyStops = windows ? [2, 3, 5] : [1, 2];
+  for (const lastIndex of policyStops) {
+    const prefix = openOperations.slice(0, lastIndex + 1).map((operation, index) =>
+      fact(operation, {
+        identity: index === 0 ? null : id,
+        nonInheritable: null,
+      }),
+    );
+    if (lastIndex === openOperations.length - 1) prefix.at(-1).nonInheritable = false;
+    const facts = [...prefix, fact("CLOSE", { identity: id, nonInheritable: null })];
+    const journal = readyFailure(facts, "UNKNOWN");
+    assert.ok(journal.failures.some((entry) => entry.reason.includes("policy refusal")));
+    assert.ok(journal.failures.every((entry) => !entry.reason.endsWith(":0")));
+
+    const missing = structuredClone(facts);
+    missing[1].identity = null;
+    readyFailure(missing, "UNKNOWN");
+  }
+
+  if (!windows) {
+    const inconsistent = successfulOpening();
+    inconsistent.at(-1).nonInheritable = false;
+    const facts = [...inconsistent, fact("CLOSE", { identity: id, nonInheritable: null })];
+    const journal = readyFailure(facts, "UNKNOWN");
+    assert.ok(journal.failures.some((entry) => entry.reason.includes("inconsistent final flag")));
+  }
+});
+
+test(
+  "Windows canonical-equivalent failed-prefix mutations preserve canonical outcomes",
+  { skip: !windows },
+  () => {
+    const pairs = [];
+    const w3 = failedOpening(3);
+    pairs.push([w3.toSpliced(1, 1), failedOpening(2), "W3 delete IDENTIFY -> W2"]);
+    const w2 = failedOpening(2);
+    pairs.push([w2.toSpliced(1, 0, structuredClone(w2[1])), failedOpening(3), "W2 duplicate IDENTIFY -> W3"]);
+    const w5 = failedOpening(5);
+    pairs.push([w5.toSpliced(4, 1), failedOpening(4), "W5 delete FLAGS setter -> W4"]);
+    const swapped = structuredClone(w3);
+    [swapped[1], swapped[2]] = [swapped[2], swapped[1]];
+    pairs.push([swapped, w3, "identical IDENTIFY swap"]);
+
+    for (const [mutant, canonical, name] of pairs) {
+      assert.deepEqual(mutant, canonical, `${name}: visible input`);
+      const mutantJournal = readyFailure(mutant, "UNSUPPORTED");
+      const canonicalJournal = readyFailure(canonical, "UNSUPPORTED");
+      assert.deepEqual(
+        failureProjection(mutantJournal),
+        failureProjection(canonicalJournal),
+        `${name}: outcome`,
+      );
+    }
+  },
+);
+
 test("READY context and state refuse before an unrelated access-denied error can normalize", () => {
   const opening = fact("OPEN", { nonInheritable: null });
   const closing = fact("CLOSE", { identity: null, nonInheritable: null });
@@ -364,7 +587,7 @@ test("candidate READY validates actual fact shapes; candidate verdict and replac
   const reply = {
     ...command("READY"),
     state: "OPEN",
-    facts: openOperations.map((operation) => fact(operation)),
+    facts: successfulOpening(),
   };
   assert.equal(candidateReply(measurement(), "HOLDER", reply, command("READY"), id), "37");
   assert.throws(() =>

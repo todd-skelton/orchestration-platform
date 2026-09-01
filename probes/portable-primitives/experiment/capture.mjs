@@ -69,7 +69,7 @@ export function retainCalls(journal, actor, value) {
   return facts;
 }
 
-function requireSuccessful(journal, actor, facts) {
+function retainNativeFailures(journal, actor, facts) {
   const unsupported =
     process.platform === "win32"
       ? ["1", "5", "50"]
@@ -89,6 +89,10 @@ function requireSuccessful(journal, actor, facts) {
         `${actor}:${fact.operation}:${fact.errorCode}`,
       );
     }
+}
+
+function requireSuccessful(journal, actor, facts) {
+  retainNativeFailures(journal, actor, facts);
   journal.assert();
 }
 
@@ -112,17 +116,10 @@ function liveFacts(journal, actor, facts, operations, expectedIdentity, nativeHa
   return requireLiveFacts(facts, operations, expectedIdentity, nativeHandle);
 }
 
-function failedOpenShape(facts) {
+function failedOpenStructure(facts) {
   const first = facts[0];
-  if (first.operation !== "OPEN" || first.identity !== null || first.nonInheritable !== null)
-    return false;
-  if (!successful(first))
-    return (
-      facts.length === 1 &&
-      first.nativeHandle === null &&
-      first.identity === null &&
-      first.nonInheritable === null
-    );
+  if (first.operation !== "OPEN") return false;
+  if (!successful(first)) return facts.length === 1;
   // open_fixed inspects once and closes once when inspection fails. A policy
   // refusal can retain successful metadata returns; no synthetic call/error is
   // added by the native source. Earlier inspection calls must have succeeded.
@@ -133,8 +130,7 @@ function failedOpenShape(facts) {
     prefix.length < 2 ||
     prefix.length > openOperations.length ||
     !operationsAre(prefix, openOperations.slice(0, prefix.length)) ||
-    !prefix.slice(0, -1).every(successful) ||
-    prefix.some((fact) => fact.nativeHandle !== first.nativeHandle)
+    !prefix.slice(0, -1).every(successful)
   )
     return false;
   const last = prefix.at(-1);
@@ -145,6 +141,81 @@ function failedOpenShape(facts) {
     (last.operation === "IDENTIFY" && (process.platform !== "win32" || prefix.length >= 3)) ||
     (prefix.length === openOperations.length && last.nonInheritable === false)
   );
+}
+
+function retainFailedOpenSnapshots(journal, actor, facts, expectedIdentity) {
+  const first = facts[0];
+  const prefix = successful(first) ? facts.slice(0, -1) : facts;
+  const close = successful(first) ? facts.at(-1) : null;
+  const openedHandle = successful(first) ? first.nativeHandle : null;
+  let acquiredIdentity = null;
+  let identityUnavailable = false;
+  let identityMismatchRecorded = false;
+
+  if (first.identity !== null || first.nonInheritable !== null)
+    journal.fail("UNKNOWN", `${actor}:OPEN snapshot unavailable fields`);
+  if (
+    successful(first)
+      ? openedHandle === null || first.returnValue !== openedHandle
+      : first.nativeHandle !== null
+  )
+    journal.fail("UNKNOWN", `${actor}:OPEN handle lifetime`);
+
+  for (const [index, fact] of prefix.entries()) {
+    if (index > 0 && fact.nativeHandle !== openedHandle)
+      journal.fail("UNKNOWN", `${actor}:${fact.operation}:handle lifetime`);
+
+    const firstSuccessfulIdentification =
+      fact.operation === "IDENTIFY" && successful(fact) && acquiredIdentity === null;
+    if (firstSuccessfulIdentification) {
+      if (fact.identity === null) {
+        identityUnavailable = true;
+        journal.fail("UNKNOWN", `${actor}:missing first successful identity`);
+      } else acquiredIdentity = fact.identity;
+    } else if (acquiredIdentity === null) {
+      if (fact.identity !== null)
+        journal.fail("UNKNOWN", `${actor}:${fact.operation}:premature native identity`);
+    } else if (fact.identity === null) {
+      journal.fail("UNKNOWN", `${actor}:${fact.operation}:missing native identity`);
+    } else if (!sameIdentity(fact.identity, acquiredIdentity)) {
+      journal.fail("UNKNOWN", `${actor}:${fact.operation}:native identity discontinuity`);
+    }
+
+    if (
+      acquiredIdentity !== null &&
+      !identityMismatchRecorded &&
+      !sameIdentity(acquiredIdentity, expectedIdentity)
+    ) {
+      journal.fail("VIOLATED", `${actor}:native identity changed`);
+      identityMismatchRecorded = true;
+    }
+    if (identityUnavailable && fact.identity !== null)
+      journal.fail("UNKNOWN", `${actor}:${fact.operation}:late native identity`);
+
+    const finalReadback =
+      fact.operation === "FLAGS" && index === openOperations.length - 1 && successful(fact);
+    if (finalReadback) {
+      if (typeof fact.nonInheritable !== "boolean")
+        journal.fail("UNKNOWN", `${actor}:missing final flag readback`);
+      else if (
+        process.platform !== "win32" &&
+        fact.nonInheritable !== ((BigInt(fact.returnValue) & 1n) !== 0n)
+      )
+        journal.fail("UNKNOWN", `${actor}:inconsistent final flag readback`);
+    } else if (fact.nonInheritable !== null)
+      journal.fail("UNKNOWN", `${actor}:${fact.operation}:premature flag readback`);
+  }
+
+  if (close !== null) {
+    if (close.nativeHandle !== null || close.nonInheritable !== null)
+      journal.fail("UNKNOWN", `${actor}:CLOSE handle/flag lifetime`);
+    if (acquiredIdentity === null) {
+      if (close.identity !== null) journal.fail("UNKNOWN", `${actor}:CLOSE premature identity`);
+    } else if (close.identity === null || !sameIdentity(close.identity, acquiredIdentity))
+      journal.fail("UNKNOWN", `${actor}:CLOSE identity discontinuity`);
+    if (identityUnavailable && close.identity !== null)
+      journal.fail("UNKNOWN", `${actor}:CLOSE late native identity`);
+  }
 }
 
 export function expectLock(journal, actor, value, expectedIdentity, nativeHandle, expected) {
@@ -174,11 +245,13 @@ export function candidateReply(journal, actor, value, command, expectedIdentity,
   if (command.name === "READY") {
     if (reply.state === "OPEN" && operationsAre(facts, openOperations) && facts.every(successful))
       return liveFacts(journal, actor, facts, openOperations, expectedIdentity);
-    if (reply.state !== "FAILED" || !failedOpenShape(facts))
+    if (reply.state !== "FAILED" || !failedOpenStructure(facts))
       journal.stop("UNKNOWN", `${actor}:invalid READY operation sequence/state`);
+    retainFailedOpenSnapshots(journal, actor, facts, expectedIdentity);
     if (facts.length > 1 && successful(facts.at(-2)))
       journal.fail("UNKNOWN", `${actor}:READY metadata/flags policy refusal`);
-    requireSuccessful(journal, actor, facts);
+    retainNativeFailures(journal, actor, facts);
+    journal.assert();
     journal.stop("UNKNOWN", `${actor}:missing successful READY`);
   }
   if (command.name === "ACQUIRE") {
