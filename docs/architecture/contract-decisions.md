@@ -3059,9 +3059,21 @@ The diagnostic report has exactly:
 | `coordinates` | `{repositoryId,runId,runAttempt,workflowRevision,candidateRevision,jobId,operatingSystem,architecture,nodeVersion,nodeModulesVersion,nodeNapiVersion}`; identities equal the stable plan/provider/actual process inputs, OS is `LINUX|MACOS|WINDOWS` |
 | `builds` | Two records in `STABLE_WITNESS,CANDIDATE_BINDING` order, each `{role,revision,inputs,argv,toolchain,outputs,loaded,result}`; inputs/outputs/loaded are sorted `{path,byteLength,sha256}` arrays binding retained files; `loaded` is exactly that role's `.node` output; `toolchain` is `{compilerPath,compilerVersion,sdkVersion}` from stable capture; result is `BUILT|UNSUPPORTED|UNKNOWN`; unavailable inputs/argv/toolchain/outputs/loaded are null, never invented; role/revision remain bound |
 | `custody` | `{rootPath,leafName,initialIdentity,finalIdentity,initialByteHex,finalByteHex}`; leaf is `native-lock`, successful identities match, bytes are `41`; initial/final null is permitted only with the corresponding missing-evidence result |
-| `cases` | Four ordered `{caseId,events,result}` records, with exactly the case IDs above; an unexecuted row has `events:[]` and `result:"UNKNOWN"`, except a verified unsupported build/prerequisite propagates `UNSUPPORTED` without inventing an observation |
-| `controls` | Ordered `{controlId,refused}` records for the finite census below; `refused` is Boolean, never a supplied PASS verdict |
+| `cases` | Four ordered `{caseId,events,result}` records, with exactly the case IDs above and result `OBSERVED|VIOLATED|UNSUPPORTED|UNKNOWN`; an unexecuted row has `events:[]` and result `UNKNOWN`, except a verified unsupported build/prerequisite propagates `UNSUPPORTED` without inventing an observation |
+| `controls` | Twelve ordered `{controlId,refused,result}` records for the finite census below. The closed arms are `{refused:true,result:"REFUSED"}`, `{refused:false,result:"VIOLATED"}`, `{refused:null,result:"UNSUPPORTED"}`, and `{refused:null,result:"UNKNOWN"}`; no other pairing is valid |
 | `result` | Stable recomputed `OBSERVED|VIOLATED|UNSUPPORTED|UNKNOWN`; even `OBSERVED` selects nothing |
+
+`REFUSED` is the control-local success word and does not mean report refusal.
+It is available only after the named mutant or interception fixture actually
+reaches the stable guard and retained evidence proves rejection. `VIOLATED`
+means that executed control was accepted. `UNSUPPORTED` means the control did
+not run because stable evidence classifies one of its exact prerequisites as
+unsupported under the fixed OS vocabulary. `UNKNOWN` means the control did not
+run or complete and its exact prerequisite or outcome cannot be established.
+Neither unavailable arm claims that a guard refused anything. Build rows use
+`BUILT|UNSUPPORTED|UNKNOWN`; case and per-OS report rows use
+`OBSERVED|VIOLATED|UNSUPPORTED|UNKNOWN`; these vocabularies are not
+interchangeable.
 
 Every retained-file path is artifact-relative, unique and free of empty/dot/
 parent components; links and path escape refuse. The archive manifest covers
@@ -3113,8 +3125,10 @@ identity/range/flag mismatch or a valid `CONTENDED` after release/death is
 
 The whole report/reduction uses precedence
 `UNKNOWN > VIOLATED > UNSUPPORTED > OBSERVED`, retaining every individual
-failure even when a higher-precedence failure exists. `OBSERVED` requires all
-four rows observed, every refusal control refused and intact identity/build
+failure even when a higher-precedence failure exists. A control maps
+`UNKNOWN`, `VIOLATED`, and `UNSUPPORTED` to the same report result; `REFUSED`
+contributes no failure. `OBSERVED` requires all four rows observed, all twelve
+controls `REFUSED`, and intact identity/build
 evidence in that OS report. The final inline reduction has exactly
 `{experiment,reports,providerEvidence,result}`; reports are the complete three
 records in `LINUX,MACOS,WINDOWS` order (a missing report is a null slot and
@@ -3124,7 +3138,8 @@ parsed provider/workflow/manifest inputs, and experiment has the same literal
 identifier. The verifier rereads/revalidates those bytes rather than trusting
 their hashes. Its `OBSERVED` additionally requires the complete same-attempt
 three-OS/provider census and equal revisions. A well-formed
-control that is not refused is `VIOLATED`; a missing/unreadable control is
+executed control with `refused:false` is `VIOLATED`; an explicit unavailable
+arm maps as above, while a missing, malformed or unreadable control is
 `UNKNOWN`. No candidate-normalized result is accepted.
 
 The bounded control census is exactly the following order on each OS. Stable
@@ -3135,6 +3150,12 @@ The first three use stable-authored JS call-interception fixtures and real
 witness calls; all others mutate captured inputs to the actual guard/parser.
 They add no alternate native binary, intentional inheritance or additional
 holder-death run. Do not repeat the death case to find a favorable result.
+If the witness, candidate binding, custody, or other exact prerequisite needed
+by one of the first three controls is unavailable, do not run that control and
+emit its nullable `UNSUPPORTED` or `UNKNOWN` arm from the stable prerequisite
+evidence. Evaluate each later captured-input control independently; one native
+unavailability does not erase a stable guard result that can still be executed
+and retained.
 
 | Control ID | Cheapest discriminating evidence / required refusal |
 | --- | --- |
@@ -3155,15 +3176,19 @@ These mutation rows also cover their named structural variants deterministically
 in one test invocation; no fuzz campaign, transfer mechanism or new security
 framework is required. They must fail if their corresponding guard is deleted.
 An incomplete control census cannot yield `OBSERVED`.
-Retained control inputs and observed rejection transcripts have fixed paths
+Executed control inputs and every control observation use the fixed paths
 `controls/<controlId>/input.json` and `controls/<controlId>/observation.json`;
 case stdout/stderr use `transcripts/<caseId>/<actor>.stdout` and `.stderr` for
 that case's actual child actors. The stable collector derives this finite
 file census from the report, builds and fixtures, hashes every retained file
 using the existing artifact manifest, and refuses missing/extra files. A
-`refused` Boolean without its replayable guard input or real witness transcript
-is missing evidence. Guard replay uses stable code and data only; native
-process measurements are not rerun by the reducer.
+`REFUSED` or `VIOLATED` row requires both fixed control files and its replayable
+guard input or real witness transcript. An unavailable row requires its
+canonical `observation.json`, forbids `input.json`, and is accepted only when
+the report's stable prerequisite facts independently derive the identical
+`UNSUPPORTED` or `UNKNOWN` result. Any other presence pattern is `UNKNOWN`.
+Guard replay uses stable code and data only; native process measurements are not
+rerun by the reducer.
 
 #### Disposition, proportionality, and stop boundary
 
