@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "finding-census-fixtures/v1",
+  "governingDecision": {
+    "source": "external:github-issue-182/comment-5481438849",
+    "createdAt": "2026-08-31T16:41:09Z",
+    "url": "https://github.com/todd-skelton/orchestration-platform/issues/182#issuecomment-5481438849",
+    "utf8Sha256": "85932a7f92d384eb35c38c868ec1d0a65eb9c31e2999fe2fef68cc1dcf7a95b6",
+    "excerpt": "Ruling under the governing admission authority — Decision 182 resolved: KEEP\nPARKED at absolute attempt 8.",
+    "body": "Ruling under the governing admission authority — Decision 182 resolved: KEEP\nPARKED at absolute attempt 8.\n\nThe corrected plan (SHA256 d4c76ad3…) and its independent semantic PASS\n(SHA256 597fcb3e…) are accepted as the durable, binding remedy specification.\nNo source work is admitted now. Unpark condition, replacing prose intent with\na concrete gate: when (a) the ISS-022 native-inputs coordinator has landed on\nmain and (b) a hosted native-compilation path for the lock experiment is\nregistered and scheduled, a one-comment confirmation on this issue admits\nexactly the already-reviewed attempts 9 and 10 under the same hashes, same\nfootprint, same absolute endpoint of ten — no replanning, no new plan review,\nno attempt reset. Spend record: consumed [X USD] against ceiling [Y USD].\nThe B1 finding class is filed into the ISS-046 census now, from the existing\nreceipts, without unparking this packet."
+  },
+  "historicalPair": {
+    "id": "round-1-op-pt-011",
+    "classId": "missing-negative-controls",
+    "sourceRound": "planning/pressure-tests/2026-08-15-round-1.md",
+    "rowUtf8Sha256": "a8f59b8808202a4045e6c7d717e752a2344849bf8a59f260e2c1df735f544273",
+    "offender": "OP-PT-011 several acceptance methods were non-discriminating",
+    "repaired": "Replaced samples and vibes with complete censuses, exact thresholds, golden artifacts, and negative controls."
+  },
+  "mutableProjection": [
+    {
+      "id": "authority-claim-on-nonauthoritative-input",
+      "occurrenceCount": 3
+    },
+    {
+      "id": "evidence-does-not-discriminate-criterion",
+      "occurrenceCount": 4
+    },
+    {
+      "id": "fail-open-missing-snapshot-evidence",
+      "occurrenceCount": 1
+    },
+    {
+      "id": "missing-negative-controls",
+      "occurrenceCount": 4
+    },
+    {
+      "id": "scope-fence-drift",
+      "occurrenceCount": 3
+    }
+  ],
+  "grammarNegatives": [
+    "No attack is provided.",
+    "Do not attack the census.",
+    "Attack.",
+    "Attack",
+    "Attack no target.",
+    "Attack nothing.",
+    "Attack the empty target.",
+    "Replace nothing.",
+    "Attack is not provided.",
+    "Remove without a target.",
+    "Attack it.",
+    "Review the attack surface."
+  ],
+  "censusMutants": [
+    "COORDINATED_CLASS_DELETION",
+    "COORDINATED_OCCURRENCE_DELETION",
+    "MISSING_ROUND",
+    "MISSED_CITED_CLASS",
+    "MISSING_RECURRING_DISPOSITION",
+    "WRONG_RECURRENCE_COUNT",
+    "B1_DUPLICATION"
+  ],
+  "fixtureMutants": [
+    "STALE_ROW_DIGEST",
+    "UNRELATED_REPAIRED_FORM",
+    "STALE_DECISION_TIMESTAMP",
+    "ADMIT_DECISION_AND_REHASH"
+  ]
+}

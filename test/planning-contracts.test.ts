@@ -197,6 +197,14 @@ describe("planning contract", () => {
       },
     ],
     [
+      "removed ISS-046 finding-census slot",
+      (snapshot: PlanningSnapshot) => {
+        snapshot.capabilitySlots = snapshot.capabilitySlots.filter(
+          (slot) => slot.issue !== "ISS-046" || slot.name !== "planning%3Afinding-census-check.mjs",
+        );
+      },
+    ],
+    [
       "duplicate verification capability owner",
       (snapshot: PlanningSnapshot) => {
         snapshot.issueDrafts["ISS-040"] = snapshot.issueDrafts["ISS-040"]!.replace(
