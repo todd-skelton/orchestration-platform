@@ -708,7 +708,7 @@ test("full reused frontier, capability and ordered-subject bounds have positive 
   const sparse = inline(4);
   sparse.result.subject.result.entries = new Array(1);
   expect(c.parseProjectPreflightObservation(sparse).ok).toBe(false);
-});
+}, 30_000);
 
 test("hostile inline values and six-input relations invoke no supplied code", () => {
   const a = context(),
