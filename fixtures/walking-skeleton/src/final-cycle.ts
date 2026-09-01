@@ -15,7 +15,6 @@ import {
   computeModuleActionPlanDigest,
   computeModulePlanInputDigest,
   computeProjectPreflightDigest,
-  computeProjectPreflightObservationDigest,
   computeEventJournalPrefixDigest,
   computeReducedStateDigest,
   computeReviewAttemptResultDigest,
@@ -32,7 +31,6 @@ import {
   parseCycleReceipt,
   parseDispositionInput,
   parseFollowUpCycleRequest,
-  parseProjectPreflightObservation,
   parseReviewRequest,
   parseRoutineStepSkip,
   serializeContract,
@@ -41,7 +39,6 @@ import {
   validateDispatchPlanBinding,
   validateFollowUpCycleRequestBinding,
   validateModulePlanBinding,
-  validateProjectPreflightBinding,
   validateResourceReclaimReceiptBinding,
   validateReviewResultBinding,
   validateRouteSelectionBinding,
@@ -58,6 +55,7 @@ import {
   type WorkerLaunchReceipt,
 } from "@orchestration-platform/contracts";
 import type { CurrentPolicyReader } from "../../../packages/adapter-sdk/src/current-policy.js";
+import { observeWorkerResultPreflight } from "../../../packages/adapter-sdk/src/preflight.js";
 import type { SnapshotClocks, SnapshotReader } from "../../../packages/adapter-sdk/src/snapshot.js";
 import type {
   ConfigurationHostAdapter,
@@ -453,40 +451,18 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
 
     const step6 = journal.step(6, computeRouteSelectionDigest(route));
     await journal.start(step6);
-    const currentSeed = await readReviewSeed(roots.projectRoot);
-    const preflightObservation = required(
-      parseProjectPreflightObservation({
-        adapterConfigurationDigest: canonicalDigest(moduleInput.adapterConfiguration),
-        kind: "REVIEW",
-        observationId: nextIdentity(),
-        observedAt: input.clocks.wallNow(),
-        result:
-          computeWorkerResultSubjectDigest(currentSeed.subject) ===
-          computeWorkerResultSubjectDigest(seed.subject)
-            ? { kind: "AVAILABLE", subject: currentSeed.subject }
-            : { kind: "UNKNOWN" },
-      }),
+    const observedPreflight = await observeWorkerResultPreflight(
+      moduleInput,
+      action,
+      echoMapping,
+      route,
+      async () => (await readReviewSeed(roots.projectRoot)).subject,
+      nextIdentity,
+      input.clocks,
     );
-    const preflight = required(
-      validateProjectPreflightBinding(
-        moduleInput,
-        action,
-        echoMapping,
-        route,
-        preflightObservation,
-        {
-          actionPlanDigest: computeModuleActionPlanDigest(action),
-          observationDigest: computeProjectPreflightObservationDigest(preflightObservation),
-          outcome:
-            preflightObservation.kind === "REVIEW" &&
-            preflightObservation.result.kind === "AVAILABLE"
-              ? { kind: "ELIGIBLE" }
-              : { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" },
-          routeDigest: computeRouteSelectionDigest(route),
-          schemaVersion: "project-preflight/v1",
-        },
-      ),
-    );
+    if (!observedPreflight.ok) throw new Error(`fixture preflight ${observedPreflight.code}`);
+    const preflightObservation = observedPreflight.observation,
+      preflight = observedPreflight.preflight;
     await journal.terminal(step6, {
       action,
       input: moduleInput,

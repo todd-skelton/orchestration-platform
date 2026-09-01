@@ -7,6 +7,7 @@ import {
   readdir,
   realpath,
   rm,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -45,6 +46,33 @@ const parsed = <T extends c.ContractRecord>(result: c.ParseResult<T>): T => {
   if (!result.ok) throw new Error(result.issues.join(","));
   return result.value;
 };
+const downstreamFiles = [
+  "action-disposition.json",
+  "cycle-receipt.json",
+  "dispatch-plan.json",
+  "dispatch-session-health.json",
+  "echo-input.bin",
+  "echo-ownership.json",
+  "follow-up-cycle-request.json",
+  "rendered-input.bin",
+  "resource-reclaim-receipt.json",
+  "review-attempt.json",
+  "review-authority.json",
+  "review-expected.bin",
+  "review-procedure.bin",
+  "review-request.json",
+  "routine-step-skip-12.json",
+  "routine-step-skip-13.json",
+  "seed-artifact.bin",
+  "stderr.bin",
+  "stdout.bin",
+  "worker-launch.json",
+  "worker-terminal.json",
+] as const;
+
+function expectNoDownstreamFiles(names: readonly string[]) {
+  for (const name of downstreamFiles) expect(names).not.toContain(name);
+}
 
 async function fixture(options: { artifact?: Buffer; malformed?: boolean; id: number }) {
   const disposableRoot = await realpath(
@@ -355,6 +383,163 @@ test("fixture journal owner proves idempotence and refuses retained partial or c
   });
   expect(await readFile(path)).toEqual(retained);
 });
+
+test("step-6 valid target change is retained and refuses before dispatch or effects", async () => {
+  const f = await fixture({ id: 34 }),
+    projectRoot = f.input.invocation.flags.projectRoot!,
+    changedArtifact = Buffer.from("changed before review preflight\n"),
+    changedSubject = parsed(
+      c.parseWorkerResultSubject({
+        ...f.subject,
+        result: {
+          entries: [{ contentDigest: hash(changedArtifact), kind: "ARTIFACT" }],
+          kind: "ORDERED_PATCH_ARTIFACTS",
+        },
+      }),
+    ),
+    execution = vi.spyOn(echoWorker, "runEcho");
+  const result = await consumeFinalReviewCycle({
+    ...f.input,
+    boundary: async ({ boundary }) => {
+      if (boundary !== "STARTED:6") return;
+      await writeFile(join(projectRoot, "fixture-review-artifact.bin"), changedArtifact);
+      await writeFile(
+        join(projectRoot, "fixture-review-subject.json"),
+        c.canonicalJson(changedSubject),
+      );
+    },
+  });
+  expect(result).toMatchObject({
+    boundary: "TERMINAL:6",
+    cleanup: "RETAINED_UNKNOWN",
+    ok: false,
+    reason: "CYCLE_REFUSED",
+  });
+  expect(execution).not.toHaveBeenCalled();
+  const p = await physical(f.stateRoot);
+  expect(p.journal.events).toHaveLength(12);
+  const output = p.journal.events.at(-1)!.output as Row;
+  expect(output).toMatchObject({
+    kind: "PREFLIGHT",
+    observation: { kind: "REVIEW", result: { kind: "AVAILABLE", subject: changedSubject } },
+    preflight: { outcome: { kind: "REFUSED", reason: "TARGET_CHANGED" } },
+  });
+  expect(
+    c.validateProjectPreflightBinding(
+      output.input,
+      output.action,
+      output.mapping,
+      output.route,
+      output.observation,
+      output.preflight,
+    ).ok,
+  ).toBe(true);
+  expect(
+    c.parseCanonicalContractBytes(
+      "worker-result-subject/v1",
+      await readFile(join(f.stateRoot, "preflight-review-subject.json")),
+    ),
+  ).toEqual({ ok: true, value: changedSubject });
+  expect(
+    JSON.parse(await readFile(join(f.stateRoot, "preflight-review-observation.json"), "utf8")),
+  ).toEqual(output.observation);
+  expect(JSON.parse(await readFile(join(f.stateRoot, "project-preflight.json"), "utf8"))).toEqual(
+    output.preflight,
+  );
+  expectNoDownstreamFiles(await readdir(f.stateRoot));
+}, 60_000);
+
+test("step-6 malformed or absent current source retains typed uncertainty without effects", async () => {
+  const cases: ReadonlyArray<readonly [number, (subjectPath: string) => Promise<void>]> = [
+    [35, async (path) => writeFile(path, "not canonical json\n")],
+    [36, async (path) => unlink(path)],
+  ];
+  const execution = vi.spyOn(echoWorker, "runEcho");
+  for (const [id, mutate] of cases) {
+    const f = await fixture({ id }),
+      subjectPath = join(f.input.invocation.flags.projectRoot!, "fixture-review-subject.json");
+    const result = await consumeFinalReviewCycle({
+      ...f.input,
+      boundary: async ({ boundary }) => {
+        if (boundary === "STARTED:6") await mutate(subjectPath);
+      },
+    });
+    expect(result).toMatchObject({
+      boundary: "TERMINAL:6",
+      cleanup: "RETAINED_UNKNOWN",
+      ok: false,
+      reason: "CYCLE_REFUSED",
+    });
+    const p = await physical(f.stateRoot);
+    expect(p.journal.events).toHaveLength(12);
+    const output = p.journal.events.at(-1)!.output as Row;
+    expect(output).toMatchObject({
+      kind: "PREFLIGHT",
+      observation: { kind: "REVIEW", result: { kind: "UNKNOWN" } },
+      preflight: { outcome: { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" } },
+    });
+    expect(
+      c.validateProjectPreflightBinding(
+        output.input,
+        output.action,
+        output.mapping,
+        output.route,
+        output.observation,
+        output.preflight,
+      ).ok,
+    ).toBe(true);
+    const names = await readdir(f.stateRoot);
+    expect(
+      JSON.parse(await readFile(join(f.stateRoot, "preflight-review-observation.json"), "utf8")),
+    ).toEqual(output.observation);
+    expect(JSON.parse(await readFile(join(f.stateRoot, "project-preflight.json"), "utf8"))).toEqual(
+      output.preflight,
+    );
+    expect(names).not.toContain("preflight-review-subject.json");
+    expectNoDownstreamFiles(names);
+  }
+  expect(execution).not.toHaveBeenCalled();
+}, 60_000);
+
+test.each(["invalid", "reused"] as const)(
+  "step-6 %s observation identity fails before terminal output or effects",
+  async (mode) => {
+    const f = await fixture({ id: mode === "invalid" ? 37 : 38 });
+    let observationId = "not-a-uuid";
+    const execution = vi.spyOn(echoWorker, "runEcho");
+    const result = await consumeFinalReviewCycle({
+      ...f.input,
+      boundary: async ({ boundary }) => {
+        if (boundary !== "STARTED:6" || mode !== "reused") return;
+        const journal = parsed(
+          c.parseEventJournalBytes(await readFile(join(f.stateRoot, "cycle.opj"))),
+        );
+        observationId = (journal.events[3]!.output as Row).facts.observationId as string;
+      },
+      identity: () => observationId,
+    });
+    expect(result).toMatchObject({
+      boundary: "STARTED:6",
+      cleanup: "RETAINED_UNKNOWN",
+      ok: false,
+      reason: "CYCLE_REFUSED",
+    });
+    expect(execution).not.toHaveBeenCalled();
+    const p = await physical(f.stateRoot);
+    expect(p.journal.events).toHaveLength(11);
+    expect(p.journal.events.at(-1)).toMatchObject({
+      output: null,
+      phase: "STARTED",
+      step: { ordinal: "6" },
+    });
+    const names = await readdir(f.stateRoot);
+    expect(names).not.toContain("preflight-review-observation.json");
+    expect(names).not.toContain("preflight-review-subject.json");
+    expect(names).not.toContain("project-preflight.json");
+    expectNoDownstreamFiles(names);
+  },
+  60_000,
+);
 
 test("post-child target mutation records only UNKNOWN authority and cannot use the stale accepted seed", async () => {
   const f = await fixture({ id: 40 });
