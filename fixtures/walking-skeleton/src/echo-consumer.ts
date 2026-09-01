@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { observeProjectPreflight } from "../../../packages/adapter-sdk/src/preflight.js";
 import {
   canonicalJson,
   canonicalDigest,
@@ -188,7 +189,7 @@ async function consumeFixed(reviewMode: boolean, ...args: CycleArgs) {
     await record("worker-host.json", "worker-host-renderer-artifact/v1", echoMapping[0]);
     phase = "PREFLIGHT_REFUSED";
     let observation: ProjectPreflightObservation;
-    let outcome: ProjectPreflight["outcome"];
+    let preflight: ProjectPreflight;
     if (seed) {
       let current: ReviewSeed | null = null;
       try {
@@ -203,52 +204,39 @@ async function consumeFixed(reviewMode: boolean, ...args: CycleArgs) {
         observedAt: clocks.wallNow(),
         result: current ? { kind: "AVAILABLE", subject: current.subject } : { kind: "UNKNOWN" },
       };
-      outcome = current
+      const outcome: ProjectPreflight["outcome"] = current
         ? computeWorkerResultSubjectDigest(current.subject) ===
           computeWorkerResultSubjectDigest(seed.subject)
           ? { kind: "ELIGIBLE" }
           : { kind: "REFUSED", reason: "TARGET_CHANGED" }
         : { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" };
+      preflight = required(
+        validateProjectPreflightBinding(input, action, echoMapping, route, observation, {
+          actionPlanDigest: computeModuleActionPlanDigest(action),
+          observationDigest: computeProjectPreflightObservationDigest(observation),
+          outcome,
+          routeDigest: computeRouteSelectionDigest(route),
+          schemaVersion: "project-preflight/v1",
+        }),
+      );
     } else {
-      const current = await snapshot(
-        input.adapterConfiguration,
-        input.configurationProvenance,
+      const current = await observeProjectPreflight(
+        input,
+        action,
+        echoMapping,
+        route,
+        snapshot,
         clocks,
       );
       if (!current.ok)
         return {
           ok: false as const,
           reason: "PREFLIGHT_OBSERVATION_REFUSED",
-          observation: current,
+          observation: current.observation ?? current,
         };
-      observation = { kind: "PROJECT" as const, facts: current.facts };
-      const row =
-        current.facts.state === "COMPLETE"
-          ? current.facts.frontier.find((item) => item.workId === action.workId)
-          : undefined;
-      if (current.facts.state === "UNAVAILABLE")
-        outcome = { kind: "UNKNOWN", reason: "SOURCE_UNAVAILABLE" };
-      else if (current.facts.state === "UNKNOWN")
-        outcome = { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" };
-      else if (!row) outcome = { kind: "REFUSED", reason: "WORK_MISSING" };
-      else if (row.immutableSubjectDigest !== action.actionCore.immutableSubjectDigest)
-        outcome = { kind: "REFUSED", reason: "TARGET_CHANGED" };
-      else if (!row.capabilityNames.includes(action.actionCore.capabilityName as string))
-        outcome = { kind: "REFUSED", reason: "CAPABILITY_REMOVED" };
-      else if (row.readiness !== "READY") outcome = { kind: "REFUSED", reason: "NOT_READY" };
-      else if (current.facts.frontierDigest !== input.projectFacts.frontierDigest)
-        outcome = { kind: "REFUSED", reason: "FRONTIER_CHANGED" };
-      else outcome = { kind: "ELIGIBLE" };
+      observation = current.observation;
+      preflight = current.preflight;
     }
-    const preflight = required(
-      validateProjectPreflightBinding(input, action, echoMapping, route, observation, {
-        actionPlanDigest: computeModuleActionPlanDigest(action),
-        observationDigest: computeProjectPreflightObservationDigest(observation),
-        outcome,
-        routeDigest: computeRouteSelectionDigest(route),
-        schemaVersion: "project-preflight/v1",
-      }),
-    );
     if (observation.kind === "PROJECT")
       await record("preflight-project-facts.json", "project-facts/v1", observation.facts);
     else if (observation.result.kind === "AVAILABLE")
