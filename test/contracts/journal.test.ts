@@ -274,6 +274,614 @@ function terminalCycle() {
   return { ...f, receipt, startedJournal, step15, terminalizing };
 }
 
+function rechain(journal: Row) {
+  const header = {
+    cycleId: journal.cycleId,
+    cyclePlan: journal.cyclePlan,
+    cyclePlanDigest: journal.cyclePlanDigest,
+    genesisDigest: journal.genesisDigest,
+    schemaVersion: journal.schemaVersion,
+    sessionId: journal.sessionId,
+  };
+  let bytes = concat(
+    enc.encode("OPJ1"),
+    Uint8Array.of(0),
+    uint(canonical(header).byteLength, 4),
+    canonical(header),
+  );
+  let prior: Row | null = null;
+  let pending: Row | null = null;
+  for (const [index, event] of journal.events.entries()) {
+    if (event.phase === "STARTED") {
+      event.step.predecessorJournalDigest = event.step.ordinal === "1" ? null : prefixHash(bytes);
+      pending = copy(event.step);
+    } else {
+      event.step = copy(pending);
+      if (event.output.kind === "SKIP") event.output.skip.step = copy(pending);
+      if (event.output.kind === "SESSION") event.output.health.step = copy(pending);
+      pending = null;
+    }
+    event.position = String(index);
+    event.previousEventDigest = prior === null ? null : eventHash(prior);
+    event.previousPrefixDigest = prefixHash(bytes);
+    const eventBytes = canonical(event);
+    bytes = concat(bytes, uint(eventBytes.byteLength, 4), eventBytes);
+    prior = event;
+  }
+  return bytes;
+}
+
+function producerRecords() {
+  const b = base();
+  const facts = {
+    adapterConfigurationDigest: c.canonicalDigest(b.configuration),
+    frontier: [
+      {
+        capabilityNames: ["work.read"],
+        immutableSubjectDigest: "a".repeat(64),
+        readiness: "READY",
+        workId: id(10),
+      },
+    ],
+    frontierDigest: "",
+    observationId: id(11),
+    observedAt: "2026-08-31T01:00:00.000Z",
+    projectId: b.configuration.projectId,
+    schemaVersion: "project-facts/v1",
+    state: "COMPLETE",
+  };
+  facts.frontierDigest = c.canonicalDigest(facts.frontier);
+  const policyFacts = {
+    adapterConfigurationDigest: c.canonicalDigest(b.configuration),
+    decisions: [{ capabilityName: "work.read", trip: "NO_TRIP" }],
+    observationId: id(12),
+    observedAt: "2026-08-31T01:00:00.001Z",
+    policyVersion: "1.2.3",
+    projectFactsDigest: c.canonicalDigest(facts),
+    projectId: b.configuration.projectId,
+    schemaVersion: "project-breaker-facts/v1",
+    state: "COMPLETE",
+  };
+  const descriptor = {
+    abi: "orchestration-module/v1",
+    actions: [
+      {
+        actionKind: "fixture.inspect",
+        capabilityName: "work.read",
+        requestedRole: "review",
+        reviewRequired: false,
+        workerRequired: true,
+      },
+    ],
+    compatibility: [
+      {
+        adapterId: b.configuration.adapterId,
+        adapterVersion: b.configuration.adapterVersion,
+        engineVersion: b.configuration.engineVersion,
+        policyVersion: policyFacts.policyVersion,
+      },
+    ],
+    dispatchCatalog: c.dispatchDirectiveKinds
+      .filter((kind) => kind !== "OPERATOR_ACTION")
+      .map((directiveKind) => ({
+        actionKind: "fixture.inspect",
+        capabilityName: "work.read",
+        code: directiveKind.toLowerCase(),
+        directiveKind,
+        planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+        templateId: `template.${directiveKind.toLowerCase()}`,
+      })),
+    dispositionCodes: ["decision.done"],
+    inputSchemas: ["module-plan-input/v1"],
+    moduleId: "fixture.module",
+    moduleVersion: "1.0.0",
+    outputSchemas: ["module-action-plan/v1", "module-no-action/v1"],
+    schemaVersion: "module-descriptor/v1",
+  };
+  const reviewSubject = {
+    authorAttemptId: id(13),
+    authorCycleId: id(14),
+    baseSource: {
+      adapterId: b.configuration.adapterId,
+      projectId: b.configuration.projectId,
+      revision: "fixture.seed.v1",
+    },
+    result: { kind: "TREE", treeDigest: "b".repeat(64) },
+    schemaVersion: "worker-result-subject/v1",
+    terminalReceiptDigest: "c".repeat(64),
+  };
+  const input = {
+    adapterConfiguration: b.configuration,
+    configurationProvenance: b.configurationProvenance,
+    cycleRequest: b.cyclePlan.request,
+    descriptor,
+    policyFacts,
+    projectFacts: facts,
+    reviewSubject,
+    schemaVersion: "module-plan-input/v1",
+  };
+  const core = {
+    actionKind: "fixture.inspect",
+    capabilityName: "work.read",
+    immutableSubjectDigest: c.computeWorkerResultSubjectDigest(reviewSubject),
+    moduleDescriptorDigest: c.computeModuleDescriptorDigest(descriptor),
+    requestedRole: "review",
+    schemaVersion: "dispatch-action-core/v1",
+  };
+  const action = {
+    actionCore: core,
+    dispatchBrief: {
+      action: {
+        actionCoreDigest: c.computeDispatchActionCoreDigest(core),
+        actionKind: core.actionKind,
+        capabilityName: core.capabilityName,
+        immutableSubjectDigest: core.immutableSubjectDigest,
+        moduleDescriptorDigest: core.moduleDescriptorDigest,
+        schemaVersion: "dispatch-brief-action/v1",
+      },
+      directives: c.dispatchDirectiveKinds.map((directiveKind) => ({
+        code: directiveKind === "OPERATOR_ACTION" ? null : directiveKind.toLowerCase(),
+        directiveKind,
+        presence: directiveKind === "OPERATOR_ACTION" ? "ABSENT" : "PRESENT",
+        schemaVersion: "dispatch-brief-directive/v1",
+        subjectDigest: core.immutableSubjectDigest,
+      })),
+      footprint: [
+        {
+          access: "READ",
+          resourceIdentityDigest: core.immutableSubjectDigest,
+          schemaVersion: "dispatch-brief-resource/v1",
+        },
+      ],
+      role: "review",
+      schemaVersion: "dispatch-brief/v1",
+    },
+    inputDigest: c.computeModulePlanInputDigest(input),
+    schemaVersion: "module-action-plan/v1",
+    workId: null,
+  };
+  const identity = {
+    capabilityNames: ["work.read"],
+    hostRendererArtifactDigest: "d".repeat(64),
+    schemaVersion: "worker-host-identity/v1",
+  };
+  const mapping = [
+    {
+      ...identity,
+      schemaVersion: "worker-host-renderer-artifact/v1",
+      workerHostIdentityDigest: c.computeWorkerHostIdentityDigest(identity),
+    },
+  ];
+  const route = {
+    actionPlanDigest: c.computeModuleActionPlanDigest(action),
+    hostMappingDigest: c.computeRouteMappingDigest(mapping),
+    outcome: { kind: "SELECTED", workerHostIdentityDigest: mapping[0]!.workerHostIdentityDigest },
+    schemaVersion: "route-selection/v1",
+  };
+  const observation = {
+    adapterConfigurationDigest: c.canonicalDigest(b.configuration),
+    kind: "REVIEW",
+    observationId: id(15),
+    observedAt: "2026-08-31T01:00:00.002Z",
+    result: { kind: "AVAILABLE", subject: copy(reviewSubject) },
+  };
+  const preflight = {
+    actionPlanDigest: c.computeModuleActionPlanDigest(action),
+    observationDigest: c.computeProjectPreflightObservationDigest(observation),
+    outcome: { kind: "ELIGIBLE" },
+    routeDigest: c.computeRouteSelectionDigest(route),
+    schemaVersion: "project-preflight/v1",
+  };
+  const planHealth = {
+    holderSessionId: b.cyclePlan.request.sessionRequest.sessionId,
+    leaseState: "HELD_FRESH",
+    observedAt: "2026-08-31T01:00:00.003Z",
+    outcome: "HEALTHY",
+    reason: null,
+    schemaVersion: "session-health/v1",
+    step: null,
+    targetSessionId: b.cyclePlan.request.sessionRequest.sessionId,
+  };
+  const reviewRequest = {
+    packet: { brief: copy(action.dispatchBrief), evidence: [], subject: copy(reviewSubject) },
+    reviewCycleId: b.cyclePlan.request.cycleId,
+    schemaVersion: "review-request/v1",
+  };
+  const rendered = Uint8Array.from([0, 255, 65]);
+  const streamOut = Uint8Array.from([255, 0]);
+  const streamErr = Uint8Array.from([97]);
+  const reference = (bytes: Uint8Array) => ({
+    byteLength: String(bytes.byteLength),
+    contentDigest: hash(bytes),
+  });
+  const dispatch = {
+    actionPlanDigest: c.computeModuleActionPlanDigest(action),
+    attemptId: id(16),
+    outcome: {
+      credentials: { kind: "NONE" },
+      hostRendererArtifactDigest: mapping[0]!.hostRendererArtifactDigest,
+      kind: "PLANNED",
+      renderedInput: reference(rendered),
+      resourceIntents: [],
+      workerHostIdentityDigest: mapping[0]!.workerHostIdentityDigest,
+    },
+    preflightDigest: c.computeProjectPreflightDigest(preflight),
+    reviewRequestDigest: c.computeReviewRequestDigest(reviewRequest),
+    routeDigest: c.computeRouteSelectionDigest(route),
+    schemaVersion: "dispatch-plan/v1",
+    sessionHealthDigest: c.computeSessionHealthDigest(planHealth),
+  };
+  const launch = {
+    attemptId: dispatch.attemptId,
+    dispatchPlanDigest: c.computeDispatchPlanDigest(dispatch),
+    observedAt: "2026-08-31T01:00:00.004Z",
+    outcome: { kind: "LIVE" },
+    ownership: "PUBLISHED",
+    processes: {
+      completeness: "COMPLETE",
+      entries: [{ parentProcessId: null, processId: id(17), state: "LIVE" }],
+    },
+    resources: [],
+    schemaVersion: "worker-launch-receipt/v1",
+  };
+  const terminal = {
+    attemptId: dispatch.attemptId,
+    capture: {
+      stderr: { content: reference(streamErr), kind: "TRUNCATED" },
+      stdout: { content: reference(streamOut), kind: "COMPLETE" },
+    },
+    dispatchPlanDigest: c.computeDispatchPlanDigest(dispatch),
+    launchReceiptDigest: c.computeWorkerLaunchReceiptDigest(launch),
+    observedAt: "2026-08-31T01:00:00.005Z",
+    outcome: { exit: { kind: "EXIT_CODE", value: "0" }, kind: "EXITED" },
+    processes: {
+      completeness: "COMPLETE",
+      entries: [{ parentProcessId: null, processId: id(17), state: "DEAD" }],
+    },
+    schemaVersion: "worker-terminal-receipt/v1",
+  };
+  const reviewIds = {
+    packetDigest: c.computeReviewPacketDigest(reviewRequest.packet),
+    requestDigest: c.computeReviewRequestDigest(reviewRequest),
+    subjectDigest: c.computeWorkerResultSubjectDigest(reviewSubject),
+  };
+  const attempt = {
+    ...reviewIds,
+    attemptId: dispatch.attemptId,
+    cycleId: b.cyclePlan.request.cycleId,
+    dispatchPlanDigest: c.computeDispatchPlanDigest(dispatch),
+    launchReceiptDigest: c.computeWorkerLaunchReceiptDigest(launch),
+    result: {
+      evidence: [{ byteLength: "0", contentDigest: hash("") }],
+      kind: "SWEEP_COMPLETE",
+    },
+    schemaVersion: "review-attempt-result/v1",
+    terminalReceiptDigest: c.computeWorkerTerminalReceiptDigest(terminal),
+  };
+  const authority = {
+    ...reviewIds,
+    outcome: {
+      attemptResultDigest: c.computeReviewAttemptResultDigest(attempt),
+      kind: "accepted",
+    },
+    schemaVersion: "review-authority/v1",
+  };
+  const dispositionInput = {
+    actionPlan: copy(action),
+    moduleInput: copy(input),
+    preflight: copy(preflight),
+    review: { attempt: copy(attempt), authority: copy(authority), request: copy(reviewRequest) },
+    route: copy(route),
+    skips: [],
+    worker: {
+      launch: copy(launch),
+      plan: copy(dispatch),
+      resultSubject: null,
+      terminal: copy(terminal),
+    },
+  };
+  const disposition = {
+    actionPlanDigest: c.computeModuleActionPlanDigest(action),
+    code: "decision.done",
+    inputDigest: c.computeDispositionInputDigest(dispositionInput),
+    outcome: { kind: "APPLY", operation: "PROJECT" },
+    schemaVersion: "action-disposition/v1",
+    subjectDigest: reviewIds.subjectDigest,
+    subjectKind: "WORKER_RESULT",
+  };
+  const request = {
+    actionPlanDigest: c.computeModuleActionPlanDigest(action),
+    adapterConfigurationDigest: c.canonicalDigest(b.configuration),
+    dispositionDigest: c.computeActionDispositionDigest(disposition),
+    schemaVersion: "project-mutation-request/v1",
+    sourceCycleId: b.cyclePlan.request.cycleId,
+    subjectDigest: disposition.subjectDigest,
+    subjectKind: disposition.subjectKind,
+    transactionId: id(18),
+  };
+  const value = (bytes: string | null) =>
+    bytes === null ? { kind: "ABSENT" } : { bytes, kind: "PRESENT" };
+  const effects = [
+    {
+      after: value("00ff"),
+      before: value(null),
+      kind: "COMPARE_REPLACE",
+      resourceId: "fixture.resource",
+    },
+  ];
+  const observed = (n: number, values: Row[]) => ({
+    adapterConfigurationDigest: c.canonicalDigest(b.configuration),
+    observationId: id(20 + n),
+    observedAt: `2026-08-31T01:00:0${6 + n}.000Z`,
+    result: {
+      kind: "COMPLETE",
+      projectFacts: {
+        ...copy(facts),
+        observationId: id(30 + n),
+        observedAt: `2026-08-31T01:00:0${6 + n}.000Z`,
+      },
+      resources: [{ resourceId: "fixture.resource", value: copy(values[0]) }],
+    },
+  });
+  const dry = observed(1, [effects[0]!.before]);
+  const before = observed(2, [effects[0]!.before]);
+  const after = observed(3, [effects[0]!.after]);
+  const intents = [{ owner: "ADAPTER", resourceIdentityDigest: "e".repeat(64) }];
+  const mutationPlan = {
+    observationDigest: c.computeProjectMutationObservationDigest(dry),
+    outcome: { effects, kind: "PLANNED", resourceIntents: intents },
+    requestDigest: c.computeProjectMutationRequestDigest(request),
+    schemaVersion: "project-mutation-plan/v1",
+    transactionId: request.transactionId,
+  };
+  const applyReceipt = {
+    afterObservationDigest: c.computeProjectMutationObservationDigest(after),
+    beforeObservationDigest: c.computeProjectMutationObservationDigest(before),
+    completedEffectCount: "1",
+    outcome: { kind: "APPLIED" },
+    phase: "AFTER_WRITE",
+    planDigest: c.computeProjectMutationPlanDigest(mutationPlan),
+    requestDigest: c.computeProjectMutationRequestDigest(request),
+    resources: [
+      {
+        ...intents[0],
+        allocationId: id(40),
+        ownerTransactionId: request.transactionId,
+        state: "ALLOCATED",
+      },
+    ],
+    schemaVersion: "project-apply-receipt/v1",
+    transactionId: request.transactionId,
+  };
+  const breaker = {
+    adapterConfigurationDigest: c.canonicalDigest(b.configuration),
+    cycleId: b.cyclePlan.request.cycleId,
+    cycleRequestDigest: c.computeCycleRequestDigest(b.cyclePlan.request),
+    operations: [],
+    policyFactsDigest: c.canonicalDigest(policyFacts),
+    policyIdentity: {
+      adapterId: b.configuration.adapterId,
+      adapterVersion: b.configuration.adapterVersion,
+      policyVersion: policyFacts.policyVersion,
+    },
+    priorReceiptDigest: null,
+    result: { capabilities: [{ capabilityName: "work.read", state: "CLOSED" }], kind: "KNOWN" },
+    schemaVersion: "breaker-receipt/v1",
+    sessionId: b.cyclePlan.request.sessionRequest.sessionId,
+  };
+  return {
+    action,
+    after,
+    applyReceipt,
+    attempt,
+    authority,
+    b,
+    before,
+    breaker,
+    dispatch,
+    disposition,
+    dispositionInput,
+    dry,
+    facts,
+    input,
+    launch,
+    mapping,
+    mutationPlan,
+    observation,
+    planHealth,
+    policyFacts,
+    preflight,
+    rendered,
+    request,
+    reviewRequest,
+    route,
+    streamErr,
+    streamOut,
+    terminal,
+  };
+}
+
+function producerJournal() {
+  const p = producerRecords();
+  const cyclePlanDigest = c.computeCyclePlanDigest(p.b.cyclePlan);
+  const genesisInput = {
+    cycleId: id(2),
+    cyclePlan: p.b.cyclePlan,
+    cyclePlanDigest,
+    sessionId: id(3),
+  };
+  const genesisDigest = domain("event-journal-genesis/v1", canonical(genesisInput));
+  const header = { ...genesisInput, genesisDigest, schemaVersion: "event-journal/v1" };
+  let bytes = concat(
+    enc.encode("OPJ1"),
+    Uint8Array.of(0),
+    uint(canonical(header).byteLength, 4),
+    canonical(header),
+  );
+  const events: Row[] = [],
+    evidence: Row[][] = [];
+  let prior: Row | null = null;
+  const reference = (kind: string, raw: Uint8Array) => ({
+    byteLength: String(raw.byteLength),
+    contentDigest: hash(raw),
+    encoding: "RAW_BYTES",
+    kind,
+  });
+  const add = (
+    phase: "STARTED" | "TERMINAL",
+    current: Row,
+    output: Row | null,
+    suppliedEvidence: Row[] = [],
+  ) => {
+    const retainedEvidence = suppliedEvidence
+      .map((entry) => reference(entry.kind, entry.bytes))
+      .sort((left, right) => left.kind.localeCompare(right.kind));
+    const supplied = suppliedEvidence
+      .map((entry) => ({ bytes: entry.bytes, kind: entry.kind }))
+      .sort((left, right) => left.kind.localeCompare(right.kind));
+    const event = {
+      cycleId: id(2),
+      output,
+      phase,
+      position: String(events.length),
+      previousEventDigest: prior === null ? null : eventHash(prior),
+      previousPrefixDigest: prefixHash(bytes),
+      retainedEvidence,
+      schemaVersion: "orchestration-event/v1",
+      step: copy(current),
+    };
+    const eventBytes = canonical(event);
+    events.push(event);
+    evidence.push(supplied);
+    bytes = concat(bytes, uint(eventBytes.byteLength, 4), eventBytes);
+    prior = event;
+  };
+  const outputs: Array<Row | null> = [
+    null,
+    {
+      cyclePlan: p.b.cyclePlan,
+      health: {
+        ...copy(p.planHealth),
+        step: step(1, c.computeCycleRequestDigest(p.b.cyclePlan.request), null),
+      },
+      kind: "SESSION",
+    },
+    { configuration: p.b.configuration, facts: p.facts, kind: "PROJECT_FACTS" },
+    {
+      configuration: p.b.configuration,
+      cycleRequest: p.b.cyclePlan.request,
+      kind: "BREAKER",
+      policyFacts: p.policyFacts,
+      prior: null,
+      projectFacts: p.facts,
+      provenance: p.b.configurationProvenance,
+      receipt: p.breaker,
+    },
+    { input: p.input, kind: "MODULE", result: p.action },
+    { action: p.action, input: p.input, kind: "ROUTE", mapping: p.mapping, route: p.route },
+    {
+      action: p.action,
+      input: p.input,
+      kind: "PREFLIGHT",
+      mapping: p.mapping,
+      observation: p.observation,
+      preflight: p.preflight,
+      route: p.route,
+    },
+    {
+      action: p.action,
+      cyclePlan: p.b.cyclePlan,
+      health: p.planHealth,
+      input: p.input,
+      kind: "DISPATCH_PLAN",
+      mapping: p.mapping,
+      observation: p.observation,
+      plan: p.dispatch,
+      preflight: p.preflight,
+      reviewRequest: p.reviewRequest,
+      route: p.route,
+    },
+    { kind: "LAUNCH", launch: p.launch, plan: p.dispatch, terminal: null },
+    {
+      attempt: p.attempt,
+      kind: "WORKER_TERMINAL",
+      launch: p.launch,
+      plan: p.dispatch,
+      resultSubject: null,
+      terminal: p.terminal,
+    },
+    {
+      attempt: p.attempt,
+      authority: p.authority,
+      kind: "REVIEW_AUTHORITY",
+      request: p.reviewRequest,
+    },
+    {
+      disposition: p.disposition,
+      followUp: null,
+      input: p.dispositionInput,
+      kind: "DISPOSITION",
+    },
+    {
+      disposition: p.disposition,
+      dispositionInput: p.dispositionInput,
+      kind: "MUTATION_PLAN",
+      observation: p.dry,
+      plan: p.mutationPlan,
+      request: p.request,
+    },
+    {
+      afterObservation: p.after,
+      beforeObservation: p.before,
+      disposition: p.disposition,
+      dispositionInput: p.dispositionInput,
+      dryObservation: p.dry,
+      expectedPlanDigest: c.computeProjectMutationPlanDigest(p.mutationPlan),
+      kind: "PROJECT_APPLY",
+      plan: p.mutationPlan,
+      receipt: p.applyReceipt,
+      request: p.request,
+    },
+  ];
+  const inputs = [
+    "",
+    c.computeCycleRequestDigest(p.b.cyclePlan.request),
+    c.canonicalDigest(p.b.configuration),
+    c.canonicalDigest(p.facts),
+    c.computeModulePlanInputDigest(p.input),
+    c.computeModuleActionPlanDigest(p.action),
+    c.computeRouteSelectionDigest(p.route),
+    c.computeProjectPreflightDigest(p.preflight),
+    c.computeDispatchPlanDigest(p.dispatch),
+    c.computeWorkerLaunchReceiptDigest(p.launch),
+    c.computeReviewAttemptResultDigest(p.attempt),
+    c.computeDispositionInputDigest(p.dispositionInput),
+    c.computeProjectMutationRequestDigest(p.request),
+    c.computeProjectMutationPlanDigest(p.mutationPlan),
+  ];
+  const retained = (ordinal: number) => {
+    if (ordinal === 7) return [{ bytes: p.rendered, kind: "RENDERED_INPUT" }];
+    if ([9, 11, 12, 13].includes(ordinal))
+      return [
+        { bytes: p.streamErr, kind: "STDERR" },
+        { bytes: p.streamOut, kind: "STDOUT" },
+      ];
+    return [];
+  };
+  for (let ordinal = 1; ordinal <= 13; ordinal += 1) {
+    const current = step(ordinal, inputs[ordinal]!, ordinal === 1 ? null : prefixHash(bytes));
+    if (ordinal === 1) outputs[1]!.health.step = copy(current);
+    add("STARTED", current, null);
+    add("TERMINAL", current, outputs[ordinal]!, retained(ordinal));
+  }
+  return {
+    ...p,
+    evidence,
+    journal: { ...header, events },
+    outputs,
+  };
+}
+
 const emptyBindings = () => ({
   actionDigest: null,
   applyDigest: null,
@@ -607,6 +1215,333 @@ test("binds STARTED and the actual SESSION and RECLAIM evidence tuples", () => {
   expect(c.validateOrchestrationEventBinding(movedContext, []).ok).toBe(false);
 });
 
+test("replays every concrete producer from PROJECT_FACTS through PROJECT_APPLY", () => {
+  const p = producerJournal();
+  expect(c.validateProjectFactsBinding(p.facts, p.b.configuration).ok).toBe(true);
+  expect(
+    c.validateBreakerReceiptBinding(
+      p.b.configurationProvenance,
+      p.b.configuration,
+      p.b.cyclePlan.request,
+      p.facts,
+      p.policyFacts,
+      null,
+      p.breaker,
+    ).ok,
+  ).toBe(true);
+  expect(c.validateModulePlanBinding(p.input, p.action).ok).toBe(true);
+  expect(c.validateRouteSelectionBinding(p.input, p.action, p.mapping, p.route).ok).toBe(true);
+  expect(
+    c.validateProjectPreflightBinding(
+      p.input,
+      p.action,
+      p.mapping,
+      p.route,
+      p.observation,
+      p.preflight,
+    ).ok,
+  ).toBe(true);
+  expect(
+    c.validateDispatchPlanBinding(
+      p.input,
+      p.action,
+      p.mapping,
+      p.route,
+      p.observation,
+      p.preflight,
+      p.b.cyclePlan,
+      p.planHealth,
+      p.reviewRequest,
+      p.rendered,
+      p.dispatch,
+    ).ok,
+  ).toBe(true);
+  expect(c.validateWorkerLaunchReceiptBinding(p.dispatch, p.launch).ok).toBe(true);
+  expect(
+    c.validateWorkerTerminalReceiptBinding(
+      p.dispatch,
+      p.launch,
+      p.streamOut,
+      p.streamErr,
+      p.terminal,
+    ).ok,
+  ).toBe(true);
+  expect(c.validateReviewResultBinding(p.reviewRequest, p.attempt, p.authority).ok).toBe(true);
+  expect(
+    c.validateActionDispositionBinding(p.dispositionInput, p.streamOut, p.streamErr, p.disposition)
+      .ok,
+  ).toBe(true);
+  expect(
+    c.validateProjectMutationRequestBinding(
+      p.dispositionInput,
+      p.streamOut,
+      p.streamErr,
+      p.disposition,
+      p.request,
+    ).ok,
+  ).toBe(true);
+  expect(
+    c.validateProjectMutationPlanBinding(
+      p.dispositionInput,
+      p.streamOut,
+      p.streamErr,
+      p.disposition,
+      p.request,
+      p.dry,
+      p.mutationPlan,
+    ).ok,
+  ).toBe(true);
+  expect(
+    c.validateProjectApplyReceiptBinding(
+      p.dispositionInput,
+      p.streamOut,
+      p.streamErr,
+      p.disposition,
+      p.request,
+      p.dry,
+      p.mutationPlan,
+      c.computeProjectMutationPlanDigest(p.mutationPlan),
+      p.before,
+      p.after,
+      p.applyReceipt,
+    ).ok,
+  ).toBe(true);
+
+  expect(
+    p.journal.events.filter((row) => row.phase === "TERMINAL").map((row) => row.output.kind),
+  ).toEqual(c.eventOutputKinds.slice(0, 13));
+  for (const [index, event] of p.journal.events.entries())
+    expect(c.validateOrchestrationEventBinding(event, p.evidence[index]).ok).toBe(true);
+  expect(c.reduceEventJournal(p.journal, p.evidence)).toMatchObject({
+    ok: true,
+    value: {
+      bindings: {
+        actionDigest: c.computeModuleActionPlanDigest(p.action),
+        applyDigest: c.computeProjectApplyReceiptDigest(p.applyReceipt),
+        mutationPlanDigest: c.computeProjectMutationPlanDigest(p.mutationPlan),
+        reviewAuthorityDigest: c.computeReviewAuthorityDigest(p.authority),
+        subjectDigest: p.authority.subjectDigest,
+      },
+      outcome: { kind: "RUNNING" },
+      steps: expect.arrayContaining([
+        expect.objectContaining({ ordinal: "2", state: "TERMINAL" }),
+        expect.objectContaining({ ordinal: "13", state: "TERMINAL" }),
+      ]),
+    },
+  });
+});
+
+test("derives WAITING states only from real dispatch, launch and review preimages", () => {
+  const p = producerJournal();
+  for (const [ordinal, outcome] of [
+    [8, { attemptId: p.dispatch.attemptId, kind: "WAITING_WORKER" }],
+    [9, { attemptId: p.dispatch.attemptId, kind: "WAITING_WORKER" }],
+    [10, { kind: "WAITING_REVIEW", requestDigest: c.computeReviewRequestDigest(p.reviewRequest) }],
+  ] as const) {
+    const length = (ordinal - 1) * 2 + 1;
+    expect(
+      c.reduceEventJournal(
+        { ...p.journal, events: p.journal.events.slice(0, length) },
+        p.evidence.slice(0, length),
+      ),
+    ).toMatchObject({
+      ok: true,
+      value: { outcome, pendingStep: { ordinal: String(ordinal) } },
+    });
+  }
+});
+
+test("binds retained producer bytes and refuses byte, reference and encoding substitutions", () => {
+  const p = producerJournal();
+  for (const ordinal of [7, 9, 11, 12, 13]) {
+    const index = ordinal * 2 - 1,
+      event = p.journal.events[index]!,
+      supplied = p.evidence[index]!;
+    expect(c.validateOrchestrationEventBinding(event, supplied).ok).toBe(true);
+    const movedBytes = copy(supplied);
+    movedBytes[0]!.bytes = Uint8Array.of(88);
+    expect(c.validateOrchestrationEventBinding(event, movedBytes).ok).toBe(false);
+
+    const movedLength = copy(event);
+    movedLength.retainedEvidence[0].byteLength = "0";
+    expect(c.validateOrchestrationEventBinding(movedLength, supplied).ok).toBe(false);
+    const movedDigest = copy(event);
+    movedDigest.retainedEvidence[0].contentDigest = "0".repeat(64);
+    expect(c.validateOrchestrationEventBinding(movedDigest, supplied).ok).toBe(false);
+    const movedEncoding = copy(event);
+    movedEncoding.retainedEvidence[0].encoding = "CANONICAL_JSON";
+    expect(c.parseOrchestrationEvent(movedEncoding).ok).toBe(false);
+  }
+});
+
+test("refuses individually valid producer substitutions that sever prior-output continuity", () => {
+  const attacks = [
+    {
+      ordinal: 4,
+      mutate(output: Row) {
+        output.input.projectFacts.observationId = id(70);
+        output.input.policyFacts.projectFactsDigest = c.canonicalDigest(output.input.projectFacts);
+        output.result.inputDigest = c.computeModulePlanInputDigest(output.input);
+      },
+    },
+    {
+      ordinal: 5,
+      mutate(output: Row) {
+        output.input.descriptor.moduleVersion = "1.0.1";
+        output.action.actionCore.moduleDescriptorDigest = c.computeModuleDescriptorDigest(
+          output.input.descriptor,
+        );
+        output.action.dispatchBrief.action.moduleDescriptorDigest =
+          output.action.actionCore.moduleDescriptorDigest;
+        output.action.dispatchBrief.action.actionCoreDigest = c.computeDispatchActionCoreDigest(
+          output.action.actionCore,
+        );
+        output.action.inputDigest = c.computeModulePlanInputDigest(output.input);
+        output.route.actionPlanDigest = c.computeModuleActionPlanDigest(output.action);
+      },
+    },
+    {
+      ordinal: 7,
+      mutate(output: Row) {
+        output.observation.observationId = id(71);
+        output.preflight.observationDigest = c.computeProjectPreflightObservationDigest(
+          output.observation,
+        );
+        output.plan.preflightDigest = c.computeProjectPreflightDigest(output.preflight);
+      },
+    },
+    {
+      ordinal: 13,
+      mutate(output: Row) {
+        output.request.transactionId = id(72);
+        output.plan.transactionId = output.request.transactionId;
+        output.plan.requestDigest = c.computeProjectMutationRequestDigest(output.request);
+        output.expectedPlanDigest = c.computeProjectMutationPlanDigest(output.plan);
+        output.receipt.transactionId = output.request.transactionId;
+        output.receipt.requestDigest = c.computeProjectMutationRequestDigest(output.request);
+        output.receipt.planDigest = output.expectedPlanDigest;
+        for (const resource of output.receipt.resources)
+          resource.ownerTransactionId = output.request.transactionId;
+      },
+    },
+  ];
+  for (const attack of attacks) {
+    const p = producerJournal();
+    const startIndex = (attack.ordinal - 1) * 2,
+      terminalIndex = startIndex + 1,
+      output = p.journal.events[terminalIndex]!.output;
+    attack.mutate(output);
+    const inputDigests: Record<number, string> = {
+      4: c.computeModulePlanInputDigest(output.input),
+      5: c.computeModuleActionPlanDigest(output.action),
+      7: c.computeProjectPreflightDigest(output.preflight),
+      13: c.computeProjectMutationPlanDigest(output.plan),
+    };
+    p.journal.events[startIndex]!.step.inputDigest = inputDigests[attack.ordinal]!;
+    rechain(p.journal);
+    expect(
+      c.validateOrchestrationEventBinding(
+        p.journal.events[terminalIndex],
+        p.evidence[terminalIndex],
+      ).ok,
+    ).toBe(true);
+    expect(c.reduceEventJournal(p.journal, p.evidence)).toMatchObject({
+      ok: true,
+      value: { outcome: { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" } },
+    });
+  }
+});
+
+test("binds malformed mapping, preflight and mutation observations only through canonical evidence", () => {
+  const p = producerJournal();
+  const malformed = canonical({ unexpected: true });
+  const observationCases = [
+    {
+      evidenceIndex: 0,
+      event: {
+        ...copy(p.journal.events[9]),
+        output: {
+          ...copy(p.outputs[5]!),
+          mapping: null,
+          route: {
+            ...copy(p.route),
+            hostMappingDigest: null,
+            outcome: { kind: "UNKNOWN", reason: "MAPPING_INVALID" },
+          },
+        },
+        retainedEvidence: [
+          {
+            byteLength: String(malformed.byteLength),
+            contentDigest: hash(malformed),
+            encoding: "CANONICAL_JSON",
+            kind: "MAPPING_OBSERVATION",
+          },
+        ],
+      },
+      evidence: [{ bytes: malformed, kind: "MAPPING_OBSERVATION" }],
+    },
+    {
+      evidenceIndex: 0,
+      event: {
+        ...copy(p.journal.events[11]),
+        output: {
+          ...copy(p.outputs[6]!),
+          observation: null,
+          preflight: {
+            ...copy(p.preflight),
+            observationDigest: null,
+            outcome: { kind: "UNKNOWN", reason: "OBSERVATION_INVALID" },
+          },
+        },
+        retainedEvidence: [
+          {
+            byteLength: String(malformed.byteLength),
+            contentDigest: hash(malformed),
+            encoding: "CANONICAL_JSON",
+            kind: "PREFLIGHT_OBSERVATION",
+          },
+        ],
+      },
+      evidence: [{ bytes: malformed, kind: "PREFLIGHT_OBSERVATION" }],
+    },
+    {
+      evidenceIndex: 0,
+      event: {
+        ...copy(p.journal.events[23]),
+        output: {
+          ...copy(p.outputs[12]!),
+          observation: null,
+          plan: {
+            ...copy(p.mutationPlan),
+            observationDigest: null,
+            outcome: { kind: "UNKNOWN", reason: "OBSERVATION_INVALID" },
+          },
+        },
+        retainedEvidence: [
+          {
+            byteLength: String(malformed.byteLength),
+            contentDigest: hash(malformed),
+            encoding: "CANONICAL_JSON",
+            kind: "MUTATION_OBSERVATION",
+          },
+          ...copy(p.journal.events[23]!.retainedEvidence),
+        ],
+      },
+      evidence: [
+        { bytes: malformed, kind: "MUTATION_OBSERVATION" },
+        ...p.evidence[23]!.map((entry) => ({ bytes: entry.bytes, kind: entry.kind })),
+      ],
+    },
+  ];
+  for (const row of observationCases) {
+    expect(c.parseOrchestrationEvent(row.event).ok).toBe(true);
+    expect(c.validateOrchestrationEventBinding(row.event, row.evidence).ok).toBe(true);
+    const moved = copy(row.evidence);
+    moved[row.evidenceIndex]!.bytes = canonical({ different: true });
+    expect(c.validateOrchestrationEventBinding(row.event, moved).ok).toBe(false);
+  }
+});
+
 test("closes event phase/output/null matrices, evidence rows, ordinals and fields", () => {
   const f = fixture();
   const started = f.journal.events[0]!;
@@ -678,6 +1613,27 @@ test("reduces deterministic complete preimages and refuses missing, substituted 
   expect(c.parseEventJournal(broken).ok).toBe(false);
 });
 
+test("rejects a self-consistent skip chain whose input no longer names the prior terminal", () => {
+  const f = fixture();
+  const journal = copy(f.journal);
+  journal.events[24]!.step.inputDigest = "0".repeat(64);
+  rechain(journal);
+  const reclaimOutput = journal.events[27]!.output;
+  reclaimOutput.context.skips[11] = copy(journal.events[25]!.output.skip);
+  reclaimOutput.receipt.contextDigest = c.computeResourceReclaimContextDigest(
+    reclaimOutput.context,
+  );
+  journal.events[26]!.step.inputDigest = c.computeResourceReclaimContextDigest(
+    reclaimOutput.context,
+  );
+  rechain(journal);
+  expect(c.parseEventJournal(journal).ok).toBe(true);
+  expect(c.reduceEventJournal(journal, f.evidence)).toMatchObject({
+    ok: true,
+    value: { outcome: { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" } },
+  });
+});
+
 test("represents JOURNAL_ONLY restart evidence without inventing rerun authority", () => {
   const f = fixture();
   const startedOnly = { ...f.journal, events: f.journal.events.slice(0, 1) };
@@ -697,6 +1653,27 @@ test("represents JOURNAL_ONLY restart evidence without inventing rerun authority
   if (!inspection.ok) throw new Error(inspection.issues.join(","));
   expect(c.reduceEventJournal(inspection.value.journal, [[]])).toEqual(state);
   expect(c.planEventJournalAppend(suffix, f.journal.events[1]).ok).toBe(false);
+});
+
+test("keeps early-terminal skip STARTED8, STARTED9 and STARTED10 prefixes RUNNING", () => {
+  const f = fixture();
+  for (const ordinal of [8, 9, 10]) {
+    const eventCount = (ordinal - 1) * 2 + 1;
+    const prefix = {
+      ...f.journal,
+      events: f.journal.events.slice(0, eventCount),
+    };
+    expect(c.reduceEventJournal(prefix, f.evidence.slice(0, eventCount))).toMatchObject({
+      ok: true,
+      value: {
+        outcome: { kind: "RUNNING" },
+        pendingStep: { ordinal: String(ordinal) },
+        steps: expect.arrayContaining([
+          expect.objectContaining({ ordinal: String(ordinal), state: "STARTED" }),
+        ]),
+      },
+    });
+  }
 });
 
 test("closes reduced outcome cells, nulls, exact density and 1-15 bounds", () => {
@@ -837,6 +1814,16 @@ test("closes reduced outcome cells, nulls, exact density and 1-15 bounds", () =>
       })),
     }).ok,
   ).toBe(false);
+  const completeRows = rows(15, 0).map((row) => ({
+    ...row,
+    primaryDigest: "a".repeat(64),
+    state: "TERMINAL",
+  }));
+  for (const ordinal of [1, 14, 15]) {
+    const impossible = copy(completeRows);
+    impossible[ordinal - 1]!.state = "SKIPPED";
+    expect(c.parseReducedState({ ...baseState, steps: impossible }).ok).toBe(false);
+  }
 });
 
 test("constructs receipt only from STARTED15 terminalizing state and final replay stays acyclic", () => {
@@ -877,9 +1864,103 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
       ),
     }).ok,
   ).toBe(false);
-  expect(c.validateCycleReceiptBinding(f.startedJournal, f.terminalizing.value, f.receipt).ok).toBe(
-    true,
-  );
+  expect(
+    c.validateCycleReceiptBinding(f.startedJournal, f.terminalizing.value, f.receipt, f.evidence)
+      .ok,
+  ).toBe(true);
+  const substitutedReplayEvidence = f.evidence.map((rows) => [...rows]);
+  substitutedReplayEvidence[0] = [{ bytes: Uint8Array.of(1), kind: "STDOUT" }];
+  expect(
+    c.validateCycleReceiptBinding(
+      f.startedJournal,
+      f.terminalizing.value,
+      f.receipt,
+      substitutedReplayEvidence,
+    ).ok,
+  ).toBe(false);
+  const stateMutants = [
+    { ...f.terminalizing.value, cyclePlanDigest: "0".repeat(64) },
+    { ...f.terminalizing.value, journalPrefixDigest: "0".repeat(64) },
+    {
+      ...f.terminalizing.value,
+      bindings: { ...f.terminalizing.value.bindings, actionDigest: "0".repeat(64) },
+    },
+    {
+      ...f.terminalizing.value,
+      steps: f.terminalizing.value.steps.map((row: Row, index: number) =>
+        index === 1 ? { ...row, primaryDigest: "0".repeat(64) } : row,
+      ),
+    },
+  ];
+  const movedPending = copy(f.terminalizing.value);
+  movedPending.pendingStep.inputDigest = "0".repeat(64);
+  movedPending.steps[14].stepDigest = c.computeRoutineStepDigest(movedPending.pendingStep);
+  movedPending.outcome.terminalStepDigest = c.computeRoutineStepDigest(movedPending.pendingStep);
+  stateMutants.push(movedPending);
+  const foreignCycle = copy(f.terminalizing.value);
+  foreignCycle.cycleId = id(90);
+  foreignCycle.pendingStep.cycleId = id(90);
+  foreignCycle.steps[14].stepDigest = c.computeRoutineStepDigest(foreignCycle.pendingStep);
+  foreignCycle.outcome.terminalStepDigest = c.computeRoutineStepDigest(foreignCycle.pendingStep);
+  stateMutants.push(foreignCycle);
+  for (const state of stateMutants) {
+    expect(c.parseReducedState(state).ok).toBe(true);
+    const matching = {
+      ...f.receipt,
+      bindings: copy(state.bindings),
+      reducedStateDigest: c.computeReducedStateDigest(state),
+      startedJournalPrefixDigest: state.journalPrefixDigest,
+      steps: copy(state.steps),
+      terminalStepDigest: c.computeRoutineStepDigest(state.pendingStep),
+    };
+    expect(c.validateCycleReceiptBinding(f.startedJournal, state, matching, f.evidence).ok).toBe(
+      false,
+    );
+  }
+  const withoutStarted15 = {
+    ...f.startedJournal,
+    events: f.startedJournal.events.slice(0, -1),
+  };
+  expect(c.parseEventJournal(withoutStarted15).ok).toBe(true);
+  expect(
+    c.validateCycleReceiptBinding(withoutStarted15, f.terminalizing.value, f.receipt, f.evidence)
+      .ok,
+  ).toBe(false);
+
+  const forgedStarted = copy(f.startedJournal);
+  forgedStarted.events.at(-1)!.step.inputDigest = "0".repeat(64);
+  const forgedBytes = rechain(forgedStarted);
+  const forgedState = copy(f.terminalizing.value);
+  forgedState.pendingStep = copy(forgedStarted.events.at(-1)!.step);
+  forgedState.steps[14].stepDigest = c.computeRoutineStepDigest(forgedState.pendingStep);
+  forgedState.outcome.terminalStepDigest = c.computeRoutineStepDigest(forgedState.pendingStep);
+  forgedState.journalPrefixDigest = prefixHash(forgedBytes);
+  const forgedReceipt = {
+    ...f.receipt,
+    bindings: copy(forgedState.bindings),
+    reducedStateDigest: c.computeReducedStateDigest(forgedState),
+    startedJournalPrefixDigest: forgedState.journalPrefixDigest,
+    steps: copy(forgedState.steps),
+    terminalStepDigest: c.computeRoutineStepDigest(forgedState.pendingStep),
+  };
+  expect(c.parseEventJournal(forgedStarted).ok).toBe(true);
+  expect(c.parseReducedState(forgedState).ok).toBe(true);
+  expect(c.parseCycleReceipt(forgedReceipt).ok).toBe(true);
+  expect(
+    c.validateCycleReceiptBinding(forgedStarted, forgedState, forgedReceipt, f.evidence).ok,
+  ).toBe(false);
+
+  const forgedFinal = copy(f.journal);
+  forgedFinal.events[28]!.step = copy(forgedState.pendingStep);
+  forgedFinal.events[29]!.step = copy(forgedState.pendingStep);
+  forgedFinal.events[29]!.output.receipt = copy(forgedReceipt);
+  rechain(forgedFinal);
+  expect(c.parseEventJournal(forgedFinal).ok).toBe(true);
+  const forgedReplay = c.reduceEventJournal(forgedFinal, f.evidence);
+  expect(
+    forgedReplay.ok &&
+      ["COMPLETED", "COMPLETED_NO_WORK", "FAILED_KNOWN"].includes(forgedReplay.value.outcome.kind),
+  ).toBe(false);
   expect(f.receipt.reducedStateDigest).toBe(c.computeReducedStateDigest(f.terminalizing.value));
   expect(f.receipt.startedJournalPrefixDigest).toBe(f.terminalizing.value.journalPrefixDigest);
   expect(f.receipt.terminalStepDigest).toBe(c.computeRoutineStepDigest(f.step15));
@@ -909,9 +1990,9 @@ test("constructs receipt only from STARTED15 terminalizing state and final repla
     { ...f.receipt, reclaimOutcome: "RECLAIMED" },
     { ...f.receipt, steps: f.receipt.steps.slice(0, 14) },
   ])
-    expect(c.validateCycleReceiptBinding(f.startedJournal, f.terminalizing.value, mutant).ok).toBe(
-      false,
-    );
+    expect(
+      c.validateCycleReceiptBinding(f.startedJournal, f.terminalizing.value, mutant, f.evidence).ok,
+    ).toBe(false);
 });
 
 test("routes all four families through generic parse, canonical bytes and serialization", () => {
