@@ -1,9 +1,11 @@
-# Partial walking-skeleton contract consumers
+# Walking-skeleton contract consumers
 
 This disposable ISS-041 fixture produces integration evidence, never authority.
-ISS-041 remains open. Production packages must not import it; it has no public
-exports and is excluded from release bundles. Run the fixture workspace tests
-or ordinary root `pnpm test`; both skeleton capability commands remain placeholders.
+Production packages must not import it; it has no public exports and is excluded
+from release bundles. Existing partial consumers remain available for focused
+compatibility evidence. The final composition and its negative controls run
+through `pnpm run skeleton:cycle` and `pnpm run skeleton:negative-controls`.
+ISS-041 remains open until independent review and all three OS transcripts land.
 
 The observer imports `@orchestration-platform/contracts` by workspace name.
 Its fixed descriptor is now a complete public `module-descriptor/v1`, with
@@ -51,8 +53,8 @@ across the plan await. Setup and final cleanup are outside the measured call;
 this is bounded filesystem evidence, not OS-wide isolation. Source execution,
 independent review and three-OS CI are separate acceptance gates.
 
-Routine step 3, actual worker/review execution, journal append/replay, complete
-ordinal/terminal census and every-boundary restart evidence remain missing.
+For this observer entrypoint, routine step 3, actual worker/review execution,
+journal append/replay and complete ordinal/terminal evidence remain absent.
 See [the divergence ledger](divergence-ledger.md). Replacing only the private
 module seam preserves the existing running consumer; a registry, general
 loader, breaker reducer or process service would exceed this increment.
@@ -85,8 +87,8 @@ production selected state, renewal, recovery or clock authority. Injected clock
 observations bound the fixture's unrenewed lifetime and refuse rollback, skew or
 unavailability. Neither canonical success spelling nor a prior receipt replaces
 live observation. No public exports, production APIs, module admission, journal,
-complete ordinal census or terminal cycle are added; both skeleton commands
-remain placeholders and full ISS-041 remains open.
+complete ordinal census or terminal cycle are added by this separate entrypoint;
+the final composition below owns the activated skeleton commands.
 
 The focused session tests cover the real claim and second-holder refusal,
 configuration/entry joins, moved/malformed/unavailable state, clock negatives,
@@ -128,8 +130,8 @@ malformed frontier cleanup, changed claim across the plan await, no-action and
 repeat-output refusal. This is cooperative fixture behavior: no hostile-writer
 atomicity, native lease, production freshness, breaker permission, journal,
 resume guarantee, worker, review or terminal cycle is claimed. An observer call
-still merely constructs artifacts even when current policy reports TRIP.
-Both root skeleton commands remain placeholders pending the complete cycle.
+still merely constructs artifacts even when current policy reports TRIP. The
+final composition below owns the root skeleton commands.
 
 ## Initial breaker observation
 
@@ -159,7 +161,7 @@ outputs remain for inspection. Uncertain claims remain retained, partial
 writes are diagnostic and a later call refuses genesis on that existing root.
 The original observer and joined module consumer retain their behavior.
 No module dispatch, route, worker, review, public journal, terminal cycle or
-resume implementation is added. Both skeleton commands remain placeholders.
+resume implementation is added by this separate entrypoint.
 
 # Echo execution increment (partial)
 
@@ -180,8 +182,8 @@ composition. Existing standalone entrypoints retain their behavior.
 
 This increment stops at worker exit. It does not provide review reduction,
 disposition, public event journaling/replay, reclaim receipts, final-cycle
-authority or all-boundary crash/resume. Root skeleton commands remain reserved
-until those public families and the complete cycle are implemented. Evidence
+authority or all-boundary crash/resume. The final composition below supplies
+the command-owned continuation. Evidence
 requires independent review and host/three-OS verification; source never
 certifies itself.
 
@@ -206,6 +208,52 @@ review or permission. Both outcomes retain their raw finding/procedure evidence.
 Existing consumeEcho remains the ordinary observer path. The optional pure
 review-module disposition export is present but is not invoked by this partial
 consumer: the actual step11 journal-prefix admission is still absent. This
-increment still does not complete disposition/follow-up, reclaim, public journal
-append/replay, final cycle or all-boundary acceptance. No root command is
-activated and production imports no fixture.
+increment itself does not complete disposition/follow-up, reclaim, public
+journal append/replay, final cycle or all-boundary acceptance. The separate
+final composition owns those commands, and production imports no fixture.
+
+## Complete fixture-only review cycle
+
+`consumeFinalReviewCycle` is the bounded final composition. It acquires the
+existing cooperative create-once claim, uses actual SDK snapshot and policy
+observations, reduces the fresh-root initial breaker, invokes the fixed review
+module, routes and launches the fixed echo child, materializes a review attempt,
+reduces the separate fixed review decision, invokes the reviewed disposition,
+reclaims the one echo-input allocation, and terminalizes the cycle.
+
+The target is a seeded immutable worker result whose author cycle and attempt
+are distinct from the current review cycle and dispatch attempt. The accepted
+path therefore does not let a worker certify its own result. Accepted authority
+allows only the module's explicit nonmutating COMPLETE disposition. Steps 12
+and 13 are real `no-mutation` skips. Rejected authority produces an actual
+FOLLOW_UP/REPLAN request, skips mutation, reclaims the same resource and ends
+FAILED_KNOWN.
+
+The fixture owns `cycle.opj` with an exclusive retained file handle. It writes
+the public OPJ1 header and each length-framed event with short-write handling,
+syncs, rereads exact bytes, strictly parses the physical journal and reduces the
+complete retained-evidence tuple before the next owner runs. A partial suffix
+blocks append and is never truncated. The rendered dispatch input is retained
+separately because the managed echo input is deleted during reclaim. Final
+receipt construction follows the acyclic pre-15 reduced state, STARTED15,
+terminalizing state, receipt and TERMINAL15 order.
+
+The boundary seam covers the header, all 30 event boundaries, allocation,
+ownership publication, spawn, terminal observation, resource deletion and
+session cleanup. This fixture deliberately has no stale-claim adoption: after a
+killed owner, read-only replay remains possible but a restarted contender gets
+the named `SESSION_HELD` refusal before repeating an effect. That is bounded
+fail-closed evidence, not production resume.
+
+Malformed frontier and concurrent lease controls stop before journal or worker
+creation. The rejected-review control completes a known-failure journal without
+mutation. All writes remain below a caller-provided disposable state root;
+before/after manifests require the surrounding project inputs to remain byte
+identical. See [the exact step and boundary table](step-table.md) and
+[the divergence ledger](divergence-ledger.md).
+
+This composition still supplies no production state service, lease recovery,
+generic process-tree authority, hostile-filesystem atomicity, credential
+service, module registry, mutation, release, promotion, scheduler, broker or
+ISS-026 engine. Source records and parser success remain claims until their
+actual owners and independent review admit them.

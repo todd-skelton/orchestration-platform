@@ -16,6 +16,7 @@ import {
   type DispatchProcessCensus,
   type WorkerLaunchReceipt,
   type WorkerTerminalReceipt,
+  type ReclaimProcessObservation,
 } from "@orchestration-platform/contracts";
 
 // No imports, shell, descendants, credentials, filesystem or arbitrary input execution.
@@ -66,6 +67,19 @@ async function createOnce(path: string, bytes: Uint8Array) {
 const empty: DispatchProcessCensus = { completeness: "COMPLETE", entries: [] };
 const unavailable = { stdout: { kind: "UNAVAILABLE" }, stderr: { kind: "UNAVAILABLE" } } as const;
 
+export type EchoBoundary =
+  "INPUT_ALLOCATED" | "OWNERSHIP_PUBLISHED" | "CHILD_SPAWNED" | "CHILD_TERMINAL_OBSERVED";
+export type EchoLifecycleHooks = Readonly<{
+  boundary?: (boundary: EchoBoundary) => void | Promise<void>;
+  launched?: (launch: WorkerLaunchReceipt) => void | Promise<void>;
+  terminal?: (
+    terminal: WorkerTerminalReceipt,
+    stdout: Uint8Array,
+    stderr: Uint8Array,
+    process: ReclaimProcessObservation,
+  ) => void | Promise<void>;
+}>;
+
 // Private fixed host. Its sole caller owns the full preparation tuple and actual live lease.
 // A retained handle/source proves only this direct child, never generic descendant absence.
 export async function runEcho(
@@ -74,6 +88,7 @@ export async function runEcho(
   rendered: Uint8Array,
   now: () => string,
   inspect: () => Promise<boolean>,
+  hooks: EchoLifecycleHooks = {},
 ) {
   const resource = echoResource(plan.attemptId);
   if (
@@ -113,6 +128,7 @@ export async function runEcho(
     terminal: null,
     stdout: null,
     stderr: null,
+    process: null,
     retained: true as const,
   });
   try {
@@ -121,12 +137,22 @@ export async function runEcho(
     rows[0] = { ...rows[0]!, state: "UNKNOWN" };
     await createOnce(join(root, "echo-input.bin"), rendered);
     rows[0] = { ...rows[0]!, state: "ALLOCATED", allocationId: fixtureId() };
+  } catch {
+    return unknownLaunch();
+  }
+  await hooks.boundary?.("INPUT_ALLOCATED");
+  try {
     if (!(await inspect())) return unknownLaunch();
     const encoded = serializeContract("dispatch-plan/v1", plan);
     if (!encoded.ok) throw new Error("ownership encoding refused");
     ownership = "UNKNOWN";
     await createOnce(join(root, "echo-ownership.json"), encoded.bytes);
     ownership = "PUBLISHED";
+  } catch {
+    return unknownLaunch();
+  }
+  await hooks.boundary?.("OWNERSHIP_PUBLISHED");
+  try {
     if (!(await inspect())) return unknownLaunch();
   } catch {
     return unknownLaunch();
@@ -153,8 +179,9 @@ export async function runEcho(
     terminal: WorkerTerminalReceipt | null;
     stdout: Uint8Array | null;
     stderr: Uint8Array | null;
+    process: ReclaimProcessObservation | null;
     retained: boolean;
-  }>((resolve) => {
+  }>((resolve, reject) => {
     let launch: WorkerLaunchReceipt | null = null;
     let settled = false;
     let streamFailure = false;
@@ -168,6 +195,13 @@ export async function runEcho(
       clearTimeout(timeout);
       clearTimeout(abandon);
       resolve(value);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(abandon);
+      reject(error);
     };
     const unknownTerminal = () => {
       const prior =
@@ -188,6 +222,7 @@ export async function runEcho(
         terminal: checked.ok ? checked.value : null,
         stdout: null,
         stderr: null,
+        process: null,
         retained: true,
       });
     };
@@ -213,20 +248,26 @@ export async function runEcho(
       streamFailure = true;
     });
     child.once("spawn", () => {
-      try {
-        launch = launchRecord({ kind: "LIVE" }, census("LIVE"), now());
-        child.stdin.end(Buffer.from(rendered));
-      } catch {
-        child.kill();
-        unknownTerminal();
-      }
+      void (async () => {
+        try {
+          launch = launchRecord({ kind: "LIVE" }, census("LIVE"), now());
+          await hooks.boundary?.("CHILD_SPAWNED");
+          await hooks.launched?.(launch);
+          child.stdin.end(Buffer.from(rendered));
+        } catch (error) {
+          child.kill();
+          fail(error);
+        }
+      })();
     });
     child.once("error", () => {
       child.kill();
       unknownTerminal();
     });
-    child.once("close", (code, signal) => {
+    child.once("close", async (code, signal) => {
       if (settled) return;
+      clearTimeout(timeout);
+      clearTimeout(abandon);
       if (!launch || (code === null) === (signal === null)) {
         unknownTerminal();
         return;
@@ -279,12 +320,43 @@ export async function runEcho(
           unknownTerminal();
           return;
         }
+        if (streamFailure || clockInvalid) {
+          finish({
+            launch,
+            terminal: checked.value,
+            stdout: null,
+            stderr: null,
+            process: null,
+            retained: true,
+          });
+          return;
+        }
+        const process: ReclaimProcessObservation = {
+          handles: {
+            process: "CLOSED",
+            stderr: "CLOSED",
+            stdin: "CLOSED",
+            stdout: "CLOSED",
+          },
+          kind: "OBSERVED",
+          observationId: fixtureId(),
+          observedAt,
+          processes: checked.value.processes,
+        };
+        try {
+          await hooks.boundary?.("CHILD_TERMINAL_OBSERVED");
+          await hooks.terminal?.(checked.value, stdout, stderr, process);
+        } catch (error) {
+          fail(error);
+          return;
+        }
         finish({
           launch,
           terminal: checked.value,
-          stdout: streamFailure ? null : stdout,
-          stderr: streamFailure ? null : stderr,
-          retained: clockInvalid,
+          stdout,
+          stderr,
+          process,
+          retained: false,
         });
       } catch {
         unknownTerminal();

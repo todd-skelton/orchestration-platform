@@ -9,7 +9,12 @@ import {
   validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
   validateModulePlanBinding,
+  type AdapterConfiguration,
+  type ContractRecord,
+  type CycleRequest,
   type ModuleDescriptor,
+  type ProjectBreakerFacts,
+  type ProjectFacts,
   type ReviewSubject,
 } from "@orchestration-platform/contracts";
 import type { CurrentPolicyReader } from "../../../packages/adapter-sdk/src/current-policy.js";
@@ -26,6 +31,96 @@ import { descriptor as reviewDescriptor } from "./review-module.js";
 // Matches the two statically composed SDK fixture policies, never input JSON.
 const currentPolicyVersion = "1.0.0";
 
+export type FixtureConfiguration = Readonly<{
+  configuration: AdapterConfiguration;
+  cycleRequest: CycleRequest;
+  provenance: ContractRecord;
+  stateRoot: string;
+}>;
+
+/** Staged fixture-only configuration admission used by the complete cycle. */
+export async function loadFixtureConfiguration(
+  adapter: ConfigurationHostAdapter,
+  invocation: ConfigurationLoaderInvocation,
+  adapterConfiguration: unknown,
+  cycleRequest: unknown,
+) {
+  const request = parseCycleRequest(cycleRequest);
+  if (!request.ok) return request;
+  const loaded = await createConfigurationLoader(adapter)(invocation);
+  if (!loaded.ok) return loaded;
+  const provenance = projectConfigurationProvenance(loaded.value);
+  if (!provenance.ok) return provenance;
+  const configuration = validateAdapterConfigurationBinding(adapterConfiguration, provenance.value);
+  if (!configuration.ok) return configuration;
+  return {
+    ok: true as const,
+    value: {
+      configuration: configuration.value,
+      cycleRequest: request.value,
+      provenance: provenance.value,
+      stateRoot: loaded.value.stateRoot,
+    },
+  };
+}
+
+/** One actual step-2 observation; UNKNOWN/UNAVAILABLE stays typed for the caller. */
+export async function observeFixtureSnapshot(
+  context: FixtureConfiguration,
+  snapshot: SnapshotReader,
+  clocks: SnapshotClocks,
+) {
+  const observed = await snapshot(context.configuration, context.provenance, clocks);
+  if (!observed.ok) return observed;
+  return validateProjectFactsBinding(observed.facts, context.configuration);
+}
+
+/** One actual step-3 policy observation over the retained complete snapshot. */
+export async function observeFixturePolicy(
+  context: FixtureConfiguration,
+  facts: ProjectFacts,
+  currentPolicy: CurrentPolicyReader,
+  clocks: SnapshotClocks,
+) {
+  if (facts.state !== "COMPLETE")
+    return { ok: false as const, issues: [`fixture:snapshot:${facts.state}`] };
+  const observed = await currentPolicy(context.configuration, context.provenance, facts, clocks);
+  if (!observed.ok) return observed;
+  const breakerFacts = validateProjectBreakerFactsBinding(
+    observed.facts,
+    context.configuration,
+    facts,
+    currentPolicyVersion,
+  );
+  if (!breakerFacts.ok) return breakerFacts;
+  return breakerFacts.value.state === "COMPLETE"
+    ? breakerFacts
+    : {
+        ok: false as const,
+        issues: [`fixture:current-policy:${breakerFacts.value.state}:${breakerFacts.value.reason}`],
+      };
+}
+
+/** Pure construction after the distinct step-2/3 observations have been admitted. */
+export function composeFixtureModuleInput(
+  descriptor: ModuleDescriptor,
+  reviewSubject: ReviewSubject | null,
+  context: FixtureConfiguration,
+  projectFacts: ProjectFacts,
+  policyFacts: ProjectBreakerFacts,
+) {
+  return parseModulePlanInput({
+    adapterConfiguration: context.configuration,
+    configurationProvenance: context.provenance,
+    cycleRequest: context.cycleRequest,
+    descriptor,
+    policyFacts,
+    projectFacts,
+    reviewSubject,
+    schemaVersion: "module-plan-input/v1",
+  });
+}
+
 // Invoked only by the quarantined fixture. No process globals or package-export changes.
 async function prepareInput(
   selectedDescriptor: ModuleDescriptor,
@@ -38,52 +133,34 @@ async function prepareInput(
   clocks: SnapshotClocks,
   cycleRequest: unknown,
 ) {
-  const request = parseCycleRequest(cycleRequest);
-  if (!request.ok) return request;
-  const loaded = await createConfigurationLoader(adapter)(invocation);
-  if (!loaded.ok) return loaded;
-  const provenance = projectConfigurationProvenance(loaded.value);
-  if (!provenance.ok) return provenance;
-  const configuration = validateAdapterConfigurationBinding(adapterConfiguration, provenance.value);
-  if (!configuration.ok) return configuration;
-  const observed = await snapshot(configuration.value, provenance.value, clocks);
-  if (!observed.ok) return observed;
-  const facts = validateProjectFactsBinding(observed.facts, configuration.value);
+  const context = await loadFixtureConfiguration(
+    adapter,
+    invocation,
+    adapterConfiguration,
+    cycleRequest,
+  );
+  if (!context.ok) return context;
+  const facts = await observeFixtureSnapshot(context.value, snapshot, clocks);
   if (!facts.ok) return facts;
   if (facts.value.state !== "COMPLETE")
     return { ok: false as const, issues: [`fixture:snapshot:${facts.value.state}`] };
-  const policyObserved = await currentPolicy(
-    configuration.value,
-    provenance.value,
+  const breakerFacts = await observeFixturePolicy(
+    context.value,
     facts.value,
+    currentPolicy,
     clocks,
   );
-  if (!policyObserved.ok) return policyObserved;
-  const breakerFacts = validateProjectBreakerFactsBinding(
-    policyObserved.facts,
-    configuration.value,
-    facts.value,
-    currentPolicyVersion,
-  );
   if (!breakerFacts.ok) return breakerFacts;
-  if (breakerFacts.value.state !== "COMPLETE")
-    return {
-      ok: false as const,
-      issues: [`fixture:current-policy:${breakerFacts.value.state}:${breakerFacts.value.reason}`],
-    };
   // Retain the exact public input across the call. Both trip arms remain observations only.
-  const retainedInput = parseModulePlanInput({
-    adapterConfiguration: configuration.value,
-    configurationProvenance: provenance.value,
-    cycleRequest: request.value,
-    descriptor: selectedDescriptor,
-    policyFacts: breakerFacts.value,
-    projectFacts: facts.value,
+  const retainedInput = composeFixtureModuleInput(
+    selectedDescriptor,
     reviewSubject,
-    schemaVersion: "module-plan-input/v1",
-  });
+    context.value,
+    facts.value,
+    breakerFacts.value,
+  );
   if (!retainedInput.ok) return retainedInput;
-  return { ok: true as const, input: retainedInput.value, stateRoot: loaded.value.stateRoot };
+  return { ok: true as const, input: retainedInput.value, stateRoot: context.value.stateRoot };
 }
 
 type PreparationArgs = [
