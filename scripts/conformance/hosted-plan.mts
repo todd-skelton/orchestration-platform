@@ -24,6 +24,10 @@ import {
   projectGithubCandidateSubject,
   type GithubProtectionApiInput,
 } from "../../packages/conformance/src/github-actions/index.js";
+import {
+  hostedNativeLockAction,
+  loadHostedNativeLockPlanInputs,
+} from "./hosted-native-lock-plan.mjs";
 
 const execFileAsync = promisify(execFile);
 const commitPattern = /^[0-9a-f]{40}$/;
@@ -63,6 +67,34 @@ export interface HostedPlanContext extends Omit<HostedDispatchContext, "protecte
   readonly providerRunDigest: string;
   readonly requiredJobRegistryDigest: string;
   readonly schemaVersion: "hosted-conformance-plan-context/v1";
+  readonly testBundleDigest: string;
+  readonly vectorCensusDigest: string;
+}
+
+export interface HostedNativeLockDispatchContext extends HostedDispatchContext {
+  readonly action: typeof hostedNativeLockAction;
+}
+
+export interface HostedNativeLockPlanSelection extends HostedNativeLockDispatchContext {
+  readonly event: "repository_dispatch";
+  readonly protectedRefDigest: string;
+  readonly schemaVersion: "hosted-native-lock-plan-selection/v1";
+}
+
+export interface HostedNativeLockPlanContext extends Omit<
+  HostedNativeLockDispatchContext,
+  "protectedRef"
+> {
+  readonly candidateSubjectDigest: string;
+  readonly caseCensusDigest: string;
+  readonly controlCensusDigest: string;
+  readonly event: "repository_dispatch";
+  readonly harnessBundleDigest: string;
+  readonly prerequisiteCensusDigest: string;
+  readonly protectedRefDigest: string;
+  readonly providerRunDigest: string;
+  readonly requiredJobRegistryDigest: string;
+  readonly schemaVersion: "hosted-native-lock-plan-context/v1";
   readonly testBundleDigest: string;
   readonly vectorCensusDigest: string;
 }
@@ -203,6 +235,28 @@ export function parseHostedDispatchContext(
   }
 }
 
+export function parseHostedNativeLockDispatchContext(
+  environment: Readonly<Record<string, string | undefined>>,
+  eventInput: unknown,
+): HostedPlanResult<HostedNativeLockDispatchContext> {
+  try {
+    const event = plainRecord(eventInput);
+    if (!event || event.action !== hostedNativeLockAction) return refusal("event:action-refused");
+    const ordinary = parseHostedDispatchContext(
+      environment,
+      Object.freeze({ ...event, action: "conformance_candidate" }),
+    );
+    return ordinary.ok
+      ? {
+          ok: true,
+          value: Object.freeze({ ...ordinary.value, action: hostedNativeLockAction }),
+        }
+      : ordinary;
+  } catch {
+    return refusal("context:unreadable");
+  }
+}
+
 export async function selectHostedPlan(
   context: HostedDispatchContext,
   token: string,
@@ -227,6 +281,37 @@ export async function selectHostedPlan(
         event: "repository_dispatch",
         protectedRefDigest: computeGithubConformanceProtectedRefDigest(protectedRef.value),
         schemaVersion: "hosted-conformance-plan-selection/v1",
+      }),
+    };
+  } catch {
+    return refusal("provider:selection-unreadable");
+  }
+}
+
+export async function selectHostedNativeLockPlan(
+  context: HostedNativeLockDispatchContext,
+  token: string,
+  api: HostedPlanApi,
+): Promise<HostedPlanResult<HostedNativeLockPlanSelection>> {
+  try {
+    if (typeof token !== "string" || token.length === 0) return refusal("provider:token-required");
+    const resolvedRevision = await api.resolveCommit(
+      context.repository,
+      context.candidateRevision,
+      token,
+    );
+    if (resolvedRevision !== context.candidateRevision)
+      return refusal("candidate:resolved-revision-mismatch");
+    const protectedRef = parseGithubConformanceProtectedRef(context.protectedRef);
+    if (!protectedRef.ok)
+      return refusal(...protectedRef.issues.map((issue) => `protectedRef.${issue}`));
+    return {
+      ok: true,
+      value: Object.freeze({
+        ...context,
+        event: "repository_dispatch",
+        protectedRefDigest: computeGithubConformanceProtectedRefDigest(protectedRef.value),
+        schemaVersion: "hosted-native-lock-plan-selection/v1",
       }),
     };
   } catch {
@@ -561,6 +646,83 @@ export async function finalizeHostedPlan(input: {
   }
 }
 
+export async function finalizeHostedNativeLockPlan(input: {
+  readonly candidateRoot: string;
+  readonly selection: HostedNativeLockPlanSelection;
+  readonly stableRoot: string;
+}): Promise<
+  HostedPlanResult<{
+    readonly context: HostedNativeLockPlanContext;
+    readonly encodedContext: string;
+    readonly matrix: Readonly<{ include: readonly ContractRecord[] }>;
+  }>
+> {
+  try {
+    const stableRoot = resolve(input.stableRoot);
+    const candidateRoot = resolve(input.candidateRoot);
+    if (
+      input.selection.action !== hostedNativeLockAction ||
+      !isAbsolute(input.candidateRoot) ||
+      within(stableRoot, candidateRoot) ||
+      within(candidateRoot, stableRoot)
+    )
+      return refusal("candidate:separate-root-required");
+    const [candidate, nativePlan] = await Promise.all([
+      loadHostedCandidateSnapshot(candidateRoot, input.selection.candidateRevision),
+      loadHostedNativeLockPlanInputs(stableRoot),
+    ]);
+    if (!candidate.ok) return candidate;
+    const providerRunContext = Object.freeze({
+      candidateRevision: input.selection.candidateRevision,
+      candidateSubjectDigest: candidate.value.digest,
+      event: "repository_dispatch",
+      harnessBundleDigest: nativePlan.harnessBundleDigest,
+      protectedRefDigest: input.selection.protectedRefDigest,
+      repositoryId: input.selection.repositoryId,
+      requiredJobRegistryDigest: nativePlan.requiredJobRegistryDigest,
+      runAttempt: input.selection.runAttempt,
+      runId: input.selection.runId,
+      testBundleDigest: nativePlan.testBundleDigest,
+      workflowPath: input.selection.workflowPath,
+      workflowRef: input.selection.workflowRef,
+      workflowRevision: input.selection.workflowRevision,
+    });
+    const parsedProviderRun = parseGithubProviderRunContext(providerRunContext);
+    if (!parsedProviderRun.ok) return refusal(...parsedProviderRun.issues);
+    const context: HostedNativeLockPlanContext = Object.freeze({
+      action: hostedNativeLockAction,
+      candidateRevision: input.selection.candidateRevision,
+      candidateSubjectDigest: candidate.value.digest,
+      caseCensusDigest: nativePlan.caseCensusDigest,
+      controlCensusDigest: nativePlan.controlCensusDigest,
+      event: "repository_dispatch",
+      harnessBundleDigest: nativePlan.harnessBundleDigest,
+      prerequisiteCensusDigest: nativePlan.prerequisiteCensusDigest,
+      protectedRefDigest: input.selection.protectedRefDigest,
+      providerRunDigest: computeGithubProviderRunDigest(parsedProviderRun.value),
+      repository: input.selection.repository,
+      repositoryId: input.selection.repositoryId,
+      requiredJobRegistryDigest: nativePlan.requiredJobRegistryDigest,
+      runAttempt: input.selection.runAttempt,
+      runId: input.selection.runId,
+      schemaVersion: "hosted-native-lock-plan-context/v1",
+      testBundleDigest: nativePlan.testBundleDigest,
+      vectorCensusDigest: nativePlan.vectorCensusDigest,
+      workflowPath: input.selection.workflowPath,
+      workflowRef: input.selection.workflowRef,
+      workflowRevision: input.selection.workflowRevision,
+    });
+    const encodedContext = Buffer.from(canonicalJson(context), "utf8").toString("base64url");
+    if (encodedContext.length > 64 * 1024) return refusal("plan:context-output-over-bound");
+    return {
+      ok: true,
+      value: Object.freeze({ context, encodedContext, matrix: nativePlan.matrix }),
+    };
+  } catch {
+    return refusal("native-lock-plan:finalize-refused");
+  }
+}
+
 export type HostedGithubFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 async function githubJson(
@@ -712,6 +874,41 @@ function parseSelection(input: unknown): HostedPlanResult<HostedPlanSelection> {
   return { ok: true, value: record as unknown as HostedPlanSelection };
 }
 
+export function parseHostedNativeLockSelection(
+  input: unknown,
+): HostedPlanResult<HostedNativeLockPlanSelection> {
+  const fields = [
+    "action",
+    "candidateRevision",
+    "event",
+    "protectedRef",
+    "protectedRefDigest",
+    "repository",
+    "repositoryId",
+    "runAttempt",
+    "runId",
+    "schemaVersion",
+    "workflowPath",
+    "workflowRef",
+    "workflowRevision",
+  ];
+  const record = exactRecord(input, fields);
+  if (!record) return refusal("selection:closed-record-refused");
+  const protectedRef = parseGithubConformanceProtectedRef(record.protectedRef);
+  if (!protectedRef.ok) return refusal(...protectedRef.issues.map((issue) => `selection.${issue}`));
+  const candidateRevision = record.candidateRevision;
+  if (
+    record.action !== hostedNativeLockAction ||
+    record.schemaVersion !== "hosted-native-lock-plan-selection/v1" ||
+    record.event !== "repository_dispatch" ||
+    typeof candidateRevision !== "string" ||
+    !commitPattern.test(candidateRevision) ||
+    record.protectedRefDigest !== computeGithubConformanceProtectedRefDigest(protectedRef.value)
+  )
+    return refusal("selection:scalar-refused");
+  return { ok: true, value: record as unknown as HostedNativeLockPlanSelection };
+}
+
 async function writeOutput(name: string, value: string): Promise<void> {
   const output = process.env.GITHUB_OUTPUT;
   if (!output || !isAbsolute(output) || /[\r\n]/.test(name) || /[\r\n]/.test(value))
@@ -722,13 +919,26 @@ async function writeOutput(name: string, value: string): Promise<void> {
 export async function runHostedPlanSelect(): Promise<void> {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath || !isAbsolute(eventPath)) throw new Error("provider:event-path-refused");
-  const context = parseHostedDispatchContext(process.env, await readJsonFile(eventPath));
-  if (!context.ok) throw new Error("provider:dispatch-context-refused");
-  const selection = await selectHostedPlan(
-    context.value,
-    process.env.GITHUB_TOKEN ?? "",
-    githubPlanApi,
-  );
+  const eventInput = await readJsonFile(eventPath);
+  const eventRecord = plainRecord(eventInput);
+  const selection =
+    eventRecord?.action === hostedNativeLockAction
+      ? await (async () => {
+          const context = parseHostedNativeLockDispatchContext(process.env, eventInput);
+          return context.ok
+            ? await selectHostedNativeLockPlan(
+                context.value,
+                process.env.GITHUB_TOKEN ?? "",
+                githubPlanApi,
+              )
+            : context;
+        })()
+      : await (async () => {
+          const context = parseHostedDispatchContext(process.env, eventInput);
+          return context.ok
+            ? await selectHostedPlan(context.value, process.env.GITHUB_TOKEN ?? "", githubPlanApi)
+            : context;
+        })();
   if (!selection.ok) throw new Error("provider:plan-selection-refused");
   await mkdir(resolve(".conformance"), { recursive: false });
   await writeFile(resolve(selectionFile), canonicalJson(selection.value), {
@@ -739,14 +949,32 @@ export async function runHostedPlanSelect(): Promise<void> {
 }
 
 export async function runHostedPlanFinalize(): Promise<void> {
-  const selection = parseSelection(await readJsonFile(resolve(selectionFile)));
+  const selectionInput = await readJsonFile(resolve(selectionFile));
+  const selectionRecord = plainRecord(selectionInput);
   const candidateRoot = process.env.CANDIDATE_ROOT;
-  if (!selection.ok || !candidateRoot) throw new Error("provider:plan-selection-refused");
-  const finalized = await finalizeHostedPlan({
-    candidateRoot,
-    selection: selection.value,
-    stableRoot: process.cwd(),
-  });
+  if (!candidateRoot) throw new Error("provider:plan-selection-refused");
+  const finalized =
+    selectionRecord?.schemaVersion === "hosted-native-lock-plan-selection/v1"
+      ? await (async () => {
+          const selection = parseHostedNativeLockSelection(selectionInput);
+          return selection.ok
+            ? await finalizeHostedNativeLockPlan({
+                candidateRoot,
+                selection: selection.value,
+                stableRoot: process.cwd(),
+              })
+            : selection;
+        })()
+      : await (async () => {
+          const selection = parseSelection(selectionInput);
+          return selection.ok
+            ? await finalizeHostedPlan({
+                candidateRoot,
+                selection: selection.value,
+                stableRoot: process.cwd(),
+              })
+            : selection;
+        })();
   if (!finalized.ok) throw new Error("provider:plan-finalize-refused");
   await writeFile(resolve(contextFile), canonicalJson(finalized.value.context), {
     encoding: "utf8",

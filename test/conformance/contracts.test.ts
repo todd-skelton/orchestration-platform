@@ -279,6 +279,12 @@ describe("portable conformance contracts", () => {
         suites: [{ ...registry.suites[0], runnerToken: "CANDIDATE_SELECTED" }],
       }).ok,
     ).toBe(false);
+    expect(
+      conformance.parseConformanceRequiredJobRegistry({
+        ...registry,
+        suites: [{ ...registry.suites[0], runnerToken: "ISS022_NATIVE_LOCK_EXPERIMENT" }],
+      }).ok,
+    ).toBe(true);
   });
 
   test("builds exact raw evidence and refuses moved environment bytes", () => {

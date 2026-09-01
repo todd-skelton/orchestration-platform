@@ -49,6 +49,7 @@ export const conformanceRequirementKinds = Object.freeze(["REQUIRED", "UNUSED"] 
 export const conformanceWalkRequirements = Object.freeze(["NONE", "WALK_1000"] as const);
 export const conformanceRunnerTokens = Object.freeze([
   "ISS002_CONTRACTS",
+  "ISS022_NATIVE_LOCK_EXPERIMENT",
   "ISS022_PORTABLE_PRIMITIVES",
 ] as const);
 

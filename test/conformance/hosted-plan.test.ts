@@ -5,15 +5,24 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  finalizeHostedNativeLockPlan,
   finalizeHostedPlan,
   parseGitTreeOutput,
   parseHostedDispatchContext,
+  parseHostedNativeLockDispatchContext,
   readGithubProtection,
+  selectHostedNativeLockPlan,
   selectHostedPlan,
   type HostedDispatchContext,
+  type HostedNativeLockPlanSelection,
   type HostedPlanApi,
   type HostedPlanSelection,
 } from "../../scripts/conformance/hosted-plan.mjs";
+import {
+  createHostedNativeLockMatrix,
+  createHostedNativeLockRegistry,
+  hostedNativeLockControlIds,
+} from "../../scripts/conformance/hosted-native-lock-plan.mjs";
 import {
   computeGithubConformanceProtectedRefDigest,
   projectGithubProtectionSnapshot,
@@ -49,6 +58,14 @@ function environment(overrides: Readonly<Record<string, string | undefined>> = {
 
 function event(payload: unknown = { candidateRevision: revision }) {
   return { action: "conformance_candidate", client_payload: payload, repository: { id: 1 } };
+}
+
+function nativeEvent(payload: unknown = { candidateRevision: revision }) {
+  return {
+    action: "iss022_native_lock_experiment",
+    client_payload: payload,
+    repository: { id: 1 },
+  };
 }
 
 function context(): HostedDispatchContext {
@@ -114,6 +131,80 @@ describe("hosted conformance plan", () => {
         )
       ).ok,
     ).toBe(false);
+  });
+
+  test("registers only the literal native-lock action under a distinct selection", async () => {
+    const parsed = parseHostedNativeLockDispatchContext(environment(), nativeEvent());
+    expect(parsed.ok).toBe(true);
+    expect(parseHostedNativeLockDispatchContext(environment(), event()).ok).toBe(false);
+    expect(
+      parseHostedNativeLockDispatchContext(
+        environment(),
+        nativeEvent({ candidateRevision: revision, matrix: [] }),
+      ).ok,
+    ).toBe(false);
+    if (!parsed.ok) return;
+    const selected = await selectHostedNativeLockPlan(parsed.value, "token", api());
+    expect(selected.ok).toBe(true);
+    if (!selected.ok) return;
+    expect(selected.value).toMatchObject({
+      action: "iss022_native_lock_experiment",
+      candidateRevision: revision,
+      schemaVersion: "hosted-native-lock-plan-selection/v1",
+    });
+    expect((await selectHostedNativeLockPlan(parsed.value, "", api())).ok).toBe(false);
+    expect(
+      (
+        await selectHostedNativeLockPlan(
+          parsed.value,
+          "token",
+          api({ resolveCommit: async () => "b".repeat(40) }),
+        )
+      ).ok,
+    ).toBe(false);
+  });
+
+  test("pins the native-lock runner token, three required OS rows, and matrix order", () => {
+    expect(hostedNativeLockControlIds).toHaveLength(12);
+    const registry = createHostedNativeLockRegistry("a".repeat(64));
+    expect(createHostedNativeLockMatrix(registry).include).toEqual([
+      {
+        jobId: "iss022-native-lock-experiment-linux",
+        runner: "ubuntu-latest",
+        runnerToken: "ISS022_NATIVE_LOCK_EXPERIMENT",
+        suiteId: "iss022-native-lock-experiment",
+      },
+      {
+        jobId: "iss022-native-lock-experiment-macos",
+        runner: "macos-latest",
+        runnerToken: "ISS022_NATIVE_LOCK_EXPERIMENT",
+        suiteId: "iss022-native-lock-experiment",
+      },
+      {
+        jobId: "iss022-native-lock-experiment-windows",
+        runner: "windows-latest",
+        runnerToken: "ISS022_NATIVE_LOCK_EXPERIMENT",
+        suiteId: "iss022-native-lock-experiment",
+      },
+    ]);
+    type RegistryMutant = {
+      jobs: Array<Record<string, unknown>>;
+      suites: Array<Record<string, unknown>>;
+    };
+    const mutants: Array<(value: RegistryMutant) => unknown> = [
+      (value) => (value.suites[0]!.runnerToken = "ISS022_PORTABLE_PRIMITIVES"),
+      (value) => (value.jobs[0]!.jobId = "iss022-native-lock-experiment-other"),
+      (value) => (value.jobs[0]!.environmentFamily = "WINDOWS"),
+      (value) => (value.jobs[0]!.requirement = "UNUSED"),
+      (value) => value.jobs.reverse(),
+      (value) => value.jobs.pop(),
+      (value) => value.jobs.push(structuredClone(value.jobs[0]!)),
+    ];
+    for (const mutate of mutants) {
+      const value = structuredClone(registry) as unknown as RegistryMutant;
+      mutate(value);
+      expect(() => createHostedNativeLockMatrix(value)).toThrow(/native-lock-plan/);
+    }
   });
 
   test("parses only complete NUL-terminated Git tree rows", () => {
@@ -197,6 +288,8 @@ describe("hosted conformance plan", () => {
     const finalized = await finalizeHostedPlan({ candidateRoot, selection, stableRoot });
     if (!finalized.ok) throw new Error(finalized.issues.join(","));
     expect(finalized.ok).toBe(true);
+    expect(finalized.value.context.schemaVersion).toBe("hosted-conformance-plan-context/v1");
+    expect(finalized.value.context).not.toHaveProperty("action");
     expect(finalized.value.context.candidateSubjectDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(finalized.value.context.providerRunDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(finalized.value.matrix.include).toEqual([
@@ -221,6 +314,57 @@ describe("hosted conformance plan", () => {
     ]);
     expect(Buffer.from(finalized.value.encodedContext, "base64url").toString("utf8")).toContain(
       finalized.value.context.providerRunDigest,
+    );
+  }, 600_000);
+
+  test("finalizes the native-lock plan without activating an observation runner", async () => {
+    const temporary = await mkdtemp(resolve(tmpdir(), "orchestration-native-lock-plan-"));
+    roots.push(temporary);
+    const candidateRoot = resolve(temporary, "candidate");
+    const stableRoot = resolve(import.meta.dirname, "../..");
+    await execFileAsync("git", [
+      "clone",
+      "--local",
+      "--no-hardlinks",
+      "--quiet",
+      stableRoot,
+      candidateRoot,
+    ]);
+    const { stdout } = await execFileAsync("git", ["-C", candidateRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    });
+    const candidateRevision = stdout.trim();
+    const dispatch = parseHostedNativeLockDispatchContext(environment(), nativeEvent());
+    if (!dispatch.ok) throw new Error(dispatch.issues.join(","));
+    const selection: HostedNativeLockPlanSelection = Object.freeze({
+      ...dispatch.value,
+      candidateRevision,
+      event: "repository_dispatch",
+      protectedRefDigest: computeGithubConformanceProtectedRefDigest(dispatch.value.protectedRef),
+      schemaVersion: "hosted-native-lock-plan-selection/v1",
+      workflowRevision: candidateRevision,
+    });
+    const finalized = await finalizeHostedNativeLockPlan({ candidateRoot, selection, stableRoot });
+    if (!finalized.ok) throw new Error(finalized.issues.join(","));
+    expect(finalized.value.context).toMatchObject({
+      action: "iss022_native_lock_experiment",
+      candidateRevision,
+      schemaVersion: "hosted-native-lock-plan-context/v1",
+    });
+    for (const field of [
+      "caseCensusDigest",
+      "controlCensusDigest",
+      "harnessBundleDigest",
+      "prerequisiteCensusDigest",
+      "providerRunDigest",
+      "requiredJobRegistryDigest",
+      "testBundleDigest",
+      "vectorCensusDigest",
+    ] as const)
+      expect(finalized.value.context[field]).toMatch(/^[0-9a-f]{64}$/);
+    expect(finalized.value.matrix.include).toHaveLength(3);
+    expect(Buffer.from(finalized.value.encodedContext, "base64url").toString("utf8")).toContain(
+      '"action":"iss022_native_lock_experiment"',
     );
   }, 600_000);
 });
