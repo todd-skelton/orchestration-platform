@@ -56,9 +56,12 @@ describe("private composition build", () => {
       await readFile(resolve(root, "fixtures/walking-skeleton/package.json"), "utf8"),
     );
     expect(fixturePackage).toMatchObject({ private: true, exports: {} });
-    expect(await readFile(resolve(root, "packages/journal/src/index.ts"), "utf8")).toBe(
-      'export { commandHandlerRegistration } from "./command-handler.mjs";\n',
-    );
+    expect(
+      (await readFile(resolve(root, "packages/journal/src/index.ts"), "utf8")).replace(
+        /\r\n/g,
+        "\n",
+      ),
+    ).toBe('export { commandHandlerRegistration } from "./command-handler.mjs";\n');
     expect(
       JSON.stringify(
         JSON.parse(await readFile(resolve(root, "config/private-compositions.json"), "utf8")),
