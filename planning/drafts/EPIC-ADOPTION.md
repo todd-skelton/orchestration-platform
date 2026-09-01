@@ -2,7 +2,22 @@
 key: EPIC-ADOPTION
 title: "Epic: Adopt the platform through a versioned project adapter"
 labels: ["type:epic", "area:integrations"]
-children: [ISS-013, ISS-028, ISS-016, ISS-024, ISS-017, ISS-018, ISS-044, ISS-045]
+children:
+  [
+    ISS-013,
+    ISS-049,
+    ISS-050,
+    ISS-051,
+    ISS-052,
+    ISS-053,
+    ISS-028,
+    ISS-016,
+    ISS-024,
+    ISS-017,
+    ISS-018,
+    ISS-044,
+    ISS-045,
+  ]
 ---
 
 ## Outcome
@@ -24,9 +39,14 @@ inheriting any of its evidence, and sit off the self-host critical path.
 
 - Direct-edge DAG (generated from `planning/roadmap.json`):
   `ISS-003 → ISS-013`;
+  `ISS-008 → ISS-049`;
+  `ISS-009 → ISS-050`;
+  `ISS-030 → ISS-051`;
+  `ISS-014 → ISS-052`;
+  `ISS-020 → ISS-053`;
   `ISS-013 → ISS-028`;
   `ISS-025 → ISS-016`;
-  `ISS-016, ISS-028 → ISS-024`;
+  `ISS-016, ISS-028, ISS-053 → ISS-024`;
   `ISS-015, ISS-016, ISS-028 → ISS-017`;
   `ISS-017, ISS-024 → ISS-018`;
   `ISS-021 → ISS-044`;
@@ -45,6 +65,11 @@ inheriting any of its evidence, and sit off the self-host critical path.
 ## Child index
 
 - `ISS-013` — Define and validate the project adapter SDK.
+- `ISS-049` — Implement adapter dispatch allocation and resource mapping.
+- `ISS-050` — Implement reviewed project mutation and adapter conformance.
+- `ISS-051` — Implement adapter recovery and owned-resource reclaim.
+- `ISS-052` — Implement release-candidate and CI/deploy observations.
+- `ISS-053` — Implement adapter state export and import mapping hooks.
 - `ISS-028` — Scaffold the first-consumer adapter composition root.
 - `ISS-016` — Capture the first consumer parity fixture.
 - `ISS-024` — Implement and fixture first-consumer state import recovery.

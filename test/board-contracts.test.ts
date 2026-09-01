@@ -117,8 +117,8 @@ describe("board contract", () => {
       (board: BoardSnapshot) => {
         const row = item(board, "ISS-019");
         row.body = row.body.replace(
-          "blocked_by: [ISS-020, ISS-030, ISS-039, ISS-040]",
-          "blocked_by: [ISS-006, ISS-020, ISS-030, ISS-039, ISS-040]",
+          "blocked_by: [ISS-020, ISS-039, ISS-040]",
+          "blocked_by: [ISS-006, ISS-020, ISS-039, ISS-040]",
         );
       },
     ],

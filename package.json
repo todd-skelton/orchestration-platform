@@ -34,7 +34,7 @@
     "modules:test": "node scripts/capability-not-implemented.mjs ISS-011 modules:test",
     "modules:conformance": "node scripts/capability-not-implemented.mjs ISS-011 modules:conformance",
     "test:routing-matrix": "node scripts/capability-not-implemented.mjs ISS-012 test:routing-matrix",
-    "adapters:conformance": "node scripts/capability-not-implemented.mjs ISS-013 adapters:conformance",
+    "adapters:conformance": "node scripts/capability-not-implemented.mjs ISS-050 adapters:conformance",
     "test:promotion-fault-matrix": "node scripts/capability-not-implemented.mjs ISS-014 test:promotion-fault-matrix",
     "self-host:fixture": "node scripts/capability-not-implemented.mjs ISS-015 self-host:fixture",
     "self-host:negative-controls": "node scripts/capability-not-implemented.mjs ISS-015 self-host:negative-controls",
