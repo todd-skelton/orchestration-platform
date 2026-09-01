@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -366,5 +366,32 @@ describe("hosted conformance plan", () => {
     expect(Buffer.from(finalized.value.encodedContext, "base64url").toString("utf8")).toContain(
       '"action":"iss022_native_lock_experiment"',
     );
+    for (const [name, path] of [
+      ["catalog", "packages/conformance/src/contracts.ts"],
+      ["dispatcher", "scripts/conformance/hosted-plan.mts"],
+    ] as const) {
+      const mutatedStableRoot = resolve(temporary, `stable-${name}`);
+      await execFileAsync("git", [
+        "clone",
+        "--local",
+        "--no-hardlinks",
+        "--quiet",
+        stableRoot,
+        mutatedStableRoot,
+      ]);
+      await appendFile(resolve(mutatedStableRoot, path), "\n// stable-root mutant\n", "utf8");
+      const mutated = await finalizeHostedNativeLockPlan({
+        candidateRoot,
+        selection,
+        stableRoot: mutatedStableRoot,
+      });
+      if (!mutated.ok) throw new Error(mutated.issues.join(","));
+      expect(mutated.value.context.harnessBundleDigest).not.toBe(
+        finalized.value.context.harnessBundleDigest,
+      );
+      expect(mutated.value.context.providerRunDigest).not.toBe(
+        finalized.value.context.providerRunDigest,
+      );
+    }
   }, 600_000);
 });

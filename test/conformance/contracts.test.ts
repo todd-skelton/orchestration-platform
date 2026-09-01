@@ -152,6 +152,7 @@ describe("portable conformance contracts", () => {
     expect(conformance.conformanceResults).toEqual(["PASS", "FAIL", "UNSUPPORTED", "UNKNOWN"]);
     expect(conformance.conformanceRunnerTokens).toEqual([
       "ISS002_CONTRACTS",
+      "ISS022_NATIVE_LOCK_EXPERIMENT",
       "ISS022_PORTABLE_PRIMITIVES",
     ]);
     expect(conformance.conformanceRequirementKinds).toEqual(["REQUIRED", "UNUSED"]);

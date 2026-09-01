@@ -34,6 +34,12 @@ export const hostedNativeLockControlIds = Object.freeze([
 ] as const);
 
 const harnessPaths = Object.freeze([
+  "packages/conformance/src/contracts.ts",
+  "packages/conformance/src/github-actions.ts",
+  "packages/conformance/src/github-actions/index.ts",
+  "packages/conformance/src/index.ts",
+  "packages/conformance/src/manifest.ts",
+  "packages/contracts/src/index.ts",
   "packages/contracts/src/runtime.ts",
   "probes/portable-primitives/experiment/facts.mjs",
   "probes/portable-primitives/experiment/fixture.mjs",
@@ -47,6 +53,7 @@ const harnessPaths = Object.freeze([
   "scripts/build/native-lock-headers.mjs",
   "scripts/build/native-lock-inputs.mjs",
   "scripts/conformance/hosted-native-lock-plan.mts",
+  "scripts/conformance/hosted-plan.mts",
 ] as const);
 
 const testPaths = Object.freeze([
