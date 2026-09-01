@@ -222,7 +222,10 @@ reduces the separate fixed review decision, invokes the reviewed disposition,
 reclaims the one echo-input allocation, and terminalizes the cycle.
 
 The target is a seeded immutable worker result whose author cycle and attempt
-are distinct from the current review cycle and dispatch attempt. The accepted
+are distinct from the current review cycle and newly generated dispatch attempt;
+that equality is checked again after ID generation. The target subject and
+artifact are reread after child exit before an attempt is materialized. A change
+emits UNKNOWN/TARGET_CHANGED and stops before decided authority. The accepted
 path therefore does not let a worker certify its own result. Accepted authority
 allows only the module's explicit nonmutating COMPLETE disposition. Steps 12
 and 13 are real `no-mutation` skips. Rejected authority produces an actual
@@ -240,10 +243,13 @@ terminalizing state, receipt and TERMINAL15 order.
 
 The boundary seam covers the header, all 30 event boundaries, allocation,
 ownership publication, spawn, terminal observation, resource deletion and
-session cleanup. This fixture deliberately has no stale-claim adoption: after a
-killed owner, read-only replay remains possible but a restarted contender gets
-the named `SESSION_HELD` refusal before repeating an effect. That is bounded
-fail-closed evidence, not production resume.
+session cleanup. This fixture deliberately has no stale-claim adoption: at every
+pre-cleanup killed-owner row, read-only replay remains possible but a restarted
+contender gets the named `SESSION_HELD` refusal before repeating an effect. The
+sole post-cleanup state has a complete terminal OPJ1 and no claim; restart
+returns `CYCLE_ALREADY_TERMINAL` from replay without attempting acquisition or
+an effect. These are bounded fail-closed/idempotent results, not production
+resume.
 
 Malformed frontier and concurrent lease controls stop before journal or worker
 creation. The rejected-review control completes a known-failure journal without

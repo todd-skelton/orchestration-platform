@@ -53,9 +53,11 @@ and `TERMINAL:1` through `TERMINAL:15`, plus:
 - `RECLAIM_AFTER_DELETE`
 - `SESSION_CLOSED`
 
-A process-level fault after a durable boundary leaves the create-once session
-claim. Read-only restart may parse and reduce `cycle.opj`, but a new owner must
-receive `SESSION_HELD` before another source callback, child launch, deletion or
-append. This is the issue's named-refusal branch, not lease adoption or
-production resume. A partial frame is retained and blocks append; a lost
-acknowledgement of a complete identical event is idempotent.
+A process-level fault at any boundary before claim cleanup leaves the create-once
+session claim. Read-only restart may parse and reduce `cycle.opj`, but a new owner
+must receive `SESSION_HELD` before another source callback, child launch,
+deletion or append. At the sole `SESSION_CLOSED` post-cleanup row, the complete
+terminal journal and absent claim return `CYCLE_ALREADY_TERMINAL` without an
+acquisition or effect. These are the named refusal/idempotent branches, not lease
+adoption or production resume. A partial frame is retained and blocks append; a
+lost acknowledgement of a complete identical event is idempotent.

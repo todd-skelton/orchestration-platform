@@ -1,5 +1,6 @@
 import {
   consumeFinalReviewCycle,
+  inspectFinalCycleRestart,
   observeConcurrentLeaseControl,
   observeMalformedFrontierControl,
   type FinalCycleInvocation,
@@ -11,6 +12,17 @@ export async function runSkeletonCycleCommand(input: FinalCycleInvocation) {
   return {
     command: "skeleton:cycle" as const,
     exitCode: result.ok ? 0 : 1,
+    result,
+  };
+}
+
+/** Private restart inspection: terminal idempotency or a named no-adoption refusal. */
+export async function runSkeletonRestartCommand(input: FinalCycleInvocation) {
+  const result = await inspectFinalCycleRestart(input);
+  return {
+    command: "skeleton:restart" as const,
+    exitCode:
+      result.reason === "CYCLE_ALREADY_TERMINAL" || result.reason === "SESSION_HELD" ? 0 : 1,
     result,
   };
 }

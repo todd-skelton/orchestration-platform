@@ -19,6 +19,7 @@ import {
   computeEventJournalPrefixDigest,
   computeReducedStateDigest,
   computeReviewAttemptResultDigest,
+  computeReviewPacketDigest,
   computeReviewRequestDigest,
   computeResourceReclaimContextDigest,
   computeRouteMappingDigest,
@@ -534,6 +535,8 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
       files.push(name);
     }
     const attemptId = fixtureId();
+    if (seed.subject.authorAttemptId === attemptId)
+      throw new Error("fixture distinct review author attempt refused");
     const dispatch = required(
       validateDispatchPlanBinding(
         moduleInput,
@@ -593,6 +596,8 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
     let workerLaunch: WorkerLaunchReceipt | null = null;
     let attempt: ReviewAttemptResult | null = null;
     let process: ReclaimProcessObservation | null = null;
+    let admittedReviewSeed = seed;
+    let reviewTargetChanged: boolean = false;
     const worker = await runEcho(
       roots.stateRoot,
       dispatch,
@@ -618,15 +623,29 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
           await createOnce(join(roots.stateRoot, "stdout.bin"), stdout);
           await createOnce(join(roots.stateRoot, "stderr.bin"), stderr);
           files.push("stdout.bin", "stderr.bin");
-          attempt = observeFixtureReviewAttempt(
-            seed,
-            request,
-            dispatch,
-            workerLaunch!,
-            terminal,
-            stdout,
-            stderr,
-          );
+          let currentSeed: Awaited<ReturnType<typeof readReviewSeed>> | null = null;
+          try {
+            currentSeed = await readReviewSeed(roots.projectRoot);
+          } catch {
+            // The typed TARGET_CHANGED authority below retains the original request evidence.
+          }
+          reviewTargetChanged =
+            currentSeed === null ||
+            !currentSeed.subjectBytes.equals(seed.subjectBytes) ||
+            !currentSeed.artifact.equals(seed.artifact) ||
+            canonicalJson(currentSeed.subject) !== canonicalJson(seed.subject);
+          if (!reviewTargetChanged) {
+            admittedReviewSeed = currentSeed!;
+            attempt = observeFixtureReviewAttempt(
+              admittedReviewSeed,
+              request,
+              dispatch,
+              workerLaunch!,
+              terminal,
+              stdout,
+              stderr,
+            );
+          }
           process = processObservation;
           await journal!.terminal(
             step9,
@@ -641,7 +660,8 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
             [evidence(stderr, "STDERR"), evidence(stdout, "STDOUT")],
           );
           await writeRecord("worker-terminal.json", "worker-terminal-receipt/v1", terminal);
-          await writeRecord("review-attempt.json", "review-attempt-result/v1", attempt);
+          if (attempt !== null)
+            await writeRecord("review-attempt.json", "review-attempt-result/v1", attempt);
         },
       },
     );
@@ -652,18 +672,65 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
       worker.terminal.outcome.exit.value !== "0" ||
       worker.stdout === null ||
       worker.stderr === null ||
-      attempt === null ||
+      (!reviewTargetChanged && attempt === null) ||
       process === null
     )
       throw new Error("fixture worker observation refused");
     uncertain = false;
 
-    const step10 = journal.step(10, computeReviewAttemptResultDigest(attempt));
+    if (reviewTargetChanged) {
+      const step10 = journal.step(10, computeReviewRequestDigest(request));
+      await journal.start(step10);
+      const authority = required(
+        validateReviewResultBinding(request, null, {
+          outcome: {
+            attemptResultDigest: null,
+            evidence: reviewEvidence(seed),
+            kind: "unknown",
+            reason: "TARGET_CHANGED",
+          },
+          packetDigest: computeReviewPacketDigest(request.packet),
+          requestDigest: computeReviewRequestDigest(request),
+          schemaVersion: "review-authority/v1",
+          subjectDigest: computeWorkerResultSubjectDigest(seed.subject),
+        }),
+      );
+      await journal.terminal(step10, {
+        attempt: null,
+        authority,
+        kind: "REVIEW_AUTHORITY",
+        request,
+      });
+      await writeRecord("review-authority.json", "review-authority/v1", authority);
+      const reduced = journal.replay();
+      if (!reduced.ok || reduced.value.outcome.kind !== "UNKNOWN")
+        throw new Error("fixture changed review target did not fail closed");
+      await journal.close();
+      journal = null;
+      const cleanup = await lease.retain();
+      const outsideAfter = await manifest(roots.disposableRoot, roots.stateRoot);
+      return {
+        acquisition: session.acquisition,
+        authority,
+        cleanup,
+        files: (await readdir(roots.stateRoot)).sort(),
+        ok: false as const,
+        outsideAfter,
+        outsideBefore,
+        outsideUnchanged: canonicalJson(outsideAfter) === canonicalJson(outsideBefore),
+        reason: "REVIEW_TARGET_CHANGED" as const,
+        reduced: reduced.value,
+      };
+    }
+    if (attempt === null) throw new Error("fixture review attempt missing");
+    const decidedAttempt = attempt;
+
+    const step10 = journal.step(10, computeReviewAttemptResultDigest(decidedAttempt));
     await journal.start(step10);
-    const authority = reduceFixtureReviewAuthority(seed, request, attempt);
-    required(validateReviewResultBinding(request, attempt, authority));
+    const authority = reduceFixtureReviewAuthority(admittedReviewSeed, request, decidedAttempt);
+    required(validateReviewResultBinding(request, decidedAttempt, authority));
     await journal.terminal(step10, {
-      attempt,
+      attempt: decidedAttempt,
       authority,
       kind: "REVIEW_AUTHORITY",
       request,
@@ -675,7 +742,7 @@ export async function consumeFinalReviewCycle(input: FinalCycleInvocation) {
         actionPlan: action,
         moduleInput,
         preflight,
-        review: { attempt, authority, request },
+        review: { attempt: decidedAttempt, authority, request },
         route,
         skips: [],
         worker: {
@@ -980,6 +1047,38 @@ export async function inspectFinalCycleRestart(input: FinalCycleInvocation) {
     // A crash before an evidence file is retained remains an unreadable prefix,
     // but it still cannot authorize adoption or another effect.
   }
+  const claimPath = join(roots.stateRoot, "session-claim.json");
+  let claim: "ABSENT" | "PRESENT" | "UNKNOWN" = "UNKNOWN";
+  try {
+    const observed = await lstat(claimPath, { bigint: true });
+    claim = observed.isFile() ? "PRESENT" : "UNKNOWN";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") claim = "ABSENT";
+  }
+  const terminal =
+    replay?.ok === true &&
+    ["COMPLETED", "COMPLETED_NO_WORK", "FAILED_KNOWN"].includes(replay.value.reduced.outcome.kind);
+  if (claim === "ABSENT")
+    return terminal
+      ? {
+          acquisition: null,
+          ok: true as const,
+          reason: "CYCLE_ALREADY_TERMINAL" as const,
+          replay,
+        }
+      : {
+          acquisition: null,
+          ok: false as const,
+          reason: "RESTART_UNPROVEN" as const,
+          replay,
+        };
+  if (claim !== "PRESENT")
+    return {
+      acquisition: null,
+      ok: false as const,
+      reason: "RESTART_UNPROVEN" as const,
+      replay,
+    };
   const acquisition = await acquireFixtureSession(
     input.adapter,
     input.invocation,
