@@ -20,6 +20,7 @@ const stablePaths = Object.freeze([
   "scripts/build/native-lock-experiment.mjs",
   "scripts/build/native-lock-headers.mjs",
   "scripts/build/native-lock-inputs.mjs",
+  "scripts/conformance/hosted-native-lock-acquisition.mts",
 ]);
 const modulePath = fileURLToPath(import.meta.url);
 const stableRoot = resolve(dirname(modulePath), "../..");

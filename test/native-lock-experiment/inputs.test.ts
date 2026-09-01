@@ -18,6 +18,10 @@ import {
   type NativeLockInputRequest,
   type NativeLockToolchainCapture,
 } from "../../scripts/build/native-lock-inputs.mjs";
+import {
+  acquireHostedNativeLockInputs,
+  type HostedNativeLockAcquisitionBoundary,
+} from "../../scripts/conformance/hosted-native-lock-acquisition.mjs";
 
 type Call = {
   file: string;
@@ -324,6 +328,7 @@ describe("private composed preparation, synthetic evidence only", () => {
         "scripts/build/native-lock-experiment.mjs",
         "scripts/build/native-lock-headers.mjs",
         "scripts/build/native-lock-inputs.mjs",
+        "scripts/conformance/hosted-native-lock-acquisition.mts",
       ]);
       expect(result.extraction.headers.map((row) => row.path)).toContain("config.gypi");
       expect(result.extraction.headers.map((row) => row.path)).toContain("extra.h");
@@ -337,13 +342,86 @@ describe("private composed preparation, synthetic evidence only", () => {
       );
       expect(
         result.retainedFiles.filter((row) => row.path.startsWith("build/inputs/stable/")),
-      ).toHaveLength(9);
+      ).toHaveLength(10);
       expect(
         await readFile(
           resolve(result.buildRoot, "inputs/CANDIDATE_BINDING/native-lock-candidate.c"),
           "utf8",
         ),
       ).toContain("distinct synthetic candidate");
+    },
+    integrationTimeout,
+  );
+
+  test(
+    "accepts the acquisition producer's AVAILABLE capture without translation",
+    async () => {
+      const { input, base, sdk } = await fixture(true);
+      const acquisitionRoot = resolve(base, "acquisition");
+      await mkdir(acquisitionRoot);
+      const macSdk = resolve(base, "MacOSX15.4.sdk");
+      if (process.platform === "darwin") await mkdir(macSdk);
+      const exactResponse = (bytes: Uint8Array, url: string) => {
+        const response = new Response(bytes, {
+          headers: { "content-length": String(bytes.byteLength) },
+          status: 200,
+        });
+        Object.defineProperty(response, "url", { value: url });
+        return response;
+      };
+      const boundary: HostedNativeLockAcquisitionBoundary = {
+        async fetch(url) {
+          const path = url.endsWith("SHASUMS256.txt")
+            ? input.distribution.shasumsPath
+            : url.endsWith("node.lib")
+              ? input.distribution.importLibraryPath!
+              : input.distribution.archivePath;
+          return exactResponse(Uint8Array.from(await readFile(path)), url);
+        },
+        async resolveExecutable() {
+          return { path: process.execPath, state: "FOUND" };
+        },
+        async execute(file, argv) {
+          return {
+            errorCode: null,
+            exitCode: 0,
+            signal: null,
+            stderr: new Uint8Array(),
+            stdout: new TextEncoder().encode(
+              process.platform === "darwin" && argv.includes("--show-sdk-path")
+                ? `${macSdk}\n`
+                : "synthetic exact hosted version\n",
+            ),
+          };
+        },
+      };
+      const acquired = await acquireHostedNativeLockInputs(
+        {
+          environment: {
+            PATH: dirname(process.execPath),
+            ...(process.platform === "win32"
+              ? {
+                  INCLUDE: sdk,
+                  LIB: sdk,
+                  SystemRoot: sdk,
+                  WindowsSDKVersion: "10.0.26100.0\\",
+                }
+              : {}),
+          },
+          root: acquisitionRoot,
+        },
+        boundary,
+      );
+      expect(acquired).toMatchObject({ ok: true, state: "AVAILABLE" });
+      if (!acquired.ok || acquired.state !== "AVAILABLE") return;
+      const prepared = await prepareNativeLockBuild({
+        ...input,
+        toolchainCapture: acquired.capturePath,
+      });
+      expect(prepared.helper.builds.map((row) => row.result)).toEqual(["BUILT", "BUILT"]);
+      expect(JSON.parse(await readFile(acquired.capturePath, "utf8"))).toMatchObject({
+        state: "AVAILABLE",
+      });
     },
     integrationTimeout,
   );
