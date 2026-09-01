@@ -1,11 +1,16 @@
+import { types } from "node:util";
 import {
+  canonicalDigest,
   canonicalJson,
   closedRecord,
   computeModuleActionPlanDigest,
   computeProjectPreflightObservationDigest,
   computeRouteSelectionDigest,
+  computeWorkerResultSubjectDigest,
   parseModuleActionPlan,
   parseModulePlanInput,
+  parseProjectPreflightObservation,
+  parseWorkerResultSubject,
   parseWorkerHostRendererArtifacts,
   snapshotJson,
   validateProjectFactsBinding,
@@ -14,6 +19,7 @@ import {
   type ProjectPreflight,
   type ProjectPreflightObservation,
   type ContractRecord,
+  type WorkerResultSubject,
 } from "@orchestration-platform/contracts";
 import type { SnapshotClocks, SnapshotReader, SnapshotResult } from "./snapshot.js";
 
@@ -27,6 +33,19 @@ export type ProjectPreflightResult =
       ok: false;
       code: "PREFLIGHT_ADMISSION_REFUSED" | "PREFLIGHT_OBSERVATION_REFUSED";
       observation: SnapshotResult | null;
+    }>;
+
+export type WorkerResultPreflightRead = () => unknown;
+export type WorkerResultPreflightResult =
+  | Readonly<{
+      ok: true;
+      observation: Extract<ProjectPreflightObservation, { kind: "REVIEW" }>;
+      preflight: ProjectPreflight;
+    }>
+  | Readonly<{
+      ok: false;
+      code: "PREFLIGHT_ADMISSION_REFUSED" | "PREFLIGHT_OBSERVATION_REFUSED";
+      observation: Extract<ProjectPreflightObservation, { kind: "REVIEW" }> | null;
     }>;
 
 /**
@@ -166,5 +185,119 @@ export async function observeProjectPreflight(
         ok: false,
         code: "PREFLIGHT_OBSERVATION_REFUSED",
         observation: { ok: true, facts: facts.value },
+      };
+}
+
+/**
+ * Reads one fresh worker-result target for the existing REVIEW preflight path.
+ * The callback is fixed trusted composition, never loaded adapter code. This
+ * helper proves only current target consistency and grants no review authority.
+ */
+export async function observeWorkerResultPreflight(
+  moduleInput: unknown,
+  actionPlan: unknown,
+  mapping: unknown,
+  route: unknown,
+  readCurrentSubject: WorkerResultPreflightRead,
+  nextObservationId: () => string,
+  clocks: Pick<SnapshotClocks, "wallNow">,
+): Promise<WorkerResultPreflightResult> {
+  const input = parseModulePlanInput(moduleInput);
+  const action = parseModuleActionPlan(actionPlan);
+  const routeBinding = validateRouteSelectionBinding(moduleInput, actionPlan, mapping, route);
+  const retainedMapping =
+    routeBinding.ok && routeBinding.value.outcome.kind === "SELECTED"
+      ? parseWorkerHostRendererArtifacts(mapping)
+      : null;
+  if (
+    !input.ok ||
+    !action.ok ||
+    input.value.reviewSubject?.schemaVersion !== "worker-result-subject/v1" ||
+    input.value.reviewSubject.baseSource.adapterId !== input.value.adapterConfiguration.adapterId ||
+    input.value.reviewSubject.baseSource.projectId !== input.value.adapterConfiguration.projectId ||
+    !routeBinding.ok ||
+    routeBinding.value.outcome.kind !== "SELECTED" ||
+    !retainedMapping?.ok
+  )
+    return {
+      ok: false,
+      code: "PREFLIGHT_ADMISSION_REFUSED",
+      observation: null,
+    };
+  const target = input.value.reviewSubject,
+    admittedMapping = retainedMapping.value;
+
+  let current: WorkerResultSubject | null = null;
+  try {
+    const pending = readCurrentSubject();
+    if (
+      types.isPromise(pending) &&
+      Object.getPrototypeOf(pending) === Promise.prototype &&
+      !Object.hasOwn(pending, "constructor")
+    ) {
+      const settled = (await Promise.prototype.then.call(
+        pending,
+        (value: unknown) => ({ ok: true as const, value }),
+        () => ({ ok: false as const }),
+      )) as Readonly<{ ok: true; value: unknown }> | Readonly<{ ok: false }>;
+      if (settled.ok) {
+        const parsed = parseWorkerResultSubject(settled.value);
+        if (parsed.ok) current = parsed.value;
+      }
+    }
+  } catch {
+    /* typed source uncertainty below */
+  }
+
+  let observation: Extract<ProjectPreflightObservation, { kind: "REVIEW" }>;
+  try {
+    observation = {
+      adapterConfigurationDigest: canonicalDigest(input.value.adapterConfiguration),
+      kind: "REVIEW",
+      observationId: nextObservationId(),
+      observedAt: clocks.wallNow(),
+      result: current ? { kind: "AVAILABLE", subject: current } : { kind: "UNKNOWN" },
+    };
+  } catch {
+    return {
+      ok: false,
+      code: "PREFLIGHT_OBSERVATION_REFUSED",
+      observation: null,
+    };
+  }
+  const parsedObservation = parseProjectPreflightObservation(observation);
+  if (!parsedObservation.ok)
+    return {
+      ok: false,
+      code: "PREFLIGHT_OBSERVATION_REFUSED",
+      observation: null,
+    };
+  observation = parsedObservation.value as Extract<ProjectPreflightObservation, { kind: "REVIEW" }>;
+  const outcome: ProjectPreflight["outcome"] = current
+    ? computeWorkerResultSubjectDigest(current) === computeWorkerResultSubjectDigest(target)
+      ? { kind: "ELIGIBLE" }
+      : { kind: "REFUSED", reason: "TARGET_CHANGED" }
+    : { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" };
+  const preflight = {
+    actionPlanDigest: computeModuleActionPlanDigest(action.value),
+    observationDigest: computeProjectPreflightObservationDigest(observation),
+    outcome,
+    routeDigest: computeRouteSelectionDigest(routeBinding.value),
+    schemaVersion: "project-preflight/v1" as const,
+  };
+  const bound = validateProjectPreflightBinding(
+    input.value,
+    action.value,
+    admittedMapping,
+    routeBinding.value,
+    observation,
+    preflight,
+  );
+  return bound.ok
+    ? Object.freeze({ ok: true, observation, preflight: bound.value })
+    : {
+        ok: false,
+        code: "PREFLIGHT_OBSERVATION_REFUSED",
+        observation,
       };
 }

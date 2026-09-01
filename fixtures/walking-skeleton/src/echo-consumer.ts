@@ -1,13 +1,15 @@
 import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { observeProjectPreflight } from "../../../packages/adapter-sdk/src/preflight.js";
+import {
+  observeProjectPreflight,
+  observeWorkerResultPreflight,
+} from "../../../packages/adapter-sdk/src/preflight.js";
 import {
   canonicalJson,
   canonicalDigest,
   computeDispatchContentReference,
   computeModuleActionPlanDigest,
   computeProjectPreflightDigest,
-  computeProjectPreflightObservationDigest,
   computeRouteMappingDigest,
   computeRouteSelectionDigest,
   computeSessionHealthDigest,
@@ -21,7 +23,6 @@ import {
   serializeContract,
   validateDispatchPlanBinding,
   validateModulePlanBinding,
-  validateProjectPreflightBinding,
   validateRouteSelectionBinding,
   type ParseResult,
   type ContractRecord,
@@ -191,34 +192,23 @@ async function consumeFixed(reviewMode: boolean, ...args: CycleArgs) {
     let observation: ProjectPreflightObservation;
     let preflight: ProjectPreflight;
     if (seed) {
-      let current: ReviewSeed | null = null;
-      try {
-        current = await readReviewSeed(retained.flags.projectRoot!);
-      } catch {
-        /* typed source uncertainty */
-      }
-      observation = {
-        adapterConfigurationDigest: canonicalDigest(input.adapterConfiguration),
-        kind: "REVIEW",
-        observationId: fixtureId(),
-        observedAt: clocks.wallNow(),
-        result: current ? { kind: "AVAILABLE", subject: current.subject } : { kind: "UNKNOWN" },
-      };
-      const outcome: ProjectPreflight["outcome"] = current
-        ? computeWorkerResultSubjectDigest(current.subject) ===
-          computeWorkerResultSubjectDigest(seed.subject)
-          ? { kind: "ELIGIBLE" }
-          : { kind: "REFUSED", reason: "TARGET_CHANGED" }
-        : { kind: "UNKNOWN", reason: "SOURCE_UNKNOWN" };
-      preflight = required(
-        validateProjectPreflightBinding(input, action, echoMapping, route, observation, {
-          actionPlanDigest: computeModuleActionPlanDigest(action),
-          observationDigest: computeProjectPreflightObservationDigest(observation),
-          outcome,
-          routeDigest: computeRouteSelectionDigest(route),
-          schemaVersion: "project-preflight/v1",
-        }),
+      const current = await observeWorkerResultPreflight(
+        input,
+        action,
+        echoMapping,
+        route,
+        async () => (await readReviewSeed(retained.flags.projectRoot!)).subject,
+        fixtureId,
+        clocks,
       );
+      if (!current.ok)
+        return {
+          ok: false as const,
+          reason: "PREFLIGHT_OBSERVATION_REFUSED",
+          observation: current.observation ?? current,
+        };
+      observation = current.observation;
+      preflight = current.preflight;
     } else {
       const current = await observeProjectPreflight(
         input,
