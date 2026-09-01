@@ -8,6 +8,7 @@ import {
 import { parseConfigurationProvenance } from "./configuration.js";
 import {
   computeCyclePlanDigest,
+  computeCycleRequestDigest,
   computeSessionHealthDigest,
   parseCyclePlan,
   parseCycleRequest,
@@ -29,6 +30,7 @@ import {
 } from "./dispatch-lifecycle.js";
 import {
   computeActionDispositionDigest,
+  computeDispositionInputDigest,
   computeFollowUpCycleRequestDigest,
   parseActionDisposition,
   parseDispositionInput,
@@ -39,6 +41,7 @@ import {
 import {
   computeModuleActionPlanDigest,
   computeModuleNoActionDigest,
+  computeModulePlanInputDigest,
   parseModuleActionPlan,
   parseModuleNoAction,
   parseModulePlanInput,
@@ -47,6 +50,7 @@ import {
 import {
   computeProjectApplyReceiptDigest,
   computeProjectMutationPlanDigest,
+  computeProjectMutationRequestDigest,
   parseProjectApplyReceipt,
   parseProjectMutationObservation,
   parseProjectMutationPlan,
@@ -85,6 +89,7 @@ import {
   parseWorkerResultSubject,
 } from "./review-subject.js";
 import {
+  computeResourceReclaimContextDigest,
   computeResourceReclaimReceiptDigest,
   parseResourceReclaimContext,
   parseResourceReclaimReceipt,
@@ -1172,6 +1177,14 @@ export function parseReducedState(input: unknown): ParseResult<ReducedState> {
   if (steps.ok) {
     const values = steps.value as unknown as readonly ReducedStep[];
     const started = values.filter((step) => step.state === "STARTED");
+    if (
+      values.some(
+        (step) =>
+          step.state === "SKIPPED" &&
+          (step.ordinal === "1" || step.ordinal === "14" || step.ordinal === "15"),
+      )
+    )
+      issues.push("steps:mandatory-step-skipped");
     if (started.length > 1) issues.push("steps:multiple-started");
     if (row.pendingStep === null) {
       if (started.length) issues.push("steps:started-requires-pending");
@@ -1723,6 +1736,11 @@ export function validateOrchestrationEventBinding(
                   ? (row.receipt as ContractRecord).cycleId
                   : event.value.cycleId;
   if (cycleCandidate !== event.value.cycleId) issues.push("output:cycle-mismatch");
+  if (row.kind !== "SKIP" && row.kind !== "CYCLE_TERMINAL") {
+    const expectedInput = terminalStepInputDigest(row, new Map());
+    if (expectedInput === null || event.value.step.inputDigest !== expectedInput)
+      issues.push("step.inputDigest:binding-mismatch");
+  }
   return issues.length ? invalid(...issues) : event;
 }
 
@@ -1787,6 +1805,91 @@ function outputIdentity(
     default:
       throw new TypeError("output.kind:unsupported");
   }
+}
+
+function terminalStepInputDigest(
+  output: ContractRecord,
+  outputs: ReadonlyMap<number, ContractRecord>,
+): string | null {
+  switch (output.kind) {
+    case "SESSION":
+      return computeCycleRequestDigest((output.cyclePlan as ContractRecord).request);
+    case "PROJECT_FACTS":
+      return canonicalDigest(output.configuration);
+    case "BREAKER":
+      return canonicalDigest(output.projectFacts);
+    case "MODULE":
+      return computeModulePlanInputDigest(output.input);
+    case "ROUTE":
+      return computeModuleActionPlanDigest(output.action);
+    case "PREFLIGHT":
+      return computeRouteSelectionDigest(output.route);
+    case "DISPATCH_PLAN":
+      return computeProjectPreflightDigest(output.preflight);
+    case "LAUNCH":
+      return computeDispatchPlanDigest(output.plan);
+    case "WORKER_TERMINAL":
+      return computeWorkerLaunchReceiptDigest(output.launch);
+    case "REVIEW_AUTHORITY":
+      return output.attempt === null
+        ? computeReviewRequestDigest(output.request)
+        : computeReviewAttemptResultDigest(output.attempt);
+    case "DISPOSITION":
+      return computeDispositionInputDigest(output.input);
+    case "MUTATION_PLAN":
+      return computeProjectMutationRequestDigest(output.request);
+    case "PROJECT_APPLY":
+      return computeProjectMutationPlanDigest(output.plan);
+    case "RECLAIM":
+      return computeResourceReclaimContextDigest(output.context);
+    case "SKIP": {
+      const ordinal = Number(((output.skip as ContractRecord).step as ContractRecord).ordinal);
+      const prior = outputs.get(ordinal - 1);
+      return prior ? outputIdentity(prior).primary : null;
+    }
+    default:
+      return null;
+  }
+}
+
+function pendingStepInputDigest(
+  ordinal: number,
+  outputs: ReadonlyMap<number, ContractRecord>,
+  journal: EventJournal,
+): string | null {
+  if (ordinal === 1) return computeCycleRequestDigest(journal.cyclePlan.request);
+  const prior = outputs.get(ordinal - 1);
+  if (!prior) return null;
+  if ([3, 5, 6, 7, 8, 9, 13].includes(ordinal)) return outputIdentity(prior).primary;
+  if (ordinal === 10) {
+    const request = outputs.get(7)?.reviewRequest;
+    const terminal = outputs.get(9)?.terminal as ContractRecord | undefined;
+    const terminalOutcome = terminal?.outcome as ContractRecord | undefined;
+    const successfulReviewWorker =
+      terminalOutcome?.kind === "EXITED" &&
+      (terminalOutcome.exit as ContractRecord).kind === "EXIT_CODE" &&
+      (terminalOutcome.exit as ContractRecord).value === "0";
+    if (request !== null && request !== undefined && successfulReviewWorker) {
+      const attempt = outputs.get(9)?.attempt;
+      return attempt === null || attempt === undefined
+        ? computeReviewRequestDigest(request)
+        : computeReviewAttemptResultDigest(attempt);
+    }
+    return outputIdentity(prior).primary;
+  }
+  const priorSkip = prior.kind === "SKIP" ? (prior.skip as ContractRecord) : null;
+  if (priorSkip !== null) {
+    const reason = priorSkip.reason;
+    const priorOrdinal = Number((priorSkip.step as ContractRecord).ordinal);
+    if (
+      (reason === "prior-known-terminal" && ordinal <= 13) ||
+      (reason === "no-allocation" && priorOrdinal === 7 && ordinal === 8) ||
+      (reason === "no-worker" && ordinal === priorOrdinal + 1 && ordinal <= 10) ||
+      (reason === "no-mutation" && priorOrdinal === 12 && ordinal === 13)
+    )
+      return outputIdentity(prior).primary;
+  }
+  return null;
 }
 
 function outputUnknown(output: ContractRecord): "EARLIER_UNKNOWN" | "RESOURCE_UNKNOWN" | null {
@@ -2142,6 +2245,7 @@ export function validateCycleReceiptBinding(
   journalInput: unknown,
   terminalizingStateInput: unknown,
   receiptInput: unknown,
+  retainedEvidenceByEvent: unknown,
 ): ParseResult<CycleReceipt> {
   const journal = parseEventJournal(journalInput);
   if (!journal.ok) return invalid(...prefixed("journal", journal.issues));
@@ -2151,6 +2255,15 @@ export function validateCycleReceiptBinding(
   if (!receipt.ok) return receipt;
   const row = receipt.value,
     issues: string[] = [];
+  const last = journal.value.events[journal.value.events.length - 1];
+  if (last?.phase !== "STARTED" || last.step.ordinal !== "15")
+    issues.push("journal:started-terminal-step-required");
+  const derived =
+    last?.phase === "STARTED" && last.step.ordinal === "15"
+      ? reduceEventJournal(journal.value, retainedEvidenceByEvent)
+      : invalid<ReducedState>("journal:started-terminal-step-required");
+  if (!derived.ok) issues.push(...prefixed("journal.reducedState", derived.issues));
+  else if (!same(derived.value, state.value)) issues.push("state:journal-derived-mismatch");
   if (state.value.outcome.kind !== "TERMINALIZING" || state.value.pendingStep?.ordinal !== "15")
     issues.push("state:terminalizing-required");
   if (
@@ -2216,10 +2329,30 @@ export function reduceEventJournal(
     if (outcome.kind === "UNKNOWN") outcome = { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
     const binding = validateOrchestrationEventBinding(event, retainedEvidenceByEvent[index]);
     if (!binding.ok) outcome = { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
-    const eventBytes = canonicalBytes(event);
-    prefixBytes = concat([prefixBytes, u32(eventBytes.byteLength), eventBytes]);
     const ordinal = Number(event.step.ordinal),
       stepDigest = computeRoutineStepDigest(event.step);
+    if (event.phase === "STARTED") {
+      let expectedInput = pendingStepInputDigest(ordinal, outputs, journal.value);
+      if (ordinal === 15) {
+        const pre15: ReducedState = {
+          bindings,
+          cycleId: journal.value.cycleId,
+          cyclePlanDigest: journal.value.cyclePlanDigest,
+          journalPrefixDigest: event.previousPrefixDigest,
+          outcome,
+          pendingStep: null,
+          schemaVersion: "reduced-state/v1",
+          steps: [...steps.values()],
+        };
+        const parsedPre15 = parseReducedState(pre15);
+        if (!parsedPre15.ok) outcome = { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
+        else expectedInput = computeReducedStateDigest(parsedPre15.value);
+      }
+      if (expectedInput !== null && event.step.inputDigest !== expectedInput)
+        outcome = { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
+    }
+    const eventBytes = canonicalBytes(event);
+    prefixBytes = concat([prefixBytes, u32(eventBytes.byteLength), eventBytes]);
     if (event.phase === "STARTED") {
       pending = event.step;
       steps.set(ordinal, {
@@ -2233,6 +2366,9 @@ export function reduceEventJournal(
       continue;
     }
     const output = event.output!;
+    const expectedInput = terminalStepInputDigest(output, outputs);
+    if (output.kind !== "CYCLE_TERMINAL" && event.step.inputDigest !== expectedInput)
+      outcome = { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
     const continuity = continuityIssues(output, outputs, journal.value);
     if (continuity.length) outcome = { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
     if (output.kind === "CYCLE_TERMINAL") {
@@ -2247,7 +2383,12 @@ export function reduceEventJournal(
         schemaVersion: "reduced-state/v1",
         steps: [...steps.values()],
       };
-      const terminal = validateCycleReceiptBinding(priorJournal, terminalizing, output.receipt);
+      const terminal = validateCycleReceiptBinding(
+        priorJournal,
+        terminalizing,
+        output.receipt,
+        retainedEvidenceByEvent.slice(0, index),
+      );
       if (!terminal.ok) outcome = { kind: "UNKNOWN", reason: "OUTPUT_CONFLICT" };
     }
     const identity = outputIdentity(output);
