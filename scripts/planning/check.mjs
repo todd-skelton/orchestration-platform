@@ -252,6 +252,7 @@ function declaredCapabilities(issueDrafts) {
 
 function validateCapabilitySlots(snapshot) {
   const declared = declaredCapabilities(snapshot.issueDrafts);
+  const required = new Map([["planning:finding-census-check", "ISS-046"]]);
   const seen = new Set();
   for (const slot of snapshot.capabilitySlots) {
     if (!/^ISS-\d{3}$/.test(slot.issue) || !slot.isDirectory || slot.directorySymlink) {
@@ -275,6 +276,11 @@ function validateCapabilitySlots(snapshot) {
     }
     if (seen.has(capability)) fail(`duplicate capability slot ${capability}`);
     seen.add(capability);
+  }
+  for (const [capability, issue] of required) {
+    if (declared.get(capability) !== issue || !seen.has(capability)) {
+      fail(`missing implemented capability slot ${issue}/${capabilitySlotName(capability)}`);
+    }
   }
 }
 
