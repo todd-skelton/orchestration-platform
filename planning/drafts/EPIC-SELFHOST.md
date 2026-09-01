@@ -39,8 +39,8 @@ post-self-host improvements unless a measured blocker promotes them.
   `ISS-012, ISS-031 → ISS-023`;
   `ISS-008, ISS-023 → ISS-021`;
   `ISS-013 → ISS-036`;
-  `ISS-021, ISS-026, ISS-038 → ISS-033`;
-  `ISS-020, ISS-030, ISS-039, ISS-040 → ISS-019`;
+  `ISS-021, ISS-049, ISS-050, ISS-051, ISS-052 → ISS-033`;
+  `ISS-020, ISS-039, ISS-040 → ISS-019`;
   `ISS-019 → ISS-037`;
   `ISS-037 → ISS-034`;
   `ISS-034 → ISS-027`;

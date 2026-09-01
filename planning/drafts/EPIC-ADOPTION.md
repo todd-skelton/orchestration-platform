@@ -46,7 +46,7 @@ inheriting any of its evidence, and sit off the self-host critical path.
   `ISS-020 → ISS-053`;
   `ISS-013 → ISS-028`;
   `ISS-025 → ISS-016`;
-  `ISS-016, ISS-028 → ISS-024`;
+  `ISS-016, ISS-028, ISS-053 → ISS-024`;
   `ISS-015, ISS-016, ISS-028 → ISS-017`;
   `ISS-017, ISS-024 → ISS-018`;
   `ISS-021 → ISS-044`;
