@@ -430,7 +430,12 @@ test("dispatch attempt collision with the seeded author fails before every worke
     phase: "STARTED",
     step: { ordinal: "7" },
   });
-  expect(c.reduceEventJournal(journal, journal.events.map(() => []))).toMatchObject({
+  expect(
+    c.reduceEventJournal(
+      journal,
+      journal.events.map(() => []),
+    ),
+  ).toMatchObject({
     ok: true,
     value: { outcome: { kind: "RUNNING" }, pendingStep: { ordinal: "7" } },
   });
