@@ -171,19 +171,23 @@ function runChild(
   return new Promise((resolveRun, reject) => {
     const messages: Message[] = [],
       stderr: Buffer[] = [];
-    const child = spawn(process.execPath, [vitest, "run", childFile, "--reporter=dot"], {
-      cwd: checkout,
-      env: {
-        ...process.env,
-        ORCHESTRATION_ISS041_FAULT_BOUNDARY: boundary,
-        ORCHESTRATION_ISS041_FAULT_CYCLE: row.cycleId,
-        ORCHESTRATION_ISS041_FAULT_PROJECT: row.projectId,
-        ORCHESTRATION_ISS041_FAULT_ROOT: row.disposableRoot,
-        ORCHESTRATION_ISS041_FAULT_SESSION: row.sessionId,
+    const child = spawn(
+      process.execPath,
+      [vitest, "run", childFile, "--reporter=dot", "--pool=threads", "--maxWorkers=1"],
+      {
+        cwd: checkout,
+        env: {
+          ...process.env,
+          ORCHESTRATION_ISS041_FAULT_BOUNDARY: boundary,
+          ORCHESTRATION_ISS041_FAULT_CYCLE: row.cycleId,
+          ORCHESTRATION_ISS041_FAULT_PROJECT: row.projectId,
+          ORCHESTRATION_ISS041_FAULT_ROOT: row.disposableRoot,
+          ORCHESTRATION_ISS041_FAULT_SESSION: row.sessionId,
+        },
+        stdio: ["ignore", "ignore", "pipe", "ipc"],
+        windowsHide: true,
       },
-      stdio: ["ignore", "ignore", "pipe", "ipc"],
-      windowsHide: true,
-    });
+    );
     child.stderr!.on("data", (bytes: Buffer) => stderr.push(Buffer.from(bytes)));
     child.on("message", (message) => messages.push(message as Message));
     child.once("error", reject);

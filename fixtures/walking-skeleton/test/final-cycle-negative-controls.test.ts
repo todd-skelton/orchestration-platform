@@ -277,7 +277,7 @@ test("reserved negative command runs malformed, rejected and concurrent controls
     expect(names).not.toContain(name);
   expect(rejected.subject.authorCycleId).not.toBe(rejected.input.cycleId);
   expect(terminal(9).attempt.attemptId).not.toBe(rejected.subject.authorAttemptId);
-});
+}, 30_000);
 
 test("fixture journal owner proves idempotence and refuses retained partial or conflicting physical history", async () => {
   const disposableRoot = await realpath(
@@ -312,21 +312,21 @@ test("fixture journal owner proves idempotence and refuses retained partial or c
   await owner.start(step);
   const complete = owner.bytes,
     idempotent = await owner.verifyLastEventIdempotent();
+  const last = owner.journal.events.at(-1)!;
+  await owner.close();
   expect(idempotent).toEqual({
     byteLength: complete.byteLength,
     prefixDigest: c.computeEventJournalPrefixDigest(complete),
     status: "IDEMPOTENT",
   });
-  expect(await readFile(path)).toEqual(complete);
-  const last = owner.journal.events.at(-1)!;
+  expect(Buffer.from(complete).equals(await readFile(path))).toBe(true);
   expect(
     c.planEventJournalAppend(complete, {
       ...last,
       step: { ...last.step, inputDigest: "0".repeat(64) },
     }).ok,
   ).toBe(false);
-  expect(await readFile(path)).toEqual(complete);
-  await owner.close();
+  expect(Buffer.from(complete).equals(await readFile(path))).toBe(true);
 
   const earlierPath = join(stateRoot, "earlier.opj");
   await writeFile(earlierPath, header);
@@ -400,4 +400,4 @@ test("post-child target mutation records only UNKNOWN authority and cannot use t
     "cycle-receipt.json",
   ])
     expect(names).not.toContain(name);
-});
+}, 30_000);

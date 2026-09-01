@@ -31,6 +31,11 @@ function notify(value: unknown) {
   });
 }
 
+function reallyExit(code: number): never {
+  const runtime = process as NodeJS.Process & { reallyExit(exitCode: number): never };
+  return runtime.reallyExit(code);
+}
+
 selectedTest(
   "terminates only after the selected physical boundary read-back",
   async () => {
@@ -79,7 +84,7 @@ selectedTest(
         await notify({ kind: "BOUNDARY", snapshot });
         if (snapshot.boundary !== target) return;
         await notify({ kind: "TARGET", snapshot });
-        process.exit(86);
+        reallyExit(86);
       },
       clocks: { wallNow: () => "2026-08-31T01:00:00.000Z", monotonicNow: () => 0 },
       currentPolicy: createBranchFixtureCurrentPolicy(() => work),
