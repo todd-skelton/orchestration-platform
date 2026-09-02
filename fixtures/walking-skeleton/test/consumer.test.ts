@@ -11,6 +11,7 @@ import {
   computeModuleDescriptorDigest,
   computeModulePlanInputDigest,
   dispatchDirectiveKinds,
+  parseModuleDescriptor,
   parseCanonicalContractBytes,
   parseContract,
   parseCycleRequest,
@@ -20,9 +21,12 @@ import {
   validateAdapterConfigurationBinding,
   validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
+  type ModuleDescriptor,
   type ProjectBreakerFacts,
   type ProjectFrontierRow,
+  type ReviewSubject,
 } from "@orchestration-platform/contracts";
+import { normalizeTrackedText } from "../../../scripts/tracked-text.mjs";
 import {
   createBranchFixtureCurrentPolicy,
   createBranchFixtureSnapshot,
@@ -45,11 +49,20 @@ import {
   projectConfigurationPaths,
   projectConfigurationProvenance,
 } from "../../../packages/config/src/resolver.js";
-import { consume } from "../src/consume.js";
+import * as planningModule from "../../../modules/planning/src/index.js";
+import {
+  composeFixtureModuleInput,
+  consume,
+  loadFixtureConfiguration,
+  observeFixturePolicy,
+  observeFixtureSnapshot,
+} from "../src/consume.js";
 import { descriptor } from "../src/index.js";
 import * as fixtureModule from "../src/index.js";
 
 const checkout = resolve(import.meta.dirname, "../../..");
+const planningSourceUrl = new URL("../../../modules/planning/src/index.ts", import.meta.url);
+const planningSourceDigest = "522964281992bdb3239b0db140a7efc82ca13ea53eb1c922745c2aee49d8f1d0";
 const actionPair = { actionKind: "fixture.inspect", capabilityName: "work.read" };
 const roots: string[] = [];
 const source = {
@@ -75,6 +88,117 @@ const action = {
   requestedRole: "observer",
   schemaVersion: "dispatch-action-core/v1",
 };
+
+const planningDescriptorGolden = {
+  abi: "orchestration-module/v1",
+  actions: [
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      requestedRole: "implementation",
+      reviewRequired: true,
+      workerRequired: true,
+    },
+  ],
+  compatibility: [
+    {
+      adapterId: "fixture.branches",
+      adapterVersion: "1.0.0",
+      engineVersion: "0.0.0",
+      policyVersion: "1.0.0",
+    },
+    {
+      adapterId: "fixture.queue",
+      adapterVersion: "1.0.0",
+      engineVersion: "0.0.0",
+      policyVersion: "1.0.0",
+    },
+  ],
+  dispatchCatalog: [
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.acceptance-evidence",
+      directiveKind: "ACCEPTANCE_EVIDENCE",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.acceptance-evidence",
+    },
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.constraint",
+      directiveKind: "CONSTRAINT",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.constraint",
+    },
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.decision",
+      directiveKind: "DECISION",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.decision",
+    },
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.non-goal",
+      directiveKind: "NON_GOAL",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.non-goal",
+    },
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.review-attack",
+      directiveKind: "REVIEW_ATTACK",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.review-attack",
+    },
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.scope-exclude",
+      directiveKind: "SCOPE_EXCLUDE",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.scope-exclude",
+    },
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.scope-include",
+      directiveKind: "SCOPE_INCLUDE",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.scope-include",
+    },
+    {
+      actionKind: "planning.implement",
+      capabilityName: "work.read",
+      code: "planning.verification",
+      directiveKind: "VERIFICATION",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "planning.verification",
+    },
+  ],
+  dispositionCodes: [],
+  inputSchemas: ["module-plan-input/v1"],
+  moduleId: "planning",
+  moduleVersion: "0.0.0",
+  outputSchemas: ["module-action-plan/v1", "module-no-action/v1"],
+  schemaVersion: "module-descriptor/v1",
+} as const;
+
+const planningDirectiveCodes = [
+  ["ACCEPTANCE_EVIDENCE", "planning.acceptance-evidence"],
+  ["CONSTRAINT", "planning.constraint"],
+  ["DECISION", "planning.decision"],
+  ["NON_GOAL", "planning.non-goal"],
+  ["OPERATOR_ACTION", null],
+  ["REVIEW_ATTACK", "planning.review-attack"],
+  ["SCOPE_EXCLUDE", "planning.scope-exclude"],
+  ["SCOPE_INCLUDE", "planning.scope-include"],
+  ["VERIFICATION", "planning.verification"],
+] as const;
 
 const uuid = (index: number) => `018f0f4d-7b2d-7a11-8a2b-${index.toString(16).padStart(12, "0")}`;
 const clocks = { wallNow: () => "2026-08-30T01:02:03.004Z", monotonicNow: () => 0 };
@@ -203,6 +327,70 @@ async function fixture(kind: "branches" | "queue" = "branches", rows = frontier(
     snapshotSource,
     policySource,
   };
+}
+
+async function preparedPlanningInput(
+  kind: "branches" | "queue",
+  rows: readonly ProjectFrontierRow[],
+  selectedDescriptor: ModuleDescriptor = planningModule.descriptor,
+  reviewSubject: ReviewSubject | null = null,
+) {
+  const f = await fixture(kind, [...rows]);
+  const cycleRequest = {
+    ...f.cycleRequest,
+    allowedModuleIds: [selectedDescriptor.moduleId],
+  };
+  const context = await loadFixtureConfiguration(
+    adapter,
+    f.invocation,
+    f.configuration,
+    cycleRequest,
+  );
+  if (!context.ok) throw new Error("planning fixture configuration refused");
+  const facts = await observeFixtureSnapshot(context.value, f.snapshot, clocks);
+  if (!facts.ok || facts.value.state !== "COMPLETE")
+    throw new Error("planning fixture snapshot refused");
+  const policy = await observeFixturePolicy(context.value, facts.value, f.currentPolicy, clocks);
+  if (!policy.ok || policy.value.state !== "COMPLETE")
+    throw new Error("planning fixture policy refused");
+  const composed = composeFixtureModuleInput(
+    selectedDescriptor,
+    reviewSubject,
+    context.value,
+    facts.value,
+    policy.value,
+  );
+  if (!composed.ok) throw new Error("planning fixture input refused");
+  return { input: composed.value, policy: policy.value };
+}
+
+async function preparedPlanning(
+  kind: "branches" | "queue",
+  rows: readonly ProjectFrontierRow[],
+  selectedDescriptor: ModuleDescriptor = planningModule.descriptor,
+  reviewSubject: ReviewSubject | null = null,
+) {
+  const prepared = await preparedPlanningInput(kind, rows, selectedDescriptor, reviewSubject);
+  const { input } = prepared;
+  const promise = invokeAdmittedPlanning(input);
+  expect(promise).toBeInstanceOf(Promise);
+  const returned = await promise;
+  const result = validateModulePlanBinding(input, returned);
+  if (!result.ok) throw new Error("planning fixture result refused");
+  return { ...prepared, result: result.value };
+}
+
+async function admittedPlanningSource(): Promise<string> {
+  const sourceText = normalizeTrackedText(await readFile(planningSourceUrl, "utf8"));
+  expect(createHash("sha256").update(sourceText).digest("hex")).toBe(planningSourceDigest);
+  return sourceText;
+}
+
+async function invokeAdmittedPlanning(
+  input: Parameters<typeof planningModule.plan>[0],
+): ReturnType<typeof planningModule.plan> {
+  await admittedPlanningSource();
+  return planningModule.plan(input);
 }
 
 afterEach(async () => {
@@ -861,6 +1049,189 @@ test("detaches cycle intent before asynchronous observation and binds the retain
   const result = await output(f, "module-result.json", "module-plan-result/v1");
   expect(input.cycleRequest).toEqual(persisted);
   expect(validateModulePlanBinding(input, result).ok).toBe(true);
+});
+
+test("runs the quarantined planning module through actual branch and queue preparation", async () => {
+  expect(Object.keys(planningModule).sort()).toEqual(["descriptor", "plan"]);
+  expect(planningModule.descriptor).toEqual(planningDescriptorGolden);
+  expect(computeModuleDescriptorDigest(planningModule.descriptor)).toBe(
+    "a91ffba1f6adfb694e13bd30d488b5d7df7c3032f152cabbe203fdac3c7de582",
+  );
+
+  const branch = await preparedPlanning("branches", frontier());
+  expect(branch.policy.decisions).toEqual([{ capabilityName: "work.read", trip: "TRIP" }]);
+  expect(branch.result).toEqual({
+    inputDigest: computeModulePlanInputDigest(branch.input),
+    outcome: "NO_ACTION",
+    reason: "NO_ELIGIBLE_ACTION",
+    schemaVersion: "module-no-action/v1",
+  });
+
+  const queueRows = frontier().filter((row) => row.workId !== uuid(4));
+  const queue = await preparedPlanning("queue", queueRows);
+  expect(queue.policy.decisions).toEqual([{ capabilityName: "work.read", trip: "NO_TRIP" }]);
+  const descriptorDigest = computeModuleDescriptorDigest(planningDescriptorGolden);
+  const expectedCore = {
+    actionKind: "planning.implement",
+    capabilityName: "work.read",
+    immutableSubjectDigest: "a".repeat(64),
+    moduleDescriptorDigest: descriptorDigest,
+    requestedRole: "implementation",
+    schemaVersion: "dispatch-action-core/v1",
+  };
+  expect(queue.result).toEqual({
+    actionCore: expectedCore,
+    dispatchBrief: {
+      action: {
+        actionCoreDigest: computeDispatchActionCoreDigest(expectedCore),
+        actionKind: "planning.implement",
+        capabilityName: "work.read",
+        immutableSubjectDigest: "a".repeat(64),
+        moduleDescriptorDigest: descriptorDigest,
+        schemaVersion: "dispatch-brief-action/v1",
+      },
+      directives: planningDirectiveCodes.map(([directiveKind, code]) => ({
+        code,
+        directiveKind,
+        presence: code === null ? "ABSENT" : "PRESENT",
+        schemaVersion: "dispatch-brief-directive/v1",
+        subjectDigest: "a".repeat(64),
+      })),
+      footprint: [
+        {
+          access: "READ",
+          resourceIdentityDigest: "a".repeat(64),
+          schemaVersion: "dispatch-brief-resource/v1",
+        },
+      ],
+      role: "implementation",
+      schemaVersion: "dispatch-brief/v1",
+    },
+    inputDigest: computeModulePlanInputDigest(queue.input),
+    schemaVersion: "module-action-plan/v1",
+    workId: uuid(3),
+  });
+  expect(canonicalJson(await invokeAdmittedPlanning(queue.input))).toBe(
+    canonicalJson(await invokeAdmittedPlanning(queue.input)),
+  );
+
+  const alternate = parseModuleDescriptor({
+    ...planningDescriptorGolden,
+    moduleVersion: "0.0.1",
+  });
+  if (!alternate.ok) throw new Error("alternate planning descriptor refused");
+  const substituted = await preparedPlanning("queue", queueRows, alternate.value);
+  expect(substituted.result).toEqual({
+    inputDigest: computeModulePlanInputDigest(substituted.input),
+    outcome: "REFUSED",
+    reason: "INPUT_REFUSED",
+    schemaVersion: "module-no-action/v1",
+  });
+
+  const reviewSubject: ReviewSubject = {
+    authorAttemptId: uuid(90),
+    authorCycleId: uuid(91),
+    baseSource: {
+      adapterId: "fixture.queue",
+      projectId: source.projectId,
+      revision: "review-source",
+    },
+    result: { kind: "TREE", treeDigest: "e".repeat(64) },
+    schemaVersion: "worker-result-subject/v1",
+    terminalReceiptDigest: "f".repeat(64),
+  };
+  const reviewInput = await preparedPlanning(
+    "queue",
+    queueRows,
+    planningModule.descriptor,
+    reviewSubject,
+  );
+  expect(reviewInput.result).toEqual({
+    inputDigest: computeModulePlanInputDigest(reviewInput.input),
+    outcome: "REFUSED",
+    reason: "INPUT_REFUSED",
+    schemaVersion: "module-no-action/v1",
+  });
+
+  const notReady = await preparedPlanning(
+    "queue",
+    queueRows.map((row) => ({ ...row, readiness: "NOT_READY" })),
+  );
+  expect(notReady.policy.decisions).toEqual([{ capabilityName: "work.read", trip: "TRIP" }]);
+  expect(notReady.result).toEqual({
+    inputDigest: computeModulePlanInputDigest(notReady.input),
+    outcome: "NO_ACTION",
+    reason: "NO_ELIGIBLE_ACTION",
+    schemaVersion: "module-no-action/v1",
+  });
+
+  const missingCapability = await preparedPlanning(
+    "queue",
+    queueRows.map((row) => ({ ...row, capabilityNames: [] })),
+  );
+  expect(missingCapability.policy.decisions).toEqual([
+    { capabilityName: "work.read", trip: "NO_TRIP" },
+  ]);
+  expect(missingCapability.result).toEqual({
+    inputDigest: computeModulePlanInputDigest(missingCapability.input),
+    outcome: "NO_ACTION",
+    reason: "NO_ELIGIBLE_ACTION",
+    schemaVersion: "module-no-action/v1",
+  });
+
+  const allReady = frontier().map((row) => ({ ...row, readiness: "READY" as const }));
+  const [readyBranch, readyQueue] = await Promise.all([
+    preparedPlanning("branches", allReady),
+    preparedPlanning("queue", allReady),
+  ]);
+  if (
+    readyBranch.result.schemaVersion !== "module-action-plan/v1" ||
+    readyQueue.result.schemaVersion !== "module-action-plan/v1"
+  )
+    throw new Error("planning fixture action required");
+  const decisionProjection = ({
+    inputDigest: _inputDigest,
+    ...result
+  }: typeof readyBranch.result) => result;
+  expect(decisionProjection(readyBranch.result)).toEqual(decisionProjection(readyQueue.result));
+  expect(readyBranch.result.inputDigest).not.toBe(readyQueue.result.inputDigest);
+  expect(readyBranch.result.workId).toBe(uuid(2));
+  expect(readyQueue.result.workId).toBe(uuid(2));
+});
+
+test("keeps quarantined planning source effect-free and outside manifest activation", async () => {
+  const sourceText = await admittedPlanningSource();
+  for (const mutant of [
+    "import fs from 'node:fs';",
+    "export * from 'node:fs';",
+    "void import('node:fs');",
+    "void import(dependencyName);",
+    "require('node:fs');",
+    "require(dependencyName);",
+    "const load = require;",
+    "Date.now();",
+    "Math.random();",
+    "process.cwd();",
+    "fetch('https://invalid.example');",
+    "navigator.platform;",
+    "new WebSocket('ws://invalid.example');",
+    "structuredClone({});",
+  ]) {
+    const mutatedSource = `${sourceText}${mutant}\n`;
+    expect(createHash("sha256").update(mutatedSource).digest("hex")).not.toBe(planningSourceDigest);
+  }
+  expect(
+    normalizeTrackedText(
+      await readFile(new URL("../../../modules/manifest.json", import.meta.url), "utf8"),
+    ),
+  ).toBe("[]\n");
+  const generatorSource = await readFile(
+    new URL("../../../modules/build/generate-registry.mjs", import.meta.url),
+    "utf8",
+  );
+  expect(createHash("sha256").update(normalizeTrackedText(generatorSource)).digest("hex")).toBe(
+    "0dc6c3fd2e002d90b25bfe3e14b8529cda315555a1c82e029fc08bc212e4cb51",
+  );
 });
 
 test.each(["THROWN", "WRAPPED"] as const)(
