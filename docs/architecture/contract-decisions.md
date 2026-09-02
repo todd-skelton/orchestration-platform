@@ -6514,11 +6514,12 @@ prefix interpreted by the supplied ruleset semantics; glob syntax, implicit
 prefix broadening, and caller-selected matching are not part of this contract.
 
 `workflows` has exactly two rows ordered by UTF-8 `path`, one `BUILD` and one
-`REVIEW`, with no duplicate path. Each row has exactly these seven members:
+`REVIEW`, with no duplicate path. Each row has exactly these eight members:
 
 ```text
 digest:sha256
 path:path
+permissionNamespace:github-actions-permissions/2026-09-02
 permissions:permission-row[]
 ref:ref
 role:BUILD|REVIEW
@@ -6526,37 +6527,132 @@ trigger:trigger
 workflowId:canonical decimal string in 1..Number.MAX_SAFE_INTEGER
 ```
 
-Each `permissions` array has exactly five rows ordered by `permission`, one for
-each literal `actions|attestations|contents|id-token|pull-requests`. A row has
-exactly `access:NONE|READ|WRITE` and `permission`. This is the complete
-effective workflow permission census, including implicit `NONE`; an omitted
-permission is not equivalent. Any provider permission key outside this closed
-five-key census makes the ISS-036 semantic reduction refuse rather than being
-ignored. A `trigger` has exactly `activities`, `event`, and
-`sourceWorkflowPath`. `event` is `PULL_REQUEST|WORKFLOW_RUN`.
-`activities` is a 1..5 UTF-8-sorted unique array drawn from
-`closed|completed|opened|reopened|synchronize`. `sourceWorkflowPath` is null
-for `PULL_REQUEST` and is a non-null `path` for `WORKFLOW_RUN`; only the latter
-may contain `completed` and only the former may contain any other activity.
-The source workflow path must identify a different row in the same `workflows`
-array. These rows identify the ISS-036 synthetic workflows, not the later
-ISS-038 production workflows.
-
-`apiObservations` has 1..64 rows ordered by UTF-8 `route`, with no duplicate
-route. Each row has exactly these five members:
+`github-actions-permissions/2026-09-02` is the repository's closed GitHub.com
+Free/Pro/Team permission-namespace snapshot. Its official-source anchor is
+`github/docs` commit `143af21a5ef1c6c36ecf3fb0c68515d7290769c9`, specifically
+the versioned workflow-syntax source and available-permissions reusable:
 
 ```text
-etag:etag
-observedAt:timestamp
-pageCount:canonical decimal string in 1..64
-responseDigest:sha256
-route:api-route
+https://github.com/github/docs/blob/143af21a5ef1c6c36ecf3fb0c68515d7290769c9/content/actions/reference/workflows-and-actions/workflow-syntax.md
+https://github.com/github/docs/blob/143af21a5ef1c6c36ecf3fb0c68515d7290769c9/data/reusables/actions/github-token-available-permissions.md
 ```
 
-`pageCount` is the complete number of pages for that route and
-`responseDigest` identifies the canonical complete-page reduction owned by
-ISS-036. The value contract neither fetches a page nor proves completeness.
-Every `observedAt` must be no later than `issuedAt`.
+The snapshot has exactly seventeen UTF-8-sorted permission names:
+
+```text
+actions
+artifact-metadata
+attestations
+checks
+code-quality
+contents
+deployments
+discussions
+id-token
+issues
+models
+packages
+pages
+pull-requests
+security-events
+statuses
+vulnerability-alerts
+```
+
+Each workflow `permissions` array has exactly seventeen rows in that order,
+one per snapshot name, including every effective implicit `NONE`. A row has
+exactly `access` and `permission`. `id-token` admits only `NONE|WRITE`;
+`models` and `vulnerability-alerts` admit only `NONE|READ`; every other name
+admits `NONE|READ|WRITE`. An omitted, duplicate, later-added, renamed, or
+unknown provider permission refuses. Updating GitHub's mutable documentation
+does not silently widen this contract; a namespace change requires a new
+reviewed snapshot and compatibility entry.
+
+A `trigger` has exactly `activities`, `event`, `requiredConclusion`,
+`sourceWorkflowDigest`, `sourceWorkflowPath`, and `sourceWorkflowRef`. The
+`BUILD` row must have `event:PULL_REQUEST`, the exact UTF-8-sorted activities
+`[opened,reopened,synchronize]`, and all four source/conclusion cells null. The
+`REVIEW` row must have `event:WORKFLOW_RUN`, exact activities `[completed]`,
+`requiredConclusion:SUCCESS`, and non-null source path/ref/digest equal to the
+`BUILD` row. No other event, activity, conclusion, source, role/event pairing,
+or BUILD/REVIEW inversion parses. These rows identify the ISS-036 synthetic
+workflows, not the later ISS-038 production workflows.
+
+`apiObservations` is historical capture evidence retained in the receipt. It
+has exactly nine rows ordered by `purpose`, one for each
+`ENVIRONMENT|ENVIRONMENT_VARIABLE|PULL_REQUEST|PULL_REQUEST_REVIEWS|REPOSITORY|RULESET|WORKFLOW_BUILD|WORKFLOW_REVIEW|WORKFLOW_RUN`,
+with no duplicate purpose or request identity. Each row has exactly these nine
+members:
+
+```text
+completedAt:timestamp
+completeReductionDigest:sha256
+pages:rest-page[]|graphql-page[]
+purpose:the nine-member enum above
+reducedValueDigest:sha256
+request:rest-request|graphql-request
+requestIdentityDigest:sha256
+startedAt:timestamp
+terminalPaginationDigest:sha256
+```
+
+A REST request has exactly `apiKind:REST`, `apiVersion:2022-11-28`,
+`method:GET`, `queryDigest:sha256`, and `route:api-route`. A GraphQL request has
+exactly `apiKind:GRAPHQL`, `apiVersion:null`, `documentDigest:sha256`,
+`method:POST`, and `variablesDigest:sha256`; it has no REST route or query
+member. The request identity is the framed digest of `purpose` plus that
+complete request branch under `github-api-request-identity/v1`. Any different HTTP method or missing,
+renamed, crossed, or opposite-branch member refuses. `2022-11-28` is the exact
+REST `X-GitHub-Api-Version` already selected by
+`docs/architecture/self-host-github-contract.md`; ISS-054 does not select a
+newer mutable documentation example.
+
+Each page array has 1..64 dense rows with adjacent canonical decimal ordinals
+`"1".."64"`, and all page times satisfy
+`startedAt <= observedAt <= completedAt <= issuedAt`. Every page has status
+literal `"200"`, a `requestDigest` for the exact page request, and a
+`responseDigest` over the canonical response body bytes. A REST page has
+exactly `etag`, `linkHeaderDigest`, `linkRelations`, `nextRequestDigest`,
+`observedAt`, `ordinal`, `requestDigest`, `responseDigest`, and `status`.
+`etag` is non-null. `linkRelations` is a 0..4 UTF-8-sorted unique array of
+closed `{relation:FIRST|LAST|NEXT|PREV,targetRequestDigest:sha256}` rows.
+`linkHeaderDigest` is null exactly when `linkRelations` is empty and otherwise
+hashes the exact raw Link header. Every nonterminal REST page has exactly one
+`NEXT` relation whose target equals non-null `nextRequestDigest` and the next
+row's `requestDigest`; the final page has no `NEXT` and null
+`nextRequestDigest`. Extra, malformed, duplicate, reordered, skipped, or
+unfollowed Link relations refuse.
+
+A GraphQL page has exactly `endCursor`, `etag`, `hasNextPage`, `observedAt`,
+`ordinal`, `requestCursor`, `requestDigest`, `responseDigest`, and `status`.
+`etag` is `etag|null`; `requestCursor` and `endCursor` are null or 1..2048
+UTF-8 bytes without control characters. The first request cursor is null.
+Every nonterminal page has `hasNextPage:true` and non-null `endCursor` equal to
+the next row's `requestCursor`; the final page has `hasNextPage:false`.
+`hasNextPage:true` on the final page, false before the final page, cursor
+repetition, a missing next page, or a supplied cursor not obtained from the
+immediately prior page refuses.
+
+For both branches the first page request digest is derived from the request
+identity plus its null pagination position. `reducedValueDigest` identifies
+the canonical complete-page reducer output for that purpose.
+`completeReductionDigest` is the framed digest of request identity, every
+ordered response digest, and `reducedValueDigest` under
+`github-api-complete-reduction/v1`.
+`terminalPaginationDigest` is the framed digest of request identity, ordered
+page request/response digests, and the exact final REST no-`NEXT` or GraphQL
+`hasNextPage:false` cell under `github-api-terminal-pagination/v1`. It cannot be
+formed from a caller count alone. The historical parser verifies all formulas
+and terminal structure; it performs no API request and makes no freshness
+claim.
+
+For the six semantic purposes shared with fresh read-back, the historical
+`reducedValueDigest` recomputes from the corresponding receipt environment,
+repository, ruleset/path/review-policy, BUILD, or REVIEW value. The
+`PULL_REQUEST`, `PULL_REQUEST_REVIEWS`, and `WORKFLOW_RUN` digests bind their
+ISS-036 archived closed reducer outputs and are historical probe evidence only;
+the WORKFLOW_RUN output must bind the receipt producer run/attempt/workflow and
+conclusion `SUCCESS`. They do not become fresh ruleset semantics.
 
 `producer` has exactly `artifactName`, `runAttempt`, `runId`, `workflowDigest`,
 `workflowPath`, and `workflowRef`. `artifactName` is a safe name;
@@ -6576,9 +6672,9 @@ exactly `protectedPathPolicies`, `repositoryId`, `reviewPolicy`, `rulesetId`,
 and `workflows`, framed under domain
 `repository-protection-ruleset-semantics/v1`. It deliberately excludes API
 ETags/times, producer/run identity, anchor transport, receipt times, and
-disposition. This projection lets a fresh ISS-038 read-back compare the
-effective ruleset/workflow semantics without pretending that an old ETag is
-current.
+disposition. This projection lets a fresh ISS-038 read-back compare immutable
+effective ruleset/workflow semantics without equating historical capture
+ETags, cursors, page bytes, or observation times to the fresh read-back.
 
 `bootstrap-verifier-anchor/v1` has exactly these ten top-level members in
 ascending canonical JSON member order:
@@ -6652,35 +6748,73 @@ do not construct, read, or write it.
 
 The sole pure cross-family binder receives four detached supplied inputs:
 `receipt`, `anchor`, `observedProtection`, and `evaluatedAt`.
-`observedProtection` is not persisted and has exactly `apiObservations`,
-`environmentBinding`, `producer`, `protectedPathPolicies`, `repositoryId`,
-`reviewPolicy`, `rulesetId`, and `workflows`, using the identical nested
-censuses above. The binder parses both values, requires receipt disposition
-`ACCEPTED`, requires `issuedAt <= evaluatedAt < expiresAt`, recomputes
-`Danchor`, and requires equality among it, `receipt.verifierAnchorDigest`, and
-the receipt environment variable value. It requires both repository IDs and
-the signer-workflow repository ID to equal the supplied observed repository.
-It requires every supplied observation/policy/producer/workflow/ruleset field
-to equal its receipt counterpart, recomputes the semantic digest from the
-supplied effective semantics, and requires it to equal the receipt digest.
-It returns only detached parsed values and exact `Danchor`/`Dprotection`; it
-never returns an authority, currentness, verification, or grant claim.
+`observedProtection` is fresh ISS-038 read-back evidence, not persisted by this
+contract, and has exactly `apiObservations`, `completedAt`,
+`environmentBinding`, `protectedPathPolicies`, `repositoryId`, `reviewPolicy`,
+`rulesetId`, `startedAt`, `terminalEvidenceDigest`, and `workflows`.
+
+Fresh `apiObservations` use the identical closed request/page/terminal row
+censuses and formulas but have exactly the six shared effective-semantics
+purposes `ENVIRONMENT|ENVIRONMENT_VARIABLE|REPOSITORY|RULESET|WORKFLOW_BUILD|WORKFLOW_REVIEW`.
+Every fresh page time lies within
+`observedProtection.startedAt..completedAt` rather than before receipt issue.
+The fresh environment binding uses the identical five-member census but carries
+its independently observed ETag and source update time. The fresh observation
+must finish within 300,000 milliseconds of its start, `evaluatedAt` must equal
+`completedAt`, and every API terminal digest plus the environment ETag/time,
+semantic projection, repository/ruleset identities, and exact observation
+start/end is framed into `terminalEvidenceDigest` under
+`repository-protection-terminal-evidence/v1`. Thus a precomputed caller count,
+historical receipt timestamp, or API row without terminal pagination cannot be
+presented as the evaluation boundary.
+
+The binder parses both values, requires receipt disposition `ACCEPTED`, and
+requires `issuedAt <= evaluatedAt < expiresAt`. It recomputes `Danchor` and
+requires equality among it, `receipt.verifierAnchorDigest`, the historical
+receipt environment variable value, and the fresh environment variable value.
+It requires receipt, anchor, signer-workflow, and fresh-observation repository
+IDs to agree. Historical and fresh environment names/variable names agree, but
+their ETags and update times are independently validated and deliberately need
+not equal. The six shared historical and fresh API rows are joined one-for-one
+by purpose and exact `requestIdentityDigest`; the historical pull-request,
+reviews, and producer-run rows have no fresh counterpart. Historical and fresh
+page counts, ETags, cursors, Link headers, response bytes, capture times,
+reduction digests, and terminal digests are not equated. Each fresh row must
+independently terminate. Its `reducedValueDigest` must recompute respectively
+from the fresh environment name, environment name/variable name/value,
+repository ID, ruleset ID/path/review policy, BUILD workflow row, or REVIEW
+workflow row; API ETags/times and page metadata are excluded from those six
+semantic values. The binder recomputes the semantic digest from those fresh
+effective semantics and requires it to equal the receipt's immutable
+`rulesetSemanticDigest`. Receipt producer identity remains historical and is
+not copied into the fresh input.
+
+The binder returns only detached parsed values and exact
+`Danchor`/`Dprotection`/`terminalEvidenceDigest`; it never returns an authority,
+currentness, verification, or grant claim. ISS-038 composition, not this pure
+relation, decides whether the supplied fresh capture source is authenticated
+and usable.
 
 Compatibility and negative evidence must pin canonical byte and framed-digest
 goldens for both families and the semantic projection; remove, add, rename,
 reorder, null, or cross-type every member; hit every scalar bound and enum;
 cover receipt expiry at 1 ms and exactly seven days plus zero, reversed, and
 seven-days-plus-1-ms refusals; mutate each policy, permission, trigger, path,
-ref, workflow, producer, route/page/ETag, environment, repository, ruleset,
-asset, checksum, signer, issuer, trust, operator, and digest relation
-independently. Arrays must run the complete mutable/sealed/frozen and hostile
-reflection corpus. Vectors must also reject duplicate/unsorted rows, incomplete
-five-permission or three-OS censuses, partial/latest API evidence, post-upload
-artifact members, mutable selectors, custom roots, executable paths, and
-consistently substituted anchor/verifier/bundle inputs. Deleting any parser,
-bound, semantic projection, producer/workflow, anchor/environment,
-repository/signer, expiry, or supplied-observation equality must make a
-committed mutant survive and therefore fail the suite.
+ref, workflow, producer, request identity/version/method/branch, page ordinal,
+status/body/ETag/time, Link relation, cursor, reduction/terminal digest,
+environment, repository, ruleset, asset, checksum, signer, issuer, trust,
+operator, and digest relation independently. Arrays must run the complete
+mutable/sealed/frozen and hostile reflection corpus. Vectors must also reject
+duplicate/unsorted rows, incomplete seventeen-permission or three-OS censuses,
+permission namespace drift, role/trigger/conclusion inversion, partial/latest
+API evidence, REST/GraphQL branch crossing, early false terminal, unfollowed
+next evidence, historical/fresh metadata equality as a requirement, stale or
+unbound fresh terminal evidence, post-upload artifact members, mutable
+selectors, custom roots, executable paths, and consistently substituted
+anchor/verifier/bundle inputs. Deleting any parser, bound, semantic projection,
+producer/workflow, anchor/environment, repository/signer, expiry, request/page
+chain, terminal pagination, fresh terminal evidence, or immutable-semantics
+equality must make a committed mutant survive and therefore fail the suite.
 
 This ledger authorizes only total parsers, canonical serializers, framed
 identity and semantic-digest functions, registry/compatibility/public exports,
