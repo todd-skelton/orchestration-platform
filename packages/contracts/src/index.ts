@@ -39,6 +39,10 @@ import {
 } from "./dispatch-lifecycle.js";
 import { compatibilityDisposition, schemaDefinitions, schemaVersions } from "./registry.js";
 import {
+  computeBootstrapVerifierAnchorDigest,
+  parseVerifierAnchorContract,
+} from "./verifier-anchor.js";
+import {
   canonicalBytes,
   canonicalDigest,
   canonicalJson,
@@ -114,6 +118,7 @@ import {
 } from "./cycle-entry.js";
 
 export * from "./authority.js";
+export * from "./verifier-anchor.js";
 export * from "./breaker-receipt.js";
 export * from "./commit.js";
 export * from "./definitions.js";
@@ -191,6 +196,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const verifierAnchor = parseVerifierAnchorContract(expectedSchemaVersion, input);
+  if (verifierAnchor) return verifierAnchor;
   const journal = parseJournalContract(expectedSchemaVersion, input);
   if (journal) return journal;
   const reclaim = parseResourceReclaimContract(expectedSchemaVersion, input);
@@ -324,6 +331,12 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if (expectedSchemaVersion === "bootstrap-verifier-anchor/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeBootstrapVerifierAnchorDigest(parsed.value),
+    };
   if ((journalSchemaVersions as readonly string[]).includes(expectedSchemaVersion)) {
     const bytes =
       expectedSchemaVersion === "event-journal/v1"
