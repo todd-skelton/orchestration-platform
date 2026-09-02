@@ -7,6 +7,7 @@ children:
     ISS-000,
     ISS-001,
     ISS-002,
+    ISS-054,
     ISS-003,
     ISS-006,
     ISS-048,
@@ -33,6 +34,7 @@ extends that foundation for cold-session self-hosting without ambient secrets.
 - Direct-edge DAG (generated from `planning/roadmap.json`):
   `ISS-000 → ISS-001`;
   `ISS-001 → ISS-002`;
+  `ISS-002 → ISS-054`;
   `ISS-006 → ISS-003`;
   `ISS-002 → ISS-006`;
   `ISS-006 → ISS-048`;
@@ -59,6 +61,7 @@ extends that foundation for cold-session self-hosting without ambient secrets.
 - `ISS-000` — Bootstrap the repository toolchain and executable verification surface.
 - `ISS-001` — Capture the reference behavior and authority inventory.
 - `ISS-002` — Define versioned configuration, state, and receipt contracts.
+- `ISS-054` — Implement repository-protection receipt and verifier-anchor contracts.
 - `ISS-003` — Build the portable CLI and configuration loader.
 - `ISS-006` — Establish the trusted cross-platform test harness.
 - `ISS-048` — Run the hosted native-lock compilation and diagnostic experiment.
