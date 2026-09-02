@@ -1,8 +1,13 @@
-import { readFile, readdir } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { gunzipSync } from "node:zlib";
+import { cp, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
   admitFirstConsumerCompatibility,
+  createFirstConsumerConfiguration,
   firstConsumerAdapterId,
   firstConsumerAdapterVersion,
   firstConsumerCapabilityNames,
@@ -14,12 +19,15 @@ import {
 import * as importExtension from "../../adapters/first-consumer/src/import/index.ts";
 import * as mutationExtension from "../../adapters/first-consumer/src/mutation/index.ts";
 import * as shadowExtension from "../../adapters/first-consumer/src/shadow/index.ts";
+import { resolvePnpmLauncher } from "../../scripts/pnpm-launcher.mjs";
 
+const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const packagePath = resolve(repositoryRoot, "adapters/first-consumer/package.json");
 const sourceRoot = resolve(repositoryRoot, "adapters/first-consumer/src");
 const sdkPackagePath = resolve(repositoryRoot, "packages/adapter-sdk/package.json");
 const enginePackagePath = resolve(repositoryRoot, "packages/engine/package.json");
+const emptyFixtureProjectId = "01900000-0000-7000-8000-000000000028";
 
 function fail(message) {
   throw new Error(`first-consumer-scaffold:${message}`);
@@ -62,18 +70,131 @@ function assertClosedPlaceholder(moduleNamespace, exportName, owner) {
     fail("extension-placeholder-census");
 }
 
-async function packageSourceCensus(directory = sourceRoot) {
+async function packageSourceCensus(directory = sourceRoot, root = directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) files.push(...(await packageSourceCensus(path)));
-    else if (entry.isFile()) files.push(relative(sourceRoot, path).replaceAll("\\", "/"));
+    if (entry.isDirectory()) files.push(...(await packageSourceCensus(path, root)));
+    else if (entry.isFile()) files.push(relative(root, path).replaceAll("\\", "/"));
     else fail("package-source-kind");
   }
   return files.sort();
 }
 
+function parsePackResult(stdout) {
+  const start = stdout.indexOf("{");
+  if (start < 0) fail("package-pack-json");
+  return JSON.parse(stdout.slice(start));
+}
+
+async function readTarballFiles(path) {
+  const archive = gunzipSync(await readFile(path));
+  const files = new Map();
+  for (let offset = 0; offset + 512 <= archive.length;) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const text = (start, length) =>
+      header
+        .subarray(start, start + length)
+        .toString("utf8")
+        .replace(/\0.*$/s, "");
+    const name = [text(345, 155), text(0, 100)].filter(Boolean).join("/");
+    const size = Number.parseInt(text(124, 12).trim() || "0", 8);
+    if (!Number.isSafeInteger(size) || size < 0) fail("package-tar-size");
+    const type = text(156, 1);
+    offset += 512;
+    if (type === "" || type === "0") {
+      const publicPath = name.replace(/^package\//, "");
+      if (!publicPath || files.has(publicPath)) fail("package-tar-census");
+      files.set(publicPath, archive.subarray(offset, offset + size));
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+function containsSensitiveOrLocalText(text) {
+  return (
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text) ||
+    /gh[pousr]_[A-Za-z0-9]{20,}/.test(text) ||
+    /github_pat_[A-Za-z0-9_]{20,}/.test(text) ||
+    /npm_[A-Za-z0-9]{20,}/.test(text) ||
+    /(?:^|[\s"'`(=])(?:[A-Za-z]:\\Users\\[^\\\s"'`]+(?:\\[^\s"'`]*)?|\/Users\/[^/\s"'`]+(?:\/[^\s"'`]*)?|\/home\/[^/\s"'`]+(?:\/[^\s"'`]*)?)/m.test(
+      text,
+    ) ||
+    /file:\/\/\/(?:[A-Za-z]:\/Users|Users|home)\/[^/\s"'`]+/i.test(text)
+  );
+}
+
+function containsFirstConsumerReference(text) {
+  return text.includes("first-consumer");
+}
+
+function assertBoundaryDetectorFixtures() {
+  const sensitive = [
+    "-----BEGIN PRIVATE KEY-----",
+    `ghp_${"a".repeat(20)}`,
+    `github_pat_${"a_b".repeat(10)}`,
+    `npm_${"a".repeat(36)}`,
+    "C:\\Users\\fixture-user\\repository\\secret.txt",
+    "/Users/fixture-user/repository/secret.txt",
+    "/home/fixture-user/repository/secret.txt",
+    "file:///home/fixture-user/repository/secret.txt",
+  ];
+  const benign = [
+    "https://example.test/home/fixture-user/repository",
+    "https://example.test/Users/fixture-user/repository",
+    "the /home/ page",
+    "ghp_short",
+    "github_pat_short",
+    "npm_install",
+    "-----BEGIN PUBLIC KEY-----",
+    "C:\\Program Files\\fixture\\readme.txt",
+  ];
+  if (sensitive.some((value) => !containsSensitiveOrLocalText(value)))
+    fail("sensitive-detector-positive");
+  if (benign.some((value) => containsSensitiveOrLocalText(value)))
+    fail("sensitive-detector-negative");
+  const references = [
+    "@orchestration-platform/adapter-first-consumer",
+    "../../first-consumer/src/index.js",
+    "../../../adapters/first-consumer/src/index.js",
+    'adapterId: "first-consumer"',
+  ];
+  const unrelated = ["consumer-first", "first_consumer", "first.consumer", "consumer"];
+  if (references.some((value) => !containsFirstConsumerReference(value)))
+    fail("platform-reference-detector-positive");
+  if (unrelated.some((value) => containsFirstConsumerReference(value)))
+    fail("platform-reference-detector-negative");
+}
+
 export async function runFirstConsumerScaffoldCheck() {
+  const fixture = createFirstConsumerConfiguration(emptyFixtureProjectId);
+  if (!fixture.ok) fail("empty-configuration-refused");
+  if (
+    !Object.isFrozen(fixture) ||
+    !Object.isFrozen(fixture.value) ||
+    JSON.stringify(Object.keys(fixture.value).sort()) !==
+      JSON.stringify([
+        "adapterId",
+        "adapterVersion",
+        "capabilityNames",
+        "engineVersion",
+        "projectId",
+        "schemaVersion",
+      ]) ||
+    JSON.stringify(fixture.value) !==
+      '{"adapterId":"first-consumer","adapterVersion":"0.0.0","capabilityNames":["project.import","project.mutation","project.shadow"],"engineVersion":"0.0.0","projectId":"01900000-0000-7000-8000-000000000028","schemaVersion":"adapter-configuration/v1"}'
+  )
+    fail("empty-configuration-census");
+  for (const projectId of [
+    null,
+    {},
+    "01900000-0000-6000-8000-000000000028",
+    "01900000-0000-7000-7000-000000000028",
+    "01900000-0000-7000-8ABC-000000000028",
+  ])
+    if (createFirstConsumerConfiguration(projectId).ok) fail("project-id-mutant-accepted");
   if (!admitFirstConsumerCompatibility(request()).ok) fail("exact-compatibility-refused");
   if (
     !admitFirstConsumerCompatibility(
@@ -190,12 +311,7 @@ export async function runFirstConsumerScaffoldCheck() {
     fail("package-source-census");
   for (const name of sourceCensus) {
     const source = await readFile(resolve(sourceRoot, name), "utf8");
-    if (
-      /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(source) ||
-      /gh[pousr]_[A-Za-z0-9]{20,}/.test(source) ||
-      /(?:[A-Za-z]:\\Users\\|\/Users\/|\/home\/)[^\s"']+/.test(source)
-    )
-      fail("package-sensitive-source");
+    if (containsSensitiveOrLocalText(source)) fail("package-sensitive-source");
   }
 
   const expectedExtensions = Object.freeze([
@@ -265,5 +381,110 @@ export async function runFirstConsumerFootprintCollisionCheck() {
     paths.add(path);
   }
   if (paths.has("adapters/first-consumer/src/index.ts")) fail("composition-root-collision");
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "first-consumer-collision-"));
+  try {
+    const baseFiles = await packageSourceCensus();
+    const changedPaths = await Promise.all(
+      firstConsumerExtensions.map(async (row) => {
+        const tree = resolve(temporaryRoot, row.extensionId);
+        await cp(sourceRoot, tree, { recursive: true });
+        const target = resolve(tree, row.extensionId, "index.ts");
+        const before = await readFile(target, "utf8");
+        await writeFile(
+          target,
+          `${before}\nexport const representative${row.extensionId[0].toUpperCase()}${row.extensionId.slice(1)}Patch = Object.freeze({ capabilityName: ${JSON.stringify(row.capabilityName)}, outcome: "REPRESENTATIVE_ONLY" });\n`,
+        );
+        const observedFiles = await packageSourceCensus(tree);
+        if (JSON.stringify(observedFiles) !== JSON.stringify(baseFiles))
+          fail("representative-patch-file-census");
+        const changed = [];
+        for (const file of baseFiles)
+          if (
+            !(await readFile(resolve(tree, file))).equals(await readFile(resolve(sourceRoot, file)))
+          )
+            changed.push(`adapters/first-consumer/src/${file}`);
+        return changed;
+      }),
+    );
+    const expectedPaths = firstConsumerExtensions.map(
+      (row) => `adapters/first-consumer/src/${row.extensionId}/index.ts`,
+    );
+    if (
+      changedPaths.some((changed) => changed.length !== 1) ||
+      JSON.stringify(changedPaths.flat().sort()) !== JSON.stringify(expectedPaths.sort())
+    )
+      fail("representative-patch-collision");
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
   return Object.freeze({ paths: Object.freeze([...paths].sort()), outcome: "PASS" });
+}
+
+export async function runFirstConsumerPackageBoundaryCheck() {
+  assertBoundaryDetectorFixtures();
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  if (
+    JSON.stringify(packageJson.scripts) !==
+    JSON.stringify({
+      test: "node ../../scripts/capability-not-implemented.mjs ISS-028 @orchestration-platform/adapter-first-consumer:test",
+    })
+  )
+    fail("package-script-census");
+  const sourceFiles = await packageSourceCensus();
+  const launcher = await resolvePnpmLauncher();
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), "first-consumer-package-"));
+  try {
+    const { stdout } = await execFileAsync(
+      launcher.executable,
+      [
+        ...launcher.prefixArgs,
+        "--filter",
+        "@orchestration-platform/adapter-first-consumer",
+        "pack",
+        "--pack-destination",
+        temporaryRoot,
+        "--json",
+      ],
+      {
+        cwd: repositoryRoot,
+        env: { ...process.env, npm_config_ignore_scripts: "true" },
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    const packed = parsePackResult(stdout);
+    const packedPath = resolve(packed.filename);
+    if (!packedPath.startsWith(`${temporaryRoot}${sep}`) || !(await stat(packedPath)).isFile())
+      fail("package-tar-path");
+    const expectedFiles = ["package.json", ...sourceFiles.map((file) => `src/${file}`)];
+    const reportedFiles = packed.files.map(({ path }) => path).sort();
+    if (JSON.stringify(reportedFiles) !== JSON.stringify(expectedFiles.sort()))
+      fail("package-reported-census");
+    const tarballFiles = await readTarballFiles(packedPath);
+    if (JSON.stringify([...tarballFiles.keys()].sort()) !== JSON.stringify(expectedFiles.sort()))
+      fail("package-tar-census");
+    for (const bytes of tarballFiles.values())
+      if (containsSensitiveOrLocalText(bytes.toString("utf8"))) fail("package-sensitive-tar-byte");
+
+    const tracked = await execFileAsync(
+      "git",
+      [
+        "ls-files",
+        "bootstrap",
+        "adapters/self",
+        "packages",
+        "modules",
+        "config/private-compositions.json",
+      ],
+      { cwd: repositoryRoot, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+    );
+    for (const file of tracked.stdout.split(/\r?\n/).filter(Boolean)) {
+      if (!/\.(?:[cm]?[jt]s|json)$/.test(file)) continue;
+      const text = await readFile(resolve(repositoryRoot, file), "utf8");
+      if (containsFirstConsumerReference(text)) fail("platform-artifact-input-leak");
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+  return Object.freeze({ outcome: "PASS" });
 }

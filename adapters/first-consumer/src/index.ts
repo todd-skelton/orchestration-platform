@@ -50,6 +50,40 @@ export type FirstConsumerCompatibilityResult =
   | Readonly<{ ok: true; value: FirstConsumerCompatibility }>
   | Readonly<{ ok: false; code: "ADAPTER_COMPATIBILITY_REFUSED" }>;
 
+export type FirstConsumerAdapterConfiguration = Readonly<{
+  adapterId: typeof firstConsumerAdapterId;
+  adapterVersion: typeof firstConsumerAdapterVersion;
+  capabilityNames: typeof firstConsumerCapabilityNames;
+  engineVersion: (typeof firstConsumerEngineVersions)[number];
+  projectId: string;
+  schemaVersion: "adapter-configuration/v1";
+}>;
+
+export type FirstConsumerConfigurationResult =
+  | Readonly<{ ok: true; value: FirstConsumerAdapterConfiguration }>
+  | Readonly<{ ok: false; code: "FIRST_CONSUMER_PROJECT_ID_REFUSED" }>;
+
+const uuidV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** Constructs data-only input for the generic adapter-configuration/v1 parser. */
+export function createFirstConsumerConfiguration(
+  projectId: unknown,
+): FirstConsumerConfigurationResult {
+  if (typeof projectId !== "string" || !uuidV7.test(projectId))
+    return Object.freeze({ ok: false, code: "FIRST_CONSUMER_PROJECT_ID_REFUSED" });
+  return Object.freeze({
+    ok: true,
+    value: Object.freeze({
+      adapterId: firstConsumerAdapterId,
+      adapterVersion: firstConsumerAdapterVersion,
+      capabilityNames: firstConsumerCapabilityNames,
+      engineVersion: firstConsumerEngineVersions[0],
+      projectId,
+      schemaVersion: "adapter-configuration/v1",
+    }),
+  });
+}
+
 const compatibilityFields = Object.freeze([
   "adapterId",
   "adapterVersion",
