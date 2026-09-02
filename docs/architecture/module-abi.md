@@ -144,8 +144,9 @@ The first source tranche is only `modules/planning/src/index.ts`. It is grounded
 in the existing two ISS-013 fixture adapters and walking-skeleton module
 consumer. It remains quarantined from `modules/manifest.json` and the generated
 registry; final manifest activation still requires all four baseline source
-entrypoints. The other three module semantics remain undefined until their own
-executable consumers start. Its descriptor is exact:
+entrypoints. Delivery and repair semantics remain undefined until their own
+executable consumers start; the next review tranche is defined below. Its
+descriptor is exact:
 
 - `moduleId: planning`, `moduleVersion: 0.0.0`, ABI and schema arrays as above,
   and empty `dispositionCodes` (there is no optional disposition export);
@@ -207,6 +208,130 @@ an all-READY NO_TRIP corpus through both adapters and require the same selected
 work/action/core/brief projection; only the necessarily different
 adapter-bound input digest may differ. Consumer source fields and terminology
 must be absent from every retained public record and comparison.
+
+### Next runtime consumer: neutral worker-result review planning
+
+Round 443 defines only the next quarantined source tranche,
+`modules/review/src/index.ts`. It extracts the step-4 behavior already consumed
+from `fixtures/walking-skeleton/src/review-module.ts`; it does not replace that
+fixture module, copy its disposition, or enter a running cycle. The entrypoint
+exports exactly `descriptor` and `plan`, with no `disposition` export. Empty
+`dispositionCodes` makes this a partial ABI implementation; full-routine
+admission still requires the actual source-owned handler before worker effects.
+Planning's Round 439 source and identity remain unchanged, and both modules
+remain absent from the empty manifest and registry.
+
+The complete descriptor uses the existing closed `module-descriptor/v1`
+members and no extensions:
+
+- `schemaVersion: module-descriptor/v1`, `abi: orchestration-module/v1`,
+  `moduleId: review`, and `moduleVersion: 0.0.0`;
+- `inputSchemas: ["module-plan-input/v1"]`,
+  `outputSchemas: ["module-action-plan/v1","module-no-action/v1"]`, and
+  `dispositionCodes: []`;
+- exactly two compatibility rows, in order `fixture.branches`, then
+  `fixture.queue`, each with adapter version `1.0.0`, engine version
+  `0.0.0`, and policy version `1.0.0`;
+- exactly one action: `actionKind: review.worker-result`,
+  `capabilityName: work.read`, `requestedRole: review`,
+  `workerRequired: true`, and `reviewRequired: false`. The last value is
+  required by the existing review-role contract; it does not certify the target
+  or waive the distinct-author and exact-target review authority gates;
+- exactly eight catalog rows, in existing directive order:
+  `ACCEPTANCE_EVIDENCE`, `CONSTRAINT`, `DECISION`, `NON_GOAL`,
+  `REVIEW_ATTACK`, `SCOPE_EXCLUDE`, `SCOPE_INCLUDE`, `VERIFICATION`.
+  Each row has the action/capability pair above, accessor
+  `IMMUTABLE_SUBJECT_DIGEST`, and equal code/template ID formed as
+  `review.` plus ASCII-lowercase directive kind with every underscore changed
+  to a hyphen. There is no `OPERATOR_ACTION` catalog row.
+
+The complete step-4 result policy is:
+
+1. Parse the entire supplied input with `parseModulePlanInput` and retain that
+   detached public value. Every structural or relational parser refusal,
+   including incomplete snapshot/policy, unsupported compatibility, invalid
+   module intent, unconfigured capability, or a subject authored in the current
+   cycle, is a caller failure. Do not fabricate an input digest or module result
+   from rejected input.
+2. Require canonical-byte-equal identity between the parsed input descriptor
+   and the exported descriptor. A parse-valid alternate descriptor, null review
+   subject, or `release-candidate-subject/v1` returns exactly the bound
+   `module-no-action/v1` with the retained input digest,
+   `outcome: REFUSED`, and `reason: INPUT_REFUSED`.
+3. Otherwise the exact `worker-result-subject/v1` is the sole action target.
+   Return one `module-action-plan/v1` with `workId: null` and the retained
+   input digest. Its core has schema `dispatch-action-core/v1`, the declared
+   action/capability/role, the exported descriptor digest, and
+   `immutableSubjectDigest = computeWorkerResultSubjectDigest(reviewSubject)`.
+   Never substitute a frontier row, author attempt, artifact content digest,
+   terminal receipt digest, or frontier digest for that complete subject.
+4. The brief has schema `dispatch-brief/v1` and role `review`. Its action
+   record binds the exact core digest, pair, subject, and descriptor under
+   `dispatch-brief-action/v1`. Its nine directives use the existing complete
+   order and `dispatch-brief-directive/v1`; the eight catalog kinds are
+   `PRESENT` with their exact codes, while `OPERATOR_ACTION` is `ABSENT`
+   with `code: null`. Every directive, including the absent one, binds the
+   same subject digest. The footprint is exactly one
+   `dispatch-brief-resource/v1` with `access: READ` and that same
+   `resourceIdentityDigest`. Validate the result against the retained input.
+
+Both `TRIP` and `NO_TRIP` on `work.read` preserve this action decision,
+matching the existing review fixture. The complete policy observation is bound
+into the input digest but never interpreted as execution permission here.
+Unlike frontier planning, review planning neither selects a frontier row nor
+requires its readiness; a parse-valid empty or changed frontier cannot replace
+the supplied target. The engine's later current-policy/breaker, installed
+registry, preflight, distinct-author, and exact-target gates remain mandatory.
+The module never emits a success, acceptance, review authority, disposition,
+follow-up, or cycle receipt. This tranche has no `NO_ACTION` decision cell:
+the ABI output schema census remains fixed even though this policy emits only
+an action or `REFUSED/INPUT_REFUSED`. An unexpected throw or malformed return
+is a caller failure, not silently converted to another result.
+
+The source packet must consume the existing walking-skeleton preparation seam:
+actual branch and queue configuration loaders and SDK snapshot/current-policy
+readers through `loadFixtureConfiguration`, `observeFixtureSnapshot`,
+`observeFixturePolicy`, and `composeFixtureModuleInput`, using the new
+descriptor and a concrete prior worker-result subject. Retain the exact parsed
+input across `await plan(input)` and apply `validateModulePlanBinding`
+afterward. Keep the two real adapter policy projections, including contrasting
+TRIP/NO_TRIP observations, and assert the same action/role/catalog shape with
+each output bound to its own complete input and target digests. Seeded prior
+subjects are explicit fixture input, never proof that an author cycle executed.
+
+The focused vectors must pin complete descriptor and output bytes/digests;
+valid descriptor/null/candidate refusals; parser refusals without bound output;
+same-cycle denial; both policy arms; empty, reordered, and changed frontier
+noninterference; repeated-input byte equality; exact worker-result substitution;
+and every result core/brief/directive/footprint binding. A changed subject with
+unchanged result must fail binding; a valid changed subject replanned must bind
+the new complete digest. Required descriptor/capability/policy checks cannot be
+omitted to manufacture an otherwise invalid test input. Consumer terminology
+stays outside public output. Tests exercise the new module through preparation,
+not only hand-built module inputs or tests of the old fixture module.
+
+Source admission reuses the Round 438/439 boundary: normalize the exact tracked
+review entrypoint and require its independently reviewed SHA-256 immediately
+before every new review `plan` invocation. Independent exact-head review
+recomputes that identity and inspects those exact production bytes for the sole
+public-contract static dependency and absence of ambient/effect access.
+Seeded static/dynamic import, `require`, clock, random, process, network,
+`navigator`, `WebSocket`, and an intentionally unlisted-byte mutation prove
+only identity change; there is no source classifier, scanner, sandbox, VM, or
+complete global-name inventory. The pin cannot confer semantic, installation,
+execution, release, or authority status. Final reviewed manifest admission
+eventually replaces it.
+
+The source footprint is exactly this review entrypoint, focused additions to
+`fixtures/walking-skeleton/test/consumer.test.ts`, and one pressure record.
+No public contracts, fixture runtime, planning source/pin, manifest, generator,
+generated stub, root configuration, dependency, or authority surface changes.
+Local verification is typecheck, planning, reconciled board, targeted formatting,
+and diff checks; execution evidence is the hosted focused/full suite on Linux,
+macOS, and Windows. The definition and following source each require independent
+exact-head review. Release-candidate planning, disposition, delivery, repair,
+ISS-039 advisory findings, module activation, and ISS-011 closure remain later
+work.
 
 `ISS-011` owns the only registry generator at
 `modules/build/generate-registry.mjs`. It parses the closed manifest and exact
