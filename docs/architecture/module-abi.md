@@ -53,17 +53,160 @@ This conditional export/callable replan requires independent review before code.
 
 `ISS-011` owns `modules/manifest.json` and these baseline entrypoints:
 
-| Module ID | Source entrypoint |
-| --- | --- |
+| Module ID  | Source entrypoint               |
+| ---------- | ------------------------------- |
 | `planning` | `modules/planning/src/index.ts` |
 | `delivery` | `modules/delivery/src/index.ts` |
-| `review` | `modules/review/src/index.ts` |
-| `repair` | `modules/repair/src/index.ts` |
+| `review`   | `modules/review/src/index.ts`   |
+| `repair`   | `modules/repair/src/index.ts`   |
 
 The manifest is an ordered closed list. For each row it records the source-tree
 digest, emitted-module digest, descriptor digest, ABI/schema IDs, and
 compatibility/capability declarations. Release assembly recomputes those values
 and binds the whole manifest digest into `release-manifest/v1`.
+
+### Closed manifest row and ordered build
+
+`modules/manifest.json` contains one canonical JSON array and a final LF. N0 has
+exactly four rows in the table order above. A row has exactly these members in
+canonical key order:
+
+| Member                | Complete rule                                                                            |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| `abi`                 | literal `orchestration-module/v1`                                                        |
+| `capabilityNames`     | the descriptor action rows' distinct capability projection, strictly ASCII sorted        |
+| `compatibility`       | the descriptor's complete ordered exact-version tuple array                              |
+| `descriptorDigest`    | the existing framed `module-descriptor/v1` digest                                        |
+| `emittedEntryPoint`   | literal `modules/<moduleId>/dist/index.mjs`                                              |
+| `emittedModuleDigest` | SHA-256 of the exact emitted entrypoint bytes                                            |
+| `inputSchemas`        | exact descriptor projection, currently `["module-plan-input/v1"]`                        |
+| `moduleId`            | exact table ID; rows are strictly ordered `planning, delivery, review, repair`           |
+| `moduleVersion`       | exact descriptor version                                                                 |
+| `outputSchemas`       | exact descriptor projection, currently `["module-action-plan/v1","module-no-action/v1"]` |
+| `sourceEntryPoint`    | literal `modules/<moduleId>/src/index.ts`                                                |
+| `sourceTreeDigest`    | source-census digest below                                                               |
+
+All strings retain the existing `Id`, `Name`, `Version`, schema-ID, and digest
+grammars. Compatibility rows retain their complete descriptor rules and order.
+Every direct projection must equal the parsed descriptor; matching a copied
+digest never repairs a differing declaration. Unknown fields, a noncanonical
+file, wrong row order, a duplicate ID/path, a moved path, or any path containing
+an absolute component, backslash, dot segment, percent escape, URL syntax, or
+non-ASCII byte refuses before a module is loaded or emitted.
+
+For one module, the source census is every tracked regular `.ts` file below its
+literal `modules/<moduleId>/src/` root. Directories and files are traversed by
+strict ASCII slash path; symlinks, reparse points, hard-link aliases, untracked
+entries, other extensions, empty censuses, duplicate normalized paths, and
+entries outside that root refuse. Each tracked text file is normalized through
+the repository's existing tracked-text LF normalizer. The private census is an
+ordered array of exact `{path,sha256,size}` rows, where `path` is relative to the
+module root, `sha256` hashes the normalized UTF-8 bytes, and `size` is their
+safe integer byte length. `sourceTreeDigest = SHA256(C(census))`. The census is
+build input and test evidence; it is not another public schema or shipped
+registry.
+
+The one generator performs these stages serially in manifest order:
+
+1. read and canonical-byte-parse the manifest; seal its file identity and the
+   complete source censuses and retain their normalized bytes before awaiting
+   build work;
+2. statically inspect each source graph from its fixed entrypoint and refuse
+   dynamic imports, computed specifiers, imports outside that module or the
+   public contracts package, and imports of filesystem, process, network,
+   clock, random, credential, host, adapter, mutation, child-process, worker,
+   native-addon, or package-resolution APIs;
+3. emit one ESM Node-24 artifact per row from only those retained bytes with the repository's fixed build
+   options and no caller-supplied resolver, option, define, plugin, environment,
+   banner, footer, source map, or output path;
+4. recheck every sealed source/manifest identity, then compare the source,
+   emitted, and parsed descriptor digests plus all direct projections with that
+   exact row;
+5. only after every row passes, atomically replace each ignored `dist`
+   entrypoint and replace the sole generated registry last.
+
+Failure before publication leaves prior outputs unchanged. A publication write
+failure aborts the build; ignored partial outputs are not admitted and the next
+invocation must remove them before rebuilding the complete set. Temporary
+output is created exclusively beside its fixed ignored destination and removed
+on failure. The registry is the final commit marker: the self-host build starts
+only after a post-publication census rechecks every final byte against every
+manifest row. A repeated run from identical tracked input must produce
+byte-identical emitted modules and registry. A stale, missing, extra,
+hand-edited, partially replaced, or nondeterministic output refuses the
+self-host build. Build outputs grant no runtime or release authority; installed
+use still requires the stable release path and the exact release-manifest joins
+below.
+
+### First runtime consumer: neutral planning
+
+The first source tranche is only `modules/planning/src/index.ts`. It is grounded
+in the existing two ISS-013 fixture adapters and walking-skeleton module
+consumer. It remains quarantined from `modules/manifest.json` and the generated
+registry; final manifest activation still requires all four baseline source
+entrypoints. The other three module semantics remain undefined until their own
+executable consumers start. Its descriptor is exact:
+
+- `moduleId: planning`, `moduleVersion: 0.0.0`, ABI and schema arrays as above,
+  and empty `dispositionCodes` (there is no optional disposition export);
+- compatibility tuples for `fixture.branches` and `fixture.queue`, each adapter
+  version `1.0.0`, engine version `0.0.0`, and policy version `1.0.0`, in that
+  order;
+- one action: `actionKind: planning.implement`, `capabilityName: work.read`,
+  `requestedRole: implementation`, `workerRequired: true`, and
+  `reviewRequired: true`;
+- one catalog row for each existing required non-operator directive kind, in
+  the existing directive order, with code and template ID
+  `planning.<lowercase-hyphenated-directive-kind>` (ASCII lowercase with each
+  underscore changed to a hyphen) and accessor
+  `IMMUTABLE_SUBJECT_DIGEST`. `OPERATOR_ACTION` remains the required absent
+  directive in the emitted brief and has no catalog row.
+
+`plan` first parses the complete supplied input and requires byte-equal
+descriptor identity with the exported descriptor. It accepts only ordinary
+frontier planning (`reviewSubject:null`). It considers rows in the already
+canonical `projectFacts.frontier` order and selects the first `READY` row that
+declares `work.read` only when the complete policy census has `work.read` as
+`NO_TRIP`. No row or a tripped capability returns the exact bound
+`NO_ACTION/NO_ELIGIBLE_ACTION` result. A parse-valid alternate descriptor,
+non-null review subject, or other valid-but-unusable input returns the exact
+bound `REFUSED/INPUT_REFUSED` result. Missing exact compatibility, incomplete
+policy census, invalid allowed-module intent, and every other structural or
+relational input refusal remain caller failures: no input digest or module
+result is fabricated. An internal inability after full admission returns
+`REFUSED/PLANNING_FAILED`; a thrown call or malformed return remains the
+caller's failure.
+
+The selected action binds that row's work ID and immutable subject, the exact
+descriptor/input digests, and a complete closed implementation-role dispatch
+brief. Every present directive uses the fixed catalog lookup and the immutable
+subject as its subject; the footprint is one `READ` resource with that same
+identity. The module does not render prose, inspect project/provider data,
+choose a host/model/route, launch work, request credentials, mutate state, or
+claim current breaker clearance. The engine must independently recheck current
+policy and installed registry authority before using the result.
+
+For the same canonical input bytes, `plan` must produce byte-identical output
+bytes and digest on every supported OS and repeated invocation. Selection uses
+no time, randomness, locale, object insertion order, ambient configuration, or
+iteration outside the canonical arrays. Single-axis fixtures cover descriptor,
+adapter tuple, policy decision, row readiness/capability/order, review subject,
+and every returned core/brief binding.
+
+The first source packet's focused integration test must use the existing actual
+preparation seam rather than constructing module input by hand: run the
+ISS-013 branch and queue snapshot/current-policy readers through
+`loadFixtureConfiguration`, `observeFixtureSnapshot`, and
+`observeFixturePolicy`; call `composeFixtureModuleInput` with the new exported
+descriptor; retain that exact parsed input across `await plan(input)`; then run
+`validateModulePlanBinding` on the retained input and returned value. Pin a
+branch fixture with one READY and one NOT_READY `work.read` row to its policy's
+TRIP and the bound no-action result. Pin the equivalent queue fixture to its
+one-NOT_READY NO_TRIP and the implementation action for the READY row. Also run
+an all-READY NO_TRIP corpus through both adapters and require the same selected
+work/action/core/brief projection; only the necessarily different
+adapter-bound input digest may differ. Consumer source fields and terminology
+must be absent from every retained public record and comparison.
 
 `ISS-011` owns the only registry generator at
 `modules/build/generate-registry.mjs`. It parses the closed manifest and exact
