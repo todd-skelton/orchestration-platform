@@ -6581,7 +6581,7 @@ workflows, not the later ISS-038 production workflows.
 `apiObservations` is historical capture evidence retained in the receipt. It
 has exactly nine rows ordered by `purpose`, one for each
 `ENVIRONMENT|ENVIRONMENT_VARIABLE|PULL_REQUEST|PULL_REQUEST_REVIEWS|REPOSITORY|RULESET|WORKFLOW_BUILD|WORKFLOW_REVIEW|WORKFLOW_RUN`,
-with no duplicate purpose or request identity. Each row has exactly these nine
+with no duplicate purpose or request identity. Each row has exactly these ten
 members:
 
 ```text
@@ -6594,6 +6594,7 @@ request:rest-request|graphql-request
 requestIdentityDigest:sha256
 startedAt:timestamp
 terminalPaginationDigest:sha256
+triggeringBuild:triggering-build|null
 ```
 
 A REST request has exactly `apiKind:REST`, `apiVersion:2022-11-28`,
@@ -6608,8 +6609,9 @@ REST `X-GitHub-Api-Version` already selected by
 newer mutable documentation example.
 
 Each page array has 1..64 dense rows with adjacent canonical decimal ordinals
-`"1".."64"`, and all page times satisfy
-`startedAt <= observedAt <= completedAt <= issuedAt`. Every page has status
+`"1".."64"`, and all historical observation/page times satisfy
+`producer.startedAt <= startedAt <= observedAt <= completedAt <= issuedAt`.
+Every page has status
 literal `"200"`, a `requestDigest` for the exact page request, and a
 `responseDigest` over the canonical response body bytes. A REST page has
 exactly `etag`, `linkHeaderDigest`, `linkRelations`, `nextRequestDigest`,
@@ -6646,26 +6648,43 @@ formed from a caller count alone. The historical parser verifies all formulas
 and terminal structure; it performs no API request and makes no freshness
 claim.
 
+`triggeringBuild` is non-null only for `WORKFLOW_RUN` and has exactly
+`completedAt`, `conclusion`, `runAttempt`, `runId`, `workflowDigest`,
+`workflowPath`, and `workflowRef`. Its conclusion is literal `SUCCESS`; its
+workflow path/ref/digest equal the BUILD workflow row; its run and attempt are
+canonical decimal strings in `1..Number.MAX_SAFE_INTEGER`; and its
+`completedAt` is no later than `producer.startedAt`. Every other purpose has a
+literal null `triggeringBuild`. The WORKFLOW_RUN request/page reduction binds
+this exact completed BUILD run, which is the REVIEW workflow's trigger source.
+
 For the six semantic purposes shared with fresh read-back, the historical
 `reducedValueDigest` recomputes from the corresponding receipt environment,
 repository, ruleset/path/review-policy, BUILD, or REVIEW value. The
 `PULL_REQUEST`, `PULL_REQUEST_REVIEWS`, and `WORKFLOW_RUN` digests bind their
 ISS-036 archived closed reducer outputs and are historical probe evidence only;
-the WORKFLOW_RUN output must bind the receipt producer run/attempt/workflow and
-conclusion `SUCCESS`. They do not become fresh ruleset semantics.
+the WORKFLOW_RUN output must bind `triggeringBuild`. They do not become fresh
+ruleset semantics.
 
-`producer` has exactly `artifactName`, `runAttempt`, `runId`, `workflowDigest`,
-`workflowPath`, and `workflowRef`. `artifactName` is a safe name;
-`workflowPath`, `workflowRef`, and `workflowDigest` must equal one row in
-`workflows`. No artifact numeric ID, archive digest, enclosing artifact digest,
-upload URL, or latest-artifact selector exists because those values do not
-exist until after the receipt bytes are uploaded.
+`producer` has exactly `artifactName`, `runAttempt`, `runId`, `startedAt`,
+`workflowDigest`, `workflowPath`, and `workflowRef`. `artifactName` is a safe
+name; `startedAt` is canonical time; and workflow path/ref/digest must equal the
+REVIEW row specifically. The producer run ID differs from
+`apiObservations[WORKFLOW_RUN].triggeringBuild.runId`; BUILD and REVIEW workflow
+identities are already distinct. The REVIEW run produces and uploads the
+receipt while live. The contract contains no producer conclusion or completion
+time and never requires that run to know its own terminal result. No artifact
+numeric ID, archive digest, enclosing artifact digest, upload URL, or latest-
+artifact selector exists because those values do not exist until after the
+receipt bytes are uploaded.
 
 `environmentBinding` has exactly `environmentEtag`, `environmentName`,
 `variableName`, `variableUpdatedAt`, and `variableValue`. The two names are
 literal `host-custody-bootstrap-root` and `VERIFIER_ANCHOR_SHA256`.
 `environmentEtag` is an ETag, `variableUpdatedAt` is no later than `issuedAt`,
 and `variableValue` is a SHA-256 equal to top-level `verifierAnchorDigest`.
+The strict pre-producer portion of the chronology is
+`environmentBinding.variableUpdatedAt < producer.startedAt <= issuedAt`; the
+cross-family binder below adds the anchor timestamps.
 
 `rulesetSemanticDigest` is SHA-256 over the canonical detached value with
 exactly `protectedPathPolicies`, `repositoryId`, `reviewPolicy`, `rulesetId`,
@@ -6772,6 +6791,10 @@ The binder parses both values, requires receipt disposition `ACCEPTED`, and
 requires `issuedAt <= evaluatedAt < expiresAt`. It recomputes `Danchor` and
 requires equality among it, `receipt.verifierAnchorDigest`, the historical
 receipt environment variable value, and the fresh environment variable value.
+It requires the acyclic historical chronology
+`anchor.operatorConfirmation.confirmedAt <= anchor.createdAt <= receipt.environmentBinding.variableUpdatedAt < receipt.producer.startedAt <= receipt.issuedAt`.
+This makes comparison, anchor creation, protected-environment publication, and
+receipt production ordered inputs rather than future-dated precomputation.
 It requires receipt, anchor, signer-workflow, and fresh-observation repository
 IDs to agree. Historical and fresh environment names/variable names agree, but
 their ETags and update times are independently validated and deliberately need
@@ -6815,6 +6838,12 @@ anchor/verifier/bundle inputs. Deleting any parser, bound, semantic projection,
 producer/workflow, anchor/environment, repository/signer, expiry, request/page
 chain, terminal pagination, fresh terminal evidence, or immutable-semantics
 equality must make a committed mutant survive and therefore fail the suite.
+Dedicated deletion vectors remove each chronology comparison, future-date the
+confirmation/anchor/variable, make variable publication equal to producer
+start, bind producer to BUILD, add a producer conclusion, point REVIEW at
+itself, omit or null the triggering BUILD, change its conclusion, cross its
+workflow identity, reuse its run ID for REVIEW, or move BUILD completion after
+REVIEW start. Every mutant must fail.
 
 This ledger authorizes only total parsers, canonical serializers, framed
 identity and semantic-digest functions, registry/compatibility/public exports,
