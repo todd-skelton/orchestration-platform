@@ -6446,6 +6446,250 @@ ISS041.
 
 ## Release layout and root of trust
 
+### Pre-N0 repository-protection and verifier-anchor ledger
+
+This ledger defines only the two closed ISS-054 value families and their pure
+supplied-record binding. `ISS-036` is the first producer of a protection
+receipt and the first writer of an operator-retained anchor. `ISS-038` is the
+first authority consumer. Parsing, canonicalizing, hashing, or binding these
+values does not observe GitHub, verify an attestation, prove that an operator
+acted, select an artifact, or grant authority.
+
+All records and nested records use the closed-record and array rules above.
+Every member is required and non-null unless a nullable cell is stated. String
+bounds count UTF-8 bytes. Numeric GitHub identities and counts use the common
+canonical safe-integer decimal-string grammar; the additional lower bounds
+below are checked before conversion. A `path` is a 1..512-byte repository-
+relative path with `/` separators and the common path exclusions. A `ref` is a
+1..512-byte UTF-8 string beginning `refs/heads/`, followed by a nonempty Git
+ref name with no control, backslash, empty component, `.`/`..` component,
+`//`, `@{`, or trailing `/`, `.`, or `.lock`. A `safe name` is 1..256 UTF-8
+bytes, contains no control, `/`, or `\\`, and is neither `.` nor `..`. An ETag
+is 1..1024 visible ASCII bytes with no CR or LF. API routes are 1..512 visible
+ASCII bytes, begin `/`, and contain no query or fragment. All SHA-256 values
+are lowercase hex and all timestamps use the common canonical timestamp.
+
+`repository-protection-receipt/v1` has exactly these fourteen top-level
+members in ascending canonical JSON member order:
+
+```text
+apiObservations
+disposition
+environmentBinding
+expiresAt
+issuedAt
+producer
+protectedPathPolicies
+repositoryId
+reviewPolicy
+rulesetId
+rulesetSemanticDigest
+schemaVersion
+verifierAnchorDigest
+workflows
+```
+
+`schemaVersion` is literal `repository-protection-receipt/v1`.
+`repositoryId`, `rulesetId`, `producer.runId`, and `producer.runAttempt` are
+canonical decimal strings in `1..Number.MAX_SAFE_INTEGER`. `issuedAt` is
+strictly before `expiresAt`; their difference is at most 604,800,000
+milliseconds. `disposition` is exactly `ACCEPTED|REJECTED|BLOCK_REPLAN`.
+Parsing all three dispositions preserves refusal evidence; only `ACCEPTED` may
+pass the pure binding relation.
+
+`reviewPolicy` has exactly these five members:
+
+```text
+adminBypass:FORBIDDEN
+authorApproval:FORBIDDEN
+committerApproval:FORBIDDEN
+dismissalOnSourceChange:REQUIRED
+minimumApprovals:"1"
+```
+
+`protectedPathPolicies` has 1..64 rows, ordered by UTF-8 `path`, with no
+duplicate path. Each row has exactly `path` and
+`reviewPolicy:INDEPENDENT_APPROVAL`. A path denotes the exact path or directory
+prefix interpreted by the supplied ruleset semantics; glob syntax, implicit
+prefix broadening, and caller-selected matching are not part of this contract.
+
+`workflows` has exactly two rows ordered by UTF-8 `path`, one `BUILD` and one
+`REVIEW`, with no duplicate path. Each row has exactly these seven members:
+
+```text
+digest:sha256
+path:path
+permissions:permission-row[]
+ref:ref
+role:BUILD|REVIEW
+trigger:trigger
+workflowId:canonical decimal string in 1..Number.MAX_SAFE_INTEGER
+```
+
+Each `permissions` array has exactly five rows ordered by `permission`, one for
+each literal `actions|attestations|contents|id-token|pull-requests`. A row has
+exactly `access:NONE|READ|WRITE` and `permission`. This is the complete
+effective workflow permission census, including implicit `NONE`; an omitted
+permission is not equivalent. Any provider permission key outside this closed
+five-key census makes the ISS-036 semantic reduction refuse rather than being
+ignored. A `trigger` has exactly `activities`, `event`, and
+`sourceWorkflowPath`. `event` is `PULL_REQUEST|WORKFLOW_RUN`.
+`activities` is a 1..5 UTF-8-sorted unique array drawn from
+`closed|completed|opened|reopened|synchronize`. `sourceWorkflowPath` is null
+for `PULL_REQUEST` and is a non-null `path` for `WORKFLOW_RUN`; only the latter
+may contain `completed` and only the former may contain any other activity.
+The source workflow path must identify a different row in the same `workflows`
+array. These rows identify the ISS-036 synthetic workflows, not the later
+ISS-038 production workflows.
+
+`apiObservations` has 1..64 rows ordered by UTF-8 `route`, with no duplicate
+route. Each row has exactly these five members:
+
+```text
+etag:etag
+observedAt:timestamp
+pageCount:canonical decimal string in 1..64
+responseDigest:sha256
+route:api-route
+```
+
+`pageCount` is the complete number of pages for that route and
+`responseDigest` identifies the canonical complete-page reduction owned by
+ISS-036. The value contract neither fetches a page nor proves completeness.
+Every `observedAt` must be no later than `issuedAt`.
+
+`producer` has exactly `artifactName`, `runAttempt`, `runId`, `workflowDigest`,
+`workflowPath`, and `workflowRef`. `artifactName` is a safe name;
+`workflowPath`, `workflowRef`, and `workflowDigest` must equal one row in
+`workflows`. No artifact numeric ID, archive digest, enclosing artifact digest,
+upload URL, or latest-artifact selector exists because those values do not
+exist until after the receipt bytes are uploaded.
+
+`environmentBinding` has exactly `environmentEtag`, `environmentName`,
+`variableName`, `variableUpdatedAt`, and `variableValue`. The two names are
+literal `host-custody-bootstrap-root` and `VERIFIER_ANCHOR_SHA256`.
+`environmentEtag` is an ETag, `variableUpdatedAt` is no later than `issuedAt`,
+and `variableValue` is a SHA-256 equal to top-level `verifierAnchorDigest`.
+
+`rulesetSemanticDigest` is SHA-256 over the canonical detached value with
+exactly `protectedPathPolicies`, `repositoryId`, `reviewPolicy`, `rulesetId`,
+and `workflows`, framed under domain
+`repository-protection-ruleset-semantics/v1`. It deliberately excludes API
+ETags/times, producer/run identity, anchor transport, receipt times, and
+disposition. This projection lets a fresh ISS-038 read-back compare the
+effective ruleset/workflow semantics without pretending that an old ETag is
+current.
+
+`bootstrap-verifier-anchor/v1` has exactly these ten top-level members in
+ascending canonical JSON member order:
+
+```text
+assets
+cliVersion
+createdAt
+expectedOidcIssuer
+operatorConfirmation
+releaseTag
+repositoryId
+schemaVersion
+signerWorkflow
+trustBootstrap
+```
+
+`schemaVersion` is literal `bootstrap-verifier-anchor/v1`, `cliVersion` is
+literal `2.93.0`, `releaseTag` is literal `v2.93.0`,
+`expectedOidcIssuer` is literal
+`https://token.actions.githubusercontent.com`, and `trustBootstrap` is literal
+`GITHUB_CLI_DEFAULT_ONLINE_SIGSTORE_TUF`. `repositoryId` is a canonical decimal
+string in `1..Number.MAX_SAFE_INTEGER`.
+
+`assets` has exactly three rows ordered `LINUX`, `MACOS`, `WINDOWS`, one for
+each OS. A row has exactly these eight members:
+
+```text
+architecture:ARM64|X64
+archiveSha256:sha256
+assetName:safe-name
+checksumManifestName:safe-name
+checksumManifestSha256:sha256
+executableName:safe-name
+executableSha256:sha256
+osKind:LINUX|MACOS|WINDOWS
+```
+
+These fields pin the downloaded official archive, the official release
+checksum manifest containing its entry, and the extracted executable used by
+the clean target. There is no `latest` selector, download URL, executable
+path, install directory, alternate binary, or fallback asset.
+
+`signerWorkflow` has exactly `digest`, `path`, `ref`, and `repositoryId`.
+The nested repository ID must equal the top-level repository ID; the digest is
+the allowed signer workflow's exact SHA-256 identity. `operatorConfirmation`
+has exactly `actorId`, `claim`, and `confirmedAt`. `actorId` is a canonical
+decimal string in `1..Number.MAX_SAFE_INTEGER`, `claim` is literal
+`OFFICIAL_RELEASE_ASSETS_AND_CHECKSUMS_MATCH`, and `confirmedAt` is no later
+than `createdAt`. The parser preserves this claim; it cannot prove who supplied
+it or that the comparison occurred. No custom trust root, Sigstore/TUF
+material, candidate/kit/source digest, local credential, token, arbitrary
+verifier argument, or executable path exists.
+
+Canonical bytes for both families use the repository authority JSON encoding.
+Their public identities are:
+
+```text
+Dprotection = SHA256(frame(
+  "repository-protection-receipt/v1",
+  canonical repository-protection-receipt/v1 JSON bytes))
+
+Danchor = SHA256(frame(
+  "bootstrap-verifier-anchor/v1",
+  canonical bootstrap-verifier-anchor/v1 JSON bytes))
+```
+
+The canonical anchor path is
+`<state-root>/bootstrap/verifier-anchor.json`; the value and identity functions
+do not construct, read, or write it.
+
+The sole pure cross-family binder receives four detached supplied inputs:
+`receipt`, `anchor`, `observedProtection`, and `evaluatedAt`.
+`observedProtection` is not persisted and has exactly `apiObservations`,
+`environmentBinding`, `producer`, `protectedPathPolicies`, `repositoryId`,
+`reviewPolicy`, `rulesetId`, and `workflows`, using the identical nested
+censuses above. The binder parses both values, requires receipt disposition
+`ACCEPTED`, requires `issuedAt <= evaluatedAt < expiresAt`, recomputes
+`Danchor`, and requires equality among it, `receipt.verifierAnchorDigest`, and
+the receipt environment variable value. It requires both repository IDs and
+the signer-workflow repository ID to equal the supplied observed repository.
+It requires every supplied observation/policy/producer/workflow/ruleset field
+to equal its receipt counterpart, recomputes the semantic digest from the
+supplied effective semantics, and requires it to equal the receipt digest.
+It returns only detached parsed values and exact `Danchor`/`Dprotection`; it
+never returns an authority, currentness, verification, or grant claim.
+
+Compatibility and negative evidence must pin canonical byte and framed-digest
+goldens for both families and the semantic projection; remove, add, rename,
+reorder, null, or cross-type every member; hit every scalar bound and enum;
+cover receipt expiry at 1 ms and exactly seven days plus zero, reversed, and
+seven-days-plus-1-ms refusals; mutate each policy, permission, trigger, path,
+ref, workflow, producer, route/page/ETag, environment, repository, ruleset,
+asset, checksum, signer, issuer, trust, operator, and digest relation
+independently. Arrays must run the complete mutable/sealed/frozen and hostile
+reflection corpus. Vectors must also reject duplicate/unsorted rows, incomplete
+five-permission or three-OS censuses, partial/latest API evidence, post-upload
+artifact members, mutable selectors, custom roots, executable paths, and
+consistently substituted anchor/verifier/bundle inputs. Deleting any parser,
+bound, semantic projection, producer/workflow, anchor/environment,
+repository/signer, expiry, or supplied-observation equality must make a
+committed mutant survive and therefore fail the suite.
+
+This ledger authorizes only total parsers, canonical serializers, framed
+identity and semantic-digest functions, registry/compatibility/public exports,
+and the pure four-input binder. It authorizes no GitHub/API/network access,
+pagination, workflow execution, ruleset/environment mutation, receipt
+production, artifact upload/download/selection, CLI acquisition/execution,
+attestation or signature verification, trust bootstrap, filesystem IO,
+credential use, installation, release selection, or authority grant.
+
 - Before runtime state exists, ISS-022 derives immutable
   `physical-destination-identity/v1` from stable host/custody-root namespace and
   physical ancestor/leaf identity. Helper, path, case/Unicode, custody, and
