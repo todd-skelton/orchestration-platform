@@ -151,6 +151,8 @@ function retainFailedOpenSnapshots(journal, actor, facts, expectedIdentity) {
   let acquiredIdentity = null;
   let identityUnavailable = false;
   let identityMismatchRecorded = false;
+  const identityDoesNotMatch = (identity) =>
+    identity !== null && !sameIdentity(identity, expectedIdentity);
 
   if (first.identity !== null || first.nonInheritable !== null)
     journal.fail("UNKNOWN", `${actor}:OPEN snapshot unavailable fields`);
@@ -164,6 +166,11 @@ function retainFailedOpenSnapshots(journal, actor, facts, expectedIdentity) {
   for (const [index, fact] of prefix.entries()) {
     if (index > 0 && fact.nativeHandle !== openedHandle)
       journal.fail("UNKNOWN", `${actor}:${fact.operation}:handle lifetime`);
+
+    if (identityDoesNotMatch(fact.identity) && !identityMismatchRecorded) {
+      journal.fail("VIOLATED", `${actor}:native identity changed`);
+      identityMismatchRecorded = true;
+    }
 
     const firstSuccessfulIdentification =
       fact.operation === "IDENTIFY" && successful(fact) && acquiredIdentity === null;
@@ -181,14 +188,6 @@ function retainFailedOpenSnapshots(journal, actor, facts, expectedIdentity) {
       journal.fail("UNKNOWN", `${actor}:${fact.operation}:native identity discontinuity`);
     }
 
-    if (
-      acquiredIdentity !== null &&
-      !identityMismatchRecorded &&
-      !sameIdentity(acquiredIdentity, expectedIdentity)
-    ) {
-      journal.fail("VIOLATED", `${actor}:native identity changed`);
-      identityMismatchRecorded = true;
-    }
     if (identityUnavailable && fact.identity !== null)
       journal.fail("UNKNOWN", `${actor}:${fact.operation}:late native identity`);
 
@@ -209,6 +208,10 @@ function retainFailedOpenSnapshots(journal, actor, facts, expectedIdentity) {
   if (close !== null) {
     if (close.nativeHandle !== null || close.nonInheritable !== null)
       journal.fail("UNKNOWN", `${actor}:CLOSE handle/flag lifetime`);
+    if (identityDoesNotMatch(close.identity) && !identityMismatchRecorded) {
+      journal.fail("VIOLATED", `${actor}:native identity changed`);
+      identityMismatchRecorded = true;
+    }
     if (acquiredIdentity === null) {
       if (close.identity !== null) journal.fail("UNKNOWN", `${actor}:CLOSE premature identity`);
     } else if (close.identity === null || !sameIdentity(close.identity, acquiredIdentity))

@@ -326,6 +326,7 @@ test("failed READY identity lifetime distinguishes consistent mismatch from disc
   assert.ok(
     discontinuityJournal.failures.some((entry) => entry.reason.includes("discontinuity")),
   );
+  assert.ok(discontinuityJournal.failures.some((entry) => entry.result === "VIOLATED"));
   assert.ok(discontinuityJournal.failures.some((entry) => entry.result === "UNSUPPORTED"));
 
   const premature = failedOpening(1);
