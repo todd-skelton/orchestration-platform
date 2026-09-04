@@ -17,3 +17,6 @@ See [the architecture vision](docs/architecture/vision.md) and
 [the draft roadmap](docs/planning/roadmap.md). The
 [extraction assessment](docs/planning/extraction-assessment.md) compares this
 design with the embedded controller and records the recommendation.
+
+[Operator model selection](docs/model-selection.md) lists task and orchestration
+choices, including GPT-6 Astra, without starting the pending routing engine.
