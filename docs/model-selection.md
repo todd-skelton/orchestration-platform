@@ -30,5 +30,5 @@ Model reference, checked September 4, 2026:
 Verify this bounded selection surface with:
 
 ```sh
-node --test scripts/tests/model-options.node-test.mjs
+pnpm exec vitest run test/model-options.test.ts
 ```
