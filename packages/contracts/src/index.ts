@@ -43,6 +43,10 @@ import {
   parseVerifierAnchorContract,
 } from "./verifier-anchor.js";
 import {
+  computeRepositoryProtectionReceiptDigest,
+  parseRepositoryProtectionContract,
+} from "./repository-protection.js";
+import {
   canonicalBytes,
   canonicalDigest,
   canonicalJson,
@@ -119,6 +123,7 @@ import {
 
 export * from "./authority.js";
 export * from "./verifier-anchor.js";
+export * from "./repository-protection.js";
 export * from "./breaker-receipt.js";
 export * from "./commit.js";
 export * from "./definitions.js";
@@ -196,6 +201,8 @@ export {
 } from "./configuration.js";
 
 export function parseContract(expectedSchemaVersion: string, input: unknown): ParseResult {
+  const repositoryProtection = parseRepositoryProtectionContract(expectedSchemaVersion, input);
+  if (repositoryProtection) return repositoryProtection;
   const verifierAnchor = parseVerifierAnchorContract(expectedSchemaVersion, input);
   if (verifierAnchor) return verifierAnchor;
   const journal = parseJournalContract(expectedSchemaVersion, input);
@@ -331,6 +338,12 @@ export function serializeContract(
 ): SerializationResult {
   const parsed = parseContract(expectedSchemaVersion, input);
   if (!parsed.ok) return parsed;
+  if (expectedSchemaVersion === "repository-protection-receipt/v1")
+    return {
+      ok: true,
+      bytes: canonicalBytes(parsed.value),
+      digest: computeRepositoryProtectionReceiptDigest(parsed.value),
+    };
   if (expectedSchemaVersion === "bootstrap-verifier-anchor/v1")
     return {
       ok: true,
