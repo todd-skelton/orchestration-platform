@@ -1,13 +1,19 @@
 import {
   canonicalJson,
   computeDispatchActionCoreDigest,
+  computeDispositionInputDigest,
+  computeModuleActionPlanDigest,
   computeModuleDescriptorDigest,
   computeModulePlanInputDigest,
   computeWorkerResultSubjectDigest,
   dispatchDirectiveKinds,
+  parseActionDisposition,
+  parseDispositionInput,
   parseModuleDescriptor,
   parseModulePlanInput,
   validateModulePlanBinding,
+  type ActionDisposition,
+  type DispositionInput,
   type ModulePlanInput,
   type ModulePlanResult,
 } from "../../../packages/contracts/src/index.js";
@@ -46,7 +52,7 @@ const parsedDescriptor = parseModuleDescriptor({
       planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
       templateId: directiveCode(directiveKind),
     })),
-  dispositionCodes: [],
+  dispositionCodes: ["review.complete", "review.reject", "review.unknown"],
   inputSchemas: ["module-plan-input/v1"],
   moduleId: "review",
   moduleVersion: "0.0.0",
@@ -117,4 +123,48 @@ export async function plan(value: ModulePlanInput): Promise<ModulePlanResult> {
     schemaVersion: "module-action-plan/v1",
     workId: null,
   });
+}
+
+export async function disposition(value: DispositionInput): Promise<ActionDisposition> {
+  const parsed = parseDispositionInput(value);
+  if (!parsed.ok) throw new Error("review disposition input refused");
+  const input = parsed.value;
+  const subject = input.moduleInput.reviewSubject;
+  if (
+    canonicalJson(input.moduleInput.descriptor) !== canonicalJson(descriptor) ||
+    subject?.schemaVersion !== "worker-result-subject/v1"
+  )
+    throw new Error("review disposition target refused");
+
+  const authority = input.review?.authority.outcome.kind;
+  const subjectDigest = computeWorkerResultSubjectDigest(subject);
+  const result = parseActionDisposition({
+    actionPlanDigest: computeModuleActionPlanDigest(input.actionPlan),
+    code:
+      authority === "accepted"
+        ? "review.complete"
+        : authority === "rejected"
+          ? "review.reject"
+          : "review.unknown",
+    inputDigest: computeDispositionInputDigest(input),
+    outcome:
+      authority === "accepted"
+        ? { kind: "COMPLETE" }
+        : authority === "rejected"
+          ? {
+              kind: "FOLLOW_UP",
+              followUp: {
+                kind: "REPLAN",
+                moduleId: descriptor.moduleId,
+                subjectDigest,
+                subjectKind: "WORKER_RESULT",
+              },
+            }
+          : { kind: "UNKNOWN", reason: "AUTHORITY_UNPROVEN" },
+    schemaVersion: "action-disposition/v1",
+    subjectDigest,
+    subjectKind: "WORKER_RESULT",
+  });
+  if (!result.ok) throw new Error("review disposition refused");
+  return result.value;
 }
