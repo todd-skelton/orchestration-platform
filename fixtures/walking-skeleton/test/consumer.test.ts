@@ -8,8 +8,10 @@ import {
   canonicalDigest,
   canonicalJson,
   computeDispatchActionCoreDigest,
+  computeModuleActionPlanDigest,
   computeModuleDescriptorDigest,
   computeModulePlanInputDigest,
+  computeWorkerResultSubjectDigest,
   dispatchDirectiveKinds,
   parseModuleDescriptor,
   parseCanonicalContractBytes,
@@ -22,6 +24,8 @@ import {
   validateProjectBreakerFactsBinding,
   validateProjectFactsBinding,
   type ModuleDescriptor,
+  type ModulePlanInput,
+  type WorkerResultSubject,
   type ProjectBreakerFacts,
   type ProjectFrontierRow,
   type ReviewSubject,
@@ -50,6 +54,7 @@ import {
   projectConfigurationProvenance,
 } from "../../../packages/config/src/resolver.js";
 import * as planningModule from "../../../modules/planning/src/index.js";
+import * as reviewModule from "../../../modules/review/src/index.js";
 import {
   composeFixtureModuleInput,
   consume,
@@ -63,6 +68,25 @@ import * as fixtureModule from "../src/index.js";
 const checkout = resolve(import.meta.dirname, "../../..");
 const planningSourceUrl = new URL("../../../modules/planning/src/index.ts", import.meta.url);
 const planningSourceDigest = "522964281992bdb3239b0db140a7efc82ca13ea53eb1c922745c2aee49d8f1d0";
+const reviewSourceUrl = new URL("../../../modules/review/src/index.ts", import.meta.url);
+const reviewSourceDigest = "80a50dfdcb364697f10975cb146f49894cb2d2a0b5845c0ec39df5a839f13863";
+const reviewDescriptorDigest = "b79f22b6e948874ba0c0cf01cd7969d80d4726bcaead1179ce642314e244f246";
+const reviewGoldenIdentities = {
+  branches: {
+    subject: "227387a1f704a787ed5f8d997385479aef37d2be40811c271c05b7bf3e6f7ace",
+    core: "f6c59da174d58af52521add65352200db1da9f5ba1d3cb306ca7f0a62f37f288",
+    brief: "3b879656d1baf23f64cb117ad3abd5729da70ff1e1ed8001e88b89472a002430",
+    footprint: "047abe32afa52a53586ed64df90b9e3d69e150982fd6a0aae77a509b0956678a",
+    zeroInputPlan: "d2041d35fdc2f6b4c68aaed23ad053508f394b2972f7cf7fbb3309405f2d598d",
+  },
+  queue: {
+    subject: "a9dc26a0feef2f72c3185e4d83f2c8f8b367013bed2095934a2a89dd4c9a9561",
+    core: "8d365a0781d7ae5b43fc6b6bcd5d872a9bdf26a5ece38310b425e975863829b0",
+    brief: "9fd8331ddfb787311688a3ba22ad41e7d9c0ef96a3c21497ded543b70deb9bf5",
+    footprint: "e50cab6b86b6d179b25bed881b7173407ea7907bfc6165dd45814092c453a6b7",
+    zeroInputPlan: "605631ace2c6a56466ab15477ab1a665532eac96deb01877d5ff13d379bc3067",
+  },
+} as const;
 const actionPair = { actionKind: "fixture.inspect", capabilityName: "work.read" };
 const roots: string[] = [];
 const source = {
@@ -198,6 +222,117 @@ const planningDirectiveCodes = [
   ["SCOPE_EXCLUDE", "planning.scope-exclude"],
   ["SCOPE_INCLUDE", "planning.scope-include"],
   ["VERIFICATION", "planning.verification"],
+] as const;
+
+const reviewDescriptorGolden = {
+  abi: "orchestration-module/v1",
+  actions: [
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      requestedRole: "review",
+      reviewRequired: false,
+      workerRequired: true,
+    },
+  ],
+  compatibility: [
+    {
+      adapterId: "fixture.branches",
+      adapterVersion: "1.0.0",
+      engineVersion: "0.0.0",
+      policyVersion: "1.0.0",
+    },
+    {
+      adapterId: "fixture.queue",
+      adapterVersion: "1.0.0",
+      engineVersion: "0.0.0",
+      policyVersion: "1.0.0",
+    },
+  ],
+  dispatchCatalog: [
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.acceptance-evidence",
+      directiveKind: "ACCEPTANCE_EVIDENCE",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.acceptance-evidence",
+    },
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.constraint",
+      directiveKind: "CONSTRAINT",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.constraint",
+    },
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.decision",
+      directiveKind: "DECISION",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.decision",
+    },
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.non-goal",
+      directiveKind: "NON_GOAL",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.non-goal",
+    },
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.review-attack",
+      directiveKind: "REVIEW_ATTACK",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.review-attack",
+    },
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.scope-exclude",
+      directiveKind: "SCOPE_EXCLUDE",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.scope-exclude",
+    },
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.scope-include",
+      directiveKind: "SCOPE_INCLUDE",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.scope-include",
+    },
+    {
+      actionKind: "review.worker-result",
+      capabilityName: "work.read",
+      code: "review.verification",
+      directiveKind: "VERIFICATION",
+      planAccessor: "IMMUTABLE_SUBJECT_DIGEST",
+      templateId: "review.verification",
+    },
+  ],
+  dispositionCodes: [],
+  inputSchemas: ["module-plan-input/v1"],
+  moduleId: "review",
+  moduleVersion: "0.0.0",
+  outputSchemas: ["module-action-plan/v1", "module-no-action/v1"],
+  schemaVersion: "module-descriptor/v1",
+} as const;
+
+const reviewDirectiveCodes = [
+  ["ACCEPTANCE_EVIDENCE", "review.acceptance-evidence"],
+  ["CONSTRAINT", "review.constraint"],
+  ["DECISION", "review.decision"],
+  ["NON_GOAL", "review.non-goal"],
+  ["OPERATOR_ACTION", null],
+  ["REVIEW_ATTACK", "review.review-attack"],
+  ["SCOPE_EXCLUDE", "review.scope-exclude"],
+  ["SCOPE_INCLUDE", "review.scope-include"],
+  ["VERIFICATION", "review.verification"],
 ] as const;
 
 const uuid = (index: number) => `018f0f4d-7b2d-7a11-8a2b-${index.toString(16).padStart(12, "0")}`;
@@ -391,6 +526,91 @@ async function invokeAdmittedPlanning(
 ): ReturnType<typeof planningModule.plan> {
   await admittedPlanningSource();
   return planningModule.plan(input);
+}
+
+function admitReviewSource(sourceText: string): string {
+  const normalized = normalizeTrackedText(sourceText);
+  if (createHash("sha256").update(normalized).digest("hex") !== reviewSourceDigest)
+    throw new Error("review source identity refused");
+  return normalized;
+}
+
+async function invokeAdmittedReview(input: ModulePlanInput): ReturnType<typeof reviewModule.plan> {
+  admitReviewSource(await readFile(reviewSourceUrl, "utf8"));
+  return reviewModule.plan(input);
+}
+
+function reviewFixtureSubject(kind: "branches" | "queue"): WorkerResultSubject {
+  return {
+    authorAttemptId: uuid(90),
+    authorCycleId: uuid(91),
+    baseSource: {
+      adapterId: `fixture.${kind}`,
+      projectId: source.projectId,
+      revision: "review-source",
+    },
+    result: { kind: "TREE", treeDigest: "e".repeat(64) },
+    schemaVersion: "worker-result-subject/v1",
+    terminalReceiptDigest: "f".repeat(64),
+  };
+}
+
+function reviewResultGolden(inputDigest: string, subjectDigest: string) {
+  const core = {
+    actionKind: "review.worker-result",
+    capabilityName: "work.read",
+    immutableSubjectDigest: subjectDigest,
+    moduleDescriptorDigest: reviewDescriptorDigest,
+    requestedRole: "review",
+    schemaVersion: "dispatch-action-core/v1",
+  } as const;
+  return {
+    actionCore: core,
+    dispatchBrief: {
+      action: {
+        actionCoreDigest: computeDispatchActionCoreDigest(core),
+        actionKind: "review.worker-result",
+        capabilityName: "work.read",
+        immutableSubjectDigest: subjectDigest,
+        moduleDescriptorDigest: reviewDescriptorDigest,
+        schemaVersion: "dispatch-brief-action/v1",
+      },
+      directives: reviewDirectiveCodes.map(([directiveKind, code]) => ({
+        code,
+        directiveKind,
+        presence: code === null ? "ABSENT" : "PRESENT",
+        schemaVersion: "dispatch-brief-directive/v1",
+        subjectDigest,
+      })),
+      footprint: [
+        {
+          access: "READ",
+          resourceIdentityDigest: subjectDigest,
+          schemaVersion: "dispatch-brief-resource/v1",
+        },
+      ],
+      role: "review",
+      schemaVersion: "dispatch-brief/v1",
+    },
+    inputDigest,
+    schemaVersion: "module-action-plan/v1",
+    workId: null,
+  } as const;
+}
+
+async function preparedReview(
+  kind: "branches" | "queue",
+  rows: readonly ProjectFrontierRow[] = frontier(),
+  selectedDescriptor: ModuleDescriptor = reviewModule.descriptor,
+  subject: ReviewSubject | null = reviewFixtureSubject(kind),
+) {
+  const prepared = await preparedPlanningInput(kind, rows, selectedDescriptor, subject);
+  const retained = prepared.input;
+  const promise = invokeAdmittedReview(retained);
+  expect(promise).toBeInstanceOf(Promise);
+  const result = validateModulePlanBinding(retained, await promise);
+  if (!result.ok) throw new Error("review fixture result refused");
+  return { ...prepared, result: result.value };
 }
 
 afterEach(async () => {
@@ -1197,6 +1417,345 @@ test("runs the quarantined planning module through actual branch and queue prepa
   expect(readyBranch.result.inputDigest).not.toBe(readyQueue.result.inputDigest);
   expect(readyBranch.result.workId).toBe(uuid(2));
   expect(readyQueue.result.workId).toBe(uuid(2));
+});
+
+test.each(["branches", "queue"] as const)(
+  "runs quarantined review planning through actual %s preparation with exact bytes",
+  async (kind) => {
+    expect(Object.keys(reviewModule).sort()).toEqual(["descriptor", "plan"]);
+    expect(reviewModule.descriptor).toEqual(reviewDescriptorGolden);
+    expect(canonicalJson(reviewModule.descriptor)).toBe(canonicalJson(reviewDescriptorGolden));
+    expect(computeModuleDescriptorDigest(reviewModule.descriptor)).toBe(reviewDescriptorDigest);
+    const { input, policy, result } = await preparedReview(kind);
+    expect(policy.decisions).toEqual([
+      { capabilityName: "work.read", trip: kind === "branches" ? "TRIP" : "NO_TRIP" },
+    ]);
+    const identities = reviewGoldenIdentities[kind];
+    expect(input.reviewSubject).toEqual(reviewFixtureSubject(kind));
+    expect(computeWorkerResultSubjectDigest(input.reviewSubject)).toBe(identities.subject);
+    const expected = reviewResultGolden(computeModulePlanInputDigest(input), identities.subject);
+    expect(result).toEqual(expected);
+    expect(canonicalJson(result)).toBe(canonicalJson(expected));
+    if (result.schemaVersion !== "module-action-plan/v1" || result.dispatchBrief === null)
+      throw new Error("review action required");
+    expect(computeDispatchActionCoreDigest(result.actionCore)).toBe(identities.core);
+    expect(canonicalDigest(result.dispatchBrief)).toBe(identities.brief);
+    expect(canonicalDigest(result.dispatchBrief.footprint!)).toBe(identities.footprint);
+    expect(computeModuleActionPlanDigest(result)).toBe(computeModuleActionPlanDigest(expected));
+    // Only this golden projection substitutes zero; the real result above binds the full input.
+    expect(computeModuleActionPlanDigest({ ...result, inputDigest: "0".repeat(64) })).toBe(
+      identities.zeroInputPlan,
+    );
+    const repeated = await invokeAdmittedReview(input);
+    expect(validateModulePlanBinding(input, repeated).ok).toBe(true);
+    expect(canonicalJson(repeated)).toBe(canonicalJson(result));
+    expect(canonicalJson(result)).not.toMatch(
+      /"(?:branch|ticketId|revisionDigest|documentDigest)":/,
+    );
+  },
+);
+
+test.each(["branches", "queue"] as const)(
+  "keeps the %s review target independent of frontier and both policy arms",
+  async (kind) => {
+    const subjectDigest = reviewGoldenIdentities[kind].subject;
+    const cases: readonly ProjectFrontierRow[][] = [
+      frontier().reverse(),
+      [],
+      frontier().map((row) => ({ ...row, readiness: "NOT_READY" })),
+      frontier().map((row) => ({
+        ...row,
+        immutableSubjectDigest: "d".repeat(64),
+        readiness: "READY",
+        capabilityNames: [],
+      })),
+    ];
+    const observedTrips = new Set<string>();
+    for (const rows of cases) {
+      const { input, policy, result } = await preparedReview(kind, rows);
+      observedTrips.add(policy.decisions[0]!.trip);
+      expect(result).toEqual(
+        reviewResultGolden(computeModulePlanInputDigest(input), subjectDigest),
+      );
+    }
+    expect([...observedTrips].sort()).toEqual(["NO_TRIP", "TRIP"]);
+  },
+);
+
+test("returns only bound INPUT_REFUSED for valid unusable review inputs", async () => {
+  const subject = reviewFixtureSubject("queue");
+  const alternateVersion = parseModuleDescriptor({
+    ...reviewDescriptorGolden,
+    moduleVersion: "0.0.1",
+  });
+  const alternateCatalog = parseModuleDescriptor({
+    ...reviewDescriptorGolden,
+    dispatchCatalog: reviewDescriptorGolden.dispatchCatalog.map((row, index) =>
+      index === 0 ? { ...row, templateId: "review.alternate" } : row,
+    ),
+  });
+  if (!alternateVersion.ok || !alternateCatalog.ok) throw new Error("valid descriptor required");
+  const candidate: ReviewSubject = {
+    assemblyCycleId: uuid(92),
+    candidateDigest: "a".repeat(64),
+    certificationDigest: "b".repeat(64),
+    landedSource: subject.baseSource,
+    landedTreeDigest: "c".repeat(64),
+    manifestDigest: "d".repeat(64),
+    schemaVersion: "release-candidate-subject/v1",
+    testBundleDigest: "e".repeat(64),
+  };
+  const cases: readonly [ModuleDescriptor, ReviewSubject | null][] = [
+    [alternateVersion.value, subject],
+    [alternateCatalog.value, subject],
+    [reviewModule.descriptor, null],
+    [reviewModule.descriptor, candidate],
+  ];
+  for (const [selectedDescriptor, selectedSubject] of cases) {
+    const { input, result } = await preparedReview(
+      "queue",
+      frontier(),
+      selectedDescriptor,
+      selectedSubject,
+    );
+    expect(parseModulePlanInput(input).ok).toBe(true);
+    expect(result).toEqual({
+      inputDigest: computeModulePlanInputDigest(input),
+      outcome: "REFUSED",
+      reason: "INPUT_REFUSED",
+      schemaVersion: "module-no-action/v1",
+    });
+  }
+});
+
+test("rejects malformed and relationally invalid review input without a bound result", async () => {
+  const subject = reviewFixtureSubject("queue");
+  const { input } = await preparedPlanningInput(
+    "queue",
+    frontier(),
+    reviewModule.descriptor,
+    subject,
+  );
+  const unconfigured = {
+    ...reviewDescriptorGolden,
+    actions: reviewDescriptorGolden.actions.map((row) => ({
+      ...row,
+      capabilityName: "work.write",
+    })),
+    dispatchCatalog: reviewDescriptorGolden.dispatchCatalog.map((row) => ({
+      ...row,
+      capabilityName: "work.write",
+    })),
+  };
+  expect(parseModuleDescriptor(unconfigured).ok).toBe(true);
+  const cases: readonly [string, unknown][] = [
+    ["extra member", { ...input, authority: true }],
+    [
+      "same author cycle",
+      { ...input, reviewSubject: { ...subject, authorCycleId: input.cycleRequest.cycleId } },
+    ],
+    [
+      "unsupported compatibility",
+      {
+        ...input,
+        descriptor: {
+          ...reviewDescriptorGolden,
+          compatibility: reviewDescriptorGolden.compatibility.map((row) => ({
+            ...row,
+            engineVersion: "9.0.0",
+          })),
+        },
+      },
+    ],
+    ["unconfigured capability", { ...input, descriptor: unconfigured }],
+    [
+      "incomplete policy census",
+      { ...input, policyFacts: { ...input.policyFacts, decisions: [] } },
+    ],
+    [
+      "incomplete snapshot",
+      { ...input, projectFacts: { ...input.projectFacts, state: "UNKNOWN" } },
+    ],
+    [
+      "invalid module intent",
+      { ...input, cycleRequest: { ...input.cycleRequest, allowedModuleIds: [] } },
+    ],
+    [
+      "malformed target",
+      { ...input, reviewSubject: { ...subject, terminalReceiptDigest: "invalid" } },
+    ],
+  ];
+  for (const [label, value] of cases) {
+    expect(parseModulePlanInput(value).ok, label).toBe(false);
+    let producedResult = false;
+    await expect(
+      invokeAdmittedReview(value as ModulePlanInput).then((result) => {
+        producedResult = true;
+        return result;
+      }),
+      label,
+    ).rejects.toThrow("review input refused");
+    expect(producedResult, label).toBe(false);
+  }
+});
+
+test("binds every changed worker-result component and refuses reuse of the old target", async () => {
+  const subject = reviewFixtureSubject("queue");
+  const { input, result } = await preparedReview("queue");
+  const subjects: readonly WorkerResultSubject[] = [
+    { ...subject, authorAttemptId: uuid(93) },
+    { ...subject, authorCycleId: uuid(94) },
+    { ...subject, baseSource: { ...subject.baseSource, revision: "review-source-changed" } },
+    { ...subject, baseSource: { ...subject.baseSource, projectId: uuid(95) } },
+    { ...subject, baseSource: { ...subject.baseSource, adapterId: "fixture.branches" } },
+    { ...subject, result: { kind: "TREE", treeDigest: "d".repeat(64) } },
+    { ...subject, terminalReceiptDigest: "d".repeat(64) },
+    {
+      ...subject,
+      result: {
+        kind: "ORDERED_PATCH_ARTIFACTS",
+        entries: [
+          { kind: "PATCH", contentDigest: "a".repeat(64) },
+          { kind: "ARTIFACT", contentDigest: "b".repeat(64) },
+        ],
+      },
+    },
+    {
+      ...subject,
+      result: {
+        kind: "ORDERED_PATCH_ARTIFACTS",
+        entries: [
+          { kind: "ARTIFACT", contentDigest: "b".repeat(64) },
+          { kind: "PATCH", contentDigest: "a".repeat(64) },
+        ],
+      },
+    },
+  ];
+  const targetDigests = new Set<string>([reviewGoldenIdentities.queue.subject]);
+  for (const changed of subjects) {
+    const parsed = parseModulePlanInput({ ...input, reviewSubject: changed });
+    if (!parsed.ok) throw new Error("changed review input must remain valid");
+    const changedDigest = computeWorkerResultSubjectDigest(changed);
+    expect(targetDigests.has(changedDigest)).toBe(false);
+    targetDigests.add(changedDigest);
+    const inputDigest = computeModulePlanInputDigest(parsed.value);
+    // Repair the outer input digest to attack the complete target join independently.
+    expect(validateModulePlanBinding(parsed.value, { ...result, inputDigest }).ok).toBe(false);
+    const replanned = await invokeAdmittedReview(parsed.value);
+    expect(validateModulePlanBinding(parsed.value, replanned).ok).toBe(true);
+    expect(replanned).toEqual(reviewResultGolden(inputDigest, changedDigest));
+  }
+});
+
+test("rejects changed review result joins after the awaited module call", async () => {
+  const { input, result } = await preparedReview("queue");
+  const expected = reviewResultGolden(
+    computeModulePlanInputDigest(input),
+    reviewGoldenIdentities.queue.subject,
+  );
+  expect(result).toEqual(expected);
+  const { actionCore, dispatchBrief } = expected;
+  const cases: readonly [string, unknown][] = [
+    ["outer input", { ...expected, inputDigest: "a".repeat(64) }],
+    ["frontier work instead of review", { ...expected, workId: uuid(3) }],
+    [
+      "whole target with coherent copied digests",
+      reviewResultGolden(expected.inputDigest, "a".repeat(64)),
+    ],
+    [
+      "core descriptor",
+      { ...expected, actionCore: { ...actionCore, moduleDescriptorDigest: "a".repeat(64) } },
+    ],
+    ["core action", { ...expected, actionCore: { ...actionCore, actionKind: "review.other" } }],
+    [
+      "core capability",
+      { ...expected, actionCore: { ...actionCore, capabilityName: "work.write" } },
+    ],
+    ["core role", { ...expected, actionCore: { ...actionCore, requestedRole: "implementation" } }],
+    ["brief required", { ...expected, dispatchBrief: null }],
+    ["brief role", { ...expected, dispatchBrief: { ...dispatchBrief, role: "observer" } }],
+    [
+      "brief action digest",
+      {
+        ...expected,
+        dispatchBrief: {
+          ...dispatchBrief,
+          action: { ...dispatchBrief.action, actionCoreDigest: "a".repeat(64) },
+        },
+      },
+    ],
+    [
+      "brief prose extension",
+      { ...expected, dispatchBrief: { ...dispatchBrief, prose: "unbound instructions" } },
+    ],
+    ["extra result authority", { ...expected, accepted: true }],
+  ];
+  for (const [label, changed] of cases)
+    expect(validateModulePlanBinding(input, changed).ok, label).toBe(false);
+  for (const [index, directive] of dispatchBrief.directives.entries()) {
+    const directives = dispatchBrief.directives.map((row, current) =>
+      current === index ? { ...row, subjectDigest: "a".repeat(64) } : row,
+    );
+    expect(
+      validateModulePlanBinding(input, {
+        ...expected,
+        dispatchBrief: { ...dispatchBrief, directives },
+      }).ok,
+      directive.directiveKind,
+    ).toBe(false);
+  }
+  for (const [index, directive] of dispatchBrief.directives.entries()) {
+    const directives = dispatchBrief.directives.map((row, current) =>
+      current === index ? { ...row, code: "review.unlisted", presence: "PRESENT" } : row,
+    );
+    expect(
+      validateModulePlanBinding(input, {
+        ...expected,
+        dispatchBrief: { ...dispatchBrief, directives },
+      }).ok,
+      directive.directiveKind,
+    ).toBe(false);
+  }
+});
+
+test("admits only exact reviewed review-source bytes without activating either module", async () => {
+  const sourceText = admitReviewSource(await readFile(reviewSourceUrl, "utf8"));
+  expect(admitReviewSource(sourceText.replaceAll("\n", "\r\n"))).toBe(sourceText);
+  for (const mutant of [
+    "import fs from 'node:fs';",
+    "export * from 'node:fs';",
+    "void import('node:fs');",
+    "void import(dependencyName);",
+    "require('node:fs');",
+    "const load = require;",
+    "Date.now();",
+    "Math.random();",
+    "process.cwd();",
+    "fetch('https://invalid.example');",
+    "navigator.platform;",
+    "new WebSocket('ws://invalid.example');",
+    "structuredClone({});",
+    "// an otherwise unlisted changed byte",
+  ])
+    expect(() => admitReviewSource(`${sourceText}${mutant}\n`), mutant).toThrow(
+      "review source identity refused",
+    );
+  // Identity denial only: no mutant is executed or categorized as effect-free.
+  expect(
+    normalizeTrackedText(
+      await readFile(new URL("../../../modules/manifest.json", import.meta.url), "utf8"),
+    ),
+  ).toBe("[]\n");
+  const generator = normalizeTrackedText(
+    await readFile(
+      new URL("../../../modules/build/generate-registry.mjs", import.meta.url),
+      "utf8",
+    ),
+  );
+  expect(createHash("sha256").update(generator).digest("hex")).toBe(
+    "0dc6c3fd2e002d90b25bfe3e14b8529cda315555a1c82e029fc08bc212e4cb51",
+  );
+  await admittedPlanningSource();
 });
 
 test("keeps quarantined planning source effect-free and outside manifest activation", async () => {
