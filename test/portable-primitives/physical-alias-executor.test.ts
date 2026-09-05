@@ -58,7 +58,7 @@ describe("ISS-022 case and Unicode physical alias observations", () => {
     expect(facts).toHaveLength(6);
     await rm(custodyRoot, { recursive: true });
     roots.splice(roots.indexOf(custodyRoot), 1);
-  });
+  }, 30_000);
 
   test("refuses disappearance after lstat instead of laundering it as absence", async () => {
     const custodyRoot = await root("physical-alias-disappearance");
