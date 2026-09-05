@@ -69,22 +69,22 @@ const checkout = resolve(import.meta.dirname, "../../..");
 const planningSourceUrl = new URL("../../../modules/planning/src/index.ts", import.meta.url);
 const planningSourceDigest = "522964281992bdb3239b0db140a7efc82ca13ea53eb1c922745c2aee49d8f1d0";
 const reviewSourceUrl = new URL("../../../modules/review/src/index.ts", import.meta.url);
-const reviewSourceDigest = "80a50dfdcb364697f10975cb146f49894cb2d2a0b5845c0ec39df5a839f13863";
-const reviewDescriptorDigest = "b79f22b6e948874ba0c0cf01cd7969d80d4726bcaead1179ce642314e244f246";
+const reviewSourceDigest = "22e45e94d5359c9d1aed4d34c18800ec4c72684ef784bd652c8a86bb443148a4";
+const reviewDescriptorDigest = "c62d5a69b1b715bdc7d08793135a74bbaa0157a2f020c621de8edc07fd85dc9a";
 const reviewGoldenIdentities = {
   branches: {
     subject: "227387a1f704a787ed5f8d997385479aef37d2be40811c271c05b7bf3e6f7ace",
-    core: "f6c59da174d58af52521add65352200db1da9f5ba1d3cb306ca7f0a62f37f288",
-    brief: "3b879656d1baf23f64cb117ad3abd5729da70ff1e1ed8001e88b89472a002430",
+    core: "0c4301647e5ee1f2d51f57335d07880e1c5331e282f4d18dfc82c054bcbed336",
+    brief: "0c5d5e8a4eb98e1f6345eb7fda11ee99021e0848155e8cbe47612b5d1e76c886",
     footprint: "047abe32afa52a53586ed64df90b9e3d69e150982fd6a0aae77a509b0956678a",
-    zeroInputPlan: "d2041d35fdc2f6b4c68aaed23ad053508f394b2972f7cf7fbb3309405f2d598d",
+    zeroInputPlan: "83004d728016fa10cf3ce349521d408b3465d0109a774a5ae478f2c458eaf2b0",
   },
   queue: {
     subject: "a9dc26a0feef2f72c3185e4d83f2c8f8b367013bed2095934a2a89dd4c9a9561",
-    core: "8d365a0781d7ae5b43fc6b6bcd5d872a9bdf26a5ece38310b425e975863829b0",
-    brief: "9fd8331ddfb787311688a3ba22ad41e7d9c0ef96a3c21497ded543b70deb9bf5",
+    core: "1740e77f78c7ed3f04b535466490292e7f8c950b4749462c71668b39b91543c9",
+    brief: "f11d82f3f4f61cf6d47e1b0b71b81ec9fbf4514fb1726b5d0747622b893cbe53",
     footprint: "e50cab6b86b6d179b25bed881b7173407ea7907bfc6165dd45814092c453a6b7",
-    zeroInputPlan: "605631ace2c6a56466ab15477ab1a665532eac96deb01877d5ff13d379bc3067",
+    zeroInputPlan: "ce76eb661f3fcb337dc9f629492740405836a0218a9b96bf22e85c0f18267d77",
   },
 } as const;
 const actionPair = { actionKind: "fixture.inspect", capabilityName: "work.read" };
@@ -315,7 +315,7 @@ const reviewDescriptorGolden = {
       templateId: "review.verification",
     },
   ],
-  dispositionCodes: [],
+  dispositionCodes: ["review.complete", "review.reject", "review.unknown"],
   inputSchemas: ["module-plan-input/v1"],
   moduleId: "review",
   moduleVersion: "0.0.0",
@@ -1422,7 +1422,7 @@ test("runs the quarantined planning module through actual branch and queue prepa
 test.each(["branches", "queue"] as const)(
   "runs quarantined review planning through actual %s preparation with exact bytes",
   async (kind) => {
-    expect(Object.keys(reviewModule).sort()).toEqual(["descriptor", "plan"]);
+    expect(Object.keys(reviewModule).sort()).toEqual(["descriptor", "disposition", "plan"]);
     expect(reviewModule.descriptor).toEqual(reviewDescriptorGolden);
     expect(canonicalJson(reviewModule.descriptor)).toBe(canonicalJson(reviewDescriptorGolden));
     expect(computeModuleDescriptorDigest(reviewModule.descriptor)).toBe(reviewDescriptorDigest);
