@@ -2841,3 +2841,992 @@ describe("ISS-054 Packet B relations, pagination and deletion mutants", () => {
     }
   });
 });
+
+/* -------------------------------------------------------------------------- *
+ * ISS-054 Packet C: fresh observed-protection vectors
+ *
+ * These sections prove closure and typed local structure for the fresh
+ * `observedProtection` read-back record only (ledger 6877-6892). They add no
+ * cross-record equality, chronology join, purpose join, projection, digest or
+ * terminal-evidence claim, and they change no Packet A or Packet B vector: the
+ * Packet A census, matrix roots and deletion mutants are re-asserted unchanged
+ * and the fresh census, roots and mutants are disjoint additions. No vector
+ * below claims API origin, authentication, capture completeness, freshness,
+ * binding, operator action or authority.
+ * -------------------------------------------------------------------------- */
+
+const FRESH_PURPOSES: readonly string[] = Object.freeze([
+  "ENVIRONMENT",
+  "ENVIRONMENT_VARIABLE",
+  "REPOSITORY",
+  "RULESET",
+  "WORKFLOW_BUILD",
+  "WORKFLOW_REVIEW",
+]);
+const HISTORICAL_ONLY_PURPOSES: readonly string[] = Object.freeze([
+  "PULL_REQUEST",
+  "PULL_REQUEST_REVIEWS",
+  "WORKFLOW_RUN",
+]);
+const FRESH_GRAPHQL_PURPOSE = "RULESET";
+const FRESH_GRAPHQL_INDEX = 3;
+const FRESH_STARTED_AT = "2026-09-04T00:01:00.000Z";
+const FRESH_COMPLETED_AT = "2026-09-04T00:01:02.000Z";
+const FRESH_PAGE_AT = "2026-09-04T00:01:01.000Z";
+const FRESH_WINDOW_EXACT_AT = "2026-09-04T00:06:00.000Z";
+const FRESH_WINDOW_OVER_AT = "2026-09-04T00:06:00.001Z";
+const FRESH_ROOT_MEMBERS: readonly string[] = Object.freeze([
+  "apiObservations",
+  "completedAt",
+  "environmentBinding",
+  "protectedPathPolicies",
+  "repositoryId",
+  "reviewPolicy",
+  "rulesetId",
+  "startedAt",
+  "terminalEvidenceDigest",
+  "workflows",
+]);
+const freshParserNames: readonly string[] = Object.freeze([
+  "parseFreshApiObservation",
+  "parseFreshApiObservations",
+  "parseObservedProtectionStructure",
+]);
+
+function freshObservationRow(purpose: string, pageCount = 1): Row {
+  return observationRow(purpose, purpose === FRESH_GRAPHQL_PURPOSE ? "GRAPHQL" : "REST", pageCount);
+}
+function freshEnvironmentBinding(): Row {
+  return {
+    environmentEtag: quote + "environment-v2" + quote,
+    environmentName: "host-custody-bootstrap-root",
+    variableName: "VERIFIER_ANCHOR_SHA256",
+    variableUpdatedAt: "2026-09-04T00:00:30.000Z",
+    variableValue: sha("anchor"),
+  };
+}
+function freshObservation(): Row {
+  const receipt = fixture();
+  return {
+    apiObservations: FRESH_PURPOSES.map((purpose) => freshObservationRow(purpose)),
+    completedAt: FRESH_COMPLETED_AT,
+    environmentBinding: freshEnvironmentBinding(),
+    protectedPathPolicies: receipt.protectedPathPolicies,
+    repositoryId: receipt.repositoryId,
+    reviewPolicy: receipt.reviewPolicy,
+    rulesetId: receipt.rulesetId,
+    startedAt: FRESH_STARTED_AT,
+    terminalEvidenceDigest: sha("fresh-terminal-evidence"),
+    workflows: receipt.workflows,
+  };
+}
+function freshChanged(path: Path, value: unknown): Row {
+  const observed = freshObservation();
+  at(observed, path.slice(0, -1))[String(required(path[path.length - 1]))] = value;
+  return observed;
+}
+function freshIssues(input: unknown): readonly string[] {
+  const result = parse.parseObservedProtectionStructure(input);
+  return result.ok ? [] : result.issues;
+}
+function freshRows(observed: Row): Row[] {
+  return observed.apiObservations as Row[];
+}
+
+/* -------------------------------------------------------------------------- *
+ * Versioned structural-input census extension (test-local, not a schema
+ * version). The Packet A census object above is re-asserted unchanged; the
+ * fresh kinds are carried here so no landed Packet A vector moves.
+ * -------------------------------------------------------------------------- */
+
+const freshObservedProtectionStructuralInputCensus20260905 = Object.freeze({
+  censusVersion: "2026-09-05",
+  extendsCensusVersion: repositoryProtectionStructuralInputCensus20260905.censusVersion,
+  freshRecordKinds: Object.freeze({
+    FreshApiObservation: "parseFreshApiObservation",
+    ObservedProtectionStructure: "parseObservedProtectionStructure",
+  }),
+  freshTypedArrayParsers: Object.freeze(["parseFreshApiObservations"]),
+  freshRootMemberCensus: FRESH_ROOT_MEMBERS,
+  freshPurposeCensus: FRESH_PURPOSES,
+  reusedPacketAParsers: Object.freeze({
+    "$fresh.apiObservations[*]": "parseHistoricalApiObservation",
+    "$fresh.environmentBinding": "parseEnvironmentBinding",
+    "$fresh.protectedPathPolicies": "parseProtectedPathPolicies",
+    "$fresh.reviewPolicy": "parseReviewPolicy",
+    "$fresh.workflows": "parseWorkflows",
+  }),
+  derivedByTheBinderNotParsedHere: Object.freeze([
+    "parseApiTerminal",
+    "parseApiTerminals",
+    "parseEvaluatedAt",
+    "bindRepositoryProtectionEvidence",
+    "computeRepositoryProtectionTerminalEvidenceDigest",
+    "computeRepositoryProtectionObservedProtectionDigest",
+  ]),
+});
+
+/* -------------------------------------------------------------------------- *
+ * The fresh no-throw matrix roots: every new root and every new path
+ * -------------------------------------------------------------------------- */
+
+const freshRestObservationValid = (): Row => freshObservationRow("ENVIRONMENT", 2);
+const freshGraphqlObservationValid = (): Row => freshObservationRow(FRESH_GRAPHQL_PURPOSE, 2);
+const freshLinkPage = (): Row => at(freshObservationRow("ENVIRONMENT", 3), ["pages", 1]);
+
+const freshObservedProtectionRoots: readonly MatrixRoot[] = Object.freeze([
+  {
+    name: "$fresh",
+    kind: "record",
+    parse: parse.parseObservedProtectionStructure,
+    valid: freshObservation,
+  },
+  {
+    name: "$fresh.apiObservations",
+    kind: "array",
+    parse: parse.parseFreshApiObservations,
+    valid: () => rowsAt(freshObservation(), ["apiObservations"]),
+  },
+  {
+    name: "$fresh.apiObservations[REST]",
+    kind: "record",
+    parse: parse.parseFreshApiObservation,
+    valid: freshRestObservationValid,
+  },
+  {
+    name: "$fresh.apiObservations[GRAPHQL]",
+    kind: "record",
+    parse: parse.parseFreshApiObservation,
+    valid: freshGraphqlObservationValid,
+  },
+  {
+    name: "$fresh.apiObservations[*].request{REST}",
+    kind: "record",
+    parse: parse.parseRestRequest,
+    valid: () => at(freshRestObservationValid(), ["request"]),
+  },
+  {
+    name: "$fresh.apiObservations[*].request{GRAPHQL}",
+    kind: "record",
+    parse: parse.parseGraphqlRequest,
+    valid: () => at(freshGraphqlObservationValid(), ["request"]),
+  },
+  {
+    name: "$fresh.apiObservations[*].request{REST|GRAPHQL}",
+    kind: "record",
+    parse: parse.parseRepositoryProtectionRequest,
+    valid: () => at(freshGraphqlObservationValid(), ["request"]),
+  },
+  {
+    name: "$fresh.apiObservations[*].pages{REST}",
+    kind: "array",
+    parse: (input) => parse.parseTerminalPaginationPages("REST", input),
+    valid: () => rowsAt(freshRestObservationValid(), ["pages"]),
+  },
+  {
+    name: "$fresh.apiObservations[*].pages{GRAPHQL}",
+    kind: "array",
+    parse: (input) => parse.parseTerminalPaginationPages("GRAPHQL", input),
+    valid: () => rowsAt(freshGraphqlObservationValid(), ["pages"]),
+  },
+  {
+    name: "$fresh.apiObservations[*].pages[*]{REST}",
+    kind: "record",
+    parse: parse.parseRestPage,
+    valid: () => at(freshRestObservationValid(), ["pages", 0]),
+  },
+  {
+    name: "$fresh.apiObservations[*].pages[*]{GRAPHQL}",
+    kind: "record",
+    parse: parse.parseGraphqlPage,
+    valid: () => at(freshGraphqlObservationValid(), ["pages", 0]),
+  },
+  {
+    name: "$fresh.apiObservations[*].pages[*].linkRelations",
+    kind: "array",
+    parse: parse.parseRestLinkRelations,
+    valid: () => rowsAt(freshLinkPage(), ["linkRelations"]),
+  },
+  {
+    name: "$fresh.apiObservations[*].pages[*].linkRelations[*]",
+    kind: "record",
+    parse: parse.parseRestLinkRelation,
+    valid: () => at(freshLinkPage(), ["linkRelations", 0]),
+  },
+  {
+    name: "$fresh.environmentBinding",
+    kind: "record",
+    parse: parse.parseEnvironmentBinding,
+    valid: freshEnvironmentBinding,
+  },
+  {
+    name: "$fresh.protectedPathPolicies",
+    kind: "array",
+    parse: parse.parseProtectedPathPolicies,
+    valid: () => rowsAt(freshObservation(), ["protectedPathPolicies"]),
+  },
+  {
+    name: "$fresh.protectedPathPolicies[*]",
+    kind: "record",
+    parse: parse.parseProtectedPathPolicy,
+    valid: () => at(freshObservation(), ["protectedPathPolicies", 0]),
+  },
+  {
+    name: "$fresh.reviewPolicy",
+    kind: "record",
+    parse: parse.parseReviewPolicy,
+    valid: () => at(freshObservation(), ["reviewPolicy"]),
+  },
+  {
+    name: "$fresh.workflows",
+    kind: "array",
+    parse: parse.parseWorkflows,
+    valid: () => rowsAt(freshObservation(), ["workflows"]),
+  },
+  {
+    name: "$fresh.workflows[BUILD]",
+    kind: "record",
+    parse: parse.parseWorkflow,
+    valid: () => at(freshObservation(), ["workflows", 0]),
+  },
+  {
+    name: "$fresh.workflows[REVIEW]",
+    kind: "record",
+    parse: parse.parseWorkflow,
+    valid: () => at(freshObservation(), ["workflows", 1]),
+  },
+  {
+    name: "$fresh.workflows[*].permissions",
+    kind: "array",
+    parse: parse.parseWorkflowPermissions,
+    valid: () => rowsAt(freshObservation(), ["workflows", 0, "permissions"]),
+  },
+  {
+    name: "$fresh.workflows[*].permissions[*]",
+    kind: "record",
+    parse: parse.parseWorkflowPermission,
+    valid: () => at(freshObservation(), ["workflows", 0, "permissions", 0]),
+  },
+  {
+    name: "$fresh.workflows[BUILD].trigger",
+    kind: "record",
+    parse: parse.parseWorkflowTrigger,
+    valid: () => at(freshObservation(), ["workflows", 0, "trigger"]),
+  },
+  {
+    name: "$fresh.workflows[REVIEW].trigger",
+    kind: "record",
+    parse: parse.parseWorkflowTrigger,
+    valid: () => at(freshObservation(), ["workflows", 1, "trigger"]),
+  },
+  {
+    name: "$fresh.workflows[*].trigger.activities",
+    kind: "array",
+    parse: parse.parseWorkflowTriggerActivities,
+    valid: () => rowsAt(freshObservation(), ["workflows", 0, "trigger", "activities"]),
+  },
+]);
+
+/* -------------------------------------------------------------------------- *
+ * Committed fresh deletion mutants: each removes exactly one new typed-child
+ * gate and each is shown to make the committed mutant survive.
+ * -------------------------------------------------------------------------- */
+
+const freshDeletionMutants: readonly DeletionMutant[] = Object.freeze([
+  {
+    gate: "parseFreshApiObservation: typed historical-row child gate before fresh narrowing",
+    path: "$fresh.apiObservations[*]",
+    input: () => freshChanged(["apiObservations", 0, "pages"], null),
+    real: parse.parseObservedProtectionStructure,
+    ungated: (input) => {
+      const row = at(input, ["apiObservations", 0]);
+      const parsed = parse.parseHistoricalApiObservation(row);
+      const value = (parsed.ok ? parsed.value : undefined) as unknown as Row;
+      return value.purpose;
+    },
+  },
+  {
+    gate: "parseFreshApiObservation: fresh six-purpose census gate before row construction",
+    path: "$fresh.apiObservations[*].purpose",
+    input: () => freshChanged(["apiObservations", 0], observationRow("WORKFLOW_RUN", "REST")),
+    real: parse.parseObservedProtectionStructure,
+    ungated: (input) => {
+      const row = at(input, ["apiObservations", 0]);
+      const parsed = parse.parseFreshApiObservation(row);
+      const value = (parsed.ok ? parsed.value : undefined) as unknown as Row;
+      return value.triggeringBuild;
+    },
+  },
+  {
+    gate: "parseObservedProtectionStructure: typed apiObservations gate",
+    path: "$fresh.apiObservations",
+    input: () => freshChanged(["apiObservations"], null),
+    real: parse.parseObservedProtectionStructure,
+    ungated: (input) => {
+      const record = input as Row;
+      const parsed = parse.parseFreshApiObservations(record.apiObservations);
+      const rows = (parsed.ok ? parsed.value : undefined) as unknown as Row[];
+      return rows.find((row) => row.purpose === FRESH_GRAPHQL_PURPOSE);
+    },
+  },
+  {
+    gate: "parseObservedProtectionStructure: typed environmentBinding gate",
+    path: "$fresh.environmentBinding",
+    input: () => freshChanged(["environmentBinding"], null),
+    real: parse.parseObservedProtectionStructure,
+    ungated: (input) => {
+      const record = input as Row;
+      const parsed = parse.parseEnvironmentBinding(record.environmentBinding);
+      const value = (parsed.ok ? parsed.value : undefined) as unknown as Row;
+      return { environmentEtag: value.environmentEtag };
+    },
+  },
+  {
+    gate: "parseObservedProtectionStructure: typed protectedPathPolicies gate",
+    path: "$fresh.protectedPathPolicies",
+    input: () => freshChanged(["protectedPathPolicies"], null),
+    real: parse.parseObservedProtectionStructure,
+    ungated: (input) => {
+      const record = input as Row;
+      const parsed = parse.parseProtectedPathPolicies(record.protectedPathPolicies);
+      const rows = (parsed.ok ? parsed.value : undefined) as unknown as Row[];
+      return rows.length;
+    },
+  },
+  {
+    gate: "parseObservedProtectionStructure: typed reviewPolicy gate",
+    path: "$fresh.reviewPolicy",
+    input: () => freshChanged(["reviewPolicy"], null),
+    real: parse.parseObservedProtectionStructure,
+    ungated: (input) => {
+      const record = input as Row;
+      const parsed = parse.parseReviewPolicy(record.reviewPolicy);
+      const value = (parsed.ok ? parsed.value : undefined) as unknown as Row;
+      return value.minimumApprovals;
+    },
+  },
+  {
+    gate: "parseObservedProtectionStructure: typed workflows gate",
+    path: "$fresh.workflows",
+    input: () => freshChanged(["workflows"], null),
+    real: parse.parseObservedProtectionStructure,
+    ungated: (input) => {
+      const record = input as Row;
+      const parsed = parse.parseWorkflows(record.workflows);
+      const rows = (parsed.ok ? parsed.value : undefined) as unknown as Row[];
+      return rows.find((row) => row.role === "BUILD");
+    },
+  },
+]);
+
+describe("ISS-054 Packet C fresh observed-protection census and canonical fixture", () => {
+  test("extends the versioned structural-input census to the new fresh kinds only", () => {
+    const packetA = repositoryProtectionStructuralInputCensus20260905;
+    const packetC = freshObservedProtectionStructuralInputCensus20260905;
+    const moduleExports = parse as unknown as Record<string, unknown>;
+    expect(packetC.extendsCensusVersion).toBe(packetA.censusVersion);
+
+    // The landed Packet A census is unchanged by this packet.
+    expect(Object.keys(packetA.receiptTreeRecordKinds)).toHaveLength(15);
+    expect(Object.keys(packetA.standaloneRecordKinds)).toHaveLength(2);
+    expect(Object.keys(packetA.helperArgumentKinds)).toHaveLength(8);
+    expect(Object.keys(censusKinds)).toHaveLength(25);
+    expect(Object.keys(parse.repositoryProtectionSchemaFields)).toHaveLength(17);
+    expect(parse.repositoryProtectionPurposes).toHaveLength(9);
+    expect(parse.repositoryProtectionSchemaVersions).toEqual([schema]);
+
+    // The fresh kinds are new, disjoint and implemented.
+    expect(Object.keys(packetC.freshRecordKinds)).toHaveLength(2);
+    for (const kind of Object.keys(packetC.freshRecordKinds))
+      expect(Object.keys(censusKinds), kind).not.toContain(kind);
+    for (const parserName of Object.values(packetC.freshRecordKinds)) {
+      expect(typeof moduleExports[parserName], parserName).toBe("function");
+      expect(Object.values(censusKinds), parserName).not.toContain(parserName);
+    }
+    for (const parserName of packetC.freshTypedArrayParsers) {
+      expect(typeof moduleExports[parserName], parserName).toBe("function");
+      expect(packetA.typedArrayParsers, parserName).not.toContain(parserName);
+    }
+    expect(
+      codepointSorted([
+        ...Object.values(packetC.freshRecordKinds),
+        ...packetC.freshTypedArrayParsers,
+      ]),
+    ).toEqual(codepointSorted([...freshParserNames]));
+
+    // Every reused parser is a landed Packet A kind, not a fresh copy of one.
+    for (const parserName of Object.values(packetC.reusedPacketAParsers))
+      expect([...Object.values(censusKinds), ...packetA.typedArrayParsers], parserName).toContain(
+        parserName,
+      );
+
+    // The fresh root census is the accepted ten members, codepoint ordered,
+    // with no schemaVersion member, and the exported field object did not grow.
+    expect(packetC.freshRootMemberCensus).toHaveLength(10);
+    expect(packetC.freshRootMemberCensus).toEqual(codepointSorted(packetC.freshRootMemberCensus));
+    expect(packetC.freshRootMemberCensus).not.toContain("schemaVersion");
+    expect(codepointSorted(Object.keys(freshObservation()))).toEqual([
+      ...packetC.freshRootMemberCensus,
+    ]);
+    for (const key of Object.keys(parse.repositoryProtectionSchemaFields))
+      expect(packetC.freshRecordKinds, key).not.toHaveProperty(key);
+
+    // The six-purpose census is narrowed from, never widened past, the nine.
+    expect(packetC.freshPurposeCensus).toHaveLength(6);
+    expect(packetC.freshPurposeCensus).toEqual(codepointSorted(packetC.freshPurposeCensus));
+    for (const purpose of packetC.freshPurposeCensus)
+      expect([...parse.repositoryProtectionPurposes], purpose).toContain(purpose);
+    expect(
+      parse.repositoryProtectionPurposes.filter(
+        (purpose) => !packetC.freshPurposeCensus.includes(purpose),
+      ),
+    ).toEqual([...HISTORICAL_ONLY_PURPOSES]);
+
+    // apiTerminals, evaluatedAt and the binder are derived or owned elsewhere.
+    expect(packetC.derivedByTheBinderNotParsedHere).toHaveLength(6);
+    for (const name of packetC.derivedByTheBinderNotParsedHere)
+      expect(moduleExports[name], name).toBeUndefined();
+
+    expect(iss002HarnessPaths).toContain(sourcePath);
+    expect(iss002TestBundlePaths).toContain(testPath);
+  });
+
+  test("accepts the canonical six-purpose fresh fixture with REST and GraphQL rows", () => {
+    const input = freshObservation();
+    const parsed = parse.parseObservedProtectionStructure(input);
+    if (!parsed.ok) throw new Error(parsed.issues.join(","));
+    expect(parsed.value.apiObservations.map((row) => row.purpose)).toEqual([...FRESH_PURPOSES]);
+    expect(parsed.value.apiObservations.map((row) => row.request.apiKind)).toEqual([
+      "REST",
+      "REST",
+      "REST",
+      "GRAPHQL",
+      "REST",
+      "REST",
+    ]);
+    expect(parsed.value.apiObservations.map((row) => row.triggeringBuild)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(parsed.value.startedAt).toBe(FRESH_STARTED_AT);
+    expect(parsed.value.completedAt).toBe(FRESH_COMPLETED_AT);
+    expect(parsed.value.environmentBinding.environmentEtag).toBe(quote + "environment-v2" + quote);
+    expect(parsed.value.workflows.map((row) => row.role)).toEqual(["BUILD", "REVIEW"]);
+    expect(parsed.value).toEqual(input);
+    expect(parsed.value).not.toBe(input);
+    expect(parsed.value.apiObservations).not.toBe(input.apiObservations);
+    expect(deeplyFrozen(parsed.value)).toBe(true);
+    at(input, ["environmentBinding"]).environmentEtag = quote + "moved" + quote;
+    at(input, ["apiObservations", 0, "pages", 0]).observedAt = "2026-09-04T00:01:01.500Z";
+    expect(parsed.value.environmentBinding.environmentEtag).toBe(quote + "environment-v2" + quote);
+    expect(at(parsed.value, ["apiObservations", 0, "pages", 0]).observedAt).toBe(FRESH_PAGE_AT);
+    for (const mode of ["sealed", "frozen"]) {
+      const immutable = freshObservation();
+      freezeDeep(immutable, mode === "sealed");
+      expect(parse.parseObservedProtectionStructure(immutable).ok, mode).toBe(true);
+    }
+  });
+
+  test("accepts one-, two- and sixty-four-page fresh REST and GraphQL observations", () => {
+    for (const count of [1, 2, 64]) {
+      expect(
+        parse.parseObservedProtectionStructure(
+          freshChanged(["apiObservations", 0], freshObservationRow("ENVIRONMENT", count)),
+        ).ok,
+        "rest:" + String(count),
+      ).toBe(true);
+      expect(
+        parse.parseObservedProtectionStructure(
+          freshChanged(
+            ["apiObservations", FRESH_GRAPHQL_INDEX],
+            freshObservationRow(FRESH_GRAPHQL_PURPOSE, count),
+          ),
+        ).ok,
+        "graphql:" + String(count),
+      ).toBe(true);
+    }
+    expect(freshIssues(freshChanged(["apiObservations", 0, "pages"], []))).toEqual([
+      "apiObservations.0.pages.array:length",
+    ]);
+    expect(
+      freshIssues(freshChanged(["apiObservations", 0, "pages"], restPages("ENVIRONMENT", 65))),
+    ).toEqual(["apiObservations.0.pages.array:length"]);
+    expect(
+      freshIssues(
+        freshChanged(
+          ["apiObservations", FRESH_GRAPHQL_INDEX, "pages"],
+          graphqlPages(FRESH_GRAPHQL_PURPOSE, 65),
+        ),
+      ),
+    ).toEqual(["apiObservations." + String(FRESH_GRAPHQL_INDEX) + ".pages.array:length"]);
+  });
+
+  test("keeps the accepted fresh nullable cells as positives", () => {
+    for (const row of freshRows(freshObservation()))
+      expect(row.triggeringBuild, String(row.purpose)).toBeNull();
+    const graphqlRow = freshObservationRow(FRESH_GRAPHQL_PURPOSE, 1);
+    expect(at(graphqlRow, ["pages", 0]).etag).toBeNull();
+    expect(parse.parseFreshApiObservation(graphqlRow).ok).toBe(true);
+    const terminalCursorNull = freshObservationRow(FRESH_GRAPHQL_PURPOSE, 1);
+    at(terminalCursorNull, ["pages", 0]).endCursor = null;
+    expect(at(terminalCursorNull, ["pages", 0]).requestCursor).toBeNull();
+    expect(parse.parseFreshApiObservation(terminalCursorNull).ok).toBe(true);
+    expect(
+      parse.parseObservedProtectionStructure(
+        freshChanged(["apiObservations", FRESH_GRAPHQL_INDEX], terminalCursorNull),
+      ).ok,
+    ).toBe(true);
+    const onePageRest = freshObservationRow("ENVIRONMENT", 1);
+    expect(at(onePageRest, ["pages", 0]).linkRelations).toEqual([]);
+    expect(at(onePageRest, ["pages", 0]).linkHeaderDigest).toBeNull();
+    expect(at(onePageRest, ["pages", 0]).nextRequestDigest).toBeNull();
+    expect(parse.parseFreshApiObservation(onePageRest).ok).toBe(true);
+    expect(parse.parseObservedProtectionStructure(freshObservation()).ok).toBe(true);
+  });
+});
+
+describe("ISS-054 Packet C one-axis mutants, refusal categories and freshness", () => {
+  test("refuses every fresh root scalar grammar on one axis with its exact code", () => {
+    const axes: readonly { readonly field: string; readonly values: readonly unknown[] }[] =
+      Object.freeze([
+        {
+          field: "completedAt",
+          values: ["2026-09-04T00:01:02Z", "2026-09-04T00:01:02.000+00:00", "", 1, true, null, []],
+        },
+        {
+          field: "startedAt",
+          values: ["2026-09-04T00:01:00", "2026-13-04T00:01:00.000Z", "", 1, true, null, {}],
+        },
+        { field: "repositoryId", values: ["0", "01", "77" + lineFeed, "", 77, null, true] },
+        { field: "rulesetId", values: ["0", "088", "8 8", "", 88, null, []] },
+        {
+          field: "terminalEvidenceDigest",
+          values: [
+            sha("fresh-terminal-evidence").toUpperCase(),
+            sha("fresh-terminal-evidence").slice(0, 63),
+            sha("fresh-terminal-evidence") + "0",
+            "",
+            1,
+            null,
+            {},
+          ],
+        },
+      ]);
+    for (const axis of axes)
+      for (const value of axis.values)
+        expect(
+          freshIssues(freshChanged([axis.field], value)),
+          axis.field + "=" + JSON.stringify(value),
+        ).toEqual([axis.field + ":invalid"]);
+  });
+
+  test("refuses a missing, unknown, renamed or schemaVersion-bearing fresh root", () => {
+    for (const field of FRESH_ROOT_MEMBERS) {
+      const missing = freshObservation();
+      delete missing[field];
+      expect(freshIssues(missing), field).toEqual([field + ":missing"]);
+    }
+    expect(freshIssues({ ...freshObservation(), schemaVersion: schema })).toEqual([
+      "schemaVersion:unknown-field",
+    ]);
+    expect(freshIssues({ ...freshObservation(), evaluatedAt: FRESH_COMPLETED_AT })).toEqual([
+      "evaluatedAt:unknown-field",
+    ]);
+    expect(freshIssues({ ...freshObservation(), apiTerminals: [] })).toEqual([
+      "apiTerminals:unknown-field",
+    ]);
+    const renamed = freshObservation();
+    renamed.observationStartedAt = renamed.startedAt;
+    delete renamed.startedAt;
+    expect(freshIssues(renamed)).toEqual([
+      "observationStartedAt:unknown-field",
+      "startedAt:missing",
+    ]);
+  });
+
+  test("treats a reordered fresh top level as a positive, not a refusal", () => {
+    // Record key order carries no meaning: `snapshotClosedRecord` compares
+    // sorted censuses, so refusing insertion order would be an unstated
+    // relation. The ordered census that does refuse is the purpose sequence.
+    const observed = freshObservation();
+    const reordered: Row = {};
+    for (const key of [...Object.keys(observed)].reverse()) reordered[key] = observed[key];
+    expect(Object.keys(reordered)).not.toEqual(Object.keys(observed));
+    expect(codepointSorted(Object.keys(reordered))).toEqual([...FRESH_ROOT_MEMBERS]);
+    expect(parse.parseObservedProtectionStructure(reordered).ok).toBe(true);
+  });
+
+  test("refuses the historical nine-purpose array and every purpose-census defect", () => {
+    expect(
+      freshIssues(
+        freshChanged(
+          ["apiObservations"],
+          parse.repositoryProtectionPurposes.map((purpose) =>
+            observationRow(purpose, purpose === GRAPHQL_PURPOSE ? "GRAPHQL" : "REST"),
+          ),
+        ),
+      ),
+    ).toEqual(["apiObservations.array:length"]);
+    const skipped = freshObservation();
+    freshRows(skipped).splice(2, 1);
+    expect(freshIssues(skipped)).toEqual(["apiObservations.array:length"]);
+    expect(freshIssues(freshChanged(["apiObservations"], []))).toEqual([
+      "apiObservations.array:length",
+    ]);
+    expect(
+      freshIssues(freshChanged(["apiObservations", 1], freshObservationRow("ENVIRONMENT"))),
+    ).toEqual(["apiObservations.1.purpose:ordered-census-required"]);
+    const reordered = freshObservation();
+    const rows = freshRows(reordered);
+    const first = required(rows[0]);
+    rows[0] = required(rows[2]);
+    rows[2] = first;
+    expect(freshIssues(reordered)).toEqual([
+      "apiObservations.0.purpose:ordered-census-required",
+      "apiObservations.2.purpose:ordered-census-required",
+    ]);
+    for (const purpose of HISTORICAL_ONLY_PURPOSES) {
+      const invaded = freshChanged(["apiObservations", 0], observationRow(purpose, "REST"));
+      expect(freshIssues(invaded), purpose).toEqual(
+        purpose === "WORKFLOW_RUN"
+          ? [
+              "apiObservations.0.purpose:fresh-census-required",
+              "apiObservations.0.triggeringBuild:null-required",
+            ]
+          : ["apiObservations.0.purpose:fresh-census-required"],
+      );
+    }
+    expect(freshIssues(freshChanged(["apiObservations", 0, "purpose"], "ENVIRONMENTS"))).toEqual([
+      "apiObservations.0.purpose.purpose:invalid",
+    ]);
+  });
+
+  test("refuses a non-null triggeringBuild on any fresh row", () => {
+    for (let index = 0; index < FRESH_PURPOSES.length; index += 1)
+      expect(
+        freshIssues(
+          freshChanged(["apiObservations", index, "triggeringBuild"], triggeringBuildRow()),
+        ),
+        String(index),
+      ).toEqual(["apiObservations." + String(index) + ".triggeringBuild:null-required"]);
+  });
+
+  test("pins the 300,000 millisecond fresh window at both boundaries", () => {
+    expect(
+      parse.parseObservedProtectionStructure(freshChanged(["completedAt"], FRESH_WINDOW_EXACT_AT))
+        .ok,
+    ).toBe(true);
+    expect(freshIssues(freshChanged(["completedAt"], FRESH_WINDOW_OVER_AT))).toEqual([
+      "completedAt:more-than-five-minutes",
+    ]);
+    const zeroWindow = freshObservation();
+    zeroWindow.startedAt = FRESH_PAGE_AT;
+    zeroWindow.completedAt = FRESH_PAGE_AT;
+    expect(parse.parseObservedProtectionStructure(zeroWindow).ok).toBe(true);
+    const reversed = freshObservation();
+    reversed.startedAt = FRESH_COMPLETED_AT;
+    reversed.completedAt = FRESH_STARTED_AT;
+    expect(freshIssues(reversed)).toEqual(["completedAt:before-startedAt"]);
+    const reversedByOneMillisecond = freshObservation();
+    reversedByOneMillisecond.startedAt = "2026-09-04T00:01:02.001Z";
+    expect(freshIssues(reversedByOneMillisecond)).toEqual(["completedAt:before-startedAt"]);
+  });
+
+  test("refuses fresh page times outside the observation window, page by page", () => {
+    expect(
+      freshIssues(
+        freshChanged(["apiObservations", 0, "pages", 0, "observedAt"], "2026-09-04T00:00:59.999Z"),
+      ),
+    ).toEqual(["apiObservations.0.pages.0.observedAt:outside-window"]);
+    expect(
+      freshIssues(
+        freshChanged(
+          ["apiObservations", FRESH_GRAPHQL_INDEX, "pages", 0, "observedAt"],
+          "2026-09-04T00:01:02.001Z",
+        ),
+      ),
+    ).toEqual([
+      "apiObservations." + String(FRESH_GRAPHQL_INDEX) + ".pages.0.observedAt:outside-window",
+    ]);
+    for (const boundary of [FRESH_STARTED_AT, FRESH_COMPLETED_AT])
+      expect(
+        parse.parseObservedProtectionStructure(
+          freshChanged(["apiObservations", 0, "pages", 0, "observedAt"], boundary),
+        ).ok,
+        boundary,
+      ).toBe(true);
+    const multiPage = freshChanged(["apiObservations", 0], freshObservationRow("ENVIRONMENT", 2));
+    at(multiPage, ["apiObservations", 0, "pages", 0]).observedAt = "2026-09-04T00:00:59.999Z";
+    at(multiPage, ["apiObservations", 0, "pages", 1]).observedAt = "2026-09-04T00:01:02.001Z";
+    expect(freshIssues(multiPage)).toEqual([
+      "apiObservations.0.pages.0.observedAt:outside-window",
+      "apiObservations.0.pages.1.observedAt:outside-window",
+    ]);
+  });
+});
+
+describe("ISS-054 Packet C structural discriminator, hostile reflection and gates", () => {
+  test("enumerates every fresh matrix root exactly once and accepts each positive", () => {
+    expect(freshObservedProtectionRoots).toHaveLength(25);
+    expect(new Set(freshObservedProtectionRoots.map((root) => root.name)).size).toBe(
+      freshObservedProtectionRoots.length,
+    );
+    const packetANames = new Set(allRoots.map((root) => root.name));
+    for (const root of freshObservedProtectionRoots) {
+      expect(packetANames.has(root.name), root.name).toBe(false);
+      const result = root.parse(root.valid());
+      if (!result.ok) throw new Error("positive fresh root refused: " + root.name);
+      expect(result.ok, root.name).toBe(true);
+    }
+  });
+
+  test("returns a refusal and never throws across every fresh root and path", () => {
+    for (const root of freshObservedProtectionRoots)
+      for (const mutation of mutationsFor(root)) {
+        const label = root.name + " / " + mutation.label;
+        let result: { readonly ok: boolean } | undefined;
+        expect(() => {
+          result = root.parse(mutation.input);
+        }, label).not.toThrow();
+        expect(required(result).ok, label).toBe(false);
+      }
+  });
+
+  test("refuses hostile reflection at every fresh root with zero trap executions", () => {
+    for (const root of freshObservedProtectionRoots) {
+      const valid = root.valid();
+      const target: object = typeof valid === "object" && valid !== null ? valid : { value: valid };
+
+      const proxyTrap = vi.fn(() => {
+        throw new Error("proxy trap executed at " + root.name);
+      });
+      const proxied = new Proxy(target, {
+        get: proxyTrap,
+        getOwnPropertyDescriptor: proxyTrap,
+        has: proxyTrap,
+        ownKeys: proxyTrap,
+      });
+      expect(root.parse(proxied).ok, root.name).toBe(false);
+      expect(proxyTrap, root.name).not.toHaveBeenCalled();
+
+      const accessorTrap = vi.fn(() => sha("accessor"));
+      const accessorTarget = (Array.isArray(target)
+        ? [...(target as unknown[])]
+        : { ...(target as Row) }) as unknown as Record<PropertyKey, unknown>;
+      const accessorKey = Array.isArray(target) ? "0" : (Object.keys(accessorTarget)[0] ?? "value");
+      delete accessorTarget[accessorKey];
+      Object.defineProperty(accessorTarget, accessorKey, {
+        configurable: true,
+        enumerable: true,
+        get: accessorTrap,
+      });
+      expect(root.parse(accessorTarget).ok, root.name).toBe(false);
+      expect(accessorTrap, root.name).not.toHaveBeenCalled();
+
+      const symbolTarget = (Array.isArray(target)
+        ? [...(target as unknown[])]
+        : { ...(target as Row) }) as unknown as Record<PropertyKey, unknown>;
+      symbolTarget[Symbol("hidden")] = true;
+      expect(root.parse(symbolTarget).ok, root.name).toBe(false);
+
+      const hiddenTarget = (Array.isArray(target)
+        ? [...(target as unknown[])]
+        : { ...(target as Row) }) as unknown as Record<PropertyKey, unknown>;
+      Object.defineProperty(hiddenTarget, "hiddenMember", {
+        configurable: true,
+        enumerable: false,
+        value: true,
+      });
+      expect(root.parse(hiddenTarget).ok, root.name).toBe(false);
+    }
+  });
+
+  test("refuses cross-realm, subclass, cyclic, iterator, hole and extra-key fresh inputs", () => {
+    const crossRealm = runInNewContext("(" + JSON.stringify(freshObservation()) + ")") as unknown;
+    expect(parse.parseObservedProtectionStructure(crossRealm).ok).toBe(false);
+    class ObservedProtection extends Object {}
+    expect(
+      parse.parseObservedProtectionStructure(
+        Object.assign(new ObservedProtection(), freshObservation()),
+      ).ok,
+    ).toBe(false);
+    const cyclic: Record<string, unknown> = freshObservation();
+    cyclic.self = cyclic;
+    expect(parse.parseObservedProtectionStructure(cyclic).ok).toBe(false);
+    const iterated = freshObservation();
+    const rows = rowsAt(iterated, ["apiObservations"]) as unknown as Record<PropertyKey, unknown>;
+    rows[Symbol.iterator] = function* iterate() {
+      yield freshObservationRow("ENVIRONMENT");
+    };
+    expect(parse.parseObservedProtectionStructure(iterated).ok).toBe(false);
+    const extraKey = freshObservation();
+    Object.defineProperty(rowsAt(extraKey, ["workflows"]), "extra", {
+      configurable: true,
+      enumerable: true,
+      value: 1,
+    });
+    expect(parse.parseObservedProtectionStructure(extraKey).ok).toBe(false);
+    const holed = freshObservation();
+    delete rowsAt(holed, ["apiObservations"])[0];
+    expect(parse.parseObservedProtectionStructure(holed).ok).toBe(false);
+  });
+
+  test("keeps every fresh typed-child deletion mutant discriminating", () => {
+    expect(freshDeletionMutants).toHaveLength(7);
+    expect(new Set(freshDeletionMutants.map((mutant) => mutant.gate)).size).toBe(
+      freshDeletionMutants.length,
+    );
+    const packetAGates = new Set(deletionMutants.map((mutant) => mutant.gate));
+    for (const mutant of freshDeletionMutants) {
+      expect(packetAGates.has(mutant.gate), mutant.gate).toBe(false);
+      // Without the gate the removed check is not duplicated elsewhere: the
+      // ungated path reaches an unparsed value and throws.
+      expect(() => mutant.ungated(mutant.input()), mutant.gate).toThrow();
+      let result: { readonly ok: boolean } | undefined;
+      expect(() => {
+        result = mutant.real(mutant.input());
+      }, mutant.gate).not.toThrow();
+      expect(required(result).ok, mutant.gate).toBe(false);
+      // The same input on the unmutated fixture is a positive, so each mutant
+      // is discriminating rather than tautological.
+      expect(parse.parseObservedProtectionStructure(freshObservation()).ok, mutant.gate).toBe(true);
+    }
+    expect(deletionMutants).toHaveLength(8);
+  });
+});
+
+describe("ISS-054 Packet C boundary statements and the unchanged public surface", () => {
+  test("treats fresh opaque leaves as supplied grammar and nullability claims only", () => {
+    const leaves: readonly Path[] = Object.freeze([
+      ["apiObservations", 0, "pages", 0, "requestDigest"],
+      ["apiObservations", 0, "pages", 0, "responseDigest"],
+      ["apiObservations", 0, "request", "queryDigest"],
+      ["apiObservations", 0, "completeReductionDigest"],
+      ["apiObservations", 0, "reducedValueDigest"],
+      ["apiObservations", 0, "requestIdentityDigest"],
+      ["apiObservations", 0, "terminalPaginationDigest"],
+      ["apiObservations", FRESH_GRAPHQL_INDEX, "request", "documentDigest"],
+      ["apiObservations", FRESH_GRAPHQL_INDEX, "request", "variablesDigest"],
+      ["apiObservations", FRESH_GRAPHQL_INDEX, "pages", 0, "responseDigest"],
+      ["terminalEvidenceDigest"],
+    ]);
+    for (const path of leaves) {
+      const label = path.join(".");
+      expect(
+        parse.parseObservedProtectionStructure(freshChanged(path, sha("rotated-opaque-leaf"))).ok,
+        label,
+      ).toBe(true);
+      expect(
+        parse.parseObservedProtectionStructure(freshChanged(path, "not-a-digest")).ok,
+        label,
+      ).toBe(false);
+    }
+    const twoPage = freshChanged(["apiObservations", 0], freshObservationRow("ENVIRONMENT", 2));
+    at(twoPage, ["apiObservations", 0, "pages", 0]).linkHeaderDigest = null;
+    expect(parse.parseObservedProtectionStructure(twoPage).ok).toBe(false);
+    // No positive asserts API origin, authentication, capture completeness,
+    // currentness or authority: the ten ledger members are exempt from the vocabulary
+    // scan below because the census equality above already pins them.
+    const parsed = parse.parseObservedProtectionStructure(freshObservation());
+    if (!parsed.ok) throw new Error(parsed.issues.join(","));
+    expect(codepointSorted(Object.keys(parsed.value))).toEqual([...FRESH_ROOT_MEMBERS]);
+    for (const key of Object.keys(parsed.value)) {
+      if (FRESH_ROOT_MEMBERS.includes(key)) continue;
+      for (const word of [
+        "authenticat",
+        "authority",
+        "authoriz",
+        "complete",
+        "current",
+        "grant",
+        "verif",
+      ])
+        expect(key.toLowerCase(), key + "/" + word).not.toContain(word);
+    }
+  });
+
+  test("states that stale substitution and every cross-record relation stay in the binder", () => {
+    const receipt = fixture();
+    const producerStartedAt = String(at(receipt, ["producer"]).startedAt);
+    const historicalUpdatedAt = String(at(receipt, ["environmentBinding"]).variableUpdatedAt);
+    // A fresh update time moved to or after the historical REVIEW producer
+    // start is the ledger's stale-substitution refusal (6941-6942, 7003-7005).
+    // It is cross-record, so Packet C must not express it: these inputs are
+    // structurally well formed and parse. Packet D owns the refusal.
+    const movedAfterProducerStart = freshObservation();
+    at(movedAfterProducerStart, ["environmentBinding"]).variableUpdatedAt =
+      "2026-09-04T00:05:00.000Z";
+    expect(
+      String(at(movedAfterProducerStart, ["environmentBinding"]).variableUpdatedAt) >
+        producerStartedAt,
+    ).toBe(true);
+    expect(parse.parseObservedProtectionStructure(movedAfterProducerStart).ok).toBe(true);
+    const sameValueRewrite = freshObservation();
+    at(sameValueRewrite, ["environmentBinding"]).variableUpdatedAt = producerStartedAt;
+    expect(parse.parseObservedProtectionStructure(sameValueRewrite).ok).toBe(true);
+    // Equally, over-binding is not introduced here: a fresh binding whose ETag
+    // and update time legally differ from the historical ones is a positive.
+    expect(at(freshObservation(), ["environmentBinding"]).environmentEtag).not.toBe(
+      at(receipt, ["environmentBinding"]).environmentEtag,
+    );
+    expect(at(freshObservation(), ["environmentBinding"]).variableUpdatedAt).not.toBe(
+      historicalUpdatedAt,
+    );
+    expect(parse.parseObservedProtectionStructure(freshObservation()).ok).toBe(true);
+    // A fresh window that straddles the historical receipt issue time is also
+    // admitted at parse time; the ledger states no relation against it and
+    // Packet D carries the positive that pins that.
+    expect(String(receipt.issuedAt) > FRESH_STARTED_AT).toBe(true);
+    expect(parse.parseObservedProtectionStructure(freshObservation()).ok).toBe(true);
+    // A repositoryId or rulesetId disagreeing with the receipt is likewise a
+    // cross-record relation and parses here.
+    expect(parse.parseObservedProtectionStructure(freshChanged(["repositoryId"], "999")).ok).toBe(
+      true,
+    );
+    expect(parse.parseObservedProtectionStructure(freshChanged(["rulesetId"], "999")).ok).toBe(
+      true,
+    );
+  });
+
+  test("leaves the public surface at exactly the reviewed twelve names and the type", () => {
+    expect(packetBPublicSurface).toHaveLength(12);
+    expect(Object.keys(protection).sort()).toEqual([...packetBPublicSurface]);
+    const publicNames = Object.keys(c);
+    const moduleExports = parse as unknown as Record<string, unknown>;
+    for (const name of freshParserNames) {
+      expect(typeof moduleExports[name], name).toBe("function");
+      expect(publicNames, name).not.toContain(name);
+      expect(Object.keys(protection), name).not.toContain(name);
+    }
+    for (const name of [
+      "observedProtectionSchemaFields",
+      "freshObservedProtectionPurposes",
+      "parseObservedProtection",
+      "bindRepositoryProtectionEvidence",
+    ])
+      expect(publicNames, name).not.toContain(name);
+    const parsed = protection.parseRepositoryProtectionReceipt(sealedReceipt());
+    if (!parsed.ok) throw new Error(parsed.issues.join(","));
+    const retained: c.RepositoryProtectionReceipt = parsed.value;
+    expect(retained.schemaVersion).toBe(schema);
+    expect(
+      c.schemaVersions.filter((version) => version.startsWith("repository-protection")),
+    ).toEqual([schema]);
+    expect(
+      Object.keys(c.schemaVocabularyDefinitions).filter((key) =>
+        key.includes("observed-protection"),
+      ),
+    ).toEqual([]);
+    expect(
+      Object.keys(c.schemaVocabularyDefinitions).filter((key) => key.includes("terminal-evidence")),
+    ).toEqual([]);
+    expect(c.parseContract("repository-protection-observed/v1", freshObservation()).ok).toBe(false);
+    expect(iss002HarnessPaths).toContain(sourcePath);
+    expect(iss002HarnessPaths).toContain(relationsSourcePath);
+    expect(iss002TestBundlePaths).toContain(testPath);
+  });
+});
