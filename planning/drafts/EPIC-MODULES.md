@@ -2,7 +2,7 @@
 key: EPIC-MODULES
 title: "Epic: Package portable planning, delivery, and routing modules"
 labels: ["type:epic", "area:modules"]
-children: [ISS-011, ISS-012, ISS-039, ISS-040, ISS-047]
+children: [ISS-011, ISS-012, ISS-039, ISS-040, ISS-047, ISS-055]
 ---
 
 ## Outcome
@@ -18,9 +18,10 @@ until a second consumer exists.
 - Direct-edge DAG (generated from `planning/roadmap.json`):
   `ISS-013 → ISS-011`;
   `ISS-010, ISS-011, ISS-025 → ISS-012`;
-  `ISS-009, ISS-011 → ISS-039`;
-  `ISS-011 → ISS-040`;
-  `ISS-010, ISS-011 → ISS-047`.
+  `ISS-009, ISS-055 → ISS-039`;
+  `ISS-055 → ISS-040`;
+  `ISS-010, ISS-055 → ISS-047`;
+  `ISS-011 → ISS-055`.
 - Gate: modules consume engine contracts and project-adapter facts; they do not
   read a consumer repository's labels or file layout directly. Repository-local
   work-model templates are explicitly excluded from portable bundles.
@@ -39,3 +40,5 @@ until a second consumer exists.
 - `ISS-039` — Carry non-blocking simplification findings through review and repair modules.
 - `ISS-040` — Enforce simplest-correct-solution and evidence-proportionality planning standards.
 - `ISS-047` — Implement telemetry-driven discovery intake for replanning.
+- `ISS-055` — Activate the four-row module manifest, registry generator, and
+  emitted bundle.
