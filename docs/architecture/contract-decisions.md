@@ -3313,53 +3313,57 @@ The collector refuses an archive exceeding any of the three. That refusal is a
 finding, never permission to drop retained bytes, substitute a hash for a file,
 or continue without the missing evidence.
 
-The per-OS reduction is a separate reducer, not an amendment.
-`reduceCaseTranscripts` stays byte-stable. It already returns an honest
-`transcriptResult` over the case rows and pins `result: "UNKNOWN"` behind its
-five `missingPrerequisites`
-(`probes/portable-primitives/experiment/reduction.mjs:26-31, 291, 372-376`), and
-its own landed comment states that `result` remains `UNKNOWN` until a separate
-retained-byte, build, control and provider verifier exists (`:286-290`). Stage
-three adds that separate per-OS reducer as a new stable module which consumes
-`transcriptResult` unchanged and joins it with retained-byte, build, custody and
-control evidence to recompute the report's `result`. The reason is not diff
-size: amending `reduceCaseTranscripts` to return a non-`UNKNOWN` `result` would
-have to drop its fifth prerequisite, three-OS same-attempt reports and terminal
-provider evidence, from a landed independently reviewed guard, and that is
-exactly the evidence stage four supplies. The digest cost is recorded honestly
-rather than used as the argument: editing `reduction.mjs` would move
-`harnessBundleDigest` and `providerRunDigest` only, because
+The per-OS reduction is a separate reducer, not an
+amendment. `reduceCaseTranscripts` stays byte-stable. It already
+returns an honest `transcriptResult` over the case rows and
+pins `result: "UNKNOWN"` behind its five `missingPrerequisites`
+(`probes/portable-primitives/experiment/reduction.mjs:26-31, 291,
+372-376`), and its own landed comment states that `result` remains
+`UNKNOWN` until a separate retained-byte, build, control and provider
+verifier exists (`:286-290`). Stage three adds that separate per-OS
+reducer, `probes/portable-primitives/experiment/per-os-reduction.mjs`,
+as a new stable module which consumes `transcriptResult` unchanged and
+joins it with retained-byte, build, custody and control evidence to
+recompute the report's `result`. The reason is not diff size: amending
+`reduceCaseTranscripts` to return a non-`UNKNOWN` `result` would have to
+drop its fifth prerequisite, three-OS same-attempt reports and terminal
+provider evidence, from a landed independently reviewed guard, and that
+is exactly the evidence stage four supplies. The digest cost is recorded
+honestly rather than used as the argument: editing `reduction.mjs`
+would move `harnessBundleDigest` and `providerRunDigest` only, because
 `prerequisiteCensusDigest` digests the `harnessPaths` strings and not their
-contents (`scripts/conformance/hosted-native-lock-plan.mts:158-171`), whereas a
-new module enters `harnessPaths` and additionally moves
+contents (`scripts/conformance/hosted-native-lock-plan.mts:158-171`),
+whereas a new module enters `harnessPaths` and additionally moves
 `prerequisiteCensusDigest`, `vectorCensusDigest` and the registry's
 `requiredJobRegistryDigest`. Every stage-three source slice pays that cost
-already. No per-OS `result` may be reported that the separate reducer did not
-recompute.
+already. No per-OS `result` may be reported that the separate reducer did
+not recompute.
 
-Line-ending normalization precedes stage four. `.gitattributes` applies
-`text eol=lf` to `packages/**/src/**`, `probes/portable-primitives/src/**`,
-`scripts/conformance/**`, `test/conformance/**` and a fixed file list, but not
-to `probes/portable-primitives/experiment/`,
+Line-ending normalization precedes stage four. `.gitattributes` applies `text
+eol=lf` to `packages/contracts/src/**`, `packages/conformance/src/**`,
+`probes/portable-primitives/src/**`, `scripts/conformance/**`,
+`test/conformance/**`, `test/contracts/**`, `test/portable-primitives/** and
+a fixed file list, but not to `probes/portable-primitives/experiment/`,
 `probes/portable-primitives/native/`, `scripts/build/` or
 `test/native-lock-experiment/`, all four of which the authenticated plan
 censuses (`scripts/conformance/hosted-native-lock-plan.mts:36-76`). With
-`core.autocrlf=true`, the `windows-latest` default, those files check out CRLF
-on Windows and LF elsewhere, so their bundle rows and hence
-`harnessBundleDigest`, `testBundleDigest` and `providerRunDigest` differ by
-checkout normalization rather than by content. Nothing compares those digests
-across operating systems before stage four: each observation job finalizes and
-consumes its own plan. Stage four's aggregate joins three per-OS records and
-`MISSING_OR_MIXED_CENSUS` refuses a differing attempt or revision, so a cross-OS
-equality would then refuse for a normalization reason rather than a content one.
-The decision is therefore that a bounded normalization slice lands after slice
-3.5 and before any stage-four source, as its own reviewed slice with its own
-round record, never folded into a stage-three packet: landing it inside one
-would move every native-lock digest mid-stage and invalidate that slice's own
-digest-mutant evidence while buying nothing stage three needs. Its footprint is
-`.gitattributes` and its round record; its acceptance evidence is that all four
-trees are covered, that a Windows checkout reports working-tree LF for every
-file in them, and that no tracked index byte changes.
+`core.autocrlf=true`, the `windows-latest` default, those files check
+out CRLF on Windows and LF elsewhere, so their bundle rows and hence
+`harnessBundleDigest`, `testBundleDigest` and `providerRunDigest` differ
+by checkout normalization rather than by content. Nothing compares those
+digests across operating systems before stage four: each observation job
+finalizes and consumes its own plan. Stage four's aggregate joins three
+per-OS records and `MISSING_OR_MIXED_CENSUS` refuses a differing attempt
+or revision, so a cross-OS equality would then refuse for a normalization
+reason rather than a content one. The decision is therefore that a bounded
+normalization slice lands after slice 3.5 and before any stage-four source,
+as its own reviewed slice with its own round record, never folded into
+a stage-three packet: landing it inside one would move every native-lock
+digest mid-stage and invalidate that slice's own digest-mutant evidence
+while buying nothing stage three needs. Its footprint is `.gitattributes`
+and its round record; its acceptance evidence is that all four trees are
+covered, that a Windows checkout reports working-tree LF for every file in
+them, and that no tracked index byte changes.
 
 Vitest `.mjs` discovery is a separate later slice. Decision #278 ruling 2 keeps
 `vitest.config.ts` closed for stage three, so every stage-three test is a
