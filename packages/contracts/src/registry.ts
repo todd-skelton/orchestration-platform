@@ -26,6 +26,7 @@ import {
   dispatchLifecycleClosedValues,
 } from "./dispatch-lifecycle.js";
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
+import { verifierAnchorSchemaFields, verifierAnchorSchemaVersions } from "./verifier-anchor.js";
 import {
   breakerReceiptSchemaFields,
   breakerReceiptSchemaVersions,
@@ -411,6 +412,30 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
     "review-authority/v1#content": Object.freeze({
       schemaVersion: "review-authority/v1",
       fields: reviewRequestSchemaFields.content,
+    }),
+    "bootstrap-verifier-anchor/v1": Object.freeze({
+      schemaVersion: "bootstrap-verifier-anchor/v1",
+      fields: verifierAnchorSchemaFields.anchor,
+      closedValues: Object.freeze([
+        "2.93.0",
+        "v2.93.0",
+        "https://token.actions.githubusercontent.com",
+        "GITHUB_CLI_DEFAULT_ONLINE_SIGSTORE_TUF",
+      ]),
+    }),
+    "bootstrap-verifier-anchor/v1#asset": Object.freeze({
+      schemaVersion: "bootstrap-verifier-anchor/v1",
+      fields: verifierAnchorSchemaFields.asset,
+      closedValues: Object.freeze(["ARM64", "X64", "LINUX", "MACOS", "WINDOWS"]),
+    }),
+    "bootstrap-verifier-anchor/v1#confirmation": Object.freeze({
+      schemaVersion: "bootstrap-verifier-anchor/v1",
+      fields: verifierAnchorSchemaFields.confirmation,
+      closedValues: Object.freeze(["OFFICIAL_RELEASE_ASSETS_AND_CHECKSUMS_MATCH"]),
+    }),
+    "bootstrap-verifier-anchor/v1#signer": Object.freeze({
+      schemaVersion: "bootstrap-verifier-anchor/v1",
+      fields: verifierAnchorSchemaFields.signer,
     }),
     "review-request/v1": Object.freeze({
       schemaVersion: "review-request/v1",
@@ -1134,6 +1159,7 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
 export const schemaVersions = Object.freeze(
   [
     ...Object.keys(schemaDefinitions),
+    ...verifierAnchorSchemaVersions,
     ...configurationSchemaVersions,
     ...projectSnapshotSchemaVersions,
     ...projectBreakerFactsSchemaVersions,
