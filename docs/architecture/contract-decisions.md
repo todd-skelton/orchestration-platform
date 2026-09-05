@@ -6616,14 +6616,35 @@ literal `"200"`, a `requestDigest` for the exact page request, and a
 `responseDigest` over the canonical response body bytes. A REST page has
 exactly `etag`, `linkHeaderDigest`, `linkRelations`, `nextRequestDigest`,
 `observedAt`, `ordinal`, `requestDigest`, `responseDigest`, and `status`.
-`etag` is non-null. `linkRelations` is a 0..4 UTF-8-sorted unique array of
-closed `{relation:FIRST|LAST|NEXT|PREV,targetRequestDigest:sha256}` rows.
+`etag` is non-null. `linkRelations` is a 0..4 array of closed
+`{relation:FIRST|LAST|NEXT|PREV,targetRequestDigest:sha256}` rows, UTF-8-sorted
+by `relation`. A relation name occurs at most once in one page; changing only a
+target never makes a second row with the same relation admissible.
 `linkHeaderDigest` is null exactly when `linkRelations` is empty and otherwise
-hashes the exact raw Link header. Every nonterminal REST page has exactly one
-`NEXT` relation whose target equals non-null `nextRequestDigest` and the next
-row's `requestDigest`; the final page has no `NEXT` and null
-`nextRequestDigest`. Extra, malformed, duplicate, reordered, skipped, or
-unfollowed Link relations refuse.
+hashes the exact raw Link header.
+
+Every page `requestDigest` is globally unique within the observation. For page
+index `i` in a zero-based array of length `n`, every present relation resolves
+to an exact admitted page request digest as follows:
+
+```text
+FIRST -> pages[0].requestDigest, permitted only when i > 0
+PREV  -> pages[i - 1].requestDigest, permitted only when i > 0
+NEXT  -> pages[i + 1].requestDigest, required exactly when i < n - 1
+LAST  -> pages[n - 1].requestDigest, permitted only when i < n - 1
+```
+
+`FIRST`, `PREV`, and `LAST` remain optional when permitted; the parser does not
+invent Link relations that the provider omitted. They are forbidden at their
+stated boundaries. `NEXT` is mandatory on every nonterminal page and forbidden
+on the final page. It equals non-null `nextRequestDigest`; the final page has
+null `nextRequestDigest`. For `n = 1`, all four relations are absent,
+`linkRelations` is empty, and both `linkHeaderDigest` and `nextRequestDigest`
+are null. Across the observation, NEXT targets are unique, occur exactly as the
+immediately following page, and never repeat the current or any earlier request
+digest. Thus a supplied `A -> B -> A` chain refuses even if its final row claims
+termination. Extra, malformed, duplicate-name, reordered, misdirected,
+skipped, repeated, boundary-invalid, or unfollowed Link relations refuse.
 
 A GraphQL page has exactly `endCursor`, `etag`, `hasNextPage`, `observedAt`,
 `ordinal`, `requestCursor`, `requestDigest`, `responseDigest`, and `status`.
@@ -6684,7 +6705,7 @@ outside this compact receipt. The parser checks hash grammar, nullability,
 ordering and chain relations; authenticated ISS-036/038 composition checks the
 preimages and capture completeness. Opaque leaves never establish pagination
 completeness by themselves. REST `linkRelations` sort uniquely by the UTF-8
-tuple `(relation, targetRequestDigest)`.
+`relation` value and retain the unique-relation and exact-index rules above.
 
 The complete-reduction recipe is exact and non-circular:
 
@@ -6910,6 +6931,15 @@ It requires the acyclic historical chronology
 `anchor.operatorConfirmation.confirmedAt <= anchor.createdAt <= receipt.environmentBinding.variableUpdatedAt < receipt.producer.startedAt <= receipt.issuedAt`.
 This makes comparison, anchor creation, protected-environment publication, and
 receipt production ordered inputs rather than future-dated precomputation.
+The independently read fresh binding additionally requires
+`anchor.createdAt <= observedProtection.environmentBinding.variableUpdatedAt < receipt.producer.startedAt`
+and
+`observedProtection.environmentBinding.variableUpdatedAt <= observedProtection.startedAt`.
+The last comparison also places the update no later than every fresh page
+observation and completion time. Historical and fresh variable update times may
+differ only within these chronology windows; neither equality nor ETag equality
+is required. A same-value rewrite or retarget-then-restore whose fresh update
+time is equal to or later than the historical REVIEW producer start refuses.
 It requires receipt, anchor, signer-workflow, and fresh-observation repository
 IDs to agree. Historical and fresh environment names/variable names agree, but
 their ETags and update times are independently validated and deliberately need
@@ -6959,16 +6989,20 @@ mutable/sealed/frozen and hostile reflection corpus. Vectors must also reject
 duplicate/unsorted rows, incomplete seventeen-permission or three-OS censuses,
 permission namespace drift, role/trigger/conclusion inversion, partial/latest
 API evidence, REST/GraphQL branch crossing, early false terminal, unfollowed
-next evidence, historical/fresh metadata equality as a requirement, stale or
-unbound fresh terminal evidence, post-upload artifact members, mutable
+next evidence, duplicate REST relation names, wrong FIRST/PREV/NEXT/LAST
+targets, boundary-forbidden optional links, repeated page request/NEXT target
+digests, `A -> B -> A` chains, historical/fresh metadata equality as a
+requirement, stale or unbound fresh terminal evidence, post-upload artifact members, mutable
 selectors, custom roots, executable paths, and consistently substituted
 anchor/verifier/bundle inputs. Deleting any parser, bound, semantic projection,
 producer/workflow, anchor/environment, repository/signer, expiry, request/page
 chain, terminal pagination, fresh terminal evidence, or immutable-semantics
 equality must make a committed mutant survive and therefore fail the suite.
 Dedicated deletion vectors remove each chronology comparison, future-date the
-confirmation/anchor/variable, make variable publication equal to producer
-start, bind producer to BUILD, add a producer conclusion, point REVIEW at
+confirmation/anchor/variable, make historical or fresh variable publication
+equal to producer start, place the fresh update after fresh observation start,
+rewrite the same anchor value after producer start, retarget then restore the
+same value with a moved update time, bind producer to BUILD, add a producer conclusion, point REVIEW at
 itself, omit or null the triggering BUILD, change its conclusion, cross its
 workflow identity, reuse its run ID for REVIEW, or move BUILD completion after
 REVIEW start. Every mutant must fail.
