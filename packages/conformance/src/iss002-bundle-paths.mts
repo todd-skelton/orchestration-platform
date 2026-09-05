@@ -57,6 +57,7 @@ export const iss002HarnessPaths = Object.freeze([
   "packages/contracts/src/recovery.ts",
   "packages/contracts/src/registry.ts",
   "packages/contracts/src/repository-protection-parse.ts",
+  "packages/contracts/src/repository-protection.ts",
   "packages/contracts/src/resource-reclaim.ts",
   "packages/contracts/src/retirement.ts",
   "packages/contracts/src/review-request.ts",
