@@ -27,6 +27,7 @@ import {
   computeGithubConformanceProtectedRefDigest,
   projectGithubProtectionSnapshot,
 } from "../../packages/conformance/src/github-actions/index.js";
+import { createConformanceBundleManifest } from "../../packages/conformance/src/manifest.js";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
@@ -366,9 +367,23 @@ describe("hosted conformance plan", () => {
     expect(Buffer.from(finalized.value.encodedContext, "base64url").toString("utf8")).toContain(
       '"action":"iss022_native_lock_experiment"',
     );
-    for (const [name, path] of [
-      ["catalog", "packages/conformance/src/contracts.ts"],
-      ["dispatcher", "scripts/conformance/hosted-plan.mts"],
+    const misordered = await createConformanceBundleManifest(
+      stableRoot,
+      ["scripts/conformance/hosted-plan.mts", "packages/conformance/src/contracts.ts"],
+      "HARNESS",
+    );
+    expect(misordered).toEqual({ ok: false, issues: ["paths:order-refused"] });
+    for (const [name, path, bundleDigest] of [
+      ["catalog", "packages/conformance/src/contracts.ts", "harnessBundleDigest"],
+      ["dispatcher", "scripts/conformance/hosted-plan.mts", "harnessBundleDigest"],
+      ["case-capture", "probes/portable-primitives/experiment/capture.mjs", "harnessBundleDigest"],
+      [
+        "case-context",
+        "probes/portable-primitives/experiment/case-context.mjs",
+        "harnessBundleDigest",
+      ],
+      ["cases", "probes/portable-primitives/experiment/cases.mjs", "harnessBundleDigest"],
+      ["cases-test", "test/native-lock-experiment/cases.test.mjs", "testBundleDigest"],
     ] as const) {
       const mutatedStableRoot = resolve(temporary, `stable-${name}`);
       await execFileAsync("git", [
@@ -386,9 +401,7 @@ describe("hosted conformance plan", () => {
         stableRoot: mutatedStableRoot,
       });
       if (!mutated.ok) throw new Error(mutated.issues.join(","));
-      expect(mutated.value.context.harnessBundleDigest).not.toBe(
-        finalized.value.context.harnessBundleDigest,
-      );
+      expect(mutated.value.context[bundleDigest]).not.toBe(finalized.value.context[bundleDigest]);
       expect(mutated.value.context.providerRunDigest).not.toBe(
         finalized.value.context.providerRunDigest,
       );
