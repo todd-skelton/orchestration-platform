@@ -1637,3 +1637,243 @@ export function parseRepositoryProtectionStructure(
   };
   return { ok: true, value: frozen(value) };
 }
+
+/* -------------------------------------------------------------------------- *
+ * ISS-054 Packet C: fresh observed-protection typed parsing
+ *
+ * Everything below this delimiter parses the fresh `observedProtection`
+ * read-back record of the accepted `Pre-N0 repository-protection and
+ * verifier-anchor ledger` (docs/architecture/contract-decisions.md 6877-6892).
+ * Packet A's parsers, types and the exported `repositoryProtectionSchemaFields`
+ * object above are unchanged. The fresh record is a supplied binder input, not
+ * a registrable schema family — it carries no `schemaVersion` member
+ * (6879-6882) — so its field arrays stay module private, no registry
+ * vocabulary or compatibility row exists for it, and nothing here is
+ * re-exported by `src/index.ts` or `src/registry.ts`.
+ *
+ * The two internal stages are Packet A's, unchanged: the root is snapshotted
+ * once with the repository hostile-reflection primitive, every child is parsed
+ * by its own typed parser, and no parent is constructed whose child failed.
+ * Local structure is then confined to this one record: the ten-member census,
+ * the ordered six-purpose census (6885-6886), literal null `triggeringBuild`
+ * on every fresh row (6744, 6749-6750 with 6884), `startedAt <= completedAt`,
+ * the 300,000 millisecond window (6891), and fresh page times inside
+ * `startedAt..completedAt` (6887-6888).
+ *
+ * `evaluatedAt` is a binder input, not a member of this record. Every
+ * cross-record equality, chronology join, purpose join, semantic projection,
+ * reduced-value or terminal-evidence recomputation, the derived `apiTerminals`
+ * projection (6896-6898) and the stale-substitution refusal (6941-6942,
+ * 7003-7005) are cross-record and belong to the binder packet. Success below
+ * claims no API origin, authentication, capture completeness, freshness,
+ * currentness, binding or authority.
+ * -------------------------------------------------------------------------- */
+
+const FRESH_OBSERVED_PROTECTION_PURPOSES = Object.freeze([
+  "ENVIRONMENT",
+  "ENVIRONMENT_VARIABLE",
+  "REPOSITORY",
+  "RULESET",
+  "WORKFLOW_BUILD",
+  "WORKFLOW_REVIEW",
+] as const);
+
+const OBSERVED_PROTECTION_FIELDS = Object.freeze([
+  "apiObservations",
+  "completedAt",
+  "environmentBinding",
+  "protectedPathPolicies",
+  "repositoryId",
+  "reviewPolicy",
+  "rulesetId",
+  "startedAt",
+  "terminalEvidenceDigest",
+  "workflows",
+] as const);
+
+const MAXIMUM_FRESH_OBSERVATION_WINDOW_MS = 300_000;
+
+export type FreshObservedProtectionPurpose = (typeof FRESH_OBSERVED_PROTECTION_PURPOSES)[number];
+
+/**
+ * A fresh row is Packet A's row narrowed to the six shared effective-semantics
+ * purposes with a literal null `triggeringBuild`, both by construction.
+ */
+export type ParsedFreshApiObservation = ParsedHistoricalApiObservation &
+  Readonly<{ purpose: FreshObservedProtectionPurpose; triggeringBuild: null }>;
+
+export type ParsedObservedProtectionStructure = ContractRecord &
+  Readonly<{
+    apiObservations: readonly ParsedFreshApiObservation[];
+    completedAt: string;
+    environmentBinding: ParsedEnvironmentBinding;
+    protectedPathPolicies: readonly ParsedProtectedPathPolicy[];
+    repositoryId: string;
+    reviewPolicy: ParsedReviewPolicy;
+    rulesetId: string;
+    startedAt: string;
+    terminalEvidenceDigest: string;
+    workflows: readonly ParsedWorkflow[];
+  }>;
+
+/**
+ * `FreshApiObservation`. The row census, the request branch, the page rows and
+ * the `triggeringBuild` nullability rule are Packet A's purpose-agnostic
+ * `parseHistoricalApiObservation`, reused with no edit; this parser narrows
+ * that already typed row to the fresh six-purpose census and to literal null
+ * `triggeringBuild`, and refuses before constructing a fresh row whose typed
+ * child failed. `WORKFLOW_RUN`, `PULL_REQUEST` and `PULL_REQUEST_REVIEWS` have
+ * no fresh counterpart and refuse here (6885-6886, 6946-6948).
+ */
+export function parseFreshApiObservation(input: unknown): ParseResult<ParsedFreshApiObservation> {
+  const row = parseHistoricalApiObservation(input);
+  if (!row.ok) return row;
+  const historical = row.value;
+  const issues: Issues = [];
+  const purpose = member(
+    historical.purpose,
+    FRESH_OBSERVED_PROTECTION_PURPOSES,
+    "purpose:fresh-census-required",
+    issues,
+  );
+  if (historical.triggeringBuild !== null) issues.push("triggeringBuild:null-required");
+  if (issues.length > 0 || purpose === undefined) return refuse(issues);
+  const value: ParsedFreshApiObservation = {
+    completeReductionDigest: historical.completeReductionDigest,
+    completedAt: historical.completedAt,
+    pages: historical.pages,
+    purpose,
+    reducedValueDigest: historical.reducedValueDigest,
+    request: historical.request,
+    requestIdentityDigest: historical.requestIdentityDigest,
+    startedAt: historical.startedAt,
+    terminalPaginationDigest: historical.terminalPaginationDigest,
+    triggeringBuild: null,
+  };
+  return { ok: true, value: frozen(value) };
+}
+
+/**
+ * `FreshApiObservation[]`: exactly the ordered six-purpose census
+ * `ENVIRONMENT|ENVIRONMENT_VARIABLE|REPOSITORY|RULESET|WORKFLOW_BUILD|WORKFLOW_REVIEW`
+ * (6884-6886). The historical nine-purpose array, a skipped row, a duplicated
+ * row and a reordered row all refuse; the census is narrowed from, never
+ * widened past, `repositoryProtectionPurposes`.
+ */
+export function parseFreshApiObservations(
+  input: unknown,
+): StructuralParseResult<readonly ParsedFreshApiObservation[]> {
+  const rows = parseTypedArray(
+    input,
+    FRESH_OBSERVED_PROTECTION_PURPOSES.length,
+    FRESH_OBSERVED_PROTECTION_PURPOSES.length,
+    parseFreshApiObservation,
+  );
+  if (!rows.ok) return rows;
+  const issues: Issues = [];
+  rows.value.forEach((row, index) => {
+    if (row.purpose !== FRESH_OBSERVED_PROTECTION_PURPOSES[index])
+      issues.push(`${index}.purpose:ordered-census-required`);
+  });
+  return issues.length > 0 ? refuse(issues) : rows;
+}
+
+/**
+ * `ObservedProtectionStructure`: the structure-only entry point for the fresh
+ * ISS-038 read-back record.
+ *
+ * Success means the supplied tree is detached, closed, typed and locally well
+ * formed inside this one record. It is not bound, current, authenticated,
+ * complete, terminal or authoritative evidence, and it is not a persisted
+ * contract: `evaluatedAt`, the four-way anchor-digest equality, every
+ * historical/fresh chronology and purpose join, the fresh reduced-value and
+ * semantic recomputation, the `apiTerminals` projection and the
+ * `repository-protection-terminal-evidence/v1` identity all remain with the
+ * binder packet.
+ */
+export function parseObservedProtectionStructure(
+  input: unknown,
+): ParseResult<ParsedObservedProtectionStructure> {
+  const snapshot = snapshotClosedRecord(input, OBSERVED_PROTECTION_FIELDS);
+  if (!snapshot.ok) return refuse(snapshot.issues);
+  const record = snapshot.value;
+  const closure: Issues = [];
+  const apiObservations = child(
+    parseFreshApiObservations(record.apiObservations),
+    "apiObservations",
+    closure,
+  );
+  const environmentBinding = child(
+    parseEnvironmentBinding(record.environmentBinding),
+    "environmentBinding",
+    closure,
+  );
+  const protectedPathPolicies = child(
+    parseProtectedPathPolicies(record.protectedPathPolicies),
+    "protectedPathPolicies",
+    closure,
+  );
+  const reviewPolicy = child(parseReviewPolicy(record.reviewPolicy), "reviewPolicy", closure);
+  const workflows = child(parseWorkflows(record.workflows), "workflows", closure);
+  if (
+    closure.length > 0 ||
+    apiObservations === undefined ||
+    environmentBinding === undefined ||
+    protectedPathPolicies === undefined ||
+    reviewPolicy === undefined ||
+    workflows === undefined
+  )
+    return refuse(closure);
+  const issues: Issues = [];
+  const completedAt = scalar(
+    record.completedAt,
+    isCanonicalTimestamp,
+    "completedAt:invalid",
+    issues,
+  );
+  const repositoryId = scalar(record.repositoryId, isPositiveId, "repositoryId:invalid", issues);
+  const rulesetId = scalar(record.rulesetId, isPositiveId, "rulesetId:invalid", issues);
+  const startedAt = scalar(record.startedAt, isCanonicalTimestamp, "startedAt:invalid", issues);
+  const terminalEvidenceDigest = scalar(
+    record.terminalEvidenceDigest,
+    isSha256,
+    "terminalEvidenceDigest:invalid",
+    issues,
+  );
+  if (startedAt !== undefined && completedAt !== undefined) {
+    if (startedAt > completedAt) issues.push("completedAt:before-startedAt");
+    else {
+      if (Date.parse(completedAt) - Date.parse(startedAt) > MAXIMUM_FRESH_OBSERVATION_WINDOW_MS)
+        issues.push("completedAt:more-than-five-minutes");
+      apiObservations.forEach((row, index) => {
+        const pages: readonly (ParsedGraphqlPage | ParsedRestPage)[] = row.pages;
+        pages.forEach((page, pageIndex) => {
+          if (page.observedAt < startedAt || page.observedAt > completedAt)
+            issues.push(`apiObservations.${index}.pages.${pageIndex}.observedAt:outside-window`);
+        });
+      });
+    }
+  }
+  if (
+    issues.length > 0 ||
+    completedAt === undefined ||
+    repositoryId === undefined ||
+    rulesetId === undefined ||
+    startedAt === undefined ||
+    terminalEvidenceDigest === undefined
+  )
+    return refuse(issues);
+  const value: ParsedObservedProtectionStructure = {
+    apiObservations,
+    completedAt,
+    environmentBinding,
+    protectedPathPolicies,
+    repositoryId,
+    reviewPolicy,
+    rulesetId,
+    startedAt,
+    terminalEvidenceDigest,
+    workflows,
+  };
+  return { ok: true, value: frozen(value) };
+}
