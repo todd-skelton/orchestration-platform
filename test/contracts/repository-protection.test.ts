@@ -765,6 +765,29 @@ describe("repository-protection historical receipt", () => {
     });
     refused(new Proxy(fixture(), { ownKeys: proxyTrap }));
     expect(proxyTrap).not.toHaveBeenCalled();
+    const request = fixture().apiObservations[0]!.request;
+    const requestProxyTrap = vi.fn(() => {
+      throw new Error("request trap invoked");
+    });
+    expect(() =>
+      protection.computeGitHubApiRequestIdentityDigest(
+        "ENVIRONMENT",
+        new Proxy(request, { get: requestProxyTrap, ownKeys: requestProxyTrap }),
+      ),
+    ).toThrow(TypeError);
+    expect(requestProxyTrap).not.toHaveBeenCalled();
+    const requestWithAccessor = Object.fromEntries(
+      Object.entries(request).filter(([key]) => key !== "apiKind"),
+    );
+    const apiKindGetter = vi.fn(() => "REST");
+    Object.defineProperty(requestWithAccessor, "apiKind", {
+      enumerable: true,
+      get: apiKindGetter,
+    });
+    expect(() =>
+      protection.computeGitHubApiRequestIdentityDigest("ENVIRONMENT", requestWithAccessor),
+    ).toThrow(TypeError);
+    expect(apiKindGetter).not.toHaveBeenCalled();
     for (const path of [
       [],
       ["apiObservations"],

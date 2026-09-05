@@ -7,6 +7,7 @@ import {
   isSha256,
   snapshotClosedArray,
   snapshotClosedRecord,
+  snapshotJson,
   type ContractRecord,
   type JsonValue,
   type ParseResult,
@@ -437,10 +438,21 @@ function validateRequest(
   prefix: string,
   issues: string[],
 ): ContractRecord | null {
-  const kind =
-    value !== null && typeof value === "object" && !Array.isArray(value)
-      ? (value as ContractRecord).apiKind
-      : undefined;
+  const snapshot = snapshotJson(value);
+  if (!snapshot.ok) {
+    issues.push(...snapshot.issues.map((issue) => `${prefix}.${issue}`));
+    return null;
+  }
+  if (
+    snapshot.value === null ||
+    Array.isArray(snapshot.value) ||
+    typeof snapshot.value !== "object"
+  ) {
+    issues.push(`${prefix}.record:object-required`);
+    return null;
+  }
+  const detached = snapshot.value as ContractRecord;
+  const kind = detached.apiKind;
   const fields =
     kind === "REST"
       ? repositoryProtectionSchemaFields.restRequest
@@ -451,7 +463,7 @@ function validateRequest(
     issues.push(`${prefix}.apiKind:invalid`);
     return null;
   }
-  const row = nestedRecord(value, fields, prefix, issues);
+  const row = nestedRecord(detached, fields, prefix, issues);
   if (!row) return null;
   if (kind === "REST") {
     if (row.apiVersion !== "2022-11-28") issues.push(`${prefix}.apiVersion:mismatch`);
