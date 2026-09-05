@@ -1,11 +1,17 @@
 /**
- * ISS-054 Packet A: structure-only vectors for the historical
+ * ISS-054 Packets A and B vectors for the historical
  * `repository-protection-receipt/v1` family (Decisions #268/#272, Round 451).
  *
- * These vectors prove closure and typed local structure only. They make no
- * cross-record equality, chronology, pagination, projection, digest,
- * authentication, completeness or authority claim, and they assert that the
- * public schema family is still unsupported through the package index.
+ * The retained Packet A sections prove closure and typed local structure only:
+ * they make no cross-record equality, chronology, pagination, projection or
+ * digest claim, and the structure-only entry point stays package private.
+ *
+ * The Packet B sections add the public surface, registry, compatibility and
+ * serialization census, independently recomputed canonical and framed digest
+ * goldens, every pure relation and chronology join, the REST and GraphQL page
+ * chains, opaque-leaf enclosure and one deletion mutant per relation. No vector
+ * claims API origin, capture completeness, authentication, freshness, operator
+ * action or authority.
  */
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
@@ -16,6 +22,7 @@ import {
 } from "../../packages/conformance/src/stable-bundles.js";
 import * as c from "../../packages/contracts/src/index.js";
 import * as parse from "../../packages/contracts/src/repository-protection-parse.js";
+import * as protection from "../../packages/contracts/src/repository-protection.js";
 
 const schema = "repository-protection-receipt/v1";
 const sourcePath = "packages/contracts/src/repository-protection-parse.ts";
@@ -1531,25 +1538,1306 @@ describe("ISS-054 Packet A detachment, freezing and public-surface boundary", ()
     expect(parse.parseCompleteReductionPages(completeReductionPages(64)).ok).toBe(true);
   });
 
-  test("leaves the public repository-protection family unsupported", () => {
+  test("keeps the structure-only entry point and its child parsers package private", () => {
     const receipt = fixture();
     expect(parse.parseRepositoryProtectionStructure(receipt).ok).toBe(true);
-    expect(c.parseContract(schema, receipt)).toEqual({
-      ok: false,
-      issues: ["schemaVersion:unsupported"],
-    });
-    expect(c.serializeContract(schema, receipt).ok).toBe(false);
-    expect(c.parseCanonicalContractBytes(schema, c.canonicalBytes(receipt)).ok).toBe(false);
-    expect(c.schemaVersions).not.toContain(schema);
     const publicNames = Object.keys(c);
-    for (const name of [...packetBPublicNames, "parseRepositoryProtectionStructure"])
-      expect(publicNames, name).not.toContain(name);
     for (const name of [
-      "repositoryProtectionPermissionNames",
-      "repositoryProtectionPurposes",
-      "repositoryProtectionSchemaFields",
-      "repositoryProtectionSchemaVersions",
+      "parseRepositoryProtectionStructure",
+      "parseRepositoryProtectionRequest",
+      "parseRulesetSemantics",
+      "parseCompleteReductionPages",
+      "parseSha256Digest",
+      "parseNullableRequestCursor",
+      "parseGitHubApiKind",
+      "parseTerminalPaginationPages",
+      "parseWorkflow",
+      "parseWorkflows",
+      "parseRestPage",
+      "parseGraphqlPage",
     ])
       expect(publicNames, name).not.toContain(name);
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * ISS-054 Packet B: independent frame recipes and sealed relational fixtures
+ *
+ * The recipes below are transcribed from the accepted `Pre-N0
+ * repository-protection and verifier-anchor ledger` rather than imported from
+ * the relations module, so every golden, positive and deletion mutant compares
+ * the implementation against an independent recomputation.
+ * -------------------------------------------------------------------------- */
+
+const relationsSourcePath = "packages/contracts/src/repository-protection.ts";
+
+const frameRequestIdentity = (purpose: string, request: c.JsonValue): string =>
+  c.framedDigest("github-api-request-identity/v1", [
+    c.frame.text(purpose),
+    c.frame.canonical(request),
+  ]);
+const framePageRequest = (identityDigest: string, requestCursor: string | null): string =>
+  c.framedDigest("github-api-page-request/v1", [
+    c.frame.raw32(identityDigest),
+    c.frame.nullableText(requestCursor),
+  ]);
+const reductionProjection = (pages: readonly Row[]): c.JsonValue =>
+  pages.map((page) => ({
+    ordinal: page.ordinal,
+    responseDigest: page.responseDigest,
+  })) as c.JsonValue;
+const frameCompleteReduction = (
+  identityDigest: string,
+  pages: readonly Row[],
+  reducedValueDigest: string,
+): string =>
+  c.framedDigest("github-api-complete-reduction/v1", [
+    c.frame.raw32(identityDigest),
+    c.frame.canonical(reductionProjection(pages)),
+    c.frame.raw32(reducedValueDigest),
+  ]);
+const frameTerminalPagination = (
+  identityDigest: string,
+  apiKind: string,
+  pages: readonly Row[],
+): string =>
+  c.framedDigest("github-api-terminal-pagination/v1", [
+    c.frame.raw32(identityDigest),
+    c.frame.text(apiKind),
+    c.frame.canonical(pages as unknown as c.JsonValue),
+  ]);
+const frameReducedValue = (purpose: string, projection: c.JsonValue): string =>
+  c.framedDigest("github-api-reduced-value/v1", [
+    c.frame.text(purpose),
+    c.frame.canonical(projection),
+  ]);
+const frameRulesetSemantics = (projection: c.JsonValue): string =>
+  c.framedDigest("repository-protection-ruleset-semantics/v1", [c.frame.canonical(projection)]);
+const frameReceiptIdentity = (receipt: c.JsonValue): string =>
+  c.framedDigest("repository-protection-receipt/v1", [c.frame.canonical(receipt)]);
+
+interface PagePlan {
+  readonly kind: "GRAPHQL" | "REST";
+  readonly count: number;
+}
+interface SealOptions {
+  readonly shape?: (receipt: Row) => void;
+  readonly plan?: (purpose: string) => PagePlan;
+  readonly triggering?: Row;
+}
+
+function defaultPagePlan(purpose: string): PagePlan {
+  return { kind: purpose === GRAPHQL_PURPOSE ? "GRAPHQL" : "REST", count: 1 };
+}
+function planFor(purpose: string, kind: "GRAPHQL" | "REST", count: number) {
+  return (candidate: string): PagePlan =>
+    candidate === purpose ? { kind, count } : defaultPagePlan(candidate);
+}
+
+/**
+ * A sealed REST chain. The first page request digest is recomputed from the
+ * request identity; every later page request digest stays a supplied opaque
+ * SHA-256 claim linked only by the prior page's `NEXT` relation and non-null
+ * `nextRequestDigest`.
+ */
+function sealedRestPages(identityDigest: string, purpose: string, count: number): Row[] {
+  const digests = Array.from({ length: count }, (_, index) =>
+    index === 0
+      ? framePageRequest(identityDigest, null)
+      : sha(purpose + ":opaque-rest-request:" + String(index + 1)),
+  );
+  return digests.map((requestDigest, index) => {
+    const final = index === count - 1;
+    const relations: Row[] = [];
+    if (index > 0) relations.push({ relation: "FIRST", targetRequestDigest: required(digests[0]) });
+    if (!final)
+      relations.push({ relation: "LAST", targetRequestDigest: required(digests[count - 1]) });
+    if (!final)
+      relations.push({ relation: "NEXT", targetRequestDigest: required(digests[index + 1]) });
+    if (index > 0)
+      relations.push({ relation: "PREV", targetRequestDigest: required(digests[index - 1]) });
+    return {
+      etag: quote + purpose + "-" + String(index + 1) + quote,
+      linkHeaderDigest: relations.length > 0 ? sha(purpose + ":link:" + String(index + 1)) : null,
+      linkRelations: relations,
+      nextRequestDigest: final ? null : required(digests[index + 1]),
+      observedAt: "2026-09-04T00:01:01.000Z",
+      ordinal: String(index + 1),
+      requestDigest,
+      responseDigest: sha(purpose + ":response:" + String(index + 1)),
+      status: "200",
+    };
+  });
+}
+
+/** A sealed GraphQL chain; every page request digest recomputes from its cursor. */
+function sealedGraphqlPages(identityDigest: string, purpose: string, count: number): Row[] {
+  return Array.from({ length: count }, (_, index) => {
+    const final = index === count - 1;
+    const requestCursor = index === 0 ? null : purpose + "-cursor-" + String(index);
+    return {
+      endCursor: final ? purpose + "-terminal-cursor" : purpose + "-cursor-" + String(index + 1),
+      etag: index % 2 === 0 ? null : quote + purpose + "-" + String(index + 1) + quote,
+      hasNextPage: !final,
+      observedAt: "2026-09-04T00:01:01.000Z",
+      ordinal: String(index + 1),
+      requestCursor,
+      requestDigest: framePageRequest(identityDigest, requestCursor),
+      responseDigest: sha(purpose + ":response:" + String(index + 1)),
+      status: "200",
+    };
+  });
+}
+
+/** The seven recomputable projections; the two historical-only purposes are opaque. */
+function reducedProjection(
+  receipt: Row,
+  purpose: string,
+  triggeringBuild: Row | null,
+): c.JsonValue | null {
+  const environment = at(receipt, ["environmentBinding"]);
+  if (purpose === "ENVIRONMENT")
+    return { environmentName: environment.environmentName } as c.JsonValue;
+  if (purpose === "ENVIRONMENT_VARIABLE")
+    return {
+      environmentName: environment.environmentName,
+      variableName: environment.variableName,
+      variableValue: environment.variableValue,
+    } as c.JsonValue;
+  if (purpose === "REPOSITORY") return { repositoryId: receipt.repositoryId } as c.JsonValue;
+  if (purpose === "RULESET")
+    return {
+      protectedPathPolicies: receipt.protectedPathPolicies,
+      reviewPolicy: receipt.reviewPolicy,
+      rulesetId: receipt.rulesetId,
+    } as c.JsonValue;
+  if (purpose === "WORKFLOW_BUILD")
+    return { workflow: at(receipt, ["workflows", 0]) } as c.JsonValue;
+  if (purpose === "WORKFLOW_REVIEW")
+    return { workflow: at(receipt, ["workflows", 1]) } as c.JsonValue;
+  if (purpose === "WORKFLOW_RUN")
+    return triggeringBuild === null ? null : ({ triggeringBuild } as c.JsonValue);
+  return null;
+}
+
+function rulesetProjection(receipt: Row): c.JsonValue {
+  return {
+    protectedPathPolicies: receipt.protectedPathPolicies,
+    repositoryId: receipt.repositoryId,
+    reviewPolicy: receipt.reviewPolicy,
+    rulesetId: receipt.rulesetId,
+    workflows: receipt.workflows,
+  } as c.JsonValue;
+}
+
+function sealedTriggeringBuild(receipt: Row, overrides: Row): Row {
+  const build = at(receipt, ["workflows", 0]);
+  return {
+    ...triggeringBuildRow(),
+    workflowDigest: build.digest,
+    workflowPath: build.path,
+    workflowRef: build.ref,
+    ...overrides,
+  };
+}
+
+function sealedObservation(receipt: Row, purpose: string, plan: PagePlan, triggering: Row): Row {
+  const request = requestRow(purpose, plan.kind);
+  const identityDigest = frameRequestIdentity(purpose, request as unknown as c.JsonValue);
+  const pages =
+    plan.kind === "REST"
+      ? sealedRestPages(identityDigest, purpose, plan.count)
+      : sealedGraphqlPages(identityDigest, purpose, plan.count);
+  const triggeringBuild = purpose === "WORKFLOW_RUN" ? triggering : null;
+  const projection = reducedProjection(receipt, purpose, triggeringBuild);
+  const reducedValueDigest =
+    projection === null
+      ? sha(purpose + ":opaque-reduced-value")
+      : frameReducedValue(purpose, projection);
+  return {
+    completeReductionDigest: frameCompleteReduction(identityDigest, pages, reducedValueDigest),
+    completedAt: "2026-09-04T00:01:02.000Z",
+    pages,
+    purpose,
+    reducedValueDigest,
+    request,
+    requestIdentityDigest: identityDigest,
+    startedAt: "2026-09-04T00:01:00.000Z",
+    terminalPaginationDigest: frameTerminalPagination(identityDigest, plan.kind, pages),
+    triggeringBuild,
+  };
+}
+
+/** Builds the canonical relationally sealed receipt from the retained Packet A base. */
+function sealedReceipt(options: SealOptions = {}): Row {
+  const receipt = fixture();
+  if (options.shape !== undefined) options.shape(receipt);
+  const plan = options.plan ?? defaultPagePlan;
+  const triggering = sealedTriggeringBuild(receipt, options.triggering ?? {});
+  receipt.rulesetSemanticDigest = frameRulesetSemantics(rulesetProjection(receipt));
+  receipt.apiObservations = parse.repositoryProtectionPurposes.map((purpose) =>
+    sealedObservation(receipt, purpose, plan(purpose), triggering),
+  );
+  return receipt;
+}
+
+function pagesOf(receipt: Row, index: number): Row[] {
+  return rowsAt(receipt, ["apiObservations", index, "pages"]) as Row[];
+}
+function pageOf(receipt: Row, index: number, page: number): Row {
+  return required(pagesOf(receipt, index)[page]);
+}
+function relationsOf(receipt: Row, index: number, page: number): Row[] {
+  return pageOf(receipt, index, page).linkRelations as Row[];
+}
+function relationOf(receipt: Row, index: number, page: number, name: string): Row {
+  return required(relationsOf(receipt, index, page).find((row) => row.relation === name));
+}
+function sortRelations(rows: Row[]): Row[] {
+  return [...rows].sort((left, right) =>
+    Buffer.compare(
+      Buffer.from(String(left.relation), "utf8"),
+      Buffer.from(String(right.relation), "utf8"),
+    ),
+  );
+}
+
+/** Recomputes only the two derived digests that enclose the current page rows. */
+function refreshObservationDigests(receipt: Row, index: number): Row {
+  const row = at(receipt, ["apiObservations", index]);
+  const identityDigest = String(row.requestIdentityDigest);
+  const pages = pagesOf(receipt, index);
+  row.completeReductionDigest = frameCompleteReduction(
+    identityDigest,
+    pages,
+    String(row.reducedValueDigest),
+  );
+  row.terminalPaginationDigest = frameTerminalPagination(
+    identityDigest,
+    String(at(row, ["request"]).apiKind),
+    pages,
+  );
+  return receipt;
+}
+function refreshSemanticDigest(receipt: Row): Row {
+  receipt.rulesetSemanticDigest = frameRulesetSemantics(rulesetProjection(receipt));
+  return receipt;
+}
+
+const OTHER_DIGEST = sha("packet-b-unrelated");
+const OTHER_PATH = "ci/other-workflow.yml";
+const OTHER_REF = "refs/heads/release";
+const twoPageRest = planFor("ENVIRONMENT", "REST", 2);
+const twoPageGraphql = planFor(GRAPHQL_PURPOSE, "GRAPHQL", 2);
+const threePageRest = planFor("ENVIRONMENT", "REST", 3);
+const threePageGraphql = planFor(GRAPHQL_PURPOSE, "GRAPHQL", 3);
+
+interface RelationMutant {
+  readonly relation: string;
+  readonly input: () => Row;
+  readonly issues: readonly string[];
+}
+
+const relationMutants: readonly RelationMutant[] = Object.freeze([
+  {
+    relation: "producer workflow digest bound to the REVIEW row",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["producer"]).workflowDigest = OTHER_DIGEST;
+        },
+      }),
+    issues: ["producer.workflowDigest:review-mismatch"],
+  },
+  {
+    relation: "producer workflow path bound to the REVIEW row",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["producer"]).workflowPath = OTHER_PATH;
+        },
+      }),
+    issues: ["producer.workflowPath:review-mismatch"],
+  },
+  {
+    relation: "producer workflow ref bound to the REVIEW row",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["producer"]).workflowRef = OTHER_REF;
+        },
+      }),
+    issues: ["producer.workflowRef:review-mismatch"],
+  },
+  {
+    relation: "environment variable value equals the verifier anchor digest",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["environmentBinding"]).variableValue = OTHER_DIGEST;
+        },
+      }),
+    issues: ["environmentBinding.variableValue:anchor-mismatch"],
+  },
+  {
+    relation: "REVIEW trigger source digest equals the BUILD row",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["workflows", 1, "trigger"]).sourceWorkflowDigest = OTHER_DIGEST;
+        },
+      }),
+    issues: ["workflows:review-source-digest-mismatch"],
+  },
+  {
+    relation: "REVIEW trigger source path equals the BUILD row",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["workflows", 1, "trigger"]).sourceWorkflowPath = OTHER_PATH;
+        },
+      }),
+    issues: ["workflows:review-source-path-mismatch"],
+  },
+  {
+    relation: "REVIEW trigger source ref equals the BUILD row",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["workflows", 1, "trigger"]).sourceWorkflowRef = OTHER_REF;
+        },
+      }),
+    issues: ["workflows:review-source-ref-mismatch"],
+  },
+  {
+    relation: "BUILD and REVIEW workflow identities stay distinct",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["workflows", 1]).workflowId = String(
+            at(receipt, ["workflows", 0]).workflowId,
+          );
+        },
+      }),
+    issues: ["workflows:workflowId-duplicate"],
+  },
+  {
+    relation: "BUILD role pairs with the PULL_REQUEST event",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["workflows", 0]).trigger = at(reviewWorkflow(), ["trigger"]);
+        },
+      }),
+    issues: ["workflows:build-role-event-mismatch"],
+  },
+  {
+    relation: "REVIEW role pairs with the WORKFLOW_RUN event",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["workflows", 1]).trigger = at(buildWorkflow(), ["trigger"]);
+        },
+      }),
+    issues: [
+      "workflows:review-role-event-mismatch",
+      "workflows:review-source-digest-mismatch",
+      "workflows:review-source-path-mismatch",
+      "workflows:review-source-ref-mismatch",
+    ],
+  },
+  {
+    relation: "triggering BUILD workflow digest equals the BUILD row",
+    input: () => sealedReceipt({ triggering: { workflowDigest: OTHER_DIGEST } }),
+    issues: ["apiObservations.WORKFLOW_RUN.triggeringBuild.workflowDigest:mismatch"],
+  },
+  {
+    relation: "triggering BUILD workflow path equals the BUILD row",
+    input: () => sealedReceipt({ triggering: { workflowPath: OTHER_PATH } }),
+    issues: ["apiObservations.WORKFLOW_RUN.triggeringBuild.workflowPath:mismatch"],
+  },
+  {
+    relation: "triggering BUILD workflow ref equals the BUILD row",
+    input: () => sealedReceipt({ triggering: { workflowRef: OTHER_REF } }),
+    issues: ["apiObservations.WORKFLOW_RUN.triggeringBuild.workflowRef:mismatch"],
+  },
+  {
+    relation: "producer run identity differs from the triggering BUILD run",
+    input: () => sealedReceipt({ triggering: { runId: "9002" } }),
+    issues: ["producer.runId:triggering-build-alias"],
+  },
+  {
+    relation: "triggering BUILD completes no later than the producer start",
+    input: () => sealedReceipt({ triggering: { completedAt: "2026-09-04T00:01:00.001Z" } }),
+    issues: ["apiObservations.WORKFLOW_RUN.triggeringBuild.completedAt:after-producer-start"],
+  },
+  {
+    relation: "request identities are unique across the nine observations",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 1]).requestIdentityDigest = String(
+        at(receipt, ["apiObservations", 0]).requestIdentityDigest,
+      );
+      return receipt;
+    },
+    issues: [
+      "apiObservations.1.requestIdentityDigest:mismatch",
+      "apiObservations:requestIdentityDigest-duplicate",
+    ],
+  },
+  {
+    relation: "variable publication strictly precedes the producer start",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["environmentBinding"]).variableUpdatedAt = "2026-09-04T00:01:00.000Z";
+        },
+      }),
+    issues: ["environmentBinding.variableUpdatedAt:not-before-producer"],
+  },
+  {
+    relation: "variable publication is no later than receipt issue",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["environmentBinding"]).variableUpdatedAt = "2026-09-04T00:03:00.000Z";
+        },
+      }),
+    issues: [
+      "environmentBinding.variableUpdatedAt:after-issuedAt",
+      "environmentBinding.variableUpdatedAt:not-before-producer",
+    ],
+  },
+  {
+    relation: "producer start is no later than receipt issue",
+    input: () =>
+      sealedReceipt({
+        shape: (receipt) => {
+          at(receipt, ["producer"]).startedAt = "2026-09-04T00:03:00.000Z";
+        },
+      }),
+    issues: [
+      "producer.startedAt:after-issuedAt",
+      ...parse.repositoryProtectionPurposes.map(
+        (_purpose, index) => "apiObservations." + String(index) + ".startedAt:before-producer",
+      ),
+    ],
+  },
+  {
+    relation: "observation start is no earlier than the producer start",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 0]).startedAt = "2026-09-04T00:00:30.000Z";
+      return receipt;
+    },
+    issues: ["apiObservations.0.startedAt:before-producer"],
+  },
+  {
+    relation: "observation completion is no later than receipt issue",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 0]).completedAt = "2026-09-04T00:03:00.000Z";
+      return receipt;
+    },
+    issues: ["apiObservations.0.completedAt:after-issuedAt"],
+  },
+  {
+    relation: "page observation time lies inside the observation window",
+    input: () => {
+      const receipt = sealedReceipt();
+      pageOf(receipt, 0, 0).observedAt = "2026-09-04T00:01:30.000Z";
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.0.observedAt:outside-observation"],
+  },
+  {
+    relation: "request identity recomputes from purpose and request branch",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 0]).requestIdentityDigest = OTHER_DIGEST;
+      return receipt;
+    },
+    issues: ["apiObservations.0.requestIdentityDigest:mismatch"],
+  },
+  {
+    relation: "first page request digest recomputes with a null cursor",
+    input: () => {
+      const receipt = sealedReceipt();
+      pageOf(receipt, 0, 0).requestDigest = OTHER_DIGEST;
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.0.requestDigest:mismatch"],
+  },
+  {
+    relation: "every GraphQL page request digest recomputes from its cursor",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageGraphql });
+      pageOf(receipt, 3, 1).requestDigest = OTHER_DIGEST;
+      return refreshObservationDigests(receipt, 3);
+    },
+    issues: ["apiObservations.3.pages.1.requestDigest:mismatch"],
+  },
+  {
+    relation: "complete reduction digest recomputes over the page projection",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 0]).completeReductionDigest = OTHER_DIGEST;
+      return receipt;
+    },
+    issues: ["apiObservations.0.completeReductionDigest:mismatch"],
+  },
+  {
+    relation: "terminal pagination digest recomputes over the complete page rows",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 0]).terminalPaginationDigest = OTHER_DIGEST;
+      return receipt;
+    },
+    issues: ["apiObservations.0.terminalPaginationDigest:mismatch"],
+  },
+  {
+    relation: "recomputable reduced value digest is pinned to its projection",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 0]).reducedValueDigest = OTHER_DIGEST;
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "opaque PULL_REQUEST reduced leaf stays enclosed by its reduction",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 2]).reducedValueDigest = OTHER_DIGEST;
+      return receipt;
+    },
+    issues: ["apiObservations.2.completeReductionDigest:mismatch"],
+  },
+  {
+    relation: "opaque PULL_REQUEST_REVIEWS reduced leaf stays enclosed by its reduction",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 3]).reducedValueDigest = OTHER_DIGEST;
+      return receipt;
+    },
+    issues: ["apiObservations.3.completeReductionDigest:mismatch"],
+  },
+  {
+    relation: "REPOSITORY projection member repositoryId",
+    input: () => {
+      const receipt = sealedReceipt();
+      receipt.repositoryId = "78";
+      return refreshSemanticDigest(receipt);
+    },
+    issues: ["apiObservations.4.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "RULESET projection member rulesetId",
+    input: () => {
+      const receipt = sealedReceipt();
+      receipt.rulesetId = "89";
+      return refreshSemanticDigest(receipt);
+    },
+    issues: ["apiObservations.5.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "RULESET projection member protectedPathPolicies",
+    input: () => {
+      const receipt = sealedReceipt();
+      rowsAt(receipt, ["protectedPathPolicies"]).push({
+        path: "scripts/planning",
+        reviewPolicy: "INDEPENDENT_APPROVAL",
+      });
+      return refreshSemanticDigest(receipt);
+    },
+    issues: ["apiObservations.5.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "WORKFLOW_BUILD projection member workflow",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["workflows", 0]).workflowId = "103";
+      return refreshSemanticDigest(receipt);
+    },
+    issues: ["apiObservations.6.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "WORKFLOW_REVIEW projection member workflow",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["workflows", 1]).workflowId = "104";
+      return refreshSemanticDigest(receipt);
+    },
+    issues: ["apiObservations.7.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "WORKFLOW_RUN projection member triggeringBuild",
+    input: () => {
+      const receipt = sealedReceipt();
+      at(receipt, ["apiObservations", 8, "triggeringBuild"]).runAttempt = "3";
+      return receipt;
+    },
+    issues: ["apiObservations.8.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "ENVIRONMENT_VARIABLE projection member variableValue",
+    input: () => {
+      const receipt = sealedReceipt();
+      const rotated = sha("rotated-anchor");
+      at(receipt, ["environmentBinding"]).variableValue = rotated;
+      receipt.verifierAnchorDigest = rotated;
+      return receipt;
+    },
+    issues: ["apiObservations.1.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "ruleset semantic digest recomputes over its five-member projection",
+    input: () => {
+      const receipt = sealedReceipt();
+      receipt.rulesetSemanticDigest = OTHER_DIGEST;
+      return receipt;
+    },
+    issues: ["rulesetSemanticDigest:mismatch"],
+  },
+  {
+    relation: "REST NEXT relation targets the immediately following page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      relationOf(receipt, 0, 0, "NEXT").targetRequestDigest = OTHER_DIGEST;
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.0.linkRelations.NEXT:target-mismatch"],
+  },
+  {
+    relation: "REST NEXT relation is mandatory on every nonterminal page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      pageOf(receipt, 0, 0).linkRelations = relationsOf(receipt, 0, 0).filter(
+        (row) => row.relation !== "NEXT",
+      );
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.0.linkRelations.NEXT:required"],
+  },
+  {
+    relation: "REST NEXT relation is forbidden on the final page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      pageOf(receipt, 0, 1).linkRelations = sortRelations([
+        ...relationsOf(receipt, 0, 1),
+        { relation: "NEXT", targetRequestDigest: pageOf(receipt, 0, 0).requestDigest },
+      ]);
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: [
+      "apiObservations.0.pages.1.linkRelations.NEXT:boundary-forbidden",
+      "apiObservations.0.pages.1.linkRelations.NEXT:target-mismatch",
+    ],
+  },
+  {
+    relation: "REST FIRST relation is forbidden on the first page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      pageOf(receipt, 0, 0).linkRelations = sortRelations([
+        ...relationsOf(receipt, 0, 0),
+        { relation: "FIRST", targetRequestDigest: pageOf(receipt, 0, 0).requestDigest },
+      ]);
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: [
+      "apiObservations.0.pages.0.linkRelations.FIRST:boundary-forbidden",
+      "apiObservations.0.pages.0.linkRelations.FIRST:target-mismatch",
+    ],
+  },
+  {
+    relation: "REST PREV relation targets the immediately preceding page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      relationOf(receipt, 0, 1, "PREV").targetRequestDigest = OTHER_DIGEST;
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.1.linkRelations.PREV:target-mismatch"],
+  },
+  {
+    relation: "REST LAST relation is forbidden on the final page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      pageOf(receipt, 0, 1).linkRelations = sortRelations([
+        ...relationsOf(receipt, 0, 1),
+        { relation: "LAST", targetRequestDigest: pageOf(receipt, 0, 1).requestDigest },
+      ]);
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: [
+      "apiObservations.0.pages.1.linkRelations.LAST:boundary-forbidden",
+      "apiObservations.0.pages.1.linkRelations.LAST:target-mismatch",
+    ],
+  },
+  {
+    relation: "REST nonterminal nextRequestDigest hands off to the following page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      pageOf(receipt, 0, 0).nextRequestDigest = OTHER_DIGEST;
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.0.nextRequestDigest:mismatch"],
+  },
+  {
+    relation: "REST terminal page carries a null nextRequestDigest",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      pageOf(receipt, 0, 1).nextRequestDigest = OTHER_DIGEST;
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.1.nextRequestDigest:null-required"],
+  },
+  {
+    relation: "REST page ordinals stay adjacent from one",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageRest });
+      pageOf(receipt, 0, 1).ordinal = "3";
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.1.ordinal:mismatch"],
+  },
+  {
+    relation: "REST page request digests never repeat across the observation",
+    input: () => {
+      const receipt = sealedReceipt({ plan: threePageRest });
+      const first = pageOf(receipt, 0, 0).requestDigest;
+      pageOf(receipt, 0, 2).requestDigest = first;
+      relationOf(receipt, 0, 0, "LAST").targetRequestDigest = first;
+      relationOf(receipt, 0, 1, "LAST").targetRequestDigest = first;
+      relationOf(receipt, 0, 1, "NEXT").targetRequestDigest = first;
+      pageOf(receipt, 0, 1).nextRequestDigest = first;
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages:requestDigest-duplicate"],
+  },
+  {
+    relation: "GraphQL first request cursor is null",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageGraphql });
+      const identityDigest = String(at(receipt, ["apiObservations", 3]).requestIdentityDigest);
+      pageOf(receipt, 3, 0).requestCursor = "seeded-cursor";
+      pageOf(receipt, 3, 0).requestDigest = framePageRequest(identityDigest, "seeded-cursor");
+      return refreshObservationDigests(receipt, 3);
+    },
+    issues: [
+      "apiObservations.3.pages.0.requestCursor:null-required",
+      "apiObservations.3.pages.0.requestDigest:mismatch",
+    ],
+  },
+  {
+    relation: "GraphQL cursor is acquired from the immediately prior page",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageGraphql });
+      const identityDigest = String(at(receipt, ["apiObservations", 3]).requestIdentityDigest);
+      pageOf(receipt, 3, 1).requestCursor = "unacquired-cursor";
+      pageOf(receipt, 3, 1).requestDigest = framePageRequest(identityDigest, "unacquired-cursor");
+      return refreshObservationDigests(receipt, 3);
+    },
+    issues: ["apiObservations.3.pages.1.requestCursor:mismatch"],
+  },
+  {
+    relation: "GraphQL nonterminal page reports hasNextPage true",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageGraphql });
+      pageOf(receipt, 3, 0).hasNextPage = false;
+      return refreshObservationDigests(receipt, 3);
+    },
+    issues: ["apiObservations.3.pages.0.hasNextPage:true-required"],
+  },
+  {
+    relation: "GraphQL terminal page reports hasNextPage false",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageGraphql });
+      pageOf(receipt, 3, 1).hasNextPage = true;
+      return refreshObservationDigests(receipt, 3);
+    },
+    issues: ["apiObservations.3.pages.1.hasNextPage:false-required"],
+  },
+  {
+    relation: "GraphQL nonterminal page carries a non-null endCursor",
+    input: () => {
+      const receipt = sealedReceipt({ plan: twoPageGraphql });
+      pageOf(receipt, 3, 0).endCursor = null;
+      return refreshObservationDigests(receipt, 3);
+    },
+    issues: [
+      "apiObservations.3.pages.0.endCursor:required",
+      "apiObservations.3.pages.1.requestCursor:mismatch",
+    ],
+  },
+  {
+    relation: "GraphQL cursors never repeat across the observation",
+    input: () => {
+      const receipt = sealedReceipt({ plan: threePageGraphql });
+      pageOf(receipt, 3, 2).endCursor = pageOf(receipt, 3, 0).endCursor;
+      return refreshObservationDigests(receipt, 3);
+    },
+    issues: ["apiObservations.3.pages.2.endCursor:repeated"],
+  },
+  {
+    relation: "request identity frame part order",
+    input: () => {
+      const receipt = sealedReceipt();
+      const row = at(receipt, ["apiObservations", 0]);
+      row.requestIdentityDigest = c.framedDigest("github-api-request-identity/v1", [
+        c.frame.canonical(at(row, ["request"]) as unknown as c.JsonValue),
+        c.frame.text(String(row.purpose)),
+      ]);
+      return receipt;
+    },
+    issues: ["apiObservations.0.requestIdentityDigest:mismatch"],
+  },
+  {
+    relation: "page request frame nullable-text part tag",
+    input: () => {
+      const receipt = sealedReceipt();
+      const identityDigest = String(at(receipt, ["apiObservations", 0]).requestIdentityDigest);
+      pageOf(receipt, 0, 0).requestDigest = c.framedDigest("github-api-page-request/v1", [
+        c.frame.raw32(identityDigest),
+        c.frame.text(""),
+      ]);
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.pages.0.requestDigest:mismatch"],
+  },
+  {
+    relation: "complete reduction frame part order",
+    input: () => {
+      const receipt = sealedReceipt();
+      const row = at(receipt, ["apiObservations", 0]);
+      row.completeReductionDigest = c.framedDigest("github-api-complete-reduction/v1", [
+        c.frame.raw32(String(row.reducedValueDigest)),
+        c.frame.canonical(reductionProjection(pagesOf(receipt, 0))),
+        c.frame.raw32(String(row.requestIdentityDigest)),
+      ]);
+      return receipt;
+    },
+    issues: ["apiObservations.0.completeReductionDigest:mismatch"],
+  },
+  {
+    relation: "terminal pagination frame apiKind part tag",
+    input: () => {
+      const receipt = sealedReceipt();
+      const row = at(receipt, ["apiObservations", 0]);
+      row.terminalPaginationDigest = c.framedDigest("github-api-terminal-pagination/v1", [
+        c.frame.raw32(String(row.requestIdentityDigest)),
+        c.frame.canonical(String(at(row, ["request"]).apiKind)),
+        c.frame.canonical(pagesOf(receipt, 0) as unknown as c.JsonValue),
+      ]);
+      return receipt;
+    },
+    issues: ["apiObservations.0.terminalPaginationDigest:mismatch"],
+  },
+  {
+    relation: "reduced value frame domain and part order",
+    input: () => {
+      const receipt = sealedReceipt();
+      const row = at(receipt, ["apiObservations", 0]);
+      row.reducedValueDigest = c.framedDigest("github-api-reduced-value/v1", [
+        c.frame.canonical(reducedProjection(receipt, String(row.purpose), null) ?? null),
+        c.frame.text(String(row.purpose)),
+      ]);
+      return refreshObservationDigests(receipt, 0);
+    },
+    issues: ["apiObservations.0.reducedValueDigest:mismatch"],
+  },
+  {
+    relation: "ruleset semantics frame encloses the canonical projection",
+    input: () => {
+      const receipt = sealedReceipt();
+      receipt.rulesetSemanticDigest = c.canonicalDigest(rulesetProjection(receipt));
+      return receipt;
+    },
+    issues: ["rulesetSemanticDigest:mismatch"],
+  },
+]);
+
+const packetBPublicSurface: readonly string[] = Object.freeze(
+  [
+    ...packetBPublicNames,
+    "repositoryProtectionPermissionNames",
+    "repositoryProtectionPurposes",
+    "repositoryProtectionSchemaFields",
+    "repositoryProtectionSchemaVersions",
+  ].sort(),
+);
+
+const registryFieldKeyByVocabulary: Readonly<Record<string, string>> = Object.freeze({
+  [schema]: "receipt",
+  [schema + "#environment-binding"]: "environmentBinding",
+  [schema + "#graphql-page"]: "graphqlPage",
+  [schema + "#graphql-request"]: "graphqlRequest",
+  [schema + "#link-relation"]: "linkRelation",
+  [schema + "#observation"]: "observation",
+  [schema + "#permission"]: "permission",
+  [schema + "#producer"]: "producer",
+  [schema + "#protected-path-policy"]: "protectedPathPolicy",
+  [schema + "#rest-page"]: "restPage",
+  [schema + "#rest-request"]: "restRequest",
+  [schema + "#review-policy"]: "reviewPolicy",
+  [schema + "#trigger"]: "trigger",
+  [schema + "#triggering-build"]: "triggeringBuild",
+  [schema + "#workflow"]: "workflow",
+});
+
+describe("ISS-054 Packet B public surface, registry and canonical bytes", () => {
+  test("exposes exactly the twelve reviewed public names and the retained receipt type", () => {
+    expect(packetBPublicSurface).toHaveLength(12);
+    expect(Object.keys(protection).sort()).toEqual([...packetBPublicSurface]);
+    const publicModule = c as unknown as Record<string, unknown>;
+    for (const [name, value] of Object.entries(protection))
+      expect(publicModule[name], name).toBe(value);
+    for (const name of packetBPublicSurface) expect(Object.keys(c), name).toContain(name);
+    const parsed = protection.parseRepositoryProtectionReceipt(sealedReceipt());
+    if (!parsed.ok) throw new Error(parsed.issues.join(","));
+    const retained: protection.RepositoryProtectionReceipt = parsed.value;
+    const aliased: c.RepositoryProtectionReceipt = retained;
+    expect(aliased.schemaVersion).toBe(schema);
+    expect(protection.repositoryProtectionSchemaVersions).toBe(
+      parse.repositoryProtectionSchemaVersions,
+    );
+    expect(protection.repositoryProtectionSchemaFields).toBe(
+      parse.repositoryProtectionSchemaFields,
+    );
+    expect(protection.repositoryProtectionPurposes).toBe(parse.repositoryProtectionPurposes);
+    expect(protection.repositoryProtectionPermissionNames).toBe(
+      parse.repositoryProtectionPermissionNames,
+    );
+    expect(iss002HarnessPaths).toContain(relationsSourcePath);
+    expect(iss002HarnessPaths).toContain(sourcePath);
+    expect(iss002TestBundlePaths).toContain(testPath);
+  });
+
+  test("registers the family vocabulary, compatibility and serialization together", () => {
+    expect(c.schemaVersions.filter((version) => version === schema)).toHaveLength(1);
+    expect(
+      Object.keys(c.schemaVocabularyDefinitions)
+        .filter((key) => key.startsWith(schema))
+        .sort(),
+    ).toEqual(codepointSorted(Object.keys(registryFieldKeyByVocabulary)));
+    const fieldsByKey = parse.repositoryProtectionSchemaFields as unknown as Record<
+      string,
+      readonly string[]
+    >;
+    for (const [vocabularyKey, fieldKey] of Object.entries(registryFieldKeyByVocabulary)) {
+      const definition = required(c.schemaVocabularyDefinitions[vocabularyKey]);
+      expect(definition.schemaVersion, vocabularyKey).toBe(schema);
+      expect(definition.fields, vocabularyKey).toEqual(required(fieldsByKey[fieldKey]));
+    }
+    expect(Object.keys(registryFieldKeyByVocabulary)).toHaveLength(15);
+    expect(
+      Object.values(registryFieldKeyByVocabulary)
+        .concat(["completeReductionPage", "rulesetSemantics"])
+        .sort(),
+    ).toEqual(codepointSorted(Object.keys(fieldsByKey)));
+    expect(c.engineVocabularyFindings(c.schemaVocabularyDefinitions)).toEqual([]);
+    expect(c.compatibilityDisposition(schema, schema)).toBe("readable");
+    for (const observed of [
+      null,
+      schema.replace("/v1", "/v0-fixture"),
+      schema.replace("/v1", "/v999"),
+    ])
+      expect(c.compatibilityDisposition(schema, observed)).toBe("refused");
+    expect(c.compatibilityMatrix).toContainEqual({
+      expectedSchemaVersion: schema,
+      observedSchemaVersion: schema,
+      disposition: "readable",
+    });
+    expect(
+      c.compatibilityMatrix.filter((row) => row.expectedSchemaVersion === schema),
+    ).toHaveLength(4);
+  });
+
+  test("accepts canonical bytes and refuses noncanonical, prefixed and BOM bytes", () => {
+    const receipt = sealedReceipt();
+    const bytes = c.canonicalBytes(receipt);
+    const parsedBytes = c.parseCanonicalContractBytes(schema, bytes);
+    expect(parsedBytes.ok).toBe(true);
+    const serialized = c.serializeContract(schema, receipt);
+    if (!serialized.ok) throw new Error(serialized.issues.join(","));
+    expect([...serialized.bytes]).toEqual([...bytes]);
+    expect(serialized.digest).toBe(protection.computeRepositoryProtectionReceiptDigest(receipt));
+    expect(serialized.digest).toBe(frameReceiptIdentity(receipt as unknown as c.JsonValue));
+    expect(serialized.digest).not.toBe(c.canonicalDigest(receipt));
+    const prefixed = new TextEncoder().encode(" " + c.canonicalJson(receipt));
+    expect(c.parseCanonicalContractBytes(schema, prefixed)).toEqual({
+      ok: false,
+      issues: ["encoding:noncanonical"],
+    });
+    const withBom = new Uint8Array([0xef, 0xbb, 0xbf, ...bytes]);
+    expect(c.parseCanonicalContractBytes(schema, withBom)).toEqual({
+      ok: false,
+      issues: ["encoding:bom-refused"],
+    });
+    expect(c.parseContract(schema, receipt).ok).toBe(true);
+    expect(c.parseContract(schema, fixture()).ok).toBe(false);
+    expect(c.serializeContract(schema, fixture()).ok).toBe(false);
+  });
+
+  test("pins the archived independent canonical and framed digest goldens", () => {
+    const receipt = sealedReceipt();
+    const row = at(receipt, ["apiObservations", 0]);
+    expect(c.canonicalJson(at(row, ["request"]))).toBe(
+      '{"apiKind":"REST","apiVersion":"2022-11-28","method":"GET","queryDigest":"748728053759d33c07be4fa603f064a27b414ca4cfd2aa8eb00bfc226c245559","route":"/repos/owner/repository/environment"}' +
+        lineFeed,
+    );
+    expect(row.requestIdentityDigest).toBe(
+      "8138f1981c4216367b5a01575fda23813283fcb6bb7294cfbdc40d6b2f522906",
+    );
+    expect(pageOf(receipt, 0, 0).requestDigest).toBe(
+      "92d8cecd678bd2062ac8df356a51b036044849e859d94fd6a3c80136c409dc0c",
+    );
+    expect(row.completeReductionDigest).toBe(
+      "eb752c9b35d565804ef2c927cf58942e1135d71b108fa506d687a2d76787f93d",
+    );
+    expect(row.terminalPaginationDigest).toBe(
+      "f8e4922d097117668c22e8870ac726bac6870232c57f1c8e0c1d0c191db4b55a",
+    );
+    expect(at(receipt, ["apiObservations", 3]).terminalPaginationDigest).toBe(
+      "065fdb557d59c2d1dfd9185e1524ad39f331419727e13055fb9a945c33d970b8",
+    );
+    expect(receipt.rulesetSemanticDigest).toBe(
+      "ddef4024cf3ad45f96c479c02f1a6e3c352ff34fad10bc79572c358c367cc42d",
+    );
+    expect(protection.computeRepositoryProtectionReceiptDigest(receipt)).toBe(
+      "2ab8c816a39da770a5a7c31ff66420f54b69eab21ace33ccf33815c4452cc9fa",
+    );
+    expect(
+      protection.computeGitHubApiRequestIdentityDigest(row.purpose, { ...at(row, ["request"]) }),
+    ).toBe(row.requestIdentityDigest);
+    expect(
+      protection.computeGitHubApiPageRequestDigest(String(row.requestIdentityDigest), null),
+    ).toBe(pageOf(receipt, 0, 0).requestDigest);
+    expect(
+      protection.computeGitHubApiCompleteReductionDigest(
+        String(row.requestIdentityDigest),
+        reductionProjection(pagesOf(receipt, 0)),
+        String(row.reducedValueDigest),
+      ),
+    ).toBe(row.completeReductionDigest);
+    expect(
+      protection.computeGitHubApiTerminalPaginationDigest(
+        String(row.requestIdentityDigest),
+        "REST",
+        pagesOf(receipt, 0),
+      ),
+    ).toBe(row.terminalPaginationDigest);
+    expect(protection.computeRepositoryProtectionRulesetSemanticDigest(rulesetSemantics())).toBe(
+      receipt.rulesetSemanticDigest,
+    );
+  });
+
+  test("routes every public helper argument through its Packet A parser", () => {
+    const receipt = sealedReceipt();
+    const row = at(receipt, ["apiObservations", 0]);
+    const identityDigest = String(row.requestIdentityDigest);
+    const request = at(row, ["request"]);
+    const reductionPages = reductionProjection(pagesOf(receipt, 0));
+    const restPageRows = pagesOf(receipt, 0);
+    for (const [label, call] of [
+      [
+        "purpose:invalid",
+        () => protection.computeGitHubApiRequestIdentityDigest("environment", request),
+      ],
+      ["request:null", () => protection.computeGitHubApiRequestIdentityDigest("ENVIRONMENT", null)],
+      [
+        "request:branch",
+        () =>
+          protection.computeGitHubApiRequestIdentityDigest("ENVIRONMENT", {
+            ...request,
+            apiKind: "SOAP",
+          }),
+      ],
+      ["pageRequest:identity", () => protection.computeGitHubApiPageRequestDigest("nope", null)],
+      [
+        "pageRequest:cursor",
+        () => protection.computeGitHubApiPageRequestDigest(identityDigest, "cursor" + lineFeed),
+      ],
+      [
+        "reduction:identity",
+        () =>
+          protection.computeGitHubApiCompleteReductionDigest(
+            "nope",
+            reductionPages,
+            identityDigest,
+          ),
+      ],
+      [
+        "reduction:empty",
+        () =>
+          protection.computeGitHubApiCompleteReductionDigest(identityDigest, [], identityDigest),
+      ],
+      [
+        "reduction:ordinal",
+        () =>
+          protection.computeGitHubApiCompleteReductionDigest(
+            identityDigest,
+            [{ ordinal: "2", responseDigest: sha("x") }],
+            identityDigest,
+          ),
+      ],
+      [
+        "reduction:reducedValue",
+        () =>
+          protection.computeGitHubApiCompleteReductionDigest(
+            identityDigest,
+            reductionPages,
+            "nope",
+          ),
+      ],
+      [
+        "terminal:identity",
+        () => protection.computeGitHubApiTerminalPaginationDigest("nope", "REST", restPageRows),
+      ],
+      [
+        "terminal:apiKind",
+        () =>
+          protection.computeGitHubApiTerminalPaginationDigest(identityDigest, "rest", restPageRows),
+      ],
+      [
+        "terminal:empty",
+        () => protection.computeGitHubApiTerminalPaginationDigest(identityDigest, "REST", []),
+      ],
+      [
+        "terminal:branch",
+        () =>
+          protection.computeGitHubApiTerminalPaginationDigest(
+            identityDigest,
+            "GRAPHQL",
+            restPageRows,
+          ),
+      ],
+      [
+        "terminal:chain",
+        () =>
+          protection.computeGitHubApiTerminalPaginationDigest(
+            identityDigest,
+            "REST",
+            pagesOf(sealedReceipt({ plan: twoPageRest }), 0).slice(1),
+          ),
+      ],
+      ["semantics:null", () => protection.computeRepositoryProtectionRulesetSemanticDigest(null)],
+      [
+        "semantics:workflows",
+        () =>
+          protection.computeRepositoryProtectionRulesetSemanticDigest({
+            ...rulesetSemantics(),
+            workflows: null,
+          }),
+      ],
+      ["receipt:null", () => protection.computeRepositoryProtectionReceiptDigest(null)],
+      ["receipt:relations", () => protection.computeRepositoryProtectionReceiptDigest(fixture())],
+    ] as const)
+      expect(call, label).toThrow(TypeError);
+    expect(
+      protection.parseRepositoryProtectionContract("repository-protection-receipt/v2", receipt),
+    ).toBeNull();
+    expect(protection.parseRepositoryProtectionContract(schema, null)?.ok).toBe(false);
+    expect(protection.parseRepositoryProtectionContract(schema, receipt)?.ok).toBe(true);
+    expect(protection.parseRepositoryProtectionReceipt(null).ok).toBe(false);
+    expect(protection.parseRepositoryProtectionReceipt(fixture()).ok).toBe(false);
+  });
+});
+
+describe("ISS-054 Packet B relations, pagination and deletion mutants", () => {
+  test("accepts the canonical relationally sealed receipt as a detached frozen tree", () => {
+    const receipt = sealedReceipt();
+    const parsed = protection.parseRepositoryProtectionReceipt(receipt);
+    if (!parsed.ok) throw new Error(parsed.issues.join(","));
+    expect(parsed.value).toEqual(receipt);
+    expect(parsed.value).not.toBe(receipt);
+    expect(deeplyFrozen(parsed.value)).toBe(true);
+    at(receipt, ["environmentBinding"]).variableValue = sha("moved");
+    expect(at(parsed.value, ["environmentBinding"]).variableValue).toBe(sha("anchor"));
+  });
+
+  test("accepts every disposition while only ACCEPTED stays binder eligible", () => {
+    const binderEligibleDispositions: readonly string[] = Object.freeze(["ACCEPTED"]);
+    const digests: string[] = [];
+    for (const disposition of ["ACCEPTED", "BLOCK_REPLAN", "REJECTED"]) {
+      const receipt = sealedReceipt({
+        shape: (candidate) => {
+          candidate.disposition = disposition;
+        },
+      });
+      const parsed = protection.parseRepositoryProtectionReceipt(receipt);
+      if (!parsed.ok) throw new Error(disposition + ": " + parsed.issues.join(","));
+      expect(parsed.value.disposition).toBe(disposition);
+      expect(c.serializeContract(schema, receipt).ok).toBe(true);
+      digests.push(protection.computeRepositoryProtectionReceiptDigest(receipt));
+    }
+    expect(new Set(digests).size).toBe(3);
+    // The four-input binder is a later slice; parsing preserves refusal evidence
+    // and never widens eligibility beyond the accepted single disposition.
+    expect(
+      ["ACCEPTED", "BLOCK_REPLAN", "REJECTED"].filter((disposition) =>
+        binderEligibleDispositions.includes(disposition),
+      ),
+    ).toEqual(["ACCEPTED"]);
+  });
+
+  test("accepts one, two and sixty-four page REST and GraphQL chains", () => {
+    for (const count of [1, 2, 64]) {
+      const restReceipt = sealedReceipt({ plan: planFor("ENVIRONMENT", "REST", count) });
+      const restParsed = protection.parseRepositoryProtectionReceipt(restReceipt);
+      if (!restParsed.ok)
+        throw new Error("rest:" + String(count) + ":" + restParsed.issues.join(","));
+      expect(pagesOf(restReceipt, 0)).toHaveLength(count);
+      const graphqlReceipt = sealedReceipt({ plan: planFor(GRAPHQL_PURPOSE, "GRAPHQL", count) });
+      const graphqlParsed = protection.parseRepositoryProtectionReceipt(graphqlReceipt);
+      if (!graphqlParsed.ok)
+        throw new Error("graphql:" + String(count) + ":" + graphqlParsed.issues.join(","));
+      expect(pagesOf(graphqlReceipt, 3)).toHaveLength(count);
+    }
+  });
+
+  test("refuses zero-row, sixty-five-row and cyclic page chains", () => {
+    const emptied = sealedReceipt();
+    at(emptied, ["apiObservations", 0]).pages = [];
+    expect(protection.parseRepositoryProtectionReceipt(emptied).ok).toBe(false);
+    const oversized = sealedReceipt();
+    const identityDigest = String(at(oversized, ["apiObservations", 0]).requestIdentityDigest);
+    at(oversized, ["apiObservations", 0]).pages = sealedRestPages(
+      identityDigest,
+      "ENVIRONMENT",
+      65,
+    );
+    expect(protection.parseRepositoryProtectionReceipt(oversized).ok).toBe(false);
+    const emptiedGraphql = sealedReceipt();
+    at(emptiedGraphql, ["apiObservations", 3]).pages = [];
+    expect(protection.parseRepositoryProtectionReceipt(emptiedGraphql).ok).toBe(false);
+    const oversizedGraphql = sealedReceipt();
+    const graphqlIdentity = String(
+      at(oversizedGraphql, ["apiObservations", 3]).requestIdentityDigest,
+    );
+    at(oversizedGraphql, ["apiObservations", 3]).pages = sealedGraphqlPages(
+      graphqlIdentity,
+      GRAPHQL_PURPOSE,
+      65,
+    );
+    expect(protection.parseRepositoryProtectionReceipt(oversizedGraphql).ok).toBe(false);
+  });
+
+  test("keeps every Packet B relation deletion mutant discriminating", () => {
+    expect(relationMutants).toHaveLength(60);
+    expect(new Set(relationMutants.map((mutant) => mutant.relation)).size).toBe(
+      relationMutants.length,
+    );
+    for (const mutant of relationMutants) {
+      const parsed = protection.parseRepositoryProtectionReceipt(mutant.input());
+      expect(parsed.ok, mutant.relation).toBe(false);
+      if (parsed.ok) continue;
+      expect([...parsed.issues], mutant.relation).toEqual([...mutant.issues].sort());
+      expect(c.parseContract(schema, mutant.input()).ok, mutant.relation).toBe(false);
+      expect(c.serializeContract(schema, mutant.input()).ok, mutant.relation).toBe(false);
+      expect(
+        () => protection.computeRepositoryProtectionReceiptDigest(mutant.input()),
+        mutant.relation,
+      ).toThrow(TypeError);
+    }
   });
 });
