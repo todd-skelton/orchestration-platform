@@ -3190,6 +3190,192 @@ the report's stable prerequisite facts independently derive the identical
 Guard replay uses stable code and data only; native process measurements are not
 rerun by the reducer.
 
+#### Single-OS archive layout, roots, and the post-case census
+
+Decision #278 ruling 1 admitted one bounded stage-three replan and definition
+round. This subsection closes that round's definitions. It fixes layout only: it
+adds, removes or renames no case ID, control ID, control arm, vocabulary, report
+member or archive name, and the four-case/twelve-control census above is
+unchanged. Every rule below is derivable from already landed code and requires
+no change to `scripts/build/native-lock-inputs.mjs`,
+`native-lock-experiment.mjs`, `native-lock-headers.mjs`,
+`native-lock-distribution.mjs`,
+`probes/portable-primitives/experiment/case-context.mjs`, or its
+`reduction.mjs`.
+
+Three sibling runner-temp roots. The single-OS observation job allocates exactly
+three mutually external children of provider `runner.temp`: the acquisition
+root, the preparation root, and the case root. None is an ancestor of another
+and none overlaps the stable or candidate source root.
+`acquireHostedNativeLockInputs` owns the acquisition root and refuses unless it
+resolves to itself and `readdir` returns zero entries
+(`scripts/conformance/hosted-native-lock-acquisition.mts:642-656`), sealing that
+tree against added entries when it returns (`:688`). `prepareNativeLockBuild`
+receives the preparation root as its `runnerTemp`, refuses unless `readdir` of
+it is empty (`scripts/build/native-lock-inputs.mjs:150`) and `headers`, `build`
+and `preparation` are all absent beneath it (`:151-162`), and refuses any
+overlap among stable root, candidate root and preparation root (`:128-130`). Its
+`external()` rule (`:132-136`) is applied to the Node executable, the headers
+archive, `SHASUMS256.txt`, the Windows import library and the toolchain capture
+(`:137-144`) and refuses each one lying inside any of those roots. Acquisition
+outputs therefore may never be written inside the preparation root; the
+acquisition root is a sibling by construction, not by convention. The case root
+is the `runnerTemp` passed to `createCaseContext`; the case `artifactRoot` is
+exactly the preparation root's `build` child
+(`scripts/build/native-lock-inputs.mjs:152`, returned as `buildRoot` at `:507`),
+and the context refuses when its custody root and that `artifactRoot` contain
+one another
+(`probes/portable-primitives/experiment/case-context.mjs:111-113`). Acquired
+bytes reach the archive only as the builder's own `build/inputs/` copies; the
+acquisition root itself is never archived.
+
+Archive root and the archive-relative mapping. The archive root is the
+preparation root. For a retained file at absolute path `P`, its
+archive-relative path is `relative(archiveRoot, P)` with `/` separators, with
+exactly one declared exception: when that value begins with the literal
+`build/transcripts/`, the leading `build/` is removed. There is no other
+rebasing and no rule may move a path between prefixes. The exception is forced
+and bounded: `prepareNativeLockBuild` seals rows already prefixed `build/` and
+`preparation/` and reports `buildPathPrefix: "build/"`
+(`scripts/build/native-lock-inputs.mjs:441-442, 502-514`), while
+`caseContext.finalize()` writes `transcripts/<caseId>/<actor>.<stream>` under
+`artifactRoot`, that is under the archive root's `build` child
+(`probes/portable-primitives/experiment/case-context.mjs:307-321`), and the
+fixed archive-relative transcript path above starts at `transcripts/`. The
+builder writes nothing that could collide: every `artifactRoot` member it
+creates is under `inputs/` or `builds/`
+(`scripts/build/native-lock-experiment.mjs:278-284, 297-303, 307, 321, 342-346,
+367, 380, 484, 539-548`) and it refuses at return unless the `artifactRoot`
+census equals exactly its own retained rows (`:392-397`). The mapping is
+therefore total, injective and prefix-preserving.
+
+| Producer | Physical location under the archive root | Archive-relative path |
+| --- | --- | --- |
+| `prepareNativeLockBuild` build tree | `build/` | `build/`, identity |
+| `prepareNativeLockBuild` preparation retains | `preparation/` | `preparation/`, identity |
+| Control phase | `controls/` | `controls/`, identity |
+| `caseContext.finalize()` transcripts | `build/transcripts/` | `transcripts/`, the sole rebasing |
+| `caseContext.finalize()` diagnostics | `build/case-diagnostics.json` | `build/case-diagnostics.json`, identity |
+
+Every retained archive-relative path therefore begins with exactly one of
+`build/`, `preparation/`, `controls/` or `transcripts/`, is unique, and carries
+no empty, dot or parent component; the only archive member outside those four
+prefixes is the report itself, which the manifest covers as its own subject.
+
+`case-diagnostics.json` is in the archive; the fixed-lock custody root is out.
+`caseContext.finalize()` writes exactly one `case-diagnostics.json` under
+`artifactRoot`
+(`probes/portable-primitives/experiment/case-context.mjs:345-364`), so its
+archive-relative path is `build/case-diagnostics.json` under the identity
+mapping, and it is retained and hashed like any other retained file. It is not a
+report member: the report's members remain exactly the seven fixed above, and no
+fact it carries may supply, replace or outrank a report fact. Presence rule: the
+collector derives it from the report, requires it exactly once whenever the case
+phase ran, refuses it when present otherwise, and refuses when its `custody`
+disagrees with the report's `custody` member. The custody root is the
+`iss022-native-lock-` temporary directory created under the case root with the
+fixed `native-lock` leaf (`case-context.mjs:111-113`), structurally disjoint
+from the archive root; copying or rereading that leaf would contradict the
+custody clause above. Presence rule: no archive path may resolve inside the
+custody root and no retained file may be named `native-lock`; that root's
+evidence enters the archive only as the report's `custody` member.
+
+Two censuses, and how they bind. The sealed preparation census is
+`retainedFiles` as returned with `status: "PENDING_CANDIDATE_CONSUME"`
+(`scripts/build/native-lock-inputs.mjs:502-514`). It is taken after header
+disposal, requires the preparation root's children to be exactly `build` and
+`preparation` (`:403-405`), and is stale by construction because the control and
+case phases write afterwards. A second, post-case census supersedes it as the
+archive census. The stable collector takes that second census over the archive
+root after `finalize()` returns and after the control phase has written its
+fixed files, with the archive root's direct children exactly `build`,
+`preparation` and `controls`, and before the report is serialized. The two bind
+as follows: every row of the sealed census must appear in the second census with
+identical archive-relative path, `byteLength` and `sha256`, and any missing or
+changed row refuses; the second census may exceed the first by exactly the fixed
+control files, the fixed transcript files for each retained case's actual child
+actors, and `build/case-diagnostics.json`; any other additional member refuses.
+The sealed census is not discarded, and the second census never rewrites the
+report's `builds` rows, which continue to bind it.
+
+Bounded per-OS archive. Every referenced retained file keeps its bytes; no
+census digest substitutes for retained bytes. The bound is therefore stated on
+count and size, which the landed extractor already enforces: one extracted
+header distribution admits at most 8192 tar records
+(`scripts/build/native-lock-distribution.mjs:11, 172`), at most 16 MiB of gzip
+(`:8, 30`), at most 96 MiB inflated (`:9, 44`) and at most 16 MiB per member
+(`:10, 106`), while the builder independently refuses more than 12000 header
+rows (`scripts/build/native-lock-experiment.mjs:322`) and more than 128 stable
+files (`:286-291`). The closed archive bound is: at most 8192 retained entries
+under `build/inputs/headers/`, at most 512 further retained entries in the whole
+archive, and at most 512 MiB of retained bytes summed over the second census.
+The collector refuses an archive exceeding any of the three. That refusal is a
+finding, never permission to drop retained bytes, substitute a hash for a file,
+or continue without the missing evidence.
+
+The per-OS reduction is a separate reducer, not an amendment.
+`reduceCaseTranscripts` stays byte-stable. It already returns an honest
+`transcriptResult` over the case rows and pins `result: "UNKNOWN"` behind its
+five `missingPrerequisites`
+(`probes/portable-primitives/experiment/reduction.mjs:26-31, 291, 372-376`), and
+its own landed comment states that `result` remains `UNKNOWN` until a separate
+retained-byte, build, control and provider verifier exists (`:286-290`). Stage
+three adds that separate per-OS reducer as a new stable module which consumes
+`transcriptResult` unchanged and joins it with retained-byte, build, custody and
+control evidence to recompute the report's `result`. The reason is not diff
+size: amending `reduceCaseTranscripts` to return a non-`UNKNOWN` `result` would
+have to drop its fifth prerequisite, three-OS same-attempt reports and terminal
+provider evidence, from a landed independently reviewed guard, and that is
+exactly the evidence stage four supplies. The digest cost is recorded honestly
+rather than used as the argument: editing `reduction.mjs` would move
+`harnessBundleDigest` and `providerRunDigest` only, because
+`prerequisiteCensusDigest` digests the `harnessPaths` strings and not their
+contents (`scripts/conformance/hosted-native-lock-plan.mts:158-171`), whereas a
+new module enters `harnessPaths` and additionally moves
+`prerequisiteCensusDigest`, `vectorCensusDigest` and the registry's
+`requiredJobRegistryDigest`. Every stage-three source slice pays that cost
+already. No per-OS `result` may be reported that the separate reducer did not
+recompute.
+
+Line-ending normalization precedes stage four. `.gitattributes` applies
+`text eol=lf` to `packages/**/src/**`, `probes/portable-primitives/src/**`,
+`scripts/conformance/**`, `test/conformance/**` and a fixed file list, but not
+to `probes/portable-primitives/experiment/`,
+`probes/portable-primitives/native/`, `scripts/build/` or
+`test/native-lock-experiment/`, all four of which the authenticated plan
+censuses (`scripts/conformance/hosted-native-lock-plan.mts:36-76`). With
+`core.autocrlf=true`, the `windows-latest` default, those files check out CRLF
+on Windows and LF elsewhere, so their bundle rows and hence
+`harnessBundleDigest`, `testBundleDigest` and `providerRunDigest` differ by
+checkout normalization rather than by content. Nothing compares those digests
+across operating systems before stage four: each observation job finalizes and
+consumes its own plan. Stage four's aggregate joins three per-OS records and
+`MISSING_OR_MIXED_CENSUS` refuses a differing attempt or revision, so a cross-OS
+equality would then refuse for a normalization reason rather than a content one.
+The decision is therefore that a bounded normalization slice lands after slice
+3.5 and before any stage-four source, as its own reviewed slice with its own
+round record, never folded into a stage-three packet: landing it inside one
+would move every native-lock digest mid-stage and invalidate that slice's own
+digest-mutant evidence while buying nothing stage three needs. Its footprint is
+`.gitattributes` and its round record; its acceptance evidence is that all four
+trees are covered, that a Windows checkout reports working-tree LF for every
+file in them, and that no tracked index byte changes.
+
+Vitest `.mjs` discovery is a separate later slice. Decision #278 ruling 2 keeps
+`vitest.config.ts` closed for stage three, so every stage-three test is a
+`.test.ts` file. `vitest.config.ts:12` includes only `test/**/*.test.ts` and
+`fixtures/*/test/**/*.test.ts`, so the five landed `.test.mjs` files censused in
+`testPaths` (`candidate`, `cases`, `fixture-foundation`, `reduction`, `witness`)
+are not executed by `pnpm test` and therefore not by the hosted three-OS
+bootstrap. Widening discovery to `test/**/*.test.mjs` is registered here as a
+separate reviewed slice, defined after this replan round, sequenced after slice
+3.5, and never folded into a stage-three or stage-four packet. Its predicted
+footprint is `vitest.config.ts`, any repair the newly discovered files require,
+and its round record; its named risk is that it adds five never-run
+child-process test files to a hosted Windows runner that has already reached the
+5000 ms per-test ceiling. Until it lands, no stage-three or stage-four claim may
+cite a `.test.mjs` file as executed evidence.
+
 #### Disposition, proportionality, and stop boundary
 
 The prediction is falsifiable at the first complete three-OS reduction:
