@@ -3342,7 +3342,7 @@ not recompute.
 Line-ending normalization precedes stage four. `.gitattributes` applies `text
 eol=lf` to `packages/contracts/src/**`, `packages/conformance/src/**`,
 `probes/portable-primitives/src/**`, `scripts/conformance/**`,
-`test/conformance/**`, `test/contracts/**`, `test/portable-primitives/** and
+`test/conformance/**`, `test/contracts/**`, `test/portable-primitives/**` and
 a fixed file list, but not to `probes/portable-primitives/experiment/`,
 `probes/portable-primitives/native/`, `scripts/build/` or
 `test/native-lock-experiment/`, all four of which the authenticated plan
