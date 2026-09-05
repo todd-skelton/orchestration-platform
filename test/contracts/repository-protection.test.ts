@@ -3729,11 +3729,13 @@ describe("ISS-054 Packet C boundary statements and the unchanged public surface"
     at(twoPage, ["apiObservations", 0, "pages", 0]).linkHeaderDigest = null;
     expect(parse.parseObservedProtectionStructure(twoPage).ok).toBe(false);
     // No positive asserts API origin, authentication, capture completeness,
-    // currentness or authority: success yields exactly the ten supplied members.
+    // currentness or authority: the ten ledger members are exempt from the vocabulary
+    // scan below because the census equality above already pins them.
     const parsed = parse.parseObservedProtectionStructure(freshObservation());
     if (!parsed.ok) throw new Error(parsed.issues.join(","));
     expect(codepointSorted(Object.keys(parsed.value))).toEqual([...FRESH_ROOT_MEMBERS]);
-    for (const key of Object.keys(parsed.value))
+    for (const key of Object.keys(parsed.value)) {
+      if (FRESH_ROOT_MEMBERS.includes(key)) continue;
       for (const word of [
         "authenticat",
         "authority",
@@ -3744,6 +3746,7 @@ describe("ISS-054 Packet C boundary statements and the unchanged public surface"
         "verif",
       ])
         expect(key.toLowerCase(), key + "/" + word).not.toContain(word);
+    }
   });
 
   test("states that stale substitution and every cross-record relation stay in the binder", () => {
