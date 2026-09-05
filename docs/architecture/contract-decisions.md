@@ -6616,14 +6616,35 @@ literal `"200"`, a `requestDigest` for the exact page request, and a
 `responseDigest` over the canonical response body bytes. A REST page has
 exactly `etag`, `linkHeaderDigest`, `linkRelations`, `nextRequestDigest`,
 `observedAt`, `ordinal`, `requestDigest`, `responseDigest`, and `status`.
-`etag` is non-null. `linkRelations` is a 0..4 UTF-8-sorted unique array of
-closed `{relation:FIRST|LAST|NEXT|PREV,targetRequestDigest:sha256}` rows.
+`etag` is non-null. `linkRelations` is a 0..4 array of closed
+`{relation:FIRST|LAST|NEXT|PREV,targetRequestDigest:sha256}` rows, UTF-8-sorted
+by `relation`. A relation name occurs at most once in one page; changing only a
+target never makes a second row with the same relation admissible.
 `linkHeaderDigest` is null exactly when `linkRelations` is empty and otherwise
-hashes the exact raw Link header. Every nonterminal REST page has exactly one
-`NEXT` relation whose target equals non-null `nextRequestDigest` and the next
-row's `requestDigest`; the final page has no `NEXT` and null
-`nextRequestDigest`. Extra, malformed, duplicate, reordered, skipped, or
-unfollowed Link relations refuse.
+hashes the exact raw Link header.
+
+Every page `requestDigest` is globally unique within the observation. For page
+index `i` in a zero-based array of length `n`, every present relation resolves
+to an exact admitted page request digest as follows:
+
+```text
+FIRST -> pages[0].requestDigest, permitted only when i > 0
+PREV  -> pages[i - 1].requestDigest, permitted only when i > 0
+NEXT  -> pages[i + 1].requestDigest, required exactly when i < n - 1
+LAST  -> pages[n - 1].requestDigest, permitted only when i < n - 1
+```
+
+`FIRST`, `PREV`, and `LAST` remain optional when permitted; the parser does not
+invent Link relations that the provider omitted. They are forbidden at their
+stated boundaries. `NEXT` is mandatory on every nonterminal page and forbidden
+on the final page. It equals non-null `nextRequestDigest`; the final page has
+null `nextRequestDigest`. For `n = 1`, all four relations are absent,
+`linkRelations` is empty, and both `linkHeaderDigest` and `nextRequestDigest`
+are null. Across the observation, NEXT targets are unique, occur exactly as the
+immediately following page, and never repeat the current or any earlier request
+digest. Thus a supplied `A -> B -> A` chain refuses even if its final row claims
+termination. Extra, malformed, duplicate-name, reordered, misdirected,
+skipped, repeated, boundary-invalid, or unfollowed Link relations refuse.
 
 A GraphQL page has exactly `endCursor`, `etag`, `hasNextPage`, `observedAt`,
 `ordinal`, `requestCursor`, `requestDigest`, `responseDigest`, and `status`.
@@ -6635,17 +6656,89 @@ the next row's `requestCursor`; the final page has `hasNextPage:false`.
 repetition, a missing next page, or a supplied cursor not obtained from the
 immediately prior page refuses.
 
-For both branches the first page request digest is derived from the request
-identity plus its null pagination position. `reducedValueDigest` identifies
-the canonical complete-page reducer output for that purpose.
-`completeReductionDigest` is the framed digest of request identity, every
-ordered response digest, and `reducedValueDigest` under
-`github-api-complete-reduction/v1`.
-`terminalPaginationDigest` is the framed digest of request identity, ordered
-page request/response digests, and the exact final REST no-`NEXT` or GraphQL
-`hasNextPage:false` cell under `github-api-terminal-pagination/v1`. It cannot be
-formed from a caller count alone. The historical parser verifies all formulas
-and terminal structure; it performs no API request and makes no freshness
+The following recipes are normative. `frame.text`, `frame.nullableText`,
+`frame.raw32`, and `frame.canonical` mean the correspondingly tagged frame
+parts in the repository authority framing contract; listed part order is
+significant. A projection record has exactly the listed members. Canonical JSON
+sorts record keys, so changing insertion order alone does not change bytes;
+changing a frame-part tag or order does. Projection arrays retain the already
+required receipt row order.
+
+`queryDigest`, `documentDigest`, and `variablesDigest` are supplied SHA-256
+leaf claims over the exact pagination-invariant request material retained by
+ISS-036. Pagination position is excluded from those leaves and is represented
+by the page chain below. The pure parser checks their grammar and joins but has
+no request bytes with which to authenticate or recompute them. The request
+identity recipe is exactly:
+
+```text
+requestIdentityDigest = framedDigest("github-api-request-identity/v1", [
+  frame.text(purpose),
+  frame.canonical(request)
+])
+```
+
+For both API kinds the first page request digest is exactly:
+
+```text
+framedDigest("github-api-page-request/v1", [
+  frame.raw32(requestIdentityDigest),
+  frame.nullableText(null)
+])
+```
+
+Every GraphQL page, including the first, recomputes `requestDigest` with that
+same recipe after replacing the null final part by
+`frame.nullableText(requestCursor)`. For REST, a later page's exact request
+bytes are not carried by this value: its `requestDigest` is therefore a
+supplied opaque SHA-256 request identity which must equal the immediately prior
+page's non-null `nextRequestDigest` and sole `NEXT.targetRequestDigest`.
+ISS-036/038 composition must bind that leaf to the authenticated raw Link
+target and actual following request. Parser success proves only an internally
+linked claimed chain. It does not prove that GitHub supplied a Link header or
+that the producer followed it.
+
+`responseDigest` is a supplied SHA-256 leaf claim over the exact canonical
+response body bytes. A non-null `linkHeaderDigest` is a supplied SHA-256 leaf
+claim over the exact raw Link header bytes. Those preimages are deliberately
+outside this compact receipt. The parser checks hash grammar, nullability,
+ordering and chain relations; authenticated ISS-036/038 composition checks the
+preimages and capture completeness. Opaque leaves never establish pagination
+completeness by themselves. REST `linkRelations` sort uniquely by the UTF-8
+`relation` value and retain the unique-relation and exact-index rules above.
+
+The complete-reduction recipe is exact and non-circular:
+
+```text
+completeReductionDigest = framedDigest("github-api-complete-reduction/v1", [
+  frame.raw32(requestIdentityDigest),
+  frame.canonical(pages.map(({ ordinal, responseDigest }) =>
+    ({ ordinal, responseDigest }))),
+  frame.raw32(reducedValueDigest)
+])
+```
+
+The terminal-pagination recipe is exact and non-circular. For REST,
+`paginationPages` contains the complete REST page rows: exactly `etag`,
+`linkHeaderDigest`, `linkRelations`, `nextRequestDigest`, `observedAt`,
+`ordinal`, `requestDigest`, `responseDigest`, and `status`. For GraphQL it
+contains the complete GraphQL page rows: exactly `endCursor`, `etag`,
+`hasNextPage`, `observedAt`, `ordinal`, `requestCursor`, `requestDigest`,
+`responseDigest`, and `status`.
+
+```text
+terminalPaginationDigest = framedDigest("github-api-terminal-pagination/v1", [
+  frame.raw32(requestIdentityDigest),
+  frame.text(request.apiKind),
+  frame.canonical(paginationPages)
+])
+```
+
+The final projected REST row therefore commits null `nextRequestDigest`, no
+`NEXT` relation, and its Link-header leaf. The final projected GraphQL row
+commits `hasNextPage:false` and its cursors. A caller count cannot form either
+terminal proof. The parser recomputes these derived digests and verifies the
+terminal structure without performing an API request or making a freshness
 claim.
 
 `triggeringBuild` is non-null only for `WORKFLOW_RUN` and has exactly
@@ -6657,13 +6750,28 @@ canonical decimal strings in `1..Number.MAX_SAFE_INTEGER`; and its
 literal null `triggeringBuild`. The WORKFLOW_RUN request/page reduction binds
 this exact completed BUILD run, which is the REVIEW workflow's trigger source.
 
-For the six semantic purposes shared with fresh read-back, the historical
-`reducedValueDigest` recomputes from the corresponding receipt environment,
-repository, ruleset/path/review-policy, BUILD, or REVIEW value. The
-`PULL_REQUEST`, `PULL_REQUEST_REVIEWS`, and `WORKFLOW_RUN` digests bind their
-ISS-036 archived closed reducer outputs and are historical probe evidence only;
-the WORKFLOW_RUN output must bind `triggeringBuild`. They do not become fresh
-ruleset semantics.
+`reducedValueDigest` uses domain `github-api-reduced-value/v1` and exactly two
+parts: `frame.text(purpose)` followed by `frame.canonical(reducedProjection)`.
+The six projections shared with fresh read-back are exact:
+
+```text
+ENVIRONMENT          { environmentName }
+ENVIRONMENT_VARIABLE { environmentName, variableName, variableValue }
+REPOSITORY           { repositoryId }
+RULESET               { protectedPathPolicies, reviewPolicy, rulesetId }
+WORKFLOW_BUILD        { workflow } // the complete BUILD workflow row
+WORKFLOW_REVIEW       { workflow } // the complete REVIEW workflow row
+```
+
+The `WORKFLOW_RUN` projection is exactly `{ triggeringBuild }`, containing the
+complete non-null triggering-build row. Its digest is recomputed. The receipt
+does not carry reducer preimages for `PULL_REQUEST` or
+`PULL_REQUEST_REVIEWS`; their `reducedValueDigest` cells are supplied opaque
+SHA-256 claims bound into `completeReductionDigest`. The pure parser checks
+their grammar and the page/reduction joins only. ISS-036 must retain and bind
+the exact closed reducer outputs in its authenticated archive, and ISS-038 does
+not join either historical-only purpose into fresh ruleset semantics. These
+three historical purposes never become fresh ruleset semantics.
 
 `producer` has exactly `artifactName`, `runAttempt`, `runId`, `startedAt`,
 `workflowDigest`, `workflowPath`, and `workflowRef`. `artifactName` is a safe
@@ -6686,10 +6794,10 @@ The strict pre-producer portion of the chronology is
 `environmentBinding.variableUpdatedAt < producer.startedAt <= issuedAt`; the
 cross-family binder below adds the anchor timestamps.
 
-`rulesetSemanticDigest` is SHA-256 over the canonical detached value with
-exactly `protectedPathPolicies`, `repositoryId`, `reviewPolicy`, `rulesetId`,
-and `workflows`, framed under domain
-`repository-protection-ruleset-semantics/v1`. It deliberately excludes API
+`rulesetSemanticDigest` is exactly
+`framedDigest("repository-protection-ruleset-semantics/v1",
+[frame.canonical({ protectedPathPolicies, repositoryId, reviewPolicy,
+rulesetId, workflows })])`. It deliberately excludes API
 ETags/times, producer/run identity, anchor transport, receipt times, and
 disposition. This projection lets a fresh ISS-038 read-back compare immutable
 effective ruleset/workflow semantics without equating historical capture
@@ -6749,16 +6857,17 @@ material, candidate/kit/source digest, local credential, token, arbitrary
 verifier argument, or executable path exists.
 
 Canonical bytes for both families use the repository authority JSON encoding.
-Their public identities are:
+Each family identity has exactly one canonical frame part. Their public
+identities are:
 
 ```text
-Dprotection = SHA256(frame(
-  "repository-protection-receipt/v1",
-  canonical repository-protection-receipt/v1 JSON bytes))
+Dprotection = framedDigest("repository-protection-receipt/v1", [
+  frame.canonical(receipt)
+])
 
-Danchor = SHA256(frame(
-  "bootstrap-verifier-anchor/v1",
-  canonical bootstrap-verifier-anchor/v1 JSON bytes))
+Danchor = framedDigest("bootstrap-verifier-anchor/v1", [
+  frame.canonical(anchor)
+])
 ```
 
 The canonical anchor path is
@@ -6783,7 +6892,34 @@ must finish within 300,000 milliseconds of its start, `evaluatedAt` must equal
 `completedAt`, and every API terminal digest plus the environment ETag/time,
 semantic projection, repository/ruleset identities, and exact observation
 start/end is framed into `terminalEvidenceDigest` under
-`repository-protection-terminal-evidence/v1`. Thus a precomputed caller count,
+`repository-protection-terminal-evidence/v1`. The digest is exactly one
+canonical frame part over this closed projection; `apiTerminals` retains the
+six-purpose order and each row has exactly `purpose`,
+`requestIdentityDigest`, and `terminalPaginationDigest`:
+
+```text
+terminalEvidenceDigest = framedDigest(
+  "repository-protection-terminal-evidence/v1",
+  [frame.canonical({
+    apiTerminals,
+    completedAt,
+    environmentBinding,
+    rulesetSemantics: {
+      protectedPathPolicies,
+      repositoryId,
+      reviewPolicy,
+      rulesetId,
+      workflows
+    },
+    startedAt
+  })]
+)
+```
+
+`environmentBinding` is the complete five-member fresh binding, and the
+ruleset projection is identical to the semantic-digest projection. The
+terminal projection excludes `terminalEvidenceDigest` itself and is therefore
+non-circular. Thus a precomputed caller count,
 historical receipt timestamp, or API row without terminal pagination cannot be
 presented as the evaluation boundary.
 
@@ -6795,6 +6931,15 @@ It requires the acyclic historical chronology
 `anchor.operatorConfirmation.confirmedAt <= anchor.createdAt <= receipt.environmentBinding.variableUpdatedAt < receipt.producer.startedAt <= receipt.issuedAt`.
 This makes comparison, anchor creation, protected-environment publication, and
 receipt production ordered inputs rather than future-dated precomputation.
+The independently read fresh binding additionally requires
+`anchor.createdAt <= observedProtection.environmentBinding.variableUpdatedAt < receipt.producer.startedAt`
+and
+`observedProtection.environmentBinding.variableUpdatedAt <= observedProtection.startedAt`.
+The last comparison also places the update no later than every fresh page
+observation and completion time. Historical and fresh variable update times may
+differ only within these chronology windows; neither equality nor ETag equality
+is required. A same-value rewrite or retarget-then-restore whose fresh update
+time is equal to or later than the historical REVIEW producer start refuses.
 It requires receipt, anchor, signer-workflow, and fresh-observation repository
 IDs to agree. Historical and fresh environment names/variable names agree, but
 their ETags and update times are independently validated and deliberately need
@@ -6812,11 +6957,24 @@ effective semantics and requires it to equal the receipt's immutable
 `rulesetSemanticDigest`. Receipt producer identity remains historical and is
 not copied into the fresh input.
 
-The binder returns only detached parsed values and exact
-`Danchor`/`Dprotection`/`terminalEvidenceDigest`; it never returns an authority,
-currentness, verification, or grant claim. ISS-038 composition, not this pure
-relation, decides whether the supplied fresh capture source is authenticated
-and usable.
+The binder returns one detached deeply frozen record with exactly these six
+members in ascending canonical member order:
+
+```text
+anchor
+anchorDigest
+observedProtection
+protectionDigest
+receipt
+terminalEvidenceDigest
+```
+
+`anchorDigest` is `Danchor`; `protectionDigest` is `Dprotection`; the terminal
+digest is recomputed by the recipe above. The three values are the parsed,
+detached inputs. The result never contains an authority, currentness,
+authentication, verification, completeness, or grant claim. ISS-038
+composition, not this pure relation, decides whether the supplied fresh capture
+source and opaque leaves are authenticated and usable.
 
 Compatibility and negative evidence must pin canonical byte and framed-digest
 goldens for both families and the semantic projection; remove, add, rename,
@@ -6831,16 +6989,20 @@ mutable/sealed/frozen and hostile reflection corpus. Vectors must also reject
 duplicate/unsorted rows, incomplete seventeen-permission or three-OS censuses,
 permission namespace drift, role/trigger/conclusion inversion, partial/latest
 API evidence, REST/GraphQL branch crossing, early false terminal, unfollowed
-next evidence, historical/fresh metadata equality as a requirement, stale or
-unbound fresh terminal evidence, post-upload artifact members, mutable
+next evidence, duplicate REST relation names, wrong FIRST/PREV/NEXT/LAST
+targets, boundary-forbidden optional links, repeated page request/NEXT target
+digests, `A -> B -> A` chains, historical/fresh metadata equality as a
+requirement, stale or unbound fresh terminal evidence, post-upload artifact members, mutable
 selectors, custom roots, executable paths, and consistently substituted
 anchor/verifier/bundle inputs. Deleting any parser, bound, semantic projection,
 producer/workflow, anchor/environment, repository/signer, expiry, request/page
 chain, terminal pagination, fresh terminal evidence, or immutable-semantics
 equality must make a committed mutant survive and therefore fail the suite.
 Dedicated deletion vectors remove each chronology comparison, future-date the
-confirmation/anchor/variable, make variable publication equal to producer
-start, bind producer to BUILD, add a producer conclusion, point REVIEW at
+confirmation/anchor/variable, make historical or fresh variable publication
+equal to producer start, place the fresh update after fresh observation start,
+rewrite the same anchor value after producer start, retarget then restore the
+same value with a moved update time, bind producer to BUILD, add a producer conclusion, point REVIEW at
 itself, omit or null the triggering BUILD, change its conclusion, cross its
 workflow identity, reuse its run ID for REVIEW, or move BUILD completion after
 REVIEW start. Every mutant must fail.
