@@ -28,6 +28,12 @@ import {
 import { type ContractDefinition, type ContractRecord } from "./runtime.js";
 import { verifierAnchorSchemaFields, verifierAnchorSchemaVersions } from "./verifier-anchor.js";
 import {
+  repositoryProtectionPermissionNames,
+  repositoryProtectionPurposes,
+  repositoryProtectionSchemaFields,
+  repositoryProtectionSchemaVersions,
+} from "./repository-protection.js";
+import {
   breakerReceiptSchemaFields,
   breakerReceiptSchemaVersions,
   breakerCheckpointStates,
@@ -436,6 +442,92 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
     "bootstrap-verifier-anchor/v1#signer": Object.freeze({
       schemaVersion: "bootstrap-verifier-anchor/v1",
       fields: verifierAnchorSchemaFields.signer,
+    }),
+    "repository-protection-receipt/v1": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.receipt,
+      closedValues: Object.freeze(["ACCEPTED", "REJECTED", "BLOCK_REPLAN"]),
+    }),
+    "repository-protection-receipt/v1#environment-binding": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.environmentBinding,
+      closedValues: Object.freeze(["host-custody-bootstrap-root", "VERIFIER_ANCHOR_SHA256"]),
+    }),
+    "repository-protection-receipt/v1#graphql-page": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.graphqlPage,
+    }),
+    "repository-protection-receipt/v1#graphql-request": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.graphqlRequest,
+      closedValues: Object.freeze(["GRAPHQL", "POST"]),
+    }),
+    "repository-protection-receipt/v1#link-relation": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.linkRelation,
+      closedValues: Object.freeze(["FIRST", "LAST", "NEXT", "PREV"]),
+    }),
+    "repository-protection-receipt/v1#observation": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.observation,
+      closedValues: repositoryProtectionPurposes,
+    }),
+    "repository-protection-receipt/v1#permission": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.permission,
+      closedValues: Object.freeze([
+        ...repositoryProtectionPermissionNames,
+        "NONE",
+        "READ",
+        "WRITE",
+      ]),
+    }),
+    "repository-protection-receipt/v1#producer": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.producer,
+    }),
+    "repository-protection-receipt/v1#protected-path-policy": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.protectedPathPolicy,
+      closedValues: Object.freeze(["INDEPENDENT_APPROVAL"]),
+    }),
+    "repository-protection-receipt/v1#rest-page": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.restPage,
+      closedValues: Object.freeze(["200"]),
+    }),
+    "repository-protection-receipt/v1#rest-request": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.restRequest,
+      closedValues: Object.freeze(["REST", "2022-11-28", "GET"]),
+    }),
+    "repository-protection-receipt/v1#review-policy": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.reviewPolicy,
+      closedValues: Object.freeze(["FORBIDDEN", "REQUIRED", "1"]),
+    }),
+    "repository-protection-receipt/v1#trigger": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.trigger,
+      closedValues: Object.freeze([
+        "PULL_REQUEST",
+        "WORKFLOW_RUN",
+        "SUCCESS",
+        "opened",
+        "reopened",
+        "synchronize",
+        "completed",
+      ]),
+    }),
+    "repository-protection-receipt/v1#triggering-build": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.triggeringBuild,
+      closedValues: Object.freeze(["SUCCESS"]),
+    }),
+    "repository-protection-receipt/v1#workflow": Object.freeze({
+      schemaVersion: "repository-protection-receipt/v1",
+      fields: repositoryProtectionSchemaFields.workflow,
+      closedValues: Object.freeze(["BUILD", "REVIEW", "github-actions-permissions/2026-09-02"]),
     }),
     "review-request/v1": Object.freeze({
       schemaVersion: "review-request/v1",
@@ -1159,6 +1251,7 @@ export const schemaVocabularyDefinitions: Readonly<Record<string, ContractDefini
 export const schemaVersions = Object.freeze(
   [
     ...Object.keys(schemaDefinitions),
+    ...repositoryProtectionSchemaVersions,
     ...verifierAnchorSchemaVersions,
     ...configurationSchemaVersions,
     ...projectSnapshotSchemaVersions,
