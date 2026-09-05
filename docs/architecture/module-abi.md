@@ -211,13 +211,14 @@ must be absent from every retained public record and comparison.
 
 ### Next runtime consumer: neutral worker-result review planning
 
-Round 443 defines only the next quarantined source tranche,
+Round 443 defines only the initial quarantined source tranche,
 `modules/review/src/index.ts`. It extracts the step-4 behavior already consumed
 from `fixtures/walking-skeleton/src/review-module.ts`; it does not replace that
-fixture module, copy its disposition, or enter a running cycle. The entrypoint
-exports exactly `descriptor` and `plan`, with no `disposition` export. Empty
-`dispositionCodes` makes this a partial ABI implementation; full-routine
-admission still requires the actual source-owned handler before worker effects.
+fixture module, copy its disposition, or enter a running cycle. At that tranche
+the entrypoint exports exactly `descriptor` and `plan`, with no `disposition`
+export. Its empty `dispositionCodes` makes it a partial ABI implementation;
+Round 446 below defines the separate descriptor and handler change required for
+full-routine admission before worker effects.
 Planning's Round 439 source and identity remain unchanged, and both modules
 remain absent from the empty manifest and registry.
 
@@ -227,8 +228,9 @@ members and no extensions:
 - `schemaVersion: module-descriptor/v1`, `abi: orchestration-module/v1`,
   `moduleId: review`, and `moduleVersion: 0.0.0`;
 - `inputSchemas: ["module-plan-input/v1"]`,
-  `outputSchemas: ["module-action-plan/v1","module-no-action/v1"]`, and
-  `dispositionCodes: []`;
+  `outputSchemas: ["module-action-plan/v1","module-no-action/v1"]`, and, for
+  the initial plan-only tranche, `dispositionCodes: []`; Round 446 replaces
+  only that last array with its ordered three-code census;
 - exactly two compatibility rows, in order `fixture.branches`, then
   `fixture.queue`, each with adapter version `1.0.0`, engine version
   `0.0.0`, and policy version `1.0.0`;
@@ -332,6 +334,90 @@ macOS, and Windows. The definition and following source each require independent
 exact-head review. Release-candidate planning, disposition, delivery, repair,
 ISS-039 advisory findings, module activation, and ISS-011 closure remain later
 work.
+
+### Following consumer: neutral worker-result review disposition
+
+Round 446 defines the smallest full-routine extension already exercised by the
+walking-skeleton review consumer. It carries forward Rounds 401 and 434 through
+444, including both abandoned planning-source rounds and their review/hosted
+evidence. The independently reviewed Round 444 source identity applies only to
+that exact plan-only entrypoint. Adding this phase changes the source and the
+descriptor, so no old source hash, descriptor digest, action-core digest,
+brief digest, plan digest, or golden authorizes the following source.
+
+The review descriptor otherwise remains declaratively equal to the Round 443
+descriptor, but its ordered `dispositionCodes` becomes exactly
+`["review.complete","review.reject","review.unknown"]`. The entrypoint then
+exports exactly `descriptor`, `disposition`, and `plan`. The step-4 selection
+policy, action, compatibility, catalog, schemas, role, target and result shapes
+do not change. Their canonical bytes and every descriptor-derived identity do
+change and must be recomputed from independently authored literals.
+
+`disposition` is the existing optional pure ABI phase. It first calls
+`parseDispositionInput` and retains that detached closed value. Parser refusal
+throws and returns no `action-disposition/v1`. It then requires canonical-byte
+equality between `moduleInput.descriptor` and the newly exported descriptor and
+requires `moduleInput.reviewSubject` to be `worker-result-subject/v1`; either
+mismatch throws without a disposition. These are the handler's owned admission
+checks. Parsing alone does not prove that route, preflight, worker, review or
+captured-stream evidence is authentic or mutually bound.
+
+For the admitted subject, the output always binds
+`actionPlanDigest = computeModuleActionPlanDigest(actionPlan)`,
+`inputDigest = computeDispositionInputDigest(input)`, and the complete
+`computeWorkerResultSubjectDigest(reviewSubject)` with subject kind
+`WORKER_RESULT`. The exact review-authority matrix is:
+
+| Supplied review authority | Code              | Outcome                                                                                |
+| ------------------------- | ----------------- | -------------------------------------------------------------------------------------- |
+| `accepted`                | `review.complete` | `{kind:"COMPLETE"}`                                                                    |
+| `rejected`                | `review.reject`   | `FOLLOW_UP` with `REPLAN`, module `review`, and the same complete worker-result target |
+| absent or `unknown`       | `review.unknown`  | `{kind:"UNKNOWN",reason:"AUTHORITY_UNPROVEN"}`                                         |
+
+The handler parses the constructed disposition before returning it. The caller
+retains the exact disposition input and separately captured stdout/stderr bytes
+across the await, then calls `validateActionDispositionBinding` with those four
+preimages. That existing binder, not the module parser, validates all action,
+route, preflight, dispatch, launch, terminal, review request/attempt/authority,
+skip, code and outcome relations. A structurally valid input can therefore
+produce a structural disposition which the caller still refuses. No raw byte,
+filesystem, provider, history or authenticity claim is added to the ABI input.
+
+The following source tests must exercise a production-descriptor tuple rather
+than relabel the existing `fixture.review-consumer`/`fixture.review` tuple.
+`fixtures/walking-skeleton/test/consumer.test.ts` supplies the actual branch and
+queue loader, snapshot, policy and composition seam and obtains the production
+review plan. Test-local composition in
+`fixtures/walking-skeleton/test/review-consumer.test.ts` must reuse the current
+review evidence builders and public binders to carry that exact production
+module input/action through coherent route, preflight, worker and review
+records, retaining actual captured stream bytes for the post-await disposition
+binder. The fixture runtime remains unchanged. If that coherent seam cannot be
+made in those two test files, source stops for a fresh footprint replan rather
+than hand-building an unrelated authority tuple.
+
+The complete vectors cover all three authority cells, absent review, malformed
+input, alternate descriptor, candidate/null/changed worker-result subject,
+action/route/preflight/worker/request/attempt/authority/stream substitutions,
+declared-code changes, repeated canonical equality and complete target changes.
+Deleting any authority arm, complete-target join, code declaration, parser
+refusal, descriptor/subject comparison or external raw-byte binding must make
+its matching vector fail. Accepted `COMPLETE` remains only the module's
+nonmutating disposition; final completion still requires journal, mutation-skip
+and reclaim evidence. Rejected `REPLAN` allocates no cycle and unknown authority
+permits no follow-up or effect.
+
+The predicted source footprint is exactly
+`modules/review/src/index.ts`,
+`fixtures/walking-skeleton/test/consumer.test.ts`,
+`fixtures/walking-skeleton/test/review-consumer.test.ts`, and one source pressure
+record. It must rebaseline the normalized review-source identity and every
+descriptor/core/brief/plan golden affected by the code census. The planning
+source and pin, fixture runtime, public contracts, empty manifest, generator,
+generated stub, root configuration and dependencies remain unchanged.
+Delivery, repair, release-candidate disposition, worker launch, routing,
+mutation, journal/reclaim ownership, registry activation and ISS-011 closure
+remain outside this tranche.
 
 `ISS-011` owns the only registry generator at
 `modules/build/generate-registry.mjs`. It parses the closed manifest and exact
