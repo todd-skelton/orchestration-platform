@@ -186,10 +186,6 @@ describe("dispatch action and brief contracts", () => {
   test("binds action, role, subject, catalog resolver, and descriptor pair census", () => {
     expect(validateDispatchCatalog(catalog, declaredPairs)).toEqual([]);
     expect(validateDispatchBriefBinding(brief, actionCore, catalog, declaredPairs)).toEqual([]);
-    const duplicateKey = [{ ...catalog[0]!, templateId: "template.changed" }, ...catalog];
-    expect(validateDispatchCatalog(duplicateKey, declaredPairs)).toContain(
-      "catalog:resolver-key:duplicate",
-    );
     expect(validateDispatchCatalog(catalog, [])).toContain("declaredPairs:mismatch");
     expect(
       validateDispatchBriefBinding(
@@ -207,6 +203,45 @@ describe("dispatch action and brief contracts", () => {
         declaredPairs,
       ),
     ).toContain("binding:actionCoreDigest");
+  });
+
+  test("censuses catalog resolver keys and declared action-capability pairs at the direct seam", () => {
+    expect(validateDispatchCatalog(catalog, declaredPairs)).toEqual([]);
+
+    for (const sameResolverKey of [
+      { ...catalog[0]!, planAccessor: "MODULE_DESCRIPTOR_DIGEST" },
+      { ...catalog[0]!, templateId: "template.changed" },
+      {
+        ...catalog[0]!,
+        planAccessor: "MODULE_DESCRIPTOR_DIGEST",
+        templateId: "template.changed",
+      },
+    ])
+      expect(validateDispatchCatalog([sameResolverKey, ...catalog], declaredPairs)).toEqual([
+        "catalog:resolver-key:duplicate",
+      ]);
+
+    expect(
+      validateDispatchCatalog(
+        [...catalog, { ...catalog[0]!, code: "directive.alternate" }],
+        declaredPairs,
+      ),
+    ).toEqual([]);
+
+    expect(validateDispatchCatalog(catalog, [...declaredPairs, declaredPairs[0]!])).toEqual([
+      "declaredPairs:duplicate",
+    ]);
+
+    const addedPair = Object.freeze({
+      actionKind: "review.inspect",
+      capabilityName: "workspace.read",
+    });
+    expect(validateDispatchCatalog(catalog, [...declaredPairs, addedPair])).toEqual([
+      "declaredPairs:mismatch",
+    ]);
+    expect(
+      validateDispatchCatalog([...catalog, { ...catalog[0]!, ...addedPair }], declaredPairs),
+    ).toEqual(["declaredPairs:mismatch"]);
   });
 
   test("is total for hostile brief and catalog inputs", () => {
