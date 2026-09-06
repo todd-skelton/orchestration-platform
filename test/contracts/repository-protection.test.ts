@@ -3806,7 +3806,6 @@ describe("ISS-054 Packet C boundary statements and the unchanged public surface"
       "observedProtectionSchemaFields",
       "freshObservedProtectionPurposes",
       "parseObservedProtection",
-      "bindRepositoryProtectionEvidence",
     ])
       expect(publicNames, name).not.toContain(name);
     const parsed = protection.parseRepositoryProtectionReceipt(sealedReceipt());

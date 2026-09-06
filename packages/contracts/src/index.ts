@@ -124,6 +124,7 @@ import {
 export * from "./authority.js";
 export * from "./verifier-anchor.js";
 export * from "./repository-protection.js";
+export * from "./repository-protection-binding.js";
 export * from "./breaker-receipt.js";
 export * from "./commit.js";
 export * from "./definitions.js";
