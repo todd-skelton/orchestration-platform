@@ -388,11 +388,21 @@ describe("hosted conformance plan", () => {
         "scripts/conformance/hosted-native-lock-preparation.mts",
         "harnessBundleDigest",
       ],
+      [
+        "control-fixtures",
+        "probes/portable-primitives/experiment/control-fixtures.mjs",
+        "harnessBundleDigest",
+      ],
       ["controls", "probes/portable-primitives/experiment/controls.mjs", "harnessBundleDigest"],
       ["cases-test", "test/native-lock-experiment/cases.test.mjs", "testBundleDigest"],
       [
         "preparation-test",
         "test/conformance/hosted-native-lock-preparation.test.ts",
+        "testBundleDigest",
+      ],
+      [
+        "control-fixtures-test",
+        "test/native-lock-experiment/control-fixtures.test.ts",
         "testBundleDigest",
       ],
       ["controls-test", "test/native-lock-experiment/controls.test.ts", "testBundleDigest"],
