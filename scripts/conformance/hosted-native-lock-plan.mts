@@ -60,6 +60,7 @@ const harnessPaths = Object.freeze([
   "scripts/build/native-lock-headers.mjs",
   "scripts/build/native-lock-inputs.mjs",
   "scripts/conformance/hosted-native-lock-acquisition.mts",
+  "scripts/conformance/hosted-native-lock-observation.mts",
   "scripts/conformance/hosted-native-lock-plan.mts",
   "scripts/conformance/hosted-native-lock-preparation.mts",
   "scripts/conformance/hosted-plan.mts",
@@ -68,6 +69,7 @@ const harnessPaths = Object.freeze([
 const testPaths = Object.freeze([
   "test/conformance/contracts.test.ts",
   "test/conformance/hosted-native-lock-acquisition.test.ts",
+  "test/conformance/hosted-native-lock-observation.test.ts",
   "test/conformance/hosted-native-lock-preparation.test.ts",
   "test/conformance/hosted-plan.test.ts",
   "test/native-lock-experiment/build.test.ts",
