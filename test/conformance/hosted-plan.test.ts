@@ -84,7 +84,7 @@ function api(overrides: Partial<HostedPlanApi> = {}): HostedPlanApi {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
-});
+}, 120_000);
 
 describe("hosted conformance plan", () => {
   test("accepts only the closed protected-main dispatch context", () => {
