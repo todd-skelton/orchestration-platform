@@ -49,7 +49,9 @@ const harnessPaths = Object.freeze([
   "probes/portable-primitives/experiment/facts.mjs",
   "probes/portable-primitives/experiment/fixture.mjs",
   "probes/portable-primitives/experiment/io.mjs",
+  "probes/portable-primitives/experiment/per-os-reduction.mjs",
   "probes/portable-primitives/experiment/reduction.mjs",
+  "probes/portable-primitives/experiment/report.mjs",
   "probes/portable-primitives/experiment/session.mjs",
   "probes/portable-primitives/native/native-lock-candidate.c",
   "probes/portable-primitives/native/native-lock-witness.c",
@@ -78,6 +80,7 @@ const testPaths = Object.freeze([
   "test/native-lock-experiment/headers.test.ts",
   "test/native-lock-experiment/inputs.test.ts",
   "test/native-lock-experiment/reduction.test.mjs",
+  "test/native-lock-experiment/report.test.ts",
   "test/native-lock-experiment/witness.test.mjs",
 ] as const);
 

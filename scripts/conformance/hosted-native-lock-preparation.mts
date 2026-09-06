@@ -3,7 +3,10 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 // Narrow import on purpose: this module calls no ISS-022 selection, profile,
 // capability or decision writer, and adds no public export or schema.
 import { sha256Bytes } from "../../packages/conformance/src/contracts.js";
-import type { NativeLockBuildFile } from "../build/native-lock-experiment.mjs";
+import type {
+  NativeLockBuildFile,
+  NativeLockPreparedBuild,
+} from "../build/native-lock-experiment.mjs";
 import {
   prepareNativeLockBuild,
   type NativeLockInputRequest,
@@ -32,6 +35,15 @@ import type {
  * control, writes no report or archive member, reads no runner token, and calls
  * no provider. A `PENDING_CANDIDATE_CONSUME` preparation is private data, never
  * authority: only a later reviewed collector may accept it.
+ *
+ * Sub-slice 3.4 adds one bounded completion to this module and nothing else:
+ * `completeHostedNativeLockLoadedMembers` fills each build's `loaded` member
+ * from the ACTUAL post-load rehash of that role's `.node` output. The pre-load
+ * guard `checkPreLoadBuildBinding` is unchanged and still requires every
+ * `loaded` member to be null at preparation time, and no completion path may
+ * take a `loaded` row from that pre-load hash. That completion still loads no
+ * addon here: the load itself happens in the reviewed case-context seam, and
+ * this function only rereads and rehashes the bytes afterwards.
  */
 
 /** The one candidate source this transaction may ever compose build inputs for. */
@@ -227,6 +239,95 @@ export function checkPreLoadBuildBinding(pending: NativeLockPendingPreparation):
     }
   }
   return issues(...found);
+}
+
+/** The one `.node` output each build role may load. Never a caller's table. */
+export const hostedNativeLockLoadedOutputNames = Object.freeze({
+  CANDIDATE_BINDING: "native-lock-candidate.node",
+  STABLE_WITNESS: "native-lock-witness.node",
+} as const);
+
+export type HostedNativeLockLoadedResult =
+  | { readonly ok: true; readonly loaded: readonly (readonly NativeLockBuildFile[] | null)[] }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+/**
+ * Complete each build's `loaded` member from the actual post-load rehash, in
+ * the order the builds were given. A role that did not load keeps a null
+ * member: null is honest missing evidence, never an invented row, and the
+ * builder's own sealed `loaded: null` is never promoted into a completion.
+ *
+ * The row returned is built from bytes read here, after the load; the declared
+ * pre-load output row is only compared against it, so a byte that changed
+ * across the load is refused instead of being reported as loaded. This function
+ * makes no native call, loads nothing and writes nothing.
+ */
+export async function completeHostedNativeLockLoadedMembers(
+  artifactRoot: string,
+  builds: readonly NativeLockPreparedBuild[],
+  loadedRoles: readonly string[],
+): Promise<HostedNativeLockLoadedResult> {
+  try {
+    if (!canonicalInput(artifactRoot) || !(await canonicalDirectory(artifactRoot)))
+      return { ok: false, issues: issues("native-lock-preparation:artifact-root-refused") };
+    const roles = Object.keys(hostedNativeLockLoadedOutputNames);
+    if (
+      !Array.isArray(builds) ||
+      builds.length !== roles.length ||
+      !Array.isArray(loadedRoles) ||
+      new Set(loadedRoles).size !== loadedRoles.length ||
+      loadedRoles.some((role) => !roles.includes(role))
+    )
+      return { ok: false, issues: issues("native-lock-preparation:loaded-request-refused") };
+    const completed: (readonly NativeLockBuildFile[] | null)[] = [];
+    const found: string[] = [];
+    const rows: readonly NativeLockPreparedBuild[] = builds;
+    for (const build of rows) {
+      const name = hostedNativeLockLoadedOutputNames[build?.role];
+      // The pre-load guard stays: preparation loaded nothing, so the member it
+      // sealed must still be null and can never be the source of a completion.
+      if (!name || build.loaded !== null) {
+        found.push("native-lock-preparation:loaded-request-refused");
+        completed.push(null);
+        continue;
+      }
+      if (!loadedRoles.includes(build.role)) {
+        completed.push(null);
+        continue;
+      }
+      if (build.result !== "BUILT") {
+        found.push("native-lock-preparation:loaded-without-built-row");
+        completed.push(null);
+        continue;
+      }
+      const declaredPath = `builds/${build.role}/${name}`;
+      const declared = (build.outputs ?? []).filter((row) => row.path === declaredPath);
+      const path = resolve(artifactRoot, "builds", build.role, name);
+      const marker = await lstat(path, { bigint: true });
+      if (declared.length !== 1 || !marker.isFile() || marker.isSymbolicLink()) {
+        found.push("native-lock-preparation:loaded-output-refused");
+        completed.push(null);
+        continue;
+      }
+      const bytes = Uint8Array.from(await readFile(path));
+      const row = Object.freeze({
+        byteLength: String(bytes.byteLength),
+        path: declaredPath,
+        sha256: sha256Bytes(bytes),
+      });
+      if (row.byteLength !== declared[0]!.byteLength || row.sha256 !== declared[0]!.sha256) {
+        found.push("native-lock-preparation:post-load-rehash-mismatch");
+        completed.push(null);
+        continue;
+      }
+      completed.push(Object.freeze([row]));
+    }
+    return found.length > 0
+      ? { ok: false, issues: issues(...found) }
+      : { ok: true, loaded: Object.freeze(completed) };
+  } catch {
+    return { ok: false, issues: issues("native-lock-preparation:loaded-unreadable") };
+  }
 }
 
 /**
