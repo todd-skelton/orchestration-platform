@@ -524,20 +524,39 @@ describe("ISS-048 per-OS diagnostic archive collector", () => {
         sealedFiles: [...value.sealed, sealedRow("preparation/toolchain.json", "{}\n")],
       }),
     ).toEqual({ issues: ["native-lock-observation:retained-path-duplicated"], ok: false });
-    // A derived control path colliding with a sealed row is the same refusal.
+    // A derived `build/` row colliding with a sealed row is a pure duplicate,
+    // with no census violation, because `build/` is a hygienic sealed prefix.
+    // The default fixture runs the case phase (`custody.initialIdentity !==
+    // null`), so the derived census already carries `build/case-diagnostics.json`.
     const collided = await fixture();
     expect(
       await sealHostedNativeLockArchive({
         ...sealInput(collided),
+        sealedFiles: [...collided.sealed, sealedRow(hostedNativeLockDiagnosticsPath, "{}\n")],
+      }),
+    ).toEqual({ issues: ["native-lock-observation:retained-path-duplicated"], ok: false });
+    // A caller-supplied `controls/` row is both a census violation (outside
+    // `build/` and `preparation/`) and a collision with the derived control
+    // row for the same control, so both refusals are returned, sorted.
+    const controlCollided = await fixture();
+    expect(
+      await sealHostedNativeLockArchive({
+        ...sealInput(controlCollided),
         sealedFiles: [
-          ...collided.sealed,
+          ...controlCollided.sealed,
           {
             ...sealedRow("build/x", "{}\n"),
             path: `controls/${hostedNativeLockControlIds[0]}/observation.json`,
           },
         ],
       }),
-    ).toEqual({ issues: ["native-lock-observation:retained-path-duplicated"], ok: false });
+    ).toEqual({
+      issues: [
+        "native-lock-observation:retained-path-duplicated",
+        "native-lock-observation:sealed-census-refused",
+      ],
+      ok: false,
+    });
   }, 60_000);
 
   test("binds every sealed row to the post-case census byte for byte", async () => {
