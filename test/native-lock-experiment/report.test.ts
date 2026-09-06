@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -241,7 +241,7 @@ afterEach(async () => {
 });
 
 async function temporaryRoot(prefix: string): Promise<string> {
-  const root = await mkdtemp(resolve(tmpdir(), prefix));
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), prefix)));
   roots.push(root);
   return root;
 }
