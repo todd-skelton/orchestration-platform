@@ -16,6 +16,14 @@ children:
     ISS-034,
     ISS-027,
     ISS-015,
+    ISS-056,
+    ISS-057,
+    ISS-058,
+    ISS-059,
+    ISS-060,
+    ISS-061,
+    ISS-062,
+    ISS-063,
   ]
 ---
 
@@ -38,13 +46,21 @@ post-self-host improvements unless a measured blocker promotes them.
   `ISS-029, ISS-033 → ISS-020`;
   `ISS-012, ISS-031 → ISS-023`;
   `ISS-008, ISS-023, ISS-055 → ISS-021`;
-  `ISS-013, ISS-054 → ISS-036`;
+  `ISS-013, ISS-062, ISS-063 → ISS-036`;
   `ISS-021, ISS-049, ISS-050, ISS-051, ISS-052 → ISS-033`;
   `ISS-020, ISS-039, ISS-040 → ISS-019`;
   `ISS-019 → ISS-037`;
   `ISS-037 → ISS-034`;
   `ISS-034 → ISS-027`;
-  `ISS-027 → ISS-015`.
+  `ISS-027 → ISS-015`;
+  `ISS-054 → ISS-056`;
+  `ISS-054 → ISS-057`;
+  `ISS-059 → ISS-058`;
+  `ISS-057 → ISS-059`;
+  `ISS-054 → ISS-060`;
+  `ISS-059 → ISS-061`;
+  `ISS-056, ISS-058, ISS-060, ISS-061 → ISS-062`;
+  `ISS-054 → ISS-063`.
 - Gate: all release evidence binds the same immutable candidate digest.
 - Parked: automatic rollout to external consumers; un-park after the first
   consumer completes shadow adoption.
@@ -70,3 +86,11 @@ post-self-host improvements unless a measured blocker promotes them.
 - `ISS-034` — Provision and bind production N0 credential references.
 - `ISS-027` — Authorize and install independently reviewed bootstrap N0.
 - `ISS-015` — Complete the first stable-predecessor self-hosting release.
+- `ISS-056` — Build the bootstrap-verifier-anchor/v1 canonical helper and refusal corpus.
+- `ISS-057` — Build the probes/self-host-github/ transcript capture model and pure reducers.
+- `ISS-058` — Build the negative-control matrix over recorded self-host-github transcripts.
+- `ISS-059` — Build the protection-receipt producer offline path and sole-file artifact shape.
+- `ISS-060` — Land the synthetic self-host BUILD/REVIEW workflow bytes and issue form, reviewed but not enabled.
+- `ISS-061` — Build the offline observedProtection fixture harness for the two binder-judged controls.
+- `ISS-062` — Write the self-host-github probe runbook, offline :verify implementation, and ISS-000 scaffold amendment.
+- `ISS-063` — Define the contract for the four post-upload protection-receipt environment variables.
