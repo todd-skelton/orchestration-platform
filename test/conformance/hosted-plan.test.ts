@@ -84,7 +84,7 @@ function api(overrides: Partial<HostedPlanApi> = {}): HostedPlanApi {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
-});
+}, 120_000);
 
 describe("hosted conformance plan", () => {
   test("accepts only the closed protected-main dispatch context", () => {
@@ -388,12 +388,14 @@ describe("hosted conformance plan", () => {
         "scripts/conformance/hosted-native-lock-preparation.mts",
         "harnessBundleDigest",
       ],
+      ["controls", "probes/portable-primitives/experiment/controls.mjs", "harnessBundleDigest"],
       ["cases-test", "test/native-lock-experiment/cases.test.mjs", "testBundleDigest"],
       [
         "preparation-test",
         "test/conformance/hosted-native-lock-preparation.test.ts",
         "testBundleDigest",
       ],
+      ["controls-test", "test/native-lock-experiment/controls.test.ts", "testBundleDigest"],
     ] as const) {
       const mutatedStableRoot = resolve(temporary, `stable-${name}`);
       await execFileAsync("git", [
