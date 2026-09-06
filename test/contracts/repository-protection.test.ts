@@ -1947,6 +1947,11 @@ const relationMutants: readonly RelationMutant[] = Object.freeze([
     ],
   },
   {
+    relation: "triggering BUILD conclusion is the SUCCESS literal",
+    input: () => sealedReceipt({ triggering: { conclusion: "FAILURE" } }),
+    issues: ["apiObservations.8.triggeringBuild.conclusion:mismatch"],
+  },
+  {
     relation: "triggering BUILD workflow digest equals the BUILD row",
     input: () => sealedReceipt({ triggering: { workflowDigest: OTHER_DIGEST } }),
     issues: ["apiObservations.WORKFLOW_RUN.triggeringBuild.workflowDigest:mismatch"],
@@ -2823,7 +2828,7 @@ describe("ISS-054 Packet B relations, pagination and deletion mutants", () => {
   });
 
   test("keeps every Packet B relation deletion mutant discriminating", () => {
-    expect(relationMutants).toHaveLength(60);
+    expect(relationMutants).toHaveLength(61);
     expect(new Set(relationMutants.map((mutant) => mutant.relation)).size).toBe(
       relationMutants.length,
     );
