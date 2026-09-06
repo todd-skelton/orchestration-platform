@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -764,6 +765,32 @@ describe("ISS-048 per-OS diagnostic archive collector", () => {
       ).toEqual({ issues: ["native-lock-observation:archive-root-refused"], ok: false });
     else expect(process.platform).toBe("win32");
     const separator = process.platform === "win32" ? "\\" : "/";
+    // The lowercased-spelling variant only exists on disk when the filesystem
+    // is case-insensitive (Windows NTFS, and the default case-insensitive
+    // APFS on hosted macOS runners): only then does the lowercased path
+    // resolve to the same directory, letting `sealHostedNativeLockArchive`
+    // take the `archive-root-refused` branch for it. On hosted Linux's
+    // case-sensitive ext4 the lowercased path does not exist, so the module
+    // correctly takes its unrelated `archive-unreadable` branch instead -- a
+    // different, correct module outcome, not a defect (review receipt for
+    // 92d92f2, BLOCKER 1). Probe once, against a path segment this fixture
+    // created with a known-lowercase spelling ("preparation"), rather than
+    // against the temporary root's own spelling: the root's `mkdtemp` suffix
+    // is only mixed-case ~96% of the time, so probing it directly would
+    // silently reintroduce the same flakiness this fix removes.
+    let caseInsensitive: boolean;
+    try {
+      await lstat(resolve(value.root, "PREPARATION"));
+      caseInsensitive = true;
+    } catch {
+      caseInsensitive = false;
+    }
+    if (!caseInsensitive)
+      // Skipped with a reason, not a silent pass: a case-sensitive filesystem
+      // is expected only on hosted Linux. If this ever held on Windows or
+      // macOS it would mean the probe above is wrong, not that the skip is
+      // safe.
+      expect(process.platform).toBe("linux");
     const variants = [
       `${value.archiveRoot}${separator}.`,
       `${resolve(value.archiveRoot, "..", "preparation")}${separator}.`,
@@ -771,7 +798,7 @@ describe("ISS-048 per-OS diagnostic archive collector", () => {
         /^([A-Za-z]):/,
         (_match, drive: string) => `${drive.toLowerCase()}:`,
       ),
-      value.archiveRoot.toLowerCase(),
+      ...(caseInsensitive ? [value.archiveRoot.toLowerCase()] : []),
     ].filter((path, index, all) => path !== value.archiveRoot && all.indexOf(path) === index);
     for (const archiveRoot of variants)
       expect({
