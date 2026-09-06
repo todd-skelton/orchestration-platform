@@ -44,6 +44,14 @@ import type {
  * take a `loaded` row from that pre-load hash. That completion still loads no
  * addon here: the load itself happens in the reviewed case-context seam, and
  * this function only rereads and rehashes the bytes afterwards.
+ *
+ * Sub-slice 3.5 adds one further bounded accessor and nothing else:
+ * `hostedNativeLockSealedCensus` hands the collector the builder's OWN sealed
+ * `PENDING_CANDIDATE_CONSUME` rows, so the second, post-case census can never be
+ * bound to a caller-shaped list. Nothing else here changes; in particular
+ * `censusHostedNativeLockArchive` below stays the PREPARATION-time census, whose
+ * `build`-and-`preparation` child rule holds only before the control and case
+ * phases write, and it is not the archive census.
  */
 
 /** The one candidate source this transaction may ever compose build inputs for. */
@@ -331,10 +339,59 @@ export async function completeHostedNativeLockLoadedMembers(
 }
 
 /**
- * The census that supersedes the builder's sealed one. No control or case phase
- * has run in this slice, so the archive root's direct children must be exactly
- * `build` and `preparation`, the archive-relative mapping is the identity for
- * both prefixes, and the census must equal the sealed rows with no excess.
+ * The sealed preparation census, taken straight from the builder's own
+ * `PENDING_CANDIDATE_CONSUME` return. Sub-slice 3.5's collector binds its
+ * second, post-case census to exactly these rows, so they may never arrive from
+ * a caller: a status, prefix, shape, hygiene or duplicate substitution refuses
+ * here rather than becoming an archive row.
+ */
+export function hostedNativeLockSealedCensus(
+  pending: NativeLockPendingPreparation,
+): HostedNativeLockArchiveCensusResult {
+  const refused: HostedNativeLockArchiveCensusResult = {
+    ok: false,
+    issues: issues("native-lock-preparation:sealed-census-refused"),
+  };
+  const retained: unknown = pending?.retainedFiles;
+  if (
+    !pending ||
+    typeof pending !== "object" ||
+    pending.status !== "PENDING_CANDIDATE_CONSUME" ||
+    pending.buildPathPrefix !== "build/" ||
+    !Array.isArray(retained) ||
+    retained.length === 0
+  )
+    return refused;
+  const rows: NativeLockBuildFile[] = [];
+  const seen = new Set<string>();
+  for (const row of retained as readonly NativeLockBuildFile[]) {
+    if (
+      !row ||
+      typeof row !== "object" ||
+      typeof row.path !== "string" ||
+      !/^(?:build|preparation)\//.test(row.path) ||
+      row.path.includes("\\") ||
+      row.path.split("/").some((part) => !part || part === "." || part === "..") ||
+      typeof row.byteLength !== "string" ||
+      !/^(?:0|[1-9][0-9]*)$/.test(row.byteLength) ||
+      typeof row.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(row.sha256) ||
+      seen.has(row.path)
+    )
+      return refused;
+    seen.add(row.path);
+    rows.push(Object.freeze({ byteLength: row.byteLength, path: row.path, sha256: row.sha256 }));
+  }
+  return { ok: true, files: Object.freeze(rows) };
+}
+
+/**
+ * The preparation-time census. No control or case phase has run when it is
+ * taken, so the archive root's direct children must be exactly `build` and
+ * `preparation`, the archive-relative mapping is the identity for both
+ * prefixes, and the census must equal the sealed rows with no excess. The
+ * second, post-case census that supersedes it belongs to sub-slice 3.5's
+ * collector and is not this function.
  */
 export async function censusHostedNativeLockArchive(
   archiveRoot: string,

@@ -400,6 +400,11 @@ describe("hosted conformance plan", () => {
         "harnessBundleDigest",
       ],
       ["report", "probes/portable-primitives/experiment/report.mjs", "harnessBundleDigest"],
+      [
+        "observation",
+        "scripts/conformance/hosted-native-lock-observation.mts",
+        "harnessBundleDigest",
+      ],
       ["cases-test", "test/native-lock-experiment/cases.test.mjs", "testBundleDigest"],
       [
         "preparation-test",
@@ -413,6 +418,11 @@ describe("hosted conformance plan", () => {
       ],
       ["controls-test", "test/native-lock-experiment/controls.test.ts", "testBundleDigest"],
       ["report-test", "test/native-lock-experiment/report.test.ts", "testBundleDigest"],
+      [
+        "observation-test",
+        "test/conformance/hosted-native-lock-observation.test.ts",
+        "testBundleDigest",
+      ],
     ] as const) {
       const mutatedStableRoot = resolve(temporary, `stable-${name}`);
       await execFileAsync("git", [
