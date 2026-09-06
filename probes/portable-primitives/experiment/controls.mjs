@@ -1,11 +1,21 @@
-// Private ISS-048 stage-three control census (sub-slice 3.2). Every record this
-// module produces is a stable guard replay over synthetic captured input. It
-// loads no addon, requires no `.node`, spawns no process, makes no native call,
-// runs no case, seals no archive, writes no report or workflow, and calls no
-// ISS-022 selection, profile, capability or decision writer. No synthetic
-// result is ever labelled a native observation: the control-local `REFUSED`
-// word stays inside the control arm vocabulary and never enters the per-OS
-// `OBSERVED|VIOLATED|UNSUPPORTED|UNKNOWN` case or report vocabulary.
+// Private ISS-048 stage-three control census (sub-slice 3.2) and control phase
+// (sub-slice 3.3). Every captured-input record this module produces is a stable
+// guard replay over synthetic input. It loads no addon, requires no `.node`,
+// makes no native call itself, runs no case, seals no archive, writes no report
+// or workflow, and calls no ISS-022 selection, profile, capability or decision
+// writer. No synthetic result is ever labelled a native observation: the
+// control-local `REFUSED` word stays inside the control arm vocabulary and
+// never enters the per-OS `OBSERVED|VIOLATED|UNSUPPORTED|UNKNOWN` case or
+// report vocabulary.
+//
+// Sub-slice 3.3 adds the wiring only. The three call-interception fixtures live
+// in the bare-Node-loadable `./control-fixtures.mjs`, which this module must
+// never be imported by: this module reaches `scripts/conformance/*.mts` and
+// `packages/conformance/src/*.ts` and is not loadable by bare Node, so it may
+// not enter a spawned fixture child's import graph. Every witness-dependent
+// arm here comes from the stable parent's own witness call, never from a
+// fixture's report, and every caller-supplied boundary substitution is recorded
+// in the retained observation.
 //
 // The ordered census is derived from the landed control ID list
 // (`hostedNativeLockControlIds`) and is never re-typed here. The landed guards
@@ -29,6 +39,17 @@ import {
   hostedNativeLockCandidateSourcePath,
 } from "../../../scripts/conformance/hosted-native-lock-preparation.mts";
 import { candidateReply, measurement } from "./capture.mjs";
+import { requireCaseContext } from "./case-context.mjs";
+import {
+  checkNativeLockCasePhaseEntry,
+  checkNativeLockControlDeathFreedom,
+  checkNativeLockControlFixtureCensus,
+  checkNativeLockControlReset,
+  createNativeLockControlResourceLedger,
+  judgeNativeLockControlFixture,
+  nativeLockControlFixturePolicies,
+  runNativeLockControlFixtureChild,
+} from "./control-fixtures.mjs";
 import {
   openOperations,
   readOperations,
@@ -434,6 +455,7 @@ function reduced(run) {
 const executableRows = Object.freeze([
   {
     // INHERITABLE_FLAGS
+    controlId: "INHERITABLE_FLAGS",
     guard: "probes/portable-primitives/experiment/facts.mjs#requireInspection",
     mutant: "stable-inspection-read-back-non-inheritable-false",
     executedHalf: null,
@@ -456,6 +478,7 @@ const executableRows = Object.freeze([
   },
   {
     // INHERITED_IDENTITY
+    controlId: "INHERITED_IDENTITY",
     guard: "probes/portable-primitives/experiment/facts.mjs#requireInspection(child)",
     mutant: "child-inspection-same-file-identity-with-claimed-non-inherit-flags",
     executedHalf: null,
@@ -478,6 +501,7 @@ const executableRows = Object.freeze([
   },
   {
     // WRONG_CUSTODY
+    controlId: "WRONG_CUSTODY",
     guard: "probes/portable-primitives/experiment/facts.mjs#requireCustody",
     mutant: "captured-barrier-leaf-identity-substituted",
     executedHalf: null,
@@ -503,6 +527,7 @@ const executableRows = Object.freeze([
   },
   {
     // WRONG_RANGE_OR_FLAGS
+    controlId: "WRONG_RANGE_OR_FLAGS",
     guard: "scripts/conformance/hosted-native-lock-preparation.mts#checkCandidateSubjectBinding",
     mutant: "reviewed-call-and-compile-parameters-substituted",
     executedHalf: null,
@@ -524,6 +549,7 @@ const executableRows = Object.freeze([
   },
   {
     // BUILD_OR_LOADER_SUBSTITUTION, pre-load half only
+    controlId: "BUILD_OR_LOADER_SUBSTITUTION",
     guard: "scripts/conformance/hosted-native-lock-preparation.mts#checkPreLoadBuildBinding",
     mutant: "candidate-bytes-substituted-for-the-witness-output",
     executedHalf: "PRE_LOAD_RETAINED_BYTE_REHASH",
@@ -533,6 +559,7 @@ const executableRows = Object.freeze([
   },
   {
     // MALFORMED_OR_FORGED_FACTS
+    controlId: "MALFORMED_OR_FORGED_FACTS",
     guard: "probes/portable-primitives/experiment/capture.mjs#candidateReply",
     mutant: "pending-reply-carries-an-extra-candidate-verdict-member",
     executedHalf: null,
@@ -559,6 +586,7 @@ const executableRows = Object.freeze([
   },
   {
     // FALSE_DEATH_OR_RETRY
+    controlId: "FALSE_DEATH_OR_RETRY",
     guard: "probes/portable-primitives/experiment/reduction.mjs#reduceCaseTranscripts",
     mutant: "death-row-carries-two-post-death-lock-attempts",
     executedHalf: null,
@@ -568,6 +596,7 @@ const executableRows = Object.freeze([
   },
   {
     // MISSING_OR_MIXED_CENSUS, per-OS half only
+    controlId: "MISSING_OR_MIXED_CENSUS",
     guard: "probes/portable-primitives/experiment/reduction.mjs#reduceCaseTranscripts",
     mutant: "per-os-case-census-row-duplicated",
     executedHalf: "PER_OS_CASE_CENSUS",
@@ -577,6 +606,7 @@ const executableRows = Object.freeze([
   },
   {
     // CAPABILITY_CONFUSION
+    controlId: "CAPABILITY_CONFUSION",
     guard:
       "packages/conformance/src/iss022-profile.ts#parseIss022SuiteCoordinates;" +
       "packages/conformance/src/portable-primitives-decision.ts#parsePortablePrimitivesCapabilityDecisionCore;" +
@@ -627,13 +657,56 @@ const executableRows = Object.freeze([
   },
 ]);
 if (executableRows.length !== controlIds.length - witnessDependentCount) refuse();
+// Name-keyed, not positional. A reorder of the landed control ID list refuses
+// here instead of silently re-associating a guard with another control.
+for (const [index, definition] of executableRows.entries())
+  if (definition.controlId !== controlIds[index + witnessDependentCount]) refuse();
+
+/** The first three landed rows: the call-interception fixtures' control IDs. */
+const witnessDependentIds = Object.freeze(controlIds.slice(0, witnessDependentCount));
+checkNativeLockControlFixtureCensus(nativeLockControlFixturePolicies, witnessDependentIds);
+
+/** The named guard the three witness-dependent rows reach when they execute. */
+const witnessGuard =
+  "probes/portable-primitives/experiment/control-fixtures.mjs#judgeNativeLockControlFixture";
+
+/**
+ * The control-phase gates sub-slice 3.3 adds, substitutable exactly like
+ * `nativeLockControlGuards` and disclosed in every retained observation.
+ */
+export const nativeLockControlPhaseGates = Object.freeze({
+  casePhaseEntry: checkNativeLockCasePhaseEntry,
+  deathFreedom: checkNativeLockControlDeathFreedom,
+  fixtureCensus: checkNativeLockControlFixtureCensus,
+  judge: judgeNativeLockControlFixture,
+  reset: checkNativeLockControlReset,
+  seamKind: seamKindOf,
+});
+
+// Only `runNativeLockControlFixturePhase` can brand a fixture result, so a
+// caller-supplied result can never be stamped as a landed-seam witness call.
+const phaseResults = new WeakSet();
+function seamKindOf(result) {
+  if (!phaseResults.has(result)) return "CAPTURED_INPUT";
+  return result.seamKind === "LANDED_CASE_CONTEXT" ? "LANDED_CASE_CONTEXT" : "SUBSTITUTED_SEAM";
+}
+
+function substitutionsOf(boundary, seam) {
+  return Object.freeze({
+    fixtures: boundary.fixtures !== undefined,
+    gates: sorted(Object.keys(boundary.gates ?? {})),
+    guards: sorted(Object.keys(boundary.guards ?? {})),
+    seam,
+    spawn: boundary.spawn !== undefined,
+  });
+}
 
 /**
  * Derive the nullable arm of a witness-dependent row from stable prerequisite
- * evidence. Stage three executes no call-interception fixture, so there is no
- * path from this function to `REFUSED` or `VIOLATED`: an unsupported exact
- * prerequisite yields `UNSUPPORTED`, and every other state yields `UNKNOWN`
- * because the control did not run.
+ * evidence. There is no path from this function to `REFUSED` or `VIOLATED`: an
+ * unsupported exact prerequisite yields `UNSUPPORTED`, and every other state
+ * yields `UNKNOWN` because the control did not run. Only a real witness call,
+ * reduced by `judgeNativeLockControlFixture`, can reach an executed arm.
  */
 export function deriveNativeLockControlPrerequisiteArm(prerequisites) {
   const parsed = record(prerequisites, nativeLockControlPrerequisiteFields);
@@ -651,7 +724,7 @@ export function deriveNativeLockControlPrerequisiteArm(prerequisites) {
       })
     : Object.freeze({
         arm: nativeLockControlArms.UNKNOWN,
-        prerequisite: "not-run:no-call-interception-fixture-before-sub-slice-3.3",
+        prerequisite: "not-run:no-witness-call-interception-fixture-executed",
       });
 }
 
@@ -668,6 +741,8 @@ function observationOf(row) {
     prerequisite: row.prerequisite,
     refused: row.arm.refused,
     result: row.arm.result,
+    substitutions: row.substitutions,
+    witnessDisposition: row.witnessDisposition,
   });
 }
 
@@ -679,24 +754,67 @@ function observationOf(row) {
 export function buildNativeLockControlCensus(input, boundary = {}) {
   const parsed = record(input, ["prerequisites"]);
   const guards = Object.freeze({ ...nativeLockControlGuards, ...(boundary.guards ?? {}) });
+  const gates = Object.freeze({ ...nativeLockControlPhaseGates, ...(boundary.gates ?? {}) });
   const derived = deriveNativeLockControlPrerequisiteArm(parsed.prerequisites);
+  const fixtures = boundary.fixtures ?? nativeLockControlFixturePolicies;
+  gates.fixtureCensus(fixtures, witnessDependentIds);
+  gates.deathFreedom(fixtures, boundary.spawnCount ?? 0);
+  const results = boundary.fixtureResults ?? null;
+  if (results !== null && (!Array.isArray(results) || results.length !== witnessDependentCount))
+    refuse();
   const rows = controlIds.map((controlId, index) => {
     const paths = nativeLockControlPaths(controlId);
-    if (index < witnessDependentCount)
+    if (index < witnessDependentCount) {
+      const result = results === null ? null : results[index];
+      if (result !== null && result.controlId !== controlId) refuse();
+      const seam = result === null ? "ABSENT" : gates.seamKind(result);
+      const substitutions = substitutionsOf(boundary, seam);
+      // The verdict is a function of the control ID and the stable parent's own
+      // witness facts. The fixture's claim is never an argument to it.
+      const judged =
+        result === null || result.witnessFacts === null || result.witnessFacts === undefined
+          ? null
+          : gates.judge(controlId, result.witnessFacts);
+      const executed = judged !== null && judged.verdict !== null;
+      const arm = executed ? nativeLockControlArms[judged.verdict] : derived.arm;
+      if (arm === undefined) refuse();
       return {
-        arm: derived.arm,
+        arm,
         controlId,
         deferredHalves: [],
-        detail: "witness-dependent control did not run; nullable arm from stable prerequisites",
-        evidence: "STABLE_PREREQUISITE_DERIVATION",
+        detail:
+          result === null
+            ? "witness-dependent control did not run; nullable arm from stable prerequisites"
+            : executed
+              ? `parent witness call ${judged.disposition}; the fixture's own report was not read`
+              : `witness call unusable (${judged?.disposition ?? "absent"}); nullable arm from the same stable prerequisites`,
+        evidence:
+          result === null
+            ? "STABLE_PREREQUISITE_DERIVATION"
+            : seam === "LANDED_CASE_CONTEXT"
+              ? "WITNESS_CALL_INTERCEPTION"
+              : "SYNTHETIC_WITNESS_CALL_INTERCEPTION",
         executedHalf: null,
-        guard: null,
-        inputPath: null,
-        mutant: null,
+        guard: executed ? witnessGuard : null,
+        inputPath: executed ? paths.inputPath : null,
+        mutant: executed ? (fixtures[index].interception ?? null) : null,
         observationPath: paths.observationPath,
-        prerequisite: derived.prerequisite,
-        retained: null,
+        prerequisite: executed ? null : derived.prerequisite,
+        retained: executed
+          ? {
+              claim: result.claim ?? null,
+              controlId,
+              disposition: judged.disposition,
+              failure: result.failure ?? null,
+              interception: fixtures[index].interception ?? null,
+              seam,
+              witnessFacts: result.witnessFacts,
+            }
+          : null,
+        substitutions,
+        witnessDisposition: judged?.disposition ?? null,
       };
+    }
     const definition = executableRows[index - witnessDependentCount];
     const replay = definition.replay();
     const honest = definition.run(guards, replay.honest);
@@ -730,6 +848,8 @@ export function buildNativeLockControlCensus(input, boundary = {}) {
             replay,
           }
         : null,
+      substitutions: substitutionsOf(boundary, "ABSENT"),
+      witnessDisposition: null,
     };
   });
   const files = [];
@@ -833,17 +953,136 @@ export async function writeNativeLockControlFiles(archiveRoot, census) {
 }
 
 /**
- * The control-phase entry point a later sub-slice wires before the case phase.
- * It builds the census, writes the fixed files, and returns the ordered report
- * rows with the archive-relative paths it retained. It runs no fixture and
- * releases no resource, because this slice adds no call-interception fixture.
+ * Run the three call-interception fixtures through the landed control-phase
+ * seam, in the landed census order, releasing each fixture's known resources on
+ * the same fixed file before the next one. Returns `null` when no seam is
+ * supplied, in which case the three rows keep their nullable prerequisite arm.
+ *
+ * Nothing here reads a fixture's report: the claim is carried out only as
+ * retained control input, and the arm comes from `gates.judge` over the stable
+ * parent's own witness facts.
+ */
+export async function runNativeLockControlFixturePhase(input, boundary = {}) {
+  const seam = boundary.seam ?? null;
+  if (seam === null) return null;
+  const parsed = record(input, ["prerequisites"]);
+  deriveNativeLockControlPrerequisiteArm(parsed.prerequisites);
+  const gates = Object.freeze({ ...nativeLockControlPhaseGates, ...(boundary.gates ?? {}) });
+  const fixtures = boundary.fixtures ?? nativeLockControlFixturePolicies;
+  gates.fixtureCensus(fixtures, witnessDependentIds);
+  record(boundary.fixtureChild, ["stableFiles", "systemRoot", "witness"]);
+  let landed = false;
+  try {
+    requireCaseContext(seam);
+    landed = true;
+  } catch {
+    landed = false;
+  }
+  const seamKind = landed ? "LANDED_CASE_CONTEXT" : "SUBSTITUTED_SEAM";
+  let spawnCount = 0;
+  // The control phase never launches a case actor. Any attempt is counted and
+  // refused by the death-freedom gate below rather than silently allowed.
+  const guardedSeam = Object.freeze({
+    artifactRoot: seam.artifactRoot,
+    barrier: (journal) => seam.barrier(journal),
+    beginControl: () => seam.beginControl(),
+    identity: seam.identity,
+    rootPath: seam.rootPath,
+    spawn: (...args) => {
+      spawnCount += 1;
+      return seam.spawn(...args);
+    },
+    tryWitness: (journal) => seam.tryWitness(journal),
+  });
+  const results = [];
+  const openResources = [];
+  let witnessHeld = false;
+  let resetFailure = null;
+  for (const policy of fixtures) {
+    const ledger = createNativeLockControlResourceLedger();
+    const run = await runNativeLockControlFixtureChild(policy, guardedSeam, {
+      ...boundary,
+      ledger,
+    });
+    const judged =
+      run.witnessFacts === null || run.witnessFacts === undefined
+        ? null
+        : gates.judge(policy.controlId, run.witnessFacts);
+    if (judged?.disposition === "ACQUIRED") witnessHeld = true;
+    try {
+      gates.reset(ledger, run.journal);
+      seam.resetControl();
+      witnessHeld = false;
+    } catch (error) {
+      // A refused reset cannot certify that the fixed file was released, so the
+      // case phase stays closed whatever the witness call reported.
+      resetFailure ??= brief(error?.message ?? error);
+      witnessHeld = true;
+      openResources.push(...ledger.openNames);
+    }
+    const result = {
+      claim: run.claim,
+      controlId: run.controlId,
+      failure: run.failure ?? resetFailure,
+      interception: run.interception,
+      seamKind,
+      witnessFacts: run.witnessFacts,
+    };
+    phaseResults.add(result);
+    results.push(Object.freeze(result));
+  }
+  gates.deathFreedom(fixtures, spawnCount);
+  return Object.freeze({
+    openResources: Object.freeze(sorted(openResources)),
+    resetFailure,
+    results: Object.freeze(results),
+    seamKind,
+    spawnCount,
+    witnessHeld,
+  });
+}
+
+/**
+ * The control-phase entry point sub-slice 3.4 wires before the case phase. It
+ * runs the fixtures when a seam is supplied, builds the census, writes the fixed
+ * files, and returns the ordered report rows with the archive-relative paths it
+ * retained plus the state the case-phase gate reads.
  */
 export async function runNativeLockControlPhase(archiveRoot, input, boundary = {}) {
-  const census = buildNativeLockControlCensus(input, boundary);
+  const phase = await runNativeLockControlFixturePhase(input, boundary);
+  const census = buildNativeLockControlCensus(
+    input,
+    phase === null
+      ? boundary
+      : Object.freeze({
+          ...boundary,
+          fixtureResults: phase.results,
+          spawnCount: phase.spawnCount,
+        }),
+  );
   const retained = await writeNativeLockControlFiles(archiveRoot, census);
   return Object.freeze({
     observations: census.observations,
+    openResources: phase?.openResources ?? Object.freeze([]),
     records: census.records,
     retained,
+    seam: phase?.seamKind ?? "ABSENT",
+    spawnCount: phase?.spawnCount ?? 0,
+    witnessHeld: phase?.witnessHeld ?? false,
   });
+}
+
+/**
+ * Enter the case phase. Refuses when a control left the witness locked or left a
+ * known resource open on the fixed file, before the landed seam's own
+ * `beginCases` repeats both conditions over its private state.
+ */
+export function enterNativeLockCasePhase(seam, phase, boundary = {}) {
+  const gates = Object.freeze({ ...nativeLockControlPhaseGates, ...(boundary.gates ?? {}) });
+  gates.casePhaseEntry({
+    openResources: phase?.openResources ?? null,
+    witnessHeld: phase?.witnessHeld ?? null,
+  });
+  seam.beginCases();
+  return true;
 }
