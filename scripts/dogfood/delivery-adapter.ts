@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { normalizeBody } from "../planning/board-check.mjs";
@@ -17,6 +17,7 @@ import {
 
 const exec = promisify(execFile);
 const SHA = /^[a-f0-9]{40}$/;
+const ATTEMPT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
 async function run(executable: string, args: string[], cwd: string) {
   return exec(executable, args, {
@@ -109,6 +110,29 @@ async function remoteBranchHead(config: DeliveryConfig, branch: string) {
   return match[1];
 }
 
+export async function assertControllerExecutor(config: DeliveryConfig, executingRoot: string) {
+  try {
+    const [actualRoot, configuredRoot] = await Promise.all([
+      realpath(executingRoot),
+      realpath(config.controllerRoot),
+    ]);
+    if (!samePath(actualRoot, configuredRoot))
+      throw new DeliveryBlocked("controller-executor-mismatch");
+    const repositoryRoot = await realpath(
+      await git(config, ["rev-parse", "--show-toplevel"], actualRoot),
+    );
+    if (!samePath(repositoryRoot, actualRoot))
+      throw new DeliveryBlocked("controller-executor-not-repository-root");
+    if ((await git(config, ["rev-parse", "HEAD"], actualRoot)) !== config.controllerRevision)
+      throw new DeliveryBlocked("controller-executor-revision-moved");
+    if ((await git(config, ["status", "--porcelain"], actualRoot)) !== "")
+      throw new DeliveryBlocked("dirty-controller-executor");
+  } catch (error) {
+    if (error instanceof DeliveryBlocked) throw error;
+    throw new DeliveryBlocked("controller-executor-unverified");
+  }
+}
+
 export function githubDeliveryAdapter(): DeliveryAdapter {
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
@@ -146,9 +170,11 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
         candidate?.head !== config.candidateHead ||
         reviewer?.status !== "passed" ||
         reviewer?.head !== config.candidateHead ||
+        typeof author?.id !== "string" ||
+        !ATTEMPT_ID.test(author.id) ||
         typeof reviewer?.id !== "string" ||
-        !/^[a-f0-9-]{36}$/.test(reviewer.id) ||
-        reviewer.id === author?.id
+        !ATTEMPT_ID.test(reviewer.id) ||
+        author.id === reviewer.id
       )
         throw new DeliveryBlocked("unreviewed-delivery-source");
       return { head: candidate.head, reviewId: reviewer.id };

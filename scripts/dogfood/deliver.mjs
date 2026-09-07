@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { githubDeliveryAdapter } from "./delivery-adapter.mjs";
+import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
 import { DeliveryBlocked, assertControllerRequest, deliveryStep } from "./delivery.mjs";
 import { selfDeliveryPolicy } from "./self-delivery-policy.mjs";
 
@@ -10,6 +10,7 @@ try {
   const config = JSON.parse(await readFile(request, "utf8"));
   await assertControllerRequest(config, request);
   const adapter = githubDeliveryAdapter();
+  await assertControllerExecutor(config, resolve(import.meta.dirname, "../.."));
   const policy = selfDeliveryPolicy();
   for (;;) {
     const result = await deliveryStep(config, adapter, policy);

@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
-import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
+import {
+  assertControllerExecutor,
+  githubDeliveryAdapter,
+} from "../../scripts/dogfood/delivery-adapter.mjs";
 import type { DeliveryConfig } from "../../scripts/dogfood/delivery.mjs";
 import {
   selfDeliveryPolicy,
@@ -53,6 +56,45 @@ function config(root: string): DeliveryConfig {
       pullRequestBody: "reviewed delivery candidate",
     },
   };
+}
+
+async function cleanController(root: string) {
+  const current = config(root);
+  await Promise.all(
+    [current.controllerRoot, current.worktree, current.reviewWorktree, current.stateDirectory].map(
+      (path) => mkdir(path),
+    ),
+  );
+  await promisify(execFile)("git", ["init", "--quiet"], {
+    cwd: current.controllerRoot,
+    windowsHide: true,
+  });
+  await writeFile(resolve(current.controllerRoot, "stable.txt"), "stable\n");
+  await promisify(execFile)("git", ["add", "stable.txt"], {
+    cwd: current.controllerRoot,
+    windowsHide: true,
+  });
+  await promisify(execFile)(
+    "git",
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "stable",
+    ],
+    { cwd: current.controllerRoot, windowsHide: true },
+  );
+  const { stdout } = await promisify(execFile)("git", ["rev-parse", "HEAD"], {
+    cwd: current.controllerRoot,
+    windowsHide: true,
+  });
+  current.controllerRevision = stdout.trim();
+  current.authority.controllerRevision = current.controllerRevision;
+  return current;
 }
 
 afterEach(async () => {
@@ -168,26 +210,68 @@ it("reduces existing pilot records to exact reviewed source evidence without wor
 });
 
 it.each([
-  { reviewerId: authorId, reviewerHead: head },
-  { reviewerId: reviewId, reviewerHead: "b".repeat(40) },
-])("rejects self-review and wrong-head pilot evidence", async ({ reviewerId, reviewerHead }) => {
+  ["missing author identity", {}, { id: reviewId, status: "passed", head }],
+  ["malformed author identity", { id: "-".repeat(36) }, { id: reviewId, status: "passed", head }],
+  ["missing reviewer identity", { id: authorId }, { status: "passed", head }],
+  ["malformed reviewer identity", { id: authorId }, { id: "-".repeat(36), status: "passed", head }],
+  ["duplicate identities", { id: authorId }, { id: authorId, status: "passed", head }],
+  ["wrong review head", { id: authorId }, { id: reviewId, status: "passed", head: "b".repeat(40) }],
+] as const)("rejects %s in pilot evidence", async (_case, author, reviewer) => {
   const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
   roots.push(root);
   const current = config(root);
   await mkdir(current.stateDirectory);
   await Promise.all([
     writeFile(resolve(current.stateDirectory, "candidate.json"), JSON.stringify({ head })),
-    writeFile(
-      resolve(current.stateDirectory, "reviewer-terminal.json"),
-      JSON.stringify({ id: reviewerId, status: "passed", head: reviewerHead }),
-    ),
-    writeFile(
-      resolve(current.stateDirectory, "author-attempt.json"),
-      JSON.stringify({ id: authorId }),
-    ),
+    writeFile(resolve(current.stateDirectory, "reviewer-terminal.json"), JSON.stringify(reviewer)),
+    writeFile(resolve(current.stateDirectory, "author-attempt.json"), JSON.stringify(author)),
   ]);
   await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
     "unreviewed-delivery-source",
+  );
+});
+
+it("rejects entrypoint execution from another checkout despite a clean matching declared controller", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-executor-"));
+  roots.push(root);
+  const current = await cleanController(root);
+  const request = resolve(current.stateDirectory, "delivery-request.json");
+  await writeFile(request, JSON.stringify(current));
+
+  let stderr = "";
+  try {
+    await promisify(execFile)(
+      process.execPath,
+      [resolve(import.meta.dirname, "../../scripts/dogfood/deliver.mjs"), request],
+      { windowsHide: true },
+    );
+  } catch (error) {
+    stderr = (error as { stderr?: string }).stderr ?? "";
+  }
+  expect(JSON.parse(stderr)).toEqual({
+    status: "blocked",
+    reason: "controller-executor-mismatch",
+  });
+});
+
+it("requires the actual controller executor to remain at its clean authorized revision", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-executor-"));
+  roots.push(root);
+  const current = await cleanController(root);
+  await expect(assertControllerExecutor(current, current.controllerRoot)).resolves.toBeUndefined();
+
+  const revision = current.controllerRevision;
+  current.controllerRevision = "d".repeat(40);
+  current.authority.controllerRevision = current.controllerRevision;
+  await expect(assertControllerExecutor(current, current.controllerRoot)).rejects.toThrow(
+    "controller-executor-revision-moved",
+  );
+
+  current.controllerRevision = revision;
+  current.authority.controllerRevision = revision;
+  await writeFile(resolve(current.controllerRoot, "dirty.txt"), "dirty\n");
+  await expect(assertControllerExecutor(current, current.controllerRoot)).rejects.toThrow(
+    "dirty-controller-executor",
   );
 });
 
@@ -197,9 +281,9 @@ it("imports both concrete delivery adapters directly in Node 24", async () => {
     [
       "--input-type=module",
       "-e",
-      'Promise.all([import("./scripts/dogfood/delivery-adapter.mjs"),import("./scripts/dogfood/self-delivery-policy.mjs")]).then(([a,p])=>process.stdout.write(JSON.stringify([typeof a.githubDeliveryAdapter,typeof p.selfDeliveryPolicy])))',
+      'Promise.all([import("./scripts/dogfood/delivery-adapter.mjs"),import("./scripts/dogfood/self-delivery-policy.mjs")]).then(([a,p])=>process.stdout.write(JSON.stringify([typeof a.assertControllerExecutor,typeof a.githubDeliveryAdapter,typeof p.selfDeliveryPolicy])))',
     ],
     { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
   );
-  expect(JSON.parse(stdout)).toEqual(["function", "function"]);
+  expect(JSON.parse(stdout)).toEqual(["function", "function", "function"]);
 });

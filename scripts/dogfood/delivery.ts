@@ -153,6 +153,17 @@ function scalarObject(value: unknown): value is Record<string, string | null> {
   );
 }
 
+function exactUniqueStringSet(value: unknown, expected: string[]) {
+  return (
+    Array.isArray(value) &&
+    value.length === expected.length &&
+    value.every((item) => typeof item === "string") &&
+    new Set(value).size === value.length &&
+    value.every((item) => expected.includes(item)) &&
+    expected.every((item) => value.includes(item))
+  );
+}
+
 function outside(root: string, candidate: string) {
   const path = relative(root, candidate);
   return path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path);
@@ -449,9 +460,7 @@ export async function deliveryStep(
         SHA.test(savedMerge.mergeCommit) &&
         exactKeys(completed, ["head", "worktrees", "branch"]) &&
         completed.head === config.candidateHead &&
-        Array.isArray(completed.worktrees) &&
-        completed.worktrees.length === completedPlan.cleanup.worktrees.length &&
-        completed.worktrees.every((path) => completedPlan.cleanup.worktrees.includes(path)) &&
+        exactUniqueStringSet(completed.worktrees, completedPlan.cleanup.worktrees) &&
         completed.branch === completedPlan.cleanup.branch &&
         checks?.every((check) => check.bucket === "pass"),
       "malformed-completed-delivery",
@@ -634,9 +643,7 @@ export async function deliveryStep(
     exactKeys(cleanup, ["head", "worktrees", "branch"]) &&
       cleanup.head === config.candidateHead &&
       cleanup.branch === plan.cleanup.branch &&
-      Array.isArray(cleanup.worktrees) &&
-      cleanup.worktrees.length === plan.cleanup.worktrees.length &&
-      cleanup.worktrees.every((path: string) => plan.cleanup.worktrees.includes(path)),
+      exactUniqueStringSet(cleanup.worktrees, plan.cleanup.worktrees),
     "malformed-cleanup-receipt",
   );
   return {

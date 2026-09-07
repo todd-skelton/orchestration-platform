@@ -315,6 +315,48 @@ it("refuses partial cleanup and never starts a second cleanup mutation", async (
   expect(f.calls.filter((call) => call === "policy")).toHaveLength(1);
 });
 
+it.each(["duplicate", "omitted"] as const)(
+  "rejects a newly observed cleanup receipt with %s targets",
+  async (mode) => {
+    const f = await fixture();
+    f.adapter.observeCleanup = async () => ({
+      state: "confirmed",
+      value: {
+        worktrees:
+          mode === "duplicate"
+            ? [f.plan.cleanup.worktrees[0]!, f.plan.cleanup.worktrees[0]!]
+            : [f.plan.cleanup.worktrees[0]!],
+        branch: f.plan.cleanup.branch,
+      },
+    });
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+      "malformed-cleanup-receipt",
+    );
+  },
+);
+
+it.each(["duplicate", "omitted"] as const)(
+  "rejects a restarted completed delivery with %s cleanup targets",
+  async (mode) => {
+    const f = await fixture();
+    await deliveryStep(f.config, f.adapter, f.policy);
+    await writeFile(
+      resolve(f.config.stateDirectory, "cleanup.json"),
+      JSON.stringify({
+        head,
+        worktrees:
+          mode === "duplicate"
+            ? [f.plan.cleanup.worktrees[0]!, f.plan.cleanup.worktrees[0]!]
+            : [f.plan.cleanup.worktrees[0]!],
+        branch: f.plan.cleanup.branch,
+      }),
+    );
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+      "malformed-completed-delivery",
+    );
+  },
+);
+
 it("rejects cleanup plans that include the surviving controller checkout", async () => {
   const f = await fixture();
   f.plan.cleanup.worktrees = [f.config.controllerRoot, f.config.worktree];
