@@ -148,12 +148,14 @@ small detached observation process only captures the existing CLI's PID, exit
 and JSONL; it survives controller exit and cannot dispatch another attempt.
 
 The pilot appends the exact base/head and JSON verdict instructions to each
-prompt. The four authority keys remain required; workers may also return an
-optional summary of at most 2,000 characters. The pilot omits malformed summary
-values, bounds long ones, and exposes retained summaries as advisory diagnostics
-without changing verdict, head, role, or run checks. Author `head` must be the
-unchanged base; the pilot makes the local commit under the controller's existing
-authority after validating the complete footprint. The author does not stage,
+prompt. The four authority keys remain required; new native schemas also require
+a summary string of at most 2,000 characters, using an empty string when there
+are no findings. The parser still accepts legacy four-key records. The pilot
+omits malformed or empty summary values, bounds long ones, and exposes retained
+summaries as advisory diagnostics without changing verdict, head, role, or run
+checks. Author `head` must be the unchanged base; the pilot makes the local commit
+under the controller's existing authority after validating the complete
+footprint. The author does not stage,
 commit, or alter Git metadata. The pilot starts review at the resulting detached
 candidate head, then returns `awaiting-publication`. The existing controller
 publishes and writes `publication.json` in the state directory containing

@@ -124,12 +124,27 @@ it("accepts legacy verdicts and bounds optional advisory summaries", () => {
     "x".repeat(2000),
   );
 });
-it("requests an optional bounded summary without changing verdict authority fields", () => {
+it("requests a bounded summary for new outputs without changing verdict authority fields", () => {
   const schema = outputSchema(config, "reviewer");
-  expect(schema.required).toEqual(["run", "role", "head", "verdict"]);
+  expect(schema.required).toEqual(["run", "role", "head", "verdict", "summary"]);
   expect(schema.properties.summary).toMatchObject({ type: "string", maxLength: 2000 });
   expect(schema.additionalProperties).toBe(false);
 });
+it.skipIf(process.env.GITHUB_ACTIONS !== "true")(
+  "loads the adapter in a hosted child Node process with its native TypeScript imports",
+  async () => {
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        'const adapter = await import("./scripts/dogfood/dispatch-adapter.ts"); process.stdout.write(JSON.stringify(adapter.outputSchema({ run: "native-smoke", base: "a".repeat(40) }, "author").required));',
+      ],
+      { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
+    );
+    expect(JSON.parse(stdout)).toEqual(["run", "role", "head", "verdict", "summary"]);
+  },
+);
 it("rejects missing/duplicate identities, missing completion, changed session, wrong role and prose verdicts", () => {
   expect(() => parseTrace(trace(rows.slice(1)), true, "reviewer", config)).toThrow();
   expect(() => parseTrace(trace([rows[0]!, ...rows]), true, "reviewer", config)).toThrow();

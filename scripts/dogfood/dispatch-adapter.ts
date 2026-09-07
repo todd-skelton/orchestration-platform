@@ -3,15 +3,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import {
-  MAX_TERMINAL_SUMMARY_LENGTH,
-  terminalSummary,
-  type Adapter,
-  type Attempt,
-  type Config,
-  type Role,
-  type Terminal,
-} from "./flow.js";
+import type { Adapter, Attempt, Config, Role, Terminal } from "./flow.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
 
 const exec = promisify(execFile);
 const check = (ok: unknown, reason: string) => {
@@ -125,7 +118,7 @@ export function outputSchema(config: Config, role: Role) {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["run", "role", "head", "verdict"],
+    required: ["run", "role", "head", "verdict", "summary"],
     properties: {
       run: { type: "string", enum: [config.run] },
       role: { type: "string", enum: [role] },
@@ -137,7 +130,7 @@ export function outputSchema(config: Config, role: Role) {
       summary: {
         type: "string",
         maxLength: MAX_TERMINAL_SUMMARY_LENGTH,
-        description: "Short actionable findings; advisory only.",
+        description: "Short actionable findings; advisory only. Use an empty string when none.",
       },
     },
   };

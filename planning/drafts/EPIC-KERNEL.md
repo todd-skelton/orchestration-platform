@@ -2,7 +2,7 @@
 key: EPIC-KERNEL
 title: "Epic: Build the orchestration control-plane kernel"
 labels: ["type:epic", "area:core"]
-children: [ISS-025, ISS-007, ISS-008, ISS-009, ISS-010, ISS-026, ISS-030, ISS-041, ISS-042, ISS-043, ISS-071]
+children: [ISS-025, ISS-007, ISS-008, ISS-009, ISS-010, ISS-026, ISS-030, ISS-041, ISS-042, ISS-043, ISS-071, ISS-072]
 ---
 
 ## Outcome
@@ -33,7 +33,8 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
   `ISS-003 → ISS-041`;
   `ISS-010 → ISS-042`;
   `ISS-009, ISS-021 → ISS-043`;
-  `ISS-041 → ISS-071`.
+  `ISS-041 → ISS-071`;
+  `ISS-071 → ISS-072`.
 - Parallelism: review authority and the event journal may proceed in parallel
   once their gates are satisfied. The walking skeleton runs as soon as
   contracts and the CLI exist and blocks nothing; its divergence ledger is
@@ -86,3 +87,4 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
 - `ISS-043` — Calibrate independent review discrimination.
 
 - `ISS-071` — Run one supervised real-work loop through review, CI and restart.
+- `ISS-072` — Preserve actionable worker diagnostics through the dogfood loop.
