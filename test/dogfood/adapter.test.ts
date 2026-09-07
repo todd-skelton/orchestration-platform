@@ -7,6 +7,7 @@ import { afterEach, expect, it } from "vitest";
 import {
   codexAdapter,
   launchArguments,
+  outputSchema,
   parseTrace,
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
@@ -101,6 +102,49 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
 });
+it("accepts legacy verdicts and bounds optional advisory summaries", () => {
+  expect(parseTrace(trace(), true, "reviewer", config, id)).not.toHaveProperty("summary");
+  const verdict = (summary: unknown) =>
+    trace([
+      rows[0]!,
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({ run: "trial", role: "reviewer", head, verdict: "PASS", summary }),
+        },
+      },
+      rows[2]!,
+    ]);
+  expect(parseTrace(verdict("actionable finding"), true, "reviewer", config, id).summary).toBe(
+    "actionable finding",
+  );
+  expect(parseTrace(verdict(7), true, "reviewer", config, id)).not.toHaveProperty("summary");
+  expect(parseTrace(verdict("x".repeat(2100)), true, "reviewer", config, id).summary).toBe(
+    "x".repeat(2000),
+  );
+});
+it("requests a bounded summary for new outputs without changing verdict authority fields", () => {
+  const schema = outputSchema(config, "reviewer");
+  expect(schema.required).toEqual(["run", "role", "head", "verdict", "summary"]);
+  expect(schema.properties.summary).toMatchObject({ type: "string", maxLength: 2000 });
+  expect(schema.additionalProperties).toBe(false);
+});
+it.skipIf(process.env.GITHUB_ACTIONS !== "true")(
+  "loads the adapter in a hosted child Node process with its native TypeScript imports",
+  async () => {
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        'const adapter = await import("./scripts/dogfood/dispatch-adapter.ts"); process.stdout.write(JSON.stringify(adapter.outputSchema({ run: "native-smoke", base: "a".repeat(40) }, "author").required));',
+      ],
+      { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
+    );
+    expect(JSON.parse(stdout)).toEqual(["run", "role", "head", "verdict", "summary"]);
+  },
+);
 it("rejects missing/duplicate identities, missing completion, changed session, wrong role and prose verdicts", () => {
   expect(() => parseTrace(trace(rows.slice(1)), true, "reviewer", config)).toThrow();
   expect(() => parseTrace(trace([rows[0]!, ...rows]), true, "reviewer", config)).toThrow();

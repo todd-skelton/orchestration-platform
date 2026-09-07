@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
 
 export type Role = "author" | "reviewer";
 export interface Config {
@@ -29,6 +30,7 @@ export interface Terminal {
   id: string;
   head?: string;
   usage?: unknown;
+  summary?: string;
 }
 export interface Check {
   name: string;
@@ -233,7 +235,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
       const prompt =
         `${prompts[role === "author" ? 0 : 1]}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
         `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"${head}","verdict":"PASS"} (or verdict FAIL). Review every changed assertion independently; do not run local test runners/native builds.\n`;
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently; do not run local test runners/native builds.\n`;
       attempt = await adapter.launch(role, config, prompt);
       await record(directory, `${role}-attempt`, attempt);
     }
@@ -258,10 +260,15 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
           ["running", "passed", "failed"].includes(terminal.status),
         "malformed-terminal",
       );
+      const summary = terminalSummary(terminal.summary);
+      delete terminal.summary;
+      if (summary) terminal.summary = summary;
       if (terminal.status === "running") return finish(`observing-${role}`, { attempt });
       await record(directory, `${role}-terminal`, terminal);
     }
-    requireThat(terminal.id === attempt.id && terminal.status === "passed", `${role}-failed`);
+    const summary = terminalSummary(terminal.summary);
+    if (terminal.id !== attempt.id || terminal.status !== "passed")
+      throw Object.assign(new Error(`${role}-failed`), summary ? { diagnostics: summary } : {});
     if (role === "author") {
       requireThat(terminal.head === config.base, "author-wrong-head");
       if (!reviewed) {
@@ -328,10 +335,21 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
   }
   const reviewed = await get("candidate");
   const publication = await get("publication");
+  const diagnostics = Object.fromEntries(
+    (
+      await Promise.all(
+        (["author", "reviewer"] as const).map(async (role) => [
+          role,
+          terminalSummary((await get(`${role}-terminal`))?.summary),
+        ]),
+      )
+    ).filter((entry): entry is [Role, string] => typeof entry[1] === "string"),
+  );
   const evidence = {
     head: reviewed.head,
     author: await get("author-attempt"),
     reviewer: await get("reviewer-attempt"),
+    ...(Object.keys(diagnostics).length > 0 ? { diagnostics } : {}),
   };
   if (!publication) return finish("awaiting-publication", evidence);
   requireThat(

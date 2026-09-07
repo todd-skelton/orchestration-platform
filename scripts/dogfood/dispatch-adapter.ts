@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Adapter, Attempt, Config, Role, Terminal } from "./flow.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
 
 const exec = promisify(execFile);
 const check = (ok: unknown, reason: string) => {
@@ -104,11 +105,34 @@ export function parseTrace(
       ["PASS", "FAIL"].includes(verdict.verdict),
     "malformed-worker-verdict",
   );
+  const summary = terminalSummary(verdict.summary);
   return {
     id,
     status: verdict.verdict === "PASS" ? "passed" : "failed",
     head: verdict.head,
     usage: turns[0].usage,
+    ...(summary ? { summary } : {}),
+  };
+}
+export function outputSchema(config: Config, role: Role) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["run", "role", "head", "verdict", "summary"],
+    properties: {
+      run: { type: "string", enum: [config.run] },
+      role: { type: "string", enum: [role] },
+      head:
+        role === "author"
+          ? { type: "string", enum: [config.base] }
+          : { type: "string", pattern: "^[a-f0-9]{40}$" },
+      verdict: { type: "string", enum: ["PASS", "FAIL"] },
+      summary: {
+        type: "string",
+        maxLength: MAX_TERMINAL_SUMMARY_LENGTH,
+        description: "Short actionable findings; advisory only. Use an empty string when none.",
+      },
+    },
   };
 }
 export function codexAdapter(): Adapter {
@@ -143,20 +167,7 @@ export function codexAdapter(): Adapter {
       await writeFile(artifact(config, role, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(
         artifact(config, role, "output-schema.json"),
-        JSON.stringify({
-          type: "object",
-          additionalProperties: false,
-          required: ["run", "role", "head", "verdict"],
-          properties: {
-            run: { type: "string", enum: [config.run] },
-            role: { type: "string", enum: [role] },
-            head:
-              role === "author"
-                ? { type: "string", enum: [config.base] }
-                : { type: "string", pattern: "^[a-f0-9]{40}$" },
-            verdict: { type: "string", enum: ["PASS", "FAIL"] },
-          },
-        }),
+        JSON.stringify(outputSchema(config, role)),
         { flag: "wx" },
       );
       const trace = artifact(config, role, "jsonl");

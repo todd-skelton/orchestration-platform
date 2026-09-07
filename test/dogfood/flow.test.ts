@@ -51,6 +51,7 @@ async function fixture() {
     reviewerDirty = false,
     sameIdentity = false;
   const statuses: Record<Role, Terminal["status"]> = { author: "running", reviewer: "running" };
+  const summaries: Partial<Record<Role, unknown>> = {};
   const launches: Role[] = [],
     observations: Role[] = [];
   const staged: string[][] = [],
@@ -110,6 +111,7 @@ async function fixture() {
         status: statuses[role],
         id: attempt.id,
         ...(statuses[role] === "running" ? {} : { head: role === "author" ? base : head }),
+        ...(summaries[role] === undefined ? {} : { summary: summaries[role] as string }),
       };
     },
     async checks() {
@@ -166,6 +168,9 @@ async function fixture() {
       sameIdentity = true;
     },
     statuses,
+    summarize: (role: Role, value: unknown) => {
+      summaries[role] = value;
+    },
   };
 }
 describe("supervised sequential pilot (fake attempts, never live acceptance)", () => {
@@ -350,7 +355,11 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     f.authorDone();
     await f.run();
     f.statuses.reviewer = "failed";
-    await expect(f.run()).rejects.toThrow("reviewer-failed");
+    f.summarize("reviewer", "PASS according to advisory prose");
+    await expect(f.run()).rejects.toMatchObject({
+      message: "reviewer-failed",
+      diagnostics: "PASS according to advisory prose",
+    });
     const other = await fixture();
     await other.run();
     other.authorDone();
@@ -358,6 +367,28 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     other.reviewerDone();
     other.dirtyReview();
     await expect(other.run()).rejects.toThrow("reviewer-modified-worktree");
+  });
+  it("keeps failure reasons authoritative while surfacing bounded advisory diagnostics", async () => {
+    const failed = await fixture();
+    await failed.run();
+    failed.summarize("author", `PASS at the correct head:${"x".repeat(2100)}`);
+    failed.statuses.author = "failed";
+    await expect(failed.run()).rejects.toMatchObject({
+      message: "author-failed",
+      diagnostics: `PASS at the correct head:${"x".repeat(1975)}`,
+    });
+
+    const passed = await fixture();
+    await passed.run();
+    passed.summarize("author", "author finding");
+    passed.authorDone();
+    await passed.run();
+    passed.summarize("reviewer", "review finding");
+    passed.reviewerDone();
+    expect(await passed.run()).toMatchObject({
+      status: "awaiting-publication",
+      diagnostics: { author: "author finding", reviewer: "review finding" },
+    });
   });
   it.each(["empty", "missing", "duplicate", "failed", "pending", "wrong-head"])(
     "fails closed or waits for %s CI",

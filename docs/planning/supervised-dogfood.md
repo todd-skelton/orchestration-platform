@@ -1,10 +1,9 @@
 # Supervised real-work loop
 
-Todd's 2026-09-07 ruling (#323) makes ISS-071 the next delivery target. The
-first milestone is **Supervised self-improvement (M0)**: this general-purpose
-orchestrator pilot takes one real improvement to its own repository through independent
-review and hosted CI, followed by one restart that does not dispatch it again.
-It is a supervised trial, not the certified N0-to-N1 release in ISS-015.
+M0 completed its supervised real-work loop through PR #320. The next goal is
+successive useful cycles with fewer manual interventions, beginning with keeping
+actionable worker diagnostics in pilot output. This remains a supervised trial,
+not a production or self-promotion claim.
 
 ## Run boundary
 
@@ -148,14 +147,18 @@ These files, process traces and private output-shape files remain external. The
 small detached observation process only captures the existing CLI's PID, exit
 and JSONL; it survives controller exit and cannot dispatch another attempt.
 
-The pilot appends the exact base/head and four-key JSON verdict instructions to
-each prompt. Author `head` must be the unchanged base; the pilot makes the local
-commit under the controller's existing authority after validating the complete
-footprint. The author does not stage, commit, or alter Git metadata. The pilot
-retains substantive progress messages and advisory token usage in the attempt
-trace, starts review at the resulting detached candidate head, then returns
-`awaiting-publication`. The existing controller publishes
-and writes `publication.json` in the state directory containing
+The pilot appends the exact base/head and JSON verdict instructions to each
+prompt. The four authority keys remain required; new native schemas also require
+a summary string of at most 2,000 characters, using an empty string when there
+are no findings. The parser still accepts legacy four-key records. The pilot
+omits malformed or empty summary values, bounds long ones, and exposes retained
+summaries as advisory diagnostics without changing verdict, head, role, or run
+checks. Author `head` must be the unchanged base; the pilot makes the local commit
+under the controller's existing authority after validating the complete
+footprint. The author does not stage,
+commit, or alter Git metadata. The pilot starts review at the resulting detached
+candidate head, then returns `awaiting-publication`. The existing controller
+publishes and writes `publication.json` in the state directory containing
 `{"url":"https://github.com/owner/repo/pull/123","head":"<reviewed commit>"}`.
 Rerun the same command to observe CI using read-only `gh pr view`/`gh pr checks`.
 The configured required check names must each appear exactly once and pass.
