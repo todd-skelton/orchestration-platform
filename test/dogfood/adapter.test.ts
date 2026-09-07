@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
+  WORKER_ENVIRONMENT_ALLOWLIST,
+  WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST,
   codexAdapter,
   launchArguments,
   outputSchema,
@@ -49,27 +51,185 @@ it.each(["win32", "linux", "darwin"] as const)(
     }
   },
 );
-it("drops only parent Desktop context without changing auth location or the parent environment", () => {
+const locationNames = [
+  "APPDATA",
+  "CODEX_HOME",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOCALAPPDATA",
+  "USERPROFILE",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+] as const;
+const startupNames = [
+  "COMSPEC",
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "WINDIR",
+  ...(process.platform === "win32" ? WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST : []),
+] as const;
+const forbiddenNames = [
+  "ANTHROPIC_API_KEY",
+  "AWS_SECRET_ACCESS_KEY",
+  "AZURE_CLIENT_SECRET",
+  "CODEX_APP_TOOLS_PIPE_PATH",
+  "CODEX_CI",
+  "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+  "CODEX_PERMISSION_PROFILE",
+  "CODEX_SESSION_ID",
+  "CODEX_SHELL",
+  "CODEX_THREAD_ID",
+  "GH_ENTERPRISE_TOKEN",
+  "GH_TOKEN",
+  "GIT_ASKPASS",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GITHUB_PERSONAL_ACCESS_TOKEN",
+  "GITHUB_TOKEN",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NODE_OPTIONS",
+  "NODE_V8_COVERAGE",
+  "OPENAI_API_KEY",
+  "SSH_AUTH_SOCK",
+  "UNRELATED_CONTROLLER_SECRET",
+];
+const syntheticLocations = Object.fromEntries(
+  locationNames.map((name) => [name, `synthetic-${name.toLowerCase()}-location`]),
+);
+function hostedParent() {
+  const startup = Object.fromEntries(
+    startupNames.flatMap((name) => {
+      const source = Object.keys(process.env).find(
+        (candidate) =>
+          candidate === name || (process.platform === "win32" && candidate.toUpperCase() === name),
+      );
+      return source && process.env[source] !== undefined ? [[name, process.env[source]]] : [];
+    }),
+  );
+  return {
+    ...startup,
+    ...syntheticLocations,
+    ...Object.fromEntries(forbiddenNames.map((name) => [name, `synthetic-${name.toLowerCase()}`])),
+    ...Object.fromEntries(
+      forbiddenNames.map((name) => [name.toLowerCase(), `synthetic-${name.toLowerCase()}-alias`]),
+    ),
+    NODE_OPTIONS: "",
+  };
+}
+function fixtureAssertion(parent: NodeJS.ProcessEnv, result?: string) {
+  return {
+    allowed: [
+      ...WORKER_ENVIRONMENT_ALLOWLIST,
+      ...(process.platform === "win32" ? WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST : []),
+    ],
+    forbidden: forbiddenNames,
+    locations: syntheticLocations,
+    present: [...startupNames, ...locationNames].filter((name) => parent[name] !== undefined),
+    ...(result ? { result } : {}),
+  };
+}
+async function eventuallyRead(path: string) {
+  for (let count = 0; count < 100; count++) {
+    try {
+      return await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await new Promise((done) => setTimeout(done, 20));
+  }
+  throw new Error("fixture-result-timeout");
+}
+async function assertFixture(path: string, boundary: "observer" | "worker") {
+  const checks = JSON.parse(await eventuallyRead(path));
+  // Only fixed boolean fields reach hosted logs, including evidence of the
+  // single OS-generated macOS name. No environment keys or values are dumped.
+  expect(checks).toEqual({
+    locationsMatch: true,
+    requiredNamesPresent: true,
+    onlyAllowlistedNames: process.platform === "darwin" ? expect.any(Boolean) : true,
+    onlyExpectedNames: true,
+    forbiddenAbsent: true,
+    runtimeMetadataPresent: process.platform === "darwin" ? expect.any(Boolean) : false,
+  });
+  console.log(JSON.stringify({ dogfoodEnvironmentFixture: { boundary, ...checks } }));
+}
+it("builds a new environment from the exact portable allowlist without changing its parent", () => {
+  const allAllowed = Object.fromEntries(
+    WORKER_ENVIRONMENT_ALLOWLIST.map((name) => [name, `synthetic-${name.toLowerCase()}`]),
+  );
   const parent = {
-    CODEX_APP_TOOLS_PIPE_PATH: "synthetic-pipe",
-    CODEX_PERMISSION_PROFILE: "synthetic-parent-permissions",
-    CODEX_THREAD_ID: "synthetic-thread",
-    CODEX_SESSION_ID: "synthetic-session",
-    CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "synthetic-desktop",
-    CODEX_CI: "1",
-    CODEX_SHELL: "1",
-    codex_permission_profile: "synthetic-case-alias",
-    CODEX_HOME: "synthetic-auth-home",
-    APPDATA: "synthetic-appdata",
-    PATH: "synthetic-bin",
-    UNRELATED: "synthetic-value",
+    ...allAllowed,
+    PATH: "synthetic-canonical-path",
+    path: "synthetic-path-case-alias",
+    home: "synthetic-home-case-alias",
+    CODEX_HOME: "synthetic-codex-home",
+    GH_TOKEN: "synthetic-gh-token",
+    gh_token: "synthetic-gh-token-case-alias",
+    GITHUB_TOKEN: "synthetic-github-token",
+    github_token: "synthetic-github-token-case-alias",
+    HTTP_PROXY: "synthetic-http-proxy",
+    UNRELATED_CONTROLLER_SECRET: "synthetic-controller-secret",
+    NODE_V8_COVERAGE: "synthetic-coverage",
+    __CF_USER_TEXT_ENCODING: "synthetic-metadata-not-to-copy",
+    LOGONSERVER: "synthetic-logonserver",
+    SYSTEMDRIVE: "synthetic-systemdrive",
+    USERDOMAIN: "synthetic-userdomain",
+    USERNAME: "synthetic-username",
   };
   const before = { ...parent };
-  expect(workerEnvironment(parent)).toEqual({
-    CODEX_HOME: "synthetic-auth-home",
-    APPDATA: "synthetic-appdata",
-    PATH: "synthetic-bin",
-    UNRELATED: "synthetic-value",
+  expect(WORKER_ENVIRONMENT_ALLOWLIST).toEqual([
+    "APPDATA",
+    "CODEX_HOME",
+    "COMSPEC",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "WINDIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+  ]);
+  expect(workerEnvironment(parent, "linux")).toEqual({
+    ...allAllowed,
+    CODEX_HOME: "synthetic-codex-home",
+    PATH: "synthetic-canonical-path",
+  });
+  expect(workerEnvironment(parent, "darwin")).toEqual(workerEnvironment(parent, "linux"));
+  expect(workerEnvironment(parent, "win32")).toEqual({
+    ...allAllowed,
+    CODEX_HOME: "synthetic-codex-home",
+    PATH: "synthetic-canonical-path",
+    LOGONSERVER: "synthetic-logonserver",
+    SYSTEMDRIVE: "synthetic-systemdrive",
+    USERDOMAIN: "synthetic-userdomain",
+    USERNAME: "synthetic-username",
+  });
+  expect(WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST).toEqual([
+    "LOGONSERVER",
+    "SYSTEMDRIVE",
+    "USERDOMAIN",
+    "USERNAME",
+  ]);
+  const child = workerEnvironment(parent);
+  expect(child.NODE_V8_COVERAGE).toBeUndefined();
+  expect(Object.keys(child)).not.toContain("NODE_V8_COVERAGE");
+  expect(Object.getPrototypeOf(child)).toBeNull();
+  expect(Object.isFrozen(child)).toBe(true);
+  expect(workerEnvironment({ path: "synthetic-only-alias" }, "linux")).toEqual({});
+  expect(workerEnvironment({ path: "synthetic-only-alias" }, "win32")).toEqual({
+    PATH: "synthetic-only-alias",
   });
   expect(parent).toEqual(before);
 });
@@ -173,17 +333,38 @@ const cleanup: string[] = [];
 afterEach(async () => {
   for (const root of cleanup.splice(0)) await rm(root, { recursive: true, force: true });
 });
-it("keeps fake provider observation alive after controller exit and filters its parent context", async () => {
+it("filters the actual controller-to-observer child environment", async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-process-")));
+  cleanup.push(root);
+  const assertion = resolve(root, "observer-assertion.json"),
+    result = resolve(root, "observer-result.txt"),
+    parent = { ...hostedParent(), NODE_V8_COVERAGE: resolve(root, "synthetic-coverage") },
+    before = { ...parent };
+  await writeFile(assertion, JSON.stringify(fixtureAssertion(parent, result)));
+  await promisify(execFile)(
+    process.execPath,
+    [resolve(import.meta.dirname, "fixtures/controller.mjs"), "launch-observer", assertion],
+    { windowsHide: true, env: parent },
+  );
+  await assertFixture(result, "observer");
+  expect(parent).toEqual(before);
+});
+it("filters the actual observer-to-worker child environment", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-process-")));
   cleanup.push(root);
   const request = resolve(root, "request.json"),
-    stdin = resolve(root, "prompt.txt");
+    stdin = resolve(root, "prompt.txt"),
+    assertion = resolve(root, "worker-assertion.json"),
+    result = resolve(root, "worker-result.json"),
+    parent = { ...hostedParent(), NODE_V8_COVERAGE: resolve(root, "synthetic-coverage") },
+    before = { ...parent };
   await writeFile(stdin, "finite prompt");
+  await writeFile(assertion, JSON.stringify(fixtureAssertion(parent, result)));
   await writeFile(
     request,
     JSON.stringify({
       executable: process.execPath,
-      args: [resolve(import.meta.dirname, "fixtures/provider.mjs")],
+      args: [resolve(import.meta.dirname, "fixtures/provider.mjs"), assertion],
       stdin,
       stdout: resolve(root, "trace.jsonl"),
       stderr: resolve(root, "stderr.log"),
@@ -193,29 +374,13 @@ it("keeps fake provider observation alive after controller exit and filters its 
   );
   await promisify(execFile)(
     process.execPath,
-    [resolve(import.meta.dirname, "fixtures/controller.mjs"), request],
-    {
-      windowsHide: true,
-      env: {
-        ...process.env,
-        CODEX_HOME: "synthetic-auth-home",
-        CODEX_PERMISSION_PROFILE: "synthetic-parent-permissions",
-        CODEX_APP_TOOLS_PIPE_PATH: "synthetic-pipe",
-        DOGFOOD_VERIFY_ENV: "1",
-      },
-    },
+    [resolve(import.meta.dirname, "../../scripts/dogfood/observe-process.mjs"), request],
+    { windowsHide: true, env: parent },
   );
-  let exit;
-  for (let count = 0; count < 100; count++) {
-    try {
-      exit = JSON.parse(await readFile(resolve(root, "exit.json"), "utf8"));
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    await new Promise((done) => setTimeout(done, 20));
-  }
+  const exit = JSON.parse(await eventuallyRead(resolve(root, "exit.json")));
+  await assertFixture(result, "worker");
   expect(exit).toEqual({ code: 0, signal: null });
   expect(JSON.parse(await readFile(resolve(root, "identity.json"), "utf8")).pid).toBeGreaterThan(0);
   expect(await readFile(resolve(root, "trace.jsonl"), "utf8")).toBe("finite prompt\n");
+  expect(parent).toEqual(before);
 });
