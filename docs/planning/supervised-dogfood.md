@@ -131,15 +131,28 @@ credential broker or production worker authority is claimed.
 
 Native Windows workers explicitly select the host's observed `unelevated`
 backend; `--ignore-user-config` otherwise removes that separate setting. Other
-hosts receive no Windows override. The worker wrapper removes inherited Desktop
-pipe, permission, session, originator and CI/shell context variables from an
-in-memory child environment, preserving the existing authentication location. It
-also excludes `GH_TOKEN`, `GITHUB_TOKEN`, `GITHUB_PERSONAL_ACCESS_TOKEN`,
-`GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` case-insensitively.
-The environment is never serialized into the request or trace. This addresses
-the first real run's observed launch-context defects; which defect caused its
-read-only downgrade remains unproved until a corrected live run. See pressure
-round 474 for the failed attempt and successful active-restart observation.
+hosts receive no Windows override. Both native process hops rebuild their child
+environment from an empty object: controller to observer and observer to worker.
+The exact allowlist is `PATH`, `PATHEXT`, `SYSTEMROOT`, `WINDIR`, `COMSPEC`,
+`TEMP`, `TMP`, `TMPDIR` for OS and process startup, plus provider-auth locations
+`CODEX_HOME`, `HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`,
+`LOCALAPPDATA`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME`. POSIX accepts only those
+exact uppercase spellings. Windows matches names case-insensitively and emits
+one canonical uppercase spelling; an exact canonical entry wins over an alias.
+Every other parent name is omitted without logging, including delivery/cloud
+credentials, `NODE_OPTIONS`, askpass, agent sockets and proxies. Provider-auth
+filesystem and keychain locations stay usable; this does not isolate those
+stores. The parent remains unchanged and no environment is serialized into the
+request or trace.
+
+This stronger boundary supersedes the five-name ISS-073 candidate that source 1
+and review 2 passed. Source 6, independent review 7, the four controller package
+gates and actual hosted Windows/macOS/Linux results are still required; none is
+claimed here. Credential material reached retained logs in the observed run.
+Its validity and scopes and any unauthorized operations remain unverified, and
+invalidation was not performed. This repair does not prove controller
+containment or identify which launch-context defect caused the earlier read-only
+downgrade. See pressure rounds 474 and 476.
 
 The request file must not be named `config.json` inside the state directory:
 the pilot reserves that name for the pinned request/prompt fingerprint. One
@@ -176,15 +189,15 @@ PR/CI links plus the short learning note; unit tests do not satisfy that trial.
 
 ## Deferred work and unpark conditions
 
-| Work | Current disposition | Unpark condition |
-|---|---|---|
-| CF-2 full capture subsystem, ISS-057 | #322 1A/2B/3B; no four-packet expansion or increased cap | A real trial/release consumer names the minimum needed behavior; unresolved policy remains unusable as authority |
-| CF-3 through CF-7, ISS-058 through ISS-062 | Release preparation, off the first trial path | Observed need from a runnable consumer; original correctness dependencies still apply |
-| CF-8, ISS-063 | #316 C, deferred | Runnable release consumer needs the post-upload transport |
-| ISS-036 live protection window | #317 deferred | Concrete consumer need, dry-run and separately authorized operator action |
-| Native experiment and ISS-022 selection | Production-lock track, not this supervised trial's lock | Verified hosted build/experiment and Todd's selection before production use |
-| N0 certification, broker, installed supervisor, automatic N1 promotion | Original M3 acceptance unchanged | Production path prerequisites and separate operator/release authority |
-| Seven ISS-064 through ISS-070 followups | Reserved in the parked planning artifact, backlog | A measured defect or next real consumer needs one; #319 record repair does not authorize implementation |
+| Work                                                                   | Current disposition                                      | Unpark condition                                                                                                 |
+| ---------------------------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| CF-2 full capture subsystem, ISS-057                                   | #322 1A/2B/3B; no four-packet expansion or increased cap | A real trial/release consumer names the minimum needed behavior; unresolved policy remains unusable as authority |
+| CF-3 through CF-7, ISS-058 through ISS-062                             | Release preparation, off the first trial path            | Observed need from a runnable consumer; original correctness dependencies still apply                            |
+| CF-8, ISS-063                                                          | #316 C, deferred                                         | Runnable release consumer needs the post-upload transport                                                        |
+| ISS-036 live protection window                                         | #317 deferred                                            | Concrete consumer need, dry-run and separately authorized operator action                                        |
+| Native experiment and ISS-022 selection                                | Production-lock track, not this supervised trial's lock  | Verified hosted build/experiment and Todd's selection before production use                                      |
+| N0 certification, broker, installed supervisor, automatic N1 promotion | Original M3 acceptance unchanged                         | Production path prerequisites and separate operator/release authority                                            |
+| Seven ISS-064 through ISS-070 followups                                | Reserved in the parked planning artifact, backlog        | A measured defect or next real consumer needs one; #319 record repair does not authorize implementation          |
 
 Deferral is priority, not false completion or deletion of existing dependency
 edges. ISS-071 closes only its supervised trial. ISS-026, ISS-021, ISS-041 and

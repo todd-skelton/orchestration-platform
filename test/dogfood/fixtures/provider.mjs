@@ -1,23 +1,13 @@
 import { readFileSync } from "node:fs";
 const prompt = readFileSync(0, "utf8");
-const excludedDeliveryCredentials = [
-  "GH_TOKEN",
-  "gh_token",
-  "GITHUB_TOKEN",
-  "github_token",
-  "GITHUB_PERSONAL_ACCESS_TOKEN",
-  "github_personal_access_token",
-  "GH_ENTERPRISE_TOKEN",
-  "gh_enterprise_token",
-  "GITHUB_ENTERPRISE_TOKEN",
-  "github_enterprise_token",
-];
+const assertion = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const allowed = new Set(assertion.allowed);
+const names = Object.keys(process.env);
 if (
-  process.env.DOGFOOD_VERIFY_ENV === "1" &&
-  (process.env.CODEX_PERMISSION_PROFILE !== undefined ||
-    process.env.CODEX_APP_TOOLS_PIPE_PATH !== undefined ||
-    process.env.CODEX_HOME !== "synthetic-auth-home" ||
-    excludedDeliveryCredentials.some((key) => process.env[key] !== undefined))
+  !Object.entries(assertion.locations).every(([name, value]) => process.env[name] === value) ||
+  !assertion.present.every((name) => process.env[name] !== undefined) ||
+  !names.every((name) => allowed.has(name)) ||
+  names.some((name) => assertion.forbidden.includes(name.toUpperCase()))
 )
   process.exit(9);
 setTimeout(() => process.stdout.write(prompt + "\n"), 100);

@@ -15,7 +15,7 @@ const stderr = openSync(request.stderr, "wx");
 const child = spawn(request.executable, request.args, {
   windowsHide: true,
   stdio: [stdin, stdout, stderr],
-  // Filter in memory at the worker boundary; never persist the inherited environment.
+  // Rebuild again at the observer-to-worker boundary; never persist the parent environment.
   env: workerEnvironment(process.env),
 });
 child.once("spawn", () => {

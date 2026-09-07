@@ -21,24 +21,58 @@ async function optionalText(path: string) {
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const artifact = (config: Config, role: Role, suffix: string) =>
   resolve(config.stateDirectory, `${role}.${suffix}`);
-export function workerEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const child = { ...environment };
-  const parentContext = new Set([
-    "CODEX_APP_TOOLS_PIPE_PATH",
-    "CODEX_PERMISSION_PROFILE",
-    "CODEX_THREAD_ID",
-    "CODEX_SESSION_ID",
-    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
-    "CODEX_CI",
-    "CODEX_SHELL",
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "GITHUB_PERSONAL_ACCESS_TOKEN",
-    "GH_ENTERPRISE_TOKEN",
-    "GITHUB_ENTERPRISE_TOKEN",
-  ]);
-  for (const key of Object.keys(child)) if (parentContext.has(key.toUpperCase())) delete child[key];
+// POSIX copies only these exact spellings. Windows environment names are
+// case-insensitive, so an allowed alias is copied once under this canonical spelling.
+export const WORKER_ENVIRONMENT_ALLOWLIST = [
+  "APPDATA",
+  "CODEX_HOME",
+  "COMSPEC",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOCALAPPDATA",
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "USERPROFILE",
+  "WINDIR",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+] as const;
+export function workerEnvironment(
+  environment: NodeJS.ProcessEnv,
+  platform = process.platform,
+): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {};
+  const names = Object.keys(environment);
+  for (const allowed of WORKER_ENVIRONMENT_ALLOWLIST) {
+    const name =
+      names.find((candidate) => candidate === allowed) ??
+      (platform === "win32"
+        ? names.find((candidate) => candidate.toUpperCase() === allowed)
+        : undefined);
+    if (name !== undefined && environment[name] !== undefined) child[allowed] = environment[name];
+  }
   return child;
+}
+export async function launchObserver(
+  request: string,
+  observer = fileURLToPath(new URL("./observe-process.mjs", import.meta.url)),
+) {
+  const child = spawn(process.execPath, [observer, request], {
+    detached: true,
+    windowsHide: true,
+    stdio: "ignore",
+    env: workerEnvironment(process.env),
+  });
+  await new Promise<void>((done, reject) => {
+    child.once("spawn", done);
+    child.once("error", reject);
+  });
+  child.unref();
 }
 export function launchArguments(config: Config, role: Role, platform = process.platform) {
   check(
@@ -190,16 +224,7 @@ export function codexAdapter(): Adapter {
         }),
         { flag: "wx" },
       );
-      const child = spawn(
-        process.execPath,
-        [fileURLToPath(new URL("./observe-process.mjs", import.meta.url)), request],
-        { detached: true, windowsHide: true, stdio: "ignore" },
-      );
-      await new Promise<void>((done, reject) => {
-        child.once("spawn", done);
-        child.once("error", reject);
-      });
-      child.unref();
+      await launchObserver(request);
       for (let count = 0; count < 120; count++) {
         const identity = await optionalText(artifact(config, role, "process.json"));
         const text = await optionalText(trace);
