@@ -1,0 +1,398 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { promisify } from "node:util";
+import { afterEach, expect, it } from "vitest";
+import {
+  assertControllerRequest,
+  deliveryStep,
+  type DeliveryAdapter,
+  type DeliveryConfig,
+  type DeliveryPlan,
+  type Observation,
+  type PublicationEvidence,
+} from "../../scripts/dogfood/delivery.mjs";
+
+const head = "a".repeat(40);
+const mergeCommit = "b".repeat(40);
+const roots: string[] = [];
+
+async function fixture() {
+  const parent = await mkdtemp(resolve(tmpdir(), "delivery-fixture-"));
+  roots.push(parent);
+  const paths = await Promise.all(
+    ["controller-", "author-", "reviewer-", "state-"].map((name) => mkdtemp(resolve(parent, name))),
+  );
+  const config: DeliveryConfig = {
+    run: "delivery-fixture",
+    issue: "fixture-issue",
+    repository: "fixture/repository",
+    controllerRoot: paths[0]!,
+    controllerRevision: "c".repeat(40),
+    worktree: paths[1]!,
+    reviewWorktree: paths[2]!,
+    stateDirectory: paths[3]!,
+    candidateHead: head,
+    requiredChecks: ["linux", "windows", "macos"],
+    authority: {
+      schemaVersion: "dogfood-delivery-authority/v1",
+      controller: "fixture-controller",
+      run: "delivery-fixture",
+      repository: "fixture/repository",
+      controllerRevision: "c".repeat(40),
+      head,
+      actions: ["gates", "mirror", "publish", "merge", "cleanup"],
+    },
+    policy: { kind: "fixture" },
+  };
+  const plan: DeliveryPlan = {
+    gates: {
+      beforeMirror: ["typecheck", "format:check", "planning:check"],
+      afterMirror: ["planning:board-check"],
+    },
+    drafts: [
+      {
+        key: "EPIC-FIXTURE",
+        issue: 2,
+        title: "epic",
+        body: "epic body",
+        attributes: { milestone: null },
+      },
+      {
+        key: "ISS-074",
+        issue: 332,
+        title: "issue",
+        body: "issue body",
+        attributes: { milestone: "M2" },
+      },
+    ],
+    publication: {
+      sourceBranch: "codex/fixture",
+      baseBranch: "main",
+      title: "fixture PR",
+      body: "fixture body",
+      draft: true,
+    },
+    mergePolicy: { method: "squash" },
+    cleanup: { worktrees: [paths[1]!, paths[2]!], branch: "codex/fixture" },
+  };
+  const calls: string[] = [];
+  const publication: PublicationEvidence = {
+    number: 44,
+    url: "https://example.test/pull/44",
+    head,
+  };
+  const state = {
+    workspace: true,
+    drafts: new Set<number>(),
+    publication: undefined as PublicationEvidence | undefined,
+    merged: false,
+    cleanup: "present" as "present" | "partial" | "complete",
+    publicationOutcome: "confirmed" as "confirmed" | "unknown",
+    checks: "pass" as "pass" | "pending" | "duplicate" | "missing" | "skipping",
+  };
+  const adapter: DeliveryAdapter = {
+    async source() {
+      calls.push("source");
+      return { head, reviewId: "review-fixture" };
+    },
+    async verifyWorkspace() {
+      calls.push("verify");
+      return state.workspace;
+    },
+    async runGate(_config, name) {
+      calls.push(`gate:${name}`);
+      return "passed";
+    },
+    async observeDraft(_config, draft) {
+      calls.push(`observe-draft:${draft.issue}`);
+      return state.drafts.has(draft.issue)
+        ? { state: "confirmed", value: { issue: draft.issue } }
+        : { state: "needs-mutation" };
+    },
+    async applyDraft(_config, draft) {
+      calls.push(`draft:${draft.issue}`);
+      state.drafts.add(draft.issue);
+    },
+    async observePublication(): Promise<Observation<PublicationEvidence>> {
+      calls.push("observe-publication");
+      if (state.publicationOutcome === "unknown") return { state: "unknown" };
+      return state.publication
+        ? { state: "confirmed", value: state.publication }
+        : { state: "needs-mutation" };
+    },
+    async publish() {
+      calls.push("publish");
+      state.publication = publication;
+    },
+    async checks() {
+      calls.push("checks");
+      const values = config.requiredChecks.map((name) => ({
+        name,
+        bucket: (state.checks === "pending" && name === "macos" ? "pending" : "pass") as
+          "pass" | "pending",
+        link: `https://example.test/check/${name}`,
+      }));
+      if (state.checks === "duplicate") values.push({ ...values[0]! });
+      if (state.checks === "missing") values.pop();
+      if (state.checks === "skipping") values[0]!.bucket = "skipping" as never;
+      return { head, checks: values };
+    },
+    async observeMerge() {
+      calls.push("observe-merge");
+      return state.merged
+        ? {
+            state: "confirmed" as const,
+            value: { number: publication.number, head, mergeCommit },
+          }
+        : { state: "needs-mutation" as const };
+    },
+    async merge() {
+      calls.push("merge");
+      state.merged = true;
+    },
+    async observeCleanup() {
+      calls.push("observe-cleanup");
+      if (state.cleanup === "partial") return { state: "unknown" };
+      return state.cleanup === "complete"
+        ? {
+            state: "confirmed" as const,
+            value: { worktrees: [...plan.cleanup.worktrees], branch: plan.cleanup.branch },
+          }
+        : { state: "needs-mutation" as const };
+    },
+    async cleanup() {
+      calls.push("cleanup");
+      state.cleanup = "complete";
+    },
+  };
+  const policy = {
+    async plan() {
+      calls.push("policy");
+      return plan;
+    },
+  };
+  return { config, plan, adapter, policy, calls, state };
+}
+
+afterEach(async () => {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+it("completes the authorized normal path once with intent-backed mutations", async () => {
+  const f = await fixture();
+  const result = await deliveryStep(f.config, f.adapter, f.policy);
+  expect(result).toMatchObject({
+    status: "complete",
+    head,
+    reviewId: "review-fixture",
+    publication: { number: 44 },
+    checks: [
+      { name: "linux", bucket: "pass" },
+      { name: "windows", bucket: "pass" },
+      { name: "macos", bucket: "pass" },
+    ],
+    mergeCommit,
+  });
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "cleanup")).toHaveLength(1);
+  expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+  expect(f.calls.filter((call) => call.startsWith("draft:"))).toEqual(["draft:2", "draft:332"]);
+  expect(f.calls.indexOf("gate:planning:check")).toBeLessThan(f.calls.indexOf("draft:2"));
+  expect(f.calls.indexOf("draft:332")).toBeLessThan(f.calls.indexOf("gate:planning:board-check"));
+});
+
+it("resumes completed delivery after deleted candidate worktrees without consulting source or policy", async () => {
+  const f = await fixture();
+  await deliveryStep(f.config, f.adapter, f.policy);
+  await Promise.all([
+    rm(f.config.worktree, { recursive: true }),
+    rm(f.config.reviewWorktree, { recursive: true }),
+  ]);
+  f.calls.length = 0;
+  const result = await deliveryStep(f.config, f.adapter, {
+    async plan() {
+      throw new Error("must not be called");
+    },
+  });
+  expect(result.status).toBe("complete");
+  expect(f.calls).toEqual([]);
+});
+
+it("observes pending hosted checks without merging or cleanup and resumes without republishing", async () => {
+  const f = await fixture();
+  f.state.checks = "pending";
+  expect(await deliveryStep(f.config, f.adapter, f.policy)).toMatchObject({
+    status: "observing-hosted-checks",
+  });
+  expect(f.calls).not.toContain("merge");
+  f.state.checks = "pass";
+  await deliveryStep(f.config, f.adapter, f.policy);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+});
+
+it.each([
+  ["duplicate", "missing-or-duplicate-check:linux"],
+  ["missing", "missing-or-duplicate-check:macos"],
+  ["skipping", "hosted-check-failed:linux"],
+] as const)("fails closed for %s required hosted checks", async (mode, reason) => {
+  const f = await fixture();
+  f.state.checks = mode;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
+  expect(f.calls).not.toContain("merge");
+});
+
+it("invalidates readiness when hosted observation moves from the reviewed head", async () => {
+  const f = await fixture();
+  f.adapter.checks = async () => ({ head: "c".repeat(40), checks: [] });
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow("hosted-head-drift");
+  expect(f.calls).not.toContain("merge");
+});
+
+it("does not retry an uncertain publication and reconciles it on restart", async () => {
+  const f = await fixture();
+  let observations = 0;
+  f.adapter.observePublication = async () => {
+    observations += 1;
+    if (observations === 1) return { state: "needs-mutation" };
+    if (observations === 2) return { state: "unknown" };
+    return { state: "confirmed", value: { number: 44, url: "https://example.test/pull/44", head } };
+  };
+  f.adapter.publish = async () => {
+    f.calls.push("publish");
+    throw new Error("synthetic lost response");
+  };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "publication-outcome-unknown",
+  );
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  await deliveryStep(f.config, f.adapter, f.policy);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+});
+
+it("does not double merge after a lost provider response", async () => {
+  const f = await fixture();
+  let observations = 0;
+  f.adapter.observeMerge = async () => {
+    observations += 1;
+    if (observations === 1) return { state: "needs-mutation" };
+    if (observations === 2) return { state: "unknown" };
+    return {
+      state: "confirmed",
+      value: { number: 44, head, mergeCommit },
+    };
+  };
+  f.adapter.merge = async () => {
+    f.calls.push("merge");
+    throw new Error("synthetic lost response");
+  };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "merge-outcome-unknown",
+  );
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  await deliveryStep(f.config, f.adapter, f.policy);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+});
+
+it("refuses partial cleanup and never starts a second cleanup mutation", async () => {
+  const f = await fixture();
+  f.adapter.cleanup = async () => {
+    f.calls.push("cleanup");
+    f.state.cleanup = "partial";
+    throw new Error("synthetic partial cleanup");
+  };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "cleanup-outcome-unknown",
+  );
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "cleanup-state-unknown",
+  );
+  expect(f.calls.filter((call) => call === "cleanup")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "policy")).toHaveLength(1);
+});
+
+it("rejects cleanup plans that include the surviving controller checkout", async () => {
+  const f = await fixture();
+  f.plan.cleanup.worktrees = [f.config.controllerRoot, f.config.worktree];
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "malformed-cleanup-plan",
+  );
+  expect(f.calls.some((call) => call === "cleanup" || call === "publish")).toBe(false);
+});
+
+it.each([
+  undefined,
+  {},
+  { schemaVersion: "unknown" },
+  {
+    schemaVersion: "dogfood-delivery-authority/v1",
+    controller: "fixture-controller",
+    run: "delivery-fixture",
+    repository: "fixture/repository",
+    controllerRevision: "c".repeat(40),
+    head,
+    actions: ["gates", "mirror", "publish", "merge"],
+  },
+])("rejects unknown or malformed controller authority", async (authority) => {
+  const f = await fixture();
+  f.config.authority = authority as never;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "unauthorized-delivery",
+  );
+  expect(f.calls).toEqual([]);
+});
+
+it("rejects authority issued for a different stable controller revision", async () => {
+  const f = await fixture();
+  f.config.authority.controllerRevision = "d".repeat(40);
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "unauthorized-delivery",
+  );
+  expect(f.calls).toEqual([]);
+});
+
+it("refuses candidate workspace drift before any gate or provider mutation", async () => {
+  const f = await fixture();
+  f.state.workspace = false;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "candidate-workspace-drift",
+  );
+  expect(f.calls.some((call) => call.startsWith("gate:") || call === "publish")).toBe(false);
+});
+
+it("fails closed on a malformed external delivery record", async () => {
+  const f = await fixture();
+  await writeFile(resolve(f.config.stateDirectory, "delivery-config.json"), "not-json\n");
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "malformed-record:delivery-config",
+  );
+  expect(f.calls).toEqual([]);
+});
+
+it("accepts controller authority only from the external state directory", async () => {
+  const f = await fixture();
+  const external = resolve(f.config.stateDirectory, "delivery-request.json");
+  const worker = resolve(f.config.worktree, "delivery-request.json");
+  await Promise.all([writeFile(external, "{}\n"), writeFile(worker, "{}\n")]);
+  await expect(assertControllerRequest(f.config, external)).resolves.toBeUndefined();
+  await expect(assertControllerRequest(f.config, worker)).rejects.toThrow(
+    "request-outside-controller-state",
+  );
+});
+
+it("imports the portable delivery composition directly in Node 24", async () => {
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      'import("./scripts/dogfood/delivery.mjs").then(m=>process.stdout.write(JSON.stringify([typeof m.deliveryStep,m.DELIVERY_AUTHORITY_SCHEMA])))',
+    ],
+    { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
+  );
+  expect(JSON.parse(stdout)).toEqual(["function", "dogfood-delivery-authority/v1"]);
+});

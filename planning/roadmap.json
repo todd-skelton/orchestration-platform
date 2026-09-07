@@ -21,7 +21,7 @@
     {
       "key": "M2",
       "title": "Minimum orchestration kernel",
-      "description": "Outcome: one policy-neutral cycle can acquire a lease, select work through an adapter, dispatch a concrete worker, obtain independent review, journal the result, apply breaker and routing policy, and recover under supervision. Scope boundary: isolated fixtures plus the explicitly supervised ISS-071 real-work pilot; no production bootstrap or consumer cutover. Exit evidence: a bounded end-to-end fixture cycle with crash, stale-authority, self-certification, explicit two-hop child-environment allowlisting, and provider-boundary negatives."
+      "description": "Outcome: one policy-neutral cycle can acquire a lease, select work through an adapter, dispatch a concrete worker, obtain independent review, journal the result, apply breaker and routing policy, and recover under supervision. Scope boundary: isolated fixtures plus the explicitly supervised real-work pilot and its private normal-delivery command; no production bootstrap or consumer cutover. Exit evidence: a bounded end-to-end fixture cycle with crash, stale-authority, self-certification, explicit two-hop child-environment allowlisting, provider-boundary negatives, and one externally authorized exact-head delivery through hosted proof and protected cleanup."
     },
     {
       "key": "M3",
@@ -515,6 +515,13 @@
       "milestone": "M2",
       "parent": "EPIC-KERNEL",
       "blockedBy": ["ISS-072"]
+    },
+    {
+      "key": "ISS-074",
+      "file": "planning/drafts/ISS-074.md",
+      "milestone": "M2",
+      "parent": "EPIC-KERNEL",
+      "blockedBy": ["ISS-073"]
     }
   ]
 }

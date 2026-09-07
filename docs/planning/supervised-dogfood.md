@@ -204,6 +204,79 @@ three-OS execution and independent assertion review remain required. A live run
 must separately retain actual host, exact revision, launch counts, attempt and
 PR/CI links plus the short learning note; unit tests do not satisfy that trial.
 
+## Normal delivery command
+
+ISS-074 extracts the repeatedly measured post-review controller handoffs into
+`node scripts/dogfood/deliver.mjs <absolute-request.json>`. This remains a
+private self-repository composition, not a public capability or successor
+activation path. Run it from the independently reviewed stable checkout. The
+external `delivery-request.json` is a direct child of the external state
+directory, binds an exact candidate and includes controller-held authority:
+
+```json
+{
+  "run": "unique-delivery-label",
+  "issue": "https://github.com/todd-skelton/orchestration-platform/issues/332",
+  "repository": "todd-skelton/orchestration-platform",
+  "controllerRoot": "<absolute stable checkout>",
+  "controllerRevision": "<reviewed stable 40-character head>",
+  "worktree": "<absolute clean candidate worktree>",
+  "reviewWorktree": "<absolute clean exact-head review worktree>",
+  "stateDirectory": "<absolute existing pilot state directory>",
+  "candidateHead": "<independently reviewed 40-character head>",
+  "requiredChecks": [
+    "Node 24 / ubuntu-latest",
+    "Node 24 / windows-latest",
+    "Node 24 / macos-latest"
+  ],
+  "authority": {
+    "schemaVersion": "dogfood-delivery-authority/v1",
+    "controller": "<controller identity>",
+    "run": "unique-delivery-label",
+    "repository": "todd-skelton/orchestration-platform",
+    "controllerRevision": "<same stable head>",
+    "head": "<same reviewed head>",
+    "actions": ["gates", "mirror", "publish", "merge", "cleanup"]
+  },
+  "policy": {
+    "kind": "orchestration-platform-self/v1",
+    "planningKey": "ISS-074",
+    "planningIssue": 332,
+    "parentEpicKey": "EPIC-KERNEL",
+    "parentEpicIssue": 2,
+    "sourceBranch": "codex/<selected normal-delivery branch>",
+    "baseBranch": "main",
+    "pullRequestTitle": "<approved title>",
+    "pullRequestBody": "<approved body>"
+  }
+}
+```
+
+The command first reduces existing `candidate.json`, `author-attempt.json` and
+`reviewer-terminal.json` into narrow `delivery-source.json` evidence. It then
+runs typecheck, format and local planning checks; mirrors only the approved
+ISS-074 and kernel-epic bodies; runs the board check; publishes or updates one
+draft PR; observes every required hosted check at the exact reviewed head; and
+uses the explicit squash/cleanup policy only after all checks pass. It stages PR
+and issue bodies plus immutable mutation intents in the external state directory.
+
+Every provider mutation is observed before and after the call. Confirmed state
+is recorded and never repeated. Unknown or partial publication, merge or cleanup
+stops with a typed reconcile status; a later invocation observes provider state
+before any retry. Cleanup refuses moved, dirty, missing or broad targets and
+requires the stable controller checkout to survive. Once cleanup is confirmed,
+restart reads delivery records directly and does not enter the original pilot
+flow or resolve the removed candidate/reviewer paths. Output is limited to typed
+status, identities, heads and check links; raw errors, logs, worker prose and
+environment values are excluded.
+
+Stable release N may run this command for reviewed N+1. N+1 cannot invoke itself
+as delivery authority, certify its tests, activate itself or alter the production
+release/operator fences. The controller still owns request creation, credentials
+and every mutation grant. Hosted fixtures demonstrate behavior only; the next
+genuinely useful measured issue must retain real counts, identities, exact heads,
+hosted execution and restart evidence.
+
 ## Deferred work and unpark conditions
 
 | Work                                                                   | Current disposition                                      | Unpark condition                                                                                                 |
