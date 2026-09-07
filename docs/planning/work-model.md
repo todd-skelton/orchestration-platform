@@ -1,5 +1,45 @@
 # Work model
 
+## Supervised self-improvement first (Todd ruling #323)
+
+M0, Supervised self-improvement, is the first delivery milestone. ISS-071 runs
+one supervised improvement to this orchestrator repository through a real worker,
+independent exact-head review, hosted CI and restart without duplicate dispatch.
+See `docs/planning/supervised-dogfood.md` for the bounded execution plan. This
+does not grant production bootstrap, merge or automatic N1 promotion authority.
+
+The installed milestone-orchestrator and model-routing skills were written for
+Chase Sets. Under Todd's explicit clarification they are reference material or
+loose guidance only, never authority for this general-purpose platform. Their
+controller freshness, leases, budgets, routing and deployment machinery are not
+platform prerequisites. The existing launcher is a temporary, replaceable adapter.
+Repository contracts and Todd's explicit platform rulings remain governing.
+
+The 2026-09-07 ruling supersedes conflicting earlier process prose as follows:
+
+- Reviews block on behavior, authority, materially false evidence or inability
+  to verify the change. Harmless headings and citation nits get corrected
+  without parking otherwise sound work. Preserve complete attempt history;
+  unresolved substantive blockers still prevent landing.
+- Independently inspect every changed assertion and require intended suites to
+  actually execute on the candidate in hosted macOS/Windows/Linux CI. This
+  replaces #305's universal duplicate bare-Node execution. Use targeted
+  reproduction for a named uncertainty. Synthetic platform tokens are not OS
+  evidence. No local test runner or native execution is authorized.
+- Deterministic CI failures within approved scope admit bounded repair and
+  fresh independent exact-head review without another Decision merely because
+  changed code failed (#271). No weakened assertions, broad timeout increases
+  or blind retries. Changed authority, credentials, provider mutations, product
+  tradeoffs and increased spending still require Todd's ruling.
+
+Explicitly applicable platform attempt and spend bounds persist. No extra Chase
+Sets cap is imported from a skill, no history resets and no requested increase
+is silently granted. Shared controller software and Chase Sets policy are not
+modified by this repository ruling. Deferral and trial completion never imply
+production certification or closure of the original M3 gates.
+
+## Vocabulary and production delivery model
+
 The repository uses a deliberately small vocabulary:
 
 - Milestones are independently usable outcomes with explicit exit evidence.
@@ -21,7 +61,8 @@ Labels have one meaning each:
 
 Sequencing belongs in dependencies and epic DAGs, not phase or wave labels.
 
-The delivery program has five outcome milestones: portable substrate, minimum
+The delivery program starts with supervised self-improvement (M0), followed by
+portable substrate, minimum
 orchestration kernel, self-hosting release, Chase Sets integration-ready, and
 Chase Sets adoption. Milestone placement describes the evidence an issue helps
 produce; native dependencies determine when the issue is runnable. Preparation
