@@ -19,7 +19,7 @@ the small sequential run/observe/resume flow; the controller retains credential,
 merge and all release authority. A human manually moving every step does not
 count as the pilot completing a loop.
 
-Use the existing launcher and its author/reviewer isolation. Do not build a
+Use an installed provider launcher and its author/reviewer isolation. Do not build a
 second launcher, credential broker, general engine, scheduler or policy
 framework. The adapter translates between the pilot's small local run record
 and the launcher's existing attempt identities and terminal observations.
@@ -28,7 +28,7 @@ missing capability gets the smallest concrete adapter change, not a new public
 contract family. Never import the walking-skeleton fixture into the pilot.
 
 The portable flow has no embedded repository policy or Windows command paths.
-The local Windows launcher is an explicit host adapter; a host without a
+The installed native Codex CLI is an explicit host adapter; a host without a
 compatible adapter reports unavailable before dispatch. Hosted tests exercise
 the portable flow and adapter boundary on macOS, Windows and Linux. The first
 live run reports its actual host and proves no untested cross-OS claim.
@@ -42,8 +42,12 @@ live run reports its actual host and proves no untested cross-OS claim.
    through the adapter. Record the real launcher attempt identity. On restart,
    an uncertain intent-to-launch interval is blocked for operator reconciliation;
    never blindly retry it or claim exactly-once launch without evidence.
-3. Observe that attempt to completion. Capture its exact commit and changed-file
-   scope. A moved base, unexpected diff or unknown terminal result is blocked.
+3. Observe that attempt to completion. The author edits source only and reports
+   the unchanged base. Validate tracked, staged, untracked and deleted paths
+   before staging the exact footprint and making one local controller commit.
+   Reserve commit intent first; missing durable candidate evidence after that
+   intent blocks reconciliation instead of retrying the commit. A moved base,
+   unexpected diff or unknown terminal result is blocked.
 4. Dispatch a distinct review attempt for that exact commit through the existing
    isolated reviewer path. Author approval cannot substitute for this review.
 5. On review PASS, the controller publishes the candidate PR using its existing
@@ -68,7 +72,10 @@ Implement and review ISS-071 as one bounded vertical slice, then run it against
 one controller-selected low-risk improvement to this orchestrator repository.
 The running pilot stays pinned to its reviewed revision; any successor edit is
 reviewed as a candidate and cannot replace the running pilot or certify itself.
-Do not choose changes to authority or verification rules for the first trial. Select the exact target when
+The first run may apply the already-approved #321A exact scaffold census repair
+on PR #320. Preserve unknown-directory and unexpected-manifest failures and
+require independent review. It must not edit the running pilot, review/CI success
+conditions, mutation authority or release rules. Select the exact target when
 the pilot is ready; record it before launch. Do not invent a busywork change to
 manufacture a success. A real blocker and its captured evidence is useful, but
 does not satisfy the successful-run acceptance criterion.
@@ -81,6 +88,76 @@ must not expand into the self-host certification program before the trial.
 After the run, retain one short learning note: what happened, what stopped
 progress, time/spend observed, and the next smallest change justified by that
 evidence. Do not add speculative hardening acceptance to ISS-071 mid-flight.
+
+## Pilot invocation
+
+Run `node scripts/dogfood/run.mjs <absolute-request.json>` from the clean,
+independently reviewed pilot checkout. Node 24 executes the private TypeScript
+modules directly; no package/build registration is needed. The controller first
+creates two clean worktrees and an existing external state directory. Supply:
+
+```json
+{
+  "owner": "controller-identity",
+  "run": "unique-trial-label",
+  "issue": "https://github.com/owner/repo/issues/123",
+  "pilotRevision": "<reviewed pilot 40-character commit>",
+  "base": "<author starting 40-character commit>",
+  "worktree": "<absolute author worktree>",
+  "reviewWorktree": "<absolute separate review worktree>",
+  "stateDirectory": "<absolute existing external directory>",
+  "allowedPaths": ["exact/file.ts", "allowed/subdirectory/"],
+  "repository": "owner/repo",
+  "requiredChecks": ["exact hosted check name for each required job"],
+  "author": { "model": "<model>", "effort": "<effort>", "promptFile": "<absolute prompt>" },
+  "reviewer": { "model": "<model>", "effort": "<effort>", "promptFile": "<absolute prompt>" },
+  "adapter": { "kind": "codex-exec", "executable": "<absolute installed native CLI>" }
+}
+```
+
+The adapter accepts only `kind` and `executable`; obsolete extra Git-write
+configuration is refused. The author uses `workspace-write` for source edits
+only, with no additional write roots. Shared Git metadata remains protected by
+the native sandbox. The reviewer uses `read-only` in a separate fresh session.
+Canonical pilot, author and reviewer roots must not overlap; the state directory
+must not overlap any checkout. Both documented temporary-root exclusions and
+an empty `sandbox_workspace_write.writable_roots` are explicit CLI overrides.
+See the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+for `exclude_slash_tmp` and `exclude_tmpdir_env_var`.
+The actual installed `codex exec --help` supplies the observed CLI flags; preflight
+refuses an unavailable/incompatible CLI. `--ignore-user-config` and `--ignore-rules`
+avoid importing a user's controller configuration. Existing authentication is
+retained. The native CLI's sandbox is the host isolation boundary; no new
+credential broker or production worker authority is claimed.
+
+The request file must not be named `config.json` inside the state directory:
+the pilot reserves that name for the pinned request/prompt fingerprint. One
+controller owns this trial. Exclusive immutable stage files reserve each attempt;
+partial writes or intent without identity block for reconciliation, never retry.
+These files, process traces and private output-shape files remain external. The
+small detached observation process only captures the existing CLI's PID, exit
+and JSONL; it survives controller exit and cannot dispatch another attempt.
+
+The pilot appends the exact base/head and four-key JSON verdict instructions to
+each prompt. Author `head` must be the unchanged base; the pilot makes the local
+commit under the controller's existing authority after validating the complete
+footprint. The author does not stage, commit, or alter Git metadata. The pilot
+retains substantive progress messages and advisory token usage in the attempt
+trace, starts review at the resulting detached candidate head, then returns
+`awaiting-publication`. The existing controller publishes
+and writes `publication.json` in the state directory containing
+`{"url":"https://github.com/owner/repo/pull/123","head":"<reviewed commit>"}`.
+Rerun the same command to observe CI using read-only `gh pr view`/`gh pr checks`.
+The configured required check names must each appear exactly once and pass.
+The pilot verifies PR head before and after reading checks; it never publishes,
+pushes, merges or promotes. Restart with the same request while observing and
+after `ready`; record unchanged attempt identities and launch artifacts. Even
+after readiness, a resumed command rechecks worktrees and hosted CI.
+
+Tests under `test/dogfood/` use fake attempts/processes only. Intended hosted
+three-OS execution and independent assertion review remain required. A live run
+must separately retain actual host, exact revision, launch counts, attempt and
+PR/CI links plus the short learning note; unit tests do not satisfy that trial.
 
 ## Deferred work and unpark conditions
 
