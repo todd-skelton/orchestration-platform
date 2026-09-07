@@ -130,6 +130,16 @@ avoid importing a user's controller configuration. Existing authentication is
 retained. The native CLI's sandbox is the host isolation boundary; no new
 credential broker or production worker authority is claimed.
 
+Native Windows workers explicitly select the host's observed `unelevated`
+backend; `--ignore-user-config` otherwise removes that separate setting. Other
+hosts receive no Windows override. The worker wrapper removes inherited Desktop
+pipe, permission, session, originator and CI/shell context variables from an
+in-memory child environment, preserving the existing authentication location.
+The environment is never serialized into the request or trace. This addresses
+the first real run's observed launch-context defects; which defect caused its
+read-only downgrade remains unproved until a corrected live run. See pressure
+round 474 for the failed attempt and successful active-restart observation.
+
 The request file must not be named `config.json` inside the state directory:
 the pilot reserves that name for the pinned request/prompt fingerprint. One
 controller owns this trial. Exclusive immutable stage files reserve each attempt;

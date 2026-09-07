@@ -20,7 +20,21 @@ async function optionalText(path: string) {
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const artifact = (config: Config, role: Role, suffix: string) =>
   resolve(config.stateDirectory, `${role}.${suffix}`);
-export function launchArguments(config: Config, role: Role) {
+export function workerEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const child = { ...environment };
+  const parentContext = new Set([
+    "CODEX_APP_TOOLS_PIPE_PATH",
+    "CODEX_PERMISSION_PROFILE",
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+    "CODEX_CI",
+    "CODEX_SHELL",
+  ]);
+  for (const key of Object.keys(child)) if (parentContext.has(key.toUpperCase())) delete child[key];
+  return child;
+}
+export function launchArguments(config: Config, role: Role, platform = process.platform) {
   check(
     Object.keys(config.adapter).every((key) => ["kind", "executable"].includes(key)),
     "unsupported-adapter-configuration",
@@ -38,6 +52,7 @@ export function launchArguments(config: Config, role: Role) {
     `model_reasoning_effort=${config[role].effort}`,
     "-c",
     'approval_policy="never"',
+    ...(platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : []),
     "-c",
     "sandbox_workspace_write.exclude_slash_tmp=true",
     "-c",
