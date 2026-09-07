@@ -15,6 +15,12 @@ try {
     await new Promise((done) => setTimeout(done, 10000));
   }
 } catch (error) {
-  console.error(JSON.stringify({ status: "blocked", reason: error.message }));
+  console.error(
+    JSON.stringify({
+      status: "blocked",
+      reason: error.message,
+      ...(typeof error.diagnostics === "string" ? { diagnostics: error.diagnostics } : {}),
+    }),
+  );
   process.exitCode = 1;
 }

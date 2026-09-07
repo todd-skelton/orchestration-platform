@@ -7,6 +7,7 @@ import { afterEach, expect, it } from "vitest";
 import {
   codexAdapter,
   launchArguments,
+  outputSchema,
   parseTrace,
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
@@ -100,6 +101,34 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
     usage: { input_tokens: 12, output_tokens: 8 },
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
+});
+it("accepts legacy verdicts and bounds optional advisory summaries", () => {
+  expect(parseTrace(trace(), true, "reviewer", config, id)).not.toHaveProperty("summary");
+  const verdict = (summary: unknown) =>
+    trace([
+      rows[0]!,
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: JSON.stringify({ run: "trial", role: "reviewer", head, verdict: "PASS", summary }),
+        },
+      },
+      rows[2]!,
+    ]);
+  expect(parseTrace(verdict("actionable finding"), true, "reviewer", config, id).summary).toBe(
+    "actionable finding",
+  );
+  expect(parseTrace(verdict(7), true, "reviewer", config, id)).not.toHaveProperty("summary");
+  expect(parseTrace(verdict("x".repeat(2100)), true, "reviewer", config, id).summary).toBe(
+    "x".repeat(2000),
+  );
+});
+it("requests an optional bounded summary without changing verdict authority fields", () => {
+  const schema = outputSchema(config, "reviewer");
+  expect(schema.required).toEqual(["run", "role", "head", "verdict"]);
+  expect(schema.properties.summary).toMatchObject({ type: "string", maxLength: 2000 });
+  expect(schema.additionalProperties).toBe(false);
 });
 it("rejects missing/duplicate identities, missing completion, changed session, wrong role and prose verdicts", () => {
   expect(() => parseTrace(trace(rows.slice(1)), true, "reviewer", config)).toThrow();

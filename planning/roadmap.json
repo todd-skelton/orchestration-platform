@@ -111,6 +111,7 @@
     { "key": "ISS-046", "file": "planning/drafts/ISS-046.md", "milestone": "M2", "parent": "EPIC-RUNTIME", "blockedBy": ["ISS-000"] },
     { "key": "ISS-047", "file": "planning/drafts/ISS-047.md", "milestone": "M3", "parent": "EPIC-MODULES", "blockedBy": ["ISS-010", "ISS-055"] },
     { "key": "ISS-055", "file": "planning/drafts/ISS-055.md", "milestone": "M2", "parent": "EPIC-MODULES", "blockedBy": ["ISS-011"] },
-    { "key": "ISS-071", "file": "planning/drafts/ISS-071.md", "milestone": "M0", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-041"] }
+    { "key": "ISS-071", "file": "planning/drafts/ISS-071.md", "milestone": "M0", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-041"] },
+    { "key": "ISS-072", "file": "planning/drafts/ISS-072.md", "milestone": "M2", "parent": "EPIC-KERNEL", "blockedBy": ["ISS-071"] }
   ]
 }
