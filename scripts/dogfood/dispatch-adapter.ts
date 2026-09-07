@@ -42,13 +42,25 @@ export const WORKER_ENVIRONMENT_ALLOWLIST = [
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
 ] as const;
+// libuv supplies these Windows startup names from its own process if omitted.
+// Make them explicit, rather than treating native additions as unknown inheritance.
+export const WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST = [
+  "LOGONSERVER",
+  "SYSTEMDRIVE",
+  "USERDOMAIN",
+  "USERNAME",
+] as const;
 export function workerEnvironment(
   environment: NodeJS.ProcessEnv,
   platform = process.platform,
 ): NodeJS.ProcessEnv {
-  const child: NodeJS.ProcessEnv = {};
+  const child: NodeJS.ProcessEnv = Object.create(null);
   const names = Object.keys(environment);
-  for (const allowed of WORKER_ENVIRONMENT_ALLOWLIST) {
+  const allowedNames = [
+    ...WORKER_ENVIRONMENT_ALLOWLIST,
+    ...(platform === "win32" ? WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST : []),
+  ];
+  for (const allowed of allowedNames) {
     const name =
       names.find((candidate) => candidate === allowed) ??
       (platform === "win32"
@@ -56,7 +68,11 @@ export function workerEnvironment(
         : undefined);
     if (name !== undefined && environment[name] !== undefined) child[allowed] = environment[name];
   }
-  return child;
+  // Node normally copies ambient coverage even with an explicit env. An own,
+  // non-enumerable undefined entry prevents that copy and is never transported.
+  Object.defineProperty(child, "NODE_V8_COVERAGE", { value: undefined });
+  // Refuse any later JS-runtime attempt to append non-allowlisted environment.
+  return Object.freeze(child);
 }
 export async function launchObserver(
   request: string,

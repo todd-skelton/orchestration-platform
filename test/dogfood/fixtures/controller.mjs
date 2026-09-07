@@ -12,10 +12,22 @@ const names = Object.keys(process.env);
 const locationsMatch = Object.entries(assertion.locations).every(
   ([name, value]) => process.env[name] === value,
 );
-const clean =
-  locationsMatch &&
-  assertion.present.every((name) => process.env[name] !== undefined) &&
-  names.every((name) => allowed.has(name)) &&
-  !names.some((name) => assertion.forbidden.includes(name.toUpperCase()));
-if (!clean) process.exit(9);
-writeFileSync(assertion.result, "observer-environment-ok");
+// CoreFoundation may generate this one field after exec on macOS; it is not
+// copied by either production allowlist. No runtime prefixes are exempted.
+const runtimeName = (name) => process.platform === "darwin" && name === "__CF_USER_TEXT_ENCODING";
+const checks = {
+  locationsMatch,
+  requiredNamesPresent: assertion.present.every((name) => process.env[name] !== undefined),
+  onlyAllowlistedNames: names.every((name) => allowed.has(name)),
+  onlyExpectedNames: names.every((name) => allowed.has(name) || runtimeName(name)),
+  forbiddenAbsent: !names.some((name) => assertion.forbidden.includes(name.toUpperCase())),
+  runtimeMetadataPresent: process.env.__CF_USER_TEXT_ENCODING !== undefined,
+};
+writeFileSync(assertion.result, JSON.stringify(checks));
+if (
+  !checks.locationsMatch ||
+  !checks.requiredNamesPresent ||
+  !checks.onlyExpectedNames ||
+  !checks.forbiddenAbsent
+)
+  process.exit(9);

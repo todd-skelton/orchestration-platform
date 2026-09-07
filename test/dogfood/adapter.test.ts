@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
   WORKER_ENVIRONMENT_ALLOWLIST,
+  WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST,
   codexAdapter,
   launchArguments,
   outputSchema,
@@ -70,6 +71,7 @@ const startupNames = [
   "TMP",
   "TMPDIR",
   "WINDIR",
+  ...(process.platform === "win32" ? WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST : []),
 ] as const;
 const forbiddenNames = [
   "ANTHROPIC_API_KEY",
@@ -91,6 +93,7 @@ const forbiddenNames = [
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NODE_OPTIONS",
+  "NODE_V8_COVERAGE",
   "OPENAI_API_KEY",
   "SSH_AUTH_SOCK",
   "UNRELATED_CONTROLLER_SECRET",
@@ -120,7 +123,10 @@ function hostedParent() {
 }
 function fixtureAssertion(parent: NodeJS.ProcessEnv, result?: string) {
   return {
-    allowed: [...WORKER_ENVIRONMENT_ALLOWLIST],
+    allowed: [
+      ...WORKER_ENVIRONMENT_ALLOWLIST,
+      ...(process.platform === "win32" ? WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST : []),
+    ],
     forbidden: forbiddenNames,
     locations: syntheticLocations,
     present: [...startupNames, ...locationNames].filter((name) => parent[name] !== undefined),
@@ -138,6 +144,20 @@ async function eventuallyRead(path: string) {
   }
   throw new Error("fixture-result-timeout");
 }
+async function assertFixture(path: string, boundary: "observer" | "worker") {
+  const checks = JSON.parse(await eventuallyRead(path));
+  // Only fixed boolean fields reach hosted logs, including evidence of the
+  // single OS-generated macOS name. No environment keys or values are dumped.
+  expect(checks).toEqual({
+    locationsMatch: true,
+    requiredNamesPresent: true,
+    onlyAllowlistedNames: process.platform === "darwin" ? expect.any(Boolean) : true,
+    onlyExpectedNames: true,
+    forbiddenAbsent: true,
+    runtimeMetadataPresent: process.platform === "darwin" ? expect.any(Boolean) : false,
+  });
+  console.log(JSON.stringify({ dogfoodEnvironmentFixture: { boundary, ...checks } }));
+}
 it("builds a new environment from the exact portable allowlist without changing its parent", () => {
   const allAllowed = Object.fromEntries(
     WORKER_ENVIRONMENT_ALLOWLIST.map((name) => [name, `synthetic-${name.toLowerCase()}`]),
@@ -154,6 +174,12 @@ it("builds a new environment from the exact portable allowlist without changing 
     github_token: "synthetic-github-token-case-alias",
     HTTP_PROXY: "synthetic-http-proxy",
     UNRELATED_CONTROLLER_SECRET: "synthetic-controller-secret",
+    NODE_V8_COVERAGE: "synthetic-coverage",
+    __CF_USER_TEXT_ENCODING: "synthetic-metadata-not-to-copy",
+    LOGONSERVER: "synthetic-logonserver",
+    SYSTEMDRIVE: "synthetic-systemdrive",
+    USERDOMAIN: "synthetic-userdomain",
+    USERNAME: "synthetic-username",
   };
   const before = { ...parent };
   expect(WORKER_ENVIRONMENT_ALLOWLIST).toEqual([
@@ -185,7 +211,22 @@ it("builds a new environment from the exact portable allowlist without changing 
     ...allAllowed,
     CODEX_HOME: "synthetic-codex-home",
     PATH: "synthetic-canonical-path",
+    LOGONSERVER: "synthetic-logonserver",
+    SYSTEMDRIVE: "synthetic-systemdrive",
+    USERDOMAIN: "synthetic-userdomain",
+    USERNAME: "synthetic-username",
   });
+  expect(WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST).toEqual([
+    "LOGONSERVER",
+    "SYSTEMDRIVE",
+    "USERDOMAIN",
+    "USERNAME",
+  ]);
+  const child = workerEnvironment(parent);
+  expect(child.NODE_V8_COVERAGE).toBeUndefined();
+  expect(Object.keys(child)).not.toContain("NODE_V8_COVERAGE");
+  expect(Object.getPrototypeOf(child)).toBeNull();
+  expect(Object.isFrozen(child)).toBe(true);
   expect(workerEnvironment({ path: "synthetic-only-alias" }, "linux")).toEqual({});
   expect(workerEnvironment({ path: "synthetic-only-alias" }, "win32")).toEqual({
     PATH: "synthetic-only-alias",
@@ -297,7 +338,7 @@ it("filters the actual controller-to-observer child environment", async () => {
   cleanup.push(root);
   const assertion = resolve(root, "observer-assertion.json"),
     result = resolve(root, "observer-result.txt"),
-    parent = hostedParent(),
+    parent = { ...hostedParent(), NODE_V8_COVERAGE: resolve(root, "synthetic-coverage") },
     before = { ...parent };
   await writeFile(assertion, JSON.stringify(fixtureAssertion(parent, result)));
   await promisify(execFile)(
@@ -305,7 +346,7 @@ it("filters the actual controller-to-observer child environment", async () => {
     [resolve(import.meta.dirname, "fixtures/controller.mjs"), "launch-observer", assertion],
     { windowsHide: true, env: parent },
   );
-  expect(await eventuallyRead(result)).toBe("observer-environment-ok");
+  await assertFixture(result, "observer");
   expect(parent).toEqual(before);
 });
 it("filters the actual observer-to-worker child environment", async () => {
@@ -314,10 +355,11 @@ it("filters the actual observer-to-worker child environment", async () => {
   const request = resolve(root, "request.json"),
     stdin = resolve(root, "prompt.txt"),
     assertion = resolve(root, "worker-assertion.json"),
-    parent = hostedParent(),
+    result = resolve(root, "worker-result.json"),
+    parent = { ...hostedParent(), NODE_V8_COVERAGE: resolve(root, "synthetic-coverage") },
     before = { ...parent };
   await writeFile(stdin, "finite prompt");
-  await writeFile(assertion, JSON.stringify(fixtureAssertion(parent)));
+  await writeFile(assertion, JSON.stringify(fixtureAssertion(parent, result)));
   await writeFile(
     request,
     JSON.stringify({
@@ -336,6 +378,7 @@ it("filters the actual observer-to-worker child environment", async () => {
     { windowsHide: true, env: parent },
   );
   const exit = JSON.parse(await eventuallyRead(resolve(root, "exit.json")));
+  await assertFixture(result, "worker");
   expect(exit).toEqual({ code: 0, signal: null });
   expect(JSON.parse(await readFile(resolve(root, "identity.json"), "utf8")).pid).toBeGreaterThan(0);
   expect(await readFile(resolve(root, "trace.jsonl"), "utf8")).toBe("finite prompt\n");

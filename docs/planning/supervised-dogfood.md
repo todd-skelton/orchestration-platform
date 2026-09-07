@@ -139,16 +139,33 @@ The exact allowlist is `PATH`, `PATHEXT`, `SYSTEMROOT`, `WINDIR`, `COMSPEC`,
 `LOCALAPPDATA`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME`. POSIX accepts only those
 exact uppercase spellings. Windows matches names case-insensitively and emits
 one canonical uppercase spelling; an exact canonical entry wins over an alias.
+Windows also explicitly permits `LOGONSERVER`, `SYSTEMDRIVE`, `USERDOMAIN`, and
+`USERNAME`: libuv supplies these startup names from its own process when absent
+from a supplied environment. Thus the list is 17 names on POSIX and 21 on Windows.
+The projected object has no prototype and is frozen. A non-enumerable own
+`NODE_V8_COVERAGE` entry with value `undefined` prevents Node's automatic ambient
+coverage propagation; no coverage variable is transported to the child. Other
+JavaScript runtime attempts to append variables fail before spawn.
 Every other parent name is omitted without logging, including delivery/cloud
 credentials, `NODE_OPTIONS`, askpass, agent sockets and proxies. Provider-auth
 filesystem and keychain locations stay usable; this does not isolate those
 stores. The parent remains unchanged and no environment is serialized into the
 request or trace.
 
+Child runtime initialization is a separate boundary. CoreFoundation can generate
+the exact `__CF_USER_TEXT_ENCODING` name on macOS after exec; it is never copied
+by this allowlist. Hosted fixtures allow only that exact Darwin runtime name in
+addition to the explicit list and report fixed booleans for verification. Native
+Windows tool shells may add offline proxy controls, as recorded by live
+presence-only checks. Neither behavior authorizes arbitrary runtime-name prefixes,
+parent proxy pass-through, or inspection of environment values.
+
 This stronger boundary supersedes the five-name ISS-073 candidate that source 1
-and review 2 passed. Source 6, independent review 7, the four controller package
-gates and actual hosted Windows/macOS/Linux results are still required; none is
-claimed here. Credential material reached retained logs in the observed run.
+and review 2 passed. Source 6, review 7 and four controller gates passed the next
+candidate, but hosted Windows/macOS failures withheld acceptance. The bounded
+controller repair requires independent review 8, all four gates at the corrected
+head, and fresh hosted three-OS execution. Credential material reached retained
+logs in the original observed run.
 Its validity and scopes and any unauthorized operations remain unverified, and
 invalidation was not performed. This repair does not prove controller
 containment or identify which launch-context defect caused the earlier read-only
