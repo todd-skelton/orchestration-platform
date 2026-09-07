@@ -1,0 +1,52 @@
+{
+  "byteLength": 1856,
+  "canonicalJson": "{\"assets\":[{\"architecture\":\"X64\",\"archiveSha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"assetName\":\"gh_2.93.0_linux_amd64.tar.gz\",\"checksumManifestName\":\"gh_2.93.0_checksums.txt\",\"checksumManifestSha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"executableName\":\"gh\",\"executableSha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"osKind\":\"LINUX\"},{\"architecture\":\"ARM64\",\"archiveSha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"assetName\":\"gh_2.93.0_macOS_arm64.zip\",\"checksumManifestName\":\"gh_2.93.0_checksums.txt\",\"checksumManifestSha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"executableName\":\"gh\",\"executableSha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"osKind\":\"MACOS\"},{\"architecture\":\"X64\",\"archiveSha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"assetName\":\"gh_2.93.0_windows_amd64.zip\",\"checksumManifestName\":\"gh_2.93.0_checksums.txt\",\"checksumManifestSha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"executableName\":\"gh.exe\",\"executableSha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"osKind\":\"WINDOWS\"}],\"cliVersion\":\"2.93.0\",\"createdAt\":\"2026-09-02T00:00:01.000Z\",\"expectedOidcIssuer\":\"https://token.actions.githubusercontent.com\",\"operatorConfirmation\":{\"actorId\":\"5678\",\"claim\":\"OFFICIAL_RELEASE_ASSETS_AND_CHECKSUMS_MATCH\",\"confirmedAt\":\"2026-09-02T00:00:00.000Z\"},\"releaseTag\":\"v2.93.0\",\"repositoryId\":\"1234\",\"schemaVersion\":\"bootstrap-verifier-anchor/v1\",\"signerWorkflow\":{\"digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"path\":\".github/workflows/review.yml\",\"ref\":\"refs/heads/main\",\"repositoryId\":\"1234\"},\"trustBootstrap\":\"GITHUB_CLI_DEFAULT_ONLINE_SIGSTORE_TUF\"}\n",
+  "digest": "70be486e417574fa4e1211828b7e3028c7b1b8583f42d440772d514b669e2bd5",
+  "facts": {
+    "assets": [
+      {
+        "architecture": "X64",
+        "archiveSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "assetName": "gh_2.93.0_linux_amd64.tar.gz",
+        "checksumManifestName": "gh_2.93.0_checksums.txt",
+        "checksumManifestSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "executableName": "gh",
+        "executableSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "osKind": "LINUX"
+      },
+      {
+        "architecture": "ARM64",
+        "archiveSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "assetName": "gh_2.93.0_macOS_arm64.zip",
+        "checksumManifestName": "gh_2.93.0_checksums.txt",
+        "checksumManifestSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "executableName": "gh",
+        "executableSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "osKind": "MACOS"
+      },
+      {
+        "architecture": "X64",
+        "archiveSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "assetName": "gh_2.93.0_windows_amd64.zip",
+        "checksumManifestName": "gh_2.93.0_checksums.txt",
+        "checksumManifestSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "executableName": "gh.exe",
+        "executableSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "osKind": "WINDOWS"
+      }
+    ],
+    "createdAt": "2026-09-02T00:00:01.000Z",
+    "operatorConfirmation": {
+      "actorId": "5678",
+      "confirmedAt": "2026-09-02T00:00:00.000Z"
+    },
+    "repositoryId": "1234",
+    "signerWorkflow": {
+      "digest": "4444444444444444444444444444444444444444444444444444444444444444",
+      "path": ".github/workflows/review.yml",
+      "ref": "refs/heads/main",
+      "repositoryId": "1234"
+    }
+  },
+  "note": "Structural fixture only. The three repeated-digit SHA-256 values and the numeric identities are synthetic: this file claims no real GitHub CLI 2.93.0 asset, checksum, signer, or operator comparison. ISS-036 operator action O7 supplies the real facts."
+}

@@ -450,23 +450,38 @@ async function findHandlerFiles(root) {
   return files.sort();
 }
 
+export async function collectWorkspacePackageDirectories(root = defaultRoot) {
+  const directories = [];
+  for (const parent of ["packages", "probes", "adapters", "fixtures"]) {
+    const entries = await readdir(resolve(root, parent), { withFileTypes: true });
+    directories.push(
+      ...entries.filter((entry) => entry.isDirectory()).map((entry) => `${parent}/${entry.name}`),
+    );
+  }
+
+  const optionalSourceContainer = "probes/self-host-github";
+  const optionalIndex = directories.indexOf(optionalSourceContainer);
+  if (optionalIndex !== -1) {
+    const sourceContainerEntries = await readdir(resolve(root, optionalSourceContainer));
+    if (sourceContainerEntries.some((entry) => entry.toLowerCase() === "package.json")) {
+      fail(`${optionalSourceContainer} must remain a manifestless source container`);
+    }
+    directories.splice(optionalIndex, 1);
+  }
+
+  const packageDirectories = directories.sort();
+  const expectedDirectories = packageContract.map(([, path]) => path).sort();
+  if (!equal(packageDirectories, expectedDirectories))
+    fail("workspace package path census mismatch");
+  return packageDirectories;
+}
+
 export async function loadBootstrapSnapshot(root = defaultRoot) {
+  const packageDirectories = await collectWorkspacePackageDirectories(root);
   const manifests = {};
   for (const [name, path] of packageContract) {
     manifests[name] = JSON.parse(await readFile(resolve(root, path, "package.json"), "utf8"));
   }
-  const packageDirectories = (await readdir(resolve(root, "packages"), { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => `packages/${entry.name}`);
-  const adapterDirectories = (await readdir(resolve(root, "adapters"), { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => `adapters/${entry.name}`);
-  const probeDirectories = (await readdir(resolve(root, "probes"), { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => `probes/${entry.name}`);
-  const fixtureDirectories = (await readdir(resolve(root, "fixtures"), { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => `fixtures/${entry.name}`);
   const cliRegistryUrl = `${pathToFileURL(resolve(root, "packages/cli/src/registry.mjs")).href}?census=${Date.now()}`;
   const bootstrapRegistryUrl = `${pathToFileURL(resolve(root, "bootstrap/src/command-registry.mjs")).href}?census=${Date.now()}`;
   const hostRegistryUrl = `${pathToFileURL(resolve(root, "packages/host-custody/src/bootstrap-command-registry.mjs")).href}?census=${Date.now()}`;
@@ -480,12 +495,7 @@ export async function loadBootstrapSnapshot(root = defaultRoot) {
     workspace: await readFile(resolve(root, "pnpm-workspace.yaml"), "utf8"),
     baseTsconfig: JSON.parse(await readFile(resolve(root, "tsconfig.base.json"), "utf8")),
     manifests,
-    packageDirectories: [
-      ...packageDirectories,
-      ...probeDirectories,
-      ...adapterDirectories,
-      ...fixtureDirectories,
-    ].sort(),
+    packageDirectories,
     buildConfiguration: JSON.parse(
       await readFile(resolve(root, "config/private-compositions.json"), "utf8"),
     ),
