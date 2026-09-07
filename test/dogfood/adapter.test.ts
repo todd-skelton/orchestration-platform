@@ -8,6 +8,7 @@ import {
   codexAdapter,
   launchArguments,
   parseTrace,
+  workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
 
@@ -34,6 +35,43 @@ const rows = [
   { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
 ];
 const trace = (events = rows) => events.map((row) => JSON.stringify(row)).join("\n") + "\n";
+it.each(["win32", "linux", "darwin"] as const)(
+  "selects the observed native backend only on Windows (%s argument fixture)",
+  (platform) => {
+    for (const role of ["author", "reviewer"] as const) {
+      const args = launchArguments(config, role, platform);
+      expect(args.includes('windows.sandbox="unelevated"')).toBe(platform === "win32");
+      expect(args[args.indexOf("-s") + 1]).toBe(
+        role === "author" ? "workspace-write" : "read-only",
+      );
+      expect(args).not.toContain("--add-dir");
+    }
+  },
+);
+it("drops only parent Desktop context without changing auth location or the parent environment", () => {
+  const parent = {
+    CODEX_APP_TOOLS_PIPE_PATH: "synthetic-pipe",
+    CODEX_PERMISSION_PROFILE: "synthetic-parent-permissions",
+    CODEX_THREAD_ID: "synthetic-thread",
+    CODEX_SESSION_ID: "synthetic-session",
+    CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "synthetic-desktop",
+    CODEX_CI: "1",
+    CODEX_SHELL: "1",
+    codex_permission_profile: "synthetic-case-alias",
+    CODEX_HOME: "synthetic-auth-home",
+    APPDATA: "synthetic-appdata",
+    PATH: "synthetic-bin",
+    UNRELATED: "synthetic-value",
+  };
+  const before = { ...parent };
+  expect(workerEnvironment(parent)).toEqual({
+    CODEX_HOME: "synthetic-auth-home",
+    APPDATA: "synthetic-appdata",
+    PATH: "synthetic-bin",
+    UNRELATED: "synthetic-value",
+  });
+  expect(parent).toEqual(before);
+});
 it("uses distinct sandbox roles, finite stdin and exact output shape without ambient configuration", () => {
   const author = launchArguments(config, "author"),
     reviewer = launchArguments(config, "reviewer");
@@ -91,7 +129,7 @@ const cleanup: string[] = [];
 afterEach(async () => {
   for (const root of cleanup.splice(0)) await rm(root, { recursive: true, force: true });
 });
-it("keeps the fake provider observation alive after its controller process exits", async () => {
+it("keeps fake provider observation alive after controller exit and filters its parent context", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-process-")));
   cleanup.push(root);
   const request = resolve(root, "request.json"),
@@ -112,7 +150,16 @@ it("keeps the fake provider observation alive after its controller process exits
   await promisify(execFile)(
     process.execPath,
     [resolve(import.meta.dirname, "fixtures/controller.mjs"), request],
-    { windowsHide: true },
+    {
+      windowsHide: true,
+      env: {
+        ...process.env,
+        CODEX_HOME: "synthetic-auth-home",
+        CODEX_PERMISSION_PROFILE: "synthetic-parent-permissions",
+        CODEX_APP_TOOLS_PIPE_PATH: "synthetic-pipe",
+        DOGFOOD_VERIFY_ENV: "1",
+      },
+    },
   );
   let exit;
   for (let count = 0; count < 100; count++) {
