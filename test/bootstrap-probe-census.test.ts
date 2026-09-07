@@ -22,9 +22,7 @@ beforeEach(async () => {
     ),
   );
   await Promise.all(
-    authoritativePackageDirectories.map((path) =>
-      mkdir(resolve(root, path), { recursive: true }),
-    ),
+    authoritativePackageDirectories.map((path) => mkdir(resolve(root, path), { recursive: true })),
   );
 });
 
@@ -33,20 +31,17 @@ afterEach(async () => {
 });
 
 describe("bootstrap probe directory census", () => {
-  test(
-    "keeps the authoritative package census with the optional source container absent or present",
-    async () => {
-      await expect(collectWorkspacePackageDirectories(root)).resolves.toEqual(
-        authoritativePackageDirectories,
-      );
+  test("keeps the authoritative package census with the optional source container absent or present", async () => {
+    await expect(collectWorkspacePackageDirectories(root)).resolves.toEqual(
+      authoritativePackageDirectories,
+    );
 
-      await mkdir(resolve(root, "probes/self-host-github/src"), { recursive: true });
+    await mkdir(resolve(root, "probes/self-host-github/src"), { recursive: true });
 
-      await expect(collectWorkspacePackageDirectories(root)).resolves.toEqual(
-        authoritativePackageDirectories,
-      );
-    },
-  );
+    await expect(collectWorkspacePackageDirectories(root)).resolves.toEqual(
+      authoritativePackageDirectories,
+    );
+  });
 
   test("rejects an unknown probe sibling", async () => {
     await mkdir(resolve(root, "probes/unknown-source"));
@@ -73,4 +68,17 @@ describe("bootstrap probe directory census", () => {
       "BOOTSTRAP_CONTRACT_MISMATCH: probes/self-host-github must remain a manifestless source container",
     );
   });
+
+  test.each(["PACKAGE.JSON", "Package.Json"])(
+    "rejects alternate-case package manifest %s in the approved source container",
+    async (manifestName) => {
+      const sourceContainer = resolve(root, "probes/self-host-github");
+      await mkdir(sourceContainer);
+      await writeFile(resolve(sourceContainer, manifestName), "{}\n");
+
+      await expect(collectWorkspacePackageDirectories(root)).rejects.toThrow(
+        "BOOTSTRAP_CONTRACT_MISMATCH: probes/self-host-github must remain a manifestless source container",
+      );
+    },
+  );
 });

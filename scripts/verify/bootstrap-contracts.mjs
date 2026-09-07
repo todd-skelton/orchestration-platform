@@ -455,9 +455,7 @@ export async function collectWorkspacePackageDirectories(root = defaultRoot) {
   for (const parent of ["packages", "probes", "adapters", "fixtures"]) {
     const entries = await readdir(resolve(root, parent), { withFileTypes: true });
     directories.push(
-      ...entries
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => `${parent}/${entry.name}`),
+      ...entries.filter((entry) => entry.isDirectory()).map((entry) => `${parent}/${entry.name}`),
     );
   }
 
@@ -465,7 +463,7 @@ export async function collectWorkspacePackageDirectories(root = defaultRoot) {
   const optionalIndex = directories.indexOf(optionalSourceContainer);
   if (optionalIndex !== -1) {
     const sourceContainerEntries = await readdir(resolve(root, optionalSourceContainer));
-    if (sourceContainerEntries.includes("package.json")) {
+    if (sourceContainerEntries.some((entry) => entry.toLowerCase() === "package.json")) {
       fail(`${optionalSourceContainer} must remain a manifestless source container`);
     }
     directories.splice(optionalIndex, 1);
