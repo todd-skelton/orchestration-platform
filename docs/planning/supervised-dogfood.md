@@ -133,7 +133,9 @@ Native Windows workers explicitly select the host's observed `unelevated`
 backend; `--ignore-user-config` otherwise removes that separate setting. Other
 hosts receive no Windows override. The worker wrapper removes inherited Desktop
 pipe, permission, session, originator and CI/shell context variables from an
-in-memory child environment, preserving the existing authentication location.
+in-memory child environment, preserving the existing authentication location. It
+also excludes `GH_TOKEN`, `GITHUB_TOKEN`, `GITHUB_PERSONAL_ACCESS_TOKEN`,
+`GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` case-insensitively.
 The environment is never serialized into the request or trace. This addresses
 the first real run's observed launch-context defects; which defect caused its
 read-only downgrade remains unproved until a corrected live run. See pressure

@@ -31,6 +31,11 @@ export function workerEnvironment(environment: NodeJS.ProcessEnv): NodeJS.Proces
     "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
     "CODEX_CI",
     "CODEX_SHELL",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
   ]);
   for (const key of Object.keys(child)) if (parentContext.has(key.toUpperCase())) delete child[key];
   return child;

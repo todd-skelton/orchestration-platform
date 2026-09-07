@@ -49,7 +49,7 @@ it.each(["win32", "linux", "darwin"] as const)(
     }
   },
 );
-it("drops only parent Desktop context without changing auth location or the parent environment", () => {
+it("drops parent Desktop context and delivery credentials without changing auth location or the parent environment", () => {
   const parent = {
     CODEX_APP_TOOLS_PIPE_PATH: "synthetic-pipe",
     CODEX_PERMISSION_PROFILE: "synthetic-parent-permissions",
@@ -59,6 +59,16 @@ it("drops only parent Desktop context without changing auth location or the pare
     CODEX_CI: "1",
     CODEX_SHELL: "1",
     codex_permission_profile: "synthetic-case-alias",
+    GH_TOKEN: "synthetic-gh-token",
+    gh_token: "synthetic-gh-token-case-alias",
+    GITHUB_TOKEN: "synthetic-github-token",
+    github_token: "synthetic-github-token-case-alias",
+    GITHUB_PERSONAL_ACCESS_TOKEN: "synthetic-github-personal-access-token",
+    github_personal_access_token: "synthetic-github-personal-access-token-case-alias",
+    GH_ENTERPRISE_TOKEN: "synthetic-gh-enterprise-token",
+    gh_enterprise_token: "synthetic-gh-enterprise-token-case-alias",
+    GITHUB_ENTERPRISE_TOKEN: "synthetic-github-enterprise-token",
+    github_enterprise_token: "synthetic-github-enterprise-token-case-alias",
     CODEX_HOME: "synthetic-auth-home",
     APPDATA: "synthetic-appdata",
     PATH: "synthetic-bin",
@@ -201,6 +211,16 @@ it("keeps fake provider observation alive after controller exit and filters its 
         CODEX_HOME: "synthetic-auth-home",
         CODEX_PERMISSION_PROFILE: "synthetic-parent-permissions",
         CODEX_APP_TOOLS_PIPE_PATH: "synthetic-pipe",
+        GH_TOKEN: "synthetic-gh-token",
+        gh_token: "synthetic-gh-token-case-alias",
+        GITHUB_TOKEN: "synthetic-github-token",
+        github_token: "synthetic-github-token-case-alias",
+        GITHUB_PERSONAL_ACCESS_TOKEN: "synthetic-github-personal-access-token",
+        github_personal_access_token: "synthetic-github-personal-access-token-case-alias",
+        GH_ENTERPRISE_TOKEN: "synthetic-gh-enterprise-token",
+        gh_enterprise_token: "synthetic-gh-enterprise-token-case-alias",
+        GITHUB_ENTERPRISE_TOKEN: "synthetic-github-enterprise-token",
+        github_enterprise_token: "synthetic-github-enterprise-token-case-alias",
         DOGFOOD_VERIFY_ENV: "1",
       },
     },
