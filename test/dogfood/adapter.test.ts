@@ -20,7 +20,7 @@ const config = {
   reviewWorktree: "/reviewer",
   author: { model: "test", effort: "low" },
   reviewer: { model: "test", effort: "high" },
-  adapter: { kind: "codex-exec", executable: process.execPath, authorGitDirectory: "/common/.git" },
+  adapter: { kind: "codex-exec", executable: process.execPath },
 } as Config;
 const rows = [
   { type: "thread.started", thread_id: id },
@@ -38,7 +38,10 @@ it("uses distinct sandbox roles, finite stdin and exact output shape without amb
   const author = launchArguments(config, "author"),
     reviewer = launchArguments(config, "reviewer");
   expect(author).toContain("workspace-write");
-  expect(author).toContain("/common/.git");
+  expect(author).not.toContain("--add-dir");
+  expect(author).toContain("sandbox_workspace_write.exclude_slash_tmp=true");
+  expect(author).toContain("sandbox_workspace_write.exclude_tmpdir_env_var=true");
+  expect(author).toContain("sandbox_workspace_write.writable_roots=[]");
   expect(reviewer).toContain("read-only");
   expect(reviewer).not.toContain("--add-dir");
   expect(reviewer).toContain("--ignore-user-config");
@@ -46,6 +49,10 @@ it("uses distinct sandbox roles, finite stdin and exact output shape without amb
   expect(reviewer).toContain("--output-schema");
   expect(reviewer.at(-1)).toBe("-");
   expect(reviewer).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+});
+it("rejects obsolete extra Git write configuration instead of exposing hooks/config to the source worker", () => {
+  const unsafe = { ...config, adapter: { ...config.adapter, authorGitDirectory: "/shared/.git" } };
+  expect(() => launchArguments(unsafe, "author")).toThrow("unsupported-adapter-configuration");
 });
 it("reads actual Codex event shape and retains usage as advisory data", () => {
   expect(parseTrace(trace(), true, "reviewer", config, id)).toEqual({

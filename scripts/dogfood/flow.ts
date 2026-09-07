@@ -17,7 +17,7 @@ export interface Config {
   requiredChecks: string[];
   author: { model: string; effort: string; promptFile: string };
   reviewer: { model: string; effort: string; promptFile: string };
-  adapter: { kind: "codex-exec"; executable: string; authorGitDirectory?: string };
+  adapter: { kind: "codex-exec"; executable: string };
 }
 export interface Attempt {
   id: string;
@@ -69,6 +69,11 @@ async function record(directory: string, name: string, value: unknown) {
 }
 export function validateConfig(config: Config) {
   requireThat(config && /^[\w.-]{1,64}$/.test(config.run), "invalid-run");
+  requireThat(
+    config.adapter &&
+      Object.keys(config.adapter).every((key) => ["kind", "executable"].includes(key)),
+    "unsupported-adapter-configuration",
+  );
   for (const name of ["owner", "issue", "repository"] as const)
     requireThat(typeof config[name] === "string" && config[name].length > 0, `invalid-${name}`);
   for (const name of ["base", "pilotRevision"] as const)
@@ -109,6 +114,19 @@ export function validateConfig(config: Config) {
     requireThat(isAbsolute(actor.promptFile), "prompt-path-not-absolute");
   }
 }
+function footprint(config: Config, changed: string[]) {
+  requireThat(
+    changed.length > 0 &&
+      changed.every((file) =>
+        config.allowedPaths.some(
+          (allowed) => file === allowed || (allowed.endsWith("/") && file.startsWith(allowed)),
+        ),
+      ),
+    "outside-footprint",
+  );
+  return changed;
+}
+const paths = (output: string) => output.split("\0").filter(Boolean);
 async function candidate(config: Config, adapter: Adapter) {
   requireThat(
     (await adapter.git(config.worktree, ["status", "--porcelain"])) === "",
@@ -120,26 +138,18 @@ async function candidate(config: Config, adapter: Adapter) {
     (await adapter.git(config.worktree, ["merge-base", config.base, head])) === config.base,
     "changed-base",
   );
-  const changed = (
-    await adapter.git(config.worktree, [
-      "diff",
-      "--name-only",
-      "--no-renames",
-      "-z",
-      config.base,
-      head,
-    ])
-  )
-    .split("\0")
-    .filter(Boolean);
-  requireThat(
-    changed.length > 0 &&
-      changed.every((file) =>
-        config.allowedPaths.some(
-          (allowed) => file === allowed || (allowed.endsWith("/") && file.startsWith(allowed)),
-        ),
-      ),
-    "outside-footprint",
+  const changed = footprint(
+    config,
+    paths(
+      await adapter.git(config.worktree, [
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        config.base,
+        head,
+      ]),
+    ),
   );
   return { head, changed };
 }
@@ -156,11 +166,13 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
   }
   const directory = await realpath(config.stateDirectory); // Controller reserves the external directory.
   requireThat(
-    roots.every((root) => outside(root, directory)),
+    roots.every((root) => outside(root, directory) && outside(directory, root)),
     "state-inside-checkout",
   );
   requireThat(
-    roots[1] !== roots[2] && roots[0] !== roots[1] && roots[0] !== roots[2],
+    roots.every((root, index) =>
+      roots.every((other, otherIndex) => index === otherIndex || outside(root, other)),
+    ),
     "worktree-isolation",
   );
   requireThat(
@@ -220,8 +232,8 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
       const head = role === "author" ? config.base : reviewed.head;
       const prompt =
         `${prompts[role === "author" ? 0 : 1]}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
-        `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Only author may edit/commit its supplied worktree. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"<full candidate commit>","verdict":"PASS"} (or verdict FAIL). Review every changed assertion independently; do not run local test runners/native builds.\n`;
+        `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"${head}","verdict":"PASS"} (or verdict FAIL). Review every changed assertion independently; do not run local test runners/native builds.\n`;
       attempt = await adapter.launch(role, config, prompt);
       await record(directory, `${role}-attempt`, attempt);
     }
@@ -250,9 +262,61 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
       await record(directory, `${role}-terminal`, terminal);
     }
     requireThat(terminal.id === attempt.id && terminal.status === "passed", `${role}-failed`);
+    if (role === "author") {
+      requireThat(terminal.head === config.base, "author-wrong-head");
+      if (!reviewed) {
+        requireThat(!(await get("commit-intent")), "commit-result-unknown-reconcile");
+        requireThat(
+          (await adapter.git(config.worktree, ["rev-parse", "HEAD"])) === config.base,
+          "author-head-moved",
+        );
+        const changed = footprint(config, [
+          ...new Set([
+            ...paths(
+              await adapter.git(config.worktree, [
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                "HEAD",
+              ]),
+            ),
+            ...paths(
+              await adapter.git(config.worktree, [
+                "diff",
+                "--cached",
+                "--name-only",
+                "--no-renames",
+                "-z",
+              ]),
+            ),
+            ...paths(
+              await adapter.git(config.worktree, [
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+              ]),
+            ),
+          ]),
+        ]);
+        await record(directory, "commit-intent", { base: config.base, changed });
+        await adapter.git(config.worktree, [
+          "--literal-pathspecs",
+          "add",
+          "--all",
+          "--",
+          ...changed,
+        ]);
+        await adapter.git(config.worktree, ["commit", "-m", `dogfood: ${config.run}`]);
+        await record(directory, "candidate", await candidate(config, adapter));
+      }
+      const current = await candidate(config, adapter);
+      requireThat(current.head === (await get("candidate")).head, "candidate-head-moved");
+      continue;
+    }
     const current = await candidate(config, adapter);
     requireThat(terminal.head === current.head, `${role}-wrong-head`);
-    if (role === "author" && !reviewed) await record(directory, "candidate", current);
     if (role === "reviewer") {
       requireThat(reviewed.head === current.head, "candidate-head-moved");
       requireThat(

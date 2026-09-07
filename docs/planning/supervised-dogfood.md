@@ -42,8 +42,12 @@ live run reports its actual host and proves no untested cross-OS claim.
    through the adapter. Record the real launcher attempt identity. On restart,
    an uncertain intent-to-launch interval is blocked for operator reconciliation;
    never blindly retry it or claim exactly-once launch without evidence.
-3. Observe that attempt to completion. Capture its exact commit and changed-file
-   scope. A moved base, unexpected diff or unknown terminal result is blocked.
+3. Observe that attempt to completion. The author edits source only and reports
+   the unchanged base. Validate tracked, staged, untracked and deleted paths
+   before staging the exact footprint and making one local controller commit.
+   Reserve commit intent first; missing durable candidate evidence after that
+   intent blocks reconciliation instead of retrying the commit. A moved base,
+   unexpected diff or unknown terminal result is blocked.
 4. Dispatch a distinct review attempt for that exact commit through the existing
    isolated reviewer path. Author approval cannot substitute for this review.
 5. On review PASS, the controller publishes the candidate PR using its existing
@@ -111,10 +115,15 @@ creates two clean worktrees and an existing external state directory. Supply:
 }
 ```
 
-For a linked author worktree, optional `adapter.authorGitDirectory` must resolve
-to its exact Git common directory. The adapter checks this and adds that write
-root only for the author so commits can reach shared Git metadata. The author
-uses `workspace-write`; the reviewer uses `read-only` in a separate fresh session.
+The adapter accepts only `kind` and `executable`; obsolete extra Git-write
+configuration is refused. The author uses `workspace-write` for source edits
+only, with no additional write roots. Shared Git metadata remains protected by
+the native sandbox. The reviewer uses `read-only` in a separate fresh session.
+Canonical pilot, author and reviewer roots must not overlap; the state directory
+must not overlap any checkout. Both documented temporary-root exclusions and
+an empty `sandbox_workspace_write.writable_roots` are explicit CLI overrides.
+See the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+for `exclude_slash_tmp` and `exclude_tmpdir_env_var`.
 The actual installed `codex exec --help` supplies the observed CLI flags; preflight
 refuses an unavailable/incompatible CLI. `--ignore-user-config` and `--ignore-rules`
 avoid importing a user's controller configuration. Existing authentication is
@@ -130,9 +139,12 @@ small detached observation process only captures the existing CLI's PID, exit
 and JSONL; it survives controller exit and cannot dispatch another attempt.
 
 The pilot appends the exact base/head and four-key JSON verdict instructions to
-each prompt. It retains substantive progress messages and advisory token usage
-in the attempt trace. It polls author, starts review at the resulting detached
-head, then returns `awaiting-publication`. The existing controller publishes
+each prompt. Author `head` must be the unchanged base; the pilot makes the local
+commit under the controller's existing authority after validating the complete
+footprint. The author does not stage, commit, or alter Git metadata. The pilot
+retains substantive progress messages and advisory token usage in the attempt
+trace, starts review at the resulting detached candidate head, then returns
+`awaiting-publication`. The existing controller publishes
 and writes `publication.json` in the state directory containing
 `{"url":"https://github.com/owner/repo/pull/123","head":"<reviewed commit>"}`.
 Rerun the same command to observe CI using read-only `gh pr view`/`gh pr checks`.

@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -21,6 +21,10 @@ const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const artifact = (config: Config, role: Role, suffix: string) =>
   resolve(config.stateDirectory, `${role}.${suffix}`);
 export function launchArguments(config: Config, role: Role) {
+  check(
+    Object.keys(config.adapter).every((key) => ["kind", "executable"].includes(key)),
+    "unsupported-adapter-configuration",
+  );
   return [
     "exec",
     "--json",
@@ -34,13 +38,16 @@ export function launchArguments(config: Config, role: Role) {
     `model_reasoning_effort=${config[role].effort}`,
     "-c",
     'approval_policy="never"',
+    "-c",
+    "sandbox_workspace_write.exclude_slash_tmp=true",
+    "-c",
+    "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+    "-c",
+    "sandbox_workspace_write.writable_roots=[]",
     "--output-schema",
     artifact(config, role, "output-schema.json"),
     "-s",
     role === "author" ? "workspace-write" : "read-only",
-    ...(role === "author" && config.adapter.authorGitDirectory
-      ? ["--add-dir", config.adapter.authorGitDirectory]
-      : []),
     "-",
   ];
 }
@@ -100,6 +107,7 @@ export function codexAdapter(): Adapter {
   return {
     git,
     async preflight(config) {
+      launchArguments(config, "author");
       check(
         config.adapter?.kind === "codex-exec" && isAbsolute(config.adapter.executable),
         "host-adapter-unavailable",
@@ -115,15 +123,6 @@ export function codexAdapter(): Adapter {
         "--output-schema",
       ])
         check(help.includes(flag), "incompatible-codex-cli");
-      if (config.adapter.authorGitDirectory) {
-        check(isAbsolute(config.adapter.authorGitDirectory), "invalid-author-git-directory");
-        const common = await git(config.worktree, ["rev-parse", "--git-common-dir"]);
-        check(
-          (await realpath(config.adapter.authorGitDirectory)) ===
-            (await realpath(resolve(config.worktree, common))),
-          "author-git-directory-mismatch",
-        );
-      }
     },
     async launch(role, config, prompt) {
       await writeFile(artifact(config, role, "prompt.txt"), prompt, { flag: "wx" });
@@ -136,7 +135,10 @@ export function codexAdapter(): Adapter {
           properties: {
             run: { type: "string", enum: [config.run] },
             role: { type: "string", enum: [role] },
-            head: { type: "string", pattern: "^[a-f0-9]{40}$" },
+            head:
+              role === "author"
+                ? { type: "string", enum: [config.base] }
+                : { type: "string", pattern: "^[a-f0-9]{40}$" },
             verdict: { type: "string", enum: ["PASS", "FAIL"] },
           },
         }),
