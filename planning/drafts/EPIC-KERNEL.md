@@ -2,7 +2,7 @@
 key: EPIC-KERNEL
 title: "Epic: Build the orchestration control-plane kernel"
 labels: ["type:epic", "area:core"]
-children: [ISS-025, ISS-007, ISS-008, ISS-009, ISS-010, ISS-026, ISS-030, ISS-041, ISS-042, ISS-043]
+children: [ISS-025, ISS-007, ISS-008, ISS-009, ISS-010, ISS-026, ISS-030, ISS-041, ISS-042, ISS-043, ISS-071]
 ---
 
 ## Outcome
@@ -11,6 +11,14 @@ The engine can own one session, dispatch bounded workers, reduce exact-revision
 review authority, reconstruct its state from an append-only journal without
 consumer-specific policy, show the operator what it is doing, and measure that
 its independent review actually discriminates.
+
+## Immediate supervised learning target
+
+Under Todd's #323 ruling, ISS-071 is next: one real work item through the
+existing launcher adapter, independent exact-head review, hosted CI observation
+and restart without duplicate dispatch. The controller retains publication and
+merge authority. The production kernel outcome above is unchanged; the pilot
+does not close its production owners. See docs/planning/supervised-dogfood.md.
 
 ## Orchestrator handoff
 
@@ -24,7 +32,8 @@ its independent review actually discriminates.
   `ISS-026, ISS-038 → ISS-030`;
   `ISS-003 → ISS-041`;
   `ISS-010 → ISS-042`;
-  `ISS-009, ISS-021 → ISS-043`.
+  `ISS-009, ISS-021 → ISS-043`;
+  `ISS-041 → ISS-071`.
 - Parallelism: review authority and the event journal may proceed in parallel
   once their gates are satisfied. The walking skeleton runs as soon as
   contracts and the CLI exist and blocks nothing; its divergence ledger is
@@ -75,3 +84,5 @@ its independent review actually discriminates.
 - `ISS-041` — Run the walking-skeleton cycle end to end.
 - `ISS-042` — Implement the operator status projection.
 - `ISS-043` — Calibrate independent review discrimination.
+
+- `ISS-071` — Run one supervised real-work loop through review, CI and restart.
