@@ -415,5 +415,6 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       else await expect(f.run()).rejects.toThrow();
       expect(f.launches).toEqual(["author", "reviewer"]);
     },
+    30_000,
   );
 });

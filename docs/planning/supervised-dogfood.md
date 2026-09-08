@@ -330,3 +330,22 @@ Deferral is priority, not false completion or deletion of existing dependency
 edges. ISS-071 closes only its supervised trial. ISS-026, ISS-021, ISS-041 and
 ISS-015 are not closed or certified by it. Future production extraction must
 implement their contracts rather than treating trial bookkeeping as authority.
+
+## Bounded review-repair continuation
+
+ISS-076 adds `node scripts/dogfood/continue-repair.mjs <absolute-repair-request.json>`
+for one externally admitted failed source review.
+The private command validates the closed v2 review report and its exact source
+config, candidate and participant join, records repair intent outside every
+checkout, and delegates exactly one corrective author and one independent delta
+reviewer to the existing reviewed flow and native dispatch adapter. Main base and
+corrective base remain separate; all acceptance criteria, allowed paths, prior
+participants, verdicts and known/unavailable usage are carried forward.
+
+The command accepts only a complete fixable exact-head failure under the
+`contract` quality profile. Malformed, incomplete, stale, dirty, exhausted or
+unknown state blocks with a bounded reason. A structured exact-head delta PASS
+can produce `awaiting-delivery`, but it cannot grant four-gate/hosted proof,
+existing-PR refresh, merge, cleanup, promotion or stable authority. Notes remain
+in the external handoff as advisory follow-up. Hosted fixtures do not close the
+issue's later genuine-use and restart obligation.
