@@ -597,7 +597,8 @@ it("reconciles a lost merge through the engine and the real OPEN-only checks ada
   expect(effects.filter((args) => args[1] === "merge")).toHaveLength(1);
   expect(effects.filter((args) => args[1] === "checks")).toHaveLength(1);
   expect(cleaned).toBe(true);
-});
+  // Two engine cycles perform real Git identity checks; Windows CI exceeds the 5s default.
+}, 30_000);
 
 it("rejects matching heads from a different Git worktree family", async () => {
   vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
