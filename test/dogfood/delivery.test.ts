@@ -176,6 +176,25 @@ async function fixture() {
   return { config, plan, adapter, policy, calls, state };
 }
 
+async function writeState(config: DeliveryConfig, name: string, value: unknown) {
+  await writeFile(resolve(config.stateDirectory, `${name}.json`), `${JSON.stringify(value)}\n`);
+}
+
+function expectNoProviderAction(calls: string[]) {
+  expect(calls).not.toContain("source");
+  expect(calls).not.toContain("verify");
+  expect(calls.filter((call) => call.startsWith("gate:"))).toEqual([]);
+  expect(calls.filter((call) => call.startsWith("observe-draft:"))).toEqual([]);
+  expect(calls.filter((call) => call.startsWith("draft:"))).toEqual([]);
+  expect(calls).not.toContain("observe-publication");
+  expect(calls).not.toContain("publish");
+  expect(calls).not.toContain("checks");
+  expect(calls).not.toContain("observe-merge");
+  expect(calls).not.toContain("merge");
+  expect(calls).not.toContain("observe-cleanup");
+  expect(calls).not.toContain("cleanup");
+}
+
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -414,6 +433,44 @@ it("fails closed on a malformed external delivery record", async () => {
   );
   expect(f.calls).toEqual([]);
 });
+
+it.each([
+  ["publication", "null", null, "malformed-publication-receipt"],
+  ["publication", "false", false, "malformed-publication-receipt"],
+  ["publication", "object-shape-invalid", {}, "malformed-publication-receipt"],
+  ["hosted-checks", "null", null, "malformed-hosted-checks-record"],
+  ["hosted-checks", "false", false, "malformed-hosted-checks-record"],
+  ["hosted-checks", "object-shape-invalid", {}, "malformed-hosted-checks-record"],
+  ["merge", "null", null, "malformed-merge-receipt"],
+  ["merge", "false", false, "malformed-merge-receipt"],
+  ["merge", "object-shape-invalid", {}, "malformed-merge-receipt"],
+] as const)(
+  "rejects present %s state containing %s before any provider action",
+  async (name, _shape, value, reason) => {
+    const f = await fixture();
+    await writeState(f.config, name, value);
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
+    expectNoProviderAction(f.calls);
+  },
+);
+
+it.each([
+  ["gate-4", "null", null, "malformed-record:gate-4"],
+  ["gate-4", "false", false, "malformed-record:gate-4"],
+  ["gate-4", "object-shape-invalid", {}, "malformed-record:gate-4"],
+  ["draft-ISS-074", "null", null, "malformed-record:draft-ISS-074"],
+  ["draft-ISS-074", "false", false, "malformed-record:draft-ISS-074"],
+  ["draft-ISS-074", "object-shape-invalid", {}, "malformed-record:draft-ISS-074"],
+] as const)(
+  "prevalidates a present %s %s receipt before gates, mirrors, or publication",
+  async (name, _shape, value, reason) => {
+    const f = await fixture();
+    await writeState(f.config, name, value);
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
+    expect(f.calls).toEqual(["policy"]);
+    expectNoProviderAction(f.calls);
+  },
+);
 
 it("accepts controller authority only from the external state directory", async () => {
   const f = await fixture();

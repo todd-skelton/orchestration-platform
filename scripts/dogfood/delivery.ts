@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 export const DELIVERY_AUTHORITY_SCHEMA = "dogfood-delivery-authority/v1" as const;
 const ACTIONS = ["gates", "mirror", "publish", "merge", "cleanup"] as const;
 const SHA = /^[a-f0-9]{40}$/;
+const ABSENT_RECORD = Symbol("absent-record");
 
 export interface DeliveryAuthority {
   schemaVersion: typeof DELIVERY_AUTHORITY_SCHEMA;
@@ -173,11 +174,11 @@ function digest(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-async function optionalRecord(directory: string, name: string): Promise<any | undefined> {
+async function optionalRecord(directory: string, name: string): Promise<unknown> {
   try {
     return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return ABSENT_RECORD;
     throw new DeliveryBlocked(`malformed-record:${name}`);
   }
 }
@@ -191,7 +192,10 @@ async function record(directory: string, name: string, value: unknown) {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const existing = await optionalRecord(directory, name);
-    demand(JSON.stringify(existing) === JSON.stringify(value), `conflicting-record:${name}`);
+    demand(
+      existing !== ABSENT_RECORD && JSON.stringify(existing) === JSON.stringify(value),
+      `conflicting-record:${name}`,
+    );
   }
 }
 
@@ -347,12 +351,17 @@ async function confirmMutation<T>(
   observe: () => Promise<Observation<T>>,
   mutate: () => Promise<void>,
   project: (value: T) => object,
+  validate: (value: unknown) => void,
 ) {
   const receipt = await optionalRecord(directory, name);
-  if (receipt) return receipt;
+  if (receipt !== ABSENT_RECORD) {
+    validate(receipt);
+    return receipt;
+  }
   let observation = await observe();
   if (observation.state === "confirmed") {
     const value = { head, ...project(observation.value) };
+    validate(value);
     await record(directory, name, value);
     return value;
   }
@@ -365,8 +374,66 @@ async function confirmMutation<T>(
   demand(observation.state !== "unknown", `${name}-outcome-unknown`);
   demand(observation.state === "confirmed", `${name}-unconfirmed-reconcile-before-retry`);
   const value = { head, ...project(observation.value) };
+  validate(value);
   await record(directory, name, value);
   return value;
+}
+
+function validateSourceRecord(
+  config: DeliveryConfig,
+  source: unknown,
+): asserts source is SourceEvidence {
+  demand(
+    exactKeys(source, ["head", "reviewId"]) &&
+      source.head === config.candidateHead &&
+      typeof source.reviewId === "string" &&
+      /^[A-Za-z0-9._:-]{1,128}$/.test(source.reviewId),
+    "delivery-source-head-drift",
+  );
+}
+
+function validatePublicationRecord(
+  config: DeliveryConfig,
+  publication: unknown,
+): asserts publication is PublicationEvidence {
+  demand(
+    exactKeys(publication, ["head", "number", "url"]) &&
+      publication.head === config.candidateHead &&
+      Number.isSafeInteger(publication.number) &&
+      (publication.number as number) > 0 &&
+      typeof publication.url === "string" &&
+      publication.url.startsWith("https://"),
+    "malformed-publication-receipt",
+  );
+}
+
+function validateMergeRecord(
+  config: DeliveryConfig,
+  merge: unknown,
+): asserts merge is MergeEvidence {
+  demand(
+    exactKeys(merge, ["head", "number", "mergeCommit"]) &&
+      merge.head === config.candidateHead &&
+      Number.isSafeInteger(merge.number) &&
+      (merge.number as number) > 0 &&
+      typeof merge.mergeCommit === "string" &&
+      SHA.test(merge.mergeCommit),
+    "malformed-merge-receipt",
+  );
+}
+
+function validateCleanupRecord(
+  config: DeliveryConfig,
+  plan: CleanupPlan,
+  cleanup: unknown,
+): asserts cleanup is { head: string; worktrees: string[]; branch: string } {
+  demand(
+    exactKeys(cleanup, ["head", "worktrees", "branch"]) &&
+      cleanup.head === config.candidateHead &&
+      cleanup.branch === plan.branch &&
+      exactUniqueStringSet(cleanup.worktrees, plan.worktrees),
+    "malformed-cleanup-receipt",
+  );
 }
 
 function validateChecks(config: DeliveryConfig, head: string, checks: CheckEvidence[]) {
@@ -398,7 +465,7 @@ export async function deliveryStep(
   const directory = await realpath(config.stateDirectory);
   const fingerprint = digest(config);
   const pinned = await optionalRecord(directory, "delivery-config");
-  if (pinned)
+  if (pinned !== ABSENT_RECORD)
     demand(
       exactKeys(pinned, ["fingerprint"]) && pinned.fingerprint === fingerprint,
       "conflicting-delivery-config",
@@ -429,16 +496,17 @@ export async function deliveryStep(
   const savedChecks = await optionalRecord(directory, "hosted-checks");
   const savedMerge = await optionalRecord(directory, "merge");
   const savedPlan = await optionalRecord(directory, "delivery-plan");
-  if (completed) {
+  if (completed !== ABSENT_RECORD) {
     demand(
-      exactKeys(savedPlan, ["head", "digest", "plan"]) &&
+      savedPlan !== ABSENT_RECORD &&
+        exactKeys(savedPlan, ["head", "digest", "plan"]) &&
         savedPlan.head === config.candidateHead &&
         savedPlan.digest === digest(savedPlan.plan),
       "malformed-delivery-plan-record",
     );
     validatePlan(config, savedPlan.plan as DeliveryPlan);
     const completedPlan = savedPlan.plan as DeliveryPlan;
-    const checks =
+    const completedChecks =
       exactKeys(savedChecks, ["head", "checks"]) && savedChecks.head === config.candidateHead
         ? validateChecks(config, savedChecks.head, savedChecks.checks as CheckEvidence[])
         : undefined;
@@ -462,7 +530,7 @@ export async function deliveryStep(
         completed.head === config.candidateHead &&
         exactUniqueStringSet(completed.worktrees, completedPlan.cleanup.worktrees) &&
         completed.branch === completedPlan.cleanup.branch &&
-        checks?.every((check) => check.bucket === "pass"),
+        completedChecks?.every((check) => check.bucket === "pass"),
       "malformed-completed-delivery",
     );
     return {
@@ -472,28 +540,84 @@ export async function deliveryStep(
       head: config.candidateHead,
       reviewId: savedSource.reviewId,
       publication: { number: savedPublication.number, url: savedPublication.url },
-      checks,
+      checks: completedChecks,
       mergeCommit: savedMerge.mergeCommit,
       cleanup: { status: "confirmed", branch: completed.branch },
     };
   }
 
-  if (savedPlan)
+  if (savedSource !== ABSENT_RECORD) validateSourceRecord(config, savedSource);
+  if (savedPublication !== ABSENT_RECORD) validatePublicationRecord(config, savedPublication);
+  let checks: CheckEvidence[] | undefined;
+  if (savedChecks !== ABSENT_RECORD) {
+    demand(exactKeys(savedChecks, ["head", "checks"]), "malformed-hosted-checks-record");
+    checks = validateChecks(
+      config,
+      savedChecks.head as string,
+      savedChecks.checks as CheckEvidence[],
+    );
+  }
+  if (savedMerge !== ABSENT_RECORD) {
+    validateMergeRecord(config, savedMerge);
     demand(
-      exactKeys(savedPlan, ["head", "digest", "plan"]) && savedPlan.head === config.candidateHead,
+      savedPublication !== ABSENT_RECORD &&
+        savedChecks !== ABSENT_RECORD &&
+        savedMerge.number === savedPublication.number &&
+        checks?.every((check) => check.bucket === "pass"),
+      "malformed-merge-receipt",
+    );
+  }
+  if (savedPlan !== ABSENT_RECORD) {
+    demand(
+      exactKeys(savedPlan, ["head", "digest", "plan"]) &&
+        savedPlan.head === config.candidateHead &&
+        savedPlan.digest === digest(savedPlan.plan),
       "malformed-delivery-plan-record",
     );
-  const plan = savedPlan ? savedPlan.plan : await policy.plan(config);
+    validatePlan(config, savedPlan.plan as DeliveryPlan);
+  }
+  const plan =
+    savedPlan !== ABSENT_RECORD ? (savedPlan.plan as DeliveryPlan) : await policy.plan(config);
   validatePlan(config, plan);
-  demand(!savedPlan || savedPlan.digest === digest(plan), "malformed-delivery-plan-record");
   await record(directory, "delivery-plan", {
     head: config.candidateHead,
     digest: digest(plan),
     plan,
   });
 
+  const plannedReceipts = [
+    ...[...plan.gates.beforeMirror, ...plan.gates.afterMirror].map((name, index) => ({
+      file: `gate-${index + 1}`,
+      validate(value: unknown) {
+        demand(
+          exactKeys(value, ["head", "name"]) &&
+            value.head === config.candidateHead &&
+            value.name === name,
+          `malformed-record:gate-${index + 1}`,
+        );
+      },
+    })),
+    ...plan.drafts.map((draft) => ({
+      file: `draft-${draft.key}`,
+      validate(value: unknown) {
+        demand(
+          exactKeys(value, ["head", "issue"]) &&
+            value.head === config.candidateHead &&
+            value.issue === draft.issue,
+          `malformed-record:draft-${draft.key}`,
+        );
+      },
+    })),
+  ];
+  await Promise.all(
+    plannedReceipts.map(async ({ file, validate }) => {
+      const value = await optionalRecord(directory, file);
+      if (value !== ABSENT_RECORD) validate(value);
+    }),
+  );
+
   let source = savedSource;
-  if (!source) {
+  if (source === ABSENT_RECORD) {
     source = await adapter.source(config);
     demand(
       source &&
@@ -504,15 +628,9 @@ export async function deliveryStep(
     );
     await record(directory, "delivery-source", source);
   }
-  demand(
-    exactKeys(source, ["head", "reviewId"]) &&
-      source.head === config.candidateHead &&
-      typeof source.reviewId === "string" &&
-      /^[A-Za-z0-9._:-]{1,128}$/.test(source.reviewId),
-    "delivery-source-head-drift",
-  );
+  validateSourceRecord(config, source);
 
-  if (!savedMerge) {
+  if (savedMerge === ABSENT_RECORD) {
     demand(
       await adapter.verifyWorkspace(config, config.candidateHead),
       "candidate-workspace-drift",
@@ -521,7 +639,7 @@ export async function deliveryStep(
       for (const [index, gate] of gates.entries()) {
         const name = `gate-${offset + index + 1}`;
         const receipt = await optionalRecord(directory, name);
-        if (receipt) {
+        if (receipt !== ABSENT_RECORD) {
           demand(
             exactKeys(receipt, ["head", "name"]) &&
               receipt.head === config.candidateHead &&
@@ -556,6 +674,13 @@ export async function deliveryStep(
         () => adapter.observeDraft(config, draft),
         () => adapter.applyDraft(config, draft),
         (value) => value,
+        (value) =>
+          demand(
+            exactKeys(value, ["head", "issue"]) &&
+              value.head === config.candidateHead &&
+              value.issue === draft.issue,
+            `malformed-record:draft-${draft.key}`,
+          ),
       );
       demand(
         exactKeys(receipt, ["head", "issue"]) &&
@@ -567,32 +692,22 @@ export async function deliveryStep(
     await runGates(plan.gates.afterMirror, plan.gates.beforeMirror.length);
   }
 
-  const publication = (savedPublication ??
-    (await confirmMutation(
-      directory,
-      "publication",
-      config.candidateHead,
-      () => adapter.observePublication(config, plan.publication),
-      () => adapter.publish(config, plan.publication),
-      (value) => value,
-    ))) as PublicationEvidence;
-  demand(
-    exactKeys(publication, ["head", "number", "url"]) &&
-      publication.head === config.candidateHead &&
-      Number.isSafeInteger(publication.number) &&
-      publication.number > 0 &&
-      typeof publication.url === "string" &&
-      publication.url.startsWith("https://"),
-    "malformed-publication-receipt",
-  );
+  const publication =
+    savedPublication !== ABSENT_RECORD
+      ? savedPublication
+      : await confirmMutation(
+          directory,
+          "publication",
+          config.candidateHead,
+          () => adapter.observePublication(config, plan.publication),
+          () => adapter.publish(config, plan.publication),
+          (value) => value,
+          (value) => validatePublicationRecord(config, value),
+        );
+  validatePublicationRecord(config, publication);
 
   let merge = savedMerge;
-  if (savedChecks)
-    demand(exactKeys(savedChecks, ["head", "checks"]), "malformed-hosted-checks-record");
-  let checks = savedChecks
-    ? validateChecks(config, savedChecks.head as string, savedChecks.checks as CheckEvidence[])
-    : undefined;
-  if (!merge) {
+  if (merge === ABSENT_RECORD) {
     demand(
       await adapter.verifyWorkspace(config, config.candidateHead),
       "candidate-workspace-drift",
@@ -611,25 +726,27 @@ export async function deliveryStep(
       };
     }
     await record(directory, "hosted-checks", { head: config.candidateHead, checks });
-    merge = await confirmMutation(
+    const reconciledMerge = await confirmMutation(
       directory,
       "merge",
       config.candidateHead,
       () => adapter.observeMerge(config, publication),
       () => adapter.merge(config, publication, plan.mergePolicy),
       (value) => value,
+      (value) => {
+        validateMergeRecord(config, value);
+        demand(value.number === publication.number, "malformed-merge-receipt");
+      },
     );
+    validateMergeRecord(config, reconciledMerge);
+    merge = reconciledMerge;
   }
+  validateMergeRecord(config, merge);
   demand(
-    exactKeys(merge, ["head", "number", "mergeCommit"]) &&
-      merge.head === config.candidateHead &&
-      merge.number === publication.number &&
-      typeof merge.mergeCommit === "string" &&
-      SHA.test(merge.mergeCommit) &&
-      checks?.every((check) => check.bucket === "pass"),
+    merge.number === publication.number && checks?.every((check) => check.bucket === "pass"),
     "malformed-merge-receipt",
   );
-  const confirmedMerge = merge as unknown as MergeEvidence;
+  const confirmedMerge = merge;
 
   const cleanup = await confirmMutation(
     directory,
@@ -638,14 +755,9 @@ export async function deliveryStep(
     () => adapter.observeCleanup(config, plan.cleanup, confirmedMerge),
     () => adapter.cleanup(config, plan.cleanup, confirmedMerge),
     (value) => value,
+    (value) => validateCleanupRecord(config, plan.cleanup, value),
   );
-  demand(
-    exactKeys(cleanup, ["head", "worktrees", "branch"]) &&
-      cleanup.head === config.candidateHead &&
-      cleanup.branch === plan.cleanup.branch &&
-      exactUniqueStringSet(cleanup.worktrees, plan.cleanup.worktrees),
-    "malformed-cleanup-receipt",
-  );
+  validateCleanupRecord(config, plan.cleanup, cleanup);
   return {
     status: "complete",
     run: config.run,
