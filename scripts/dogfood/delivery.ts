@@ -107,6 +107,8 @@ export interface DeliveryPolicyAdapter {
 }
 
 export interface DeliveryAdapter {
+  /** Pure provider identity formatting; this method must not perform I/O. */
+  publicationUrl(config: DeliveryConfig, number: number): string;
   source(config: DeliveryConfig): Promise<SourceEvidence>;
   verifyWorkspace(config: DeliveryConfig, head: string): Promise<boolean>;
   runGate(config: DeliveryConfig, name: string, head: string): Promise<"passed" | "failed">;
@@ -443,6 +445,7 @@ function validateSourceRecord(
 function validatePublicationShape(
   config: DeliveryConfig,
   publication: unknown,
+  adapter: DeliveryAdapter,
 ): asserts publication is PublicationEvidence {
   demand(
     exactKeys(publication, [
@@ -459,8 +462,9 @@ function validatePublicationShape(
       publication.head === config.candidateHead &&
       Number.isSafeInteger(publication.number) &&
       (publication.number as number) > 0 &&
-      publication.url ===
-        `https://github.com/${config.repository}/pull/${String(publication.number)}` &&
+      typeof publication.url === "string" &&
+      publication.url.startsWith("https://") &&
+      publication.url === adapter.publicationUrl(config, publication.number as number) &&
       publication.repository === config.repository &&
       typeof publication.sourceBranch === "string" &&
       typeof publication.baseBranch === "string" &&
@@ -477,8 +481,9 @@ function validatePublicationRecord(
   plan: DeliveryPlan,
   planDigest: string,
   publication: unknown,
+  adapter: DeliveryAdapter,
 ): asserts publication is PublicationEvidence {
-  validatePublicationShape(config, publication);
+  validatePublicationShape(config, publication, adapter);
   demand(
     publication.sourceBranch === plan.publication.sourceBranch &&
       publication.baseBranch === plan.publication.baseBranch &&
@@ -600,7 +605,8 @@ export async function deliveryStep(
   const savedPlan = await optionalRecord(directory, "delivery-plan");
   const savedPlanAuthorization = await optionalRecord(directory, "delivery-plan-authorization");
   if (savedSource !== ABSENT_RECORD) validateSourceRecord(config, savedSource);
-  if (savedPublication !== ABSENT_RECORD) validatePublicationShape(config, savedPublication);
+  if (savedPublication !== ABSENT_RECORD)
+    validatePublicationShape(config, savedPublication, adapter);
   let checks: CheckEvidence[] | undefined;
   if (savedChecks !== ABSENT_RECORD) {
     demand(exactKeys(savedChecks, ["head", "checks"]), "malformed-hosted-checks-record");
@@ -662,7 +668,13 @@ export async function deliveryStep(
     const completedPlan = savedPlan.plan as DeliveryPlan;
     const completedPlanDigest = savedPlan.digest as string;
     validateSourceRecord(config, savedSource);
-    validatePublicationRecord(config, completedPlan, completedPlanDigest, savedPublication);
+    validatePublicationRecord(
+      config,
+      completedPlan,
+      completedPlanDigest,
+      savedPublication,
+      adapter,
+    );
     validateMergeRecord(config, savedMerge);
     const requiredReceipts = await Promise.all(
       receiptValidators(completedPlan).map(async ({ file, validate }) => {
@@ -743,7 +755,7 @@ export async function deliveryStep(
   });
 
   if (savedPublication !== ABSENT_RECORD)
-    validatePublicationRecord(config, plan, planDigest, savedPublication);
+    validatePublicationRecord(config, plan, planDigest, savedPublication, adapter);
   if (savedMerge !== ABSENT_RECORD) {
     demand(
       savedPublication !== ABSENT_RECORD &&
@@ -847,9 +859,9 @@ export async function deliveryStep(
           () => adapter.observePublication(config, plan.publication, planDigest),
           () => adapter.publish(config, plan.publication),
           (value) => value,
-          (value) => validatePublicationRecord(config, plan, planDigest, value),
+          (value) => validatePublicationRecord(config, plan, planDigest, value, adapter),
         );
-  validatePublicationRecord(config, plan, planDigest, publication);
+  validatePublicationRecord(config, plan, planDigest, publication, adapter);
 
   let merge = savedMerge;
   if (merge === ABSENT_RECORD) {

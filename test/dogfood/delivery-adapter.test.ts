@@ -508,14 +508,36 @@ it.each([
   const current = config(root);
   await mkdir(current.stateDirectory);
   await writePilotEvidence(current, {
-    author,
-    reviewerAttempt: reviewer,
+    author: { pid: 101, trace: resolve(current.stateDirectory, "author.jsonl"), ...author },
+    reviewerAttempt: {
+      id: (reviewer as { id?: string }).id,
+      pid: 202,
+      trace: resolve(current.stateDirectory, "reviewer.jsonl"),
+    },
     reviewerTerminal: reviewer,
   });
   await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
     "unreviewed-delivery-source",
   );
 });
+
+it.each([{ fingerprint: ["e".repeat(64)] }, { fingerprint: "e".repeat(40) }])(
+  "rejects malformed pilot fingerprint %j without provider access",
+  async ({ fingerprint }) => {
+    const root = await mkdtemp(resolve(tmpdir(), "delivery-fingerprint-"));
+    roots.push(root);
+    const current = config(root);
+    await mkdir(current.stateDirectory);
+    await writePilotEvidence(current);
+    await writeFile(
+      resolve(current.stateDirectory, "config.json"),
+      JSON.stringify({ fingerprint, config: pilotConfig(current) }),
+    );
+    await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
+      "unreviewed-delivery-source",
+    );
+  },
+);
 
 it.each([
   "reviewer-attempt",

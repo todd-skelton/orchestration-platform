@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile, realpath, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { normalizeBody } from "../planning/board-check.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
@@ -88,8 +88,13 @@ function validAttempt(value: any, config: DeliveryConfig, role: "author" | "revi
     Number.isSafeInteger(value.pid) &&
     value.pid > 0 &&
     typeof value.trace === "string" &&
+    isAbsolute(value.trace) &&
     samePath(value.trace, resolve(config.stateDirectory, `${role}.jsonl`))
   );
+}
+
+function publicationUrl(config: DeliveryConfig, number: number) {
+  return `https://github.com/${config.repository}/pull/${number}`;
 }
 
 function publication(
@@ -120,7 +125,7 @@ function matchesPublicationTarget(row: any, config: DeliveryConfig, plan: Public
   return (
     Number.isSafeInteger(row?.number) &&
     row.number > 0 &&
-    row.url === `https://github.com/${config.repository}/pull/${String(row.number)}` &&
+    row.url === publicationUrl(config, row.number) &&
     row.headRefOid === config.candidateHead &&
     row.headRefName === plan.sourceBranch &&
     row.baseRefName === plan.baseBranch
@@ -131,7 +136,7 @@ function matchesPublication(row: any, current: PublicationEvidence, config: Deli
   return (
     current.repository === config.repository &&
     current.head === config.candidateHead &&
-    current.url === `https://github.com/${config.repository}/pull/${String(current.number)}` &&
+    current.url === publicationUrl(config, current.number) &&
     DIGEST.test(current.planDigest) &&
     row?.number === current.number &&
     row.url === current.url &&
@@ -285,6 +290,7 @@ export function githubDeliveryAdapter(
     }
   };
   return {
+    publicationUrl,
     async source(config) {
       const pinned = await json(
         resolve(config.stateDirectory, "config.json"),
@@ -312,7 +318,8 @@ export function githubDeliveryAdapter(
       );
       const pilot = pinned?.config;
       if (
-        !DIGEST.test(pinned?.fingerprint) ||
+        typeof pinned?.fingerprint !== "string" ||
+        !DIGEST.test(pinned.fingerprint) ||
         !pilot ||
         pilot.owner !== config.authority.controller ||
         pilot.run !== config.run ||
@@ -325,6 +332,7 @@ export function githubDeliveryAdapter(
         !samePath(pilot.reviewWorktree, config.reviewWorktree) ||
         typeof pilot.stateDirectory !== "string" ||
         !samePath(pilot.stateDirectory, config.stateDirectory) ||
+        typeof pilot.base !== "string" ||
         !SHA.test(pilot.base) ||
         !exactStringSet(pilot.requiredChecks, config.requiredChecks) ||
         candidate?.head !== config.candidateHead ||

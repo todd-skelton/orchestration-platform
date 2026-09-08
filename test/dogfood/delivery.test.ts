@@ -82,7 +82,7 @@ async function fixture() {
   const calls: string[] = [];
   const publication: PublicationEvidence = {
     number: 44,
-    url: "https://github.com/fixture/repository/pull/44",
+    url: "https://example.test/pull/44",
     head,
     repository: config.repository,
     sourceBranch: plan.publication.sourceBranch,
@@ -101,6 +101,9 @@ async function fixture() {
     checks: "pass" as "pass" | "pending" | "duplicate" | "missing" | "skipping",
   };
   const adapter: DeliveryAdapter = {
+    publicationUrl(_config, number) {
+      return `https://example.test/pull/${number}`;
+    },
     async source() {
       calls.push("source");
       return {
@@ -225,7 +228,7 @@ it("completes the authorized normal path once with intent-backed mutations", asy
     status: "complete",
     head,
     reviewId: "review-fixture",
-    publication: { number: 44 },
+    publication: { number: 44, url: "https://example.test/pull/44" },
     checks: [
       { name: "linux", bucket: "pass" },
       { name: "windows", bucket: "pass" },
@@ -354,6 +357,21 @@ it("rejects a same-head publication receipt whose approved base identity changed
   );
   expect(f.calls).toEqual([]);
   expectNoProviderAction(f.calls);
+});
+
+it("rejects a receipt URL outside the adapter identity before provider effects", async () => {
+  const f = await fixture();
+  f.state.checks = "pending";
+  await deliveryStep(f.config, f.adapter, f.policy);
+  await writeState(f.config, "publication", {
+    ...f.publication,
+    url: "https://foreign.example/pull/44",
+  });
+  f.calls.length = 0;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "malformed-publication-receipt",
+  );
+  expect(f.calls).toEqual([]);
 });
 
 it("does not double merge after a lost provider response", async () => {
