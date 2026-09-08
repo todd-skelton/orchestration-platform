@@ -202,42 +202,50 @@ it("reconciles an interrupted worktree creation and does not duplicate mutations
   ).toEqual(mutations);
 });
 
-it("rejects case-alias worktrees before mutation on a case-insensitive host filesystem", async () => {
+it("exercises the observed host filesystem case-mode branch", async () => {
   const current = await fixture();
   const root = resolve(current.config.pilotWorktree, "..");
-  if (await hostPathIsCaseSensitive(root)) return;
-  selectCaseAliasWorktrees(
-    current,
-    resolve(root, "CaseAliasWorktree"),
-    resolve(root, "casealiasworktree"),
+  const caseSensitive = await hostPathIsCaseSensitive(root);
+
+  if (caseSensitive) {
+    selectCaseAliasWorktrees(
+      current,
+      resolve(root, "CaseDistinctWorktree"),
+      resolve(root, "casedistinctworktree"),
+    );
+
+    await expect(
+      setupStep(current.config, current.adapter, current.config.controllerRoot),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([
+      "create:pilot",
+      "create:source",
+      "create:review",
+    ]);
+  } else {
+    selectCaseAliasWorktrees(
+      current,
+      resolve(root, "CaseAliasWorktree"),
+      resolve(root, "casealiasworktree"),
+    );
+
+    await expect(
+      setupStep(current.config, current.adapter, current.config.controllerRoot),
+    ).rejects.toMatchObject({ reason: "overlapping-setup-paths" });
+    expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([]);
+    await expect(lstat(current.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(current.config.sourceWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+  }
+
+  console.log(
+    JSON.stringify({
+      dogfoodSetupCaseFixture: {
+        caseSensitive,
+        branch: caseSensitive ? "distinct-paths" : "alias-refusal",
+        assertionsPassed: true,
+      },
+    }),
   );
-
-  await expect(
-    setupStep(current.config, current.adapter, current.config.controllerRoot),
-  ).rejects.toMatchObject({ reason: "overlapping-setup-paths" });
-  expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([]);
-  await expect(lstat(current.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
-  await expect(lstat(current.config.sourceWorktree)).rejects.toMatchObject({ code: "ENOENT" });
-});
-
-it("preserves distinct case-only worktree paths on a case-sensitive host filesystem", async () => {
-  const current = await fixture();
-  const root = resolve(current.config.pilotWorktree, "..");
-  if (!(await hostPathIsCaseSensitive(root))) return;
-  selectCaseAliasWorktrees(
-    current,
-    resolve(root, "CaseDistinctWorktree"),
-    resolve(root, "casedistinctworktree"),
-  );
-
-  await expect(
-    setupStep(current.config, current.adapter, current.config.controllerRoot),
-  ).resolves.toMatchObject({ status: "ready" });
-  expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([
-    "create:pilot",
-    "create:source",
-    "create:review",
-  ]);
 });
 
 it.each([
