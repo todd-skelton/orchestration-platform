@@ -17,6 +17,7 @@ children:
     ISS-071,
     ISS-072,
     ISS-073,
+    ISS-074,
   ]
 ---
 
@@ -50,7 +51,8 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
   `ISS-009, ISS-021 → ISS-043`;
   `ISS-041 → ISS-071`;
   `ISS-071 → ISS-072`;
-  `ISS-072 → ISS-073`.
+  `ISS-072 → ISS-073`;
+  `ISS-073 → ISS-074`.
 - Parallelism: review authority and the event journal may proceed in parallel
   once their gates are satisfied. The walking skeleton runs as soon as
   contracts and the CLI exist and blocks nothing; its divergence ledger is
@@ -105,3 +107,4 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
 - `ISS-071` — Run one supervised real-work loop through review, CI and restart.
 - `ISS-072` — Preserve actionable worker diagnostics through the dogfood loop.
 - `ISS-073` — Allowlist startup and provider-auth locations at both native dispatch hops.
+- `ISS-074` — Automate normal controller delivery handoffs behind explicit authority and policy.
