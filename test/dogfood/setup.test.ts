@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -65,6 +65,7 @@ async function fixture() {
   const calls: string[] = [];
   let interrupted: SetupRole | undefined;
   let installOutcome: "succeeded" | "failed" | "unknown" = "succeeded";
+  const dependencyEffects = new Set<SetupRole>();
   const adapter: SetupAdapter = {
     async assertAuthority(_config, executingRoot) {
       calls.push(`authority:${executingRoot}`);
@@ -100,7 +101,7 @@ async function fixture() {
           await readFile(resolve(current.stateDirectory, `dependency-${role}-intent.json`), "utf8"),
         ).args,
       ).toEqual(["install", "--offline", "--frozen-lockfile", "--ignore-scripts"]);
-      if (installOutcome === "succeeded") dependencies.add(role);
+      if (installOutcome === "succeeded" || dependencyEffects.has(role)) dependencies.add(role);
       return installOutcome;
     },
   };
@@ -116,7 +117,33 @@ async function fixture() {
     setInstallOutcome(outcome: "succeeded" | "failed" | "unknown") {
       installOutcome = outcome;
     },
+    leaveDependencyEffect(role: SetupRole) {
+      dependencyEffects.add(role);
+    },
   };
+}
+
+async function hostPathIsCaseSensitive(root: string) {
+  const probe = resolve(root, "CaseSensitivityProbe");
+  await mkdir(probe);
+  try {
+    await lstat(resolve(root, "casesensitivityprobe"));
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+function selectCaseAliasWorktrees(
+  current: Awaited<ReturnType<typeof fixture>>,
+  pilotWorktree: string,
+  sourceWorktree: string,
+) {
+  current.config.pilotWorktree = pilotWorktree;
+  current.config.sourceWorktree = sourceWorktree;
+  current.config.authority.pilotWorktree = pilotWorktree;
+  current.config.authority.sourceWorktree = sourceWorktree;
 }
 
 afterEach(async () => {
@@ -175,6 +202,44 @@ it("reconciles an interrupted worktree creation and does not duplicate mutations
   ).toEqual(mutations);
 });
 
+it("rejects case-alias worktrees before mutation on a case-insensitive host filesystem", async () => {
+  const current = await fixture();
+  const root = resolve(current.config.pilotWorktree, "..");
+  if (await hostPathIsCaseSensitive(root)) return;
+  selectCaseAliasWorktrees(
+    current,
+    resolve(root, "CaseAliasWorktree"),
+    resolve(root, "casealiasworktree"),
+  );
+
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).rejects.toMatchObject({ reason: "overlapping-setup-paths" });
+  expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([]);
+  await expect(lstat(current.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(lstat(current.config.sourceWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("preserves distinct case-only worktree paths on a case-sensitive host filesystem", async () => {
+  const current = await fixture();
+  const root = resolve(current.config.pilotWorktree, "..");
+  if (!(await hostPathIsCaseSensitive(root))) return;
+  selectCaseAliasWorktrees(
+    current,
+    resolve(root, "CaseDistinctWorktree"),
+    resolve(root, "casedistinctworktree"),
+  );
+
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).resolves.toMatchObject({ status: "ready" });
+  expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([
+    "create:pilot",
+    "create:source",
+    "create:review",
+  ]);
+});
+
 it.each([
   ["failed", "dependency-install-failed"],
   ["unknown", "dependency-install-unknown"],
@@ -202,6 +267,37 @@ it.each([
     expect(current.calls.filter((call) => call === "create:pilot")).toHaveLength(1);
   },
 );
+
+it("does not repeat an uncertain post-effect install or write a success receipt on resume", async () => {
+  const current = await fixture();
+  current.setInstallOutcome("unknown");
+  current.leaveDependencyEffect("pilot");
+
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).resolves.toMatchObject({
+    status: "incomplete",
+    phase: "dependencies",
+    reason: "dependency-install-unknown",
+  });
+  expect(current.calls.filter((call) => call === "install:pilot")).toHaveLength(1);
+  await expect(
+    readFile(resolve(current.config.stateDirectory, "dependency-pilot.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+
+  current.setInstallOutcome("succeeded");
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).resolves.toMatchObject({
+    status: "incomplete",
+    phase: "dependencies",
+    reason: "dependency-install-unknown",
+  });
+  expect(current.calls.filter((call) => call === "install:pilot")).toHaveLength(1);
+  await expect(
+    readFile(resolve(current.config.stateDirectory, "dependency-pilot.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 it("fails an unknown external authority before recording intent or calling the adapter", async () => {
   const current = await fixture();

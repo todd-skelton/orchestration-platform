@@ -229,12 +229,43 @@ function validateConfig(config: SetupConfig) {
   );
 }
 
+function alternateAsciiCase(value: string) {
+  return value.replace(/[A-Za-z]/g, (character) =>
+    character === character.toLowerCase() ? character.toUpperCase() : character.toLowerCase(),
+  );
+}
+
+async function pathIsCaseSensitive(existingPath: string) {
+  let cursor = await realpath(existingPath);
+  for (;;) {
+    const name = basename(cursor);
+    const alternateName = alternateAsciiCase(name);
+    if (alternateName !== name) {
+      const actual = await lstat(cursor);
+      try {
+        const alternate = await lstat(resolve(dirname(cursor), alternateName));
+        return actual.dev !== alternate.dev || actual.ino !== alternate.ino;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw new SetupBlocked("unresolved-setup-path-case");
+      }
+    }
+    const parent = dirname(cursor);
+    demand(parent !== cursor, "unresolved-setup-path-case");
+    cursor = parent;
+  }
+}
+
 async function futureRealpath(path: string) {
   let cursor = resolve(path);
   const suffix: string[] = [];
   for (;;) {
     try {
-      return resolve(await realpath(cursor), ...suffix.reverse());
+      const existing = await realpath(cursor);
+      return {
+        path: resolve(existing, ...suffix.reverse()),
+        caseSensitive: await pathIsCaseSensitive(existing),
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const parent = dirname(cursor);
@@ -245,9 +276,9 @@ async function futureRealpath(path: string) {
   }
 }
 
-function comparable(path: string) {
+function comparable(path: string, caseSensitive: boolean) {
   const resolved = resolve(path);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return caseSensitive ? resolved : resolved.toLowerCase();
 }
 
 function overlaps(left: string, right: string) {
@@ -263,13 +294,14 @@ async function assertSafePaths(config: SetupConfig) {
     [config.repositoryRoot, config.controllerRoot, config.stateDirectory].map(async (path) => {
       const resolved = await realpath(path);
       demand((await stat(resolved)).isDirectory(), "setup-root-not-directory");
-      return comparable(resolved);
+      return comparable(resolved, await pathIsCaseSensitive(resolved));
     }),
   );
   const requested = await Promise.all(
-    [config.pilotWorktree, config.sourceWorktree, config.reviewWorktree].map(async (path) =>
-      comparable(await futureRealpath(path)),
-    ),
+    [config.pilotWorktree, config.sourceWorktree, config.reviewWorktree].map(async (path) => {
+      const facts = await futureRealpath(path);
+      return comparable(facts.path, facts.caseSensitive);
+    }),
   );
   const protectedRoots = [...existing, ...requested];
   for (let left = 0; left < protectedRoots.length; left++)
@@ -519,6 +551,12 @@ export async function setupStep(
     const intent = await optionalRecord(config.stateDirectory, `dependency-${role}-intent`);
     if (intent !== ABSENT) exactRecord(intent, intentValue, `malformed-dependency-intent:${role}`);
     else await record(config.stateDirectory, `dependency-${role}-intent`, intentValue);
+
+    if (intent !== ABSENT) {
+      const dependencies = await adapter.observeDependencies(config, role);
+      if (dependencies !== "absent")
+        return result(config, "incomplete", "dependencies", "dependency-install-unknown");
+    }
 
     const outcome = await adapter.installDependencies(config, role);
     const worktree = await adapter.observeWorktree(config, role, true);

@@ -111,16 +111,27 @@ async function fixture() {
     },
   };
   let installs = 0;
+  let installOutcome: "succeeded" | "unknown" = "succeeded";
   const adapter = gitSetupAdapter({
     async install(_launcher, args, cwd) {
       installs += 1;
       expect(args).toEqual(["install", "--offline", "--frozen-lockfile", "--ignore-scripts"]);
       await mkdir(resolve(cwd, "node_modules"), { recursive: true });
       await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
-      return "succeeded";
+      return installOutcome;
     },
   });
-  return { root, repository, controller, config, adapter, installs: () => installs };
+  return {
+    root,
+    repository,
+    controller,
+    config,
+    adapter,
+    installs: () => installs,
+    setInstallOutcome(outcome: "succeeded" | "unknown") {
+      installOutcome = outcome;
+    },
+  };
 }
 
 afterEach(async () => {
@@ -165,6 +176,39 @@ it("prepares three real portable Git worktrees and resumes without duplicate set
     setupStep(current.config, current.adapter, current.config.controllerRoot),
   ).rejects.toMatchObject({ reason: "dependency-state-drift:pilot" });
   expect(current.installs()).toBe(3);
+}, 30_000);
+
+it("keeps a marker-then-unknown install uncertain without repeating it on resume", async () => {
+  const current = await fixture();
+  current.setInstallOutcome("unknown");
+
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).resolves.toMatchObject({
+    status: "incomplete",
+    phase: "dependencies",
+    reason: "dependency-install-unknown",
+  });
+  expect(current.installs()).toBe(1);
+  await expect(
+    access(resolve(current.config.pilotWorktree, "node_modules/.modules.yaml")),
+  ).resolves.toBeUndefined();
+  await expect(
+    access(resolve(current.config.stateDirectory, "dependency-pilot.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+
+  current.setInstallOutcome("succeeded");
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).resolves.toMatchObject({
+    status: "incomplete",
+    phase: "dependencies",
+    reason: "dependency-install-unknown",
+  });
+  expect(current.installs()).toBe(1);
+  await expect(
+    access(resolve(current.config.stateDirectory, "dependency-pilot.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
 }, 30_000);
 
 it("rejects path and branch collisions before creating any selected worktree", async () => {
