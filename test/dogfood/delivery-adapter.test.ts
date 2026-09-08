@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -8,7 +8,12 @@ import {
   assertControllerExecutor,
   githubDeliveryAdapter,
 } from "../../scripts/dogfood/delivery-adapter.mjs";
-import type { DeliveryConfig, PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
+import {
+  deliveryStep,
+  type DeliveryConfig,
+  type DeliveryPlan,
+  type PublicationEvidence,
+} from "../../scripts/dogfood/delivery.mjs";
 import {
   selfDeliveryPolicy,
   selfPlanFromSnapshots,
@@ -99,7 +104,10 @@ async function writePilotEvidence(
       resolve(current.stateDirectory, "config.json"),
       JSON.stringify({ fingerprint: "e".repeat(64), config: values.pinnedConfig ?? pilot }),
     ),
-    writeFile(resolve(current.stateDirectory, "candidate.json"), JSON.stringify({ head })),
+    writeFile(
+      resolve(current.stateDirectory, "candidate.json"),
+      JSON.stringify({ head: current.candidateHead }),
+    ),
     writeFile(resolve(current.stateDirectory, "author-attempt.json"), JSON.stringify(author)),
     writeFile(
       resolve(current.stateDirectory, "author-terminal.json"),
@@ -121,7 +129,7 @@ async function writePilotEvidence(
         values.reviewerTerminal ?? {
           id: (reviewerAttempt as { id?: unknown }).id,
           status: "passed",
-          head,
+          head: current.candidateHead,
         },
       ),
     ),
@@ -179,7 +187,7 @@ afterEach(async () => {
 async function repositoryFixture(remote: string) {
   // A regressed guard must still never contact a real provider from a fixture.
   vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
-  const root = await mkdtemp(resolve(tmpdir(), "delivery-repository-"));
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-repository-")));
   roots.push(root);
   const current = await cleanController(root);
   const git = async (args: string[], cwd = current.controllerRoot) =>
@@ -255,13 +263,17 @@ it.each(["foreign-fetch", "foreign-push", "extra-push"] as const)(
     const adapter = githubDeliveryAdapter();
     await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
     await expect(
-      adapter.publish(current, {
-        sourceBranch: "codex/iss-074-delivery",
-        baseBranch: "main",
-        title: "fixture",
-        body: "fixture",
-        draft: true,
-      }),
+      adapter.publish(
+        current,
+        {
+          sourceBranch: "codex/iss-074-delivery",
+          baseBranch: "main",
+          title: "fixture",
+          body: "fixture",
+          draft: true,
+        },
+        "absent",
+      ),
     ).rejects.toThrow("candidate-workspace-drift");
     await expect(
       adapter.cleanup(
@@ -358,6 +370,233 @@ it("can resume merge for an already-ready PR with unchanged approved identity", 
   expect(effects).toEqual([
     ["pr", "merge", "44", "--squash", "--match-head-commit", current.candidateHead],
   ]);
+});
+
+it.each([undefined, null, "false", "true", 0, 1])(
+  "rejects a malformed initial draft flag %s before ready or merge",
+  async (isDraft) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const publication = publicationEvidence(current);
+    const effects: string[][] = [];
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson() {
+        return publicationRow(publication, { isDraft });
+      },
+    });
+    await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow(
+      "merge-head-drift",
+    );
+    expect(effects).toEqual([]);
+  },
+);
+
+it.each([undefined, null, "false", "true", 0, 1])(
+  "rejects a malformed post-ready draft flag %s before merge",
+  async (isDraft) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const publication = publicationEvidence(current);
+    const effects: string[][] = [];
+    let observations = 0;
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson() {
+        return publicationRow(publication, { isDraft: ++observations === 1 ? true : isDraft });
+      },
+    });
+    await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow(
+      "merge-head-drift",
+    );
+    expect(effects).toEqual([["pr", "ready", "44"]]);
+  },
+);
+
+it.each(["replacement", "base", "head", "malformed", "absent"])(
+  "refuses publication target %s after selecting an existing draft",
+  async (mode) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const publication = publicationEvidence(current);
+    const plan = {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: publication.baseBranch,
+      title: publication.title,
+      body: publication.body,
+      draft: true as const,
+    };
+    const effects: string[][] = [];
+    const initial = publicationRow(publication, { title: "old title" });
+    let rows = [initial];
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson() {
+        return rows;
+      },
+    });
+    const selected = await adapter.observePublication(current, plan, publication.planDigest);
+    expect(selected).toEqual({ state: "needs-mutation", target: "pr:44" });
+    if (selected.state !== "needs-mutation") throw new Error("expected target");
+    rows =
+      mode === "absent"
+        ? []
+        : [
+            publicationRow(publication, {
+              title: "old title",
+              ...(mode === "replacement"
+                ? { number: 45, url: `https://github.com/${current.repository}/pull/45` }
+                : mode === "base"
+                  ? { baseRefName: "release" }
+                  : mode === "head"
+                    ? { headRefOid: "b".repeat(40) }
+                    : { number: "44" }),
+            }),
+          ];
+    await expect(adapter.publish(current, plan, selected.target)).rejects.toThrow(
+      "publication-target-drift",
+    );
+    expect(effects).toEqual([]);
+    await expect(
+      adapter.observePublication(current, plan, publication.planDigest, selected.target),
+    ).resolves.toEqual({ state: "unknown" });
+  },
+);
+
+it("refuses to edit a draft that appeared after an absence observation", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const plan = {
+    sourceBranch: publication.sourceBranch,
+    baseBranch: publication.baseBranch,
+    title: publication.title,
+    body: publication.body,
+    draft: true as const,
+  };
+  let rows: unknown[] = [];
+  const effects: string[][] = [];
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson() {
+      return rows;
+    },
+  });
+  await expect(adapter.observePublication(current, plan, publication.planDigest)).resolves.toEqual({
+    state: "needs-mutation",
+    target: "absent",
+  });
+  rows = [publicationRow(publication, { title: "unapproved title" })];
+  await expect(adapter.publish(current, plan, "absent")).rejects.toThrow(
+    "publication-target-drift",
+  );
+  expect(effects).toEqual([]);
+});
+
+it("reconciles a lost merge through the engine and the real OPEN-only checks adapter", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  await writePilotEvidence(current);
+  const publication = publicationEvidence(current);
+  const plan: DeliveryPlan = {
+    gates: {
+      beforeMirror: ["typecheck", "format:check", "planning:check"],
+      afterMirror: ["planning:board-check"],
+    },
+    drafts: [{ key: "ISS-074", issue: 332, title: "issue", body: "body", attributes: {} }],
+    publication: {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: publication.baseBranch,
+      title: publication.title,
+      body: publication.body,
+      draft: true,
+    },
+    mergePolicy: { method: "squash" },
+    cleanup: {
+      worktrees: [current.worktree, current.reviewWorktree],
+      branch: publication.sourceBranch,
+    },
+  };
+  const effects: string[][] = [];
+  let merged = false,
+    lostObservation = false,
+    ready = false,
+    cleaned = false;
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      if (args[1] === "checks")
+        return JSON.stringify(
+          current.requiredChecks.map((name) => ({
+            name,
+            bucket: "pass",
+            link: `https://example.test/check/${encodeURIComponent(name)}`,
+          })),
+        );
+      if (args[1] === "ready") ready = true;
+      if (args[1] === "merge") {
+        merged = true;
+        lostObservation = true;
+        throw new Error("lost merge response");
+      }
+      return "";
+    },
+    async ghJson(_config, args) {
+      if (lostObservation) {
+        lostObservation = false;
+        throw new Error("lost observation");
+      }
+      const row = publicationRow(publication, {
+        state: merged ? "MERGED" : "OPEN",
+        isDraft: !ready,
+        mergeCommit: merged ? { oid: "b".repeat(40) } : null,
+      });
+      return args[1] === "list" ? [row] : row;
+    },
+  });
+  adapter.runGate = async () => "passed";
+  adapter.observeDraft = async (_config, draft) => ({
+    state: "confirmed",
+    value: { issue: draft.issue },
+  });
+  adapter.observeCleanup = async () =>
+    cleaned ? { state: "confirmed", value: plan.cleanup } : { state: "needs-mutation" };
+  adapter.cleanup = async () => {
+    cleaned = true;
+  };
+  const policy = { plan: async () => plan };
+  await expect(deliveryStep(current, adapter, policy)).rejects.toThrow("merge-outcome-unknown");
+  expect(merged).toBe(true);
+  await expect(
+    readFile(resolve(current.stateDirectory, "merge.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  // The real checks adapter refuses MERGED. The engine must reconcile before calling it.
+  await expect(adapter.checks(current, publication)).rejects.toThrow(
+    "hosted-observation-unavailable",
+  );
+  await expect(deliveryStep(current, adapter, policy)).resolves.toMatchObject({
+    status: "complete",
+  });
+  expect(effects.filter((args) => args[1] === "merge")).toHaveLength(1);
+  expect(effects.filter((args) => args[1] === "checks")).toHaveLength(1);
+  expect(cleaned).toBe(true);
 });
 
 it("rejects matching heads from a different Git worktree family", async () => {

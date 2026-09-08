@@ -20,6 +20,14 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const ATTEMPT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
+function validPublicationTarget(target: unknown): target is string {
+  return (
+    typeof target === "string" &&
+    (target === "absent" ||
+      (/^pr:[1-9][0-9]*$/.test(target) && Number.isSafeInteger(Number(target.slice(3)))))
+  );
+}
+
 async function run(executable: string, args: string[], cwd: string) {
   return exec(executable, args, {
     cwd,
@@ -409,8 +417,9 @@ export function githubDeliveryAdapter(
         ...(milestone === null ? ["--remove-milestone"] : ["--milestone", milestone]),
       ]);
     },
-    async observePublication(config, plan, planDigest) {
+    async observePublication(config, plan, planDigest, target) {
       try {
+        if (target !== undefined && !validPublicationTarget(target)) return { state: "unknown" };
         const rows = await commands.ghJson(config, [
           "pr",
           "list",
@@ -424,24 +433,61 @@ export function githubDeliveryAdapter(
           "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body",
         ]);
         if (!Array.isArray(rows) || rows.length > 1) return { state: "unknown" };
-        if (rows.length === 0) return { state: "needs-mutation" };
+        if (rows.length === 0)
+          return target === undefined || target === "absent"
+            ? { state: "needs-mutation", target: "absent" }
+            : { state: "unknown" };
         const value = publication(rows[0], config, plan, planDigest);
         if (
           !matchesPublicationTarget(rows[0], config, plan) ||
           rows[0]?.state !== "OPEN" ||
-          rows[0]?.isDraft !== true
+          rows[0]?.isDraft !== true ||
+          (target !== undefined && target !== "absent" && target !== `pr:${rows[0].number}`)
         )
           return { state: "unknown" };
-        return value ? { state: "confirmed", value } : { state: "needs-mutation" };
+        if (value) return { state: "confirmed", value };
+        if (target === "absent") return { state: "unknown" };
+        return { state: "needs-mutation", target: `pr:${rows[0].number}` };
       } catch {
         return { state: "unknown" };
       }
     },
-    async publish(config, plan) {
+    async publish(config, plan, target) {
       if (!(await verifyWorkspace(config, config.candidateHead)))
         throw new DeliveryBlocked("candidate-workspace-drift");
+      if (!validPublicationTarget(target)) throw new DeliveryBlocked("publication-target-drift");
       const branch = await git(config, ["branch", "--show-current"], config.worktree);
       if (branch !== plan.sourceBranch) throw new DeliveryBlocked("publication-branch-mismatch");
+      const readTarget = async () => {
+        const rows = await commands.ghJson(config, [
+          "pr",
+          "list",
+          "--head",
+          plan.sourceBranch,
+          "--base",
+          plan.baseBranch,
+          "--state",
+          "all",
+          "--json",
+          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body",
+        ]);
+        if (
+          !Array.isArray(rows) ||
+          rows.length > 1 ||
+          (target === "absent"
+            ? rows.length !== 0
+            : rows.length !== 1 ||
+              !matchesPublicationTarget(rows[0], config, plan) ||
+              target !== `pr:${rows[0].number}` ||
+              rows[0].state !== "OPEN" ||
+              rows[0].isDraft !== true ||
+              typeof rows[0].title !== "string" ||
+              typeof rows[0].body !== "string")
+        )
+          throw new DeliveryBlocked("publication-target-drift");
+        return rows;
+      };
+      await readTarget();
       const body = await stagedFile(config, "approved-pull-request.md", plan.body);
       await run(
         "git",
@@ -453,20 +499,7 @@ export function githubDeliveryAdapter(
         ],
         config.worktree,
       );
-      const rows = await commands.ghJson(config, [
-        "pr",
-        "list",
-        "--head",
-        plan.sourceBranch,
-        "--base",
-        plan.baseBranch,
-        "--state",
-        "open",
-        "--json",
-        "number",
-      ]);
-      if (!Array.isArray(rows) || rows.length > 1)
-        throw new DeliveryBlocked("ambiguous-publication");
+      const rows = await readTarget();
       if (rows.length === 1) {
         await commands.gh(config, [
           "pr",
@@ -572,7 +605,11 @@ export function githubDeliveryAdapter(
         "--json",
         "number,url,headRefOid,headRefName,baseRefName,isDraft,state,title,body",
       ]);
-      if (!matchesPublication(row, current, config) || row?.state !== "OPEN")
+      if (
+        !matchesPublication(row, current, config) ||
+        row?.state !== "OPEN" ||
+        typeof row.isDraft !== "boolean"
+      )
         throw new DeliveryBlocked("merge-head-drift");
       if (row.isDraft) {
         await commands.gh(config, ["pr", "ready", String(current.number)]);
@@ -586,7 +623,7 @@ export function githubDeliveryAdapter(
         if (
           !matchesPublication(ready, current, config) ||
           ready?.state !== "OPEN" ||
-          ready?.isDraft
+          ready?.isDraft !== false
         )
           throw new DeliveryBlocked("merge-head-drift");
       }

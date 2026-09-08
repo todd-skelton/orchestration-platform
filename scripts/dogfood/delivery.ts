@@ -102,6 +102,11 @@ export interface CheckEvidence {
 export type Observation<T> =
   { state: "confirmed"; value: T } | { state: "needs-mutation" } | { state: "unknown" };
 
+export type PublicationObservation =
+  | { state: "confirmed"; value: PublicationEvidence }
+  | { state: "needs-mutation"; target: string }
+  | { state: "unknown" };
+
 export interface DeliveryPolicyAdapter {
   plan(config: DeliveryConfig): Promise<DeliveryPlan>;
 }
@@ -118,8 +123,9 @@ export interface DeliveryAdapter {
     config: DeliveryConfig,
     plan: PublicationPlan,
     planDigest: string,
-  ): Promise<Observation<PublicationEvidence>>;
-  publish(config: DeliveryConfig, plan: PublicationPlan): Promise<void>;
+    target?: string,
+  ): Promise<PublicationObservation>;
+  publish(config: DeliveryConfig, plan: PublicationPlan, target: string): Promise<void>;
   checks(
     config: DeliveryConfig,
     publication: PublicationEvidence,
@@ -404,6 +410,57 @@ async function confirmMutation<T>(
   validate(value);
   await record(directory, name, value);
   return value;
+}
+
+async function confirmPublication(
+  config: DeliveryConfig,
+  adapter: DeliveryAdapter,
+  plan: DeliveryPlan,
+  planDigest: string,
+  directory: string,
+) {
+  // The adapter owns the opaque target; the engine durably binds it before any effect.
+  const intent = await optionalRecord(directory, "publication-intent");
+  const operation = digest({ name: "publication", head: config.candidateHead, planDigest });
+  let target: string | undefined;
+  if (intent !== ABSENT_RECORD) {
+    demand(
+      exactKeys(intent, ["head", "operation", "target"]) &&
+        intent.head === config.candidateHead &&
+        intent.operation === operation &&
+        typeof intent.target === "string" &&
+        intent.target.length > 0 &&
+        intent.target.length <= 1000,
+      "malformed-publication-intent",
+    );
+    target = intent.target;
+  }
+  let observation = await adapter.observePublication(config, plan.publication, planDigest, target);
+  if (observation.state !== "confirmed") {
+    demand(observation.state === "needs-mutation", "publication-state-unknown");
+    demand(
+      typeof observation.target === "string" &&
+        observation.target.length > 0 &&
+        observation.target.length <= 1000 &&
+        (target === undefined || target === observation.target),
+      "publication-target-drift",
+    );
+    target = observation.target;
+    await record(directory, "publication-intent", {
+      head: config.candidateHead,
+      operation,
+      target,
+    });
+    try {
+      await adapter.publish(config, plan.publication, target);
+    } catch {}
+    observation = await adapter.observePublication(config, plan.publication, planDigest, target);
+    demand(observation.state !== "unknown", "publication-outcome-unknown");
+    demand(observation.state === "confirmed", "publication-unconfirmed-reconcile-before-retry");
+  }
+  validatePublicationRecord(config, plan, planDigest, observation.value, adapter);
+  await record(directory, "publication", observation.value);
+  return observation.value;
 }
 
 function validateSourceRecord(
@@ -852,18 +909,22 @@ export async function deliveryStep(
   const publication =
     savedPublication !== ABSENT_RECORD
       ? savedPublication
-      : await confirmMutation(
-          directory,
-          "publication",
-          config.candidateHead,
-          () => adapter.observePublication(config, plan.publication, planDigest),
-          () => adapter.publish(config, plan.publication),
-          (value) => value,
-          (value) => validatePublicationRecord(config, plan, planDigest, value, adapter),
-        );
+      : await confirmPublication(config, adapter, plan, planDigest, directory);
   validatePublicationRecord(config, plan, planDigest, publication, adapter);
 
   let merge = savedMerge;
+  if (merge === ABSENT_RECORD && checks?.every((check) => check.bucket === "pass")) {
+    // A successful remote merge may have lost both its response and local receipt.
+    // Reconcile that outcome before the OPEN-only checks path, using saved proof.
+    const observed = await adapter.observeMerge(config, publication);
+    demand(observed.state !== "unknown", "merge-state-unknown");
+    if (observed.state === "confirmed") {
+      validateMergeRecord(config, observed.value);
+      demand(observed.value.number === publication.number, "malformed-merge-receipt");
+      await record(directory, "merge", observed.value);
+      merge = observed.value;
+    }
+  }
   if (merge === ABSENT_RECORD) {
     demand(
       await adapter.verifyWorkspace(config, config.candidateHead),

@@ -5,13 +5,14 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
+import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   assertControllerRequest,
   deliveryStep,
   type DeliveryAdapter,
   type DeliveryConfig,
   type DeliveryPlan,
-  type Observation,
+  type PublicationObservation,
   type PublicationEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
 
@@ -138,12 +139,12 @@ async function fixture() {
       calls.push(`draft:${draft.issue}`);
       state.drafts.add(draft.issue);
     },
-    async observePublication(): Promise<Observation<PublicationEvidence>> {
+    async observePublication(): Promise<PublicationObservation> {
       calls.push("observe-publication");
       if (state.publicationOutcome === "unknown") return { state: "unknown" };
       return state.publication
         ? { state: "confirmed", value: state.publication }
-        : { state: "needs-mutation" };
+        : { state: "needs-mutation", target: "fixture-absent" };
     },
     async publish() {
       calls.push("publish");
@@ -327,7 +328,7 @@ it("does not retry an uncertain publication and reconciles it on restart", async
   let observations = 0;
   f.adapter.observePublication = async () => {
     observations += 1;
-    if (observations === 1) return { state: "needs-mutation" };
+    if (observations === 1) return { state: "needs-mutation", target: "fixture-absent" };
     if (observations === 2) return { state: "unknown" };
     return { state: "confirmed", value: f.publication };
   };
@@ -341,6 +342,67 @@ it("does not retry an uncertain publication and reconciles it on restart", async
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
   await deliveryStep(f.config, f.adapter, f.policy);
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+});
+
+it("persists a selected publication target and rejects its replacement on restart", async () => {
+  const f = await fixture();
+  const provider = githubDeliveryAdapter({
+    async gh() {
+      throw new Error("unexpected provider effect");
+    },
+    async ghJson() {
+      if (uncertain) throw new Error("uncertain provider response");
+      return [
+        {
+          number,
+          url: `https://github.com/${f.config.repository}/pull/${number}`,
+          headRefOid: head,
+          headRefName: f.plan.publication.sourceBranch,
+          baseRefName: f.plan.publication.baseBranch,
+          state: "OPEN",
+          isDraft: true,
+          title: number === 44 ? "old title" : f.plan.publication.title,
+          body: f.plan.publication.body,
+        },
+      ];
+    },
+  });
+  let number = 44,
+    uncertain = false;
+  f.adapter.publicationUrl = provider.publicationUrl;
+  f.adapter.observePublication = provider.observePublication;
+  const targets: string[] = [];
+  f.adapter.publish = async (_config, _plan, target) => {
+    targets.push(target);
+    uncertain = true;
+    throw new Error("lost response");
+  };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "publication-outcome-unknown",
+  );
+  expect(
+    JSON.parse(await readFile(resolve(f.config.stateDirectory, "publication-intent.json"), "utf8")),
+  ).toMatchObject({ head, target: "pr:44" });
+  number = 45;
+  uncertain = false;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "publication-state-unknown",
+  );
+  expect(targets).toEqual(["pr:44"]);
+  expect(f.calls).not.toContain("checks");
+});
+
+it("refuses a legacy unbound publication intent before observing the provider", async () => {
+  const f = await fixture();
+  await writeState(f.config, "publication-intent", {
+    head,
+    operation: digest({ name: "publication", head }),
+  });
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "malformed-publication-intent",
+  );
+  expect(f.calls).not.toContain("observe-publication");
+  expect(f.calls).not.toContain("publish");
 });
 
 it("rejects a same-head publication receipt whose approved base identity changed", async () => {
