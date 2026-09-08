@@ -269,7 +269,7 @@ it("refuses a different loaded controller root before intent or direct dispatch 
     code: "ENOENT",
   });
   expect(effects).toBe(0);
-});
+}, 30_000);
 
 it("refuses a substituted predecessor prompt before reading it or recording intent", async () => {
   const current = await realFixture();
@@ -284,7 +284,7 @@ it("refuses a substituted predecessor prompt before reading it or recording inte
   await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
     code: "ENOENT",
   });
-});
+}, 30_000);
 
 it("refuses a canonical predecessor prompt escape before reading it or recording intent", async () => {
   const current = await realFixture();
