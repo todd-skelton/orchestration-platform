@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 export const QUALITY_KEYS = [
   "SCOPE",
@@ -249,11 +249,6 @@ function validPath(path: unknown) {
     !(path as string).includes("\\") &&
     !(path as string).split("/").includes("..")
   );
-}
-
-function inside(root: string, candidate: string) {
-  const path = relative(root, candidate);
-  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 
 function inFootprint(allowedPaths: string[], path: string) {
