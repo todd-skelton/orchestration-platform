@@ -86,7 +86,7 @@ async function sourcePromptContents(config: RepairConfig): Promise<[string, stri
   let root: string;
   let prompts: [string, string];
   try {
-    root = await realpath(config.controllerRoot);
+    root = await realpath(config.sourceStateDirectory);
     prompts = (await Promise.all(
       [config.authority.source.author.promptFile, config.authority.source.reviewer.promptFile].map(
         (path) => realpath(path),
@@ -97,7 +97,7 @@ async function sourcePromptContents(config: RepairConfig): Promise<[string, stri
   }
   demand(
     prompts.every((path) => !outside(root, path) && path !== root),
-    "source-prompt-outside-controller",
+    "source-prompt-outside-source-state",
   );
   return Promise.all(prompts.map((path) => readFile(path, "utf8"))) as Promise<[string, string]>;
 }

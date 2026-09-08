@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export const QUALITY_KEYS = [
   "SCOPE",
@@ -516,9 +516,9 @@ function validateAuthority(config: RepairConfig) {
       strings(authority.source.requiredChecks, 16, 160) &&
       validActor(authority.source.author) &&
       validActor(authority.source.reviewer) &&
-      [authority.source.author, authority.source.reviewer].every((actor) =>
-        inside(config.controllerRoot, actor.promptFile),
-      ) &&
+      authority.source.author.promptFile === resolve(config.sourceStateDirectory, "author.md") &&
+      authority.source.reviewer.promptFile ===
+        resolve(config.sourceStateDirectory, "reviewer.md") &&
       validAdapter(authority.source.adapter) &&
       /^[a-f0-9]{64}$/.test(authority.source.configFingerprint) &&
       authority.source.candidateHead === config.repairBase &&

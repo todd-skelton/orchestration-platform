@@ -68,8 +68,8 @@ export async function repairFixture(root: string) {
   await Promise.all(Object.values(paths).map((path) => mkdir(path)));
   const authorPrompt = resolve(paths.controller, "repair-author.md");
   const reviewerPrompt = resolve(paths.controller, "repair-reviewer.md");
-  const sourceAuthorPrompt = resolve(paths.controller, "source-author.md");
-  const sourceReviewerPrompt = resolve(paths.controller, "source-reviewer.md");
+  const sourceAuthorPrompt = resolve(paths.priorState, "author.md");
+  const sourceReviewerPrompt = resolve(paths.priorState, "reviewer.md");
   await Promise.all([
     writeFile(authorPrompt, "Apply only the validated corrective delta.\n"),
     writeFile(reviewerPrompt, "Review only the validated corrective delta.\n"),

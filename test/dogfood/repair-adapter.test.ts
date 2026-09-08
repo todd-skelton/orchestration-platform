@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -87,17 +87,6 @@ async function realFixture() {
   Object.assign(config.authority, { controllerRoot: loadedControllerRoot, mainBase, repairBase });
   config.authority.source.candidateHead = repairBase;
   current.source.configRecord.config.base = mainBase;
-  const sourcePromptFiles = [
-    resolve(loadedControllerRoot, "planning/drafts/ISS-076.md"),
-    resolve(loadedControllerRoot, "planning/pressure-tests/2026-09-08-round-479.md"),
-  ] as const;
-  config.authority.source.author.promptFile = sourcePromptFiles[0];
-  config.authority.source.reviewer.promptFile = sourcePromptFiles[1];
-  current.source.configRecord.config.author = structuredClone(config.authority.source.author);
-  current.source.configRecord.config.reviewer = structuredClone(config.authority.source.reviewer);
-  current.source.promptContents = (await Promise.all(
-    sourcePromptFiles.map((path) => readFile(path, "utf8")),
-  )) as [string, string];
   refreshSourceFingerprint(config, current.source);
   current.source.candidate = { head: repairBase, changed: [sourceFile] };
   current.source.terminal.head = repairBase;
@@ -120,8 +109,20 @@ async function realFixture() {
 
 it("joins the actual closed source records to exact Git heads, changed files and lines", async () => {
   const current = await realFixture();
+  expect(current.config.authority.source.author.promptFile).toBe(
+    resolve(current.paths.priorState, "author.md"),
+  );
+  expect(current.config.authority.source.reviewer.promptFile).toBe(
+    resolve(current.paths.priorState, "reviewer.md"),
+  );
+  expect(current.config.authority.source.author).not.toEqual(current.config.author);
+  expect(current.config.authority.source.reviewer).not.toEqual(current.config.reviewer);
   const adapter = reviewedRepairAdapter({} as Adapter);
   const artifacts = await adapter.loadSourceReview(current.config);
+  expect(artifacts.promptContents).toEqual([
+    "Apply the original bounded change.\n",
+    "Review the original bounded change.\n",
+  ]);
   expect(artifacts).toMatchObject({
     sourceHead: current.repairBase,
     reviewHead: current.repairBase,
@@ -235,14 +236,6 @@ it("refuses a different loaded controller root before intent or direct dispatch 
   const current = await realFixture();
   current.config.controllerRoot = current.paths.controller;
   current.config.authority.controllerRoot = current.paths.controller;
-  current.config.authority.source.author.promptFile = resolve(
-    current.paths.controller,
-    "source-author.md",
-  );
-  current.config.authority.source.reviewer.promptFile = resolve(
-    current.paths.controller,
-    "source-reviewer.md",
-  );
   let effects = 0;
   const native = {
     async preflight() {
@@ -278,15 +271,32 @@ it("refuses a different loaded controller root before intent or direct dispatch 
   expect(effects).toBe(0);
 });
 
-it("refuses an externally claimed predecessor prompt outside the loaded controller before reading it", async () => {
+it("refuses a substituted predecessor prompt before reading it or recording intent", async () => {
   const current = await realFixture();
   current.config.authority.source.author.promptFile = resolve(
-    current.paths.source,
-    "outside-source-prompt.md",
+    current.paths.priorState,
+    "substituted-author.md",
   );
   const adapter = reviewedRepairAdapter({} as Adapter);
-  await expect(adapter.loadSourceReview(current.config)).rejects.toMatchObject({
+  await expect(repairStep(current.config, adapter, repairPolicy())).rejects.toMatchObject({
     reason: "unauthorized-source-review",
+  });
+  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+it("refuses a canonical predecessor prompt escape before reading it or recording intent", async () => {
+  const current = await realFixture();
+  const sourceAuthorPrompt = resolve(current.paths.priorState, "author.md");
+  await rm(sourceAuthorPrompt);
+  await symlink(current.paths.controller, sourceAuthorPrompt, "junction");
+  const adapter = reviewedRepairAdapter({} as Adapter);
+  await expect(repairStep(current.config, adapter, repairPolicy())).rejects.toMatchObject({
+    reason: "source-prompt-outside-source-state",
+  });
+  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+    code: "ENOENT",
   });
 });
 
