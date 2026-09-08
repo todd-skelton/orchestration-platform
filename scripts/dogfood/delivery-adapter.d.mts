@@ -1,8 +1,13 @@
 import type { DeliveryAdapter, DeliveryConfig } from "./delivery.mjs";
 
+export interface GithubDeliveryCommands {
+  gh(config: DeliveryConfig, args: string[]): Promise<string>;
+  ghJson(config: DeliveryConfig, args: string[]): Promise<unknown>;
+}
+
 export function assertControllerExecutor(
   config: DeliveryConfig,
   executingRoot: string,
 ): Promise<void>;
 
-export function githubDeliveryAdapter(): DeliveryAdapter;
+export function githubDeliveryAdapter(commands?: GithubDeliveryCommands): DeliveryAdapter;

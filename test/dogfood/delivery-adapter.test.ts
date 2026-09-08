@@ -8,7 +8,7 @@ import {
   assertControllerExecutor,
   githubDeliveryAdapter,
 } from "../../scripts/dogfood/delivery-adapter.mjs";
-import type { DeliveryConfig } from "../../scripts/dogfood/delivery.mjs";
+import type { DeliveryConfig, PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
 import {
   selfDeliveryPolicy,
   selfPlanFromSnapshots,
@@ -56,6 +56,76 @@ function config(root: string): DeliveryConfig {
       pullRequestBody: "reviewed delivery candidate",
     },
   };
+}
+
+function pilotConfig(current: DeliveryConfig) {
+  return {
+    owner: current.authority.controller,
+    run: current.run,
+    issue: current.issue,
+    repository: current.repository,
+    pilotRevision: current.controllerRevision,
+    base: "d".repeat(40),
+    worktree: current.worktree,
+    reviewWorktree: current.reviewWorktree,
+    stateDirectory: current.stateDirectory,
+    requiredChecks: [...current.requiredChecks],
+  };
+}
+
+async function writePilotEvidence(
+  current: DeliveryConfig,
+  values: {
+    author?: unknown;
+    authorTerminal?: unknown;
+    reviewerAttempt?: unknown;
+    reviewerTerminal?: unknown;
+    pinnedConfig?: unknown;
+  } = {},
+) {
+  const pilot = pilotConfig(current);
+  const author = values.author ?? {
+    id: authorId,
+    pid: 101,
+    trace: resolve(current.stateDirectory, "author.jsonl"),
+  };
+  const reviewerAttempt = values.reviewerAttempt ?? {
+    id: reviewId,
+    pid: 202,
+    trace: resolve(current.stateDirectory, "reviewer.jsonl"),
+  };
+  await Promise.all([
+    writeFile(
+      resolve(current.stateDirectory, "config.json"),
+      JSON.stringify({ fingerprint: "e".repeat(64), config: values.pinnedConfig ?? pilot }),
+    ),
+    writeFile(resolve(current.stateDirectory, "candidate.json"), JSON.stringify({ head })),
+    writeFile(resolve(current.stateDirectory, "author-attempt.json"), JSON.stringify(author)),
+    writeFile(
+      resolve(current.stateDirectory, "author-terminal.json"),
+      JSON.stringify(
+        values.authorTerminal ?? {
+          id: (author as { id?: unknown }).id,
+          status: "passed",
+          head: pilot.base,
+        },
+      ),
+    ),
+    writeFile(
+      resolve(current.stateDirectory, "reviewer-attempt.json"),
+      JSON.stringify(reviewerAttempt),
+    ),
+    writeFile(
+      resolve(current.stateDirectory, "reviewer-terminal.json"),
+      JSON.stringify(
+        values.reviewerTerminal ?? {
+          id: (reviewerAttempt as { id?: unknown }).id,
+          status: "passed",
+          head,
+        },
+      ),
+    ),
+  ]);
 }
 
 async function cleanController(root: string) {
@@ -122,6 +192,36 @@ async function repositoryFixture(remote: string) {
   return { current, git };
 }
 
+function publicationEvidence(current: DeliveryConfig): PublicationEvidence {
+  return {
+    number: 44,
+    url: `https://github.com/${current.repository}/pull/44`,
+    head: current.candidateHead,
+    repository: current.repository,
+    sourceBranch: "codex/iss-074-delivery",
+    baseBranch: "main",
+    title: "automate normal delivery",
+    body: "reviewed delivery candidate",
+    planDigest: "f".repeat(64),
+  };
+}
+
+function publicationRow(current: PublicationEvidence, values: Record<string, unknown> = {}) {
+  return {
+    number: current.number,
+    url: current.url,
+    headRefOid: current.head,
+    headRefName: current.sourceBranch,
+    baseRefName: current.baseBranch,
+    state: "OPEN",
+    isDraft: true,
+    title: current.title,
+    body: current.body,
+    mergeCommit: null,
+    ...values,
+  };
+}
+
 it.each([
   "https://github.com/todd-skelton/orchestration-platform.git",
   "git@github.com:todd-skelton/orchestration-platform.git",
@@ -184,6 +284,81 @@ it.each(["foreign-fetch", "foreign-push", "extra-push"] as const)(
     ).rejects.toMatchObject({ code: "ENOENT" });
   },
 );
+
+it("revalidates full publication identity after checks before ready or merge effects", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const effects: string[][] = [];
+  let drifted = false;
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      if (args[1] === "ready" || args[1] === "merge") effects.push(args);
+      return "[]";
+    },
+    async ghJson() {
+      return publicationRow(publication, drifted ? { baseRefName: "release" } : {});
+    },
+  });
+  await expect(adapter.checks(current, publication)).resolves.toEqual({
+    head: current.candidateHead,
+    checks: [],
+  });
+  drifted = true;
+  await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow(
+    "merge-head-drift",
+  );
+  expect(effects).toEqual([]);
+});
+
+it("revalidates full publication identity after making a draft ready", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const effects: string[][] = [];
+  let observations = 0;
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson() {
+      observations += 1;
+      return publicationRow(
+        publication,
+        observations === 1 ? {} : { baseRefName: "release", isDraft: false },
+      );
+    },
+  });
+  await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow(
+    "merge-head-drift",
+  );
+  expect(effects).toEqual([["pr", "ready", "44"]]);
+  expect(effects.some((args) => args.includes("merge"))).toBe(false);
+});
+
+it("can resume merge for an already-ready PR with unchanged approved identity", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const effects: string[][] = [];
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson() {
+      return publicationRow(publication, { isDraft: false });
+    },
+  });
+  await expect(adapter.merge(current, publication, { method: "squash" })).resolves.toBeUndefined();
+  expect(effects).toEqual([
+    ["pr", "merge", "44", "--squash", "--match-head-commit", current.candidateHead],
+  ]);
+});
 
 it("rejects matching heads from a different Git worktree family", async () => {
   vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
@@ -297,25 +472,26 @@ it("reduces existing pilot records to exact reviewed source evidence without wor
       (path) => mkdir(path),
     ),
   );
-  await Promise.all([
-    writeFile(resolve(current.stateDirectory, "candidate.json"), JSON.stringify({ head })),
-    writeFile(
-      resolve(current.stateDirectory, "reviewer-terminal.json"),
-      JSON.stringify({
-        id: reviewId,
-        status: "passed",
-        head,
-        summary: "advisory prose must not cross the delivery boundary",
-      }),
-    ),
-    writeFile(
-      resolve(current.stateDirectory, "author-attempt.json"),
-      JSON.stringify({ id: authorId }),
-    ),
-  ]);
+  await writePilotEvidence(current, {
+    reviewerTerminal: {
+      id: reviewId,
+      status: "passed",
+      head,
+      summary: "advisory prose must not cross the delivery boundary",
+    },
+  });
   await expect(githubDeliveryAdapter().source(current)).resolves.toEqual({
     head,
     reviewId,
+    controller: current.authority.controller,
+    run: current.run,
+    issue: current.issue,
+    repository: current.repository,
+    controllerRevision: current.controllerRevision,
+    worktree: current.worktree,
+    reviewWorktree: current.reviewWorktree,
+    stateDirectory: current.stateDirectory,
+    requiredChecks: current.requiredChecks,
   });
 });
 
@@ -331,11 +507,47 @@ it.each([
   roots.push(root);
   const current = config(root);
   await mkdir(current.stateDirectory);
-  await Promise.all([
-    writeFile(resolve(current.stateDirectory, "candidate.json"), JSON.stringify({ head })),
-    writeFile(resolve(current.stateDirectory, "reviewer-terminal.json"), JSON.stringify(reviewer)),
-    writeFile(resolve(current.stateDirectory, "author-attempt.json"), JSON.stringify(author)),
-  ]);
+  await writePilotEvidence(current, {
+    author,
+    reviewerAttempt: reviewer,
+    reviewerTerminal: reviewer,
+  });
+  await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
+    "unreviewed-delivery-source",
+  );
+});
+
+it.each([
+  "reviewer-attempt",
+  "run",
+  "repository",
+  "worktree",
+  "pilot-revision",
+  "controller",
+] as const)("rejects pilot %s identity drift before provider effects", async (mode) => {
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
+  roots.push(root);
+  const current = config(root);
+  await mkdir(current.stateDirectory);
+  const pinned = pilotConfig(current);
+  if (mode === "run") pinned.run = "unrelated-run";
+  if (mode === "repository") pinned.repository = "foreign/repository";
+  if (mode === "worktree") pinned.worktree = resolve(root, "unrelated-author");
+  if (mode === "pilot-revision") pinned.pilotRevision = "f".repeat(40);
+  if (mode === "controller") pinned.owner = "unknown-controller";
+  await writePilotEvidence(current, {
+    pinnedConfig: pinned,
+    ...(mode === "reviewer-attempt"
+      ? {
+          reviewerAttempt: {
+            id: "33333333-3333-3333-3333-333333333333",
+            pid: 303,
+            trace: resolve(current.stateDirectory, "reviewer.jsonl"),
+          },
+          reviewerTerminal: { id: reviewId, status: "passed", head },
+        }
+      : {}),
+  });
   await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
     "unreviewed-delivery-source",
   );

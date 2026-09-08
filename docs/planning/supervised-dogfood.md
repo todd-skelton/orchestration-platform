@@ -252,23 +252,28 @@ directory, binds an exact candidate and includes controller-held authority:
 }
 ```
 
-The command first reduces existing `candidate.json`, `author-attempt.json` and
-`reviewer-terminal.json` into narrow `delivery-source.json` evidence. It then
-runs typecheck, format and local planning checks; mirrors only the approved
-ISS-074 and kernel-epic bodies; runs the board check; publishes or updates one
-draft PR; observes every required hosted check at the exact reviewed head; and
-uses the explicit squash/cleanup policy only after all checks pass. It stages PR
-and issue bodies plus immutable mutation intents in the external state directory.
+The command first joins the pinned pilot `config.json`, candidate, both exact
+attempt identities and both terminal records into narrow `delivery-source.json`
+evidence. The join binds the controller, run, repository, pilot revision,
+worktrees and hosted check set without reading worker prose. It then runs
+typecheck, format and local planning checks; mirrors only the approved ISS-074
+and kernel-epic bodies; runs the board check; publishes or updates one draft PR;
+observes every required hosted check at the exact reviewed head; and uses the
+explicit squash/cleanup policy only after all checks pass. It stages PR and issue
+bodies plus immutable mutation intents in the external state directory.
 
 Every provider mutation is observed before and after the call. Confirmed state
 is recorded and never repeated. Unknown or partial publication, merge or cleanup
 stops with a typed reconcile status; a later invocation observes provider state
 before any retry. Cleanup refuses moved, dirty, missing or broad targets and
 requires the stable controller checkout to survive. Once cleanup is confirmed,
-restart reads delivery records directly and does not enter the original pilot
-flow or resolve the removed candidate/reviewer paths. Output is limited to typed
-status, identities, heads and check links; raw errors, logs, worker prose and
-environment values are excluded.
+restart reads a separately policy-authorized plan digest and the complete gate,
+draft, publication, hosted-check and merge receipt chain directly; it does not
+enter the original pilot flow or resolve the removed candidate/reviewer paths.
+Publication and merge observations bind the repository, PR number and URL,
+source, base, title, body and exact reviewed head before dependent effects.
+Output is limited to typed status, identities, heads and check links; raw errors,
+logs, worker prose and environment values are excluded.
 
 Stable release N may run this command for reviewed N+1. N+1 cannot invoke itself
 as delivery authority, certify its tests, activate itself or alter the production

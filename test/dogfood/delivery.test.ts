@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -17,6 +18,7 @@ import {
 const head = "a".repeat(40);
 const mergeCommit = "b".repeat(40);
 const roots: string[] = [];
+const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 async function fixture() {
   const parent = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-fixture-")));
@@ -80,8 +82,14 @@ async function fixture() {
   const calls: string[] = [];
   const publication: PublicationEvidence = {
     number: 44,
-    url: "https://example.test/pull/44",
+    url: "https://github.com/fixture/repository/pull/44",
     head,
+    repository: config.repository,
+    sourceBranch: plan.publication.sourceBranch,
+    baseBranch: plan.publication.baseBranch,
+    title: plan.publication.title,
+    body: plan.publication.body,
+    planDigest: digest(plan),
   };
   const state = {
     workspace: true,
@@ -95,7 +103,19 @@ async function fixture() {
   const adapter: DeliveryAdapter = {
     async source() {
       calls.push("source");
-      return { head, reviewId: "review-fixture" };
+      return {
+        head,
+        reviewId: "review-fixture",
+        controller: "fixture-controller",
+        run: config.run,
+        issue: config.issue,
+        repository: config.repository,
+        controllerRevision: config.controllerRevision,
+        worktree: config.worktree,
+        reviewWorktree: config.reviewWorktree,
+        stateDirectory: config.stateDirectory,
+        requiredChecks: [...config.requiredChecks],
+      };
     },
     async verifyWorkspace() {
       calls.push("verify");
@@ -173,7 +193,7 @@ async function fixture() {
       return plan;
     },
   };
-  return { config, plan, adapter, policy, calls, state };
+  return { config, plan, publication, adapter, policy, calls, state };
 }
 
 async function writeState(config: DeliveryConfig, name: string, value: unknown) {
@@ -181,7 +201,6 @@ async function writeState(config: DeliveryConfig, name: string, value: unknown) 
 }
 
 function expectNoProviderAction(calls: string[]) {
-  expect(calls).not.toContain("source");
   expect(calls).not.toContain("verify");
   expect(calls.filter((call) => call.startsWith("gate:"))).toEqual([]);
   expect(calls.filter((call) => call.startsWith("observe-draft:"))).toEqual([]);
@@ -240,6 +259,34 @@ it("resumes completed delivery after deleted candidate worktrees without consult
   expect(f.calls).toEqual([]);
 });
 
+it("rejects an unknown issuer when resuming completed state without provider access", async () => {
+  const f = await fixture();
+  await deliveryStep(f.config, f.adapter, f.policy);
+  f.config.authority.controller = "unknown-controller";
+  await writeState(f.config, "delivery-config", { fingerprint: digest(f.config) });
+  f.calls.length = 0;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "unauthorized-delivery",
+  );
+  expect(f.calls).toEqual([]);
+  expectNoProviderAction(f.calls);
+});
+
+it("rejects a self-consistent saved plan that was not authorized by policy", async () => {
+  const f = await fixture();
+  const offPolicy = structuredClone(f.plan);
+  offPolicy.publication.baseBranch = "release";
+  await writeState(f.config, "delivery-plan", {
+    head,
+    digest: digest(offPolicy),
+    plan: offPolicy,
+  });
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "unauthorized-delivery-plan",
+  );
+  expect(f.calls).toEqual(["source", "policy"]);
+});
+
 it("observes pending hosted checks without merging or cleanup and resumes without republishing", async () => {
   const f = await fixture();
   f.state.checks = "pending";
@@ -279,7 +326,7 @@ it("does not retry an uncertain publication and reconciles it on restart", async
     observations += 1;
     if (observations === 1) return { state: "needs-mutation" };
     if (observations === 2) return { state: "unknown" };
-    return { state: "confirmed", value: { number: 44, url: "https://example.test/pull/44", head } };
+    return { state: "confirmed", value: f.publication };
   };
   f.adapter.publish = async () => {
     f.calls.push("publish");
@@ -291,6 +338,22 @@ it("does not retry an uncertain publication and reconciles it on restart", async
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
   await deliveryStep(f.config, f.adapter, f.policy);
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+});
+
+it("rejects a same-head publication receipt whose approved base identity changed", async () => {
+  const f = await fixture();
+  f.state.checks = "pending";
+  await deliveryStep(f.config, f.adapter, f.policy);
+  await writeState(f.config, "publication", {
+    ...f.publication,
+    baseBranch: "release",
+  });
+  f.calls.length = 0;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "malformed-publication-receipt",
+  );
+  expect(f.calls).toEqual([]);
+  expectNoProviderAction(f.calls);
 });
 
 it("does not double merge after a lost provider response", async () => {
@@ -332,6 +395,36 @@ it("refuses partial cleanup and never starts a second cleanup mutation", async (
   );
   expect(f.calls.filter((call) => call === "cleanup")).toHaveLength(1);
   expect(f.calls.filter((call) => call === "policy")).toHaveLength(1);
+});
+
+it.each(["gate-4", "draft-ISS-074"])(
+  "refuses a saved merge when the %s prerequisite receipt is absent",
+  async (missing) => {
+    const f = await fixture();
+    await deliveryStep(f.config, f.adapter, f.policy);
+    await Promise.all([
+      rm(resolve(f.config.stateDirectory, "cleanup.json")),
+      rm(resolve(f.config.stateDirectory, `${missing}.json`)),
+    ]);
+    f.calls.length = 0;
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+      "incomplete-merge-prerequisites",
+    );
+    expect(f.calls).toEqual([]);
+    expectNoProviderAction(f.calls);
+  },
+);
+
+it("refuses completed status when a required phase receipt is absent", async () => {
+  const f = await fixture();
+  await deliveryStep(f.config, f.adapter, f.policy);
+  await rm(resolve(f.config.stateDirectory, "gate-2.json"));
+  f.calls.length = 0;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "incomplete-completed-delivery",
+  );
+  expect(f.calls).toEqual([]);
+  expectNoProviderAction(f.calls);
 });
 
 it.each(["duplicate", "omitted"] as const)(
@@ -398,13 +491,34 @@ it.each([
     head,
     actions: ["gates", "mirror", "publish", "merge"],
   },
+  {
+    schemaVersion: "dogfood-delivery-authority/v1",
+    controller: "unknown-controller",
+    run: "delivery-fixture",
+    repository: "fixture/repository",
+    controllerRevision: "c".repeat(40),
+    head,
+    actions: ["gates", "mirror", "publish", "merge", "cleanup"],
+  },
+  {
+    schemaVersion: "dogfood-delivery-authority/v1",
+    controller: "   ",
+    run: "delivery-fixture",
+    repository: "fixture/repository",
+    controllerRevision: "c".repeat(40),
+    head,
+    actions: ["gates", "mirror", "publish", "merge", "cleanup"],
+  },
 ])("rejects unknown or malformed controller authority", async (authority) => {
   const f = await fixture();
   f.config.authority = authority as never;
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
     "unauthorized-delivery",
   );
-  expect(f.calls).toEqual([]);
+  expect(f.calls.filter((call) => call !== "source")).toEqual([]);
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "delivery-config.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it.each([
@@ -475,6 +589,7 @@ it.each([
     const f = await fixture();
     await writeState(f.config, name, value);
     await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
+    expect(f.calls).toEqual([]);
     expectNoProviderAction(f.calls);
   },
 );
@@ -492,7 +607,7 @@ it.each([
     const f = await fixture();
     await writeState(f.config, name, value);
     await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
-    expect(f.calls).toEqual(["policy"]);
+    expect(f.calls).toEqual(["source", "policy"]);
     expectNoProviderAction(f.calls);
   },
 );

@@ -64,12 +64,27 @@ export interface DeliveryPlan {
 export interface SourceEvidence {
   head: string;
   reviewId: string;
+  controller: string;
+  run: string;
+  issue: string;
+  repository: string;
+  controllerRevision: string;
+  worktree: string;
+  reviewWorktree: string;
+  stateDirectory: string;
+  requiredChecks: string[];
 }
 
 export interface PublicationEvidence {
   number: number;
   url: string;
   head: string;
+  repository: string;
+  sourceBranch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+  planDigest: string;
 }
 
 export interface MergeEvidence {
@@ -100,6 +115,7 @@ export interface DeliveryAdapter {
   observePublication(
     config: DeliveryConfig,
     plan: PublicationPlan,
+    planDigest: string,
   ): Promise<Observation<PublicationEvidence>>;
   publish(config: DeliveryConfig, plan: PublicationPlan): Promise<void>;
   checks(
@@ -259,7 +275,7 @@ function validateConfig(config: DeliveryConfig) {
       ]) &&
       authority.schemaVersion === DELIVERY_AUTHORITY_SCHEMA &&
       typeof authority.controller === "string" &&
-      authority.controller.length > 0 &&
+      /^[A-Za-z0-9._:-]{1,128}$/.test(authority.controller) &&
       authority.run === config.run &&
       authority.repository === config.repository &&
       authority.controllerRevision === config.controllerRevision &&
@@ -393,26 +409,103 @@ function validateSourceRecord(
   source: unknown,
 ): asserts source is SourceEvidence {
   demand(
-    exactKeys(source, ["head", "reviewId"]) &&
+    exactKeys(source, [
+      "head",
+      "reviewId",
+      "controller",
+      "run",
+      "issue",
+      "repository",
+      "controllerRevision",
+      "worktree",
+      "reviewWorktree",
+      "stateDirectory",
+      "requiredChecks",
+    ]) &&
       source.head === config.candidateHead &&
       typeof source.reviewId === "string" &&
-      /^[A-Za-z0-9._:-]{1,128}$/.test(source.reviewId),
+      /^[A-Za-z0-9._:-]{1,128}$/.test(source.reviewId) &&
+      typeof source.controller === "string" &&
+      /^[A-Za-z0-9._:-]{1,128}$/.test(source.controller) &&
+      source.run === config.run &&
+      source.issue === config.issue &&
+      source.repository === config.repository &&
+      source.controllerRevision === config.controllerRevision &&
+      source.worktree === config.worktree &&
+      source.reviewWorktree === config.reviewWorktree &&
+      source.stateDirectory === config.stateDirectory &&
+      exactUniqueStringSet(source.requiredChecks, config.requiredChecks),
     "delivery-source-head-drift",
+  );
+  demand(source.controller === config.authority.controller, "unauthorized-delivery");
+}
+
+function validatePublicationShape(
+  config: DeliveryConfig,
+  publication: unknown,
+): asserts publication is PublicationEvidence {
+  demand(
+    exactKeys(publication, [
+      "head",
+      "number",
+      "url",
+      "repository",
+      "sourceBranch",
+      "baseBranch",
+      "title",
+      "body",
+      "planDigest",
+    ]) &&
+      publication.head === config.candidateHead &&
+      Number.isSafeInteger(publication.number) &&
+      (publication.number as number) > 0 &&
+      publication.url ===
+        `https://github.com/${config.repository}/pull/${String(publication.number)}` &&
+      publication.repository === config.repository &&
+      typeof publication.sourceBranch === "string" &&
+      typeof publication.baseBranch === "string" &&
+      typeof publication.title === "string" &&
+      typeof publication.body === "string" &&
+      typeof publication.planDigest === "string" &&
+      /^[a-f0-9]{64}$/.test(publication.planDigest),
+    "malformed-publication-receipt",
   );
 }
 
 function validatePublicationRecord(
   config: DeliveryConfig,
+  plan: DeliveryPlan,
+  planDigest: string,
   publication: unknown,
 ): asserts publication is PublicationEvidence {
+  validatePublicationShape(config, publication);
   demand(
-    exactKeys(publication, ["head", "number", "url"]) &&
-      publication.head === config.candidateHead &&
-      Number.isSafeInteger(publication.number) &&
-      (publication.number as number) > 0 &&
-      typeof publication.url === "string" &&
-      publication.url.startsWith("https://"),
+    publication.sourceBranch === plan.publication.sourceBranch &&
+      publication.baseBranch === plan.publication.baseBranch &&
+      publication.title === plan.publication.title &&
+      publication.body === plan.publication.body &&
+      publication.planDigest === planDigest,
     "malformed-publication-receipt",
+  );
+}
+
+function validatePlanAuthorization(
+  config: DeliveryConfig,
+  authorization: unknown,
+): asserts authorization is {
+  head: string;
+  digest: string;
+  policyDigest: string;
+  controller: string;
+} {
+  demand(
+    exactKeys(authorization, ["head", "digest", "policyDigest", "controller"]) &&
+      authorization.head === config.candidateHead &&
+      typeof authorization.digest === "string" &&
+      /^[a-f0-9]{64}$/.test(authorization.digest) &&
+      authorization.policyDigest === digest(config.policy) &&
+      authorization.controller === config.authority.controller,
+    "malformed-delivery-plan-authorization",
   );
 }
 
@@ -474,6 +567,7 @@ export async function deliveryStep(
   const directory = await realpath(config.stateDirectory);
   const fingerprint = digest(config);
   const pinned = await optionalRecord(directory, "delivery-config");
+  const needsConfigRecord = pinned === ABSENT_RECORD;
   if (pinned !== ABSENT_RECORD)
     demand(
       exactKeys(pinned, ["fingerprint"]) && pinned.fingerprint === fingerprint,
@@ -496,7 +590,6 @@ export async function deliveryStep(
       roots.every((root) => outside(root, directory) && outside(directory, root)),
       "delivery-state-inside-checkout",
     );
-    await record(directory, "delivery-config", { fingerprint });
   }
 
   const completed = await optionalRecord(directory, "cleanup");
@@ -505,58 +598,9 @@ export async function deliveryStep(
   const savedChecks = await optionalRecord(directory, "hosted-checks");
   const savedMerge = await optionalRecord(directory, "merge");
   const savedPlan = await optionalRecord(directory, "delivery-plan");
-  if (completed !== ABSENT_RECORD) {
-    demand(
-      savedPlan !== ABSENT_RECORD &&
-        exactKeys(savedPlan, ["head", "digest", "plan"]) &&
-        savedPlan.head === config.candidateHead &&
-        savedPlan.digest === digest(savedPlan.plan),
-      "malformed-delivery-plan-record",
-    );
-    validatePlan(config, savedPlan.plan as DeliveryPlan);
-    const completedPlan = savedPlan.plan as DeliveryPlan;
-    const completedChecks =
-      exactKeys(savedChecks, ["head", "checks"]) && savedChecks.head === config.candidateHead
-        ? validateChecks(config, savedChecks.head, savedChecks.checks as CheckEvidence[])
-        : undefined;
-    demand(
-      exactKeys(savedSource, ["head", "reviewId"]) &&
-        savedSource.head === config.candidateHead &&
-        typeof savedSource.reviewId === "string" &&
-        /^[A-Za-z0-9._:-]{1,128}$/.test(savedSource.reviewId) &&
-        exactKeys(savedPublication, ["head", "number", "url"]) &&
-        savedPublication.head === config.candidateHead &&
-        Number.isSafeInteger(savedPublication.number) &&
-        (savedPublication.number as number) > 0 &&
-        typeof savedPublication.url === "string" &&
-        savedPublication.url.startsWith("https://") &&
-        exactKeys(savedMerge, ["head", "number", "mergeCommit"]) &&
-        savedMerge.head === config.candidateHead &&
-        savedMerge.number === savedPublication.number &&
-        typeof savedMerge.mergeCommit === "string" &&
-        SHA.test(savedMerge.mergeCommit) &&
-        exactKeys(completed, ["head", "worktrees", "branch"]) &&
-        completed.head === config.candidateHead &&
-        exactUniqueStringSet(completed.worktrees, completedPlan.cleanup.worktrees) &&
-        completed.branch === completedPlan.cleanup.branch &&
-        completedChecks?.every((check) => check.bucket === "pass"),
-      "malformed-completed-delivery",
-    );
-    return {
-      status: "complete",
-      run: config.run,
-      issue: config.issue,
-      head: config.candidateHead,
-      reviewId: savedSource.reviewId,
-      publication: { number: savedPublication.number, url: savedPublication.url },
-      checks: completedChecks,
-      mergeCommit: savedMerge.mergeCommit,
-      cleanup: { status: "confirmed", branch: completed.branch },
-    };
-  }
-
+  const savedPlanAuthorization = await optionalRecord(directory, "delivery-plan-authorization");
   if (savedSource !== ABSENT_RECORD) validateSourceRecord(config, savedSource);
-  if (savedPublication !== ABSENT_RECORD) validatePublicationRecord(config, savedPublication);
+  if (savedPublication !== ABSENT_RECORD) validatePublicationShape(config, savedPublication);
   let checks: CheckEvidence[] | undefined;
   if (savedChecks !== ABSENT_RECORD) {
     demand(exactKeys(savedChecks, ["head", "checks"]), "malformed-hosted-checks-record");
@@ -566,16 +610,7 @@ export async function deliveryStep(
       savedChecks.checks as CheckEvidence[],
     );
   }
-  if (savedMerge !== ABSENT_RECORD) {
-    validateMergeRecord(config, savedMerge);
-    demand(
-      savedPublication !== ABSENT_RECORD &&
-        savedChecks !== ABSENT_RECORD &&
-        savedMerge.number === savedPublication.number &&
-        checks?.every((check) => check.bucket === "pass"),
-      "malformed-merge-receipt",
-    );
-  }
+  if (savedMerge !== ABSENT_RECORD) validateMergeRecord(config, savedMerge);
   if (savedPlan !== ABSENT_RECORD) {
     demand(
       exactKeys(savedPlan, ["head", "digest", "plan"]) &&
@@ -585,16 +620,13 @@ export async function deliveryStep(
     );
     validatePlan(config, savedPlan.plan as DeliveryPlan);
   }
-  const plan =
-    savedPlan !== ABSENT_RECORD ? (savedPlan.plan as DeliveryPlan) : await policy.plan(config);
-  validatePlan(config, plan);
-  await record(directory, "delivery-plan", {
-    head: config.candidateHead,
-    digest: digest(plan),
-    plan,
-  });
+  if (savedPlanAuthorization !== ABSENT_RECORD) {
+    validatePlanAuthorization(config, savedPlanAuthorization);
+    demand(savedPlan !== ABSENT_RECORD, "orphaned-delivery-plan-authorization");
+    demand(savedPlanAuthorization.digest === savedPlan.digest, "unauthorized-delivery-plan");
+  }
 
-  const plannedReceipts = [
+  const receiptValidators = (plan: DeliveryPlan) => [
     ...[...plan.gates.beforeMirror, ...plan.gates.afterMirror].map((name, index) => ({
       file: `gate-${index + 1}`,
       validate(value: unknown) {
@@ -618,6 +650,111 @@ export async function deliveryStep(
       },
     })),
   ];
+
+  if (completed !== ABSENT_RECORD) {
+    demand(
+      pinned !== ABSENT_RECORD &&
+        savedPlan !== ABSENT_RECORD &&
+        savedPlanAuthorization !== ABSENT_RECORD &&
+        savedPlanAuthorization.digest === savedPlan.digest,
+      "malformed-completed-delivery",
+    );
+    const completedPlan = savedPlan.plan as DeliveryPlan;
+    const completedPlanDigest = savedPlan.digest as string;
+    validateSourceRecord(config, savedSource);
+    validatePublicationRecord(config, completedPlan, completedPlanDigest, savedPublication);
+    validateMergeRecord(config, savedMerge);
+    const requiredReceipts = await Promise.all(
+      receiptValidators(completedPlan).map(async ({ file, validate }) => {
+        const value = await optionalRecord(directory, file);
+        demand(value !== ABSENT_RECORD, "incomplete-completed-delivery");
+        validate(value);
+        return value;
+      }),
+    );
+    demand(
+      requiredReceipts.length === 4 + completedPlan.drafts.length &&
+        savedMerge.number === savedPublication.number &&
+        exactKeys(completed, ["head", "worktrees", "branch"]) &&
+        completed.head === config.candidateHead &&
+        exactUniqueStringSet(completed.worktrees, completedPlan.cleanup.worktrees) &&
+        completed.branch === completedPlan.cleanup.branch &&
+        checks?.every((check) => check.bucket === "pass"),
+      "malformed-completed-delivery",
+    );
+    return {
+      status: "complete",
+      run: config.run,
+      issue: config.issue,
+      head: config.candidateHead,
+      reviewId: savedSource.reviewId,
+      publication: { number: savedPublication.number, url: savedPublication.url },
+      checks,
+      mergeCommit: savedMerge.mergeCommit,
+      cleanup: { status: "confirmed", branch: completed.branch },
+    };
+  }
+
+  if (savedMerge !== ABSENT_RECORD)
+    demand(
+      savedSource !== ABSENT_RECORD &&
+        savedPublication !== ABSENT_RECORD &&
+        savedChecks !== ABSENT_RECORD &&
+        savedPlan !== ABSENT_RECORD &&
+        savedPlanAuthorization !== ABSENT_RECORD &&
+        !needsConfigRecord,
+      "incomplete-merge-prerequisites",
+    );
+  if (savedChecks !== ABSENT_RECORD)
+    demand(savedPublication !== ABSENT_RECORD, "incomplete-check-prerequisites");
+
+  let source = savedSource;
+  if (source === ABSENT_RECORD) {
+    source = await adapter.source(config);
+    validateSourceRecord(config, source);
+    await record(directory, "delivery-source", source);
+  }
+  validateSourceRecord(config, source);
+  if (needsConfigRecord) await record(directory, "delivery-config", { fingerprint });
+
+  let plan: DeliveryPlan;
+  if (savedPlan === ABSENT_RECORD) {
+    plan = await policy.plan(config);
+    validatePlan(config, plan);
+  } else if (savedPlanAuthorization === ABSENT_RECORD) {
+    const authorizedPlan = await policy.plan(config);
+    validatePlan(config, authorizedPlan);
+    demand(digest(authorizedPlan) === savedPlan.digest, "unauthorized-delivery-plan");
+    plan = savedPlan.plan as DeliveryPlan;
+  } else {
+    plan = savedPlan.plan as DeliveryPlan;
+  }
+  const planDigest = digest(plan);
+  await record(directory, "delivery-plan", {
+    head: config.candidateHead,
+    digest: planDigest,
+    plan,
+  });
+  await record(directory, "delivery-plan-authorization", {
+    head: config.candidateHead,
+    digest: planDigest,
+    policyDigest: digest(config.policy),
+    controller: config.authority.controller,
+  });
+
+  if (savedPublication !== ABSENT_RECORD)
+    validatePublicationRecord(config, plan, planDigest, savedPublication);
+  if (savedMerge !== ABSENT_RECORD) {
+    demand(
+      savedPublication !== ABSENT_RECORD &&
+        savedChecks !== ABSENT_RECORD &&
+        savedMerge.number === savedPublication.number &&
+        checks?.every((check) => check.bucket === "pass"),
+      "malformed-merge-receipt",
+    );
+  }
+
+  const plannedReceipts = receiptValidators(plan);
   await Promise.all(
     plannedReceipts.map(async ({ file, validate }) => {
       const value = await optionalRecord(directory, file);
@@ -625,19 +762,18 @@ export async function deliveryStep(
     }),
   );
 
-  let source = savedSource;
-  if (source === ABSENT_RECORD) {
-    source = await adapter.source(config);
-    demand(
-      source &&
-        source.head === config.candidateHead &&
-        typeof source.reviewId === "string" &&
-        /^[A-Za-z0-9._:-]{1,128}$/.test(source.reviewId),
-      "unreviewed-delivery-source",
-    );
-    await record(directory, "delivery-source", source);
+  if (savedPublication !== ABSENT_RECORD) {
+    for (const { file, validate } of plannedReceipts) {
+      const value = await optionalRecord(directory, file);
+      demand(
+        value !== ABSENT_RECORD,
+        savedMerge === ABSENT_RECORD
+          ? "incomplete-publication-prerequisites"
+          : "incomplete-merge-prerequisites",
+      );
+      validate(value);
+    }
   }
-  validateSourceRecord(config, source);
 
   if (savedMerge === ABSENT_RECORD) {
     demand(
@@ -708,12 +844,12 @@ export async function deliveryStep(
           directory,
           "publication",
           config.candidateHead,
-          () => adapter.observePublication(config, plan.publication),
+          () => adapter.observePublication(config, plan.publication, planDigest),
           () => adapter.publish(config, plan.publication),
           (value) => value,
-          (value) => validatePublicationRecord(config, value),
+          (value) => validatePublicationRecord(config, plan, planDigest, value),
         );
-  validatePublicationRecord(config, publication);
+  validatePublicationRecord(config, plan, planDigest, publication);
 
   let merge = savedMerge;
   if (merge === ABSENT_RECORD) {

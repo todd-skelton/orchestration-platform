@@ -17,6 +17,7 @@ import {
 
 const exec = promisify(execFile);
 const SHA = /^[a-f0-9]{40}$/;
+const DIGEST = /^[a-f0-9]{64}$/;
 const ATTEMPT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
 async function run(executable: string, args: string[], cwd: string) {
@@ -41,6 +42,11 @@ async function ghJson(config: DeliveryConfig, args: string[]) {
   return JSON.parse(await gh(config, args));
 }
 
+export interface GithubDeliveryCommands {
+  gh(config: DeliveryConfig, args: string[]): Promise<string>;
+  ghJson(config: DeliveryConfig, args: string[]): Promise<any>;
+}
+
 async function json(path: string, reason: string) {
   try {
     return JSON.parse(await readFile(path, "utf8"));
@@ -61,14 +67,80 @@ async function stagedFile(config: DeliveryConfig, name: string, contents: string
   return path;
 }
 
-function publication(row: any): PublicationEvidence | undefined {
-  return Number.isSafeInteger(row?.number) &&
-    row.number > 0 &&
-    typeof row.url === "string" &&
-    row.url.startsWith("https://") &&
-    SHA.test(row.headRefOid)
-    ? { number: row.number, url: row.url, head: row.headRefOid }
+function exactStringSet(value: unknown, expected: string[]) {
+  return (
+    Array.isArray(value) &&
+    value.length === expected.length &&
+    value.every((item) => typeof item === "string") &&
+    new Set(value).size === value.length &&
+    value.every((item) => expected.includes(item)) &&
+    expected.every((item) => value.includes(item))
+  );
+}
+
+function validAttempt(value: any, config: DeliveryConfig, role: "author" | "reviewer") {
+  return (
+    value &&
+    Object.keys(value).length === 3 &&
+    ["id", "pid", "trace"].every((key) => Object.hasOwn(value, key)) &&
+    typeof value.id === "string" &&
+    ATTEMPT_ID.test(value.id) &&
+    Number.isSafeInteger(value.pid) &&
+    value.pid > 0 &&
+    typeof value.trace === "string" &&
+    samePath(value.trace, resolve(config.stateDirectory, `${role}.jsonl`))
+  );
+}
+
+function publication(
+  row: any,
+  config: DeliveryConfig,
+  plan: PublicationPlan,
+  planDigest: string,
+): PublicationEvidence | undefined {
+  return matchesPublicationTarget(row, config, plan) &&
+    row.title === plan.title &&
+    normalizeBody(row.body) === normalizeBody(plan.body) &&
+    DIGEST.test(planDigest)
+    ? {
+        number: row.number,
+        url: row.url,
+        head: row.headRefOid,
+        repository: config.repository,
+        sourceBranch: plan.sourceBranch,
+        baseBranch: plan.baseBranch,
+        title: plan.title,
+        body: plan.body,
+        planDigest,
+      }
     : undefined;
+}
+
+function matchesPublicationTarget(row: any, config: DeliveryConfig, plan: PublicationPlan) {
+  return (
+    Number.isSafeInteger(row?.number) &&
+    row.number > 0 &&
+    row.url === `https://github.com/${config.repository}/pull/${String(row.number)}` &&
+    row.headRefOid === config.candidateHead &&
+    row.headRefName === plan.sourceBranch &&
+    row.baseRefName === plan.baseBranch
+  );
+}
+
+function matchesPublication(row: any, current: PublicationEvidence, config: DeliveryConfig) {
+  return (
+    current.repository === config.repository &&
+    current.head === config.candidateHead &&
+    current.url === `https://github.com/${config.repository}/pull/${String(current.number)}` &&
+    DIGEST.test(current.planDigest) &&
+    row?.number === current.number &&
+    row.url === current.url &&
+    row.headRefOid === current.head &&
+    row.headRefName === current.sourceBranch &&
+    row.baseRefName === current.baseBranch &&
+    row.title === current.title &&
+    normalizeBody(row.body) === normalizeBody(current.body)
+  );
 }
 
 function samePath(left: string, right: string) {
@@ -190,7 +262,9 @@ export async function assertControllerExecutor(config: DeliveryConfig, executing
   }
 }
 
-export function githubDeliveryAdapter(): DeliveryAdapter {
+export function githubDeliveryAdapter(
+  commands: GithubDeliveryCommands = { gh, ghJson },
+): DeliveryAdapter {
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
       await assertWorktreeRepository(config);
@@ -212,6 +286,10 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
   };
   return {
     async source(config) {
+      const pinned = await json(
+        resolve(config.stateDirectory, "config.json"),
+        "missing-pilot-config-record",
+      );
       const candidate = await json(
         resolve(config.stateDirectory, "candidate.json"),
         "missing-candidate-record",
@@ -224,18 +302,56 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
         resolve(config.stateDirectory, "author-attempt.json"),
         "missing-author-record",
       );
+      const reviewerAttempt = await json(
+        resolve(config.stateDirectory, "reviewer-attempt.json"),
+        "missing-reviewer-attempt-record",
+      );
+      const authorTerminal = await json(
+        resolve(config.stateDirectory, "author-terminal.json"),
+        "missing-author-terminal-record",
+      );
+      const pilot = pinned?.config;
       if (
+        !DIGEST.test(pinned?.fingerprint) ||
+        !pilot ||
+        pilot.owner !== config.authority.controller ||
+        pilot.run !== config.run ||
+        pilot.issue !== config.issue ||
+        pilot.repository !== config.repository ||
+        pilot.pilotRevision !== config.controllerRevision ||
+        typeof pilot.worktree !== "string" ||
+        !samePath(pilot.worktree, config.worktree) ||
+        typeof pilot.reviewWorktree !== "string" ||
+        !samePath(pilot.reviewWorktree, config.reviewWorktree) ||
+        typeof pilot.stateDirectory !== "string" ||
+        !samePath(pilot.stateDirectory, config.stateDirectory) ||
+        !SHA.test(pilot.base) ||
+        !exactStringSet(pilot.requiredChecks, config.requiredChecks) ||
         candidate?.head !== config.candidateHead ||
+        authorTerminal?.status !== "passed" ||
+        authorTerminal?.id !== author?.id ||
+        authorTerminal?.head !== pilot.base ||
         reviewer?.status !== "passed" ||
         reviewer?.head !== config.candidateHead ||
-        typeof author?.id !== "string" ||
-        !ATTEMPT_ID.test(author.id) ||
-        typeof reviewer?.id !== "string" ||
-        !ATTEMPT_ID.test(reviewer.id) ||
-        author.id === reviewer.id
+        !validAttempt(author, config, "author") ||
+        !validAttempt(reviewerAttempt, config, "reviewer") ||
+        reviewer?.id !== reviewerAttempt.id ||
+        author.id === reviewerAttempt.id
       )
         throw new DeliveryBlocked("unreviewed-delivery-source");
-      return { head: candidate.head, reviewId: reviewer.id };
+      return {
+        head: candidate.head,
+        reviewId: reviewerAttempt.id,
+        controller: config.authority.controller,
+        run: config.run,
+        issue: config.issue,
+        repository: config.repository,
+        controllerRevision: config.controllerRevision,
+        worktree: config.worktree,
+        reviewWorktree: config.reviewWorktree,
+        stateDirectory: config.stateDirectory,
+        requiredChecks: [...config.requiredChecks],
+      };
     },
     verifyWorkspace,
     async runGate(config, name, head) {
@@ -250,7 +366,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
     },
     async observeDraft(config, draft) {
       try {
-        const row = await ghJson(config, [
+        const row = await commands.ghJson(config, [
           "issue",
           "view",
           String(draft.issue),
@@ -274,7 +390,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
       const milestone = draft.attributes.milestone;
       if (typeof milestone !== "string" && milestone !== null)
         throw new DeliveryBlocked("malformed-draft-policy");
-      await gh(config, [
+      await commands.gh(config, [
         "issue",
         "edit",
         String(draft.issue),
@@ -285,9 +401,9 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
         ...(milestone === null ? ["--remove-milestone"] : ["--milestone", milestone]),
       ]);
     },
-    async observePublication(config, plan) {
+    async observePublication(config, plan, planDigest) {
       try {
-        const rows = await ghJson(config, [
+        const rows = await commands.ghJson(config, [
           "pr",
           "list",
           "--head",
@@ -297,18 +413,18 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
           "--state",
           "all",
           "--json",
-          "number,url,headRefOid,state,isDraft,title,body",
+          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body",
         ]);
         if (!Array.isArray(rows) || rows.length > 1) return { state: "unknown" };
         if (rows.length === 0) return { state: "needs-mutation" };
-        const value = publication(rows[0]);
-        if (!value || rows[0]?.state !== "OPEN" || rows[0]?.isDraft !== true)
+        const value = publication(rows[0], config, plan, planDigest);
+        if (
+          !matchesPublicationTarget(rows[0], config, plan) ||
+          rows[0]?.state !== "OPEN" ||
+          rows[0]?.isDraft !== true
+        )
           return { state: "unknown" };
-        return value.head === config.candidateHead &&
-          rows[0]?.title === plan.title &&
-          normalizeBody(rows[0]?.body) === normalizeBody(plan.body)
-          ? { state: "confirmed", value }
-          : { state: "needs-mutation" };
+        return value ? { state: "confirmed", value } : { state: "needs-mutation" };
       } catch {
         return { state: "unknown" };
       }
@@ -329,7 +445,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
         ],
         config.worktree,
       );
-      const rows = await ghJson(config, [
+      const rows = await commands.ghJson(config, [
         "pr",
         "list",
         "--head",
@@ -344,7 +460,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
       if (!Array.isArray(rows) || rows.length > 1)
         throw new DeliveryBlocked("ambiguous-publication");
       if (rows.length === 1) {
-        await gh(config, [
+        await commands.gh(config, [
           "pr",
           "edit",
           String(rows[0].number),
@@ -354,7 +470,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
           body,
         ]);
       } else {
-        await gh(config, [
+        await commands.gh(config, [
           "pr",
           "create",
           "--head",
@@ -370,21 +486,23 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
       }
     },
     async checks(config, current) {
-      const readHead = async () => {
-        const row = await ghJson(config, [
+      const readIdentity = async () => {
+        const row = await commands.ghJson(config, [
           "pr",
           "view",
           String(current.number),
           "--json",
-          "headRefOid",
+          "number,url,headRefOid,headRefName,baseRefName,state,title,body",
         ]);
-        return row?.headRefOid;
+        if (row?.state !== "OPEN" || !matchesPublication(row, current, config))
+          throw new Error("publication moved");
+        return row;
       };
       try {
-        const before = await readHead();
+        const before = await readIdentity();
         let stdout: string;
         try {
-          stdout = await gh(config, [
+          stdout = await commands.gh(config, [
             "pr",
             "checks",
             String(current.number),
@@ -396,24 +514,23 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
           if (![1, 8].includes(result.code ?? -1) || typeof result.stdout !== "string") throw error;
           stdout = result.stdout;
         }
-        const after = await readHead();
-        if (!SHA.test(before) || before !== after) throw new Error("head moved");
-        return { head: before, checks: JSON.parse(stdout) };
+        const after = await readIdentity();
+        if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("publication moved");
+        return { head: before.headRefOid, checks: JSON.parse(stdout) };
       } catch {
         throw new DeliveryBlocked("hosted-observation-unavailable");
       }
     },
     async observeMerge(config, current) {
       try {
-        const row = await ghJson(config, [
+        const row = await commands.ghJson(config, [
           "pr",
           "view",
           String(current.number),
           "--json",
-          "number,headRefOid,state,mergeCommit",
+          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body,mergeCommit",
         ]);
-        if (row?.number !== current.number || row?.headRefOid !== config.candidateHead)
-          return { state: "unknown" };
+        if (!matchesPublication(row, current, config)) return { state: "unknown" };
         if (row.state === "OPEN") return { state: "needs-mutation" };
         if (row.state !== "MERGED" || !SHA.test(row.mergeCommit?.oid)) return { state: "unknown" };
         return {
@@ -440,17 +557,32 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
         (policy as { method?: unknown }).method !== "squash"
       )
         throw new DeliveryBlocked("unsupported-self-merge-policy");
-      const row = await ghJson(config, [
+      const row = await commands.ghJson(config, [
         "pr",
         "view",
         String(current.number),
         "--json",
-        "headRefOid,isDraft,state",
+        "number,url,headRefOid,headRefName,baseRefName,isDraft,state,title,body",
       ]);
-      if (row?.headRefOid !== config.candidateHead || row?.state !== "OPEN")
+      if (!matchesPublication(row, current, config) || row?.state !== "OPEN")
         throw new DeliveryBlocked("merge-head-drift");
-      if (row.isDraft) await gh(config, ["pr", "ready", String(current.number)]);
-      await gh(config, [
+      if (row.isDraft) {
+        await commands.gh(config, ["pr", "ready", String(current.number)]);
+        const ready = await commands.ghJson(config, [
+          "pr",
+          "view",
+          String(current.number),
+          "--json",
+          "number,url,headRefOid,headRefName,baseRefName,isDraft,state,title,body",
+        ]);
+        if (
+          !matchesPublication(ready, current, config) ||
+          ready?.state !== "OPEN" ||
+          ready?.isDraft
+        )
+          throw new DeliveryBlocked("merge-head-drift");
+      }
+      await commands.gh(config, [
         "pr",
         "merge",
         String(current.number),
