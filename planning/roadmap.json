@@ -522,6 +522,13 @@
       "milestone": "M2",
       "parent": "EPIC-KERNEL",
       "blockedBy": ["ISS-073"]
+    },
+    {
+      "key": "ISS-075",
+      "file": "planning/drafts/ISS-075.md",
+      "milestone": "M2",
+      "parent": "EPIC-KERNEL",
+      "blockedBy": ["ISS-074"]
     }
   ]
 }

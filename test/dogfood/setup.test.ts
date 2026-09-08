@@ -1,0 +1,258 @@
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { afterEach, expect, it } from "vitest";
+import {
+  setupStep,
+  type SetupAdapter,
+  type SetupConfig,
+  type SetupRole,
+} from "../../scripts/dogfood/setup.mjs";
+
+const roots: string[] = [];
+const pilot = "a".repeat(40);
+const base = "b".repeat(40);
+
+async function fixture() {
+  const root = await mkdtemp(resolve(tmpdir(), "setup-engine-fixture-"));
+  roots.push(root);
+  const paths = {
+    repository: resolve(root, "repository"),
+    controller: resolve(root, "controller"),
+    state: resolve(root, "state"),
+    pilot: resolve(root, "pilot"),
+    source: resolve(root, "source"),
+    review: resolve(root, "review"),
+  };
+  await Promise.all([paths.repository, paths.controller, paths.state].map((path) => mkdir(path)));
+  const config: SetupConfig = {
+    run: "synthetic-setup-run",
+    issue: "fixture-075",
+    repository: "fixture/repository",
+    repositoryRoot: paths.repository,
+    controllerRoot: paths.controller,
+    controllerRevision: pilot,
+    pilotRevision: pilot,
+    base,
+    baseBranch: "main",
+    sourceBranch: "fixture/iss-075",
+    pilotWorktree: paths.pilot,
+    sourceWorktree: paths.source,
+    reviewWorktree: paths.review,
+    stateDirectory: paths.state,
+    authority: {
+      schemaVersion: "dogfood-setup-authority/v1",
+      controller: "synthetic-controller",
+      run: "synthetic-setup-run",
+      issue: "fixture-075",
+      repository: "fixture/repository",
+      controllerRevision: pilot,
+      pilotRevision: pilot,
+      base,
+      baseBranch: "main",
+      sourceBranch: "fixture/iss-075",
+      repositoryRoot: paths.repository,
+      controllerRoot: paths.controller,
+      pilotWorktree: paths.pilot,
+      sourceWorktree: paths.source,
+      reviewWorktree: paths.review,
+      stateDirectory: paths.state,
+      actions: ["worktrees", "dependencies"],
+    },
+  };
+  const present = new Set<SetupRole>();
+  const dependencies = new Set<SetupRole>();
+  const calls: string[] = [];
+  let interrupted: SetupRole | undefined;
+  let installOutcome: "succeeded" | "failed" | "unknown" = "succeeded";
+  const adapter: SetupAdapter = {
+    async assertAuthority(_config, executingRoot) {
+      calls.push(`authority:${executingRoot}`);
+    },
+    async observeWorktree(_config, role) {
+      calls.push(`observe:${role}`);
+      return present.has(role)
+        ? {
+            state: "confirmed",
+            head: role === "pilot" ? pilot : base,
+            branch: role === "source" ? "fixture/iss-075" : null,
+          }
+        : { state: "absent" };
+    },
+    async createWorktree(current, role) {
+      calls.push(`create:${role}`);
+      expect(
+        JSON.parse(
+          await readFile(resolve(current.stateDirectory, `worktree-${role}-intent.json`), "utf8"),
+        ).role,
+      ).toBe(role);
+      present.add(role);
+      if (interrupted === role) throw new Error("synthetic interruption");
+    },
+    async observeDependencies(_config, role) {
+      calls.push(`observe-dependencies:${role}`);
+      return dependencies.has(role) ? "present" : "absent";
+    },
+    async installDependencies(current, role) {
+      calls.push(`install:${role}`);
+      expect(
+        JSON.parse(
+          await readFile(resolve(current.stateDirectory, `dependency-${role}-intent.json`), "utf8"),
+        ).args,
+      ).toEqual(["install", "--offline", "--frozen-lockfile", "--ignore-scripts"]);
+      if (installOutcome === "succeeded") dependencies.add(role);
+      return installOutcome;
+    },
+  };
+  return {
+    config,
+    adapter,
+    calls,
+    present,
+    dependencies,
+    interrupt(role?: SetupRole) {
+      interrupted = role;
+    },
+    setInstallOutcome(outcome: "succeeded" | "failed" | "unknown") {
+      installOutcome = outcome;
+    },
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+it("writes ownership intent before every bounded worktree and dependency mutation", async () => {
+  const current = await fixture();
+  const result = await setupStep(current.config, current.adapter, current.config.controllerRoot);
+
+  expect(result).toEqual({
+    status: "ready",
+    run: current.config.run,
+    issue: current.config.issue,
+    heads: { pilot, source: base, review: base },
+    worktrees: {
+      pilot: current.config.pilotWorktree,
+      source: current.config.sourceWorktree,
+      review: current.config.reviewWorktree,
+    },
+    phase: "complete",
+  });
+  expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([
+    "create:pilot",
+    "create:source",
+    "create:review",
+  ]);
+  expect(current.calls.filter((call) => call.startsWith("install:"))).toEqual([
+    "install:pilot",
+    "install:source",
+    "install:review",
+  ]);
+});
+
+it("reconciles an interrupted worktree creation and does not duplicate mutations on resume", async () => {
+  const current = await fixture();
+  current.interrupt("source");
+
+  expect(
+    await setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).toMatchObject({
+    status: "ready",
+  });
+  current.interrupt();
+  const mutations = current.calls.filter(
+    (call) => call.startsWith("create:") || call.startsWith("install:"),
+  );
+
+  expect(
+    await setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).toMatchObject({
+    status: "ready",
+  });
+  expect(
+    current.calls.filter((call) => call.startsWith("create:") || call.startsWith("install:")),
+  ).toEqual(mutations);
+});
+
+it.each([
+  ["failed", "dependency-install-failed"],
+  ["unknown", "dependency-install-unknown"],
+] as const)(
+  "keeps a %s installer outcome incomplete and resumes convergently",
+  async (outcome, reason) => {
+    const current = await fixture();
+    current.setInstallOutcome(outcome);
+
+    expect(
+      await setupStep(current.config, current.adapter, current.config.controllerRoot),
+    ).toMatchObject({
+      status: "incomplete",
+      phase: "dependencies",
+      reason,
+    });
+    expect(current.dependencies.size).toBe(0);
+
+    current.setInstallOutcome("succeeded");
+    expect(
+      await setupStep(current.config, current.adapter, current.config.controllerRoot),
+    ).toMatchObject({
+      status: "ready",
+    });
+    expect(current.calls.filter((call) => call === "create:pilot")).toHaveLength(1);
+  },
+);
+
+it("fails an unknown external authority before recording intent or calling the adapter", async () => {
+  const current = await fixture();
+  (current.config.authority as { schemaVersion: string }).schemaVersion =
+    "dogfood-setup-authority/unknown";
+
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).rejects.toMatchObject({ reason: "unauthorized-setup" });
+  expect(current.calls).toEqual([]);
+  await expect(
+    readFile(resolve(current.config.stateDirectory, "setup-plan.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+
+  const relabeled = await fixture();
+  relabeled.config.issue = "fixture-076";
+  await expect(
+    setupStep(relabeled.config, relabeled.adapter, relabeled.config.controllerRoot),
+  ).rejects.toMatchObject({ reason: "unauthorized-setup" });
+  expect(relabeled.calls).toEqual([]);
+});
+
+it("preflights dependency receipts before creating any worktree", async () => {
+  const current = await fixture();
+  await writeFile(
+    resolve(current.config.stateDirectory, "dependency-pilot.json"),
+    `${JSON.stringify({ status: "complete" })}\n`,
+  );
+
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).rejects.toMatchObject({ reason: "malformed-dependency-receipt:pilot" });
+  expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([]);
+});
+
+it("refuses candidate-as-pilot selection and unexpected external state", async () => {
+  const candidate = await fixture();
+  candidate.config.pilotRevision = base;
+  candidate.config.controllerRevision = base;
+  candidate.config.authority.pilotRevision = base;
+  candidate.config.authority.controllerRevision = base;
+  await expect(
+    setupStep(candidate.config, candidate.adapter, candidate.config.controllerRoot),
+  ).rejects.toMatchObject({ reason: "candidate-as-pilot-selection" });
+
+  const unrelated = await fixture();
+  await writeFile(resolve(unrelated.config.stateDirectory, "unrelated.txt"), "preserve me\n");
+  await expect(
+    setupStep(unrelated.config, unrelated.adapter, unrelated.config.controllerRoot),
+  ).rejects.toMatchObject({ reason: "unexpected-setup-state" });
+  expect(await readFile(resolve(unrelated.config.stateDirectory, "unrelated.txt"), "utf8")).toBe(
+    "preserve me\n",
+  );
+});

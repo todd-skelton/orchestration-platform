@@ -282,6 +282,38 @@ and every mutation grant. Hosted fixtures demonstrate behavior only; the next
 genuinely useful measured issue must retain real counts, identities, exact heads,
 hosted execution and restart evidence.
 
+## Bounded workspace preparation
+
+ISS-075 extracts the remaining repeated setup bridge into
+`node scripts/dogfood/prepare.mjs <absolute-setup-request.json>`. The private
+command prepares exactly one externally selected pilot, source and review
+worktree and installs their dependencies through the existing pnpm launcher.
+It does not dispatch a worker, clean a path, call a provider, inspect credentials
+or change delivery and release authority.
+
+The external `setup-request.json` is a direct child of an existing external
+state directory. It binds the repository and stable controller roots, externally
+reviewed `controllerRevision`/`pilotRevision`, exact immutable `base`, current
+`baseBranch`, new `sourceBranch`, three selected worktree paths, and that state
+directory. Its `dogfood-setup-authority/v1` object repeats the issue and those
+exact identities, names the external controller, and grants only the ordered
+`worktrees` and `dependencies` actions. The clean executing controller must
+equal the named stable root and revision; pilot and base must differ. The clean
+repository root must remain on the named base branch and exact base.
+
+All roots are canonicalized and disjoint before mutation. Existing unowned paths,
+branches, worktrees or state files refuse without deletion. Write-once intents
+precede each `git worktree add` and each pnpm install. Restart observes current
+Git membership, exact branch/head, cleanliness, dependency marker and immutable
+receipts before continuing. Installs use exactly `--offline`,
+`--frozen-lockfile`, and `--ignore-scripts`; failure or uncertainty is incomplete,
+not network fallback or success. Output is limited to closed setup status/reason,
+phase, run/issue, selected paths and approved heads; process text is discarded.
+
+This candidate cannot prepare or certify itself. Only the externally reviewed,
+hosted-proven stable successor may use the command for the next genuinely useful
+repair-handoff issue, retaining real setup, restart and partial-failure evidence.
+
 ## Deferred work and unpark conditions
 
 | Work                                                                   | Current disposition                                      | Unpark condition                                                                                                 |
