@@ -4,6 +4,7 @@ import {
   repairDigest,
   type RepairConfig,
   type SourceReviewArtifacts,
+  type SourceReviewArtifactsWithPrompts,
 } from "../../../scripts/dogfood/repair-policy.mjs";
 
 export const mainBase = "a".repeat(40);
@@ -44,6 +45,18 @@ export function reviewSummary(scope: "complete" | "delta", head: string) {
   });
 }
 
+export function refreshSourceFingerprint(
+  config: RepairConfig,
+  source: SourceReviewArtifactsWithPrompts,
+) {
+  const fingerprint = repairDigest({
+    config: source.configRecord.config,
+    prompts: source.promptContents,
+  });
+  config.authority.source.configFingerprint = fingerprint;
+  source.configRecord.fingerprint = fingerprint;
+}
+
 export async function repairFixture(root: string) {
   const paths = {
     controller: resolve(root, "controller"),
@@ -53,11 +66,15 @@ export async function repairFixture(root: string) {
     priorState: resolve(root, "prior-state"),
   };
   await Promise.all(Object.values(paths).map((path) => mkdir(path)));
-  const authorPrompt = resolve(root, "author.md");
-  const reviewerPrompt = resolve(root, "reviewer.md");
+  const authorPrompt = resolve(paths.controller, "repair-author.md");
+  const reviewerPrompt = resolve(paths.controller, "repair-reviewer.md");
+  const sourceAuthorPrompt = resolve(paths.controller, "source-author.md");
+  const sourceReviewerPrompt = resolve(paths.controller, "source-reviewer.md");
   await Promise.all([
     writeFile(authorPrompt, "Apply only the validated corrective delta.\n"),
     writeFile(reviewerPrompt, "Review only the validated corrective delta.\n"),
+    writeFile(sourceAuthorPrompt, "Apply the original bounded change.\n"),
+    writeFile(sourceReviewerPrompt, "Review the original bounded change.\n"),
   ]);
   const history = [
     {
@@ -99,6 +116,44 @@ export async function repairFixture(root: string) {
     acceptanceCriteria: ["Preserve the synthetic acceptance criterion."],
     requiredChecks: ["hosted-linux", "hosted-macos", "hosted-windows"],
   };
+  const author = { model: "synthetic-author-model", effort: "high", promptFile: authorPrompt };
+  const reviewer = {
+    model: "synthetic-reviewer-model",
+    effort: "high",
+    promptFile: reviewerPrompt,
+  };
+  const sourceAuthor = {
+    model: "synthetic-old-author",
+    effort: "high",
+    promptFile: sourceAuthorPrompt,
+  };
+  const sourceReviewer = {
+    model: "synthetic-old-reviewer",
+    effort: "high",
+    promptFile: sourceReviewerPrompt,
+  };
+  const adapter = { kind: "codex-exec" as const, executable: process.execPath };
+  const priorConfig = {
+    owner: "synthetic-controller",
+    run: "synthetic-source-run",
+    issue: common.issue,
+    pilotRevision: controllerRevision,
+    base: mainBase,
+    worktree: paths.source,
+    reviewWorktree: paths.review,
+    stateDirectory: paths.priorState,
+    allowedPaths: [...common.allowedPaths],
+    repository: common.repository,
+    requiredChecks: [...common.requiredChecks],
+    author: sourceAuthor,
+    reviewer: sourceReviewer,
+    adapter: structuredClone(adapter),
+  };
+  const promptContents = [
+    "Apply the original bounded change.\n",
+    "Review the original bounded change.\n",
+  ] as [string, string];
+  const sourceFingerprint = repairDigest({ config: priorConfig, prompts: promptContents });
   const config = {
     schemaVersion: "dogfood-repair-request/v1",
     ...common,
@@ -107,28 +162,36 @@ export async function repairFixture(root: string) {
     implementationAttempts: 1,
     implementationAttemptCeiling: 4,
     admission,
-    author: { model: "synthetic-author-model", effort: "high", promptFile: authorPrompt },
-    reviewer: { model: "synthetic-reviewer-model", effort: "high", promptFile: reviewerPrompt },
-    adapter: { kind: "codex-exec", executable: process.execPath },
+    author,
+    reviewer,
+    adapter,
     authority: {
       schemaVersion: "dogfood-repair-authority/v1",
       controller: "synthetic-controller",
       ...common,
+      controllerRoot: paths.controller,
       allowedPaths: [...common.allowedPaths],
       sourcePaths: [...common.sourcePaths],
       acceptanceCriteria: [...common.acceptanceCriteria],
       requiredChecks: [...common.requiredChecks],
       source: {
+        owner: priorConfig.owner,
         run: "synthetic-source-run",
-        configFingerprint: "e".repeat(64),
+        pilotRevision: priorConfig.pilotRevision,
+        requiredChecks: [...priorConfig.requiredChecks],
+        author: structuredClone(sourceAuthor),
+        reviewer: structuredClone(sourceReviewer),
+        adapter: structuredClone(adapter),
+        configFingerprint: sourceFingerprint,
         candidateHead: repairBase,
         authorAttempt: history[0]!.id,
         reviewerAttempt: history[1]!.id,
         reviewId: history[1]!.id,
         disposition: "BLOCK_FIXABLE",
       },
-      author: { model: "synthetic-author-model", effort: "high" },
-      reviewer: { model: "synthetic-reviewer-model", effort: "high" },
+      author: structuredClone(author),
+      reviewer: structuredClone(reviewer),
+      adapter: structuredClone(adapter),
       implementationAttempts: 1,
       implementationAttemptCeiling: 4,
       admission: structuredClone(admission),
@@ -136,23 +199,7 @@ export async function repairFixture(root: string) {
       actions: ["validate-source-review", "dispatch-author", "dispatch-delta-review"],
     },
   } as RepairConfig;
-  const priorConfig = {
-    owner: "synthetic-controller",
-    run: config.authority.source.run,
-    issue: config.issue,
-    pilotRevision: controllerRevision,
-    base: mainBase,
-    worktree: paths.source,
-    reviewWorktree: paths.review,
-    stateDirectory: paths.priorState,
-    allowedPaths: [...config.allowedPaths],
-    repository: config.repository,
-    requiredChecks: [...config.requiredChecks],
-    author: { model: "synthetic-old-author", effort: "high", promptFile: authorPrompt },
-    reviewer: { model: "synthetic-old-reviewer", effort: "high", promptFile: reviewerPrompt },
-    adapter: config.adapter,
-  };
-  const source: SourceReviewArtifacts = {
+  const source: SourceReviewArtifactsWithPrompts = {
     configRecord: {
       fingerprint: config.authority.source.configFingerprint,
       config: priorConfig,
@@ -173,6 +220,7 @@ export async function repairFixture(root: string) {
     reviewHead: repairBase,
     sourceClean: true,
     reviewClean: true,
+    promptContents,
   };
   const delta: SourceReviewArtifacts & { launchContext: Record<string, any> } = {
     ...source,

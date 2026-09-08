@@ -9,6 +9,7 @@ import {
   repairBase,
   repairedHead,
   repairFixture,
+  refreshSourceFingerprint,
   reviewSummary,
   sourceFile,
 } from "./repair-fixtures/config.js";
@@ -191,8 +192,14 @@ it("refuses incomplete, malformed, oversized and non-fixable source reports", as
   }
 });
 
-it("refuses admission, history, acceptance and footprint authority drift", async () => {
+it("refuses controller, prompt, adapter, admission, history, acceptance and footprint authority drift before intent", async () => {
   for (const mutate of [
+    (f: any) => (f.config.controllerRoot = resolve(f.config.controllerRoot, "substituted")),
+    (f: any) => (f.config.author.promptFile = resolve(f.paths.controller, "substituted-author.md")),
+    (f: any) =>
+      (f.config.reviewer.promptFile = resolve(f.paths.controller, "substituted-reviewer.md")),
+    (f: any) => (f.config.adapter.kind = "substituted-adapter"),
+    (f: any) => (f.config.adapter.executable = "substituted-codex"),
     (f: any) => (f.config.admission.ceiling += 1),
     (f: any) =>
       (f.config.history[1]!.usage = {
@@ -209,7 +216,115 @@ it("refuses admission, history, acceptance and footprint authority drift", async
     await expect(
       repairStep(current.config, current.adapter, repairPolicy()),
     ).rejects.toBeInstanceOf(Error);
+    await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(current.dispatches()).toBe(0);
+  }
+});
+
+it.each([
+  ["owner", (f: any): void => void (f.source.configRecord.config.owner = "substituted-controller")],
+  [
+    "pilot revision",
+    (f: any): void => void (f.source.configRecord.config.pilotRevision = "9".repeat(40)),
+  ],
+  ["required checks", (f: any): void => void f.source.configRecord.config.requiredChecks.pop()],
+  [
+    "source author",
+    (f: any): void => void (f.source.configRecord.config.author.model = "substituted-author"),
+  ],
+  [
+    "source reviewer",
+    (f: any): void => void (f.source.configRecord.config.reviewer.model = "substituted-reviewer"),
+  ],
+  [
+    "source adapter",
+    (f: any): void => void (f.source.configRecord.config.adapter.executable = "other"),
+  ],
+  [
+    "source prompt contents",
+    (f: any): void => void (f.source.promptContents[0] = "substituted prompt\n"),
+  ],
+] as const)(
+  "recomputes the source fingerprint and refuses changed %s before intent",
+  async (_name, mutate) => {
+    const current = await fixture();
+    const fingerprint = current.source.configRecord.fingerprint;
+    mutate(current);
+    expect(current.source.configRecord.fingerprint).toBe(fingerprint);
+    await expect(repairStep(current.config, current.adapter, repairPolicy())).rejects.toMatchObject(
+      {
+        reason: "source-config-mismatch",
+      },
+    );
+    await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(current.dispatches()).toBe(0);
+  },
+);
+
+it.each([
+  ["owner", (f: any): void => void (f.source.configRecord.config.owner = "substituted-controller")],
+  [
+    "pilot revision",
+    (f: any): void => void (f.source.configRecord.config.pilotRevision = "9".repeat(40)),
+  ],
+  ["required checks", (f: any): void => void f.source.configRecord.config.requiredChecks.pop()],
+  [
+    "source author",
+    (f: any): void => void (f.source.configRecord.config.author.model = "substituted-author"),
+  ],
+  [
+    "source reviewer",
+    (f: any): void => void (f.source.configRecord.config.reviewer.model = "substituted-reviewer"),
+  ],
+  [
+    "source adapter",
+    (f: any): void => void (f.source.configRecord.config.adapter.executable = "other"),
+  ],
+] as const)("binds recomputed %s to the authorized predecessor context", async (_name, mutate) => {
+  const current = await fixture();
+  mutate(current);
+  refreshSourceFingerprint(current.config, current.source);
+  await expect(repairStep(current.config, current.adapter, repairPolicy())).rejects.toMatchObject({
+    reason: "source-config-mismatch",
+  });
+  expect(current.dispatches()).toBe(0);
+});
+
+it("accepts allowed directory descendants and refuses sibling or prefix escapes", async () => {
+  const allowedDirectory = "test/dogfood/cases/";
+  const validDescendant = `${allowedDirectory}a.ts`;
+  const accepted = await fixture();
+  accepted.config.allowedPaths = [sourceFile, allowedDirectory];
+  accepted.config.authority.allowedPaths = [...accepted.config.allowedPaths];
+  accepted.source.configRecord.config.allowedPaths = [...accepted.config.allowedPaths];
+  accepted.source.changedFiles = [sourceFile, validDescendant];
+  accepted.source.candidate.changed = [...accepted.source.changedFiles];
+  refreshSourceFingerprint(accepted.config, accepted.source);
+  await expect(
+    repairStep(accepted.config, accepted.adapter, repairPolicy()),
+  ).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(accepted.dispatches()).toBe(1);
+
+  for (const escaped of ["test/dogfood/other/a.ts", "test/dogfood/cases-sibling/a.ts"]) {
+    const refused = await fixture();
+    refused.config.allowedPaths = [sourceFile, allowedDirectory];
+    refused.config.authority.allowedPaths = [...refused.config.allowedPaths];
+    refused.source.configRecord.config.allowedPaths = [...refused.config.allowedPaths];
+    refused.source.changedFiles = [sourceFile, escaped];
+    refused.source.candidate.changed = [...refused.source.changedFiles];
+    refreshSourceFingerprint(refused.config, refused.source);
+    await expect(repairStep(refused.config, refused.adapter, repairPolicy())).rejects.toMatchObject(
+      {
+        reason: "candidate-footprint-drift",
+      },
+    );
+    expect(refused.dispatches()).toBe(0);
   }
 });
 

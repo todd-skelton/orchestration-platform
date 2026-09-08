@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -8,7 +8,12 @@ import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.mjs"
 import { repairStep } from "../../scripts/dogfood/repair.mjs";
 import { repairPolicy, type RepairConfig } from "../../scripts/dogfood/repair-policy.mjs";
 import type { Adapter, Role, Terminal } from "../../scripts/dogfood/flow.js";
-import { repairFixture, reviewSummary, sourceFile } from "./repair-fixtures/config.js";
+import {
+  refreshSourceFingerprint,
+  repairFixture,
+  reviewSummary,
+  sourceFile,
+} from "./repair-fixtures/config.js";
 
 const run = promisify(execFile);
 const roots: string[] = [];
@@ -75,11 +80,25 @@ async function realFixture() {
   ]);
 
   const config = current.config as RepairConfig;
+  const loadedControllerRoot = resolve(import.meta.dirname, "../..");
   config.mainBase = mainBase;
   config.repairBase = repairBase;
-  Object.assign(config.authority, { mainBase, repairBase });
+  config.controllerRoot = loadedControllerRoot;
+  Object.assign(config.authority, { controllerRoot: loadedControllerRoot, mainBase, repairBase });
   config.authority.source.candidateHead = repairBase;
   current.source.configRecord.config.base = mainBase;
+  const sourcePromptFiles = [
+    resolve(loadedControllerRoot, "planning/drafts/ISS-076.md"),
+    resolve(loadedControllerRoot, "planning/pressure-tests/2026-09-08-round-479.md"),
+  ] as const;
+  config.authority.source.author.promptFile = sourcePromptFiles[0];
+  config.authority.source.reviewer.promptFile = sourcePromptFiles[1];
+  current.source.configRecord.config.author = structuredClone(config.authority.source.author);
+  current.source.configRecord.config.reviewer = structuredClone(config.authority.source.reviewer);
+  current.source.promptContents = (await Promise.all(
+    sourcePromptFiles.map((path) => readFile(path, "utf8")),
+  )) as [string, string];
+  refreshSourceFingerprint(config, current.source);
   current.source.candidate = { head: repairBase, changed: [sourceFile] };
   current.source.terminal.head = repairBase;
   current.source.terminal.summary = reviewSummary("complete", repairBase);
@@ -129,7 +148,7 @@ it("calls the reviewed flow through a complete correction and reconciles without
   const native: Adapter = {
     async preflight() {},
     async git(tree, args) {
-      if (tree === current.paths.controller) {
+      if (tree === current.config.controllerRoot) {
         if (args[1] === "--show-toplevel") return tree;
         if (args[0] === "rev-parse") return current.config.controllerRevision;
         if (args[0] === "status") return "";
@@ -211,6 +230,65 @@ it("calls the reviewed flow through a complete correction and reconciles without
     predecessorReviewId: "synthetic-prior-reviewer",
   });
 }, 30_000);
+
+it("refuses a different loaded controller root before intent or direct dispatch effects", async () => {
+  const current = await realFixture();
+  current.config.controllerRoot = current.paths.controller;
+  current.config.authority.controllerRoot = current.paths.controller;
+  current.config.authority.source.author.promptFile = resolve(
+    current.paths.controller,
+    "source-author.md",
+  );
+  current.config.authority.source.reviewer.promptFile = resolve(
+    current.paths.controller,
+    "source-reviewer.md",
+  );
+  let effects = 0;
+  const native = {
+    async preflight() {
+      effects += 1;
+    },
+    async git() {
+      effects += 1;
+      return "";
+    },
+    async launch() {
+      effects += 1;
+      throw new Error("unexpected launch");
+    },
+    async observe() {
+      effects += 1;
+      throw new Error("unexpected observation");
+    },
+    async checks() {
+      effects += 1;
+      throw new Error("unexpected checks");
+    },
+  } as Adapter;
+  const adapter = reviewedRepairAdapter(native);
+  await expect(adapter.dispatch(current.config, {} as never)).rejects.toMatchObject({
+    reason: "controller-executor-mismatch",
+  });
+  await expect(repairStep(current.config, adapter, repairPolicy())).rejects.toMatchObject({
+    reason: "controller-executor-mismatch",
+  });
+  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  expect(effects).toBe(0);
+});
+
+it("refuses an externally claimed predecessor prompt outside the loaded controller before reading it", async () => {
+  const current = await realFixture();
+  current.config.authority.source.author.promptFile = resolve(
+    current.paths.source,
+    "outside-source-prompt.md",
+  );
+  const adapter = reviewedRepairAdapter({} as Adapter);
+  await expect(adapter.loadSourceReview(current.config)).rejects.toMatchObject({
+    reason: "unauthorized-source-review",
+  });
+});
 
 it("loads the TypeScript composition directly in Node and emits only a bounded refusal", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "repair-composition-fixture-"));

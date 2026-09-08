@@ -11,6 +11,7 @@ import {
   type RepairConfig,
   type RepairHandoff,
   type SourceReviewArtifacts,
+  validateRepairConfig,
 } from "./repair-policy.mjs";
 
 const exec = promisify(execFile);
@@ -65,6 +66,40 @@ async function assertBoundedRoots(config: RepairConfig) {
       ),
     "overlapping-repair-paths",
   );
+}
+
+async function assertLoadedController(config: RepairConfig) {
+  validateRepairConfig(config);
+  try {
+    const [loadedRoot, authorizedRoot] = await Promise.all([
+      realpath(resolve(import.meta.dirname, "../..")),
+      realpath(config.controllerRoot),
+    ]);
+    demand(loadedRoot === authorizedRoot, "controller-executor-mismatch");
+  } catch (error) {
+    if (error instanceof RepairBlocked) throw error;
+    throw new RepairBlocked("controller-executor-unverified");
+  }
+}
+
+async function sourcePromptContents(config: RepairConfig): Promise<[string, string]> {
+  let root: string;
+  let prompts: [string, string];
+  try {
+    root = await realpath(config.controllerRoot);
+    prompts = (await Promise.all(
+      [config.authority.source.author.promptFile, config.authority.source.reviewer.promptFile].map(
+        (path) => realpath(path),
+      ),
+    )) as [string, string];
+  } catch {
+    throw new RepairBlocked("source-prompt-unavailable");
+  }
+  demand(
+    prompts.every((path) => !outside(root, path) && path !== root),
+    "source-prompt-outside-controller",
+  );
+  return Promise.all(prompts.map((path) => readFile(path, "utf8"))) as Promise<[string, string]>;
 }
 
 async function readJson(directory: string, name: string) {
@@ -245,10 +280,16 @@ function boundedAdapter(config: RepairConfig, handoff: RepairHandoff, native: Ad
 export function reviewedRepairAdapter(native: Adapter): RepairAdapter {
   return {
     async loadSourceReview(config) {
+      await assertLoadedController(config);
       await assertBoundedRoots(config);
-      return loadArtifacts(config, config.sourceStateDirectory, config.mainBase);
+      const prompts = await sourcePromptContents(config);
+      return {
+        ...(await loadArtifacts(config, config.sourceStateDirectory, config.mainBase)),
+        promptContents: prompts,
+      };
     },
     async dispatch(config, handoff) {
+      await assertLoadedController(config);
       demand(!(await optionalJson(config.stateDirectory, "publication")), "repair-cannot-publish");
       try {
         return await step(

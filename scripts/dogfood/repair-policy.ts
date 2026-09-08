@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 
 export const QUALITY_KEYS = [
   "SCOPE",
@@ -100,6 +100,7 @@ export interface RepairAuthority {
   run: string;
   issue: string;
   repository: string;
+  controllerRoot: string;
   controllerRevision: string;
   mainBase: string;
   repairBase: string;
@@ -112,7 +113,13 @@ export interface RepairAuthority {
   acceptanceCriteria: string[];
   requiredChecks: string[];
   source: {
+    owner: string;
     run: string;
+    pilotRevision: string;
+    requiredChecks: string[];
+    author: RepairActor;
+    reviewer: RepairActor;
+    adapter: { kind: "codex-exec"; executable: string };
     configFingerprint: string;
     candidateHead: string;
     authorAttempt: string;
@@ -120,8 +127,9 @@ export interface RepairAuthority {
     reviewId: string;
     disposition: "BLOCK_FIXABLE";
   };
-  author: { model: string; effort: string };
-  reviewer: { model: string; effort: string };
+  author: RepairActor;
+  reviewer: RepairActor;
+  adapter: { kind: "codex-exec"; executable: string };
   implementationAttempts: number;
   implementationAttemptCeiling: number;
   admission: {
@@ -171,6 +179,10 @@ export interface SourceReviewArtifacts {
   reviewHead: string;
   sourceClean: boolean;
   reviewClean: boolean;
+}
+
+export interface SourceReviewArtifactsWithPrompts extends SourceReviewArtifacts {
+  promptContents: [string, string];
 }
 
 export interface ReviewFinding {
@@ -236,6 +248,37 @@ function validPath(path: unknown) {
     !(path as string).startsWith("/") &&
     !(path as string).includes("\\") &&
     !(path as string).split("/").includes("..")
+  );
+}
+
+function inside(root: string, candidate: string) {
+  const path = relative(root, candidate);
+  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+}
+
+function inFootprint(allowedPaths: string[], path: string) {
+  return allowedPaths.some(
+    (allowed) => path === allowed || (allowed.endsWith("/") && path.startsWith(allowed)),
+  );
+}
+
+function validActor(actor: unknown) {
+  return (
+    object(actor) &&
+    exactKeys(actor, ["model", "effort", "promptFile"]) &&
+    bounded(actor.model, 128) &&
+    bounded(actor.effort, 32) &&
+    typeof actor.promptFile === "string" &&
+    isAbsolute(actor.promptFile)
+  );
+}
+
+function validAdapter(adapter: unknown) {
+  return (
+    object(adapter) &&
+    exactKeys(adapter, ["kind", "executable"]) &&
+    adapter.kind === "codex-exec" &&
+    bounded(adapter.executable, 1_000)
   );
 }
 
@@ -318,21 +361,9 @@ export function validateRepairConfig(config: RepairConfig) {
   );
   demand(strings(config.acceptanceCriteria, 32, 1_000), "malformed-acceptance-criteria");
   demand(strings(config.requiredChecks, 16, 160), "malformed-required-checks");
-  demand(
-    exactKeys(config.adapter, ["kind", "executable"]) &&
-      config.adapter.kind === "codex-exec" &&
-      bounded(config.adapter.executable, 1_000),
-    "unsupported-repair-adapter",
-  );
+  demand(validAdapter(config.adapter), "unsupported-repair-adapter");
   for (const actor of [config.author, config.reviewer])
-    demand(
-      exactKeys(actor, ["model", "effort", "promptFile"]) &&
-        bounded(actor.model, 128) &&
-        bounded(actor.effort, 32) &&
-        typeof actor.promptFile === "string" &&
-        isAbsolute(actor.promptFile),
-      "malformed-repair-actor",
-    );
+    demand(validActor(actor), "malformed-repair-actor");
   demand(
     Number.isSafeInteger(config.implementationAttempts) &&
       config.implementationAttempts > 0 &&
@@ -409,6 +440,7 @@ function validateAuthority(config: RepairConfig) {
     "run",
     "issue",
     "repository",
+    "controllerRoot",
     "controllerRevision",
     "mainBase",
     "repairBase",
@@ -426,6 +458,7 @@ function validateAuthority(config: RepairConfig) {
       "run",
       "issue",
       "repository",
+      "controllerRoot",
       "controllerRevision",
       "mainBase",
       "repairBase",
@@ -440,6 +473,7 @@ function validateAuthority(config: RepairConfig) {
       "source",
       "author",
       "reviewer",
+      "adapter",
       "implementationAttempts",
       "implementationAttemptCeiling",
       "admission",
@@ -454,15 +488,22 @@ function validateAuthority(config: RepairConfig) {
       same(authority.acceptanceCriteria, config.acceptanceCriteria) &&
       same(authority.requiredChecks, config.requiredChecks) &&
       same(authority.admission, config.admission) &&
-      same(authority.author, { model: config.author.model, effort: config.author.effort }) &&
-      same(authority.reviewer, { model: config.reviewer.model, effort: config.reviewer.effort }) &&
+      same(authority.author, config.author) &&
+      same(authority.reviewer, config.reviewer) &&
+      same(authority.adapter, config.adapter) &&
       authority.historyDigest === repairDigest(config.history) &&
       same(authority.actions, ACTIONS),
     "unauthorized-repair",
   );
   demand(
     exactKeys(authority.source, [
+      "owner",
       "run",
+      "pilotRevision",
+      "requiredChecks",
+      "author",
+      "reviewer",
+      "adapter",
       "configFingerprint",
       "candidateHead",
       "authorAttempt",
@@ -470,6 +511,15 @@ function validateAuthority(config: RepairConfig) {
       "reviewId",
       "disposition",
     ]) &&
+      IDENTITY.test(authority.source.owner) &&
+      SHA.test(authority.source.pilotRevision) &&
+      strings(authority.source.requiredChecks, 16, 160) &&
+      validActor(authority.source.author) &&
+      validActor(authority.source.reviewer) &&
+      [authority.source.author, authority.source.reviewer].every((actor) =>
+        inside(config.controllerRoot, actor.promptFile),
+      ) &&
+      validAdapter(authority.source.adapter) &&
       /^[a-f0-9]{64}$/.test(authority.source.configFingerprint) &&
       authority.source.candidateHead === config.repairBase &&
       [
@@ -594,7 +644,7 @@ function validateLocations(
   const changed = new Set(artifacts.changedFiles);
   demand(
     artifacts.changedFiles.length > 0 &&
-      artifacts.changedFiles.every((path) => config.allowedPaths.includes(path)) &&
+      artifacts.changedFiles.every((path) => inFootprint(config.allowedPaths, path)) &&
       same(artifacts.candidate.changed, artifacts.changedFiles),
     "candidate-footprint-drift",
   );
@@ -612,7 +662,7 @@ export function repairPolicy() {
   return {
     prepare(
       config: RepairConfig,
-      artifacts: SourceReviewArtifacts,
+      artifacts: SourceReviewArtifactsWithPrompts,
       requireCurrentCandidate = true,
     ): RepairHandoff {
       validateRepairConfig(config);
@@ -620,6 +670,13 @@ export function repairPolicy() {
       demand(
         exactKeys(artifacts.configRecord, ["fingerprint", "config", "host"]) &&
           artifacts.configRecord.fingerprint === source.configFingerprint &&
+          Array.isArray(artifacts.promptContents) &&
+          artifacts.promptContents.length === 2 &&
+          artifacts.promptContents.every((prompt) => typeof prompt === "string") &&
+          repairDigest({
+            config: artifacts.configRecord.config,
+            prompts: artifacts.promptContents,
+          }) === source.configFingerprint &&
           typeof artifacts.configRecord.host === "string" &&
           object(artifacts.configRecord.config),
         "source-config-mismatch",
@@ -643,13 +700,19 @@ export function repairPolicy() {
           "adapter",
         ]) &&
           prior.run === source.run &&
+          prior.owner === source.owner &&
           prior.issue === config.issue &&
+          prior.pilotRevision === source.pilotRevision &&
           prior.repository === config.repository &&
           prior.base === config.mainBase &&
           prior.worktree === config.worktree &&
           prior.reviewWorktree === config.reviewWorktree &&
           prior.stateDirectory === config.sourceStateDirectory &&
-          same(prior.allowedPaths, config.allowedPaths),
+          same(prior.allowedPaths, config.allowedPaths) &&
+          same(prior.requiredChecks, source.requiredChecks) &&
+          same(prior.author, source.author) &&
+          same(prior.reviewer, source.reviewer) &&
+          same(prior.adapter, source.adapter),
         "source-config-mismatch",
       );
       demand(

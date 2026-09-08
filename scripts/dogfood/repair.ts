@@ -7,6 +7,7 @@ import {
   type RepairHandoff,
   type RepairPolicy,
   type SourceReviewArtifacts,
+  type SourceReviewArtifactsWithPrompts,
   validateRepairConfig,
 } from "./repair-policy.mjs";
 
@@ -47,7 +48,7 @@ export interface RepairAdapter {
   loadSourceReview(
     config: RepairConfig,
     requireCurrentCandidate?: boolean,
-  ): Promise<SourceReviewArtifacts>;
+  ): Promise<SourceReviewArtifactsWithPrompts>;
   dispatch(config: RepairConfig, handoff: RepairHandoff): Promise<{ status: string }>;
   loadDeltaReview(
     config: RepairConfig,
