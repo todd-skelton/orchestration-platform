@@ -111,12 +111,26 @@ async function worktrees(config: SetupConfig) {
 }
 
 async function branchHead(config: SetupConfig, branch: string) {
-  try {
-    return await git(config, ["show-ref", "--verify", "--hash", `refs/heads/${branch}`]);
-  } catch (error) {
-    if ((error as { code?: number }).code === 1) return undefined;
-    throw error;
-  }
+  await git(config, ["check-ref-format", "--branch", branch]);
+  const expectedRef = `refs/heads/${branch}`;
+  const output = await git(config, [
+    "for-each-ref",
+    "--count=1",
+    "--format=%(refname)%00%(objectname)",
+    expectedRef,
+  ]);
+  if (output === "") return undefined;
+
+  const [actualRef, head, ...unexpected] = output.split("\0");
+  if (
+    unexpected.length !== 0 ||
+    !actualRef ||
+    !head ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head) ||
+    (actualRef !== expectedRef && !actualRef.startsWith(`${expectedRef}/`))
+  )
+    throw new Error("malformed branch lookup");
+  return actualRef === expectedRef ? head : undefined;
 }
 
 async function commonDirectory(config: SetupConfig, cwd: string) {

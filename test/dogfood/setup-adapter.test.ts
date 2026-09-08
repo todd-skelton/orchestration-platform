@@ -239,6 +239,15 @@ it("rejects path and branch collisions before creating any selected worktree", a
   });
 }, 30_000);
 
+it("keeps a malformed source branch lookup unknown", async () => {
+  const current = await fixture();
+  current.config.sourceBranch = "malformed..source";
+
+  await expect(current.adapter.observeWorktree(current.config, "source", false)).resolves.toEqual({
+    state: "unknown",
+  });
+});
+
 it("fails closed on a moving base and on dirty reconciled state", async () => {
   const moving = await fixture();
   await git(moving.repository, [
