@@ -33,7 +33,7 @@ async function git(config: DeliveryConfig, args: string[], cwd = config.controll
 
 async function gh(config: DeliveryConfig, args: string[]) {
   return (
-    await run("gh", [...args, "--repo", config.repository], config.controllerRoot)
+    await run("gh", [...args, "--repo", `github.com/${config.repository}`], config.controllerRoot)
   ).stdout.trim();
 }
 
@@ -77,6 +77,62 @@ function samePath(left: string, right: string) {
   return normalize(left) === normalize(right);
 }
 
+function matchesRepository(remote: string, repository: string) {
+  if (remote !== remote.trim()) return false;
+  let path: string;
+  const scp = remote.match(/^git@github\.com:([^\s?#]+)$/i);
+  if (scp) path = scp[1]!;
+  else {
+    try {
+      const url = new URL(remote);
+      if (
+        url.hostname.toLowerCase() !== "github.com" ||
+        url.port !== "" ||
+        url.search !== "" ||
+        url.hash !== "" ||
+        url.password !== "" ||
+        !(
+          (url.protocol === "https:" && url.username === "") ||
+          (url.protocol === "ssh:" && url.username === "git")
+        )
+      )
+        return false;
+      path = url.pathname.slice(1);
+    } catch {
+      return false;
+    }
+  }
+  path = path.replace(/\/$/, "").toLowerCase();
+  return path === repository.toLowerCase() || path === `${repository.toLowerCase()}.git`;
+}
+
+async function assertGitTarget(config: DeliveryConfig, cwd: string) {
+  try {
+    for (const kind of [[], ["--push"]]) {
+      const { stdout } = await run("git", ["remote", "get-url", ...kind, "--all", "origin"], cwd);
+      const urls = stdout.replace(/\r?\n$/, "").split(/\r?\n/);
+      if (urls.length !== 1 || !matchesRepository(urls[0]!, config.repository))
+        throw new DeliveryBlocked("delivery-repository-mismatch");
+    }
+  } catch (error) {
+    if (error instanceof DeliveryBlocked) throw error;
+    throw new DeliveryBlocked("delivery-repository-unverified");
+  }
+}
+
+async function assertWorktreeRepository(config: DeliveryConfig) {
+  const common = await realpath(
+    resolve(config.controllerRoot, await git(config, ["rev-parse", "--git-common-dir"])),
+  );
+  for (const cwd of [config.controllerRoot, config.worktree, config.reviewWorktree]) {
+    const selected = await realpath(
+      resolve(cwd, await git(config, ["rev-parse", "--git-common-dir"], cwd)),
+    );
+    if (!samePath(common, selected)) throw new DeliveryBlocked("delivery-worktree-family-mismatch");
+    await assertGitTarget(config, cwd);
+  }
+}
+
 async function worktrees(config: DeliveryConfig) {
   const output = await git(config, ["worktree", "list", "--porcelain"]);
   return output
@@ -101,6 +157,7 @@ async function branchHead(config: DeliveryConfig, branch: string) {
 }
 
 async function remoteBranchHead(config: DeliveryConfig, branch: string) {
+  await assertGitTarget(config, config.controllerRoot);
   const output = await git(config, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]);
   if (output === "") return undefined;
   const rows = output.split(/\r?\n/);
@@ -136,6 +193,7 @@ export async function assertControllerExecutor(config: DeliveryConfig, executing
 export function githubDeliveryAdapter(): DeliveryAdapter {
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
+      await assertWorktreeRepository(config);
       if (
         (await git(config, ["rev-parse", "HEAD"], config.controllerRoot)) !==
         config.controllerRevision
@@ -261,7 +319,16 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
       const branch = await git(config, ["branch", "--show-current"], config.worktree);
       if (branch !== plan.sourceBranch) throw new DeliveryBlocked("publication-branch-mismatch");
       const body = await stagedFile(config, "approved-pull-request.md", plan.body);
-      await run("git", ["push", "origin", `HEAD:refs/heads/${plan.sourceBranch}`], config.worktree);
+      await run(
+        "git",
+        [
+          "push",
+          "--no-follow-tags",
+          "origin",
+          `${config.candidateHead}:refs/heads/${plan.sourceBranch}`,
+        ],
+        config.worktree,
+      );
       const rows = await ghJson(config, [
         "pr",
         "list",
@@ -394,6 +461,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
     },
     async observeCleanup(config, plan) {
       try {
+        await assertGitTarget(config, config.controllerRoot);
         const rows = await worktrees(config);
         if ((await git(config, ["status", "--porcelain"], config.controllerRoot)) !== "")
           return { state: "unknown" };
@@ -427,6 +495,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
       }
     },
     async cleanup(config, plan) {
+      await assertGitTarget(config, config.controllerRoot);
       const rows = await worktrees(config);
       if (
         (await git(config, ["status", "--porcelain"], config.controllerRoot)) !== "" ||
@@ -455,6 +524,7 @@ export function githubDeliveryAdapter(): DeliveryAdapter {
           "git",
           [
             "push",
+            "--no-follow-tags",
             `--force-with-lease=refs/heads/${plan.branch}:${config.candidateHead}`,
             "--delete",
             "origin",

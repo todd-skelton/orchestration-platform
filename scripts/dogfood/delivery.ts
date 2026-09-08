@@ -217,16 +217,25 @@ function validateConfig(config: DeliveryConfig) {
     ]),
     "malformed-delivery-config",
   );
-  demand(/^[\w.-]{1,80}$/.test(config.run), "invalid-run");
+  demand(typeof config.run === "string" && /^[\w.-]{1,80}$/.test(config.run), "invalid-run");
   demand(
     typeof config.issue === "string" && /^[\w:/.#-]{1,500}$/.test(config.issue),
     "invalid-issue",
   );
-  demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
+  demand(
+    typeof config.repository === "string" && /^[^/\s]+\/[^/\s]+$/.test(config.repository),
+    "invalid-repository",
+  );
   for (const name of ["controllerRoot", "worktree", "reviewWorktree", "stateDirectory"] as const)
     demand(typeof config[name] === "string" && isAbsolute(config[name]), `invalid-${name}`);
-  demand(SHA.test(config.candidateHead), "invalid-candidate-head");
-  demand(SHA.test(config.controllerRevision), "invalid-controller-revision");
+  demand(
+    typeof config.candidateHead === "string" && SHA.test(config.candidateHead),
+    "invalid-candidate-head",
+  );
+  demand(
+    typeof config.controllerRevision === "string" && SHA.test(config.controllerRevision),
+    "invalid-controller-revision",
+  );
   demand(
     Array.isArray(config.requiredChecks) &&
       config.requiredChecks.length >= 3 &&

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   assertControllerExecutor,
   githubDeliveryAdapter,
@@ -69,6 +69,10 @@ async function cleanController(root: string) {
     cwd: current.controllerRoot,
     windowsHide: true,
   });
+  await promisify(execFile)("git", ["config", "core.autocrlf", "false"], {
+    cwd: current.controllerRoot,
+    windowsHide: true,
+  });
   await writeFile(resolve(current.controllerRoot, "stable.txt"), "stable\n");
   await promisify(execFile)("git", ["add", "stable.txt"], {
     cwd: current.controllerRoot,
@@ -98,7 +102,113 @@ async function cleanController(root: string) {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+async function repositoryFixture(remote: string) {
+  // A regressed guard must still never contact a real provider from a fixture.
+  vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-repository-"));
+  roots.push(root);
+  const current = await cleanController(root);
+  const git = async (args: string[], cwd = current.controllerRoot) =>
+    (await promisify(execFile)("git", args, { cwd, windowsHide: true })).stdout.trim();
+  await git(["remote", "add", "origin", remote]);
+  await git(["worktree", "add", "-b", "codex/iss-074-delivery", current.worktree, "HEAD"]);
+  await git(["worktree", "add", "--detach", current.reviewWorktree, "HEAD"]);
+  current.candidateHead = current.controllerRevision;
+  current.authority.head = current.candidateHead;
+  return { current, git };
+}
+
+it.each([
+  "https://github.com/todd-skelton/orchestration-platform.git",
+  "git@github.com:todd-skelton/orchestration-platform.git",
+  "ssh://git@github.com/todd-skelton/orchestration-platform.git",
+])("accepts one authorized effective Git target using %s", async (remote) => {
+  const { current } = await repositoryFixture(remote);
+  await expect(
+    githubDeliveryAdapter().verifyWorkspace(current, current.candidateHead),
+  ).resolves.toBe(true);
+});
+
+it.each(["foreign-fetch", "foreign-push", "extra-push"] as const)(
+  "rejects %s before publication or cleanup",
+  async (mode) => {
+    const authorized = "https://github.com/todd-skelton/orchestration-platform.git";
+    const { current, git } = await repositoryFixture(authorized);
+    if (mode === "foreign-fetch")
+      await git(["remote", "set-url", "origin", "https://github.com/foreign/repository.git"]);
+    else if (mode === "foreign-push")
+      await git([
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "https://github.com/foreign/repository.git",
+      ]);
+    else {
+      await git(["remote", "set-url", "--push", "origin", authorized]);
+      await git(["remote", "set-url", "--add", "--push", "origin", authorized]);
+    }
+    const adapter = githubDeliveryAdapter();
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.publish(current, {
+        sourceBranch: "codex/iss-074-delivery",
+        baseBranch: "main",
+        title: "fixture",
+        body: "fixture",
+        draft: true,
+      }),
+    ).rejects.toThrow("candidate-workspace-drift");
+    await expect(
+      adapter.cleanup(
+        current,
+        {
+          branch: "codex/iss-074-delivery",
+          worktrees: [current.worktree, current.reviewWorktree],
+        },
+        { number: 44, head: current.candidateHead, mergeCommit: "b".repeat(40) },
+      ),
+    ).rejects.toThrow("delivery-repository-mismatch");
+    await expect(readFile(resolve(current.worktree, "stable.txt"), "utf8")).resolves.toBe(
+      "stable\n",
+    );
+    await expect(readFile(resolve(current.reviewWorktree, "stable.txt"), "utf8")).resolves.toBe(
+      "stable\n",
+    );
+    await expect(
+      readFile(resolve(current.stateDirectory, "approved-pull-request.md"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+it("rejects matching heads from a different Git worktree family", async () => {
+  vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-family-"));
+  roots.push(root);
+  const current = await cleanController(root);
+  const remote = "https://github.com/todd-skelton/orchestration-platform.git";
+  await promisify(execFile)("git", ["remote", "add", "origin", remote], {
+    cwd: current.controllerRoot,
+    windowsHide: true,
+  });
+  for (const cwd of [current.worktree, current.reviewWorktree]) {
+    await promisify(execFile)("git", ["clone", "--local", current.controllerRoot, cwd], {
+      windowsHide: true,
+    });
+    await promisify(execFile)("git", ["remote", "set-url", "origin", remote], {
+      cwd,
+      windowsHide: true,
+    });
+  }
+  current.candidateHead = current.controllerRevision;
+  current.authority.head = current.candidateHead;
+  await expect(
+    githubDeliveryAdapter().verifyWorkspace(current, current.candidateHead),
+  ).resolves.toBe(false);
 });
 
 it("keeps repository identities and mirror rules in the explicit private policy adapter", async () => {

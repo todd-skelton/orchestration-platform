@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -19,7 +19,7 @@ const mergeCommit = "b".repeat(40);
 const roots: string[] = [];
 
 async function fixture() {
-  const parent = await mkdtemp(resolve(tmpdir(), "delivery-fixture-"));
+  const parent = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-fixture-")));
   roots.push(parent);
   const paths = await Promise.all(
     ["controller-", "author-", "reviewer-", "state-"].map((name) => mkdtemp(resolve(parent, name))),
@@ -406,6 +406,31 @@ it.each([
   );
   expect(f.calls).toEqual([]);
 });
+
+it.each([
+  ["null run", "run", "run", null, "invalid-run"],
+  ["false run", "run", "run", false, "invalid-run"],
+  ["true run", "run", "run", true, "invalid-run"],
+  ["numeric run", "run", "run", 42, "invalid-run"],
+  ["array repository", "repository", "repository", ["fixture/repository"], "invalid-repository"],
+  ["array candidate head", "candidateHead", "head", [head], "invalid-candidate-head"],
+  [
+    "array controller revision",
+    "controllerRevision",
+    "controllerRevision",
+    ["c".repeat(40)],
+    "invalid-controller-revision",
+  ],
+] as const)(
+  "rejects %s despite matching authority",
+  async (_case, field, authorityField, value, reason) => {
+    const f = await fixture();
+    (f.config as unknown as Record<string, unknown>)[field] = value;
+    (f.config.authority as unknown as Record<string, unknown>)[authorityField] = value;
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
+    expect(f.calls).toEqual([]);
+  },
+);
 
 it("rejects authority issued for a different stable controller revision", async () => {
   const f = await fixture();
