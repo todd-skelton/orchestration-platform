@@ -30,9 +30,7 @@ const mergeCommit = "e".repeat(40);
 const unavailable = { status: "unavailable" as const };
 
 async function fixture(history: QueueParticipant[] = []) {
-  const root = await realpath(
-    await mkdtemp(resolve(tmpdir(), "queue-adapter-fixture-")),
-  );
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "queue-adapter-fixture-")));
   roots.push(root);
   const paths = {
     repository: resolve(root, "repository"),
