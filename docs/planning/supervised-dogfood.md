@@ -349,3 +349,109 @@ can produce `awaiting-delivery`, but it cannot grant four-gate/hosted proof,
 existing-PR refresh, merge, cleanup, promotion or stable authority. Notes remain
 in the external handoff as advisory follow-up. Hosted fixtures do not close the
 issue's later genuine-use and restart obligation.
+
+## Bounded useful-cycle queue
+
+ISS-078 adds
+`node scripts/dogfood/supervise.mjs <absolute-queue-request.json>`. The request
+must be the `queue-request.json` child of an existing external queue state
+directory. This private command performs the handoffs: it calls the accepted
+setup transition, runs the existing native author/reviewer flow, routes only an
+actually recorded `reviewer-failed` result through the accepted repair policy,
+then passes the exact accepted head and review identity to normal delivery. It
+does not print a list of commands or require a controller script per item.
+
+The finite interface is `dogfood-bounded-queue-request/v1`:
+
+```json
+{
+  "schemaVersion": "dogfood-bounded-queue-request/v1",
+  "run": "queue-run",
+  "controllerRoot": "<absolute stable executor checkout>",
+  "controllerRevision": "<externally accepted stable 40-character head>",
+  "stateDirectory": "<absolute external queue state>",
+  "limit": 2,
+  "nativeLaunchCeiling": 8,
+  "initialHistory": [],
+  "items": [
+    {
+      "id": "opaque-useful-item",
+      "issue": "<externally selected issue>",
+      "base": "<exact starting head>",
+      "implementationAttempt": 1,
+      "setup": "<dogfood-setup request object>",
+      "source": "<existing flow config object>",
+      "repair": {
+        "stateDirectory": "<absolute external repair state>",
+        "sourcePaths": ["exact/source.ts"],
+        "acceptanceCriteria": ["verbatim criterion"],
+        "author": "<bounded actor object>",
+        "reviewer": "<bounded actor object>"
+      },
+      "delivery": {
+        "requiredChecks": ["<Linux>", "<Windows>", "<macOS>"],
+        "policy": "<existing explicit delivery policy>"
+      }
+    }
+  ],
+  "authority": {
+    "schemaVersion": "dogfood-bounded-queue-authority/v1",
+    "controller": "<controller identity>",
+    "run": "queue-run",
+    "controllerRoot": "<same stable checkout>",
+    "controllerRevision": "<same stable head>",
+    "stateDirectory": "<same queue state>",
+    "limit": 2,
+    "nativeLaunchCeiling": 8,
+    "lineageDigest": "<identity/outcome lineage digest>",
+    "itemsDigest": "<exact ordered item-policy digest>",
+    "actions": ["setup", "source", "repair", "delivery"]
+  }
+}
+```
+
+The concrete objects replace the quoted placeholders above; the abbreviated
+form documents ownership, not a second schema. The authority digest binds every
+item's setup, models/effort, paths, scope, repair criteria, required checks and
+delivery policy. Participant ordinals are consumed in launch order under the
+single queue ceiling. Their identities and outcomes are authoritative lineage;
+token and cost availability are retained as advisory measurements and are not
+part of the authority digest. Repair/review launches consume native admission
+but not another implementation attempt.
+
+Write-once cursor and stage intents precede component entry. The accepted
+components retain their own finer mutation intents and reconcile their exact
+worktree, process and provider observations on restart. A missing launch
+identity, unknown effect, cursor gap, moved head, reused participant, drifted
+item, exhausted ceiling or malformed receipt blocks; none authorizes a new
+worker, directory, PR, merge or cleanup. A completed item is skipped only when
+its complete review lineage and delivery receipt remain an exact prefix of the
+durable queue history. The stable executor remains fixed for the invocation;
+accepted candidate code is delivered but never loaded as its own authority.
+The command derives its executing root from the loaded command location and the
+repository adapter verifies that root against the configured stable executor
+before setup or delivery. Accepted review IDs are matched to the final reviewer
+in durable stage history before delivery intent. Queue and item completion
+receipts are validated as a whole before component entry; a valid completed
+restart returns the same closed result without re-entering delivery.
+
+Queue usage remains per-measure known or unavailable. When repair compatibility
+is needed, wholly unavailable and wholly known observations retain their legacy
+representations, while partial observations retain each known token measure and
+leave unavailable cost unavailable. No USD value is inferred.
+
+The thin command imports the co-located queue engine and explicit repository
+adapter in `queue.ts`, which calls the accepted component entry points directly.
+Thus command-to-effect behavior crosses the command, queue/adapter, and component
+files while `queueStep` continues to depend only on its injected `QueueAdapter`.
+
+This is a finite self-repository dogfood composition, not an installed
+scheduler, service, public API, arbitrary workflow engine or production
+promotion path. Source and hosted fixture acceptance do not close ISS-078/#338.
+It remains open until multiple consecutive genuinely useful cycles, an actual
+completed restart and a naturally encountered bounded failure/recovery complete
+without routine controller bridges. ISS-074/#332, ISS-076/#335 and ISS-077/#337
+retain their separate real-use obligations. Failed-PR refresh, explicit setup
+Git selection and known failed native-launch reconciliation remain measured
+future corrections; a typed stop for those cases is safe but is not proof of
+full supervision removal.

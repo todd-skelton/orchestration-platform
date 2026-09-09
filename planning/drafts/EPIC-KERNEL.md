@@ -21,6 +21,7 @@ children:
     ISS-075,
     ISS-076,
     ISS-077,
+    ISS-078,
   ]
 ---
 
@@ -58,7 +59,8 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
   `ISS-073 → ISS-074`;
   `ISS-074 → ISS-075`;
   `ISS-075 → ISS-076`;
-  `ISS-076 → ISS-077`.
+  `ISS-076 → ISS-077`;
+  `ISS-077 → ISS-078`.
 - Parallelism: review authority and the event journal may proceed in parallel
   once their gates are satisfied. The walking skeleton runs as soon as
   contracts and the CLI exist and blocks nothing; its divergence ledger is
@@ -117,3 +119,4 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
 - `ISS-075` — Prepare bounded dogfood workspaces and offline dependencies.
 - `ISS-076` — Automate bounded review-repair handoffs.
 - `ISS-077` — Reconcile absent branches after real delivery cleanup.
+- `ISS-078` — Supervise a bounded queue of useful cycles.

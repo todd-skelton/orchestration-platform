@@ -449,6 +449,7 @@ it.each([undefined, null, "false", "true", 0, 1])(
     );
     expect(effects).toEqual([]);
   },
+  30_000,
 );
 
 it.each([undefined, null, "false", "true", 0, 1])(

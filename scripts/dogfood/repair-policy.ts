@@ -92,7 +92,12 @@ export interface ParticipantHistory {
   outcome: "passed" | "failed" | "unknown";
   usage:
     | { status: "unavailable" }
-    | { status: "known"; inputTokens: number; outputTokens: number; costUsd: number };
+    | { status: "known"; inputTokens: number; outputTokens: number; costUsd: number }
+    | {
+        inputTokens: { status: "unavailable" } | { status: "known"; value: number };
+        outputTokens: { status: "unavailable" } | { status: "known"; value: number };
+        costUsd: { status: "unavailable" } | { status: "known"; value: number };
+      };
 }
 export interface RepairAuthority {
   schemaVersion: "dogfood-repair-authority/v1";
@@ -399,17 +404,34 @@ export function validateRepairConfig(config: RepairConfig) {
     );
     demand(!identities.has(participant.id), "reused-participant-identity");
     identities.add(participant.id);
-    const usage = participant.usage;
+    const usage: unknown = participant.usage;
+    const validMeasure = (measure: unknown, integer: boolean) => {
+      if (!object(measure)) return false;
+      if (exactKeys(measure, ["status"])) return measure.status === "unavailable";
+      return (
+        exactKeys(measure, ["status", "value"]) &&
+        measure.status === "known" &&
+        typeof measure.value === "number" &&
+        Number.isFinite(measure.value) &&
+        measure.value >= 0 &&
+        (!integer || Number.isSafeInteger(measure.value))
+      );
+    };
+    const usageRecord = object(usage) ? usage : {};
     demand(
-      (exactKeys(usage, ["status"]) && usage.status === "unavailable") ||
-        (exactKeys(usage, ["status", "inputTokens", "outputTokens", "costUsd"]) &&
-          usage.status === "known" &&
-          [usage.inputTokens, usage.outputTokens].every(
+      (exactKeys(usageRecord, ["status"]) && usageRecord.status === "unavailable") ||
+        (exactKeys(usageRecord, ["status", "inputTokens", "outputTokens", "costUsd"]) &&
+          usageRecord.status === "known" &&
+          [usageRecord.inputTokens, usageRecord.outputTokens].every(
             (value) => Number.isSafeInteger(value) && value >= 0,
           ) &&
-          typeof usage.costUsd === "number" &&
-          Number.isFinite(usage.costUsd) &&
-          usage.costUsd >= 0),
+          typeof usageRecord.costUsd === "number" &&
+          Number.isFinite(usageRecord.costUsd) &&
+          usageRecord.costUsd >= 0) ||
+        (exactKeys(usageRecord, ["inputTokens", "outputTokens", "costUsd"]) &&
+          validMeasure(usageRecord.inputTokens, true) &&
+          validMeasure(usageRecord.outputTokens, true) &&
+          validMeasure(usageRecord.costUsd, false)),
       "malformed-participant-usage",
     );
   }
