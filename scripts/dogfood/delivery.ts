@@ -107,6 +107,28 @@ export interface CheckEvidence {
   link: string;
 }
 
+export type DeliveryResult =
+  | {
+      status: "observing-hosted-checks";
+      run: string;
+      issue: string;
+      head: string;
+      reviewId: string;
+      publication: { number: number; url: string };
+      checks: CheckEvidence[];
+    }
+  | {
+      status: "complete";
+      run: string;
+      issue: string;
+      head: string;
+      reviewId: string;
+      publication: { number: number; url: string };
+      checks: CheckEvidence[];
+      mergeCommit: string;
+      cleanup: { status: "confirmed"; branch: string };
+    };
+
 export type Observation<T> =
   { state: "confirmed"; value: T } | { state: "needs-mutation" } | { state: "unknown" };
 
@@ -661,7 +683,7 @@ export async function deliveryStep(
   config: DeliveryConfig,
   adapter: DeliveryAdapter,
   policy: DeliveryPolicyAdapter,
-) {
+): Promise<DeliveryResult> {
   validateConfig(config);
   if (config.refresh)
     demand(
@@ -790,7 +812,8 @@ export async function deliveryStep(
         completed.head === config.candidateHead &&
         exactUniqueStringSet(completed.worktrees, completedPlan.cleanup.worktrees) &&
         completed.branch === completedPlan.cleanup.branch &&
-        checks?.every((check) => check.bucket === "pass"),
+        checks !== undefined &&
+        checks.every((check) => check.bucket === "pass"),
       "malformed-completed-delivery",
     );
     return {
@@ -1003,7 +1026,9 @@ export async function deliveryStep(
   }
   validateMergeRecord(config, merge);
   demand(
-    merge.number === publication.number && checks?.every((check) => check.bucket === "pass"),
+    merge.number === publication.number &&
+      checks !== undefined &&
+      checks.every((check) => check.bucket === "pass"),
     "malformed-merge-receipt",
   );
   const confirmedMerge = merge;

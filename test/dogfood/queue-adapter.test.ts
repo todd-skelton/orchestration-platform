@@ -1,8 +1,13 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { queueUsage, repositoryQueueAdapter } from "../../scripts/dogfood/queue.js";
+import {
+  queueStep,
+  queueUsage,
+  reconcileCompletedQueue,
+  repositoryQueueAdapter,
+} from "../../scripts/dogfood/queue.js";
 import type {
   DeliveryAdapter,
   DeliveryConfig,
@@ -18,6 +23,7 @@ import {
   participantIdentity,
   queueDigest,
   type QueueConfig,
+  type QueueAdapter,
   type QueueItem,
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
@@ -437,6 +443,435 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     refresh: current.item.delivery.refresh,
     authority: { refresh: current.item.delivery.refresh },
   });
+});
+
+it("persists the genuine adapter result and restarts four-participant completion without effects", async () => {
+  const current = await fixture();
+  await Promise.all([
+    writeFile(current.source.author.promptFile, "synthetic source author prompt"),
+    writeFile(current.source.reviewer.promptFile, "synthetic source reviewer prompt"),
+  ]);
+  const sourceSummary = JSON.stringify({
+    v: 2,
+    head: candidate,
+    complete: true,
+    scope: "complete",
+    profile: "contract",
+    g0: ["PASS", "synthetic smallest shape"],
+    pairs: Array.from({ length: 12 }, (_value, index) =>
+      index === 0 ? ["BLOCK", "PASS", "F1"] : ["PASS", "PASS", "synthetic probe"],
+    ),
+    findings: [
+      {
+        file: "scripts/dogfood/queue.ts",
+        line: 1,
+        severity: "P1",
+        defect: "synthetic fixable completion-contract defect",
+        verification: "synthetic hosted compatibility probe",
+      },
+    ],
+    notes: [],
+  });
+  const deltaSummary = JSON.stringify({
+    v: 2,
+    head: repaired,
+    complete: true,
+    scope: "delta",
+    profile: "contract",
+    g0: ["PASS", "synthetic prescribed remedy only"],
+    pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "synthetic probe"]),
+    findings: [],
+    notes: [],
+  });
+  let sourceHead = base;
+  let reviewHead = base;
+  let pid = 100;
+  const native: Adapter = {
+    async preflight() {},
+    async git(worktree, args) {
+      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
+      if (args[0] === "rev-parse" && args[1] === "HEAD") {
+        if (worktree === current.paths.pilot) return stable;
+        return worktree === current.paths.review ? reviewHead : sourceHead;
+      }
+      if (args[0] === "status") return "";
+      if (args[0] === "checkout") {
+        reviewHead = String(args.at(-1));
+        return "";
+      }
+      if (args[0] === "merge-base") return base;
+      if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
+      if (args[0] === "ls-files") return "";
+      if (args[0] === "commit") {
+        sourceHead = candidate;
+        return "";
+      }
+      return "";
+    },
+    async launch(role) {
+      return {
+        id: `synthetic-source-${role}`,
+        pid: pid++,
+        trace: resolve(current.root, `synthetic-source-${role}.jsonl`),
+      };
+    },
+    async observe(role, _config, attempt) {
+      return role === "author"
+        ? {
+            status: "passed",
+            id: attempt.id,
+            head: base,
+            usage: { input_tokens: 11, output_tokens: 3 },
+          }
+        : {
+            status: "failed",
+            id: attempt.id,
+            head: candidate,
+            usage: { input_tokens: 8, output_tokens: 4, cost_usd: 1.25 },
+            summary: sourceSummary,
+          };
+    },
+    async checks() {
+      return { head: candidate, checks: [] };
+    },
+  };
+  let sourceArtifacts: any;
+  const repairAdapter: RepairAdapter = {
+    async loadSourceReview() {
+      if (!sourceArtifacts) {
+        const read = async (name: string) =>
+          JSON.parse(await readFile(resolve(current.paths.source, `${name}.json`), "utf8"));
+        sourceArtifacts = {
+          configRecord: await read("config"),
+          candidate: await read("candidate"),
+          authorAttempt: await read("author-attempt"),
+          reviewerAttempt: await read("reviewer-attempt"),
+          terminal: await read("reviewer-terminal"),
+          changedFiles: ["scripts/dogfood/queue.ts"],
+          lineCounts: { "scripts/dogfood/queue.ts": 10 },
+          sourceHead: candidate,
+          reviewHead: candidate,
+          sourceClean: true,
+          reviewClean: true,
+          promptContents: ["synthetic source author prompt", "synthetic source reviewer prompt"],
+        };
+      }
+      return sourceArtifacts;
+    },
+    async dispatch(config) {
+      const rows = [
+        {
+          ordinal: config.admission.reservations[0].ordinal,
+          id: "synthetic-repair-author",
+          role: "author" as const,
+          head: candidate,
+          usage: undefined,
+        },
+        {
+          ordinal: config.admission.reservations[1].ordinal,
+          id: "synthetic-repair-reviewer",
+          role: "reviewer" as const,
+          head: repaired,
+          usage: { input_tokens: 5, output_tokens: 2 },
+        },
+      ];
+      for (const row of rows) {
+        await Promise.all([
+          writeFile(
+            resolve(current.paths.queue, `participant-${row.ordinal}-intent.json`),
+            JSON.stringify({
+              schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
+              ordinal: row.ordinal,
+              item: current.item.id,
+              stage: "repair",
+              role: row.role,
+            }),
+          ),
+          writeFile(
+            resolve(current.paths.queue, `participant-${row.ordinal}-attempt.json`),
+            JSON.stringify({
+              schemaVersion: "dogfood-bounded-queue-participant/v1",
+              ordinal: row.ordinal,
+              id: row.id,
+              item: current.item.id,
+              stage: "repair",
+              role: row.role,
+            }),
+          ),
+          writeFile(
+            resolve(current.paths.repair, `${row.role}-attempt.json`),
+            JSON.stringify({
+              id: row.id,
+              pid: row.ordinal + 100,
+              trace: resolve(current.root, `${row.id}.jsonl`),
+            }),
+          ),
+          writeFile(
+            resolve(current.paths.repair, `${row.role}-terminal.json`),
+            JSON.stringify({
+              status: "passed",
+              id: row.id,
+              head: row.head,
+              ...(row.usage ? { usage: row.usage } : {}),
+              ...(row.role === "reviewer" ? { summary: deltaSummary } : {}),
+            }),
+          ),
+        ]);
+      }
+      return { status: "awaiting-publication" };
+    },
+    async loadDeltaReview(config) {
+      return {
+        configRecord: sourceArtifacts.configRecord,
+        candidate: { head: repaired, changed: ["scripts/dogfood/queue.ts"] },
+        authorAttempt: {
+          id: "synthetic-repair-author",
+          pid: config.admission.reservations[0].ordinal + 100,
+          trace: resolve(current.root, "synthetic-repair-author.jsonl"),
+        },
+        reviewerAttempt: {
+          id: "synthetic-repair-reviewer",
+          pid: config.admission.reservations[1].ordinal + 100,
+          trace: resolve(current.root, "synthetic-repair-reviewer.jsonl"),
+        },
+        terminal: {
+          status: "passed",
+          id: "synthetic-repair-reviewer",
+          head: repaired,
+          usage: { input_tokens: 5, output_tokens: 2 },
+          summary: deltaSummary,
+        },
+        changedFiles: ["scripts/dogfood/queue.ts"],
+        lineCounts: { "scripts/dogfood/queue.ts": 10 },
+        sourceHead: repaired,
+        reviewHead: repaired,
+        sourceClean: true,
+        reviewClean: true,
+        launchContext: {
+          schemaVersion: "dogfood-repair-launch-context/v1",
+          run: config.run,
+          role: "reviewer",
+          ordinal: config.admission.reservations[1].ordinal,
+          head: repaired,
+          model: current.item.repair.reviewer.model,
+          effort: current.item.repair.reviewer.effort,
+          predecessorReviewId: "synthetic-source-reviewer",
+        },
+      };
+    },
+  };
+  const plan: DeliveryPlan = {
+    gates: {
+      beforeMirror: ["typecheck", "format:check", "planning:check"],
+      afterMirror: ["planning:board-check"],
+    },
+    drafts: [
+      {
+        key: "ISS-SYNTHETIC-COMPLETION",
+        issue: 350,
+        title: "synthetic completion",
+        body: "synthetic completion body",
+        attributes: { milestone: "synthetic-M2" },
+      },
+    ],
+    publication: {
+      sourceBranch: "codex/synthetic-completion",
+      baseBranch: "main",
+      title: "synthetic completion",
+      body: "synthetic completion body",
+      draft: true,
+    },
+    mergePolicy: { method: "squash" },
+    cleanup: {
+      worktrees: [current.paths.author, current.paths.review],
+      branch: "codex/synthetic-completion",
+    },
+  };
+  const mutationEffects: string[] = [];
+  let draft = false;
+  let published = false;
+  let merged = false;
+  let cleaned = false;
+  let publicationDigest = "";
+  const publication = (): PublicationEvidence => ({
+    number: 350,
+    url: "https://example.test/pull/350",
+    head: repaired,
+    repository: current.source.repository,
+    sourceBranch: plan.publication.sourceBranch,
+    baseBranch: plan.publication.baseBranch,
+    title: plan.publication.title,
+    body: plan.publication.body,
+    planDigest: publicationDigest,
+  });
+  const delivery: DeliveryAdapter = {
+    publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
+    async source(config) {
+      return {
+        head: repaired,
+        reviewId: "synthetic-repair-reviewer",
+        controller: current.source.owner,
+        run: config.run,
+        issue: config.issue,
+        repository: config.repository,
+        controllerRevision: stable,
+        worktree: config.worktree,
+        reviewWorktree: config.reviewWorktree,
+        stateDirectory: config.stateDirectory,
+        requiredChecks: [...config.requiredChecks],
+      };
+    },
+    async verifyWorkspace() {
+      return true;
+    },
+    async runGate(_config, name) {
+      mutationEffects.push(`gate:${name}`);
+      return "passed";
+    },
+    async observeDraft() {
+      return draft ? { state: "confirmed", value: { issue: 350 } } : { state: "needs-mutation" };
+    },
+    async applyDraft() {
+      mutationEffects.push("draft");
+      draft = true;
+    },
+    async observePublication(_config, _plan, planDigest) {
+      publicationDigest = planDigest;
+      return published
+        ? { state: "confirmed", value: publication() }
+        : { state: "needs-mutation", target: "synthetic-absent" };
+    },
+    async publish() {
+      mutationEffects.push("publish");
+      published = true;
+    },
+    async checks(config) {
+      return {
+        head: repaired,
+        checks: config.requiredChecks.map((name) => ({
+          name,
+          bucket: "pass" as const,
+          link: `https://example.test/check/${name}`,
+        })),
+      };
+    },
+    async observeMerge() {
+      return merged
+        ? { state: "confirmed", value: { number: 350, head: repaired, mergeCommit } }
+        : { state: "needs-mutation" };
+    },
+    async merge() {
+      mutationEffects.push("merge");
+      merged = true;
+    },
+    async observeCleanup() {
+      return cleaned
+        ? {
+            state: "confirmed",
+            value: { worktrees: [...plan.cleanup.worktrees], branch: plan.cleanup.branch },
+          }
+        : { state: "needs-mutation" };
+    },
+    async cleanup() {
+      mutationEffects.push("cleanup");
+      cleaned = true;
+    },
+  };
+  const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
+    native,
+    repair: repairAdapter,
+    delivery,
+    deliveryPolicy: {
+      async plan() {
+        return plan;
+      },
+    },
+    assertExecutor: async () => {},
+  });
+  const componentEntries: string[] = [];
+  const adapter: QueueAdapter = {
+    async assertAuthority() {
+      componentEntries.push("authority");
+    },
+    history: repository.history,
+    async setup() {
+      componentEntries.push("setup");
+      return { status: "ready" };
+    },
+    async source(item) {
+      componentEntries.push("source");
+      return repository.source(item);
+    },
+    async repair(item) {
+      componentEntries.push("repair");
+      return repository.repair(item);
+    },
+    async delivery(item, accepted) {
+      componentEntries.push("delivery");
+      return repository.delivery(item, accepted);
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).resolves.toEqual({
+    status: "complete",
+    run: current.config.run,
+    cursor: 1,
+    items: 1,
+    participants: 4,
+  });
+  const completed = JSON.parse(
+    await readFile(resolve(current.paths.queue, "item-1-complete.json"), "utf8"),
+  );
+  expect(completed).toMatchObject({
+    status: "complete",
+    run: current.source.run,
+    issue: current.item.issue,
+    head: repaired,
+    reviewId: "synthetic-repair-reviewer",
+    checks: current.source.requiredChecks.map((name) => ({ name, bucket: "pass" })),
+    history: [
+      { id: "synthetic-source-author", outcome: "passed", usage: { costUsd: unavailable } },
+      {
+        id: "synthetic-source-reviewer",
+        outcome: "failed",
+        usage: { costUsd: { status: "known", value: 1.25 } },
+      },
+      { id: "synthetic-repair-author", outcome: "passed", usage: { costUsd: unavailable } },
+      { id: "synthetic-repair-reviewer", outcome: "passed", usage: { costUsd: unavailable } },
+    ],
+  });
+  expect(mutationEffects).toEqual([
+    "gate:typecheck",
+    "gate:format:check",
+    "gate:planning:check",
+    "draft",
+    "publish",
+    "gate:planning:board-check",
+    "merge",
+    "cleanup",
+  ]);
+  const queueFiles = (await readdir(current.paths.queue)).sort();
+  const originalBytes = await Promise.all(
+    queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
+  );
+  const entriesAfterCompletion = componentEntries.length;
+  const effectsAfterCompletion = mutationEffects.length;
+
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete" });
+  expect(componentEntries.slice(entriesAfterCompletion)).toEqual(["authority"]);
+  expect(mutationEffects).toHaveLength(effectsAfterCompletion);
+  const entriesBeforeReadOnly = componentEntries.length;
+  await expect(
+    reconcileCompletedQueue(current.config, { history: repository.history }),
+  ).resolves.toMatchObject({ status: "complete", participants: 4 });
+  expect(componentEntries).toHaveLength(entriesBeforeReadOnly);
+  expect(mutationEffects).toHaveLength(effectsAfterCompletion);
+  expect((await readdir(current.paths.queue)).sort()).toEqual(queueFiles);
+  expect(
+    await Promise.all(
+      queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
+    ),
+  ).toEqual(originalBytes);
 });
 
 it("directly composes the accepted repair transition from a complete fixable review", async () => {
