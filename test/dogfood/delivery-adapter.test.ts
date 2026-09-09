@@ -652,6 +652,86 @@ it("refreshes one exact existing draft forward under its observed remote lease",
   ]);
 }, 30_000);
 
+it.each([
+  ["absent", () => []],
+  [
+    "closed",
+    (publication: PublicationEvidence) => [publicationRow(publication, { state: "CLOSED" })],
+  ],
+  [
+    "duplicate",
+    (publication: PublicationEvidence) => [
+      publicationRow(publication),
+      publicationRow(publication),
+    ],
+  ],
+  [
+    "wrong number",
+    (publication: PublicationEvidence) => [publicationRow(publication, { number: 45 })],
+  ],
+  [
+    "wrong URL",
+    (publication: PublicationEvidence) => [
+      publicationRow(publication, { url: "https://github.com/foreign/repository/pull/44" }),
+    ],
+  ],
+  [
+    "wrong source",
+    (publication: PublicationEvidence) => [
+      publicationRow(publication, { headRefName: "codex/other-delivery" }),
+    ],
+  ],
+  [
+    "wrong base",
+    (publication: PublicationEvidence) => [publicationRow(publication, { baseRefName: "release" })],
+  ],
+] as const)(
+  "refuses a refresh with %s target without effects",
+  async (_mode, rowsFor) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    current.refresh = {
+      number: 44,
+      url: `https://github.com/${current.repository}/pull/44`,
+      head: "b".repeat(40),
+    };
+    current.authority.refresh = current.refresh;
+    const publication = publicationEvidence(current);
+    const plan = {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: publication.baseBranch,
+      title: publication.title,
+      body: publication.body,
+      draft: true as const,
+    };
+    const effects: string[][] = [];
+    const before = await stateSnapshot(current.stateDirectory);
+    const rows = rowsFor(publication);
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson() {
+        return rows;
+      },
+    });
+
+    await expect(
+      adapter.observePublication(current, plan, publication.planDigest),
+    ).resolves.toEqual({
+      state: "unknown",
+    });
+    await expect(adapter.publish(current, plan, "pr:44")).rejects.toThrow(
+      "publication-target-drift",
+    );
+    expect(effects).toEqual([]);
+    expect(await stateSnapshot(current.stateDirectory)).toEqual(before);
+  },
+  30_000,
+);
+
 it("refuses a refresh when the exact remote lease has already moved", async () => {
   const { current, git } = await localRemoteRepositoryFixture();
   const priorHead = current.candidateHead;

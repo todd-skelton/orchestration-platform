@@ -663,6 +663,11 @@ export async function deliveryStep(
   policy: DeliveryPolicyAdapter,
 ) {
   validateConfig(config);
+  if (config.refresh)
+    demand(
+      config.refresh.url === adapter.publicationUrl(config, config.refresh.number),
+      "malformed-publication-refresh",
+    );
   const directory = await realpath(config.stateDirectory);
   const fingerprint = digest(config);
   const pinned = await optionalRecord(directory, "delivery-config");

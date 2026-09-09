@@ -397,6 +397,21 @@ it("rejects refresh authority substitution before source or provider access", as
   expectNoProviderAction(f.calls);
 });
 
+it("rejects a foreign refresh URL before source, policy, or provider access", async () => {
+  const f = await fixture();
+  f.config.refresh = {
+    number: 44,
+    url: "https://foreign.test/pull/44",
+    head: "d".repeat(40),
+  };
+  f.config.authority.refresh = f.config.refresh;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "malformed-publication-refresh",
+  );
+  expect(f.calls).toEqual([]);
+  expectNoProviderAction(f.calls);
+});
+
 it("persists a selected publication target and rejects its replacement on restart", async () => {
   const f = await fixture();
   const provider = githubDeliveryAdapter({
