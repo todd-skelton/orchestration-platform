@@ -455,3 +455,29 @@ retain their separate real-use obligations. Failed-PR refresh, explicit setup
 Git selection and known failed native-launch reconciliation remain measured
 future corrections; a typed stop for those cases is safe but is not proof of
 full supervision removal.
+
+## Reviewed existing-PR forward refresh
+
+ISS-079 adds one optional refresh identity to an accepted bounded-queue item's
+delivery policy: the exact existing PR number, repository-derived URL and prior
+reviewed head. A refresh is valid only for a later implementation attempt whose
+source base is that prior head. Queue authority binds the complete item, and the
+derived delivery authority repeats the same refresh identity; absent refresh
+retains the existing new-publication path.
+
+The GitHub adapter selects only that open draft on the policy-approved source
+and base branches. Before its sole push it proves the accepted candidate is a
+descendant of the prior head, observes the remote source branch at exactly that
+head and supplies the same value in `--force-with-lease`. Moved, missing,
+closed, duplicate, divergent or substituted targets block. Publication intent
+is written first. If provider visibility remains at the old head after an
+uncertain outcome, restart observes and blocks without another push; after the
+candidate head becomes visible, metadata reconciliation may finish and the
+original hosted-check, merge and cleanup path resumes.
+
+This correction does not weaken independent review, the four controller gates,
+or exact hosted Windows/macOS/Linux evidence. Prior participants, verdicts,
+attempts and measured/unavailable spend remain immutable queue lineage;
+telemetry is advisory. Hosted fixtures prove compatibility only. #341 remains
+open until a genuine accepted c024 queue refresh preserves the earlier failure
+and later reviewed-head/restart evidence without a duplicate publication.

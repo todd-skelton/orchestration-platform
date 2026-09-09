@@ -10,6 +10,7 @@ import {
   type DeliveryAdapter,
   type DeliveryConfig,
   type DeliveryPolicyAdapter,
+  type PublicationRefresh,
 } from "./delivery.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { codexAdapter } from "./dispatch-adapter.ts";
@@ -69,7 +70,11 @@ export interface QueueItem {
     author: RepairActor;
     reviewer: RepairActor;
   };
-  delivery: { requiredChecks: string[]; policy: DeliveryConfig["policy"] };
+  delivery: {
+    requiredChecks: string[];
+    policy: DeliveryConfig["policy"];
+    refresh?: PublicationRefresh;
+  };
 }
 
 export interface QueueAuthority {
@@ -293,11 +298,27 @@ export function validateQueueConfig(config: QueueConfig) {
         item.repair.sourcePaths.length > 0 &&
         Array.isArray(item.repair.acceptanceCriteria) &&
         item.repair.acceptanceCriteria.length > 0 &&
-        exactKeys(item.delivery, ["requiredChecks", "policy"]) &&
+        exactKeys(item.delivery, [
+          "requiredChecks",
+          "policy",
+          ...(object(item.delivery) && Object.hasOwn(item.delivery, "refresh") ? ["refresh"] : []),
+        ]) &&
         Array.isArray(item.delivery.requiredChecks) &&
         item.delivery.requiredChecks.length >= 3,
       "malformed-queue-item",
     );
+    if (Object.hasOwn(item.delivery, "refresh"))
+      demand(
+        exactKeys(item.delivery.refresh, ["number", "url", "head"]) &&
+          Number.isSafeInteger(item.delivery.refresh.number) &&
+          item.delivery.refresh.number > 0 &&
+          typeof item.delivery.refresh.url === "string" &&
+          item.delivery.refresh.url.startsWith("https://") &&
+          SHA.test(item.delivery.refresh.head) &&
+          item.delivery.refresh.head === item.base &&
+          item.implementationAttempt > 1,
+        "malformed-publication-refresh",
+      );
     demand(!itemIds.has(item.id), "duplicate-queue-item");
     itemIds.add(item.id);
   }
@@ -449,12 +470,19 @@ function assertItemReviewHistory(
   item: QueueItem,
   repaired: boolean,
   reviewId: string,
+  priorParticipants: number,
 ) {
   const source = history.filter(
-    (participant) => participant.item === item.id && participant.stage === "source",
+    (participant) =>
+      participant.ordinal > priorParticipants &&
+      participant.item === item.id &&
+      participant.stage === "source",
   );
   const repair = history.filter(
-    (participant) => participant.item === item.id && participant.stage === "repair",
+    (participant) =>
+      participant.ordinal > priorParticipants &&
+      participant.item === item.id &&
+      participant.stage === "repair",
   );
   demand(
     source.length === 2 &&
@@ -478,12 +506,19 @@ function assertSourceFailureHistory(
   history: QueueParticipant[],
   item: QueueItem,
   reviewId: string,
+  priorParticipants: number,
 ) {
   const source = history.filter(
-    (participant) => participant.item === item.id && participant.stage === "source",
+    (participant) =>
+      participant.ordinal > priorParticipants &&
+      participant.item === item.id &&
+      participant.stage === "source",
   );
   const repair = history.filter(
-    (participant) => participant.item === item.id && participant.stage === "repair",
+    (participant) =>
+      participant.ordinal > priorParticipants &&
+      participant.item === item.id &&
+      participant.stage === "repair",
   );
   demand(
     source.length === 2 &&
@@ -547,9 +582,12 @@ async function completedItemReceipt(
     item,
     completed.history.some(
       (participant: QueueParticipant) =>
-        participant.item === item.id && participant.stage === "repair",
+        participant.ordinal > config.initialHistory.length &&
+        participant.item === item.id &&
+        participant.stage === "repair",
     ),
     completed.reviewId,
+    config.initialHistory.length,
   );
   assertHistorySnapshot(config, completed.history, currentHistory);
   const accepted = await optionalRecord(directory, `${prefix}-accepted`);
@@ -579,7 +617,13 @@ async function completedItemReceipt(
       Array.isArray(accepted.history),
     "malformed-completed-item",
   );
-  assertItemReviewHistory(accepted.history, item, accepted.stage === "repair", accepted.reviewId);
+  assertItemReviewHistory(
+    accepted.history,
+    item,
+    accepted.stage === "repair",
+    accepted.reviewId,
+    config.initialHistory.length,
+  );
   assertHistorySnapshot(config, accepted.history, currentHistory);
   demand(
     accepted.history.length === completed.history.length &&
@@ -694,14 +738,20 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           };
         demand("reviewId" in source, "unexpected-source-flow-status");
         if (source.status === "fixable-review") {
-          assertSourceFailureHistory(history, item, source.reviewId);
+          assertSourceFailureHistory(history, item, source.reviewId, config.initialHistory.length);
           await record(
             directory,
             `${prefix}-source-failure`,
             stageRecord(item, "source", history, source),
           );
         } else {
-          assertItemReviewHistory(history, item, false, source.reviewId);
+          assertItemReviewHistory(
+            history,
+            item,
+            false,
+            source.reviewId,
+            config.initialHistory.length,
+          );
           accepted = stageRecord(item, "source", history, source);
           await record(directory, `${prefix}-accepted`, accepted);
         }
@@ -719,7 +769,12 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           "malformed-source-failure-stage",
         );
       if (sourceFailure !== ABSENT) {
-        assertSourceFailureHistory(sourceFailure.history, item, sourceFailure.reviewId);
+        assertSourceFailureHistory(
+          sourceFailure.history,
+          item,
+          sourceFailure.reviewId,
+          config.initialHistory.length,
+        );
       }
       if (accepted === ABSENT) {
         await record(directory, `${prefix}-repair-intent`, { item: item.id, base: item.base });
@@ -735,7 +790,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
             cursor: index,
           };
         demand("reviewId" in repair, "unexpected-repair-status");
-        assertItemReviewHistory(history, item, true, repair.reviewId);
+        assertItemReviewHistory(history, item, true, repair.reviewId, config.initialHistory.length);
         accepted = stageRecord(item, "repair", history, repair);
         await record(directory, `${prefix}-accepted`, accepted);
       }
@@ -758,7 +813,13 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       "malformed-accepted-stage",
     );
     assertHistoryPrefix(config, accepted.history);
-    assertItemReviewHistory(accepted.history, item, accepted.stage === "repair", accepted.reviewId);
+    assertItemReviewHistory(
+      accepted.history,
+      item,
+      accepted.stage === "repair",
+      accepted.reviewId,
+      config.initialHistory.length,
+    );
     await record(directory, `${prefix}-delivery-intent`, {
       item: item.id,
       head: accepted.head,
@@ -1101,7 +1162,10 @@ export function repositoryQueueAdapter(
     reviewerOutcome: "passed" | "failed",
   ) => {
     const pair = (await readHistory()).filter(
-      (participant) => participant.item === item.id && participant.stage === stage,
+      (participant) =>
+        participant.ordinal > config.initialHistory.length &&
+        participant.item === item.id &&
+        participant.stage === stage,
     );
     demand(
       pair.length === 2 &&
@@ -1435,6 +1499,7 @@ export function repositoryQueueAdapter(
         reviewWorktree: item.source.reviewWorktree,
         stateDirectory: accepted.stateDirectory,
         candidateHead: accepted.head,
+        ...(item.delivery.refresh ? { refresh: item.delivery.refresh } : {}),
         requiredChecks: item.delivery.requiredChecks,
         authority: {
           schemaVersion: "dogfood-delivery-authority/v1",
@@ -1443,6 +1508,7 @@ export function repositoryQueueAdapter(
           repository: item.source.repository,
           controllerRevision: config.controllerRevision,
           head: accepted.head,
+          ...(item.delivery.refresh ? { refresh: item.delivery.refresh } : {}),
           actions: ["gates", "mirror", "publish", "merge", "cleanup"],
         },
         policy: item.delivery.policy,

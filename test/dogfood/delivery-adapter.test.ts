@@ -246,6 +246,33 @@ async function localRemoteRepositoryFixture() {
   return { current, git };
 }
 
+async function commitCandidate(
+  current: DeliveryConfig,
+  git: (args: string[], cwd?: string) => Promise<string>,
+  contents = "reviewed refresh\n",
+) {
+  await writeFile(resolve(current.worktree, "refresh.txt"), contents);
+  await git(["add", "refresh.txt"], current.worktree);
+  await git(
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "reviewed refresh",
+    ],
+    current.worktree,
+  );
+  const candidate = await git(["rev-parse", "HEAD"], current.worktree);
+  await git(["checkout", "--detach", candidate], current.reviewWorktree);
+  current.candidateHead = candidate;
+  current.authority.head = candidate;
+  return candidate;
+}
+
 async function stateSnapshot(directory: string) {
   const names = (await readdir(directory)).sort();
   return Object.fromEntries(
@@ -564,6 +591,215 @@ it("refuses to edit a draft that appeared after an absence observation", async (
   );
   expect(effects).toEqual([]);
 });
+
+it("refreshes one exact existing draft forward under its observed remote lease", async () => {
+  const { current, git } = await localRemoteRepositoryFixture();
+  const priorHead = current.candidateHead;
+  const candidate = await commitCandidate(current, git);
+  current.refresh = {
+    number: 44,
+    url: `https://github.com/${current.repository}/pull/44`,
+    head: priorHead,
+  };
+  current.authority.refresh = current.refresh;
+  const publication = publicationEvidence(current);
+  const plan = {
+    sourceBranch: publication.sourceBranch,
+    baseBranch: publication.baseBranch,
+    title: publication.title,
+    body: publication.body,
+    draft: true as const,
+  };
+  const effects: string[][] = [];
+  const remoteHead = async () =>
+    (await git(["ls-remote", "--heads", "origin", `refs/heads/${plan.sourceBranch}`])).split(
+      /\s+/,
+    )[0]!;
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson() {
+      return [
+        publicationRow(publication, {
+          headRefOid: await remoteHead(),
+          title: "earlier failed attempt",
+        }),
+      ];
+    },
+  });
+
+  await expect(adapter.observePublication(current, plan, "f".repeat(64))).resolves.toEqual({
+    state: "needs-mutation",
+    target: "pr:44",
+  });
+  await expect(adapter.observePublication(current, plan, "f".repeat(64), "pr:44")).resolves.toEqual(
+    { state: "unknown" },
+  );
+  await expect(adapter.publish(current, plan, "pr:44")).resolves.toBeUndefined();
+  expect(await remoteHead()).toBe(candidate);
+  expect(effects).toEqual([
+    [
+      "pr",
+      "edit",
+      "44",
+      "--title",
+      publication.title,
+      "--body-file",
+      resolve(current.stateDirectory, "approved-pull-request.md"),
+    ],
+  ]);
+}, 30_000);
+
+it.each([
+  ["absent", () => []],
+  [
+    "closed",
+    (publication: PublicationEvidence) => [publicationRow(publication, { state: "CLOSED" })],
+  ],
+  [
+    "duplicate",
+    (publication: PublicationEvidence) => [
+      publicationRow(publication),
+      publicationRow(publication),
+    ],
+  ],
+  [
+    "wrong number",
+    (publication: PublicationEvidence) => [publicationRow(publication, { number: 45 })],
+  ],
+  [
+    "wrong URL",
+    (publication: PublicationEvidence) => [
+      publicationRow(publication, { url: "https://github.com/foreign/repository/pull/44" }),
+    ],
+  ],
+  [
+    "wrong source",
+    (publication: PublicationEvidence) => [
+      publicationRow(publication, { headRefName: "codex/other-delivery" }),
+    ],
+  ],
+  [
+    "wrong base",
+    (publication: PublicationEvidence) => [publicationRow(publication, { baseRefName: "release" })],
+  ],
+] as const)(
+  "refuses a refresh with %s target without effects",
+  async (_mode, rowsFor) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    current.refresh = {
+      number: 44,
+      url: `https://github.com/${current.repository}/pull/44`,
+      head: "b".repeat(40),
+    };
+    current.authority.refresh = current.refresh;
+    const publication = publicationEvidence(current);
+    const plan = {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: publication.baseBranch,
+      title: publication.title,
+      body: publication.body,
+      draft: true as const,
+    };
+    const effects: string[][] = [];
+    const before = await stateSnapshot(current.stateDirectory);
+    const rows = rowsFor(publication);
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson() {
+        return rows;
+      },
+    });
+
+    await expect(
+      adapter.observePublication(current, plan, publication.planDigest),
+    ).resolves.toEqual({
+      state: "unknown",
+    });
+    await expect(adapter.publish(current, plan, "pr:44")).rejects.toThrow(
+      "publication-target-drift",
+    );
+    expect(effects).toEqual([]);
+    expect(await stateSnapshot(current.stateDirectory)).toEqual(before);
+  },
+  30_000,
+);
+
+it("refuses a refresh when the exact remote lease has already moved", async () => {
+  const { current, git } = await localRemoteRepositoryFixture();
+  const priorHead = current.candidateHead;
+  const candidate = await commitCandidate(current, git);
+  current.refresh = {
+    number: 44,
+    url: `https://github.com/${current.repository}/pull/44`,
+    head: priorHead,
+  };
+  current.authority.refresh = current.refresh;
+  await git(["push", "origin", `${candidate}:refs/heads/codex/iss-074-delivery`], current.worktree);
+  const publication = publicationEvidence(current);
+  const plan = {
+    sourceBranch: publication.sourceBranch,
+    baseBranch: publication.baseBranch,
+    title: publication.title,
+    body: publication.body,
+    draft: true as const,
+  };
+  const adapter = githubDeliveryAdapter({
+    async gh() {
+      throw new Error("unexpected provider mutation");
+    },
+    async ghJson() {
+      return [publicationRow(publication, { headRefOid: priorHead, title: "failed attempt" })];
+    },
+  });
+
+  await expect(adapter.publish(current, plan, "pr:44")).rejects.toThrow(
+    "publication-refresh-lease-drift",
+  );
+}, 30_000);
+
+it("refuses a reviewed refresh that is not forward from the prior publication head", async () => {
+  const { current, git } = await localRemoteRepositoryFixture();
+  const rootHead = current.candidateHead;
+  const priorHead = await commitCandidate(current, git, "prior publication\n");
+  await git(["push", "origin", `${priorHead}:refs/heads/codex/iss-074-delivery`], current.worktree);
+  await git(["checkout", "-B", "codex/iss-074-delivery", rootHead], current.worktree);
+  const candidate = await commitCandidate(current, git, "divergent candidate\n");
+  current.refresh = {
+    number: 44,
+    url: `https://github.com/${current.repository}/pull/44`,
+    head: priorHead,
+  };
+  current.authority.refresh = current.refresh;
+  expect(candidate).not.toBe(priorHead);
+  const publication = publicationEvidence(current);
+  const plan = {
+    sourceBranch: publication.sourceBranch,
+    baseBranch: publication.baseBranch,
+    title: publication.title,
+    body: publication.body,
+    draft: true as const,
+  };
+  const adapter = githubDeliveryAdapter({
+    async gh() {
+      throw new Error("unexpected provider mutation");
+    },
+    async ghJson() {
+      return [publicationRow(publication, { headRefOid: priorHead, title: "failed attempt" })];
+    },
+  });
+
+  await expect(adapter.publish(current, plan, "pr:44")).rejects.toThrow(
+    "publication-refresh-not-forward",
+  );
+}, 30_000);
 
 it("reconciles a lost merge through the engine and the real OPEN-only checks adapter", async () => {
   const { current } = await repositoryFixture(

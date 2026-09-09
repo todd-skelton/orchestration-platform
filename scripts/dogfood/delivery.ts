@@ -14,6 +14,7 @@ export interface DeliveryAuthority {
   repository: string;
   controllerRevision: string;
   head: string;
+  refresh?: PublicationRefresh;
   actions: (typeof ACTIONS)[number][];
 }
 
@@ -27,6 +28,7 @@ export interface DeliveryConfig {
   reviewWorktree: string;
   stateDirectory: string;
   candidateHead: string;
+  refresh?: PublicationRefresh;
   requiredChecks: string[];
   authority: DeliveryAuthority;
   policy: unknown;
@@ -46,6 +48,12 @@ export interface PublicationPlan {
   title: string;
   body: string;
   draft: true;
+}
+
+export interface PublicationRefresh {
+  number: number;
+  url: string;
+  head: string;
 }
 
 export interface CleanupPlan {
@@ -224,6 +232,8 @@ async function record(directory: string, name: string, value: unknown) {
 }
 
 function validateConfig(config: DeliveryConfig) {
+  const hasRefresh =
+    typeof config === "object" && config !== null && Object.hasOwn(config, "refresh");
   demand(
     exactKeys(config, [
       "run",
@@ -235,6 +245,7 @@ function validateConfig(config: DeliveryConfig) {
       "reviewWorktree",
       "stateDirectory",
       "candidateHead",
+      ...(hasRefresh ? ["refresh"] : []),
       "requiredChecks",
       "authority",
       "policy",
@@ -260,6 +271,18 @@ function validateConfig(config: DeliveryConfig) {
     typeof config.controllerRevision === "string" && SHA.test(config.controllerRevision),
     "invalid-controller-revision",
   );
+  if (hasRefresh)
+    demand(
+      exactKeys(config.refresh, ["number", "url", "head"]) &&
+        Number.isSafeInteger(config.refresh.number) &&
+        config.refresh.number > 0 &&
+        typeof config.refresh.url === "string" &&
+        config.refresh.url.startsWith("https://") &&
+        typeof config.refresh.head === "string" &&
+        SHA.test(config.refresh.head) &&
+        config.refresh.head !== config.candidateHead,
+      "malformed-publication-refresh",
+    );
   demand(
     Array.isArray(config.requiredChecks) &&
       config.requiredChecks.length >= 3 &&
@@ -270,6 +293,8 @@ function validateConfig(config: DeliveryConfig) {
     "invalid-required-checks",
   );
   const authority = config.authority;
+  const authorityHasRefresh =
+    typeof authority === "object" && authority !== null && Object.hasOwn(authority, "refresh");
   demand(
     authority &&
       exactKeys(authority, [
@@ -279,6 +304,7 @@ function validateConfig(config: DeliveryConfig) {
         "repository",
         "controllerRevision",
         "head",
+        ...(authorityHasRefresh ? ["refresh"] : []),
         "actions",
       ]) &&
       authority.schemaVersion === DELIVERY_AUTHORITY_SCHEMA &&
@@ -288,6 +314,12 @@ function validateConfig(config: DeliveryConfig) {
       authority.repository === config.repository &&
       authority.controllerRevision === config.controllerRevision &&
       authority.head === config.candidateHead &&
+      authorityHasRefresh === hasRefresh &&
+      (!hasRefresh ||
+        (exactKeys(authority.refresh, ["number", "url", "head"]) &&
+          authority.refresh.number === config.refresh?.number &&
+          authority.refresh.url === config.refresh?.url &&
+          authority.refresh.head === config.refresh?.head)) &&
       Array.isArray(authority.actions) &&
       authority.actions.length === ACTIONS.length &&
       ACTIONS.every((action) => authority.actions.filter((item) => item === action).length === 1),
@@ -421,7 +453,12 @@ async function confirmPublication(
 ) {
   // The adapter owns the opaque target; the engine durably binds it before any effect.
   const intent = await optionalRecord(directory, "publication-intent");
-  const operation = digest({ name: "publication", head: config.candidateHead, planDigest });
+  const operation = digest({
+    name: "publication",
+    head: config.candidateHead,
+    planDigest,
+    ...(config.refresh ? { refresh: config.refresh } : {}),
+  });
   let target: string | undefined;
   if (intent !== ABSENT_RECORD) {
     demand(
@@ -626,6 +663,11 @@ export async function deliveryStep(
   policy: DeliveryPolicyAdapter,
 ) {
   validateConfig(config);
+  if (config.refresh)
+    demand(
+      config.refresh.url === adapter.publicationUrl(config, config.refresh.number),
+      "malformed-publication-refresh",
+    );
   const directory = await realpath(config.stateDirectory);
   const fingerprint = digest(config);
   const pinned = await optionalRecord(directory, "delivery-config");

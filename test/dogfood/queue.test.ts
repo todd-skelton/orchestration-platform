@@ -7,6 +7,7 @@ import {
   participantIdentity,
   queueDigest,
   queueStep,
+  validateQueueConfig,
   type QueueAdapter,
   type QueueConfig,
   type QueueItem,
@@ -104,9 +105,55 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+it("binds a refresh to a later attempt whose exact prior head is its source base", async () => {
+  const current = await fixture();
+  const item = current.items[0]!;
+  item.implementationAttempt = 1;
+  item.delivery.refresh = {
+    number: 341,
+    url: "https://example.test/pull/341",
+    head: item.base,
+  };
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  expect(() => validateQueueConfig(current.config)).toThrow("malformed-publication-refresh");
+
+  item.implementationAttempt = 2;
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  expect(() => validateQueueConfig(current.config)).not.toThrow();
+
+  item.delivery.refresh.head = "f".repeat(40);
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  expect(() => validateQueueConfig(current.config)).toThrow("malformed-publication-refresh");
+});
+
 it("advances every finite item and completed restart repeats no effects", async () => {
   const current = await fixture(2);
-  const history: QueueParticipant[] = [];
+  const first = current.items[0]!;
+  const priorHistory = [
+    {
+      ...participant(1, first.id, "source", "author", "passed"),
+      id: "prior-source-author",
+    },
+    {
+      ...participant(2, first.id, "source", "reviewer", "failed"),
+      id: "prior-source-reviewer",
+      usage: {
+        inputTokens: { status: "known" as const, value: 8 },
+        outputTokens: { status: "known" as const, value: 3 },
+        costUsd: { status: "known" as const, value: 1.25 },
+      },
+    },
+  ];
+  first.implementationAttempt = 2;
+  first.delivery.refresh = {
+    number: 341,
+    url: "https://example.test/pull/341",
+    head: first.base,
+  };
+  current.config.initialHistory = priorHistory;
+  current.config.authority.lineageDigest = queueDigest(priorHistory.map(participantIdentity));
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  const history: QueueParticipant[] = structuredClone(priorHistory);
   const calls: string[] = [];
   const deliveryEffects = new Set<string>();
   const adapter: QueueAdapter = {
@@ -128,7 +175,7 @@ it("advances every finite item and completed restart repeats no effects", async 
       );
       return {
         status: "accepted",
-        head: item.id === "synthetic-1" ? "b".repeat(40) : "c".repeat(40),
+        head: item.id === "synthetic-1" ? "e".repeat(40) : "c".repeat(40),
         reviewId: `${item.id}-source-reviewer`,
         stateDirectory: resolve(current.root, `${item.id}-source`),
       };
@@ -158,7 +205,7 @@ it("advances every finite item and completed restart repeats no effects", async 
     run: current.config.run,
     cursor: 2,
     items: 2,
-    participants: 4,
+    participants: 6,
   });
   expect(calls).toEqual([
     "authority",
@@ -177,13 +224,14 @@ it("advances every finite item and completed restart repeats no effects", async 
 
   await expect(queueStep(current.config, adapter)).resolves.toMatchObject({
     status: "complete",
-    participants: 4,
+    participants: 6,
   });
   expect(calls.slice(7)).toEqual(["authority"]);
   expect([...deliveryEffects]).toEqual(["synthetic-1", "synthetic-2"]);
   expect(await readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8")).toBe(
     firstComplete,
   );
+  expect(JSON.parse(firstComplete).history.slice(0, 2)).toEqual(priorHistory);
 });
 
 it("hands a genuine failed source review to repair without losing participants or usage", async () => {
