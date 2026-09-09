@@ -840,6 +840,24 @@ it("persists the genuine adapter result and restarts four-participant completion
       { id: "synthetic-repair-reviewer", outcome: "passed", usage: { costUsd: unavailable } },
     ],
   });
+  expect(completed.history.map((participant: QueueParticipant) => participant.usage)).toEqual([
+    {
+      inputTokens: { status: "known", value: 11 },
+      outputTokens: { status: "known", value: 3 },
+      costUsd: unavailable,
+    },
+    {
+      inputTokens: { status: "known", value: 8 },
+      outputTokens: { status: "known", value: 4 },
+      costUsd: { status: "known", value: 1.25 },
+    },
+    { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable },
+    {
+      inputTokens: { status: "known", value: 5 },
+      outputTokens: { status: "known", value: 2 },
+      costUsd: unavailable,
+    },
+  ]);
   expect(mutationEffects).toEqual([
     "gate:typecheck",
     "gate:format:check",

@@ -353,6 +353,68 @@ it.each([
   expect(effects).toHaveLength(beforeReadOnly);
 });
 
+it.each([
+  [
+    "an unsupported top-level field",
+    (result: Record<string, any>) => (result.syntheticExtra = true),
+  ],
+  [
+    "an unsupported publication field",
+    (result: Record<string, any>) => (result.publication.syntheticExtra = true),
+  ],
+  [
+    "an unsupported cleanup field",
+    (result: Record<string, any>) => (result.cleanup.syntheticExtra = true),
+  ],
+  ["malformed cleanup", (result: Record<string, any>) => (result.cleanup.branch = "")],
+])("rejects a delivery completion result with %s before completion", async (_name, mutate) => {
+  const current = await fixture();
+  const history: QueueParticipant[] = [];
+  let deliveryCalls = 0;
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source(item) {
+      history.push(
+        participant(1, item.id, "source", "author", "passed"),
+        participant(2, item.id, "source", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        stateDirectory: item.source.stateDirectory,
+      };
+    },
+    async repair() {
+      throw new Error("repair must not run");
+    },
+    async delivery(item, accepted) {
+      deliveryCalls += 1;
+      const result = deliveryCompletion(item, accepted.head, accepted.reviewId) as Record<
+        string,
+        any
+      >;
+      mutate(result);
+      return result as Extract<QueueDeliveryResult, { status: "complete" }>;
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-delivery-completion");
+  expect(deliveryCalls).toBe(1);
+  await expect(
+    readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(
+    readFile(resolve(current.stateDirectory, "queue-complete.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 it("hands a genuine failed source review to repair without losing participants or usage", async () => {
   const current = await fixture();
   const history: QueueParticipant[] = [];

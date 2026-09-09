@@ -451,6 +451,51 @@ function validCompletedChecks(item: QueueItem, checks: unknown): checks is Check
   );
 }
 
+function validCompletedDeliveryFields(item: QueueItem, delivery: Record<string, any>) {
+  return (
+    delivery.status === "complete" &&
+    delivery.run === item.source.run &&
+    delivery.issue === item.issue &&
+    typeof delivery.head === "string" &&
+    SHA.test(delivery.head) &&
+    typeof delivery.reviewId === "string" &&
+    exactKeys(delivery.publication, ["number", "url"]) &&
+    Number.isSafeInteger(delivery.publication.number) &&
+    delivery.publication.number > 0 &&
+    typeof delivery.publication.url === "string" &&
+    delivery.publication.url.startsWith("https://") &&
+    (!item.delivery.refresh ||
+      (delivery.publication.number === item.delivery.refresh.number &&
+        delivery.publication.url === item.delivery.refresh.url)) &&
+    validCompletedChecks(item, delivery.checks) &&
+    typeof delivery.mergeCommit === "string" &&
+    SHA.test(delivery.mergeCommit) &&
+    exactKeys(delivery.cleanup, ["status", "branch"]) &&
+    delivery.cleanup.status === "confirmed" &&
+    typeof delivery.cleanup.branch === "string" &&
+    delivery.cleanup.branch.length > 0
+  );
+}
+
+function validCompletedDeliveryResult(
+  item: QueueItem,
+  delivery: unknown,
+): delivery is Extract<QueueDeliveryResult, { status: "complete" }> {
+  return (
+    exactKeys(delivery, [
+      "status",
+      "run",
+      "issue",
+      "head",
+      "reviewId",
+      "publication",
+      "checks",
+      "mergeCommit",
+      "cleanup",
+    ]) && validCompletedDeliveryFields(item, delivery)
+  );
+}
+
 function completedStageRecord(
   item: QueueItem,
   history: QueueParticipant[],
@@ -596,24 +641,7 @@ async function completedItemReceipt(
       completed.issue === item.issue &&
       completed.base === item.base &&
       completed.stage === "delivery" &&
-      completed.status === "complete" &&
-      completed.run === item.source.run &&
-      SHA.test(completed.head) &&
-      typeof completed.reviewId === "string" &&
-      exactKeys(completed.publication, ["number", "url"]) &&
-      Number.isSafeInteger(completed.publication.number) &&
-      completed.publication.number > 0 &&
-      typeof completed.publication.url === "string" &&
-      completed.publication.url.startsWith("https://") &&
-      (!item.delivery.refresh ||
-        (completed.publication.number === item.delivery.refresh.number &&
-          completed.publication.url === item.delivery.refresh.url)) &&
-      validCompletedChecks(item, completed.checks) &&
-      SHA.test(completed.mergeCommit) &&
-      exactKeys(completed.cleanup, ["status", "branch"]) &&
-      completed.cleanup.status === "confirmed" &&
-      typeof completed.cleanup.branch === "string" &&
-      completed.cleanup.branch.length > 0 &&
+      validCompletedDeliveryFields(item, completed) &&
       Array.isArray(completed.history),
     "malformed-completed-item",
   );
@@ -932,12 +960,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         issue: item.issue,
         cursor: index,
       };
-    demand(
-      delivery.run === item.source.run &&
-        delivery.issue === item.issue &&
-        validCompletedChecks(item, delivery.checks),
-      "malformed-delivery-completion",
-    );
+    demand(validCompletedDeliveryResult(item, delivery), "malformed-delivery-completion");
     await record(directory, `${prefix}-complete`, completedStageRecord(item, history, delivery));
   }
 
