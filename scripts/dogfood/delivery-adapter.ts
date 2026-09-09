@@ -140,6 +140,34 @@ function matchesPublicationTarget(row: any, config: DeliveryConfig, plan: Public
   );
 }
 
+function matchesPublicationIdentity(
+  row: any,
+  config: DeliveryConfig,
+  plan: PublicationPlan,
+  number: number,
+) {
+  return (
+    row?.number === number &&
+    row.url === publicationUrl(config, number) &&
+    row.headRefName === plan.sourceBranch &&
+    row.baseRefName === plan.baseBranch
+  );
+}
+
+function publicationRefresh(config: DeliveryConfig) {
+  const refresh = config.refresh;
+  if (refresh === undefined) return undefined;
+  if (
+    !Number.isSafeInteger(refresh.number) ||
+    refresh.number <= 0 ||
+    refresh.url !== publicationUrl(config, refresh.number) ||
+    !SHA.test(refresh.head) ||
+    refresh.head === config.candidateHead
+  )
+    throw new DeliveryBlocked("malformed-publication-refresh");
+  return refresh;
+}
+
 function matchesPublication(row: any, current: PublicationEvidence, config: DeliveryConfig) {
   return (
     current.repository === config.repository &&
@@ -271,6 +299,31 @@ async function remoteBranchHead(config: DeliveryConfig, branch: string) {
   const match = rows[0]!.match(/^([a-f0-9]{40})\s+refs\/heads\/(.+)$/);
   if (!match || match[2] !== branch) throw new DeliveryBlocked("malformed-remote-cleanup-branch");
   return match[1];
+}
+
+async function publicationRemoteBranchHead(config: DeliveryConfig, branch: string) {
+  await assertGitTarget(config, config.worktree);
+  const output = await git(
+    config,
+    ["ls-remote", "--heads", "origin", `refs/heads/${branch}`],
+    config.worktree,
+  );
+  const match = output.match(/^([a-f0-9]{40})\s+refs\/heads\/(.+)$/);
+  if (!match || match[2] !== branch || output.split(/\r?\n/).length !== 1)
+    throw new DeliveryBlocked("publication-refresh-lease-unverified");
+  return match[1];
+}
+
+async function assertForwardRefresh(config: DeliveryConfig, priorHead: string) {
+  try {
+    await run(
+      "git",
+      ["merge-base", "--is-ancestor", priorHead, config.candidateHead],
+      config.worktree,
+    );
+  } catch {
+    throw new DeliveryBlocked("publication-refresh-not-forward");
+  }
 }
 
 export async function assertControllerExecutor(config: DeliveryConfig, executingRoot: string) {
@@ -441,6 +494,7 @@ export function githubDeliveryAdapter(
     async observePublication(config, plan, planDigest, target) {
       try {
         if (target !== undefined && !validPublicationTarget(target)) return { state: "unknown" };
+        const refresh = publicationRefresh(config);
         const rows = await commands.ghJson(config, [
           "pr",
           "list",
@@ -454,10 +508,32 @@ export function githubDeliveryAdapter(
           "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body",
         ]);
         if (!Array.isArray(rows) || rows.length > 1) return { state: "unknown" };
-        if (rows.length === 0)
+        if (rows.length === 0) {
+          if (refresh) return { state: "unknown" };
           return target === undefined || target === "absent"
             ? { state: "needs-mutation", target: "absent" }
             : { state: "unknown" };
+        }
+        if (refresh) {
+          const row = rows[0];
+          const selectedTarget = `pr:${refresh.number}`;
+          if (
+            !matchesPublicationIdentity(row, config, plan, refresh.number) ||
+            row?.state !== "OPEN" ||
+            row?.isDraft !== true ||
+            (target !== undefined && target !== selectedTarget)
+          )
+            return { state: "unknown" };
+          if (row.headRefOid === config.candidateHead) {
+            const value = publication(row, config, plan, planDigest);
+            return value
+              ? { state: "confirmed", value }
+              : { state: "needs-mutation", target: selectedTarget };
+          }
+          return row.headRefOid === refresh.head && target === undefined
+            ? { state: "needs-mutation", target: selectedTarget }
+            : { state: "unknown" };
+        }
         const value = publication(rows[0], config, plan, planDigest);
         if (
           !matchesPublicationTarget(rows[0], config, plan) ||
@@ -477,9 +553,10 @@ export function githubDeliveryAdapter(
       if (!(await verifyWorkspace(config, config.candidateHead)))
         throw new DeliveryBlocked("candidate-workspace-drift");
       if (!validPublicationTarget(target)) throw new DeliveryBlocked("publication-target-drift");
+      const refresh = publicationRefresh(config);
       const branch = await git(config, ["branch", "--show-current"], config.worktree);
       if (branch !== plan.sourceBranch) throw new DeliveryBlocked("publication-branch-mismatch");
-      const readTarget = async () => {
+      const readTarget = async (expectedHead?: string) => {
         const rows = await commands.ghJson(config, [
           "pr",
           "list",
@@ -498,7 +575,12 @@ export function githubDeliveryAdapter(
           (target === "absent"
             ? rows.length !== 0
             : rows.length !== 1 ||
-              !matchesPublicationTarget(rows[0], config, plan) ||
+              (refresh
+                ? !matchesPublicationIdentity(rows[0], config, plan, refresh.number) ||
+                  (expectedHead === undefined
+                    ? ![refresh.head, config.candidateHead].includes(rows[0].headRefOid)
+                    : rows[0].headRefOid !== expectedHead)
+                : !matchesPublicationTarget(rows[0], config, plan)) ||
               target !== `pr:${rows[0].number}` ||
               rows[0].state !== "OPEN" ||
               rows[0].isDraft !== true ||
@@ -508,19 +590,34 @@ export function githubDeliveryAdapter(
           throw new DeliveryBlocked("publication-target-drift");
         return rows;
       };
-      await readTarget();
+      if (refresh && target !== `pr:${refresh.number}`)
+        throw new DeliveryBlocked("publication-target-drift");
+      const initialRows = await readTarget(refresh ? undefined : config.candidateHead);
       const body = await stagedFile(config, "approved-pull-request.md", plan.body);
-      await run(
-        "git",
-        [
-          "push",
-          "--no-follow-tags",
-          "origin",
-          `${config.candidateHead}:refs/heads/${plan.sourceBranch}`,
-        ],
-        config.worktree,
-      );
-      const rows = await readTarget();
+      const observedHead = initialRows[0]?.headRefOid;
+      if (!refresh || observedHead === refresh.head) {
+        if (refresh) {
+          await assertForwardRefresh(config, refresh.head);
+          if ((await publicationRemoteBranchHead(config, plan.sourceBranch)) !== refresh.head)
+            throw new DeliveryBlocked("publication-refresh-lease-drift");
+        }
+        await run(
+          "git",
+          [
+            "push",
+            "--no-follow-tags",
+            ...(refresh
+              ? [`--force-with-lease=refs/heads/${plan.sourceBranch}:${refresh.head}`]
+              : []),
+            "origin",
+            `${config.candidateHead}:refs/heads/${plan.sourceBranch}`,
+          ],
+          config.worktree,
+        );
+      } else if (observedHead !== config.candidateHead) {
+        throw new DeliveryBlocked("publication-target-drift");
+      }
+      const rows = await readTarget(config.candidateHead);
       if (rows.length === 1) {
         await commands.gh(config, [
           "pr",

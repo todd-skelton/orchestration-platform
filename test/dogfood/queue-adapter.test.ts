@@ -5,6 +5,7 @@ import { afterEach, expect, it } from "vitest";
 import { queueUsage, repositoryQueueAdapter } from "../../scripts/dogfood/queue.js";
 import type {
   DeliveryAdapter,
+  DeliveryConfig,
   DeliveryPlan,
   PublicationEvidence,
 } from "../../scripts/dogfood/delivery.js";
@@ -209,6 +210,12 @@ it("directly composes the accepted setup transition before source work", async (
 
 it("directly composes the accepted flow and delivery transitions with exact identities", async () => {
   const current = await fixture();
+  current.item.implementationAttempt = 2;
+  current.item.delivery.refresh = {
+    number: 337,
+    url: "https://example.test/pull/337",
+    head: current.item.base,
+  };
   await Promise.all([
     writeFile(current.source.author.promptFile, "author prompt"),
     writeFile(current.source.reviewer.promptFile, "review prompt"),
@@ -311,9 +318,11 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     body: plan.publication.body,
     planDigest: publishedDigest,
   });
+  let capturedDelivery: DeliveryConfig | undefined;
   const delivery: DeliveryAdapter = {
     publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
     async source(config) {
+      capturedDelivery = config;
       return {
         head: candidate,
         reviewId: "source-reviewer",
@@ -423,6 +432,10 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     published: true,
     merged: true,
     cleaned: true,
+  });
+  expect(capturedDelivery).toMatchObject({
+    refresh: current.item.delivery.refresh,
+    authority: { refresh: current.item.delivery.refresh },
   });
 });
 

@@ -344,6 +344,59 @@ it("does not retry an uncertain publication and reconciles it on restart", async
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
 });
 
+it("reconciles a delayed reviewed refresh without repeating its publication effect", async () => {
+  const f = await fixture();
+  const refresh = {
+    number: f.publication.number,
+    url: f.publication.url,
+    head: "d".repeat(40),
+  };
+  f.config.refresh = refresh;
+  f.config.authority.refresh = refresh;
+  let visible = false;
+  let publications = 0;
+  f.adapter.observePublication = async (_config, _plan, _digest, target) => {
+    if (visible) return { state: "confirmed", value: f.publication };
+    return target === undefined
+      ? { state: "needs-mutation", target: `pr:${refresh.number}` }
+      : { state: "unknown" };
+  };
+  f.adapter.publish = async () => {
+    publications += 1;
+  };
+
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "publication-outcome-unknown",
+  );
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "publication-state-unknown",
+  );
+  expect(publications).toBe(1);
+  visible = true;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "complete",
+    head,
+    reviewId: "review-fixture",
+  });
+  expect(publications).toBe(1);
+  expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+});
+
+it("rejects refresh authority substitution before source or provider access", async () => {
+  const f = await fixture();
+  f.config.refresh = {
+    number: 44,
+    url: "https://example.test/pull/44",
+    head: "d".repeat(40),
+  };
+  f.config.authority.refresh = { ...f.config.refresh, number: 45 };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "unauthorized-delivery",
+  );
+  expect(f.calls).toEqual([]);
+  expectNoProviderAction(f.calls);
+});
+
 it("persists a selected publication target and rejects its replacement on restart", async () => {
   const f = await fixture();
   const provider = githubDeliveryAdapter({
