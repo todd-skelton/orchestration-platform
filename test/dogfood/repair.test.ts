@@ -165,6 +165,14 @@ it.each([
     },
     "source-finding-location-outside-candidate",
   ],
+  [
+    "authority-bound duplicate source paths",
+    (f: any): void => {
+      f.config.sourcePaths = [sourceFile, sourceFile];
+      f.config.authority.sourcePaths = [sourceFile, sourceFile];
+    },
+    "malformed-source-footprint",
+  ],
 ] as const)("refuses %s before durable repair intent", async (_name, mutate, reason) => {
   const current = await fixture();
   mutate(current);

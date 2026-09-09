@@ -351,7 +351,9 @@ export function validateRepairConfig(config: RepairConfig) {
     "malformed-repair-footprint",
   );
   demand(
-    strings(config.sourcePaths, 32, 500) && config.sourcePaths.every(validRepairReviewPath),
+    strings(config.sourcePaths, 32, 500) &&
+      config.sourcePaths.every(validRepairReviewPath) &&
+      new Set(config.sourcePaths).size === config.sourcePaths.length,
     "malformed-source-footprint",
   );
   demand(
