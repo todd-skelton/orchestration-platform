@@ -447,8 +447,92 @@ it.each([
   30_000,
 );
 
-it("calls the reviewed flow through a complete correction and reconciles without duplicate effects", async () => {
+it("completes a selected external source repair locally and reconciles without duplicate effects", async () => {
   const current = await realFixture();
+  const selectedState = resolve(dirname(current.paths.priorState), "selected-source-review");
+  const original = current.source.reviewerAttempt.id;
+  const selected = "synthetic-external-selected-reviewer";
+  const incomplete = {
+    v: 2,
+    head: current.repairBase,
+    complete: false,
+    scope: "complete",
+    profile: "contract",
+    g0: ["PASS", "complete evidence did not fit"],
+    pairs: [],
+    findings: [],
+    notes: [],
+  };
+  await mkdir(selectedState);
+  await Promise.all([
+    writeFile(
+      resolve(current.paths.priorState, "reviewer-terminal.json"),
+      JSON.stringify({
+        id: original,
+        status: "failed",
+        head: current.repairBase,
+        summary: JSON.stringify(incomplete),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-attempt.json"),
+      JSON.stringify({
+        id: selected,
+        pid: 303,
+        trace: resolve(selectedState, "synthetic-external-reviewer.jsonl"),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-terminal.json"),
+      JSON.stringify({
+        id: selected,
+        status: "failed",
+        head: current.repairBase,
+        summary: reviewSummary("complete", current.repairBase),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "source-review-binding.json"),
+      JSON.stringify(
+        sourceReviewBinding({
+          run: current.source.configRecord.config.run,
+          stateDirectory: current.paths.priorState,
+          configFingerprint: current.source.configRecord.fingerprint,
+          authorAttempt: current.source.authorAttempt.id,
+          candidateHead: current.repairBase,
+          originalReview: original,
+          originalDisposition: "incomplete",
+          selectedReview: selected,
+          selectedDisposition: "failed",
+        }),
+      ),
+    ),
+  ]);
+  current.config.selectedReviewStateDirectory = selectedState;
+  current.config.history.push({
+    ordinal: 3,
+    id: selected,
+    role: "reviewer",
+    outcome: "failed",
+    usage: { status: "unavailable" },
+  });
+  current.config.admission = {
+    consumed: 3,
+    ceiling: 5,
+    reservations: [
+      { role: "author", ordinal: 4 },
+      { role: "reviewer", ordinal: 5 },
+    ],
+  };
+  Object.assign(current.config.authority, {
+    selectedReviewStateDirectory: selectedState,
+    admission: current.config.admission,
+    historyDigest: repairDigest(current.config.history),
+  });
+  Object.assign(current.config.authority.source, {
+    reviewerAttempt: selected,
+    reviewId: selected,
+  });
   const launches: Role[] = [];
   const observations: Role[] = [];
   const statuses: Record<Role, Terminal["status"]> = {
@@ -475,7 +559,7 @@ it("calls the reviewed flow through a complete correction and reconciles without
         expect(prompt).toContain(current.mainBase);
         expect(prompt).toContain("Synthetic fixture confirms one bounded fixable defect");
       } else {
-        expect(prompt).toContain("synthetic-prior-reviewer");
+        expect(prompt).toContain(selected);
         expect(prompt).toContain('"scope":"delta"');
       }
       return {
@@ -504,6 +588,10 @@ it("calls the reviewed flow through a complete correction and reconciles without
     },
   };
   const adapter = reviewedRepairAdapter(native);
+  await expect(adapter.loadSourceReview(current.config)).resolves.toMatchObject({
+    reviewerAttempt: { id: selected },
+    terminal: { id: selected, status: "failed" },
+  });
   await expect(repairStep(current.config, adapter, repairPolicy())).resolves.toMatchObject({
     status: "observing-author",
   });
@@ -521,7 +609,7 @@ it("calls the reviewed flow through a complete correction and reconciles without
   statuses.reviewer = "passed";
   await expect(repairStep(current.config, adapter, repairPolicy())).resolves.toMatchObject({
     status: "awaiting-delivery",
-    predecessorReviewId: "synthetic-prior-reviewer",
+    predecessorReviewId: selected,
   });
   await expect(repairStep(current.config, adapter, repairPolicy())).resolves.toMatchObject({
     status: "awaiting-delivery",
@@ -535,9 +623,9 @@ it("calls the reviewed flow through a complete correction and reconciles without
     JSON.parse(await readFile(resolve(current.paths.state, "author-launch-context.json"), "utf8")),
   ).toMatchObject({
     role: "author",
-    ordinal: 3,
+    ordinal: 4,
     head: current.repairBase,
-    predecessorReviewId: "synthetic-prior-reviewer",
+    predecessorReviewId: selected,
   });
 }, 30_000);
 

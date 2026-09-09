@@ -165,6 +165,7 @@ async function loadArtifacts(
   config: RepairConfig,
   directory: string,
   base: string,
+  selectedReviewStateDirectory?: string,
 ): Promise<SourceReviewArtifacts> {
   const [configRecord, candidate, authorAttempt] = await Promise.all([
     readJson(directory, "config"),
@@ -176,7 +177,7 @@ async function loadArtifacts(
   try {
     ({ attempt: reviewerAttempt, terminal } = await selectedSourceReview(
       configRecord.config,
-      config.selectedReviewStateDirectory ?? directory,
+      selectedReviewStateDirectory ?? directory,
     ));
   } catch (error) {
     throw new RepairBlocked(
@@ -320,7 +321,12 @@ export function reviewedRepairAdapter(native: Adapter): RepairAdapter {
       await assertBoundedRoots(config);
       const prompts = await sourcePromptContents(config);
       return {
-        ...(await loadArtifacts(config, config.sourceStateDirectory, config.mainBase)),
+        ...(await loadArtifacts(
+          config,
+          config.sourceStateDirectory,
+          config.mainBase,
+          config.selectedReviewStateDirectory,
+        )),
         promptContents: prompts,
       };
     },
