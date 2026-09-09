@@ -357,9 +357,7 @@ export function validateRepairConfig(config: RepairConfig) {
     "malformed-source-footprint",
   );
   demand(
-    config.sourcePaths.every(
-      (path) => config.allowedPaths.includes(path),
-    ),
+    config.sourcePaths.every((path) => config.allowedPaths.includes(path)),
     "malformed-source-footprint",
   );
   demand(strings(config.acceptanceCriteria, 32, 1_000), "malformed-acceptance-criteria");
