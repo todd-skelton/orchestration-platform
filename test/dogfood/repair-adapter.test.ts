@@ -479,7 +479,7 @@ it("completes a selected external source repair locally and reconciles without d
       JSON.stringify({
         id: selected,
         pid: 303,
-        trace: resolve(selectedState, "synthetic-external-reviewer.jsonl"),
+        trace: resolve(selectedState, "reviewer.jsonl"),
       }),
     ),
     writeFile(
