@@ -190,11 +190,33 @@ it("invokes completion and a completed restart without repeating component effec
   expect(first.code).toBe(0);
   expect(JSON.parse(first.stdout)).toMatchObject({ status: "complete", participants: 2 });
   const calls = await readFile(resolve(current.root, "command-calls.json"), "utf8");
+  expect(JSON.parse(calls)).toEqual({ setup: 1, source: 1, delivery: 1 });
+  const completionPath = resolve(current.root, "queue", "item-1-complete.json");
+  const queueCompletePath = resolve(current.root, "queue", "queue-complete.json");
+  const completionBytes = await readFile(completionPath, "utf8");
+  const queueCompleteBytes = await readFile(queueCompletePath, "utf8");
+  expect(JSON.parse(completionBytes)).toMatchObject({
+    status: "complete",
+    run: "synthetic-command-item",
+    issue: "fixture-338",
+    checks: [
+      { name: "linux", bucket: "pass" },
+      { name: "windows", bucket: "pass" },
+      { name: "macos", bucket: "pass" },
+    ],
+  });
+  expect(JSON.parse(completionBytes).checks).toEqual([
+    { name: "linux", bucket: "pass", link: "https://example.test/check/linux" },
+    { name: "windows", bucket: "pass", link: "https://example.test/check/windows" },
+    { name: "macos", bucket: "pass", link: "https://example.test/check/macos" },
+  ]);
 
   const restarted = await run(current.request);
   expect(restarted.code).toBe(0);
   expect(JSON.parse(restarted.stdout)).toMatchObject({ status: "complete", participants: 2 });
   expect(await readFile(resolve(current.root, "command-calls.json"), "utf8")).toBe(calls);
+  expect(await readFile(completionPath, "utf8")).toBe(completionBytes);
+  expect(await readFile(queueCompletePath, "utf8")).toBe(queueCompleteBytes);
 }, 30_000);
 
 it("keeps the command-to-component trace within three non-test files", async () => {

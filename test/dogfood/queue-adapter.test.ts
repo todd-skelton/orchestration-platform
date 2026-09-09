@@ -486,6 +486,7 @@ it("persists the genuine adapter result and restarts four-participant completion
   let sourceHead = base;
   let reviewHead = base;
   let pid = 100;
+  const workerEffects: string[] = [];
   const native: Adapter = {
     async preflight() {},
     async git(worktree, args) {
@@ -509,6 +510,7 @@ it("persists the genuine adapter result and restarts four-participant completion
       return "";
     },
     async launch(role) {
+      workerEffects.push(`source:${role}`);
       return {
         id: `synthetic-source-${role}`,
         pid: pid++,
@@ -575,6 +577,7 @@ it("persists the genuine adapter result and restarts four-participant completion
           usage: { input_tokens: 5, output_tokens: 2 },
         },
       ];
+      workerEffects.push(...rows.map((row) => `repair:${row.role}`));
       for (const row of rows) {
         await Promise.all([
           writeFile(
@@ -822,6 +825,24 @@ it("persists the genuine adapter result and restarts four-participant completion
   const completed = JSON.parse(
     await readFile(resolve(current.paths.queue, "item-1-complete.json"), "utf8"),
   );
+  expect(Object.keys(completed).sort()).toEqual(
+    [
+      "schemaVersion",
+      "item",
+      "issue",
+      "base",
+      "stage",
+      "history",
+      "status",
+      "run",
+      "head",
+      "reviewId",
+      "publication",
+      "checks",
+      "mergeCommit",
+      "cleanup",
+    ].sort(),
+  );
   expect(completed).toMatchObject({
     status: "complete",
     run: current.source.run,
@@ -858,16 +879,30 @@ it("persists the genuine adapter result and restarts four-participant completion
       costUsd: unavailable,
     },
   ]);
+  expect(completed.checks).toEqual(
+    current.source.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: `https://example.test/check/${name}`,
+    })),
+  );
   expect(mutationEffects).toEqual([
     "gate:typecheck",
     "gate:format:check",
     "gate:planning:check",
     "draft",
-    "publish",
     "gate:planning:board-check",
+    "publish",
     "merge",
     "cleanup",
   ]);
+  expect(workerEffects).toEqual([
+    "source:author",
+    "source:reviewer",
+    "repair:author",
+    "repair:reviewer",
+  ]);
+  expect(componentEntries).toEqual(["authority", "setup", "source", "repair", "delivery"]);
   const queueFiles = (await readdir(current.paths.queue)).sort();
   const originalBytes = await Promise.all(
     queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
@@ -884,6 +919,12 @@ it("persists the genuine adapter result and restarts four-participant completion
   ).resolves.toMatchObject({ status: "complete", participants: 4 });
   expect(componentEntries).toHaveLength(entriesBeforeReadOnly);
   expect(mutationEffects).toHaveLength(effectsAfterCompletion);
+  expect(workerEffects).toEqual([
+    "source:author",
+    "source:reviewer",
+    "repair:author",
+    "repair:reviewer",
+  ]);
   expect((await readdir(current.paths.queue)).sort()).toEqual(queueFiles);
   expect(
     await Promise.all(

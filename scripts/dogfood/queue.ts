@@ -308,6 +308,26 @@ export function validateQueueConfig(config: QueueConfig) {
         new Set(item.delivery.requiredChecks).size === item.delivery.requiredChecks.length,
       "malformed-queue-item",
     );
+    demand(
+      object(item.setup) &&
+        object(item.source) &&
+        typeof item.source.run === "string" &&
+        /^[\w.-]{1,64}$/.test(item.source.run) &&
+        item.setup.run === item.source.run,
+      "queue-run-drift",
+    );
+    demand(
+      item.issue === item.source.issue && item.issue === item.setup.issue,
+      "queue-issue-drift",
+    );
+    demand(
+      Array.isArray(item.source.requiredChecks) &&
+        item.source.requiredChecks.length === item.delivery.requiredChecks.length &&
+        item.source.requiredChecks.every(
+          (name, index) => name === item.delivery.requiredChecks[index],
+        ),
+      "queue-hosted-check-drift",
+    );
     if (Object.hasOwn(item.delivery, "refresh"))
       demand(
         exactKeys(item.delivery.refresh, ["number", "url", "head"]) &&
@@ -1296,11 +1316,10 @@ export function repositoryQueueAdapter(
 
   const assertItem = (item: QueueItem) => {
     demand(
-      item.issue === item.source.issue &&
-        item.issue === item.setup.issue &&
-        item.setup.run === item.source.run,
+      item.issue === item.source.issue && item.issue === item.setup.issue,
       "queue-issue-drift",
     );
+    demand(item.setup.run === item.source.run, "queue-run-drift");
     demand(item.base === item.source.base && item.base === item.setup.base, "queue-base-drift");
     demand(item.source.owner === config.authority.controller, "queue-controller-drift");
     demand(

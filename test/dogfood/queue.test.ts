@@ -77,16 +77,20 @@ async function fixture(itemCount = 1) {
   const items = Array.from({ length: itemCount }, (_, index) => {
     const id = `synthetic-${index + 1}`;
     const base = String(index + 1).repeat(40);
+    const run = `synthetic-item-run-${index + 1}`;
+    const requiredChecks = ["linux", "windows", "macos"];
     return {
       id,
       issue: `fixture-${index + 1}`,
       base,
       implementationAttempt: index + 1,
-      setup: { issue: `fixture-${index + 1}`, base },
+      setup: { run, issue: `fixture-${index + 1}`, base },
       source: {
+        run,
         issue: `fixture-${index + 1}`,
         base,
         stateDirectory: resolve(root, `${id}-source`),
+        requiredChecks,
       },
       repair: {
         stateDirectory: resolve(root, `${id}-repair`),
@@ -99,7 +103,7 @@ async function fixture(itemCount = 1) {
           promptFile: resolve(root, "reviewer.md"),
         },
       },
-      delivery: { requiredChecks: ["linux", "windows", "macos"], policy: { kind: "fixture" } },
+      delivery: { requiredChecks: [...requiredChecks], policy: { kind: "fixture" } },
     } as unknown as QueueItem;
   });
   const config: QueueConfig = {
@@ -716,7 +720,10 @@ it.each([
   [
     "substituted issue",
     (config: QueueConfig) => {
-      config.items[0]!.issue = "fixture-substitution";
+      const item = config.items[0]!;
+      item.issue = "fixture-substitution";
+      item.source.issue = item.issue;
+      item.setup.issue = item.issue;
     },
     "unauthorized-queue",
   ],
@@ -734,11 +741,38 @@ it.each([
     },
     "unauthorized-queue",
   ],
+  [
+    "drifted item run binding",
+    (config: QueueConfig) => {
+      config.items[0]!.source.run = "synthetic-substituted-run";
+      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
+    },
+    "queue-run-drift",
+  ],
+  [
+    "drifted item issue binding",
+    (config: QueueConfig) => {
+      config.items[0]!.source.issue = "synthetic-substituted-issue";
+      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
+    },
+    "queue-issue-drift",
+  ],
+  [
+    "drifted hosted-check binding",
+    (config: QueueConfig) => {
+      config.items[0]!.source.requiredChecks = ["linux", "windows", "synthetic-other-check"];
+      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
+    },
+    "queue-hosted-check-drift",
+  ],
 ])("fails closed for %s", async (_name, mutate, reason) => {
   const current = await fixture();
   mutate(current.config);
+  let adapterEntries = 0;
   const adapter = {
-    assertAuthority: async () => {},
+    assertAuthority: async () => {
+      adapterEntries += 1;
+    },
     history: async () => [],
     setup: async () => ({ status: "ready" as const }),
     source: async () => ({ status: "observing-author" as const }),
@@ -750,6 +784,7 @@ it.each([
     }),
   };
   await expect(queueStep(current.config, adapter)).rejects.toThrow(reason);
+  expect(adapterEntries).toBe(0);
 });
 
 it("does not advance through a forged completion receipt", async () => {
