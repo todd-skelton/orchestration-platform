@@ -221,6 +221,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     const reviewed = await get("candidate");
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
     if (!attempt) {
+      let reviewerHead: string | undefined;
       requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
       // Reserve before checkout/prompt/launch; a crash here is deliberately not retried.
       const intentHead = role === "author" ? config.base : reviewed?.head;
@@ -240,17 +241,21 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
           "dirty-author",
         );
       } else {
-        requireThat(
-          reviewed && (await candidate(config, adapter)).head === reviewed.head,
-          "candidate-head-moved",
-        );
+        requireThat(reviewed, "candidate-head-moved");
+        const candidateHead = (await candidate(config, adapter)).head;
+        requireThat(candidateHead === reviewed.head, "candidate-head-moved");
+        reviewerHead = candidateHead;
         requireThat(
           (await adapter.git(config.reviewWorktree, ["status", "--porcelain"])) === "",
           "dirty-reviewer",
         );
         await adapter.git(config.reviewWorktree, ["checkout", "--detach", reviewed.head]);
       }
-      const head = role === "author" ? config.base : reviewed.head;
+      const head =
+        role === "author"
+          ? config.base
+          : reviewerHead;
+      requireThat(typeof head === "string", "review-head-identity-unknown");
       const prompt = workerPrompt(config, role, head, prompts[role === "author" ? 0 : 1]);
       attempt = await adapter.launch(role, config, prompt);
       await record(directory, `${role}-attempt`, attempt);

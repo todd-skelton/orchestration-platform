@@ -44,6 +44,17 @@ const rows = [
   { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
 ];
 const trace = (events = rows) => events.map((row) => JSON.stringify(row)).join("\n") + "\n";
+type MutableFixture<T> = T extends string
+  ? string
+  : T extends number
+    ? number
+    : T extends boolean
+      ? boolean
+      : T extends object
+        ? { -readonly [K in keyof T]: MutableFixture<T[K]> } & { extra?: unknown }
+        : T;
+type SourceReviewBindingFixture = MutableFixture<ReturnType<typeof sourceReviewBinding>>;
+type ReviewRecoveryAuthorityFixture = MutableFixture<ReturnType<typeof reviewRecoveryAuthority>>;
 it.each(["win32", "linux", "darwin"] as const)(
   "selects the observed native backend only on Windows (%s argument fixture)",
   (platform) => {
@@ -362,18 +373,27 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
   ).toThrow("malformed-worker-verdict");
 });
 it.each([
-  ["schema", (value: any) => (value.schemaVersion = "unknown")],
-  ["source run", (value: any) => (value.source.run = "other")],
-  ["source state", (value: any) => (value.source.stateDirectory = "/other")],
-  ["fingerprint", (value: any) => (value.source.configFingerprint = "f".repeat(64))],
-  ["author", (value: any) => (value.source.authorAttempt = "other-author")],
-  ["head", (value: any) => (value.source.candidateHead = "f".repeat(40))],
-  ["original", (value: any) => (value.originalReview.attempt = "other-original")],
-  ["original disposition", (value: any) => (value.originalReview.disposition = "incomplete")],
-  ["invalid original disposition", (value: any) => (value.originalReview.disposition = "failed")],
-  ["selected", (value: any) => (value.selectedReview.attempt = "other-selected")],
-  ["selected disposition", (value: any) => (value.selectedReview.disposition = "failed")],
-  ["extra", (value: any) => (value.extra = true)],
+  ["schema", (value: SourceReviewBindingFixture) => (value.schemaVersion = "unknown")],
+  ["source run", (value: SourceReviewBindingFixture) => (value.source.run = "other")],
+  ["source state", (value: SourceReviewBindingFixture) => (value.source.stateDirectory = "/other")],
+  ["fingerprint", (value: SourceReviewBindingFixture) => (value.source.configFingerprint = "f".repeat(64))],
+  ["author", (value: SourceReviewBindingFixture) => (value.source.authorAttempt = "other-author")],
+  ["head", (value: SourceReviewBindingFixture) => (value.source.candidateHead = "f".repeat(40))],
+  ["original", (value: SourceReviewBindingFixture) => (value.originalReview.attempt = "other-original")],
+  [
+    "original disposition",
+    (value: SourceReviewBindingFixture) => (value.originalReview.disposition = "incomplete"),
+  ],
+  [
+    "invalid original disposition",
+    (value: SourceReviewBindingFixture) => (value.originalReview.disposition = "failed"),
+  ],
+  ["selected", (value: SourceReviewBindingFixture) => (value.selectedReview.attempt = "other-selected")],
+  [
+    "selected disposition",
+    (value: SourceReviewBindingFixture) => (value.selectedReview.disposition = "failed"),
+  ],
+  ["extra", (value: SourceReviewBindingFixture) => (value.extra = true)],
 ] as const)("rejects substituted source-review binding %s", (_case, mutate) => {
   const input = {
     run: "trial",
@@ -385,24 +405,30 @@ it.each([
     selectedReview: "selected",
     selectedDisposition: "passed" as const,
   };
-  const binding: any = structuredClone(sourceReviewBinding(input));
+  const binding = structuredClone(sourceReviewBinding(input));
   mutate(binding);
   expect(() => validateSourceReviewBinding(binding, input)).toThrow(
     "invalid-source-review-binding",
   );
 });
 it.each([
-  ["schema", (value: any) => (value.schemaVersion = "unknown")],
-  ["controller", (value: any) => (value.controller = "other")],
-  ["run", (value: any) => (value.run = "other")],
-  ["state", (value: any) => (value.stateDirectory = "/other")],
-  ["fingerprint", (value: any) => (value.sourceConfigFingerprint = "f".repeat(64))],
-  ["author", (value: any) => (value.sourceAuthor = "other-author")],
-  ["head", (value: any) => (value.candidateHead = "f".repeat(40))],
-  ["original", (value: any) => (value.originalReview = "other-original")],
-  ["reviewer", (value: any) => (value.reviewer.model = "other")],
-  ["action", (value: any) => (value.action = "retry")],
-  ["extra", (value: any) => (value.extra = true)],
+  ["schema", (value: ReviewRecoveryAuthorityFixture) => (value.schemaVersion = "unknown")],
+  ["controller", (value: ReviewRecoveryAuthorityFixture) => (value.controller = "other")],
+  ["run", (value: ReviewRecoveryAuthorityFixture) => (value.run = "other")],
+  ["state", (value: ReviewRecoveryAuthorityFixture) => (value.stateDirectory = "/other")],
+  [
+    "fingerprint",
+    (value: ReviewRecoveryAuthorityFixture) => (value.sourceConfigFingerprint = "f".repeat(64)),
+  ],
+  ["author", (value: ReviewRecoveryAuthorityFixture) => (value.sourceAuthor = "other-author")],
+  ["head", (value: ReviewRecoveryAuthorityFixture) => (value.candidateHead = "f".repeat(40))],
+  ["original", (value: ReviewRecoveryAuthorityFixture) => (value.originalReview = "other-original")],
+  [
+    "reviewer",
+    (value: ReviewRecoveryAuthorityFixture) => (value.reviewer.model = "other"),
+  ],
+  ["action", (value: ReviewRecoveryAuthorityFixture) => (value.action = "retry")],
+  ["extra", (value: ReviewRecoveryAuthorityFixture) => (value.extra = true)],
 ] as const)("rejects substituted review-recovery authority %s", (_case, mutate) => {
   const input = {
     controller: "controller",
@@ -414,7 +440,7 @@ it.each([
     originalReview: "original",
     reviewer: { model: "reviewer", effort: "high", promptFile: "/reviewer.md" },
   };
-  const authority: any = structuredClone(reviewRecoveryAuthority(input));
+  const authority = structuredClone(reviewRecoveryAuthority(input));
   mutate(authority);
   expect(() => validateReviewRecoveryAuthority(authority, input)).toThrow(
     "invalid-review-recovery-authority",
