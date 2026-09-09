@@ -201,9 +201,7 @@ function validRepositoryRepairTemplate(item: QueueItem) {
     item.repair.sourcePaths.length <= 32 &&
     item.repair.sourcePaths.every(
       (path) =>
-        validRepairReviewPath(path) &&
-        allowedPaths.includes(path) &&
-        validDogfoodReviewPath(path),
+        validRepairReviewPath(path) && allowedPaths.includes(path) && validDogfoodReviewPath(path),
     ) &&
     new Set(item.repair.sourcePaths).size === item.repair.sourcePaths.length
   );
@@ -324,9 +322,7 @@ export function validateQueueConfig(config: QueueConfig) {
         ]) &&
         Array.isArray(item.delivery.requiredChecks) &&
         item.delivery.requiredChecks.length >= 3 &&
-        item.delivery.requiredChecks.every(
-          (name) => typeof name === "string" && name.length > 0,
-        ) &&
+        item.delivery.requiredChecks.every((name) => typeof name === "string" && name.length > 0) &&
         new Set(item.delivery.requiredChecks).size === item.delivery.requiredChecks.length,
       "malformed-queue-item",
     );
@@ -346,7 +342,9 @@ export function validateQueueConfig(config: QueueConfig) {
     demand(
       Array.isArray(item.source.requiredChecks) &&
         item.source.requiredChecks.length === item.delivery.requiredChecks.length &&
-        item.source.requiredChecks.every((name, index) => name === item.delivery.requiredChecks[index]),
+        item.source.requiredChecks.every(
+          (name, index) => name === item.delivery.requiredChecks[index],
+        ),
       "queue-hosted-check-drift",
     );
     if (Object.hasOwn(item.delivery, "refresh"))

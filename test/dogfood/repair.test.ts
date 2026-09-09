@@ -364,9 +364,7 @@ it.each([
   current.source.terminal.summary = JSON.stringify(report);
   refreshSourceFingerprint(current.config, current.source);
 
-  await expect(
-    repairStep(current.config, current.adapter, repairPolicy()),
-  ).resolves.toMatchObject({
+  await expect(repairStep(current.config, current.adapter, repairPolicy())).resolves.toMatchObject({
     status: "observing-author",
   });
   expect(current.dispatches()).toBe(1);
