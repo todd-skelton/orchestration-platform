@@ -391,7 +391,10 @@ it.each([
       value.source.stateDirectory = "/other";
     },
   ],
-  ["fingerprint", (value: SourceReviewBindingFixture) => (value.source.configFingerprint = "f".repeat(64))],
+  [
+    "fingerprint",
+    (value: SourceReviewBindingFixture) => (value.source.configFingerprint = "f".repeat(64)),
+  ],
   [
     "author",
     (value: SourceReviewBindingFixture): void => {

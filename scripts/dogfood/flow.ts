@@ -252,10 +252,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
         );
         await adapter.git(config.reviewWorktree, ["checkout", "--detach", reviewed.head]);
       }
-      const head =
-        role === "author"
-          ? config.base
-          : reviewerHead;
+      const head = role === "author" ? config.base : reviewerHead;
       if (typeof head !== "string") throw new Error("review-head-identity-unknown");
       const prompt = workerPrompt(config, role, head, prompts[role === "author" ? 0 : 1]);
       attempt = await adapter.launch(role, config, prompt);
