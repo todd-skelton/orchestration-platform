@@ -580,6 +580,96 @@ it("refuses a different loaded controller root before intent or direct dispatch 
   expect(effects).toBe(0);
 }, 30_000);
 
+it.each([
+  ["controller", "equal"],
+  ["controller", "descendant"],
+  ["controller", "ancestor"],
+  ["controller", "canonical alias"],
+  ["source checkout", "equal"],
+  ["source checkout", "descendant"],
+  ["source checkout", "ancestor"],
+  ["source checkout", "canonical alias"],
+  ["review checkout", "equal"],
+  ["review checkout", "descendant"],
+  ["review checkout", "ancestor"],
+  ["review checkout", "canonical alias"],
+  ["repair state", "equal"],
+  ["repair state", "descendant"],
+  ["repair state", "ancestor"],
+  ["repair state", "canonical alias"],
+  ["source review state", "equal"],
+  ["source review state", "descendant"],
+  ["source review state", "ancestor"],
+  ["source review state", "canonical alias"],
+] as const)(
+  "refuses a selected review state %s %s before poisoned report reads, intent, or dispatch effects",
+  async (rootName, relation) => {
+    const current = await realFixture();
+    const root = {
+      controller: current.config.controllerRoot,
+      "source checkout": current.paths.source,
+      "review checkout": current.paths.review,
+      "repair state": current.paths.state,
+      "source review state": current.paths.priorState,
+    }[rootName];
+    let selected = root;
+    if (relation === "descendant") {
+      selected =
+        rootName === "controller"
+          ? resolve(root, "scripts")
+          : resolve(root, "selected-review-state");
+      if (rootName !== "controller") await mkdir(selected, { recursive: true });
+    } else if (relation === "ancestor") {
+      selected = dirname(root);
+    } else if (relation === "canonical alias") {
+      selected = resolve(
+        dirname(current.paths.state),
+        `selected-review-${rootName.replaceAll(" ", "-")}`,
+      );
+      await symlink(root, selected, process.platform === "win32" ? "junction" : "dir");
+    }
+    current.config.selectedReviewStateDirectory = selected;
+    current.config.authority.selectedReviewStateDirectory = selected;
+    await writeFile(resolve(current.paths.priorState, "config.json"), "{");
+
+    let effects = 0;
+    const native = {
+      async preflight() {
+        effects += 1;
+      },
+      async git() {
+        effects += 1;
+        return "";
+      },
+      async launch() {
+        effects += 1;
+        throw new Error("unexpected launch");
+      },
+      async observe() {
+        effects += 1;
+        throw new Error("unexpected observation");
+      },
+      async checks() {
+        effects += 1;
+        throw new Error("unexpected checks");
+      },
+    } as Adapter;
+    const adapter = reviewedRepairAdapter(native);
+
+    await expect(adapter.loadSourceReview(current.config)).rejects.toMatchObject({
+      reason: "overlapping-repair-paths",
+    });
+    await expect(adapter.dispatch(current.config, {} as never)).rejects.toMatchObject({
+      reason: "overlapping-repair-paths",
+    });
+    await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(effects).toBe(0);
+  },
+  30_000,
+);
+
 it("refuses a substituted predecessor prompt before reading it or recording intent", async () => {
   const current = await realFixture();
   current.config.authority.source.author.promptFile = resolve(

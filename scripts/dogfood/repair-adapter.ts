@@ -65,6 +65,7 @@ async function assertBoundedRoots(config: RepairConfig) {
       config.reviewWorktree,
       config.stateDirectory,
       config.sourceStateDirectory,
+      ...(config.selectedReviewStateDirectory ? [config.selectedReviewStateDirectory] : []),
     ].map((path) => realpath(path)),
   );
   demand(
@@ -325,6 +326,7 @@ export function reviewedRepairAdapter(native: Adapter): RepairAdapter {
     },
     async dispatch(config, handoff) {
       await assertLoadedController(config);
+      await assertBoundedRoots(config);
       demand(!(await optionalJson(config.stateDirectory, "publication")), "repair-cannot-publish");
       try {
         return await step(
