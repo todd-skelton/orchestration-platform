@@ -1503,6 +1503,15 @@ it("directly composes the accepted repair transition from a complete fixable rev
     ],
     notes: [],
   });
+  await writeFile(
+    resolve(current.paths.source, "reviewer-terminal.json"),
+    JSON.stringify({
+      status: "failed",
+      id: "source-reviewer",
+      head: candidate,
+      summary: sourceSummary,
+    }),
+  );
   const deltaSummary = JSON.stringify({
     v: 2,
     head: repaired,

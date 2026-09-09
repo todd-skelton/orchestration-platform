@@ -101,6 +101,8 @@ async function realFixture() {
   current.source.terminal.summary = reviewSummary("complete", repairBase);
   current.source.sourceHead = repairBase;
   current.source.reviewHead = repairBase;
+  current.source.authorAttempt.trace = resolve(current.paths.priorState, "author.jsonl");
+  current.source.reviewerAttempt.trace = resolve(current.paths.priorState, "reviewer.jsonl");
   for (const [name, value] of [
     ["config", current.source.configRecord],
     ["candidate", current.source.candidate],
