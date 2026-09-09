@@ -233,12 +233,33 @@ async function worktrees(config: DeliveryConfig) {
 }
 
 async function branchHead(config: DeliveryConfig, branch: string) {
-  try {
-    return await git(config, ["show-ref", "--verify", "--hash", `refs/heads/${branch}`]);
-  } catch (error) {
-    if ((error as { code?: number }).code === 1) return undefined;
-    throw error;
+  await git(config, ["check-ref-format", "--branch", branch]);
+  const expectedRef = `refs/heads/${branch}`;
+  const { stdout, stderr } = await run(
+    "git",
+    ["for-each-ref", "--count=2", "--format=%(refname)%00%(objectname)", expectedRef],
+    config.controllerRoot,
+  );
+  const output = stdout.trim();
+  if (stderr.trim() !== "") throw new DeliveryBlocked("malformed-local-cleanup-branch");
+  if (output === "") return undefined;
+
+  const rows = output.split(/\r?\n/);
+  if (rows.length !== 1) throw new DeliveryBlocked("ambiguous-local-cleanup-branch");
+  const [actualRef, head, ...unexpected] = rows[0]!.split("\0");
+  if (
+    unexpected.length !== 0 ||
+    !actualRef ||
+    !head ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)
+  )
+    throw new DeliveryBlocked("malformed-local-cleanup-branch");
+  if (actualRef !== expectedRef) {
+    if (actualRef.startsWith(`${expectedRef}/`))
+      throw new DeliveryBlocked("ambiguous-local-cleanup-branch");
+    throw new DeliveryBlocked("malformed-local-cleanup-branch");
   }
+  return head;
 }
 
 async function remoteBranchHead(config: DeliveryConfig, branch: string) {
