@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
@@ -136,7 +137,7 @@ async function run(request: string, mocked = true) {
   try {
     const { stdout, stderr } = await execute(
       process.execPath,
-      [...(mocked ? ["--import", hook] : []), command, request],
+      [...(mocked ? ["--import", pathToFileURL(hook).href] : []), command, request],
       { timeout: 25_000, windowsHide: true },
     );
     return { code: 0, stdout, stderr };
