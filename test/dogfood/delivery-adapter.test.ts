@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -198,6 +198,61 @@ async function repositoryFixture(remote: string) {
   current.candidateHead = current.controllerRevision;
   current.authority.head = current.candidateHead;
   return { current, git };
+}
+
+async function localRemoteRepositoryFixture() {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-cleanup-")));
+  roots.push(root);
+  const current = await cleanController(root);
+  const remoteRoot = resolve(root, "remote.git");
+  await mkdir(remoteRoot);
+  await promisify(execFile)("git", ["init", "--bare", "--quiet"], {
+    cwd: remoteRoot,
+    windowsHide: true,
+  });
+  const ssh = resolve(root, "fixture-ssh.mjs");
+  await writeFile(
+    ssh,
+    [
+      'import { spawn } from "node:child_process";',
+      `const repository = ${JSON.stringify(remoteRoot)};`,
+      'const service = process.argv.some((value) => value.includes("git-receive-pack"))',
+      '  ? "receive-pack"',
+      '  : "upload-pack";',
+      'const child = spawn("git", [service, repository], { stdio: "inherit", windowsHide: true });',
+      'child.once("error", () => process.exit(1));',
+      'child.once("close", (code) => process.exit(code ?? 1));',
+      "",
+    ].join("\n"),
+  );
+  const commandPath = (value: string) => `"${value.replaceAll("\\", "/").replaceAll('"', '\\"')}"`;
+  vi.stubEnv("GIT_SSH_COMMAND", `${commandPath(process.execPath)} ${commandPath(ssh)}`);
+  vi.stubEnv("GIT_SSH_VARIANT", "ssh");
+  const git = async (args: string[], cwd = current.controllerRoot) =>
+    (await promisify(execFile)("git", args, { cwd, windowsHide: true })).stdout.trim();
+  await git([
+    "remote",
+    "add",
+    "origin",
+    "ssh://git@github.com/todd-skelton/orchestration-platform.git",
+  ]);
+  await git(["worktree", "add", "-b", "codex/iss-074-delivery", current.worktree, "HEAD"]);
+  await git(["worktree", "add", "--detach", current.reviewWorktree, "HEAD"]);
+  current.candidateHead = current.controllerRevision;
+  current.authority.head = current.candidateHead;
+  await git(["branch", "protected/fixture", current.candidateHead]);
+  await git(["push", "origin", `${current.candidateHead}:refs/heads/codex/iss-074-delivery`]);
+  await git(["push", "origin", `${current.candidateHead}:refs/heads/protected/fixture`]);
+  return { current, git };
+}
+
+async function stateSnapshot(directory: string) {
+  const names = (await readdir(directory)).sort();
+  return Object.fromEntries(
+    await Promise.all(
+      names.map(async (name) => [name, await readFile(resolve(directory, name), "utf8")]),
+    ),
+  );
 }
 
 function publicationEvidence(current: DeliveryConfig): PublicationEvidence {
@@ -598,6 +653,191 @@ it("reconciles a lost merge through the engine and the real OPEN-only checks ada
   expect(effects.filter((args) => args[1] === "checks")).toHaveLength(1);
   expect(cleaned).toBe(true);
   // Two engine cycles perform real Git identity checks; Windows CI exceeds the 5s default.
+}, 30_000);
+
+it("cleans real Git state, confirms exact absence, and restarts without effects", async () => {
+  const { current, git } = await localRemoteRepositoryFixture();
+  await writePilotEvidence(current);
+  const publication = publicationEvidence(current);
+  const plan: DeliveryPlan = {
+    gates: {
+      beforeMirror: ["typecheck", "format:check", "planning:check"],
+      afterMirror: ["planning:board-check"],
+    },
+    drafts: [{ key: "ISS-074", issue: 332, title: "issue", body: "body", attributes: {} }],
+    publication: {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: publication.baseBranch,
+      title: publication.title,
+      body: publication.body,
+      draft: true,
+    },
+    mergePolicy: { method: "squash" },
+    cleanup: {
+      worktrees: [current.worktree, current.reviewWorktree],
+      branch: publication.sourceBranch,
+    },
+  };
+  const mergeEvidence = {
+    number: publication.number,
+    head: current.candidateHead,
+    mergeCommit: "b".repeat(40),
+  };
+  const effects: string[][] = [];
+  let providerReads = 0;
+  let gateRuns = 0;
+  let draftObservations = 0;
+  let planCalls = 0;
+  let merged = false;
+  let ready = false;
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      if (args[1] === "checks")
+        return JSON.stringify(
+          current.requiredChecks.map((name) => ({
+            name,
+            bucket: "pass",
+            link: `https://example.test/check/${encodeURIComponent(name)}`,
+          })),
+        );
+      if (args[1] === "ready") ready = true;
+      if (args[1] === "merge") merged = true;
+      return "";
+    },
+    async ghJson(_config, args) {
+      providerReads += 1;
+      const row = publicationRow(publication, {
+        state: merged ? "MERGED" : "OPEN",
+        isDraft: !ready,
+        mergeCommit: merged ? { oid: "b".repeat(40) } : null,
+      });
+      return args[1] === "list" ? [row] : row;
+    },
+  });
+  adapter.runGate = async () => {
+    gateRuns += 1;
+    return "passed";
+  };
+  adapter.observeDraft = async (_config, draft) => {
+    draftObservations += 1;
+    return { state: "confirmed", value: { issue: draft.issue } };
+  };
+  const policy = {
+    async plan() {
+      planCalls += 1;
+      return plan;
+    },
+  };
+
+  await expect(adapter.observeCleanup(current, plan.cleanup, mergeEvidence)).resolves.toEqual({
+    state: "needs-mutation",
+  });
+  await expect(deliveryStep(current, adapter, policy)).resolves.toMatchObject({
+    status: "complete",
+    cleanup: { status: "confirmed", branch: plan.cleanup.branch },
+  });
+  await expect(adapter.observeCleanup(current, plan.cleanup, mergeEvidence)).resolves.toEqual({
+    state: "confirmed",
+    value: plan.cleanup,
+  });
+
+  await expect(readFile(resolve(current.worktree, "stable.txt"), "utf8")).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  await expect(
+    readFile(resolve(current.reviewWorktree, "stable.txt"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  const registered = await git(["worktree", "list", "--porcelain"]);
+  const comparablePath = (value: string) => {
+    const path = resolve(value);
+    return process.platform === "win32" ? path.toLowerCase() : path;
+  };
+  const registeredPaths = registered
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => comparablePath(line.slice(9)));
+  expect(registeredPaths).not.toContain(comparablePath(current.worktree));
+  expect(registeredPaths).not.toContain(comparablePath(current.reviewWorktree));
+  expect(
+    await git(["for-each-ref", "--format=%(objectname)", `refs/heads/${plan.cleanup.branch}`]),
+  ).toBe("");
+  expect(await git(["ls-remote", "--heads", "origin", `refs/heads/${plan.cleanup.branch}`])).toBe(
+    "",
+  );
+  expect(await git(["rev-parse", "refs/heads/protected/fixture"])).toBe(current.candidateHead);
+  expect(await git(["ls-remote", "--heads", "origin", "refs/heads/protected/fixture"])).toBe(
+    `${current.candidateHead}\trefs/heads/protected/fixture`,
+  );
+
+  const tree = await git(["rev-parse", `${current.candidateHead}^{tree}`]);
+  const wrongHead = await git([
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit-tree",
+    tree,
+    "-p",
+    current.candidateHead,
+    "-m",
+    "wrong cleanup head",
+  ]);
+  await git(["branch", plan.cleanup.branch, wrongHead]);
+  await expect(adapter.observeCleanup(current, plan.cleanup, mergeEvidence)).resolves.toEqual({
+    state: "unknown",
+  });
+  await git(["branch", "-D", plan.cleanup.branch]);
+
+  const descendant = `${plan.cleanup.branch}/descendant`;
+  await git(["branch", descendant, current.candidateHead]);
+  await expect(adapter.observeCleanup(current, plan.cleanup, mergeEvidence)).resolves.toEqual({
+    state: "unknown",
+  });
+  await git(["branch", "-D", descendant]);
+  await expect(
+    adapter.observeCleanup(current, { ...plan.cleanup, branch: "malformed branch" }, mergeEvidence),
+  ).resolves.toEqual({ state: "unknown" });
+
+  const malformedBranch = "malformed-cleanup-ref";
+  const malformedRefPath = resolve(
+    current.controllerRoot,
+    await git(["rev-parse", "--git-path", `refs/heads/${malformedBranch}`]),
+  );
+  await mkdir(dirname(malformedRefPath), { recursive: true });
+  await writeFile(malformedRefPath, "not-an-object\n");
+  await expect(
+    adapter.observeCleanup(current, { ...plan.cleanup, branch: malformedBranch }, mergeEvidence),
+  ).resolves.toEqual({ state: "unknown" });
+  await rm(malformedRefPath);
+  await expect(adapter.observeCleanup(current, plan.cleanup, mergeEvidence)).resolves.toEqual({
+    state: "confirmed",
+    value: plan.cleanup,
+  });
+
+  const receipts = await stateSnapshot(current.stateDirectory);
+  const effectCount = effects.length;
+  const providerReadCount = providerReads;
+  const gateRunCount = gateRuns;
+  const draftObservationCount = draftObservations;
+  const planCallCount = planCalls;
+  await expect(deliveryStep(current, adapter, policy)).resolves.toMatchObject({
+    status: "complete",
+    cleanup: { status: "confirmed", branch: plan.cleanup.branch },
+  });
+  expect(await stateSnapshot(current.stateDirectory)).toEqual(receipts);
+  expect(effects).toHaveLength(effectCount);
+  expect(providerReads).toBe(providerReadCount);
+  expect(gateRuns).toBe(gateRunCount);
+  expect(draftObservations).toBe(draftObservationCount);
+  expect(planCalls).toBe(planCallCount);
+  expect(
+    await git(["for-each-ref", "--format=%(objectname)", `refs/heads/${plan.cleanup.branch}`]),
+  ).toBe("");
+  expect(await git(["ls-remote", "--heads", "origin", `refs/heads/${plan.cleanup.branch}`])).toBe(
+    "",
+  );
+  // Real Git cleanup and a completed engine restart exceed Vitest's 5s default on Windows CI.
 }, 30_000);
 
 it("rejects matching heads from a different Git worktree family", async () => {
