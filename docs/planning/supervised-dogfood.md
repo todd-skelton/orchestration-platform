@@ -481,3 +481,36 @@ attempts and measured/unavailable spend remain immutable queue lineage;
 telemetry is advisory. Hosted fixtures prove compatibility only. #341 remains
 open until a genuine accepted c024 queue refresh preserves the earlier failure
 and later reviewed-head/restart evidence without a duplicate publication.
+
+## Closed queue completion reconciliation
+
+ISS-086/#350 closes the producer/consumer contract used after delivery. The
+repository delivery adapter returns `run`, `issue` and ordered hosted `checks`
+with the reviewed head, reviewer, publication, merge and cleanup result. New
+queue item completions retain the delivery run and passing check evidence in
+the closed `dogfood-bounded-queue-stage/v1` record. The queue's item and issue
+remain the owning stage identity. On restart the reader requires exact keys,
+binds the run to the item's source run, binds refreshed publication identity
+when present, and accepts exactly one passing HTTPS-linked check in configured
+order for every required hosted check. Diagnostics never authorize an effect.
+
+The same closed validator supports only the production shape already emitted
+by the preserved ISS-079 completion. Missing or extra fields, malformed
+collections, wrong run/head/reviewer/check/publication, changed lineage and
+incompatible completion state fail before component entry. Validation reads
+the immutable accepted stage, participant history, item completion, queue
+completion and original queue-config authority; it never rewrites a receipt.
+
+`reconcileCompletedQueue` is a deliberately read-only post-promotion surface.
+It accepts only a history reader, not queue adapter authority or setup, source,
+repair or delivery effects. This permits an externally promoted stable release
+to reconcile an older executor's already-terminal queue without making that old
+mutation authority valid for the new executor or bypassing the normal
+executing-root check. The old failed restart remains a failed command, not a
+successful rerun.
+
+Source and hosted fixtures are compatibility evidence only. #350 and
+ISS-078/#338 remain open until external exact-head review, four controller
+gates, actual hosted Windows/macOS/Linux execution and stable promotion are
+followed by read-only reconciliation of the preserved completion and a genuinely
+useful later queue/restart under that later queue's own accepted authority.

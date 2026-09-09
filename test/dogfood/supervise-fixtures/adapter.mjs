@@ -89,13 +89,20 @@ export function repositoryQueueAdapter(config) {
     async repair() {
       throw new Error("fixture repair must not run");
     },
-    async delivery(_item, accepted) {
+    async delivery(item, accepted) {
       await changeCalls("delivery");
       return {
         status: "complete",
+        run: item.source.run,
+        issue: item.issue,
         head: accepted.head,
         reviewId: accepted.reviewId,
         publication: { number: 338, url: "https://example.test/338" },
+        checks: item.delivery.requiredChecks.map((name) => ({
+          name,
+          bucket: "pass",
+          link: `https://example.test/check/${name}`,
+        })),
         mergeCommit: "c".repeat(40),
         cleanup: { status: "confirmed", branch: "codex/synthetic-338" },
       };

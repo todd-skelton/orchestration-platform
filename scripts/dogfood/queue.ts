@@ -7,8 +7,10 @@ import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adap
 import {
   DeliveryBlocked,
   deliveryStep,
+  type CheckEvidence,
   type DeliveryAdapter,
   type DeliveryConfig,
+  type DeliveryResult,
   type DeliveryPolicyAdapter,
   type PublicationRefresh,
 } from "./delivery.mjs";
@@ -113,14 +115,11 @@ export type QueueRepairResult =
   | { status: "accepted"; head: string; reviewId: string; stateDirectory: string };
 export type QueueDeliveryResult =
   | { status: "observing-hosted-checks"; head: string; reviewId: string }
-  | {
-      status: "complete";
-      head: string;
-      reviewId: string;
-      publication: { number: number; url: string };
-      mergeCommit: string;
-      cleanup: { status: "confirmed"; branch: string };
-    };
+  | Extract<DeliveryResult, { status: "complete" }>;
+
+export interface CompletedQueueReader {
+  history(): Promise<QueueParticipant[]>;
+}
 
 export interface QueueAdapter {
   assertAuthority(config: QueueConfig): Promise<void>;
@@ -304,8 +303,30 @@ export function validateQueueConfig(config: QueueConfig) {
           ...(object(item.delivery) && Object.hasOwn(item.delivery, "refresh") ? ["refresh"] : []),
         ]) &&
         Array.isArray(item.delivery.requiredChecks) &&
-        item.delivery.requiredChecks.length >= 3,
+        item.delivery.requiredChecks.length >= 3 &&
+        item.delivery.requiredChecks.every((name) => typeof name === "string" && name.length > 0) &&
+        new Set(item.delivery.requiredChecks).size === item.delivery.requiredChecks.length,
       "malformed-queue-item",
+    );
+    demand(
+      object(item.setup) &&
+        object(item.source) &&
+        typeof item.source.run === "string" &&
+        /^[\w.-]{1,64}$/.test(item.source.run) &&
+        item.setup.run === item.source.run,
+      "queue-run-drift",
+    );
+    demand(
+      item.issue === item.source.issue && item.issue === item.setup.issue,
+      "queue-issue-drift",
+    );
+    demand(
+      Array.isArray(item.source.requiredChecks) &&
+        item.source.requiredChecks.length === item.delivery.requiredChecks.length &&
+        item.source.requiredChecks.every(
+          (name, index) => name === item.delivery.requiredChecks[index],
+        ),
+      "queue-hosted-check-drift",
     );
     if (Object.hasOwn(item.delivery, "refresh"))
       demand(
@@ -434,6 +455,83 @@ function stageRecord(item: QueueItem, stage: string, history: QueueParticipant[]
     ...value,
   };
 }
+
+function validCompletedChecks(item: QueueItem, checks: unknown): checks is CheckEvidence[] {
+  return (
+    Array.isArray(checks) &&
+    checks.length === item.delivery.requiredChecks.length &&
+    checks.every(
+      (check, index) =>
+        exactKeys(check, ["name", "bucket", "link"]) &&
+        check.name === item.delivery.requiredChecks[index] &&
+        check.bucket === "pass" &&
+        typeof check.link === "string" &&
+        check.link.startsWith("https://"),
+    )
+  );
+}
+
+function validCompletedDeliveryFields(item: QueueItem, delivery: Record<string, any>) {
+  return (
+    delivery.status === "complete" &&
+    delivery.run === item.source.run &&
+    delivery.issue === item.issue &&
+    typeof delivery.head === "string" &&
+    SHA.test(delivery.head) &&
+    typeof delivery.reviewId === "string" &&
+    exactKeys(delivery.publication, ["number", "url"]) &&
+    Number.isSafeInteger(delivery.publication.number) &&
+    delivery.publication.number > 0 &&
+    typeof delivery.publication.url === "string" &&
+    delivery.publication.url.startsWith("https://") &&
+    (!item.delivery.refresh ||
+      (delivery.publication.number === item.delivery.refresh.number &&
+        delivery.publication.url === item.delivery.refresh.url)) &&
+    validCompletedChecks(item, delivery.checks) &&
+    typeof delivery.mergeCommit === "string" &&
+    SHA.test(delivery.mergeCommit) &&
+    exactKeys(delivery.cleanup, ["status", "branch"]) &&
+    delivery.cleanup.status === "confirmed" &&
+    typeof delivery.cleanup.branch === "string" &&
+    delivery.cleanup.branch.length > 0
+  );
+}
+
+function validCompletedDeliveryResult(
+  item: QueueItem,
+  delivery: unknown,
+): delivery is Extract<QueueDeliveryResult, { status: "complete" }> {
+  return (
+    exactKeys(delivery, [
+      "status",
+      "run",
+      "issue",
+      "head",
+      "reviewId",
+      "publication",
+      "checks",
+      "mergeCommit",
+      "cleanup",
+    ]) && validCompletedDeliveryFields(item, delivery)
+  );
+}
+
+function completedStageRecord(
+  item: QueueItem,
+  history: QueueParticipant[],
+  delivery: Extract<QueueDeliveryResult, { status: "complete" }>,
+) {
+  return stageRecord(item, "delivery", history, {
+    status: delivery.status,
+    run: delivery.run,
+    head: delivery.head,
+    reviewId: delivery.reviewId,
+    publication: delivery.publication,
+    checks: delivery.checks,
+    mergeCommit: delivery.mergeCommit,
+    cleanup: delivery.cleanup,
+  });
+}
 function assertHistoryPrefix(config: QueueConfig, history: QueueParticipant[]) {
   validateHistory(history, config.nativeLaunchCeiling);
   demand(history.length >= config.initialHistory.length, "participant-history-truncated");
@@ -550,9 +648,11 @@ async function completedItemReceipt(
       "stage",
       "history",
       "status",
+      "run",
       "head",
       "reviewId",
       "publication",
+      "checks",
       "mergeCommit",
       "cleanup",
     ]) &&
@@ -561,19 +661,7 @@ async function completedItemReceipt(
       completed.issue === item.issue &&
       completed.base === item.base &&
       completed.stage === "delivery" &&
-      completed.status === "complete" &&
-      SHA.test(completed.head) &&
-      typeof completed.reviewId === "string" &&
-      exactKeys(completed.publication, ["number", "url"]) &&
-      Number.isSafeInteger(completed.publication.number) &&
-      completed.publication.number > 0 &&
-      typeof completed.publication.url === "string" &&
-      completed.publication.url.length > 0 &&
-      SHA.test(completed.mergeCommit) &&
-      exactKeys(completed.cleanup, ["status", "branch"]) &&
-      completed.cleanup.status === "confirmed" &&
-      typeof completed.cleanup.branch === "string" &&
-      completed.cleanup.branch.length > 0 &&
+      validCompletedDeliveryFields(item, completed) &&
       Array.isArray(completed.history),
     "malformed-completed-item",
   );
@@ -637,19 +725,29 @@ async function completedItemReceipt(
   return completed;
 }
 
-export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
-  validateQueueConfig(config);
-  const directory = await realpath(config.stateDirectory);
-  await adapter.assertAuthority(config);
-  await assertQueueStateCensus(config, directory);
-  const fingerprint = queueDigest({
+function queueFingerprint(config: QueueConfig) {
+  return queueDigest({
     ...config,
     initialHistory: config.initialHistory.map(participantIdentity),
   });
-  await record(directory, "queue-config", { fingerprint, authority: config.authority });
+}
 
-  const currentHistory = await adapter.history();
-  assertHistoryPrefix(config, currentHistory);
+async function assertQueueConfigRecord(config: QueueConfig, directory: string) {
+  const pinned = await optionalRecord(directory, "queue-config");
+  demand(
+    pinned !== ABSENT &&
+      exactKeys(pinned, ["fingerprint", "authority"]) &&
+      pinned.fingerprint === queueFingerprint(config) &&
+      JSON.stringify(pinned.authority) === JSON.stringify(config.authority),
+    "malformed-queue-config-record",
+  );
+}
+
+async function completedQueueState(
+  config: QueueConfig,
+  directory: string,
+  currentHistory: QueueParticipant[],
+) {
   const queueComplete = await optionalRecord(directory, "queue-complete");
   const completedItems: (typeof ABSENT | Record<string, any>)[] = [];
   let incompleteSeen = false;
@@ -665,7 +763,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
     if (complete === ABSENT) incompleteSeen = true;
     else demand(!incompleteSeen, "queue-cursor-gap");
   }
-  if (queueComplete !== ABSENT) {
+  if (queueComplete !== ABSENT)
     demand(
       exactKeys(queueComplete, ["status", "run", "cursor", "items", "participants"]) &&
         queueComplete.status === "complete" &&
@@ -676,6 +774,43 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         !incompleteSeen,
       "malformed-queue-complete",
     );
+  return { queueComplete, completedItems };
+}
+
+// External promotion may authorize this closed, read-only view of an older
+// executor's terminal state. It validates the original authority and receipts
+// but deliberately has no adapter authority or component-effect capability.
+export async function reconcileCompletedQueue(
+  config: QueueConfig,
+  reader: CompletedQueueReader,
+): Promise<Extract<QueueResult, { status: "complete" }>> {
+  validateQueueConfig(config);
+  const directory = await realpath(config.stateDirectory);
+  await assertQueueStateCensus(config, directory);
+  await assertQueueConfigRecord(config, directory);
+  const currentHistory = await reader.history();
+  assertHistoryPrefix(config, currentHistory);
+  const { queueComplete } = await completedQueueState(config, directory, currentHistory);
+  demand(queueComplete !== ABSENT, "incomplete-queue-reconciliation");
+  return queueComplete as Extract<QueueResult, { status: "complete" }>;
+}
+
+export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
+  validateQueueConfig(config);
+  const directory = await realpath(config.stateDirectory);
+  await adapter.assertAuthority(config);
+  await assertQueueStateCensus(config, directory);
+  const fingerprint = queueFingerprint(config);
+  await record(directory, "queue-config", { fingerprint, authority: config.authority });
+
+  const currentHistory = await adapter.history();
+  assertHistoryPrefix(config, currentHistory);
+  const { queueComplete, completedItems } = await completedQueueState(
+    config,
+    directory,
+    currentHistory,
+  );
+  if (queueComplete !== ABSENT) {
     return queueComplete as QueueResult;
   }
 
@@ -845,7 +980,8 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         issue: item.issue,
         cursor: index,
       };
-    await record(directory, `${prefix}-complete`, stageRecord(item, "delivery", history, delivery));
+    demand(validCompletedDeliveryResult(item, delivery), "malformed-delivery-completion");
+    await record(directory, `${prefix}-complete`, completedStageRecord(item, history, delivery));
   }
 
   const history = await adapter.history();
@@ -1180,11 +1316,10 @@ export function repositoryQueueAdapter(
 
   const assertItem = (item: QueueItem) => {
     demand(
-      item.issue === item.source.issue &&
-        item.issue === item.setup.issue &&
-        item.setup.run === item.source.run,
+      item.issue === item.source.issue && item.issue === item.setup.issue,
       "queue-issue-drift",
     );
+    demand(item.setup.run === item.source.run, "queue-run-drift");
     demand(item.base === item.source.base && item.base === item.setup.base, "queue-base-drift");
     demand(item.source.owner === config.authority.controller, "queue-controller-drift");
     demand(
@@ -1520,7 +1655,9 @@ export function repositoryQueueAdapter(
           result.head === accepted.head && result.reviewId === accepted.reviewId,
           "delivery-source-drift",
         );
-        return result as QueueDeliveryResult;
+        if (result.status === "observing-hosted-checks")
+          return { status: result.status, head: result.head, reviewId: result.reviewId };
+        return result;
       } catch (error) {
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(

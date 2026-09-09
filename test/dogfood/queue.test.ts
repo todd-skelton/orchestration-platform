@@ -6,10 +6,12 @@ import {
   itemAuthority,
   participantIdentity,
   queueDigest,
+  reconcileCompletedQueue,
   queueStep,
   validateQueueConfig,
   type QueueAdapter,
   type QueueConfig,
+  type QueueDeliveryResult,
   type QueueItem,
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
@@ -40,6 +42,33 @@ function participant(
   };
 }
 
+function deliveryCompletion(
+  item: QueueItem,
+  head: string,
+  reviewId: string,
+  number = 1,
+  branch = `codex/${item.id}`,
+): Extract<QueueDeliveryResult, { status: "complete" }> {
+  return {
+    status: "complete",
+    run: item.source.run,
+    issue: item.issue,
+    head,
+    reviewId,
+    publication: {
+      number,
+      url: item.delivery.refresh?.url ?? `https://example.test/pull/${number}`,
+    },
+    checks: item.delivery.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: `https://example.test/check/${name}`,
+    })),
+    mergeCommit: "d".repeat(40),
+    cleanup: { status: "confirmed", branch },
+  };
+}
+
 async function fixture(itemCount = 1) {
   const root = await mkdtemp(resolve(tmpdir(), "bounded-queue-fixture-"));
   roots.push(root);
@@ -48,16 +77,20 @@ async function fixture(itemCount = 1) {
   const items = Array.from({ length: itemCount }, (_, index) => {
     const id = `synthetic-${index + 1}`;
     const base = String(index + 1).repeat(40);
+    const run = `synthetic-item-run-${index + 1}`;
+    const requiredChecks = ["linux", "windows", "macos"];
     return {
       id,
       issue: `fixture-${index + 1}`,
       base,
       implementationAttempt: index + 1,
-      setup: { issue: `fixture-${index + 1}`, base },
+      setup: { run, issue: `fixture-${index + 1}`, base },
       source: {
+        run,
         issue: `fixture-${index + 1}`,
         base,
         stateDirectory: resolve(root, `${id}-source`),
+        requiredChecks,
       },
       repair: {
         stateDirectory: resolve(root, `${id}-repair`),
@@ -70,7 +103,7 @@ async function fixture(itemCount = 1) {
           promptFile: resolve(root, "reviewer.md"),
         },
       },
-      delivery: { requiredChecks: ["linux", "windows", "macos"], policy: { kind: "fixture" } },
+      delivery: { requiredChecks: [...requiredChecks], policy: { kind: "fixture" } },
     } as unknown as QueueItem;
   });
   const config: QueueConfig = {
@@ -186,17 +219,12 @@ it("advances every finite item and completed restart repeats no effects", async 
     async delivery(item, accepted) {
       calls.push(`delivery:${item.id}`);
       deliveryEffects.add(item.id);
-      return {
-        status: "complete",
-        head: accepted.head,
-        reviewId: accepted.reviewId,
-        publication: {
-          number: Number(item.id.at(-1)),
-          url: `https://example.test/${item.id}`,
-        },
-        mergeCommit: "d".repeat(40),
-        cleanup: { status: "confirmed", branch: `codex/${item.id}` },
-      };
+      return deliveryCompletion(
+        item,
+        accepted.head,
+        accepted.reviewId,
+        item.delivery.refresh?.number ?? Number(item.id.at(-1)),
+      );
     },
   };
 
@@ -232,6 +260,163 @@ it("advances every finite item and completed restart repeats no effects", async 
     firstComplete,
   );
   expect(JSON.parse(firstComplete).history.slice(0, 2)).toEqual(priorHistory);
+});
+
+it.each([
+  ["wrong delivery run", (receipt: Record<string, any>) => (receipt.run = "synthetic-wrong-run")],
+  ["wrong completed head", (receipt: Record<string, any>) => (receipt.head = "f".repeat(40))],
+  [
+    "wrong hosted check identity",
+    (receipt: Record<string, any>) => (receipt.checks[0].name = "synthetic-unrelated-check"),
+  ],
+  ["unsupported extra field", (receipt: Record<string, any>) => (receipt.extra = true)],
+  ["missing run", (receipt: Record<string, any>) => delete receipt.run],
+  ["missing checks", (receipt: Record<string, any>) => delete receipt.checks],
+  ["missing required check", (receipt: Record<string, any>) => receipt.checks.pop()],
+  ["substituted publication", (receipt: Record<string, any>) => (receipt.publication.number = 351)],
+  [
+    "changed reviewer",
+    (receipt: Record<string, any>) => (receipt.reviewId = "synthetic-other-reviewer"),
+  ],
+  [
+    "changed participant history",
+    (receipt: Record<string, any>) => (receipt.history[1].id = "synthetic-other-reviewer"),
+  ],
+  ["malformed checks collection", (receipt: Record<string, any>) => (receipt.checks = {})],
+  [
+    "incompatible completion state",
+    (receipt: Record<string, any>) => (receipt.status = "observing-hosted-checks"),
+  ],
+])("read-only reconciliation rejects historical completion with %s", async (_name, mutate) => {
+  const current = await fixture();
+  const item = current.items[0]!;
+  item.implementationAttempt = 2;
+  item.delivery.refresh = {
+    number: 350,
+    url: "https://example.test/pull/350",
+    head: item.base,
+  };
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  const history: QueueParticipant[] = [];
+  const effects: string[] = [];
+  const adapter: QueueAdapter = {
+    async assertAuthority() {
+      effects.push("authority");
+    },
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      effects.push("setup");
+      return { status: "ready" };
+    },
+    async source(selected) {
+      effects.push("source");
+      history.push(
+        participant(1, selected.id, "source", "author", "passed"),
+        participant(2, selected.id, "source", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        stateDirectory: selected.source.stateDirectory,
+      };
+    },
+    async repair() {
+      throw new Error("repair must not run");
+    },
+    async delivery(selected, accepted) {
+      effects.push("delivery");
+      return deliveryCompletion(selected, accepted.head, accepted.reviewId, 350);
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete" });
+  const immutablePaths = [
+    "item-1-accepted.json",
+    "item-1-complete.json",
+    "queue-complete.json",
+  ].map((name) => resolve(current.stateDirectory, name));
+  const originalBytes = await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")));
+  const beforeReadOnly = effects.length;
+  await expect(
+    reconcileCompletedQueue(current.config, { history: adapter.history }),
+  ).resolves.toMatchObject({ status: "complete", participants: 2 });
+  expect(effects).toHaveLength(beforeReadOnly);
+  expect(await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")))).toEqual(
+    originalBytes,
+  );
+
+  const completion = JSON.parse(originalBytes[1]!) as Record<string, any>;
+  mutate(completion);
+  await writeFile(immutablePaths[1]!, `${JSON.stringify(completion, null, 2)}\n`);
+  await expect(
+    reconcileCompletedQueue(current.config, { history: adapter.history }),
+  ).rejects.toBeInstanceOf(Error);
+  expect(effects).toHaveLength(beforeReadOnly);
+});
+
+it.each([
+  [
+    "an unsupported top-level field",
+    (result: Record<string, any>) => (result.syntheticExtra = true),
+  ],
+  [
+    "an unsupported publication field",
+    (result: Record<string, any>) => (result.publication.syntheticExtra = true),
+  ],
+  [
+    "an unsupported cleanup field",
+    (result: Record<string, any>) => (result.cleanup.syntheticExtra = true),
+  ],
+  ["malformed cleanup", (result: Record<string, any>) => (result.cleanup.branch = "")],
+])("rejects a delivery completion result with %s before completion", async (_name, mutate) => {
+  const current = await fixture();
+  const history: QueueParticipant[] = [];
+  let deliveryCalls = 0;
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source(item) {
+      history.push(
+        participant(1, item.id, "source", "author", "passed"),
+        participant(2, item.id, "source", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        stateDirectory: item.source.stateDirectory,
+      };
+    },
+    async repair() {
+      throw new Error("repair must not run");
+    },
+    async delivery(item, accepted) {
+      deliveryCalls += 1;
+      const result = deliveryCompletion(item, accepted.head, accepted.reviewId) as Record<
+        string,
+        any
+      >;
+      mutate(result);
+      return result as Extract<QueueDeliveryResult, { status: "complete" }>;
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-delivery-completion");
+  expect(deliveryCalls).toBe(1);
+  await expect(
+    readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(
+    readFile(resolve(current.stateDirectory, "queue-complete.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("hands a genuine failed source review to repair without losing participants or usage", async () => {
@@ -284,15 +469,8 @@ it("hands a genuine failed source review to repair without losing participants o
         stateDirectory: item.repair.stateDirectory,
       };
     },
-    async delivery(_item, accepted) {
-      return {
-        status: "complete",
-        head: accepted.head,
-        reviewId: accepted.reviewId,
-        publication: { number: 1, url: "https://example.test/1" },
-        mergeCommit: "d".repeat(40),
-        cleanup: { status: "confirmed", branch: "codex/repair" },
-      };
+    async delivery(item, accepted) {
+      return deliveryCompletion(item, accepted.head, accepted.reviewId, 1, "codex/repair");
     },
   };
 
@@ -341,15 +519,8 @@ it("retains an interrupted wait target and refuses a moved delivery identity", a
     async repair() {
       throw new Error("unexpected repair");
     },
-    async delivery(_item, accepted) {
-      return {
-        status: "complete",
-        head: "c".repeat(40),
-        reviewId: accepted.reviewId,
-        publication: { number: 1, url: "https://example.test/1" },
-        mergeCommit: "d".repeat(40),
-        cleanup: { status: "confirmed", branch: "codex/moved" },
-      };
+    async delivery(item, accepted) {
+      return deliveryCompletion(item, "c".repeat(40), accepted.reviewId, 1, "codex/moved");
     },
   };
   await expect(queueStep(current.config, adapter)).resolves.toMatchObject({
@@ -482,9 +653,15 @@ it("refuses conflicting completion metrics before repeating a completed item", a
         ...common,
         stage: "delivery",
         status: "complete",
+        run: item.source.run,
         head: "b".repeat(40),
         reviewId: history[1]!.id,
         publication: { number: 1, url: "https://example.test/1" },
+        checks: item.delivery.requiredChecks.map((name) => ({
+          name,
+          bucket: "pass",
+          link: `https://example.test/check/${name}`,
+        })),
         mergeCommit: "c".repeat(40),
         cleanup: { status: "confirmed", branch: "codex/synthetic-1" },
       })}\n`,
@@ -543,7 +720,10 @@ it.each([
   [
     "substituted issue",
     (config: QueueConfig) => {
-      config.items[0]!.issue = "fixture-substitution";
+      const item = config.items[0]!;
+      item.issue = "fixture-substitution";
+      item.source.issue = item.issue;
+      item.setup.issue = item.issue;
     },
     "unauthorized-queue",
   ],
@@ -561,11 +741,38 @@ it.each([
     },
     "unauthorized-queue",
   ],
+  [
+    "drifted item run binding",
+    (config: QueueConfig) => {
+      config.items[0]!.source.run = "synthetic-substituted-run";
+      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
+    },
+    "queue-run-drift",
+  ],
+  [
+    "drifted item issue binding",
+    (config: QueueConfig) => {
+      config.items[0]!.source.issue = "synthetic-substituted-issue";
+      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
+    },
+    "queue-issue-drift",
+  ],
+  [
+    "drifted hosted-check binding",
+    (config: QueueConfig) => {
+      config.items[0]!.source.requiredChecks = ["linux", "windows", "synthetic-other-check"];
+      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
+    },
+    "queue-hosted-check-drift",
+  ],
 ])("fails closed for %s", async (_name, mutate, reason) => {
   const current = await fixture();
   mutate(current.config);
+  let adapterEntries = 0;
   const adapter = {
-    assertAuthority: async () => {},
+    assertAuthority: async () => {
+      adapterEntries += 1;
+    },
     history: async () => [],
     setup: async () => ({ status: "ready" as const }),
     source: async () => ({ status: "observing-author" as const }),
@@ -577,6 +784,7 @@ it.each([
     }),
   };
   await expect(queueStep(current.config, adapter)).rejects.toThrow(reason);
+  expect(adapterEntries).toBe(0);
 });
 
 it("does not advance through a forged completion receipt", async () => {
