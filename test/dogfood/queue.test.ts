@@ -53,7 +53,11 @@ async function fixture(itemCount = 1) {
       base,
       implementationAttempt: index + 1,
       setup: { issue: `fixture-${index + 1}`, base },
-      source: { issue: `fixture-${index + 1}`, base },
+      source: {
+        issue: `fixture-${index + 1}`,
+        base,
+        stateDirectory: resolve(root, `${id}-source`),
+      },
       repair: {
         stateDirectory: resolve(root, `${id}-repair`),
         sourcePaths: ["scripts/dogfood/queue.ts"],
@@ -283,7 +287,7 @@ it("retains an interrupted wait target and refuses a moved delivery identity", a
         status: "accepted",
         head: "b".repeat(40),
         reviewId: history[1]!.id,
-        stateDirectory: resolve(current.root, "source"),
+        stateDirectory: item.source.stateDirectory,
       };
     },
     async repair() {
@@ -421,7 +425,7 @@ it("refuses conflicting completion metrics before repeating a completed item", a
         status: "accepted",
         head: "b".repeat(40),
         reviewId: history[1]!.id,
-        stateDirectory: resolve(current.root, "source"),
+        stateDirectory: item.source.stateDirectory,
       })}\n`,
     ),
     writeFile(

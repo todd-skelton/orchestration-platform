@@ -14,11 +14,13 @@ import {
 
 const execute = promisify(execFile);
 const roots: string[] = [];
-const command = resolve("scripts/dogfood/supervise.mjs");
-const hook = resolve("test/dogfood/supervise-fixtures/hook.mjs");
+const command = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
+const hook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");
 
 async function fixture(controllerRoot: string, mode: "complete" | "wait" = "complete") {
-  const root = await mkdtemp(resolve(tmpdir(), "supervise-command-fixture-"));
+  const root = await realpath(
+    await mkdtemp(resolve(tmpdir(), "supervise-command-fixture-")),
+  );
   roots.push(root);
   const paths = {
     queue: resolve(root, "queue"),
@@ -147,7 +149,11 @@ async function run(request: string, mocked = true) {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots.splice(0).map((root) =>
+      rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+    ),
+  );
 });
 
 it("invokes the hosted command and refuses a mismatched executing root", async () => {
@@ -164,7 +170,10 @@ it("invokes the hosted command and refuses a mismatched executing root", async (
 }, 30_000);
 
 it("invokes the hosted command through an observed wait to completion", async () => {
-  const current = await fixture(await realpath("."), "wait");
+  const current = await fixture(
+    await realpath(resolve(import.meta.dirname, "../..")),
+    "wait",
+  );
   const result = await run(current.request);
   expect(result.code).toBe(0);
   expect(result.stderr).toBe("");
@@ -180,7 +189,7 @@ it("invokes the hosted command through an observed wait to completion", async ()
 }, 30_000);
 
 it("invokes completion and a completed restart without repeating component effects", async () => {
-  const current = await fixture(await realpath("."));
+  const current = await fixture(await realpath(resolve(import.meta.dirname, "../..")));
   const first = await run(current.request);
   expect(first.code).toBe(0);
   expect(JSON.parse(first.stdout)).toMatchObject({ status: "complete", participants: 2 });
