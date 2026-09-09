@@ -324,7 +324,9 @@ export function validateQueueConfig(config: QueueConfig) {
         ]) &&
         Array.isArray(item.delivery.requiredChecks) &&
         item.delivery.requiredChecks.length >= 3 &&
-        item.delivery.requiredChecks.every((name) => typeof name === "string" && name.length > 0) &&
+        item.delivery.requiredChecks.every(
+          (name) => typeof name === "string" && name.length > 0,
+        ) &&
         new Set(item.delivery.requiredChecks).size === item.delivery.requiredChecks.length,
       "malformed-queue-item",
     );
@@ -1365,8 +1367,7 @@ export function repositoryQueueAdapter(
     );
     demand(item.source.repository === item.setup.repository, "queue-repository-drift");
     demand(
-      item.setup.authority.actions.includes("worktrees") &&
-        validRepositoryRepairTemplate(item),
+      item.setup.authority.actions.includes("worktrees") && validRepositoryRepairTemplate(item),
       "queue-policy-drift",
     );
     for (const actor of [item.repair.author, item.repair.reviewer])

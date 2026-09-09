@@ -167,13 +167,12 @@ it.each([
   "planning/drafts/ISS-SYNTHETIC.md",
   "planning/roadmap.json",
 ] as const)("admits the explicit repository review location %s", async (reviewPath) => {
-    const current = await fixture();
-    current.items[0]!.source.allowedPaths = [reviewPath];
-    current.items[0]!.repair.sourcePaths = [reviewPath];
-    current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
-    expect(() => validateQueueConfig(current.config)).not.toThrow();
-  },
-);
+  const current = await fixture();
+  current.items[0]!.source.allowedPaths = [reviewPath];
+  current.items[0]!.repair.sourcePaths = [reviewPath];
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  expect(() => validateQueueConfig(current.config)).not.toThrow();
+});
 
 it("advances every finite item and completed restart repeats no effects", async () => {
   const current = await fixture(2);
