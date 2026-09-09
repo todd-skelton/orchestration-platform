@@ -373,27 +373,68 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
   ).toThrow("malformed-worker-verdict");
 });
 it.each([
-  ["schema", (value: SourceReviewBindingFixture) => (value.schemaVersion = "unknown")],
-  ["source run", (value: SourceReviewBindingFixture) => (value.source.run = "other")],
-  ["source state", (value: SourceReviewBindingFixture) => (value.source.stateDirectory = "/other")],
+  [
+    "schema",
+    (value: SourceReviewBindingFixture): void => {
+      value.schemaVersion = "unknown";
+    },
+  ],
+  [
+    "source run",
+    (value: SourceReviewBindingFixture): void => {
+      value.source.run = "other";
+    },
+  ],
+  [
+    "source state",
+    (value: SourceReviewBindingFixture): void => {
+      value.source.stateDirectory = "/other";
+    },
+  ],
   ["fingerprint", (value: SourceReviewBindingFixture) => (value.source.configFingerprint = "f".repeat(64))],
-  ["author", (value: SourceReviewBindingFixture) => (value.source.authorAttempt = "other-author")],
+  [
+    "author",
+    (value: SourceReviewBindingFixture): void => {
+      value.source.authorAttempt = "other-author";
+    },
+  ],
   ["head", (value: SourceReviewBindingFixture) => (value.source.candidateHead = "f".repeat(40))],
-  ["original", (value: SourceReviewBindingFixture) => (value.originalReview.attempt = "other-original")],
+  [
+    "original",
+    (value: SourceReviewBindingFixture): void => {
+      value.originalReview.attempt = "other-original";
+    },
+  ],
   [
     "original disposition",
-    (value: SourceReviewBindingFixture) => (value.originalReview.disposition = "incomplete"),
+    (value: SourceReviewBindingFixture): void => {
+      value.originalReview.disposition = "incomplete";
+    },
   ],
   [
     "invalid original disposition",
-    (value: SourceReviewBindingFixture) => (value.originalReview.disposition = "failed"),
+    (value: SourceReviewBindingFixture): void => {
+      value.originalReview.disposition = "failed";
+    },
   ],
-  ["selected", (value: SourceReviewBindingFixture) => (value.selectedReview.attempt = "other-selected")],
+  [
+    "selected",
+    (value: SourceReviewBindingFixture): void => {
+      value.selectedReview.attempt = "other-selected";
+    },
+  ],
   [
     "selected disposition",
-    (value: SourceReviewBindingFixture) => (value.selectedReview.disposition = "failed"),
+    (value: SourceReviewBindingFixture): void => {
+      value.selectedReview.disposition = "failed";
+    },
   ],
-  ["extra", (value: SourceReviewBindingFixture) => (value.extra = true)],
+  [
+    "extra",
+    (value: SourceReviewBindingFixture): void => {
+      value.extra = true;
+    },
+  ],
 ] as const)("rejects substituted source-review binding %s", (_case, mutate) => {
   const input = {
     run: "trial",
@@ -412,23 +453,65 @@ it.each([
   );
 });
 it.each([
-  ["schema", (value: ReviewRecoveryAuthorityFixture) => (value.schemaVersion = "unknown")],
-  ["controller", (value: ReviewRecoveryAuthorityFixture) => (value.controller = "other")],
-  ["run", (value: ReviewRecoveryAuthorityFixture) => (value.run = "other")],
-  ["state", (value: ReviewRecoveryAuthorityFixture) => (value.stateDirectory = "/other")],
+  [
+    "schema",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.schemaVersion = "unknown";
+    },
+  ],
+  [
+    "controller",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.controller = "other";
+    },
+  ],
+  [
+    "run",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.run = "other";
+    },
+  ],
+  [
+    "state",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.stateDirectory = "/other";
+    },
+  ],
   [
     "fingerprint",
     (value: ReviewRecoveryAuthorityFixture) => (value.sourceConfigFingerprint = "f".repeat(64)),
   ],
-  ["author", (value: ReviewRecoveryAuthorityFixture) => (value.sourceAuthor = "other-author")],
+  [
+    "author",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.sourceAuthor = "other-author";
+    },
+  ],
   ["head", (value: ReviewRecoveryAuthorityFixture) => (value.candidateHead = "f".repeat(40))],
-  ["original", (value: ReviewRecoveryAuthorityFixture) => (value.originalReview = "other-original")],
+  [
+    "original",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.originalReview = "other-original";
+    },
+  ],
   [
     "reviewer",
-    (value: ReviewRecoveryAuthorityFixture) => (value.reviewer.model = "other"),
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.reviewer.model = "other";
+    },
   ],
-  ["action", (value: ReviewRecoveryAuthorityFixture) => (value.action = "retry")],
-  ["extra", (value: ReviewRecoveryAuthorityFixture) => (value.extra = true)],
+  [
+    "action",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.action = "retry";
+    },
+  ],
+  [
+    "extra",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.extra = true;
+    },
+  ],
 ] as const)("rejects substituted review-recovery authority %s", (_case, mutate) => {
   const input = {
     controller: "controller",

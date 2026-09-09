@@ -255,7 +255,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
         role === "author"
           ? config.base
           : reviewerHead;
-      requireThat(typeof head === "string", "review-head-identity-unknown");
+      if (typeof head !== "string") throw new Error("review-head-identity-unknown");
       const prompt = workerPrompt(config, role, head, prompts[role === "author" ? 0 : 1]);
       attempt = await adapter.launch(role, config, prompt);
       await record(directory, `${role}-attempt`, attempt);
