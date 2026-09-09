@@ -138,6 +138,93 @@ it("joins the actual closed source records to exact Git heads, changed files and
   });
 }, 30_000);
 
+it.each([
+  "scripts/dogfood/review-location.ts",
+  "test/dogfood/review-location.test.ts",
+  "docs/planning/review-location.md",
+  "planning/drafts/ISS-SYNTHETIC.md",
+] as const)(
+  "reads and bounds the exact-head Git review location %s",
+  async (reviewPath) => {
+    const current = await realFixture();
+    await mkdir(dirname(resolve(current.paths.source, reviewPath)), { recursive: true });
+    await writeFile(resolve(current.paths.source, reviewPath), "first line\nsecond line\n");
+    await git(current.paths.source, ["add", reviewPath]);
+    await git(current.paths.source, [
+      "-c",
+      "user.name=Synthetic Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "synthetic review location",
+    ]);
+    const exactHead = await git(current.paths.source, ["rev-parse", "HEAD"]);
+    await git(current.paths.review, ["reset", "--hard", exactHead]);
+
+    const changed = [sourceFile, reviewPath].sort();
+    current.config.repairBase = exactHead;
+    current.config.allowedPaths = [...changed];
+    current.config.sourcePaths = [reviewPath];
+    Object.assign(current.config.authority, {
+      repairBase: exactHead,
+      allowedPaths: [...changed],
+      sourcePaths: [reviewPath],
+    });
+    current.config.authority.source.candidateHead = exactHead;
+    current.source.configRecord.config.allowedPaths = [...changed];
+    refreshSourceFingerprint(current.config, current.source);
+    const report = JSON.parse(reviewSummary("complete", exactHead));
+    report.findings[0].file = reviewPath;
+    report.findings[0].line = 2;
+    report.notes[0].file = reviewPath;
+    report.notes[0].line = 1;
+    const candidateRecord = { head: exactHead, changed };
+    const terminalRecord = {
+      ...current.source.terminal,
+      head: exactHead,
+      summary: JSON.stringify(report),
+    };
+    await Promise.all([
+      writeFile(
+        resolve(current.paths.priorState, "config.json"),
+        JSON.stringify(current.source.configRecord),
+      ),
+      writeFile(
+        resolve(current.paths.priorState, "candidate.json"),
+        JSON.stringify(candidateRecord),
+      ),
+      writeFile(
+        resolve(current.paths.priorState, "reviewer-terminal.json"),
+        JSON.stringify(terminalRecord),
+      ),
+    ]);
+
+    const adapter = reviewedRepairAdapter({} as Adapter);
+    const artifacts = await adapter.loadSourceReview(current.config);
+    expect(artifacts).toMatchObject({
+      sourceHead: exactHead,
+      reviewHead: exactHead,
+      changedFiles: changed,
+      lineCounts: { [reviewPath]: 2 },
+    });
+    expect(repairPolicy().prepare(current.config, artifacts)).toMatchObject({
+      correctiveBase: exactHead,
+      sourcePaths: [reviewPath],
+    });
+
+    const outOfBounds = structuredClone(artifacts);
+    const outOfBoundsReport = JSON.parse(String(outOfBounds.terminal.summary));
+    outOfBoundsReport.findings[0].line = 3;
+    outOfBounds.terminal.summary = JSON.stringify(outOfBoundsReport);
+    expect(() => repairPolicy().prepare(current.config, outOfBounds)).toThrow(
+      "source-finding-location-outside-candidate",
+    );
+  },
+  30_000,
+);
+
 it("calls the reviewed flow through a complete correction and reconciles without duplicate effects", async () => {
   const current = await realFixture();
   const launches: Role[] = [];
@@ -280,6 +367,21 @@ it("refuses a substituted predecessor prompt before reading it or recording inte
   const adapter = reviewedRepairAdapter({} as Adapter);
   await expect(repairStep(current.config, adapter, repairPolicy())).rejects.toMatchObject({
     reason: "unauthorized-source-review",
+  });
+  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+}, 30_000);
+
+it("refuses an unsupported repository review template before reading source state", async () => {
+  const current = await realFixture();
+  current.config.allowedPaths = ["package.json"];
+  current.config.authority.allowedPaths = ["package.json"];
+  current.config.sourcePaths = ["package.json"];
+  current.config.authority.sourcePaths = ["package.json"];
+  const adapter = reviewedRepairAdapter({} as Adapter);
+  await expect(adapter.loadSourceReview(current.config)).rejects.toMatchObject({
+    reason: "incompatible-repair-template",
   });
   await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
     code: "ENOENT",

@@ -125,4 +125,5 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
 - `ISS-077` — Reconcile absent branches after real delivery cleanup.
 - `ISS-078` — Supervise a bounded queue of useful cycles.
 - `ISS-079` — Refresh an existing reviewed delivery PR forward.
+- `ISS-085` — Correct bounded repair review locations.
 - `ISS-086` — Reconcile real queue completion receipts on restart.
