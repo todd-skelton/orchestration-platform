@@ -268,7 +268,7 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
 });
-it("accepts legacy verdicts and bounds optional advisory summaries", () => {
+it("accepts legacy verdicts, bounds advisory summaries and rejects oversized review authority", () => {
   expect(parseTrace(trace(), true, "reviewer", config, id)).not.toHaveProperty("summary");
   const verdict = (summary: unknown) =>
     trace([
@@ -286,8 +286,11 @@ it("accepts legacy verdicts and bounds optional advisory summaries", () => {
     "actionable finding",
   );
   expect(parseTrace(verdict(7), true, "reviewer", config, id)).not.toHaveProperty("summary");
-  expect(parseTrace(verdict("x".repeat(2100)), true, "reviewer", config, id).summary).toBe(
+  expect(parseTrace(verdict("x".repeat(2000)), true, "reviewer", config, id).summary).toBe(
     "x".repeat(2000),
+  );
+  expect(() => parseTrace(verdict("x".repeat(2001)), true, "reviewer", config, id)).toThrow(
+    "malformed-worker-verdict",
   );
 });
 it("requests a bounded summary for new outputs without changing verdict authority fields", () => {
@@ -366,7 +369,8 @@ it.each([
   ["author", (value: any) => (value.source.authorAttempt = "other-author")],
   ["head", (value: any) => (value.source.candidateHead = "f".repeat(40))],
   ["original", (value: any) => (value.originalReview.attempt = "other-original")],
-  ["original disposition", (value: any) => (value.originalReview.disposition = "failed")],
+  ["original disposition", (value: any) => (value.originalReview.disposition = "incomplete")],
+  ["invalid original disposition", (value: any) => (value.originalReview.disposition = "failed")],
   ["selected", (value: any) => (value.selectedReview.attempt = "other-selected")],
   ["selected disposition", (value: any) => (value.selectedReview.disposition = "failed")],
   ["extra", (value: any) => (value.extra = true)],

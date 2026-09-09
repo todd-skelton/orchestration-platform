@@ -172,6 +172,12 @@ export function parseTrace(
     verdict.run === config.run && verdict.role === role,
     "worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility",
   );
+  check(
+    role !== "reviewer" ||
+      typeof verdict.summary !== "string" ||
+      verdict.summary.length <= MAX_TERMINAL_SUMMARY_LENGTH,
+    "malformed-worker-verdict",
+  );
   const summary = terminalSummary(verdict.summary);
   return {
     id,

@@ -93,6 +93,7 @@ function validAttempt(
   config: DeliveryConfig,
   role: "author" | "reviewer",
   artifactPrefix = "",
+  stateDirectory = config.stateDirectory,
 ) {
   return (
     value &&
@@ -106,7 +107,7 @@ function validAttempt(
     isAbsolute(value.trace) &&
     samePath(
       value.trace,
-      resolve(config.stateDirectory, `${artifactPrefix ? `${artifactPrefix}.` : ""}${role}.jsonl`),
+      resolve(stateDirectory, `${artifactPrefix ? `${artifactPrefix}.` : ""}${role}.jsonl`),
     )
   );
 }
@@ -405,7 +406,10 @@ export function githubDeliveryAdapter(
       let reviewerAttempt: any;
       let replacement = false;
       try {
-        const selected = await selectedSourceReview(pilot);
+        const selected = await selectedSourceReview(
+          pilot,
+          config.selectedReviewStateDirectory ?? config.stateDirectory,
+        );
         reviewer = selected.terminal;
         reviewerAttempt = selected.attempt;
         replacement = selected.binding !== undefined;
@@ -451,7 +455,13 @@ export function githubDeliveryAdapter(
         !replacementReportAccepted ||
         reviewer?.head !== config.candidateHead ||
         !validAttempt(author, config, "author") ||
-        !validAttempt(reviewerAttempt, config, "reviewer", replacement ? "review-recovery" : "") ||
+        !validAttempt(
+          reviewerAttempt,
+          config,
+          "reviewer",
+          replacement && !config.selectedReviewStateDirectory ? "review-recovery" : "",
+          config.selectedReviewStateDirectory ?? config.stateDirectory,
+        ) ||
         reviewer?.id !== reviewerAttempt.id ||
         author.id === reviewerAttempt.id
       )

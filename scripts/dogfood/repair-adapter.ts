@@ -173,7 +173,10 @@ async function loadArtifacts(
   let reviewerAttempt: any;
   let terminal: any;
   try {
-    ({ attempt: reviewerAttempt, terminal } = await selectedSourceReview(configRecord.config));
+    ({ attempt: reviewerAttempt, terminal } = await selectedSourceReview(
+      configRecord.config,
+      config.selectedReviewStateDirectory ?? directory,
+    ));
   } catch (error) {
     throw new RepairBlocked(
       error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",

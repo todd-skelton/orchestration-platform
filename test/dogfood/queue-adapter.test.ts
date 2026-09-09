@@ -527,153 +527,162 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   });
 });
 
-it("replaces only malformed review transport and binds the selected review without relaunch on restart", async () => {
-  const current = await fixture();
-  await Promise.all([
-    writeFile(current.source.author.promptFile, "author prompt"),
-    writeFile(current.source.reviewer.promptFile, "review prompt"),
-  ]);
-  let sourceHead = base;
-  let reviewHead = base;
-  const launches: string[] = [];
-  const native: Adapter = {
-    async preflight() {},
-    async git(worktree, args) {
-      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
-      if (args[0] === "rev-parse" && args[1] === "HEAD") {
-        if (worktree === current.paths.pilot) return stable;
-        return worktree === current.paths.review ? reviewHead : sourceHead;
-      }
-      if (args[0] === "status") return "";
-      if (args[0] === "checkout") {
-        reviewHead = String(args.at(-1));
+it.each([
+  ["malformed terminal transport", { status: "malformed" as const }],
+  ["malformed nested report", { status: "passed" as const, summary: "{not-json" }],
+])(
+  "replaces only %s and binds the selected review without relaunch on restart",
+  async (_case, malformedReview) => {
+    const current = await fixture();
+    await Promise.all([
+      writeFile(current.source.author.promptFile, "author prompt"),
+      writeFile(current.source.reviewer.promptFile, "review prompt"),
+    ]);
+    let sourceHead = base;
+    let reviewHead = base;
+    const launches: string[] = [];
+    const native: Adapter = {
+      async preflight() {},
+      async git(worktree, args) {
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
+        if (args[0] === "rev-parse" && args[1] === "HEAD") {
+          if (worktree === current.paths.pilot) return stable;
+          return worktree === current.paths.review ? reviewHead : sourceHead;
+        }
+        if (args[0] === "status") return "";
+        if (args[0] === "checkout") {
+          reviewHead = String(args.at(-1));
+          return "";
+        }
+        if (args[0] === "merge-base") return base;
+        if (args[0] === "diff")
+          return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
+        if (args[0] === "ls-files") return "";
+        if (args[0] === "commit") {
+          sourceHead = candidate;
+          return "";
+        }
         return "";
-      }
-      if (args[0] === "merge-base") return base;
-      if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
-      if (args[0] === "ls-files") return "";
-      if (args[0] === "commit") {
-        sourceHead = candidate;
-        return "";
-      }
-      return "";
-    },
-    async launch(role, config, prompt) {
-      const replacement = config.artifactPrefix === "review-recovery";
-      launches.push(replacement ? "replacement-reviewer" : role);
-      if (replacement) {
-        expect(prompt).toContain("sole authority-bound replacement");
-        expect(prompt).toContain('scope "complete"');
-      }
-      return {
-        id: replacement ? "selected-reviewer" : `source-${role}`,
-        pid: launches.length,
-        trace: resolve(
-          current.paths.source,
-          `${replacement ? "review-recovery." : ""}${role}.jsonl`,
-        ),
-      };
-    },
-    async observe(_role, _config, attempt) {
-      if (attempt.id === "source-author")
-        return { status: "passed", id: attempt.id, head: base, usage: { input_tokens: 3 } };
-      if (attempt.id === "source-reviewer")
+      },
+      async launch(role, config, prompt) {
+        const replacement = config.artifactPrefix === "review-recovery";
+        launches.push(replacement ? "replacement-reviewer" : role);
+        if (replacement) {
+          expect(prompt).toContain("sole authority-bound replacement");
+          expect(prompt).toContain('scope "complete"');
+        }
         return {
-          status: "malformed",
+          id: replacement ? "selected-reviewer" : `source-${role}`,
+          pid: launches.length,
+          trace: resolve(
+            current.paths.source,
+            `${replacement ? "review-recovery." : ""}${role}.jsonl`,
+          ),
+        };
+      },
+      async observe(_role, _config, attempt) {
+        if (attempt.id === "source-author")
+          return { status: "passed", id: attempt.id, head: base, usage: { input_tokens: 3 } };
+        if (attempt.id === "source-reviewer")
+          return {
+            ...malformedReview,
+            id: attempt.id,
+            head: candidate,
+            usage: { input_tokens: 9 },
+          };
+        return {
+          status: "passed",
           id: attempt.id,
           head: candidate,
-          usage: { input_tokens: 9 },
+          usage: { output_tokens: 4 },
+          summary: passingReviewSummary(candidate),
         };
-      return {
-        status: "passed",
-        id: attempt.id,
-        head: candidate,
-        usage: { output_tokens: 4 },
-        summary: passingReviewSummary(candidate),
-      };
-    },
-    async checks() {
-      return { head: candidate, checks: [] };
-    },
-  };
-  const fingerprint = repairDigest({
-    config: current.source,
-    prompts: ["author prompt", "review prompt"],
-  });
-  await writeFile(
-    resolve(current.paths.source, "review-recovery-authority.json"),
-    JSON.stringify(
-      reviewRecoveryAuthority({
-        controller: current.source.owner,
-        run: current.source.run,
-        stateDirectory: current.paths.source,
-        configFingerprint: fingerprint,
-        authorAttempt: "source-author",
-        candidateHead: candidate,
-        originalReview: "source-reviewer",
-        reviewer: current.source.reviewer,
+      },
+      async checks() {
+        return { head: candidate, checks: [] };
+      },
+    };
+    const fingerprint = repairDigest({
+      config: current.source,
+      prompts: ["author prompt", "review prompt"],
+    });
+    await writeFile(
+      resolve(current.paths.source, "review-recovery-authority.json"),
+      JSON.stringify(
+        reviewRecoveryAuthority({
+          controller: current.source.owner,
+          run: current.source.run,
+          stateDirectory: current.paths.source,
+          configFingerprint: fingerprint,
+          authorAttempt: "source-author",
+          candidateHead: candidate,
+          originalReview: "source-reviewer",
+          reviewer: current.source.reviewer,
+        }),
+      ),
+    );
+    const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
+
+    await expect(adapter.source(current.item)).resolves.toEqual({
+      status: "accepted",
+      head: candidate,
+      reviewId: "selected-reviewer",
+      stateDirectory: current.paths.source,
+    });
+    expect(launches).toEqual(["author", "reviewer", "replacement-reviewer"]);
+    expect(await adapter.history()).toEqual([
+      expect.objectContaining({ id: "source-author", outcome: "passed" }),
+      expect.objectContaining({
+        id: "source-reviewer",
+        outcome: "malformed",
+        usage: {
+          inputTokens: { status: "known", value: 9 },
+          outputTokens: unavailable,
+          costUsd: unavailable,
+        },
       }),
-    ),
-  );
-  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
-
-  await expect(adapter.source(current.item)).resolves.toEqual({
-    status: "accepted",
-    head: candidate,
-    reviewId: "selected-reviewer",
-    stateDirectory: current.paths.source,
-  });
-  expect(launches).toEqual(["author", "reviewer", "replacement-reviewer"]);
-  expect(await adapter.history()).toEqual([
-    expect.objectContaining({ id: "source-author", outcome: "passed" }),
-    expect.objectContaining({
-      id: "source-reviewer",
-      outcome: "malformed",
-      usage: {
-        inputTokens: { status: "known", value: 9 },
-        outputTokens: unavailable,
-        costUsd: unavailable,
+      expect.objectContaining({
+        id: "selected-reviewer",
+        outcome: "passed",
+        usage: {
+          inputTokens: unavailable,
+          outputTokens: { status: "known", value: 4 },
+          costUsd: unavailable,
+        },
+      }),
+    ]);
+    expect(
+      JSON.parse(
+        await readFile(resolve(current.paths.source, "source-review-binding.json"), "utf8"),
+      ),
+    ).toMatchObject({
+      source: {
+        run: current.source.run,
+        candidateHead: candidate,
+        authorAttempt: "source-author",
       },
-    }),
-    expect.objectContaining({
-      id: "selected-reviewer",
-      outcome: "passed",
-      usage: {
-        inputTokens: unavailable,
-        outputTokens: { status: "known", value: 4 },
-        costUsd: unavailable,
-      },
-    }),
-  ]);
-  expect(
-    JSON.parse(await readFile(resolve(current.paths.source, "source-review-binding.json"), "utf8")),
-  ).toMatchObject({
-    source: {
-      run: current.source.run,
-      candidateHead: candidate,
-      authorAttempt: "source-author",
-    },
-    originalReview: { attempt: "source-reviewer", disposition: "malformed" },
-    selectedReview: { attempt: "selected-reviewer", disposition: "passed" },
-  });
+      originalReview: { attempt: "source-reviewer", disposition: "malformed" },
+      selectedReview: { attempt: "selected-reviewer", disposition: "passed" },
+    });
 
-  const completedFiles = (await readdir(current.paths.source)).sort();
-  const completedState = await Promise.all(
-    completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
-  );
-
-  await expect(adapter.source(current.item)).resolves.toMatchObject({
-    status: "accepted",
-    reviewId: "selected-reviewer",
-  });
-  expect(launches).toHaveLength(3);
-  expect((await readdir(current.paths.source)).sort()).toEqual(completedFiles);
-  expect(
-    await Promise.all(
+    const completedFiles = (await readdir(current.paths.source)).sort();
+    const completedState = await Promise.all(
       completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
-    ),
-  ).toEqual(completedState);
-});
+    );
+
+    await expect(adapter.source(current.item)).resolves.toMatchObject({
+      status: "accepted",
+      reviewId: "selected-reviewer",
+    });
+    expect(launches).toHaveLength(3);
+    expect((await readdir(current.paths.source)).sort()).toEqual(completedFiles);
+    expect(
+      await Promise.all(
+        completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
+      ),
+    ).toEqual(completedState);
+  },
+);
 
 it("preserves a valid incomplete review without shopping for a replacement", async () => {
   const current = await fixture();

@@ -386,6 +386,20 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await expect(f.run()).rejects.toThrow("reviewer-malformed");
     expect(f.launches).toEqual(["author", "reviewer"]);
   });
+  it("rejects an oversized reviewer report without persisting a truncated authority prefix", async () => {
+    const f = await fixture();
+    await f.run();
+    f.authorDone();
+    await f.run();
+    f.reviewerDone();
+    f.summarize("reviewer", "x".repeat(2001));
+    await expect(f.run()).rejects.toThrow("reviewer-malformed");
+    expect(
+      JSON.parse(
+        await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
+      ),
+    ).toEqual({ status: "malformed", id: "reviewer", head });
+  });
   it("keeps failure reasons authoritative while surfacing bounded advisory diagnostics", async () => {
     const failed = await fixture();
     await failed.run();

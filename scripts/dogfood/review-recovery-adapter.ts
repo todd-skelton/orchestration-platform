@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { sha, workerPrompt } from "./flow.ts";
 import type { Adapter, Attempt, Config, Terminal } from "./flow.js";
+import { classifyReview } from "./repair-policy.mjs";
 import {
   sourceReviewBinding,
   validateReviewRecoveryAuthority,
@@ -72,30 +73,34 @@ function samePath(left: string, right: string) {
   return normalize(left) === normalize(right);
 }
 
-async function sourceIdentity(config: Config) {
+async function sourceIdentity(
+  config: Config,
+  originalDisposition: "malformed" | "incomplete" = "malformed",
+) {
   const directory = config.stateDirectory;
-  const [
-    pin,
-    candidate,
-    author,
-    authorTerminal,
-    original,
-    originalTerminal,
-    originalIntent,
-    authority,
-  ] = await Promise.all([
-    required(directory, "config"),
-    required(directory, "candidate"),
-    required(directory, "author-attempt"),
-    required(directory, "author-terminal"),
-    required(directory, "reviewer-attempt"),
-    required(directory, "reviewer-terminal"),
-    required(directory, "reviewer-intent"),
-    required(directory, "review-recovery-authority"),
-  ]);
+  const [pin, candidate, author, authorTerminal, original, originalTerminal, originalIntent] =
+    await Promise.all([
+      required(directory, "config"),
+      required(directory, "candidate"),
+      required(directory, "author-attempt"),
+      required(directory, "author-terminal"),
+      required(directory, "reviewer-attempt"),
+      required(directory, "reviewer-terminal"),
+      required(directory, "reviewer-intent"),
+    ]);
   const prompts = await Promise.all(
     [config.author.promptFile, config.reviewer.promptFile].map((path) => readFile(path, "utf8")),
   );
+  const classifiedOriginal =
+    candidate && SHA.test(candidate.head)
+      ? classifyReview(originalTerminal?.summary, candidate.head, "complete").disposition
+      : "malformed";
+  const originalMatchesDisposition =
+    originalDisposition === "malformed"
+      ? originalTerminal?.status === "malformed" ||
+        (["passed", "failed"].includes(originalTerminal?.status) &&
+          classifiedOriginal === "malformed")
+      : originalTerminal?.status === "failed" && classifiedOriginal === "incomplete";
   demand(
     pin?.config &&
       JSON.stringify(pin.config) === JSON.stringify(config) &&
@@ -113,7 +118,7 @@ async function sourceIdentity(config: Config) {
       validAttempt(original) &&
       original.id !== author.id &&
       samePath(original.trace, resolve(directory, "reviewer.jsonl")) &&
-      originalTerminal?.status === "malformed" &&
+      originalMatchesDisposition &&
       originalTerminal.id === original.id &&
       originalTerminal.head === candidate.head &&
       originalIntent?.fingerprint === pin.fingerprint &&
@@ -121,20 +126,23 @@ async function sourceIdentity(config: Config) {
       originalIntent.head === candidate.head,
     "review-recovery-source-lineage-mismatch",
   );
-  const expectedAuthority = {
-    controller: config.owner,
-    run: config.run,
-    stateDirectory: config.stateDirectory,
-    configFingerprint: pin.fingerprint,
-    authorAttempt: author.id,
-    candidateHead: candidate.head,
-    originalReview: original.id,
-    reviewer: config.reviewer,
-  };
-  try {
-    validateReviewRecoveryAuthority(authority, expectedAuthority);
-  } catch {
-    throw new ReviewRecoveryBlocked("unauthorized-review-recovery");
+  if (originalDisposition === "malformed") {
+    const authority = await required(directory, "review-recovery-authority");
+    const expectedAuthority = {
+      controller: config.owner,
+      run: config.run,
+      stateDirectory: config.stateDirectory,
+      configFingerprint: pin.fingerprint,
+      authorAttempt: author.id,
+      candidateHead: candidate.head,
+      originalReview: original.id,
+      reviewer: config.reviewer,
+    };
+    try {
+      validateReviewRecoveryAuthority(authority, expectedAuthority);
+    } catch {
+      throw new ReviewRecoveryBlocked("unauthorized-review-recovery");
+    }
   }
   return { pin, candidate, author, original, originalTerminal };
 }
@@ -145,25 +153,50 @@ export interface SelectedSourceReview {
   binding?: SourceReviewBinding;
 }
 
-export async function selectedSourceReview(config: Config): Promise<SelectedSourceReview> {
-  const savedBinding = await optional(config.stateDirectory, "source-review-binding");
-  if (savedBinding === ABSENT)
+export async function selectedSourceReview(
+  config: Config,
+  selectedStateDirectory = config.stateDirectory,
+): Promise<SelectedSourceReview> {
+  demand(isAbsolute(selectedStateDirectory), "selected-review-state-invalid");
+  const externalSelection = !samePath(selectedStateDirectory, config.stateDirectory);
+  const savedBinding = await optional(selectedStateDirectory, "source-review-binding");
+  if (savedBinding === ABSENT) {
+    demand(!externalSelection, "missing-selected-review-binding");
     return {
       attempt: await required(config.stateDirectory, "reviewer-attempt"),
       terminal: await required(config.stateDirectory, "reviewer-terminal"),
     };
-  const source = await sourceIdentity(config);
+  }
+  const originalDisposition = savedBinding?.originalReview?.disposition;
+  demand(
+    originalDisposition === "malformed" || originalDisposition === "incomplete",
+    "selected-review-binding-mismatch",
+  );
+  demand(
+    externalSelection ? originalDisposition === "incomplete" : originalDisposition === "malformed",
+    "selected-review-binding-mismatch",
+  );
+  const source = await sourceIdentity(config, originalDisposition);
+  const attemptName = externalSelection ? "reviewer-attempt" : "review-recovery-attempt";
+  const terminalName = externalSelection ? "reviewer-terminal" : "review-recovery-terminal";
   const [attempt, terminal] = await Promise.all([
-    required(config.stateDirectory, "review-recovery-attempt"),
-    required(config.stateDirectory, "review-recovery-terminal"),
+    required(selectedStateDirectory, attemptName),
+    required(selectedStateDirectory, terminalName),
   ]);
+  const selectedTrace = resolve(
+    selectedStateDirectory,
+    externalSelection ? "reviewer.jsonl" : "review-recovery.reviewer.jsonl",
+  );
   demand(
     validAttempt(attempt) &&
-      attempt.trace === resolve(config.stateDirectory, "review-recovery.reviewer.jsonl") &&
+      samePath(attempt.trace, selectedTrace) &&
+      ![source.author.id, source.original.id].includes(attempt.id) &&
       terminal &&
       terminal.id === attempt.id &&
       terminal.head === source.candidate.head &&
-      ["passed", "failed"].includes(terminal.status),
+      ["passed", "failed"].includes(terminal.status) &&
+      classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
+        "complete",
     "selected-review-record-mismatch",
   );
   const expected = {
@@ -173,6 +206,7 @@ export async function selectedSourceReview(config: Config): Promise<SelectedSour
     authorAttempt: source.author.id,
     candidateHead: source.candidate.head,
     originalReview: source.original.id,
+    originalDisposition,
     selectedReview: attempt.id,
     selectedDisposition: terminal.status as "passed" | "failed",
   };
@@ -254,9 +288,20 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
         );
         if (terminal.status === "running") return { status: "observing-reviewer" };
         demand(terminal.head === source.candidate.head, "review-recovery-head-mismatch");
+        demand(
+          terminal.status === "malformed" ||
+            classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
+              "complete",
+          "replacement-review-malformed",
+        );
         await writeOnce(config.stateDirectory, "review-recovery-terminal", terminal);
       }
       demand(terminal.status !== "malformed", "replacement-review-malformed");
+      demand(
+        classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
+          "complete",
+        "replacement-review-malformed",
+      );
       demand(
         ["passed", "failed"].includes(terminal.status) &&
           terminal.id === attempt.id &&

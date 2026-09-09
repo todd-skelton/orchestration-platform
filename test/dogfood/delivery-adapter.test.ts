@@ -1336,6 +1336,133 @@ it("joins delivery to an immutable selected review while retaining the malformed
   );
 });
 
+it("joins delivery to a separately selected PASS while retaining incomplete source evidence", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-external-selected-review-"));
+  roots.push(root);
+  const current = config(root);
+  const selectedState = resolve(root, "selected-review");
+  await Promise.all(
+    [
+      current.controllerRoot,
+      current.worktree,
+      current.reviewWorktree,
+      current.stateDirectory,
+      selectedState,
+    ].map((path) => mkdir(path)),
+  );
+  const selected = "33333333-3333-3333-3333-333333333333";
+  const authorPrompt = resolve(current.stateDirectory, "author.md");
+  const reviewerPrompt = resolve(current.stateDirectory, "reviewer.md");
+  const pilot = {
+    ...pilotConfig(current),
+    allowedPaths: ["scripts/dogfood/queue.ts"],
+    author: { model: "author", effort: "high", promptFile: authorPrompt },
+    reviewer: { model: "reviewer", effort: "high", promptFile: reviewerPrompt },
+    adapter: { kind: "codex-exec", executable: resolve(root, "codex") },
+  };
+  const prompts = ["author prompt", "reviewer prompt"];
+  const fingerprint = sha(JSON.stringify({ config: pilot, prompts }));
+  current.selectedReviewStateDirectory = selectedState;
+  current.authority.selectedReviewStateDirectory = selectedState;
+  await Promise.all([
+    writeFile(authorPrompt, prompts[0]!),
+    writeFile(reviewerPrompt, prompts[1]!),
+    writePilotEvidence(current, {
+      pinnedConfig: pilot,
+      reviewerTerminal: {
+        id: reviewId,
+        status: "failed",
+        head,
+        summary: JSON.stringify({
+          v: 2,
+          head,
+          complete: false,
+          scope: "complete",
+          profile: "contract",
+          g0: ["PASS", "complete evidence did not fit"],
+          pairs: [],
+          findings: [],
+          notes: [],
+        }),
+      },
+    }),
+  ]);
+  await Promise.all([
+    writeFile(
+      resolve(current.stateDirectory, "config.json"),
+      JSON.stringify({ fingerprint, config: pilot }),
+    ),
+    writeFile(
+      resolve(current.stateDirectory, "reviewer-intent.json"),
+      JSON.stringify({ fingerprint, role: "reviewer", head }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-attempt.json"),
+      JSON.stringify({ id: selected, pid: 303, trace: resolve(selectedState, "reviewer.jsonl") }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-terminal.json"),
+      JSON.stringify({
+        id: selected,
+        status: "passed",
+        head,
+        summary: JSON.stringify({
+          v: 2,
+          head,
+          complete: true,
+          scope: "complete",
+          profile: "contract",
+          g0: ["PASS", "bounded external selection"],
+          pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "checked"]),
+          findings: [],
+          notes: [],
+        }),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "source-review-binding.json"),
+      JSON.stringify(
+        sourceReviewBinding({
+          run: current.run,
+          stateDirectory: current.stateDirectory,
+          configFingerprint: fingerprint,
+          authorAttempt: authorId,
+          candidateHead: head,
+          originalReview: reviewId,
+          originalDisposition: "incomplete",
+          selectedReview: selected,
+          selectedDisposition: "passed",
+        }),
+      ),
+    ),
+  ]);
+
+  await expect(githubDeliveryAdapter().source(current)).resolves.toMatchObject({
+    head,
+    reviewId: selected,
+  });
+  expect(
+    JSON.parse(await readFile(resolve(current.stateDirectory, "reviewer-terminal.json"), "utf8")),
+  ).toMatchObject({ id: reviewId, status: "failed", head });
+
+  const bindingPath = resolve(selectedState, "source-review-binding.json");
+  const binding = JSON.parse(await readFile(bindingPath, "utf8"));
+  binding.source.configFingerprint = "f".repeat(64);
+  await writeFile(bindingPath, JSON.stringify(binding));
+  await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
+    "selected-review-binding-mismatch",
+  );
+});
+
+it("requires delivery authority to bind the separate selected-review location", async () => {
+  const current = config(resolve(tmpdir(), "delivery-selected-authority"));
+  current.selectedReviewStateDirectory = resolve(tmpdir(), "selected-review");
+  current.authority.selectedReviewStateDirectory = resolve(tmpdir(), "substituted-review");
+  await expect(deliveryStep(current, {} as never, {} as never)).rejects.toThrow(
+    "unauthorized-delivery",
+  );
+});
+
 it.each([
   ["missing author identity", {}, { id: reviewId, status: "passed", head }],
   ["malformed author identity", { id: "-".repeat(36) }, { id: reviewId, status: "passed", head }],

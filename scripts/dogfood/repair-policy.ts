@@ -113,6 +113,7 @@ export interface RepairAuthority {
   reviewWorktree: string;
   stateDirectory: string;
   sourceStateDirectory: string;
+  selectedReviewStateDirectory?: string;
   allowedPaths: string[];
   sourcePaths: string[];
   acceptanceCriteria: string[];
@@ -158,6 +159,7 @@ export interface RepairConfig {
   reviewWorktree: string;
   stateDirectory: string;
   sourceStateDirectory: string;
+  selectedReviewStateDirectory?: string;
   allowedPaths: string[];
   sourcePaths: string[];
   acceptanceCriteria: string[];
@@ -211,6 +213,10 @@ export interface ValidatedReview {
   findings: ReviewFinding[];
   notes: ReviewNote[];
 }
+export type ReviewReportClassification =
+  | { disposition: "complete"; report: ValidatedReview }
+  | { disposition: "incomplete" }
+  | { disposition: "malformed" };
 export interface RepairHandoff {
   schemaVersion: "dogfood-repair-handoff/v1";
   run: string;
@@ -287,6 +293,7 @@ function validAdapter(adapter: unknown) {
 }
 
 export function validateRepairConfig(config: RepairConfig) {
+  const hasSelectedReview = object(config) && Object.hasOwn(config, "selectedReviewStateDirectory");
   demand(
     exactKeys(config, [
       "schemaVersion",
@@ -301,6 +308,7 @@ export function validateRepairConfig(config: RepairConfig) {
       "reviewWorktree",
       "stateDirectory",
       "sourceStateDirectory",
+      ...(hasSelectedReview ? ["selectedReviewStateDirectory"] : []),
       "allowedPaths",
       "sourcePaths",
       "acceptanceCriteria",
@@ -333,6 +341,7 @@ export function validateRepairConfig(config: RepairConfig) {
       config.reviewWorktree,
       config.stateDirectory,
       config.sourceStateDirectory,
+      ...(hasSelectedReview ? [config.selectedReviewStateDirectory] : []),
     ].every((path) => typeof path === "string" && isAbsolute(path)),
     "malformed-repair-paths",
   );
@@ -343,7 +352,9 @@ export function validateRepairConfig(config: RepairConfig) {
       config.reviewWorktree,
       config.stateDirectory,
       config.sourceStateDirectory,
-    ]).size === 5,
+      ...(hasSelectedReview ? [config.selectedReviewStateDirectory] : []),
+    ]).size ===
+      5 + Number(hasSelectedReview),
     "overlapping-repair-paths",
   );
   demand(
@@ -454,6 +465,9 @@ export function validateRepairConfig(config: RepairConfig) {
 
 function validateAuthority(config: RepairConfig) {
   const authority = config.authority;
+  const hasSelectedReview = Object.hasOwn(config, "selectedReviewStateDirectory");
+  const authorityHasSelectedReview =
+    object(authority) && Object.hasOwn(authority, "selectedReviewStateDirectory");
   const boundKeys: (keyof RepairConfig & keyof RepairAuthority)[] = [
     "run",
     "issue",
@@ -484,6 +498,7 @@ function validateAuthority(config: RepairConfig) {
       "reviewWorktree",
       "stateDirectory",
       "sourceStateDirectory",
+      ...(authorityHasSelectedReview ? ["selectedReviewStateDirectory"] : []),
       "allowedPaths",
       "sourcePaths",
       "acceptanceCriteria",
@@ -501,6 +516,9 @@ function validateAuthority(config: RepairConfig) {
       authority.schemaVersion === "dogfood-repair-authority/v1" &&
       IDENTITY.test(authority.controller) &&
       boundKeys.every((key) => same(authority[key], config[key])) &&
+      authorityHasSelectedReview === hasSelectedReview &&
+      (!hasSelectedReview ||
+        same(authority.selectedReviewStateDirectory, config.selectedReviewStateDirectory)) &&
       same(authority.allowedPaths, config.allowedPaths) &&
       same(authority.sourcePaths, config.sourcePaths) &&
       same(authority.acceptanceCriteria, config.acceptanceCriteria) &&
@@ -656,6 +674,85 @@ export function parseReview(
     "duplicate-source-note",
   );
   return parsed as unknown as ValidatedReview;
+}
+
+export function classifyReview(
+  summary: unknown,
+  expectedHead: string,
+  expectedScope: "complete" | "delta",
+): ReviewReportClassification {
+  try {
+    return { disposition: "complete", report: parseReview(summary, expectedHead, expectedScope) };
+  } catch (error) {
+    if (!(error instanceof RepairBlocked)) throw error;
+  }
+  if (typeof summary !== "string" || summary.length > MAX_REVIEW_SUMMARY_LENGTH)
+    return { disposition: "malformed" };
+  let report: unknown;
+  try {
+    report = JSON.parse(summary);
+  } catch {
+    return { disposition: "malformed" };
+  }
+  const parsed = report as Record<string, any>;
+  if (
+    !exactKeys(parsed, REPORT_KEYS) ||
+    parsed.v !== 2 ||
+    parsed.head !== expectedHead ||
+    parsed.complete !== false ||
+    parsed.scope !== expectedScope ||
+    parsed.profile !== "contract" ||
+    !Array.isArray(parsed.g0) ||
+    parsed.g0.length !== 2 ||
+    !["PASS", "BLOCK_REPLAN"].includes(parsed.g0[0]) ||
+    !bounded(parsed.g0[1], 200) ||
+    !Array.isArray(parsed.pairs) ||
+    parsed.pairs.length > QUALITY_KEYS.length ||
+    !Array.isArray(parsed.findings) ||
+    parsed.findings.length > 8 ||
+    !Array.isArray(parsed.notes) ||
+    parsed.notes.length > 8
+  )
+    return { disposition: "malformed" };
+  const validPair = (pair: unknown, index: number) =>
+    Array.isArray(pair) &&
+    pair.length === 3 &&
+    [pair[0], pair[1]].every((value) => ["PASS", "BLOCK", "NOTE", "NA"].includes(value)) &&
+    bounded(pair[2], 140) &&
+    !(QUALITY_WEIGHTS[index] === "Low" && pair.includes("BLOCK")) &&
+    !(QUALITY_WEIGHTS[index] === "Med" && pair[1] === "BLOCK");
+  const validFinding = (finding: unknown) => {
+    const candidate = finding as Record<string, any>;
+    return (
+      exactKeys(candidate, ["file", "line", "severity", "defect", "verification"]) &&
+      validPath(candidate.file) &&
+      Number.isSafeInteger(candidate.line) &&
+      candidate.line > 0 &&
+      ["P0", "P1", "P2"].includes(candidate.severity) &&
+      bounded(candidate.defect, 350) &&
+      bounded(candidate.verification, 200)
+    );
+  };
+  const validNote = (note: unknown) => {
+    const candidate = note as Record<string, any>;
+    return (
+      exactKeys(candidate, ["file", "line", "remedy"]) &&
+      validPath(candidate.file) &&
+      Number.isSafeInteger(candidate.line) &&
+      candidate.line > 0 &&
+      bounded(candidate.remedy, 160)
+    );
+  };
+  if (
+    !parsed.pairs.every(validPair) ||
+    !parsed.findings.every(validFinding) ||
+    !parsed.notes.every(validNote) ||
+    new Set(parsed.findings.map((finding: unknown) => JSON.stringify(finding))).size !==
+      parsed.findings.length ||
+    new Set(parsed.notes.map((note: unknown) => JSON.stringify(note))).size !== parsed.notes.length
+  )
+    return { disposition: "malformed" };
+  return { disposition: "incomplete" };
 }
 
 function validateLocations(

@@ -33,6 +33,7 @@ import {
 import { repairStep, type RepairAdapter } from "./repair.mjs";
 import {
   RepairBlocked,
+  classifyReview,
   parseReview,
   repairDigest,
   repairPolicy,
@@ -1333,9 +1334,34 @@ export function repositoryQueueAdapter(
   ) => {
     for (const role of ["author", "reviewer"] as const) {
       const attempt = await adapterOptional(directory, `${role}-attempt`);
-      const terminal = await adapterOptional(directory, `${role}-terminal`);
+      let terminal = await adapterOptional(directory, `${role}-terminal`);
+      if (
+        stage === "source" &&
+        role === "reviewer" &&
+        terminal !== ABSENT &&
+        ["passed", "failed"].includes(terminal.status)
+      ) {
+        const candidate = await adapterOptional(directory, "candidate");
+        if (
+          candidate !== ABSENT &&
+          SHA.test(candidate.head) &&
+          classifyReview(terminal.summary, candidate.head, "complete").disposition === "malformed"
+        )
+          terminal = { ...terminal, status: "malformed" };
+      }
       await syncParticipant(item, stage, role, attempt, terminal);
     }
+  };
+
+  const sourceReviewDisposition = async (item: QueueItem) => {
+    const [candidate, terminal] = await Promise.all([
+      adapterOptional(item.source.stateDirectory, "candidate"),
+      adapterOptional(item.source.stateDirectory, "reviewer-terminal"),
+    ]);
+    if (candidate === ABSENT || terminal === ABSENT || !SHA.test(candidate.head)) return undefined;
+    if (terminal.status === "malformed") return "malformed" as const;
+    if (!["passed", "failed"].includes(terminal.status)) return undefined;
+    return classifyReview(terminal.summary, candidate.head, "complete").disposition;
   };
 
   const acceptedPair = async (
@@ -1628,6 +1654,8 @@ export function repositoryQueueAdapter(
           boundedNative(item, "source"),
           item.setup.pilotWorktree,
         );
+        if ((await sourceReviewDisposition(item)) === "malformed")
+          throw new Error("reviewer-malformed");
         await syncParticipants(item, "source", item.source.stateDirectory);
         if (result.status === "observing-author" || result.status === "observing-reviewer")
           return { status: result.status };
@@ -1643,7 +1671,12 @@ export function repositoryQueueAdapter(
       } catch (error) {
         await syncParticipants(item, "source", item.source.stateDirectory);
         if (error instanceof QueueBlocked) throw error;
-        const reason = error instanceof Error ? error.message : "";
+        const reason =
+          (await sourceReviewDisposition(item)) === "malformed"
+            ? "reviewer-malformed"
+            : error instanceof Error
+              ? error.message
+              : "";
         if (reason === "reviewer-malformed") {
           const recovery =
             options.reviewRecovery ?? reviewedReviewRecoveryAdapter(boundedNative(item, "source"));

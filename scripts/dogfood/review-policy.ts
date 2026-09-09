@@ -12,7 +12,7 @@ export interface SourceReviewBinding {
     authorAttempt: string;
     candidateHead: string;
   };
-  originalReview: { attempt: string; disposition: "malformed" };
+  originalReview: { attempt: string; disposition: "malformed" | "incomplete" };
   selectedReview: { attempt: string; disposition: SelectedReviewDisposition };
 }
 
@@ -23,6 +23,7 @@ export interface SourceReviewBindingInput {
   authorAttempt: string;
   candidateHead: string;
   originalReview: string;
+  originalDisposition?: "malformed" | "incomplete";
   selectedReview: string;
   selectedDisposition: SelectedReviewDisposition;
 }
@@ -118,6 +119,7 @@ function exactKeys(value: unknown, keys: string[]): value is Record<string, any>
 }
 
 export function sourceReviewBinding(input: SourceReviewBindingInput): SourceReviewBinding {
+  const originalDisposition = input.originalDisposition ?? "malformed";
   if (
     !/^[\w.-]{1,64}$/.test(input.run) ||
     typeof input.stateDirectory !== "string" ||
@@ -128,6 +130,7 @@ export function sourceReviewBinding(input: SourceReviewBindingInput): SourceRevi
       IDENTITY.test(value),
     ) ||
     new Set([input.authorAttempt, input.originalReview, input.selectedReview]).size !== 3 ||
+    !["malformed", "incomplete"].includes(originalDisposition) ||
     !["passed", "failed"].includes(input.selectedDisposition)
   )
     throw new Error("invalid-source-review-binding-input");
@@ -140,7 +143,7 @@ export function sourceReviewBinding(input: SourceReviewBindingInput): SourceRevi
       authorAttempt: input.authorAttempt,
       candidateHead: input.candidateHead,
     },
-    originalReview: { attempt: input.originalReview, disposition: "malformed" },
+    originalReview: { attempt: input.originalReview, disposition: originalDisposition },
     selectedReview: {
       attempt: input.selectedReview,
       disposition: input.selectedDisposition,

@@ -276,9 +276,14 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
           ["running", "passed", "failed", "malformed"].includes(terminal.status),
         "malformed-terminal",
       );
-      const summary = terminalSummary(terminal.summary);
+      const oversizedReviewSummary =
+        role === "reviewer" &&
+        typeof terminal.summary === "string" &&
+        terminal.summary.length > MAX_TERMINAL_SUMMARY_LENGTH;
+      const summary = oversizedReviewSummary ? undefined : terminalSummary(terminal.summary);
       delete terminal.summary;
-      if (summary) terminal.summary = summary;
+      if (oversizedReviewSummary) terminal.status = "malformed";
+      else if (summary) terminal.summary = summary;
       if (terminal.status === "running") return finish(`observing-${role}`, { attempt });
       await record(directory, `${role}-terminal`, terminal);
     }

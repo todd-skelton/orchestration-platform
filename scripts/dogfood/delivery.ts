@@ -15,6 +15,7 @@ export interface DeliveryAuthority {
   controllerRevision: string;
   head: string;
   refresh?: PublicationRefresh;
+  selectedReviewStateDirectory?: string;
   actions: (typeof ACTIONS)[number][];
 }
 
@@ -27,6 +28,7 @@ export interface DeliveryConfig {
   worktree: string;
   reviewWorktree: string;
   stateDirectory: string;
+  selectedReviewStateDirectory?: string;
   candidateHead: string;
   refresh?: PublicationRefresh;
   requiredChecks: string[];
@@ -256,6 +258,10 @@ async function record(directory: string, name: string, value: unknown) {
 function validateConfig(config: DeliveryConfig) {
   const hasRefresh =
     typeof config === "object" && config !== null && Object.hasOwn(config, "refresh");
+  const hasSelectedReview =
+    typeof config === "object" &&
+    config !== null &&
+    Object.hasOwn(config, "selectedReviewStateDirectory");
   demand(
     exactKeys(config, [
       "run",
@@ -266,6 +272,7 @@ function validateConfig(config: DeliveryConfig) {
       "worktree",
       "reviewWorktree",
       "stateDirectory",
+      ...(hasSelectedReview ? ["selectedReviewStateDirectory"] : []),
       "candidateHead",
       ...(hasRefresh ? ["refresh"] : []),
       "requiredChecks",
@@ -285,6 +292,13 @@ function validateConfig(config: DeliveryConfig) {
   );
   for (const name of ["controllerRoot", "worktree", "reviewWorktree", "stateDirectory"] as const)
     demand(typeof config[name] === "string" && isAbsolute(config[name]), `invalid-${name}`);
+  if (hasSelectedReview)
+    demand(
+      typeof config.selectedReviewStateDirectory === "string" &&
+        isAbsolute(config.selectedReviewStateDirectory) &&
+        relative(config.stateDirectory, config.selectedReviewStateDirectory) !== "",
+      "invalid-selected-review-state-directory",
+    );
   demand(
     typeof config.candidateHead === "string" && SHA.test(config.candidateHead),
     "invalid-candidate-head",
@@ -317,6 +331,10 @@ function validateConfig(config: DeliveryConfig) {
   const authority = config.authority;
   const authorityHasRefresh =
     typeof authority === "object" && authority !== null && Object.hasOwn(authority, "refresh");
+  const authorityHasSelectedReview =
+    typeof authority === "object" &&
+    authority !== null &&
+    Object.hasOwn(authority, "selectedReviewStateDirectory");
   demand(
     authority &&
       exactKeys(authority, [
@@ -327,6 +345,7 @@ function validateConfig(config: DeliveryConfig) {
         "controllerRevision",
         "head",
         ...(authorityHasRefresh ? ["refresh"] : []),
+        ...(authorityHasSelectedReview ? ["selectedReviewStateDirectory"] : []),
         "actions",
       ]) &&
       authority.schemaVersion === DELIVERY_AUTHORITY_SCHEMA &&
@@ -337,6 +356,9 @@ function validateConfig(config: DeliveryConfig) {
       authority.controllerRevision === config.controllerRevision &&
       authority.head === config.candidateHead &&
       authorityHasRefresh === hasRefresh &&
+      authorityHasSelectedReview === hasSelectedReview &&
+      (!hasSelectedReview ||
+        authority.selectedReviewStateDirectory === config.selectedReviewStateDirectory) &&
       (!hasRefresh ||
         (exactKeys(authority.refresh, ["number", "url", "head"]) &&
           authority.refresh.number === config.refresh?.number &&
@@ -703,6 +725,9 @@ export async function deliveryStep(
     const roots = await Promise.all(
       [config.controllerRoot, config.worktree, config.reviewWorktree].map((path) => realpath(path)),
     );
+    const selectedReviewDirectory = config.selectedReviewStateDirectory
+      ? await realpath(config.selectedReviewStateDirectory)
+      : undefined;
     demand(
       roots.every(
         (root, index) =>
@@ -713,7 +738,16 @@ export async function deliveryStep(
       "delivery-worktree-overlap",
     );
     demand(
-      roots.every((root) => outside(root, directory) && outside(directory, root)),
+      roots.every(
+        (root) =>
+          outside(root, directory) &&
+          outside(directory, root) &&
+          (!selectedReviewDirectory ||
+            (outside(root, selectedReviewDirectory) && outside(selectedReviewDirectory, root))),
+      ) &&
+        (!selectedReviewDirectory ||
+          (outside(directory, selectedReviewDirectory) &&
+            outside(selectedReviewDirectory, directory))),
       "delivery-state-inside-checkout",
     );
   }
