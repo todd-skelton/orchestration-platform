@@ -195,9 +195,10 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     "pilot-revision-moved",
   );
   requireThat((await adapter.git(pilotRoot, ["status", "--porcelain"])) === "", "dirty-pilot");
-  const prompts = await Promise.all(
-    [config.author.promptFile, config.reviewer.promptFile].map((p) => readFile(p, "utf8")),
-  );
+  const prompts = await Promise.all([
+    readFile(config.author.promptFile, "utf8"),
+    readFile(config.reviewer.promptFile, "utf8"),
+  ]);
   requireThat(
     prompts.every((p) => p.trim()),
     "empty-prompt",
