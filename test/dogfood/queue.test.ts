@@ -166,9 +166,7 @@ it.each([
   "docs/planning/review-location.md",
   "planning/drafts/ISS-SYNTHETIC.md",
   "planning/roadmap.json",
-] as const)(
-  "admits the explicit repository review location %s",
-  async (reviewPath) => {
+] as const)("admits the explicit repository review location %s", async (reviewPath) => {
     const current = await fixture();
     current.items[0]!.source.allowedPaths = [reviewPath];
     current.items[0]!.repair.sourcePaths = [reviewPath];

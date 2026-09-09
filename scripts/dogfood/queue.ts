@@ -344,9 +344,7 @@ export function validateQueueConfig(config: QueueConfig) {
     demand(
       Array.isArray(item.source.requiredChecks) &&
         item.source.requiredChecks.length === item.delivery.requiredChecks.length &&
-        item.source.requiredChecks.every(
-          (name, index) => name === item.delivery.requiredChecks[index],
-        ),
+        item.source.requiredChecks.every((name, index) => name === item.delivery.requiredChecks[index]),
       "queue-hosted-check-drift",
     );
     if (Object.hasOwn(item.delivery, "refresh"))

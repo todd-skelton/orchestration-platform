@@ -348,9 +348,7 @@ it.each([
   "test/dogfood/runtime-review.test.ts",
   "docs/planning/runtime-review.md",
   "planning/drafts/ISS-SYNTHETIC.md",
-] as const)(
-  "accepts an exact changed review finding at %s",
-  async (reviewPath) => {
+] as const)("accepts an exact changed review finding at %s", async (reviewPath) => {
     const current = await fixture();
     current.config.allowedPaths = [reviewPath];
     current.config.authority.allowedPaths = [reviewPath];
