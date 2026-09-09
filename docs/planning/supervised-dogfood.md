@@ -428,6 +428,22 @@ worker, directory, PR, merge or cleanup. A completed item is skipped only when
 its complete review lineage and delivery receipt remain an exact prefix of the
 durable queue history. The stable executor remains fixed for the invocation;
 accepted candidate code is delivered but never loaded as its own authority.
+The command derives its executing root from the loaded command location and the
+repository adapter verifies that root against the configured stable executor
+before setup or delivery. Accepted review IDs are matched to the final reviewer
+in durable stage history before delivery intent. Queue and item completion
+receipts are validated as a whole before component entry; a valid completed
+restart returns the same closed result without re-entering delivery.
+
+Queue usage remains per-measure known or unavailable. When repair compatibility
+is needed, wholly unavailable and wholly known observations retain their legacy
+representations, while partial observations retain each known token measure and
+leave unavailable cost unavailable. No USD value is inferred.
+
+The thin command imports the co-located queue engine and explicit repository
+adapter in `queue.ts`, which calls the accepted component entry points directly.
+Thus command-to-effect behavior crosses the command, queue/adapter, and component
+files while `queueStep` continues to depend only on its injected `QueueAdapter`.
 
 This is a finite self-repository dogfood composition, not an installed
 scheduler, service, public API, arbitrary workflow engine or production

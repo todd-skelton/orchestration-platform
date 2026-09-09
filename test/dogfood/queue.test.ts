@@ -175,7 +175,7 @@ it("advances every finite item and completed restart repeats no effects", async 
     status: "complete",
     participants: 4,
   });
-  expect(calls.slice(7)).toEqual(["authority", "delivery:synthetic-1", "delivery:synthetic-2"]);
+  expect(calls.slice(7)).toEqual(["authority"]);
   expect([...deliveryEffects]).toEqual(["synthetic-1", "synthetic-2"]);
   expect(await readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8")).toBe(
     firstComplete,
@@ -312,6 +312,172 @@ it("retains an interrupted wait target and refuses a moved delivery identity", a
   await expect(
     readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8"),
   ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("binds an accepted review identity to the exact stage history before delivery", async () => {
+  const current = await fixture();
+  const history: QueueParticipant[] = [];
+  let deliveryCalls = 0;
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source(item) {
+      history.push(
+        participant(1, item.id, "source", "author", "passed"),
+        participant(2, item.id, "source", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: "b".repeat(40),
+        reviewId: "forged-review",
+        stateDirectory: resolve(current.root, "source"),
+      };
+    },
+    async repair() {
+      throw new Error("repair must not run");
+    },
+    async delivery() {
+      deliveryCalls += 1;
+      throw new Error("delivery must not run");
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).rejects.toThrow("item-review-history-mismatch");
+  expect(deliveryCalls).toBe(0);
+  await expect(
+    readFile(resolve(current.stateDirectory, "item-1-delivery-intent.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("refuses an orphan queue completion before item component effects", async () => {
+  const current = await fixture();
+  await writeFile(
+    resolve(current.stateDirectory, "queue-complete.json"),
+    `${JSON.stringify({
+      status: "complete",
+      run: current.config.run,
+      cursor: 1,
+      items: 1,
+      participants: 0,
+    })}\n`,
+  );
+  const componentCalls: string[] = [];
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return [];
+    },
+    async setup() {
+      componentCalls.push("setup");
+      return { status: "ready" };
+    },
+    async source() {
+      componentCalls.push("source");
+      return { status: "observing-author" };
+    },
+    async repair() {
+      componentCalls.push("repair");
+      return { status: "observing-author" };
+    },
+    async delivery() {
+      componentCalls.push("delivery");
+      return {
+        status: "observing-hosted-checks",
+        head: "b".repeat(40),
+        reviewId: "review",
+      };
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-queue-complete");
+  expect(componentCalls).toEqual([]);
+});
+
+it("refuses conflicting completion metrics before repeating a completed item", async () => {
+  const current = await fixture();
+  const item = current.items[0]!;
+  const history = [
+    participant(1, item.id, "source", "author", "passed"),
+    participant(2, item.id, "source", "reviewer", "passed"),
+  ];
+  const common = {
+    schemaVersion: "dogfood-bounded-queue-stage/v1",
+    item: item.id,
+    issue: item.issue,
+    base: item.base,
+    history,
+  };
+  await Promise.all([
+    writeFile(
+      resolve(current.stateDirectory, "item-1-accepted.json"),
+      `${JSON.stringify({
+        ...common,
+        stage: "source",
+        status: "accepted",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        stateDirectory: resolve(current.root, "source"),
+      })}\n`,
+    ),
+    writeFile(
+      resolve(current.stateDirectory, "item-1-complete.json"),
+      `${JSON.stringify({
+        ...common,
+        stage: "delivery",
+        status: "complete",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        publication: { number: 1, url: "https://example.test/1" },
+        mergeCommit: "c".repeat(40),
+        cleanup: { status: "confirmed", branch: "codex/synthetic-1" },
+      })}\n`,
+    ),
+    writeFile(
+      resolve(current.stateDirectory, "queue-complete.json"),
+      `${JSON.stringify({
+        status: "complete",
+        run: current.config.run,
+        cursor: 1,
+        items: 1,
+        participants: 3,
+      })}\n`,
+    ),
+  ]);
+  const componentCalls: string[] = [];
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return history;
+    },
+    async setup() {
+      componentCalls.push("setup");
+      return { status: "ready" };
+    },
+    async source() {
+      componentCalls.push("source");
+      return { status: "observing-author" };
+    },
+    async repair() {
+      componentCalls.push("repair");
+      return { status: "observing-author" };
+    },
+    async delivery() {
+      componentCalls.push("delivery");
+      return {
+        status: "observing-hosted-checks",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+      };
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-queue-complete");
+  expect(componentCalls).toEqual([]);
 });
 
 it.each([

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { queueUsage, repositoryQueueAdapter } from "../../scripts/dogfood/queue-adapter.js";
+import { queueUsage, repositoryQueueAdapter } from "../../scripts/dogfood/queue.js";
 import type {
   DeliveryAdapter,
   DeliveryPlan,
@@ -193,7 +193,7 @@ it("directly composes the accepted setup transition before source work", async (
       return "succeeded";
     },
   };
-  const adapter = repositoryQueueAdapter(current.config, {
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
     native: {} as never,
     setup,
   });
@@ -379,7 +379,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       cleaned = true;
     },
   };
-  const adapter = repositoryQueueAdapter(current.config, {
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
     native,
     delivery,
     deliveryPolicy: {
@@ -444,7 +444,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
       stage: "source",
       role: "reviewer",
       outcome: "failed",
-      usage: queueUsage({ input_tokens: 8, output_tokens: 4 }),
+      usage: queueUsage({ input_tokens: 8, output_tokens: 4, cost_usd: 1.25 }),
     },
   ];
   const current = await fixture(sourceHistory);
@@ -629,7 +629,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
       };
     },
   };
-  const adapter = repositoryQueueAdapter(current.config, {
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
     native: {} as never,
     repair: repairAdapter,
   });
@@ -666,7 +666,17 @@ it("directly composes the accepted repair transition from a complete fixable rev
       },
     },
   });
-  expect(captured.history[0].usage).toEqual({ status: "unavailable" });
+  expect(captured.history[0].usage).toEqual({
+    inputTokens: { status: "known", value: 10 },
+    outputTokens: { status: "known", value: 2 },
+    costUsd: { status: "unavailable" },
+  });
+  expect(captured.history[1].usage).toEqual({
+    status: "known",
+    inputTokens: 8,
+    outputTokens: 4,
+    costUsd: 1.25,
+  });
   expect((await adapter.history()).map((row) => row.id)).toEqual([
     "source-author",
     "source-reviewer",
