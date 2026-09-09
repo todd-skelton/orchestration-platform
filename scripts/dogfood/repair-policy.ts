@@ -89,7 +89,7 @@ export interface ParticipantHistory {
   ordinal: number;
   id: string;
   role: "author" | "reviewer";
-  outcome: "passed" | "failed" | "unknown";
+  outcome: "passed" | "failed" | "unknown" | "malformed";
   usage:
     | { status: "unavailable" }
     | { status: "known"; inputTokens: number; outputTokens: number; costUsd: number }
@@ -400,7 +400,7 @@ export function validateRepairConfig(config: RepairConfig) {
         participant.ordinal === index + 1 &&
         IDENTITY.test(participant.id) &&
         ["author", "reviewer"].includes(participant.role) &&
-        ["passed", "failed", "unknown"].includes(participant.outcome),
+        ["passed", "failed", "unknown", "malformed"].includes(participant.outcome),
       "malformed-participant-history",
     );
     demand(!identities.has(participant.id), "reused-participant-identity");
@@ -552,7 +552,11 @@ function validateAuthority(config: RepairConfig) {
   );
 }
 
-function parseReview(summary: unknown, expectedHead: string, expectedScope: "complete" | "delta") {
+export function parseReview(
+  summary: unknown,
+  expectedHead: string,
+  expectedScope: "complete" | "delta",
+) {
   demand(
     typeof summary === "string" && summary.length <= MAX_REVIEW_SUMMARY_LENGTH,
     "source-review-summary-out-of-bounds",

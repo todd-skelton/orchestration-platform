@@ -20,7 +20,10 @@ async function optionalText(path: string) {
 }
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const artifact = (config: Config, role: Role, suffix: string) =>
-  resolve(config.stateDirectory, `${role}.${suffix}`);
+  resolve(
+    config.stateDirectory,
+    `${config.artifactPrefix ? `${config.artifactPrefix}.` : ""}${role}.${suffix}`,
+  );
 // POSIX copies only these exact spellings. Windows environment names are
 // case-insensitive, so an allowed alias is copied once under this canonical spelling.
 export const WORKER_ENVIRONMENT_ALLOWLIST = [
@@ -151,14 +154,23 @@ export function parseTrace(
   const messages = rows.filter(
     (row) => row.type === "item.completed" && row.item?.type === "agent_message",
   );
-  const verdict = JSON.parse(messages.at(-1)?.item.text ?? "null");
+  let verdict: any;
+  try {
+    verdict = JSON.parse(messages.at(-1)?.item.text ?? "null");
+  } catch {
+    throw new Error("malformed-worker-verdict");
+  }
   check(
     verdict &&
-      verdict.run === config.run &&
-      verdict.role === role &&
+      typeof verdict.run === "string" &&
+      typeof verdict.role === "string" &&
       /^[a-f0-9]{40}$/.test(verdict.head) &&
       ["PASS", "FAIL"].includes(verdict.verdict),
     "malformed-worker-verdict",
+  );
+  check(
+    verdict.run === config.run && verdict.role === role,
+    "worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility",
   );
   const summary = terminalSummary(verdict.summary);
   return {
@@ -268,13 +280,24 @@ export function codexAdapter(): Adapter {
           throw error;
         }
       }
-      return parseTrace(
-        await readFile(attempt.trace, "utf8"),
-        Boolean(exit),
-        role,
-        config,
-        attempt.id,
-      );
+      const trace = await readFile(attempt.trace, "utf8");
+      try {
+        return parseTrace(trace, Boolean(exit), role, config, attempt.id);
+      } catch (error) {
+        if (
+          role === "reviewer" &&
+          Boolean(exit) &&
+          error instanceof Error &&
+          error.message === "malformed-worker-verdict"
+        )
+          return {
+            id: attempt.id,
+            status: "malformed",
+            head: await git(config.reviewWorktree, ["rev-parse", "HEAD"]),
+            usage: events(trace, true).find((row) => row.type === "turn.completed")?.usage,
+          };
+        throw error;
+      }
     },
     async checks(config, url) {
       const head = async () =>

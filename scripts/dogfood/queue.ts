@@ -20,6 +20,12 @@ import { codexAdapter } from "./dispatch-adapter.ts";
 import { step } from "./flow.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
 import {
+  ReviewRecoveryBlocked,
+  reviewedReviewRecoveryAdapter,
+  selectedSourceReview,
+  type ReviewRecoveryAdapter,
+} from "./review-recovery-adapter.mjs";
+import {
   reviewedRepairAdapter,
   sourceReviewerReportPrompt,
   validDogfoodReviewPath,
@@ -27,6 +33,7 @@ import {
 import { repairStep, type RepairAdapter } from "./repair.mjs";
 import {
   RepairBlocked,
+  parseReview,
   repairDigest,
   repairPolicy,
   type ParticipantHistory,
@@ -59,7 +66,7 @@ export interface QueueParticipant {
   item: string;
   stage: "source" | "repair";
   role: "author" | "reviewer";
-  outcome: "passed" | "failed" | "unknown";
+  outcome: "passed" | "failed" | "unknown" | "malformed";
   usage: QueueUsage;
 }
 
@@ -237,7 +244,7 @@ export function validateHistory(history: QueueParticipant[], ceiling: number) {
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.item) &&
         ["source", "repair"].includes(participant.stage) &&
         ["author", "reviewer"].includes(participant.role) &&
-        ["passed", "failed", "unknown"].includes(participant.outcome) &&
+        ["passed", "failed", "unknown", "malformed"].includes(participant.outcome) &&
         validUsage(participant.usage),
       "malformed-participant-history",
     );
@@ -601,12 +608,17 @@ function assertItemReviewHistory(
       participant.item === item.id &&
       participant.stage === "repair",
   );
+  const selectedSource = source.at(-1);
+  const validSource =
+    [2, 3].includes(source.length) &&
+    source[0]!.role === "author" &&
+    source[0]!.outcome === "passed" &&
+    source.slice(1).every((participant) => participant.role === "reviewer") &&
+    (source.length === 2 || source[1]!.outcome === "malformed") &&
+    selectedSource!.outcome === (repaired ? "failed" : "passed") &&
+    selectedSource!.id === (repaired ? source.at(-1)!.id : reviewId);
   demand(
-    source.length === 2 &&
-      source[0]!.role === "author" &&
-      source[0]!.outcome === "passed" &&
-      source[1]!.role === "reviewer" &&
-      source[1]!.outcome === (repaired ? "failed" : "passed") &&
+    validSource &&
       (repaired
         ? repair.length === 2 &&
           repair[0]!.role === "author" &&
@@ -614,7 +626,7 @@ function assertItemReviewHistory(
           repair[1]!.role === "reviewer" &&
           repair[1]!.outcome === "passed" &&
           repair[1]!.id === reviewId
-        : repair.length === 0 && source[1]!.id === reviewId),
+        : repair.length === 0),
     "item-review-history-mismatch",
   );
 }
@@ -638,12 +650,13 @@ function assertSourceFailureHistory(
       participant.stage === "repair",
   );
   demand(
-    source.length === 2 &&
+    [2, 3].includes(source.length) &&
       source[0]!.role === "author" &&
       source[0]!.outcome === "passed" &&
-      source[1]!.role === "reviewer" &&
-      source[1]!.outcome === "failed" &&
-      source[1]!.id === reviewId &&
+      source.slice(1).every((participant) => participant.role === "reviewer") &&
+      (source.length === 2 || source[1]!.outcome === "malformed") &&
+      source.at(-1)!.outcome === "failed" &&
+      source.at(-1)!.id === reviewId &&
       repair.length === 0,
     "malformed-source-failure-stage",
   );
@@ -1116,6 +1129,7 @@ export interface RepositoryQueueAdapterOptions {
   delivery?: DeliveryAdapter;
   deliveryPolicy?: DeliveryPolicyAdapter;
   repairPolicy?: RepairPolicy;
+  reviewRecovery?: ReviewRecoveryAdapter;
   assertExecutor?: (config: DeliveryConfig, executingRoot: string) => Promise<void>;
 }
 
@@ -1267,6 +1281,51 @@ export function repositoryQueueAdapter(
     },
   });
 
+  const syncParticipant = async (
+    item: QueueItem,
+    stage: "source" | "repair",
+    role: Role,
+    attempt: any,
+    terminal: any,
+  ) => {
+    if (attempt === ABSENT || terminal === ABSENT || terminal.status === "running") return;
+    let matchedOrdinal: number | undefined;
+    for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
+      const saved = await adapterOptional(state, `participant-${ordinal}-attempt`);
+      if (saved !== ABSENT && saved.id === attempt.id) {
+        demand(
+          saved.item === item.id && saved.stage === stage && saved.role === role,
+          "participant-context-drift",
+        );
+        matchedOrdinal = ordinal;
+        break;
+      }
+    }
+    demand(matchedOrdinal !== undefined, "participant-attempt-unreserved");
+    const outcome: QueueParticipant["outcome"] = ["passed", "failed", "malformed"].includes(
+      terminal.status,
+    )
+      ? terminal.status
+      : "unknown";
+    const participant: QueueParticipant = {
+      ordinal: matchedOrdinal,
+      id: attempt.id,
+      item: item.id,
+      stage,
+      role,
+      outcome,
+      usage: queueUsage(terminal.usage),
+    };
+    const existing = await adapterOptional(state, `participant-${matchedOrdinal}-terminal`);
+    if (existing === ABSENT)
+      await adapterRecord(state, `participant-${matchedOrdinal}-terminal`, participant);
+    else
+      demand(
+        sameParticipantIdentity(existing as QueueParticipant, participant),
+        "participant-terminal-drift",
+      );
+  };
+
   const syncParticipants = async (
     item: QueueItem,
     stage: "source" | "repair",
@@ -1274,44 +1333,8 @@ export function repositoryQueueAdapter(
   ) => {
     for (const role of ["author", "reviewer"] as const) {
       const attempt = await adapterOptional(directory, `${role}-attempt`);
-      if (attempt === ABSENT) continue;
       const terminal = await adapterOptional(directory, `${role}-terminal`);
-      if (terminal === ABSENT || terminal.status === "running") continue;
-      let matchedOrdinal: number | undefined;
-      for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-        const saved = await adapterOptional(state, `participant-${ordinal}-attempt`);
-        if (saved !== ABSENT && saved.id === attempt.id) {
-          demand(
-            saved.item === item.id && saved.stage === stage && saved.role === role,
-            "participant-context-drift",
-          );
-          matchedOrdinal = ordinal;
-          break;
-        }
-      }
-      demand(matchedOrdinal !== undefined, "participant-attempt-unreserved");
-      const participant: QueueParticipant = {
-        ordinal: matchedOrdinal,
-        id: attempt.id,
-        item: item.id,
-        stage,
-        role,
-        outcome:
-          terminal.status === "passed"
-            ? "passed"
-            : terminal.status === "failed"
-              ? "failed"
-              : "unknown",
-        usage: queueUsage(terminal.usage),
-      };
-      const existing = await adapterOptional(state, `participant-${matchedOrdinal}-terminal`);
-      if (existing === ABSENT)
-        await adapterRecord(state, `participant-${matchedOrdinal}-terminal`, participant);
-      else
-        demand(
-          sameParticipantIdentity(existing as QueueParticipant, participant),
-          "participant-terminal-drift",
-        );
+      await syncParticipant(item, stage, role, attempt, terminal);
     }
   };
 
@@ -1326,15 +1349,46 @@ export function repositoryQueueAdapter(
         participant.item === item.id &&
         participant.stage === stage,
     );
+    const last = pair.at(-1);
+    const validLength =
+      stage === "repair"
+        ? pair.length === 2
+        : [2, 3].includes(pair.length) && (pair.length === 2 || pair[1]!.outcome === "malformed");
     demand(
-      pair.length === 2 &&
+      validLength &&
         pair[0]!.role === "author" &&
         pair[0]!.outcome === "passed" &&
-        pair[1]!.role === "reviewer" &&
-        pair[1]!.outcome === reviewerOutcome &&
-        pair[0]!.id !== pair[1]!.id,
+        pair.slice(1).every((participant) => participant.role === "reviewer") &&
+        last!.outcome === reviewerOutcome &&
+        new Set(pair.map((participant) => participant.id)).size === pair.length,
       "participant-stage-history-mismatch",
     );
+  };
+
+  const passingSourceReview = async (item: QueueItem) => {
+    const [candidate, selected] = await Promise.all([
+      json(item.source.stateDirectory, "candidate"),
+      selectedSourceReview(item.source),
+    ]);
+    demand(
+      selected.terminal.status === "passed" && selected.terminal.head === candidate.head,
+      "source-review-state-unknown",
+    );
+    let review;
+    try {
+      review = parseReview(selected.terminal.summary, candidate.head, "complete");
+    } catch (error) {
+      throw new QueueBlocked(
+        error instanceof RepairBlocked ? error.reason : "source-review-report-unknown",
+      );
+    }
+    demand(
+      review.g0[0] === "PASS" &&
+        review.findings.length === 0 &&
+        review.pairs.every((pair) => !pair.includes("BLOCK")),
+      "source-review-not-accepted",
+    );
+    return { candidate, selected };
   };
 
   const assertItem = (item: QueueItem) => {
@@ -1384,12 +1438,13 @@ export function repositoryQueueAdapter(
   };
 
   const buildRepair = async (item: QueueItem): Promise<RepairConfig> => {
-    const [pinned, candidate, authorAttempt, reviewerAttempt] = await Promise.all([
+    const [pinned, candidate, authorAttempt, selected] = await Promise.all([
       json(item.source.stateDirectory, "config"),
       json(item.source.stateDirectory, "candidate"),
       json(item.source.stateDirectory, "author-attempt"),
-      json(item.source.stateDirectory, "reviewer-attempt"),
+      selectedSourceReview(item.source),
     ]);
+    const reviewerAttempt = selected.attempt;
     demand(SHA.test(candidate.head), "source-candidate-mismatch");
     const history = await readHistory();
     const baseline = history.filter(
@@ -1578,20 +1633,48 @@ export function repositoryQueueAdapter(
           return { status: result.status };
         demand(result.status === "awaiting-publication", "unexpected-source-flow-status");
         await acceptedPair(item, "source", "passed");
-        const [candidate, reviewer] = await Promise.all([
-          json(item.source.stateDirectory, "candidate"),
-          json(item.source.stateDirectory, "reviewer-attempt"),
-        ]);
+        const { candidate, selected } = await passingSourceReview(item);
         return {
           status: "accepted",
           head: candidate.head,
-          reviewId: reviewer.id,
+          reviewId: selected.attempt.id,
           stateDirectory: item.source.stateDirectory,
         };
       } catch (error) {
         await syncParticipants(item, "source", item.source.stateDirectory);
         if (error instanceof QueueBlocked) throw error;
         const reason = error instanceof Error ? error.message : "";
+        if (reason === "reviewer-malformed") {
+          const recovery =
+            options.reviewRecovery ?? reviewedReviewRecoveryAdapter(boundedNative(item, "source"));
+          let selected;
+          try {
+            selected = await recovery.recover(item.source);
+          } catch (recoveryError) {
+            throw new QueueBlocked(
+              recoveryError instanceof ReviewRecoveryBlocked
+                ? recoveryError.reason
+                : "review-recovery-state-unknown",
+            );
+          }
+          if (selected.status === "observing-reviewer") return { status: selected.status };
+          await syncParticipant(item, "source", "reviewer", selected.attempt, selected.terminal);
+          await acceptedPair(item, "source", selected.terminal.status);
+          if (selected.terminal.status === "passed") {
+            await passingSourceReview(item);
+            return {
+              status: "accepted",
+              head: selected.terminal.head,
+              reviewId: selected.attempt.id,
+              stateDirectory: item.source.stateDirectory,
+            };
+          }
+          return {
+            status: "fixable-review",
+            head: selected.terminal.head,
+            reviewId: selected.attempt.id,
+          };
+        }
         demand(reason === "reviewer-failed", "source-flow-state-unknown");
         const [candidate, reviewer, terminal] = await Promise.all([
           json(item.source.stateDirectory, "candidate"),

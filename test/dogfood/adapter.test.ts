@@ -14,6 +14,12 @@ import {
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
+import {
+  reviewRecoveryAuthority,
+  sourceReviewBinding,
+  validateReviewRecoveryAuthority,
+  validateSourceReviewBinding,
+} from "../../scripts/dogfood/review-policy.mjs";
 
 const id = "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
   head = "b".repeat(40);
@@ -325,6 +331,90 @@ it("rejects missing/duplicate identities, missing completion, changed session, w
       config,
     ),
   ).toThrow();
+});
+it("distinguishes malformed verdict transport from a valid verdict with substituted identity", () => {
+  const message = (value: unknown) =>
+    trace([
+      rows[0]!,
+      { type: "item.completed", item: { type: "agent_message", text: JSON.stringify(value) } },
+      rows[2]!,
+    ]);
+  expect(() =>
+    parseTrace(
+      message({ run: "other-run", role: "reviewer", head, verdict: "PASS", summary: "" }),
+      true,
+      "reviewer",
+      config,
+      id,
+    ),
+  ).toThrow("worker-verdict-identity-mismatch");
+  expect(() =>
+    parseTrace(
+      message({ run: config.run, role: "reviewer", head: "not-a-head", verdict: "PASS" }),
+      true,
+      "reviewer",
+      config,
+      id,
+    ),
+  ).toThrow("malformed-worker-verdict");
+});
+it.each([
+  ["schema", (value: any) => (value.schemaVersion = "unknown")],
+  ["source run", (value: any) => (value.source.run = "other")],
+  ["source state", (value: any) => (value.source.stateDirectory = "/other")],
+  ["fingerprint", (value: any) => (value.source.configFingerprint = "f".repeat(64))],
+  ["author", (value: any) => (value.source.authorAttempt = "other-author")],
+  ["head", (value: any) => (value.source.candidateHead = "f".repeat(40))],
+  ["original", (value: any) => (value.originalReview.attempt = "other-original")],
+  ["original disposition", (value: any) => (value.originalReview.disposition = "failed")],
+  ["selected", (value: any) => (value.selectedReview.attempt = "other-selected")],
+  ["selected disposition", (value: any) => (value.selectedReview.disposition = "failed")],
+  ["extra", (value: any) => (value.extra = true)],
+] as const)("rejects substituted source-review binding %s", (_case, mutate) => {
+  const input = {
+    run: "trial",
+    stateDirectory: "/state",
+    configFingerprint: "e".repeat(64),
+    authorAttempt: "author",
+    candidateHead: head,
+    originalReview: "original",
+    selectedReview: "selected",
+    selectedDisposition: "passed" as const,
+  };
+  const binding: any = structuredClone(sourceReviewBinding(input));
+  mutate(binding);
+  expect(() => validateSourceReviewBinding(binding, input)).toThrow(
+    "invalid-source-review-binding",
+  );
+});
+it.each([
+  ["schema", (value: any) => (value.schemaVersion = "unknown")],
+  ["controller", (value: any) => (value.controller = "other")],
+  ["run", (value: any) => (value.run = "other")],
+  ["state", (value: any) => (value.stateDirectory = "/other")],
+  ["fingerprint", (value: any) => (value.sourceConfigFingerprint = "f".repeat(64))],
+  ["author", (value: any) => (value.sourceAuthor = "other-author")],
+  ["head", (value: any) => (value.candidateHead = "f".repeat(40))],
+  ["original", (value: any) => (value.originalReview = "other-original")],
+  ["reviewer", (value: any) => (value.reviewer.model = "other")],
+  ["action", (value: any) => (value.action = "retry")],
+  ["extra", (value: any) => (value.extra = true)],
+] as const)("rejects substituted review-recovery authority %s", (_case, mutate) => {
+  const input = {
+    controller: "controller",
+    run: "trial",
+    stateDirectory: "/state",
+    configFingerprint: "e".repeat(64),
+    authorAttempt: "author",
+    candidateHead: head,
+    originalReview: "original",
+    reviewer: { model: "reviewer", effort: "high", promptFile: "/reviewer.md" },
+  };
+  const authority: any = structuredClone(reviewRecoveryAuthority(input));
+  mutate(authority);
+  expect(() => validateReviewRecoveryAuthority(authority, input)).toThrow(
+    "invalid-review-recovery-authority",
+  );
 });
 it("refuses a CLI without the observed native interface before launching", async () => {
   await expect(codexAdapter().preflight(config)).rejects.toThrow();

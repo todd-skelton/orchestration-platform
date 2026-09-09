@@ -19,6 +19,10 @@ export interface Config {
   author: { model: string; effort: string; promptFile: string };
   reviewer: { model: string; effort: string; promptFile: string };
   adapter: { kind: "codex-exec"; executable: string };
+  // Private adapter-only artifact namespace. Persisted source configurations
+  // never set this; a bounded replacement review uses it to avoid overwriting
+  // the original review transport.
+  artifactPrefix?: "review-recovery";
 }
 export interface Attempt {
   id: string;
@@ -26,7 +30,7 @@ export interface Attempt {
   trace: string;
 }
 export interface Terminal {
-  status: "running" | "passed" | "failed";
+  status: "running" | "passed" | "failed" | "malformed";
   id: string;
   head?: string;
   usage?: unknown;
@@ -71,6 +75,7 @@ async function record(directory: string, name: string, value: unknown) {
 }
 export function validateConfig(config: Config) {
   requireThat(config && /^[\w.-]{1,64}$/.test(config.run), "invalid-run");
+  requireThat(config.artifactPrefix === undefined, "persisted-artifact-prefix-forbidden");
   requireThat(
     config.adapter &&
       Object.keys(config.adapter).every((key) => ["kind", "executable"].includes(key)),
@@ -115,6 +120,14 @@ export function validateConfig(config: Config) {
     );
     requireThat(isAbsolute(actor.promptFile), "prompt-path-not-absolute");
   }
+}
+
+export function workerPrompt(config: Config, role: Role, head: string, prompt: string): string {
+  return (
+    `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
+    `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
+    `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently; do not run local test runners/native builds.\n`
+  );
 }
 function footprint(config: Config, changed: string[]) {
   requireThat(
@@ -210,7 +223,13 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     if (!attempt) {
       requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
       // Reserve before checkout/prompt/launch; a crash here is deliberately not retried.
-      await record(directory, `${role}-intent`, { at: new Date().toISOString(), fingerprint });
+      const intentHead = role === "author" ? config.base : reviewed?.head;
+      await record(directory, `${role}-intent`, {
+        at: new Date().toISOString(),
+        fingerprint,
+        role,
+        head: intentHead,
+      });
       if (role === "author") {
         requireThat(
           (await adapter.git(config.worktree, ["rev-parse", "HEAD"])) === config.base,
@@ -232,10 +251,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
         await adapter.git(config.reviewWorktree, ["checkout", "--detach", reviewed.head]);
       }
       const head = role === "author" ? config.base : reviewed.head;
-      const prompt =
-        `${prompts[role === "author" ? 0 : 1]}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
-        `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently; do not run local test runners/native builds.\n`;
+      const prompt = workerPrompt(config, role, head, prompts[role === "author" ? 0 : 1]);
       attempt = await adapter.launch(role, config, prompt);
       await record(directory, `${role}-attempt`, attempt);
     }
@@ -257,7 +273,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
       requireThat(
         terminal &&
           terminal.id === attempt.id &&
-          ["running", "passed", "failed"].includes(terminal.status),
+          ["running", "passed", "failed", "malformed"].includes(terminal.status),
         "malformed-terminal",
       );
       const summary = terminalSummary(terminal.summary);
@@ -267,7 +283,9 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
       await record(directory, `${role}-terminal`, terminal);
     }
     const summary = terminalSummary(terminal.summary);
-    if (terminal.id !== attempt.id || terminal.status !== "passed")
+    if (terminal.id !== attempt.id || terminal.status === "malformed")
+      throw new Error(`${role}-malformed`);
+    if (terminal.status !== "passed")
       throw Object.assign(new Error(`${role}-failed`), summary ? { diagnostics: summary } : {});
     if (role === "author") {
       requireThat(terminal.head === config.base, "author-wrong-head");

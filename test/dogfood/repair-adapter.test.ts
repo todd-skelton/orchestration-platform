@@ -6,7 +6,15 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.mjs";
 import { repairStep } from "../../scripts/dogfood/repair.mjs";
-import { repairPolicy, type RepairConfig } from "../../scripts/dogfood/repair-policy.mjs";
+import {
+  repairDigest,
+  repairPolicy,
+  type RepairConfig,
+} from "../../scripts/dogfood/repair-policy.mjs";
+import {
+  reviewRecoveryAuthority,
+  sourceReviewBinding,
+} from "../../scripts/dogfood/review-policy.mjs";
 import type { Adapter, Role, Terminal } from "../../scripts/dogfood/flow.js";
 import {
   refreshSourceFingerprint,
@@ -97,8 +105,17 @@ async function realFixture() {
     ["config", current.source.configRecord],
     ["candidate", current.source.candidate],
     ["author-attempt", current.source.authorAttempt],
+    ["author-terminal", { id: current.source.authorAttempt.id, status: "passed", head: mainBase }],
     ["reviewer-attempt", current.source.reviewerAttempt],
     ["reviewer-terminal", current.source.terminal],
+    [
+      "reviewer-intent",
+      {
+        fingerprint: current.source.configRecord.fingerprint,
+        role: "reviewer",
+        head: repairBase,
+      },
+    ],
   ] as const)
     await writeFile(
       resolve(current.paths.priorState, `${name}.json`),
@@ -135,6 +152,104 @@ it("joins the actual closed source records to exact Git heads, changed files and
     mainBase: current.mainBase,
     correctiveBase: current.repairBase,
     predecessorCompleteSweep: "synthetic-prior-reviewer",
+  });
+}, 30_000);
+
+it("feeds a selected failed review through the accepted repair policy without losing the malformed predecessor", async () => {
+  const current = await realFixture();
+  const original = current.source.reviewerAttempt.id;
+  const selected = "synthetic-selected-reviewer";
+  const selectedAttempt = {
+    id: selected,
+    pid: 303,
+    trace: resolve(current.paths.priorState, "review-recovery.reviewer.jsonl"),
+  };
+  const selectedTerminal = {
+    ...current.source.terminal,
+    id: selected,
+    status: "failed",
+  };
+  await Promise.all([
+    writeFile(
+      resolve(current.paths.priorState, "reviewer-terminal.json"),
+      JSON.stringify({ id: original, status: "malformed", head: current.repairBase }),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "review-recovery-attempt.json"),
+      JSON.stringify(selectedAttempt),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "review-recovery-authority.json"),
+      JSON.stringify(
+        reviewRecoveryAuthority({
+          controller: current.source.configRecord.config.owner,
+          run: current.source.configRecord.config.run,
+          stateDirectory: current.paths.priorState,
+          configFingerprint: current.source.configRecord.fingerprint,
+          authorAttempt: current.source.authorAttempt.id,
+          candidateHead: current.repairBase,
+          originalReview: original,
+          reviewer: current.source.configRecord.config.reviewer,
+        }),
+      ),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "review-recovery-terminal.json"),
+      JSON.stringify(selectedTerminal),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "source-review-binding.json"),
+      JSON.stringify(
+        sourceReviewBinding({
+          run: current.source.configRecord.config.run,
+          stateDirectory: current.paths.priorState,
+          configFingerprint: current.source.configRecord.fingerprint,
+          authorAttempt: current.source.authorAttempt.id,
+          candidateHead: current.repairBase,
+          originalReview: original,
+          selectedReview: selected,
+          selectedDisposition: "failed",
+        }),
+      ),
+    ),
+  ]);
+  current.config.history[1]!.outcome = "malformed";
+  current.config.history.push({
+    ordinal: 3,
+    id: selected,
+    role: "reviewer",
+    outcome: "failed",
+    usage: { status: "unavailable" },
+  });
+  current.config.admission = {
+    consumed: 3,
+    ceiling: 5,
+    reservations: [
+      { role: "author", ordinal: 4 },
+      { role: "reviewer", ordinal: 5 },
+    ],
+  };
+  Object.assign(current.config.authority, {
+    admission: current.config.admission,
+    historyDigest: repairDigest(current.config.history),
+  });
+  Object.assign(current.config.authority.source, {
+    reviewerAttempt: selected,
+    reviewId: selected,
+  });
+
+  const artifacts = await reviewedRepairAdapter({} as Adapter).loadSourceReview(current.config);
+  expect(artifacts).toMatchObject({
+    reviewerAttempt: { id: selected },
+    terminal: { id: selected, status: "failed" },
+  });
+  expect(repairPolicy().prepare(current.config, artifacts)).toMatchObject({
+    predecessorCompleteSweep: selected,
+    history: [
+      { id: current.source.authorAttempt.id, outcome: "passed" },
+      { id: original, outcome: "malformed" },
+      { id: selected, outcome: "failed" },
+    ],
   });
 }, 30_000);
 

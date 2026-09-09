@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
+import { ReviewRecoveryBlocked, selectedSourceReview } from "./review-recovery-adapter.mjs";
+import { RepairBlocked, parseReview } from "./repair-policy.mjs";
 import { normalizeBody } from "../planning/board-check.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 import {
@@ -86,7 +88,12 @@ function exactStringSet(value: unknown, expected: string[]) {
   );
 }
 
-function validAttempt(value: any, config: DeliveryConfig, role: "author" | "reviewer") {
+function validAttempt(
+  value: any,
+  config: DeliveryConfig,
+  role: "author" | "reviewer",
+  artifactPrefix = "",
+) {
   return (
     value &&
     Object.keys(value).length === 3 &&
@@ -97,7 +104,10 @@ function validAttempt(value: any, config: DeliveryConfig, role: "author" | "revi
     value.pid > 0 &&
     typeof value.trace === "string" &&
     isAbsolute(value.trace) &&
-    samePath(value.trace, resolve(config.stateDirectory, `${role}.jsonl`))
+    samePath(
+      value.trace,
+      resolve(config.stateDirectory, `${artifactPrefix ? `${artifactPrefix}.` : ""}${role}.jsonl`),
+    )
   );
 }
 
@@ -382,23 +392,39 @@ export function githubDeliveryAdapter(
         resolve(config.stateDirectory, "candidate.json"),
         "missing-candidate-record",
       );
-      const reviewer = await json(
-        resolve(config.stateDirectory, "reviewer-terminal.json"),
-        "missing-review-record",
-      );
       const author = await json(
         resolve(config.stateDirectory, "author-attempt.json"),
         "missing-author-record",
-      );
-      const reviewerAttempt = await json(
-        resolve(config.stateDirectory, "reviewer-attempt.json"),
-        "missing-reviewer-attempt-record",
       );
       const authorTerminal = await json(
         resolve(config.stateDirectory, "author-terminal.json"),
         "missing-author-terminal-record",
       );
       const pilot = pinned?.config;
+      let reviewer: any;
+      let reviewerAttempt: any;
+      let replacement = false;
+      try {
+        const selected = await selectedSourceReview(pilot);
+        reviewer = selected.terminal;
+        reviewerAttempt = selected.attempt;
+        replacement = selected.binding !== undefined;
+      } catch (error) {
+        throw new DeliveryBlocked(
+          error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",
+        );
+      }
+      let replacementReportAccepted = !replacement;
+      if (replacement)
+        try {
+          const report = parseReview(reviewer.summary, config.candidateHead, "complete");
+          replacementReportAccepted =
+            report.g0[0] === "PASS" &&
+            report.findings.length === 0 &&
+            report.pairs.every((pair) => !pair.includes("BLOCK"));
+        } catch (error) {
+          if (!(error instanceof RepairBlocked)) throw error;
+        }
       if (
         typeof pinned?.fingerprint !== "string" ||
         !DIGEST.test(pinned.fingerprint) ||
@@ -422,9 +448,10 @@ export function githubDeliveryAdapter(
         authorTerminal?.id !== author?.id ||
         authorTerminal?.head !== pilot.base ||
         reviewer?.status !== "passed" ||
+        !replacementReportAccepted ||
         reviewer?.head !== config.candidateHead ||
         !validAttempt(author, config, "author") ||
-        !validAttempt(reviewerAttempt, config, "reviewer") ||
+        !validAttempt(reviewerAttempt, config, "reviewer", replacement ? "review-recovery" : "") ||
         reviewer?.id !== reviewerAttempt.id ||
         author.id === reviewerAttempt.id
       )
