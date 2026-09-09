@@ -419,6 +419,19 @@ token and cost availability are retained as advisory measurements and are not
 part of the authority digest. Repair/review launches consume native admission
 but not another implementation attempt.
 
+The retained v1 `repair.sourcePaths` key names exact authorized review
+locations rather than a scripts-only source subset. The self-repository queue
+adapter accepts only explicitly allowed dogfood runtime/test TypeScript,
+planning documentation and roadmap files. It rejects directories, unsupported
+locations and paths absent from the source allowed footprint before adapter
+entry or initial dispatch. Before the initial source reviewer launch, the queue
+appends the closed complete-review contract, contract profile, G0, all twelve
+ordered quality pairs and that exact path list. A later repair adapter obtains
+line counts with `git show <reviewed-head>:<path>` and accepts findings/notes
+only for changed files present on valid one-based lines at that head. These
+checks do not alter the immutable predecessor review, participant/usage history
+or implementation-attempt count.
+
 Write-once cursor and stage intents precede component entry. The accepted
 components retain their own finer mutation intents and reconcile their exact
 worktree, process and provider observations on restart. A missing launch

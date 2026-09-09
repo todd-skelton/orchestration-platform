@@ -253,7 +253,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       }
       return "";
     },
-    async launch(role): Promise<Attempt> {
+    async launch(role, _config, prompt): Promise<Attempt> {
       const ordinal = launches.length + 1;
       expect(
         JSON.parse(
@@ -263,6 +263,12 @@ it("directly composes the accepted flow and delivery transitions with exact iden
           ),
         ),
       ).toMatchObject({ ordinal, item: current.item.id, stage: "source", role });
+      if (role === "reviewer") {
+        expect(prompt).toContain('scope "complete"');
+        expect(prompt).toContain('profile "contract"');
+        expect(prompt).toContain("SCOPE, ROBUSTNESS, DEPTH");
+        expect(prompt).toContain(JSON.stringify(current.item.repair.sourcePaths));
+      }
       launches.push(role);
       return { id: `source-${role}`, pid: pid++, trace: resolve(current.root, `${role}.jsonl`) };
     },

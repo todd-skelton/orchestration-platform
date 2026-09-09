@@ -19,7 +19,11 @@ import { codexAdapter } from "./dispatch-adapter.ts";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { step } from "./flow.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
-import { reviewedRepairAdapter } from "./repair-adapter.mjs";
+import {
+  reviewedRepairAdapter,
+  sourceReviewerReportPrompt,
+  validDogfoodReviewPath,
+} from "./repair-adapter.mjs";
 import { repairStep, type RepairAdapter } from "./repair.mjs";
 import {
   RepairBlocked,
@@ -29,6 +33,7 @@ import {
   type RepairActor,
   type RepairConfig,
   type RepairPolicy,
+  validRepairReviewPath,
 } from "./repair-policy.mjs";
 import { selfDeliveryPolicy } from "./self-delivery-policy.mjs";
 import { gitSetupAdapter } from "./setup-adapter.mjs";
@@ -189,6 +194,19 @@ export function itemAuthority(item: QueueItem) {
   };
 }
 
+function validRepositoryRepairTemplate(item: QueueItem) {
+  const allowedPaths: unknown = item.source.allowedPaths;
+  return (
+    Array.isArray(allowedPaths) &&
+    item.repair.sourcePaths.length <= 32 &&
+    item.repair.sourcePaths.every(
+      (path) =>
+        validRepairReviewPath(path) && allowedPaths.includes(path) && validDogfoodReviewPath(path),
+    ) &&
+    new Set(item.repair.sourcePaths).size === item.repair.sourcePaths.length
+  );
+}
+
 function validMeasure(candidate: unknown, integer: boolean) {
   return (
     (exactKeys(candidate, ["status"]) && candidate.status === "unavailable") ||
@@ -320,6 +338,7 @@ export function validateQueueConfig(config: QueueConfig) {
       item.issue === item.source.issue && item.issue === item.setup.issue,
       "queue-issue-drift",
     );
+    demand(validRepositoryRepairTemplate(item), "incompatible-repair-template");
     demand(
       Array.isArray(item.source.requiredChecks) &&
         item.source.requiredChecks.length === item.delivery.requiredChecks.length &&
@@ -1223,7 +1242,11 @@ export function repositoryQueueAdapter(
         effort: current[role].effort,
       };
       await adapterRecord(state, `participant-${ordinal}-intent`, context);
-      const attempt = await native.launch(role, current, prompt);
+      const repairCompatiblePrompt =
+        stage === "source" && role === "reviewer"
+          ? `${prompt}\n\n${sourceReviewerReportPrompt(item.repair.sourcePaths)}\n`
+          : prompt;
+      const attempt = await native.launch(role, current, repairCompatiblePrompt);
       demand(
         typeof attempt.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),
         "invalid-participant-identity",
@@ -1342,10 +1365,7 @@ export function repositoryQueueAdapter(
     );
     demand(item.source.repository === item.setup.repository, "queue-repository-drift");
     demand(
-      item.setup.authority.actions.includes("worktrees") &&
-        item.repair.sourcePaths.every((sourcePath) =>
-          item.source.allowedPaths.includes(sourcePath),
-        ),
+      item.setup.authority.actions.includes("worktrees") && validRepositoryRepairTemplate(item),
       "queue-policy-drift",
     );
     for (const actor of [item.repair.author, item.repair.reviewer])

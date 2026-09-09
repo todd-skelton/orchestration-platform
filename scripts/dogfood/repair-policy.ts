@@ -256,6 +256,10 @@ function validPath(path: unknown) {
   );
 }
 
+export function validRepairReviewPath(path: unknown) {
+  return validPath(path) && !(path as string).endsWith("/");
+}
+
 function inFootprint(allowedPaths: string[], path: string) {
   return allowedPaths.some(
     (allowed) => path === allowed || (allowed.endsWith("/") && path.startsWith(allowed)),
@@ -347,16 +351,13 @@ export function validateRepairConfig(config: RepairConfig) {
     "malformed-repair-footprint",
   );
   demand(
-    strings(config.sourcePaths, 32, 500) && config.sourcePaths.every(validPath),
+    strings(config.sourcePaths, 32, 500) &&
+      config.sourcePaths.every(validRepairReviewPath) &&
+      new Set(config.sourcePaths).size === config.sourcePaths.length,
     "malformed-source-footprint",
   );
   demand(
-    config.sourcePaths.every(
-      (path) =>
-        config.allowedPaths.includes(path) &&
-        path.startsWith("scripts/") &&
-        /\.(?:ts|mts|mjs)$/.test(path),
-    ),
+    config.sourcePaths.every((path) => config.allowedPaths.includes(path)),
     "malformed-source-footprint",
   );
   demand(strings(config.acceptanceCriteria, 32, 1_000), "malformed-acceptance-criteria");

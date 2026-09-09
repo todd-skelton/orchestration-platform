@@ -158,6 +158,21 @@ it.each([
     },
     "source-finding-location-outside-candidate",
   ],
+  [
+    "finding file absent at the reviewed head",
+    (f: any): void => {
+      delete f.source.lineCounts[sourceFile];
+    },
+    "source-finding-location-outside-candidate",
+  ],
+  [
+    "authority-bound duplicate source paths",
+    (f: any): void => {
+      f.config.sourcePaths = [sourceFile, sourceFile];
+      f.config.authority.sourcePaths = [sourceFile, sourceFile];
+    },
+    "malformed-source-footprint",
+  ],
 ] as const)("refuses %s before durable repair intent", async (_name, mutate, reason) => {
   const current = await fixture();
   mutate(current);
@@ -326,6 +341,48 @@ it("accepts allowed directory descendants and refuses sibling or prefix escapes"
     );
     expect(refused.dispatches()).toBe(0);
   }
+});
+
+it.each([
+  "scripts/dogfood/runtime-review.ts",
+  "test/dogfood/runtime-review.test.ts",
+  "docs/planning/runtime-review.md",
+  "planning/drafts/ISS-SYNTHETIC.md",
+] as const)("accepts an exact changed review finding at %s", async (reviewPath) => {
+  const current = await fixture();
+  current.config.allowedPaths = [reviewPath];
+  current.config.authority.allowedPaths = [reviewPath];
+  current.config.sourcePaths = [reviewPath];
+  current.config.authority.sourcePaths = [reviewPath];
+  current.source.configRecord.config.allowedPaths = [reviewPath];
+  current.source.changedFiles = [reviewPath];
+  current.source.candidate.changed = [reviewPath];
+  current.source.lineCounts = { [reviewPath]: 3 };
+  const report = JSON.parse(reviewSummary("complete", repairBase));
+  report.findings[0].file = reviewPath;
+  report.notes[0].file = reviewPath;
+  current.source.terminal.summary = JSON.stringify(report);
+  refreshSourceFingerprint(current.config, current.source);
+
+  await expect(repairStep(current.config, current.adapter, repairPolicy())).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(current.dispatches()).toBe(1);
+});
+
+it("refuses a directory review template before durable repair intent", async () => {
+  const current = await fixture();
+  current.config.sourcePaths = ["test/dogfood/"];
+  current.config.authority.sourcePaths = ["test/dogfood/"];
+  current.config.allowedPaths = ["test/dogfood/"];
+  current.config.authority.allowedPaths = ["test/dogfood/"];
+  await expect(repairStep(current.config, current.adapter, repairPolicy())).rejects.toMatchObject({
+    reason: "malformed-source-footprint",
+  });
+  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  expect(current.dispatches()).toBe(0);
 });
 
 it("requires the accepted delta to inherit the exact predecessor and use fresh identities", async () => {
