@@ -1304,19 +1304,44 @@ export function repositoryQueueAdapter(
     }
   };
   const adoptedSourceItems = new Set<string>();
+  const validatedSelectedSourceReview = async (item: QueueItem) => {
+    try {
+      return await selectedSourceReview(item.source);
+    } catch (error) {
+      throw new QueueBlocked(
+        error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",
+      );
+    }
+  };
   const authorizeAdoptedSource = async (item: QueueItem) => {
     if (item.source.pilotRevision !== config.controllerRevision) {
       await validatedReviewSelection(item);
       if ((await adapterOptional(item.source.stateDirectory, "source-review-binding")) !== ABSENT)
-        try {
-          await selectedSourceReview(item.source);
-        } catch (error) {
-          throw new QueueBlocked(
-            error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",
-          );
-        }
+        await validatedSelectedSourceReview(item);
       adoptedSourceItems.add(item.id);
     }
+  };
+
+  const validateCompletedSourceSelection = async (item: QueueItem, index: number) => {
+    const completed = await adapterOptional(state, `item-${index + 1}-complete`);
+    if (completed === ABSENT) return;
+    await validatedReviewSelection(item);
+    const selected = await validatedSelectedSourceReview(item);
+    const sourceReviewers = Array.isArray(completed.history)
+      ? completed.history.filter(
+          (participant: any) =>
+            participant?.item === item.id &&
+            participant.stage === "source" &&
+            participant.role === "reviewer",
+        )
+      : [];
+    const expected = sourceReviewers.at(-1);
+    demand(
+      expected !== undefined &&
+        selected.attempt.id === expected.id &&
+        selected.terminal.status === expected.outcome,
+      "selected-review-binding-mismatch",
+    );
   };
 
   const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
@@ -1721,6 +1746,8 @@ export function repositoryQueueAdapter(
     async assertAuthority(current) {
       demand(current === config, "queue-adapter-config-drift");
       demand(isAbsolute(executingRoot), "controller-executor-unverified");
+      for (const [index, item] of config.items.entries())
+        await validateCompletedSourceSelection(item, index);
       const [executor, ...roots] = await Promise.all(
         [
           executingRoot,

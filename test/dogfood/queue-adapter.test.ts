@@ -860,10 +860,29 @@ it.each([
   },
 );
 
-it("delivers an adopted recovered DELTA once and rejects ancestry drift on completed restart", async () => {
+it.each([
+  {
+    name: "delivers an adopted recovered DELTA once and rejects ancestry drift on completed restart",
+    adopted: true,
+    mutation: "authority" as const,
+    reason: "selected-review-binding-mismatch",
+  },
+  {
+    name: "rejects a deleted adopted DELTA binding on completed restart",
+    adopted: true,
+    mutation: "binding" as const,
+    reason: "selected-review-binding-mismatch",
+  },
+  {
+    name: "rejects same-revision DELTA ancestry substitution on completed restart",
+    adopted: false,
+    mutation: "authority" as const,
+    reason: "source-review-intent-contract-mismatch",
+  },
+])("$name", async ({ adopted, mutation, reason }) => {
   const current = await fixture();
   await writeMalformedSource(current);
-  const successor = "f".repeat(40);
+  const executorRevision = adopted ? "f".repeat(40) : stable;
   const inheritance = {
     run: "completed-sweep",
     author: "sweep-author",
@@ -877,31 +896,45 @@ it("delivers an adopted recovered DELTA once and rejects ancestry drift on compl
     config: current.source,
     prompts: ["author prompt", "review prompt"],
   });
-  current.config.controllerRevision = successor;
-  current.config.authority.controllerRevision = successor;
-  current.item.setup.controllerRevision = successor;
-  current.item.setup.pilotRevision = successor;
-  current.item.setup.authority.controllerRevision = successor;
-  current.item.setup.authority.pilotRevision = successor;
-  current.config.authority.itemsDigest = queueDigest([itemAuthority(current.item)]);
+  if (adopted) {
+    current.config.controllerRevision = executorRevision;
+    current.config.authority.controllerRevision = executorRevision;
+    current.item.setup.controllerRevision = executorRevision;
+    current.item.setup.pilotRevision = executorRevision;
+    current.item.setup.authority.controllerRevision = executorRevision;
+    current.item.setup.authority.pilotRevision = executorRevision;
+    current.config.authority.itemsDigest = queueDigest([itemAuthority(current.item)]);
+  }
+  const reviewAuthority = sourceReviewAuthority({
+    controller: current.source.owner,
+    run: current.source.run,
+    stateDirectory: current.paths.source,
+    configFingerprint: fingerprint,
+    authorAttempt: "source-author",
+    candidateHead: candidate,
+    comparisonBase: base,
+    executorRevision,
+    scope: "delta",
+    inheritance,
+  });
   await Promise.all([
     writeFile(
       resolve(current.paths.source, "source-review-authority.json"),
-      JSON.stringify(
-        sourceReviewAuthority({
-          controller: current.source.owner,
-          run: current.source.run,
-          stateDirectory: current.paths.source,
-          configFingerprint: fingerprint,
-          authorAttempt: "source-author",
-          candidateHead: candidate,
-          comparisonBase: base,
-          executorRevision: successor,
-          scope: "delta",
-          inheritance,
-        }),
-      ),
+      JSON.stringify(reviewAuthority),
     ),
+    ...(adopted
+      ? []
+      : [
+          writeFile(
+            resolve(current.paths.source, "reviewer-intent.json"),
+            JSON.stringify({
+              fingerprint,
+              role: "reviewer",
+              head: candidate,
+              reviewAuthority,
+            }),
+          ),
+        ]),
     writeFile(
       resolve(current.paths.source, "review-recovery-attempt.json"),
       JSON.stringify({
@@ -1084,9 +1117,14 @@ it("delivers an adopted recovered DELTA once and rejects ancestry drift on compl
     },
   ];
   let deliveryEntries = 0;
+  let validateCompletedAuthority = false;
   const adapter: QueueAdapter = {
     async assertAuthority() {
-      await sourceReviewContract(current.source, undefined, successor);
+      if (validateCompletedAuthority) {
+        await repository.assertAuthority(current.config);
+        return;
+      }
+      await sourceReviewContract(current.source, undefined, executorRevision);
       await selectedSourceReview(current.source);
     },
     async history() {
@@ -1130,13 +1168,16 @@ it("delivers an adopted recovered DELTA once and rejects ancestry drift on compl
     legacySourceCalls: 0,
     gateCalls: 4,
   });
-  const authorityPath = resolve(current.paths.source, "source-review-authority.json");
-  const drifted = JSON.parse(await readFile(authorityPath, "utf8"));
-  drifted.inheritance.review = "substituted-completed-sweep";
-  await writeFile(authorityPath, JSON.stringify(drifted));
-  await expect(queueStep(current.config, adapter)).rejects.toThrow(
-    "selected-review-binding-mismatch",
-  );
+  if (mutation === "binding") {
+    await rm(resolve(current.paths.source, "source-review-binding.json"));
+  } else {
+    const authorityPath = resolve(current.paths.source, "source-review-authority.json");
+    const drifted = JSON.parse(await readFile(authorityPath, "utf8"));
+    drifted.inheritance.review = "substituted-completed-sweep";
+    await writeFile(authorityPath, JSON.stringify(drifted));
+  }
+  validateCompletedAuthority = true;
+  await expect(queueStep(current.config, adapter)).rejects.toThrow(reason);
   expect({ deliveryEntries, legacySourceCalls, gateCalls }).toEqual({
     deliveryEntries: 1,
     legacySourceCalls: 0,
