@@ -195,7 +195,7 @@ export interface RepairHandoff {
   };
   predecessorCompleteSweep: string;
   history: ParticipantHistory[];
-  implementation: { attempts: number; ceiling: number; consumedByRepair: 0 };
+  implementation: { attempts: number; ceiling: number; consumedByRepair: 1 };
   admission: RepairAuthority["admission"];
   author: { model: string; effort: string };
   reviewer: { model: string; effort: string };
@@ -319,7 +319,7 @@ export function validateRepairConfig(config: RepairConfig) {
     "malformed-source-footprint",
   );
   demand(
-    config.sourcePaths.every((path) => config.allowedPaths.includes(path)),
+    config.sourcePaths.every((path) => inFootprint(config.allowedPaths, path)),
     "malformed-source-footprint",
   );
   demand(strings(config.acceptanceCriteria, 32, 1_000), "malformed-acceptance-criteria");
@@ -727,7 +727,7 @@ export function repairPolicy() {
         implementation: {
           attempts: config.implementationAttempts,
           ceiling: config.implementationAttemptCeiling,
-          consumedByRepair: 0,
+          consumedByRepair: 1,
         },
         admission: config.admission,
         author: { model: config.author.model, effort: config.author.effort },

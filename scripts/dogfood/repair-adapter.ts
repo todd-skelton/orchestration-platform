@@ -271,7 +271,7 @@ function boundedAdapter(config: RepairConfig, handoff: RepairHandoff, native: Ad
       await writeOnce(config.stateDirectory, `${role}-launch-context`, context);
       const suffix =
         role === "author"
-          ? `Correct only these validated source findings: ${JSON.stringify(handoff.failedReview.findings)}. Start from corrective base ${handoff.correctiveBase}; the distinct delivery main base remains ${handoff.mainBase}. Preserve these acceptance criteria verbatim: ${JSON.stringify(handoff.acceptanceCriteria)}. Authorized exact review paths are ${JSON.stringify(handoff.sourcePaths)}. Repairs consume no implementation attempt. Author PASS uses an empty summary. On FAIL, use a short actionable summary; never include raw output or environment data.`
+          ? `Correct only these validated source findings: ${JSON.stringify(handoff.failedReview.findings)}. Start from corrective base ${handoff.correctiveBase}; the distinct delivery main base remains ${handoff.mainBase}. Preserve these acceptance criteria verbatim: ${JSON.stringify(handoff.acceptanceCriteria)}. Authorized exact review paths are ${JSON.stringify(handoff.sourcePaths)}. This is implementation candidate ${handoff.implementation.attempts} of ${handoff.implementation.ceiling}. Author PASS uses an empty summary. On FAIL, use a short actionable summary; never include raw output or environment data.`
           : reviewerReportPrompt(handoff);
       const attempt = await native.launch(role, current, `${prompt}\n\n${suffix}\n`);
       demand(IDENTITY.test(attempt.id), "invalid-repair-participant-identity");

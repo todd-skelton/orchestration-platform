@@ -1542,7 +1542,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
   expect(captured).toMatchObject({
     mainBase: base,
     repairBase: candidate,
-    implementationAttempts: 1,
+    implementationAttempts: 2,
     implementationAttemptCeiling: 4,
     history: [
       { ordinal: 1, id: "source-author" },

@@ -36,6 +36,7 @@ import {
   type ParticipantHistory,
   type RepairActor,
   type RepairConfig,
+  type ReviewFinding,
   type RepairPolicy,
 } from "./repair-policy.mjs";
 import { selfDeliveryPolicy } from "./self-delivery-policy.mjs";
@@ -134,10 +135,11 @@ export interface LoopConfig {
 export type QueueSourceResult =
   | { status: "observing-author" | "observing-reviewer" }
   | { status: "accepted"; head: string; reviewId: string; stateDirectory: string }
-  | { status: "fixable-review"; head: string; reviewId: string };
+  | { status: "fixable-review"; head: string; reviewId: string; findings: ReviewFinding[] };
 export type QueueRepairResult =
   | { status: "observing-author" | "observing-reviewer" }
-  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string };
+  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string }
+  | { status: "failed"; head: string; reviewId: string; findings: ReviewFinding[] };
 export type QueueDeliveryResult =
   | { status: "observing-hosted-checks"; head: string; reviewId: string }
   | Extract<DeliveryResult, { status: "complete" }>;
@@ -161,6 +163,13 @@ export interface QueueAdapter {
 export type QueueResult =
   | {
       status: "observing-author" | "observing-reviewer" | "observing-hosted-checks";
+      run: string;
+      item: string;
+      issue: string;
+      cursor: number;
+    }
+  | {
+      status: "advancing-attempt";
       run: string;
       item: string;
       issue: string;
@@ -234,7 +243,7 @@ function validateLoopConfig(config: LoopConfig) {
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
-  demand(/^[\w.-]{1,64}$/.test(config.run), "invalid-run");
+  demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
   demand(
     exactKeys(config.issue, ["key", "number"]) &&
       /^ISS-\d{3}$/.test(config.issue.key) &&
@@ -283,6 +292,49 @@ function doneWhen(draft: string) {
   const section = /\n## Done when\s*\n([\s\S]*?)(?=\n## |$)/.exec(draft)?.[1]?.trim();
   demand(section, "selected-issue-criteria-missing");
   return [section];
+}
+
+interface FailedAttemptReceipt {
+  schemaVersion: "dogfood-bounded-queue-attempt-failure/v1";
+  run: string;
+  item: string;
+  issue: string;
+  base: string;
+  candidateAttempt: number;
+  head: string;
+  reviewer: string;
+  findings: ReviewFinding[];
+  history: QueueParticipant[];
+}
+
+function validateFailedAttempt(
+  value: unknown,
+  sourceAttempt: number,
+  attemptCeiling: number,
+): asserts value is FailedAttemptReceipt {
+  demand(
+    exactKeys(value, [
+      "schemaVersion",
+      "run",
+      "item",
+      "issue",
+      "base",
+      "candidateAttempt",
+      "head",
+      "reviewer",
+      "findings",
+      "history",
+    ]) &&
+      value.schemaVersion === "dogfood-bounded-queue-attempt-failure/v1" &&
+      Number.isSafeInteger(value.candidateAttempt) &&
+      [sourceAttempt, sourceAttempt + 1].includes(value.candidateAttempt) &&
+      value.candidateAttempt <= attemptCeiling &&
+      SHA.test(value.head) &&
+      typeof value.reviewer === "string" &&
+      Array.isArray(value.findings) &&
+      Array.isArray(value.history),
+    "malformed-failed-attempt",
+  );
 }
 
 export async function queueConfigFromLoop(config: LoopConfig, executingRoot: string) {
@@ -344,12 +396,31 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
   const title = draftTitle(draft);
   const issueUrl = `https://github.com/${config.repository}/issues/${config.issue.number}`;
   const promptContext = `Repository loop rules:\n\n${loopRules.trim()}\n\nSelected issue ${config.issue.key} (#${config.issue.number}):\n\n${draft.trim()}`;
-  const sourcePrompt = `Implement the selected issue completely. Keep the loop smaller and stay within the issue scope.\n\n${promptContext}`;
+  const baseSourcePrompt = `Implement the selected issue completely. Keep the loop smaller and stay within the issue scope.\n\n${promptContext}`;
   const reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
-  const slug = `${config.issue.key.toLowerCase()}-attempt-1`;
   const runState = resolve(stateRoot, config.run);
+  let sourceAttempt = 1;
+  let attemptBase = base;
+  let initialHistory: QueueParticipant[] = [];
+  let prescribedFindings: ReviewFinding[] | undefined;
+  for (;;) {
+    const priorSlug = `${config.issue.key.toLowerCase()}-attempt-${sourceAttempt}`;
+    const priorQueue = resolve(runState, priorSlug, "queue");
+    const failed = await optionalRecord(priorQueue, "item-1-failed");
+    if (failed === ABSENT) break;
+    validateFailedAttempt(failed, sourceAttempt, config.attemptCeiling);
+    demand(
+      failed.candidateAttempt < config.attemptCeiling,
+      "implementation-attempt-ceiling-exhausted",
+    );
+    sourceAttempt = failed.candidateAttempt + 1;
+    attemptBase = failed.head;
+    initialHistory = failed.history;
+    prescribedFindings = failed.findings;
+  }
+  const slug = `${config.issue.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {
-    queue: resolve(runState, "queue"),
+    queue: resolve(runState, slug, "queue"),
     setup: resolve(runState, slug, "setup"),
     source: resolve(runState, slug, "source"),
     repair: resolve(runState, slug, "repair"),
@@ -363,7 +434,12 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     ),
   );
   const controller = `loop:${config.run}`;
-  const sourceBranch = `codex/${config.issue.key.toLowerCase()}`;
+  const sourceBranch = `codex/${config.issue.key.toLowerCase()}${
+    sourceAttempt === 1 ? "" : `-attempt-${sourceAttempt}`
+  }`;
+  const sourcePrompt = prescribedFindings
+    ? `${baseSourcePrompt}\n\nStart from rejected candidate ${attemptBase}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
+    : baseSourcePrompt;
   const setupWithoutAuthority = {
     run: config.run,
     issue: issueUrl,
@@ -372,7 +448,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     controllerRoot: executor,
     controllerRevision: base,
     pilotRevision: base,
-    base,
+    base: attemptBase,
     baseBranch: "main",
     sourceBranch,
     pilotWorktree: paths.pilot,
@@ -394,7 +470,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     run: config.run,
     issue: issueUrl,
     pilotRevision: base,
-    base,
+    base: attemptBase,
     worktree: paths.sourceWorktree,
     reviewWorktree: paths.reviewWorktree,
     stateDirectory: paths.source,
@@ -410,10 +486,10 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
   };
   const item: QueueItem = {
-    id: `${config.issue.key}:1`,
+    id: `${config.issue.key}:${sourceAttempt}`,
     issue: issueUrl,
-    base,
-    implementationAttempt: 1,
+    base: attemptBase,
+    implementationAttempt: sourceAttempt,
     implementationAttemptCeiling: config.attemptCeiling,
     setup,
     source,
@@ -444,7 +520,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     stateDirectory: paths.queue,
     limit: 1,
     nativeLaunchCeiling: config.nativeLaunchCeiling,
-    initialHistory: [],
+    initialHistory,
     items: [item],
     authority: undefined as never,
   };
@@ -658,6 +734,7 @@ async function assertQueueStateCensus(config: QueueConfig, directory: string) {
       "source-intent",
       "source-failure",
       "repair-intent",
+      "failed",
       "accepted",
       "delivery-intent",
       "complete",
@@ -867,6 +944,57 @@ function assertSourceFailureHistory(
   );
 }
 
+function assertRepairFailureHistory(
+  history: QueueParticipant[],
+  item: QueueItem,
+  reviewId: string,
+  priorParticipants: number,
+) {
+  const repair = history.filter(
+    (participant) =>
+      participant.ordinal > priorParticipants &&
+      participant.item === item.id &&
+      participant.stage === "repair",
+  );
+  demand(
+    repair.length === 2 &&
+      repair[0]!.role === "author" &&
+      repair[0]!.outcome === "passed" &&
+      repair[1]!.role === "reviewer" &&
+      repair[1]!.outcome === "failed" &&
+      repair[1]!.id === reviewId,
+    "malformed-repair-failure-stage",
+  );
+}
+
+async function failedItemReceipt(directory: string, prefix: string, item: QueueItem) {
+  const failed = await optionalRecord(directory, `${prefix}-failed`);
+  if (failed === ABSENT) return ABSENT;
+  validateFailedAttempt(failed, item.implementationAttempt, item.implementationAttemptCeiling);
+  return failed;
+}
+
+function attemptFailureRecord(
+  config: QueueConfig,
+  item: QueueItem,
+  candidateAttempt: number,
+  review: { head: string; reviewId: string; findings: ReviewFinding[] },
+  history: QueueParticipant[],
+): FailedAttemptReceipt {
+  return {
+    schemaVersion: "dogfood-bounded-queue-attempt-failure/v1",
+    run: config.run,
+    item: item.id,
+    issue: item.issue,
+    base: item.base,
+    candidateAttempt,
+    head: review.head,
+    reviewer: review.reviewId,
+    findings: review.findings,
+    history,
+  };
+}
+
 async function completedItemReceipt(
   config: QueueConfig,
   directory: string,
@@ -1042,6 +1170,21 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
 
   const currentHistory = await adapter.history();
   assertHistoryPrefix(config, currentHistory);
+  for (const [index, item] of config.items.entries()) {
+    const failed = await failedItemReceipt(directory, `item-${index + 1}`, item);
+    if (failed === ABSENT) continue;
+    demand(
+      failed.candidateAttempt < item.implementationAttemptCeiling,
+      "implementation-attempt-ceiling-exhausted",
+    );
+    return {
+      status: "advancing-attempt",
+      run: config.run,
+      item: item.id,
+      issue: item.issue,
+      cursor: failed.candidateAttempt,
+    };
+  }
   const { queueComplete, completedItems } = await completedQueueState(
     config,
     directory,
@@ -1149,6 +1292,18 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         );
       }
       if (accepted === ABSENT) {
+        const failedSource = await optionalRecord(directory, `${prefix}-source-failure`);
+        demand(failedSource !== ABSENT, "malformed-source-failure-stage");
+        if (item.implementationAttempt >= item.implementationAttemptCeiling) {
+          const history = await adapter.history();
+          assertHistoryPrefix(config, history);
+          await record(
+            directory,
+            `${prefix}-failed`,
+            attemptFailureRecord(config, item, item.implementationAttempt, failedSource, history),
+          );
+          throw new QueueBlocked("implementation-attempt-ceiling-exhausted");
+        }
         await record(directory, `${prefix}-repair-intent`, { item: item.id, base: item.base });
         const repair = await adapter.repair(item);
         const history = await adapter.history();
@@ -1162,6 +1317,25 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
             cursor: index,
           };
         demand("reviewId" in repair, "unexpected-repair-status");
+        if (repair.status === "failed") {
+          assertRepairFailureHistory(history, item, repair.reviewId, config.initialHistory.length);
+          await record(
+            directory,
+            `${prefix}-failed`,
+            attemptFailureRecord(config, item, item.implementationAttempt + 1, repair, history),
+          );
+          demand(
+            item.implementationAttempt + 1 < item.implementationAttemptCeiling,
+            "implementation-attempt-ceiling-exhausted",
+          );
+          return {
+            status: "advancing-attempt",
+            run: config.run,
+            item: item.id,
+            issue: item.issue,
+            cursor: item.implementationAttempt + 1,
+          };
+        }
         assertItemReviewHistory(history, item, true, repair.reviewId, config.initialHistory.length);
         accepted = stageRecord(item, "repair", history, repair);
         await record(directory, `${prefix}-accepted`, accepted);
@@ -1628,6 +1802,34 @@ export function repositoryQueueAdapter(
     return { candidate, selected };
   };
 
+  const blockingReview = (
+    candidate: Record<string, any>,
+    reviewer: Record<string, any>,
+    terminal: Record<string, any>,
+    run: string,
+    reason: string,
+  ) => {
+    demand(
+      terminal.status === "failed" &&
+        terminal.id === reviewer.id &&
+        terminal.head === candidate.head &&
+        SHA.test(candidate.head),
+      reason,
+    );
+    let review;
+    try {
+      review = parseReview(terminal.summary, run, candidate.head);
+    } catch (error) {
+      throw new QueueBlocked(error instanceof RepairBlocked ? error.reason : reason);
+    }
+    demand(
+      review.verdict === "FAIL" &&
+        review.findings.some((finding) => finding.severity === "blocking"),
+      reason,
+    );
+    return { head: candidate.head, reviewId: reviewer.id, findings: review.findings };
+  };
+
   const assertItem = (item: QueueItem) => {
     demand(
       item.issue === item.source.issue && item.issue === item.setup.issue,
@@ -1727,7 +1929,7 @@ export function repositoryQueueAdapter(
       acceptanceCriteria: item.repair.acceptanceCriteria,
       requiredChecks: item.source.requiredChecks,
       history: projected,
-      implementationAttempts: item.implementationAttempt,
+      implementationAttempts: item.implementationAttempt + 1,
       implementationAttemptCeiling: item.implementationAttemptCeiling,
       admission,
       author: item.repair.author,
@@ -1925,10 +2127,16 @@ export function repositoryQueueAdapter(
               stateDirectory: item.source.stateDirectory,
             };
           }
+          const candidate = await json(item.source.stateDirectory, "candidate");
           return {
             status: "fixable-review",
-            head: selected.terminal.head,
-            reviewId: selected.attempt.id,
+            ...blockingReview(
+              candidate,
+              selected.attempt,
+              selected.terminal,
+              item.source.run,
+              "source-review-state-unknown",
+            ),
           };
         }
         demand(reason === "reviewer-failed", "source-flow-state-unknown");
@@ -1944,7 +2152,16 @@ export function repositoryQueueAdapter(
           "source-review-state-unknown",
         );
         await acceptedPair(item, "source", "failed");
-        return { status: "fixable-review", head: candidate.head, reviewId: reviewer.id };
+        return {
+          status: "fixable-review",
+          ...blockingReview(
+            candidate,
+            reviewer,
+            terminal,
+            item.source.run,
+            "source-review-state-unknown",
+          ),
+        };
       }
     },
     async repair(item): Promise<QueueRepairResult> {
@@ -1976,6 +2193,24 @@ export function repositoryQueueAdapter(
           throw new QueueBlocked("repair-history-state-unknown");
         }
         if (error instanceof QueueBlocked) throw error;
+        if (error instanceof RepairBlocked && error.reason === "delta-review-failed") {
+          const [candidate, reviewer, terminal] = await Promise.all([
+            json(item.repair.stateDirectory, "candidate"),
+            json(item.repair.stateDirectory, "reviewer-attempt"),
+            json(item.repair.stateDirectory, "reviewer-terminal"),
+          ]);
+          await acceptedPair(item, "repair", "failed");
+          return {
+            status: "failed",
+            ...blockingReview(
+              candidate,
+              reviewer,
+              terminal,
+              item.source.run,
+              "repair-review-state-unknown",
+            ),
+          };
+        }
         throw new QueueBlocked(
           error instanceof RepairBlocked ? error.reason : "repair-state-unknown",
         );

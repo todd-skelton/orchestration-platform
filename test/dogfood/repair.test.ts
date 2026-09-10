@@ -74,7 +74,7 @@ it("records the bounded handoff before dispatch and preserves all controller-own
     allowedPaths: current.config.allowedPaths,
     sourcePaths: current.config.sourcePaths,
     history: current.config.history,
-    implementation: { attempts: 1, ceiling: 4, consumedByRepair: 0 },
+    implementation: { attempts: 1, ceiling: 4, consumedByRepair: 1 },
     admission: current.config.admission,
     predecessorCompleteSweep: "synthetic-prior-reviewer",
   });

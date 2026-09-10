@@ -238,7 +238,10 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
         if (
           controllerHead !== config.controllerRevision ||
           pilotObject !== config.pilotRevision ||
-          repositoryHead !== config.base ||
+          repositoryHead !==
+            (comparable(repository) === comparable(controller)
+              ? config.controllerRevision
+              : config.base) ||
           baseObject !== config.base ||
           repositoryBranch !== config.baseBranch
         )
