@@ -2,7 +2,7 @@ import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { step } from "../../scripts/dogfood/flow.js";
+import { step, workerPrompt } from "../../scripts/dogfood/flow.js";
 import type { Adapter, Check, Config, Role, Terminal } from "../../scripts/dogfood/flow.js";
 
 const base = "a".repeat(40),
@@ -174,6 +174,19 @@ async function fixture() {
   };
 }
 describe("supervised sequential pilot (fake attempts, never live acceptance)", () => {
+  it("requires local author verification and otherwise preserves the reviewer prompt", async () => {
+    const f = await fixture();
+    expect(workerPrompt(f.config, "author", base, "Improve the selected issue.")).toBe(
+      `Improve the selected issue.\n\nPilot run one-trial; role author; exact base: ${base}.\n` +
+        'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most 2000 characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
+    );
+    expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
+      `Improve the selected issue.\n\nPilot run one-trial; role reviewer; exact review head: ${head}.\n` +
+        'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most 2000 characters; use an empty string when there are no findings. Review every changed assertion independently.\n`,
+    );
+  });
   it("drives author and independent exact-head review, hands off publication, and resumes without redispatch", async () => {
     const f = await fixture();
     expect((await f.run()).status).toBe("observing-author");
