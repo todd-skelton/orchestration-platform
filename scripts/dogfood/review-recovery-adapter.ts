@@ -6,8 +6,10 @@ import type { Adapter, Attempt, Config, Terminal } from "./flow.js";
 import { classifyReview } from "./repair-policy.mjs";
 import {
   sourceReviewBinding,
+  validateSourceReviewAuthority,
   validateReviewRecoveryAuthority,
   validateSourceReviewBinding,
+  type ValidatedSourceReviewContract,
   type SourceReviewBinding,
 } from "./review-policy.mjs";
 
@@ -73,6 +75,78 @@ function samePath(left: string, right: string) {
   return normalize(left) === normalize(right);
 }
 
+export interface SourceReviewContractSelection {
+  contract: ValidatedSourceReviewContract;
+  authority?: Record<string, any>;
+}
+
+export async function sourceReviewContract(
+  config: Config,
+  known?: { configFingerprint: string; sourceAuthor: string; candidateHead: string },
+  expectedExecutorRevision?: string,
+): Promise<SourceReviewContractSelection> {
+  const [pin, candidate, author, authority, reviewerIntent] = await Promise.all([
+    required(config.stateDirectory, "config"),
+    required(config.stateDirectory, "candidate"),
+    required(config.stateDirectory, "author-attempt"),
+    optional(config.stateDirectory, "source-review-authority"),
+    optional(config.stateDirectory, "reviewer-intent"),
+  ]);
+  const prompts = await Promise.all(
+    [config.author.promptFile, config.reviewer.promptFile].map((path) => readFile(path, "utf8")),
+  );
+  demand(
+    pin?.config &&
+      JSON.stringify(pin.config) === JSON.stringify(config) &&
+      pin.fingerprint === sha(JSON.stringify({ config, prompts })) &&
+      SHA.test(candidate?.head) &&
+      validAttempt(author) &&
+      (known === undefined ||
+        (known.configFingerprint === pin.fingerprint &&
+          known.sourceAuthor === author.id &&
+          known.candidateHead === candidate.head)),
+    "source-review-contract-lineage-mismatch",
+  );
+  if (authority === ABSENT) {
+    demand(
+      expectedExecutorRevision === undefined || expectedExecutorRevision === config.pilotRevision,
+      "source-review-adoption-authority-required",
+    );
+    demand(
+      known !== undefined ||
+        reviewerIntent === ABSENT ||
+        !Object.hasOwn(reviewerIntent, "reviewAuthority"),
+      "source-review-intent-contract-mismatch",
+    );
+    return { contract: { scope: "complete", inheritance: null } };
+  }
+  let contract: ValidatedSourceReviewContract;
+  try {
+    contract = validateSourceReviewAuthority(authority, {
+      controller: config.owner,
+      run: config.run,
+      stateDirectory: config.stateDirectory,
+      configFingerprint: pin.fingerprint,
+      authorAttempt: author.id,
+      candidateHead: candidate.head,
+      comparisonBase: config.base,
+      executorRevision: expectedExecutorRevision ?? authority.executorRevision,
+      scope: authority.scope,
+      inheritance: authority.inheritance,
+    });
+  } catch {
+    throw new ReviewRecoveryBlocked("unauthorized-source-review-contract");
+  }
+  demand(
+    known !== undefined ||
+      authority.executorRevision !== config.pilotRevision ||
+      (reviewerIntent !== ABSENT &&
+        JSON.stringify(reviewerIntent.reviewAuthority) === JSON.stringify(authority)),
+    "source-review-intent-contract-mismatch",
+  );
+  return { contract, authority };
+}
+
 async function sourceIdentity(
   config: Config,
   originalDisposition: "malformed" | "incomplete" = "malformed",
@@ -91,9 +165,11 @@ async function sourceIdentity(
   const prompts = await Promise.all(
     [config.author.promptFile, config.reviewer.promptFile].map((path) => readFile(path, "utf8")),
   );
+  const reviewSelection = await sourceReviewContract(config);
   const classifiedOriginal =
     candidate && SHA.test(candidate.head)
-      ? classifyReview(originalTerminal?.summary, candidate.head, "complete").disposition
+      ? classifyReview(originalTerminal?.summary, candidate.head, reviewSelection.contract.scope)
+          .disposition
       : "malformed";
   const originalMatchesDisposition =
     originalDisposition === "malformed"
@@ -123,7 +199,12 @@ async function sourceIdentity(
       originalTerminal.head === candidate.head &&
       originalIntent?.fingerprint === pin.fingerprint &&
       originalIntent.role === "reviewer" &&
-      originalIntent.head === candidate.head,
+      originalIntent.head === candidate.head &&
+      (reviewSelection.authority === undefined
+        ? !Object.hasOwn(originalIntent, "reviewAuthority")
+        : reviewSelection.authority.executorRevision !== config.pilotRevision ||
+          JSON.stringify(originalIntent.reviewAuthority) ===
+            JSON.stringify(reviewSelection.authority)),
     "review-recovery-source-lineage-mismatch",
   );
   if (originalDisposition === "malformed") {
@@ -144,7 +225,7 @@ async function sourceIdentity(
       throw new ReviewRecoveryBlocked("unauthorized-review-recovery");
     }
   }
-  return { pin, candidate, author, original, originalTerminal };
+  return { pin, candidate, author, original, originalTerminal, reviewSelection };
 }
 
 export interface SelectedSourceReview {
@@ -195,8 +276,8 @@ export async function selectedSourceReview(
       terminal.id === attempt.id &&
       terminal.head === source.candidate.head &&
       ["passed", "failed"].includes(terminal.status) &&
-      classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
-        "complete",
+      classifyReview(terminal.summary, source.candidate.head, source.reviewSelection.contract.scope)
+        .disposition === "complete",
     "selected-review-record-mismatch",
   );
   const expected = {
@@ -209,6 +290,9 @@ export async function selectedSourceReview(
     originalDisposition,
     selectedReview: attempt.id,
     selectedDisposition: terminal.status as "passed" | "failed",
+    ...(source.reviewSelection.authority === undefined
+      ? {}
+      : { reviewContract: source.reviewSelection.contract }),
   };
   try {
     validateSourceReviewBinding(savedBinding, expected);
@@ -246,6 +330,9 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
         sourceAuthor: source.author.id,
         originalReview: source.original.id,
         reviewer: config.reviewer,
+        ...(source.reviewSelection.authority === undefined
+          ? {}
+          : { reviewContract: source.reviewSelection.contract }),
       };
       let savedIntent = await optional(config.stateDirectory, "review-recovery-intent");
       const savedAttempt = await optional(config.stateDirectory, "review-recovery-attempt");
@@ -265,7 +352,12 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
       let attempt = savedAttempt as Attempt | typeof ABSENT;
       if (attempt === ABSENT) {
         const basePrompt = await readFile(config.reviewer.promptFile, "utf8");
-        const prompt = `${workerPrompt(config, "reviewer", source.candidate.head, basePrompt)}\nThis is the sole authority-bound replacement for malformed transport from reviewer ${source.original.id}. Review the unchanged exact candidate independently. Do not infer or copy any lost finding and do not change source to obtain a verdict.\n`;
+        const inheritance = source.reviewSelection.contract.inheritance;
+        const scopeInstruction =
+          source.reviewSelection.contract.scope === "complete"
+            ? 'Return the authorized COMPLETE contract with scope "complete".'
+            : `Return only the authorized DELTA contract with scope "delta", inheriting completed independent sweep ${inheritance!.review} at ${inheritance!.head}.`;
+        const prompt = `${workerPrompt(config, "reviewer", source.candidate.head, basePrompt)}\nThis is the sole authority-bound replacement for malformed transport from reviewer ${source.original.id}. ${scopeInstruction} Review the unchanged exact candidate independently. Do not infer or copy any lost finding and do not change source to obtain a verdict.\n`;
         attempt = await native.launch("reviewer", recoveryConfig, prompt);
         demand(
           validAttempt(attempt) && ![source.author.id, source.original.id].includes(attempt.id),
@@ -290,16 +382,22 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
         demand(terminal.head === source.candidate.head, "review-recovery-head-mismatch");
         demand(
           terminal.status === "malformed" ||
-            classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
-              "complete",
+            classifyReview(
+              terminal.summary,
+              source.candidate.head,
+              source.reviewSelection.contract.scope,
+            ).disposition === "complete",
           "replacement-review-malformed",
         );
         await writeOnce(config.stateDirectory, "review-recovery-terminal", terminal);
       }
       demand(terminal.status !== "malformed", "replacement-review-malformed");
       demand(
-        classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
-          "complete",
+        classifyReview(
+          terminal.summary,
+          source.candidate.head,
+          source.reviewSelection.contract.scope,
+        ).disposition === "complete",
         "replacement-review-malformed",
       );
       demand(
@@ -318,6 +416,9 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
         originalReview: source.original.id,
         selectedReview: attempt.id,
         selectedDisposition: terminal.status,
+        ...(source.reviewSelection.authority === undefined
+          ? {}
+          : { reviewContract: source.reviewSelection.contract }),
       });
       await writeOnce(config.stateDirectory, "source-review-binding", binding);
       return {

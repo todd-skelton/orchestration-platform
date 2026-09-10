@@ -17,8 +17,14 @@ import type {
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
 import type { RepairAdapter } from "../../scripts/dogfood/repair.js";
 import { repairDigest } from "../../scripts/dogfood/repair-policy.js";
-import { reviewedReviewRecoveryAdapter } from "../../scripts/dogfood/review-recovery-adapter.mjs";
-import { reviewRecoveryAuthority } from "../../scripts/dogfood/review-policy.mjs";
+import {
+  reviewedReviewRecoveryAdapter,
+  sourceReviewContract,
+} from "../../scripts/dogfood/review-recovery-adapter.mjs";
+import {
+  reviewRecoveryAuthority,
+  sourceReviewAuthority,
+} from "../../scripts/dogfood/review-policy.mjs";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import {
   itemAuthority,
@@ -38,12 +44,12 @@ const repaired = "d".repeat(40);
 const mergeCommit = "e".repeat(40);
 const unavailable = { status: "unavailable" as const };
 
-const passingReviewSummary = (head: string) =>
+const passingReviewSummary = (head: string, scope: "complete" | "delta" = "complete") =>
   JSON.stringify({
     v: 2,
     head,
     complete: true,
-    scope: "complete",
+    scope,
     profile: "contract",
     g0: ["PASS", "smallest complete shape"],
     pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "hosted boundary probe"]),
@@ -234,6 +240,55 @@ async function writeMalformedSource(current: Awaited<ReturnType<typeof fixture>>
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+it("adopts immutable legacy source state only through an exact successor authority", async () => {
+  const current = await fixture();
+  await writeMalformedSource(current);
+  const successor = "f".repeat(40);
+  const fingerprint = repairDigest({
+    config: current.source,
+    prompts: ["author prompt", "review prompt"],
+  });
+  const immutablePaths = ["config.json", "reviewer-intent.json", "reviewer-terminal.json"].map(
+    (name) => resolve(current.paths.source, name),
+  );
+  const before = await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")));
+  await writeFile(
+    resolve(current.paths.source, "source-review-authority.json"),
+    JSON.stringify(
+      sourceReviewAuthority({
+        controller: current.source.owner,
+        run: current.source.run,
+        stateDirectory: current.paths.source,
+        configFingerprint: fingerprint,
+        authorAttempt: "source-author",
+        candidateHead: candidate,
+        comparisonBase: base,
+        executorRevision: successor,
+        scope: "delta",
+        inheritance: {
+          run: "completed-sweep",
+          author: "sweep-author",
+          review: "independent-review",
+          head: base,
+          scope: "complete",
+          complete: true,
+        },
+      }),
+    ),
+  );
+
+  await expect(sourceReviewContract(current.source, undefined, successor)).resolves.toMatchObject({
+    contract: {
+      scope: "delta",
+      inheritance: { review: "independent-review", head: base },
+    },
+  });
+  await expect(sourceReviewContract(current.source, undefined, "e".repeat(40))).rejects.toThrow(
+    "unauthorized-source-review-contract",
+  );
+  expect(await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")))).toEqual(before);
 });
 
 it("directly composes the accepted setup transition before source work", async () => {
@@ -528,11 +583,41 @@ it("directly composes the accepted flow and delivery transitions with exact iden
 });
 
 it.each([
-  ["malformed terminal transport", { status: "malformed" as const }],
-  ["malformed nested report", { status: "passed" as const, summary: "{not-json" }],
+  ["malformed terminal transport", { status: "malformed" as const }, "complete" as const],
+  [
+    "malformed nested report",
+    { status: "passed" as const, summary: "{not-json" },
+    "complete" as const,
+  ],
+  [
+    "malformed scope-bound DELTA report",
+    {
+      status: "passed" as const,
+      summary: JSON.stringify({
+        v: 2,
+        head: candidate,
+        complete: true,
+        scope: "delta",
+        profile: "contract",
+        g0: ["PASS", "independently malformed payload"],
+        pairs: Array.from({ length: 12 }, () => ["INVALID", "INVALID", "bad pair codes"]),
+        findings: [
+          {
+            file: "scripts/dogfood/queue.ts",
+            line: 1,
+            severity: "P1",
+            defect: "x".repeat(351),
+            verification: "bounded verification",
+          },
+        ],
+        notes: [],
+      }),
+    },
+    "delta" as const,
+  ],
 ])(
   "replaces only %s and binds the selected review without relaunch on restart",
-  async (_case, malformedReview) => {
+  async (_case, malformedReview, scope) => {
     const current = await fixture();
     await Promise.all([
       writeFile(current.source.author.promptFile, "author prompt"),
@@ -569,7 +654,8 @@ it.each([
         launches.push(replacement ? "replacement-reviewer" : role);
         if (replacement) {
           expect(prompt).toContain("sole authority-bound replacement");
-          expect(prompt).toContain('scope "complete"');
+          expect(prompt).toContain(`scope "${scope}"`);
+          if (scope === "delta") expect(prompt).toContain("inheriting completed independent sweep");
         }
         return {
           id: replacement ? "selected-reviewer" : `source-${role}`,
@@ -595,7 +681,7 @@ it.each([
           id: attempt.id,
           head: candidate,
           usage: { output_tokens: 4 },
-          summary: passingReviewSummary(candidate),
+          summary: passingReviewSummary(candidate, scope),
         };
       },
       async checks() {
@@ -621,6 +707,31 @@ it.each([
         }),
       ),
     );
+    if (scope === "delta")
+      await writeFile(
+        resolve(current.paths.source, "source-review-authority.json"),
+        JSON.stringify(
+          sourceReviewAuthority({
+            controller: current.source.owner,
+            run: current.source.run,
+            stateDirectory: current.paths.source,
+            configFingerprint: fingerprint,
+            authorAttempt: "source-author",
+            candidateHead: candidate,
+            comparisonBase: base,
+            executorRevision: stable,
+            scope,
+            inheritance: {
+              run: "completed-sweep",
+              author: "sweep-author",
+              review: "independent-review",
+              head: base,
+              scope: "complete",
+              complete: true,
+            },
+          }),
+        ),
+      );
     const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
 
     await expect(adapter.source(current.item)).resolves.toEqual({
@@ -663,6 +774,21 @@ it.each([
       },
       originalReview: { attempt: "source-reviewer", disposition: "malformed" },
       selectedReview: { attempt: "selected-reviewer", disposition: "passed" },
+      ...(scope === "delta"
+        ? {
+            reviewContract: {
+              scope: "delta",
+              inheritance: {
+                run: "completed-sweep",
+                author: "sweep-author",
+                review: "independent-review",
+                head: base,
+                scope: "complete",
+                complete: true,
+              },
+            },
+          }
+        : {}),
     });
 
     const completedFiles = (await readdir(current.paths.source)).sort();
@@ -681,6 +807,16 @@ it.each([
         completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
       ),
     ).toEqual(completedState);
+    if (scope === "delta") {
+      const authorityPath = resolve(current.paths.source, "source-review-authority.json");
+      const drifted = JSON.parse(await readFile(authorityPath, "utf8"));
+      drifted.inheritance.review = "substituted-completed-sweep";
+      await writeFile(authorityPath, JSON.stringify(drifted));
+      await expect(adapter.source(current.item)).rejects.toThrow(
+        "source-review-intent-contract-mismatch",
+      );
+      expect(launches).toHaveLength(3);
+    }
   },
 );
 
@@ -761,6 +897,25 @@ it("blocks a replacement intent without launch identity instead of redispatching
   const current = await fixture();
   const prompts = ["author prompt", "review prompt"];
   const fingerprint = repairDigest({ config: current.source, prompts });
+  const reviewAuthority = sourceReviewAuthority({
+    controller: current.source.owner,
+    run: current.source.run,
+    stateDirectory: current.paths.source,
+    configFingerprint: fingerprint,
+    authorAttempt: "source-author",
+    candidateHead: candidate,
+    comparisonBase: base,
+    executorRevision: stable,
+    scope: "delta",
+    inheritance: {
+      run: "completed-sweep",
+      author: "sweep-author",
+      review: "independent-review",
+      head: base,
+      scope: "complete",
+      complete: true,
+    },
+  });
   await Promise.all([
     writeFile(current.source.author.promptFile, prompts[0]!),
     writeFile(current.source.reviewer.promptFile, prompts[1]!),
@@ -786,7 +941,12 @@ it("blocks a replacement intent without launch identity instead of redispatching
     ),
     writeFile(
       resolve(current.paths.source, "reviewer-intent.json"),
-      JSON.stringify({ fingerprint, role: "reviewer", head: candidate }),
+      JSON.stringify({
+        fingerprint,
+        role: "reviewer",
+        head: candidate,
+        reviewAuthority,
+      }),
     ),
     writeFile(
       resolve(current.paths.source, "reviewer-attempt.json"),
@@ -814,6 +974,10 @@ it("blocks a replacement intent without launch identity instead of redispatching
           reviewer: current.source.reviewer,
         }),
       ),
+    ),
+    writeFile(
+      resolve(current.paths.source, "source-review-authority.json"),
+      JSON.stringify(reviewAuthority),
     ),
   ]);
   let launches = 0;

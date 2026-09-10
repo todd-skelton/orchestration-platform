@@ -26,6 +26,7 @@ children:
     ISS-081,
     ISS-085,
     ISS-086,
+    ISS-087,
   ]
 ---
 
@@ -68,7 +69,8 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
   `ISS-078 → ISS-079`;
   `ISS-078 → ISS-081`;
   `ISS-078 → ISS-085`;
-  `ISS-078 → ISS-086`.
+  `ISS-078 → ISS-086`;
+  `ISS-081 → ISS-087`.
 - Parallelism: review authority and the event journal may proceed in parallel
   once their gates are satisfied. The walking skeleton runs as soon as
   contracts and the CLI exist and blocks nothing; its divergence ledger is
@@ -131,4 +133,5 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
 - `ISS-079` - Refresh an existing reviewed delivery PR forward.
 - `ISS-081` - Recover bounded malformed source-review transport.
 - `ISS-085` - Correct bounded repair review locations.
-- `ISS-086` — Reconcile real queue completion receipts on restart.
+- `ISS-086` - Reconcile real queue completion receipts on restart.
+- `ISS-087` - Preserve explicitly authorized review scope through recovery.

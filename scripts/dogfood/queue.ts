@@ -23,6 +23,7 @@ import {
   ReviewRecoveryBlocked,
   reviewedReviewRecoveryAdapter,
   selectedSourceReview,
+  sourceReviewContract,
   type ReviewRecoveryAdapter,
 } from "./review-recovery-adapter.mjs";
 import {
@@ -1241,8 +1242,28 @@ export function repositoryQueueAdapter(
     throw new QueueBlocked("native-launch-ceiling-exhausted");
   };
 
+  const validatedReviewSelection = async (
+    item: QueueItem,
+    known?: { configFingerprint: string; sourceAuthor: string; candidateHead: string },
+  ) => {
+    try {
+      return await sourceReviewContract(item.source, known, config.controllerRevision);
+    } catch (error) {
+      throw new QueueBlocked(
+        error instanceof ReviewRecoveryBlocked
+          ? error.reason
+          : "source-review-contract-state-unknown",
+      );
+    }
+  };
+  const adoptedSourceItems = new Set<string>();
+
   const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
     ...native,
+    async authorizeReview(_current, source) {
+      demand(stage === "source", "unexpected-review-authority-request");
+      return (await validatedReviewSelection(item, source)).authority;
+    },
     async launch(role: Role, current: SourceConfig, prompt: string): Promise<Attempt> {
       const priorHistory = await readHistory();
       const ordinal = await nextOrdinal();
@@ -1257,10 +1278,17 @@ export function repositoryQueueAdapter(
         effort: current[role].effort,
       };
       await adapterRecord(state, `participant-${ordinal}-intent`, context);
-      const repairCompatiblePrompt =
+      const selection =
         stage === "source" && role === "reviewer"
-          ? `${prompt}\n\n${sourceReviewerReportPrompt(item.repair.sourcePaths)}\n`
-          : prompt;
+          ? await validatedReviewSelection(item)
+          : undefined;
+      const repairCompatiblePrompt = selection
+        ? `${prompt}\n\n${sourceReviewerReportPrompt(
+            item.repair.sourcePaths,
+            selection.contract.scope,
+            selection.contract.inheritance,
+          )}\n`
+        : prompt;
       const attempt = await native.launch(role, current, repairCompatiblePrompt);
       demand(
         typeof attempt.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),
@@ -1342,10 +1370,12 @@ export function repositoryQueueAdapter(
         ["passed", "failed"].includes(terminal.status)
       ) {
         const candidate = await adapterOptional(directory, "candidate");
+        const selection = await validatedReviewSelection(item);
         if (
           candidate !== ABSENT &&
           SHA.test(candidate.head) &&
-          classifyReview(terminal.summary, candidate.head, "complete").disposition === "malformed"
+          classifyReview(terminal.summary, candidate.head, selection.contract.scope).disposition ===
+            "malformed"
         )
           terminal = { ...terminal, status: "malformed" };
       }
@@ -1361,7 +1391,8 @@ export function repositoryQueueAdapter(
     if (candidate === ABSENT || terminal === ABSENT || !SHA.test(candidate.head)) return undefined;
     if (terminal.status === "malformed") return "malformed" as const;
     if (!["passed", "failed"].includes(terminal.status)) return undefined;
-    return classifyReview(terminal.summary, candidate.head, "complete").disposition;
+    const selection = await validatedReviewSelection(item);
+    return classifyReview(terminal.summary, candidate.head, selection.contract.scope).disposition;
   };
 
   const acceptedPair = async (
@@ -1402,7 +1433,8 @@ export function repositoryQueueAdapter(
     );
     let review;
     try {
-      review = parseReview(selected.terminal.summary, candidate.head, "complete");
+      const selection = await validatedReviewSelection(item);
+      review = parseReview(selected.terminal.summary, candidate.head, selection.contract.scope);
     } catch (error) {
       throw new QueueBlocked(
         error instanceof RepairBlocked ? error.reason : "source-review-report-unknown",
@@ -1426,7 +1458,7 @@ export function repositoryQueueAdapter(
     demand(item.base === item.source.base && item.base === item.setup.base, "queue-base-drift");
     demand(item.source.owner === config.authority.controller, "queue-controller-drift");
     demand(
-      item.source.pilotRevision === config.controllerRevision,
+      item.source.pilotRevision === config.controllerRevision || adoptedSourceItems.has(item.id),
       "candidate-as-executor-selection",
     );
     demand(
@@ -1464,11 +1496,12 @@ export function repositoryQueueAdapter(
   };
 
   const buildRepair = async (item: QueueItem): Promise<RepairConfig> => {
-    const [pinned, candidate, authorAttempt, selected] = await Promise.all([
+    const [pinned, candidate, authorAttempt, selected, sourceReview] = await Promise.all([
       json(item.source.stateDirectory, "config"),
       json(item.source.stateDirectory, "candidate"),
       json(item.source.stateDirectory, "author-attempt"),
       selectedSourceReview(item.source),
+      validatedReviewSelection(item),
     ]);
     const reviewerAttempt = selected.attempt;
     demand(SHA.test(candidate.head), "source-candidate-mismatch");
@@ -1545,6 +1578,9 @@ export function repositoryQueueAdapter(
           reviewerAttempt: reviewerAttempt.id,
           reviewId: reviewerAttempt.id,
           disposition: "BLOCK_FIXABLE",
+          ...(sourceReview.authority === undefined
+            ? {}
+            : { reviewContract: sourceReview.contract }),
         },
         author: partial.author,
         reviewer: partial.reviewer,
@@ -1622,6 +1658,11 @@ export function repositoryQueueAdapter(
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked("controller-executor-unverified");
       }
+      for (const item of config.items)
+        if (item.source.pilotRevision !== config.controllerRevision) {
+          await validatedReviewSelection(item);
+          adoptedSourceItems.add(item.id);
+        }
       config.items.forEach(assertItem);
       await seedHistory();
       const authorityFingerprint = queueDigest({

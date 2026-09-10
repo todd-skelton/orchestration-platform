@@ -560,3 +560,27 @@ ISS-078/#338 remain open until external exact-head review, four controller
 gates, actual hosted Windows/macOS/Linux execution and stable promotion are
 followed by read-only reconciliation of the preserved completion and a genuinely
 useful later queue/restart under that later queue's own accepted authority.
+
+## Authorized review scope through recovery
+
+ISS-087 adds an optional external `dogfood-source-review-authority/v1` beside
+source runtime state. It binds the run, immutable configuration fingerprint,
+source author, candidate, comparison base, adopting executor revision and COMPLETE or DELTA scope. DELTA
+also binds the independent completed sweep it inherits. Repository policy
+validates this record before reviewer dispatch; the flow engine only persists
+the adapter-returned opaque authority with reviewer intent.
+
+Classification, malformed-only recovery, replacement prompt and validation,
+selected-review binding, queue acceptance and repair handoff all reuse that
+validated contract. Absent authority preserves legacy COMPLETE behavior and v1
+bindings. Explicit scope uses a v2 binding carrying inheritance, so completed
+restart cannot silently substitute ancestry. Adoption by a later stable
+executor consists only of supplying externally authorized compatible scope and
+recovery records beside the old state; old config, attempts and receipts remain
+byte-immutable and do not grant the successor authority by themselves.
+
+This source change does not activate recovery for ISS-084, normalize its
+independently malformed reviewer5 report, repeat its completed sweep or close
+its criteria. Real recovery and restart remain post-promotion external-use
+evidence after independent review, four controller gates and actual hosted
+Windows/macOS/Linux execution.

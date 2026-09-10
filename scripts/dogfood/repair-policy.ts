@@ -132,6 +132,17 @@ export interface RepairAuthority {
     reviewerAttempt: string;
     reviewId: string;
     disposition: "BLOCK_FIXABLE";
+    reviewContract?: {
+      scope: "complete" | "delta";
+      inheritance: {
+        run: string;
+        author: string;
+        review: string;
+        head: string;
+        scope: "complete";
+        complete: true;
+      } | null;
+    };
   };
   author: RepairActor;
   reviewer: RepairActor;
@@ -238,7 +249,7 @@ export interface RepairHandoff {
     disposition: "BLOCK_FIXABLE";
     verdict: "failed";
     complete: true;
-    scope: "complete";
+    scope: "complete" | "delta";
     profile: "contract";
     g0: ValidatedReview["g0"];
     pairs: ValidatedReview["pairs"];
@@ -289,6 +300,25 @@ function validAdapter(adapter: unknown) {
     exactKeys(adapter, ["kind", "executable"]) &&
     adapter.kind === "codex-exec" &&
     bounded(adapter.executable, 1_000)
+  );
+}
+
+function validSourceReviewContract(value: unknown, comparisonBase: string) {
+  if (!object(value) || !exactKeys(value, ["scope", "inheritance"])) return false;
+  if (value.scope === "complete") return value.inheritance === null;
+  const inheritance = value.inheritance;
+  return (
+    value.scope === "delta" &&
+    object(inheritance) &&
+    exactKeys(inheritance, ["run", "author", "review", "head", "scope", "complete"]) &&
+    /^[\w.-]{1,64}$/.test(inheritance.run) &&
+    IDENTITY.test(inheritance.author) &&
+    IDENTITY.test(inheritance.review) &&
+    SHA.test(inheritance.head) &&
+    inheritance.head === comparisonBase &&
+    inheritance.scope === "complete" &&
+    inheritance.complete === true &&
+    inheritance.author !== inheritance.review
   );
 }
 
@@ -531,6 +561,7 @@ function validateAuthority(config: RepairConfig) {
       same(authority.actions, ACTIONS),
     "unauthorized-repair",
   );
+  const hasReviewContract = Object.hasOwn(authority.source, "reviewContract");
   demand(
     exactKeys(authority.source, [
       "owner",
@@ -546,6 +577,7 @@ function validateAuthority(config: RepairConfig) {
       "reviewerAttempt",
       "reviewId",
       "disposition",
+      ...(hasReviewContract ? ["reviewContract"] : []),
     ]) &&
       IDENTITY.test(authority.source.owner) &&
       SHA.test(authority.source.pilotRevision) &&
@@ -565,7 +597,9 @@ function validateAuthority(config: RepairConfig) {
       ].every((value) => IDENTITY.test(value)) &&
       authority.source.authorAttempt !== authority.source.reviewerAttempt &&
       authority.source.reviewId === authority.source.reviewerAttempt &&
-      authority.source.disposition === "BLOCK_FIXABLE",
+      authority.source.disposition === "BLOCK_FIXABLE" &&
+      (!hasReviewContract ||
+        validSourceReviewContract(authority.source.reviewContract, config.mainBase)),
     "unauthorized-source-review",
   );
 }
@@ -876,7 +910,15 @@ export function repairPolicy() {
           artifacts.terminal.head === config.repairBase,
         "source-terminal-mismatch",
       );
-      const review = parseReview(artifacts.terminal.summary, config.repairBase, "complete");
+      const sourceContract = source.reviewContract ?? {
+        scope: "complete" as const,
+        inheritance: null,
+      };
+      const review = parseReview(
+        artifacts.terminal.summary,
+        config.repairBase,
+        sourceContract.scope,
+      );
       demand(
         review.g0[0] === "PASS" &&
           review.findings.length > 0 &&
@@ -905,14 +947,14 @@ export function repairPolicy() {
           disposition: "BLOCK_FIXABLE",
           verdict: "failed",
           complete: true,
-          scope: "complete",
+          scope: sourceContract.scope,
           profile: "contract",
           g0: review.g0,
           pairs: review.pairs,
           findings: review.findings,
           notes: review.notes,
         },
-        predecessorCompleteSweep: source.reviewId,
+        predecessorCompleteSweep: sourceContract.inheritance?.review ?? source.reviewId,
         history: config.history,
         implementation: {
           attempts: config.implementationAttempts,

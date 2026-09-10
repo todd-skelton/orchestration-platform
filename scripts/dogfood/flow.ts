@@ -47,6 +47,10 @@ export interface Adapter {
   launch(role: Role, config: Config, prompt: string): Promise<Attempt>;
   observe(role: Role, config: Config, attempt: Attempt): Promise<Terminal>;
   checks(config: Config, url: string): Promise<{ head: string; checks: Check[] }>;
+  authorizeReview?(
+    config: Config,
+    source: { configFingerprint: string; sourceAuthor: string; candidateHead: string },
+  ): Promise<unknown>;
 }
 
 export const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -224,6 +228,17 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     if (!attempt) {
       let reviewerHead: string | undefined;
       requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
+      let reviewAuthority: unknown;
+      if (role === "reviewer" && adapter.authorizeReview) {
+        requireThat(reviewed, "candidate-head-moved");
+        const author: Attempt | undefined = await get("author-attempt");
+        requireThat(author, "review-author-identity-unknown");
+        reviewAuthority = await adapter.authorizeReview(config, {
+          configFingerprint: fingerprint,
+          sourceAuthor: author.id,
+          candidateHead: reviewed.head,
+        });
+      }
       // Reserve before checkout/prompt/launch; a crash here is deliberately not retried.
       const intentHead = role === "author" ? config.base : reviewed?.head;
       await record(directory, `${role}-intent`, {
@@ -231,6 +246,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
         fingerprint,
         role,
         head: intentHead,
+        ...(reviewAuthority === undefined ? {} : { reviewAuthority }),
       });
       if (role === "author") {
         requireThat(

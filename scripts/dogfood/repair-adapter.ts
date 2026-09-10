@@ -250,11 +250,27 @@ function flowConfig(config: RepairConfig): Config {
 const reviewLocationContract = (reviewPaths: string[]) =>
   `Only findings and notes in changed files drawn from these exact authorized review paths are admissible: ${JSON.stringify(reviewPaths)}. Each path must exist at the reviewed Git head and each line is a valid one-based line at that head.`;
 
-export function sourceReviewerReportPrompt(reviewPaths: string[]) {
+export function sourceReviewerReportPrompt(
+  reviewPaths: string[],
+  scope: "complete" | "delta" = "complete",
+  inheritance: {
+    run: string;
+    author: string;
+    review: string;
+    head: string;
+    scope: "complete";
+    complete: true;
+  } | null = null,
+) {
+  const inherited =
+    scope === "delta"
+      ? `This authorized DELTA inherits completed independent sweep ${inheritance?.review} from run ${inheritance?.run} at comparison head ${inheritance?.head}. `
+      : "";
   return (
+    inherited +
     "The following closed completion contract supersedes the generic review summary instruction. " +
     "The final summary must be a JSON-encoded object with exactly the keys v, head, complete, scope, profile, g0, pairs, findings and notes. " +
-    'Require v 2, the exact review head, boolean complete, scope "complete", profile "contract", g0 ["PASS"|"BLOCK_REPLAN","<evidence>"], and exactly twelve quality pairs. A complete result sets complete true. ' +
+    `Require v 2, the exact review head, boolean complete, scope "${scope}", profile "contract", g0 ["PASS"|"BLOCK_REPLAN","<evidence>"], and exactly twelve quality pairs. A complete result sets complete true. ` +
     "Pairs are ordered SCOPE, ROBUSTNESS, DEPTH, READABILITY, TESTS, OBSERVABILITY, SECURITY, PERFORMANCE, ROLLOUT, CONSISTENCY, EXPERIENCE, LANGUAGE. " +
     "Evidence is at most 140 characters per pair and 200 for G0. Findings are at most eight exact objects {file,line,severity,defect,verification}; notes are at most eight {file,line,remedy}. " +
     reviewLocationContract(reviewPaths) +
