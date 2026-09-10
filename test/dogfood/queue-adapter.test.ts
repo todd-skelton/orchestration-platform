@@ -1,12 +1,4 @@
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -54,10 +46,7 @@ const repaired = "d".repeat(40);
 const mergeCommit = "e".repeat(40);
 const unavailable = { status: "unavailable" as const };
 
-const passingReviewSummary = (
-  head: string,
-  scope: "complete" | "delta" = "complete",
-) =>
+const passingReviewSummary = (head: string, scope: "complete" | "delta" = "complete") =>
   JSON.stringify({
     v: 2,
     head,
@@ -65,19 +54,13 @@ const passingReviewSummary = (
     scope,
     profile: "contract",
     g0: ["PASS", "smallest complete shape"],
-    pairs: Array.from({ length: 12 }, () => [
-      "PASS",
-      "PASS",
-      "hosted boundary probe",
-    ]),
+    pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "hosted boundary probe"]),
     findings: [],
     notes: [],
   });
 
 async function fixture(history: QueueParticipant[] = []) {
-  const root = await realpath(
-    await mkdtemp(resolve(tmpdir(), "queue-adapter-fixture-")),
-  );
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "queue-adapter-fixture-")));
   roots.push(root);
   const paths = {
     repository: resolve(root, "repository"),
@@ -207,9 +190,7 @@ async function fixture(history: QueueParticipant[] = []) {
   return { root, paths, source, item, config };
 }
 
-async function writeMalformedSource(
-  current: Awaited<ReturnType<typeof fixture>>,
-) {
+async function writeMalformedSource(current: Awaited<ReturnType<typeof fixture>>) {
   const prompts = ["author prompt", "review prompt"];
   const fingerprint = repairDigest({ config: current.source, prompts });
   await Promise.all([
@@ -274,9 +255,7 @@ async function writeMalformedSource(
 }
 
 afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
-  );
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 it("adopts immutable legacy source state only through an exact successor authority", async () => {
@@ -287,14 +266,10 @@ it("adopts immutable legacy source state only through an exact successor authori
     config: current.source,
     prompts: ["author prompt", "review prompt"],
   });
-  const immutablePaths = [
-    "config.json",
-    "reviewer-intent.json",
-    "reviewer-terminal.json",
-  ].map((name) => resolve(current.paths.source, name));
-  const before = await Promise.all(
-    immutablePaths.map((path) => readFile(path, "utf8")),
+  const immutablePaths = ["config.json", "reviewer-intent.json", "reviewer-terminal.json"].map(
+    (name) => resolve(current.paths.source, name),
   );
+  const before = await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")));
   await writeFile(
     resolve(current.paths.source, "source-review-authority.json"),
     JSON.stringify(
@@ -320,27 +295,23 @@ it("adopts immutable legacy source state only through an exact successor authori
     ),
   );
 
-  await expect(
-    sourceReviewContract(current.source, undefined, successor),
-  ).resolves.toMatchObject({
+  await expect(sourceReviewContract(current.source, undefined, successor)).resolves.toMatchObject({
     contract: {
       scope: "delta",
       inheritance: { review: "independent-review", head: base },
     },
   });
-  await expect(
-    sourceReviewContract(current.source, undefined, "e".repeat(40)),
-  ).rejects.toThrow("unauthorized-source-review-contract");
-  expect(
-    await Promise.all(immutablePaths.map((path) => readFile(path, "utf8"))),
-  ).toEqual(before);
+  await expect(sourceReviewContract(current.source, undefined, "e".repeat(40))).rejects.toThrow(
+    "unauthorized-source-review-contract",
+  );
+  expect(await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")))).toEqual(before);
 });
 
 it("directly composes the accepted setup transition before source work", async () => {
   const current = await fixture();
   await Promise.all(
-    [current.paths.pilot, current.paths.author, current.paths.review].map(
-      (path) => rm(path, { recursive: true }),
+    [current.paths.pilot, current.paths.author, current.paths.review].map((path) =>
+      rm(path, { recursive: true }),
     ),
   );
   const present = new Set<SetupRole>();
@@ -375,14 +346,10 @@ it("directly composes the accepted setup transition before source work", async (
       return "succeeded";
     },
   };
-  const adapter = repositoryQueueAdapter(
-    current.config,
-    current.paths.controller,
-    {
-      native: {} as never,
-      setup,
-    },
-  );
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
+    native: {} as never,
+    setup,
+  });
 
   await expect(adapter.setup(current.item)).resolves.toMatchObject({
     status: "ready",
@@ -412,8 +379,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   const native: Adapter = {
     async preflight() {},
     async git(worktree, args) {
-      if (args[0] === "rev-parse" && args[1] === "--show-toplevel")
-        return worktree;
+      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
       if (args[0] === "rev-parse" && args[1] === "HEAD") {
         if (worktree === current.paths.pilot) return stable;
         if (worktree === current.paths.review) return reviewHead;
@@ -425,8 +391,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         return "";
       }
       if (args[0] === "merge-base") return base;
-      if (args[0] === "diff")
-        return args.includes("--cached") ? "" : `scripts/dogfood/queue.ts\0`;
+      if (args[0] === "diff") return args.includes("--cached") ? "" : `scripts/dogfood/queue.ts\0`;
       if (args[0] === "ls-files") return "";
       if (args[0] === "commit") {
         sourceHead = candidate;
@@ -453,9 +418,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         expect(prompt).toContain('scope "complete"');
         expect(prompt).toContain('profile "contract"');
         expect(prompt).toContain("SCOPE, ROBUSTNESS, DEPTH");
-        expect(prompt).toContain(
-          JSON.stringify(current.item.repair.sourcePaths),
-        );
+        expect(prompt).toContain(JSON.stringify(current.item.repair.sourcePaths));
       }
       launches.push(role);
       return {
@@ -473,9 +436,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
           input_tokens: role === "author" ? 11 : 7,
           output_tokens: role === "author" ? 3 : 2,
         },
-        ...(role === "reviewer"
-          ? { summary: passingReviewSummary(candidate) }
-          : {}),
+        ...(role === "reviewer" ? { summary: passingReviewSummary(candidate) } : {}),
       };
     },
     async checks() {
@@ -551,9 +512,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       return "passed";
     },
     async observeDraft() {
-      return draft
-        ? { state: "confirmed", value: { issue: 338 } }
-        : { state: "needs-mutation" };
+      return draft ? { state: "confirmed", value: { issue: 338 } } : { state: "needs-mutation" };
     },
     async applyDraft() {
       draft = true;
@@ -603,20 +562,16 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       cleaned = true;
     },
   };
-  const adapter = repositoryQueueAdapter(
-    current.config,
-    current.paths.controller,
-    {
-      native,
-      delivery,
-      deliveryPolicy: {
-        async plan() {
-          return plan;
-        },
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
+    native,
+    delivery,
+    deliveryPolicy: {
+      async plan() {
+        return plan;
       },
-      assertExecutor: async () => {},
     },
-  );
+    assertExecutor: async () => {},
+  });
 
   const accepted = await adapter.source(current.item);
   expect(accepted).toEqual({
@@ -642,16 +597,13 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       outcome: "passed",
     }),
   ]);
-  if (accepted.status !== "accepted")
-    throw new Error("fixture source did not accept");
-  await expect(adapter.delivery(current.item, accepted)).resolves.toMatchObject(
-    {
-      status: "complete",
-      head: candidate,
-      reviewId: "source-reviewer",
-      mergeCommit,
-    },
-  );
+  if (accepted.status !== "accepted") throw new Error("fixture source did not accept");
+  await expect(adapter.delivery(current.item, accepted)).resolves.toMatchObject({
+    status: "complete",
+    head: candidate,
+    reviewId: "source-reviewer",
+    mergeCommit,
+  });
   expect(launches).toEqual(["author", "reviewer"]);
   expect({ draft, published, merged, cleaned }).toEqual({
     draft: true,
@@ -666,11 +618,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
 });
 
 it.each([
-  [
-    "malformed terminal transport",
-    { status: "malformed" as const },
-    "complete" as const,
-  ],
+  ["malformed terminal transport", { status: "malformed" as const }, "complete" as const],
   [
     "malformed nested report",
     { status: "passed" as const, summary: "{not-json" },
@@ -687,11 +635,7 @@ it.each([
         scope: "delta",
         profile: "contract",
         g0: ["PASS", "independently malformed payload"],
-        pairs: Array.from({ length: 12 }, () => [
-          "INVALID",
-          "INVALID",
-          "bad pair codes",
-        ]),
+        pairs: Array.from({ length: 12 }, () => ["INVALID", "INVALID", "bad pair codes"]),
         findings: [
           {
             file: "scripts/dogfood/queue.ts",
@@ -720,8 +664,7 @@ it.each([
     const native: Adapter = {
       async preflight() {},
       async git(worktree, args) {
-        if (args[0] === "rev-parse" && args[1] === "--show-toplevel")
-          return worktree;
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
         if (args[0] === "rev-parse" && args[1] === "HEAD") {
           if (worktree === current.paths.pilot) return stable;
           return worktree === current.paths.review ? reviewHead : sourceHead;
@@ -747,8 +690,7 @@ it.each([
         if (replacement) {
           expect(prompt).toContain("sole authority-bound replacement");
           expect(prompt).toContain(`scope "${scope}"`);
-          if (scope === "delta")
-            expect(prompt).toContain("inheriting completed independent sweep");
+          if (scope === "delta") expect(prompt).toContain("inheriting completed independent sweep");
         }
         return {
           id: replacement ? "selected-reviewer" : `source-${role}`,
@@ -830,11 +772,7 @@ it.each([
           }),
         ),
       );
-    const adapter = repositoryQueueAdapter(
-      current.config,
-      current.paths.controller,
-      { native },
-    );
+    const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
 
     await expect(adapter.source(current.item)).resolves.toEqual({
       status: "accepted",
@@ -866,10 +804,7 @@ it.each([
     ]);
     expect(
       JSON.parse(
-        await readFile(
-          resolve(current.paths.source, "source-review-binding.json"),
-          "utf8",
-        ),
+        await readFile(resolve(current.paths.source, "source-review-binding.json"), "utf8"),
       ),
     ).toMatchObject({
       source: {
@@ -898,9 +833,7 @@ it.each([
 
     const completedFiles = (await readdir(current.paths.source)).sort();
     const completedState = await Promise.all(
-      completedFiles.map((name) =>
-        readFile(resolve(current.paths.source, name), "utf8"),
-      ),
+      completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
     );
 
     await expect(adapter.source(current.item)).resolves.toMatchObject({
@@ -908,21 +841,14 @@ it.each([
       reviewId: "selected-reviewer",
     });
     expect(launches).toHaveLength(3);
-    expect((await readdir(current.paths.source)).sort()).toEqual(
-      completedFiles,
-    );
+    expect((await readdir(current.paths.source)).sort()).toEqual(completedFiles);
     expect(
       await Promise.all(
-        completedFiles.map((name) =>
-          readFile(resolve(current.paths.source, name), "utf8"),
-        ),
+        completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
       ),
     ).toEqual(completedState);
     if (scope === "delta") {
-      const authorityPath = resolve(
-        current.paths.source,
-        "source-review-authority.json",
-      );
+      const authorityPath = resolve(current.paths.source, "source-review-authority.json");
       const drifted = JSON.parse(await readFile(authorityPath, "utf8"));
       drifted.inheritance.review = "substituted-completed-sweep";
       await writeFile(authorityPath, JSON.stringify(drifted));
@@ -957,9 +883,7 @@ it("delivers an adopted recovered DELTA once and rejects ancestry drift on compl
   current.item.setup.pilotRevision = successor;
   current.item.setup.authority.controllerRevision = successor;
   current.item.setup.authority.pilotRevision = successor;
-  current.config.authority.itemsDigest = queueDigest([
-    itemAuthority(current.item),
-  ]);
+  current.config.authority.itemsDigest = queueDigest([itemAuthority(current.item)]);
   await Promise.all([
     writeFile(
       resolve(current.paths.source, "source-review-authority.json"),
@@ -1109,19 +1033,15 @@ it("delivers an adopted recovered DELTA once and rejects ancestry drift on compl
       throw new Error("confirmed cleanup must not mutate");
     },
   };
-  const repository = repositoryQueueAdapter(
-    current.config,
-    current.paths.controller,
-    {
-      delivery,
-      deliveryPolicy: {
-        async plan() {
-          return plan;
-        },
+  const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
+    delivery,
+    deliveryPolicy: {
+      async plan() {
+        return plan;
       },
-      assertExecutor: async () => {},
     },
-  );
+    assertExecutor: async () => {},
+  });
   const history: QueueParticipant[] = [
     {
       ordinal: 1,
@@ -1210,10 +1130,7 @@ it("delivers an adopted recovered DELTA once and rejects ancestry drift on compl
     legacySourceCalls: 0,
     gateCalls: 4,
   });
-  const authorityPath = resolve(
-    current.paths.source,
-    "source-review-authority.json",
-  );
+  const authorityPath = resolve(current.paths.source, "source-review-authority.json");
   const drifted = JSON.parse(await readFile(authorityPath, "utf8"));
   drifted.inheritance.review = "substituted-completed-sweep";
   await writeFile(authorityPath, JSON.stringify(drifted));
@@ -1239,8 +1156,7 @@ it("preserves a valid incomplete review without shopping for a replacement", asy
   const native: Adapter = {
     async preflight() {},
     async git(worktree, args) {
-      if (args[0] === "rev-parse" && args[1] === "--show-toplevel")
-        return worktree;
+      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
       if (args[0] === "rev-parse" && args[1] === "HEAD") {
         if (worktree === current.paths.pilot) return stable;
         return worktree === current.paths.review ? reviewHead : sourceHead;
@@ -1251,8 +1167,7 @@ it("preserves a valid incomplete review without shopping for a replacement", asy
         return "";
       }
       if (args[0] === "merge-base") return base;
-      if (args[0] === "diff")
-        return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
+      if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
       if (args[0] === "ls-files") return "";
       if (args[0] === "commit") sourceHead = candidate;
       return "";
@@ -1289,11 +1204,7 @@ it("preserves a valid incomplete review without shopping for a replacement", asy
       return { head: candidate, checks: [] };
     },
   };
-  const adapter = repositoryQueueAdapter(
-    current.config,
-    current.paths.controller,
-    { native },
-  );
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
 
   await expect(adapter.source(current.item)).resolves.toEqual({
     status: "fixable-review",
@@ -1302,10 +1213,7 @@ it("preserves a valid incomplete review without shopping for a replacement", asy
   });
   expect(launches).toEqual(["author", "reviewer"]);
   await expect(
-    readFile(
-      resolve(current.paths.source, "source-review-binding.json"),
-      "utf8",
-    ),
+    readFile(resolve(current.paths.source, "source-review-binding.json"), "utf8"),
   ).rejects.toMatchObject({ code: "ENOENT" });
 });
 
@@ -1418,9 +1326,7 @@ it("blocks a replacement intent without launch identity instead of redispatching
     },
   });
 
-  await expect(recovery.recover(current.source)).rejects.toThrow(
-    "synthetic launch result unknown",
-  );
+  await expect(recovery.recover(current.source)).rejects.toThrow("synthetic launch result unknown");
   await expect(recovery.recover(current.source)).rejects.toThrow(
     "review-recovery-launch-identity-unknown-reconcile",
   );
@@ -1441,10 +1347,7 @@ it("stops after a malformed replacement instead of shopping another reviewer", a
       return {
         id: "replacement-reviewer",
         pid: 3,
-        trace: resolve(
-          current.paths.source,
-          `${config.artifactPrefix}.reviewer.jsonl`,
-        ),
+        trace: resolve(current.paths.source, `${config.artifactPrefix}.reviewer.jsonl`),
       };
     },
     async observe(_role, _config, attempt) {
@@ -1455,12 +1358,8 @@ it("stops after a malformed replacement instead of shopping another reviewer", a
     },
   });
 
-  await expect(recovery.recover(current.source)).rejects.toThrow(
-    "replacement-review-malformed",
-  );
-  await expect(recovery.recover(current.source)).rejects.toThrow(
-    "replacement-review-malformed",
-  );
+  await expect(recovery.recover(current.source)).rejects.toThrow("replacement-review-malformed");
+  await expect(recovery.recover(current.source)).rejects.toThrow("replacement-review-malformed");
   expect(launches).toBe(1);
 });
 
@@ -1501,16 +1400,10 @@ it("rejects a substituted original review transport path before replacement effe
   const current = await fixture();
   await writeMalformedSource(current);
   const original = JSON.parse(
-    await readFile(
-      resolve(current.paths.source, "reviewer-attempt.json"),
-      "utf8",
-    ),
+    await readFile(resolve(current.paths.source, "reviewer-attempt.json"), "utf8"),
   );
   original.trace = resolve(current.paths.source, "substituted-reviewer.jsonl");
-  await writeFile(
-    resolve(current.paths.source, "reviewer-attempt.json"),
-    JSON.stringify(original),
-  );
+  await writeFile(resolve(current.paths.source, "reviewer-attempt.json"), JSON.stringify(original));
   let effects = 0;
   const recovery = reviewedReviewRecoveryAdapter({
     async preflight() {
@@ -1543,14 +1436,8 @@ it("rejects a substituted original review transport path before replacement effe
 it("persists the genuine adapter result and restarts four-participant completion without effects", async () => {
   const current = await fixture();
   await Promise.all([
-    writeFile(
-      current.source.author.promptFile,
-      "synthetic source author prompt",
-    ),
-    writeFile(
-      current.source.reviewer.promptFile,
-      "synthetic source reviewer prompt",
-    ),
+    writeFile(current.source.author.promptFile, "synthetic source author prompt"),
+    writeFile(current.source.reviewer.promptFile, "synthetic source reviewer prompt"),
   ]);
   const sourceSummary = JSON.stringify({
     v: 2,
@@ -1560,9 +1447,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     profile: "contract",
     g0: ["PASS", "synthetic smallest shape"],
     pairs: Array.from({ length: 12 }, (_value, index) =>
-      index === 0
-        ? ["BLOCK", "PASS", "F1"]
-        : ["PASS", "PASS", "synthetic probe"],
+      index === 0 ? ["BLOCK", "PASS", "F1"] : ["PASS", "PASS", "synthetic probe"],
     ),
     findings: [
       {
@@ -1582,11 +1467,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     scope: "delta",
     profile: "contract",
     g0: ["PASS", "synthetic prescribed remedy only"],
-    pairs: Array.from({ length: 12 }, () => [
-      "PASS",
-      "PASS",
-      "synthetic probe",
-    ]),
+    pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "synthetic probe"]),
     findings: [],
     notes: [],
   });
@@ -1597,8 +1478,7 @@ it("persists the genuine adapter result and restarts four-participant completion
   const native: Adapter = {
     async preflight() {},
     async git(worktree, args) {
-      if (args[0] === "rev-parse" && args[1] === "--show-toplevel")
-        return worktree;
+      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
       if (args[0] === "rev-parse" && args[1] === "HEAD") {
         if (worktree === current.paths.pilot) return stable;
         return worktree === current.paths.review ? reviewHead : sourceHead;
@@ -1609,8 +1489,7 @@ it("persists the genuine adapter result and restarts four-participant completion
         return "";
       }
       if (args[0] === "merge-base") return base;
-      if (args[0] === "diff")
-        return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
+      if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
       if (args[0] === "ls-files") return "";
       if (args[0] === "commit") {
         sourceHead = candidate;
@@ -1651,12 +1530,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     async loadSourceReview() {
       if (!sourceArtifacts) {
         const read = async (name: string) =>
-          JSON.parse(
-            await readFile(
-              resolve(current.paths.source, `${name}.json`),
-              "utf8",
-            ),
-          );
+          JSON.parse(await readFile(resolve(current.paths.source, `${name}.json`), "utf8"));
         sourceArtifacts = {
           configRecord: await read("config"),
           candidate: await read("candidate"),
@@ -1669,10 +1543,7 @@ it("persists the genuine adapter result and restarts four-participant completion
           reviewHead: candidate,
           sourceClean: true,
           reviewClean: true,
-          promptContents: [
-            "synthetic source author prompt",
-            "synthetic source reviewer prompt",
-          ],
+          promptContents: ["synthetic source author prompt", "synthetic source reviewer prompt"],
         };
       }
       return sourceArtifacts;
@@ -1698,10 +1569,7 @@ it("persists the genuine adapter result and restarts four-participant completion
       for (const row of rows) {
         await Promise.all([
           writeFile(
-            resolve(
-              current.paths.queue,
-              `participant-${row.ordinal}-intent.json`,
-            ),
+            resolve(current.paths.queue, `participant-${row.ordinal}-intent.json`),
             JSON.stringify({
               schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
               ordinal: row.ordinal,
@@ -1711,10 +1579,7 @@ it("persists the genuine adapter result and restarts four-participant completion
             }),
           ),
           writeFile(
-            resolve(
-              current.paths.queue,
-              `participant-${row.ordinal}-attempt.json`,
-            ),
+            resolve(current.paths.queue, `participant-${row.ordinal}-attempt.json`),
             JSON.stringify({
               schemaVersion: "dogfood-bounded-queue-participant/v1",
               ordinal: row.ordinal,
@@ -1855,9 +1720,7 @@ it("persists the genuine adapter result and restarts four-participant completion
       return "passed";
     },
     async observeDraft() {
-      return draft
-        ? { state: "confirmed", value: { issue: 350 } }
-        : { state: "needs-mutation" };
+      return draft ? { state: "confirmed", value: { issue: 350 } } : { state: "needs-mutation" };
     },
     async applyDraft() {
       mutationEffects.push("draft");
@@ -1911,21 +1774,17 @@ it("persists the genuine adapter result and restarts four-participant completion
       cleaned = true;
     },
   };
-  const repository = repositoryQueueAdapter(
-    current.config,
-    current.paths.controller,
-    {
-      native,
-      repair: repairAdapter,
-      delivery,
-      deliveryPolicy: {
-        async plan() {
-          return plan;
-        },
+  const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
+    native,
+    repair: repairAdapter,
+    delivery,
+    deliveryPolicy: {
+      async plan() {
+        return plan;
       },
-      assertExecutor: async () => {},
     },
-  );
+    assertExecutor: async () => {},
+  });
   const componentEntries: string[] = [];
   const adapter: QueueAdapter = {
     async assertAuthority() {
@@ -1958,10 +1817,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     participants: 4,
   });
   const completed = JSON.parse(
-    await readFile(
-      resolve(current.paths.queue, "item-1-complete.json"),
-      "utf8",
-    ),
+    await readFile(resolve(current.paths.queue, "item-1-complete.json"), "utf8"),
   );
   expect(Object.keys(completed).sort()).toEqual(
     [
@@ -2014,9 +1870,7 @@ it("persists the genuine adapter result and restarts four-participant completion
       },
     ],
   });
-  expect(
-    completed.history.map((participant: QueueParticipant) => participant.usage),
-  ).toEqual([
+  expect(completed.history.map((participant: QueueParticipant) => participant.usage)).toEqual([
     {
       inputTokens: { status: "known", value: 11 },
       outputTokens: { status: "known", value: 3 },
@@ -2061,18 +1915,10 @@ it("persists the genuine adapter result and restarts four-participant completion
     "repair:author",
     "repair:reviewer",
   ]);
-  expect(componentEntries).toEqual([
-    "authority",
-    "setup",
-    "source",
-    "repair",
-    "delivery",
-  ]);
+  expect(componentEntries).toEqual(["authority", "setup", "source", "repair", "delivery"]);
   const queueFiles = (await readdir(current.paths.queue)).sort();
   const originalBytes = await Promise.all(
-    queueFiles.map((name) =>
-      readFile(resolve(current.paths.queue, name), "utf8"),
-    ),
+    queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
   );
   const entriesAfterCompletion = componentEntries.length;
   const effectsAfterCompletion = mutationEffects.length;
@@ -2097,9 +1943,7 @@ it("persists the genuine adapter result and restarts four-participant completion
   expect((await readdir(current.paths.queue)).sort()).toEqual(queueFiles);
   expect(
     await Promise.all(
-      queueFiles.map((name) =>
-        readFile(resolve(current.paths.queue, name), "utf8"),
-      ),
+      queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
     ),
   ).toEqual(originalBytes);
 });
@@ -2131,10 +1975,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
   await Promise.all([
     ...sourceHistory.map((row) =>
       writeFile(
-        resolve(
-          current.paths.queue,
-          `participant-${row.ordinal}-terminal.json`,
-        ),
+        resolve(current.paths.queue, `participant-${row.ordinal}-terminal.json`),
         `${JSON.stringify(row)}\n`,
       ),
     ),
@@ -2258,10 +2099,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
       ] as const;
       for (const row of records) {
         await writeFile(
-          resolve(
-            current.paths.queue,
-            `participant-${row.ordinal}-intent.json`,
-          ),
+          resolve(current.paths.queue, `participant-${row.ordinal}-intent.json`),
           JSON.stringify({
             schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
             ordinal: row.ordinal,
@@ -2271,10 +2109,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
           }),
         );
         await writeFile(
-          resolve(
-            current.paths.queue,
-            `participant-${row.ordinal}-attempt.json`,
-          ),
+          resolve(current.paths.queue, `participant-${row.ordinal}-attempt.json`),
           JSON.stringify({
             schemaVersion: "dogfood-bounded-queue-participant/v1",
             ordinal: row.ordinal,
@@ -2347,14 +2182,10 @@ it("directly composes the accepted repair transition from a complete fixable rev
       };
     },
   };
-  const adapter = repositoryQueueAdapter(
-    current.config,
-    current.paths.controller,
-    {
-      native: {} as never,
-      repair: repairAdapter,
-    },
-  );
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
+    native: {} as never,
+    repair: repairAdapter,
+  });
 
   await expect(adapter.repair(current.item)).resolves.toEqual({
     status: "accepted",
