@@ -248,17 +248,15 @@ function flowConfig(config: RepairConfig): Config {
 }
 
 const reviewLocationContract = (reviewPaths: string[]) =>
-  `Only findings and notes in changed files drawn from these exact authorized review paths are admissible: ${JSON.stringify(reviewPaths)}. Each path must exist at the reviewed Git head and each line is a valid one-based line at that head.`;
+  `Only findings in changed files drawn from these exact authorized review paths are admissible: ${JSON.stringify(reviewPaths)}. Each path must exist at the reviewed Git head and each line is a valid one-based line at that head.`;
 
 export function sourceReviewerReportPrompt(reviewPaths: string[]) {
   return (
-    "The following closed completion contract supersedes the generic review summary instruction. " +
-    "The final summary must be a JSON-encoded object with exactly the keys v, head, complete, scope, profile, g0, pairs, findings and notes. " +
-    'Require v 2, the exact review head, boolean complete, scope "complete", profile "contract", g0 ["PASS"|"BLOCK_REPLAN","<evidence>"], and exactly twelve quality pairs. A complete result sets complete true. ' +
-    "Pairs are ordered SCOPE, ROBUSTNESS, DEPTH, READABILITY, TESTS, OBSERVABILITY, SECURITY, PERFORMANCE, ROLLOUT, CONSISTENCY, EXPERIENCE, LANGUAGE. " +
-    "Evidence is at most 140 characters per pair and 200 for G0. Findings are at most eight exact objects {file,line,severity,defect,verification}; notes are at most eight {file,line,remedy}. " +
+    "The final reviewer report has exactly run, role, head, verdict, findings and g0. " +
+    'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
+    'Answer G0, "is there a simpler way?", with a string. A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(reviewPaths) +
-    " Total decoded summary is at most 2000 characters. Never truncate the JSON or drop a required field, finding or note. If complete evidence cannot fit that boundary, return FAIL with complete false; it remains incomplete and is never promoted to PASS. PASS requires complete true, G0 PASS, no findings and no BLOCK; a fixable FAIL requires G0 PASS, at least one finding and a bound BLOCK; notes never block."
+    " Keep the complete JSON report within 2000 characters."
   );
 }
 
@@ -266,12 +264,11 @@ function reviewerReportPrompt(handoff: RepairHandoff) {
   return (
     `This is a DELTA review inheriting complete predecessor ${handoff.predecessorCompleteSweep}. ` +
     `Inspect only the prescribed remedies ${JSON.stringify(handoff.failedReview.findings)} and their direct callers; preserve all acceptance criteria and assertions.\n` +
-    "The following closed completion contract supersedes the generic empty-summary PASS instruction. " +
-    'The final summary must be a JSON-encoded string exactly {"v":2,"head":"<exact review head>","complete":true,"scope":"delta","profile":"contract","g0":["PASS"|"BLOCK_REPLAN","<evidence>"],"pairs":[["PASS"|"BLOCK"|"NOTE"|"NA","PASS"|"BLOCK"|"NOTE"|"NA","<evidence>"],...12],"findings":[],"notes":[]}. ' +
-    "Pairs are ordered SCOPE, ROBUSTNESS, DEPTH, READABILITY, TESTS, OBSERVABILITY, SECURITY, PERFORMANCE, ROLLOUT, CONSISTENCY, EXPERIENCE, LANGUAGE. " +
-    "Evidence is at most 140 characters per pair and 200 for G0. Findings are at most eight exact objects {file,line,severity,defect,verification}; notes are at most eight {file,line,remedy}. " +
+    "The final reviewer report has exactly run, role, head, verdict, findings and g0. " +
+    'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
+    'Answer G0, "is there a simpler way?", with a string. A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(handoff.sourcePaths) +
-    " Total decoded summary is at most 2000 characters. PASS requires complete true, G0 PASS, no findings and no BLOCK; notes never block."
+    " Keep the complete JSON report within 2000 characters."
   );
 }
 
@@ -297,7 +294,7 @@ function boundedAdapter(config: RepairConfig, handoff: RepairHandoff, native: Ad
       await writeOnce(config.stateDirectory, `${role}-launch-context`, context);
       const suffix =
         role === "author"
-          ? `Correct only these validated source findings: ${JSON.stringify(handoff.failedReview.findings)}. Start from corrective base ${handoff.correctiveBase}; the distinct delivery main base remains ${handoff.mainBase}. Preserve these acceptance criteria verbatim: ${JSON.stringify(handoff.acceptanceCriteria)}. Authorized exact review paths are ${JSON.stringify(handoff.sourcePaths)}. Repairs consume no implementation attempt. Author PASS uses an empty summary. On FAIL, use only a JSON-encoded summary {"v":1,"head":"${handoff.correctiveBase}","complete":true,"findings":[{"file":"<changed authorized review path>","line":1,"severity":"P1","defect":"<at most 350 characters>","verification":"<at most 200 characters>"}]}; at most eight findings and 2000 decoded characters. Use complete false if incomplete; never include raw output, environment data or prose.`
+          ? `Correct only these validated source findings: ${JSON.stringify(handoff.failedReview.findings)}. Start from corrective base ${handoff.correctiveBase}; the distinct delivery main base remains ${handoff.mainBase}. Preserve these acceptance criteria verbatim: ${JSON.stringify(handoff.acceptanceCriteria)}. Authorized exact review paths are ${JSON.stringify(handoff.sourcePaths)}. Repairs consume no implementation attempt. Author PASS uses an empty summary. On FAIL, use a short actionable summary; never include raw output or environment data.`
           : reviewerReportPrompt(handoff);
       const attempt = await native.launch(role, current, `${prompt}\n\n${suffix}\n`);
       demand(IDENTITY.test(attempt.id), "invalid-repair-participant-identity");

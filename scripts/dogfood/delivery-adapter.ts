@@ -421,11 +421,10 @@ export function githubDeliveryAdapter(
       let replacementReportAccepted = !replacement;
       if (replacement)
         try {
-          const report = parseReview(reviewer.summary, config.candidateHead, "complete");
+          const report = parseReview(reviewer.summary, config.run, config.candidateHead);
           replacementReportAccepted =
-            report.g0[0] === "PASS" &&
-            report.findings.length === 0 &&
-            report.pairs.every((pair) => !pair.includes("BLOCK"));
+            report.verdict === "PASS" &&
+            report.findings.every((finding) => finding.severity === "note");
         } catch (error) {
           if (!(error instanceof RepairBlocked)) throw error;
         }

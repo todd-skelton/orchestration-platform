@@ -1345,7 +1345,8 @@ export function repositoryQueueAdapter(
         if (
           candidate !== ABSENT &&
           SHA.test(candidate.head) &&
-          classifyReview(terminal.summary, candidate.head, "complete").disposition === "malformed"
+          classifyReview(terminal.summary, item.source.run, candidate.head).disposition ===
+            "malformed"
         )
           terminal = { ...terminal, status: "malformed" };
       }
@@ -1361,7 +1362,7 @@ export function repositoryQueueAdapter(
     if (candidate === ABSENT || terminal === ABSENT || !SHA.test(candidate.head)) return undefined;
     if (terminal.status === "malformed") return "malformed" as const;
     if (!["passed", "failed"].includes(terminal.status)) return undefined;
-    return classifyReview(terminal.summary, candidate.head, "complete").disposition;
+    return classifyReview(terminal.summary, item.source.run, candidate.head).disposition;
   };
 
   const acceptedPair = async (
@@ -1402,16 +1403,14 @@ export function repositoryQueueAdapter(
     );
     let review;
     try {
-      review = parseReview(selected.terminal.summary, candidate.head, "complete");
+      review = parseReview(selected.terminal.summary, item.source.run, candidate.head);
     } catch (error) {
       throw new QueueBlocked(
         error instanceof RepairBlocked ? error.reason : "source-review-report-unknown",
       );
     }
     demand(
-      review.g0[0] === "PASS" &&
-        review.findings.length === 0 &&
-        review.pairs.every((pair) => !pair.includes("BLOCK")),
+      review.verdict === "PASS" && review.findings.every((finding) => finding.severity === "note"),
       "source-review-not-accepted",
     );
     return { candidate, selected };

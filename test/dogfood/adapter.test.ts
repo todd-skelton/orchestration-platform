@@ -38,7 +38,14 @@ const rows = [
     type: "item.completed",
     item: {
       type: "agent_message",
-      text: JSON.stringify({ run: "trial", role: "reviewer", head, verdict: "PASS" }),
+      text: JSON.stringify({
+        run: "trial",
+        role: "reviewer",
+        head,
+        verdict: "PASS",
+        findings: [],
+        g0: "No simpler change is available.",
+      }),
     },
   },
   { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
@@ -276,38 +283,63 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
     head,
     status: "passed",
     usage: { input_tokens: 12, output_tokens: 8 },
+    summary: JSON.stringify({
+      run: "trial",
+      role: "reviewer",
+      head,
+      verdict: "PASS",
+      findings: [],
+      g0: "No simpler change is available.",
+    }),
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
 });
-it("accepts legacy verdicts, bounds advisory summaries and rejects oversized review authority", () => {
-  expect(parseTrace(trace(), true, "reviewer", config, id)).not.toHaveProperty("summary");
-  const verdict = (summary: unknown) =>
+it("retains exact reviewer reports and rejects oversized or obsolete output", () => {
+  const verdict = (g0: unknown, extra: Record<string, unknown> = {}) =>
     trace([
       rows[0]!,
       {
         type: "item.completed",
         item: {
           type: "agent_message",
-          text: JSON.stringify({ run: "trial", role: "reviewer", head, verdict: "PASS", summary }),
+          text: JSON.stringify({
+            run: "trial",
+            role: "reviewer",
+            head,
+            verdict: "PASS",
+            findings: [],
+            g0,
+            ...extra,
+          }),
         },
       },
       rows[2]!,
     ]);
-  expect(parseTrace(verdict("actionable finding"), true, "reviewer", config, id).summary).toBe(
-    "actionable finding",
-  );
-  expect(parseTrace(verdict(7), true, "reviewer", config, id)).not.toHaveProperty("summary");
-  expect(parseTrace(verdict("x".repeat(2000)), true, "reviewer", config, id).summary).toBe(
-    "x".repeat(2000),
-  );
-  expect(() => parseTrace(verdict("x".repeat(2001)), true, "reviewer", config, id)).toThrow(
+  expect(
+    JSON.parse(parseTrace(verdict("simplest"), true, "reviewer", config, id).summary!),
+  ).toEqual({
+    run: "trial",
+    role: "reviewer",
+    head,
+    verdict: "PASS",
+    findings: [],
+    g0: "simplest",
+  });
+  expect(() => parseTrace(verdict(7), true, "reviewer", config, id)).toThrow(
     "malformed-worker-verdict",
   );
+  expect(() => parseTrace(verdict("x".repeat(2000)), true, "reviewer", config, id)).toThrow(
+    "malformed-worker-verdict",
+  );
+  expect(() =>
+    parseTrace(verdict("simplest", { summary: "obsolete" }), true, "reviewer", config, id),
+  ).toThrow("malformed-worker-verdict");
 });
-it("requests a bounded summary for new outputs without changing verdict authority fields", () => {
+it("requests the exact verdict, findings and G0 reviewer shape", () => {
   const schema = outputSchema(config, "reviewer");
-  expect(schema.required).toEqual(["run", "role", "head", "verdict", "summary"]);
-  expect(schema.properties.summary).toMatchObject({ type: "string", maxLength: 2000 });
+  expect(schema.required).toEqual(["run", "role", "head", "verdict", "findings", "g0"]);
+  expect(schema.properties.findings).toMatchObject({ type: "array" });
+  expect(schema.properties.g0).toEqual({ type: "string" });
   expect(schema.additionalProperties).toBe(false);
 });
 it.skipIf(process.env.GITHUB_ACTIONS !== "true")(
@@ -355,7 +387,14 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
     ]);
   expect(() =>
     parseTrace(
-      message({ run: "other-run", role: "reviewer", head, verdict: "PASS", summary: "" }),
+      message({
+        run: "other-run",
+        role: "reviewer",
+        head,
+        verdict: "PASS",
+        findings: [],
+        g0: "simplest",
+      }),
       true,
       "reviewer",
       config,
@@ -411,7 +450,7 @@ it.each([
   [
     "original disposition",
     (value: SourceReviewBindingFixture): void => {
-      value.originalReview.disposition = "incomplete";
+      value.originalReview.disposition = "unknown";
     },
   ],
   [

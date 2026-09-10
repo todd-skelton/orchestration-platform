@@ -1149,6 +1149,8 @@ it("keeps repository identities and mirror rules in the explicit private policy 
     "Minimum orchestration kernel",
   ]);
   expect(plan.drafts[0]!.body.startsWith("<!-- planning-key: ISS-074 -->\n")).toBe(true);
+  expect(plan.publication.body).toBe("reviewed delivery candidate");
+  expect(plan.publication.body).not.toMatch(/quality packet|profile|pairs/i);
   expect(plan.mergePolicy).toEqual({ method: "squash" });
   expect(plan.cleanup).toEqual({
     worktrees: [current.worktree, current.reviewWorktree],
@@ -1280,15 +1282,12 @@ it("joins delivery to an immutable selected review while retaining the malformed
         status: "passed",
         head,
         summary: JSON.stringify({
-          v: 2,
+          run: current.run,
+          role: "reviewer",
           head,
-          complete: true,
-          scope: "complete",
-          profile: "contract",
-          g0: ["PASS", "bounded replacement"],
-          pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "checked"]),
+          verdict: "PASS",
           findings: [],
-          notes: [],
+          g0: "The replacement review found no simpler change.",
         }),
       }),
     ),
@@ -1330,7 +1329,7 @@ it("joins delivery to an immutable selected review while retaining the malformed
   );
 });
 
-it("joins delivery to a separately selected PASS while retaining incomplete source evidence", async () => {
+it("joins delivery to a separately selected PASS while retaining malformed source evidence", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "delivery-external-selected-review-"));
   roots.push(root);
   const current = config(root);
@@ -1368,15 +1367,11 @@ it("joins delivery to a separately selected PASS while retaining incomplete sour
         status: "failed",
         head,
         summary: JSON.stringify({
-          v: 2,
+          run: current.run,
+          role: "reviewer",
           head,
-          complete: false,
-          scope: "complete",
-          profile: "contract",
-          g0: ["PASS", "complete evidence did not fit"],
-          pairs: [],
+          verdict: "FAIL",
           findings: [],
-          notes: [],
         }),
       },
     }),
@@ -1401,15 +1396,12 @@ it("joins delivery to a separately selected PASS while retaining incomplete sour
         status: "passed",
         head,
         summary: JSON.stringify({
-          v: 2,
+          run: current.run,
+          role: "reviewer",
           head,
-          complete: true,
-          scope: "complete",
-          profile: "contract",
-          g0: ["PASS", "bounded external selection"],
-          pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "checked"]),
+          verdict: "PASS",
           findings: [],
-          notes: [],
+          g0: "The selected review found no simpler change.",
         }),
       }),
     ),
@@ -1423,7 +1415,7 @@ it("joins delivery to a separately selected PASS while retaining incomplete sour
           authorAttempt: authorId,
           candidateHead: head,
           originalReview: reviewId,
-          originalDisposition: "incomplete",
+          originalDisposition: "malformed",
           selectedReview: selected,
           selectedDisposition: "passed",
         }),

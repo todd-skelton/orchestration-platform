@@ -184,7 +184,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role reviewer; exact review head: ${head}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most 2000 characters; use an empty string when there are no findings. Review every changed assertion independently.\n`,
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block. Review every changed assertion independently.\n`,
     );
   });
   it("drives author and independent exact-head review, hands off publication, and resumes without redispatch", async () => {

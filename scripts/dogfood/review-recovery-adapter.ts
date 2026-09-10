@@ -73,10 +73,7 @@ function samePath(left: string, right: string) {
   return normalize(left) === normalize(right);
 }
 
-async function sourceIdentity(
-  config: Config,
-  originalDisposition: "malformed" | "incomplete" = "malformed",
-) {
+async function sourceIdentity(config: Config, requireRecoveryAuthority = true) {
   const directory = config.stateDirectory;
   const [pin, candidate, author, authorTerminal, original, originalTerminal, originalIntent] =
     await Promise.all([
@@ -93,14 +90,11 @@ async function sourceIdentity(
   );
   const classifiedOriginal =
     candidate && SHA.test(candidate.head)
-      ? classifyReview(originalTerminal?.summary, candidate.head, "complete").disposition
+      ? classifyReview(originalTerminal?.summary, config.run, candidate.head).disposition
       : "malformed";
   const originalMatchesDisposition =
-    originalDisposition === "malformed"
-      ? originalTerminal?.status === "malformed" ||
-        (["passed", "failed"].includes(originalTerminal?.status) &&
-          classifiedOriginal === "malformed")
-      : originalTerminal?.status === "failed" && classifiedOriginal === "incomplete";
+    originalTerminal?.status === "malformed" ||
+    (["passed", "failed"].includes(originalTerminal?.status) && classifiedOriginal === "malformed");
   demand(
     pin?.config &&
       JSON.stringify(pin.config) === JSON.stringify(config) &&
@@ -126,7 +120,7 @@ async function sourceIdentity(
       originalIntent.head === candidate.head,
     "review-recovery-source-lineage-mismatch",
   );
-  if (originalDisposition === "malformed") {
+  if (requireRecoveryAuthority) {
     const authority = await required(directory, "review-recovery-authority");
     const expectedAuthority = {
       controller: config.owner,
@@ -168,15 +162,8 @@ export async function selectedSourceReview(
     };
   }
   const originalDisposition = savedBinding?.originalReview?.disposition;
-  demand(
-    originalDisposition === "malformed" || originalDisposition === "incomplete",
-    "selected-review-binding-mismatch",
-  );
-  demand(
-    externalSelection ? originalDisposition === "incomplete" : originalDisposition === "malformed",
-    "selected-review-binding-mismatch",
-  );
-  const source = await sourceIdentity(config, originalDisposition);
+  demand(originalDisposition === "malformed", "selected-review-binding-mismatch");
+  const source = await sourceIdentity(config, !externalSelection);
   const attemptName = externalSelection ? "reviewer-attempt" : "review-recovery-attempt";
   const terminalName = externalSelection ? "reviewer-terminal" : "review-recovery-terminal";
   const [attempt, terminal] = await Promise.all([
@@ -195,7 +182,7 @@ export async function selectedSourceReview(
       terminal.id === attempt.id &&
       terminal.head === source.candidate.head &&
       ["passed", "failed"].includes(terminal.status) &&
-      classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
+      classifyReview(terminal.summary, config.run, source.candidate.head).disposition ===
         "complete",
     "selected-review-record-mismatch",
   );
@@ -290,7 +277,7 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
         demand(terminal.head === source.candidate.head, "review-recovery-head-mismatch");
         demand(
           terminal.status === "malformed" ||
-            classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
+            classifyReview(terminal.summary, config.run, source.candidate.head).disposition ===
               "complete",
           "replacement-review-malformed",
         );
@@ -298,7 +285,7 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
       }
       demand(terminal.status !== "malformed", "replacement-review-malformed");
       demand(
-        classifyReview(terminal.summary, source.candidate.head, "complete").disposition ===
+        classifyReview(terminal.summary, config.run, source.candidate.head).disposition ===
           "complete",
         "replacement-review-malformed",
       );

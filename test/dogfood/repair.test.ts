@@ -78,8 +78,10 @@ it("records the bounded handoff before dispatch and preserves all controller-own
     admission: current.config.admission,
     predecessorCompleteSweep: "synthetic-prior-reviewer",
   });
-  expect(handoff.failedReview.findings).toHaveLength(1);
-  expect(handoff.failedReview.notes).toHaveLength(1);
+  expect(handoff.failedReview.findings).toEqual([
+    expect.objectContaining({ severity: "blocking" }),
+    expect.objectContaining({ severity: "note" }),
+  ]);
 });
 
 it("reconciles partial and completed restart without repeating dispatch after acceptance", async () => {
@@ -103,8 +105,9 @@ it("reconciles partial and completed restart without repeating dispatch after ac
     schemaVersion: "dogfood-repair-delta-review/v1",
     head: repairedHead,
     predecessorReviewId: "synthetic-prior-reviewer",
-    profile: "contract",
-    notes: [],
+    verdict: "PASS",
+    findings: [expect.objectContaining({ severity: "note" })],
+    g0: "The prescribed repair is the simplest change.",
   });
 
   await expect(repairStep(current.config, current.adapter, repairPolicy())).resolves.toMatchObject({
@@ -185,21 +188,17 @@ it.each([
   expect(current.dispatches()).toBe(0);
 });
 
-it("refuses incomplete, malformed, oversized and non-fixable source reports", async () => {
-  for (const mode of ["incomplete", "malformed", "oversized", "clean"] as const) {
+it("refuses malformed, oversized, inconsistent and non-fixable source reports", async () => {
+  for (const mode of ["malformed", "oversized", "inconsistent", "clean"] as const) {
     const current = await fixture();
     if (mode === "malformed") current.source.terminal.summary = "not-json";
     if (mode === "oversized") current.source.terminal.summary = "x".repeat(2_001);
-    if (mode === "incomplete") {
-      const report = JSON.parse(reviewSummary("complete", repairBase));
-      report.complete = false;
+    if (mode === "inconsistent") {
+      const report = JSON.parse(reviewSummary("failed", repairBase));
+      report.verdict = "PASS";
       current.source.terminal.summary = JSON.stringify(report);
     }
-    if (mode === "clean")
-      current.source.terminal.summary = reviewSummary("delta", repairBase).replace(
-        '"scope":"delta"',
-        '"scope":"complete"',
-      );
+    if (mode === "clean") current.source.terminal.summary = reviewSummary("passed", repairBase);
     await expect(
       repairStep(current.config, current.adapter, repairPolicy()),
     ).rejects.toBeInstanceOf(Error);
@@ -358,9 +357,9 @@ it.each([
   current.source.changedFiles = [reviewPath];
   current.source.candidate.changed = [reviewPath];
   current.source.lineCounts = { [reviewPath]: 3 };
-  const report = JSON.parse(reviewSummary("complete", repairBase));
+  const report = JSON.parse(reviewSummary("failed", repairBase));
   report.findings[0].file = reviewPath;
-  report.notes[0].file = reviewPath;
+  report.findings[1].file = reviewPath;
   current.source.terminal.summary = JSON.stringify(report);
   refreshSourceFingerprint(current.config, current.source);
 
@@ -389,7 +388,7 @@ it("requires the accepted delta to inherit the exact predecessor and use fresh i
   for (const mutate of [
     (f: any) => (f.delta.launchContext.predecessorReviewId = "forged-predecessor"),
     (f: any) => (f.delta.reviewerAttempt.id = "synthetic-prior-reviewer"),
-    (f: any) => (f.delta.terminal.summary = reviewSummary("complete", repairedHead)),
+    (f: any) => (f.delta.terminal.summary = reviewSummary("failed", repairedHead)),
   ]) {
     const current = await fixture();
     mutate(current);

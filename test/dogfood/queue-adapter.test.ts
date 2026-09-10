@@ -40,15 +40,12 @@ const unavailable = { status: "unavailable" as const };
 
 const passingReviewSummary = (head: string) =>
   JSON.stringify({
-    v: 2,
+    run: "synthetic-item-run",
+    role: "reviewer",
     head,
-    complete: true,
-    scope: "complete",
-    profile: "contract",
-    g0: ["PASS", "smallest complete shape"],
-    pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "hosted boundary probe"]),
+    verdict: "PASS",
     findings: [],
-    notes: [],
+    g0: "No simpler change is available.",
   });
 
 async function fixture(history: QueueParticipant[] = []) {
@@ -339,9 +336,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         ),
       ).toMatchObject({ ordinal, item: current.item.id, stage: "source", role });
       if (role === "reviewer") {
-        expect(prompt).toContain('scope "complete"');
-        expect(prompt).toContain('profile "contract"');
-        expect(prompt).toContain("SCOPE, ROBUSTNESS, DEPTH");
+        expect(prompt).toContain("is there a simpler way?");
         expect(prompt).toContain(JSON.stringify(current.item.repair.sourcePaths));
       }
       launches.push(role);
@@ -569,7 +564,7 @@ it.each([
         launches.push(replacement ? "replacement-reviewer" : role);
         if (replacement) {
           expect(prompt).toContain("sole authority-bound replacement");
-          expect(prompt).toContain('scope "complete"');
+          expect(prompt).toContain("is there a simpler way?");
         }
         return {
           id: replacement ? "selected-reviewer" : `source-${role}`,
@@ -683,79 +678,6 @@ it.each([
     ).toEqual(completedState);
   },
 );
-
-it("preserves a valid incomplete review without shopping for a replacement", async () => {
-  const current = await fixture();
-  await Promise.all([
-    writeFile(current.source.author.promptFile, "author prompt"),
-    writeFile(current.source.reviewer.promptFile, "review prompt"),
-  ]);
-  let sourceHead = base;
-  let reviewHead = base;
-  const launches: string[] = [];
-  const native: Adapter = {
-    async preflight() {},
-    async git(worktree, args) {
-      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
-      if (args[0] === "rev-parse" && args[1] === "HEAD") {
-        if (worktree === current.paths.pilot) return stable;
-        return worktree === current.paths.review ? reviewHead : sourceHead;
-      }
-      if (args[0] === "status") return "";
-      if (args[0] === "checkout") {
-        reviewHead = String(args.at(-1));
-        return "";
-      }
-      if (args[0] === "merge-base") return base;
-      if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
-      if (args[0] === "ls-files") return "";
-      if (args[0] === "commit") sourceHead = candidate;
-      return "";
-    },
-    async launch(role) {
-      launches.push(role);
-      return {
-        id: `incomplete-${role}`,
-        pid: launches.length,
-        trace: resolve(current.paths.source, `${role}.jsonl`),
-      };
-    },
-    async observe(role, _config, attempt) {
-      return role === "author"
-        ? { status: "passed", id: attempt.id, head: base }
-        : {
-            status: "failed",
-            id: attempt.id,
-            head: candidate,
-            summary: JSON.stringify({
-              v: 2,
-              head: candidate,
-              complete: false,
-              scope: "complete",
-              profile: "contract",
-              g0: ["PASS", "evidence did not fit"],
-              pairs: [],
-              findings: [],
-              notes: [],
-            }),
-          };
-    },
-    async checks() {
-      return { head: candidate, checks: [] };
-    },
-  };
-  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
-
-  await expect(adapter.source(current.item)).resolves.toEqual({
-    status: "fixable-review",
-    head: candidate,
-    reviewId: "incomplete-reviewer",
-  });
-  expect(launches).toEqual(["author", "reviewer"]);
-  await expect(
-    readFile(resolve(current.paths.source, "source-review-binding.json"), "utf8"),
-  ).rejects.toMatchObject({ code: "ENOENT" });
-});
 
 it("blocks a replacement intent without launch identity instead of redispatching", async () => {
   const current = await fixture();
@@ -948,36 +870,27 @@ it("persists the genuine adapter result and restarts four-participant completion
     writeFile(current.source.reviewer.promptFile, "synthetic source reviewer prompt"),
   ]);
   const sourceSummary = JSON.stringify({
-    v: 2,
+    run: current.source.run,
+    role: "reviewer",
     head: candidate,
-    complete: true,
-    scope: "complete",
-    profile: "contract",
-    g0: ["PASS", "synthetic smallest shape"],
-    pairs: Array.from({ length: 12 }, (_value, index) =>
-      index === 0 ? ["BLOCK", "PASS", "F1"] : ["PASS", "PASS", "synthetic probe"],
-    ),
+    verdict: "FAIL",
     findings: [
       {
         file: "scripts/dogfood/queue.ts",
         line: 1,
-        severity: "P1",
-        defect: "synthetic fixable completion-contract defect",
-        verification: "synthetic hosted compatibility probe",
+        severity: "blocking",
+        text: "synthetic fixable review defect",
       },
     ],
-    notes: [],
+    g0: "The prescribed repair is the simplest change.",
   });
   const deltaSummary = JSON.stringify({
-    v: 2,
+    run: current.source.run,
+    role: "reviewer",
     head: repaired,
-    complete: true,
-    scope: "delta",
-    profile: "contract",
-    g0: ["PASS", "synthetic prescribed remedy only"],
-    pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "synthetic probe"]),
+    verdict: "PASS",
     findings: [],
-    notes: [],
+    g0: "The prescribed repair is the simplest change.",
   });
   let sourceHead = base;
   let reviewHead = base;
@@ -1481,27 +1394,20 @@ it("directly composes the accepted repair transition from a complete fixable rev
       }),
     ),
   ]);
-  const pairs = Array.from({ length: 12 }, (_value, index) =>
-    index === 0 ? ["BLOCK", "PASS", "F1"] : ["PASS", "PASS", "checked"],
-  );
   const sourceSummary = JSON.stringify({
-    v: 2,
+    run: current.source.run,
+    role: "reviewer",
     head: candidate,
-    complete: true,
-    scope: "complete",
-    profile: "contract",
-    g0: ["PASS", "smallest shape"],
-    pairs,
+    verdict: "FAIL",
     findings: [
       {
         file: current.item.repair.sourcePaths[0],
         line: 1,
-        severity: "P1",
-        defect: "synthetic fixable defect",
-        verification: "hosted focused probe",
+        severity: "blocking",
+        text: "synthetic fixable defect",
       },
     ],
-    notes: [],
+    g0: "The prescribed repair is the simplest change.",
   });
   await writeFile(
     resolve(current.paths.source, "reviewer-terminal.json"),
@@ -1513,15 +1419,12 @@ it("directly composes the accepted repair transition from a complete fixable rev
     }),
   );
   const deltaSummary = JSON.stringify({
-    v: 2,
+    run: current.source.run,
+    role: "reviewer",
     head: repaired,
-    complete: true,
-    scope: "delta",
-    profile: "contract",
-    g0: ["PASS", "prescribed remedy only"],
-    pairs: Array.from({ length: 12 }, () => ["PASS", "PASS", "checked"]),
+    verdict: "PASS",
     findings: [],
-    notes: [],
+    g0: "The prescribed repair is the simplest change.",
   });
   let captured: any;
   const repairAdapter: RepairAdapter = {

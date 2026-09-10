@@ -13,35 +13,37 @@ export const repairedHead = "c".repeat(40);
 export const controllerRevision = "d".repeat(40);
 export const sourceFile = "scripts/dogfood/repairable.ts";
 
-export function reviewSummary(scope: "complete" | "delta", head: string) {
-  const blocked = scope === "complete";
-  const pairs = Array.from({ length: 12 }, () => ["PASS", "PASS", "focused evidence"]);
-  if (blocked) {
-    pairs[0] = ["BLOCK", "PASS", "F1 incorrect source behavior"];
-    pairs[7] = ["NOTE", "PASS", "N1 measured follow-up"];
-  }
+export function reviewSummary(verdict: "failed" | "passed", head: string) {
+  const blocked = verdict === "failed";
   return JSON.stringify({
-    v: 2,
+    run: "synthetic-source-run",
+    role: "reviewer",
     head,
-    complete: true,
-    scope,
-    profile: "contract",
-    g0: ["PASS", "not-built list verified"],
-    pairs,
+    verdict: blocked ? "FAIL" : "PASS",
     findings: blocked
       ? [
           {
             file: sourceFile,
             line: 2,
-            severity: "P1",
-            defect: "Synthetic fixture confirms one bounded fixable defect.",
-            verification: "Hosted fixture observes the corrected transition.",
+            severity: "blocking",
+            text: "Synthetic fixture confirms one bounded fixable defect.",
+          },
+          {
+            file: sourceFile,
+            line: 3,
+            severity: "note",
+            text: "Retain this advisory follow-up.",
           },
         ]
-      : [],
-    notes: blocked
-      ? [{ file: sourceFile, line: 3, remedy: "Retain this advisory follow-up." }]
-      : [],
+      : [
+          {
+            file: sourceFile,
+            line: 3,
+            severity: "note",
+            text: "Retain this advisory follow-up.",
+          },
+        ],
+    g0: "The prescribed repair is the simplest change.",
   });
 }
 
@@ -101,7 +103,7 @@ export async function repairFixture(root: string) {
     ] as [{ role: "author"; ordinal: number }, { role: "reviewer"; ordinal: number }],
   };
   const common = {
-    run: "synthetic-repair-run",
+    run: "synthetic-source-run",
     issue: "ISS-SYNTHETIC-076",
     repository: "synthetic/repository",
     controllerRevision,
@@ -212,7 +214,7 @@ export async function repairFixture(root: string) {
       status: "failed",
       id: history[1]!.id,
       head: repairBase,
-      summary: reviewSummary("complete", repairBase),
+      summary: reviewSummary("failed", repairBase),
     },
     changedFiles: [sourceFile],
     lineCounts: { [sourceFile]: 3 },
@@ -244,7 +246,7 @@ export async function repairFixture(root: string) {
       status: "passed",
       id: "synthetic-delta-reviewer",
       head: repairedHead,
-      summary: reviewSummary("delta", repairedHead),
+      summary: reviewSummary("passed", repairedHead),
     },
     changedFiles: [sourceFile],
     lineCounts: { [sourceFile]: 4 },

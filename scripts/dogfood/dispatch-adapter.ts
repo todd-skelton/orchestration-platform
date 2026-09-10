@@ -173,12 +173,23 @@ export function parseTrace(
     "worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility",
   );
   check(
-    role !== "reviewer" ||
-      typeof verdict.summary !== "string" ||
-      verdict.summary.length <= MAX_TERMINAL_SUMMARY_LENGTH,
+    role === "reviewer"
+      ? Object.keys(verdict).length === 6 &&
+          ["run", "role", "head", "verdict", "findings", "g0"].every((key) =>
+            Object.hasOwn(verdict, key),
+          ) &&
+          Array.isArray(verdict.findings) &&
+          typeof verdict.g0 === "string" &&
+          JSON.stringify(verdict).length <= MAX_TERMINAL_SUMMARY_LENGTH
+      : Object.keys(verdict).length === 5 &&
+          ["run", "role", "head", "verdict", "summary"].every((key) =>
+            Object.hasOwn(verdict, key),
+          ) &&
+          typeof verdict.summary === "string" &&
+          verdict.summary.length <= MAX_TERMINAL_SUMMARY_LENGTH,
     "malformed-worker-verdict",
   );
-  const summary = terminalSummary(verdict.summary);
+  const summary = role === "reviewer" ? JSON.stringify(verdict) : terminalSummary(verdict.summary);
   return {
     id,
     status: verdict.verdict === "PASS" ? "passed" : "failed",
@@ -188,6 +199,33 @@ export function parseTrace(
   };
 }
 export function outputSchema(config: Config, role: Role) {
+  if (role === "reviewer")
+    return {
+      type: "object",
+      additionalProperties: false,
+      required: ["run", "role", "head", "verdict", "findings", "g0"],
+      properties: {
+        run: { type: "string", enum: [config.run] },
+        role: { type: "string", enum: [role] },
+        head: { type: "string", pattern: "^[a-f0-9]{40}$" },
+        verdict: { type: "string", enum: ["PASS", "FAIL"] },
+        findings: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["file", "line", "severity", "text"],
+            properties: {
+              file: { type: "string" },
+              line: { type: "integer", minimum: 1 },
+              severity: { type: "string", enum: ["blocking", "note"] },
+              text: { type: "string" },
+            },
+          },
+        },
+        g0: { type: "string" },
+      },
+    };
   return {
     type: "object",
     additionalProperties: false,
@@ -195,10 +233,7 @@ export function outputSchema(config: Config, role: Role) {
     properties: {
       run: { type: "string", enum: [config.run] },
       role: { type: "string", enum: [role] },
-      head:
-        role === "author"
-          ? { type: "string", enum: [config.base] }
-          : { type: "string", pattern: "^[a-f0-9]{40}$" },
+      head: { type: "string", enum: [config.base] },
       verdict: { type: "string", enum: ["PASS", "FAIL"] },
       summary: {
         type: "string",
