@@ -38,8 +38,13 @@ async function run(executable: string, args: string[], cwd: string) {
   });
 }
 
-async function git(config: DeliveryConfig, args: string[], cwd = config.controllerRoot) {
-  return (await run("git", args, cwd)).stdout.trim();
+async function git(
+  executable: string,
+  config: DeliveryConfig,
+  args: string[],
+  cwd = config.controllerRoot,
+) {
+  return (await run(executable, args, cwd)).stdout.trim();
 }
 
 async function gh(config: DeliveryConfig, args: string[]) {
@@ -230,10 +235,14 @@ function matchesRepository(remote: string, repository: string) {
   return path === repository.toLowerCase() || path === `${repository.toLowerCase()}.git`;
 }
 
-async function assertGitTarget(config: DeliveryConfig, cwd: string) {
+async function assertGitTarget(executable: string, config: DeliveryConfig, cwd: string) {
   try {
     for (const kind of [[], ["--push"]]) {
-      const { stdout } = await run("git", ["remote", "get-url", ...kind, "--all", "origin"], cwd);
+      const { stdout } = await run(
+        executable,
+        ["remote", "get-url", ...kind, "--all", "origin"],
+        cwd,
+      );
       const urls = stdout.replace(/\r?\n$/, "").split(/\r?\n/);
       if (urls.length !== 1 || !matchesRepository(urls[0]!, config.repository))
         throw new DeliveryBlocked("delivery-repository-mismatch");
@@ -244,21 +253,24 @@ async function assertGitTarget(config: DeliveryConfig, cwd: string) {
   }
 }
 
-async function assertWorktreeRepository(config: DeliveryConfig) {
+async function assertWorktreeRepository(executable: string, config: DeliveryConfig) {
   const common = await realpath(
-    resolve(config.controllerRoot, await git(config, ["rev-parse", "--git-common-dir"])),
+    resolve(
+      config.controllerRoot,
+      await git(executable, config, ["rev-parse", "--git-common-dir"]),
+    ),
   );
   for (const cwd of [config.controllerRoot, config.worktree, config.reviewWorktree]) {
     const selected = await realpath(
-      resolve(cwd, await git(config, ["rev-parse", "--git-common-dir"], cwd)),
+      resolve(cwd, await git(executable, config, ["rev-parse", "--git-common-dir"], cwd)),
     );
     if (!samePath(common, selected)) throw new DeliveryBlocked("delivery-worktree-family-mismatch");
-    await assertGitTarget(config, cwd);
+    await assertGitTarget(executable, config, cwd);
   }
 }
 
-async function worktrees(config: DeliveryConfig) {
-  const output = await git(config, ["worktree", "list", "--porcelain"]);
+async function worktrees(executable: string, config: DeliveryConfig) {
+  const output = await git(executable, config, ["worktree", "list", "--porcelain"]);
   return output
     .split(/\r?\n\r?\n/)
     .filter(Boolean)
@@ -271,11 +283,11 @@ async function worktrees(config: DeliveryConfig) {
     });
 }
 
-async function branchHead(config: DeliveryConfig, branch: string) {
-  await git(config, ["check-ref-format", "--branch", branch]);
+async function branchHead(executable: string, config: DeliveryConfig, branch: string) {
+  await git(executable, config, ["check-ref-format", "--branch", branch]);
   const expectedRef = `refs/heads/${branch}`;
   const { stdout, stderr } = await run(
-    "git",
+    executable,
     ["for-each-ref", "--count=2", "--format=%(refname)%00%(objectname)", expectedRef],
     config.controllerRoot,
   );
@@ -301,9 +313,14 @@ async function branchHead(config: DeliveryConfig, branch: string) {
   return head;
 }
 
-async function remoteBranchHead(config: DeliveryConfig, branch: string) {
-  await assertGitTarget(config, config.controllerRoot);
-  const output = await git(config, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]);
+async function remoteBranchHead(executable: string, config: DeliveryConfig, branch: string) {
+  await assertGitTarget(executable, config, config.controllerRoot);
+  const output = await git(executable, config, [
+    "ls-remote",
+    "--heads",
+    "origin",
+    `refs/heads/${branch}`,
+  ]);
   if (output === "") return undefined;
   const rows = output.split(/\r?\n/);
   if (rows.length !== 1) throw new DeliveryBlocked("ambiguous-remote-cleanup-branch");
@@ -312,9 +329,14 @@ async function remoteBranchHead(config: DeliveryConfig, branch: string) {
   return match[1];
 }
 
-async function publicationRemoteBranchHead(config: DeliveryConfig, branch: string) {
-  await assertGitTarget(config, config.worktree);
+async function publicationRemoteBranchHead(
+  executable: string,
+  config: DeliveryConfig,
+  branch: string,
+) {
+  await assertGitTarget(executable, config, config.worktree);
   const output = await git(
+    executable,
     config,
     ["ls-remote", "--heads", "origin", `refs/heads/${branch}`],
     config.worktree,
@@ -325,10 +347,10 @@ async function publicationRemoteBranchHead(config: DeliveryConfig, branch: strin
   return match[1];
 }
 
-async function assertForwardRefresh(config: DeliveryConfig, priorHead: string) {
+async function assertForwardRefresh(executable: string, config: DeliveryConfig, priorHead: string) {
   try {
     await run(
-      "git",
+      executable,
       ["merge-base", "--is-ancestor", priorHead, config.candidateHead],
       config.worktree,
     );
@@ -337,7 +359,11 @@ async function assertForwardRefresh(config: DeliveryConfig, priorHead: string) {
   }
 }
 
-export async function assertControllerExecutor(config: DeliveryConfig, executingRoot: string) {
+export async function assertControllerExecutor(
+  config: DeliveryConfig,
+  executingRoot: string,
+  gitExecutable = "git",
+) {
   try {
     const [actualRoot, configuredRoot] = await Promise.all([
       realpath(executingRoot),
@@ -346,13 +372,16 @@ export async function assertControllerExecutor(config: DeliveryConfig, executing
     if (!samePath(actualRoot, configuredRoot))
       throw new DeliveryBlocked("controller-executor-mismatch");
     const repositoryRoot = await realpath(
-      await git(config, ["rev-parse", "--show-toplevel"], actualRoot),
+      await git(gitExecutable, config, ["rev-parse", "--show-toplevel"], actualRoot),
     );
     if (!samePath(repositoryRoot, actualRoot))
       throw new DeliveryBlocked("controller-executor-not-repository-root");
-    if ((await git(config, ["rev-parse", "HEAD"], actualRoot)) !== config.controllerRevision)
+    if (
+      (await git(gitExecutable, config, ["rev-parse", "HEAD"], actualRoot)) !==
+      config.controllerRevision
+    )
       throw new DeliveryBlocked("controller-executor-revision-moved");
-    if ((await git(config, ["status", "--porcelain"], actualRoot)) !== "")
+    if ((await git(gitExecutable, config, ["status", "--porcelain"], actualRoot)) !== "")
       throw new DeliveryBlocked("dirty-controller-executor");
   } catch (error) {
     if (error instanceof DeliveryBlocked) throw error;
@@ -362,20 +391,23 @@ export async function assertControllerExecutor(config: DeliveryConfig, executing
 
 export function githubDeliveryAdapter(
   commands: GithubDeliveryCommands = { gh, ghJson },
+  gitExecutable = "git",
 ): DeliveryAdapter {
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
-      await assertWorktreeRepository(config);
+      await assertWorktreeRepository(gitExecutable, config);
       if (
-        (await git(config, ["rev-parse", "HEAD"], config.controllerRoot)) !==
+        (await git(gitExecutable, config, ["rev-parse", "HEAD"], config.controllerRoot)) !==
         config.controllerRevision
       )
         return false;
-      if ((await git(config, ["status", "--porcelain"], config.controllerRoot)) !== "")
+      if (
+        (await git(gitExecutable, config, ["status", "--porcelain"], config.controllerRoot)) !== ""
+      )
         return false;
       for (const cwd of [config.worktree, config.reviewWorktree]) {
-        if ((await git(config, ["rev-parse", "HEAD"], cwd)) !== head) return false;
-        if ((await git(config, ["status", "--porcelain"], cwd)) !== "") return false;
+        if ((await git(gitExecutable, config, ["rev-parse", "HEAD"], cwd)) !== head) return false;
+        if ((await git(gitExecutable, config, ["status", "--porcelain"], cwd)) !== "") return false;
       }
       return true;
     } catch {
@@ -587,7 +619,12 @@ export function githubDeliveryAdapter(
         throw new DeliveryBlocked("candidate-workspace-drift");
       if (!validPublicationTarget(target)) throw new DeliveryBlocked("publication-target-drift");
       const refresh = publicationRefresh(config);
-      const branch = await git(config, ["branch", "--show-current"], config.worktree);
+      const branch = await git(
+        gitExecutable,
+        config,
+        ["branch", "--show-current"],
+        config.worktree,
+      );
       if (branch !== plan.sourceBranch) throw new DeliveryBlocked("publication-branch-mismatch");
       const readTarget = async (expectedHead?: string) => {
         const rows = await commands.ghJson(config, [
@@ -630,12 +667,15 @@ export function githubDeliveryAdapter(
       const observedHead = initialRows[0]?.headRefOid;
       if (!refresh || observedHead === refresh.head) {
         if (refresh) {
-          await assertForwardRefresh(config, refresh.head);
-          if ((await publicationRemoteBranchHead(config, plan.sourceBranch)) !== refresh.head)
+          await assertForwardRefresh(gitExecutable, config, refresh.head);
+          if (
+            (await publicationRemoteBranchHead(gitExecutable, config, plan.sourceBranch)) !==
+            refresh.head
+          )
             throw new DeliveryBlocked("publication-refresh-lease-drift");
         }
         await run(
-          "git",
+          gitExecutable,
           [
             "push",
             "--no-follow-tags",
@@ -789,9 +829,12 @@ export function githubDeliveryAdapter(
     },
     async observeCleanup(config, plan) {
       try {
-        await assertGitTarget(config, config.controllerRoot);
-        const rows = await worktrees(config);
-        if ((await git(config, ["status", "--porcelain"], config.controllerRoot)) !== "")
+        await assertGitTarget(gitExecutable, config, config.controllerRoot);
+        const rows = await worktrees(gitExecutable, config);
+        if (
+          (await git(gitExecutable, config, ["status", "--porcelain"], config.controllerRoot)) !==
+          ""
+        )
           return { state: "unknown" };
         if (
           rows.filter(
@@ -805,8 +848,8 @@ export function githubDeliveryAdapter(
         const present = plan.worktrees.filter(
           (path) => rows.filter((row) => row.path && samePath(row.path, path)).length === 1,
         );
-        const branch = await branchHead(config, plan.branch);
-        const remoteBranch = await remoteBranchHead(config, plan.branch);
+        const branch = await branchHead(gitExecutable, config, plan.branch);
+        const remoteBranch = await remoteBranchHead(gitExecutable, config, plan.branch);
         if (present.length === 0 && branch === undefined && remoteBranch === undefined) {
           return {
             state: "confirmed",
@@ -823,10 +866,11 @@ export function githubDeliveryAdapter(
       }
     },
     async cleanup(config, plan) {
-      await assertGitTarget(config, config.controllerRoot);
-      const rows = await worktrees(config);
+      await assertGitTarget(gitExecutable, config, config.controllerRoot);
+      const rows = await worktrees(gitExecutable, config);
       if (
-        (await git(config, ["status", "--porcelain"], config.controllerRoot)) !== "" ||
+        (await git(gitExecutable, config, ["status", "--porcelain"], config.controllerRoot)) !==
+          "" ||
         plan.worktrees.some(
           (path) => rows.filter((row) => row.path && samePath(row.path, path)).length !== 1,
         ) ||
@@ -837,19 +881,23 @@ export function githubDeliveryAdapter(
             samePath(row.path, config.controllerRoot) &&
             row.head === config.controllerRevision,
         ) ||
-        (await branchHead(config, plan.branch)) !== config.candidateHead ||
-        ![undefined, config.candidateHead].includes(await remoteBranchHead(config, plan.branch))
+        (await branchHead(gitExecutable, config, plan.branch)) !== config.candidateHead ||
+        ![undefined, config.candidateHead].includes(
+          await remoteBranchHead(gitExecutable, config, plan.branch),
+        )
       )
         throw new DeliveryBlocked("cleanup-target-drift");
       for (const path of plan.worktrees) {
-        if ((await git(config, ["status", "--porcelain"], path)) !== "")
+        if ((await git(gitExecutable, config, ["status", "--porcelain"], path)) !== "")
           throw new DeliveryBlocked("cleanup-dirty-worktree");
-        if ((await git(config, ["rev-parse", "HEAD"], path)) !== config.candidateHead)
+        if (
+          (await git(gitExecutable, config, ["rev-parse", "HEAD"], path)) !== config.candidateHead
+        )
           throw new DeliveryBlocked("cleanup-head-drift");
       }
-      if ((await remoteBranchHead(config, plan.branch)) === config.candidateHead)
+      if ((await remoteBranchHead(gitExecutable, config, plan.branch)) === config.candidateHead)
         await run(
-          "git",
+          gitExecutable,
           [
             "push",
             "--no-follow-tags",
@@ -861,8 +909,8 @@ export function githubDeliveryAdapter(
           config.controllerRoot,
         );
       for (const path of plan.worktrees)
-        await run("git", ["worktree", "remove", resolve(path)], config.controllerRoot);
-      await run("git", ["branch", "-D", plan.branch], config.controllerRoot);
+        await run(gitExecutable, ["worktree", "remove", resolve(path)], config.controllerRoot);
+      await run(gitExecutable, ["branch", "-D", plan.branch], config.controllerRoot);
     },
   };
 }

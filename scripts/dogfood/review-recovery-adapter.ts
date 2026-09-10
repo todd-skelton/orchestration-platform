@@ -85,9 +85,7 @@ async function sourceIdentity(config: Config, requireRecoveryAuthority = true) {
       required(directory, "reviewer-terminal"),
       required(directory, "reviewer-intent"),
     ]);
-  const prompts = await Promise.all(
-    [config.author.promptFile, config.reviewer.promptFile].map((path) => readFile(path, "utf8")),
-  );
+  const prompts = [config.author.prompt, config.reviewer.prompt];
   const classifiedOriginal =
     candidate && SHA.test(candidate.head)
       ? classifyReview(originalTerminal?.summary, config.run, candidate.head).disposition
@@ -251,7 +249,7 @@ export function reviewedReviewRecoveryAdapter(native: Adapter) {
       const recoveryConfig: Config = { ...config, artifactPrefix: "review-recovery" };
       let attempt = savedAttempt as Attempt | typeof ABSENT;
       if (attempt === ABSENT) {
-        const basePrompt = await readFile(config.reviewer.promptFile, "utf8");
+        const basePrompt = config.reviewer.prompt;
         const prompt = `${workerPrompt(config, "reviewer", source.candidate.head, basePrompt)}\nThis is the sole authority-bound replacement for malformed transport from reviewer ${source.original.id}. Review the unchanged exact candidate independently. Do not infer or copy any lost finding and do not change source to obtain a verdict.\n`;
         attempt = await native.launch("reviewer", recoveryConfig, prompt);
         demand(

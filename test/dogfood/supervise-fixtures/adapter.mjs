@@ -1,6 +1,67 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-export { assertQueueRequest, QueueBlocked, queueStep } from "../../../scripts/dogfood/queue.ts";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { delimiter, dirname, resolve } from "node:path";
+import { itemAuthority, participantIdentity, queueDigest } from "../../../scripts/dogfood/queue.ts";
+export { QueueBlocked, queueStep } from "../../../scripts/dogfood/queue.ts";
+
+export async function queueConfigFromLoop(loop, executingRoot) {
+  const stateDirectory = resolve(loop.stateRoot, loop.run, "queue");
+  const sourceState = resolve(loop.stateRoot, loop.run, "source");
+  const repairState = resolve(loop.stateRoot, loop.run, "repair");
+  await Promise.all(
+    [stateDirectory, sourceState, repairState].map((path) => mkdir(path, { recursive: true })),
+  );
+  const base = "a".repeat(40);
+  const issue = `https://github.com/${loop.repository}/issues/${loop.issue.number}`;
+  const requiredChecks = ["linux", "windows", "macos"];
+  const item = {
+    id: `${loop.issue.key}:1`,
+    issue,
+    base,
+    implementationAttempt: 1,
+    implementationAttemptCeiling: loop.attemptCeiling,
+    setup: { run: loop.run, issue, base },
+    source: {
+      run: loop.run,
+      issue,
+      base,
+      stateDirectory: sourceState,
+      allowedPaths: ["."],
+      requiredChecks,
+    },
+    repair: {
+      stateDirectory: repairState,
+      acceptanceCriteria: ["fixture criterion"],
+      author: { model: loop.author.model, effort: loop.author.effort, prompt: "author" },
+      reviewer: { model: loop.reviewer.model, effort: loop.reviewer.effort, prompt: "reviewer" },
+    },
+    delivery: { requiredChecks, policy: { kind: "fixture" } },
+  };
+  const config = {
+    schemaVersion: "dogfood-bounded-queue-config/v1",
+    run: loop.run,
+    controllerRoot: executingRoot,
+    controllerRevision: base,
+    stateDirectory,
+    limit: 1,
+    nativeLaunchCeiling: loop.nativeLaunchCeiling,
+    initialHistory: [],
+    items: [item],
+  };
+  config.authority = {
+    schemaVersion: "dogfood-bounded-queue-authority/v1",
+    controller: `loop:${loop.run}`,
+    run: config.run,
+    controllerRoot: config.controllerRoot,
+    controllerRevision: config.controllerRevision,
+    stateDirectory,
+    limit: 1,
+    nativeLaunchCeiling: config.nativeLaunchCeiling,
+    lineageDigest: queueDigest(config.initialHistory.map(participantIdentity)),
+    itemsDigest: queueDigest(config.items.map(itemAuthority)),
+    actions: ["setup", "source", "repair", "delivery"],
+  };
+  return config;
+}
 
 async function readJson(path, fallback) {
   try {
@@ -11,7 +72,9 @@ async function readJson(path, fallback) {
   }
 }
 
-export function repositoryQueueAdapter(config) {
+export function repositoryQueueAdapter(config, _executingRoot, options) {
+  if (process.env.PATH.split(delimiter)[0] !== dirname(options.gitExecutable))
+    throw new Error("selected-git-missing-from-worker-path");
   const callsPath = resolve(dirname(config.stateDirectory), "command-calls.json");
   const controlsPath = resolve(dirname(config.stateDirectory), "command-controls.json");
   const changeCalls = async (name) => {

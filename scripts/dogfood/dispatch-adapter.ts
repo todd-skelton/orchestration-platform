@@ -243,9 +243,9 @@ export function outputSchema(config: Config, role: Role) {
     },
   };
 }
-export function codexAdapter(): Adapter {
+export function codexAdapter(gitExecutable = "git"): Adapter {
   const git = async (worktree: string, gitArgs: string[]) => {
-    const { stdout } = await exec("git", ["-C", worktree, ...gitArgs], {
+    const { stdout } = await exec(gitExecutable, ["-C", worktree, ...gitArgs], {
       windowsHide: true,
       maxBuffer: 8 * 1024 * 1024,
     });

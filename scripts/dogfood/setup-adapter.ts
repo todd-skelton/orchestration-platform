@@ -14,6 +14,7 @@ import {
 const exec = promisify(execFile);
 
 export interface SetupAdapterOptions {
+  gitExecutable?: string;
   install?: (
     launcher: PnpmLauncher,
     args: string[],
@@ -29,8 +30,13 @@ async function command(executable: string, args: string[], cwd: string) {
   });
 }
 
-async function git(config: SetupConfig, args: string[], cwd = config.repositoryRoot) {
-  return (await command("git", args, cwd)).stdout.trim();
+async function git(
+  executable: string,
+  config: SetupConfig,
+  args: string[],
+  cwd = config.repositoryRoot,
+) {
+  return (await command(executable, args, cwd)).stdout.trim();
 }
 
 function rolePath(config: SetupConfig, role: SetupRole) {
@@ -92,8 +98,10 @@ interface GitWorktree {
   branch?: string;
 }
 
-async function worktrees(config: SetupConfig) {
-  const fields = (await git(config, ["worktree", "list", "--porcelain", "-z"])).split("\0");
+async function worktrees(executable: string, config: SetupConfig) {
+  const fields = (await git(executable, config, ["worktree", "list", "--porcelain", "-z"])).split(
+    "\0",
+  );
   const rows: GitWorktree[] = [];
   let row: GitWorktree | undefined;
   for (const field of fields) {
@@ -110,10 +118,10 @@ async function worktrees(config: SetupConfig) {
   return rows;
 }
 
-async function branchHead(config: SetupConfig, branch: string) {
-  await git(config, ["check-ref-format", "--branch", branch]);
+async function branchHead(executable: string, config: SetupConfig, branch: string) {
+  await git(executable, config, ["check-ref-format", "--branch", branch]);
   const expectedRef = `refs/heads/${branch}`;
-  const output = await git(config, [
+  const output = await git(executable, config, [
     "for-each-ref",
     "--count=1",
     "--format=%(refname)%00%(objectname)",
@@ -133,12 +141,16 @@ async function branchHead(config: SetupConfig, branch: string) {
   return actualRef === expectedRef ? head : undefined;
 }
 
-async function commonDirectory(config: SetupConfig, cwd: string) {
-  return realpath(resolve(cwd, await git(config, ["rev-parse", "--git-common-dir"], cwd)));
+async function commonDirectory(executable: string, config: SetupConfig, cwd: string) {
+  return realpath(
+    resolve(cwd, await git(executable, config, ["rev-parse", "--git-common-dir"], cwd)),
+  );
 }
 
-async function assertClean(config: SetupConfig, cwd: string) {
-  if ((await git(config, ["status", "--porcelain", "--untracked-files=all"], cwd)) !== "")
+async function assertClean(executable: string, config: SetupConfig, cwd: string) {
+  if (
+    (await git(executable, config, ["status", "--porcelain", "--untracked-files=all"], cwd)) !== ""
+  )
     throw new SetupBlocked("dirty-setup-repository");
 }
 
@@ -167,6 +179,7 @@ async function defaultInstall(launcher: PnpmLauncher, args: string[], cwd: strin
 
 export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter {
   const install = options.install ?? defaultInstall;
+  const gitExecutable = options.gitExecutable ?? "git";
 
   return {
     async assertAuthority(config, executingRoot) {
@@ -180,8 +193,8 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
         if (comparable(actualExecuting) !== comparable(controller))
           throw new SetupBlocked("controller-path-mismatch");
         const [controllerCommon, repositoryCommon] = await Promise.all([
-          commonDirectory(config, controller),
-          commonDirectory(config, repository),
+          commonDirectory(gitExecutable, config, controller),
+          commonDirectory(gitExecutable, config, repository),
         ]);
         if (comparable(controllerCommon) !== comparable(repositoryCommon))
           throw new SetupBlocked("setup-repository-mismatch");
@@ -193,7 +206,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
             config.reviewWorktree,
           ].map(async (path) => comparable(await canonicalFuture(path))),
         );
-        const registered = await worktrees(config);
+        const registered = await worktrees(gitExecutable, config);
         const registeredPaths = await Promise.all(
           registered.map(async (row) => comparable(await canonicalFuture(row.path))),
         );
@@ -212,11 +225,15 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
 
         const [controllerHead, repositoryHead, repositoryBranch, pilotObject, baseObject] =
           await Promise.all([
-            git(config, ["rev-parse", "HEAD"], controller),
-            git(config, ["rev-parse", "HEAD"], repository),
-            git(config, ["branch", "--show-current"], repository),
-            git(config, ["rev-parse", "--verify", `${config.pilotRevision}^{commit}`]),
-            git(config, ["rev-parse", "--verify", `${config.base}^{commit}`]),
+            git(gitExecutable, config, ["rev-parse", "HEAD"], controller),
+            git(gitExecutable, config, ["rev-parse", "HEAD"], repository),
+            git(gitExecutable, config, ["branch", "--show-current"], repository),
+            git(gitExecutable, config, [
+              "rev-parse",
+              "--verify",
+              `${config.pilotRevision}^{commit}`,
+            ]),
+            git(gitExecutable, config, ["rev-parse", "--verify", `${config.base}^{commit}`]),
           ]);
         if (
           controllerHead !== config.controllerRevision ||
@@ -227,10 +244,10 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
         )
           throw new SetupBlocked("setup-authority-head-drift");
         await Promise.all([
-          git(config, ["check-ref-format", "--branch", config.baseBranch]),
-          git(config, ["check-ref-format", "--branch", config.sourceBranch]),
-          assertClean(config, controller),
-          assertClean(config, repository),
+          git(gitExecutable, config, ["check-ref-format", "--branch", config.baseBranch]),
+          git(gitExecutable, config, ["check-ref-format", "--branch", config.sourceBranch]),
+          assertClean(gitExecutable, config, controller),
+          assertClean(gitExecutable, config, repository),
         ]);
       } catch (error) {
         if (error instanceof SetupBlocked) throw error;
@@ -241,7 +258,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
     async observeWorktree(config, role, owned): Promise<WorktreeObservation> {
       try {
         const target = comparable(await canonicalFuture(rolePath(config, role)));
-        const rows = await worktrees(config);
+        const rows = await worktrees(gitExecutable, config);
         const matches: GitWorktree[] = [];
         for (const row of rows) {
           if (comparable(await canonicalFuture(row.path)) === target) matches.push(row);
@@ -253,13 +270,17 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           if (!(await exists(rolePath(config, role)))) return { state: "collision" };
           const actual = await realpath(rolePath(config, role));
           if (comparable(actual) !== target) return { state: "collision" };
-          const common = await commonDirectory(config, actual);
-          const repositoryCommon = await commonDirectory(config, config.repositoryRoot);
+          const common = await commonDirectory(gitExecutable, config, actual);
+          const repositoryCommon = await commonDirectory(
+            gitExecutable,
+            config,
+            config.repositoryRoot,
+          );
           if (comparable(common) !== comparable(repositoryCommon)) return { state: "collision" };
           const [head, branch, dirty] = await Promise.all([
-            git(config, ["rev-parse", "HEAD"], actual),
-            git(config, ["branch", "--show-current"], actual),
-            git(config, ["status", "--porcelain", "--untracked-files=all"], actual),
+            git(gitExecutable, config, ["rev-parse", "HEAD"], actual),
+            git(gitExecutable, config, ["branch", "--show-current"], actual),
+            git(gitExecutable, config, ["status", "--porcelain", "--untracked-files=all"], actual),
           ]);
           if (
             row.head !== head ||
@@ -275,7 +296,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
 
         if (await exists(rolePath(config, role))) return { state: "collision" };
         if (expectedBranch !== null) {
-          const existingHead = await branchHead(config, expectedBranch);
+          const existingHead = await branchHead(gitExecutable, config, expectedBranch);
           if (existingHead !== undefined) {
             if (!owned || existingHead !== roleHead(config, role)) return { state: "collision" };
             if (rows.some((row) => row.branch === `refs/heads/${expectedBranch}`))
@@ -291,9 +312,9 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
     async createWorktree(config, role) {
       const path = rolePath(config, role);
       if (role === "source") {
-        const existing = await branchHead(config, config.sourceBranch);
+        const existing = await branchHead(gitExecutable, config, config.sourceBranch);
         if (existing === undefined)
-          await git(config, [
+          await git(gitExecutable, config, [
             "-c",
             "core.autocrlf=false",
             "worktree",
@@ -305,7 +326,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           ]);
         else {
           if (existing !== config.base) throw new SetupBlocked("source-branch-head-drift");
-          await git(config, [
+          await git(gitExecutable, config, [
             "-c",
             "core.autocrlf=false",
             "worktree",
@@ -315,7 +336,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           ]);
         }
       } else {
-        await git(config, [
+        await git(gitExecutable, config, [
           "-c",
           "core.autocrlf=false",
           "worktree",

@@ -8,6 +8,10 @@ export interface GithubDeliveryCommands {
 export function assertControllerExecutor(
   config: DeliveryConfig,
   executingRoot: string,
+  gitExecutable?: string,
 ): Promise<void>;
 
-export function githubDeliveryAdapter(commands?: GithubDeliveryCommands): DeliveryAdapter;
+export function githubDeliveryAdapter(
+  commands?: GithubDeliveryCommands,
+  gitExecutable?: string,
+): DeliveryAdapter;

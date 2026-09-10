@@ -1,10 +1,13 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
   itemAuthority,
   participantIdentity,
+  queueConfigFromLoop,
   queueDigest,
   reconcileCompletedQueue,
   queueStep,
@@ -17,6 +20,7 @@ import {
 } from "../../scripts/dogfood/queue.js";
 
 const roots: string[] = [];
+const execute = promisify(execFile);
 const unavailable = { status: "unavailable" as const };
 const usage = (input: number, output: number) => ({
   inputTokens: { status: "known" as const, value: input },
@@ -84,6 +88,7 @@ async function fixture(itemCount = 1) {
       issue: `fixture-${index + 1}`,
       base,
       implementationAttempt: index + 1,
+      implementationAttemptCeiling: 4,
       setup: { run, issue: `fixture-${index + 1}`, base },
       source: {
         run,
@@ -95,20 +100,19 @@ async function fixture(itemCount = 1) {
       },
       repair: {
         stateDirectory: resolve(root, `${id}-repair`),
-        sourcePaths: ["scripts/dogfood/queue.ts"],
         acceptanceCriteria: ["one preserved criterion"],
-        author: { model: "author-model", effort: "high", promptFile: resolve(root, "author.md") },
+        author: { model: "author-model", effort: "high", prompt: "author prompt" },
         reviewer: {
           model: "reviewer-model",
           effort: "high",
-          promptFile: resolve(root, "reviewer.md"),
+          prompt: "reviewer prompt",
         },
       },
       delivery: { requiredChecks: [...requiredChecks], policy: { kind: "fixture" } },
     } as unknown as QueueItem;
   });
   const config: QueueConfig = {
-    schemaVersion: "dogfood-bounded-queue-request/v1",
+    schemaVersion: "dogfood-bounded-queue-config/v1",
     run: "synthetic-bounded-queue",
     controllerRoot: resolve(root, "controller"),
     controllerRevision: "a".repeat(40),
@@ -160,18 +164,89 @@ it("binds a refresh to a later attempt whose exact prior head is its source base
   expect(() => validateQueueConfig(current.config)).toThrow("malformed-publication-refresh");
 });
 
-it.each([
-  "scripts/dogfood/review-location.ts",
-  "test/dogfood/review-location.test.ts",
-  "docs/planning/review-location.md",
-  "planning/drafts/ISS-SYNTHETIC.md",
-  "planning/roadmap.json",
-] as const)("admits the explicit repository review location %s", async (reviewPath) => {
+it("admits repository-wide source scope without a pre-authored repair path list", async () => {
   const current = await fixture();
-  current.items[0]!.source.allowedPaths = [reviewPath];
-  current.items[0]!.repair.sourcePaths = [reviewPath];
+  current.items[0]!.source.allowedPaths = ["."];
   current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   expect(() => validateQueueConfig(current.config)).not.toThrow();
+});
+
+it("derives the complete internal queue from one compact loop config", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "loop-config-fixture-"));
+  roots.push(root);
+  const repository = resolve(root, "repository");
+  const stateRoot = resolve(root, "state");
+  const worktreeRoot = resolve(root, "worktrees");
+  await Promise.all([
+    mkdir(resolve(repository, "docs"), { recursive: true }),
+    mkdir(resolve(repository, "planning/drafts"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(resolve(repository, "docs/loop.md"), "# The loop\n\nKeep it small.\n"),
+    writeFile(
+      resolve(repository, "planning/roadmap.json"),
+      JSON.stringify({
+        repository: "fixture/repository",
+        issues: [{ key: "ISS-104", file: "planning/drafts/ISS-104.md" }],
+      }),
+    ),
+    writeFile(
+      resolve(repository, "planning/drafts/ISS-104.md"),
+      '---\nkey: ISS-104\ntitle: "One config"\n---\n\n## Done when\n\n- One file drives the run.\n\n## Out of scope\n',
+    ),
+  ]);
+  const finder = process.platform === "win32" ? "where.exe" : "which";
+  const gitExecutable = (await execute(finder, ["git"])).stdout.trim().split(/\r?\n/)[0]!;
+  await execute(gitExecutable, ["init", "-b", "main", repository]);
+  await execute(gitExecutable, ["-C", repository, "config", "user.name", "Fixture"]);
+  await execute(gitExecutable, ["-C", repository, "config", "user.email", "fixture@example.test"]);
+  await execute(gitExecutable, ["-C", repository, "add", "."]);
+  await execute(gitExecutable, ["-C", repository, "commit", "-m", "fixture"]);
+
+  const queue = await queueConfigFromLoop(
+    {
+      schemaVersion: "dogfood-loop/v1",
+      run: "iss-104-run",
+      issue: { key: "ISS-104", number: 361 },
+      repository: "fixture/repository",
+      stableExecutorRoot: repository,
+      stateRoot,
+      worktreeRoot,
+      author: { model: "gpt-5.6-sol", effort: "high" },
+      reviewer: { model: "gpt-5.6-sol", effort: "high" },
+      codexExecutable: process.execPath,
+      gitExecutable,
+      nativeLaunchCeiling: 8,
+      attemptCeiling: 4,
+    },
+    repository,
+  );
+
+  expect(queue.items).toHaveLength(1);
+  expect(queue.authority.itemsDigest).toBe(queueDigest(queue.items.map(itemAuthority)));
+  expect(queue.authority.lineageDigest).toBe(
+    queueDigest(queue.initialHistory.map(participantIdentity)),
+  );
+  expect(queue.items[0]).toMatchObject({
+    id: "ISS-104:1",
+    implementationAttempt: 1,
+    implementationAttemptCeiling: 4,
+    source: {
+      allowedPaths: ["."],
+      author: { model: "gpt-5.6-sol", effort: "high" },
+      reviewer: { model: "gpt-5.6-sol", effort: "high" },
+    },
+    delivery: {
+      policy: {
+        planningKey: "ISS-104",
+        planningIssue: 361,
+        pullRequestTitle: "[ISS-104] One config",
+      },
+    },
+  });
+  expect(queue.items[0]!.source.author.prompt).toContain("Keep it small.");
+  expect(queue.items[0]!.source.author.prompt).toContain("One file drives the run.");
+  expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
 });
 
 it("advances every finite item and completed restart repeats no effects", async () => {
@@ -779,41 +854,6 @@ it.each([
       config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
     },
     "queue-hosted-check-drift",
-  ],
-  [
-    "repair location outside the authorized source footprint",
-    (config: QueueConfig) => {
-      config.items[0]!.repair.sourcePaths = ["test/dogfood/queue.test.ts"];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
-  ],
-  [
-    "unsupported repository review location",
-    (config: QueueConfig) => {
-      config.items[0]!.source.allowedPaths = ["package.json"];
-      config.items[0]!.repair.sourcePaths = ["package.json"];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
-  ],
-  [
-    "directory instead of an exact review location",
-    (config: QueueConfig) => {
-      config.items[0]!.source.allowedPaths = ["test/dogfood/"];
-      config.items[0]!.repair.sourcePaths = ["test/dogfood/"];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
-  ],
-  [
-    "duplicate exact review locations",
-    (config: QueueConfig) => {
-      const path = config.items[0]!.repair.sourcePaths[0]!;
-      config.items[0]!.repair.sourcePaths = [path, path];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
   ],
 ])("fails closed for %s", async (_name, mutate, reason) => {
   const current = await fixture();

@@ -209,9 +209,8 @@ it("refuses malformed, oversized, inconsistent and non-fixable source reports", 
 it("refuses controller, prompt, adapter, admission, history, acceptance and footprint authority drift before intent", async () => {
   for (const mutate of [
     (f: any) => (f.config.controllerRoot = resolve(f.config.controllerRoot, "substituted")),
-    (f: any) => (f.config.author.promptFile = resolve(f.paths.controller, "substituted-author.md")),
-    (f: any) =>
-      (f.config.reviewer.promptFile = resolve(f.paths.controller, "substituted-reviewer.md")),
+    (f: any) => (f.config.author.prompt = "substituted author prompt"),
+    (f: any) => (f.config.reviewer.prompt = "substituted reviewer prompt"),
     (f: any) => (f.config.adapter.kind = "substituted-adapter"),
     (f: any) => (f.config.adapter.executable = "substituted-codex"),
     (f: any) => (f.config.admission.ceiling += 1),

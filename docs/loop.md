@@ -7,8 +7,8 @@ capability is added only when a real cycle records a blocker.
 
 ## Rules
 
-1. The loop is `scripts/dogfood/`. Entry points: `loop:prepare`, `loop:run`,
-   `loop:repair`, `loop:deliver`, `loop:supervise` in `package.json`.
+1. The loop is `scripts/dogfood/`. Its entry point is `loop:supervise` in
+   `package.json`, which accepts one loop config and derives each phase.
 2. An issue is runnable when it is open, labeled `ready`, every `blocked_by`
    in its draft is closed, and it belongs to the earliest open milestone.
 3. Authors run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in their

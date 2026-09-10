@@ -45,7 +45,7 @@ export const repairDigest = (value: unknown) =>
 export interface RepairActor {
   model: string;
   effort: string;
-  promptFile: string;
+  prompt: string;
 }
 export interface ParticipantHistory {
   ordinal: number;
@@ -216,18 +216,21 @@ export function validRepairReviewPath(path: unknown) {
 
 function inFootprint(allowedPaths: string[], path: string) {
   return allowedPaths.some(
-    (allowed) => path === allowed || (allowed.endsWith("/") && path.startsWith(allowed)),
+    (allowed) =>
+      allowed === "." || path === allowed || (allowed.endsWith("/") && path.startsWith(allowed)),
   );
 }
 
 function validActor(actor: unknown) {
   return (
     object(actor) &&
-    exactKeys(actor, ["model", "effort", "promptFile"]) &&
+    exactKeys(actor, ["model", "effort", "prompt"]) &&
     bounded(actor.model, 128) &&
     bounded(actor.effort, 32) &&
-    typeof actor.promptFile === "string" &&
-    isAbsolute(actor.promptFile)
+    typeof actor.prompt === "string" &&
+    actor.prompt.length > 0 &&
+    actor.prompt.length <= 50_000 &&
+    !actor.prompt.includes("\0")
   );
 }
 
@@ -310,7 +313,7 @@ export function validateRepairConfig(config: RepairConfig) {
     "malformed-repair-footprint",
   );
   demand(
-    strings(config.sourcePaths, 32, 500) &&
+    strings(config.sourcePaths, 512, 500) &&
       config.sourcePaths.every(validRepairReviewPath) &&
       new Set(config.sourcePaths).size === config.sourcePaths.length,
     "malformed-source-footprint",
@@ -327,7 +330,8 @@ export function validateRepairConfig(config: RepairConfig) {
   demand(
     Number.isSafeInteger(config.implementationAttempts) &&
       config.implementationAttempts > 0 &&
-      config.implementationAttemptCeiling === 4 &&
+      config.implementationAttemptCeiling > 0 &&
+      config.implementationAttemptCeiling <= 4 &&
       config.implementationAttempts <= config.implementationAttemptCeiling,
     "implementation-attempt-ceiling-exhausted",
   );
@@ -500,9 +504,6 @@ function validateAuthority(config: RepairConfig) {
       strings(authority.source.requiredChecks, 16, 160) &&
       validActor(authority.source.author) &&
       validActor(authority.source.reviewer) &&
-      authority.source.author.promptFile === resolve(config.sourceStateDirectory, "author.md") &&
-      authority.source.reviewer.promptFile ===
-        resolve(config.sourceStateDirectory, "reviewer.md") &&
       validAdapter(authority.source.adapter) &&
       /^[a-f0-9]{64}$/.test(authority.source.configFingerprint) &&
       authority.source.candidateHead === config.repairBase &&

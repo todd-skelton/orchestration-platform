@@ -23,8 +23,6 @@ async function fixture() {
     string,
     string,
   ];
-  const promptFile = resolve(root, "prompt.txt");
-  await writeFile(promptFile, "Improve the selected issue.");
   const config: Config = {
     owner: "controller",
     run: "one-trial",
@@ -37,8 +35,8 @@ async function fixture() {
     allowedPaths: ["scripts/repair.mjs"],
     repository: "owner/repo",
     requiredChecks: ["linux", "macos", "windows"],
-    author: { model: "test", effort: "low", promptFile },
-    reviewer: { model: "test", effort: "low", promptFile },
+    author: { model: "test", effort: "low", prompt: "Improve the selected issue." },
+    reviewer: { model: "test", effort: "low", prompt: "Improve the selected issue." },
     adapter: { kind: "codex-exec", executable: process.execPath },
   };
   let currentHead = base,
@@ -223,7 +221,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     f.config.owner = "other-controller";
     await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
     f.config.owner = "controller";
-    await writeFile(f.config.author.promptFile, "Different instruction");
+    f.config.author.prompt = "Different instruction";
     await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
     expect(f.launches).toEqual(["author"]);
   });
