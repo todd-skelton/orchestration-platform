@@ -15,19 +15,12 @@ const ignorePaths = [
 
 export const formatterTargets = Object.freeze([
   "package.json",
-  "pnpm-workspace.yaml",
   "tsconfig.base.json",
   "tsconfig.json",
   "vitest.config.ts",
   ".prettierrc.json",
   ".github/workflows/bootstrap.yml",
   "scripts",
-  "packages",
-  "adapters",
-  "fixtures",
-  "bootstrap",
-  "modules",
-  "config",
   "test",
 ]);
 

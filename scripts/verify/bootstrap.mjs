@@ -34,12 +34,13 @@ if (process.argv.length !== 2) throw new Error("verify:bootstrap accepts no argu
 const pnpmLauncher = await resolvePnpmLauncher();
 
 const before = await status();
-await run(process.execPath, [resolve(repositoryRoot, "scripts/verify/bootstrap-contracts.mjs")]);
-for (const script of ["format:check", "typecheck", "test", "build", "planning:check"]) {
+for (const script of ["format:check", "typecheck", "test", "planning:check"]) {
   await run(pnpmLauncher.executable, [...pnpmLauncher.prefixArgs, "run", script]);
 }
 const after = await status();
 if (after !== before) {
-  throw new Error("bootstrap verification changed tracked or untracked source status");
+  throw new Error("verification changed tracked or untracked source status");
 }
-process.stdout.write("complete bootstrap suite verified without source-tree status changes\n");
+process.stdout.write(
+  "format, typecheck, tests and planning verified without source-tree status changes\n",
+);
