@@ -123,10 +123,14 @@ export function validateConfig(config: Config) {
 }
 
 export function workerPrompt(config: Config, role: Role, head: string, prompt: string): string {
+  const localVerification =
+    role === "author"
+      ? " Before reporting, run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in this worktree, and fix what fails."
+      : "";
   return (
     `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
     `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
-    `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently; do not run local test runners/native builds.\n`
+    `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"${config.run}","role":"${role}","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently.${localVerification}\n`
   );
 }
 function footprint(config: Config, changed: string[]) {
