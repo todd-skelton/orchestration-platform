@@ -1,50 +1,12 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 
-export const QUALITY_KEYS = [
-  "SCOPE",
-  "ROBUSTNESS",
-  "DEPTH",
-  "READABILITY",
-  "TESTS",
-  "OBSERVABILITY",
-  "SECURITY",
-  "PERFORMANCE",
-  "ROLLOUT",
-  "CONSISTENCY",
-  "EXPERIENCE",
-  "LANGUAGE",
-] as const;
-export const QUALITY_WEIGHTS = [
-  "High",
-  "High",
-  "High",
-  "Med",
-  "High",
-  "High",
-  "High",
-  "Low",
-  "High",
-  "High",
-  "Low",
-  "High",
-] as const;
 export const MAX_REVIEW_SUMMARY_LENGTH = 2_000;
 
 const SHA = /^[a-f0-9]{40}$/;
 const IDENTITY = /^[A-Za-z0-9._:-]{1,128}$/;
 const ACTIONS = ["validate-source-review", "dispatch-author", "dispatch-delta-review"];
-const REPORT_KEYS = [
-  "v",
-  "head",
-  "complete",
-  "scope",
-  "profile",
-  "g0",
-  "pairs",
-  "findings",
-  "notes",
-];
+const REPORT_KEYS = ["run", "role", "head", "verdict", "findings", "g0"];
 
 export class RepairBlocked extends Error {
   readonly reason: string;
@@ -195,28 +157,19 @@ export interface SourceReviewArtifactsWithPrompts extends SourceReviewArtifacts 
 export interface ReviewFinding {
   file: string;
   line: number;
-  severity: "P0" | "P1" | "P2";
-  defect: string;
-  verification: string;
-}
-export interface ReviewNote {
-  file: string;
-  line: number;
-  remedy: string;
+  severity: "blocking" | "note";
+  text: string;
 }
 export interface ValidatedReview {
+  run: string;
+  role: "reviewer";
   head: string;
-  scope: "complete" | "delta";
-  profile: "contract";
-  g0: ["PASS" | "BLOCK_REPLAN", string];
-  pairs: [string, string, string][];
+  verdict: "PASS" | "FAIL";
   findings: ReviewFinding[];
-  notes: ReviewNote[];
+  g0: string;
 }
 export type ReviewReportClassification =
-  | { disposition: "complete"; report: ValidatedReview }
-  | { disposition: "incomplete" }
-  | { disposition: "malformed" };
+  { disposition: "complete"; report: ValidatedReview } | { disposition: "malformed" };
 export interface RepairHandoff {
   schemaVersion: "dogfood-repair-handoff/v1";
   run: string;
@@ -236,14 +189,9 @@ export interface RepairHandoff {
     authorAttempt: string;
     reviewerAttempt: string;
     disposition: "BLOCK_FIXABLE";
-    verdict: "failed";
-    complete: true;
-    scope: "complete";
-    profile: "contract";
+    verdict: "FAIL";
     g0: ValidatedReview["g0"];
-    pairs: ValidatedReview["pairs"];
     findings: ReviewFinding[];
-    notes: ReviewNote[];
   };
   predecessorCompleteSweep: string;
   history: ParticipantHistory[];
@@ -570,11 +518,7 @@ function validateAuthority(config: RepairConfig) {
   );
 }
 
-export function parseReview(
-  summary: unknown,
-  expectedHead: string,
-  expectedScope: "complete" | "delta",
-) {
+export function parseReview(summary: unknown, expectedRun: string, expectedHead: string) {
   demand(
     typeof summary === "string" && summary.length <= MAX_REVIEW_SUMMARY_LENGTH,
     "source-review-summary-out-of-bounds",
@@ -588,171 +532,42 @@ export function parseReview(
   const parsed = report as Record<string, any>;
   demand(
     exactKeys(parsed, REPORT_KEYS) &&
-      parsed.v === 2 &&
+      parsed.run === expectedRun &&
+      parsed.role === "reviewer" &&
       parsed.head === expectedHead &&
-      parsed.complete === true &&
-      parsed.scope === expectedScope &&
-      parsed.profile === "contract" &&
-      Array.isArray(parsed.g0) &&
-      parsed.g0.length === 2 &&
-      ["PASS", "BLOCK_REPLAN"].includes(parsed.g0[0]) &&
-      bounded(parsed.g0[1], 200) &&
-      Array.isArray(parsed.pairs) &&
-      parsed.pairs.length === QUALITY_KEYS.length &&
+      ["PASS", "FAIL"].includes(parsed.verdict) &&
       Array.isArray(parsed.findings) &&
-      parsed.findings.length <= 8 &&
-      Array.isArray(parsed.notes) &&
-      parsed.notes.length <= 8,
+      bounded(parsed.g0, MAX_REVIEW_SUMMARY_LENGTH),
     "malformed-source-review-report",
   );
-  for (const [index, pair] of parsed.pairs.entries()) {
-    demand(
-      Array.isArray(pair) &&
-        pair.length === 3 &&
-        [pair[0], pair[1]].every((value) => ["PASS", "BLOCK", "NOTE", "NA"].includes(value)) &&
-        bounded(pair[2], 140),
-      "malformed-quality-verdict",
-    );
-    demand(!(QUALITY_WEIGHTS[index] === "Low" && pair.includes("BLOCK")), "invalid-quality-block");
-    demand(!(QUALITY_WEIGHTS[index] === "Med" && pair[1] === "BLOCK"), "invalid-quality-block");
-    if (pair.includes("BLOCK")) {
-      const ids = Array.from({ length: parsed.findings.length }, (_, item) => `F${item + 1}`);
-      demand(
-        ids.some((id) => new RegExp(`\\b${id}\\b`).test(pair[2])),
-        "unbound-quality-finding",
-      );
-    }
-    if (pair.includes("NOTE")) {
-      const ids = Array.from({ length: parsed.notes.length }, (_, item) => `N${item + 1}`);
-      demand(
-        ids.some((id) => new RegExp(`\\b${id}\\b`).test(pair[2])),
-        "unbound-quality-note",
-      );
-    }
-  }
   for (const finding of parsed.findings)
     demand(
-      exactKeys(finding, ["file", "line", "severity", "defect", "verification"]) &&
+      exactKeys(finding, ["file", "line", "severity", "text"]) &&
         validPath(finding.file) &&
         Number.isSafeInteger(finding.line) &&
         finding.line > 0 &&
-        ["P0", "P1", "P2"].includes(finding.severity) &&
-        bounded(finding.defect, 350) &&
-        bounded(finding.verification, 200),
+        ["blocking", "note"].includes(finding.severity) &&
+        bounded(finding.text, MAX_REVIEW_SUMMARY_LENGTH),
       "malformed-source-finding",
     );
-  for (const note of parsed.notes)
-    demand(
-      exactKeys(note, ["file", "line", "remedy"]) &&
-        validPath(note.file) &&
-        Number.isSafeInteger(note.line) &&
-        note.line > 0 &&
-        bounded(note.remedy, 160),
-      "malformed-source-note",
-    );
-  const findingEvidence = parsed.pairs
-    .filter((pair: string[]) => pair.includes("BLOCK"))
-    .map((pair: string[]) => pair[2])
-    .join(" ");
-  const noteEvidence = parsed.pairs
-    .filter((pair: string[]) => pair.includes("NOTE"))
-    .map((pair: string[]) => pair[2])
-    .join(" ");
-  parsed.findings.forEach((_finding: unknown, index: number) =>
-    demand(new RegExp(`\\bF${index + 1}\\b`).test(findingEvidence), "unbound-quality-finding"),
+  const blocking = parsed.findings.some(
+    (finding: ReviewFinding) => finding.severity === "blocking",
   );
-  parsed.notes.forEach((_note: unknown, index: number) =>
-    demand(new RegExp(`\\bN${index + 1}\\b`).test(noteEvidence), "unbound-quality-note"),
-  );
-  demand(
-    new Set(parsed.findings.map((finding: unknown) => JSON.stringify(finding))).size ===
-      parsed.findings.length,
-    "duplicate-source-finding",
-  );
-  demand(
-    new Set(parsed.notes.map((note: unknown) => JSON.stringify(note))).size === parsed.notes.length,
-    "duplicate-source-note",
-  );
+  demand(parsed.verdict === (blocking ? "FAIL" : "PASS"), "inconsistent-source-review-verdict");
   return parsed as unknown as ValidatedReview;
 }
 
 export function classifyReview(
   summary: unknown,
+  expectedRun: string,
   expectedHead: string,
-  expectedScope: "complete" | "delta",
 ): ReviewReportClassification {
   try {
-    return { disposition: "complete", report: parseReview(summary, expectedHead, expectedScope) };
+    return { disposition: "complete", report: parseReview(summary, expectedRun, expectedHead) };
   } catch (error) {
     if (!(error instanceof RepairBlocked)) throw error;
-  }
-  if (typeof summary !== "string" || summary.length > MAX_REVIEW_SUMMARY_LENGTH)
-    return { disposition: "malformed" };
-  let report: unknown;
-  try {
-    report = JSON.parse(summary);
-  } catch {
     return { disposition: "malformed" };
   }
-  const parsed = report as Record<string, any>;
-  if (
-    !exactKeys(parsed, REPORT_KEYS) ||
-    parsed.v !== 2 ||
-    parsed.head !== expectedHead ||
-    parsed.complete !== false ||
-    parsed.scope !== expectedScope ||
-    parsed.profile !== "contract" ||
-    !Array.isArray(parsed.g0) ||
-    parsed.g0.length !== 2 ||
-    !["PASS", "BLOCK_REPLAN"].includes(parsed.g0[0]) ||
-    !bounded(parsed.g0[1], 200) ||
-    !Array.isArray(parsed.pairs) ||
-    parsed.pairs.length > QUALITY_KEYS.length ||
-    !Array.isArray(parsed.findings) ||
-    parsed.findings.length > 8 ||
-    !Array.isArray(parsed.notes) ||
-    parsed.notes.length > 8
-  )
-    return { disposition: "malformed" };
-  const validPair = (pair: unknown, index: number) =>
-    Array.isArray(pair) &&
-    pair.length === 3 &&
-    [pair[0], pair[1]].every((value) => ["PASS", "BLOCK", "NOTE", "NA"].includes(value)) &&
-    bounded(pair[2], 140) &&
-    !(QUALITY_WEIGHTS[index] === "Low" && pair.includes("BLOCK")) &&
-    !(QUALITY_WEIGHTS[index] === "Med" && pair[1] === "BLOCK");
-  const validFinding = (finding: unknown) => {
-    const candidate = finding as Record<string, any>;
-    return (
-      exactKeys(candidate, ["file", "line", "severity", "defect", "verification"]) &&
-      validPath(candidate.file) &&
-      Number.isSafeInteger(candidate.line) &&
-      candidate.line > 0 &&
-      ["P0", "P1", "P2"].includes(candidate.severity) &&
-      bounded(candidate.defect, 350) &&
-      bounded(candidate.verification, 200)
-    );
-  };
-  const validNote = (note: unknown) => {
-    const candidate = note as Record<string, any>;
-    return (
-      exactKeys(candidate, ["file", "line", "remedy"]) &&
-      validPath(candidate.file) &&
-      Number.isSafeInteger(candidate.line) &&
-      candidate.line > 0 &&
-      bounded(candidate.remedy, 160)
-    );
-  };
-  if (
-    !parsed.pairs.every(validPair) ||
-    !parsed.findings.every(validFinding) ||
-    !parsed.notes.every(validNote) ||
-    new Set(parsed.findings.map((finding: unknown) => JSON.stringify(finding))).size !==
-      parsed.findings.length ||
-    new Set(parsed.notes.map((note: unknown) => JSON.stringify(note))).size !== parsed.notes.length
-  )
-    return { disposition: "malformed" };
-  return { disposition: "incomplete" };
 }
 
 function validateLocations(
@@ -767,7 +582,7 @@ function validateLocations(
       same(artifacts.candidate.changed, artifacts.changedFiles),
     "candidate-footprint-drift",
   );
-  for (const row of [...review.findings, ...review.notes])
+  for (const row of review.findings)
     demand(
       config.sourcePaths.includes(row.file) &&
         changed.has(row.file) &&
@@ -876,11 +691,10 @@ export function repairPolicy() {
           artifacts.terminal.head === config.repairBase,
         "source-terminal-mismatch",
       );
-      const review = parseReview(artifacts.terminal.summary, config.repairBase, "complete");
+      const review = parseReview(artifacts.terminal.summary, config.run, config.repairBase);
       demand(
-        review.g0[0] === "PASS" &&
-          review.findings.length > 0 &&
-          review.pairs.some((pair) => pair[0] === "BLOCK" || pair[1] === "BLOCK"),
+        review.verdict === "FAIL" &&
+          review.findings.some((finding) => finding.severity === "blocking"),
         "source-review-not-fixable-failure",
       );
       validateLocations(config, artifacts, review);
@@ -903,14 +717,9 @@ export function repairPolicy() {
           authorAttempt: source.authorAttempt,
           reviewerAttempt: source.reviewerAttempt,
           disposition: "BLOCK_FIXABLE",
-          verdict: "failed",
-          complete: true,
-          scope: "complete",
-          profile: "contract",
+          verdict: "FAIL",
           g0: review.g0,
-          pairs: review.pairs,
           findings: review.findings,
-          notes: review.notes,
         },
         predecessorCompleteSweep: source.reviewId,
         history: config.history,
@@ -982,11 +791,10 @@ export function repairPolicy() {
           artifacts.launchContext.predecessorReviewId === handoff.predecessorCompleteSweep,
         "delta-predecessor-mismatch",
       );
-      const review = parseReview(artifacts.terminal.summary, artifacts.candidate.head, "delta");
+      const review = parseReview(artifacts.terminal.summary, config.run, artifacts.candidate.head);
       demand(
-        review.g0[0] === "PASS" &&
-          review.findings.length === 0 &&
-          review.pairs.every((pair) => !pair.includes("BLOCK")),
+        review.verdict === "PASS" &&
+          review.findings.every((finding) => finding.severity === "note"),
         "delta-review-not-accepted",
       );
       validateLocations(config, artifacts, review);

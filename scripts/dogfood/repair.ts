@@ -80,10 +80,9 @@ function deltaReviewRecord(
     head: accepted.head,
     reviewId: accepted.reviewerAttempt,
     predecessorReviewId: handoff.predecessorCompleteSweep,
-    profile: accepted.review.profile,
+    verdict: accepted.review.verdict,
+    findings: accepted.review.findings,
     g0: accepted.review.g0,
-    pairs: accepted.review.pairs,
-    notes: accepted.review.notes,
   };
 }
 

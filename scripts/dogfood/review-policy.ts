@@ -12,7 +12,7 @@ export interface SourceReviewBinding {
     authorAttempt: string;
     candidateHead: string;
   };
-  originalReview: { attempt: string; disposition: "malformed" | "incomplete" };
+  originalReview: { attempt: string; disposition: "malformed" };
   selectedReview: { attempt: string; disposition: SelectedReviewDisposition };
 }
 
@@ -23,7 +23,7 @@ export interface SourceReviewBindingInput {
   authorAttempt: string;
   candidateHead: string;
   originalReview: string;
-  originalDisposition?: "malformed" | "incomplete";
+  originalDisposition?: "malformed";
   selectedReview: string;
   selectedDisposition: SelectedReviewDisposition;
 }
@@ -130,7 +130,7 @@ export function sourceReviewBinding(input: SourceReviewBindingInput): SourceRevi
       IDENTITY.test(value),
     ) ||
     new Set([input.authorAttempt, input.originalReview, input.selectedReview]).size !== 3 ||
-    !["malformed", "incomplete"].includes(originalDisposition) ||
+    originalDisposition !== "malformed" ||
     !["passed", "failed"].includes(input.selectedDisposition)
   )
     throw new Error("invalid-source-review-binding-input");

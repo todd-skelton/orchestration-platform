@@ -418,17 +418,13 @@ export function githubDeliveryAdapter(
           error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",
         );
       }
-      let replacementReportAccepted = !replacement;
-      if (replacement)
-        try {
-          const report = parseReview(reviewer.summary, config.candidateHead, "complete");
-          replacementReportAccepted =
-            report.g0[0] === "PASS" &&
-            report.findings.length === 0 &&
-            report.pairs.every((pair) => !pair.includes("BLOCK"));
-        } catch (error) {
-          if (!(error instanceof RepairBlocked)) throw error;
-        }
+      let reviewerReportAccepted = false;
+      try {
+        reviewerReportAccepted =
+          parseReview(reviewer.summary, config.run, config.candidateHead).verdict === "PASS";
+      } catch (error) {
+        if (!(error instanceof RepairBlocked)) throw error;
+      }
       if (
         typeof pinned?.fingerprint !== "string" ||
         !DIGEST.test(pinned.fingerprint) ||
@@ -452,7 +448,7 @@ export function githubDeliveryAdapter(
         authorTerminal?.id !== author?.id ||
         authorTerminal?.head !== pilot.base ||
         reviewer?.status !== "passed" ||
-        !replacementReportAccepted ||
+        !reviewerReportAccepted ||
         reviewer?.head !== config.candidateHead ||
         !validAttempt(author, config, "author") ||
         !validAttempt(
