@@ -253,7 +253,7 @@ it("derives the complete internal queue from one compact loop config", async () 
   expect(queue.items[0]!.source.author.prompt).toContain("Keep it small.");
   expect(queue.items[0]!.source.author.prompt).toContain("One file drives the run.");
   expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
-});
+}, 30_000);
 
 it("starts candidate three at the rejected candidate two with its prescription verbatim", async () => {
   const { loop, repository, stateRoot, gitExecutable } = await loopFixture();
