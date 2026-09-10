@@ -42,8 +42,8 @@ const FLOW_REFUSALS = new Set([
 export const validDogfoodReviewPath = (path: string) =>
   /^scripts\/dogfood\/.+\.(?:ts|mts|mjs)$/.test(path) ||
   /^test\/dogfood\/.+\.(?:ts|mts|mjs)$/.test(path) ||
-  /^docs\/planning\/.+\.md$/.test(path) ||
-  /^planning\/(?:drafts|pressure-tests)\/.+\.md$/.test(path) ||
+  /^docs\/.+\.md$/.test(path) ||
+  /^planning\/drafts\/.+\.md$/.test(path) ||
   path === "planning/roadmap.json";
 
 function demand(condition: unknown, reason: string): asserts condition {

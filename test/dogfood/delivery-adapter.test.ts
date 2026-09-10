@@ -58,8 +58,6 @@ function config(root: string): DeliveryConfig {
       kind: "orchestration-platform-self/v1",
       planningKey: "ISS-074",
       planningIssue: 332,
-      parentEpicKey: "EPIC-KERNEL",
-      parentEpicIssue: 2,
       sourceBranch: "codex/iss-074-delivery",
       baseBranch: "main",
       pullRequestTitle: "automate normal delivery",
@@ -1112,32 +1110,29 @@ it("keeps repository identities and mirror rules in the explicit private policy 
   const root = await mkdtemp(resolve(tmpdir(), "delivery-policy-"));
   roots.push(root);
   const current = config(root);
-  const epic = `---\nkey: EPIC-KERNEL\ntitle: "Kernel"\nchildren: [ISS-074]\n---\n\n## Outcome\n\nKernel.\n`;
-  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nparent: EPIC-KERNEL\nblocked_by: [ISS-073]\n---\n\n## Scope and non-goals\n\nFixture.\n`;
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: [ISS-073]\n---\n\n## Why\n\nFixture.\n`;
   const planning = {
     roadmap: {
       repository: current.repository,
       milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
-      epics: [{ key: "EPIC-KERNEL", file: "planning/drafts/EPIC-KERNEL.md" }],
       issues: [
         {
           key: "ISS-074",
           file: "planning/drafts/ISS-074.md",
           milestone: "M2",
-          parent: "EPIC-KERNEL",
           blockedBy: ["ISS-073"],
         },
       ],
     },
-    epicDrafts: { "EPIC-KERNEL": epic },
     issueDrafts: { "ISS-074": issue },
   };
   const board = {
     issues: [
       {
         number: 2,
-        title: "old epic",
-        body: "<!-- planning-key: EPIC-KERNEL -->\nold",
+        title: "closed history",
+        body: "<!-- planning-key: ISS-001 -->\nold",
+        state: "CLOSED",
       },
       { number: 332, title: "reserved seed", body: "reserved" },
     ],
@@ -1148,13 +1143,12 @@ it("keeps repository identities and mirror rules in the explicit private policy 
     afterMirror: ["planning:board-check"],
   });
   expect(plan.drafts.map(({ key, issue: number }) => ({ key, number }))).toEqual([
-    { key: "EPIC-KERNEL", number: 2 },
     { key: "ISS-074", number: 332 },
   ]);
   expect(plan.drafts.map((draft) => draft.attributes.milestone)).toEqual([
-    null,
     "Minimum orchestration kernel",
   ]);
+  expect(plan.drafts[0]!.body.startsWith("<!-- planning-key: ISS-074 -->\n")).toBe(true);
   expect(plan.mergePolicy).toEqual({ method: "squash" });
   expect(plan.cleanup).toEqual({
     worktrees: [current.worktree, current.reviewWorktree],
