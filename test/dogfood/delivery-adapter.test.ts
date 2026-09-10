@@ -1274,20 +1274,16 @@ it("joins delivery to an immutable selected review while retaining the malformed
   );
   const original = reviewId;
   const selected = "33333333-3333-3333-3333-333333333333";
-  const authorPrompt = resolve(current.stateDirectory, "author.md");
-  const reviewerPrompt = resolve(current.stateDirectory, "reviewer.md");
+  const prompts = ["author prompt", "reviewer prompt"];
   const pilot = {
     ...pilotConfig(current),
     allowedPaths: ["scripts/dogfood/queue.ts"],
-    author: { model: "author", effort: "high", promptFile: authorPrompt },
-    reviewer: { model: "reviewer", effort: "high", promptFile: reviewerPrompt },
+    author: { model: "author", effort: "high", prompt: prompts[0]! },
+    reviewer: { model: "reviewer", effort: "high", prompt: prompts[1]! },
     adapter: { kind: "codex-exec", executable: resolve(root, "codex") },
   };
-  const prompts = ["author prompt", "reviewer prompt"];
   const fingerprint = sha(JSON.stringify({ config: pilot, prompts }));
   await Promise.all([
-    writeFile(authorPrompt, prompts[0]!),
-    writeFile(reviewerPrompt, prompts[1]!),
     writePilotEvidence(current, {
       pinnedConfig: pilot,
       reviewerTerminal: { id: original, status: "malformed", head },
@@ -1394,22 +1390,18 @@ it("joins delivery to a separately selected PASS while retaining malformed sourc
     ].map((path) => mkdir(path)),
   );
   const selected = "33333333-3333-3333-3333-333333333333";
-  const authorPrompt = resolve(current.stateDirectory, "author.md");
-  const reviewerPrompt = resolve(current.stateDirectory, "reviewer.md");
+  const prompts = ["author prompt", "reviewer prompt"];
   const pilot = {
     ...pilotConfig(current),
     allowedPaths: ["scripts/dogfood/queue.ts"],
-    author: { model: "author", effort: "high", promptFile: authorPrompt },
-    reviewer: { model: "reviewer", effort: "high", promptFile: reviewerPrompt },
+    author: { model: "author", effort: "high", prompt: prompts[0]! },
+    reviewer: { model: "reviewer", effort: "high", prompt: prompts[1]! },
     adapter: { kind: "codex-exec", executable: resolve(root, "codex") },
   };
-  const prompts = ["author prompt", "reviewer prompt"];
   const fingerprint = sha(JSON.stringify({ config: pilot, prompts }));
   current.selectedReviewStateDirectory = selectedState;
   current.authority.selectedReviewStateDirectory = selectedState;
   await Promise.all([
-    writeFile(authorPrompt, prompts[0]!),
-    writeFile(reviewerPrompt, prompts[1]!),
     writePilotEvidence(current, {
       pinnedConfig: pilot,
       reviewerTerminal: {
@@ -1577,29 +1569,6 @@ it.each([
   await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
     "unreviewed-delivery-source",
   );
-});
-
-it("rejects entrypoint execution from another checkout despite a clean matching declared controller", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "delivery-executor-"));
-  roots.push(root);
-  const current = await cleanController(root);
-  const request = resolve(current.stateDirectory, "delivery-request.json");
-  await writeFile(request, JSON.stringify(current));
-
-  let stderr = "";
-  try {
-    await promisify(execFile)(
-      process.execPath,
-      [resolve(import.meta.dirname, "../../scripts/dogfood/deliver.mjs"), request],
-      { windowsHide: true },
-    );
-  } catch (error) {
-    stderr = (error as { stderr?: string }).stderr ?? "";
-  }
-  expect(JSON.parse(stderr)).toEqual({
-    status: "blocked",
-    reason: "controller-executor-mismatch",
-  });
 });
 
 it("requires the actual controller executor to remain at its clean authorized revision", async () => {

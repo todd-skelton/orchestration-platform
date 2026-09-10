@@ -1,10 +1,13 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
   itemAuthority,
   participantIdentity,
+  queueConfigFromLoop,
   queueDigest,
   reconcileCompletedQueue,
   queueStep,
@@ -15,8 +18,10 @@ import {
   type QueueItem,
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
+import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 
 const roots: string[] = [];
+const execute = promisify(execFile);
 const unavailable = { status: "unavailable" as const };
 const usage = (input: number, output: number) => ({
   inputTokens: { status: "known" as const, value: input },
@@ -84,6 +89,7 @@ async function fixture(itemCount = 1) {
       issue: `fixture-${index + 1}`,
       base,
       implementationAttempt: index + 1,
+      implementationAttemptCeiling: 4,
       setup: { run, issue: `fixture-${index + 1}`, base },
       source: {
         run,
@@ -95,20 +101,19 @@ async function fixture(itemCount = 1) {
       },
       repair: {
         stateDirectory: resolve(root, `${id}-repair`),
-        sourcePaths: ["scripts/dogfood/queue.ts"],
         acceptanceCriteria: ["one preserved criterion"],
-        author: { model: "author-model", effort: "high", promptFile: resolve(root, "author.md") },
+        author: { model: "author-model", effort: "high", prompt: "author prompt" },
         reviewer: {
           model: "reviewer-model",
           effort: "high",
-          promptFile: resolve(root, "reviewer.md"),
+          prompt: "reviewer prompt",
         },
       },
       delivery: { requiredChecks: [...requiredChecks], policy: { kind: "fixture" } },
     } as unknown as QueueItem;
   });
   const config: QueueConfig = {
-    schemaVersion: "dogfood-bounded-queue-request/v1",
+    schemaVersion: "dogfood-bounded-queue-config/v1",
     run: "synthetic-bounded-queue",
     controllerRoot: resolve(root, "controller"),
     controllerRevision: "a".repeat(40),
@@ -133,6 +138,55 @@ async function fixture(itemCount = 1) {
     actions: ["setup", "source", "repair", "delivery"],
   };
   return { root, stateDirectory, config, items };
+}
+
+async function loopFixture() {
+  const root = await mkdtemp(resolve(tmpdir(), "loop-config-fixture-"));
+  roots.push(root);
+  const repository = resolve(root, "repository");
+  const stateRoot = resolve(root, "state");
+  const worktreeRoot = resolve(root, "worktrees");
+  await Promise.all([
+    mkdir(resolve(repository, "docs"), { recursive: true }),
+    mkdir(resolve(repository, "planning/drafts"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(resolve(repository, "docs/loop.md"), "# The loop\n\nKeep it small.\n"),
+    writeFile(
+      resolve(repository, "planning/roadmap.json"),
+      JSON.stringify({
+        repository: "fixture/repository",
+        issues: [{ key: "ISS-104", file: "planning/drafts/ISS-104.md" }],
+      }),
+    ),
+    writeFile(
+      resolve(repository, "planning/drafts/ISS-104.md"),
+      '---\nkey: ISS-104\ntitle: "One config"\n---\n\n## Done when\n\n- One file drives the run.\n\n## Out of scope\n',
+    ),
+  ]);
+  const finder = process.platform === "win32" ? "where.exe" : "which";
+  const gitExecutable = (await execute(finder, ["git"])).stdout.trim().split(/\r?\n/)[0]!;
+  await execute(gitExecutable, ["init", "-b", "main", repository]);
+  await execute(gitExecutable, ["-C", repository, "config", "user.name", "Fixture"]);
+  await execute(gitExecutable, ["-C", repository, "config", "user.email", "fixture@example.test"]);
+  await execute(gitExecutable, ["-C", repository, "add", "."]);
+  await execute(gitExecutable, ["-C", repository, "commit", "-m", "fixture"]);
+  const loop = {
+    schemaVersion: "dogfood-loop/v1" as const,
+    run: "iss-104-run",
+    issue: { key: "ISS-104", number: 361 },
+    repository: "fixture/repository",
+    stableExecutorRoot: repository,
+    stateRoot,
+    worktreeRoot,
+    author: { model: "gpt-5.6-sol", effort: "high" },
+    reviewer: { model: "gpt-5.6-sol", effort: "high" },
+    codexExecutable: process.execPath,
+    gitExecutable,
+    nativeLaunchCeiling: 8,
+    attemptCeiling: 4,
+  };
+  return { repository, stateRoot, loop, gitExecutable };
 }
 
 afterEach(async () => {
@@ -160,19 +214,106 @@ it("binds a refresh to a later attempt whose exact prior head is its source base
   expect(() => validateQueueConfig(current.config)).toThrow("malformed-publication-refresh");
 });
 
-it.each([
-  "scripts/dogfood/review-location.ts",
-  "test/dogfood/review-location.test.ts",
-  "docs/planning/review-location.md",
-  "planning/drafts/ISS-SYNTHETIC.md",
-  "planning/roadmap.json",
-] as const)("admits the explicit repository review location %s", async (reviewPath) => {
+it("admits repository-wide source scope without a pre-authored repair path list", async () => {
   const current = await fixture();
-  current.items[0]!.source.allowedPaths = [reviewPath];
-  current.items[0]!.repair.sourcePaths = [reviewPath];
+  current.items[0]!.source.allowedPaths = ["."];
   current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   expect(() => validateQueueConfig(current.config)).not.toThrow();
 });
+
+it("derives the complete internal queue from one compact loop config", async () => {
+  const { loop, repository } = await loopFixture();
+  await expect(queueConfigFromLoop({ ...loop, run: ".." }, repository)).rejects.toThrow(
+    "invalid-run",
+  );
+  const queue = await queueConfigFromLoop(loop, repository);
+
+  expect(queue.items).toHaveLength(1);
+  expect(queue.authority.itemsDigest).toBe(queueDigest(queue.items.map(itemAuthority)));
+  expect(queue.authority.lineageDigest).toBe(
+    queueDigest(queue.initialHistory.map(participantIdentity)),
+  );
+  expect(queue.items[0]).toMatchObject({
+    id: "ISS-104:1",
+    implementationAttempt: 1,
+    implementationAttemptCeiling: 4,
+    source: {
+      allowedPaths: ["."],
+      author: { model: "gpt-5.6-sol", effort: "high" },
+      reviewer: { model: "gpt-5.6-sol", effort: "high" },
+    },
+    delivery: {
+      policy: {
+        planningKey: "ISS-104",
+        planningIssue: 361,
+        pullRequestTitle: "[ISS-104] One config",
+      },
+    },
+  });
+  expect(queue.items[0]!.source.author.prompt).toContain("Keep it small.");
+  expect(queue.items[0]!.source.author.prompt).toContain("One file drives the run.");
+  expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
+}, 30_000);
+
+it("starts candidate three at the rejected candidate two with its prescription verbatim", async () => {
+  const { loop, repository, stateRoot, gitExecutable } = await loopFixture();
+  await execute(gitExecutable, ["-C", repository, "checkout", "-b", "rejected"]);
+  await writeFile(resolve(repository, "rejected.txt"), "candidate two\n");
+  await execute(gitExecutable, ["-C", repository, "add", "."]);
+  await execute(gitExecutable, ["-C", repository, "commit", "-m", "candidate two"]);
+  const rejectedHead = (
+    await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
+  ).stdout.trim();
+  await execute(gitExecutable, ["-C", repository, "checkout", "main"]);
+  const main = (
+    await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
+  ).stdout.trim();
+  const prescribed = [
+    {
+      file: "scripts/dogfood/queue.ts",
+      line: 1,
+      severity: "blocking" as const,
+      text: "Preserve the rejected candidate and apply this exact fix.",
+    },
+  ];
+  const firstHistory = [
+    participant(1, "ISS-104:1", "source", "author", "passed"),
+    participant(2, "ISS-104:1", "source", "reviewer", "failed"),
+    participant(3, "ISS-104:1", "repair", "author", "passed"),
+    participant(4, "ISS-104:1", "repair", "reviewer", "failed"),
+  ];
+  const queueState = resolve(stateRoot, loop.run, "iss-104-attempt-1", "queue");
+  await mkdir(queueState, { recursive: true });
+  await writeFile(
+    resolve(queueState, "item-1-failed.json"),
+    `${JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt-failure/v1",
+      run: loop.run,
+      item: "ISS-104:1",
+      issue: "https://github.com/fixture/repository/issues/361",
+      base: main,
+      candidateAttempt: 2,
+      head: rejectedHead,
+      reviewer: firstHistory[3]!.id,
+      findings: prescribed,
+      history: firstHistory,
+    })}\n`,
+  );
+  const third = await queueConfigFromLoop(loop, repository);
+  expect(third.items[0]).toMatchObject({
+    id: "ISS-104:3",
+    base: rejectedHead,
+    implementationAttempt: 3,
+    source: { base: rejectedHead },
+    setup: { base: rejectedHead },
+  });
+  expect(third.initialHistory).toEqual(firstHistory);
+  expect(third.stateDirectory).toContain("iss-104-attempt-3");
+  expect(third.items[0]!.source.author.prompt).toContain(JSON.stringify(prescribed));
+  await expect(
+    gitSetupAdapter({ gitExecutable }).assertAuthority(third.items[0]!.setup, repository),
+  ).resolves.toBeUndefined();
+}, 15_000);
 
 it("advances every finite item and completed restart repeats no effects", async () => {
   const current = await fixture(2);
@@ -451,7 +592,19 @@ it("hands a genuine failed source review to repair without losing participants o
         participant(1, item.id, "source", "author", "passed"),
         participant(2, item.id, "source", "reviewer", "failed"),
       );
-      return { status: "fixable-review", head: "b".repeat(40), reviewId: history[1]!.id };
+      return {
+        status: "fixable-review",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        findings: [
+          {
+            file: "scripts/dogfood/queue.ts",
+            line: 1,
+            severity: "blocking",
+            text: "repair this",
+          },
+        ],
+      };
     },
     async repair(item) {
       calls.push("repair");
@@ -500,6 +653,188 @@ it("hands a genuine failed source review to repair without losing participants o
     stage: "delivery",
     head: "c".repeat(40),
     history: [{ ordinal: 1 }, { ordinal: 2 }, { ordinal: 3 }, { ordinal: 4 }],
+  });
+});
+
+it.each([
+  [1, 1],
+  [4, 4],
+])(
+  "stops candidate %i at ceiling %i without launching another author",
+  async (attempt, ceiling) => {
+    const current = await fixture();
+    const item = current.items[0]!;
+    item.implementationAttempt = attempt;
+    item.implementationAttemptCeiling = ceiling;
+    current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+    const history: QueueParticipant[] = [];
+    let sourceCalls = 0;
+    let repairCalls = 0;
+    const findings = [
+      {
+        file: "scripts/dogfood/queue.ts",
+        line: 1,
+        severity: "blocking" as const,
+        text: "source remains blocked",
+      },
+    ];
+    const adapter: QueueAdapter = {
+      async assertAuthority() {},
+      async history() {
+        return [...history];
+      },
+      async setup() {
+        return { status: "ready" };
+      },
+      async source(selected) {
+        sourceCalls += 1;
+        history.push(
+          participant(1, selected.id, "source", "author", "passed"),
+          participant(2, selected.id, "source", "reviewer", "failed"),
+        );
+        return {
+          status: "fixable-review",
+          head: "b".repeat(40),
+          reviewId: history[1]!.id,
+          findings,
+        };
+      },
+      async repair() {
+        repairCalls += 1;
+        throw new Error("repair must not run");
+      },
+      async delivery() {
+        throw new Error("delivery must not run");
+      },
+    };
+
+    await expect(queueStep(current.config, adapter)).rejects.toThrow(
+      "implementation-attempt-ceiling-exhausted",
+    );
+    expect({ sourceCalls, repairCalls }).toEqual({ sourceCalls: 1, repairCalls: 0 });
+    expect(
+      JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-failed.json"), "utf8")),
+    ).toMatchObject({ candidateAttempt: attempt, head: "b".repeat(40), findings });
+    await expect(queueStep(current.config, adapter)).rejects.toThrow(
+      "implementation-attempt-ceiling-exhausted",
+    );
+    expect({ sourceCalls, repairCalls }).toEqual({ sourceCalls: 1, repairCalls: 0 });
+  },
+);
+
+it("counts a failed genuine repair as candidate two and stops at ceiling two", async () => {
+  const current = await fixture();
+  const item = current.items[0]!;
+  item.implementationAttemptCeiling = 2;
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  const history: QueueParticipant[] = [];
+  const findings = [
+    {
+      file: "scripts/dogfood/queue.ts",
+      line: 1,
+      severity: "blocking" as const,
+      text: "repair remains blocked",
+    },
+  ];
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source(selected) {
+      history.push(
+        participant(1, selected.id, "source", "author", "passed"),
+        participant(2, selected.id, "source", "reviewer", "failed"),
+      );
+      return {
+        status: "fixable-review",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        findings,
+      };
+    },
+    async repair(selected) {
+      history.push(
+        participant(3, selected.id, "repair", "author", "passed"),
+        participant(4, selected.id, "repair", "reviewer", "failed"),
+      );
+      return {
+        status: "failed",
+        head: "c".repeat(40),
+        reviewId: history[3]!.id,
+        findings,
+      };
+    },
+    async delivery() {
+      throw new Error("delivery must not run");
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).rejects.toThrow(
+    "implementation-attempt-ceiling-exhausted",
+  );
+  expect(
+    JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-failed.json"), "utf8")),
+  ).toMatchObject({ candidateAttempt: 2, head: "c".repeat(40), findings });
+});
+
+it("restarts a persisted candidate-two failure by advancing to candidate three", async () => {
+  const current = await fixture();
+  const item = current.items[0]!;
+  const history = [
+    participant(1, item.id, "source", "author", "passed"),
+    participant(2, item.id, "source", "reviewer", "failed"),
+    participant(3, item.id, "repair", "author", "passed"),
+    participant(4, item.id, "repair", "reviewer", "failed"),
+  ];
+  const findings = [
+    {
+      file: "scripts/dogfood/queue.ts",
+      line: 1,
+      severity: "blocking" as const,
+      text: "apply this on candidate three",
+    },
+  ];
+  await writeFile(
+    resolve(current.stateDirectory, "item-1-failed.json"),
+    `${JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt-failure/v1",
+      run: current.config.run,
+      item: item.id,
+      issue: item.issue,
+      base: item.base,
+      candidateAttempt: 2,
+      head: "c".repeat(40),
+      reviewer: history[3]!.id,
+      findings,
+      history,
+    })}\n`,
+  );
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return history;
+    },
+    async setup() {
+      throw new Error("setup must not repeat");
+    },
+    async source() {
+      throw new Error("source must not repeat");
+    },
+    async repair() {
+      throw new Error("repair must not repeat");
+    },
+    async delivery() {
+      throw new Error("delivery must not run");
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({
+    status: "advancing-attempt",
+    cursor: 2,
   });
 });
 
@@ -779,41 +1114,6 @@ it.each([
       config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
     },
     "queue-hosted-check-drift",
-  ],
-  [
-    "repair location outside the authorized source footprint",
-    (config: QueueConfig) => {
-      config.items[0]!.repair.sourcePaths = ["test/dogfood/queue.test.ts"];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
-  ],
-  [
-    "unsupported repository review location",
-    (config: QueueConfig) => {
-      config.items[0]!.source.allowedPaths = ["package.json"];
-      config.items[0]!.repair.sourcePaths = ["package.json"];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
-  ],
-  [
-    "directory instead of an exact review location",
-    (config: QueueConfig) => {
-      config.items[0]!.source.allowedPaths = ["test/dogfood/"];
-      config.items[0]!.repair.sourcePaths = ["test/dogfood/"];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
-  ],
-  [
-    "duplicate exact review locations",
-    (config: QueueConfig) => {
-      const path = config.items[0]!.repair.sourcePaths[0]!;
-      config.items[0]!.repair.sourcePaths = [path, path];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
-    },
-    "incompatible-repair-template",
   ],
 ])("fails closed for %s", async (_name, mutate, reason) => {
   const current = await fixture();

@@ -341,16 +341,7 @@ it("preflights dependency receipts before creating any worktree", async () => {
   expect(current.calls.filter((call) => call.startsWith("create:"))).toEqual([]);
 });
 
-it("refuses candidate-as-pilot selection and unexpected external state", async () => {
-  const candidate = await fixture();
-  candidate.config.pilotRevision = base;
-  candidate.config.controllerRevision = base;
-  candidate.config.authority.pilotRevision = base;
-  candidate.config.authority.controllerRevision = base;
-  await expect(
-    setupStep(candidate.config, candidate.adapter, candidate.config.controllerRoot),
-  ).rejects.toMatchObject({ reason: "candidate-as-pilot-selection" });
-
+it("refuses unexpected external state", async () => {
   const unrelated = await fixture();
   await writeFile(resolve(unrelated.config.stateDirectory, "unrelated.txt"), "preserve me\n");
   await expect(

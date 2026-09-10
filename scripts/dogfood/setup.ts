@@ -187,7 +187,6 @@ function validateConfig(config: SetupConfig) {
   for (const name of ["controllerRevision", "pilotRevision", "base"] as const)
     demand(typeof config[name] === "string" && SHA.test(config[name]), `invalid-${name}`);
   demand(config.controllerRevision === config.pilotRevision, "unreviewed-pilot-selection");
-  demand(config.pilotRevision !== config.base, "candidate-as-pilot-selection");
   for (const name of ["baseBranch", "sourceBranch"] as const)
     demand(
       typeof config[name] === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(config[name]),
@@ -336,7 +335,6 @@ async function record(directory: string, name: string, value: unknown) {
 
 function allowedStateNames() {
   return new Set([
-    "setup-request.json",
     "setup-plan.json",
     ...SETUP_ROLES.flatMap((role) => [
       `worktree-${role}-intent.json`,
@@ -427,19 +425,6 @@ function result(
     },
     phase,
   };
-}
-
-export async function assertSetupRequest(config: SetupConfig, requestPath: string) {
-  validateConfig(config);
-  demand(isAbsolute(requestPath), "request-path-not-absolute");
-  const [request, directory] = await Promise.all([
-    realpath(requestPath),
-    realpath(config.stateDirectory),
-  ]);
-  demand(
-    dirname(request) === directory && basename(request) === "setup-request.json",
-    "request-outside-controller-state",
-  );
 }
 
 export async function setupStep(

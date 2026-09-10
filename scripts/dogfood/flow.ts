@@ -16,8 +16,8 @@ export interface Config {
   allowedPaths: string[];
   repository: string;
   requiredChecks: string[];
-  author: { model: string; effort: string; promptFile: string };
-  reviewer: { model: string; effort: string; promptFile: string };
+  author: { model: string; effort: string; prompt: string };
+  reviewer: { model: string; effort: string; prompt: string };
   adapter: { kind: "codex-exec"; executable: string };
   // Private adapter-only artifact namespace. Persisted source configurations
   // never set this; a bounded replacement review uses it to avoid overwriting
@@ -113,12 +113,11 @@ export function validateConfig(config: Config) {
     const actor = config[role];
     requireThat(
       actor &&
-        [actor.model, actor.effort, actor.promptFile].every(
+        [actor.model, actor.effort, actor.prompt].every(
           (s) => typeof s === "string" && s.length > 0,
         ),
       `invalid-${role}`,
     );
-    requireThat(isAbsolute(actor.promptFile), "prompt-path-not-absolute");
   }
 }
 
@@ -142,7 +141,10 @@ function footprint(config: Config, changed: string[]) {
     changed.length > 0 &&
       changed.every((file) =>
         config.allowedPaths.some(
-          (allowed) => file === allowed || (allowed.endsWith("/") && file.startsWith(allowed)),
+          (allowed) =>
+            allowed === "." ||
+            file === allowed ||
+            (allowed.endsWith("/") && file.startsWith(allowed)),
         ),
       ),
     "outside-footprint",
@@ -203,10 +205,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     "pilot-revision-moved",
   );
   requireThat((await adapter.git(pilotRoot, ["status", "--porcelain"])) === "", "dirty-pilot");
-  const prompts = await Promise.all([
-    readFile(config.author.promptFile, "utf8"),
-    readFile(config.reviewer.promptFile, "utf8"),
-  ]);
+  const prompts: [string, string] = [config.author.prompt, config.reviewer.prompt];
   requireThat(
     prompts.every((p) => p.trim()),
     "empty-prompt",

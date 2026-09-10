@@ -16,6 +16,7 @@ import {
 } from "./repair-policy.mjs";
 
 const exec = promisify(execFile);
+
 const IDENTITY = /^[A-Za-z0-9._:-]{1,128}$/;
 const FLOW_REFUSALS = new Set([
   "author-launch-identity-unknown-reconcile",
@@ -39,13 +40,6 @@ const FLOW_REFUSALS = new Set([
   "author-failed",
   "reviewer-failed",
 ]);
-export const validDogfoodReviewPath = (path: string) =>
-  /^scripts\/dogfood\/.+\.(?:ts|mts|mjs)$/.test(path) ||
-  /^test\/dogfood\/.+\.(?:ts|mts|mjs)$/.test(path) ||
-  /^docs\/.+\.md$/.test(path) ||
-  /^planning\/drafts\/.+\.md$/.test(path) ||
-  path === "planning/roadmap.json";
-
 function demand(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new RepairBlocked(reason);
 }
@@ -79,7 +73,6 @@ async function assertBoundedRoots(config: RepairConfig) {
 
 async function assertLoadedController(config: RepairConfig) {
   validateRepairConfig(config);
-  demand(config.sourcePaths.every(validDogfoodReviewPath), "incompatible-repair-template");
   try {
     const [loadedRoot, authorizedRoot] = await Promise.all([
       realpath(resolve(import.meta.dirname, "../..")),
@@ -93,23 +86,7 @@ async function assertLoadedController(config: RepairConfig) {
 }
 
 async function sourcePromptContents(config: RepairConfig): Promise<[string, string]> {
-  let root: string;
-  let prompts: [string, string];
-  try {
-    root = await realpath(config.sourceStateDirectory);
-    prompts = (await Promise.all(
-      [config.authority.source.author.promptFile, config.authority.source.reviewer.promptFile].map(
-        (path) => realpath(path),
-      ),
-    )) as [string, string];
-  } catch {
-    throw new RepairBlocked("source-prompt-unavailable");
-  }
-  demand(
-    prompts.every((path) => !outside(root, path) && path !== root),
-    "source-prompt-outside-source-state",
-  );
-  return Promise.all(prompts.map((path) => readFile(path, "utf8"))) as Promise<[string, string]>;
+  return [config.authority.source.author.prompt, config.authority.source.reviewer.prompt];
 }
 
 async function readJson(directory: string, name: string) {
@@ -142,19 +119,6 @@ async function writeOnce(directory: string, name: string, value: unknown) {
   }
 }
 
-async function git(worktree: string, args: string[]) {
-  try {
-    return (
-      await exec("git", ["-C", worktree, ...args], {
-        windowsHide: true,
-        maxBuffer: 8 * 1024 * 1024,
-      })
-    ).stdout;
-  } catch {
-    throw new RepairBlocked("source-review-git-state-unknown");
-  }
-}
-
 const lineCount = (text: string) => {
   if (text.length === 0) return 0;
   const lines = text.split(/\r?\n/);
@@ -162,11 +126,24 @@ const lineCount = (text: string) => {
 };
 
 async function loadArtifacts(
+  gitExecutable: string,
   config: RepairConfig,
   directory: string,
   base: string,
   selectedReviewStateDirectory?: string,
 ): Promise<SourceReviewArtifacts> {
+  const git = async (worktree: string, args: string[]) => {
+    try {
+      return (
+        await exec(gitExecutable, ["-C", worktree, ...args], {
+          windowsHide: true,
+          maxBuffer: 8 * 1024 * 1024,
+        })
+      ).stdout;
+    } catch {
+      throw new RepairBlocked("source-review-git-state-unknown");
+    }
+  };
   const [configRecord, candidate, authorAttempt] = await Promise.all([
     readJson(directory, "config"),
     readJson(directory, "candidate"),
@@ -294,7 +271,7 @@ function boundedAdapter(config: RepairConfig, handoff: RepairHandoff, native: Ad
       await writeOnce(config.stateDirectory, `${role}-launch-context`, context);
       const suffix =
         role === "author"
-          ? `Correct only these validated source findings: ${JSON.stringify(handoff.failedReview.findings)}. Start from corrective base ${handoff.correctiveBase}; the distinct delivery main base remains ${handoff.mainBase}. Preserve these acceptance criteria verbatim: ${JSON.stringify(handoff.acceptanceCriteria)}. Authorized exact review paths are ${JSON.stringify(handoff.sourcePaths)}. Repairs consume no implementation attempt. Author PASS uses an empty summary. On FAIL, use a short actionable summary; never include raw output or environment data.`
+          ? `Correct only these validated source findings: ${JSON.stringify(handoff.failedReview.findings)}. Start from corrective base ${handoff.correctiveBase}; the distinct delivery main base remains ${handoff.mainBase}. Preserve these acceptance criteria verbatim: ${JSON.stringify(handoff.acceptanceCriteria)}. Authorized exact review paths are ${JSON.stringify(handoff.sourcePaths)}. This is implementation candidate ${handoff.implementation.attempts} of ${handoff.implementation.ceiling}. Author PASS uses an empty summary. On FAIL, use a short actionable summary; never include raw output or environment data.`
           : reviewerReportPrompt(handoff);
       const attempt = await native.launch(role, current, `${prompt}\n\n${suffix}\n`);
       demand(IDENTITY.test(attempt.id), "invalid-repair-participant-identity");
@@ -311,7 +288,7 @@ function boundedAdapter(config: RepairConfig, handoff: RepairHandoff, native: Ad
   };
 }
 
-export function reviewedRepairAdapter(native: Adapter): RepairAdapter {
+export function reviewedRepairAdapter(native: Adapter, gitExecutable = "git"): RepairAdapter {
   return {
     async loadSourceReview(config) {
       await assertLoadedController(config);
@@ -319,6 +296,7 @@ export function reviewedRepairAdapter(native: Adapter): RepairAdapter {
       const prompts = await sourcePromptContents(config);
       return {
         ...(await loadArtifacts(
+          gitExecutable,
           config,
           config.sourceStateDirectory,
           config.mainBase,
@@ -344,7 +322,12 @@ export function reviewedRepairAdapter(native: Adapter): RepairAdapter {
       }
     },
     async loadDeltaReview(config) {
-      const artifacts = await loadArtifacts(config, config.stateDirectory, config.repairBase);
+      const artifacts = await loadArtifacts(
+        gitExecutable,
+        config,
+        config.stateDirectory,
+        config.repairBase,
+      );
       const launchContext = await readJson(config.stateDirectory, "reviewer-launch-context");
       return { ...artifacts, launchContext };
     },

@@ -75,11 +75,11 @@ async function fixture(history: QueueParticipant[] = []) {
     allowedPaths: ["scripts/dogfood/queue.ts"],
     repository: "fixture/repository",
     requiredChecks: ["linux", "windows", "macos"],
-    author: { model: "gpt-author", effort: "high", promptFile: resolve(paths.source, "author.md") },
+    author: { model: "gpt-author", effort: "high", prompt: "author prompt" },
     reviewer: {
       model: "gpt-reviewer",
       effort: "high",
-      promptFile: resolve(paths.source, "reviewer.md"),
+      prompt: "review prompt",
     },
     adapter: { kind: "codex-exec" as const, executable: resolve(root, "codex") },
   };
@@ -88,6 +88,7 @@ async function fixture(history: QueueParticipant[] = []) {
     issue: source.issue,
     base,
     implementationAttempt: 1,
+    implementationAttemptCeiling: 4,
     setup: {
       run: source.run,
       issue: source.issue,
@@ -126,23 +127,22 @@ async function fixture(history: QueueParticipant[] = []) {
     source,
     repair: {
       stateDirectory: paths.repair,
-      sourcePaths: ["scripts/dogfood/queue.ts"],
       acceptanceCriteria: ["criterion one", "criterion two"],
       author: {
         model: "gpt-repair",
         effort: "high",
-        promptFile: resolve(paths.repair, "author.md"),
+        prompt: "repair author prompt",
       },
       reviewer: {
         model: "gpt-delta",
         effort: "high",
-        promptFile: resolve(paths.repair, "reviewer.md"),
+        prompt: "repair reviewer prompt",
       },
     },
     delivery: { requiredChecks: [...source.requiredChecks], policy: { kind: "fixture" } },
   };
   const config: QueueConfig = {
-    schemaVersion: "dogfood-bounded-queue-request/v1",
+    schemaVersion: "dogfood-bounded-queue-config/v1",
     run: "synthetic-queue",
     controllerRoot: paths.controller,
     controllerRevision: stable,
@@ -170,11 +170,9 @@ async function fixture(history: QueueParticipant[] = []) {
 }
 
 async function writeMalformedSource(current: Awaited<ReturnType<typeof fixture>>) {
-  const prompts = ["author prompt", "review prompt"];
+  const prompts = [current.source.author.prompt, current.source.reviewer.prompt];
   const fingerprint = repairDigest({ config: current.source, prompts });
   await Promise.all([
-    writeFile(current.source.author.promptFile, prompts[0]!),
-    writeFile(current.source.reviewer.promptFile, prompts[1]!),
     writeFile(
       resolve(current.paths.source, "config.json"),
       JSON.stringify({ fingerprint, config: current.source }),
@@ -294,10 +292,6 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     url: "https://example.test/pull/337",
     head: current.item.base,
   };
-  await Promise.all([
-    writeFile(current.source.author.promptFile, "author prompt"),
-    writeFile(current.source.reviewer.promptFile, "review prompt"),
-  ]);
   let sourceHead = base;
   let reviewHead = base;
   let pid = 10;
@@ -337,7 +331,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       ).toMatchObject({ ordinal, item: current.item.id, stage: "source", role });
       if (role === "reviewer") {
         expect(prompt).toContain("is there a simpler way?");
-        expect(prompt).toContain(JSON.stringify(current.item.repair.sourcePaths));
+        expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
       }
       launches.push(role);
       return { id: `source-${role}`, pid: pid++, trace: resolve(current.root, `${role}.jsonl`) };
@@ -529,10 +523,6 @@ it.each([
   "replaces only %s and binds the selected review without relaunch on restart",
   async (_case, malformedReview) => {
     const current = await fixture();
-    await Promise.all([
-      writeFile(current.source.author.promptFile, "author prompt"),
-      writeFile(current.source.reviewer.promptFile, "review prompt"),
-    ]);
     let sourceHead = base;
     let reviewHead = base;
     const launches: string[] = [];
@@ -684,8 +674,6 @@ it("blocks a replacement intent without launch identity instead of redispatching
   const prompts = ["author prompt", "review prompt"];
   const fingerprint = repairDigest({ config: current.source, prompts });
   await Promise.all([
-    writeFile(current.source.author.promptFile, prompts[0]!),
-    writeFile(current.source.reviewer.promptFile, prompts[1]!),
     writeFile(
       resolve(current.paths.source, "config.json"),
       JSON.stringify({ fingerprint, config: current.source }),
@@ -865,10 +853,6 @@ it("rejects a substituted original review transport path before replacement effe
 
 it("persists the genuine adapter result and restarts four-participant completion without effects", async () => {
   const current = await fixture();
-  await Promise.all([
-    writeFile(current.source.author.promptFile, "synthetic source author prompt"),
-    writeFile(current.source.reviewer.promptFile, "synthetic source reviewer prompt"),
-  ]);
   const sourceSummary = JSON.stringify({
     run: current.source.run,
     role: "reviewer",
@@ -964,7 +948,7 @@ it("persists the genuine adapter result and restarts four-participant completion
           reviewHead: candidate,
           sourceClean: true,
           reviewClean: true,
-          promptContents: ["synthetic source author prompt", "synthetic source reviewer prompt"],
+          promptContents: [current.source.author.prompt, current.source.reviewer.prompt],
         };
       }
       return sourceArtifacts;
@@ -1379,7 +1363,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
     ),
     writeFile(
       resolve(current.paths.source, "candidate.json"),
-      JSON.stringify({ head: candidate, changed: current.item.repair.sourcePaths }),
+      JSON.stringify({ head: candidate, changed: current.source.allowedPaths }),
     ),
     writeFile(
       resolve(current.paths.source, "author-attempt.json"),
@@ -1401,7 +1385,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
     verdict: "FAIL",
     findings: [
       {
-        file: current.item.repair.sourcePaths[0],
+        file: current.source.allowedPaths[0],
         line: 1,
         severity: "blocking",
         text: "synthetic fixable defect",
@@ -1431,7 +1415,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
     async loadSourceReview() {
       return {
         configRecord: { fingerprint, config: current.source, host: "synthetic" },
-        candidate: { head: candidate, changed: current.item.repair.sourcePaths },
+        candidate: { head: candidate, changed: current.source.allowedPaths },
         authorAttempt: {
           id: "source-author",
           pid: 1,
@@ -1448,8 +1432,8 @@ it("directly composes the accepted repair transition from a complete fixable rev
           head: candidate,
           summary: sourceSummary,
         },
-        changedFiles: current.item.repair.sourcePaths,
-        lineCounts: { [current.item.repair.sourcePaths[0]!]: 10 },
+        changedFiles: current.source.allowedPaths,
+        lineCounts: { [current.source.allowedPaths[0]!]: 10 },
         sourceHead: candidate,
         reviewHead: candidate,
         sourceClean: true,
@@ -1508,7 +1492,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
     async loadDeltaReview() {
       return {
         configRecord: { fingerprint, config: current.source, host: "synthetic" },
-        candidate: { head: repaired, changed: current.item.repair.sourcePaths },
+        candidate: { head: repaired, changed: current.source.allowedPaths },
         authorAttempt: {
           id: "repair-author",
           pid: 3,
@@ -1525,8 +1509,8 @@ it("directly composes the accepted repair transition from a complete fixable rev
           head: repaired,
           summary: deltaSummary,
         },
-        changedFiles: current.item.repair.sourcePaths,
-        lineCounts: { [current.item.repair.sourcePaths[0]!]: 10 },
+        changedFiles: current.source.allowedPaths,
+        lineCounts: { [current.source.allowedPaths[0]!]: 10 },
         sourceHead: repaired,
         reviewHead: repaired,
         sourceClean: true,
@@ -1558,7 +1542,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
   expect(captured).toMatchObject({
     mainBase: base,
     repairBase: candidate,
-    implementationAttempts: 1,
+    implementationAttempts: 2,
     implementationAttemptCeiling: 4,
     history: [
       { ordinal: 1, id: "source-author" },

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export const DELIVERY_AUTHORITY_SCHEMA = "dogfood-delivery-authority/v1" as const;
 const ACTIONS = ["gates", "mirror", "publish", "merge", "cleanup"] as const;
@@ -368,19 +368,6 @@ function validateConfig(config: DeliveryConfig) {
       authority.actions.length === ACTIONS.length &&
       ACTIONS.every((action) => authority.actions.filter((item) => item === action).length === 1),
     "unauthorized-delivery",
-  );
-}
-
-export async function assertControllerRequest(config: DeliveryConfig, requestPath: string) {
-  validateConfig(config);
-  demand(isAbsolute(requestPath), "request-path-not-absolute");
-  const [request, directory] = await Promise.all([
-    realpath(requestPath),
-    realpath(config.stateDirectory),
-  ]);
-  demand(
-    dirname(request) === directory && basename(request) === "delivery-request.json",
-    "request-outside-controller-state",
   );
 }
 

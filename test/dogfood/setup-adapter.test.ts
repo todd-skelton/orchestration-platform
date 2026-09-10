@@ -289,22 +289,3 @@ it("rejects checkout-contained state before Git or installer mutation", async ()
   expect(current.installs()).toBe(0);
   await expect(access(current.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
 });
-
-it("loads the TypeScript composition directly in Node and emits only a bounded refusal", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "setup-composition-fixture-"));
-  roots.push(root);
-  const request = resolve(root, "setup-request.json");
-  await writeFile(request, "{}\n");
-
-  await expect(
-    run(
-      process.execPath,
-      [resolve(import.meta.dirname, "../../scripts/dogfood/prepare.mjs"), request],
-      {
-        windowsHide: true,
-      },
-    ),
-  ).rejects.toMatchObject({
-    stderr: `${JSON.stringify({ status: "blocked", reason: "malformed-setup-config" })}\n`,
-  });
-});

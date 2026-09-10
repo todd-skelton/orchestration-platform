@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   repairDigest,
@@ -68,16 +68,6 @@ export async function repairFixture(root: string) {
     priorState: resolve(root, "prior-state"),
   };
   await Promise.all(Object.values(paths).map((path) => mkdir(path)));
-  const authorPrompt = resolve(paths.controller, "repair-author.md");
-  const reviewerPrompt = resolve(paths.controller, "repair-reviewer.md");
-  const sourceAuthorPrompt = resolve(paths.priorState, "author.md");
-  const sourceReviewerPrompt = resolve(paths.priorState, "reviewer.md");
-  await Promise.all([
-    writeFile(authorPrompt, "Apply only the validated corrective delta.\n"),
-    writeFile(reviewerPrompt, "Review only the validated corrective delta.\n"),
-    writeFile(sourceAuthorPrompt, "Apply the original bounded change.\n"),
-    writeFile(sourceReviewerPrompt, "Review the original bounded change.\n"),
-  ]);
   const history = [
     {
       ordinal: 1,
@@ -118,21 +108,25 @@ export async function repairFixture(root: string) {
     acceptanceCriteria: ["Preserve the synthetic acceptance criterion."],
     requiredChecks: ["hosted-linux", "hosted-macos", "hosted-windows"],
   };
-  const author = { model: "synthetic-author-model", effort: "high", promptFile: authorPrompt };
+  const promptContents = [
+    "Apply the original bounded change.\n",
+    "Review the original bounded change.\n",
+  ] as [string, string];
+  const author = { model: "synthetic-author-model", effort: "high", prompt: "Repair it." };
   const reviewer = {
     model: "synthetic-reviewer-model",
     effort: "high",
-    promptFile: reviewerPrompt,
+    prompt: "Review the repair.",
   };
   const sourceAuthor = {
     model: "synthetic-old-author",
     effort: "high",
-    promptFile: sourceAuthorPrompt,
+    prompt: promptContents[0],
   };
   const sourceReviewer = {
     model: "synthetic-old-reviewer",
     effort: "high",
-    promptFile: sourceReviewerPrompt,
+    prompt: promptContents[1],
   };
   const adapter = { kind: "codex-exec" as const, executable: process.execPath };
   const priorConfig = {
@@ -151,10 +145,6 @@ export async function repairFixture(root: string) {
     reviewer: sourceReviewer,
     adapter: structuredClone(adapter),
   };
-  const promptContents = [
-    "Apply the original bounded change.\n",
-    "Review the original bounded change.\n",
-  ] as [string, string];
   const sourceFingerprint = repairDigest({ config: priorConfig, prompts: promptContents });
   const config = {
     schemaVersion: "dogfood-repair-request/v1",

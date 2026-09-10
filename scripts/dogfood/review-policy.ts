@@ -36,7 +36,7 @@ export interface ReviewRecoveryAuthorityInput {
   authorAttempt: string;
   candidateHead: string;
   originalReview: string;
-  reviewer: { model: string; effort: string; promptFile: string };
+  reviewer: { model: string; effort: string; prompt: string };
 }
 
 export function reviewRecoveryAuthority(input: ReviewRecoveryAuthorityInput) {
@@ -49,8 +49,8 @@ export function reviewRecoveryAuthority(input: ReviewRecoveryAuthorityInput) {
     !SHA.test(input.candidateHead) ||
     ![input.authorAttempt, input.originalReview].every((value) => IDENTITY.test(value)) ||
     input.authorAttempt === input.originalReview ||
-    !exactKeys(input.reviewer, ["model", "effort", "promptFile"]) ||
-    ![input.reviewer.model, input.reviewer.effort, input.reviewer.promptFile].every(
+    !exactKeys(input.reviewer, ["model", "effort", "prompt"]) ||
+    ![input.reviewer.model, input.reviewer.effort, input.reviewer.prompt].every(
       (value) => typeof value === "string" && value.length > 0,
     )
   )
@@ -87,7 +87,7 @@ export function validateReviewRecoveryAuthority(
       "reviewer",
       "action",
     ]) ||
-    !exactKeys(value.reviewer, ["model", "effort", "promptFile"]) ||
+    !exactKeys(value.reviewer, ["model", "effort", "prompt"]) ||
     value.schemaVersion !== authority.schemaVersion ||
     value.controller !== authority.controller ||
     value.run !== authority.run ||
@@ -98,7 +98,7 @@ export function validateReviewRecoveryAuthority(
     value.originalReview !== authority.originalReview ||
     value.reviewer.model !== authority.reviewer.model ||
     value.reviewer.effort !== authority.reviewer.effort ||
-    value.reviewer.promptFile !== authority.reviewer.promptFile ||
+    value.reviewer.prompt !== authority.reviewer.prompt ||
     value.action !== authority.action
   )
     throw new Error("invalid-review-recovery-authority");

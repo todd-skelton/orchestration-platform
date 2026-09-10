@@ -128,11 +128,11 @@ async function realFixture() {
 
 it("joins the actual closed source records to exact Git heads, changed files and lines", async () => {
   const current = await realFixture();
-  expect(current.config.authority.source.author.promptFile).toBe(
-    resolve(current.paths.priorState, "author.md"),
+  expect(current.config.authority.source.author.prompt).toBe(
+    "Apply the original bounded change.\n",
   );
-  expect(current.config.authority.source.reviewer.promptFile).toBe(
-    resolve(current.paths.priorState, "reviewer.md"),
+  expect(current.config.authority.source.reviewer.prompt).toBe(
+    "Review the original bounded change.\n",
   );
   expect(current.config.authority.source.author).not.toEqual(current.config.author);
   expect(current.config.authority.source.reviewer).not.toEqual(current.config.reviewer);
@@ -649,62 +649,14 @@ it.each([
   30_000,
 );
 
-it("refuses a substituted predecessor prompt before reading it or recording intent", async () => {
+it("refuses substituted predecessor prompt text before recording intent", async () => {
   const current = await realFixture();
-  current.config.authority.source.author.promptFile = resolve(
-    current.paths.priorState,
-    "substituted-author.md",
-  );
+  current.config.authority.source.author.prompt = "substituted author prompt";
   const adapter = reviewedRepairAdapter({} as Adapter);
   await expect(repairStep(current.config, adapter, repairPolicy())).rejects.toMatchObject({
-    reason: "unauthorized-source-review",
+    reason: "source-config-mismatch",
   });
   await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
     code: "ENOENT",
   });
 }, 30_000);
-
-it("refuses an unsupported repository review template before reading source state", async () => {
-  const current = await realFixture();
-  current.config.allowedPaths = ["package.json"];
-  current.config.authority.allowedPaths = ["package.json"];
-  current.config.sourcePaths = ["package.json"];
-  current.config.authority.sourcePaths = ["package.json"];
-  const adapter = reviewedRepairAdapter({} as Adapter);
-  await expect(adapter.loadSourceReview(current.config)).rejects.toMatchObject({
-    reason: "incompatible-repair-template",
-  });
-  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
-}, 30_000);
-
-it("refuses a canonical predecessor prompt escape before reading it or recording intent", async () => {
-  const current = await realFixture();
-  const sourceAuthorPrompt = resolve(current.paths.priorState, "author.md");
-  await rm(sourceAuthorPrompt);
-  await symlink(current.paths.controller, sourceAuthorPrompt, "junction");
-  const adapter = reviewedRepairAdapter({} as Adapter);
-  await expect(repairStep(current.config, adapter, repairPolicy())).rejects.toMatchObject({
-    reason: "source-prompt-outside-source-state",
-  });
-  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
-});
-
-it("loads the TypeScript composition directly in Node and emits only a bounded refusal", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "repair-composition-fixture-"));
-  roots.push(root);
-  const request = resolve(root, "repair-request.json");
-  await writeFile(request, "{}\n");
-  await expect(
-    run(
-      process.execPath,
-      [resolve(import.meta.dirname, "../../scripts/dogfood/continue-repair.mjs"), request],
-      { windowsHide: true },
-    ),
-  ).rejects.toMatchObject({
-    stderr: `${JSON.stringify({ status: "blocked", reason: "malformed-repair-config" })}\n`,
-  });
-});

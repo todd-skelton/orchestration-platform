@@ -1,5 +1,5 @@
 import { readFile, realpath, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   RepairBlocked,
   repairDigest,
@@ -84,19 +84,6 @@ function deltaReviewRecord(
     findings: accepted.review.findings,
     g0: accepted.review.g0,
   };
-}
-
-export async function assertRepairRequest(config: RepairConfig, requestPath: string) {
-  validateRepairConfig(config);
-  demand(isAbsolute(requestPath), "request-path-not-absolute");
-  const [request, directory] = await Promise.all([
-    realpath(requestPath),
-    realpath(config.stateDirectory),
-  ]);
-  demand(
-    dirname(request) === directory && basename(request) === "repair-request.json",
-    "request-outside-controller-state",
-  );
 }
 
 export async function repairStep(

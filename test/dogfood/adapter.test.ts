@@ -563,7 +563,7 @@ it.each([
     authorAttempt: "author",
     candidateHead: head,
     originalReview: "original",
-    reviewer: { model: "reviewer", effort: "high", promptFile: "/reviewer.md" },
+    reviewer: { model: "reviewer", effort: "high", prompt: "review prompt" },
   };
   const authority = structuredClone(reviewRecoveryAuthority(input));
   mutate(authority);

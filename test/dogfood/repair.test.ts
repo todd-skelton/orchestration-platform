@@ -74,7 +74,7 @@ it("records the bounded handoff before dispatch and preserves all controller-own
     allowedPaths: current.config.allowedPaths,
     sourcePaths: current.config.sourcePaths,
     history: current.config.history,
-    implementation: { attempts: 1, ceiling: 4, consumedByRepair: 0 },
+    implementation: { attempts: 1, ceiling: 4, consumedByRepair: 1 },
     admission: current.config.admission,
     predecessorCompleteSweep: "synthetic-prior-reviewer",
   });
@@ -209,9 +209,8 @@ it("refuses malformed, oversized, inconsistent and non-fixable source reports", 
 it("refuses controller, prompt, adapter, admission, history, acceptance and footprint authority drift before intent", async () => {
   for (const mutate of [
     (f: any) => (f.config.controllerRoot = resolve(f.config.controllerRoot, "substituted")),
-    (f: any) => (f.config.author.promptFile = resolve(f.paths.controller, "substituted-author.md")),
-    (f: any) =>
-      (f.config.reviewer.promptFile = resolve(f.paths.controller, "substituted-reviewer.md")),
+    (f: any) => (f.config.author.prompt = "substituted author prompt"),
+    (f: any) => (f.config.reviewer.prompt = "substituted reviewer prompt"),
     (f: any) => (f.config.adapter.kind = "substituted-adapter"),
     (f: any) => (f.config.adapter.executable = "substituted-codex"),
     (f: any) => (f.config.admission.ceiling += 1),

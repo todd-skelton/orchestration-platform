@@ -16,10 +16,6 @@
     "verify:bootstrap": "node scripts/verify/bootstrap.mjs",
     "planning:check": "node scripts/planning/check.mjs",
     "planning:board-check": "node scripts/planning/board-check.mjs",
-    "loop:prepare": "node scripts/dogfood/prepare.mjs",
-    "loop:run": "node scripts/dogfood/run.mjs",
-    "loop:repair": "node scripts/dogfood/continue-repair.mjs",
-    "loop:deliver": "node scripts/dogfood/deliver.mjs",
     "loop:supervise": "node scripts/dogfood/supervise.mjs"
   },
   "devDependencies": {

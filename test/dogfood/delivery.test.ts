@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
-  assertControllerRequest,
   deliveryStep,
   type DeliveryAdapter,
   type DeliveryConfig,
@@ -759,17 +758,6 @@ it.each([
     expectNoProviderAction(f.calls);
   },
 );
-
-it("accepts controller authority only from the external state directory", async () => {
-  const f = await fixture();
-  const external = resolve(f.config.stateDirectory, "delivery-request.json");
-  const worker = resolve(f.config.worktree, "delivery-request.json");
-  await Promise.all([writeFile(external, "{}\n"), writeFile(worker, "{}\n")]);
-  await expect(assertControllerRequest(f.config, external)).resolves.toBeUndefined();
-  await expect(assertControllerRequest(f.config, worker)).rejects.toThrow(
-    "request-outside-controller-state",
-  );
-});
 
 it("imports the portable delivery composition directly in Node 24", async () => {
   const { stdout } = await promisify(execFile)(
