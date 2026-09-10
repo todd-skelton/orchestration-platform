@@ -1449,8 +1449,9 @@ export function repositoryQueueAdapter(
       "source-review-state-unknown",
     );
     let review;
+    let selection: Awaited<ReturnType<typeof sourceReviewContract>>;
     try {
-      const selection = await validatedReviewSelection(item);
+      selection = await validatedReviewSelection(item);
       review = parseReview(selected.terminal.summary, candidate.head, selection.contract.scope);
     } catch (error) {
       throw new QueueBlocked(
