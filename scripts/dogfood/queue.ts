@@ -1,9 +1,19 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile, readdir, realpath, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { promisify } from "node:util";
-import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
+import {
+  assertControllerExecutor,
+  githubDeliveryAdapter,
+} from "./delivery-adapter.mjs";
 import {
   DeliveryBlocked,
   deliveryStep,
@@ -47,16 +57,23 @@ import {
 } from "./repair-policy.mjs";
 import { selfDeliveryPolicy } from "./self-delivery-policy.mjs";
 import { gitSetupAdapter } from "./setup-adapter.mjs";
-import { SetupBlocked, setupStep, type SetupAdapter, type SetupConfig } from "./setup.mjs";
+import {
+  SetupBlocked,
+  setupStep,
+  type SetupAdapter,
+  type SetupConfig,
+} from "./setup.mjs";
 
-export const QUEUE_AUTHORITY_SCHEMA = "dogfood-bounded-queue-authority/v1" as const;
+export const QUEUE_AUTHORITY_SCHEMA =
+  "dogfood-bounded-queue-authority/v1" as const;
 export const QUEUE_REQUEST_SCHEMA = "dogfood-bounded-queue-request/v1" as const;
 const ACTIONS = ["setup", "source", "repair", "delivery"] as const;
 const SHA = /^[a-f0-9]{40}$/;
 const ABSENT = Symbol("absent");
 const exec = promisify(execFile);
 
-export type QueueMeasure = { status: "known"; value: number } | { status: "unavailable" };
+export type QueueMeasure =
+  { status: "known"; value: number } | { status: "unavailable" };
 export type QueueUsage = {
   inputTokens: QueueMeasure;
   outputTokens: QueueMeasure;
@@ -123,11 +140,21 @@ export interface QueueConfig {
 
 export type QueueSourceResult =
   | { status: "observing-author" | "observing-reviewer" }
-  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string }
+  | {
+      status: "accepted";
+      head: string;
+      reviewId: string;
+      stateDirectory: string;
+    }
   | { status: "fixable-review"; head: string; reviewId: string };
 export type QueueRepairResult =
   | { status: "observing-author" | "observing-reviewer" }
-  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string };
+  | {
+      status: "accepted";
+      head: string;
+      reviewId: string;
+      stateDirectory: string;
+    };
 export type QueueDeliveryResult =
   | { status: "observing-hosted-checks"; head: string; reviewId: string }
   | Extract<DeliveryResult, { status: "complete" }>;
@@ -139,7 +166,9 @@ export interface CompletedQueueReader {
 export interface QueueAdapter {
   assertAuthority(config: QueueConfig): Promise<void>;
   history(): Promise<QueueParticipant[]>;
-  setup(item: QueueItem): Promise<{ status: "ready" | "incomplete"; reason?: string }>;
+  setup(
+    item: QueueItem,
+  ): Promise<{ status: "ready" | "incomplete"; reason?: string }>;
   source(item: QueueItem): Promise<QueueSourceResult>;
   repair(item: QueueItem): Promise<QueueRepairResult>;
   delivery(
@@ -150,13 +179,20 @@ export interface QueueAdapter {
 
 export type QueueResult =
   | {
-      status: "observing-author" | "observing-reviewer" | "observing-hosted-checks";
+      status:
+        "observing-author" | "observing-reviewer" | "observing-hosted-checks";
       run: string;
       item: string;
       issue: string;
       cursor: number;
     }
-  | { status: "complete"; run: string; cursor: number; items: number; participants: number };
+  | {
+      status: "complete";
+      run: string;
+      cursor: number;
+      items: number;
+      participants: number;
+    };
 
 export class QueueBlocked extends Error {
   readonly reason: string;
@@ -171,7 +207,10 @@ function demand(condition: unknown, reason: string): asserts condition {
 }
 const object = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
-function exactKeys(value: unknown, keys: string[]): value is Record<string, any> {
+function exactKeys(
+  value: unknown,
+  keys: string[],
+): value is Record<string, any> {
   return (
     object(value) &&
     Object.keys(value).length === keys.length &&
@@ -211,7 +250,9 @@ function validRepositoryRepairTemplate(item: QueueItem) {
     item.repair.sourcePaths.length <= 32 &&
     item.repair.sourcePaths.every(
       (path) =>
-        validRepairReviewPath(path) && allowedPaths.includes(path) && validDogfoodReviewPath(path),
+        validRepairReviewPath(path) &&
+        allowedPaths.includes(path) &&
+        validDogfoodReviewPath(path),
     ) &&
     new Set(item.repair.sourcePaths).size === item.repair.sourcePaths.length
   );
@@ -237,17 +278,30 @@ function validUsage(value: unknown): value is QueueUsage {
   );
 }
 export function validateHistory(history: QueueParticipant[], ceiling: number) {
-  demand(Array.isArray(history) && history.length <= ceiling, "native-launch-ceiling-exhausted");
+  demand(
+    Array.isArray(history) && history.length <= ceiling,
+    "native-launch-ceiling-exhausted",
+  );
   const identities = new Set<string>();
   for (const [index, participant] of history.entries()) {
     demand(
-      exactKeys(participant, ["ordinal", "id", "item", "stage", "role", "outcome", "usage"]) &&
+      exactKeys(participant, [
+        "ordinal",
+        "id",
+        "item",
+        "stage",
+        "role",
+        "outcome",
+        "usage",
+      ]) &&
         participant.ordinal === index + 1 &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.id) &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.item) &&
         ["source", "repair"].includes(participant.stage) &&
         ["author", "reviewer"].includes(participant.role) &&
-        ["passed", "failed", "unknown", "malformed"].includes(participant.outcome) &&
+        ["passed", "failed", "unknown", "malformed"].includes(
+          participant.outcome,
+        ) &&
         validUsage(participant.usage),
       "malformed-participant-history",
     );
@@ -279,7 +333,9 @@ export function validateQueueConfig(config: QueueConfig) {
   );
   demand(SHA.test(config.controllerRevision), "invalid-controller-revision");
   demand(
-    Number.isSafeInteger(config.limit) && config.limit > 0 && config.limit <= 32,
+    Number.isSafeInteger(config.limit) &&
+      config.limit > 0 &&
+      config.limit <= 32,
     "invalid-queue-limit",
   );
   demand(
@@ -290,7 +346,9 @@ export function validateQueueConfig(config: QueueConfig) {
   );
   validateHistory(config.initialHistory, config.nativeLaunchCeiling);
   demand(
-    Array.isArray(config.items) && config.items.length > 0 && config.items.length <= config.limit,
+    Array.isArray(config.items) &&
+      config.items.length > 0 &&
+      config.items.length <= config.limit,
     "closed-finite-input-required",
   );
   const itemIds = new Set<string>();
@@ -328,12 +386,17 @@ export function validateQueueConfig(config: QueueConfig) {
         exactKeys(item.delivery, [
           "requiredChecks",
           "policy",
-          ...(object(item.delivery) && Object.hasOwn(item.delivery, "refresh") ? ["refresh"] : []),
+          ...(object(item.delivery) && Object.hasOwn(item.delivery, "refresh")
+            ? ["refresh"]
+            : []),
         ]) &&
         Array.isArray(item.delivery.requiredChecks) &&
         item.delivery.requiredChecks.length >= 3 &&
-        item.delivery.requiredChecks.every((name) => typeof name === "string" && name.length > 0) &&
-        new Set(item.delivery.requiredChecks).size === item.delivery.requiredChecks.length,
+        item.delivery.requiredChecks.every(
+          (name) => typeof name === "string" && name.length > 0,
+        ) &&
+        new Set(item.delivery.requiredChecks).size ===
+          item.delivery.requiredChecks.length,
       "malformed-queue-item",
     );
     demand(
@@ -351,7 +414,8 @@ export function validateQueueConfig(config: QueueConfig) {
     demand(validRepositoryRepairTemplate(item), "incompatible-repair-template");
     demand(
       Array.isArray(item.source.requiredChecks) &&
-        item.source.requiredChecks.length === item.delivery.requiredChecks.length &&
+        item.source.requiredChecks.length ===
+          item.delivery.requiredChecks.length &&
         item.source.requiredChecks.every(
           (name, index) => name === item.delivery.requiredChecks[index],
         ),
@@ -395,7 +459,8 @@ export function validateQueueConfig(config: QueueConfig) {
       authority.stateDirectory === config.stateDirectory &&
       authority.limit === config.limit &&
       authority.nativeLaunchCeiling === config.nativeLaunchCeiling &&
-      authority.lineageDigest === queueDigest(config.initialHistory.map(participantIdentity)) &&
+      authority.lineageDigest ===
+        queueDigest(config.initialHistory.map(participantIdentity)) &&
       authority.itemsDigest === queueDigest(config.items.map(itemAuthority)) &&
       Array.isArray(authority.actions) &&
       authority.actions.length === ACTIONS.length &&
@@ -404,7 +469,10 @@ export function validateQueueConfig(config: QueueConfig) {
   );
 }
 
-export async function assertQueueRequest(config: QueueConfig, requestPath: string) {
+export async function assertQueueRequest(
+  config: QueueConfig,
+  requestPath: string,
+) {
   validateQueueConfig(config);
   demand(isAbsolute(requestPath), "request-path-not-absolute");
   const [request, directory] = await Promise.all([
@@ -412,14 +480,17 @@ export async function assertQueueRequest(config: QueueConfig, requestPath: strin
     realpath(config.stateDirectory),
   ]);
   demand(
-    dirname(request) === directory && basename(request) === "queue-request.json",
+    dirname(request) === directory &&
+      basename(request) === "queue-request.json",
     "request-outside-queue-state",
   );
 }
 
 async function optionalRecord(directory: string, name: string) {
   try {
-    return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
+    return JSON.parse(
+      await readFile(resolve(directory, `${name}.json`), "utf8"),
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return ABSENT;
     throw new QueueBlocked(`malformed-queue-record:${name}`);
@@ -428,7 +499,10 @@ async function optionalRecord(directory: string, name: string) {
 async function record(directory: string, name: string, value: unknown) {
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
   try {
-    await writeFile(resolve(directory, `${name}.json`), bytes, { flag: "wx", flush: true });
+    await writeFile(resolve(directory, `${name}.json`), bytes, {
+      flag: "wx",
+      flush: true,
+    });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     demand(
@@ -467,7 +541,12 @@ async function assertQueueStateCensus(config: QueueConfig, directory: string) {
     "unexpected-queue-state",
   );
 }
-function stageRecord(item: QueueItem, stage: string, history: QueueParticipant[], value: object) {
+function stageRecord(
+  item: QueueItem,
+  stage: string,
+  history: QueueParticipant[],
+  value: object,
+) {
   const unavailable: QueueMeasure = { status: "unavailable" };
   return {
     schemaVersion: "dogfood-bounded-queue-stage/v1",
@@ -479,13 +558,20 @@ function stageRecord(item: QueueItem, stage: string, history: QueueParticipant[]
       ...participantIdentity(participant),
       usage: validUsage(participant.usage)
         ? participant.usage
-        : { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable },
+        : {
+            inputTokens: unavailable,
+            outputTokens: unavailable,
+            costUsd: unavailable,
+          },
     })),
     ...value,
   };
 }
 
-function validCompletedChecks(item: QueueItem, checks: unknown): checks is CheckEvidence[] {
+function validCompletedChecks(
+  item: QueueItem,
+  checks: unknown,
+): checks is CheckEvidence[] {
   return (
     Array.isArray(checks) &&
     checks.length === item.delivery.requiredChecks.length &&
@@ -500,7 +586,10 @@ function validCompletedChecks(item: QueueItem, checks: unknown): checks is Check
   );
 }
 
-function validCompletedDeliveryFields(item: QueueItem, delivery: Record<string, any>) {
+function validCompletedDeliveryFields(
+  item: QueueItem,
+  delivery: Record<string, any>,
+) {
   return (
     delivery.status === "complete" &&
     delivery.run === item.source.run &&
@@ -563,7 +652,10 @@ function completedStageRecord(
 }
 function assertHistoryPrefix(config: QueueConfig, history: QueueParticipant[]) {
   validateHistory(history, config.nativeLaunchCeiling);
-  demand(history.length >= config.initialHistory.length, "participant-history-truncated");
+  demand(
+    history.length >= config.initialHistory.length,
+    "participant-history-truncated",
+  );
   demand(
     config.initialHistory.every(
       (participant, index) =>
@@ -735,8 +827,10 @@ async function completedItemReceipt(
       accepted.status === "accepted" &&
       accepted.head === completed.head &&
       accepted.reviewId === completed.reviewId &&
-      ((accepted.stage === "source" && accepted.stateDirectory === item.source.stateDirectory) ||
-        (accepted.stage === "repair" && accepted.stateDirectory === item.repair.stateDirectory)) &&
+      ((accepted.stage === "source" &&
+        accepted.stateDirectory === item.source.stateDirectory) ||
+        (accepted.stage === "repair" &&
+          accepted.stateDirectory === item.repair.stateDirectory)) &&
       Array.isArray(accepted.history),
     "malformed-completed-item",
   );
@@ -800,7 +894,13 @@ async function completedQueueState(
   }
   if (queueComplete !== ABSENT)
     demand(
-      exactKeys(queueComplete, ["status", "run", "cursor", "items", "participants"]) &&
+      exactKeys(queueComplete, [
+        "status",
+        "run",
+        "cursor",
+        "items",
+        "participants",
+      ]) &&
         queueComplete.status === "complete" &&
         queueComplete.run === config.run &&
         queueComplete.cursor === config.items.length &&
@@ -825,18 +925,28 @@ export async function reconcileCompletedQueue(
   await assertQueueConfigRecord(config, directory);
   const currentHistory = await reader.history();
   assertHistoryPrefix(config, currentHistory);
-  const { queueComplete } = await completedQueueState(config, directory, currentHistory);
+  const { queueComplete } = await completedQueueState(
+    config,
+    directory,
+    currentHistory,
+  );
   demand(queueComplete !== ABSENT, "incomplete-queue-reconciliation");
   return queueComplete as Extract<QueueResult, { status: "complete" }>;
 }
 
-export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
+export async function queueStep(
+  config: QueueConfig,
+  adapter: QueueAdapter,
+): Promise<QueueResult> {
   validateQueueConfig(config);
   const directory = await realpath(config.stateDirectory);
   await adapter.assertAuthority(config);
   await assertQueueStateCensus(config, directory);
   const fingerprint = queueFingerprint(config);
-  await record(directory, "queue-config", { fingerprint, authority: config.authority });
+  await record(directory, "queue-config", {
+    fingerprint,
+    authority: config.authority,
+  });
 
   const currentHistory = await adapter.history();
   assertHistoryPrefix(config, currentHistory);
@@ -866,12 +976,19 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
 
     const setupReceipt = await optionalRecord(directory, `${prefix}-setup`);
     if (setupReceipt === ABSENT) {
-      await record(directory, `${prefix}-setup-intent`, { item: item.id, base: item.base });
+      await record(directory, `${prefix}-setup-intent`, {
+        item: item.id,
+        base: item.base,
+      });
       const setup = await adapter.setup(item);
       demand(setup.status === "ready", setup.reason ?? "setup-incomplete");
       const history = await adapter.history();
       assertHistoryPrefix(config, history);
-      await record(directory, `${prefix}-setup`, stageRecord(item, "setup", history, setup));
+      await record(
+        directory,
+        `${prefix}-setup`,
+        stageRecord(item, "setup", history, setup),
+      );
     } else {
       demand(
         setupReceipt.schemaVersion === "dogfood-bounded-queue-stage/v1" &&
@@ -883,22 +1000,37 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           Array.isArray(setupReceipt.history),
         "malformed-setup-stage",
       );
-      if ((await optionalRecord(directory, `${prefix}-source-intent`)) === ABSENT) {
+      if (
+        (await optionalRecord(directory, `${prefix}-source-intent`)) === ABSENT
+      ) {
         const setup = await adapter.setup(item);
         demand(setup.status === "ready", setup.reason ?? "setup-incomplete");
       }
-      assertHistorySnapshot(config, setupReceipt.history, await adapter.history());
+      assertHistorySnapshot(
+        config,
+        setupReceipt.history,
+        await adapter.history(),
+      );
     }
 
     let accepted = await optionalRecord(directory, `${prefix}-accepted`);
     if (accepted === ABSENT) {
-      const sourceFailure = await optionalRecord(directory, `${prefix}-source-failure`);
+      const sourceFailure = await optionalRecord(
+        directory,
+        `${prefix}-source-failure`,
+      );
       if (sourceFailure === ABSENT) {
-        await record(directory, `${prefix}-source-intent`, { item: item.id, base: item.base });
+        await record(directory, `${prefix}-source-intent`, {
+          item: item.id,
+          base: item.base,
+        });
         const source = await adapter.source(item);
         const history = await adapter.history();
         assertHistoryPrefix(config, history);
-        if (source.status === "observing-author" || source.status === "observing-reviewer")
+        if (
+          source.status === "observing-author" ||
+          source.status === "observing-reviewer"
+        )
           return {
             status: source.status,
             run: config.run,
@@ -908,7 +1040,12 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           };
         demand("reviewId" in source, "unexpected-source-flow-status");
         if (source.status === "fixable-review") {
-          assertSourceFailureHistory(history, item, source.reviewId, config.initialHistory.length);
+          assertSourceFailureHistory(
+            history,
+            item,
+            source.reviewId,
+            config.initialHistory.length,
+          );
           await record(
             directory,
             `${prefix}-source-failure`,
@@ -947,11 +1084,17 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         );
       }
       if (accepted === ABSENT) {
-        await record(directory, `${prefix}-repair-intent`, { item: item.id, base: item.base });
+        await record(directory, `${prefix}-repair-intent`, {
+          item: item.id,
+          base: item.base,
+        });
         const repair = await adapter.repair(item);
         const history = await adapter.history();
         assertHistoryPrefix(config, history);
-        if (repair.status === "observing-author" || repair.status === "observing-reviewer")
+        if (
+          repair.status === "observing-author" ||
+          repair.status === "observing-reviewer"
+        )
           return {
             status: repair.status,
             run: config.run,
@@ -960,7 +1103,13 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
             cursor: index,
           };
         demand("reviewId" in repair, "unexpected-repair-status");
-        assertItemReviewHistory(history, item, true, repair.reviewId, config.initialHistory.length);
+        assertItemReviewHistory(
+          history,
+          item,
+          true,
+          repair.reviewId,
+          config.initialHistory.length,
+        );
         accepted = stageRecord(item, "repair", history, repair);
         await record(directory, `${prefix}-accepted`, accepted);
       }
@@ -976,7 +1125,8 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         accepted.status === "accepted" &&
         SHA.test(accepted.head) &&
         typeof accepted.reviewId === "string" &&
-        ((accepted.stage === "source" && accepted.stateDirectory === item.source.stateDirectory) ||
+        ((accepted.stage === "source" &&
+          accepted.stateDirectory === item.source.stateDirectory) ||
           (accepted.stage === "repair" &&
             accepted.stateDirectory === item.repair.stateDirectory)) &&
         Array.isArray(accepted.history),
@@ -1004,7 +1154,8 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
     const history = await adapter.history();
     assertHistoryPrefix(config, history);
     demand(
-      delivery.head === accepted.head && delivery.reviewId === accepted.reviewId,
+      delivery.head === accepted.head &&
+        delivery.reviewId === accepted.reviewId,
       "delivery-identity-drift",
     );
     if (delivery.status === "observing-hosted-checks")
@@ -1015,8 +1166,15 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         issue: item.issue,
         cursor: index,
       };
-    demand(validCompletedDeliveryResult(item, delivery), "malformed-delivery-completion");
-    await record(directory, `${prefix}-complete`, completedStageRecord(item, history, delivery));
+    demand(
+      validCompletedDeliveryResult(item, delivery),
+      "malformed-delivery-completion",
+    );
+    await record(
+      directory,
+      `${prefix}-complete`,
+      completedStageRecord(item, history, delivery),
+    );
   }
 
   const history = await adapter.history();
@@ -1055,7 +1213,9 @@ async function canonicalSelectedPath(path: string) {
 
 async function json(directory: string, name: string) {
   try {
-    return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
+    return JSON.parse(
+      await readFile(resolve(directory, `${name}.json`), "utf8"),
+    );
   } catch {
     throw new QueueBlocked(`malformed-component-record:${name}`);
   }
@@ -1063,7 +1223,9 @@ async function json(directory: string, name: string) {
 
 async function adapterOptional(directory: string, name: string) {
   try {
-    return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
+    return JSON.parse(
+      await readFile(resolve(directory, `${name}.json`), "utf8"),
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return ABSENT;
     throw new QueueBlocked(`malformed-queue-record:${name}`);
@@ -1077,7 +1239,10 @@ async function adapterRecord(directory: string, name: string, value: unknown) {
     await writeFile(path, bytes, { flag: "wx", flush: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    demand((await readFile(path, "utf8")) === bytes, `conflicting-queue-record:${name}`);
+    demand(
+      (await readFile(path, "utf8")) === bytes,
+      `conflicting-queue-record:${name}`,
+    );
   }
 }
 
@@ -1106,7 +1271,11 @@ export function queueUsage(value: unknown): QueueUsage {
       costUsd: canonical(value.costUsd, false),
     };
   if (!object(value))
-    return { inputTokens: unavailable(), outputTokens: unavailable(), costUsd: unavailable() };
+    return {
+      inputTokens: unavailable(),
+      outputTokens: unavailable(),
+      costUsd: unavailable(),
+    };
   return {
     inputTokens: measured(value.input_tokens ?? value.inputTokens, true),
     outputTokens: measured(value.output_tokens ?? value.outputTokens, true),
@@ -1114,7 +1283,10 @@ export function queueUsage(value: unknown): QueueUsage {
   };
 }
 
-function sameParticipantIdentity(left: QueueParticipant, right: QueueParticipant) {
+function sameParticipantIdentity(
+  left: QueueParticipant,
+  right: QueueParticipant,
+) {
   return (
     left.ordinal === right.ordinal &&
     left.id === right.id &&
@@ -1133,7 +1305,10 @@ export interface RepositoryQueueAdapterOptions {
   deliveryPolicy?: DeliveryPolicyAdapter;
   repairPolicy?: RepairPolicy;
   reviewRecovery?: ReviewRecoveryAdapter;
-  assertExecutor?: (config: DeliveryConfig, executingRoot: string) => Promise<void>;
+  assertExecutor?: (
+    config: DeliveryConfig,
+    executingRoot: string,
+  ) => Promise<void>;
 }
 
 function repairHistory(history: QueueParticipant[]): ParticipantHistory[] {
@@ -1179,7 +1354,10 @@ export function repositoryQueueAdapter(
     const history: QueueParticipant[] = [];
     let gap = false;
     for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-      const participant = await adapterOptional(state, `participant-${ordinal}-terminal`);
+      const participant = await adapterOptional(
+        state,
+        `participant-${ordinal}-terminal`,
+      );
       if (participant === ABSENT) {
         gap = true;
         continue;
@@ -1197,7 +1375,8 @@ export function repositoryQueueAdapter(
         demand(
           intent !== ABSENT &&
             attempt !== ABSENT &&
-            intent.schemaVersion === "dogfood-bounded-queue-participant-intent/v1" &&
+            intent.schemaVersion ===
+              "dogfood-bounded-queue-participant-intent/v1" &&
             attempt.schemaVersion === "dogfood-bounded-queue-participant/v1" &&
             intent.ordinal === ordinal &&
             attempt.ordinal === ordinal &&
@@ -1222,10 +1401,14 @@ export function repositoryQueueAdapter(
       const name = `participant-${participant.ordinal}-terminal`;
       const existing = await adapterOptional(state, name);
       if (existing === ABSENT)
-        await adapterRecord(state, name, { ...participant, usage: queueUsage(participant.usage) });
+        await adapterRecord(state, name, {
+          ...participant,
+          usage: queueUsage(participant.usage),
+        });
       else
         demand(
-          object(existing) && sameParticipantIdentity(existing as QueueParticipant, participant),
+          object(existing) &&
+            sameParticipantIdentity(existing as QueueParticipant, participant),
           "participant-history-drift",
         );
     }
@@ -1233,11 +1416,20 @@ export function repositoryQueueAdapter(
 
   const nextOrdinal = async () => {
     for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-      const intent = await adapterOptional(state, `participant-${ordinal}-intent`);
-      const terminal = await adapterOptional(state, `participant-${ordinal}-terminal`);
+      const intent = await adapterOptional(
+        state,
+        `participant-${ordinal}-intent`,
+      );
+      const terminal = await adapterOptional(
+        state,
+        `participant-${ordinal}-terminal`,
+      );
       if (intent === ABSENT && terminal === ABSENT) return ordinal;
       if (intent === ABSENT && terminal !== ABSENT) continue;
-      const attempt = await adapterOptional(state, `participant-${ordinal}-attempt`);
+      const attempt = await adapterOptional(
+        state,
+        `participant-${ordinal}-attempt`,
+      );
       demand(attempt !== ABSENT, "native-launch-identity-unknown-reconcile");
     }
     throw new QueueBlocked("native-launch-ceiling-exhausted");
@@ -1245,10 +1437,18 @@ export function repositoryQueueAdapter(
 
   const validatedReviewSelection = async (
     item: QueueItem,
-    known?: { configFingerprint: string; sourceAuthor: string; candidateHead: string },
+    known?: {
+      configFingerprint: string;
+      sourceAuthor: string;
+      candidateHead: string;
+    },
   ) => {
     try {
-      return await sourceReviewContract(item.source, known, config.controllerRevision);
+      return await sourceReviewContract(
+        item.source,
+        known,
+        config.controllerRevision,
+      );
     } catch (error) {
       throw new QueueBlocked(
         error instanceof ReviewRecoveryBlocked
@@ -1261,7 +1461,12 @@ export function repositoryQueueAdapter(
   const authorizeAdoptedSource = async (item: QueueItem) => {
     if (item.source.pilotRevision !== config.controllerRevision) {
       await validatedReviewSelection(item);
-      if ((await adapterOptional(item.source.stateDirectory, "source-review-binding")) !== ABSENT)
+      if (
+        (await adapterOptional(
+          item.source.stateDirectory,
+          "source-review-binding",
+        )) !== ABSENT
+      )
         try {
           await selectedSourceReview(item.source);
         } catch (error) {
@@ -1275,13 +1480,20 @@ export function repositoryQueueAdapter(
     }
   };
 
-  const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
+  const boundedNative = (
+    item: QueueItem,
+    stage: "source" | "repair",
+  ): Adapter => ({
     ...native,
     async authorizeReview(_current, source) {
       demand(stage === "source", "unexpected-review-authority-request");
       return (await validatedReviewSelection(item, source)).authority;
     },
-    async launch(role: Role, current: SourceConfig, prompt: string): Promise<Attempt> {
+    async launch(
+      role: Role,
+      current: SourceConfig,
+      prompt: string,
+    ): Promise<Attempt> {
       const priorHistory = await readHistory();
       const ordinal = await nextOrdinal();
       const context = {
@@ -1306,9 +1518,14 @@ export function repositoryQueueAdapter(
             selection.contract.inheritance,
           )}\n`
         : prompt;
-      const attempt = await native.launch(role, current, repairCompatiblePrompt);
+      const attempt = await native.launch(
+        role,
+        current,
+        repairCompatiblePrompt,
+      );
       demand(
-        typeof attempt.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),
+        typeof attempt.id === "string" &&
+          /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),
         "invalid-participant-identity",
       );
       demand(
@@ -1334,13 +1551,23 @@ export function repositoryQueueAdapter(
     attempt: any,
     terminal: any,
   ) => {
-    if (attempt === ABSENT || terminal === ABSENT || terminal.status === "running") return;
+    if (
+      attempt === ABSENT ||
+      terminal === ABSENT ||
+      terminal.status === "running"
+    )
+      return;
     let matchedOrdinal: number | undefined;
     for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-      const saved = await adapterOptional(state, `participant-${ordinal}-attempt`);
+      const saved = await adapterOptional(
+        state,
+        `participant-${ordinal}-attempt`,
+      );
       if (saved !== ABSENT && saved.id === attempt.id) {
         demand(
-          saved.item === item.id && saved.stage === stage && saved.role === role,
+          saved.item === item.id &&
+            saved.stage === stage &&
+            saved.role === role,
           "participant-context-drift",
         );
         matchedOrdinal = ordinal;
@@ -1348,9 +1575,11 @@ export function repositoryQueueAdapter(
       }
     }
     demand(matchedOrdinal !== undefined, "participant-attempt-unreserved");
-    const outcome: QueueParticipant["outcome"] = ["passed", "failed", "malformed"].includes(
-      terminal.status,
-    )
+    const outcome: QueueParticipant["outcome"] = [
+      "passed",
+      "failed",
+      "malformed",
+    ].includes(terminal.status)
       ? terminal.status
       : "unknown";
     const participant: QueueParticipant = {
@@ -1362,9 +1591,16 @@ export function repositoryQueueAdapter(
       outcome,
       usage: queueUsage(terminal.usage),
     };
-    const existing = await adapterOptional(state, `participant-${matchedOrdinal}-terminal`);
+    const existing = await adapterOptional(
+      state,
+      `participant-${matchedOrdinal}-terminal`,
+    );
     if (existing === ABSENT)
-      await adapterRecord(state, `participant-${matchedOrdinal}-terminal`, participant);
+      await adapterRecord(
+        state,
+        `participant-${matchedOrdinal}-terminal`,
+        participant,
+      );
     else
       demand(
         sameParticipantIdentity(existing as QueueParticipant, participant),
@@ -1391,8 +1627,11 @@ export function repositoryQueueAdapter(
         if (
           candidate !== ABSENT &&
           SHA.test(candidate.head) &&
-          classifyReview(terminal.summary, candidate.head, selection.contract.scope).disposition ===
-            "malformed"
+          classifyReview(
+            terminal.summary,
+            candidate.head,
+            selection.contract.scope,
+          ).disposition === "malformed"
         )
           terminal = { ...terminal, status: "malformed" };
       }
@@ -1405,11 +1644,20 @@ export function repositoryQueueAdapter(
       adapterOptional(item.source.stateDirectory, "candidate"),
       adapterOptional(item.source.stateDirectory, "reviewer-terminal"),
     ]);
-    if (candidate === ABSENT || terminal === ABSENT || !SHA.test(candidate.head)) return undefined;
+    if (
+      candidate === ABSENT ||
+      terminal === ABSENT ||
+      !SHA.test(candidate.head)
+    )
+      return undefined;
     if (terminal.status === "malformed") return "malformed" as const;
     if (!["passed", "failed"].includes(terminal.status)) return undefined;
     const selection = await validatedReviewSelection(item);
-    return classifyReview(terminal.summary, candidate.head, selection.contract.scope).disposition;
+    return classifyReview(
+      terminal.summary,
+      candidate.head,
+      selection.contract.scope,
+    ).disposition;
   };
 
   const acceptedPair = async (
@@ -1427,7 +1675,8 @@ export function repositoryQueueAdapter(
     const validLength =
       stage === "repair"
         ? pair.length === 2
-        : [2, 3].includes(pair.length) && (pair.length === 2 || pair[1]!.outcome === "malformed");
+        : [2, 3].includes(pair.length) &&
+          (pair.length === 2 || pair[1]!.outcome === "malformed");
     demand(
       validLength &&
         pair[0]!.role === "author" &&
@@ -1445,17 +1694,24 @@ export function repositoryQueueAdapter(
       selectedSourceReview(item.source),
     ]);
     demand(
-      selected.terminal.status === "passed" && selected.terminal.head === candidate.head,
+      selected.terminal.status === "passed" &&
+        selected.terminal.head === candidate.head,
       "source-review-state-unknown",
     );
     let review;
     let selection: Awaited<ReturnType<typeof sourceReviewContract>>;
     try {
       selection = await validatedReviewSelection(item);
-      review = parseReview(selected.terminal.summary, candidate.head, selection.contract.scope);
+      review = parseReview(
+        selected.terminal.summary,
+        candidate.head,
+        selection.contract.scope,
+      );
     } catch (error) {
       throw new QueueBlocked(
-        error instanceof RepairBlocked ? error.reason : "source-review-report-unknown",
+        error instanceof RepairBlocked
+          ? error.reason
+          : "source-review-report-unknown",
       );
     }
     demand(
@@ -1487,20 +1743,31 @@ export function repositoryQueueAdapter(
           : "source-review-contract-state-unknown",
       );
     }
-    const [{ candidate, selected, selection }, author, authorTerminal] = evidence;
-    const selectedPrefix = selected.binding === undefined ? "" : "review-recovery.";
-    const validAttempt = (attempt: any, role: "author" | "reviewer", prefix = "") =>
+    const [{ candidate, selected, selection }, author, authorTerminal] =
+      evidence;
+    const selectedPrefix =
+      selected.binding === undefined ? "" : "review-recovery.";
+    const validAttempt = (
+      attempt: any,
+      role: "author" | "reviewer",
+      prefix = "",
+    ) =>
       exactKeys(attempt, ["id", "pid", "trace"]) &&
       /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id) &&
       Number.isSafeInteger(attempt.pid) &&
       attempt.pid > 0 &&
       typeof attempt.trace === "string" &&
       isAbsolute(attempt.trace) &&
-      samePath(attempt.trace, resolve(item.source.stateDirectory, `${prefix}${role}.jsonl`));
+      samePath(
+        attempt.trace,
+        resolve(item.source.stateDirectory, `${prefix}${role}.jsonl`),
+      );
     demand(
       expectedSelection.authority !== undefined &&
-        expectedSelection.authority.executorRevision === config.controllerRevision &&
-        JSON.stringify(selection.contract) === JSON.stringify(expectedSelection.contract) &&
+        expectedSelection.authority.executorRevision ===
+          config.controllerRevision &&
+        JSON.stringify(selection.contract) ===
+          JSON.stringify(expectedSelection.contract) &&
         validAttempt(author, "author") &&
         authorTerminal?.status === "passed" &&
         authorTerminal.id === author.id &&
@@ -1534,10 +1801,17 @@ export function repositoryQueueAdapter(
       "queue-issue-drift",
     );
     demand(item.setup.run === item.source.run, "queue-run-drift");
-    demand(item.base === item.source.base && item.base === item.setup.base, "queue-base-drift");
-    demand(item.source.owner === config.authority.controller, "queue-controller-drift");
     demand(
-      item.source.pilotRevision === config.controllerRevision || adoptedSourceItems.has(item.id),
+      item.base === item.source.base && item.base === item.setup.base,
+      "queue-base-drift",
+    );
+    demand(
+      item.source.owner === config.authority.controller,
+      "queue-controller-drift",
+    );
+    demand(
+      item.source.pilotRevision === config.controllerRevision ||
+        adoptedSourceItems.has(item.id),
       "candidate-as-executor-selection",
     );
     demand(
@@ -1554,9 +1828,13 @@ export function repositoryQueueAdapter(
         item.setup.pilotWorktree !== item.source.reviewWorktree,
       "queue-worktree-drift",
     );
-    demand(item.source.repository === item.setup.repository, "queue-repository-drift");
     demand(
-      item.setup.authority.actions.includes("worktrees") && validRepositoryRepairTemplate(item),
+      item.source.repository === item.setup.repository,
+      "queue-repository-drift",
+    );
+    demand(
+      item.setup.authority.actions.includes("worktrees") &&
+        validRepositoryRepairTemplate(item),
       "queue-policy-drift",
     );
     for (const actor of [item.repair.author, item.repair.reviewer])
@@ -1569,26 +1847,32 @@ export function repositoryQueueAdapter(
         "queue-policy-drift",
       );
     demand(
-      JSON.stringify(item.delivery.requiredChecks) === JSON.stringify(item.source.requiredChecks),
+      JSON.stringify(item.delivery.requiredChecks) ===
+        JSON.stringify(item.source.requiredChecks),
       "queue-hosted-check-drift",
     );
   };
 
   const buildRepair = async (item: QueueItem): Promise<RepairConfig> => {
-    const [pinned, candidate, authorAttempt, selected, sourceReview] = await Promise.all([
-      json(item.source.stateDirectory, "config"),
-      json(item.source.stateDirectory, "candidate"),
-      json(item.source.stateDirectory, "author-attempt"),
-      selectedSourceReview(item.source),
-      validatedReviewSelection(item),
-    ]);
+    const [pinned, candidate, authorAttempt, selected, sourceReview] =
+      await Promise.all([
+        json(item.source.stateDirectory, "config"),
+        json(item.source.stateDirectory, "candidate"),
+        json(item.source.stateDirectory, "author-attempt"),
+        selectedSourceReview(item.source),
+        validatedReviewSelection(item),
+      ]);
     const reviewerAttempt = selected.attempt;
     demand(SHA.test(candidate.head), "source-candidate-mismatch");
     const history = await readHistory();
     const baseline = history.filter(
-      (participant) => !(participant.item === item.id && participant.stage === "repair"),
+      (participant) =>
+        !(participant.item === item.id && participant.stage === "repair"),
     );
-    demand(baseline.length + 2 <= config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+    demand(
+      baseline.length + 2 <= config.nativeLaunchCeiling,
+      "native-launch-ceiling-exhausted",
+    );
     const projected = repairHistory(baseline);
     const admission = {
       consumed: projected.length,
@@ -1596,7 +1880,10 @@ export function repositoryQueueAdapter(
       reservations: [
         { role: "author" as const, ordinal: projected.length + 1 },
         { role: "reviewer" as const, ordinal: projected.length + 2 },
-      ] as [{ role: "author"; ordinal: number }, { role: "reviewer"; ordinal: number }],
+      ] as [
+        { role: "author"; ordinal: number },
+        { role: "reviewer"; ordinal: number },
+      ],
     };
     const partial = {
       schemaVersion: "dogfood-repair-request/v1" as const,
@@ -1668,7 +1955,11 @@ export function repositoryQueueAdapter(
         implementationAttemptCeiling: partial.implementationAttemptCeiling,
         admission,
         historyDigest: repairDigest(projected),
-        actions: ["validate-source-review", "dispatch-author", "dispatch-delta-review"],
+        actions: [
+          "validate-source-review",
+          "dispatch-author",
+          "dispatch-delta-review",
+        ],
       },
     };
   };
@@ -1692,7 +1983,9 @@ export function repositoryQueueAdapter(
       demand(executor !== undefined, "controller-executor-unverified");
       demand(
         roots.every((root, index) =>
-          roots.every((other, otherIndex) => index === otherIndex || outside(root, other)),
+          roots.every(
+            (other, otherIndex) => index === otherIndex || outside(root, other),
+          ),
         ),
         "queue-state-overlap",
       );
@@ -1713,7 +2006,9 @@ export function repositoryQueueAdapter(
       demand(
         outside(controller, queueState) &&
           outside(queueState, controller) &&
-          selectedRoots.every((root) => outside(root, queueState) && outside(queueState, root)),
+          selectedRoots.every(
+            (root) => outside(root, queueState) && outside(queueState, root),
+          ),
         "queue-state-inside-checkout",
       );
       const git = async (args: string[]) =>
@@ -1725,27 +2020,36 @@ export function repositoryQueueAdapter(
         ).stdout.trim();
       try {
         demand(
-          samePath(await realpath(await git(["rev-parse", "--show-toplevel"])), executor),
+          samePath(
+            await realpath(await git(["rev-parse", "--show-toplevel"])),
+            executor,
+          ),
           "controller-executor-not-repository-root",
         );
         demand(
           (await git(["rev-parse", "HEAD"])) === config.controllerRevision,
           "controller-executor-revision-moved",
         );
-        demand((await git(["status", "--porcelain"])) === "", "dirty-controller-executor");
+        demand(
+          (await git(["status", "--porcelain"])) === "",
+          "dirty-controller-executor",
+        );
       } catch (error) {
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked("controller-executor-unverified");
       }
-      for (const item of config.items)
-        await authorizeAdoptedSource(item);
+      for (const item of config.items) await authorizeAdoptedSource(item);
       config.items.forEach(assertItem);
       await seedHistory();
       const authorityFingerprint = queueDigest({
         authority: config.authority,
-        lineage: config.initialHistory.map(({ usage: _usage, ...identity }) => identity),
+        lineage: config.initialHistory.map(
+          ({ usage: _usage, ...identity }) => identity,
+        ),
       });
-      await adapterRecord(state, "queue-adapter-authority", { fingerprint: authorityFingerprint });
+      await adapterRecord(state, "queue-adapter-authority", {
+        fingerprint: authorityFingerprint,
+      });
     },
     history: readHistory,
     async setup(item) {
@@ -1764,7 +2068,8 @@ export function repositoryQueueAdapter(
       await authorizeAdoptedSource(item);
       assertItem(item);
       demand(
-        (await adapterOptional(item.source.stateDirectory, "publication")) === ABSENT,
+        (await adapterOptional(item.source.stateDirectory, "publication")) ===
+          ABSENT,
         "source-cannot-publish",
       );
       try {
@@ -1776,9 +2081,15 @@ export function repositoryQueueAdapter(
         if ((await sourceReviewDisposition(item)) === "malformed")
           throw new Error("reviewer-malformed");
         await syncParticipants(item, "source", item.source.stateDirectory);
-        if (result.status === "observing-author" || result.status === "observing-reviewer")
+        if (
+          result.status === "observing-author" ||
+          result.status === "observing-reviewer"
+        )
           return { status: result.status };
-        demand(result.status === "awaiting-publication", "unexpected-source-flow-status");
+        demand(
+          result.status === "awaiting-publication",
+          "unexpected-source-flow-status",
+        );
         await acceptedPair(item, "source", "passed");
         const { candidate, selected } = await passingSourceReview(item);
         return {
@@ -1798,7 +2109,8 @@ export function repositoryQueueAdapter(
               : "";
         if (reason === "reviewer-malformed") {
           const recovery =
-            options.reviewRecovery ?? reviewedReviewRecoveryAdapter(boundedNative(item, "source"));
+            options.reviewRecovery ??
+            reviewedReviewRecoveryAdapter(boundedNative(item, "source"));
           let selected;
           try {
             selected = await recovery.recover(item.source);
@@ -1809,8 +2121,15 @@ export function repositoryQueueAdapter(
                 : "review-recovery-state-unknown",
             );
           }
-          if (selected.status === "observing-reviewer") return { status: selected.status };
-          await syncParticipant(item, "source", "reviewer", selected.attempt, selected.terminal);
+          if (selected.status === "observing-reviewer")
+            return { status: selected.status };
+          await syncParticipant(
+            item,
+            "source",
+            "reviewer",
+            selected.attempt,
+            selected.terminal,
+          );
           await acceptedPair(item, "source", selected.terminal.status);
           if (selected.terminal.status === "passed") {
             await passingSourceReview(item);
@@ -1840,7 +2159,11 @@ export function repositoryQueueAdapter(
           "source-review-state-unknown",
         );
         await acceptedPair(item, "source", "failed");
-        return { status: "fixable-review", head: candidate.head, reviewId: reviewer.id };
+        return {
+          status: "fixable-review",
+          head: candidate.head,
+          reviewId: reviewer.id,
+        };
       }
     },
     async repair(item): Promise<QueueRepairResult> {
@@ -1850,15 +2173,25 @@ export function repositoryQueueAdapter(
         const repair = await buildRepair(item);
         const result = await repairStep(
           repair,
-          options.repair ?? reviewedRepairAdapter(boundedNative(item, "repair")),
+          options.repair ??
+            reviewedRepairAdapter(boundedNative(item, "repair")),
           selectedRepairPolicy,
         );
         await syncParticipants(item, "repair", item.repair.stateDirectory);
-        if (result.status === "observing-author" || result.status === "observing-reviewer")
+        if (
+          result.status === "observing-author" ||
+          result.status === "observing-reviewer"
+        )
           return { status: result.status };
-        demand(result.status === "awaiting-delivery", "unexpected-repair-status");
+        demand(
+          result.status === "awaiting-delivery",
+          "unexpected-repair-status",
+        );
         await acceptedPair(item, "repair", "passed");
-        const reviewer = await json(item.repair.stateDirectory, "reviewer-attempt");
+        const reviewer = await json(
+          item.repair.stateDirectory,
+          "reviewer-attempt",
+        );
         return {
           status: "accepted",
           head: result.head,
@@ -1874,14 +2207,19 @@ export function repositoryQueueAdapter(
         }
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(
-          error instanceof RepairBlocked ? error.reason : "repair-state-unknown",
+          error instanceof RepairBlocked
+            ? error.reason
+            : "repair-state-unknown",
         );
       }
     },
     async delivery(item, accepted): Promise<QueueDeliveryResult> {
       await authorizeAdoptedSource(item);
       assertItem(item);
-      const sourceReview = samePath(accepted.stateDirectory, item.source.stateDirectory)
+      const sourceReview = samePath(
+        accepted.stateDirectory,
+        item.source.stateDirectory,
+      )
         ? await validatedReviewSelection(item)
         : undefined;
       const requiresContractBoundSource =
@@ -1923,18 +2261,29 @@ export function repositoryQueueAdapter(
               source: async () => contractBoundEvidence!,
             }
           : deliveryAdapter;
-        const result = await deliveryStep(delivery, selectedDeliveryAdapter, deliveryPolicy);
+        const result = await deliveryStep(
+          delivery,
+          selectedDeliveryAdapter,
+          deliveryPolicy,
+        );
         demand(
-          result.head === accepted.head && result.reviewId === accepted.reviewId,
+          result.head === accepted.head &&
+            result.reviewId === accepted.reviewId,
           "delivery-source-drift",
         );
         if (result.status === "observing-hosted-checks")
-          return { status: result.status, head: result.head, reviewId: result.reviewId };
+          return {
+            status: result.status,
+            head: result.head,
+            reviewId: result.reviewId,
+          };
         return result;
       } catch (error) {
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(
-          error instanceof DeliveryBlocked ? error.reason : "delivery-state-unknown",
+          error instanceof DeliveryBlocked
+            ? error.reason
+            : "delivery-state-unknown",
         );
       }
     },
