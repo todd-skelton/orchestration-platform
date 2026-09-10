@@ -13,6 +13,7 @@ import {
   type DeliveryResult,
   type DeliveryPolicyAdapter,
   type PublicationRefresh,
+  type SourceEvidence,
 } from "./delivery.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { codexAdapter } from "./dispatch-adapter.ts";
@@ -1257,6 +1258,22 @@ export function repositoryQueueAdapter(
     }
   };
   const adoptedSourceItems = new Set<string>();
+  const authorizeAdoptedSource = async (item: QueueItem) => {
+    if (item.source.pilotRevision !== config.controllerRevision) {
+      await validatedReviewSelection(item);
+      if ((await adapterOptional(item.source.stateDirectory, "source-review-binding")) !== ABSENT)
+        try {
+          await selectedSourceReview(item.source);
+        } catch (error) {
+          throw new QueueBlocked(
+            error instanceof ReviewRecoveryBlocked
+              ? error.reason
+              : "selected-review-state-unknown",
+          );
+        }
+      adoptedSourceItems.add(item.id);
+    }
+  };
 
   const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
     ...native,
@@ -1446,7 +1463,68 @@ export function repositoryQueueAdapter(
         review.pairs.every((pair) => !pair.includes("BLOCK")),
       "source-review-not-accepted",
     );
-    return { candidate, selected };
+    return { candidate, selected, selection };
+  };
+
+  const contractBoundDeliverySource = async (
+    item: QueueItem,
+    accepted: { head: string; reviewId: string; stateDirectory: string },
+    expectedSelection: Awaited<ReturnType<typeof sourceReviewContract>>,
+  ): Promise<SourceEvidence> => {
+    let evidence;
+    try {
+      evidence = await Promise.all([
+        passingSourceReview(item),
+        json(item.source.stateDirectory, "author-attempt"),
+        json(item.source.stateDirectory, "author-terminal"),
+      ]);
+    } catch (error) {
+      if (error instanceof QueueBlocked) throw error;
+      throw new QueueBlocked(
+        error instanceof ReviewRecoveryBlocked
+          ? error.reason
+          : "source-review-contract-state-unknown",
+      );
+    }
+    const [{ candidate, selected, selection }, author, authorTerminal] = evidence;
+    const selectedPrefix = selected.binding === undefined ? "" : "review-recovery.";
+    const validAttempt = (attempt: any, role: "author" | "reviewer", prefix = "") =>
+      exactKeys(attempt, ["id", "pid", "trace"]) &&
+      /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id) &&
+      Number.isSafeInteger(attempt.pid) &&
+      attempt.pid > 0 &&
+      typeof attempt.trace === "string" &&
+      isAbsolute(attempt.trace) &&
+      samePath(attempt.trace, resolve(item.source.stateDirectory, `${prefix}${role}.jsonl`));
+    demand(
+      expectedSelection.authority !== undefined &&
+        expectedSelection.authority.executorRevision === config.controllerRevision &&
+        JSON.stringify(selection.contract) === JSON.stringify(expectedSelection.contract) &&
+        validAttempt(author, "author") &&
+        authorTerminal?.status === "passed" &&
+        authorTerminal.id === author.id &&
+        authorTerminal.head === item.base &&
+        validAttempt(selected.attempt, "reviewer", selectedPrefix) &&
+        selected.terminal.id === selected.attempt.id &&
+        selected.attempt.id !== author.id &&
+        candidate.head === accepted.head &&
+        selected.attempt.id === accepted.reviewId &&
+        samePath(accepted.stateDirectory, item.source.stateDirectory),
+      "unreviewed-delivery-source",
+    );
+    return {
+      head: candidate.head,
+      reviewId: selected.attempt.id,
+      controller: config.authority.controller,
+      run: item.source.run,
+      issue: item.issue,
+      repository: item.source.repository,
+      controllerRevision: config.controllerRevision,
+      worktree: item.source.worktree,
+      reviewWorktree: item.source.reviewWorktree,
+      stateDirectory: accepted.stateDirectory,
+      requiredChecks: [...item.delivery.requiredChecks],
+    };
   };
 
   const assertItem = (item: QueueItem) => {
@@ -1659,10 +1737,7 @@ export function repositoryQueueAdapter(
         throw new QueueBlocked("controller-executor-unverified");
       }
       for (const item of config.items)
-        if (item.source.pilotRevision !== config.controllerRevision) {
-          await validatedReviewSelection(item);
-          adoptedSourceItems.add(item.id);
-        }
+        await authorizeAdoptedSource(item);
       config.items.forEach(assertItem);
       await seedHistory();
       const authorityFingerprint = queueDigest({
@@ -1673,6 +1748,7 @@ export function repositoryQueueAdapter(
     },
     history: readHistory,
     async setup(item) {
+      await authorizeAdoptedSource(item);
       assertItem(item);
       try {
         return await setupStep(item.setup, setupAdapter, executingRoot);
@@ -1684,6 +1760,7 @@ export function repositoryQueueAdapter(
       }
     },
     async source(item): Promise<QueueSourceResult> {
+      await authorizeAdoptedSource(item);
       assertItem(item);
       demand(
         (await adapterOptional(item.source.stateDirectory, "publication")) === ABSENT,
@@ -1766,6 +1843,7 @@ export function repositoryQueueAdapter(
       }
     },
     async repair(item): Promise<QueueRepairResult> {
+      await authorizeAdoptedSource(item);
       assertItem(item);
       try {
         const repair = await buildRepair(item);
@@ -1800,7 +1878,15 @@ export function repositoryQueueAdapter(
       }
     },
     async delivery(item, accepted): Promise<QueueDeliveryResult> {
+      await authorizeAdoptedSource(item);
       assertItem(item);
+      const sourceReview = samePath(accepted.stateDirectory, item.source.stateDirectory)
+        ? await validatedReviewSelection(item)
+        : undefined;
+      const requiresContractBoundSource =
+        sourceReview?.authority !== undefined &&
+        (sourceReview.contract.scope === "delta" ||
+          item.source.pilotRevision !== config.controllerRevision);
       const delivery: DeliveryConfig = {
         run: item.source.run,
         issue: item.issue,
@@ -1827,7 +1913,16 @@ export function repositoryQueueAdapter(
       };
       try {
         await assertExecutor(delivery, executingRoot);
-        const result = await deliveryStep(delivery, deliveryAdapter, deliveryPolicy);
+        const contractBoundEvidence = requiresContractBoundSource
+          ? await contractBoundDeliverySource(item, accepted, sourceReview)
+          : undefined;
+        const selectedDeliveryAdapter = requiresContractBoundSource
+          ? {
+              ...deliveryAdapter,
+              source: async () => contractBoundEvidence!,
+            }
+          : deliveryAdapter;
+        const result = await deliveryStep(delivery, selectedDeliveryAdapter, deliveryPolicy);
         demand(
           result.head === accepted.head && result.reviewId === accepted.reviewId,
           "delivery-source-drift",

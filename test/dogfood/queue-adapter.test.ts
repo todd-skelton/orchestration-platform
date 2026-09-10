@@ -19,10 +19,12 @@ import type { RepairAdapter } from "../../scripts/dogfood/repair.js";
 import { repairDigest } from "../../scripts/dogfood/repair-policy.js";
 import {
   reviewedReviewRecoveryAdapter,
+  selectedSourceReview,
   sourceReviewContract,
 } from "../../scripts/dogfood/review-recovery-adapter.mjs";
 import {
   reviewRecoveryAuthority,
+  sourceReviewBinding,
   sourceReviewAuthority,
 } from "../../scripts/dogfood/review-policy.mjs";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
@@ -819,6 +821,214 @@ it.each([
     }
   },
 );
+
+it("delivers an adopted recovered DELTA once and rejects ancestry drift on completed restart", async () => {
+  const current = await fixture();
+  await writeMalformedSource(current);
+  const successor = "f".repeat(40);
+  const inheritance = {
+    run: "completed-sweep",
+    author: "sweep-author",
+    review: "independent-review",
+    head: base,
+    scope: "complete" as const,
+    complete: true as const,
+  };
+  const contract = { scope: "delta" as const, inheritance };
+  const fingerprint = repairDigest({
+    config: current.source,
+    prompts: ["author prompt", "review prompt"],
+  });
+  current.config.controllerRevision = successor;
+  current.config.authority.controllerRevision = successor;
+  current.item.setup.controllerRevision = successor;
+  current.item.setup.pilotRevision = successor;
+  current.item.setup.authority.controllerRevision = successor;
+  current.item.setup.authority.pilotRevision = successor;
+  current.config.authority.itemsDigest = queueDigest([itemAuthority(current.item)]);
+  await Promise.all([
+    writeFile(
+      resolve(current.paths.source, "source-review-authority.json"),
+      JSON.stringify(
+        sourceReviewAuthority({
+          controller: current.source.owner,
+          run: current.source.run,
+          stateDirectory: current.paths.source,
+          configFingerprint: fingerprint,
+          authorAttempt: "source-author",
+          candidateHead: candidate,
+          comparisonBase: base,
+          executorRevision: successor,
+          scope: "delta",
+          inheritance,
+        }),
+      ),
+    ),
+    writeFile(
+      resolve(current.paths.source, "review-recovery-attempt.json"),
+      JSON.stringify({
+        id: "selected-reviewer",
+        pid: 3,
+        trace: resolve(current.paths.source, "review-recovery.reviewer.jsonl"),
+      }),
+    ),
+    writeFile(
+      resolve(current.paths.source, "review-recovery-terminal.json"),
+      JSON.stringify({
+        id: "selected-reviewer",
+        status: "passed",
+        head: candidate,
+        summary: passingReviewSummary(candidate, "delta"),
+      }),
+    ),
+    writeFile(
+      resolve(current.paths.source, "source-review-binding.json"),
+      JSON.stringify(
+        sourceReviewBinding({
+          run: current.source.run,
+          stateDirectory: current.paths.source,
+          configFingerprint: fingerprint,
+          authorAttempt: "source-author",
+          candidateHead: candidate,
+          originalReview: "source-reviewer",
+          selectedReview: "selected-reviewer",
+          selectedDisposition: "passed",
+          reviewContract: contract,
+        }),
+      ),
+    ),
+  ]);
+
+  const plan: DeliveryPlan = {
+    gates: {
+      beforeMirror: ["typecheck", "format:check", "planning:check"],
+      afterMirror: ["planning:board-check"],
+    },
+    drafts: [
+      {
+        key: "ISS-DELTA",
+        issue: 354,
+        title: "delta delivery",
+        body: "delta delivery body",
+        attributes: { milestone: "synthetic-M2" },
+      },
+    ],
+    publication: {
+      sourceBranch: "codex/delta-delivery",
+      baseBranch: "main",
+      title: "delta delivery",
+      body: "delta delivery body",
+      draft: true,
+    },
+    mergePolicy: { method: "squash" },
+    cleanup: {
+      worktrees: [current.paths.author, current.paths.review],
+      branch: "codex/delta-delivery",
+    },
+  };
+  let legacySourceCalls = 0;
+  let gateCalls = 0;
+  const delivery: DeliveryAdapter = {
+    publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
+    async source() {
+      legacySourceCalls += 1;
+      throw new Error("contract-bound source validation was not selected");
+    },
+    async verifyWorkspace() {
+      return true;
+    },
+    async runGate() {
+      gateCalls += 1;
+      return "passed";
+    },
+    async observeDraft(_config, draft) {
+      return { state: "confirmed", value: { issue: draft.issue } };
+    },
+    async applyDraft() {
+      throw new Error("confirmed draft must not mutate");
+    },
+    async observePublication(_config, publication, planDigest) {
+      return {
+        state: "confirmed",
+        value: {
+          number: 354,
+          url: "https://example.test/pull/354",
+          head: candidate,
+          repository: current.source.repository,
+          sourceBranch: publication.sourceBranch,
+          baseBranch: publication.baseBranch,
+          title: publication.title,
+          body: publication.body,
+          planDigest,
+        },
+      };
+    },
+    async publish() {
+      throw new Error("confirmed publication must not mutate");
+    },
+    async checks(config) {
+      return {
+        head: candidate,
+        checks: config.requiredChecks.map((name) => ({
+          name,
+          bucket: "pass" as const,
+          link: `https://example.test/check/${name}`,
+        })),
+      };
+    },
+    async observeMerge() {
+      return { state: "confirmed", value: { number: 354, head: candidate, mergeCommit } };
+    },
+    async merge() {
+      throw new Error("confirmed merge must not mutate");
+    },
+    async observeCleanup(_config, cleanup) {
+      return {
+        state: "confirmed",
+        value: { worktrees: [...cleanup.worktrees], branch: cleanup.branch },
+      };
+    },
+    async cleanup() {
+      throw new Error("confirmed cleanup must not mutate");
+    },
+  };
+  const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
+    delivery,
+    deliveryPolicy: { async plan() { return plan; } },
+    assertExecutor: async () => {},
+  });
+  const history: QueueParticipant[] = [
+    { ordinal: 1, id: "source-author", item: current.item.id, stage: "source", role: "author", outcome: "passed", usage: { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable } },
+    { ordinal: 2, id: "source-reviewer", item: current.item.id, stage: "source", role: "reviewer", outcome: "malformed", usage: { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable } },
+    { ordinal: 3, id: "selected-reviewer", item: current.item.id, stage: "source", role: "reviewer", outcome: "passed", usage: { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable } },
+  ];
+  let deliveryEntries = 0;
+  const adapter: QueueAdapter = {
+    async assertAuthority() {
+      await sourceReviewContract(current.source, undefined, successor);
+      await selectedSourceReview(current.source);
+    },
+    async history() { return history; },
+    async setup() { return { status: "ready" }; },
+    async source() { return { status: "accepted", head: candidate, reviewId: "selected-reviewer", stateDirectory: current.paths.source }; },
+    async repair() { throw new Error("passing replacement must not enter repair"); },
+    async delivery(item, selected) {
+      deliveryEntries += 1;
+      return repository.delivery(item, selected);
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete", items: 1 });
+  expect({ deliveryEntries, legacySourceCalls, gateCalls }).toEqual({ deliveryEntries: 1, legacySourceCalls: 0, gateCalls: 4 });
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete", items: 1 });
+  expect({ deliveryEntries, legacySourceCalls, gateCalls }).toEqual({ deliveryEntries: 1, legacySourceCalls: 0, gateCalls: 4 });
+  const authorityPath = resolve(current.paths.source, "source-review-authority.json");
+  const drifted = JSON.parse(await readFile(authorityPath, "utf8"));
+  drifted.inheritance.review = "substituted-completed-sweep";
+  await writeFile(authorityPath, JSON.stringify(drifted));
+  await expect(queueStep(current.config, adapter)).rejects.toThrow("selected-review-binding-mismatch");
+  expect({ deliveryEntries, legacySourceCalls, gateCalls }).toEqual({ deliveryEntries: 1, legacySourceCalls: 0, gateCalls: 4 });
+});
 
 it("preserves a valid incomplete review without shopping for a replacement", async () => {
   const current = await fixture();
