@@ -24,8 +24,6 @@ function validatePolicy(config) {
     "kind",
     "planningKey",
     "planningIssue",
-    "parentEpicKey",
-    "parentEpicIssue",
     "sourceBranch",
     "baseBranch",
     "pullRequestTitle",
@@ -39,9 +37,6 @@ function validatePolicy(config) {
       /^ISS-\d{3}$/.test(value.planningKey) &&
       Number.isSafeInteger(value.planningIssue) &&
       value.planningIssue > 0 &&
-      /^EPIC-[A-Z]+$/.test(value.parentEpicKey) &&
-      Number.isSafeInteger(value.parentEpicIssue) &&
-      value.parentEpicIssue > 0 &&
       value.baseBranch === "main" &&
       typeof value.sourceBranch === "string" &&
       /^codex\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(value.sourceBranch) &&
@@ -75,33 +70,24 @@ export function selfPlanFromSnapshots(config, planning, board) {
   if (!index.has(value.planningKey) && seed && planningKeyOf(seed.body) === undefined) {
     index.set(value.planningKey, seed);
   }
-  requirePolicy(
-    index.get(value.planningKey)?.number === value.planningIssue &&
-      index.get(value.parentEpicKey)?.number === value.parentEpicIssue,
-    "self-planning-identity-mismatch",
-  );
-  const epicNumbers = new Map(
-    planning.roadmap.epics.map((epic) => [epic.key, index.get(epic.key)?.number]),
-  );
-  const expected = expectedBoardItems(planning, epicNumbers);
-  const drafts = [value.parentEpicKey, value.planningKey].map((key) => {
-    const target = expected.find((item) => item.key === key);
-    const actual = index.get(key);
-    requirePolicy(target && actual, "self-draft-target-missing");
-    return {
-      key,
-      issue: actual.number,
-      title: target.title,
-      body: target.body,
-      attributes: { milestone: target.milestone },
-    };
-  });
+  const actual = index.get(value.planningKey);
+  requirePolicy(actual?.number === value.planningIssue, "self-planning-identity-mismatch");
+  const target = expectedBoardItems(planning).find((item) => item.key === value.planningKey);
+  requirePolicy(target, "self-draft-target-missing");
   return {
     gates: {
       beforeMirror: ["typecheck", "format:check", "planning:check"],
       afterMirror: ["planning:board-check"],
     },
-    drafts,
+    drafts: [
+      {
+        key: value.planningKey,
+        issue: actual.number,
+        title: target.title,
+        body: target.body,
+        attributes: { milestone: target.milestone },
+      },
+    ],
     publication: {
       sourceBranch: value.sourceBranch,
       baseBranch: value.baseBranch,

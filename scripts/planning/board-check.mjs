@@ -23,64 +23,56 @@ export function normalizeBody(value) {
 }
 
 export function planningKeyOf(body) {
-  const match = String(body ?? "").match(/^<!-- planning-key: (EPIC-[A-Z]+|ISS-\d{3}) -->/m);
+  const match = String(body ?? "").match(/^<!-- planning-key: (ISS-\d{3}) -->/m);
   return match ? match[1] : undefined;
 }
 
-export function expectedBoardItems(planning, epicNumbers) {
+export function isOpen(item) {
+  return item?.state === undefined || item.state === "OPEN";
+}
+
+export function expectedBoardItems(planning) {
   const { roadmap } = planning;
   const milestoneTitles = new Map(roadmap.milestones.map((row) => [row.key, row.title]));
-  const items = [];
-  for (const epic of roadmap.epics) {
-    const source = planning.epicDrafts[epic.key];
-    const frontmatter = parseFrontmatter(source, epic.file);
-    items.push({
-      key: epic.key,
-      isEpic: true,
-      title: frontmatter.title,
-      milestone: null,
-      body: [
-        `<!-- planning-key: ${epic.key} -->`,
-        "",
-        `Source draft: [\`planning/drafts/${epic.key}.md\`](${draftBase}/${epic.key}.md)`,
-        "",
-        source,
-      ].join("\n"),
-    });
-  }
-  for (const issue of roadmap.issues) {
+  return roadmap.issues.map((issue) => {
     const source = planning.issueDrafts[issue.key];
     const frontmatter = parseFrontmatter(source, issue.file);
-    const epicNumber = epicNumbers.get(issue.parent);
-    if (!epicNumber) fail(`${issue.key} parent ${issue.parent} has no board number`);
-    items.push({
+    return {
       key: issue.key,
-      isEpic: false,
       title: `[${issue.key}] ${frontmatter.title}`,
       milestone: milestoneTitles.get(issue.milestone) ?? null,
       body: [
         `<!-- planning-key: ${issue.key} -->`,
         "",
-        `Parent epic: #${epicNumber} (\`${issue.parent}\`)`,
-        "",
         `Source draft: [\`planning/drafts/${issue.key}.md\`](${draftBase}/${issue.key}.md)`,
         "",
         source,
       ].join("\n"),
-    });
-  }
-  return items;
+    };
+  });
 }
 
+/** Index open board items by planning key; a key claimed twice among open items fails. */
 export function indexBoardByKey(board) {
   const byKey = new Map();
   for (const item of board.issues) {
+    if (!isOpen(item)) continue;
     const key = planningKeyOf(item.body);
     if (!key) continue;
     if (byKey.has(key)) {
       fail(`planning key ${key} is claimed by #${byKey.get(key).number} and #${item.number}`);
     }
     byKey.set(key, item);
+  }
+  return byKey;
+}
+
+function closedByKey(board) {
+  const byKey = new Map();
+  for (const item of board.issues) {
+    if (isOpen(item)) continue;
+    const key = planningKeyOf(item.body);
+    if (key && !byKey.has(key)) byKey.set(key, item);
   }
   return byKey;
 }
@@ -106,6 +98,10 @@ function boardCensusProblems(board) {
   return problems;
 }
 
+/**
+ * Open board items must mirror registered drafts exactly. A registered draft whose issue
+ * is closed is finished work and is not compared. Closed items are history and never fail.
+ */
 export function boardMismatches(planning, board) {
   const { roadmap } = planning;
   const problems = boardCensusProblems(board);
@@ -116,28 +112,17 @@ export function boardMismatches(planning, board) {
   } catch (error) {
     return [String(error?.message ?? error).replace(/^BOARD_CONTRACT_MISMATCH: /, "")];
   }
-  const registered = new Set([
-    ...roadmap.epics.map((row) => row.key),
-    ...roadmap.issues.map((row) => row.key),
-  ]);
+  const registered = new Set(roadmap.issues.map((row) => row.key));
   for (const [key, item] of byKey) {
     if (!registered.has(key)) {
       problems.push(`#${item.number} carries unregistered planning key ${key}`);
     }
   }
-  const epicNumbers = new Map();
-  for (const epic of roadmap.epics) {
-    const item = byKey.get(epic.key);
-    if (!item) {
-      problems.push(`${epic.key} has no registered board item`);
-      continue;
-    }
-    epicNumbers.set(epic.key, item.number);
-  }
-  for (const expected of expectedBoardItems(planning, epicNumbers)) {
+  const closed = closedByKey(board);
+  for (const expected of expectedBoardItems(planning)) {
     const item = byKey.get(expected.key);
     if (!item) {
-      problems.push(`${expected.key} has no registered board item`);
+      if (!closed.has(expected.key)) problems.push(`${expected.key} has no board item`);
       continue;
     }
     if (item.title !== expected.title) {
@@ -200,6 +185,7 @@ export function boardSnapshotFromGraphqlPages(repository, pages) {
         title: node?.title,
         body: node?.body,
         milestone: node?.milestone?.title ?? null,
+        state: node?.state ?? "OPEN",
       });
     }
   }
@@ -274,6 +260,7 @@ export function projectSnapshotFromGraphqlPages(project, pages) {
   return { id: project.id, title: project.title, totalCount, items };
 }
 
+/** Every open registered issue appears exactly once on the delivery project. */
 export function planningProjectMismatches(planning, board, destinationProject) {
   const problems = [];
   const byKey = indexBoardByKey(board);
@@ -289,16 +276,12 @@ export function planningProjectMismatches(planning, board, destinationProject) {
     const identity = `${item.repository}#${item.number}`;
     destinationIdentityCounts.set(identity, (destinationIdentityCounts.get(identity) ?? 0) + 1);
   }
-  for (const registered of [...planning.roadmap.epics, ...planning.roadmap.issues]) {
+  for (const registered of planning.roadmap.issues) {
     const boardItem = byKey.get(registered.key);
     if (!boardItem) continue;
     const identity = `${planning.roadmap.repository}#${boardItem.number}`;
-    const projectItems = destinationProject.items.filter(
-      (item) => `${item.repository}#${item.number}` === identity,
-    );
-    if (projectItems.length !== 1) {
-      problems.push(`${registered.key} has ${projectItems.length} destination project items`);
-    }
+    const count = destinationIdentityCounts.get(identity) ?? 0;
+    if (count !== 1) problems.push(`${registered.key} has ${count} destination project items`);
   }
   for (const [identity, count] of destinationIdentityCounts) {
     if (count > 1) problems.push(`${identity} is duplicated on the destination project`);
@@ -333,7 +316,7 @@ export async function loadBoardSnapshot(repository) {
         "-F",
         `name=${name}`,
         "-f",
-        "query=query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$endCursor,states:[OPEN,CLOSED],orderBy:{field:CREATED_AT,direction:ASC}){totalCount nodes{number title body milestone{title}} pageInfo{hasNextPage endCursor}}}}",
+        "query=query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$endCursor,states:[OPEN,CLOSED],orderBy:{field:CREATED_AT,direction:ASC}){totalCount nodes{number title body state milestone{title}} pageInfo{hasNextPage endCursor}}}}",
       ],
       { maxBuffer: 256 * 1024 * 1024 },
     ));
@@ -387,9 +370,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const planning = await loadPlanningSnapshot();
   const board = await loadBoardSnapshot(planning.roadmap.repository);
   const destinationProject = await loadProjectSnapshot(planning.roadmap.project);
-  const issueProblems = boardMismatches(planning, board);
-  const projectProblems = planningProjectMismatches(planning, board, destinationProject);
-  const problems = [...issueProblems, ...projectProblems];
+  const problems = [
+    ...boardMismatches(planning, board),
+    ...planningProjectMismatches(planning, board, destinationProject),
+  ];
   if (problems.length > 0) {
     fail(`${problems.length} board/project mismatch(es)\n  - ${problems.join("\n  - ")}`);
   }

@@ -1,19 +1,12 @@
 # Repository instructions
 
-Build a portable orchestration platform rather than a project-specific
-controller.
+Read `docs/loop.md` first. It is the only process document.
 
-- Support macOS, Windows, and Linux as equal targets.
-- Keep the engine independent from repository policy through explicit adapters.
-- Treat schemas, state transitions, receipts, and mutation authority as public
-  contracts with executable compatibility tests.
-- A worker or candidate release never certifies itself.
-- Stable release N may build and test N+1; only external review and the stable
-  promotion path may grant N+1 authority.
-- Prefer incremental behavioral extraction over a file-for-file port or
-  big-bang rewrite.
-- Keep runtime state outside the source checkout.
-- Make unknown or malformed authority fail closed while keeping advisory
-  telemetry non-blocking.
-- Every issue must state scope, non-goals, acceptance evidence, verification,
-  predicted footprint, and review attack surface.
+- Keep the loop small. Add a mechanism only when a real cycle recorded the
+  blocker it removes; say which issue recorded it.
+- Run `pnpm typecheck`, `pnpm format:check`, `pnpm planning:check` and
+  `pnpm test` before handing off.
+- Never push, publish, merge, or edit the running loop from a worker.
+- Runtime state stays outside the checkout.
+- Prefer deleting over guarding. A check that defends against a threat the
+  design excludes is a finding, not a safeguard.

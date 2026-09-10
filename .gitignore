@@ -3,7 +3,5 @@ node_modules/
 .artifacts/
 .orchestration-state/
 coverage/
-**/dist/
-modules/.generated/
 *.tsbuildinfo
 *.tmp

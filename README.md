@@ -1,22 +1,15 @@
 # Orchestration Platform
 
-A self-hosting, cross-platform system for planning, routing, orchestrating,
-reviewing, and improving software delivery.
+A loop that improves a repository by picking an issue, dispatching an author,
+getting an independent review, and landing the PR through hosted CI. It runs
+on this repository first and then on Chase Sets through an adapter.
 
-The platform is intended to run on macOS, Windows, and Linux. A stable release
-may orchestrate the implementation of its successor, but a candidate release
-cannot authorize its own promotion.
+- [docs/loop.md](docs/loop.md): the rules, the planning format, the milestones.
+- [docs/model-selection.md](docs/model-selection.md): models the loop can dispatch.
+- `planning/roadmap.json` and `planning/drafts/`: the executable backlog.
 
-## Status
+Verify locally:
 
-This repository is being bootstrapped. The first roadmap establishes portable
-runtime contracts, a self-hosting release path, and adoption by an external
-project without coupling the platform to that project's terminology or policy.
-
-See [the architecture vision](docs/architecture/vision.md) and
-[the draft roadmap](docs/planning/roadmap.md). The
-[extraction assessment](docs/planning/extraction-assessment.md) compares this
-design with the embedded controller and records the recommendation.
-
-[Operator model selection](docs/model-selection.md) lists task and orchestration
-choices, including GPT-6 Astra, without starting the pending routing engine.
+```sh
+pnpm typecheck && pnpm format:check && pnpm planning:check && pnpm test
+```

@@ -1,34 +1,17 @@
-# Operator model selection
+# Model selection
 
-List the configured options or emit an explicit selection:
+Models the loop can dispatch. Selectors are case-sensitive; efforts are
+`low`, `medium`, `high`, `xhigh`, `max` for every row.
 
-```sh
-node scripts/model-options.mjs list task
-node scripts/model-options.mjs list orchestration
-node scripts/model-options.mjs select orchestration gpt-6-astra high
-```
+| Selector          | Label           | Harness | Roles            |
+| ----------------- | --------------- | ------- | ---------------- |
+| `gpt-6-astra`     | GPT-6 Astra     | codex   | author, reviewer |
+| `gpt-5.6-sol`     | GPT-5.6 Sol     | codex   | author, reviewer |
+| `gpt-5.6-terra`   | GPT-5.6 Terra   | codex   | author           |
+| `gpt-5.6-luna`    | GPT-5.6 Luna    | codex   | author           |
+| `claude-opus-5`   | Claude Opus 5   | claude  | author, reviewer |
+| `claude-sonnet-5` | Claude Sonnet 5 | claude  | author, reviewer |
+| `claude-fable-5`  | Claude Fable 5  | claude  | author           |
 
-`config/model-options.json` contains operator choices, including GPT-6 Astra
-for tasks and orchestration. Selection is case-sensitive and requires a listed
-effort. Astra supports low, medium, high, xhigh, and max. The catalog records no
-default, pricing, capability score, credentials, or provider availability.
-
-The command returns `identityStatus: "selector-only"`. It does not launch a
-worker, acquire a lease, certify a host, or establish a provider-authenticated
-snapshot. ISS-012 still owns evidence-backed routing and installed host census
-selection; its package remains a scaffold. The eventual runtime must obtain
-attempt-time provider identity and host authority independently. Astra inherits
-no Sol evidence. This operator command is usable before that runtime ships.
-
-The Chase Sets embedded controller separately offers `-Model gpt-6-astra` for
-tasks and `start-host-trial.ps1 -Arm astra-high` for its high-effort host option.
-That adapter's defaults and promotion rules remain independent of this catalog.
-
-Model reference, checked September 4, 2026:
-[OpenAI GPT-6 Astra documentation](https://developers.openai.com/api/docs/models/gpt-6-astra).
-
-Verify this bounded selection surface with:
-
-```sh
-pnpm exec vitest run test/model-options.test.ts
-```
+Default: `gpt-5.6-sol` high for both roles. The Claude harness needs ISS-109.
+The author and reviewer of one attempt are always distinct launches.
