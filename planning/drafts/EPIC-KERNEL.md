@@ -23,6 +23,7 @@ children:
     ISS-077,
     ISS-078,
     ISS-079,
+    ISS-081,
     ISS-085,
     ISS-086,
   ]
@@ -65,6 +66,7 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
   `ISS-076 → ISS-077`;
   `ISS-077 → ISS-078`;
   `ISS-078 → ISS-079`;
+  `ISS-078 → ISS-081`;
   `ISS-078 → ISS-085`;
   `ISS-078 → ISS-086`.
 - Parallelism: review authority and the event journal may proceed in parallel
@@ -126,6 +128,7 @@ does not close its production owners. See docs/planning/supervised-dogfood.md.
 - `ISS-076` — Automate bounded review-repair handoffs.
 - `ISS-077` — Reconcile absent branches after real delivery cleanup.
 - `ISS-078` — Supervise a bounded queue of useful cycles.
-- `ISS-079` — Refresh an existing reviewed delivery PR forward.
-- `ISS-085` — Correct bounded repair review locations.
+- `ISS-079` - Refresh an existing reviewed delivery PR forward.
+- `ISS-081` - Recover bounded malformed source-review transport.
+- `ISS-085` - Correct bounded repair review locations.
 - `ISS-086` — Reconcile real queue completion receipts on restart.

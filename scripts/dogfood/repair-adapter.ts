@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes the private TypeScript composition directly.
 import { step } from "./flow.ts";
 import type { Adapter, Attempt, Config, Role } from "./flow.js";
+import { ReviewRecoveryBlocked, selectedSourceReview } from "./review-recovery-adapter.mjs";
 import type { RepairAdapter } from "./repair.mjs";
 import {
   RepairBlocked,
@@ -64,6 +65,7 @@ async function assertBoundedRoots(config: RepairConfig) {
       config.reviewWorktree,
       config.stateDirectory,
       config.sourceStateDirectory,
+      ...(config.selectedReviewStateDirectory ? [config.selectedReviewStateDirectory] : []),
     ].map((path) => realpath(path)),
   );
   demand(
@@ -163,14 +165,25 @@ async function loadArtifacts(
   config: RepairConfig,
   directory: string,
   base: string,
+  selectedReviewStateDirectory?: string,
 ): Promise<SourceReviewArtifacts> {
-  const [configRecord, candidate, authorAttempt, reviewerAttempt, terminal] = await Promise.all([
+  const [configRecord, candidate, authorAttempt] = await Promise.all([
     readJson(directory, "config"),
     readJson(directory, "candidate"),
     readJson(directory, "author-attempt"),
-    readJson(directory, "reviewer-attempt"),
-    readJson(directory, "reviewer-terminal"),
   ]);
+  let reviewerAttempt: any;
+  let terminal: any;
+  try {
+    ({ attempt: reviewerAttempt, terminal } = await selectedSourceReview(
+      configRecord.config,
+      selectedReviewStateDirectory ?? directory,
+    ));
+  } catch (error) {
+    throw new RepairBlocked(
+      error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",
+    );
+  }
   demand(candidate && /^[a-f0-9]{40}$/.test(candidate.head), "source-candidate-mismatch");
   const [sourceHead, reviewHead, sourceStatus, reviewStatus, changedOutput, presentOutput] =
     await Promise.all([
@@ -241,11 +254,11 @@ export function sourceReviewerReportPrompt(reviewPaths: string[]) {
   return (
     "The following closed completion contract supersedes the generic review summary instruction. " +
     "The final summary must be a JSON-encoded object with exactly the keys v, head, complete, scope, profile, g0, pairs, findings and notes. " +
-    'Require v 2, the exact review head, complete true, scope "complete", profile "contract", g0 ["PASS"|"BLOCK_REPLAN","<evidence>"], and exactly twelve quality pairs. ' +
+    'Require v 2, the exact review head, boolean complete, scope "complete", profile "contract", g0 ["PASS"|"BLOCK_REPLAN","<evidence>"], and exactly twelve quality pairs. A complete result sets complete true. ' +
     "Pairs are ordered SCOPE, ROBUSTNESS, DEPTH, READABILITY, TESTS, OBSERVABILITY, SECURITY, PERFORMANCE, ROLLOUT, CONSISTENCY, EXPERIENCE, LANGUAGE. " +
     "Evidence is at most 140 characters per pair and 200 for G0. Findings are at most eight exact objects {file,line,severity,defect,verification}; notes are at most eight {file,line,remedy}. " +
     reviewLocationContract(reviewPaths) +
-    " Total decoded summary is at most 2000 characters. PASS requires complete true, G0 PASS, no findings and no BLOCK; a fixable FAIL requires G0 PASS, at least one finding and a bound BLOCK; notes never block."
+    " Total decoded summary is at most 2000 characters. Never truncate the JSON or drop a required field, finding or note. If complete evidence cannot fit that boundary, return FAIL with complete false; it remains incomplete and is never promoted to PASS. PASS requires complete true, G0 PASS, no findings and no BLOCK; a fixable FAIL requires G0 PASS, at least one finding and a bound BLOCK; notes never block."
   );
 }
 
@@ -308,12 +321,18 @@ export function reviewedRepairAdapter(native: Adapter): RepairAdapter {
       await assertBoundedRoots(config);
       const prompts = await sourcePromptContents(config);
       return {
-        ...(await loadArtifacts(config, config.sourceStateDirectory, config.mainBase)),
+        ...(await loadArtifacts(
+          config,
+          config.sourceStateDirectory,
+          config.mainBase,
+          config.selectedReviewStateDirectory,
+        )),
         promptContents: prompts,
       };
     },
     async dispatch(config, handoff) {
       await assertLoadedController(config);
+      await assertBoundedRoots(config);
       demand(!(await optionalJson(config.stateDirectory, "publication")), "repair-cannot-publish");
       try {
         return await step(

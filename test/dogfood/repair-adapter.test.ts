@@ -6,7 +6,15 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.mjs";
 import { repairStep } from "../../scripts/dogfood/repair.mjs";
-import { repairPolicy, type RepairConfig } from "../../scripts/dogfood/repair-policy.mjs";
+import {
+  repairDigest,
+  repairPolicy,
+  type RepairConfig,
+} from "../../scripts/dogfood/repair-policy.mjs";
+import {
+  reviewRecoveryAuthority,
+  sourceReviewBinding,
+} from "../../scripts/dogfood/review-policy.mjs";
 import type { Adapter, Role, Terminal } from "../../scripts/dogfood/flow.js";
 import {
   refreshSourceFingerprint,
@@ -93,12 +101,23 @@ async function realFixture() {
   current.source.terminal.summary = reviewSummary("complete", repairBase);
   current.source.sourceHead = repairBase;
   current.source.reviewHead = repairBase;
+  current.source.authorAttempt.trace = resolve(current.paths.priorState, "author.jsonl");
+  current.source.reviewerAttempt.trace = resolve(current.paths.priorState, "reviewer.jsonl");
   for (const [name, value] of [
     ["config", current.source.configRecord],
     ["candidate", current.source.candidate],
     ["author-attempt", current.source.authorAttempt],
+    ["author-terminal", { id: current.source.authorAttempt.id, status: "passed", head: mainBase }],
     ["reviewer-attempt", current.source.reviewerAttempt],
     ["reviewer-terminal", current.source.terminal],
+    [
+      "reviewer-intent",
+      {
+        fingerprint: current.source.configRecord.fingerprint,
+        role: "reviewer",
+        head: repairBase,
+      },
+    ],
   ] as const)
     await writeFile(
       resolve(current.paths.priorState, `${name}.json`),
@@ -136,6 +155,211 @@ it("joins the actual closed source records to exact Git heads, changed files and
     correctiveBase: current.repairBase,
     predecessorCompleteSweep: "synthetic-prior-reviewer",
   });
+}, 30_000);
+
+it("feeds a selected failed review through the accepted repair policy without losing the malformed predecessor", async () => {
+  const current = await realFixture();
+  const original = current.source.reviewerAttempt.id;
+  const selected = "synthetic-selected-reviewer";
+  const selectedAttempt = {
+    id: selected,
+    pid: 303,
+    trace: resolve(current.paths.priorState, "review-recovery.reviewer.jsonl"),
+  };
+  const selectedTerminal = {
+    ...current.source.terminal,
+    id: selected,
+    status: "failed",
+  };
+  await Promise.all([
+    writeFile(
+      resolve(current.paths.priorState, "reviewer-terminal.json"),
+      JSON.stringify({ id: original, status: "malformed", head: current.repairBase }),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "review-recovery-attempt.json"),
+      JSON.stringify(selectedAttempt),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "review-recovery-authority.json"),
+      JSON.stringify(
+        reviewRecoveryAuthority({
+          controller: current.source.configRecord.config.owner,
+          run: current.source.configRecord.config.run,
+          stateDirectory: current.paths.priorState,
+          configFingerprint: current.source.configRecord.fingerprint,
+          authorAttempt: current.source.authorAttempt.id,
+          candidateHead: current.repairBase,
+          originalReview: original,
+          reviewer: current.source.configRecord.config.reviewer,
+        }),
+      ),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "review-recovery-terminal.json"),
+      JSON.stringify(selectedTerminal),
+    ),
+    writeFile(
+      resolve(current.paths.priorState, "source-review-binding.json"),
+      JSON.stringify(
+        sourceReviewBinding({
+          run: current.source.configRecord.config.run,
+          stateDirectory: current.paths.priorState,
+          configFingerprint: current.source.configRecord.fingerprint,
+          authorAttempt: current.source.authorAttempt.id,
+          candidateHead: current.repairBase,
+          originalReview: original,
+          selectedReview: selected,
+          selectedDisposition: "failed",
+        }),
+      ),
+    ),
+  ]);
+  current.config.history[1]!.outcome = "malformed";
+  current.config.history.push({
+    ordinal: 3,
+    id: selected,
+    role: "reviewer",
+    outcome: "failed",
+    usage: { status: "unavailable" },
+  });
+  current.config.admission = {
+    consumed: 3,
+    ceiling: 5,
+    reservations: [
+      { role: "author", ordinal: 4 },
+      { role: "reviewer", ordinal: 5 },
+    ],
+  };
+  Object.assign(current.config.authority, {
+    admission: current.config.admission,
+    historyDigest: repairDigest(current.config.history),
+  });
+  Object.assign(current.config.authority.source, {
+    reviewerAttempt: selected,
+    reviewId: selected,
+  });
+
+  const artifacts = await reviewedRepairAdapter({} as Adapter).loadSourceReview(current.config);
+  expect(artifacts).toMatchObject({
+    reviewerAttempt: { id: selected },
+    terminal: { id: selected, status: "failed" },
+  });
+  expect(repairPolicy().prepare(current.config, artifacts)).toMatchObject({
+    predecessorCompleteSweep: selected,
+    history: [
+      { id: current.source.authorAttempt.id, outcome: "passed" },
+      { id: original, outcome: "malformed" },
+      { id: selected, outcome: "failed" },
+    ],
+  });
+}, 30_000);
+
+it("binds a separately selected failed review to preserved incomplete source evidence", async () => {
+  const current = await realFixture();
+  const selectedState = resolve(dirname(current.paths.priorState), "selected-source-review");
+  await mkdir(selectedState);
+  const original = current.source.reviewerAttempt.id;
+  const selected = "synthetic-external-selected-reviewer";
+  const incomplete = {
+    v: 2,
+    head: current.repairBase,
+    complete: false,
+    scope: "complete",
+    profile: "contract",
+    g0: ["PASS", "complete evidence did not fit"],
+    pairs: [],
+    findings: [],
+    notes: [],
+  };
+  await Promise.all([
+    writeFile(
+      resolve(current.paths.priorState, "reviewer-terminal.json"),
+      JSON.stringify({
+        id: original,
+        status: "failed",
+        head: current.repairBase,
+        summary: JSON.stringify(incomplete),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-attempt.json"),
+      JSON.stringify({
+        id: selected,
+        pid: 303,
+        trace: resolve(selectedState, "reviewer.jsonl"),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-terminal.json"),
+      JSON.stringify({
+        id: selected,
+        status: "failed",
+        head: current.repairBase,
+        summary: reviewSummary("complete", current.repairBase),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "source-review-binding.json"),
+      JSON.stringify(
+        sourceReviewBinding({
+          run: current.source.configRecord.config.run,
+          stateDirectory: current.paths.priorState,
+          configFingerprint: current.source.configRecord.fingerprint,
+          authorAttempt: current.source.authorAttempt.id,
+          candidateHead: current.repairBase,
+          originalReview: original,
+          originalDisposition: "incomplete",
+          selectedReview: selected,
+          selectedDisposition: "failed",
+        }),
+      ),
+    ),
+  ]);
+  current.config.selectedReviewStateDirectory = selectedState;
+  current.config.history.push({
+    ordinal: 3,
+    id: selected,
+    role: "reviewer",
+    outcome: "failed",
+    usage: { status: "unavailable" },
+  });
+  current.config.admission = {
+    consumed: 3,
+    ceiling: 5,
+    reservations: [
+      { role: "author", ordinal: 4 },
+      { role: "reviewer", ordinal: 5 },
+    ],
+  };
+  Object.assign(current.config.authority, {
+    selectedReviewStateDirectory: selectedState,
+    admission: current.config.admission,
+    historyDigest: repairDigest(current.config.history),
+  });
+  Object.assign(current.config.authority.source, {
+    reviewerAttempt: selected,
+    reviewId: selected,
+  });
+
+  const artifacts = await reviewedRepairAdapter({} as Adapter).loadSourceReview(current.config);
+  expect(artifacts).toMatchObject({
+    reviewerAttempt: { id: selected },
+    terminal: { id: selected, status: "failed" },
+  });
+  expect(repairPolicy().prepare(current.config, artifacts)).toMatchObject({
+    predecessorCompleteSweep: selected,
+    history: [
+      { id: current.source.authorAttempt.id, outcome: "passed" },
+      { id: original, outcome: "failed" },
+      { id: selected, outcome: "failed" },
+    ],
+  });
+  current.config.authority.selectedReviewStateDirectory = resolve(
+    dirname(selectedState),
+    "substituted-review",
+  );
+  expect(() => repairPolicy().prepare(current.config, artifacts)).toThrow("unauthorized-repair");
 }, 30_000);
 
 it.each([
@@ -225,8 +449,92 @@ it.each([
   30_000,
 );
 
-it("calls the reviewed flow through a complete correction and reconciles without duplicate effects", async () => {
+it("completes a selected external source repair locally and reconciles without duplicate effects", async () => {
   const current = await realFixture();
+  const selectedState = resolve(dirname(current.paths.priorState), "selected-source-review");
+  const original = current.source.reviewerAttempt.id;
+  const selected = "synthetic-external-selected-reviewer";
+  const incomplete = {
+    v: 2,
+    head: current.repairBase,
+    complete: false,
+    scope: "complete",
+    profile: "contract",
+    g0: ["PASS", "complete evidence did not fit"],
+    pairs: [],
+    findings: [],
+    notes: [],
+  };
+  await mkdir(selectedState);
+  await Promise.all([
+    writeFile(
+      resolve(current.paths.priorState, "reviewer-terminal.json"),
+      JSON.stringify({
+        id: original,
+        status: "failed",
+        head: current.repairBase,
+        summary: JSON.stringify(incomplete),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-attempt.json"),
+      JSON.stringify({
+        id: selected,
+        pid: 303,
+        trace: resolve(selectedState, "reviewer.jsonl"),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "reviewer-terminal.json"),
+      JSON.stringify({
+        id: selected,
+        status: "failed",
+        head: current.repairBase,
+        summary: reviewSummary("complete", current.repairBase),
+      }),
+    ),
+    writeFile(
+      resolve(selectedState, "source-review-binding.json"),
+      JSON.stringify(
+        sourceReviewBinding({
+          run: current.source.configRecord.config.run,
+          stateDirectory: current.paths.priorState,
+          configFingerprint: current.source.configRecord.fingerprint,
+          authorAttempt: current.source.authorAttempt.id,
+          candidateHead: current.repairBase,
+          originalReview: original,
+          originalDisposition: "incomplete",
+          selectedReview: selected,
+          selectedDisposition: "failed",
+        }),
+      ),
+    ),
+  ]);
+  current.config.selectedReviewStateDirectory = selectedState;
+  current.config.history.push({
+    ordinal: 3,
+    id: selected,
+    role: "reviewer",
+    outcome: "failed",
+    usage: { status: "unavailable" },
+  });
+  current.config.admission = {
+    consumed: 3,
+    ceiling: 5,
+    reservations: [
+      { role: "author", ordinal: 4 },
+      { role: "reviewer", ordinal: 5 },
+    ],
+  };
+  Object.assign(current.config.authority, {
+    selectedReviewStateDirectory: selectedState,
+    admission: current.config.admission,
+    historyDigest: repairDigest(current.config.history),
+  });
+  Object.assign(current.config.authority.source, {
+    reviewerAttempt: selected,
+    reviewId: selected,
+  });
   const launches: Role[] = [];
   const observations: Role[] = [];
   const statuses: Record<Role, Terminal["status"]> = {
@@ -253,7 +561,7 @@ it("calls the reviewed flow through a complete correction and reconciles without
         expect(prompt).toContain(current.mainBase);
         expect(prompt).toContain("Synthetic fixture confirms one bounded fixable defect");
       } else {
-        expect(prompt).toContain("synthetic-prior-reviewer");
+        expect(prompt).toContain(selected);
         expect(prompt).toContain('"scope":"delta"');
       }
       return {
@@ -282,6 +590,10 @@ it("calls the reviewed flow through a complete correction and reconciles without
     },
   };
   const adapter = reviewedRepairAdapter(native);
+  await expect(adapter.loadSourceReview(current.config)).resolves.toMatchObject({
+    reviewerAttempt: { id: selected },
+    terminal: { id: selected, status: "failed" },
+  });
   await expect(repairStep(current.config, adapter, repairPolicy())).resolves.toMatchObject({
     status: "observing-author",
   });
@@ -299,7 +611,7 @@ it("calls the reviewed flow through a complete correction and reconciles without
   statuses.reviewer = "passed";
   await expect(repairStep(current.config, adapter, repairPolicy())).resolves.toMatchObject({
     status: "awaiting-delivery",
-    predecessorReviewId: "synthetic-prior-reviewer",
+    predecessorReviewId: selected,
   });
   await expect(repairStep(current.config, adapter, repairPolicy())).resolves.toMatchObject({
     status: "awaiting-delivery",
@@ -313,9 +625,9 @@ it("calls the reviewed flow through a complete correction and reconciles without
     JSON.parse(await readFile(resolve(current.paths.state, "author-launch-context.json"), "utf8")),
   ).toMatchObject({
     role: "author",
-    ordinal: 3,
+    ordinal: 4,
     head: current.repairBase,
-    predecessorReviewId: "synthetic-prior-reviewer",
+    predecessorReviewId: selected,
   });
 }, 30_000);
 
@@ -357,6 +669,96 @@ it("refuses a different loaded controller root before intent or direct dispatch 
   });
   expect(effects).toBe(0);
 }, 30_000);
+
+it.each([
+  ["controller", "equal"],
+  ["controller", "descendant"],
+  ["controller", "ancestor"],
+  ["controller", "canonical alias"],
+  ["source checkout", "equal"],
+  ["source checkout", "descendant"],
+  ["source checkout", "ancestor"],
+  ["source checkout", "canonical alias"],
+  ["review checkout", "equal"],
+  ["review checkout", "descendant"],
+  ["review checkout", "ancestor"],
+  ["review checkout", "canonical alias"],
+  ["repair state", "equal"],
+  ["repair state", "descendant"],
+  ["repair state", "ancestor"],
+  ["repair state", "canonical alias"],
+  ["source review state", "equal"],
+  ["source review state", "descendant"],
+  ["source review state", "ancestor"],
+  ["source review state", "canonical alias"],
+] as const)(
+  "refuses a selected review state %s %s before poisoned report reads, intent, or dispatch effects",
+  async (rootName, relation) => {
+    const current = await realFixture();
+    const root = {
+      controller: current.config.controllerRoot,
+      "source checkout": current.paths.source,
+      "review checkout": current.paths.review,
+      "repair state": current.paths.state,
+      "source review state": current.paths.priorState,
+    }[rootName];
+    let selected = root;
+    if (relation === "descendant") {
+      selected =
+        rootName === "controller"
+          ? resolve(root, "scripts")
+          : resolve(root, "selected-review-state");
+      if (rootName !== "controller") await mkdir(selected, { recursive: true });
+    } else if (relation === "ancestor") {
+      selected = dirname(root);
+    } else if (relation === "canonical alias") {
+      selected = resolve(
+        dirname(current.paths.state),
+        `selected-review-${rootName.replaceAll(" ", "-")}`,
+      );
+      await symlink(root, selected, process.platform === "win32" ? "junction" : "dir");
+    }
+    current.config.selectedReviewStateDirectory = selected;
+    current.config.authority.selectedReviewStateDirectory = selected;
+    await writeFile(resolve(current.paths.priorState, "config.json"), "{");
+
+    let effects = 0;
+    const native = {
+      async preflight() {
+        effects += 1;
+      },
+      async git() {
+        effects += 1;
+        return "";
+      },
+      async launch() {
+        effects += 1;
+        throw new Error("unexpected launch");
+      },
+      async observe() {
+        effects += 1;
+        throw new Error("unexpected observation");
+      },
+      async checks() {
+        effects += 1;
+        throw new Error("unexpected checks");
+      },
+    } as Adapter;
+    const adapter = reviewedRepairAdapter(native);
+
+    await expect(adapter.loadSourceReview(current.config)).rejects.toMatchObject({
+      reason: "overlapping-repair-paths",
+    });
+    await expect(adapter.dispatch(current.config, {} as never)).rejects.toMatchObject({
+      reason: "overlapping-repair-paths",
+    });
+    await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(effects).toBe(0);
+  },
+  30_000,
+);
 
 it("refuses a substituted predecessor prompt before reading it or recording intent", async () => {
   const current = await realFixture();

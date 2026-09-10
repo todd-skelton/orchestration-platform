@@ -14,6 +14,12 @@ import {
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
+import {
+  reviewRecoveryAuthority,
+  sourceReviewBinding,
+  validateReviewRecoveryAuthority,
+  validateSourceReviewBinding,
+} from "../../scripts/dogfood/review-policy.mjs";
 
 const id = "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
   head = "b".repeat(40);
@@ -38,6 +44,17 @@ const rows = [
   { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
 ];
 const trace = (events = rows) => events.map((row) => JSON.stringify(row)).join("\n") + "\n";
+type MutableFixture<T> = T extends string
+  ? string
+  : T extends number
+    ? number
+    : T extends boolean
+      ? boolean
+      : T extends object
+        ? { -readonly [K in keyof T]: MutableFixture<T[K]> } & { extra?: unknown }
+        : T;
+type SourceReviewBindingFixture = MutableFixture<ReturnType<typeof sourceReviewBinding>>;
+type ReviewRecoveryAuthorityFixture = MutableFixture<ReturnType<typeof reviewRecoveryAuthority>>;
 it.each(["win32", "linux", "darwin"] as const)(
   "selects the observed native backend only on Windows (%s argument fixture)",
   (platform) => {
@@ -262,7 +279,7 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
 });
-it("accepts legacy verdicts and bounds optional advisory summaries", () => {
+it("accepts legacy verdicts, bounds advisory summaries and rejects oversized review authority", () => {
   expect(parseTrace(trace(), true, "reviewer", config, id)).not.toHaveProperty("summary");
   const verdict = (summary: unknown) =>
     trace([
@@ -280,8 +297,11 @@ it("accepts legacy verdicts and bounds optional advisory summaries", () => {
     "actionable finding",
   );
   expect(parseTrace(verdict(7), true, "reviewer", config, id)).not.toHaveProperty("summary");
-  expect(parseTrace(verdict("x".repeat(2100)), true, "reviewer", config, id).summary).toBe(
+  expect(parseTrace(verdict("x".repeat(2000)), true, "reviewer", config, id).summary).toBe(
     "x".repeat(2000),
+  );
+  expect(() => parseTrace(verdict("x".repeat(2001)), true, "reviewer", config, id)).toThrow(
+    "malformed-worker-verdict",
   );
 });
 it("requests a bounded summary for new outputs without changing verdict authority fields", () => {
@@ -325,6 +345,192 @@ it("rejects missing/duplicate identities, missing completion, changed session, w
       config,
     ),
   ).toThrow();
+});
+it("distinguishes malformed verdict transport from a valid verdict with substituted identity", () => {
+  const message = (value: unknown) =>
+    trace([
+      rows[0]!,
+      { type: "item.completed", item: { type: "agent_message", text: JSON.stringify(value) } },
+      rows[2]!,
+    ]);
+  expect(() =>
+    parseTrace(
+      message({ run: "other-run", role: "reviewer", head, verdict: "PASS", summary: "" }),
+      true,
+      "reviewer",
+      config,
+      id,
+    ),
+  ).toThrow("worker-verdict-identity-mismatch");
+  expect(() =>
+    parseTrace(
+      message({ run: config.run, role: "reviewer", head: "not-a-head", verdict: "PASS" }),
+      true,
+      "reviewer",
+      config,
+      id,
+    ),
+  ).toThrow("malformed-worker-verdict");
+});
+it.each([
+  [
+    "schema",
+    (value: SourceReviewBindingFixture): void => {
+      value.schemaVersion = "unknown";
+    },
+  ],
+  [
+    "source run",
+    (value: SourceReviewBindingFixture): void => {
+      value.source.run = "other";
+    },
+  ],
+  [
+    "source state",
+    (value: SourceReviewBindingFixture): void => {
+      value.source.stateDirectory = "/other";
+    },
+  ],
+  [
+    "fingerprint",
+    (value: SourceReviewBindingFixture) => (value.source.configFingerprint = "f".repeat(64)),
+  ],
+  [
+    "author",
+    (value: SourceReviewBindingFixture): void => {
+      value.source.authorAttempt = "other-author";
+    },
+  ],
+  ["head", (value: SourceReviewBindingFixture) => (value.source.candidateHead = "f".repeat(40))],
+  [
+    "original",
+    (value: SourceReviewBindingFixture): void => {
+      value.originalReview.attempt = "other-original";
+    },
+  ],
+  [
+    "original disposition",
+    (value: SourceReviewBindingFixture): void => {
+      value.originalReview.disposition = "incomplete";
+    },
+  ],
+  [
+    "invalid original disposition",
+    (value: SourceReviewBindingFixture): void => {
+      value.originalReview.disposition = "failed";
+    },
+  ],
+  [
+    "selected",
+    (value: SourceReviewBindingFixture): void => {
+      value.selectedReview.attempt = "other-selected";
+    },
+  ],
+  [
+    "selected disposition",
+    (value: SourceReviewBindingFixture): void => {
+      value.selectedReview.disposition = "failed";
+    },
+  ],
+  [
+    "extra",
+    (value: SourceReviewBindingFixture): void => {
+      value.extra = true;
+    },
+  ],
+] as const)("rejects substituted source-review binding %s", (_case, mutate) => {
+  const input = {
+    run: "trial",
+    stateDirectory: "/state",
+    configFingerprint: "e".repeat(64),
+    authorAttempt: "author",
+    candidateHead: head,
+    originalReview: "original",
+    selectedReview: "selected",
+    selectedDisposition: "passed" as const,
+  };
+  const binding = structuredClone(sourceReviewBinding(input));
+  mutate(binding);
+  expect(() => validateSourceReviewBinding(binding, input)).toThrow(
+    "invalid-source-review-binding",
+  );
+});
+it.each([
+  [
+    "schema",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.schemaVersion = "unknown";
+    },
+  ],
+  [
+    "controller",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.controller = "other";
+    },
+  ],
+  [
+    "run",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.run = "other";
+    },
+  ],
+  [
+    "state",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.stateDirectory = "/other";
+    },
+  ],
+  [
+    "fingerprint",
+    (value: ReviewRecoveryAuthorityFixture) => (value.sourceConfigFingerprint = "f".repeat(64)),
+  ],
+  [
+    "author",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.sourceAuthor = "other-author";
+    },
+  ],
+  ["head", (value: ReviewRecoveryAuthorityFixture) => (value.candidateHead = "f".repeat(40))],
+  [
+    "original",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.originalReview = "other-original";
+    },
+  ],
+  [
+    "reviewer",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.reviewer.model = "other";
+    },
+  ],
+  [
+    "action",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.action = "retry";
+    },
+  ],
+  [
+    "extra",
+    (value: ReviewRecoveryAuthorityFixture): void => {
+      value.extra = true;
+    },
+  ],
+] as const)("rejects substituted review-recovery authority %s", (_case, mutate) => {
+  const input = {
+    controller: "controller",
+    run: "trial",
+    stateDirectory: "/state",
+    configFingerprint: "e".repeat(64),
+    authorAttempt: "author",
+    candidateHead: head,
+    originalReview: "original",
+    reviewer: { model: "reviewer", effort: "high", promptFile: "/reviewer.md" },
+  };
+  const authority = structuredClone(reviewRecoveryAuthority(input));
+  mutate(authority);
+  expect(() => validateReviewRecoveryAuthority(authority, input)).toThrow(
+    "invalid-review-recovery-authority",
+  );
 });
 it("refuses a CLI without the observed native interface before launching", async () => {
   await expect(codexAdapter().preflight(config)).rejects.toThrow();

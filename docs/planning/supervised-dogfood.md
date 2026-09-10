@@ -495,6 +495,39 @@ telemetry is advisory. Hosted fixtures prove compatibility only. #341 remains
 open until a genuine accepted c024 queue refresh preserves the earlier failure
 and later reviewed-head/restart evidence without a duplicate publication.
 
+## Bounded malformed source-review recovery
+
+ISS-081 adds one malformed-only continuation to the accepted bounded queue. A
+reviewer whose native process completed but whose final verdict transport is
+unparsable or structurally invalid receives a durable `malformed` terminal; a
+valid negative, valid incomplete report, wrong identity/head, launch failure or
+unknown result does not. The original source author and candidate are never
+rerun or edited for a new verdict.
+
+Before the sole replacement launch, the adapter requires a pre-existing
+external `dogfood-review-recovery-authority/v1` bound to the source run, state
+directory, configuration fingerprint, author, exact head, malformed reviewer
+and configured reviewer actor. The queue then reserves the next native
+participant and the recovery adapter writes its intent. Intent without attempt
+blocks redispatch. The selected reviewer must be fresh and independent, uses a
+separate artifact namespace, and observes the same clean exact-head worktrees.
+A second malformed result stops rather than shopping for another reviewer.
+
+The write-once `dogfood-source-review-binding/v1` record joins the source,
+original malformed review and selected passed-or-failed review. Repair and
+delivery resolve replacement records only through that exact binding; absent
+binding preserves accepted legacy source state. All original records, ordinals,
+outcomes and known/unavailable usage remain in queue history. The report
+contract retains G0 and all twelve ordered quality pairs, forbids truncation or
+dropped fields/findings/notes, and requires `complete:false` when complete
+evidence cannot fit the admitted boundary.
+
+This does not implement ISS-082 verification-failure repair or change the
+ISS-079 PR-refresh adapter. Fixtures do not grant delivery, merge, execution or
+promotion authority. Exact-head review, four controller gates, hosted Node 24
+Windows/macOS/Linux and external stable promotion remain required, followed by
+a naturally encountered post-activation recovery and completed restart.
+
 ## Closed queue completion reconciliation
 
 ISS-086/#350 closes the producer/consumer contract used after delivery. The
