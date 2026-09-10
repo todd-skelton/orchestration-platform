@@ -29,6 +29,21 @@ const authorId = "11111111-1111-1111-1111-111111111111";
 const reviewId = "22222222-2222-2222-2222-222222222222";
 const roots: string[] = [];
 
+function reviewerReport(
+  current: DeliveryConfig,
+  verdict: "PASS" | "FAIL" = "PASS",
+  findings: { file: string; line: number; severity: "blocking" | "note"; text: string }[] = [],
+) {
+  return JSON.stringify({
+    run: current.run,
+    role: "reviewer",
+    head: current.candidateHead,
+    verdict,
+    findings,
+    g0: "The reviewed change is already the simplest implementation.",
+  });
+}
+
 function config(root: string): DeliveryConfig {
   return {
     run: "self-delivery-fixture",
@@ -133,6 +148,7 @@ async function writePilotEvidence(
           id: (reviewerAttempt as { id?: unknown }).id,
           status: "passed",
           head: current.candidateHead,
+          summary: reviewerReport(current),
         },
       ),
     ),
@@ -1181,7 +1197,7 @@ it("fails self policy closed before provider access for the wrong repository or 
   await expect(selfDeliveryPolicy().plan(wrongChecks)).rejects.toThrow("wrong-self-hosted-checks");
 });
 
-it("reduces existing pilot records to exact reviewed source evidence without worker prose", async () => {
+it("reduces an exact primary reviewer report to delivery evidence", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
   roots.push(root);
   const current = config(root);
@@ -1195,7 +1211,7 @@ it("reduces existing pilot records to exact reviewed source evidence without wor
       id: reviewId,
       status: "passed",
       head,
-      summary: "advisory prose must not cross the delivery boundary",
+      summary: reviewerReport(current),
     },
   });
   await expect(githubDeliveryAdapter().source(current)).resolves.toEqual({
@@ -1211,6 +1227,40 @@ it("reduces existing pilot records to exact reviewed source evidence without wor
     stateDirectory: current.stateDirectory,
     requiredChecks: current.requiredChecks,
   });
+});
+
+it.each([
+  [
+    "PASS with a blocking finding",
+    "PASS" as const,
+    [{ file: "scripts/dogfood/queue.ts", line: 1, severity: "blocking" as const, text: "block" }],
+  ],
+  [
+    "FAIL with only a note",
+    "FAIL" as const,
+    [{ file: "scripts/dogfood/queue.ts", line: 1, severity: "note" as const, text: "note" }],
+  ],
+])("rejects a contradictory primary reviewer report: %s", async (_name, verdict, findings) => {
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-review-verdict-"));
+  roots.push(root);
+  const current = config(root);
+  await Promise.all(
+    [current.controllerRoot, current.worktree, current.reviewWorktree, current.stateDirectory].map(
+      (path) => mkdir(path),
+    ),
+  );
+  await writePilotEvidence(current, {
+    reviewerTerminal: {
+      id: reviewId,
+      status: "passed",
+      head,
+      summary: reviewerReport(current, verdict, findings),
+    },
+  });
+
+  await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
+    "unreviewed-delivery-source",
+  );
 });
 
 it("joins delivery to an immutable selected review while retaining the malformed original", async () => {
