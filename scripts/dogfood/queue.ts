@@ -121,8 +121,6 @@ export const ACTIONABLE_STOP_REASONS = [
   "exit-receipt-timeout",
   "native-launch-ceiling-exhausted",
   "implementation-attempt-ceiling-exhausted",
-  "author-temp-unavailable",
-  "author-offline-pnpm-unavailable",
 ] as const;
 export type ActionableStopReason = (typeof ACTIONABLE_STOP_REASONS)[number];
 

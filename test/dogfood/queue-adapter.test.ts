@@ -136,27 +136,6 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-it.each(["author-temp-unavailable", "author-offline-pnpm-unavailable"])(
-  "preserves the typed author preflight stop %s at the source boundary",
-  async (reason) => {
-    const current = await fixture();
-    const native = {
-      async preflight() {
-        throw new QueueBlocked(reason);
-      },
-      async git(worktree: string, args: string[]) {
-        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
-        if (args[0] === "rev-parse" && args[1] === "HEAD")
-          return worktree === current.paths.pilot ? stable : base;
-        if (args[0] === "status") return "";
-        throw new Error(`unexpected git command: ${args.join(" ")}`);
-      },
-    } as unknown as Adapter;
-    const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
-    await expect(adapter.source(current.item)).rejects.toMatchObject({ reason });
-  },
-);
-
 it("directly composes the accepted setup transition before source work", async () => {
   const current = await fixture();
   await Promise.all(
