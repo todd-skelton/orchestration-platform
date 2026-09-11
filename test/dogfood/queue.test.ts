@@ -183,6 +183,7 @@ async function loopFixture() {
     reviewer: { model: "gpt-5.6-sol", effort: "high" },
     codexExecutable: process.execPath,
     gitExecutable,
+    exitReceiptWindowMs: 30_000,
     nativeLaunchCeiling: 8,
     attemptCeiling: 4,
   };
@@ -779,6 +780,74 @@ it("counts a failed genuine repair as candidate two and stops at ceiling two", a
   expect(
     JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-failed.json"), "utf8")),
   ).toMatchObject({ candidateAttempt: 2, head: "c".repeat(40), findings });
+});
+
+it("keeps a gate correction on repaired candidate two and stops at that ceiling", async () => {
+  const current = await fixture();
+  const item = current.items[0]!;
+  item.implementationAttemptCeiling = 2;
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  const history: QueueParticipant[] = [];
+  const findings = [
+    {
+      file: "scripts/dogfood/queue.ts",
+      line: 1,
+      severity: "blocking" as const,
+      text: "gate correction remains blocked",
+    },
+  ];
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source(selected) {
+      history.push(
+        participant(1, selected.id, "source", "author", "passed"),
+        participant(2, selected.id, "source", "reviewer", "failed"),
+      );
+      return {
+        status: "fixable-review",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        findings,
+      };
+    },
+    async repair(selected) {
+      history.push(
+        participant(3, selected.id, "repair", "author", "passed"),
+        participant(4, selected.id, "repair", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: "c".repeat(40),
+        reviewId: history[3]!.id,
+        stateDirectory: selected.repair.stateDirectory,
+      };
+    },
+    async delivery(selected) {
+      history.push(
+        { ...participant(5, selected.id, "repair", "author", "passed"), id: "gate-author" },
+        { ...participant(6, selected.id, "repair", "reviewer", "failed"), id: "gate-reviewer" },
+      );
+      return {
+        status: "failed",
+        head: "e".repeat(40),
+        reviewId: "gate-reviewer",
+        findings,
+      };
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).rejects.toThrow(
+    "implementation-attempt-ceiling-exhausted",
+  );
+  expect(
+    JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-failed.json"), "utf8")),
+  ).toMatchObject({ candidateAttempt: 2, head: "e".repeat(40), reviewer: "gate-reviewer" });
 });
 
 it("restarts a persisted candidate-two failure by advancing to candidate three", async () => {

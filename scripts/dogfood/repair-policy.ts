@@ -75,16 +75,17 @@ export interface RepairAuthority {
   reviewWorktree: string;
   stateDirectory: string;
   sourceStateDirectory: string;
-  selectedReviewStateDirectory?: string;
   allowedPaths: string[];
   sourcePaths: string[];
   acceptanceCriteria: string[];
   requiredChecks: string[];
+  exitReceiptWindowMs: number;
   source: {
     owner: string;
     run: string;
     pilotRevision: string;
     requiredChecks: string[];
+    exitReceiptWindowMs: number;
     author: RepairActor;
     reviewer: RepairActor;
     adapter: { kind: "codex-exec"; executable: string };
@@ -121,11 +122,11 @@ export interface RepairConfig {
   reviewWorktree: string;
   stateDirectory: string;
   sourceStateDirectory: string;
-  selectedReviewStateDirectory?: string;
   allowedPaths: string[];
   sourcePaths: string[];
   acceptanceCriteria: string[];
   requiredChecks: string[];
+  exitReceiptWindowMs: number;
   history: ParticipantHistory[];
   implementationAttempts: number;
   implementationAttemptCeiling: number;
@@ -244,7 +245,6 @@ function validAdapter(adapter: unknown) {
 }
 
 export function validateRepairConfig(config: RepairConfig) {
-  const hasSelectedReview = object(config) && Object.hasOwn(config, "selectedReviewStateDirectory");
   demand(
     exactKeys(config, [
       "schemaVersion",
@@ -259,11 +259,11 @@ export function validateRepairConfig(config: RepairConfig) {
       "reviewWorktree",
       "stateDirectory",
       "sourceStateDirectory",
-      ...(hasSelectedReview ? ["selectedReviewStateDirectory"] : []),
       "allowedPaths",
       "sourcePaths",
       "acceptanceCriteria",
       "requiredChecks",
+      "exitReceiptWindowMs",
       "history",
       "implementationAttempts",
       "implementationAttemptCeiling",
@@ -292,7 +292,6 @@ export function validateRepairConfig(config: RepairConfig) {
       config.reviewWorktree,
       config.stateDirectory,
       config.sourceStateDirectory,
-      ...(hasSelectedReview ? [config.selectedReviewStateDirectory] : []),
     ].every((path) => typeof path === "string" && isAbsolute(path)),
     "malformed-repair-paths",
   );
@@ -303,9 +302,7 @@ export function validateRepairConfig(config: RepairConfig) {
       config.reviewWorktree,
       config.stateDirectory,
       config.sourceStateDirectory,
-      ...(hasSelectedReview ? [config.selectedReviewStateDirectory] : []),
-    ]).size ===
-      5 + Number(hasSelectedReview),
+    ]).size === 5,
     "overlapping-repair-paths",
   );
   demand(
@@ -324,6 +321,12 @@ export function validateRepairConfig(config: RepairConfig) {
   );
   demand(strings(config.acceptanceCriteria, 32, 1_000), "malformed-acceptance-criteria");
   demand(strings(config.requiredChecks, 16, 160), "malformed-required-checks");
+  demand(
+    Number.isSafeInteger(config.exitReceiptWindowMs) &&
+      config.exitReceiptWindowMs >= 0 &&
+      config.exitReceiptWindowMs <= 300_000,
+    "malformed-exit-receipt-window",
+  );
   demand(validAdapter(config.adapter), "unsupported-repair-adapter");
   for (const actor of [config.author, config.reviewer])
     demand(validActor(actor), "malformed-repair-actor");
@@ -417,9 +420,6 @@ export function validateRepairConfig(config: RepairConfig) {
 
 function validateAuthority(config: RepairConfig) {
   const authority = config.authority;
-  const hasSelectedReview = Object.hasOwn(config, "selectedReviewStateDirectory");
-  const authorityHasSelectedReview =
-    object(authority) && Object.hasOwn(authority, "selectedReviewStateDirectory");
   const boundKeys: (keyof RepairConfig & keyof RepairAuthority)[] = [
     "run",
     "issue",
@@ -434,6 +434,7 @@ function validateAuthority(config: RepairConfig) {
     "sourceStateDirectory",
     "implementationAttempts",
     "implementationAttemptCeiling",
+    "exitReceiptWindowMs",
   ];
   demand(
     exactKeys(authority, [
@@ -450,11 +451,11 @@ function validateAuthority(config: RepairConfig) {
       "reviewWorktree",
       "stateDirectory",
       "sourceStateDirectory",
-      ...(authorityHasSelectedReview ? ["selectedReviewStateDirectory"] : []),
       "allowedPaths",
       "sourcePaths",
       "acceptanceCriteria",
       "requiredChecks",
+      "exitReceiptWindowMs",
       "source",
       "author",
       "reviewer",
@@ -468,9 +469,6 @@ function validateAuthority(config: RepairConfig) {
       authority.schemaVersion === "dogfood-repair-authority/v1" &&
       IDENTITY.test(authority.controller) &&
       boundKeys.every((key) => same(authority[key], config[key])) &&
-      authorityHasSelectedReview === hasSelectedReview &&
-      (!hasSelectedReview ||
-        same(authority.selectedReviewStateDirectory, config.selectedReviewStateDirectory)) &&
       same(authority.allowedPaths, config.allowedPaths) &&
       same(authority.sourcePaths, config.sourcePaths) &&
       same(authority.acceptanceCriteria, config.acceptanceCriteria) &&
@@ -489,6 +487,7 @@ function validateAuthority(config: RepairConfig) {
       "run",
       "pilotRevision",
       "requiredChecks",
+      "exitReceiptWindowMs",
       "author",
       "reviewer",
       "adapter",
@@ -502,6 +501,7 @@ function validateAuthority(config: RepairConfig) {
       IDENTITY.test(authority.source.owner) &&
       SHA.test(authority.source.pilotRevision) &&
       strings(authority.source.requiredChecks, 16, 160) &&
+      authority.source.exitReceiptWindowMs === config.exitReceiptWindowMs &&
       validActor(authority.source.author) &&
       validActor(authority.source.reviewer) &&
       validAdapter(authority.source.adapter) &&
@@ -630,6 +630,7 @@ export function repairPolicy() {
           "allowedPaths",
           "repository",
           "requiredChecks",
+          "exitReceiptWindowMs",
           "author",
           "reviewer",
           "adapter",
@@ -639,6 +640,7 @@ export function repairPolicy() {
           prior.issue === config.issue &&
           prior.pilotRevision === source.pilotRevision &&
           prior.repository === config.repository &&
+          prior.exitReceiptWindowMs === config.exitReceiptWindowMs &&
           prior.base === config.mainBase &&
           prior.worktree === config.worktree &&
           prior.reviewWorktree === config.reviewWorktree &&

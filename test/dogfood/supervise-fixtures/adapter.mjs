@@ -3,6 +3,10 @@ import { delimiter, dirname, resolve } from "node:path";
 import { itemAuthority, participantIdentity, queueDigest } from "../../../scripts/dogfood/queue.ts";
 export { QueueBlocked, queueStep } from "../../../scripts/dogfood/queue.ts";
 
+export async function currentCandidateAttempt(config) {
+  return config.items[0].implementationAttempt;
+}
+
 export async function queueConfigFromLoop(loop, executingRoot) {
   const stateDirectory = resolve(loop.stateRoot, loop.run, "queue");
   const sourceState = resolve(loop.stateRoot, loop.run, "source");

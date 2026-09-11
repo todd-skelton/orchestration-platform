@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { parseReview, RepairBlocked } from "./repair-policy.mjs";
 import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
 
 export type Role = "author" | "reviewer";
@@ -16,13 +17,14 @@ export interface Config {
   allowedPaths: string[];
   repository: string;
   requiredChecks: string[];
+  exitReceiptWindowMs: number;
   author: { model: string; effort: string; prompt: string };
   reviewer: { model: string; effort: string; prompt: string };
   adapter: { kind: "codex-exec"; executable: string };
   // Private adapter-only artifact namespace. Persisted source configurations
   // never set this; a bounded replacement review uses it to avoid overwriting
   // the original review transport.
-  artifactPrefix?: "review-recovery";
+  artifactPrefix?: "review-retry" | "gate-retry" | "gate-review-retry";
 }
 export interface Attempt {
   id: string;
@@ -73,6 +75,30 @@ async function record(directory: string, name: string, value: unknown) {
     flush: true,
   });
 }
+
+export async function selectedSourceReview(
+  config: Pick<Config, "stateDirectory">,
+  recordPrefix = "",
+) {
+  const retryAttempt = await readOptional(
+    resolve(config.stateDirectory, `${recordPrefix}reviewer-retry-attempt.json`),
+  );
+  const retryTerminal = await readOptional(
+    resolve(config.stateDirectory, `${recordPrefix}reviewer-retry-terminal.json`),
+  );
+  if (retryAttempt || retryTerminal) {
+    requireThat(retryAttempt && retryTerminal, "reviewer-retry-state-incomplete");
+    return { attempt: retryAttempt as Attempt, terminal: retryTerminal as Terminal };
+  }
+  const attempt = await readOptional(
+    resolve(config.stateDirectory, `${recordPrefix}reviewer-attempt.json`),
+  );
+  const terminal = await readOptional(
+    resolve(config.stateDirectory, `${recordPrefix}reviewer-terminal.json`),
+  );
+  requireThat(attempt && terminal, "reviewer-state-incomplete");
+  return { attempt: attempt as Attempt, terminal: terminal as Terminal };
+}
 export function validateConfig(config: Config) {
   requireThat(config && /^[\w.-]{1,64}$/.test(config.run), "invalid-run");
   requireThat(config.artifactPrefix === undefined, "persisted-artifact-prefix-forbidden");
@@ -108,6 +134,12 @@ export function validateConfig(config: Config) {
       config.requiredChecks.every((s) => typeof s === "string" && s.length > 0) &&
       new Set(config.requiredChecks).size === config.requiredChecks.length,
     "invalid-required-checks",
+  );
+  requireThat(
+    Number.isSafeInteger(config.exitReceiptWindowMs) &&
+      config.exitReceiptWindowMs >= 0 &&
+      config.exitReceiptWindowMs <= 300_000,
+    "invalid-exit-receipt-window",
   );
   for (const role of ["author", "reviewer"] as const) {
     const actor = config[role];
@@ -178,8 +210,16 @@ async function candidate(config: Config, adapter: Adapter) {
   );
   return { head, changed };
 }
-export async function step(config: Config, adapter: Adapter, pilotRoot: string) {
+async function runStep(
+  config: Config,
+  adapter: Adapter,
+  pilotRoot: string,
+  recordPrefix = "",
+  artifactPrefix?: Config["artifactPrefix"],
+) {
   validateConfig(config);
+  const runtimeConfig = artifactPrefix ? { ...config, artifactPrefix } : config;
+  const key = (name: string) => `${recordPrefix}${name}`;
   const roots = await Promise.all(
     [pilotRoot, config.worktree, config.reviewWorktree].map((p) => realpath(p)),
   );
@@ -211,20 +251,33 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     "empty-prompt",
   );
   const fingerprint = sha(JSON.stringify({ config, prompts }));
-  let pinned = await readOptional(resolve(directory, "config.json"));
+  let pinned = await readOptional(resolve(directory, `${key("config")}.json`));
   if (!pinned) {
     await adapter.preflight(config);
-    await record(directory, "config", { fingerprint, config, host: process.platform });
+    await record(directory, key("config"), { fingerprint, config, host: process.platform });
     pinned = { fingerprint };
   }
   requireThat(pinned.fingerprint === fingerprint, "conflicting-run-configuration");
-  const get = (name: string) => readOptional(resolve(directory, `${name}.json`));
+  const get = (name: string) => readOptional(resolve(directory, `${key(name)}.json`));
+  const put = (name: string, value: unknown) => record(directory, key(name), value);
   const finish = async (status: string, detail: object = {}) => ({
     status,
     run: config.run,
     issue: config.issue,
     ...detail,
   });
+  const normalizeReviewer = (terminal: Terminal, head: string) => {
+    if (terminal.status === "malformed")
+      return { terminal, parseError: "malformed-worker-verdict" };
+    if (!["passed", "failed"].includes(terminal.status)) return { terminal };
+    try {
+      parseReview(terminal.summary, config.run, head);
+      return { terminal };
+    } catch (error) {
+      const parseError = error instanceof RepairBlocked ? error.reason : "malformed-review-report";
+      return { terminal: { ...terminal, status: "malformed" as const }, parseError };
+    }
+  };
   for (const role of ["author", "reviewer"] as const) {
     const reviewed = await get("candidate");
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
@@ -233,7 +286,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
       requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
       // Reserve before checkout/prompt/launch; a crash here is deliberately not retried.
       const intentHead = role === "author" ? config.base : reviewed?.head;
-      await record(directory, `${role}-intent`, {
+      await put(`${role}-intent`, {
         at: new Date().toISOString(),
         fingerprint,
         role,
@@ -262,8 +315,8 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
       const head = role === "author" ? config.base : reviewerHead;
       if (typeof head !== "string") throw new Error("review-head-identity-unknown");
       const prompt = workerPrompt(config, role, head, prompts[role === "author" ? 0 : 1]);
-      attempt = await adapter.launch(role, config, prompt);
-      await record(directory, `${role}-attempt`, attempt);
+      attempt = await adapter.launch(role, runtimeConfig, prompt);
+      await put(`${role}-attempt`, attempt);
     }
     requireThat(
       attempt &&
@@ -278,8 +331,9 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     const author: Attempt | undefined = await get("author-attempt");
     requireThat(role !== "reviewer" || (author && author.id !== attempt.id), "author-is-reviewer");
     let terminal: Terminal | undefined = await get(`${role}-terminal`);
+    let parseError: string | undefined;
     if (!terminal) {
-      terminal = await adapter.observe(role, config, attempt);
+      terminal = await adapter.observe(role, runtimeConfig, attempt);
       requireThat(
         terminal &&
           terminal.id === attempt.id &&
@@ -292,10 +346,81 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
         terminal.summary.length > MAX_TERMINAL_SUMMARY_LENGTH;
       const summary = oversizedReviewSummary ? undefined : terminalSummary(terminal.summary);
       delete terminal.summary;
-      if (oversizedReviewSummary) terminal.status = "malformed";
-      else if (summary) terminal.summary = summary;
+      if (oversizedReviewSummary) {
+        terminal.status = "malformed";
+        parseError = "source-review-summary-out-of-bounds";
+      } else if (summary) terminal.summary = summary;
       if (terminal.status === "running") return finish(`observing-${role}`, { attempt });
-      await record(directory, `${role}-terminal`, terminal);
+      if (role === "reviewer") {
+        const normalized = normalizeReviewer(terminal, reviewed.head);
+        terminal = normalized.terminal;
+        parseError = normalized.parseError ?? parseError;
+      }
+      await put(`${role}-terminal`, terminal);
+    } else if (role === "reviewer") {
+      const normalized = normalizeReviewer(terminal, reviewed.head);
+      terminal = normalized.terminal;
+      parseError = normalized.parseError;
+    }
+    if (role === "reviewer" && terminal.status === "malformed") {
+      const original = attempt;
+      const intent = {
+        reason: "malformed-review",
+        count: 1,
+        head: reviewed.head,
+        parseError: parseError ?? "malformed-review-report",
+      };
+      const savedIntent = await get("reviewer-retry-intent");
+      let retryAttempt: Attempt | undefined = await get("reviewer-retry-attempt");
+      if (!savedIntent) {
+        requireThat(!retryAttempt, "reviewer-retry-attempt-without-intent");
+        await put("reviewer-retry-intent", intent);
+      } else {
+        requireThat(
+          savedIntent.reason === intent.reason &&
+            savedIntent.count === intent.count &&
+            savedIntent.head === intent.head &&
+            typeof savedIntent.parseError === "string" &&
+            savedIntent.parseError.length > 0,
+          "reviewer-retry-intent-drift",
+        );
+        intent.parseError = savedIntent.parseError;
+        requireThat(retryAttempt, "reviewer-retry-launch-identity-unknown-reconcile");
+      }
+      const retryArtifactPrefix =
+        artifactPrefix === "gate-retry" ? "gate-review-retry" : "review-retry";
+      const retryConfig: Config = { ...config, artifactPrefix: retryArtifactPrefix };
+      if (!retryAttempt) {
+        const prompt = `${workerPrompt(config, "reviewer", reviewed.head, config.reviewer.prompt)}\nThe previous reviewer report could not be parsed (${intent.parseError}). Review the unchanged candidate independently and return one valid report.\n`;
+        retryAttempt = await adapter.launch("reviewer", retryConfig, prompt);
+        requireThat(
+          retryAttempt.id !== original.id && retryAttempt.id !== author?.id,
+          "reviewer-retry-participant-mismatch",
+        );
+        await put("reviewer-retry-attempt", retryAttempt);
+      }
+      requireThat(
+        retryAttempt.id !== original.id && retryAttempt.id !== author?.id,
+        "reviewer-retry-participant-mismatch",
+      );
+      let retryTerminal: Terminal | undefined = await get("reviewer-retry-terminal");
+      if (!retryTerminal) {
+        retryTerminal = await adapter.observe("reviewer", retryConfig, retryAttempt);
+        requireThat(
+          retryTerminal &&
+            retryTerminal.id === retryAttempt.id &&
+            ["running", "passed", "failed", "malformed"].includes(retryTerminal.status),
+          "malformed-terminal",
+        );
+        if (retryTerminal.status === "running")
+          return finish("observing-reviewer", { attempt: retryAttempt });
+        const normalized = normalizeReviewer(retryTerminal, reviewed.head);
+        retryTerminal = normalized.terminal;
+        await put("reviewer-retry-terminal", retryTerminal);
+      }
+      requireThat(retryTerminal.status !== "malformed", "reviewer-retry-exhausted");
+      attempt = retryAttempt;
+      terminal = retryTerminal;
     }
     const summary = terminalSummary(terminal.summary);
     if (terminal.id !== attempt.id || terminal.status === "malformed")
@@ -340,7 +465,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
             ),
           ]),
         ]);
-        await record(directory, "commit-intent", { base: config.base, changed });
+        await put("commit-intent", { base: config.base, changed });
         await adapter.git(config.worktree, [
           "--literal-pathspecs",
           "add",
@@ -349,7 +474,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
           ...changed,
         ]);
         await adapter.git(config.worktree, ["commit", "-m", `dogfood: ${config.run}`]);
-        await record(directory, "candidate", await candidate(config, adapter));
+        await put("candidate", await candidate(config, adapter));
       }
       const current = await candidate(config, adapter);
       requireThat(current.head === (await get("candidate")).head, "candidate-head-moved");
@@ -368,6 +493,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
   }
   const reviewed = await get("candidate");
   const publication = await get("publication");
+  const selectedReviewer = await selectedSourceReview(config, recordPrefix);
   const diagnostics = Object.fromEntries(
     (
       await Promise.all(
@@ -381,7 +507,7 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
   const evidence = {
     head: reviewed.head,
     author: await get("author-attempt"),
-    reviewer: await get("reviewer-attempt"),
+    reviewer: selectedReviewer.attempt,
     ...(Object.keys(diagnostics).length > 0 ? { diagnostics } : {}),
   };
   if (!publication) return finish("awaiting-publication", evidence);
@@ -415,6 +541,14 @@ export async function step(config: Config, adapter: Adapter, pilotRoot: string) 
     publication,
     checks: ci.checks,
   });
-  if (ready && !(await get("ready"))) await record(directory, "ready", result);
+  if (ready && !(await get("ready"))) await put("ready", result);
   return result;
+}
+
+export async function step(config: Config, adapter: Adapter, pilotRoot: string) {
+  return runStep(config, adapter, pilotRoot);
+}
+
+export async function gateCorrectionStep(config: Config, adapter: Adapter, pilotRoot: string) {
+  return runStep(config, adapter, pilotRoot, "gate-retry-", "gate-retry");
 }

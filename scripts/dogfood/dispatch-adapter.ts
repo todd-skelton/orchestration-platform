@@ -243,7 +243,7 @@ export function outputSchema(config: Config, role: Role) {
     },
   };
 }
-export function codexAdapter(gitExecutable = "git"): Adapter {
+export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
   const git = async (worktree: string, gitArgs: string[]) => {
     const { stdout } = await exec(gitExecutable, ["-C", worktree, ...gitArgs], {
       windowsHide: true,
@@ -316,8 +316,35 @@ export function codexAdapter(gitExecutable = "git"): Adapter {
         try {
           process.kill(attempt.pid, 0);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ESRCH")
-            throw new Error("missing-terminal-reconcile");
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+            const waitPath = artifact(config, role, "exit-wait.json");
+            const saved = await optionalText(waitPath);
+            const observedAt = now();
+            if (!saved) {
+              await writeFile(
+                waitPath,
+                JSON.stringify({
+                  reason: "delayed-exit-receipt",
+                  count: 1,
+                  attempt: attempt.id,
+                  observedAt,
+                }),
+                { flag: "wx", flush: true },
+              );
+              return { id: attempt.id, status: "running" };
+            }
+            const wait = JSON.parse(saved);
+            check(
+              wait?.reason === "delayed-exit-receipt" &&
+                wait.count === 1 &&
+                wait.attempt === attempt.id &&
+                Number.isFinite(wait.observedAt),
+              "malformed-exit-wait-record",
+            );
+            if (observedAt - wait.observedAt < config.exitReceiptWindowMs)
+              return { id: attempt.id, status: "running" };
+            throw new Error("exit-receipt-timeout");
+          }
           throw error;
         }
       }
