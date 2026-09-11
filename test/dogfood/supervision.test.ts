@@ -22,6 +22,9 @@ import {
 const roots: string[] = [];
 const repositoryPolicy: RepositoryAdapter = {
   selectCandidates: () => [{ key: "ISS-105", number: 362 }],
+  issueContext: async () => {
+    throw new Error("unused");
+  },
   branchName: () => "codex/iss-105",
   pullRequest: async () => {
     throw new Error("unused pullRequest");
@@ -136,9 +139,6 @@ function selected(): SupervisedCycle {
 
 function fakeAdapter(observation: IssueObservation): SupervisionAdapter {
   return {
-    async board() {
-      throw new Error("board must not be read while a selected cycle is active");
-    },
     async currentMain() {
       throw new Error("main must not be read while a selected cycle is active");
     },
@@ -242,7 +242,6 @@ it("posts one current-main learning note before selection persistence and keeps 
   roots.push(root);
   const repository = resolve(import.meta.dirname, "../..");
   const source = await loadPlanningSnapshot(repository);
-  const expected = expectedBoardItems(source);
   const config = { ...loop(root), repository: source.roadmap.repository };
   const observation: IssueObservation = {
     state: "OPEN",
@@ -251,18 +250,6 @@ it("posts one current-main learning note before selection persistence and keeps 
     comments: [],
   };
   const adapter = fakeAdapter(observation);
-  adapter.board = async () => ({
-    repository: source.roadmap.repository,
-    totalCount: expected.length,
-    issues: expected.map((item, index) => ({
-      number: item.key === "ISS-105" ? 362 : index + 1,
-      title: item.title,
-      body: item.body,
-      milestone: item.milestone,
-      state: item.key === "ISS-105" ? "OPEN" : "CLOSED",
-      labels: item.key === "ISS-105" ? ["ready"] : [],
-    })),
-  });
   adapter.currentMain = async () => {
     throw new QueueBlocked("current-main-unavailable");
   };

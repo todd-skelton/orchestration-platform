@@ -763,17 +763,21 @@ export function githubDeliveryAdapter(
         throw new DeliveryBlocked("hosted-observation-unavailable", detail?.trim().slice(0, 500));
       }
     },
-    async observeMerge(config, current) {
+    async observeMerge(config, current, policy) {
       try {
         const row = await commands.ghJson(config, [
           "pr",
           "view",
           String(current.number),
           "--json",
-          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body,mergeCommit",
+          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body,mergeCommit,mergeStateStatus",
         ]);
         if (!matchesPublication(row, current, config)) return { state: "unknown" };
-        if (row.state === "OPEN") return { state: "needs-mutation" };
+        if (row.state === "OPEN")
+          return (policy as { method?: unknown })?.method === "queue" &&
+            row.mergeStateStatus === "QUEUED"
+            ? { state: "pending" }
+            : { state: "needs-mutation" };
         if (row.state !== "MERGED" || !SHA.test(row.mergeCommit?.oid)) return { state: "unknown" };
         return {
           state: "confirmed",
@@ -796,7 +800,7 @@ export function githubDeliveryAdapter(
         Array.isArray(policy) ||
         Object.keys(policy).length !== 1 ||
         !Object.hasOwn(policy, "method") ||
-        (policy as { method?: unknown }).method !== "squash"
+        !["squash", "queue"].includes(String((policy as { method?: unknown }).method))
       )
         throw new DeliveryBlocked("unsupported-self-merge-policy");
       const row = await commands.ghJson(config, [
@@ -828,14 +832,10 @@ export function githubDeliveryAdapter(
         )
           throw new DeliveryBlocked("merge-head-drift");
       }
-      await commands.gh(config, [
-        "pr",
-        "merge",
-        String(current.number),
-        "--squash",
-        "--match-head-commit",
-        config.candidateHead,
-      ]);
+      const merge = ["pr", "merge", String(current.number), "--squash"];
+      if ((policy as { method: string }).method === "squash")
+        merge.push("--match-head-commit", config.candidateHead);
+      await commands.gh(config, merge);
     },
     async observeCleanup(config, plan) {
       try {

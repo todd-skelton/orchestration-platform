@@ -317,6 +317,9 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   const postMerge: string[] = [];
   const repositoryPolicy: RepositoryAdapter = {
     selectCandidates: () => [],
+    issueContext: async () => {
+      throw new Error("unused");
+    },
     branchName: () => plan.publication.sourceBranch,
     pullRequest: () => plan.publication,
     requiredChecks: () => [...current.source.requiredChecks],

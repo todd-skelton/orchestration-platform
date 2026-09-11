@@ -495,6 +495,31 @@ it("can resume merge for an already-ready PR with unchanged approved identity", 
   ]);
 });
 
+it("enqueues an unchanged ready PR and observes its queue membership", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const effects: string[][] = [];
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson() {
+      return publicationRow(publication, {
+        isDraft: false,
+        mergeStateStatus: "QUEUED",
+      });
+    },
+  });
+  await expect(adapter.observeMerge(current, publication, { method: "queue" })).resolves.toEqual({
+    state: "pending",
+  });
+  await expect(adapter.merge(current, publication, { method: "queue" })).resolves.toBeUndefined();
+  expect(effects).toEqual([["pr", "merge", "44", "--squash"]]);
+});
+
 it.each([undefined, null, "false", "true", 0, 1])(
   "rejects a malformed initial draft flag %s before ready or merge",
   async (isDraft) => {

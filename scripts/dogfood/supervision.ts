@@ -2,8 +2,6 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { loadBoardSnapshot, planningKeyOf, type BoardSnapshot } from "../planning/board-check.mjs";
-import { loadPlanningSnapshot } from "../planning/check.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { QueueBlocked, validateHistory } from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
@@ -36,7 +34,6 @@ export interface IssueObservation {
 }
 
 export interface SupervisionAdapter {
-  board(repository: string): Promise<BoardSnapshot>;
   currentMain(config: LoopConfig, executingRoot: string): Promise<string>;
   issue(config: LoopConfig, number: number): Promise<IssueObservation>;
   removeReady(config: LoopConfig, number: number): Promise<void>;
@@ -59,7 +56,7 @@ function validSelection(value: unknown, cycle: number): value is SelectedIssue {
   return (
     exactKeys(value, ["cycle", "key", "number", "base"]) &&
     value.cycle === cycle &&
-    /^ISS-\d{3}$/.test(value.key) &&
+    /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.key) &&
     Number.isSafeInteger(value.number) &&
     value.number > 0 &&
     SHA.test(value.base)
@@ -122,19 +119,16 @@ export async function nextCycle(
       return { selection: selected, initialHistory };
     }
 
-    const planning = await loadPlanningSnapshot(executingRoot);
-    const board = await adapter.board(config.repository);
     const candidates = await repositoryAdapter.selectCandidates({
       repository: config.repository,
-      planning,
-      board,
+      executorRoot: executingRoot,
     });
     if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
     const issue = candidates[0];
     if (!issue) return undefined;
     if (
       !exactKeys(issue, ["key", "number"]) ||
-      !/^ISS-\d{3}$/.test(issue.key) ||
+      !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(issue.key) ||
       !Number.isSafeInteger(issue.number) ||
       issue.number <= 0
     )
@@ -161,7 +155,8 @@ export async function nextCycle(
 }
 
 function assertIssue(selection: Pick<SelectedIssue, "key">, observed: IssueObservation) {
-  if (observed.key !== selection.key) throw new QueueBlocked("selected-issue-identity-drift");
+  if (observed.key !== undefined && observed.key !== selection.key)
+    throw new QueueBlocked("selected-issue-identity-drift");
 }
 
 export async function persistCycle(config: LoopConfig, cycle: SupervisedCycle) {
@@ -414,7 +409,7 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
         throw new Error("malformed issue");
       return {
         state: row.state,
-        key: planningKeyOf(row.body),
+        key: /<!--\s*planning-key:\s*([^\s]+)\s*-->/.exec(row.body)?.[1],
         labels: row.labels.map((label: any) => label?.name),
         comments: row.comments.map((comment: any) => comment?.body),
       };
@@ -423,7 +418,6 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
     }
   };
   return {
-    board: loadBoardSnapshot,
     async currentMain(config, executingRoot) {
       try {
         const main = "refs/remotes/origin/main";

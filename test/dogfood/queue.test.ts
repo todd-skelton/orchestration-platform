@@ -25,6 +25,16 @@ import { setupStep } from "../../scripts/dogfood/setup.js";
 const roots: string[] = [];
 const repositoryPolicy: RepositoryAdapter = {
   selectCandidates: () => [],
+  issueContext: async ({ key, executorRoot }) => {
+    const body = await readFile(resolve(executorRoot, `planning/drafts/${key}.md`), "utf8");
+    const section = /\n## Done when\s*\n([\s\S]*?)(?=\n## |$)/.exec(body)?.[1]?.trim() ?? body;
+    return {
+      title: /^title:\s*"([^"]+)"\s*$/m.exec(body)?.[1] ?? key,
+      body,
+      acceptanceCriteria: [section],
+      rules: await readFile(resolve(executorRoot, "docs/loop.md"), "utf8"),
+    };
+  },
   branchName: ({ key, attempt }) =>
     `codex/${key.toLowerCase()}${attempt === 1 ? "" : `-attempt-${attempt}`}`,
   pullRequest: async () => {
