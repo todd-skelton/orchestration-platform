@@ -37,10 +37,8 @@ import { selfDeliveryPolicy } from "./self-delivery-policy.mjs";
 import { gitSetupAdapter } from "./setup-adapter.mjs";
 import { SetupBlocked, setupStep, type SetupAdapter, type SetupConfig } from "./setup.mjs";
 
-export const QUEUE_AUTHORITY_SCHEMA = "dogfood-bounded-queue-authority/v1" as const;
 export const QUEUE_CONFIG_SCHEMA = "dogfood-bounded-queue-config/v1" as const;
 export const LOOP_CONFIG_SCHEMA = "dogfood-loop/v1" as const;
-const ACTIONS = ["setup", "source", "repair", "delivery"] as const;
 const SHA = /^[a-f0-9]{40}$/;
 const ABSENT = Symbol("absent");
 const exec = promisify(execFile);
@@ -83,22 +81,9 @@ export interface QueueItem {
   };
 }
 
-export interface QueueAuthority {
-  schemaVersion: typeof QUEUE_AUTHORITY_SCHEMA;
-  controller: string;
-  run: string;
-  controllerRoot: string;
-  controllerRevision: string;
-  stateDirectory: string;
-  limit: number;
-  nativeLaunchCeiling: number;
-  lineageDigest: string;
-  itemsDigest: string;
-  actions: (typeof ACTIONS)[number][];
-}
-
 export interface QueueConfig {
   schemaVersion: typeof QUEUE_CONFIG_SCHEMA;
+  controller: string;
   run: string;
   controllerRoot: string;
   controllerRevision: string;
@@ -107,7 +92,6 @@ export interface QueueConfig {
   nativeLaunchCeiling: number;
   initialHistory: QueueParticipant[];
   items: QueueItem[];
-  authority: QueueAuthority;
 }
 
 export interface LoopConfig {
@@ -167,7 +151,7 @@ export interface CompletedQueueReader {
 }
 
 export interface QueueAdapter {
-  assertAuthority(config: QueueConfig): Promise<void>;
+  assertExecutor(): Promise<void>;
   history(): Promise<QueueParticipant[]>;
   setup(item: QueueItem): Promise<{ status: "ready" | "incomplete"; reason?: string }>;
   source(item: QueueItem): Promise<QueueSourceResult>;
@@ -220,7 +204,7 @@ function exactKeys(value: unknown, keys: string[]): value is Record<string, any>
 export const queueDigest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-export function participantIdentity(participant: QueueParticipant) {
+function participantWithoutUsage(participant: QueueParticipant) {
   return {
     ordinal: participant.ordinal,
     id: participant.id,
@@ -230,20 +214,6 @@ export function participantIdentity(participant: QueueParticipant) {
     outcome: participant.outcome,
   };
 }
-export function itemAuthority(item: QueueItem) {
-  return {
-    id: item.id,
-    issue: item.issue,
-    base: item.base,
-    implementationAttempt: item.implementationAttempt,
-    implementationAttemptCeiling: item.implementationAttemptCeiling,
-    setup: item.setup,
-    source: item.source,
-    repair: item.repair,
-    delivery: item.delivery,
-  };
-}
-
 export function validateLoopConfig(config: LoopConfig) {
   demand(
     exactKeys(config, [
@@ -411,8 +381,8 @@ export async function queueConfigFromLoop(
   executingRoot: string,
   selected: SelectedLoopIssue,
   priorHistory: QueueParticipant[] = [],
+  validatedExecutor?: Awaited<ReturnType<typeof validateLoopExecutor>>,
 ) {
-  validateLoopConfig(config);
   demand(
     exactKeys(selected, ["key", "number", "base"]) &&
       /^ISS-\d{3}$/.test(selected.key) &&
@@ -422,10 +392,8 @@ export async function queueConfigFromLoop(
     "invalid-selected-issue",
   );
   validateHistory(priorHistory, config.nativeLaunchCeiling);
-  const { executor, stateRoot, worktreeRoot, controllerRevision } = await validateLoopExecutor(
-    config,
-    executingRoot,
-  );
+  const { executor, stateRoot, worktreeRoot, controllerRevision } =
+    validatedExecutor ?? (await validateLoopExecutor(config, executingRoot));
   const git = async (args: string[]) =>
     (
       await exec(config.gitExecutable, ["-C", executor, ...args], {
@@ -490,7 +458,8 @@ export async function queueConfigFromLoop(
   const sourcePrompt = prescribedFindings
     ? `${baseSourcePrompt}\n\nStart from rejected candidate ${attemptBase}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
     : baseSourcePrompt;
-  const setupWithoutAuthority = {
+  const setup: SetupConfig = {
+    controller,
     run: config.run,
     issue: issueUrl,
     repository: config.repository,
@@ -505,15 +474,6 @@ export async function queueConfigFromLoop(
     sourceWorktree: paths.sourceWorktree,
     reviewWorktree: paths.reviewWorktree,
     stateDirectory: paths.setup,
-  };
-  const setup: SetupConfig = {
-    ...setupWithoutAuthority,
-    authority: {
-      schemaVersion: "dogfood-setup-authority/v1",
-      controller,
-      ...setupWithoutAuthority,
-      actions: ["worktrees", "dependencies"],
-    },
   };
   const source: SourceConfig = {
     owner: controller,
@@ -565,6 +525,7 @@ export async function queueConfigFromLoop(
   };
   const queue: QueueConfig = {
     schemaVersion: QUEUE_CONFIG_SCHEMA,
+    controller,
     run: config.run,
     controllerRoot: executor,
     controllerRevision,
@@ -573,22 +534,7 @@ export async function queueConfigFromLoop(
     nativeLaunchCeiling: config.nativeLaunchCeiling,
     initialHistory,
     items: [item],
-    authority: undefined as never,
   };
-  queue.authority = {
-    schemaVersion: QUEUE_AUTHORITY_SCHEMA,
-    controller,
-    run: queue.run,
-    controllerRoot: queue.controllerRoot,
-    controllerRevision: queue.controllerRevision,
-    stateDirectory: queue.stateDirectory,
-    limit: queue.limit,
-    nativeLaunchCeiling: queue.nativeLaunchCeiling,
-    lineageDigest: queueDigest(queue.initialHistory.map(participantIdentity)),
-    itemsDigest: queueDigest(queue.items.map(itemAuthority)),
-    actions: ["setup", "source", "repair", "delivery"],
-  };
-  validateQueueConfig(queue);
   return queue;
 }
 
@@ -635,6 +581,7 @@ export function validateQueueConfig(config: QueueConfig) {
   demand(
     exactKeys(config, [
       "schemaVersion",
+      "controller",
       "run",
       "controllerRoot",
       "controllerRevision",
@@ -643,9 +590,9 @@ export function validateQueueConfig(config: QueueConfig) {
       "nativeLaunchCeiling",
       "initialHistory",
       "items",
-      "authority",
     ]) &&
       config.schemaVersion === QUEUE_CONFIG_SCHEMA &&
+      /^[A-Za-z0-9._:-]{1,128}$/.test(config.controller) &&
       /^[\w.-]{1,80}$/.test(config.run) &&
       isAbsolute(config.controllerRoot) &&
       isAbsolute(config.stateDirectory) &&
@@ -704,6 +651,37 @@ export function validateQueueConfig(config: QueueConfig) {
       JSON.stringify(item.source.requiredChecks) === JSON.stringify(item.delivery.requiredChecks),
       "queue-hosted-check-drift",
     );
+    demand(item.base === item.source.base && item.base === item.setup.base, "queue-base-drift");
+    demand(item.source.owner === config.controller, "queue-controller-drift");
+    demand(
+      item.source.pilotRevision === config.controllerRevision,
+      "candidate-as-executor-selection",
+    );
+    demand(
+      item.setup.controllerRoot === config.controllerRoot &&
+        item.setup.controllerRevision === config.controllerRevision &&
+        item.setup.pilotRevision === config.controllerRevision &&
+        item.setup.controller === config.controller,
+      "queue-executor-drift",
+    );
+    demand(
+      item.setup.sourceWorktree === item.source.worktree &&
+        item.setup.reviewWorktree === item.source.reviewWorktree &&
+        item.setup.pilotWorktree !== item.source.worktree &&
+        item.setup.pilotWorktree !== item.source.reviewWorktree,
+      "queue-worktree-drift",
+    );
+    demand(item.source.repository === item.setup.repository, "queue-repository-drift");
+    for (const actor of [item.repair.author, item.repair.reviewer])
+      demand(
+        exactKeys(actor, ["model", "effort", "prompt"]) &&
+          [actor.model, actor.effort].every(
+            (value) => typeof value === "string" && value.length > 0,
+          ) &&
+          typeof actor.prompt === "string" &&
+          actor.prompt.length > 0,
+        "queue-policy-drift",
+      );
     if (item.delivery.refresh)
       demand(
         item.delivery.refresh.head === item.base &&
@@ -715,36 +693,6 @@ export function validateQueueConfig(config: QueueConfig) {
         "malformed-publication-refresh",
       );
   }
-  const authority = config.authority;
-  demand(
-    exactKeys(authority, [
-      "schemaVersion",
-      "controller",
-      "run",
-      "controllerRoot",
-      "controllerRevision",
-      "stateDirectory",
-      "limit",
-      "nativeLaunchCeiling",
-      "lineageDigest",
-      "itemsDigest",
-      "actions",
-    ]) &&
-      authority.schemaVersion === QUEUE_AUTHORITY_SCHEMA &&
-      /^[A-Za-z0-9._:-]{1,128}$/.test(authority.controller) &&
-      authority.run === config.run &&
-      authority.controllerRoot === config.controllerRoot &&
-      authority.controllerRevision === config.controllerRevision &&
-      authority.stateDirectory === config.stateDirectory &&
-      authority.limit === config.limit &&
-      authority.nativeLaunchCeiling === config.nativeLaunchCeiling &&
-      authority.lineageDigest === queueDigest(config.initialHistory.map(participantIdentity)) &&
-      authority.itemsDigest === queueDigest(config.items.map(itemAuthority)) &&
-      Array.isArray(authority.actions) &&
-      authority.actions.length === ACTIONS.length &&
-      ACTIONS.every((action, index) => authority.actions[index] === action),
-    "unauthorized-queue",
-  );
 }
 
 async function optionalRecord(directory: string, name: string) {
@@ -764,7 +712,6 @@ export async function currentCandidateAttempt(config: QueueConfig) {
 }
 
 export async function hasStartedDelivery(config: QueueConfig) {
-  validateQueueConfig(config);
   const [intent, itemComplete, queueComplete] = await Promise.all([
     optionalRecord(config.stateDirectory, "item-1-delivery-intent"),
     optionalRecord(config.stateDirectory, "item-1-complete"),
@@ -786,11 +733,7 @@ async function record(directory: string, name: string, value: unknown) {
 }
 
 async function assertQueueStateCensus(config: QueueConfig, directory: string) {
-  const allowed = new Set([
-    "queue-config.json",
-    "queue-adapter-authority.json",
-    "queue-complete.json",
-  ]);
+  const allowed = new Set(["queue-complete.json"]);
   for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1)
     for (const suffix of ["intent", "attempt", "terminal"])
       allowed.add(`participant-${ordinal}-${suffix}.json`);
@@ -823,7 +766,7 @@ function stageRecord(item: QueueItem, stage: string, history: QueueParticipant[]
     base: item.base,
     stage,
     history: history.map((participant) => ({
-      ...participantIdentity(participant),
+      ...participantWithoutUsage(participant),
       usage: validUsage(participant.usage)
         ? participant.usage
         : { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable },
@@ -914,8 +857,8 @@ function assertHistoryPrefix(config: QueueConfig, history: QueueParticipant[]) {
   demand(
     config.initialHistory.every(
       (participant, index) =>
-        JSON.stringify(participantIdentity(participant)) ===
-        JSON.stringify(participantIdentity(history[index]!)),
+        JSON.stringify(participantWithoutUsage(participant)) ===
+        JSON.stringify(participantWithoutUsage(history[index]!)),
     ),
     "participant-history-drift",
   );
@@ -932,8 +875,8 @@ function assertHistorySnapshot(
   demand(
     snapshot.every(
       (participant, index) =>
-        JSON.stringify(participantIdentity(participant)) ===
-        JSON.stringify(participantIdentity(current[index]!)),
+        JSON.stringify(participantWithoutUsage(participant)) ===
+        JSON.stringify(participantWithoutUsage(current[index]!)),
     ),
     "participant-history-drift",
   );
@@ -1164,30 +1107,12 @@ async function completedItemReceipt(
     accepted.history.length === completed.history.length &&
       accepted.history.every(
         (participant: QueueParticipant, index: number) =>
-          JSON.stringify(participantIdentity(participant)) ===
-          JSON.stringify(participantIdentity(completed.history[index])),
+          JSON.stringify(participantWithoutUsage(participant)) ===
+          JSON.stringify(participantWithoutUsage(completed.history[index])),
       ),
     "completed-item-history-drift",
   );
   return completed;
-}
-
-function queueFingerprint(config: QueueConfig) {
-  return queueDigest({
-    ...config,
-    initialHistory: config.initialHistory.map(participantIdentity),
-  });
-}
-
-async function assertQueueConfigRecord(config: QueueConfig, directory: string) {
-  const pinned = await optionalRecord(directory, "queue-config");
-  demand(
-    pinned !== ABSENT &&
-      exactKeys(pinned, ["fingerprint", "authority"]) &&
-      pinned.fingerprint === queueFingerprint(config) &&
-      JSON.stringify(pinned.authority) === JSON.stringify(config.authority),
-    "malformed-queue-config-record",
-  );
 }
 
 async function completedQueueState(
@@ -1224,9 +1149,9 @@ async function completedQueueState(
   return { queueComplete, completedItems };
 }
 
-// External promotion may authorize this closed, read-only view of an older
-// executor's terminal state. It validates the original authority and receipts
-// but deliberately has no adapter authority or component-effect capability.
+// External promotion may use this closed, read-only view of an older
+// executor's terminal state. It validates the config and receipts but has no
+// component-effect capability.
 export async function reconcileCompletedQueue(
   config: QueueConfig,
   reader: CompletedQueueReader,
@@ -1234,7 +1159,6 @@ export async function reconcileCompletedQueue(
   validateQueueConfig(config);
   const directory = await realpath(config.stateDirectory);
   await assertQueueStateCensus(config, directory);
-  await assertQueueConfigRecord(config, directory);
   const currentHistory = await reader.history();
   assertHistoryPrefix(config, currentHistory);
   const { queueComplete } = await completedQueueState(config, directory, currentHistory);
@@ -1245,10 +1169,8 @@ export async function reconcileCompletedQueue(
 export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
   validateQueueConfig(config);
   const directory = await realpath(config.stateDirectory);
-  await adapter.assertAuthority(config);
+  await adapter.assertExecutor();
   await assertQueueStateCensus(config, directory);
-  const fingerprint = queueFingerprint(config);
-  await record(directory, "queue-config", { fingerprint, authority: config.authority });
 
   const currentHistory = await adapter.history();
   assertHistoryPrefix(config, currentHistory);
@@ -1288,7 +1210,6 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       item: item.id,
       issue: item.issue,
       base: item.base,
-      itemDigest: queueDigest(itemAuthority(item)),
     });
 
     const setupReceipt = await optionalRecord(directory, `${prefix}-setup`);
@@ -1961,58 +1882,8 @@ export function repositoryQueueAdapter(
     return { head: candidate.head, reviewId: reviewer.id, findings: review.findings };
   };
 
-  const assertItem = (item: QueueItem) => {
-    demand(
-      item.issue === item.source.issue && item.issue === item.setup.issue,
-      "queue-issue-drift",
-    );
-    demand(item.setup.run === item.source.run, "queue-run-drift");
-    demand(item.base === item.source.base && item.base === item.setup.base, "queue-base-drift");
-    demand(item.source.owner === config.authority.controller, "queue-controller-drift");
-    demand(
-      item.source.pilotRevision === config.controllerRevision,
-      "candidate-as-executor-selection",
-    );
-    demand(
-      item.setup.controllerRoot === config.controllerRoot &&
-        item.setup.controllerRevision === config.controllerRevision &&
-        item.setup.pilotRevision === config.controllerRevision &&
-        item.setup.authority.controller === config.authority.controller,
-      "queue-executor-drift",
-    );
-    demand(
-      item.setup.sourceWorktree === item.source.worktree &&
-        item.setup.reviewWorktree === item.source.reviewWorktree &&
-        item.setup.pilotWorktree !== item.source.worktree &&
-        item.setup.pilotWorktree !== item.source.reviewWorktree,
-      "queue-worktree-drift",
-    );
-    demand(item.source.repository === item.setup.repository, "queue-repository-drift");
-    demand(item.setup.authority.actions.includes("worktrees"), "queue-policy-drift");
-    for (const actor of [item.repair.author, item.repair.reviewer])
-      demand(
-        exactKeys(actor, ["model", "effort", "prompt"]) &&
-          [actor.model, actor.effort].every(
-            (value) => typeof value === "string" && value.length > 0,
-          ) &&
-          typeof actor.prompt === "string" &&
-          actor.prompt.length > 0,
-        "queue-policy-drift",
-      );
-    demand(
-      JSON.stringify(item.delivery.requiredChecks) === JSON.stringify(item.source.requiredChecks),
-      "queue-hosted-check-drift",
-    );
-  };
-
   const buildRepair = async (item: QueueItem): Promise<RepairConfig> => {
-    const [pinned, candidate, authorAttempt, selected] = await Promise.all([
-      json(item.source.stateDirectory, "config"),
-      json(item.source.stateDirectory, "candidate"),
-      json(item.source.stateDirectory, "author-attempt"),
-      selectedSourceReview(item.source),
-    ]);
-    const reviewerAttempt = selected.attempt;
+    const candidate = await json(item.source.stateDirectory, "candidate");
     demand(
       SHA.test(candidate.head) &&
         Array.isArray(candidate.changed) &&
@@ -2044,6 +1915,7 @@ export function repositoryQueueAdapter(
     };
     const partial = {
       schemaVersion: "dogfood-repair-request/v1" as const,
+      controller: config.controller,
       run: item.source.run,
       issue: item.issue,
       repository: item.source.repository,
@@ -2068,58 +1940,11 @@ export function repositoryQueueAdapter(
       reviewer: item.repair.reviewer,
       adapter: item.source.adapter,
     };
-    return {
-      ...partial,
-      authority: {
-        schemaVersion: "dogfood-repair-authority/v1",
-        controller: config.authority.controller,
-        run: partial.run,
-        issue: partial.issue,
-        repository: partial.repository,
-        controllerRoot: partial.controllerRoot,
-        controllerRevision: partial.controllerRevision,
-        mainBase: partial.mainBase,
-        repairBase: partial.repairBase,
-        worktree: partial.worktree,
-        reviewWorktree: partial.reviewWorktree,
-        stateDirectory: partial.stateDirectory,
-        sourceStateDirectory: partial.sourceStateDirectory,
-        allowedPaths: partial.allowedPaths,
-        sourcePaths: partial.sourcePaths,
-        acceptanceCriteria: partial.acceptanceCriteria,
-        requiredChecks: partial.requiredChecks,
-        exitReceiptWindowMs: partial.exitReceiptWindowMs,
-        source: {
-          owner: item.source.owner,
-          run: item.source.run,
-          pilotRevision: item.source.pilotRevision,
-          requiredChecks: item.source.requiredChecks,
-          exitReceiptWindowMs: item.source.exitReceiptWindowMs,
-          author: item.source.author,
-          reviewer: item.source.reviewer,
-          adapter: item.source.adapter,
-          configFingerprint: pinned.fingerprint,
-          candidateHead: candidate.head,
-          authorAttempt: authorAttempt.id,
-          reviewerAttempt: reviewerAttempt.id,
-          reviewId: reviewerAttempt.id,
-          disposition: "BLOCK_FIXABLE",
-        },
-        author: partial.author,
-        reviewer: partial.reviewer,
-        adapter: partial.adapter,
-        implementationAttempts: partial.implementationAttempts,
-        implementationAttemptCeiling: partial.implementationAttemptCeiling,
-        admission,
-        historyDigest: repairDigest(projected),
-        actions: ["validate-source-review", "dispatch-author", "dispatch-delta-review"],
-      },
-    };
+    return partial;
   };
 
   return {
-    async assertAuthority(current) {
-      demand(current === config, "queue-adapter-config-drift");
+    async assertExecutor() {
       demand(isAbsolute(executingRoot), "controller-executor-unverified");
       const [executor, ...roots] = await Promise.all(
         [
@@ -2181,17 +2006,10 @@ export function repositoryQueueAdapter(
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked("controller-executor-unverified");
       }
-      config.items.forEach(assertItem);
       await seedHistory();
-      const authorityFingerprint = queueDigest({
-        authority: config.authority,
-        lineage: config.initialHistory.map(({ usage: _usage, ...identity }) => identity),
-      });
-      await adapterRecord(state, "queue-adapter-authority", { fingerprint: authorityFingerprint });
     },
     history: readHistory,
     async setup(item) {
-      assertItem(item);
       try {
         return await setupStep(item.setup, setupAdapter, executingRoot);
       } catch (error) {
@@ -2202,7 +2020,6 @@ export function repositoryQueueAdapter(
       }
     },
     async source(item): Promise<QueueSourceResult> {
-      assertItem(item);
       demand(
         (await adapterOptional(item.source.stateDirectory, "publication")) === ABSENT,
         "source-cannot-publish",
@@ -2275,7 +2092,6 @@ export function repositoryQueueAdapter(
       }
     },
     async repair(item): Promise<QueueRepairResult> {
-      assertItem(item);
       if ((await adapterOptional(item.repair.stateDirectory, "gate-retry")) !== ABSENT) {
         await syncParticipants(item, "repair", item.repair.stateDirectory);
         const [completed, selected] = await Promise.all([
@@ -2354,11 +2170,11 @@ export function repositoryQueueAdapter(
       }
     },
     async delivery(item, accepted): Promise<QueueDeliveryResult> {
-      assertItem(item);
       const stage = samePath(accepted.stateDirectory, item.source.stateDirectory)
         ? "source"
         : "repair";
       const deliveryConfig = (current: typeof accepted): DeliveryConfig => ({
+        controller: config.controller,
         run: item.source.run,
         issue: item.issue,
         repository: item.source.repository,
@@ -2370,16 +2186,6 @@ export function repositoryQueueAdapter(
         candidateHead: current.head,
         ...(item.delivery.refresh ? { refresh: item.delivery.refresh } : {}),
         requiredChecks: item.delivery.requiredChecks,
-        authority: {
-          schemaVersion: "dogfood-delivery-authority/v1",
-          controller: config.authority.controller,
-          run: item.source.run,
-          repository: item.source.repository,
-          controllerRevision: config.controllerRevision,
-          head: current.head,
-          ...(item.delivery.refresh ? { refresh: item.delivery.refresh } : {}),
-          actions: ["gates", "mirror", "publish", "merge", "cleanup"],
-        },
         policy: item.delivery.policy,
       });
       try {

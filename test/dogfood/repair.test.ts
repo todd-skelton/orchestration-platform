@@ -9,7 +9,6 @@ import {
   repairBase,
   repairedHead,
   repairFixture,
-  refreshSourceFingerprint,
   reviewSummary,
   sourceFile,
 } from "./repair-fixtures/config.js";
@@ -169,12 +168,44 @@ it.each([
     "source-finding-location-outside-candidate",
   ],
   [
-    "authority-bound duplicate source paths",
+    "duplicate source paths",
     (f: any): void => {
       f.config.sourcePaths = [sourceFile, sourceFile];
-      f.config.authority.sourcePaths = [sourceFile, sourceFile];
     },
     "malformed-source-footprint",
+  ],
+] as const)("refuses %s before durable repair intent", async (_name, mutate, reason) => {
+  const current = await fixture();
+  mutate(current);
+  await expect(repairStep(current.config, current.adapter, repairPolicy())).rejects.toMatchObject({
+    reason,
+  });
+  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  expect(current.dispatches()).toBe(0);
+});
+
+it.each([
+  [
+    "malformed controller",
+    (f: any): void => void (f.config.controller = "   "),
+    "malformed-repair-config",
+  ],
+  [
+    "unsupported adapter",
+    (f: any): void => void (f.config.adapter.kind = "substituted-adapter"),
+    "unsupported-repair-adapter",
+  ],
+  [
+    "exhausted admission",
+    (f: any): void => void (f.config.admission.ceiling += 1),
+    "repair-admission-exhausted",
+  ],
+  [
+    "repair footprint that differs from the source",
+    (f: any): void => void f.config.allowedPaths.pop(),
+    "source-config-mismatch",
   ],
 ] as const)("refuses %s before durable repair intent", async (_name, mutate, reason) => {
   const current = await fixture();
@@ -206,36 +237,6 @@ it("refuses malformed, oversized, inconsistent and non-fixable source reports", 
   }
 });
 
-it("refuses controller, prompt, adapter, admission, history, acceptance and footprint authority drift before intent", async () => {
-  for (const mutate of [
-    (f: any) => (f.config.controllerRoot = resolve(f.config.controllerRoot, "substituted")),
-    (f: any) => (f.config.author.prompt = "substituted author prompt"),
-    (f: any) => (f.config.reviewer.prompt = "substituted reviewer prompt"),
-    (f: any) => (f.config.adapter.kind = "substituted-adapter"),
-    (f: any) => (f.config.adapter.executable = "substituted-codex"),
-    (f: any) => (f.config.admission.ceiling += 1),
-    (f: any) =>
-      (f.config.history[1]!.usage = {
-        status: "known",
-        inputTokens: 1,
-        outputTokens: 1,
-        costUsd: 0,
-      }),
-    (f: any) => f.config.acceptanceCriteria.push("narrowed"),
-    (f: any) => f.config.allowedPaths.pop(),
-  ]) {
-    const current = await fixture();
-    mutate(current);
-    await expect(
-      repairStep(current.config, current.adapter, repairPolicy()),
-    ).rejects.toBeInstanceOf(Error);
-    await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    expect(current.dispatches()).toBe(0);
-  }
-});
-
 it.each([
   ["owner", (f: any): void => void (f.source.configRecord.config.owner = "substituted-controller")],
   [
@@ -243,64 +244,9 @@ it.each([
     (f: any): void => void (f.source.configRecord.config.pilotRevision = "9".repeat(40)),
   ],
   ["required checks", (f: any): void => void f.source.configRecord.config.requiredChecks.pop()],
-  [
-    "source author",
-    (f: any): void => void (f.source.configRecord.config.author.model = "substituted-author"),
-  ],
-  [
-    "source reviewer",
-    (f: any): void => void (f.source.configRecord.config.reviewer.model = "substituted-reviewer"),
-  ],
-  [
-    "source adapter",
-    (f: any): void => void (f.source.configRecord.config.adapter.executable = "other"),
-  ],
-  [
-    "source prompt contents",
-    (f: any): void => void (f.source.promptContents[0] = "substituted prompt\n"),
-  ],
-] as const)(
-  "recomputes the source fingerprint and refuses changed %s before intent",
-  async (_name, mutate) => {
-    const current = await fixture();
-    const fingerprint = current.source.configRecord.fingerprint;
-    mutate(current);
-    expect(current.source.configRecord.fingerprint).toBe(fingerprint);
-    await expect(repairStep(current.config, current.adapter, repairPolicy())).rejects.toMatchObject(
-      {
-        reason: "source-config-mismatch",
-      },
-    );
-    await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    expect(current.dispatches()).toBe(0);
-  },
-);
-
-it.each([
-  ["owner", (f: any): void => void (f.source.configRecord.config.owner = "substituted-controller")],
-  [
-    "pilot revision",
-    (f: any): void => void (f.source.configRecord.config.pilotRevision = "9".repeat(40)),
-  ],
-  ["required checks", (f: any): void => void f.source.configRecord.config.requiredChecks.pop()],
-  [
-    "source author",
-    (f: any): void => void (f.source.configRecord.config.author.model = "substituted-author"),
-  ],
-  [
-    "source reviewer",
-    (f: any): void => void (f.source.configRecord.config.reviewer.model = "substituted-reviewer"),
-  ],
-  [
-    "source adapter",
-    (f: any): void => void (f.source.configRecord.config.adapter.executable = "other"),
-  ],
-] as const)("binds recomputed %s to the authorized predecessor context", async (_name, mutate) => {
+] as const)("binds recomputed %s to the repair config", async (_name, mutate) => {
   const current = await fixture();
   mutate(current);
-  refreshSourceFingerprint(current.config, current.source);
   await expect(repairStep(current.config, current.adapter, repairPolicy())).rejects.toMatchObject({
     reason: "source-config-mismatch",
   });
@@ -312,11 +258,9 @@ it("accepts allowed directory descendants and refuses sibling or prefix escapes"
   const validDescendant = `${allowedDirectory}a.ts`;
   const accepted = await fixture();
   accepted.config.allowedPaths = [sourceFile, allowedDirectory];
-  accepted.config.authority.allowedPaths = [...accepted.config.allowedPaths];
   accepted.source.configRecord.config.allowedPaths = [...accepted.config.allowedPaths];
   accepted.source.changedFiles = [sourceFile, validDescendant];
   accepted.source.candidate.changed = [...accepted.source.changedFiles];
-  refreshSourceFingerprint(accepted.config, accepted.source);
   await expect(
     repairStep(accepted.config, accepted.adapter, repairPolicy()),
   ).resolves.toMatchObject({
@@ -327,11 +271,9 @@ it("accepts allowed directory descendants and refuses sibling or prefix escapes"
   for (const escaped of ["test/dogfood/other/a.ts", "test/dogfood/cases-sibling/a.ts"]) {
     const refused = await fixture();
     refused.config.allowedPaths = [sourceFile, allowedDirectory];
-    refused.config.authority.allowedPaths = [...refused.config.allowedPaths];
     refused.source.configRecord.config.allowedPaths = [...refused.config.allowedPaths];
     refused.source.changedFiles = [sourceFile, escaped];
     refused.source.candidate.changed = [...refused.source.changedFiles];
-    refreshSourceFingerprint(refused.config, refused.source);
     await expect(repairStep(refused.config, refused.adapter, repairPolicy())).rejects.toMatchObject(
       {
         reason: "candidate-footprint-drift",
@@ -349,9 +291,7 @@ it.each([
 ] as const)("accepts an exact changed review finding at %s", async (reviewPath) => {
   const current = await fixture();
   current.config.allowedPaths = [reviewPath];
-  current.config.authority.allowedPaths = [reviewPath];
   current.config.sourcePaths = [reviewPath];
-  current.config.authority.sourcePaths = [reviewPath];
   current.source.configRecord.config.allowedPaths = [reviewPath];
   current.source.changedFiles = [reviewPath];
   current.source.candidate.changed = [reviewPath];
@@ -360,7 +300,6 @@ it.each([
   report.findings[0].file = reviewPath;
   report.findings[1].file = reviewPath;
   current.source.terminal.summary = JSON.stringify(report);
-  refreshSourceFingerprint(current.config, current.source);
 
   await expect(repairStep(current.config, current.adapter, repairPolicy())).resolves.toMatchObject({
     status: "observing-author",
@@ -371,9 +310,7 @@ it.each([
 it("refuses a directory review template before durable repair intent", async () => {
   const current = await fixture();
   current.config.sourcePaths = ["test/dogfood/"];
-  current.config.authority.sourcePaths = ["test/dogfood/"];
   current.config.allowedPaths = ["test/dogfood/"];
-  current.config.authority.allowedPaths = ["test/dogfood/"];
   await expect(repairStep(current.config, current.adapter, repairPolicy())).rejects.toMatchObject({
     reason: "malformed-source-footprint",
   });

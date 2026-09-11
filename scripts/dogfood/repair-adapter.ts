@@ -89,10 +89,6 @@ async function assertLoadedController(config: RepairConfig) {
   }
 }
 
-async function sourcePromptContents(config: RepairConfig): Promise<[string, string]> {
-  return [config.authority.source.author.prompt, config.authority.source.reviewer.prompt];
-}
-
 async function readJson(directory: string, name: string) {
   try {
     return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
@@ -205,7 +201,7 @@ async function loadArtifacts(
 
 function flowConfig(config: RepairConfig): Config {
   return {
-    owner: config.authority.controller,
+    owner: config.controller,
     run: config.run,
     issue: config.issue,
     pilotRevision: config.controllerRevision,
@@ -292,16 +288,13 @@ export function reviewedRepairAdapter(native: Adapter, gitExecutable = "git"): R
     async loadSourceReview(config) {
       await assertLoadedController(config);
       await assertBoundedRoots(config);
-      const prompts = await sourcePromptContents(config);
-      return {
-        ...(await loadArtifacts(
-          gitExecutable,
-          config,
-          config.sourceStateDirectory,
-          config.mainBase,
-        )),
-        promptContents: prompts,
-      };
+      const artifacts = await loadArtifacts(
+        gitExecutable,
+        config,
+        config.sourceStateDirectory,
+        config.mainBase,
+      );
+      return artifacts;
     },
     async dispatch(config, handoff) {
       await assertLoadedController(config);

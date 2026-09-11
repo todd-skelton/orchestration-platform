@@ -5,7 +5,6 @@ export const MAX_REVIEW_SUMMARY_LENGTH = 2_000;
 
 const SHA = /^[a-f0-9]{40}$/;
 const IDENTITY = /^[A-Za-z0-9._:-]{1,128}$/;
-const ACTIONS = ["validate-source-review", "dispatch-author", "dispatch-delta-review"];
 const REPORT_KEYS = ["run", "role", "head", "verdict", "findings", "g0"];
 
 export class RepairBlocked extends Error {
@@ -61,56 +60,9 @@ export interface ParticipantHistory {
         costUsd: { status: "unavailable" } | { status: "known"; value: number };
       };
 }
-export interface RepairAuthority {
-  schemaVersion: "dogfood-repair-authority/v1";
-  controller: string;
-  run: string;
-  issue: string;
-  repository: string;
-  controllerRoot: string;
-  controllerRevision: string;
-  mainBase: string;
-  repairBase: string;
-  worktree: string;
-  reviewWorktree: string;
-  stateDirectory: string;
-  sourceStateDirectory: string;
-  allowedPaths: string[];
-  sourcePaths: string[];
-  acceptanceCriteria: string[];
-  requiredChecks: string[];
-  exitReceiptWindowMs: number;
-  source: {
-    owner: string;
-    run: string;
-    pilotRevision: string;
-    requiredChecks: string[];
-    exitReceiptWindowMs: number;
-    author: RepairActor;
-    reviewer: RepairActor;
-    adapter: { kind: "codex-exec"; executable: string };
-    configFingerprint: string;
-    candidateHead: string;
-    authorAttempt: string;
-    reviewerAttempt: string;
-    reviewId: string;
-    disposition: "BLOCK_FIXABLE";
-  };
-  author: RepairActor;
-  reviewer: RepairActor;
-  adapter: { kind: "codex-exec"; executable: string };
-  implementationAttempts: number;
-  implementationAttemptCeiling: number;
-  admission: {
-    consumed: number;
-    ceiling: number;
-    reservations: [{ role: "author"; ordinal: number }, { role: "reviewer"; ordinal: number }];
-  };
-  historyDigest: string;
-  actions: string[];
-}
 export interface RepairConfig {
   schemaVersion: "dogfood-repair-request/v1";
+  controller: string;
   run: string;
   issue: string;
   repository: string;
@@ -130,11 +82,14 @@ export interface RepairConfig {
   history: ParticipantHistory[];
   implementationAttempts: number;
   implementationAttemptCeiling: number;
-  admission: RepairAuthority["admission"];
+  admission: {
+    consumed: number;
+    ceiling: number;
+    reservations: [{ role: "author"; ordinal: number }, { role: "reviewer"; ordinal: number }];
+  };
   author: RepairActor;
   reviewer: RepairActor;
   adapter: { kind: "codex-exec"; executable: string };
-  authority: RepairAuthority;
 }
 
 export interface SourceReviewArtifacts {
@@ -149,10 +104,6 @@ export interface SourceReviewArtifacts {
   reviewHead: string;
   sourceClean: boolean;
   reviewClean: boolean;
-}
-
-export interface SourceReviewArtifactsWithPrompts extends SourceReviewArtifacts {
-  promptContents: [string, string];
 }
 
 export interface ReviewFinding {
@@ -197,7 +148,7 @@ export interface RepairHandoff {
   predecessorCompleteSweep: string;
   history: ParticipantHistory[];
   implementation: { attempts: number; ceiling: number; consumedByRepair: 1 };
-  admission: RepairAuthority["admission"];
+  admission: RepairConfig["admission"];
   author: { model: string; effort: string };
   reviewer: { model: string; effort: string };
 }
@@ -248,6 +199,7 @@ export function validateRepairConfig(config: RepairConfig) {
   demand(
     exactKeys(config, [
       "schemaVersion",
+      "controller",
       "run",
       "issue",
       "repository",
@@ -271,10 +223,10 @@ export function validateRepairConfig(config: RepairConfig) {
       "author",
       "reviewer",
       "adapter",
-      "authority",
     ]) && config.schemaVersion === "dogfood-repair-request/v1",
     "malformed-repair-config",
   );
+  demand(IDENTITY.test(config.controller), "malformed-repair-config");
   demand(/^[\w.-]{1,64}$/.test(config.run), "malformed-repair-config");
   demand(
     [config.issue, config.repository].every((value) => bounded(value, 300)),
@@ -402,121 +354,6 @@ export function validateRepairConfig(config: RepairConfig) {
       "malformed-participant-usage",
     );
   }
-  validateAuthority(config);
-  const sourceAuthor = config.history.find(
-    (participant) => participant.id === config.authority.source.authorAttempt,
-  );
-  const sourceReviewer = config.history.find(
-    (participant) => participant.id === config.authority.source.reviewerAttempt,
-  );
-  demand(
-    sourceAuthor?.role === "author" &&
-      sourceAuthor.outcome === "passed" &&
-      sourceReviewer?.role === "reviewer" &&
-      sourceReviewer.outcome === "failed",
-    "source-history-mismatch",
-  );
-}
-
-function validateAuthority(config: RepairConfig) {
-  const authority = config.authority;
-  const boundKeys: (keyof RepairConfig & keyof RepairAuthority)[] = [
-    "run",
-    "issue",
-    "repository",
-    "controllerRoot",
-    "controllerRevision",
-    "mainBase",
-    "repairBase",
-    "worktree",
-    "reviewWorktree",
-    "stateDirectory",
-    "sourceStateDirectory",
-    "implementationAttempts",
-    "implementationAttemptCeiling",
-    "exitReceiptWindowMs",
-  ];
-  demand(
-    exactKeys(authority, [
-      "schemaVersion",
-      "controller",
-      "run",
-      "issue",
-      "repository",
-      "controllerRoot",
-      "controllerRevision",
-      "mainBase",
-      "repairBase",
-      "worktree",
-      "reviewWorktree",
-      "stateDirectory",
-      "sourceStateDirectory",
-      "allowedPaths",
-      "sourcePaths",
-      "acceptanceCriteria",
-      "requiredChecks",
-      "exitReceiptWindowMs",
-      "source",
-      "author",
-      "reviewer",
-      "adapter",
-      "implementationAttempts",
-      "implementationAttemptCeiling",
-      "admission",
-      "historyDigest",
-      "actions",
-    ]) &&
-      authority.schemaVersion === "dogfood-repair-authority/v1" &&
-      IDENTITY.test(authority.controller) &&
-      boundKeys.every((key) => same(authority[key], config[key])) &&
-      same(authority.allowedPaths, config.allowedPaths) &&
-      same(authority.sourcePaths, config.sourcePaths) &&
-      same(authority.acceptanceCriteria, config.acceptanceCriteria) &&
-      same(authority.requiredChecks, config.requiredChecks) &&
-      same(authority.admission, config.admission) &&
-      same(authority.author, config.author) &&
-      same(authority.reviewer, config.reviewer) &&
-      same(authority.adapter, config.adapter) &&
-      authority.historyDigest === repairDigest(config.history) &&
-      same(authority.actions, ACTIONS),
-    "unauthorized-repair",
-  );
-  demand(
-    exactKeys(authority.source, [
-      "owner",
-      "run",
-      "pilotRevision",
-      "requiredChecks",
-      "exitReceiptWindowMs",
-      "author",
-      "reviewer",
-      "adapter",
-      "configFingerprint",
-      "candidateHead",
-      "authorAttempt",
-      "reviewerAttempt",
-      "reviewId",
-      "disposition",
-    ]) &&
-      IDENTITY.test(authority.source.owner) &&
-      SHA.test(authority.source.pilotRevision) &&
-      strings(authority.source.requiredChecks, 16, 160) &&
-      authority.source.exitReceiptWindowMs === config.exitReceiptWindowMs &&
-      validActor(authority.source.author) &&
-      validActor(authority.source.reviewer) &&
-      validAdapter(authority.source.adapter) &&
-      /^[a-f0-9]{64}$/.test(authority.source.configFingerprint) &&
-      authority.source.candidateHead === config.repairBase &&
-      [
-        authority.source.authorAttempt,
-        authority.source.reviewerAttempt,
-        authority.source.reviewId,
-      ].every((value) => IDENTITY.test(value)) &&
-      authority.source.authorAttempt !== authority.source.reviewerAttempt &&
-      authority.source.reviewId === authority.source.reviewerAttempt &&
-      authority.source.disposition === "BLOCK_FIXABLE",
-    "unauthorized-source-review",
-  );
 }
 
 export function parseReview(summary: unknown, expectedRun: string, expectedHead: string) {
@@ -597,21 +434,12 @@ export function repairPolicy() {
   return {
     prepare(
       config: RepairConfig,
-      artifacts: SourceReviewArtifactsWithPrompts,
+      artifacts: SourceReviewArtifacts,
       requireCurrentCandidate = true,
     ): RepairHandoff {
       validateRepairConfig(config);
-      const source = config.authority.source;
       demand(
         exactKeys(artifacts.configRecord, ["fingerprint", "config", "host"]) &&
-          artifacts.configRecord.fingerprint === source.configFingerprint &&
-          Array.isArray(artifacts.promptContents) &&
-          artifacts.promptContents.length === 2 &&
-          artifacts.promptContents.every((prompt) => typeof prompt === "string") &&
-          repairDigest({
-            config: artifacts.configRecord.config,
-            prompts: artifacts.promptContents,
-          }) === source.configFingerprint &&
           typeof artifacts.configRecord.host === "string" &&
           object(artifacts.configRecord.config),
         "source-config-mismatch",
@@ -635,10 +463,10 @@ export function repairPolicy() {
           "reviewer",
           "adapter",
         ]) &&
-          prior.run === source.run &&
-          prior.owner === source.owner &&
+          prior.run === config.run &&
+          prior.owner === config.controller &&
           prior.issue === config.issue &&
-          prior.pilotRevision === source.pilotRevision &&
+          prior.pilotRevision === config.controllerRevision &&
           prior.repository === config.repository &&
           prior.exitReceiptWindowMs === config.exitReceiptWindowMs &&
           prior.base === config.mainBase &&
@@ -646,10 +474,10 @@ export function repairPolicy() {
           prior.reviewWorktree === config.reviewWorktree &&
           prior.stateDirectory === config.sourceStateDirectory &&
           same(prior.allowedPaths, config.allowedPaths) &&
-          same(prior.requiredChecks, source.requiredChecks) &&
-          same(prior.author, source.author) &&
-          same(prior.reviewer, source.reviewer) &&
-          same(prior.adapter, source.adapter),
+          same(prior.requiredChecks, config.requiredChecks) &&
+          validActor(prior.author) &&
+          validActor(prior.reviewer) &&
+          validAdapter(prior.adapter),
         "source-config-mismatch",
       );
       demand(
@@ -676,10 +504,23 @@ export function repairPolicy() {
               typeof attempt.trace === "string" &&
               isAbsolute(attempt.trace),
           ) &&
-          artifacts.authorAttempt.id === source.authorAttempt &&
-          artifacts.reviewerAttempt.id === source.reviewerAttempt &&
+          IDENTITY.test(artifacts.authorAttempt.id) &&
+          IDENTITY.test(artifacts.reviewerAttempt.id) &&
           artifacts.authorAttempt.id !== artifacts.reviewerAttempt.id,
         "source-participant-mismatch",
+      );
+      const sourceAuthor = config.history.find(
+        (participant) => participant.id === artifacts.authorAttempt.id,
+      );
+      const sourceReviewer = config.history.find(
+        (participant) => participant.id === artifacts.reviewerAttempt.id,
+      );
+      demand(
+        sourceAuthor?.role === "author" &&
+          sourceAuthor.outcome === "passed" &&
+          sourceReviewer?.role === "reviewer" &&
+          sourceReviewer.outcome === "failed",
+        "source-history-mismatch",
       );
       demand(
         object(artifacts.terminal) &&
@@ -706,7 +547,7 @@ export function repairPolicy() {
         run: config.run,
         issue: config.issue,
         repository: config.repository,
-        controller: config.authority.controller,
+        controller: config.controller,
         controllerRevision: config.controllerRevision,
         mainBase: config.mainBase,
         correctiveBase: config.repairBase,
@@ -714,17 +555,17 @@ export function repairPolicy() {
         allowedPaths: config.allowedPaths,
         sourcePaths: config.sourcePaths,
         failedReview: {
-          run: source.run,
+          run: config.run,
           head: config.repairBase,
-          reviewId: source.reviewId,
-          authorAttempt: source.authorAttempt,
-          reviewerAttempt: source.reviewerAttempt,
+          reviewId: artifacts.reviewerAttempt.id,
+          authorAttempt: artifacts.authorAttempt.id,
+          reviewerAttempt: artifacts.reviewerAttempt.id,
           disposition: "BLOCK_FIXABLE",
           verdict: "FAIL",
           g0: review.g0,
           findings: review.findings,
         },
-        predecessorCompleteSweep: source.reviewId,
+        predecessorCompleteSweep: artifacts.reviewerAttempt.id,
         history: config.history,
         implementation: {
           attempts: config.implementationAttempts,

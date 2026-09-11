@@ -2,23 +2,11 @@ import { createHash } from "node:crypto";
 import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-export const DELIVERY_AUTHORITY_SCHEMA = "dogfood-delivery-authority/v1" as const;
-const ACTIONS = ["gates", "mirror", "publish", "merge", "cleanup"] as const;
 const SHA = /^[a-f0-9]{40}$/;
 const ABSENT_RECORD = Symbol("absent-record");
 
-export interface DeliveryAuthority {
-  schemaVersion: typeof DELIVERY_AUTHORITY_SCHEMA;
-  controller: string;
-  run: string;
-  repository: string;
-  controllerRevision: string;
-  head: string;
-  refresh?: PublicationRefresh;
-  actions: (typeof ACTIONS)[number][];
-}
-
 export interface DeliveryConfig {
+  controller: string;
   run: string;
   issue: string;
   repository: string;
@@ -30,7 +18,6 @@ export interface DeliveryConfig {
   candidateHead: string;
   refresh?: PublicationRefresh;
   requiredChecks: string[];
-  authority: DeliveryAuthority;
   policy: unknown;
 }
 
@@ -296,6 +283,7 @@ function validateConfig(config: DeliveryConfig) {
     typeof config === "object" && config !== null && Object.hasOwn(config, "refresh");
   demand(
     exactKeys(config, [
+      "controller",
       "run",
       "issue",
       "repository",
@@ -307,11 +295,11 @@ function validateConfig(config: DeliveryConfig) {
       "candidateHead",
       ...(hasRefresh ? ["refresh"] : []),
       "requiredChecks",
-      "authority",
       "policy",
     ]),
     "malformed-delivery-config",
   );
+  demand(/^[A-Za-z0-9._:-]{1,128}$/.test(config.controller), "invalid-controller");
   demand(typeof config.run === "string" && /^[\w.-]{1,80}$/.test(config.run), "invalid-run");
   demand(
     typeof config.issue === "string" && /^[\w:/.#-]{1,500}$/.test(config.issue),
@@ -351,39 +339,6 @@ function validateConfig(config: DeliveryConfig) {
       ) &&
       new Set(config.requiredChecks).size === config.requiredChecks.length,
     "invalid-required-checks",
-  );
-  const authority = config.authority;
-  const authorityHasRefresh =
-    typeof authority === "object" && authority !== null && Object.hasOwn(authority, "refresh");
-  demand(
-    authority &&
-      exactKeys(authority, [
-        "schemaVersion",
-        "controller",
-        "run",
-        "repository",
-        "controllerRevision",
-        "head",
-        ...(authorityHasRefresh ? ["refresh"] : []),
-        "actions",
-      ]) &&
-      authority.schemaVersion === DELIVERY_AUTHORITY_SCHEMA &&
-      typeof authority.controller === "string" &&
-      /^[A-Za-z0-9._:-]{1,128}$/.test(authority.controller) &&
-      authority.run === config.run &&
-      authority.repository === config.repository &&
-      authority.controllerRevision === config.controllerRevision &&
-      authority.head === config.candidateHead &&
-      authorityHasRefresh === hasRefresh &&
-      (!hasRefresh ||
-        (exactKeys(authority.refresh, ["number", "url", "head"]) &&
-          authority.refresh.number === config.refresh?.number &&
-          authority.refresh.url === config.refresh?.url &&
-          authority.refresh.head === config.refresh?.head)) &&
-      Array.isArray(authority.actions) &&
-      authority.actions.length === ACTIONS.length &&
-      ACTIONS.every((action) => authority.actions.filter((item) => item === action).length === 1),
-    "unauthorized-delivery",
   );
 }
 
@@ -580,7 +535,7 @@ function validateSourceRecord(
       exactUniqueStringSet(source.requiredChecks, config.requiredChecks),
     "delivery-source-head-drift",
   );
-  demand(source.controller === config.authority.controller, "unauthorized-delivery");
+  demand(source.controller === config.controller, "unauthorized-delivery");
 }
 
 function validatePublicationShape(
@@ -650,7 +605,7 @@ function validatePlanAuthorization(
       typeof authorization.digest === "string" &&
       /^[a-f0-9]{64}$/.test(authorization.digest) &&
       authorization.policyDigest === digest(config.policy) &&
-      authorization.controller === config.authority.controller,
+      authorization.controller === config.controller,
     "malformed-delivery-plan-authorization",
   );
 }
@@ -924,7 +879,7 @@ export async function deliveryStep(
       head: config.candidateHead,
       digest: planDigest,
       policyDigest: digest(config.policy),
-      controller: config.authority.controller,
+      controller: config.controller,
     });
   }
 
@@ -1055,7 +1010,7 @@ export async function deliveryStep(
         head: config.candidateHead,
         digest: planDigest,
         policyDigest: digest(config.policy),
-        controller: config.authority.controller,
+        controller: config.controller,
       });
     }
 

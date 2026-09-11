@@ -12,12 +12,7 @@ import {
   type RepairConfig,
 } from "../../scripts/dogfood/repair-policy.mjs";
 import type { Adapter, Role, Terminal } from "../../scripts/dogfood/flow.js";
-import {
-  refreshSourceFingerprint,
-  repairFixture,
-  reviewSummary,
-  sourceFile,
-} from "./repair-fixtures/config.js";
+import { repairFixture, reviewSummary, sourceFile } from "./repair-fixtures/config.js";
 
 const run = promisify(execFile);
 const roots: string[] = [];
@@ -88,10 +83,7 @@ async function realFixture() {
   config.mainBase = mainBase;
   config.repairBase = repairBase;
   config.controllerRoot = loadedControllerRoot;
-  Object.assign(config.authority, { controllerRoot: loadedControllerRoot, mainBase, repairBase });
-  config.authority.source.candidateHead = repairBase;
   current.source.configRecord.config.base = mainBase;
-  refreshSourceFingerprint(config, current.source);
   current.source.candidate = { head: repairBase, changed: [sourceFile] };
   current.source.terminal.head = repairBase;
   current.source.terminal.summary = reviewSummary("failed", repairBase);
@@ -124,20 +116,8 @@ async function realFixture() {
 
 it("joins the actual closed source records to exact Git heads, changed files and lines", async () => {
   const current = await realFixture();
-  expect(current.config.authority.source.author.prompt).toBe(
-    "Apply the original bounded change.\n",
-  );
-  expect(current.config.authority.source.reviewer.prompt).toBe(
-    "Review the original bounded change.\n",
-  );
-  expect(current.config.authority.source.author).not.toEqual(current.config.author);
-  expect(current.config.authority.source.reviewer).not.toEqual(current.config.reviewer);
   const adapter = reviewedRepairAdapter({} as Adapter);
   const artifacts = await adapter.loadSourceReview(current.config);
-  expect(artifacts.promptContents).toEqual([
-    "Apply the original bounded change.\n",
-    "Review the original bounded change.\n",
-  ]);
   expect(artifacts).toMatchObject({
     sourceHead: current.repairBase,
     reviewHead: current.repairBase,
@@ -182,14 +162,7 @@ it.each([
     current.config.repairBase = exactHead;
     current.config.allowedPaths = [...changed];
     current.config.sourcePaths = [reviewPath];
-    Object.assign(current.config.authority, {
-      repairBase: exactHead,
-      allowedPaths: [...changed],
-      sourcePaths: [reviewPath],
-    });
-    current.config.authority.source.candidateHead = exactHead;
     current.source.configRecord.config.allowedPaths = [...changed];
-    refreshSourceFingerprint(current.config, current.source);
     const report = JSON.parse(reviewSummary("failed", exactHead));
     report.findings[0].file = reviewPath;
     report.findings[0].line = 2;
@@ -243,7 +216,6 @@ it.each([
 it("refuses a different loaded controller root before intent or direct dispatch effects", async () => {
   const current = await realFixture();
   current.config.controllerRoot = current.paths.controller;
-  current.config.authority.controllerRoot = current.paths.controller;
   let effects = 0;
   const native = {
     async preflight() {
@@ -304,15 +276,3 @@ it.each(["author-temp-unavailable", "author-offline-pnpm-unavailable"])(
   },
   30_000,
 );
-
-it("refuses substituted predecessor prompt text before recording intent", async () => {
-  const current = await realFixture();
-  current.config.authority.source.author.prompt = "substituted author prompt";
-  const adapter = reviewedRepairAdapter({} as Adapter);
-  await expect(repairStep(current.config, adapter, repairPolicy())).rejects.toMatchObject({
-    reason: "source-config-mismatch",
-  });
-  await expect(access(resolve(current.paths.state, "repair-intent.json"))).rejects.toMatchObject({
-    code: "ENOENT",
-  });
-}, 30_000);

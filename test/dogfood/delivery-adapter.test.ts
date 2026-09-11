@@ -43,6 +43,7 @@ function reviewerReport(
 
 function config(root: string): DeliveryConfig {
   return {
+    controller: "external-controller",
     run: "self-delivery-fixture",
     issue: "https://github.com/todd-skelton/orchestration-platform/issues/332",
     repository: "todd-skelton/orchestration-platform",
@@ -57,15 +58,6 @@ function config(root: string): DeliveryConfig {
       "Node 24 / windows-latest",
       "Node 24 / macos-latest",
     ],
-    authority: {
-      schemaVersion: "dogfood-delivery-authority/v1",
-      controller: "external-controller",
-      run: "self-delivery-fixture",
-      repository: "todd-skelton/orchestration-platform",
-      controllerRevision: "c".repeat(40),
-      head,
-      actions: ["gates", "mirror", "publish", "merge", "cleanup"],
-    },
     policy: {
       kind: "orchestration-platform-self/v1",
       planningKey: "ISS-074",
@@ -80,7 +72,7 @@ function config(root: string): DeliveryConfig {
 
 function pilotConfig(current: DeliveryConfig) {
   return {
-    owner: current.authority.controller,
+    owner: current.controller,
     run: current.run,
     issue: current.issue,
     repository: current.repository,
@@ -191,7 +183,6 @@ async function cleanController(root: string) {
     windowsHide: true,
   });
   current.controllerRevision = stdout.trim();
-  current.authority.controllerRevision = current.controllerRevision;
   return current;
 }
 
@@ -212,7 +203,6 @@ async function repositoryFixture(remote: string) {
   await git(["worktree", "add", "-b", "codex/iss-074-delivery", current.worktree, "HEAD"]);
   await git(["worktree", "add", "--detach", current.reviewWorktree, "HEAD"]);
   current.candidateHead = current.controllerRevision;
-  current.authority.head = current.candidateHead;
   return { current, git };
 }
 
@@ -255,7 +245,6 @@ async function localRemoteRepositoryFixture() {
   await git(["worktree", "add", "-b", "codex/iss-074-delivery", current.worktree, "HEAD"]);
   await git(["worktree", "add", "--detach", current.reviewWorktree, "HEAD"]);
   current.candidateHead = current.controllerRevision;
-  current.authority.head = current.candidateHead;
   await git(["branch", "protected/fixture", current.candidateHead]);
   await git(["push", "origin", `${current.candidateHead}:refs/heads/codex/iss-074-delivery`]);
   await git(["push", "origin", `${current.candidateHead}:refs/heads/protected/fixture`]);
@@ -285,7 +274,6 @@ async function commitCandidate(
   const candidate = await git(["rev-parse", "HEAD"], current.worktree);
   await git(["checkout", "--detach", candidate], current.reviewWorktree);
   current.candidateHead = candidate;
-  current.authority.head = candidate;
   return candidate;
 }
 
@@ -617,7 +605,6 @@ it("refreshes one exact existing draft forward under its observed remote lease",
     url: `https://github.com/${current.repository}/pull/44`,
     head: priorHead,
   };
-  current.authority.refresh = current.refresh;
   const publication = publicationEvidence(current);
   const plan = {
     sourceBranch: publication.sourceBranch,
@@ -712,7 +699,6 @@ it.each([
       url: `https://github.com/${current.repository}/pull/44`,
       head: "b".repeat(40),
     };
-    current.authority.refresh = current.refresh;
     const publication = publicationEvidence(current);
     const plan = {
       sourceBranch: publication.sourceBranch,
@@ -757,7 +743,6 @@ it("refuses a refresh when the exact remote lease has already moved", async () =
     url: `https://github.com/${current.repository}/pull/44`,
     head: priorHead,
   };
-  current.authority.refresh = current.refresh;
   await git(["push", "origin", `${candidate}:refs/heads/codex/iss-074-delivery`], current.worktree);
   const publication = publicationEvidence(current);
   const plan = {
@@ -793,7 +778,6 @@ it("refuses a reviewed refresh that is not forward from the prior publication he
     url: `https://github.com/${current.repository}/pull/44`,
     head: priorHead,
   };
-  current.authority.refresh = current.refresh;
   expect(candidate).not.toBe(priorHead);
   const publication = publicationEvidence(current);
   const plan = {
@@ -1113,7 +1097,6 @@ it("rejects matching heads from a different Git worktree family", async () => {
     });
   }
   current.candidateHead = current.controllerRevision;
-  current.authority.head = current.candidateHead;
   await expect(
     githubDeliveryAdapter().verifyWorkspace(current, current.candidateHead),
   ).resolves.toBe(false);
@@ -1251,7 +1234,6 @@ it("uses the later-cycle merge base for repaired candidate line counts", async (
     current.worktree,
   );
   current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
-  current.authority.head = current.candidateHead;
 
   const locator = process.platform === "win32" ? "where.exe" : "which";
   const exactGit = (
@@ -1282,7 +1264,6 @@ it("uses the later-cycle merge base for repaired candidate line counts", async (
     current.worktree,
   );
   current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
-  current.authority.head = current.candidateHead;
   vi.stubEnv("PATH", root);
   const changes = await candidateLineChanges(current, exactGit);
   expect(changes).toEqual({
@@ -1350,7 +1331,7 @@ it("reduces an exact primary reviewer report to delivery evidence", async () => 
   await expect(githubDeliveryAdapter().source(current)).resolves.toEqual({
     head,
     reviewId,
-    controller: current.authority.controller,
+    controller: current.controller,
     run: current.run,
     issue: current.issue,
     repository: current.repository,
@@ -1484,13 +1465,11 @@ it("requires the actual controller executor to remain at its clean authorized re
 
   const revision = current.controllerRevision;
   current.controllerRevision = "d".repeat(40);
-  current.authority.controllerRevision = current.controllerRevision;
   await expect(assertControllerExecutor(current, current.controllerRoot)).rejects.toThrow(
     "controller-executor-revision-moved",
   );
 
   current.controllerRevision = revision;
-  current.authority.controllerRevision = revision;
   await writeFile(resolve(current.controllerRoot, "dirty.txt"), "dirty\n");
   await expect(assertControllerExecutor(current, current.controllerRoot)).rejects.toThrow(
     "dirty-controller-executor",

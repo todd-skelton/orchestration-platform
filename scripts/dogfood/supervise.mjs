@@ -23,13 +23,13 @@ import {
 let active;
 let config;
 let loop;
+let validatedExecutor;
 try {
   if (process.argv.length !== 3) throw new QueueBlocked("usage");
   const executingRoot = await realpath(resolve(import.meta.dirname, "../.."));
   loop = JSON.parse(await readFile(resolve(process.argv[2]), "utf8"));
   validateLoopConfig(loop);
   process.env.PATH = `${dirname(loop.gitExecutable)}${delimiter}${process.env.PATH ?? ""}`;
-  await validateLoopExecutor(loop, executingRoot);
   const supervisor = repositorySupervisionAdapter();
   for (;;) {
     if (!active) {
@@ -38,6 +38,7 @@ try {
         process.stdout.write(`${JSON.stringify({ status: "idle", run: loop.run })}\n`);
         break;
       }
+      validatedExecutor = await validateLoopExecutor(loop, executingRoot);
       await persistCycle(loop, active);
       await reconcilePendingStop(loop, active, supervisor);
     }
@@ -50,6 +51,7 @@ try {
         base: active.selection.base,
       },
       active.initialHistory,
+      validatedExecutor,
     );
     const adapter = repositoryQueueAdapter(config, executingRoot, {
       gitExecutable: loop.gitExecutable,
@@ -67,6 +69,7 @@ try {
     await completeCycle(loop, active, await adapter.history(), supervisor);
     active = undefined;
     config = undefined;
+    validatedExecutor = undefined;
   }
 } catch (error) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";

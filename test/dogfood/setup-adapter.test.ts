@@ -20,22 +20,6 @@ async function git(cwd: string, args: string[]) {
   ).stdout.trim();
 }
 
-function synchronizeAuthority(config: SetupConfig) {
-  Object.assign(config.authority, {
-    controllerRevision: config.controllerRevision,
-    pilotRevision: config.pilotRevision,
-    base: config.base,
-    baseBranch: config.baseBranch,
-    sourceBranch: config.sourceBranch,
-    repositoryRoot: config.repositoryRoot,
-    controllerRoot: config.controllerRoot,
-    pilotWorktree: config.pilotWorktree,
-    sourceWorktree: config.sourceWorktree,
-    reviewWorktree: config.reviewWorktree,
-    stateDirectory: config.stateDirectory,
-  });
-}
-
 async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), "setup-git-fixture-"));
   roots.push(root);
@@ -76,6 +60,7 @@ async function fixture() {
   await mkdir(state);
 
   const config: SetupConfig = {
+    controller: "synthetic-external-controller",
     run: "synthetic-native-setup",
     issue: "fixture-333",
     repository: "fixture/repository",
@@ -90,25 +75,6 @@ async function fixture() {
     sourceWorktree: resolve(root, "source space"),
     reviewWorktree: resolve(root, "review worktree"),
     stateDirectory: state,
-    authority: {
-      schemaVersion: "dogfood-setup-authority/v1",
-      controller: "synthetic-external-controller",
-      run: "synthetic-native-setup",
-      issue: "fixture-333",
-      repository: "fixture/repository",
-      controllerRevision: pilotRevision,
-      pilotRevision,
-      base,
-      baseBranch: "main",
-      sourceBranch: "synthetic/iss-075",
-      repositoryRoot: repository,
-      controllerRoot: controller,
-      pilotWorktree: resolve(root, "pilot ü"),
-      sourceWorktree: resolve(root, "source space"),
-      reviewWorktree: resolve(root, "review worktree"),
-      stateDirectory: state,
-      actions: ["worktrees", "dependencies"],
-    },
   };
   let installs = 0;
   let installOutcome: "succeeded" | "unknown" = "succeeded";
@@ -263,7 +229,7 @@ it("fails closed on a moving base and on dirty reconciled state", async () => {
   ]);
   await expect(
     setupStep(moving.config, moving.adapter, moving.config.controllerRoot),
-  ).rejects.toMatchObject({ reason: "setup-authority-head-drift" });
+  ).rejects.toMatchObject({ reason: "setup-head-drift" });
   await expect(access(moving.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
 
   const dirty = await fixture();
@@ -281,7 +247,6 @@ it("rejects checkout-contained state before Git or installer mutation", async ()
   const current = await fixture();
   current.config.stateDirectory = resolve(current.repository, "contained state");
   await mkdir(current.config.stateDirectory);
-  synchronizeAuthority(current.config);
 
   await expect(
     setupStep(current.config, current.adapter, current.config.controllerRoot),

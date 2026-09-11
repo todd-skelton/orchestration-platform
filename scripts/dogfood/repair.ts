@@ -7,7 +7,6 @@ import {
   type RepairHandoff,
   type RepairPolicy,
   type SourceReviewArtifacts,
-  type SourceReviewArtifactsWithPrompts,
   validateRepairConfig,
 } from "./repair-policy.mjs";
 
@@ -48,7 +47,7 @@ export interface RepairAdapter {
   loadSourceReview(
     config: RepairConfig,
     requireCurrentCandidate?: boolean,
-  ): Promise<SourceReviewArtifactsWithPrompts>;
+  ): Promise<SourceReviewArtifacts>;
   dispatch(config: RepairConfig, handoff: RepairHandoff): Promise<{ status: string }>;
   loadDeltaReview(
     config: RepairConfig,
@@ -110,7 +109,7 @@ export async function repairStep(
     schemaVersion: "dogfood-repair-intent/v1",
     run: config.run,
     issue: config.issue,
-    controller: config.authority.controller,
+    controller: config.controller,
     handoffDigest,
     reservations: config.admission.reservations,
   };

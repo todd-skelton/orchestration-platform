@@ -19,9 +19,6 @@ import type { RepairAdapter } from "../../scripts/dogfood/repair.js";
 import { repairDigest } from "../../scripts/dogfood/repair-policy.js";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import {
-  itemAuthority,
-  participantIdentity,
-  queueDigest,
   type QueueConfig,
   type QueueAdapter,
   type QueueItem,
@@ -89,6 +86,7 @@ async function fixture(history: QueueParticipant[] = []) {
     implementationAttempt: 1,
     implementationAttemptCeiling: 4,
     setup: {
+      controller: source.owner,
       run: source.run,
       issue: source.issue,
       repository: source.repository,
@@ -103,25 +101,6 @@ async function fixture(history: QueueParticipant[] = []) {
       sourceWorktree: paths.author,
       reviewWorktree: paths.review,
       stateDirectory: paths.setup,
-      authority: {
-        schemaVersion: "dogfood-setup-authority/v1",
-        controller: source.owner,
-        run: source.run,
-        issue: source.issue,
-        repository: source.repository,
-        controllerRevision: stable,
-        pilotRevision: stable,
-        base,
-        baseBranch: "main",
-        sourceBranch: "codex/fixture-338",
-        repositoryRoot: paths.repository,
-        controllerRoot: paths.controller,
-        pilotWorktree: paths.pilot,
-        sourceWorktree: paths.author,
-        reviewWorktree: paths.review,
-        stateDirectory: paths.setup,
-        actions: ["worktrees", "dependencies"],
-      },
     },
     source,
     repair: {
@@ -142,6 +121,7 @@ async function fixture(history: QueueParticipant[] = []) {
   };
   const config: QueueConfig = {
     schemaVersion: "dogfood-bounded-queue-config/v1",
+    controller: source.owner,
     run: "synthetic-queue",
     controllerRoot: paths.controller,
     controllerRevision: stable,
@@ -150,20 +130,6 @@ async function fixture(history: QueueParticipant[] = []) {
     nativeLaunchCeiling: 8,
     initialHistory: history,
     items: [item],
-    authority: undefined as never,
-  };
-  config.authority = {
-    schemaVersion: "dogfood-bounded-queue-authority/v1",
-    controller: source.owner,
-    run: config.run,
-    controllerRoot: config.controllerRoot,
-    controllerRevision: stable,
-    stateDirectory: paths.queue,
-    limit: 1,
-    nativeLaunchCeiling: 8,
-    lineageDigest: queueDigest(history.map(participantIdentity)),
-    itemsDigest: queueDigest([itemAuthority(item)]),
-    actions: ["setup", "source", "repair", "delivery"],
   };
   return { root, paths, source, item, config };
 }
@@ -203,7 +169,7 @@ it("directly composes the accepted setup transition before source work", async (
   const present = new Set<SetupRole>();
   const dependencies = new Set<SetupRole>();
   const setup: SetupAdapter = {
-    async assertAuthority(_config, executingRoot) {
+    async assertExecutor(_config, executingRoot) {
       expect(executingRoot).toBe(current.paths.controller);
     },
     async observeWorktree(config, role) {
@@ -502,7 +468,6 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   });
   expect(capturedDelivery).toMatchObject({
     refresh: current.item.delivery.refresh,
-    authority: { refresh: current.item.delivery.refresh },
   });
 });
 
@@ -603,7 +568,6 @@ it("persists the genuine adapter result and restarts four-participant completion
           reviewHead: candidate,
           sourceClean: true,
           reviewClean: true,
-          promptContents: [current.source.author.prompt, current.source.reviewer.prompt],
         };
       }
       return sourceArtifacts;
@@ -841,8 +805,8 @@ it("persists the genuine adapter result and restarts four-participant completion
   });
   const componentEntries: string[] = [];
   const adapter: QueueAdapter = {
-    async assertAuthority() {
-      componentEntries.push("authority");
+    async assertExecutor() {
+      componentEntries.push("executor");
     },
     history: repository.history,
     async setup() {
@@ -950,7 +914,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     "repair:author",
     "repair:reviewer",
   ]);
-  expect(componentEntries).toEqual(["authority", "setup", "source", "repair", "delivery"]);
+  expect(componentEntries).toEqual(["executor", "setup", "source", "repair", "delivery"]);
   const queueFiles = (await readdir(current.paths.queue)).sort();
   const originalBytes = await Promise.all(
     queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
@@ -959,7 +923,7 @@ it("persists the genuine adapter result and restarts four-participant completion
   const effectsAfterCompletion = mutationEffects.length;
 
   await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete" });
-  expect(componentEntries.slice(entriesAfterCompletion)).toEqual(["authority"]);
+  expect(componentEntries.slice(entriesAfterCompletion)).toEqual(["executor"]);
   expect(mutationEffects).toHaveLength(effectsAfterCompletion);
   const entriesBeforeReadOnly = componentEntries.length;
   await expect(
@@ -1093,7 +1057,6 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
         reviewHead: candidate,
         sourceClean: true,
         reviewClean: true,
-        promptContents: prompts,
       };
     },
     async dispatch(config) {
@@ -1234,14 +1197,7 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
         { role: "reviewer", ordinal: 4 },
       ],
     },
-    authority: {
-      source: {
-        candidateHead: candidate,
-        authorAttempt: "source-author",
-        reviewerAttempt: "source-reviewer",
-        disposition: "BLOCK_FIXABLE",
-      },
-    },
+    controller: current.source.owner,
   });
   expect(captured.history[0].usage).toEqual({
     inputTokens: { status: "known", value: 10 },
@@ -1408,7 +1364,6 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
         reviewHead: candidate,
         sourceClean: true,
         reviewClean: true,
-        promptContents: prompts,
       };
     },
     async dispatch() {
@@ -1504,7 +1459,7 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
     repair: repairAdapter,
   });
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     history: repository.history,
     async setup() {
       return { status: "ready" };

@@ -470,7 +470,7 @@ export function githubDeliveryAdapter(
         typeof pinned?.fingerprint !== "string" ||
         !DIGEST.test(pinned.fingerprint) ||
         !pilot ||
-        pilot.owner !== config.authority.controller ||
+        pilot.owner !== config.controller ||
         pilot.run !== config.run ||
         pilot.issue !== config.issue ||
         pilot.repository !== config.repository ||
@@ -506,7 +506,7 @@ export function githubDeliveryAdapter(
       return {
         head: candidate.head,
         reviewId: reviewerAttempt.id,
-        controller: config.authority.controller,
+        controller: config.controller,
         run: config.run,
         issue: config.issue,
         repository: config.repository,
