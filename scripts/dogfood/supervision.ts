@@ -2,21 +2,11 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import {
-  loadBoardSnapshot,
-  planningKeyOf,
-  validateBoardSnapshot,
-  type BoardItem,
-  type BoardSnapshot,
-} from "../planning/board-check.mjs";
-import {
-  loadPlanningSnapshot,
-  parseFrontmatter,
-  validatePlanningSnapshot,
-  type PlanningSnapshot,
-} from "../planning/check.mjs";
+import { loadBoardSnapshot, planningKeyOf, type BoardSnapshot } from "../planning/board-check.mjs";
+import { loadPlanningSnapshot } from "../planning/check.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { QueueBlocked, validateHistory } from "./queue.ts";
+import type { RepositoryAdapter } from "./repository-adapter.js";
 
 type ActionableStopReason = import("./queue.js").ActionableStopReason;
 type LoopConfig = import("./queue.js").LoopConfig;
@@ -96,48 +86,6 @@ async function record(directory: string, name: string, value: unknown) {
   }
 }
 
-function registeredByKey(planning: PlanningSnapshot) {
-  return new Map(planning.roadmap.issues.map((issue: any) => [issue.key, issue]));
-}
-
-function boardByKey(board: BoardSnapshot) {
-  const open = new Map<string, BoardItem>();
-  const closed = new Set<string>();
-  for (const issue of board.issues) {
-    const key = planningKeyOf(issue.body);
-    if (!key) continue;
-    if (issue.state === "CLOSED") closed.add(key);
-    else open.set(key, issue);
-  }
-  return { open, closed };
-}
-
-export function selectReadyIssue(planning: PlanningSnapshot, board: BoardSnapshot) {
-  validatePlanningSnapshot(planning);
-  validateBoardSnapshot(planning, board);
-  const registered = registeredByKey(planning);
-  const observed = boardByKey(board);
-  const earliest = planning.roadmap.milestones.find((milestone: any) =>
-    planning.roadmap.issues.some(
-      (issue: any) => issue.milestone === milestone.key && observed.open.has(issue.key),
-    ),
-  );
-  if (!earliest) return undefined;
-
-  for (const issue of planning.roadmap.issues
-    .filter((candidate: any) => candidate.milestone === earliest.key)
-    .sort((left: any, right: any) => left.key.localeCompare(right.key))) {
-    const item = observed.open.get(issue.key);
-    if (!item || !item.labels?.includes("ready")) continue;
-    const registeredIssue = registered.get(issue.key) as any;
-    const frontmatter = parseFrontmatter(planning.issueDrafts[issue.key]!, registeredIssue.file);
-    const blockers = frontmatter.blocked_by ?? [];
-    if (blockers.every((key: string) => observed.closed.has(key) && !observed.open.has(key)))
-      return { key: issue.key, number: item.number };
-  }
-  return undefined;
-}
-
 function stateDirectory(config: LoopConfig) {
   return resolve(config.stateRoot, config.run);
 }
@@ -146,6 +94,7 @@ export async function nextCycle(
   config: LoopConfig,
   executingRoot: string,
   adapter: SupervisionAdapter,
+  repositoryAdapter: RepositoryAdapter,
 ): Promise<SupervisedCycle | undefined> {
   const directory = stateDirectory(config);
   let cycle = 1;
@@ -175,8 +124,21 @@ export async function nextCycle(
 
     const planning = await loadPlanningSnapshot(executingRoot);
     const board = await adapter.board(config.repository);
-    const issue = selectReadyIssue(planning, board);
+    const candidates = await repositoryAdapter.selectCandidates({
+      repository: config.repository,
+      planning,
+      board,
+    });
+    if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
+    const issue = candidates[0];
     if (!issue) return undefined;
+    if (
+      !exactKeys(issue, ["key", "number"]) ||
+      !/^ISS-\d{3}$/.test(issue.key) ||
+      !Number.isSafeInteger(issue.number) ||
+      issue.number <= 0
+    )
+      throw new QueueBlocked("malformed-repository-candidates");
     let base;
     try {
       base = await adapter.currentMain(config, executingRoot);

@@ -332,21 +332,17 @@ function validatePlan(config: DeliveryConfig, plan: DeliveryPlan) {
     gates &&
       exactKeys(gates, ["beforeMirror", "afterMirror"]) &&
       Array.isArray(gates.beforeMirror) &&
-      gates.beforeMirror.length > 0 &&
-      Array.isArray(gates.afterMirror) &&
-      gates.afterMirror.length > 0,
+      Array.isArray(gates.afterMirror),
     "malformed-gate-plan",
   );
   const gateNames = [...gates.beforeMirror, ...gates.afterMirror];
   demand(
-    gateNames.length === 4 &&
-      gateNames.every((gate) => typeof gate === "string" && /^[a-z0-9:-]{1,80}$/.test(gate)) &&
+    gateNames.every((gate) => typeof gate === "string" && /^[a-z0-9:-]{1,80}$/.test(gate)) &&
       new Set(gateNames).size === gateNames.length,
     "malformed-gate-plan",
   );
   demand(
     Array.isArray(plan.drafts) &&
-      plan.drafts.length > 0 &&
       plan.drafts.every(
         (draft) =>
           exactKeys(draft, ["key", "issue", "title", "body", "attributes"]) &&
@@ -766,7 +762,10 @@ export async function deliveryStep(
       }),
     );
     demand(
-      requiredReceipts.length === 4 + completedPlan.drafts.length &&
+      requiredReceipts.length ===
+        completedPlan.gates.beforeMirror.length +
+          completedPlan.gates.afterMirror.length +
+          completedPlan.drafts.length &&
         savedMerge.number === savedPublication.number &&
         exactKeys(completed, ["head", "worktrees", "branch"]) &&
         completed.head === config.candidateHead &&

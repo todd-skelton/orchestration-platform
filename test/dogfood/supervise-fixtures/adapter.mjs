@@ -33,7 +33,29 @@ export async function validateLoopExecutor(loop, executingRoot) {
   };
 }
 
-export async function queueConfigFromLoop(loop, executingRoot, selected, initialHistory) {
+export async function loadRepositoryAdapter() {
+  return {
+    selectCandidates: ({ board }) => {
+      const issue = board.issues.find((item) => item.number === 362 && item.state === "OPEN");
+      return issue ? [{ key: "ISS-105", number: issue.number }] : [];
+    },
+    branchName: () => "codex/iss-105",
+    pullRequest: () => {
+      throw new Error("unused pullRequest");
+    },
+    requiredChecks: () => ["linux", "windows", "macos"],
+    mergeMethod: () => ({ method: "squash" }),
+    afterMerge: () => {},
+  };
+}
+
+export async function queueConfigFromLoop(
+  loop,
+  executingRoot,
+  selected,
+  _repositoryAdapter,
+  initialHistory,
+) {
   const stateDirectory = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-queue`);
   const sourceState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-source`);
   const repairState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-repair`);

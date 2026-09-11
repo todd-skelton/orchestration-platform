@@ -15,11 +15,8 @@ import {
   type DeliveryPlan,
   type PublicationEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
-import {
-  candidateLineChanges,
-  selfDeliveryPolicy,
-  selfPlanFromSnapshots,
-} from "../../scripts/dogfood/self-delivery-policy.mjs";
+import { candidateLineChanges, selfPlanFromSnapshots } from "../../adapters/self.mjs";
+import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 
 const head = "a".repeat(40);
 const authorId = "11111111-1111-1111-1111-111111111111";
@@ -60,13 +57,10 @@ function config(root: string): DeliveryConfig {
       "Node 24 / macos-latest",
     ],
     policy: {
-      kind: "orchestration-platform-self/v1",
-      planningKey: "ISS-074",
-      planningIssue: 332,
+      key: "ISS-074",
+      number: 332,
+      title: "Deliver",
       sourceBranch: "codex/iss-074-delivery",
-      baseBranch: "main",
-      pullRequestTitle: "automate normal delivery",
-      pullRequestBody: "reviewed delivery candidate",
     },
   };
 }
@@ -1193,7 +1187,7 @@ it("keeps repository identities and mirror rules in the explicit private policy 
   ]);
   expect(plan.drafts[0]!.body.startsWith("<!-- planning-key: ISS-074 -->\n")).toBe(true);
   expect(plan.publication.body).toBe(
-    "reviewed delivery candidate\n\n" +
+    "Closes #332\n\n" +
       "Line changes:\n" +
       "- Total: 7 added, 6 deleted, net +1\n" +
       "- Source (`scripts/`): 1 added, 3 deleted, net -2\n" +
@@ -1213,7 +1207,7 @@ it("keeps repository identities and mirror rules in the explicit private policy 
     /todd-skelton|ISS-074|EPIC-KERNEL|planning:board-check|squash|milestone|\bgh\b/,
   );
   const privatePolicy = await readFile(
-    resolve(import.meta.dirname, "../../scripts/dogfood/self-delivery-policy.mjs"),
+    resolve(import.meta.dirname, "../../adapters/self.mjs"),
     "utf8",
   );
   expect(privatePolicy).not.toMatch(/ISS-074|\b332\b/);
@@ -1348,10 +1342,14 @@ it("fails self policy closed before provider access for the wrong repository or 
   roots.push(root);
   const wrongRepository = config(root);
   wrongRepository.repository = "other/repository";
-  await expect(selfDeliveryPolicy().plan(wrongRepository)).rejects.toThrow("wrong-self-repository");
+  await expect(
+    repositoryDeliveryPolicy(await import("../../adapters/self.mjs"), "git").plan(wrongRepository),
+  ).rejects.toThrow("wrong-self-repository");
   const wrongChecks = config(root);
   wrongChecks.requiredChecks = ["linux", "windows", "macos"];
-  await expect(selfDeliveryPolicy().plan(wrongChecks)).rejects.toThrow("wrong-self-hosted-checks");
+  await expect(
+    repositoryDeliveryPolicy(await import("../../adapters/self.mjs"), "git").plan(wrongChecks),
+  ).rejects.toThrow("wrong-self-hosted-checks");
 });
 
 it("reduces an exact primary reviewer report to delivery evidence", async () => {
@@ -1534,7 +1532,7 @@ it("imports both concrete delivery adapters directly in Node 24", async () => {
     [
       "--input-type=module",
       "-e",
-      'Promise.all([import("./scripts/dogfood/delivery-adapter.mjs"),import("./scripts/dogfood/self-delivery-policy.mjs")]).then(async ([a,p])=>(await import("node:fs/promises")).writeFile(process.argv[1],JSON.stringify([typeof a.assertControllerExecutor,typeof a.githubDeliveryAdapter,typeof p.selfDeliveryPolicy])))',
+      'Promise.all([import("./scripts/dogfood/delivery-adapter.mjs"),import("./adapters/self.mjs")]).then(async ([a,p])=>(await import("node:fs/promises")).writeFile(process.argv[1],JSON.stringify([typeof a.assertControllerExecutor,typeof a.githubDeliveryAdapter,typeof p.selectCandidates])))',
       output,
     ],
     { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },

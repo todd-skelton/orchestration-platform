@@ -19,6 +19,7 @@ async function fixture() {
   const config = {
     schemaVersion: "dogfood-loop/v1",
     run: "synthetic-command-run",
+    adapter: "self",
     repository: "fixture/repository",
     stableExecutorRoot: resolve(import.meta.dirname, "../.."),
     stateRoot,
