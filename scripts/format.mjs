@@ -20,6 +20,7 @@ export const formatterTargets = Object.freeze([
   "vitest.config.ts",
   ".prettierrc.json",
   ".github/workflows/bootstrap.yml",
+  "adapters",
   "scripts",
   "test",
 ]);

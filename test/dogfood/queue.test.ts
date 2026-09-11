@@ -18,10 +18,26 @@ import {
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
+import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
 
 const roots: string[] = [];
+const repositoryPolicy: RepositoryAdapter = {
+  selectCandidates: () => [],
+  branchName: ({ key, attempt }) =>
+    `codex/${key.toLowerCase()}${attempt === 1 ? "" : `-attempt-${attempt}`}`,
+  pullRequest: async () => {
+    throw new Error("unused pullRequest");
+  },
+  requiredChecks: () => [
+    "Node 24 / ubuntu-latest",
+    "Node 24 / windows-latest",
+    "Node 24 / macos-latest",
+  ],
+  mergeMethod: () => ({ method: "squash" }),
+  afterMerge: () => {},
+};
 const execute = promisify(execFile);
 const unavailable = { status: "unavailable" as const };
 const usage = (input: number, output: number) => ({
@@ -204,6 +220,7 @@ async function loopFixture(withRuntime = false) {
   const loop = {
     schemaVersion: "dogfood-loop/v1" as const,
     run: "iss-104-run",
+    adapter: "self",
     repository: "fixture/repository",
     stableExecutorRoot: repository,
     stateRoot,
@@ -255,10 +272,10 @@ it("admits repository-wide source scope without a pre-authored repair path list"
 
 it("derives the complete internal queue from one compact loop config and selected issue", async () => {
   const { loop, repository, stateRoot, selected } = await loopFixture();
-  await expect(queueConfigFromLoop({ ...loop, run: ".." }, repository, selected)).rejects.toThrow(
-    "invalid-run",
-  );
-  const queue = await queueConfigFromLoop(loop, repository, selected);
+  await expect(
+    queueConfigFromLoop({ ...loop, run: ".." }, repository, selected, repositoryPolicy),
+  ).rejects.toThrow("invalid-run");
+  const queue = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
 
   expect(queue.items).toHaveLength(1);
   expect(queue.controller).toBe(`loop:${loop.run}`);
@@ -273,9 +290,9 @@ it("derives the complete internal queue from one compact loop config and selecte
     },
     delivery: {
       policy: {
-        planningKey: "ISS-104",
-        planningIssue: 361,
-        pullRequestTitle: "[ISS-104] One config",
+        key: "ISS-104",
+        number: 361,
+        title: "One config",
       },
     },
   });
@@ -292,7 +309,7 @@ it("derives the complete internal queue from one compact loop config and selecte
 
 it("recomposes a polled attempt and resumes its recorded phase", async () => {
   const { loop, repository, selected } = await loopFixture();
-  const first = await queueConfigFromLoop(loop, repository, selected);
+  const first = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
   const history: QueueParticipant[] = [];
   let setupCalls = 0;
   let sourceCalls = 0;
@@ -330,7 +347,7 @@ it("recomposes a polled attempt and resumes its recorded phase", async () => {
   await expect(queueStep(first, adapter)).resolves.toMatchObject({
     status: "observing-author",
   });
-  const restarted = await queueConfigFromLoop(loop, repository, selected);
+  const restarted = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
   expect(restarted.stateDirectory).toBe(first.stateDirectory);
   await expect(queueStep(restarted, adapter)).resolves.toMatchObject({
     status: "complete",
@@ -340,7 +357,7 @@ it("recomposes a polled attempt and resumes its recorded phase", async () => {
 
 it("runs the composed self-repository setup through the real Git adapter", async () => {
   const { loop, repository, gitExecutable, selected } = await loopFixture();
-  const queue = await queueConfigFromLoop(loop, repository, selected);
+  const queue = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
   const setup = queue.items[0]!.setup;
   expect(setup.repositoryRoot).toBe(setup.controllerRoot);
 
@@ -363,7 +380,7 @@ it("runs the composed self-repository setup through the real Git adapter", async
 
 it("preserves registered multiline criteria through the genuine repository repair path", async () => {
   const { loop, repository, gitExecutable, acceptanceCriteria, selected } = await loopFixture(true);
-  const queue = await queueConfigFromLoop(loop, repository, selected);
+  const queue = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
   const item = queue.items[0]!;
   const fixtureQueue = (await import(
     /* @vite-ignore */ pathToFileURL(resolve(repository, "scripts/dogfood/queue.ts")).href
@@ -456,6 +473,7 @@ it("keeps the executor pinned while starting a cycle from the selected main comm
     loop,
     repository,
     { ...selected, base: fresh },
+    repositoryPolicy,
     inherited,
   );
   expect(queue.controllerRevision).toBe(selected.base);
@@ -547,7 +565,7 @@ it("starts candidate three at the rejected candidate two with its prescription v
       stateDirectory: null,
     })}\n`,
   );
-  const third = await queueConfigFromLoop(loop, repository, selected);
+  const third = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
   expect(third.items[0]).toMatchObject({
     id: "ISS-104:3",
     base: rejectedHead,

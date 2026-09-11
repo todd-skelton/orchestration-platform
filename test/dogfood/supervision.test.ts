@@ -5,11 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
 import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
+import { selectCandidates } from "../../adapters/self.mjs";
+import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import {
   completeCycle,
   nextCycle,
   persistCycle,
-  selectReadyIssue,
   startCycle,
   stopCycle,
   type IssueObservation,
@@ -19,6 +20,16 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
+const repositoryPolicy: RepositoryAdapter = {
+  selectCandidates: () => [{ key: "ISS-105", number: 362 }],
+  branchName: () => "codex/iss-105",
+  pullRequest: async () => {
+    throw new Error("unused pullRequest");
+  },
+  requiredChecks: () => ["linux", "windows", "macos"],
+  mergeMethod: () => ({ method: "squash" }),
+  afterMerge: () => {},
+};
 
 function draft(key: string, milestone: string, blockedBy: string[] = []) {
   return `---
@@ -99,6 +110,7 @@ function loop(root: string): LoopConfig {
   return {
     schemaVersion: "dogfood-loop/v1",
     run: "selection-run",
+    adapter: "self",
     repository: "fixture/repository",
     stableExecutorRoot: root,
     stateRoot: resolve(root, "state"),
@@ -153,7 +165,7 @@ afterEach(async () => {
 });
 
 describe("ready issue selection", () => {
-  it("orders by the earliest open milestone and key while skipping blocked work", () => {
+  it("orders by the earliest open milestone and key while skipping blocked work", async () => {
     const source = planning();
     const snapshot = board(source, {
       "ISS-100": { state: "CLOSED" },
@@ -161,18 +173,48 @@ describe("ready issue selection", () => {
       "ISS-106": { state: "OPEN", ready: true },
       "ISS-200": { state: "OPEN", ready: true },
     });
-    expect(selectReadyIssue(source, snapshot)).toEqual({ key: "ISS-105", number: 2 });
+    expect(
+      (
+        await selectCandidates({
+          repository: source.roadmap.repository,
+          planning: source,
+          board: snapshot,
+        })
+      )[0],
+    ).toEqual({ key: "ISS-105", number: 2 });
 
     snapshot.issues[1]!.labels = [];
-    expect(selectReadyIssue(source, snapshot)).toEqual({ key: "ISS-106", number: 3 });
+    expect(
+      (
+        await selectCandidates({
+          repository: source.roadmap.repository,
+          planning: source,
+          board: snapshot,
+        })
+      )[0],
+    ).toEqual({ key: "ISS-106", number: 3 });
 
     snapshot.issues[0]!.state = "OPEN";
-    expect(selectReadyIssue(source, snapshot)).toBeUndefined();
+    expect(
+      await selectCandidates({
+        repository: source.roadmap.repository,
+        planning: source,
+        board: snapshot,
+      }),
+    ).toEqual([]);
 
     snapshot.issues[0]!.state = "CLOSED";
     snapshot.issues[1]!.state = "CLOSED";
     snapshot.issues[2]!.state = "CLOSED";
-    expect(selectReadyIssue(source, snapshot)).toEqual({ key: "ISS-200", number: 4 });
+    expect(
+      (
+        await selectCandidates({
+          repository: source.roadmap.repository,
+          planning: source,
+          board: snapshot,
+        })
+      )[0],
+    ).toEqual({ key: "ISS-200", number: 4 });
   });
 });
 
@@ -192,7 +234,7 @@ it("removes ready and resumes the selected cycle", async () => {
   await persistCycle(config, cycle);
   await startCycle(config, cycle, adapter);
   expect(observation.labels).not.toContain("ready");
-  await expect(nextCycle(config, root, adapter)).resolves.toEqual(cycle);
+  await expect(nextCycle(config, root, adapter, repositoryPolicy)).resolves.toEqual(cycle);
 });
 
 it("posts one current-main learning note before selection persistence and keeps ready", async () => {
@@ -225,8 +267,12 @@ it("posts one current-main learning note before selection persistence and keeps 
     throw new QueueBlocked("current-main-unavailable");
   };
 
-  await expect(nextCycle(config, repository, adapter)).rejects.toThrow("current-main-unavailable");
-  await expect(nextCycle(config, repository, adapter)).rejects.toThrow("current-main-unavailable");
+  await expect(nextCycle(config, repository, adapter, repositoryPolicy)).rejects.toThrow(
+    "current-main-unavailable",
+  );
+  await expect(nextCycle(config, repository, adapter, repositoryPolicy)).rejects.toThrow(
+    "current-main-unavailable",
+  );
   expect(observation.comments).toHaveLength(1);
   expect(observation.comments[0]).toContain(
     "check the stableExecutorRoot and gitExecutable fields in the loop config",

@@ -34,7 +34,7 @@ import {
   type ValidatedReview,
   validateLocations,
 } from "./repair-policy.mjs";
-import { selfDeliveryPolicy } from "./self-delivery-policy.mjs";
+import { repositoryDeliveryPolicy, type RepositoryAdapter } from "./repository-adapter.mjs";
 import { gitSetupAdapter } from "./setup-adapter.mjs";
 import { SetupBlocked, setupStep, type SetupAdapter, type SetupConfig } from "./setup.mjs";
 
@@ -98,6 +98,7 @@ export interface QueueConfig {
 export interface LoopConfig {
   schemaVersion: typeof LOOP_CONFIG_SCHEMA;
   run: string;
+  adapter: string;
   repository: string;
   stableExecutorRoot: string;
   stateRoot: string;
@@ -215,6 +216,7 @@ export function validateLoopConfig(config: LoopConfig) {
     exactKeys(config, [
       "schemaVersion",
       "run",
+      "adapter",
       "repository",
       "stableExecutorRoot",
       "stateRoot",
@@ -229,6 +231,7 @@ export function validateLoopConfig(config: LoopConfig) {
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
+  demand(/^[a-z0-9][a-z0-9-]*$/.test(config.adapter), "invalid-repository-adapter");
   demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
   for (const name of [
     "stableExecutorRoot",
@@ -385,6 +388,7 @@ export async function queueConfigFromLoop(
   config: LoopConfig,
   executingRoot: string,
   selected: SelectedLoopIssue,
+  repositoryAdapter: RepositoryAdapter,
   priorHistory: QueueParticipant[] = [],
   validatedExecutor?: Awaited<ReturnType<typeof validateLoopExecutor>>,
 ) {
@@ -457,9 +461,11 @@ export async function queueConfigFromLoop(
     ),
   );
   const controller = `loop:${config.run}`;
-  const sourceBranch = `codex/${selected.key.toLowerCase()}${
-    sourceAttempt === 1 ? "" : `-attempt-${sourceAttempt}`
-  }`;
+  const sourceBranch = await repositoryAdapter.branchName({
+    key: selected.key,
+    attempt: sourceAttempt,
+  });
+  const hostedChecks = await repositoryAdapter.requiredChecks({ repository: config.repository });
   const sourcePrompt = prescribedFindings
     ? `${baseSourcePrompt}\n\nStart from rejected candidate ${attemptBase}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
     : baseSourcePrompt;
@@ -491,11 +497,7 @@ export async function queueConfigFromLoop(
     stateDirectory: paths.source,
     allowedPaths: ["."],
     repository: config.repository,
-    requiredChecks: [
-      "Node 24 / ubuntu-latest",
-      "Node 24 / windows-latest",
-      "Node 24 / macos-latest",
-    ],
+    requiredChecks: hostedChecks,
     author: { ...config.author, prompt: sourcePrompt },
     reviewer: { ...config.reviewer, prompt: reviewerPrompt },
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
@@ -517,13 +519,10 @@ export async function queueConfigFromLoop(
     delivery: {
       requiredChecks: [...source.requiredChecks],
       policy: {
-        kind: "orchestration-platform-self/v1",
-        planningKey: selected.key,
-        planningIssue: selected.number,
+        key: selected.key,
+        number: selected.number,
+        title,
         sourceBranch,
-        baseBranch: "main",
-        pullRequestTitle: `[${selected.key}] ${title}`,
-        pullRequestBody: `Closes #${selected.number}`,
       },
     },
   };
@@ -1345,6 +1344,7 @@ function sameParticipantIdentity(left: QueueParticipant, right: QueueParticipant
 
 export interface RepositoryQueueAdapterOptions {
   gitExecutable?: string;
+  repository?: RepositoryAdapter;
   native?: Adapter;
   setup?: SetupAdapter;
   repair?: RepairAdapter;
@@ -1366,7 +1366,15 @@ export function repositoryQueueAdapter(
   const native = options.native ?? codexAdapter(gitExecutable);
   const setupAdapter = options.setup ?? gitSetupAdapter({ gitExecutable });
   const deliveryAdapter = options.delivery ?? githubDeliveryAdapter(undefined, gitExecutable);
-  const deliveryPolicy = options.deliveryPolicy ?? selfDeliveryPolicy(gitExecutable);
+  const deliveryPolicy =
+    options.deliveryPolicy ??
+    (options.repository
+      ? repositoryDeliveryPolicy(options.repository, gitExecutable)
+      : {
+          async plan() {
+            throw new DeliveryBlocked("repository-adapter-unavailable");
+          },
+        });
   const assertExecutor = options.assertExecutor ?? assertControllerExecutor;
   const state = config.stateDirectory;
 
@@ -1984,6 +1992,11 @@ export function repositoryQueueAdapter(
             reviewId: result.reviewId,
             retries: result.retries,
           };
+        if (options.repository)
+          await options.repository.afterMerge({
+            config: { ...delivery, candidateHead: result.head, retries: result.retries },
+            delivery: result,
+          });
         return result;
       } catch (error) {
         if (error instanceof QueueBlocked) throw error;

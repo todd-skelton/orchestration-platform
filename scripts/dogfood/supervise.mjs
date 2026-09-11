@@ -19,21 +19,24 @@ import {
   startCycle,
   stopCycle,
 } from "./supervision.ts";
+import { loadRepositoryAdapter } from "./repository-adapter.mjs";
 
 let active;
 let config;
 let loop;
 let validatedExecutor;
+let repositoryAdapter;
 try {
   if (process.argv.length !== 3) throw new QueueBlocked("usage");
   const executingRoot = await realpath(resolve(import.meta.dirname, "../.."));
   loop = JSON.parse(await readFile(resolve(process.argv[2]), "utf8"));
   validateLoopConfig(loop);
+  repositoryAdapter = await loadRepositoryAdapter(loop.adapter, executingRoot);
   process.env.PATH = `${dirname(loop.gitExecutable)}${delimiter}${process.env.PATH ?? ""}`;
   const supervisor = repositorySupervisionAdapter();
   for (;;) {
     if (!active) {
-      active = await nextCycle(loop, executingRoot, supervisor);
+      active = await nextCycle(loop, executingRoot, supervisor, repositoryAdapter);
       if (!active) {
         process.stdout.write(`${JSON.stringify({ status: "idle", run: loop.run })}\n`);
         break;
@@ -50,11 +53,13 @@ try {
         number: active.selection.number,
         base: active.selection.base,
       },
+      repositoryAdapter,
       active.initialHistory,
       validatedExecutor,
     );
     const adapter = repositoryQueueAdapter(config, executingRoot, {
       gitExecutable: loop.gitExecutable,
+      repository: repositoryAdapter,
     });
     const started = await startCycle(loop, active, supervisor);
     if (started.status === "closed" && !(await hasStartedDelivery(config)))

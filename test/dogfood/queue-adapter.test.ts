@@ -16,6 +16,7 @@ import type {
 } from "../../scripts/dogfood/delivery.js";
 import { sha, type Adapter, type Attempt } from "../../scripts/dogfood/flow.js";
 import type { RepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
+import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import {
   type QueueConfig,
@@ -313,6 +314,18 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   let capturedDelivery: DeliveryConfig | undefined;
   let gateCalls = 0;
   let hostedReady = false;
+  const postMerge: string[] = [];
+  const repositoryPolicy: RepositoryAdapter = {
+    selectCandidates: () => [],
+    branchName: () => plan.publication.sourceBranch,
+    pullRequest: () => plan.publication,
+    requiredChecks: () => [...current.source.requiredChecks],
+    mergeMethod: () => plan.mergePolicy,
+    afterMerge({ config, delivery: completed }) {
+      expect(config.candidateHead).toBe(corrected);
+      postMerge.push(completed.mergeCommit);
+    },
+  };
   const delivery: DeliveryAdapter = {
     publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
     async source(config) {
@@ -396,6 +409,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         return plan;
       },
     },
+    repository: repositoryPolicy,
     assertExecutor: async () => {},
   });
   const queueAdapter: QueueAdapter = { ...adapter, async assertExecutor() {} };
@@ -475,6 +489,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   expect(capturedDelivery).toMatchObject({
     refresh: current.item.delivery.refresh,
   });
+  expect(postMerge).toEqual([mergeCommit]);
 });
 
 it("persists the genuine adapter result and restarts four-participant completion without effects", async () => {
