@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
-import type { PlanningSnapshot } from "../../scripts/planning/check.mjs";
-import type { LoopConfig } from "../../scripts/dogfood/queue.js";
+import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
+import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
 import {
   completeCycle,
   nextCycle,
@@ -194,6 +194,46 @@ it("removes ready and resumes the selected cycle", async () => {
   await startCycle(config, cycle, adapter);
   expect(observation.labels).not.toContain("ready");
   await expect(nextCycle(config, root, adapter)).resolves.toEqual(cycle);
+});
+
+it("posts one current-main learning note before selection persistence and keeps ready", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-main-stop-"));
+  roots.push(root);
+  const repository = resolve(import.meta.dirname, "../..");
+  const source = await loadPlanningSnapshot(repository);
+  const expected = expectedBoardItems(source);
+  const config = { ...loop(root), repository: source.roadmap.repository };
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: ["ready"],
+    comments: [],
+  };
+  const adapter = fakeAdapter(observation);
+  adapter.board = async () => ({
+    repository: source.roadmap.repository,
+    totalCount: expected.length,
+    issues: expected.map((item, index) => ({
+      number: item.key === "ISS-105" ? 362 : index + 1,
+      title: item.title,
+      body: item.body,
+      milestone: item.milestone,
+      state: item.key === "ISS-105" ? "OPEN" : "CLOSED",
+      labels: item.key === "ISS-105" ? ["ready"] : [],
+    })),
+  });
+  adapter.currentMain = async () => {
+    throw new QueueBlocked("current-main-unavailable");
+  };
+
+  await expect(nextCycle(config, repository, adapter)).rejects.toThrow("current-main-unavailable");
+  await expect(nextCycle(config, repository, adapter)).rejects.toThrow("current-main-unavailable");
+  expect(observation.comments).toHaveLength(1);
+  expect(observation.comments[0]).toContain(
+    "check the stableExecutorRoot and gitExecutable fields in the loop config",
+  );
+  expect(observation.comments[0]).toContain("after 0 implementation attempts");
+  expect(observation.labels).toContain("ready");
 });
 
 it("posts one learning note after an interrupted comment and restores ready", async () => {

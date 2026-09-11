@@ -177,8 +177,20 @@ export async function nextCycle(
     const board = await adapter.board(config.repository);
     const issue = selectReadyIssue(planning, board);
     if (!issue) return undefined;
-    const base = await adapter.currentMain(config, executingRoot);
-    if (!SHA.test(base)) throw new QueueBlocked("current-main-unavailable");
+    let base;
+    try {
+      base = await adapter.currentMain(config, executingRoot);
+      if (!SHA.test(base)) throw new QueueBlocked("current-main-unavailable");
+    } catch {
+      const target = { cycle, ...issue };
+      await postLearningNote(
+        config,
+        target,
+        stopMessage(config, target, 0, "current-main-unavailable", 0),
+        adapter,
+      );
+      throw new QueueBlocked("current-main-unavailable");
+    }
     return {
       selection: { cycle, ...issue, base },
       initialHistory,
@@ -186,7 +198,7 @@ export async function nextCycle(
   }
 }
 
-function assertIssue(selection: SelectedIssue, observed: IssueObservation) {
+function assertIssue(selection: Pick<SelectedIssue, "key">, observed: IssueObservation) {
   if (observed.key !== selection.key) throw new QueueBlocked("selected-issue-identity-drift");
 }
 
@@ -272,7 +284,7 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
 };
 function stopMessage(
   config: LoopConfig,
-  selection: SelectedIssue,
+  selection: Pick<SelectedIssue, "cycle" | "key" | "number">,
   stop: number,
   reason: string,
   attempts: number,
@@ -297,6 +309,27 @@ function stopMessage(
     marker,
     body: `<!-- ${marker} --> The loop stopped on ${selection.key} because \`${reason}\` ${count}. A person should ${change}.`,
   };
+}
+
+async function postLearningNote(
+  config: LoopConfig,
+  selection: Pick<SelectedIssue, "key" | "number">,
+  note: { marker: string; body: string },
+  adapter: SupervisionAdapter,
+) {
+  let observed = await adapter.issue(config, selection.number);
+  assertIssue(selection, observed);
+  if (observed.state !== "OPEN") throw new QueueBlocked("stopped-issue-state-unknown");
+  const matching = observed.comments.filter((body) => body.includes(`<!-- ${note.marker} -->`));
+  if (matching.length > 1) throw new QueueBlocked("duplicate-learning-note");
+  if (matching.length === 0) {
+    await adapter.comment(config, selection.number, note.body);
+    observed = await adapter.issue(config, selection.number);
+    assertIssue(selection, observed);
+    if (!observed.comments.some((body) => body.includes(`<!-- ${note.marker} -->`)))
+      throw new QueueBlocked("learning-note-state-unknown");
+  }
+  return observed;
 }
 
 export async function stopCycle(
@@ -345,18 +378,12 @@ export async function stopCycle(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
 
-  let observed = await adapter.issue(config, cycle.selection.number);
-  assertIssue(cycle.selection, observed);
-  if (observed.state !== "OPEN") throw new QueueBlocked("stopped-issue-state-unknown");
-  const matching = observed.comments.filter((body) => body.includes(`<!-- ${intent.marker} -->`));
-  if (matching.length > 1) throw new QueueBlocked("duplicate-learning-note");
-  if (matching.length === 0) {
-    await adapter.comment(config, cycle.selection.number, intent.body);
-    observed = await adapter.issue(config, cycle.selection.number);
-    assertIssue(cycle.selection, observed);
-    if (!observed.comments.some((body) => body.includes(`<!-- ${intent.marker} -->`)))
-      throw new QueueBlocked("learning-note-state-unknown");
-  }
+  let observed = await postLearningNote(
+    config,
+    cycle.selection,
+    { marker: intent.marker, body: intent.body },
+    adapter,
+  );
   if (!observed.labels.includes("ready")) {
     await adapter.restoreReady(config, cycle.selection.number);
     observed = await adapter.issue(config, cycle.selection.number);
