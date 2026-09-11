@@ -285,7 +285,7 @@ it("rejects checkout-contained state before Git or installer mutation", async ()
 
   await expect(
     setupStep(current.config, current.adapter, current.config.controllerRoot),
-  ).rejects.toMatchObject({ reason: "overlapping-setup-paths" });
+  ).rejects.toMatchObject({ reason: "setup-path-inside-existing-checkout" });
   expect(current.installs()).toBe(0);
   await expect(access(current.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
 });
