@@ -77,7 +77,7 @@ work: close the issue with a note; leave nothing registered.
 
 | Key | Title                       | Exit evidence                                                                                                                                           |
 | --- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M1  | Unattended self-improvement | Three consecutive useful issues on this repo land through one `supervise` invocation with no per-item host script, including one retry and one restart. |
+| M1  | Unattended self-improvement | Three consecutive useful issues on this repo land through one `supervise` invocation with no per-item host script or manual step. The report states whether an automatic retry or restart occurred; planned restart recovery is separate. |
 | M2  | Chase Sets delivery adapter | One low-risk Chase Sets milestone is delivered end to end through the loop with a `chase-sets` adapter.                                                 |
 | M3  | Chase Sets adoption         | Routine Chase Sets delivery runs on the platform; the `milestone-orchestrator` host loop is retired for routine work with a rollback.                   |
 
