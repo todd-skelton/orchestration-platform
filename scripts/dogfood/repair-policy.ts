@@ -271,7 +271,6 @@ export function validateRepairConfig(config: RepairConfig) {
     config.sourcePaths.every((path) => inFootprint(config.allowedPaths, path)),
     "malformed-source-footprint",
   );
-  demand(strings(config.acceptanceCriteria, 32, 1_000), "malformed-acceptance-criteria");
   demand(strings(config.requiredChecks, 16, 160), "malformed-required-checks");
   demand(
     Number.isSafeInteger(config.exitReceiptWindowMs) &&

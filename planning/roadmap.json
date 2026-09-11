@@ -147,6 +147,12 @@
       "file": "planning/drafts/ISS-120.md",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-121",
+      "file": "planning/drafts/ISS-121.md",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }

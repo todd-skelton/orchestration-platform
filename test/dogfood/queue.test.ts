@@ -1,13 +1,15 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
   currentCandidateAttempt,
   queueConfigFromLoop,
   reconcileCompletedQueue,
+  repositoryQueueAdapter,
   queueStep,
   validateQueueConfig,
   type QueueAdapter,
@@ -16,6 +18,7 @@ import {
   type QueueItem,
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
+import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
 
@@ -155,15 +158,24 @@ async function fixture(itemCount = 1) {
   return { root, stateDirectory, config, items };
 }
 
-async function loopFixture() {
+async function loopFixture(withRuntime = false) {
   const root = await mkdtemp(resolve(tmpdir(), "loop-config-fixture-"));
   roots.push(root);
   const repository = resolve(root, "repository");
   const stateRoot = resolve(root, "state");
   const worktreeRoot = resolve(root, "worktrees");
+  const acceptanceCriteria =
+    "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.";
   await Promise.all([
     mkdir(resolve(repository, "docs"), { recursive: true }),
     mkdir(resolve(repository, "planning/drafts"), { recursive: true }),
+    ...(withRuntime
+      ? [
+          cp(resolve(import.meta.dirname, "../../scripts"), resolve(repository, "scripts"), {
+            recursive: true,
+          }),
+        ]
+      : []),
   ]);
   await Promise.all([
     writeFile(resolve(repository, ".gitignore"), "node_modules/\n"),
@@ -177,7 +189,7 @@ async function loopFixture() {
     ),
     writeFile(
       resolve(repository, "planning/drafts/ISS-104.md"),
-      '---\nkey: ISS-104\ntitle: "One config"\n---\n\n## Done when\n\n- One file drives the run.\n\n## Out of scope\n',
+      `---\nkey: ISS-104\ntitle: "One config"\n---\n\n## Done when\n\n${acceptanceCriteria}\n\n## Out of scope\n`,
     ),
   ]);
   const finder = process.platform === "win32" ? "where.exe" : "which";
@@ -210,6 +222,7 @@ async function loopFixture() {
     stateRoot,
     loop,
     gitExecutable,
+    acceptanceCriteria,
     selected: { key: "ISS-104", number: 361, base },
   };
 }
@@ -294,6 +307,84 @@ it("runs the composed self-repository setup through the real Git adapter", async
   await expect(
     execute(gitExecutable, ["-C", setup.sourceWorktree, "rev-parse", "HEAD"]),
   ).resolves.toMatchObject({ stdout: `${selected.base}\n` });
+}, 30_000);
+
+it("preserves registered multiline criteria through the genuine repository repair path", async () => {
+  const { loop, repository, gitExecutable, acceptanceCriteria, selected } = await loopFixture(true);
+  const queue = await queueConfigFromLoop(loop, repository, selected);
+  const item = queue.items[0]!;
+  const fixtureQueue = (await import(
+    /* @vite-ignore */ pathToFileURL(resolve(repository, "scripts/dogfood/queue.ts")).href
+  )) as { repositoryQueueAdapter: typeof repositoryQueueAdapter };
+  let repairPrompt = "";
+  let pid = 1;
+  const native: Adapter = {
+    async preflight() {},
+    async git(worktree, args) {
+      const result = await execute(gitExecutable, ["-C", worktree, ...args]);
+      return args.includes("-z") ? result.stdout : result.stdout.trim();
+    },
+    async launch(role, config, prompt): Promise<Attempt> {
+      const repair = config.stateDirectory === item.repair.stateDirectory;
+      if (repair) repairPrompt = prompt;
+      else if (role === "author")
+        await writeFile(resolve(config.worktree, "repair-target.txt"), "repair me\n");
+      return {
+        id: `${repair ? "repair" : "source"}-${role}`,
+        pid: pid++,
+        trace: resolve(queue.stateDirectory, `${repair ? "repair" : "source"}-${role}.jsonl`),
+      };
+    },
+    async observe(role, config, attempt) {
+      if (config.stateDirectory === item.repair.stateDirectory)
+        return { status: "running", id: attempt.id, head: config.base };
+      if (role === "author") return { status: "passed", id: attempt.id, head: config.base };
+      const head = await native.git(config.reviewWorktree, ["rev-parse", "HEAD"]);
+      return {
+        status: "failed",
+        id: attempt.id,
+        head,
+        summary: JSON.stringify({
+          run: config.run,
+          role: "reviewer",
+          head,
+          verdict: "FAIL",
+          findings: [
+            {
+              file: "repair-target.txt",
+              line: 1,
+              severity: "blocking",
+              text: "Repair the recorded source defect.",
+            },
+          ],
+          g0: "The source line requires this repair.",
+        }),
+      };
+    },
+    async checks() {
+      return { head: selected.base, checks: [] };
+    },
+  };
+  const adapter = fixtureQueue.repositoryQueueAdapter(queue, repository, {
+    gitExecutable,
+    native,
+    setup: gitSetupAdapter({
+      gitExecutable,
+      async install(_launcher, _args, cwd) {
+        await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+        await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+        return "succeeded";
+      },
+    }),
+  });
+
+  await expect(queueStep(queue, adapter)).resolves.toMatchObject({ status: "observing-author" });
+  expect(item.repair.acceptanceCriteria).toEqual([acceptanceCriteria]);
+  const encodedCriteria = repairPrompt
+    .split("Preserve these acceptance criteria verbatim: ")[1]
+    ?.split(". Authorized exact review paths are ")[0];
+  expect(encodedCriteria).toBeDefined();
+  expect(JSON.parse(encodedCriteria!)).toEqual(item.repair.acceptanceCriteria);
 }, 30_000);
 
 it("keeps the executor pinned while starting a cycle from the selected main commit", async () => {
