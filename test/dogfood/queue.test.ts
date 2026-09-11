@@ -20,6 +20,7 @@ import {
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
+import { setupStep } from "../../scripts/dogfood/setup.js";
 
 const roots: string[] = [];
 const execute = promisify(execFile);
@@ -152,6 +153,7 @@ async function loopFixture() {
     mkdir(resolve(repository, "planning/drafts"), { recursive: true }),
   ]);
   await Promise.all([
+    writeFile(resolve(repository, ".gitignore"), "node_modules/\n"),
     writeFile(resolve(repository, "docs/loop.md"), "# The loop\n\nKeep it small.\n"),
     writeFile(
       resolve(repository, "planning/roadmap.json"),
@@ -263,6 +265,29 @@ it("derives the complete internal queue from one compact loop config and selecte
   expect(queue.items[0]!.source.author.prompt).toContain("Keep it small.");
   expect(queue.items[0]!.source.author.prompt).toContain("One file drives the run.");
   expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
+}, 30_000);
+
+it("runs the composed self-repository setup through the real Git adapter", async () => {
+  const { loop, repository, gitExecutable, selected } = await loopFixture();
+  const queue = await queueConfigFromLoop(loop, repository, selected);
+  const setup = queue.items[0]!.setup;
+  expect(setup.repositoryRoot).toBe(setup.controllerRoot);
+
+  const adapter = gitSetupAdapter({
+    gitExecutable,
+    async install(_launcher, _args, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+      return "succeeded";
+    },
+  });
+  await expect(setupStep(setup, adapter, repository)).resolves.toMatchObject({
+    status: "ready",
+    phase: "complete",
+  });
+  await expect(
+    execute(gitExecutable, ["-C", setup.sourceWorktree, "rev-parse", "HEAD"]),
+  ).resolves.toMatchObject({ stdout: `${selected.base}\n` });
 }, 30_000);
 
 it("keeps the executor pinned while starting a cycle from the selected main commit", async () => {

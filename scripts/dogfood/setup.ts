@@ -290,7 +290,7 @@ function overlaps(left: string, right: string) {
 
 async function assertSafePaths(config: SetupConfig) {
   const existing = await Promise.all(
-    [config.repositoryRoot, config.controllerRoot, config.stateDirectory].map(async (path) => {
+    [config.controllerRoot, config.stateDirectory].map(async (path) => {
       const resolved = await realpath(path);
       demand((await stat(resolved)).isDirectory(), "setup-root-not-directory");
       return comparable(resolved, await pathIsCaseSensitive(resolved));
