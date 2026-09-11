@@ -73,13 +73,33 @@ To add work: write the draft, register it, create the issue with that body and
 milestone, add it to the project, label it `ready` when unblocked. To park
 work: close the issue with a note; leave nothing registered.
 
+## Running
+
+The loop runs on the WSL Ubuntu executor, not on Windows. The Windows Codex
+sandbox refuses piped child output and its elevated setup needs a UAC prompt
+that never completed, so the executor has its own Git 2.53, Node 24, pnpm,
+`gh` and Codex CLI under `/root/orchestration-m1/tools`. Windows is covered by
+hosted CI only.
+
+- Executor checkout: `/root/orchestration-m1/repo` (this repository).
+- Config: `/root/orchestration-m1/loop.json`; state under
+  `/root/orchestration-m1/runtime/<run>`; worktrees under
+  `/root/orchestration-m1/worktrees`; log `/root/orchestration-m1/supervisor.log`.
+- Start from Windows (the launcher detaches itself and prints the PID):
+  `wsl -d Ubuntu -- bash /root/orchestration-m1/run-loop.sh [config.json]`
+- Check: `wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log`.
+  A final `idle` line means nothing is `ready`; a non-zero exit means a stop
+  whose learning note is on the issue.
+- Chase Sets runs use `/root/orchestration-m2/repo` and
+  `/root/orchestration-m2/loop.json` with the same tools (ISS-110).
+
 ## Milestones
 
-| Key | Title                       | Exit evidence                                                                                                                                           |
-| --- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Key | Title                       | Exit evidence                                                                                                                                                                                                                             |
+| --- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | M1  | Unattended self-improvement | Three consecutive useful issues on this repo land through one `supervise` invocation with no per-item host script or manual step. The report states whether an automatic retry or restart occurred; planned restart recovery is separate. |
-| M2  | Chase Sets delivery adapter | One low-risk Chase Sets milestone is delivered end to end through the loop with a `chase-sets` adapter.                                                 |
-| M3  | Chase Sets adoption         | Routine Chase Sets delivery runs on the platform; the `milestone-orchestrator` host loop is retired for routine work with a rollback.                   |
+| M2  | Chase Sets delivery adapter | One low-risk Chase Sets milestone is delivered end to end through the loop with a `chase-sets` adapter.                                                                                                                                   |
+| M3  | Chase Sets adoption         | Routine Chase Sets delivery runs on the platform; the `milestone-orchestrator` host loop is retired for routine work with a rollback.                                                                                                     |
 
 ## Not carried forward
 
