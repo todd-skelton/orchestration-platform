@@ -100,8 +100,9 @@ function validAttempt(
 ) {
   return (
     value &&
-    Object.keys(value).length === 4 &&
+    Object.keys(value).length === (value.retries === undefined ? 4 : 5) &&
     ["id", "pid", "trace", "launchedAt"].every((key) => Object.hasOwn(value, key)) &&
+    (value.retries === undefined || (role === "reviewer" && value.retries === 1)) &&
     typeof value.id === "string" &&
     ATTEMPT_ID.test(value.id) &&
     Number.isSafeInteger(value.pid) &&

@@ -26,6 +26,7 @@ export interface Attempt {
   pid: number;
   trace: string;
   launchedAt: number;
+  retries?: 1;
 }
 export interface Terminal {
   status: "running" | "passed" | "failed" | "malformed";
@@ -247,6 +248,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
     const reviewed = await get("candidate");
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
     let terminal: Terminal | undefined = await get(`${role}-terminal`);
+    if (role === "reviewer" && attempt?.retries === 1) retries = 1;
     let parseError: string | undefined;
     for (let iteration = 0; iteration < (role === "reviewer" ? 2 : 1); iteration += 1) {
       const retry = iteration === 1;
@@ -302,7 +304,8 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
           reviewHead,
           prompts[role === "author" ? 0 : 1],
         )}${retryContext}`;
-        attempt = await adapter.launch(role, config, prompt);
+        const launched = await adapter.launch(role, config, prompt);
+        attempt = retry ? { ...launched, retries: 1 } : launched;
         if (!retry) await put(`${role}-attempt`, attempt);
       }
       requireThat(
@@ -313,7 +316,8 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
           typeof attempt.trace === "string" &&
           isAbsolute(attempt.trace) &&
           Number.isFinite(attempt.launchedAt) &&
-          attempt.launchedAt > 0,
+          attempt.launchedAt > 0 &&
+          (attempt.retries === undefined || attempt.retries === 1),
         "invalid-attempt-identity",
       );
       const author: Attempt | undefined = await get("author-attempt");
@@ -501,6 +505,7 @@ export async function correctGate(
   pilotRoot: string,
   gate: string,
   output: string,
+  resume = false,
 ) {
   validateConfig(config);
   requireThat(
@@ -510,7 +515,7 @@ export async function correctGate(
   );
   requireThat(
     (await adapter.git(config.worktree, ["rev-parse", "HEAD"])) === config.base &&
-      (await adapter.git(config.worktree, ["status", "--porcelain"])) === "",
+      (resume || (await adapter.git(config.worktree, ["status", "--porcelain"])) === ""),
     "candidate-workspace-drift",
   );
   const prompt = `${workerPrompt(config, "author", config.base, config.author.prompt)}\nCorrect the ${gate} gate failure on this same branch. The gate output was:\n${output}\n`;
@@ -538,7 +543,7 @@ export async function correctGate(
   if (terminal.status !== "passed")
     throw new QueueBlocked("gate-correction-failed", terminalSummary(terminal.summary));
   requireThat(terminal.head === config.base, "author-wrong-head");
-  const changed = footprint(config, [
+  const changedPaths = [
     ...new Set([
       ...paths(
         await adapter.git(config.worktree, ["diff", "--name-only", "--no-renames", "-z", "HEAD"]),
@@ -556,7 +561,16 @@ export async function correctGate(
         await adapter.git(config.worktree, ["ls-files", "--others", "--exclude-standard", "-z"]),
       ),
     ]),
-  ]);
+  ];
+  if (resume && changedPaths.length === 0) {
+    requireThat(
+      (await adapter.git(config.reviewWorktree, ["status", "--porcelain"])) === "",
+      "dirty-reviewer",
+    );
+    await adapter.git(config.reviewWorktree, ["checkout", "--detach", config.base]);
+    return { head: config.base, attempt, terminal };
+  }
+  const changed = footprint(config, changedPaths);
   await adapter.git(config.worktree, ["--literal-pathspecs", "add", "--all", "--", ...changed]);
   await adapter.git(config.worktree, ["commit", "-m", `dogfood: ${config.run} gate correction`]);
   const corrected = await candidate(config, adapter);

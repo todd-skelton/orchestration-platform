@@ -141,7 +141,11 @@ export interface DeliveryAdapter {
     name: string,
     head: string,
   ): Promise<"passed" | "failed" | { status: "passed" } | { status: "failed"; output: string }>;
-  correctGate?(config: DeliveryConfig, name: string, output: string): Promise<{ head: string }>;
+  correctGate?(
+    config: DeliveryConfig,
+    name: string,
+    output: string,
+  ): Promise<{ head: string; retries?: number }>;
   observeDraft(config: DeliveryConfig, draft: DraftPlan): Promise<Observation<{ issue: number }>>;
   applyDraft(config: DeliveryConfig, draft: DraftPlan): Promise<void>;
   observePublication(
@@ -913,7 +917,11 @@ export async function deliveryStep(
             SHA.test(correction.head) && correction.head !== config.candidateHead,
             "gate-correction-failed",
           );
-          config = { ...config, candidateHead: correction.head, retries: config.retries + 1 };
+          config = {
+            ...config,
+            candidateHead: correction.head,
+            retries: correction.retries ?? config.retries + 1,
+          };
           source = { ...(source as SourceEvidence), head: correction.head };
           fingerprint = digest(config);
           corrected = true;

@@ -930,11 +930,11 @@ function assertItemReviewHistory(
   const selected = gate?.length === 2 ? gate.at(-1) : repaired ? baseRepair : sourceReview;
   demand(
     source.length >= 1 &&
-      source.length <= 2 &&
-      repair.length <= 2 &&
+      source.length <= 3 &&
+      repair.length <= 3 &&
       sourceReview?.outcome === (repaired ? "failed" : "passed") &&
       (repaired ? repair.length >= 1 && baseRepair?.outcome === "passed" : repair.length === 0) &&
-      !(source.length === 2 && repair.length === 2) &&
+      !(source.length > 1 && repair.length > 1) &&
       selected?.outcome === "passed" &&
       selected.id === reviewId,
     "item-review-history-mismatch",
@@ -1880,6 +1880,28 @@ export function repositoryQueueAdapter(
       const stage = samePath(accepted.stateDirectory, item.source.stateDirectory)
         ? "source"
         : "repair";
+      const reviewerAttempt = await optionalRecord(accepted.stateDirectory, "reviewer-attempt");
+      const flowRetries = reviewerAttempt !== ABSENT && reviewerAttempt.retries === 1 ? 1 : 0;
+      let savedAttempt = await optionalRecord(state, "attempt");
+      if (savedAttempt !== ABSENT) validateAttempt(savedAttempt, config);
+      let gateRetryCounted =
+        savedAttempt !== ABSENT &&
+        savedAttempt.phase === "delivery" &&
+        savedAttempt.item === item.id &&
+        savedAttempt.retries > flowRetries;
+      let retries = savedAttempt === ABSENT ? (accepted.retries ?? 0) : savedAttempt.retries;
+      const persistDeliveryAttempt = async (fields: Partial<AttemptRecord>) => {
+        if (savedAttempt === ABSENT) return;
+        demand(
+          savedAttempt.phase === "delivery" &&
+            savedAttempt.item === item.id &&
+            savedAttempt.reviewId === accepted.reviewId &&
+            savedAttempt.stateDirectory === accepted.stateDirectory,
+          "delivery-source-drift",
+        );
+        savedAttempt = advance(savedAttempt, await readHistory(), fields);
+        await record(state, "attempt", savedAttempt);
+      };
       const delivery: DeliveryConfig = {
         controller: config.controller,
         run: item.source.run,
@@ -1899,20 +1921,46 @@ export function repositoryQueueAdapter(
       const correctionNative = boundedNative(item, stage);
       const inlineDelivery: DeliveryAdapter = {
         ...deliveryAdapter,
+        async source(current) {
+          const reviewed = await optionalRecord(accepted.stateDirectory, "candidate");
+          const source = await deliveryAdapter.source(
+            reviewed !== ABSENT && SHA.test(reviewed.head)
+              ? { ...current, candidateHead: reviewed.head }
+              : current,
+          );
+          return { ...source, head: current.candidateHead };
+        },
+        async verifyWorkspace(current, head) {
+          return (
+            (await deliveryAdapter.verifyWorkspace(current, head)) ||
+            (gateRetryCounted && head === current.candidateHead)
+          );
+        },
         async correctGate(current, gate, output) {
+          const resuming = gateRetryCounted;
+          if (!gateRetryCounted) {
+            retries = (accepted.retries ?? 0) + 1;
+            await persistDeliveryAttempt({ retries });
+            gateRetryCounted = true;
+          }
+          const correctionBase = resuming
+            ? await correctionNative.git(current.worktree, ["rev-parse", "HEAD"])
+            : current.candidateHead;
           const correction = await correctGate(
             {
               ...item.source,
-              base: current.candidateHead,
+              base: correctionBase,
               stateDirectory: accepted.stateDirectory,
             },
             correctionNative,
             item.setup.pilotWorktree,
             gate,
             output,
+            resuming,
           );
           await syncParticipant(item, stage, "author", correction.attempt, correction.terminal);
-          return { head: correction.head };
+          await persistDeliveryAttempt({ head: correction.head, retries });
+          return { head: correction.head, retries };
         },
       };
       try {

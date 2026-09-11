@@ -25,6 +25,11 @@ const exactKeys = (value: unknown, keys: string[]) =>
   object(value) &&
   Object.keys(value).length === keys.length &&
   keys.every((key) => Object.hasOwn(value, key));
+const attemptKeys = (value: unknown, reviewer = false) =>
+  exactKeys(value, ["id", "pid", "trace", "launchedAt"]) ||
+  (reviewer &&
+    exactKeys(value, ["id", "pid", "trace", "launchedAt", "retries"]) &&
+    (value as { retries?: unknown }).retries === 1);
 const bounded = (value: unknown, maximum: number) =>
   typeof value === "string" &&
   value.length > 0 &&
@@ -484,8 +489,8 @@ export function repairPolicy() {
           "source-workspace-not-clean-at-candidate",
         );
       demand(
-        exactKeys(artifacts.authorAttempt, ["id", "pid", "trace", "launchedAt"]) &&
-          exactKeys(artifacts.reviewerAttempt, ["id", "pid", "trace", "launchedAt"]) &&
+        attemptKeys(artifacts.authorAttempt) &&
+          attemptKeys(artifacts.reviewerAttempt, true) &&
           [artifacts.authorAttempt, artifacts.reviewerAttempt].every(
             (attempt) =>
               Number.isSafeInteger(attempt.pid) &&
@@ -595,8 +600,8 @@ export function repairPolicy() {
         "delta-workspace-not-clean-at-candidate",
       );
       demand(
-        exactKeys(artifacts.authorAttempt, ["id", "pid", "trace", "launchedAt"]) &&
-          exactKeys(artifacts.reviewerAttempt, ["id", "pid", "trace", "launchedAt"]) &&
+        attemptKeys(artifacts.authorAttempt) &&
+          attemptKeys(artifacts.reviewerAttempt, true) &&
           artifacts.terminal.id === artifacts.reviewerAttempt.id &&
           artifacts.terminal.head === artifacts.candidate.head &&
           artifacts.authorAttempt.id !== artifacts.reviewerAttempt.id &&
