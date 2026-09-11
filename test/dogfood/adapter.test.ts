@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readdir, realpath, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -12,7 +12,6 @@ import {
   launchArguments,
   outputSchema,
   parseTrace,
-  prepareAuthorRuntime,
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
@@ -265,6 +264,11 @@ it("uses distinct sandbox roles, finite stdin and exact output shape without amb
   expect(author.join("\n")).toContain(`TMP=${JSON.stringify(authorTemporaryRoot(config))}`);
   expect(author.join("\n")).toContain(`TMPDIR=${JSON.stringify(authorTemporaryRoot(config))}`);
   expect(author.join("\n")).toContain('COREPACK_ENABLE_NETWORK="0"');
+  expect(author.join("\n").match(/TEMP=/g)).toHaveLength(1);
+  expect(author.join("\n").match(/TMP=/g)).toHaveLength(1);
+  expect(author.join("\n").match(/TMPDIR=/g)).toHaveLength(1);
+  expect(author.join("\n").match(/COREPACK_ENABLE_NETWORK=/g)).toHaveLength(1);
+  expect(author.join("\n")).not.toContain("PATH=");
   expect(reviewer).toContain("read-only");
   expect(reviewer).not.toContain("--add-dir");
   expect(reviewer).toContain("--ignore-user-config");
@@ -417,61 +421,6 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
 });
 it("refuses a CLI without the observed native interface before launching", async () => {
   await expect(codexAdapter().preflight(config)).rejects.toThrow();
-});
-it("prepares one writable author temp root with the exact installed pnpm offline", async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-runtime-")));
-  cleanup.push(root);
-  const stateDirectory = resolve(root, "state");
-  const worktree = resolve(root, "worktree");
-  await Promise.all([mkdir(stateDirectory), mkdir(worktree)]);
-  await writeFile(
-    resolve(worktree, "package.json"),
-    JSON.stringify({ packageManager: "pnpm@11.22.0" }),
-  );
-  const fixture = resolve(root, "pnpm-fixture.mjs");
-  await writeFile(fixture, 'process.stdout.write("11.22.0\\n");\n');
-  const current = { ...config, stateDirectory, worktree };
-
-  await prepareAuthorRuntime(current, async () => ({
-    executable: process.execPath,
-    prefixArgs: [fixture],
-  }));
-
-  expect(
-    (await readFile(resolve(authorTemporaryRoot(current), "pnpm.cjs"), "utf8")).length,
-  ).toBeGreaterThan(0);
-  expect(await readFile(resolve(authorTemporaryRoot(current), "pnpm.cmd"), "utf8")).toContain(
-    process.execPath,
-  );
-  expect(await readFile(resolve(authorTemporaryRoot(current), "pnpm"), "utf8")).toContain(
-    "pnpm.cjs",
-  );
-  expect((await readdir(authorTemporaryRoot(current))).sort()).toEqual([
-    "pnpm",
-    "pnpm.cjs",
-    "pnpm.cmd",
-  ]);
-});
-it("reports typed author runtime preflight failures before launch", async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-runtime-")));
-  cleanup.push(root);
-  const stateDirectory = resolve(root, "state");
-  const worktree = resolve(root, "worktree");
-  await Promise.all([mkdir(stateDirectory), mkdir(worktree)]);
-  await writeFile(
-    resolve(worktree, "package.json"),
-    JSON.stringify({ packageManager: "pnpm@11.22.0" }),
-  );
-  await writeFile(authorTemporaryRoot({ ...config, stateDirectory } as Config), "occupied");
-  await expect(prepareAuthorRuntime({ ...config, stateDirectory, worktree })).rejects.toThrow(
-    "author-temp-unavailable",
-  );
-  await rm(authorTemporaryRoot({ ...config, stateDirectory } as Config));
-  await expect(
-    prepareAuthorRuntime({ ...config, stateDirectory, worktree }, async () => {
-      throw new Error("missing");
-    }),
-  ).rejects.toThrow("author-offline-pnpm-unavailable");
 });
 it("observes a missing exit receipt for the module window before a typed stop", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-exit-wait-")));

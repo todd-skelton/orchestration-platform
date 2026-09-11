@@ -277,10 +277,6 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
     `inspect ${evidence} and the nativeLaunchCeiling field, then start an authorized run with enough launch budget`,
   "implementation-attempt-ceiling-exhausted": ({ evidence }) =>
     `inspect ${evidence}, apply the final blocking findings, and start an authorized implementation attempt`,
-  "author-temp-unavailable": ({ evidence }) =>
-    `restore host write access to the run's private author-temp directory under ${evidence}, and restart`,
-  "author-offline-pnpm-unavailable": () =>
-    "install or cache the exact packageManager pnpm version, or launch the loop with a matching installed npm_execpath, and restart",
 };
 function stopMessage(
   config: LoopConfig,
