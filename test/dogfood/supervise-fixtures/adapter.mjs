@@ -1,11 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
-import {
-  itemAuthority,
-  participantIdentity,
-  QueueBlocked,
-  queueDigest,
-} from "../../../scripts/dogfood/queue.ts";
+import { QueueBlocked } from "../../../scripts/dogfood/queue.ts";
 import { expectedBoardItems } from "../../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot } from "../../../scripts/planning/check.mjs";
 let sourceObserved = false;
@@ -43,6 +38,9 @@ export async function queueConfigFromLoop(loop, executingRoot, selected, initial
   const stateDirectory = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-queue`);
   const sourceState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-source`);
   const repairState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-repair`);
+  const sourceWorktree = resolve(loop.worktreeRoot, `${selected.key.toLowerCase()}-source`);
+  const reviewWorktree = resolve(loop.worktreeRoot, `${selected.key.toLowerCase()}-review`);
+  const controller = `loop:${loop.run}`;
   await Promise.all(
     [stateDirectory, sourceState, repairState].map((path) => mkdir(path, { recursive: true })),
   );
@@ -55,13 +53,30 @@ export async function queueConfigFromLoop(loop, executingRoot, selected, initial
     base,
     implementationAttempt: 1,
     implementationAttemptCeiling: loop.attemptCeiling,
-    setup: { run: loop.run, issue, base },
-    source: {
+    setup: {
+      controller,
       run: loop.run,
       issue,
       base,
+      repository: loop.repository,
+      controllerRoot: executingRoot,
+      controllerRevision: base,
+      pilotRevision: base,
+      sourceWorktree,
+      reviewWorktree,
+      pilotWorktree: resolve(loop.worktreeRoot, `${selected.key.toLowerCase()}-pilot`),
+    },
+    source: {
+      owner: controller,
+      run: loop.run,
+      issue,
+      base,
+      pilotRevision: base,
+      worktree: sourceWorktree,
+      reviewWorktree,
       stateDirectory: sourceState,
       allowedPaths: ["."],
+      repository: loop.repository,
       requiredChecks,
       exitReceiptWindowMs: loop.exitReceiptWindowMs,
     },
@@ -75,6 +90,7 @@ export async function queueConfigFromLoop(loop, executingRoot, selected, initial
   };
   const config = {
     schemaVersion: "dogfood-bounded-queue-config/v1",
+    controller,
     run: loop.run,
     controllerRoot: executingRoot,
     controllerRevision: base,
@@ -83,19 +99,6 @@ export async function queueConfigFromLoop(loop, executingRoot, selected, initial
     nativeLaunchCeiling: loop.nativeLaunchCeiling,
     initialHistory,
     items: [item],
-  };
-  config.authority = {
-    schemaVersion: "dogfood-bounded-queue-authority/v1",
-    controller: `loop:${loop.run}`,
-    run: config.run,
-    controllerRoot: config.controllerRoot,
-    controllerRevision: config.controllerRevision,
-    stateDirectory,
-    limit: 1,
-    nativeLaunchCeiling: config.nativeLaunchCeiling,
-    lineageDigest: queueDigest(config.initialHistory.map(participantIdentity)),
-    itemsDigest: queueDigest(config.items.map(itemAuthority)),
-    actions: ["setup", "source", "repair", "delivery"],
   };
   return config;
 }
@@ -230,7 +233,7 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
     };
   };
   return {
-    async assertAuthority() {},
+    async assertExecutor() {},
     history,
     async setup() {
       return { status: "ready" };

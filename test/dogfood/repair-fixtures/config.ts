@@ -4,7 +4,6 @@ import {
   repairDigest,
   type RepairConfig,
   type SourceReviewArtifacts,
-  type SourceReviewArtifactsWithPrompts,
 } from "../../../scripts/dogfood/repair-policy.mjs";
 
 export const mainBase = "a".repeat(40);
@@ -45,18 +44,6 @@ export function reviewSummary(verdict: "failed" | "passed", head: string) {
         ],
     g0: "The prescribed repair is the simplest change.",
   });
-}
-
-export function refreshSourceFingerprint(
-  config: RepairConfig,
-  source: SourceReviewArtifactsWithPrompts,
-) {
-  const fingerprint = repairDigest({
-    config: source.configRecord.config,
-    prompts: source.promptContents,
-  });
-  config.authority.source.configFingerprint = fingerprint;
-  source.configRecord.fingerprint = fingerprint;
 }
 
 export async function repairFixture(root: string) {
@@ -150,6 +137,7 @@ export async function repairFixture(root: string) {
   const sourceFingerprint = repairDigest({ config: priorConfig, prompts: promptContents });
   const config = {
     schemaVersion: "dogfood-repair-request/v1",
+    controller: "synthetic-controller",
     ...common,
     controllerRoot: paths.controller,
     history,
@@ -159,45 +147,10 @@ export async function repairFixture(root: string) {
     author,
     reviewer,
     adapter,
-    authority: {
-      schemaVersion: "dogfood-repair-authority/v1",
-      controller: "synthetic-controller",
-      ...common,
-      controllerRoot: paths.controller,
-      allowedPaths: [...common.allowedPaths],
-      sourcePaths: [...common.sourcePaths],
-      acceptanceCriteria: [...common.acceptanceCriteria],
-      requiredChecks: [...common.requiredChecks],
-      exitReceiptWindowMs: common.exitReceiptWindowMs,
-      source: {
-        owner: priorConfig.owner,
-        run: "synthetic-source-run",
-        pilotRevision: priorConfig.pilotRevision,
-        requiredChecks: [...priorConfig.requiredChecks],
-        exitReceiptWindowMs: priorConfig.exitReceiptWindowMs,
-        author: structuredClone(sourceAuthor),
-        reviewer: structuredClone(sourceReviewer),
-        adapter: structuredClone(adapter),
-        configFingerprint: sourceFingerprint,
-        candidateHead: repairBase,
-        authorAttempt: history[0]!.id,
-        reviewerAttempt: history[1]!.id,
-        reviewId: history[1]!.id,
-        disposition: "BLOCK_FIXABLE",
-      },
-      author: structuredClone(author),
-      reviewer: structuredClone(reviewer),
-      adapter: structuredClone(adapter),
-      implementationAttempts: 1,
-      implementationAttemptCeiling: 4,
-      admission: structuredClone(admission),
-      historyDigest: repairDigest(history),
-      actions: ["validate-source-review", "dispatch-author", "dispatch-delta-review"],
-    },
   } as RepairConfig;
-  const source: SourceReviewArtifactsWithPrompts = {
+  const source: SourceReviewArtifacts = {
     configRecord: {
-      fingerprint: config.authority.source.configFingerprint,
+      fingerprint: sourceFingerprint,
       config: priorConfig,
       host: "synthetic-host",
     },
@@ -216,7 +169,6 @@ export async function repairFixture(root: string) {
     reviewHead: repairBase,
     sourceClean: true,
     reviewClean: true,
-    promptContents,
   };
   const delta: SourceReviewArtifacts & { launchContext: Record<string, any> } = {
     ...source,

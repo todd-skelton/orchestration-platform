@@ -2,16 +2,13 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-export const SETUP_AUTHORITY_SCHEMA = "dogfood-setup-authority/v1" as const;
 export const SETUP_ROLES = ["pilot", "source", "review"] as const;
-const SETUP_ACTIONS = ["worktrees", "dependencies"] as const;
 const SHA = /^[a-f0-9]{40}$/;
 const ABSENT = Symbol("absent");
 
 export type SetupRole = (typeof SETUP_ROLES)[number];
 
-export interface SetupAuthority {
-  schemaVersion: typeof SETUP_AUTHORITY_SCHEMA;
+export interface SetupConfig {
   controller: string;
   run: string;
   issue: string;
@@ -27,25 +24,6 @@ export interface SetupAuthority {
   sourceWorktree: string;
   reviewWorktree: string;
   stateDirectory: string;
-  actions: (typeof SETUP_ACTIONS)[number][];
-}
-
-export interface SetupConfig {
-  run: string;
-  issue: string;
-  repository: string;
-  repositoryRoot: string;
-  controllerRoot: string;
-  controllerRevision: string;
-  pilotRevision: string;
-  base: string;
-  baseBranch: string;
-  sourceBranch: string;
-  pilotWorktree: string;
-  sourceWorktree: string;
-  reviewWorktree: string;
-  stateDirectory: string;
-  authority: SetupAuthority;
 }
 
 export interface WorktreeObservation {
@@ -55,7 +33,7 @@ export interface WorktreeObservation {
 }
 
 export interface SetupAdapter {
-  assertAuthority(config: SetupConfig, executingRoot: string): Promise<void>;
+  assertExecutor(config: SetupConfig, executingRoot: string): Promise<void>;
   observeWorktree(
     config: SetupConfig,
     role: SetupRole,
@@ -105,14 +83,6 @@ function exactKeys(value: unknown, keys: string[]): value is Record<string, unkn
   );
 }
 
-function exactOrderedSet(value: unknown, expected: readonly string[]) {
-  return (
-    Array.isArray(value) &&
-    value.length === expected.length &&
-    value.every((item, index) => item === expected[index])
-  );
-}
-
 function digest(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -133,48 +103,27 @@ function roleBranch(config: SetupConfig, role: SetupRole) {
 
 function configKeys() {
   return [
-    "run",
-    "issue",
-    "repository",
-    "repositoryRoot",
-    "controllerRoot",
-    "controllerRevision",
-    "pilotRevision",
-    "base",
-    "baseBranch",
-    "sourceBranch",
-    "pilotWorktree",
-    "sourceWorktree",
-    "reviewWorktree",
-    "stateDirectory",
-    "authority",
-  ];
-}
-
-function authorityKeys() {
-  return [
-    "schemaVersion",
     "controller",
     "run",
     "issue",
     "repository",
+    "repositoryRoot",
+    "controllerRoot",
     "controllerRevision",
     "pilotRevision",
     "base",
     "baseBranch",
     "sourceBranch",
-    "repositoryRoot",
-    "controllerRoot",
     "pilotWorktree",
     "sourceWorktree",
     "reviewWorktree",
     "stateDirectory",
-    "actions",
   ];
 }
 
 function validateConfig(config: SetupConfig) {
   demand(exactKeys(config, configKeys()), "malformed-setup-config");
+  demand(/^[A-Za-z0-9._:-]{1,128}$/.test(config.controller), "invalid-controller");
   demand(typeof config.run === "string" && /^[\w.-]{1,80}$/.test(config.run), "invalid-run");
   demand(
     typeof config.issue === "string" && /^[\w:/.#-]{1,500}$/.test(config.issue),
@@ -202,30 +151,6 @@ function validateConfig(config: SetupConfig) {
     "stateDirectory",
   ] as const)
     demand(typeof config[name] === "string" && isAbsolute(config[name]), `invalid-${name}`);
-
-  const authority = config.authority;
-  demand(
-    exactKeys(authority, authorityKeys()) &&
-      authority.schemaVersion === SETUP_AUTHORITY_SCHEMA &&
-      typeof authority.controller === "string" &&
-      /^[A-Za-z0-9._:-]{1,128}$/.test(authority.controller) &&
-      authority.run === config.run &&
-      authority.issue === config.issue &&
-      authority.repository === config.repository &&
-      authority.controllerRevision === config.controllerRevision &&
-      authority.pilotRevision === config.pilotRevision &&
-      authority.base === config.base &&
-      authority.baseBranch === config.baseBranch &&
-      authority.sourceBranch === config.sourceBranch &&
-      authority.repositoryRoot === config.repositoryRoot &&
-      authority.controllerRoot === config.controllerRoot &&
-      authority.pilotWorktree === config.pilotWorktree &&
-      authority.sourceWorktree === config.sourceWorktree &&
-      authority.reviewWorktree === config.reviewWorktree &&
-      authority.stateDirectory === config.stateDirectory &&
-      exactOrderedSet(authority.actions, SETUP_ACTIONS),
-    "unauthorized-setup",
-  );
 }
 
 function alternateAsciiCase(value: string) {
@@ -434,7 +359,7 @@ export async function setupStep(
 ): Promise<SetupResult> {
   validateConfig(config);
   await assertSafePaths(config);
-  await adapter.assertAuthority(config, executingRoot);
+  await adapter.assertExecutor(config, executingRoot);
   await assertStateCensus(config);
 
   const observations = new Map<SetupRole, WorktreeObservation>();
@@ -489,8 +414,7 @@ export async function setupStep(
     repositoryRoot: config.repositoryRoot,
     controllerRoot: config.controllerRoot,
     stateDirectory: config.stateDirectory,
-    controller: config.authority.controller,
-    authorityDigest: digest(config.authority),
+    controller: config.controller,
     controllerRevision: config.controllerRevision,
     pilotRevision: config.pilotRevision,
     base: config.base,

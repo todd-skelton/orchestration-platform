@@ -27,6 +27,7 @@ async function fixture() {
     ["controller-", "author-", "reviewer-", "state-"].map((name) => mkdtemp(resolve(parent, name))),
   );
   const config: DeliveryConfig = {
+    controller: "fixture-controller",
     run: "delivery-fixture",
     issue: "fixture-issue",
     repository: "fixture/repository",
@@ -37,15 +38,6 @@ async function fixture() {
     stateDirectory: paths[3]!,
     candidateHead: head,
     requiredChecks: ["linux", "windows", "macos"],
-    authority: {
-      schemaVersion: "dogfood-delivery-authority/v1",
-      controller: "fixture-controller",
-      run: "delivery-fixture",
-      repository: "fixture/repository",
-      controllerRevision: "c".repeat(40),
-      head,
-      actions: ["gates", "mirror", "publish", "merge", "cleanup"],
-    },
     policy: { kind: "fixture" },
   };
   const plan: DeliveryPlan = {
@@ -262,10 +254,10 @@ it("resumes completed delivery after deleted candidate worktrees without consult
   expect(f.calls).toEqual([]);
 });
 
-it("rejects an unknown issuer when resuming completed state without provider access", async () => {
+it("rejects a changed controller when resuming completed state without provider access", async () => {
   const f = await fixture();
   await deliveryStep(f.config, f.adapter, f.policy);
-  f.config.authority.controller = "unknown-controller";
+  f.config.controller = "unknown-controller";
   await writeState(f.config, "delivery-config", { fingerprint: digest(f.config) });
   f.calls.length = 0;
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
@@ -351,7 +343,6 @@ it("reconciles a delayed reviewed refresh without repeating its publication effe
     head: "d".repeat(40),
   };
   f.config.refresh = refresh;
-  f.config.authority.refresh = refresh;
   let visible = false;
   let publications = 0;
   f.adapter.observePublication = async (_config, _plan, _digest, target) => {
@@ -381,21 +372,6 @@ it("reconciles a delayed reviewed refresh without repeating its publication effe
   expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
 });
 
-it("rejects refresh authority substitution before source or provider access", async () => {
-  const f = await fixture();
-  f.config.refresh = {
-    number: 44,
-    url: "https://example.test/pull/44",
-    head: "d".repeat(40),
-  };
-  f.config.authority.refresh = { ...f.config.refresh, number: 45 };
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
-    "unauthorized-delivery",
-  );
-  expect(f.calls).toEqual([]);
-  expectNoProviderAction(f.calls);
-});
-
 it("rejects a foreign refresh URL before source, policy, or provider access", async () => {
   const f = await fixture();
   f.config.refresh = {
@@ -403,7 +379,6 @@ it("rejects a foreign refresh URL before source, policy, or provider access", as
     url: "https://foreign.test/pull/44",
     head: "d".repeat(40),
   };
-  f.config.authority.refresh = f.config.refresh;
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
     "malformed-publication-refresh",
   );
@@ -626,79 +601,23 @@ it("rejects cleanup plans that include the surviving controller checkout", async
 });
 
 it.each([
-  undefined,
-  {},
-  { schemaVersion: "unknown" },
-  {
-    schemaVersion: "dogfood-delivery-authority/v1",
-    controller: "fixture-controller",
-    run: "delivery-fixture",
-    repository: "fixture/repository",
-    controllerRevision: "c".repeat(40),
-    head,
-    actions: ["gates", "mirror", "publish", "merge"],
-  },
-  {
-    schemaVersion: "dogfood-delivery-authority/v1",
-    controller: "unknown-controller",
-    run: "delivery-fixture",
-    repository: "fixture/repository",
-    controllerRevision: "c".repeat(40),
-    head,
-    actions: ["gates", "mirror", "publish", "merge", "cleanup"],
-  },
-  {
-    schemaVersion: "dogfood-delivery-authority/v1",
-    controller: "   ",
-    run: "delivery-fixture",
-    repository: "fixture/repository",
-    controllerRevision: "c".repeat(40),
-    head,
-    actions: ["gates", "mirror", "publish", "merge", "cleanup"],
-  },
-])("rejects unknown or malformed controller authority", async (authority) => {
-  const f = await fixture();
-  f.config.authority = authority as never;
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
-    "unauthorized-delivery",
-  );
-  expect(f.calls.filter((call) => call !== "source")).toEqual([]);
-  await expect(
-    readFile(resolve(f.config.stateDirectory, "delivery-config.json"), "utf8"),
-  ).rejects.toMatchObject({ code: "ENOENT" });
-});
-
-it.each([
-  ["null run", "run", "run", null, "invalid-run"],
-  ["false run", "run", "run", false, "invalid-run"],
-  ["true run", "run", "run", true, "invalid-run"],
-  ["numeric run", "run", "run", 42, "invalid-run"],
-  ["array repository", "repository", "repository", ["fixture/repository"], "invalid-repository"],
-  ["array candidate head", "candidateHead", "head", [head], "invalid-candidate-head"],
+  ["blank controller", "controller", "   ", "invalid-controller"],
+  ["null run", "run", null, "invalid-run"],
+  ["false run", "run", false, "invalid-run"],
+  ["true run", "run", true, "invalid-run"],
+  ["numeric run", "run", 42, "invalid-run"],
+  ["array repository", "repository", ["fixture/repository"], "invalid-repository"],
+  ["array candidate head", "candidateHead", [head], "invalid-candidate-head"],
   [
     "array controller revision",
-    "controllerRevision",
     "controllerRevision",
     ["c".repeat(40)],
     "invalid-controller-revision",
   ],
-] as const)(
-  "rejects %s despite matching authority",
-  async (_case, field, authorityField, value, reason) => {
-    const f = await fixture();
-    (f.config as unknown as Record<string, unknown>)[field] = value;
-    (f.config.authority as unknown as Record<string, unknown>)[authorityField] = value;
-    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
-    expect(f.calls).toEqual([]);
-  },
-);
-
-it("rejects authority issued for a different stable controller revision", async () => {
+] as const)("rejects malformed %s", async (_case, field, value, reason) => {
   const f = await fixture();
-  f.config.authority.controllerRevision = "d".repeat(40);
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
-    "unauthorized-delivery",
-  );
+  (f.config as unknown as Record<string, unknown>)[field] = value;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
   expect(f.calls).toEqual([]);
 });
 
@@ -735,7 +654,6 @@ it("corrects one transient gate on a new reviewed head and resumes hosted delive
   ).rejects.toThrow();
 
   f.config.candidateHead = correctedHead;
-  f.config.authority.head = correctedHead;
   f.publication.head = correctedHead;
   f.adapter.source = async (config) => ({ ...(await source(config)), head: correctedHead });
   f.adapter.checks = async () => ({
@@ -786,7 +704,6 @@ it("records a second transient gate failure and does not run a third gate on res
   const correctedHead = "e".repeat(40);
   const source = f.adapter.source;
   f.config.candidateHead = correctedHead;
-  f.config.authority.head = correctedHead;
   f.adapter.source = async (config) => ({ ...(await source(config)), head: correctedHead });
   await writeFile(
     resolve(f.config.stateDirectory, "gate-1-intent.next.json"),
@@ -863,13 +780,10 @@ it("imports the portable delivery composition directly in Node 24", async () => 
     [
       "--input-type=module",
       "-e",
-      'import("./scripts/dogfood/delivery.mjs").then(async m=>(await import("node:fs/promises")).writeFile(process.argv[1],JSON.stringify([typeof m.deliveryStep,m.DELIVERY_AUTHORITY_SCHEMA])))',
+      'import("./scripts/dogfood/delivery.mjs").then(async m=>(await import("node:fs/promises")).writeFile(process.argv[1],JSON.stringify(typeof m.deliveryStep)))',
       output,
     ],
     { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
   );
-  expect(JSON.parse(await readFile(output, "utf8"))).toEqual([
-    "function",
-    "dogfood-delivery-authority/v1",
-  ]);
+  expect(JSON.parse(await readFile(output, "utf8"))).toBe("function");
 });

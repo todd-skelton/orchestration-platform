@@ -182,7 +182,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
   const gitExecutable = options.gitExecutable ?? "git";
 
   return {
-    async assertAuthority(config, executingRoot) {
+    async assertExecutor(config, executingRoot) {
       try {
         const [actualExecuting, controller, repository, state] = await Promise.all([
           realpath(executingRoot),
@@ -245,7 +245,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           baseObject !== config.base ||
           repositoryBranch !== config.baseBranch
         )
-          throw new SetupBlocked("setup-authority-head-drift");
+          throw new SetupBlocked("setup-head-drift");
         await Promise.all([
           git(gitExecutable, config, ["check-ref-format", "--branch", config.baseBranch]),
           git(gitExecutable, config, ["check-ref-format", "--branch", config.sourceBranch]),
@@ -254,7 +254,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
         ]);
       } catch (error) {
         if (error instanceof SetupBlocked) throw error;
-        throw new SetupBlocked("setup-authority-unverified");
+        throw new SetupBlocked("setup-state-unverified");
       }
     },
 

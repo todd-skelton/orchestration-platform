@@ -26,6 +26,7 @@ async function fixture() {
   };
   await Promise.all([paths.repository, paths.controller, paths.state].map((path) => mkdir(path)));
   const config: SetupConfig = {
+    controller: "synthetic-controller",
     run: "synthetic-setup-run",
     issue: "fixture-075",
     repository: "fixture/repository",
@@ -40,25 +41,6 @@ async function fixture() {
     sourceWorktree: paths.source,
     reviewWorktree: paths.review,
     stateDirectory: paths.state,
-    authority: {
-      schemaVersion: "dogfood-setup-authority/v1",
-      controller: "synthetic-controller",
-      run: "synthetic-setup-run",
-      issue: "fixture-075",
-      repository: "fixture/repository",
-      controllerRevision: pilot,
-      pilotRevision: pilot,
-      base,
-      baseBranch: "main",
-      sourceBranch: "fixture/iss-075",
-      repositoryRoot: paths.repository,
-      controllerRoot: paths.controller,
-      pilotWorktree: paths.pilot,
-      sourceWorktree: paths.source,
-      reviewWorktree: paths.review,
-      stateDirectory: paths.state,
-      actions: ["worktrees", "dependencies"],
-    },
   };
   const present = new Set<SetupRole>();
   const dependencies = new Set<SetupRole>();
@@ -67,8 +49,8 @@ async function fixture() {
   let installOutcome: "succeeded" | "failed" | "unknown" = "succeeded";
   const dependencyEffects = new Set<SetupRole>();
   const adapter: SetupAdapter = {
-    async assertAuthority(_config, executingRoot) {
-      calls.push(`authority:${executingRoot}`);
+    async assertExecutor(_config, executingRoot) {
+      calls.push(`executor:${executingRoot}`);
     },
     async observeWorktree(_config, role) {
       calls.push(`observe:${role}`);
@@ -142,12 +124,22 @@ function selectCaseAliasWorktrees(
 ) {
   current.config.pilotWorktree = pilotWorktree;
   current.config.sourceWorktree = sourceWorktree;
-  current.config.authority.pilotWorktree = pilotWorktree;
-  current.config.authority.sourceWorktree = sourceWorktree;
 }
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+it("rejects a malformed controller before recording intent or calling the adapter", async () => {
+  const current = await fixture();
+  current.config.controller = "   ";
+  await expect(
+    setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).rejects.toMatchObject({ reason: "invalid-controller" });
+  expect(current.calls).toEqual([]);
+  await expect(
+    readFile(resolve(current.config.stateDirectory, "setup-plan.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("writes ownership intent before every bounded worktree and dependency mutation", async () => {
@@ -305,27 +297,6 @@ it("does not repeat an uncertain post-effect install or write a success receipt 
   await expect(
     readFile(resolve(current.config.stateDirectory, "dependency-pilot.json")),
   ).rejects.toMatchObject({ code: "ENOENT" });
-});
-
-it("fails an unknown external authority before recording intent or calling the adapter", async () => {
-  const current = await fixture();
-  (current.config.authority as { schemaVersion: string }).schemaVersion =
-    "dogfood-setup-authority/unknown";
-
-  await expect(
-    setupStep(current.config, current.adapter, current.config.controllerRoot),
-  ).rejects.toMatchObject({ reason: "unauthorized-setup" });
-  expect(current.calls).toEqual([]);
-  await expect(
-    readFile(resolve(current.config.stateDirectory, "setup-plan.json")),
-  ).rejects.toMatchObject({ code: "ENOENT" });
-
-  const relabeled = await fixture();
-  relabeled.config.issue = "fixture-076";
-  await expect(
-    setupStep(relabeled.config, relabeled.adapter, relabeled.config.controllerRoot),
-  ).rejects.toMatchObject({ reason: "unauthorized-setup" });
-  expect(relabeled.calls).toEqual([]);
 });
 
 it("preflights dependency receipts before creating any worktree", async () => {

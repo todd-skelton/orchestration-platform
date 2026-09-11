@@ -6,10 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
   currentCandidateAttempt,
-  itemAuthority,
-  participantIdentity,
   queueConfigFromLoop,
-  queueDigest,
   reconcileCompletedQueue,
   queueStep,
   validateQueueConfig,
@@ -86,20 +83,49 @@ async function fixture(itemCount = 1) {
     const base = String(index + 1).repeat(40);
     const run = `synthetic-item-run-${index + 1}`;
     const requiredChecks = ["linux", "windows", "macos"];
+    const controller = "synthetic-controller";
+    const controllerRoot = resolve(root, "controller");
+    const sourceWorktree = resolve(root, `${id}-source-worktree`);
+    const reviewWorktree = resolve(root, `${id}-review-worktree`);
     return {
       id,
       issue: `fixture-${index + 1}`,
       base,
       implementationAttempt: index + 1,
       implementationAttemptCeiling: 4,
-      setup: { run, issue: `fixture-${index + 1}`, base },
-      source: {
+      setup: {
+        controller,
         run,
         issue: `fixture-${index + 1}`,
+        repository: "fixture/repository",
+        repositoryRoot: controllerRoot,
+        controllerRoot,
+        controllerRevision: "a".repeat(40),
+        pilotRevision: "a".repeat(40),
         base,
+        baseBranch: "main",
+        sourceBranch: `codex/${id}`,
+        pilotWorktree: resolve(root, `${id}-pilot`),
+        sourceWorktree,
+        reviewWorktree,
+        stateDirectory: resolve(root, `${id}-setup`),
+      },
+      source: {
+        owner: controller,
+        run,
+        issue: `fixture-${index + 1}`,
+        pilotRevision: "a".repeat(40),
+        base,
+        worktree: sourceWorktree,
+        reviewWorktree,
         stateDirectory: resolve(root, `${id}-source`),
         allowedPaths: ["scripts/dogfood/queue.ts"],
+        repository: "fixture/repository",
         requiredChecks,
+        exitReceiptWindowMs: 30_000,
+        author: { model: "author-model", effort: "high", prompt: "author prompt" },
+        reviewer: { model: "reviewer-model", effort: "high", prompt: "reviewer prompt" },
+        adapter: { kind: "codex-exec", executable: process.execPath },
       },
       repair: {
         stateDirectory: resolve(root, `${id}-repair`),
@@ -116,6 +142,7 @@ async function fixture(itemCount = 1) {
   });
   const config: QueueConfig = {
     schemaVersion: "dogfood-bounded-queue-config/v1",
+    controller: "synthetic-controller",
     run: "synthetic-bounded-queue",
     controllerRoot: resolve(root, "controller"),
     controllerRevision: "a".repeat(40),
@@ -124,20 +151,6 @@ async function fixture(itemCount = 1) {
     nativeLaunchCeiling: 8,
     initialHistory: [],
     items,
-    authority: undefined as never,
-  };
-  config.authority = {
-    schemaVersion: "dogfood-bounded-queue-authority/v1",
-    controller: "synthetic-controller",
-    run: config.run,
-    controllerRoot: config.controllerRoot,
-    controllerRevision: config.controllerRevision,
-    stateDirectory,
-    limit: config.limit,
-    nativeLaunchCeiling: config.nativeLaunchCeiling,
-    lineageDigest: queueDigest(config.initialHistory.map(participantIdentity)),
-    itemsDigest: queueDigest(items.map(itemAuthority)),
-    actions: ["setup", "source", "repair", "delivery"],
   };
   return { root, stateDirectory, config, items };
 }
@@ -214,22 +227,18 @@ it("binds a refresh to a later attempt whose exact prior head is its source base
     url: "https://example.test/pull/341",
     head: item.base,
   };
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   expect(() => validateQueueConfig(current.config)).toThrow("malformed-publication-refresh");
 
   item.implementationAttempt = 2;
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   expect(() => validateQueueConfig(current.config)).not.toThrow();
 
   item.delivery.refresh.head = "f".repeat(40);
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   expect(() => validateQueueConfig(current.config)).toThrow("malformed-publication-refresh");
 });
 
 it("admits repository-wide source scope without a pre-authored repair path list", async () => {
   const current = await fixture();
   current.items[0]!.source.allowedPaths = ["."];
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   expect(() => validateQueueConfig(current.config)).not.toThrow();
 });
 
@@ -241,10 +250,7 @@ it("derives the complete internal queue from one compact loop config and selecte
   const queue = await queueConfigFromLoop(loop, repository, selected);
 
   expect(queue.items).toHaveLength(1);
-  expect(queue.authority.itemsDigest).toBe(queueDigest(queue.items.map(itemAuthority)));
-  expect(queue.authority.lineageDigest).toBe(
-    queueDigest(queue.initialHistory.map(participantIdentity)),
-  );
+  expect(queue.controller).toBe(`loop:${loop.run}`);
   expect(queue.items[0]).toMatchObject({
     id: "ISS-104:1",
     implementationAttempt: 1,
@@ -316,14 +322,13 @@ it("keeps the executor pinned while starting a cycle from the selected main comm
   });
   expect(queue.initialHistory).toEqual(inherited);
   await expect(
-    gitSetupAdapter({ gitExecutable }).assertAuthority(queue.items[0]!.setup, repository),
+    gitSetupAdapter({ gitExecutable }).assertExecutor(queue.items[0]!.setup, repository),
   ).resolves.toBeUndefined();
 }, 15_000);
 
 it("counts a genuine repair as the next candidate without a new counter", async () => {
   const current = await fixture();
   current.items[0]!.implementationAttempt = 2;
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   await expect(currentCandidateAttempt(current.config)).resolves.toBe(2);
   await writeFile(
     resolve(current.stateDirectory, "item-1-repair-intent.json"),
@@ -388,7 +393,7 @@ it("starts candidate three at the rejected candidate two with its prescription v
   expect(third.stateDirectory).toContain("iss-104-attempt-3");
   expect(third.items[0]!.source.author.prompt).toContain(JSON.stringify(prescribed));
   await expect(
-    gitSetupAdapter({ gitExecutable }).assertAuthority(third.items[0]!.setup, repository),
+    gitSetupAdapter({ gitExecutable }).assertExecutor(third.items[0]!.setup, repository),
   ).resolves.toBeUndefined();
 }, 15_000);
 
@@ -417,14 +422,12 @@ it("advances every finite item and completed restart repeats no effects", async 
     head: first.base,
   };
   current.config.initialHistory = priorHistory;
-  current.config.authority.lineageDigest = queueDigest(priorHistory.map(participantIdentity));
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   const history: QueueParticipant[] = structuredClone(priorHistory);
   const calls: string[] = [];
   const deliveryEffects = new Set<string>();
   const adapter: QueueAdapter = {
-    async assertAuthority() {
-      calls.push("authority");
+    async assertExecutor() {
+      calls.push("executor");
     },
     async history() {
       return [...history];
@@ -469,7 +472,7 @@ it("advances every finite item and completed restart repeats no effects", async 
     participants: 6,
   });
   expect(calls).toEqual([
-    "authority",
+    "executor",
     "setup:synthetic-1",
     "source:synthetic-1",
     "delivery:synthetic-1",
@@ -487,7 +490,7 @@ it("advances every finite item and completed restart repeats no effects", async 
     status: "complete",
     participants: 6,
   });
-  expect(calls.slice(7)).toEqual(["authority"]);
+  expect(calls.slice(7)).toEqual(["executor"]);
   expect([...deliveryEffects]).toEqual(["synthetic-1", "synthetic-2"]);
   expect(await readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8")).toBe(
     firstComplete,
@@ -529,12 +532,11 @@ it.each([
     url: "https://example.test/pull/350",
     head: item.base,
   };
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   const history: QueueParticipant[] = [];
   const effects: string[] = [];
   const adapter: QueueAdapter = {
-    async assertAuthority() {
-      effects.push("authority");
+    async assertExecutor() {
+      effects.push("executor");
     },
     async history() {
       return [...history];
@@ -609,7 +611,7 @@ it.each([
   const history: QueueParticipant[] = [];
   let deliveryCalls = 0;
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return [...history];
     },
@@ -657,7 +659,7 @@ it("hands a genuine failed source review to repair without losing participants o
   const history: QueueParticipant[] = [];
   const calls: string[] = [];
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return [...history];
     },
@@ -743,7 +745,6 @@ it.each([
     const item = current.items[0]!;
     item.implementationAttempt = attempt;
     item.implementationAttemptCeiling = ceiling;
-    current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
     const history: QueueParticipant[] = [];
     let sourceCalls = 0;
     let repairCalls = 0;
@@ -756,7 +757,7 @@ it.each([
       },
     ];
     const adapter: QueueAdapter = {
-      async assertAuthority() {},
+      async assertExecutor() {},
       async history() {
         return [...history];
       },
@@ -803,7 +804,6 @@ it("counts a failed genuine repair as candidate two and stops at ceiling two", a
   const current = await fixture();
   const item = current.items[0]!;
   item.implementationAttemptCeiling = 2;
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   const history: QueueParticipant[] = [];
   const findings = [
     {
@@ -814,7 +814,7 @@ it("counts a failed genuine repair as candidate two and stops at ceiling two", a
     },
   ];
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return [...history];
     },
@@ -862,7 +862,6 @@ it("keeps a gate correction on repaired candidate two and stops at that ceiling"
   const current = await fixture();
   const item = current.items[0]!;
   item.implementationAttemptCeiling = 2;
-  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
   const history: QueueParticipant[] = [];
   const findings = [
     {
@@ -873,7 +872,7 @@ it("keeps a gate correction on repaired candidate two and stops at that ceiling"
     },
   ];
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return [...history];
     },
@@ -959,7 +958,7 @@ it("restarts a persisted candidate-two failure by advancing to candidate three",
     })}\n`,
   );
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return history;
     },
@@ -989,7 +988,7 @@ it("retains an interrupted wait target and refuses a moved delivery identity", a
   let sourceCalls = 0;
   let setupCalls = 0;
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return [...history];
     },
@@ -1037,7 +1036,7 @@ it("binds an accepted review identity to the exact stage history before delivery
   const history: QueueParticipant[] = [];
   let deliveryCalls = 0;
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return [...history];
     },
@@ -1086,7 +1085,7 @@ it("refuses an orphan queue completion before item component effects", async () 
   );
   const componentCalls: string[] = [];
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return [];
     },
@@ -1174,7 +1173,7 @@ it("refuses conflicting completion metrics before repeating a completed item", a
   ]);
   const componentCalls: string[] = [];
   const adapter: QueueAdapter = {
-    async assertAuthority() {},
+    async assertExecutor() {},
     async history() {
       return history;
     },
@@ -1206,21 +1205,18 @@ it("refuses conflicting completion metrics before repeating a completed item", a
 
 it.each([
   [
-    "drifted item authority",
+    "malformed controller",
+    (config: QueueConfig) => {
+      config.controller = "   ";
+    },
+    "malformed-queue-config",
+  ],
+  [
+    "drifted item base",
     (config: QueueConfig) => {
       config.items[0]!.base = "e".repeat(40);
     },
-    "unauthorized-queue",
-  ],
-  [
-    "substituted issue",
-    (config: QueueConfig) => {
-      const item = config.items[0]!;
-      item.issue = "fixture-substitution";
-      item.source.issue = item.issue;
-      item.setup.issue = item.issue;
-    },
-    "unauthorized-queue",
+    "queue-base-drift",
   ],
   [
     "exhausted finite input",
@@ -1234,13 +1230,12 @@ it.each([
     (config: QueueConfig) => {
       config.controllerRevision = "f".repeat(40);
     },
-    "unauthorized-queue",
+    "candidate-as-executor-selection",
   ],
   [
     "drifted item run binding",
     (config: QueueConfig) => {
       config.items[0]!.source.run = "synthetic-substituted-run";
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
     },
     "queue-run-drift",
   ],
@@ -1248,7 +1243,6 @@ it.each([
     "drifted item issue binding",
     (config: QueueConfig) => {
       config.items[0]!.source.issue = "synthetic-substituted-issue";
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
     },
     "queue-issue-drift",
   ],
@@ -1256,7 +1250,6 @@ it.each([
     "drifted hosted-check binding",
     (config: QueueConfig) => {
       config.items[0]!.source.requiredChecks = ["linux", "windows", "synthetic-other-check"];
-      config.authority.itemsDigest = queueDigest(config.items.map(itemAuthority));
     },
     "queue-hosted-check-drift",
   ],
@@ -1265,7 +1258,7 @@ it.each([
   mutate(current.config);
   let adapterEntries = 0;
   const adapter = {
-    assertAuthority: async () => {
+    assertExecutor: async () => {
       adapterEntries += 1;
     },
     history: async () => [],
@@ -1298,7 +1291,7 @@ it("does not advance through a forged completion receipt", async () => {
     }),
   );
   const adapter = {
-    assertAuthority: async () => {},
+    assertExecutor: async () => {},
     history: async () => [],
     setup: async () => ({ status: "ready" as const }),
     source: async () => ({ status: "observing-author" as const }),
