@@ -186,6 +186,9 @@ export function boardSnapshotFromGraphqlPages(repository, pages) {
         body: node?.body,
         milestone: node?.milestone?.title ?? null,
         state: node?.state ?? "OPEN",
+        labels: Array.isArray(node?.labels?.nodes)
+          ? node.labels.nodes.map((label) => label?.name)
+          : [],
       });
     }
   }
@@ -316,7 +319,7 @@ export async function loadBoardSnapshot(repository) {
         "-F",
         `name=${name}`,
         "-f",
-        "query=query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$endCursor,states:[OPEN,CLOSED],orderBy:{field:CREATED_AT,direction:ASC}){totalCount nodes{number title body state milestone{title}} pageInfo{hasNextPage endCursor}}}}",
+        "query=query($owner:String!,$name:String!,$endCursor:String){repository(owner:$owner,name:$name){issues(first:100,after:$endCursor,states:[OPEN,CLOSED],orderBy:{field:CREATED_AT,direction:ASC}){totalCount nodes{number title body state milestone{title} labels(first:100){nodes{name}}} pageInfo{hasNextPage endCursor}}}}",
       ],
       { maxBuffer: 256 * 1024 * 1024 },
     ));

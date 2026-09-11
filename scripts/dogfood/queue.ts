@@ -113,7 +113,6 @@ export interface QueueConfig {
 export interface LoopConfig {
   schemaVersion: typeof LOOP_CONFIG_SCHEMA;
   run: string;
-  issue: { key: string; number: number };
   repository: string;
   stableExecutorRoot: string;
   stateRoot: string;
@@ -125,6 +124,12 @@ export interface LoopConfig {
   exitReceiptWindowMs: number;
   nativeLaunchCeiling: number;
   attemptCeiling: number;
+}
+
+export interface SelectedLoopIssue {
+  key: string;
+  number: number;
+  base: string;
 }
 
 export type QueueSourceResult =
@@ -223,12 +228,11 @@ export function itemAuthority(item: QueueItem) {
   };
 }
 
-function validateLoopConfig(config: LoopConfig) {
+export function validateLoopConfig(config: LoopConfig) {
   demand(
     exactKeys(config, [
       "schemaVersion",
       "run",
-      "issue",
       "repository",
       "stableExecutorRoot",
       "stateRoot",
@@ -249,13 +253,6 @@ function validateLoopConfig(config: LoopConfig) {
       config.exitReceiptWindowMs >= 0 &&
       config.exitReceiptWindowMs <= 300_000,
     "invalid-exit-receipt-window",
-  );
-  demand(
-    exactKeys(config.issue, ["key", "number"]) &&
-      /^ISS-\d{3}$/.test(config.issue.key) &&
-      Number.isSafeInteger(config.issue.number) &&
-      config.issue.number > 0,
-    "invalid-selected-issue",
   );
   demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
   for (const name of [
@@ -343,8 +340,22 @@ function validateFailedAttempt(
   );
 }
 
-export async function queueConfigFromLoop(config: LoopConfig, executingRoot: string) {
+export async function queueConfigFromLoop(
+  config: LoopConfig,
+  executingRoot: string,
+  selected: SelectedLoopIssue,
+  priorHistory: QueueParticipant[] = [],
+) {
   validateLoopConfig(config);
+  demand(
+    exactKeys(selected, ["key", "number", "base"]) &&
+      /^ISS-\d{3}$/.test(selected.key) &&
+      Number.isSafeInteger(selected.number) &&
+      selected.number > 0 &&
+      SHA.test(selected.base),
+    "invalid-selected-issue",
+  );
+  validateHistory(priorHistory, config.nativeLaunchCeiling);
   const [executor, configured] = await Promise.all([
     realpath(executingRoot),
     realpath(config.stableExecutorRoot),
@@ -374,17 +385,25 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
         maxBuffer: 8 * 1024 * 1024,
       })
     ).stdout.trim();
-  const [base, branch, status, version, planning, loopRules] = await Promise.all([
-    git(["rev-parse", "HEAD"]),
-    git(["branch", "--show-current"]),
-    git(["status", "--porcelain"]),
-    exec(config.gitExecutable, ["--version"], { windowsHide: true }).then((result) =>
-      result.stdout.trim(),
-    ),
-    readFile(resolve(executor, "planning/roadmap.json"), "utf8").then(JSON.parse),
-    readFile(resolve(executor, "docs/loop.md"), "utf8"),
-  ]);
-  demand(SHA.test(base) && branch === "main" && status === "", "unstable-executor");
+  const [controllerRevision, selectedBase, branch, status, version, planning, loopRules] =
+    await Promise.all([
+      git(["rev-parse", "HEAD"]),
+      git(["rev-parse", "--verify", `${selected.base}^{commit}`]),
+      git(["branch", "--show-current"]),
+      git(["status", "--porcelain"]),
+      exec(config.gitExecutable, ["--version"], { windowsHide: true }).then((result) =>
+        result.stdout.trim(),
+      ),
+      readFile(resolve(executor, "planning/roadmap.json"), "utf8").then(JSON.parse),
+      readFile(resolve(executor, "docs/loop.md"), "utf8"),
+    ]);
+  demand(
+    SHA.test(controllerRevision) &&
+      selectedBase === selected.base &&
+      branch === "main" &&
+      status === "",
+    "unstable-executor",
+  );
   if (process.platform === "win32") {
     const match = /git version (\d+)\.(\d+)/.exec(version);
     demand(
@@ -392,25 +411,22 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
       "incompatible-git",
     );
   }
-  const registered = planning?.issues?.find((issue: any) => issue.key === config.issue.key);
-  demand(
-    registered?.file === `planning/drafts/${config.issue.key}.md`,
-    "selected-issue-unregistered",
-  );
+  const registered = planning?.issues?.find((issue: any) => issue.key === selected.key);
+  demand(registered?.file === `planning/drafts/${selected.key}.md`, "selected-issue-unregistered");
   demand(planning.repository === config.repository, "planning-repository-mismatch");
   const draft = await readFile(resolve(executor, registered.file), "utf8");
   const title = draftTitle(draft);
-  const issueUrl = `https://github.com/${config.repository}/issues/${config.issue.number}`;
-  const promptContext = `Repository loop rules:\n\n${loopRules.trim()}\n\nSelected issue ${config.issue.key} (#${config.issue.number}):\n\n${draft.trim()}`;
+  const issueUrl = `https://github.com/${config.repository}/issues/${selected.number}`;
+  const promptContext = `Repository loop rules:\n\n${loopRules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${draft.trim()}`;
   const baseSourcePrompt = `Implement the selected issue completely. Keep the loop smaller and stay within the issue scope.\n\n${promptContext}`;
   const reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
   const runState = resolve(stateRoot, config.run);
   let sourceAttempt = 1;
-  let attemptBase = base;
-  let initialHistory: QueueParticipant[] = [];
+  let attemptBase = selected.base;
+  let initialHistory: QueueParticipant[] = [...priorHistory];
   let prescribedFindings: ReviewFinding[] | undefined;
   for (;;) {
-    const priorSlug = `${config.issue.key.toLowerCase()}-attempt-${sourceAttempt}`;
+    const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
     const priorQueue = resolve(runState, priorSlug, "queue");
     const failed = await optionalRecord(priorQueue, "item-1-failed");
     if (failed === ABSENT) break;
@@ -424,7 +440,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     initialHistory = failed.history;
     prescribedFindings = failed.findings;
   }
-  const slug = `${config.issue.key.toLowerCase()}-attempt-${sourceAttempt}`;
+  const slug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {
     queue: resolve(runState, slug, "queue"),
     setup: resolve(runState, slug, "setup"),
@@ -440,7 +456,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     ),
   );
   const controller = `loop:${config.run}`;
-  const sourceBranch = `codex/${config.issue.key.toLowerCase()}${
+  const sourceBranch = `codex/${selected.key.toLowerCase()}${
     sourceAttempt === 1 ? "" : `-attempt-${sourceAttempt}`
   }`;
   const sourcePrompt = prescribedFindings
@@ -452,8 +468,8 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     repository: config.repository,
     repositoryRoot: executor,
     controllerRoot: executor,
-    controllerRevision: base,
-    pilotRevision: base,
+    controllerRevision,
+    pilotRevision: controllerRevision,
     base: attemptBase,
     baseBranch: "main",
     sourceBranch,
@@ -475,7 +491,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     owner: controller,
     run: config.run,
     issue: issueUrl,
-    pilotRevision: base,
+    pilotRevision: controllerRevision,
     base: attemptBase,
     worktree: paths.sourceWorktree,
     reviewWorktree: paths.reviewWorktree,
@@ -493,7 +509,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
   };
   const item: QueueItem = {
-    id: `${config.issue.key}:${sourceAttempt}`,
+    id: `${selected.key}:${sourceAttempt}`,
     issue: issueUrl,
     base: attemptBase,
     implementationAttempt: sourceAttempt,
@@ -510,12 +526,12 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
       requiredChecks: [...source.requiredChecks],
       policy: {
         kind: "orchestration-platform-self/v1",
-        planningKey: config.issue.key,
-        planningIssue: config.issue.number,
+        planningKey: selected.key,
+        planningIssue: selected.number,
         sourceBranch,
         baseBranch: "main",
-        pullRequestTitle: `[${config.issue.key}] ${title}`,
-        pullRequestBody: `Closes #${config.issue.number}`,
+        pullRequestTitle: `[${selected.key}] ${title}`,
+        pullRequestBody: `Closes #${selected.number}`,
       },
     },
   };
@@ -523,7 +539,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     schemaVersion: QUEUE_CONFIG_SCHEMA,
     run: config.run,
     controllerRoot: executor,
-    controllerRevision: base,
+    controllerRevision,
     stateDirectory: paths.queue,
     limit: 1,
     nativeLaunchCeiling: config.nativeLaunchCeiling,
@@ -713,10 +729,28 @@ async function optionalRecord(directory: string, name: string) {
 }
 
 export async function currentCandidateAttempt(config: QueueConfig) {
+  validateQueueConfig(config);
   const item = config.items[0];
-  demand(item, "missing-queue-item");
-  const repaired = (await optionalRecord(config.stateDirectory, "item-1-repair-intent")) !== ABSENT;
-  return Math.min(item.implementationAttempt + Number(repaired), item.implementationAttemptCeiling);
+  demand(item !== undefined && config.items.length === 1, "candidate-attempt-unavailable");
+  const repair = await optionalRecord(config.stateDirectory, "item-1-repair-intent");
+  if (repair === ABSENT) return item.implementationAttempt;
+  demand(
+    exactKeys(repair, ["item", "base"]) && repair.item === item.id && repair.base === item.base,
+    "candidate-attempt-unavailable",
+  );
+  const attempt = item.implementationAttempt + 1;
+  demand(attempt <= item.implementationAttemptCeiling, "candidate-attempt-unavailable");
+  return attempt;
+}
+
+export async function hasStartedDelivery(config: QueueConfig) {
+  validateQueueConfig(config);
+  const [intent, itemComplete, queueComplete] = await Promise.all([
+    optionalRecord(config.stateDirectory, "item-1-delivery-intent"),
+    optionalRecord(config.stateDirectory, "item-1-complete"),
+    optionalRecord(config.stateDirectory, "queue-complete"),
+  ]);
+  return intent !== ABSENT || itemComplete !== ABSENT || queueComplete !== ABSENT;
 }
 async function record(directory: string, name: string, value: unknown) {
   const bytes = `${JSON.stringify(value, null, 2)}\n`;

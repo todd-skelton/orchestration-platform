@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
+  currentCandidateAttempt,
   itemAuthority,
   participantIdentity,
   queueConfigFromLoop,
@@ -171,10 +172,12 @@ async function loopFixture() {
   await execute(gitExecutable, ["-C", repository, "config", "user.email", "fixture@example.test"]);
   await execute(gitExecutable, ["-C", repository, "add", "."]);
   await execute(gitExecutable, ["-C", repository, "commit", "-m", "fixture"]);
+  const base = (
+    await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
+  ).stdout.trim();
   const loop = {
     schemaVersion: "dogfood-loop/v1" as const,
     run: "iss-104-run",
-    issue: { key: "ISS-104", number: 361 },
     repository: "fixture/repository",
     stableExecutorRoot: repository,
     stateRoot,
@@ -187,7 +190,13 @@ async function loopFixture() {
     nativeLaunchCeiling: 8,
     attemptCeiling: 4,
   };
-  return { repository, stateRoot, loop, gitExecutable };
+  return {
+    repository,
+    stateRoot,
+    loop,
+    gitExecutable,
+    selected: { key: "ISS-104", number: 361, base },
+  };
 }
 
 afterEach(async () => {
@@ -222,12 +231,12 @@ it("admits repository-wide source scope without a pre-authored repair path list"
   expect(() => validateQueueConfig(current.config)).not.toThrow();
 });
 
-it("derives the complete internal queue from one compact loop config", async () => {
-  const { loop, repository } = await loopFixture();
-  await expect(queueConfigFromLoop({ ...loop, run: ".." }, repository)).rejects.toThrow(
+it("derives the complete internal queue from one compact loop config and selected issue", async () => {
+  const { loop, repository, selected } = await loopFixture();
+  await expect(queueConfigFromLoop({ ...loop, run: ".." }, repository, selected)).rejects.toThrow(
     "invalid-run",
   );
-  const queue = await queueConfigFromLoop(loop, repository);
+  const queue = await queueConfigFromLoop(loop, repository, selected);
 
   expect(queue.items).toHaveLength(1);
   expect(queue.authority.itemsDigest).toBe(queueDigest(queue.items.map(itemAuthority)));
@@ -256,8 +265,50 @@ it("derives the complete internal queue from one compact loop config", async () 
   expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
 }, 30_000);
 
+it("keeps the executor pinned while starting a cycle from the selected main commit", async () => {
+  const { loop, repository, gitExecutable, selected } = await loopFixture();
+  await execute(gitExecutable, ["-C", repository, "checkout", "-b", "fresh-main"]);
+  await writeFile(resolve(repository, "fresh.txt"), "next cycle\n");
+  await execute(gitExecutable, ["-C", repository, "add", "."]);
+  await execute(gitExecutable, ["-C", repository, "commit", "-m", "next cycle"]);
+  const fresh = (
+    await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
+  ).stdout.trim();
+  await execute(gitExecutable, ["-C", repository, "checkout", "main"]);
+  const inherited = [participant(1, "ISS-100:1", "source", "author", "passed")];
+
+  const queue = await queueConfigFromLoop(
+    loop,
+    repository,
+    { ...selected, base: fresh },
+    inherited,
+  );
+  expect(queue.controllerRevision).toBe(selected.base);
+  expect(queue.items[0]).toMatchObject({
+    base: fresh,
+    setup: { controllerRevision: selected.base, pilotRevision: selected.base, base: fresh },
+    source: { pilotRevision: selected.base, base: fresh },
+  });
+  expect(queue.initialHistory).toEqual(inherited);
+  await expect(
+    gitSetupAdapter({ gitExecutable }).assertAuthority(queue.items[0]!.setup, repository),
+  ).resolves.toBeUndefined();
+}, 15_000);
+
+it("counts a genuine repair as the next candidate without a new counter", async () => {
+  const current = await fixture();
+  current.items[0]!.implementationAttempt = 2;
+  current.config.authority.itemsDigest = queueDigest(current.items.map(itemAuthority));
+  await expect(currentCandidateAttempt(current.config)).resolves.toBe(2);
+  await writeFile(
+    resolve(current.stateDirectory, "item-1-repair-intent.json"),
+    `${JSON.stringify({ item: current.items[0]!.id, base: current.items[0]!.base })}\n`,
+  );
+  await expect(currentCandidateAttempt(current.config)).resolves.toBe(3);
+});
+
 it("starts candidate three at the rejected candidate two with its prescription verbatim", async () => {
-  const { loop, repository, stateRoot, gitExecutable } = await loopFixture();
+  const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();
   await execute(gitExecutable, ["-C", repository, "checkout", "-b", "rejected"]);
   await writeFile(resolve(repository, "rejected.txt"), "candidate two\n");
   await execute(gitExecutable, ["-C", repository, "add", "."]);
@@ -300,7 +351,7 @@ it("starts candidate three at the rejected candidate two with its prescription v
       history: firstHistory,
     })}\n`,
   );
-  const third = await queueConfigFromLoop(loop, repository);
+  const third = await queueConfigFromLoop(loop, repository, selected);
   expect(third.items[0]).toMatchObject({
     id: "ISS-104:3",
     base: rejectedHead,
