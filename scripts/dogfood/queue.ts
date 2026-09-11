@@ -1561,7 +1561,7 @@ export function repositoryQueueAdapter(
             [
               file,
               lineCount(
-                await native.git(item.source.worktree, ["show", `${candidate.head}:${file}`]),
+                await native.git(item.source.worktree, ["show", "-z", `${candidate.head}:${file}`]),
               ),
             ] as const,
         ),

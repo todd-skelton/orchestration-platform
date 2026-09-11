@@ -508,7 +508,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     findings: [
       {
         file: "scripts/dogfood/queue.ts",
-        line: 1,
+        line: 3,
         severity: "blocking",
         text: "synthetic fixable review defect",
       },
@@ -543,7 +543,7 @@ it("persists the genuine adapter result and restarts four-participant completion
       if (args[0] === "merge-base") return base;
       if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
       if (args[0] === "ls-files") return "";
-      if (args[0] === "show") return "one\ntwo\nthree\n";
+      if (args[0] === "show") return args.includes("-z") ? "\none\n\n" : "one";
       if (args[0] === "commit") {
         sourceHead = candidate;
         return "";
