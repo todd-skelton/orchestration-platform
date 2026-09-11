@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { loadPlanningSnapshot } from "../planning/check.mjs";
 import {
   expectedBoardItems,
@@ -13,6 +15,7 @@ const REQUIRED_CHECKS = [
   "Node 24 / windows-latest",
   "Node 24 / macos-latest",
 ];
+const runFile = promisify(execFile);
 
 function requirePolicy(condition, reason) {
   if (!condition) throw new DeliveryBlocked(reason);
@@ -62,7 +65,61 @@ function validatePolicy(config) {
   return value;
 }
 
-export function selfPlanFromSnapshots(config, planning, board) {
+function describeLineChanges({ added, deleted }) {
+  const net = added - deleted;
+  return `${added} added, ${deleted} deleted, net ${net > 0 ? "+" : ""}${net}`;
+}
+
+export async function candidateLineChanges(config, gitExecutable) {
+  let stdout;
+  try {
+    ({ stdout } = await runFile(
+      gitExecutable,
+      [
+        "-C",
+        config.worktree,
+        "diff",
+        "--numstat",
+        "--no-renames",
+        `refs/remotes/origin/${config.policy.baseBranch}...${config.candidateHead}`,
+      ],
+      { windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+    ));
+  } catch {
+    throw new DeliveryBlocked("self-publication-diff-unavailable");
+  }
+  const changes = {
+    total: { added: 0, deleted: 0 },
+    scripts: { added: 0, deleted: 0 },
+    test: { added: 0, deleted: 0 },
+  };
+  for (const row of stdout.trim().split(/\r?\n/)) {
+    if (!row) continue;
+    const [addedText, deletedText, ...pathParts] = row.split("\t");
+    if (addedText === "-" && deletedText === "-") continue;
+    const added = Number(addedText);
+    const deleted = Number(deletedText);
+    const path = pathParts.join("\t");
+    requirePolicy(
+      Number.isSafeInteger(added) && Number.isSafeInteger(deleted) && path.length > 0,
+      "self-publication-diff-unavailable",
+    );
+    changes.total.added += added;
+    changes.total.deleted += deleted;
+    const group = path.startsWith("scripts/")
+      ? changes.scripts
+      : path.startsWith("test/")
+        ? changes.test
+        : undefined;
+    if (group) {
+      group.added += added;
+      group.deleted += deleted;
+    }
+  }
+  return changes;
+}
+
+export function selfPlanFromSnapshots(config, planning, board, lineChanges) {
   const value = validatePolicy(config);
   requirePolicy(planning?.roadmap?.repository === EXPECTED_REPOSITORY, "wrong-planning-repository");
   const index = indexBoardByKey(board);
@@ -92,7 +149,7 @@ export function selfPlanFromSnapshots(config, planning, board) {
       sourceBranch: value.sourceBranch,
       baseBranch: value.baseBranch,
       title: value.pullRequestTitle,
-      body: value.pullRequestBody,
+      body: `${value.pullRequestBody}\n\nLine changes:\n- Total: ${describeLineChanges(lineChanges.total)}\n- Source (\`scripts/\`): ${describeLineChanges(lineChanges.scripts)}\n- Tests (\`test/\`): ${describeLineChanges(lineChanges.test)}`,
       draft: true,
     },
     mergePolicy: { method: "squash" },
@@ -100,15 +157,16 @@ export function selfPlanFromSnapshots(config, planning, board) {
   };
 }
 
-export function selfDeliveryPolicy() {
+export function selfDeliveryPolicy(gitExecutable = "git") {
   return {
     async plan(config) {
       validatePolicy(config);
-      const [planning, board] = await Promise.all([
+      const [planning, board, lineChanges] = await Promise.all([
         loadPlanningSnapshot(config.worktree),
         loadBoardSnapshot(config.repository),
+        candidateLineChanges(config, gitExecutable),
       ]);
-      return selfPlanFromSnapshots(config, planning, board);
+      return selfPlanFromSnapshots(config, planning, board, lineChanges);
     },
   };
 }

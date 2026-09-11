@@ -1678,7 +1678,7 @@ export function repositoryQueueAdapter(
   const native = options.native ?? codexAdapter(gitExecutable);
   const setupAdapter = options.setup ?? gitSetupAdapter({ gitExecutable });
   const deliveryAdapter = options.delivery ?? githubDeliveryAdapter(undefined, gitExecutable);
-  const deliveryPolicy = options.deliveryPolicy ?? selfDeliveryPolicy();
+  const deliveryPolicy = options.deliveryPolicy ?? selfDeliveryPolicy(gitExecutable);
   const selectedRepairPolicy = options.repairPolicy ?? repairPolicy();
   const assertExecutor = options.assertExecutor ?? assertControllerExecutor;
   const state = config.stateDirectory;
