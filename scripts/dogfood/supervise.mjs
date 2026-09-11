@@ -7,11 +7,13 @@ import {
   QueueBlocked,
   queueStep,
   repositoryQueueAdapter,
+  validateLoopExecutor,
   validateLoopConfig,
 } from "./queue.ts";
 import {
   completeCycle,
   nextCycle,
+  persistCycle,
   reconcilePendingStop,
   repositorySupervisionAdapter,
   startCycle,
@@ -27,6 +29,7 @@ try {
   loop = JSON.parse(await readFile(resolve(process.argv[2]), "utf8"));
   validateLoopConfig(loop);
   process.env.PATH = `${dirname(loop.gitExecutable)}${delimiter}${process.env.PATH ?? ""}`;
+  await validateLoopExecutor(loop, executingRoot);
   const supervisor = repositorySupervisionAdapter();
   for (;;) {
     active = await nextCycle(loop, executingRoot, supervisor);
@@ -34,6 +37,8 @@ try {
       process.stdout.write(`${JSON.stringify({ status: "idle", run: loop.run })}\n`);
       break;
     }
+    await persistCycle(loop, active);
+    await reconcilePendingStop(loop, active, supervisor);
     config = await queueConfigFromLoop(
       loop,
       executingRoot,
@@ -44,7 +49,6 @@ try {
       },
       active.initialHistory,
     );
-    await reconcilePendingStop(loop, active, supervisor);
     let adapter = repositoryQueueAdapter(config, executingRoot, {
       gitExecutable: loop.gitExecutable,
     });

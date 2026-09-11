@@ -8,6 +8,7 @@ import type { LoopConfig, QueueParticipant } from "../../scripts/dogfood/queue.j
 import {
   completeCycle,
   nextCycle,
+  persistCycle,
   selectReadyIssue,
   startCycle,
   stopCycle,
@@ -182,7 +183,9 @@ it("records selection before removing ready and resumes it without selecting aga
     comments: [],
   });
 
+  await persistCycle(config, cycle);
   await startCycle(config, cycle, fixture.adapter);
+  await persistCycle(config, cycle);
   await startCycle(config, cycle, fixture.adapter);
   expect(fixture.calls.remove).toBe(1);
   expect(
@@ -206,6 +209,7 @@ it("posts one learning note after an interrupted comment and restores ready", as
     labels: ["ready"],
     comments: [],
   });
+  await persistCycle(config, cycle);
   await startCycle(config, cycle, fixture.adapter);
   let interrupted = true;
   const comment = fixture.adapter.comment;
@@ -231,6 +235,24 @@ it("posts one learning note after an interrupted comment and restores ready", as
   expect(fixture.observation.comments[0]).toContain(resolve(config.stateRoot, config.run));
 });
 
+it("gives a dependency stop a concrete saved-record correction", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-dependency-stop-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const fixture = fakeAdapter({
+    state: "OPEN",
+    key: "ISS-105",
+    labels: [],
+    comments: [],
+  });
+  await persistCycle(config, cycle);
+  await stopCycle(config, cycle, "dependency-install-failed", 0, fixture.adapter);
+  expect(fixture.observation.comments[0]).toContain("setup and dependency records");
+  expect(fixture.observation.comments[0]).toContain("offline dependency failure");
+  expect(fixture.observation.labels).toContain("ready");
+});
+
 it("closes a completed issue and carries its participant history into the next cycle", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-complete-"));
   roots.push(root);
@@ -254,6 +276,7 @@ it("closes a completed issue and carries its participant history into the next c
       usage: { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable },
     },
   ];
+  await persistCycle(config, cycle);
   await startCycle(config, cycle, fixture.adapter);
   await completeCycle(config, cycle, history, fixture.adapter);
   expect(fixture.calls.close).toBe(1);

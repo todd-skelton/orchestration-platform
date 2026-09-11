@@ -188,14 +188,17 @@ function assertIssue(selection: SelectedIssue, observed: IssueObservation) {
   if (observed.key !== selection.key) throw new QueueBlocked("selected-issue-identity-drift");
 }
 
+export async function persistCycle(config: LoopConfig, cycle: SupervisedCycle) {
+  const directory = stateDirectory(config);
+  await mkdir(directory, { recursive: true });
+  await record(directory, `cycle-${cycle.selection.cycle}-selected`, cycle.selection);
+}
+
 export async function startCycle(
   config: LoopConfig,
   cycle: SupervisedCycle,
   adapter: SupervisionAdapter,
 ) {
-  const directory = stateDirectory(config);
-  await mkdir(directory, { recursive: true });
-  await record(directory, `cycle-${cycle.selection.cycle}-selected`, cycle.selection);
   const observed = await adapter.issue(config, cycle.selection.number);
   assertIssue(cycle.selection, observed);
   if (observed.state === "CLOSED") return { status: "closed" as const };
@@ -239,13 +242,12 @@ function stopMessage(
 ) {
   const safeReason = reason.replace(/`/g, "'");
   const marker = `loop-stop:${config.run}:${selection.cycle}:${stop}`;
-  const evidence = resolve(
-    config.stateRoot,
-    config.run,
-    `${selection.key.toLowerCase()}-attempt-*`,
-  );
-  let change = `inspect the retained records under ${evidence} and correct the condition identified by \`${safeReason}\``;
-  if (/typecheck/i.test(reason))
+  const runState = resolve(config.stateRoot, config.run);
+  const evidence = resolve(runState, `${selection.key.toLowerCase()}-attempt-*`);
+  let change = `open the record named by \`${safeReason}\` under ${evidence}, correct the recorded condition, and restart`;
+  if (reason === "current-main-unavailable")
+    change = `check the stableExecutorRoot and gitExecutable fields in the loop config for ${runState}, restore access to origin/main, and restart`;
+  else if (/typecheck/i.test(reason))
     change = `open the saved typecheck gate record under ${evidence}, fix the reported type error, and rerun typecheck`;
   else if (/format/i.test(reason))
     change = `open the saved format gate record under ${evidence}, format the reported files, and rerun format:check`;
@@ -253,8 +255,16 @@ function stopMessage(
     change = `open the saved reviewer terminal under ${evidence}, correct the verdict to the required verdict/findings/G0 shape, and restart`;
   else if (/exit.*receipt|receipt.*exit/i.test(reason))
     change = `inspect the saved worker attempt and its trace path under ${evidence}, restore the missing exit receipt, and restart`;
+  else if (/native-launch-ceiling-exhausted/i.test(reason))
+    change = `inspect the participant records under ${evidence}/queue and the nativeLaunchCeiling field in the loop config, then start a newly authorized run with enough launch budget for the remaining work`;
   else if (/attempt.*ceiling|ceiling.*exhaust/i.test(reason))
     change = `open item-1-failed.json under ${evidence}, apply the final recorded blocking findings, and start a newly authorized run`;
+  else if (/setup|dependency|worktree/i.test(reason))
+    change = `open the setup and dependency records under ${evidence}/setup, correct the recorded worktree or offline dependency failure, and restart`;
+  else if (/hosted.*check|check.*hosted/i.test(reason))
+    change = `open the hosted-checks record under ${evidence}, repair the named required check on the recorded candidate, and restart`;
+  else if (/delivery|publication|merge|cleanup/i.test(reason))
+    change = `open the delivery, publication, merge, or cleanup record named by \`${safeReason}\` under ${evidence}, correct that recorded GitHub or repository state, and restart`;
   const count =
     attempts === "unavailable"
       ? "with the implementation-attempt count unavailable in the retained state"

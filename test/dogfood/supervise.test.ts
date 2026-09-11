@@ -10,7 +10,9 @@ let runOrdinal = 0;
 const command = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
 const hook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");
 
-async function fixture(mode: "blocked-count-unavailable" | "complete" | "wait" = "complete") {
+async function fixture(
+  mode: "blocked-count-unavailable" | "complete" | "composition-blocked" | "wait" = "complete",
+) {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "supervise-command-fixture-")));
   roots.push(root);
   roots.push(root);
@@ -37,7 +39,14 @@ async function fixture(mode: "blocked-count-unavailable" | "complete" | "wait" =
     writeFile(request, `${JSON.stringify(config)}\n`),
     mkdir(runState, { recursive: true }).then(async () => {
       await Promise.all([
-        writeFile(resolve(runState, "command-controls.json"), `${JSON.stringify({ mode })}\n`),
+        writeFile(
+          resolve(runState, "command-controls.json"),
+          `${JSON.stringify({
+            mode,
+            main: "a".repeat(40),
+            interruptComment: mode === "composition-blocked",
+          })}\n`,
+        ),
         writeFile(
           resolve(runState, "command-issue.json"),
           `${JSON.stringify({
@@ -235,6 +244,36 @@ it("finishes an intent-only learning note before resuming queue work", async () 
   expect(issue.state).toBe("CLOSED");
   expect(issue.comments).toHaveLength(1);
   expect(issue.comments[0]).toContain("typecheck-failed-after-retry");
+});
+
+it("reconciles an interrupted composition stop against the original selection", async () => {
+  const current = await fixture("composition-blocked");
+  const stopped = await run(current.request);
+  expect(stopped.code).toBe(1);
+  expect(JSON.parse(stopped.stderr)).toMatchObject({
+    status: "blocked",
+    reason: "setup-dependency-failed",
+  });
+  const selectedPath = resolve(current.runState, "cycle-1-selected.json");
+  const original = await readFile(selectedPath, "utf8");
+  const issueAfterStop = JSON.parse(
+    await readFile(resolve(current.runState, "command-issue.json"), "utf8"),
+  );
+  expect(issueAfterStop.labels).toContain("ready");
+  expect(issueAfterStop.comments).toHaveLength(1);
+  await writeFile(
+    resolve(current.runState, "command-controls.json"),
+    `${JSON.stringify({ mode: "complete", main: "d".repeat(40) })}\n`,
+  );
+
+  const restarted = await run(current.request);
+  expect(restarted.code, restarted.stderr).toBe(0);
+  expect(await readFile(selectedPath, "utf8")).toBe(original);
+  expect(JSON.parse(original)).toMatchObject({ key: "ISS-105", base: "a".repeat(40) });
+  const issue = JSON.parse(await readFile(resolve(current.runState, "command-issue.json"), "utf8"));
+  expect(issue.state).toBe("CLOSED");
+  expect(issue.comments).toHaveLength(1);
+  expect(issue.comments[0]).toContain("setup-dependency-failed");
 });
 
 it("keeps selection and queue composition in the supervisor entrypoint", async () => {

@@ -19,12 +19,30 @@ export { QueueBlocked };
 export {
   completeCycle,
   nextCycle,
+  persistCycle,
   reconcilePendingStop,
   startCycle,
   stopCycle,
 } from "../../../scripts/dogfood/supervision.ts";
 
+export async function validateLoopExecutor(loop, executingRoot) {
+  await Promise.all([
+    mkdir(loop.stateRoot, { recursive: true }),
+    mkdir(loop.worktreeRoot, { recursive: true }),
+  ]);
+  return {
+    executor: executingRoot,
+    stateRoot: loop.stateRoot,
+    worktreeRoot: loop.worktreeRoot,
+    controllerRevision: "a".repeat(40),
+  };
+}
+
 export async function queueConfigFromLoop(loop, executingRoot, selected, initialHistory) {
+  const controls = await readJson(resolve(loop.stateRoot, loop.run, "command-controls.json"), {
+    mode: "complete",
+  });
+  if (controls.mode === "composition-blocked") throw new QueueBlocked("setup-dependency-failed");
   const stateDirectory = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-queue`);
   const sourceState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-source`);
   const repairState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-repair`);
@@ -111,8 +129,12 @@ export function repositorySupervisionAdapter() {
         })),
       };
     },
-    async currentMain() {
-      return "a".repeat(40);
+    async currentMain(config) {
+      const controls = await readJson(
+        resolve(config.stateRoot, config.run, "command-controls.json"),
+        {},
+      );
+      return controls.main ?? "a".repeat(40);
     },
     async issue(config) {
       return readIssue(config);
@@ -136,6 +158,13 @@ export function repositorySupervisionAdapter() {
       const issue = await readIssue(config);
       issue.comments.push(body);
       await writeIssue(config, issue);
+      const controlsPath = resolve(config.stateRoot, config.run, "command-controls.json");
+      const controls = await readJson(controlsPath, {});
+      if (controls.interruptComment) {
+        controls.interruptComment = false;
+        await writeFile(controlsPath, `${JSON.stringify(controls)}\n`);
+        throw new Error("lost comment receipt");
+      }
     },
   };
 }

@@ -340,22 +340,8 @@ function validateFailedAttempt(
   );
 }
 
-export async function queueConfigFromLoop(
-  config: LoopConfig,
-  executingRoot: string,
-  selected: SelectedLoopIssue,
-  priorHistory: QueueParticipant[] = [],
-) {
+export async function validateLoopExecutor(config: LoopConfig, executingRoot: string) {
   validateLoopConfig(config);
-  demand(
-    exactKeys(selected, ["key", "number", "base"]) &&
-      /^ISS-\d{3}$/.test(selected.key) &&
-      Number.isSafeInteger(selected.number) &&
-      selected.number > 0 &&
-      SHA.test(selected.base),
-    "invalid-selected-issue",
-  );
-  validateHistory(priorHistory, config.nativeLaunchCeiling);
   const [executor, configured] = await Promise.all([
     realpath(executingRoot),
     realpath(config.stableExecutorRoot),
@@ -385,25 +371,15 @@ export async function queueConfigFromLoop(
         maxBuffer: 8 * 1024 * 1024,
       })
     ).stdout.trim();
-  const [controllerRevision, selectedBase, branch, status, version, planning, loopRules] =
-    await Promise.all([
-      git(["rev-parse", "HEAD"]),
-      git(["rev-parse", "--verify", `${selected.base}^{commit}`]),
-      git(["branch", "--show-current"]),
-      git(["status", "--porcelain"]),
-      exec(config.gitExecutable, ["--version"], { windowsHide: true }).then((result) =>
-        result.stdout.trim(),
-      ),
-      readFile(resolve(executor, "planning/roadmap.json"), "utf8").then(JSON.parse),
-      readFile(resolve(executor, "docs/loop.md"), "utf8"),
-    ]);
-  demand(
-    SHA.test(controllerRevision) &&
-      selectedBase === selected.base &&
-      branch === "main" &&
-      status === "",
-    "unstable-executor",
-  );
+  const [controllerRevision, branch, status, version] = await Promise.all([
+    git(["rev-parse", "HEAD"]),
+    git(["branch", "--show-current"]),
+    git(["status", "--porcelain"]),
+    exec(config.gitExecutable, ["--version"], { windowsHide: true }).then((result) =>
+      result.stdout.trim(),
+    ),
+  ]);
+  demand(SHA.test(controllerRevision) && branch === "main" && status === "", "unstable-executor");
   if (process.platform === "win32") {
     const match = /git version (\d+)\.(\d+)/.exec(version);
     demand(
@@ -411,6 +387,42 @@ export async function queueConfigFromLoop(
       "incompatible-git",
     );
   }
+  return { executor, stateRoot, worktreeRoot, controllerRevision };
+}
+
+export async function queueConfigFromLoop(
+  config: LoopConfig,
+  executingRoot: string,
+  selected: SelectedLoopIssue,
+  priorHistory: QueueParticipant[] = [],
+) {
+  validateLoopConfig(config);
+  demand(
+    exactKeys(selected, ["key", "number", "base"]) &&
+      /^ISS-\d{3}$/.test(selected.key) &&
+      Number.isSafeInteger(selected.number) &&
+      selected.number > 0 &&
+      SHA.test(selected.base),
+    "invalid-selected-issue",
+  );
+  validateHistory(priorHistory, config.nativeLaunchCeiling);
+  const { executor, stateRoot, worktreeRoot, controllerRevision } = await validateLoopExecutor(
+    config,
+    executingRoot,
+  );
+  const git = async (args: string[]) =>
+    (
+      await exec(config.gitExecutable, ["-C", executor, ...args], {
+        windowsHide: true,
+        maxBuffer: 8 * 1024 * 1024,
+      })
+    ).stdout.trim();
+  const [selectedBase, planning, loopRules] = await Promise.all([
+    git(["rev-parse", "--verify", `${selected.base}^{commit}`]),
+    readFile(resolve(executor, "planning/roadmap.json"), "utf8").then(JSON.parse),
+    readFile(resolve(executor, "docs/loop.md"), "utf8"),
+  ]);
+  demand(selectedBase === selected.base, "selected-base-unavailable");
   const registered = planning?.issues?.find((issue: any) => issue.key === selected.key);
   demand(registered?.file === `planning/drafts/${selected.key}.md`, "selected-issue-unregistered");
   demand(planning.repository === config.repository, "planning-repository-mismatch");
