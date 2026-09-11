@@ -1069,8 +1069,11 @@ export async function deliveryStep(
       "candidate-workspace-drift",
     );
     const observed = await adapter.checks(config, publication);
-    checks = validateChecks(config, observed.head, observed.checks);
-    if (checks.some((check) => check.bucket === "pending")) {
+    if (observed.checks.length === 0) {
+      demand(observed.head === config.candidateHead, "hosted-head-drift");
+      checks = [];
+    } else checks = validateChecks(config, observed.head, observed.checks);
+    if (checks.length === 0 || checks.some((check) => check.bucket === "pending")) {
       return {
         status: "observing-hosted-checks",
         run: config.run,

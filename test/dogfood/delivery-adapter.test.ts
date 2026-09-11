@@ -410,6 +410,46 @@ it("revalidates full publication identity after checks before ready or merge eff
   expect(effects).toEqual([]);
 });
 
+it("distinguishes the installed CLI no-check response from provider failure", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const noChecks = githubDeliveryAdapter({
+    async gh() {
+      throw Object.assign(new Error("no checks"), {
+        code: 1,
+        stdout: "",
+        stderr: "no checks reported on the 'codex/iss-113' branch\n",
+      });
+    },
+    async ghJson() {
+      return publicationRow(publication);
+    },
+  });
+  await expect(noChecks.checks(current, publication)).resolves.toEqual({
+    head: current.candidateHead,
+    checks: [],
+  });
+
+  const unavailable = githubDeliveryAdapter({
+    async gh() {
+      throw Object.assign(new Error("provider unavailable"), {
+        code: 1,
+        stdout: "",
+        stderr: "provider unavailable\n",
+      });
+    },
+    async ghJson() {
+      return publicationRow(publication);
+    },
+  });
+  await expect(unavailable.checks(current, publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics: "provider unavailable",
+  });
+});
+
 it("revalidates full publication identity after making a draft ready", async () => {
   const { current } = await repositoryFixture(
     "https://github.com/todd-skelton/orchestration-platform.git",

@@ -282,9 +282,17 @@ it("uses the generic fallback with the evidence directory and verbatim reason", 
     comments: [],
   };
   await persistCycle(config, cycle);
-  await stopCycle(config, cycle, "synthetic-unmapped-reason", 1, fakeAdapter(observation));
+  await stopCycle(
+    config,
+    cycle,
+    "synthetic-unmapped-reason",
+    1,
+    fakeAdapter(observation),
+    "provider refused the observation",
+  );
   expect(observation.comments[0]).toContain("synthetic-unmapped-reason");
   expect(observation.comments[0]).toContain(resolve(config.stateRoot, config.run));
+  expect(observation.comments[0]).toContain('Diagnostic: "provider refused the observation".');
 });
 
 it("gives the three prescribed stops exact actions without forbidden advice", async () => {

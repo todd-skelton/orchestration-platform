@@ -73,11 +73,12 @@ try {
   }
 } catch (error) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
+  const diagnostics = error instanceof QueueBlocked ? error.diagnostics : undefined;
   let lifecycleReason;
   if (active && loop) {
     const attempts = config ? await currentCandidateAttempt(config) : 0;
     try {
-      await stopCycle(loop, active, reason, attempts, repositorySupervisionAdapter());
+      await stopCycle(loop, active, reason, attempts, repositorySupervisionAdapter(), diagnostics);
     } catch (stopError) {
       lifecycleReason =
         stopError instanceof QueueBlocked ? stopError.reason : "learning-note-state-unknown";
