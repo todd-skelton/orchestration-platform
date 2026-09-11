@@ -14,9 +14,8 @@ import type {
   DeliveryPlan,
   PublicationEvidence,
 } from "../../scripts/dogfood/delivery.js";
-import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
-import type { RepairAdapter } from "../../scripts/dogfood/repair.js";
-import { repairDigest } from "../../scripts/dogfood/repair-policy.js";
+import { sha, type Adapter, type Attempt } from "../../scripts/dogfood/flow.js";
+import type { RepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import {
   type QueueConfig,
@@ -509,7 +508,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     findings: [
       {
         file: "scripts/dogfood/queue.ts",
-        line: 1,
+        line: 3,
         severity: "blocking",
         text: "synthetic fixable review defect",
       },
@@ -544,6 +543,7 @@ it("persists the genuine adapter result and restarts four-participant completion
       if (args[0] === "merge-base") return base;
       if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
       if (args[0] === "ls-files") return "";
+      if (args[0] === "show") return args.includes("-z") ? "\none\n\n" : "one";
       if (args[0] === "commit") {
         sourceHead = candidate;
         return "";
@@ -579,39 +579,18 @@ it("persists the genuine adapter result and restarts four-participant completion
       return { head: candidate, checks: [] };
     },
   };
-  let sourceArtifacts: any;
   const repairAdapter: RepairAdapter = {
-    async loadSourceReview() {
-      if (!sourceArtifacts) {
-        const read = async (name: string) =>
-          JSON.parse(await readFile(resolve(current.paths.source, `${name}.json`), "utf8"));
-        sourceArtifacts = {
-          configRecord: await read("config"),
-          candidate: await read("candidate"),
-          authorAttempt: await read("author-attempt"),
-          reviewerAttempt: await read("reviewer-attempt"),
-          terminal: await read("reviewer-terminal"),
-          changedFiles: ["scripts/dogfood/queue.ts"],
-          lineCounts: { "scripts/dogfood/queue.ts": 10 },
-          sourceHead: candidate,
-          reviewHead: candidate,
-          sourceClean: true,
-          reviewClean: true,
-        };
-      }
-      return sourceArtifacts;
-    },
-    async dispatch(config) {
+    async dispatch() {
       const rows = [
         {
-          ordinal: config.admission.reservations[0].ordinal,
+          ordinal: 3,
           id: "synthetic-repair-author",
           role: "author" as const,
           head: candidate,
           usage: undefined,
         },
         {
-          ordinal: config.admission.reservations[1].ordinal,
+          ordinal: 4,
           id: "synthetic-repair-reviewer",
           role: "reviewer" as const,
           head: repaired,
@@ -619,6 +598,10 @@ it("persists the genuine adapter result and restarts four-participant completion
         },
       ];
       workerEffects.push(...rows.map((row) => `repair:${row.role}`));
+      await writeFile(
+        resolve(current.paths.repair, "candidate.json"),
+        JSON.stringify({ head: repaired, changed: ["scripts/dogfood/queue.ts"] }),
+      );
       for (const row of rows) {
         await Promise.all([
           writeFile(
@@ -643,47 +626,6 @@ it("persists the genuine adapter result and restarts four-participant completion
         ]);
       }
       return { status: "awaiting-publication" };
-    },
-    async loadDeltaReview(config) {
-      return {
-        configRecord: sourceArtifacts.configRecord,
-        candidate: { head: repaired, changed: ["scripts/dogfood/queue.ts"] },
-        authorAttempt: {
-          id: "synthetic-repair-author",
-          pid: config.admission.reservations[0].ordinal + 100,
-          trace: resolve(current.root, "synthetic-repair-author.jsonl"),
-          launchedAt: 1,
-        },
-        reviewerAttempt: {
-          id: "synthetic-repair-reviewer",
-          pid: config.admission.reservations[1].ordinal + 100,
-          trace: resolve(current.root, "synthetic-repair-reviewer.jsonl"),
-          launchedAt: 1,
-        },
-        terminal: {
-          status: "passed",
-          id: "synthetic-repair-reviewer",
-          head: repaired,
-          usage: { input_tokens: 5, output_tokens: 2 },
-          summary: deltaSummary,
-        },
-        changedFiles: ["scripts/dogfood/queue.ts"],
-        lineCounts: { "scripts/dogfood/queue.ts": 10 },
-        sourceHead: repaired,
-        reviewHead: repaired,
-        sourceClean: true,
-        reviewClean: true,
-        launchContext: {
-          schemaVersion: "dogfood-repair-launch-context/v1",
-          run: config.run,
-          role: "reviewer",
-          ordinal: config.admission.reservations[1].ordinal,
-          head: repaired,
-          model: current.item.repair.reviewer.model,
-          effort: current.item.repair.reviewer.effort,
-          predecessorReviewId: "synthetic-source-reviewer",
-        },
-      };
     },
   };
   const plan: DeliveryPlan = {
@@ -984,7 +926,7 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
   ];
   const current = await fixture(sourceHistory);
   const prompts: [string, string] = ["author prompt", "review prompt"];
-  const fingerprint = repairDigest({ config: current.source, prompts });
+  const fingerprint = sha(JSON.stringify({ config: current.source, prompts }));
   await Promise.all([
     ...sourceHistory.map((row) =>
       writeFile(
@@ -1047,38 +989,8 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
   });
   let captured: any;
   const repairAdapter: RepairAdapter = {
-    async loadSourceReview() {
-      return {
-        configRecord: { fingerprint, config: current.source, host: "synthetic" },
-        candidate: { head: candidate, changed: current.source.allowedPaths },
-        authorAttempt: {
-          id: "source-author",
-          pid: 1,
-          trace: resolve(current.root, "author.jsonl"),
-          launchedAt: 1,
-        },
-        reviewerAttempt: {
-          id: "source-reviewer",
-          pid: 2,
-          trace: resolve(current.root, "reviewer.jsonl"),
-          launchedAt: 1,
-        },
-        terminal: {
-          status: "failed",
-          id: "source-reviewer",
-          head: candidate,
-          summary: sourceSummary,
-        },
-        changedFiles: current.source.allowedPaths,
-        lineCounts: { [current.source.allowedPaths[0]!]: 10 },
-        sourceHead: candidate,
-        reviewHead: candidate,
-        sourceClean: true,
-        reviewClean: true,
-      };
-    },
-    async dispatch(config) {
-      captured = config;
+    async dispatch(config, handoff) {
+      captured = { config, handoff };
       const records = [
         { ordinal: 3, id: "repair-author", role: "author", head: candidate, stem: "author" },
         {
@@ -1089,6 +1001,10 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
           stem: "reviewer",
         },
       ] as const;
+      await writeFile(
+        resolve(current.paths.repair, "candidate.json"),
+        JSON.stringify({ head: repaired, changed: current.source.allowedPaths }),
+      );
       for (const row of records) {
         await writeFile(
           resolve(current.paths.repair, `${row.stem}-attempt.json`),
@@ -1111,49 +1027,9 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
       }
       return { status: "awaiting-publication", retries: 1 };
     },
-    async loadDeltaReview() {
-      return {
-        configRecord: { fingerprint, config: current.source, host: "synthetic" },
-        candidate: { head: repaired, changed: current.source.allowedPaths },
-        authorAttempt: {
-          id: "repair-author",
-          pid: 3,
-          trace: resolve(current.root, "repair-author.jsonl"),
-          launchedAt: 1,
-        },
-        reviewerAttempt: {
-          id: "repair-reviewer-retry",
-          pid: 4,
-          trace: resolve(current.root, "repair-reviewer-retry.jsonl"),
-          launchedAt: 1,
-        },
-        terminal: {
-          status: "passed",
-          id: "repair-reviewer-retry",
-          head: repaired,
-          summary: deltaSummary,
-        },
-        changedFiles: current.source.allowedPaths,
-        lineCounts: { [current.source.allowedPaths[0]!]: 10 },
-        sourceHead: repaired,
-        reviewHead: repaired,
-        sourceClean: true,
-        reviewClean: true,
-        launchContext: {
-          schemaVersion: "dogfood-repair-launch-context/v1",
-          run: current.source.run,
-          role: "reviewer",
-          ordinal: 4,
-          head: repaired,
-          model: current.item.repair.reviewer.model,
-          effort: current.item.repair.reviewer.effort,
-          predecessorReviewId: "source-reviewer",
-        },
-      };
-    },
   };
   const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
-    native: {} as never,
+    native: { git: async () => "line\n" } as never,
     repair: repairAdapter,
   });
 
@@ -1169,36 +1045,20 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
     head: repaired,
     reviewId: "repair-reviewer-retry",
     stateDirectory: current.paths.repair,
+    retries: 1,
   });
   expect(captured).toMatchObject({
-    mainBase: base,
-    repairBase: candidate,
-    implementationAttempts: 2,
-    implementationAttemptCeiling: 4,
-    history: [
-      { ordinal: 1, id: "source-author" },
-      { ordinal: 2, id: "source-reviewer" },
-    ],
-    admission: {
-      consumed: 2,
-      ceiling: 4,
-      reservations: [
-        { role: "author", ordinal: 3 },
-        { role: "reviewer", ordinal: 4 },
-      ],
+    config: {
+      owner: current.source.owner,
+      base: candidate,
+      stateDirectory: current.paths.repair,
     },
-    controller: current.source.owner,
-  });
-  expect(captured.history[0].usage).toEqual({
-    inputTokens: { status: "known", value: 10 },
-    outputTokens: { status: "known", value: 2 },
-    costUsd: { status: "unavailable" },
-  });
-  expect(captured.history[1].usage).toEqual({
-    status: "known",
-    inputTokens: 8,
-    outputTokens: 4,
-    costUsd: 1.25,
+    handoff: {
+      mainBase: base,
+      correctiveBase: candidate,
+      predecessorCompleteSweep: "source-reviewer",
+      implementation: { attempts: 2, ceiling: 4 },
+    },
   });
   expect((await adapter.history()).map((row) => row.id)).toEqual([
     "source-author",
@@ -1211,7 +1071,7 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
 it("advances once when a malformed repair review retry returns a valid FAIL", async () => {
   const current = await fixture();
   const prompts: [string, string] = [current.source.author.prompt, current.source.reviewer.prompt];
-  const fingerprint = repairDigest({ config: current.source, prompts });
+  const fingerprint = sha(JSON.stringify({ config: current.source, prompts }));
   const sourceSummary = JSON.stringify({
     run: current.source.run,
     role: "reviewer",
@@ -1308,36 +1168,6 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
     ]);
   };
   const repairAdapter: RepairAdapter = {
-    async loadSourceReview() {
-      return {
-        configRecord: { fingerprint, config: current.source, host: "synthetic" },
-        candidate: { head: candidate, changed: current.source.allowedPaths },
-        authorAttempt: {
-          id: "source-author",
-          pid: 1,
-          trace: resolve(current.root, "author.jsonl"),
-          launchedAt: 1,
-        },
-        reviewerAttempt: {
-          id: "source-reviewer",
-          pid: 2,
-          trace: resolve(current.root, "reviewer.jsonl"),
-          launchedAt: 1,
-        },
-        terminal: {
-          status: "failed",
-          id: "source-reviewer",
-          head: candidate,
-          summary: sourceSummary,
-        },
-        changedFiles: current.source.allowedPaths,
-        lineCounts: { [current.source.allowedPaths[0]!]: 10 },
-        sourceHead: candidate,
-        reviewHead: candidate,
-        sourceClean: true,
-        reviewClean: true,
-      };
-    },
     async dispatch() {
       const attempts = [
         {
@@ -1384,12 +1214,9 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
       }
       throw new QueueBlocked("reviewer-failed", undefined, 1);
     },
-    async loadDeltaReview() {
-      throw new Error("delta review must not load after the flow failure");
-    },
   };
   const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
-    native: {} as never,
+    native: { git: async () => "line one\nline two\n" } as never,
     repair: repairAdapter,
   });
   const adapter: QueueAdapter = {
