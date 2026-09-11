@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -280,7 +280,9 @@ it("derives the complete internal queue from one compact loop config and selecte
       },
     },
   });
-  expect(queue.stateDirectory).toBe(resolve(stateRoot, loop.run, "iss-104-attempt-1"));
+  expect(queue.stateDirectory).toBe(
+    resolve(await realpath(stateRoot), loop.run, "iss-104-attempt-1"),
+  );
   expect(queue.items[0]!.setup.stateDirectory).toBe(resolve(queue.stateDirectory, "setup"));
   expect(queue.items[0]!.source.stateDirectory).toBe(resolve(queue.stateDirectory, "source"));
   expect(queue.items[0]!.repair.stateDirectory).toBe(resolve(queue.stateDirectory, "repair"));
