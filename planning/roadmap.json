@@ -99,6 +99,36 @@
       "file": "planning/drafts/ISS-112.md",
       "milestone": "M1",
       "blockedBy": ["ISS-101"]
+    },
+    {
+      "key": "ISS-113",
+      "file": "planning/drafts/ISS-113.md",
+      "milestone": "M1",
+      "blockedBy": ["ISS-105"]
+    },
+    {
+      "key": "ISS-114",
+      "file": "planning/drafts/ISS-114.md",
+      "milestone": "M1",
+      "blockedBy": ["ISS-113"]
+    },
+    {
+      "key": "ISS-115",
+      "file": "planning/drafts/ISS-115.md",
+      "milestone": "M1",
+      "blockedBy": ["ISS-114"]
+    },
+    {
+      "key": "ISS-116",
+      "file": "planning/drafts/ISS-116.md",
+      "milestone": "M1",
+      "blockedBy": ["ISS-115"]
+    },
+    {
+      "key": "ISS-117",
+      "file": "planning/drafts/ISS-117.md",
+      "milestone": "M1",
+      "blockedBy": ["ISS-112"]
     }
   ]
 }

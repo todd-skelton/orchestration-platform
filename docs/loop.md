@@ -28,6 +28,11 @@ capability is added only when a real cycle records a blocker.
    attempts, what a person should change. A recurring note becomes the next
    issue. That is the only intake.
 8. Runtime state lives outside the checkout.
+9. A restart may repeat the last in-flight step at the cost of one worker
+   launch. Records exist so the loop can resume, not to prove anything to a
+   second process: there is one operator, one host, and one writer. A check
+   that guards against a hostile state directory, a hand-edited receipt, or
+   the loop disagreeing with itself is a finding, not a safeguard.
 
 ## Planning
 
