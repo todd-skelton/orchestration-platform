@@ -244,7 +244,7 @@ function stopMessage(
   const marker = `loop-stop:${config.run}:${selection.cycle}:${stop}`;
   const runState = resolve(config.stateRoot, config.run);
   const evidence = resolve(runState, `${selection.key.toLowerCase()}-attempt-*`);
-  let change = `open the record named by \`${safeReason}\` under ${evidence}, correct the recorded condition, and restart`;
+  let change = `inspect the newest retained queue/component record under ${evidence}, correct its reported command/state mismatch, and restart`;
   if (reason === "current-main-unavailable")
     change = `check the stableExecutorRoot and gitExecutable fields in the loop config for ${runState}, restore access to origin/main, and restart`;
   else if (/typecheck/i.test(reason))
@@ -265,6 +265,12 @@ function stopMessage(
     change = `open the hosted-checks record under ${evidence}, repair the named required check on the recorded candidate, and restart`;
   else if (/delivery|publication|merge|cleanup/i.test(reason))
     change = `open the delivery, publication, merge, or cleanup record named by \`${safeReason}\` under ${evidence}, correct that recorded GitHub or repository state, and restart`;
+  else if (/source|review|repair/i.test(reason))
+    change = `open the source or repair candidate, history, and reviewer terminal records under ${evidence}/source and ${evidence}/repair, correct the recorded candidate or review-state mismatch, and restart`;
+  else if (/issue.*observation|label.*state|issue.*identity|issue.*state/i.test(reason))
+    change = `inspect issue #${selection.number} on GitHub, restore its planning marker, open state, and expected ready label to match the selected issue, and restart`;
+  else if (/selected|config/i.test(reason))
+    change = `open cycle-${selection.cycle}-selected.json under ${runState} and queue-config.json under ${evidence}/queue, correct the selected issue, base, or loop-config mismatch, and restart`;
   const count =
     attempts === "unavailable"
       ? "with the implementation-attempt count unavailable in the retained state"

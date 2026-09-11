@@ -253,6 +253,24 @@ it("gives a dependency stop a concrete saved-record correction", async () => {
   expect(fixture.observation.labels).toContain("ready");
 });
 
+it("points a source-review stop to the retained component records", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-source-stop-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const fixture = fakeAdapter({
+    state: "OPEN",
+    key: "ISS-105",
+    labels: [],
+    comments: [],
+  });
+  await persistCycle(config, cycle);
+  await stopCycle(config, cycle, "source-review-state-unknown", 1, fixture.adapter);
+  expect(fixture.observation.comments[0]).toContain("source or repair candidate");
+  expect(fixture.observation.comments[0]).toContain("reviewer terminal records");
+  expect(fixture.observation.comments[0]).toContain("candidate or review-state mismatch");
+});
+
 it("closes a completed issue and carries its participant history into the next cycle", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-complete-"));
   roots.push(root);
