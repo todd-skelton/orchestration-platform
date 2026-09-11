@@ -20,19 +20,19 @@ import { codexAdapter } from "./dispatch-adapter.ts";
 import { correctGate, QueueBlocked, step } from "./flow.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
 export { QueueBlocked };
-import { reviewedRepairAdapter, sourceReviewerReportPrompt } from "./repair-adapter.mjs";
-import { repairStep, type RepairAdapter } from "./repair.mjs";
+import {
+  reviewedRepairAdapter,
+  sourceReviewerReportPrompt,
+  type RepairAdapter,
+  type RepairConfig,
+  type RepairHandoff,
+} from "./repair-adapter.mjs";
 import {
   RepairBlocked,
-  classifyReview,
   parseReview,
-  repairDigest,
-  repairPolicy,
-  type ParticipantHistory,
-  type RepairActor,
-  type RepairConfig,
   type ReviewFinding,
-  type RepairPolicy,
+  type ValidatedReview,
+  validateLocations,
 } from "./repair-policy.mjs";
 import { selfDeliveryPolicy } from "./self-delivery-policy.mjs";
 import { gitSetupAdapter } from "./setup-adapter.mjs";
@@ -72,8 +72,8 @@ export interface QueueItem {
   repair: {
     stateDirectory: string;
     acceptanceCriteria: string[];
-    author: RepairActor;
-    reviewer: RepairActor;
+    author: SourceConfig["author"];
+    reviewer: SourceConfig["reviewer"];
   };
   delivery: {
     requiredChecks: string[];
@@ -1352,38 +1352,11 @@ export interface RepositoryQueueAdapterOptions {
   repair?: RepairAdapter;
   delivery?: DeliveryAdapter;
   deliveryPolicy?: DeliveryPolicyAdapter;
-  repairPolicy?: RepairPolicy;
   assertExecutor?: (
     config: DeliveryConfig,
     executingRoot: string,
     gitExecutable?: string,
   ) => Promise<void>;
-}
-
-function repairHistory(history: QueueParticipant[]): ParticipantHistory[] {
-  return history.map((participant) => {
-    const usage = participant.usage;
-    return {
-      ordinal: participant.ordinal,
-      id: participant.id,
-      role: participant.role,
-      outcome: participant.outcome,
-      usage: [usage.inputTokens, usage.outputTokens, usage.costUsd].every(
-        (measure) => measure.status === "unavailable",
-      )
-        ? { status: "unavailable" as const }
-        : usage.inputTokens.status === "known" &&
-            usage.outputTokens.status === "known" &&
-            usage.costUsd.status === "known"
-          ? {
-              status: "known" as const,
-              inputTokens: usage.inputTokens.value,
-              outputTokens: usage.outputTokens.value,
-              costUsd: usage.costUsd.value,
-            }
-          : usage,
-    };
-  });
 }
 
 export function repositoryQueueAdapter(
@@ -1396,7 +1369,6 @@ export function repositoryQueueAdapter(
   const setupAdapter = options.setup ?? gitSetupAdapter({ gitExecutable });
   const deliveryAdapter = options.delivery ?? githubDeliveryAdapter(undefined, gitExecutable);
   const deliveryPolicy = options.deliveryPolicy ?? selfDeliveryPolicy(gitExecutable);
-  const selectedRepairPolicy = options.repairPolicy ?? repairPolicy();
   const assertExecutor = options.assertExecutor ?? assertControllerExecutor;
   const state = config.stateDirectory;
 
@@ -1437,6 +1409,16 @@ export function repositoryQueueAdapter(
     }
   };
 
+  const malformedReview = (summary: unknown, run: string, head: string) => {
+    try {
+      parseReview(summary, run, head);
+      return false;
+    } catch (error) {
+      if (error instanceof RepairBlocked) return true;
+      throw error;
+    }
+  };
+
   const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
     ...native,
     async launch(role: Role, current: SourceConfig, prompt: string): Promise<Attempt> {
@@ -1466,7 +1448,7 @@ export function repositoryQueueAdapter(
           role === "reviewer" &&
           ["passed", "failed"].includes(terminal.status) &&
           terminal.head &&
-          classifyReview(terminal.summary, current.run, terminal.head).disposition === "malformed"
+          malformedReview(terminal.summary, current.run, terminal.head)
             ? { ...terminal, status: "malformed" }
             : terminal;
         await syncParticipant(item, stage, role, attempt, observed);
@@ -1528,8 +1510,7 @@ export function repositoryQueueAdapter(
         if (
           candidate !== ABSENT &&
           SHA.test(candidate.head) &&
-          classifyReview(terminal.summary, item.source.run, candidate.head).disposition ===
-            "malformed"
+          malformedReview(terminal.summary, item.source.run, candidate.head)
         )
           terminal = { ...terminal, status: "malformed" };
       }
@@ -1561,31 +1542,65 @@ export function repositoryQueueAdapter(
     );
   };
 
-  const passingSourceReview = async (item: QueueItem) => {
+  const lineCount = (text: string) => {
+    if (text.length === 0) return 0;
+    const lines = text.split(/\r?\n/);
+    return lines.at(-1) === "" ? lines.length - 1 : lines.length;
+  };
+
+  const checkLocations = async (
+    item: QueueItem,
+    candidate: Record<string, any>,
+    review: ValidatedReview,
+  ) => {
+    try {
+      const files = [...new Set(review.findings.map((finding) => finding.file))];
+      const counts = await Promise.all(
+        files.map(
+          async (file) =>
+            [
+              file,
+              lineCount(
+                await native.git(item.source.worktree, ["show", `${candidate.head}:${file}`]),
+              ),
+            ] as const,
+        ),
+      );
+      validateLocations(review, candidate as { changed: string[] }, Object.fromEntries(counts));
+    } catch (error) {
+      if (error instanceof RepairBlocked) throw new QueueBlocked(error.reason);
+      throw new QueueBlocked("source-finding-location-outside-candidate");
+    }
+  };
+
+  const passingReview = async (item: QueueItem, directory: string, reason: string) => {
     const [candidate, selected] = await Promise.all([
-      json(item.source.stateDirectory, "candidate"),
-      reviewPair(item.source.stateDirectory),
+      json(directory, "candidate"),
+      reviewPair(directory),
     ]);
     demand(
-      selected.terminal.status === "passed" && selected.terminal.head === candidate.head,
-      "source-review-state-unknown",
+      selected.terminal.status === "passed" &&
+        selected.terminal.id === selected.attempt.id &&
+        selected.terminal.head === candidate.head &&
+        SHA.test(candidate.head),
+      reason,
     );
     let review;
     try {
       review = parseReview(selected.terminal.summary, item.source.run, candidate.head);
     } catch (error) {
-      throw new QueueBlocked(
-        error instanceof RepairBlocked ? error.reason : "source-review-report-unknown",
-      );
+      throw new QueueBlocked(error instanceof RepairBlocked ? error.reason : reason);
     }
     demand(
       review.verdict === "PASS" && review.findings.every((finding) => finding.severity === "note"),
-      "source-review-not-accepted",
+      reason,
     );
-    return { candidate, selected };
+    await checkLocations(item, candidate, review);
+    return { candidate, selected, review };
   };
 
-  const blockingReview = (
+  const blockingReview = async (
+    item: QueueItem,
     candidate: Record<string, any>,
     reviewer: Record<string, any>,
     terminal: Record<string, any>,
@@ -1610,67 +1625,52 @@ export function repositoryQueueAdapter(
         review.findings.some((finding) => finding.severity === "blocking"),
       reason,
     );
+    await checkLocations(item, candidate, review);
     return { head: candidate.head, reviewId: reviewer.id, findings: review.findings };
   };
 
-  const buildRepair = async (item: QueueItem): Promise<RepairConfig> => {
-    const candidate = await json(item.source.stateDirectory, "candidate");
-    demand(
-      SHA.test(candidate.head) &&
-        Array.isArray(candidate.changed) &&
-        candidate.changed.length > 0 &&
-        candidate.changed.length <= 512 &&
-        candidate.changed.every(
-          (path: unknown) =>
-            typeof path === "string" &&
-            path.length > 0 &&
-            !path.startsWith("/") &&
-            !path.includes("\\") &&
-            !path.split("/").includes(".."),
-        ),
-      "source-candidate-mismatch",
+  const buildRepair = async (
+    item: QueueItem,
+  ): Promise<{ repair: RepairConfig; handoff: RepairHandoff }> => {
+    const [candidate, selected] = await Promise.all([
+      json(item.source.stateDirectory, "candidate"),
+      reviewPair(item.source.stateDirectory),
+    ]);
+    const source = await blockingReview(
+      item,
+      candidate,
+      selected.attempt,
+      selected.terminal,
+      item.source.run,
+      "source-review-state-unknown",
     );
     const history = await readHistory();
     const baseline = history.filter(
       (participant) => !(participant.item === item.id && participant.stage === "repair"),
     );
     demand(baseline.length + 2 <= config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
-    const projected = repairHistory(baseline);
-    const admission = {
-      consumed: projected.length,
-      ceiling: projected.length + 2,
-      reservations: [
-        { role: "author" as const, ordinal: projected.length + 1 },
-        { role: "reviewer" as const, ordinal: projected.length + 2 },
-      ] as [{ role: "author"; ordinal: number }, { role: "reviewer"; ordinal: number }],
-    };
-    const partial = {
-      schemaVersion: "dogfood-repair-request/v1" as const,
-      controller: config.controller,
-      run: item.source.run,
-      issue: item.issue,
-      repository: item.source.repository,
-      controllerRoot: config.controllerRoot,
-      controllerRevision: config.controllerRevision,
-      mainBase: item.base,
-      repairBase: candidate.head,
-      worktree: item.source.worktree,
-      reviewWorktree: item.source.reviewWorktree,
+    const repair: RepairConfig = {
+      ...item.source,
+      base: candidate.head,
       stateDirectory: item.repair.stateDirectory,
-      sourceStateDirectory: item.source.stateDirectory,
-      allowedPaths: item.source.allowedPaths,
-      sourcePaths: candidate.changed,
-      acceptanceCriteria: item.repair.acceptanceCriteria,
-      requiredChecks: item.source.requiredChecks,
-      history: projected,
-      implementationAttempts: item.implementationAttempt + 1,
-      implementationAttemptCeiling: item.implementationAttemptCeiling,
-      admission,
       author: item.repair.author,
       reviewer: item.repair.reviewer,
-      adapter: item.source.adapter,
     };
-    return partial;
+    return {
+      repair,
+      handoff: {
+        mainBase: item.base,
+        correctiveBase: candidate.head,
+        failedReview: { findings: source.findings },
+        predecessorCompleteSweep: source.reviewId,
+        implementation: {
+          attempts: item.implementationAttempt + 1,
+          ceiling: item.implementationAttemptCeiling,
+        },
+        sourcePaths: candidate.changed,
+        acceptanceCriteria: item.repair.acceptanceCriteria,
+      },
+    };
   };
 
   return {
@@ -1775,7 +1775,11 @@ export function repositoryQueueAdapter(
           };
         demand(result.status === "awaiting-publication", "unexpected-source-flow-status");
         await acceptedPair(item, "source", "passed");
-        const { candidate, selected } = await passingSourceReview(item);
+        const { candidate, selected } = await passingReview(
+          item,
+          item.source.stateDirectory,
+          "source-review-not-accepted",
+        );
         return {
           status: "accepted",
           head: candidate.head,
@@ -1805,37 +1809,41 @@ export function repositoryQueueAdapter(
         return {
           status: "fixable-review",
           ...(error.retries ? { retries: error.retries } : {}),
-          ...blockingReview(
+          ...(await blockingReview(
+            item,
             candidate,
             reviewer,
             terminal,
             item.source.run,
             "source-review-state-unknown",
-          ),
+          )),
         };
       }
     },
     async repair(item): Promise<QueueRepairResult> {
       try {
-        const repair = await buildRepair(item);
-        const result = await repairStep(
-          repair,
-          options.repair ?? reviewedRepairAdapter(boundedNative(item, "repair"), gitExecutable),
-          selectedRepairPolicy,
-        );
+        const { repair, handoff } = await buildRepair(item);
+        const result = await (
+          options.repair ??
+          reviewedRepairAdapter(boundedNative(item, "repair"), config.controllerRoot)
+        ).dispatch(repair, handoff);
         await syncParticipants(item, "repair", item.repair.stateDirectory);
         if (result.status === "observing-author" || result.status === "observing-reviewer")
           return {
             status: result.status,
             ...(result.retries ? { retries: result.retries } : {}),
           };
-        demand(result.status === "awaiting-delivery", "unexpected-repair-status");
+        demand(result.status === "awaiting-publication", "unexpected-repair-status");
         await acceptedPair(item, "repair", "passed");
-        const reviewer = (await reviewPair(item.repair.stateDirectory)).attempt;
+        const { candidate, selected } = await passingReview(
+          item,
+          item.repair.stateDirectory,
+          "repair-review-state-unknown",
+        );
         return {
           status: "accepted",
-          head: result.head,
-          reviewId: reviewer.id,
+          head: candidate.head,
+          reviewId: selected.attempt.id,
           stateDirectory: item.repair.stateDirectory,
           ...(result.retries ? { retries: result.retries } : {}),
         };
@@ -1853,7 +1861,7 @@ export function repositoryQueueAdapter(
             : error instanceof RepairBlocked
               ? error.reason
               : "";
-        if (["delta-review-failed", "reviewer-failed"].includes(reason)) {
+        if (reason === "reviewer-failed") {
           const [candidate, selected] = await Promise.all([
             json(item.repair.stateDirectory, "candidate"),
             reviewPair(item.repair.stateDirectory),
@@ -1862,13 +1870,14 @@ export function repositoryQueueAdapter(
           return {
             status: "failed",
             ...(error instanceof QueueBlocked && error.retries ? { retries: error.retries } : {}),
-            ...blockingReview(
+            ...(await blockingReview(
+              item,
               candidate,
               selected.attempt as unknown as Record<string, any>,
               selected.terminal as unknown as Record<string, any>,
               item.source.run,
               "repair-review-state-unknown",
-            ),
+            )),
           };
         }
         throw new QueueBlocked(
