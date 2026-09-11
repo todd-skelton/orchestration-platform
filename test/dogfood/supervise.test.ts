@@ -27,7 +27,6 @@ async function fixture() {
     reviewer: { model: "gpt-5.6-sol", effort: "high" },
     codexExecutable: process.execPath,
     gitExecutable: process.execPath,
-    exitReceiptWindowMs: 30_000,
     nativeLaunchCeiling: 8,
     attemptCeiling: 4,
   };

@@ -11,7 +11,12 @@ import {
   repairPolicy,
   type RepairConfig,
 } from "../../scripts/dogfood/repair-policy.mjs";
-import type { Adapter, Role, Terminal } from "../../scripts/dogfood/flow.js";
+import {
+  QueueBlocked,
+  type Adapter,
+  type Role,
+  type Terminal,
+} from "../../scripts/dogfood/flow.js";
 import { repairFixture, reviewSummary, sourceFile } from "./repair-fixtures/config.js";
 
 const run = promisify(execFile);
@@ -257,7 +262,7 @@ it.each(["author-temp-unavailable", "author-offline-pnpm-unavailable"])(
     const current = await realFixture();
     const native = {
       async preflight() {
-        throw new Error(reason);
+        throw new QueueBlocked(reason);
       },
       async git(worktree: string, args: string[]) {
         if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;

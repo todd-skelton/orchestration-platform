@@ -48,7 +48,10 @@ export interface RepairAdapter {
     config: RepairConfig,
     requireCurrentCandidate?: boolean,
   ): Promise<SourceReviewArtifacts>;
-  dispatch(config: RepairConfig, handoff: RepairHandoff): Promise<{ status: string }>;
+  dispatch(
+    config: RepairConfig,
+    handoff: RepairHandoff,
+  ): Promise<{ status: string; retries?: number }>;
   loadDeltaReview(
     config: RepairConfig,
   ): Promise<SourceReviewArtifacts & { launchContext: Record<string, any> }>;
@@ -60,6 +63,7 @@ export type RepairResult =
       phase: "author" | "reviewer";
       run: string;
       issue: string;
+      retries?: number;
     }
   | {
       status: "awaiting-delivery";
@@ -68,6 +72,7 @@ export type RepairResult =
       issue: string;
       head: string;
       predecessorReviewId: string;
+      retries?: number;
     };
 
 function deltaReviewRecord(
@@ -163,6 +168,7 @@ export async function repairStep(
       phase: result.status === "observing-author" ? "author" : "reviewer",
       run: config.run,
       issue: config.issue,
+      ...(result.retries ? { retries: result.retries } : {}),
     };
   demand(result.status === "awaiting-publication", "unexpected-repair-flow-status");
 
@@ -184,5 +190,6 @@ export async function repairStep(
     issue: config.issue,
     head: accepted.head,
     predecessorReviewId: handoff.predecessorCompleteSweep,
+    ...(result.retries ? { retries: result.retries } : {}),
   };
 }

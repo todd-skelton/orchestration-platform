@@ -269,7 +269,7 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
     `inspect ${evidence} for the typecheck gate output, fix the reported type error, and rerun typecheck`,
   "gate-retry-exhausted:format:check": ({ evidence }) =>
     `inspect ${evidence} for the format gate output, format the reported files, and rerun format:check`,
-  "reviewer-retry-exhausted": ({ evidence }) =>
+  "reviewer-malformed": ({ evidence }) =>
     `inspect ${evidence} for the reviewer terminal, correct the verdict/findings/G0 shape, and restart`,
   "exit-receipt-timeout": ({ evidence }) =>
     `inspect ${evidence} for the worker attempt and trace, restore the missing exit receipt, and restart`,

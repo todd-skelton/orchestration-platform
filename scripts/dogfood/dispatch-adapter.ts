@@ -1,15 +1,19 @@
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolvePnpmLauncher, type PnpmLauncher } from "../pnpm-launcher.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { QueueBlocked } from "./flow.ts";
 import type { Adapter, Attempt, Config, Role, Terminal } from "./flow.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
 
 const exec = promisify(execFile);
+const EXIT_RECEIPT_WINDOW_MS = 30_000;
 const check = (ok: unknown, reason: string) => {
-  if (!ok) throw new Error(reason);
+  if (!ok) throw new QueueBlocked(reason);
 };
 async function optionalText(path: string) {
   try {
@@ -20,11 +24,10 @@ async function optionalText(path: string) {
   }
 }
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
-const artifact = (config: Config, role: Role, suffix: string) =>
-  resolve(
-    config.stateDirectory,
-    `${config.artifactPrefix ? `${config.artifactPrefix}.` : ""}${role}.${suffix}`,
-  );
+const artifact = (config: Config, role: Role, launch: string, suffix: string) =>
+  resolve(config.stateDirectory, `${role}-${launch}.${suffix}`);
+const attemptArtifact = (attempt: Attempt, suffix: string) =>
+  `${attempt.trace.slice(0, -"jsonl".length)}${suffix}`;
 export const authorTemporaryRoot = (config: Config) =>
   resolve(config.stateDirectory, "author-temp");
 const toml = (value: string) => JSON.stringify(value);
@@ -66,13 +69,13 @@ export async function prepareAuthorRuntime(
     const probe = await mkdtemp(resolve(temporary, "preflight-"));
     await rm(probe, { recursive: true });
   } catch {
-    throw new Error("author-temp-unavailable");
+    throw new QueueBlocked("author-temp-unavailable");
   }
   let launcher: PnpmLauncher;
   try {
     launcher = await launcherResolver();
   } catch {
-    throw new Error("author-offline-pnpm-unavailable");
+    throw new QueueBlocked("author-offline-pnpm-unavailable");
   }
   const wrapper = resolve(temporary, "pnpm.cjs");
   try {
@@ -97,13 +100,13 @@ export async function prepareAuthorRuntime(
     }
     await chmod(resolve(temporary, "pnpm"), 0o755);
   } catch {
-    throw new Error("author-temp-unavailable");
+    throw new QueueBlocked("author-temp-unavailable");
   }
   let versionDirectory: string;
   try {
     versionDirectory = await mkdtemp(resolve(temporary, "pnpm-version-"));
   } catch {
-    throw new Error("author-temp-unavailable");
+    throw new QueueBlocked("author-temp-unavailable");
   }
   try {
     const versionPath = resolve(versionDirectory, "stdout.txt");
@@ -137,12 +140,12 @@ export async function prepareAuthorRuntime(
     const version = (await readFile(versionPath, "utf8")).trim();
     check(version === (await expectedPnpmVersion(config)), "author-offline-pnpm-unavailable");
   } catch {
-    throw new Error("author-offline-pnpm-unavailable");
+    throw new QueueBlocked("author-offline-pnpm-unavailable");
   } finally {
     try {
       await rm(versionDirectory, { recursive: true, force: true });
     } catch {
-      throw new Error("author-temp-unavailable");
+      throw new QueueBlocked("author-temp-unavailable");
     }
   }
 }
@@ -216,7 +219,12 @@ export async function launchObserver(
   });
   child.unref();
 }
-export function launchArguments(config: Config, role: Role, platform = process.platform) {
+export function launchArguments(
+  config: Config,
+  role: Role,
+  platform = process.platform,
+  schema = resolve(config.stateDirectory, `${role}.output-schema.json`),
+) {
   check(
     Object.keys(config.adapter).every((key) => ["kind", "executable"].includes(key)),
     "unsupported-adapter-configuration",
@@ -250,7 +258,7 @@ export function launchArguments(config: Config, role: Role, platform = process.p
         ]
       : []),
     "--output-schema",
-    artifact(config, role, "output-schema.json"),
+    schema,
     "-s",
     role === "author" ? "workspace-write" : "read-only",
     "-",
@@ -404,24 +412,30 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
       await prepareAuthorRuntime(config);
     },
     async launch(role, config, prompt) {
-      await writeFile(artifact(config, role, "prompt.txt"), prompt, { flag: "wx" });
+      const launch = randomUUID();
+      await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(
-        artifact(config, role, "output-schema.json"),
+        artifact(config, role, launch, "output-schema.json"),
         JSON.stringify(outputSchema(config, role)),
         { flag: "wx" },
       );
-      const trace = artifact(config, role, "jsonl");
-      const request = artifact(config, role, "request.json");
+      const trace = artifact(config, role, launch, "jsonl");
+      const request = artifact(config, role, launch, "request.json");
       await writeFile(
         request,
         JSON.stringify({
           executable: config.adapter.executable,
-          args: launchArguments(config, role),
-          stdin: artifact(config, role, "prompt.txt"),
+          args: launchArguments(
+            config,
+            role,
+            process.platform,
+            artifact(config, role, launch, "output-schema.json"),
+          ),
+          stdin: artifact(config, role, launch, "prompt.txt"),
           stdout: trace,
-          stderr: artifact(config, role, "err.log"),
-          identity: artifact(config, role, "process.json"),
-          done: artifact(config, role, "exit.json"),
+          stderr: artifact(config, role, launch, "err.log"),
+          identity: artifact(config, role, launch, "process.json"),
+          done: artifact(config, role, launch, "exit.json"),
         }),
         { flag: "wx" },
       );
@@ -431,55 +445,31 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         role === "author" ? authorEnvironment(config, process.env) : process.env,
       );
       for (let count = 0; count < 120; count++) {
-        const identity = await optionalText(artifact(config, role, "process.json"));
+        const identity = await optionalText(artifact(config, role, launch, "process.json"));
         const text = await optionalText(trace);
         if (identity && text.includes('"thread.started"')) {
           const terminal = parseTrace(text, false, role, config);
-          return { id: terminal.id, pid: JSON.parse(identity).pid, trace };
+          return { id: terminal.id, pid: JSON.parse(identity).pid, trace, launchedAt: now() };
         }
         check(
-          !(await optionalText(artifact(config, role, "exit.json"))),
+          !(await optionalText(artifact(config, role, launch, "exit.json"))),
           "launcher-exited-before-identity-reconcile",
         );
         await pause(1000);
       }
-      throw new Error("launch-identity-timeout-reconcile");
+      throw new QueueBlocked("launch-identity-timeout-reconcile");
     },
     async observe(role, config, attempt: Attempt) {
-      const exit = await optionalText(artifact(config, role, "exit.json"));
+      const exit = await optionalText(attemptArtifact(attempt, "exit.json"));
       if (exit) check(JSON.parse(exit).code === 0, "launcher-failed");
       else {
         try {
           process.kill(attempt.pid, 0);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-            const waitPath = artifact(config, role, "exit-wait.json");
-            const saved = await optionalText(waitPath);
-            const observedAt = now();
-            if (!saved) {
-              await writeFile(
-                waitPath,
-                JSON.stringify({
-                  reason: "delayed-exit-receipt",
-                  count: 1,
-                  attempt: attempt.id,
-                  observedAt,
-                }),
-                { flag: "wx", flush: true },
-              );
+            if (now() - attempt.launchedAt < EXIT_RECEIPT_WINDOW_MS)
               return { id: attempt.id, status: "running" };
-            }
-            const wait = JSON.parse(saved);
-            check(
-              wait?.reason === "delayed-exit-receipt" &&
-                wait.count === 1 &&
-                wait.attempt === attempt.id &&
-                Number.isFinite(wait.observedAt),
-              "malformed-exit-wait-record",
-            );
-            if (observedAt - wait.observedAt < config.exitReceiptWindowMs)
-              return { id: attempt.id, status: "running" };
-            throw new Error("exit-receipt-timeout");
+            throw new QueueBlocked("exit-receipt-timeout");
           }
           throw error;
         }

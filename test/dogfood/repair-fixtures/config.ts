@@ -94,7 +94,6 @@ export async function repairFixture(root: string) {
     sourcePaths: [sourceFile],
     acceptanceCriteria: ["Preserve the synthetic acceptance criterion."],
     requiredChecks: ["hosted-linux", "hosted-macos", "hosted-windows"],
-    exitReceiptWindowMs: 30_000,
   };
   const promptContents = [
     "Apply the original bounded change.\n",
@@ -129,7 +128,6 @@ export async function repairFixture(root: string) {
     allowedPaths: [...common.allowedPaths],
     repository: common.repository,
     requiredChecks: [...common.requiredChecks],
-    exitReceiptWindowMs: common.exitReceiptWindowMs,
     author: sourceAuthor,
     reviewer: sourceReviewer,
     adapter: structuredClone(adapter),
@@ -155,8 +153,18 @@ export async function repairFixture(root: string) {
       host: "synthetic-host",
     },
     candidate: { head: repairBase, changed: [sourceFile] },
-    authorAttempt: { id: history[0]!.id, pid: 101, trace: resolve(root, "old-author.jsonl") },
-    reviewerAttempt: { id: history[1]!.id, pid: 102, trace: resolve(root, "old-reviewer.jsonl") },
+    authorAttempt: {
+      id: history[0]!.id,
+      pid: 101,
+      trace: resolve(root, "old-author.jsonl"),
+      launchedAt: 1,
+    },
+    reviewerAttempt: {
+      id: history[1]!.id,
+      pid: 102,
+      trace: resolve(root, "old-reviewer.jsonl"),
+      launchedAt: 1,
+    },
     terminal: {
       status: "failed",
       id: history[1]!.id,
@@ -182,11 +190,13 @@ export async function repairFixture(root: string) {
       id: "synthetic-corrective-author",
       pid: 103,
       trace: resolve(root, "author.jsonl"),
+      launchedAt: 1,
     },
     reviewerAttempt: {
       id: "synthetic-delta-reviewer",
       pid: 104,
       trace: resolve(root, "reviewer.jsonl"),
+      launchedAt: 1,
     },
     terminal: {
       status: "passed",

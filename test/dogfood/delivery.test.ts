@@ -37,6 +37,7 @@ async function fixture() {
     reviewWorktree: paths[2]!,
     stateDirectory: paths[3]!,
     candidateHead: head,
+    retries: 0,
     requiredChecks: ["linux", "windows", "macos"],
     policy: { kind: "fixture" },
   };
@@ -119,6 +120,9 @@ async function fixture() {
     async runGate(_config, name) {
       calls.push(`gate:${name}`);
       return "passed";
+    },
+    async correctGate() {
+      throw new Error("unexpected gate correction");
     },
     async observeDraft(_config, draft) {
       calls.push(`observe-draft:${draft.issue}`);
@@ -647,21 +651,11 @@ it("corrects one transient gate on a new reviewed head and resumes hosted delive
       return { status: "failed", output: "format output" };
     return { status: "passed" };
   };
-
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
-    status: "correcting-gate",
-    gate: "format:check",
-    output: "format output",
-    count: 1,
-  });
-  await expect(readFile(resolve(f.config.stateDirectory, "gate-1.json"), "utf8")).rejects.toThrow();
-  await expect(
-    readFile(resolve(f.config.stateDirectory, "delivery-config.json"), "utf8"),
-  ).rejects.toThrow();
-
-  f.config.candidateHead = correctedHead;
-  f.publication.head = correctedHead;
-  f.adapter.source = async (config) => ({ ...(await source(config)), head: correctedHead });
+  f.adapter.correctGate = async (_config, gate, output) => {
+    expect({ gate, output }).toEqual({ gate: "format:check", output: "format output" });
+    f.publication.head = correctedHead;
+    return { head: correctedHead };
+  };
   f.adapter.checks = async () => ({
     head: correctedHead,
     checks: f.config.requiredChecks.map((name) => ({
@@ -685,10 +679,14 @@ it("corrects one transient gate on a new reviewed head and resumes hosted delive
   await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
     status: "complete",
     head: correctedHead,
+    retries: 1,
   });
-  expect(
-    JSON.parse(await readFile(resolve(f.config.stateDirectory, "gate-1-intent.json"), "utf8")),
-  ).toEqual({ head: correctedHead, name: "typecheck", attempt: 2 });
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "gate-retry.json"), "utf8"),
+  ).rejects.toThrow();
+  f.config.candidateHead = correctedHead;
+  f.config.retries = 1;
+  f.adapter.source = async (config) => ({ ...(await source(config)), head: correctedHead });
   const completedCalls = [...calls];
   await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
     status: "complete",
@@ -697,36 +695,64 @@ it("corrects one transient gate on a new reviewed head and resumes hosted delive
   expect(calls).toEqual(completedCalls);
 });
 
-it("records a second transient gate failure and does not run a third gate on restart", async () => {
+it("stops after a second transient gate failure without retry records", async () => {
   const f = await fixture();
   let calls = 0;
   f.adapter.runGate = async () => {
     calls += 1;
     return { status: "failed", output: `failure ${calls}` };
   };
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
-    status: "correcting-gate",
-  });
   const correctedHead = "e".repeat(40);
-  const source = f.adapter.source;
-  f.config.candidateHead = correctedHead;
-  f.adapter.source = async (config) => ({ ...(await source(config)), head: correctedHead });
-  await writeFile(
-    resolve(f.config.stateDirectory, "gate-1-intent.next.json"),
-    `${JSON.stringify({ head: correctedHead, name: "typecheck", attempt: 2 }, null, 2)}\n`,
-  );
+  f.adapter.correctGate = async () => ({ head: correctedHead });
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
     reason: "gate-retry-exhausted:typecheck",
     diagnostics: "failure 2",
   });
   await expect(
-    readFile(resolve(f.config.stateDirectory, "gate-1-intent.next.json"), "utf8"),
+    readFile(resolve(f.config.stateDirectory, "gate-retry-stop.json"), "utf8"),
   ).rejects.toThrow();
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
-    reason: "gate-retry-exhausted:typecheck",
-    diagnostics: "failure 2",
-  });
   expect(calls).toBe(2);
+});
+
+it("repeats an interrupted inline correction without duplicating publication or merge", async () => {
+  const f = await fixture();
+  const correctedHead = "e".repeat(40);
+  let corrections = 0;
+  f.adapter.runGate = async (config) =>
+    config.candidateHead === correctedHead
+      ? { status: "passed" }
+      : { status: "failed", output: "typecheck failed" };
+  f.adapter.correctGate = async () => {
+    corrections += 1;
+    if (corrections === 1) throw new Error("simulated restart");
+    f.publication.head = correctedHead;
+    return { head: correctedHead };
+  };
+  f.adapter.checks = async (config) => ({
+    head: correctedHead,
+    checks: config.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: `https://example.test/check/${name}`,
+    })),
+  });
+  f.adapter.observeMerge = async () =>
+    f.state.merged
+      ? {
+          state: "confirmed",
+          value: { number: f.publication.number, head: correctedHead, mergeCommit },
+        }
+      : { state: "needs-mutation" };
+
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow("simulated restart");
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "complete",
+    head: correctedHead,
+    retries: 1,
+  });
+  expect(corrections).toBe(2);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
 });
 
 it("fails closed on a malformed external delivery record", async () => {

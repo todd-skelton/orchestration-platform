@@ -53,6 +53,7 @@ function config(root: string): DeliveryConfig {
     reviewWorktree: resolve(root, "reviewer"),
     stateDirectory: resolve(root, "state"),
     candidateHead: head,
+    retries: 0,
     requiredChecks: [
       "Node 24 / ubuntu-latest",
       "Node 24 / windows-latest",
@@ -100,11 +101,13 @@ async function writePilotEvidence(
     id: authorId,
     pid: 101,
     trace: resolve(current.stateDirectory, "author.jsonl"),
+    launchedAt: 1,
   };
   const reviewerAttempt = values.reviewerAttempt ?? {
     id: reviewId,
     pid: 202,
     trace: resolve(current.stateDirectory, "reviewer.jsonl"),
+    launchedAt: 1,
   };
   await Promise.all([
     writeFile(
@@ -1430,11 +1433,17 @@ it.each([
   const current = config(root);
   await mkdir(current.stateDirectory);
   await writePilotEvidence(current, {
-    author: { pid: 101, trace: resolve(current.stateDirectory, "author.jsonl"), ...author },
+    author: {
+      pid: 101,
+      trace: resolve(current.stateDirectory, "author.jsonl"),
+      launchedAt: 1,
+      ...author,
+    },
     reviewerAttempt: {
       id: (reviewer as { id?: string }).id,
       pid: 202,
       trace: resolve(current.stateDirectory, "reviewer.jsonl"),
+      launchedAt: 1,
     },
     reviewerTerminal: reviewer,
   });
