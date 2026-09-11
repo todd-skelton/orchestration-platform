@@ -2,7 +2,7 @@ import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { step, workerPrompt } from "../../scripts/dogfood/flow.js";
+import { gateCorrectionStep, step, workerPrompt } from "../../scripts/dogfood/flow.js";
 import type { Adapter, Check, Config, Role, Terminal } from "../../scripts/dogfood/flow.js";
 
 const base = "a".repeat(40),
@@ -35,6 +35,7 @@ async function fixture() {
     allowedPaths: ["scripts/repair.mjs"],
     repository: "owner/repo",
     requiredChecks: ["linux", "macos", "windows"],
+    exitReceiptWindowMs: 30_000,
     author: { model: "test", effort: "low", prompt: "Improve the selected issue." },
     reviewer: { model: "test", effort: "low", prompt: "Improve the selected issue." },
     adapter: { kind: "codex-exec", executable: process.execPath },
@@ -49,7 +50,9 @@ async function fixture() {
     reviewerDirty = false,
     sameIdentity = false;
   const statuses: Record<Role, Terminal["status"]> = { author: "running", reviewer: "running" };
+  let retryStatus: Terminal["status"] = "running";
   const summaries: Partial<Record<Role, unknown>> = {};
+  let retrySummary: unknown;
   const launches: Role[] = [],
     observations: Role[] = [];
   const staged: string[][] = [],
@@ -94,22 +97,33 @@ async function fixture() {
       }
       throw new Error(`unexpected git operation ${args}`);
     },
-    async launch(role, _config, prompt) {
+    async launch(role, selectedConfig, prompt) {
       expect(prompt).toContain(role === "author" ? base : head);
       launches.push(role);
       return {
-        id: role === "reviewer" && sameIdentity ? "author" : role,
+        id:
+          selectedConfig.artifactPrefix !== undefined
+            ? `${selectedConfig.artifactPrefix}-${role}`
+            : role === "reviewer" && sameIdentity
+              ? "author"
+              : role,
         pid: 123,
         trace: resolve(root, `${role}.jsonl`),
       };
     },
-    async observe(role, _config, attempt) {
+    async observe(role, selectedConfig, attempt) {
       observations.push(role);
+      const status = selectedConfig.artifactPrefix?.includes("review-retry")
+        ? retryStatus
+        : statuses[role];
+      const summary = selectedConfig.artifactPrefix?.includes("review-retry")
+        ? retrySummary
+        : summaries[role];
       return {
-        status: statuses[role],
+        status,
         id: attempt.id,
-        ...(statuses[role] === "running" ? {} : { head: role === "author" ? base : head }),
-        ...(summaries[role] === undefined ? {} : { summary: summaries[role] as string }),
+        ...(status === "running" ? {} : { head: role === "author" ? base : head }),
+        ...(summary === undefined ? {} : { summary: summary as string }),
       };
     },
     async checks() {
@@ -117,11 +131,20 @@ async function fixture() {
     },
   };
   const run = () => step(config, adapter, pilot);
+  const runGateCorrection = () => gateCorrectionStep(config, adapter, pilot);
   const authorDone = () => {
     statuses.author = "passed";
   };
   const reviewerDone = () => {
     statuses.reviewer = "passed";
+    summaries.reviewer ??= JSON.stringify({
+      run: config.run,
+      role: "reviewer",
+      head,
+      verdict: "PASS",
+      findings: [],
+      g0: "No simpler change.",
+    });
   };
   const publish = () =>
     writeFile(
@@ -132,6 +155,7 @@ async function fixture() {
     config,
     adapter,
     run,
+    runGateCorrection,
     launches,
     observations,
     pilot,
@@ -166,6 +190,10 @@ async function fixture() {
       sameIdentity = true;
     },
     statuses,
+    retry: (status: Terminal["status"], summary?: unknown) => {
+      retryStatus = status;
+      retrySummary = summary;
+    },
     summarize: (role: Role, value: unknown) => {
       summaries[role] = value;
     },
@@ -366,10 +394,20 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     f.authorDone();
     await f.run();
     f.statuses.reviewer = "failed";
-    f.summarize("reviewer", "PASS according to advisory prose");
+    f.summarize(
+      "reviewer",
+      JSON.stringify({
+        run: f.config.run,
+        role: "reviewer",
+        head,
+        verdict: "FAIL",
+        findings: [{ file: "scripts/repair.mjs", line: 1, severity: "blocking", text: "finding" }],
+        g0: "No simpler change.",
+      }),
+    );
     await expect(f.run()).rejects.toMatchObject({
       message: "reviewer-failed",
-      diagnostics: "PASS according to advisory prose",
+      diagnostics: expect.stringContaining('"verdict":"FAIL"'),
     });
     const other = await fixture();
     await other.run();
@@ -379,37 +417,127 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     other.dirtyReview();
     await expect(other.run()).rejects.toThrow("reviewer-modified-worktree");
   });
-  it("persists malformed reviewer transport as a distinct exact-head terminal", async () => {
+  it("retries a malformed reviewer once with the parse error and resumes after observation", async () => {
     const f = await fixture();
     await f.run();
     f.authorDone();
     await f.run();
     f.statuses.reviewer = "malformed";
-    await expect(f.run()).rejects.toThrow("reviewer-malformed");
+    f.retry("running");
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
     expect(
       JSON.parse(
         await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
       ),
     ).toMatchObject({ status: "malformed", id: "reviewer", head });
     expect(
-      JSON.parse(await readFile(resolve(f.config.stateDirectory, "reviewer-intent.json"), "utf8")),
-    ).toMatchObject({ role: "reviewer", head });
-    await expect(f.run()).rejects.toThrow("reviewer-malformed");
-    expect(f.launches).toEqual(["author", "reviewer"]);
+      JSON.parse(
+        await readFile(resolve(f.config.stateDirectory, "reviewer-retry-intent.json"), "utf8"),
+      ),
+    ).toEqual({
+      reason: "malformed-review",
+      count: 1,
+      head,
+      parseError: "malformed-worker-verdict",
+    });
+    f.retry(
+      "passed",
+      JSON.stringify({
+        run: f.config.run,
+        role: "reviewer",
+        head,
+        verdict: "PASS",
+        findings: [],
+        g0: "No simpler change.",
+      }),
+    );
+    await expect(f.run()).resolves.toMatchObject({
+      status: "awaiting-publication",
+      reviewer: { id: "review-retry-reviewer" },
+    });
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
   });
-  it("rejects an oversized reviewer report without persisting a truncated authority prefix", async () => {
+  it("stops with a typed reason when the reviewer retry is malformed", async () => {
+    const f = await fixture();
+    await f.run();
+    f.authorDone();
+    await f.run();
+    f.statuses.reviewer = "malformed";
+    f.retry("malformed");
+    await expect(f.run()).rejects.toThrow("reviewer-retry-exhausted");
+    await expect(f.run()).rejects.toThrow("reviewer-retry-exhausted");
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+  });
+  it("keeps the original semantic parse error while a reviewer retry is running", async () => {
     const f = await fixture();
     await f.run();
     f.authorDone();
     await f.run();
     f.reviewerDone();
-    f.summarize("reviewer", "x".repeat(2001));
-    await expect(f.run()).rejects.toThrow("reviewer-malformed");
+    f.summarize(
+      "reviewer",
+      JSON.stringify({
+        run: f.config.run,
+        role: "reviewer",
+        head,
+        verdict: "PASS",
+        findings: [{ file: "scripts/repair.mjs", line: 1, severity: "blocking", text: "blocking" }],
+        g0: "No simpler change.",
+      }),
+    );
+    f.retry("running");
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
     expect(
       JSON.parse(
-        await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
+        await readFile(resolve(f.config.stateDirectory, "reviewer-retry-intent.json"), "utf8"),
+      ).parseError,
+    ).toBe("inconsistent-source-review-verdict");
+  });
+  it("keeps gate reviewer retry artifacts distinct from an earlier reviewer retry", async () => {
+    const f = await fixture();
+    const originalAttempt = JSON.stringify({ id: "original-review-retry" });
+    const originalTerminal = JSON.stringify({ status: "passed", id: "original-review-retry" });
+    await Promise.all([
+      writeFile(resolve(f.config.stateDirectory, "reviewer-retry-attempt.json"), originalAttempt),
+      writeFile(resolve(f.config.stateDirectory, "reviewer-retry-terminal.json"), originalTerminal),
+    ]);
+
+    await expect(f.runGateCorrection()).resolves.toMatchObject({ status: "observing-author" });
+    f.authorDone();
+    await expect(f.runGateCorrection()).resolves.toMatchObject({ status: "observing-reviewer" });
+    f.statuses.reviewer = "malformed";
+    f.retry("running");
+    await expect(f.runGateCorrection()).resolves.toMatchObject({ status: "observing-reviewer" });
+    f.retry(
+      "passed",
+      JSON.stringify({
+        run: f.config.run,
+        role: "reviewer",
+        head,
+        verdict: "PASS",
+        findings: [],
+        g0: "No simpler change.",
+      }),
+    );
+    await expect(f.runGateCorrection()).resolves.toMatchObject({
+      status: "awaiting-publication",
+      reviewer: { id: "gate-review-retry-reviewer" },
+    });
+    expect(
+      await readFile(resolve(f.config.stateDirectory, "reviewer-retry-attempt.json"), "utf8"),
+    ).toBe(originalAttempt);
+    expect(
+      await readFile(resolve(f.config.stateDirectory, "reviewer-retry-terminal.json"), "utf8"),
+    ).toBe(originalTerminal);
+    expect(
+      JSON.parse(
+        await readFile(
+          resolve(f.config.stateDirectory, "gate-retry-reviewer-retry-attempt.json"),
+          "utf8",
+        ),
       ),
-    ).toEqual({ status: "malformed", id: "reviewer", head });
+    ).toMatchObject({ id: "gate-review-retry-reviewer" });
   });
   it("keeps failure reasons authoritative while surfacing bounded advisory diagnostics", async () => {
     const failed = await fixture();
@@ -426,11 +554,24 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     passed.summarize("author", "author finding");
     passed.authorDone();
     await passed.run();
-    passed.summarize("reviewer", "review finding");
+    passed.summarize(
+      "reviewer",
+      JSON.stringify({
+        run: passed.config.run,
+        role: "reviewer",
+        head,
+        verdict: "PASS",
+        findings: [],
+        g0: "No simpler change.",
+      }),
+    );
     passed.reviewerDone();
     expect(await passed.run()).toMatchObject({
       status: "awaiting-publication",
-      diagnostics: { author: "author finding", reviewer: "review finding" },
+      diagnostics: {
+        author: "author finding",
+        reviewer: expect.stringContaining('"verdict":"PASS"'),
+      },
     });
   });
   it.each(["empty", "missing", "duplicate", "failed", "pending", "wrong-head"])(

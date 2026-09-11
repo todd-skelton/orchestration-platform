@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-import { ReviewRecoveryBlocked, selectedSourceReview } from "./review-recovery-adapter.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { selectedSourceReview } from "./flow.ts";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
 import { normalizeBody } from "../planning/board-check.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
@@ -67,6 +68,15 @@ async function json(path: string, reason: string) {
     return JSON.parse(await readFile(path, "utf8"));
   } catch {
     throw new DeliveryBlocked(reason);
+  }
+}
+
+async function optionalJson(path: string) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new DeliveryBlocked("malformed-source-record");
   }
 }
 
@@ -417,38 +427,37 @@ export function githubDeliveryAdapter(
   return {
     publicationUrl,
     async source(config) {
+      const recordPrefix = (await optionalJson(
+        resolve(config.stateDirectory, "gate-retry-candidate.json"),
+      ))
+        ? "gate-retry-"
+        : "";
+      const record = (name: string) => `${recordPrefix}${name}.json`;
       const pinned = await json(
-        resolve(config.stateDirectory, "config.json"),
+        resolve(config.stateDirectory, record("config")),
         "missing-pilot-config-record",
       );
       const candidate = await json(
-        resolve(config.stateDirectory, "candidate.json"),
+        resolve(config.stateDirectory, record("candidate")),
         "missing-candidate-record",
       );
       const author = await json(
-        resolve(config.stateDirectory, "author-attempt.json"),
+        resolve(config.stateDirectory, record("author-attempt")),
         "missing-author-record",
       );
       const authorTerminal = await json(
-        resolve(config.stateDirectory, "author-terminal.json"),
+        resolve(config.stateDirectory, record("author-terminal")),
         "missing-author-terminal-record",
       );
       const pilot = pinned?.config;
       let reviewer: any;
       let reviewerAttempt: any;
-      let replacement = false;
       try {
-        const selected = await selectedSourceReview(
-          pilot,
-          config.selectedReviewStateDirectory ?? config.stateDirectory,
-        );
+        const selected = await selectedSourceReview(pilot, recordPrefix);
         reviewer = selected.terminal;
         reviewerAttempt = selected.attempt;
-        replacement = selected.binding !== undefined;
       } catch (error) {
-        throw new DeliveryBlocked(
-          error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",
-        );
+        throw new DeliveryBlocked("selected-review-state-unknown");
       }
       let reviewerReportAccepted = false;
       try {
@@ -482,14 +491,14 @@ export function githubDeliveryAdapter(
         reviewer?.status !== "passed" ||
         !reviewerReportAccepted ||
         reviewer?.head !== config.candidateHead ||
-        !validAttempt(author, config, "author") ||
-        !validAttempt(
-          reviewerAttempt,
-          config,
-          "reviewer",
-          replacement && !config.selectedReviewStateDirectory ? "review-recovery" : "",
-          config.selectedReviewStateDirectory ?? config.stateDirectory,
-        ) ||
+        !validAttempt(author, config, "author", recordPrefix ? "gate-retry" : "") ||
+        (!validAttempt(reviewerAttempt, config, "reviewer", recordPrefix ? "gate-retry" : "") &&
+          !validAttempt(
+            reviewerAttempt,
+            config,
+            "reviewer",
+            recordPrefix ? "gate-review-retry" : "review-retry",
+          )) ||
         reviewer?.id !== reviewerAttempt.id ||
         author.id === reviewerAttempt.id
       )
@@ -510,13 +519,20 @@ export function githubDeliveryAdapter(
     },
     verifyWorkspace,
     async runGate(config, name, head) {
-      if (!(await verifyWorkspace(config, head))) return "failed";
+      if (!(await verifyWorkspace(config, head)))
+        return { status: "failed", output: "candidate workspace drifted before gate" };
       try {
         const launcher = await resolvePnpmLauncher();
         await run(launcher.executable, [...launcher.prefixArgs, "run", name], config.worktree);
-        return (await verifyWorkspace(config, head)) ? "passed" : "failed";
-      } catch {
-        return "failed";
+        return (await verifyWorkspace(config, head))
+          ? { status: "passed" as const }
+          : { status: "failed" as const, output: "candidate workspace drifted after gate" };
+      } catch (error) {
+        const failure = error as { stdout?: string; stderr?: string; message?: string };
+        return {
+          status: "failed",
+          output: [failure.stdout, failure.stderr, failure.message].filter(Boolean).join("\n"),
+        };
       }
     },
     async observeDraft(config, draft) {

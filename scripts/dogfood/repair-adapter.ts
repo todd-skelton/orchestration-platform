@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes the private TypeScript composition directly.
 import { step } from "./flow.ts";
 import type { Adapter, Attempt, Config, Role } from "./flow.js";
-import { ReviewRecoveryBlocked, selectedSourceReview } from "./review-recovery-adapter.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { selectedSourceReview } from "./flow.ts";
 import type { RepairAdapter } from "./repair.mjs";
 import {
   RepairBlocked,
@@ -39,6 +40,8 @@ const FLOW_REFUSALS = new Set([
   "pilot-revision-moved",
   "author-failed",
   "reviewer-failed",
+  "reviewer-retry-exhausted",
+  "exit-receipt-timeout",
 ]);
 function demand(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new RepairBlocked(reason);
@@ -59,7 +62,6 @@ async function assertBoundedRoots(config: RepairConfig) {
       config.reviewWorktree,
       config.stateDirectory,
       config.sourceStateDirectory,
-      ...(config.selectedReviewStateDirectory ? [config.selectedReviewStateDirectory] : []),
     ].map((path) => realpath(path)),
   );
   demand(
@@ -130,7 +132,6 @@ async function loadArtifacts(
   config: RepairConfig,
   directory: string,
   base: string,
-  selectedReviewStateDirectory?: string,
 ): Promise<SourceReviewArtifacts> {
   const git = async (worktree: string, args: string[]) => {
     try {
@@ -152,14 +153,9 @@ async function loadArtifacts(
   let reviewerAttempt: any;
   let terminal: any;
   try {
-    ({ attempt: reviewerAttempt, terminal } = await selectedSourceReview(
-      configRecord.config,
-      selectedReviewStateDirectory ?? directory,
-    ));
+    ({ attempt: reviewerAttempt, terminal } = await selectedSourceReview(configRecord.config));
   } catch (error) {
-    throw new RepairBlocked(
-      error instanceof ReviewRecoveryBlocked ? error.reason : "selected-review-state-unknown",
-    );
+    throw new RepairBlocked("selected-review-state-unknown");
   }
   demand(candidate && /^[a-f0-9]{40}$/.test(candidate.head), "source-candidate-mismatch");
   const [sourceHead, reviewHead, sourceStatus, reviewStatus, changedOutput, presentOutput] =
@@ -218,6 +214,7 @@ function flowConfig(config: RepairConfig): Config {
     allowedPaths: config.allowedPaths,
     repository: config.repository,
     requiredChecks: config.requiredChecks,
+    exitReceiptWindowMs: config.exitReceiptWindowMs,
     author: config.author,
     reviewer: config.reviewer,
     adapter: config.adapter,
@@ -300,7 +297,6 @@ export function reviewedRepairAdapter(native: Adapter, gitExecutable = "git"): R
           config,
           config.sourceStateDirectory,
           config.mainBase,
-          config.selectedReviewStateDirectory,
         )),
         promptContents: prompts,
       };

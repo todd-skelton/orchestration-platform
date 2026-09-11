@@ -30,6 +30,7 @@ async function fixture(mode: "complete" | "wait" = "complete") {
     reviewer: { model: "gpt-5.6-sol", effort: "high" },
     codexExecutable: process.execPath,
     gitExecutable: process.execPath,
+    exitReceiptWindowMs: 30_000,
     nativeLaunchCeiling: 8,
     attemptCeiling: 4,
   };
@@ -69,7 +70,7 @@ afterEach(async () => {
 it("accepts one compact loop config through an observed wait to completion", async () => {
   const current = await fixture("wait");
   const result = await run(current.request);
-  expect(result.code).toBe(0);
+  expect(result.code, result.stderr).toBe(0);
   expect(result.stderr).toBe("");
   expect(
     result.stdout
@@ -85,7 +86,7 @@ it("accepts one compact loop config through an observed wait to completion", asy
 it("restarts a completed compact config without repeating component effects", async () => {
   const current = await fixture();
   const first = await run(current.request);
-  expect(first.code).toBe(0);
+  expect(first.code, first.stderr).toBe(0);
   expect(JSON.parse(first.stdout)).toMatchObject({ status: "complete", participants: 2 });
   const callsPath = resolve(current.runState, "command-calls.json");
   const calls = await readFile(callsPath, "utf8");

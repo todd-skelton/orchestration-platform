@@ -3,7 +3,7 @@ import { mkdtemp, realpath, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   WORKER_ENVIRONMENT_ALLOWLIST,
   WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST,
@@ -14,12 +14,6 @@ import {
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
-import {
-  reviewRecoveryAuthority,
-  sourceReviewBinding,
-  validateReviewRecoveryAuthority,
-  validateSourceReviewBinding,
-} from "../../scripts/dogfood/review-policy.mjs";
 
 const id = "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
   head = "b".repeat(40);
@@ -60,8 +54,6 @@ type MutableFixture<T> = T extends string
       : T extends object
         ? { -readonly [K in keyof T]: MutableFixture<T[K]> } & { extra?: unknown }
         : T;
-type SourceReviewBindingFixture = MutableFixture<ReturnType<typeof sourceReviewBinding>>;
-type ReviewRecoveryAuthorityFixture = MutableFixture<ReturnType<typeof reviewRecoveryAuthority>>;
 it.each(["win32", "linux", "darwin"] as const)(
   "selects the observed native backend only on Windows (%s argument fixture)",
   (platform) => {
@@ -411,168 +403,45 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
     ),
   ).toThrow("malformed-worker-verdict");
 });
-it.each([
-  [
-    "schema",
-    (value: SourceReviewBindingFixture): void => {
-      value.schemaVersion = "unknown";
-    },
-  ],
-  [
-    "source run",
-    (value: SourceReviewBindingFixture): void => {
-      value.source.run = "other";
-    },
-  ],
-  [
-    "source state",
-    (value: SourceReviewBindingFixture): void => {
-      value.source.stateDirectory = "/other";
-    },
-  ],
-  [
-    "fingerprint",
-    (value: SourceReviewBindingFixture) => (value.source.configFingerprint = "f".repeat(64)),
-  ],
-  [
-    "author",
-    (value: SourceReviewBindingFixture): void => {
-      value.source.authorAttempt = "other-author";
-    },
-  ],
-  ["head", (value: SourceReviewBindingFixture) => (value.source.candidateHead = "f".repeat(40))],
-  [
-    "original",
-    (value: SourceReviewBindingFixture): void => {
-      value.originalReview.attempt = "other-original";
-    },
-  ],
-  [
-    "original disposition",
-    (value: SourceReviewBindingFixture): void => {
-      value.originalReview.disposition = "unknown";
-    },
-  ],
-  [
-    "invalid original disposition",
-    (value: SourceReviewBindingFixture): void => {
-      value.originalReview.disposition = "failed";
-    },
-  ],
-  [
-    "selected",
-    (value: SourceReviewBindingFixture): void => {
-      value.selectedReview.attempt = "other-selected";
-    },
-  ],
-  [
-    "selected disposition",
-    (value: SourceReviewBindingFixture): void => {
-      value.selectedReview.disposition = "failed";
-    },
-  ],
-  [
-    "extra",
-    (value: SourceReviewBindingFixture): void => {
-      value.extra = true;
-    },
-  ],
-] as const)("rejects substituted source-review binding %s", (_case, mutate) => {
-  const input = {
-    run: "trial",
-    stateDirectory: "/state",
-    configFingerprint: "e".repeat(64),
-    authorAttempt: "author",
-    candidateHead: head,
-    originalReview: "original",
-    selectedReview: "selected",
-    selectedDisposition: "passed" as const,
-  };
-  const binding = structuredClone(sourceReviewBinding(input));
-  mutate(binding);
-  expect(() => validateSourceReviewBinding(binding, input)).toThrow(
-    "invalid-source-review-binding",
-  );
-});
-it.each([
-  [
-    "schema",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.schemaVersion = "unknown";
-    },
-  ],
-  [
-    "controller",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.controller = "other";
-    },
-  ],
-  [
-    "run",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.run = "other";
-    },
-  ],
-  [
-    "state",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.stateDirectory = "/other";
-    },
-  ],
-  [
-    "fingerprint",
-    (value: ReviewRecoveryAuthorityFixture) => (value.sourceConfigFingerprint = "f".repeat(64)),
-  ],
-  [
-    "author",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.sourceAuthor = "other-author";
-    },
-  ],
-  ["head", (value: ReviewRecoveryAuthorityFixture) => (value.candidateHead = "f".repeat(40))],
-  [
-    "original",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.originalReview = "other-original";
-    },
-  ],
-  [
-    "reviewer",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.reviewer.model = "other";
-    },
-  ],
-  [
-    "action",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.action = "retry";
-    },
-  ],
-  [
-    "extra",
-    (value: ReviewRecoveryAuthorityFixture): void => {
-      value.extra = true;
-    },
-  ],
-] as const)("rejects substituted review-recovery authority %s", (_case, mutate) => {
-  const input = {
-    controller: "controller",
-    run: "trial",
-    stateDirectory: "/state",
-    configFingerprint: "e".repeat(64),
-    authorAttempt: "author",
-    candidateHead: head,
-    originalReview: "original",
-    reviewer: { model: "reviewer", effort: "high", prompt: "review prompt" },
-  };
-  const authority = structuredClone(reviewRecoveryAuthority(input));
-  mutate(authority);
-  expect(() => validateReviewRecoveryAuthority(authority, input)).toThrow(
-    "invalid-review-recovery-authority",
-  );
-});
 it("refuses a CLI without the observed native interface before launching", async () => {
   await expect(codexAdapter().preflight(config)).rejects.toThrow();
+});
+it("observes a missing exit receipt for one configured window before a typed stop", async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-exit-wait-")));
+  cleanup.push(root);
+  let now = 1_000;
+  const current = {
+    ...config,
+    stateDirectory: root,
+    exitReceiptWindowMs: 500,
+  };
+  const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl") };
+  const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+    throw Object.assign(new Error("gone"), { code: "ESRCH" });
+  });
+  try {
+    const adapter = codexAdapter("git", () => now);
+    await expect(adapter.observe("author", current, attempt)).resolves.toEqual({
+      id,
+      status: "running",
+    });
+    expect(JSON.parse(await readFile(resolve(root, "author.exit-wait.json"), "utf8"))).toEqual({
+      reason: "delayed-exit-receipt",
+      count: 1,
+      attempt: id,
+      observedAt: 1_000,
+    });
+    now = 1_499;
+    await expect(adapter.observe("author", current, attempt)).resolves.toMatchObject({
+      status: "running",
+    });
+    now = 1_500;
+    await expect(adapter.observe("author", current, attempt)).rejects.toThrow(
+      "exit-receipt-timeout",
+    );
+  } finally {
+    kill.mockRestore();
+  }
 });
 const cleanup: string[] = [];
 afterEach(async () => {

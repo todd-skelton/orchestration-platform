@@ -107,6 +107,7 @@ export async function repairFixture(root: string) {
     sourcePaths: [sourceFile],
     acceptanceCriteria: ["Preserve the synthetic acceptance criterion."],
     requiredChecks: ["hosted-linux", "hosted-macos", "hosted-windows"],
+    exitReceiptWindowMs: 30_000,
   };
   const promptContents = [
     "Apply the original bounded change.\n",
@@ -141,6 +142,7 @@ export async function repairFixture(root: string) {
     allowedPaths: [...common.allowedPaths],
     repository: common.repository,
     requiredChecks: [...common.requiredChecks],
+    exitReceiptWindowMs: common.exitReceiptWindowMs,
     author: sourceAuthor,
     reviewer: sourceReviewer,
     adapter: structuredClone(adapter),
@@ -166,11 +168,13 @@ export async function repairFixture(root: string) {
       sourcePaths: [...common.sourcePaths],
       acceptanceCriteria: [...common.acceptanceCriteria],
       requiredChecks: [...common.requiredChecks],
+      exitReceiptWindowMs: common.exitReceiptWindowMs,
       source: {
         owner: priorConfig.owner,
         run: "synthetic-source-run",
         pilotRevision: priorConfig.pilotRevision,
         requiredChecks: [...priorConfig.requiredChecks],
+        exitReceiptWindowMs: priorConfig.exitReceiptWindowMs,
         author: structuredClone(sourceAuthor),
         reviewer: structuredClone(sourceReviewer),
         adapter: structuredClone(adapter),

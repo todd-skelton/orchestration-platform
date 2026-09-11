@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export const DELIVERY_AUTHORITY_SCHEMA = "dogfood-delivery-authority/v1" as const;
@@ -15,7 +15,6 @@ export interface DeliveryAuthority {
   controllerRevision: string;
   head: string;
   refresh?: PublicationRefresh;
-  selectedReviewStateDirectory?: string;
   actions: (typeof ACTIONS)[number][];
 }
 
@@ -28,7 +27,6 @@ export interface DeliveryConfig {
   worktree: string;
   reviewWorktree: string;
   stateDirectory: string;
-  selectedReviewStateDirectory?: string;
   candidateHead: string;
   refresh?: PublicationRefresh;
   requiredChecks: string[];
@@ -111,6 +109,16 @@ export interface CheckEvidence {
 
 export type DeliveryResult =
   | {
+      status: "correcting-gate";
+      run: string;
+      issue: string;
+      head: string;
+      reviewId: string;
+      gate: string;
+      output: string;
+      count: 1;
+    }
+  | {
       status: "observing-hosted-checks";
       run: string;
       issue: string;
@@ -148,7 +156,11 @@ export interface DeliveryAdapter {
   publicationUrl(config: DeliveryConfig, number: number): string;
   source(config: DeliveryConfig): Promise<SourceEvidence>;
   verifyWorkspace(config: DeliveryConfig, head: string): Promise<boolean>;
-  runGate(config: DeliveryConfig, name: string, head: string): Promise<"passed" | "failed">;
+  runGate(
+    config: DeliveryConfig,
+    name: string,
+    head: string,
+  ): Promise<"passed" | "failed" | { status: "passed" } | { status: "failed"; output: string }>;
   observeDraft(config: DeliveryConfig, draft: DraftPlan): Promise<Observation<{ issue: number }>>;
   applyDraft(config: DeliveryConfig, draft: DraftPlan): Promise<void>;
   observePublication(
@@ -180,10 +192,12 @@ export interface DeliveryAdapter {
 
 export class DeliveryBlocked extends Error {
   readonly reason: string;
+  readonly diagnostics: string | undefined;
 
-  constructor(reason: string) {
+  constructor(reason: string, diagnostics?: string) {
     super(reason);
     this.reason = reason;
+    this.diagnostics = diagnostics;
   }
 }
 
@@ -255,13 +269,31 @@ async function record(directory: string, name: string, value: unknown) {
   }
 }
 
+async function gateIntent(
+  directory: string,
+  name: string,
+  value: { head: string; name: string; attempt: 1 | 2 },
+) {
+  const existing = await optionalRecord(directory, name);
+  if (existing !== ABSENT_RECORD && JSON.stringify(existing) === JSON.stringify(value)) return;
+  if (existing !== ABSENT_RECORD)
+    demand(
+      exactKeys(existing, ["head", "name", "attempt"]) &&
+        existing.name === value.name &&
+        existing.attempt === 1 &&
+        value.attempt === 2,
+      `conflicting-record:${name}`,
+    );
+  const temporary = resolve(directory, `${name}.next.json`);
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flush: true });
+  await rename(temporary, resolve(directory, `${name}.json`));
+}
+
+const gateOutput = (value: string) => value.trim().slice(0, 4_000);
+
 function validateConfig(config: DeliveryConfig) {
   const hasRefresh =
     typeof config === "object" && config !== null && Object.hasOwn(config, "refresh");
-  const hasSelectedReview =
-    typeof config === "object" &&
-    config !== null &&
-    Object.hasOwn(config, "selectedReviewStateDirectory");
   demand(
     exactKeys(config, [
       "run",
@@ -272,7 +304,6 @@ function validateConfig(config: DeliveryConfig) {
       "worktree",
       "reviewWorktree",
       "stateDirectory",
-      ...(hasSelectedReview ? ["selectedReviewStateDirectory"] : []),
       "candidateHead",
       ...(hasRefresh ? ["refresh"] : []),
       "requiredChecks",
@@ -292,13 +323,6 @@ function validateConfig(config: DeliveryConfig) {
   );
   for (const name of ["controllerRoot", "worktree", "reviewWorktree", "stateDirectory"] as const)
     demand(typeof config[name] === "string" && isAbsolute(config[name]), `invalid-${name}`);
-  if (hasSelectedReview)
-    demand(
-      typeof config.selectedReviewStateDirectory === "string" &&
-        isAbsolute(config.selectedReviewStateDirectory) &&
-        relative(config.stateDirectory, config.selectedReviewStateDirectory) !== "",
-      "invalid-selected-review-state-directory",
-    );
   demand(
     typeof config.candidateHead === "string" && SHA.test(config.candidateHead),
     "invalid-candidate-head",
@@ -331,10 +355,6 @@ function validateConfig(config: DeliveryConfig) {
   const authority = config.authority;
   const authorityHasRefresh =
     typeof authority === "object" && authority !== null && Object.hasOwn(authority, "refresh");
-  const authorityHasSelectedReview =
-    typeof authority === "object" &&
-    authority !== null &&
-    Object.hasOwn(authority, "selectedReviewStateDirectory");
   demand(
     authority &&
       exactKeys(authority, [
@@ -345,7 +365,6 @@ function validateConfig(config: DeliveryConfig) {
         "controllerRevision",
         "head",
         ...(authorityHasRefresh ? ["refresh"] : []),
-        ...(authorityHasSelectedReview ? ["selectedReviewStateDirectory"] : []),
         "actions",
       ]) &&
       authority.schemaVersion === DELIVERY_AUTHORITY_SCHEMA &&
@@ -356,9 +375,6 @@ function validateConfig(config: DeliveryConfig) {
       authority.controllerRevision === config.controllerRevision &&
       authority.head === config.candidateHead &&
       authorityHasRefresh === hasRefresh &&
-      authorityHasSelectedReview === hasSelectedReview &&
-      (!hasSelectedReview ||
-        authority.selectedReviewStateDirectory === config.selectedReviewStateDirectory) &&
       (!hasRefresh ||
         (exactKeys(authority.refresh, ["number", "url", "head"]) &&
           authority.refresh.number === config.refresh?.number &&
@@ -700,6 +716,33 @@ export async function deliveryStep(
       "malformed-publication-refresh",
     );
   const directory = await realpath(config.stateDirectory);
+  const stoppedRetry = await optionalRecord(directory, "gate-retry-stop");
+  if (stoppedRetry !== ABSENT_RECORD) {
+    demand(
+      exactKeys(stoppedRetry, ["reason", "count", "head", "gate", "output"]) &&
+        stoppedRetry.reason === `gate-retry-exhausted:${stoppedRetry.gate}` &&
+        stoppedRetry.count === 2 &&
+        stoppedRetry.head === config.candidateHead &&
+        typeof stoppedRetry.output === "string",
+      "malformed-gate-retry-stop",
+    );
+    throw new DeliveryBlocked(stoppedRetry.reason as string, stoppedRetry.output as string);
+  }
+  const retry = await optionalRecord(directory, "gate-retry");
+  if (retry !== ABSENT_RECORD) {
+    demand(
+      exactKeys(retry, ["reason", "count", "head", "gate", "output"]) &&
+        typeof retry.reason === "string" &&
+        retry.reason === `gate-failed:${retry.gate}` &&
+        retry.count === 1 &&
+        typeof retry.head === "string" &&
+        SHA.test(retry.head) &&
+        ["typecheck", "format:check"].includes(retry.gate as string) &&
+        typeof retry.output === "string" &&
+        retry.output.length <= 4_000,
+      "malformed-gate-retry",
+    );
+  }
   const fingerprint = digest(config);
   const pinned = await optionalRecord(directory, "delivery-config");
   const needsConfigRecord = pinned === ABSENT_RECORD;
@@ -712,9 +755,6 @@ export async function deliveryStep(
     const roots = await Promise.all(
       [config.controllerRoot, config.worktree, config.reviewWorktree].map((path) => realpath(path)),
     );
-    const selectedReviewDirectory = config.selectedReviewStateDirectory
-      ? await realpath(config.selectedReviewStateDirectory)
-      : undefined;
     demand(
       roots.every(
         (root, index) =>
@@ -725,16 +765,7 @@ export async function deliveryStep(
       "delivery-worktree-overlap",
     );
     demand(
-      roots.every(
-        (root) =>
-          outside(root, directory) &&
-          outside(directory, root) &&
-          (!selectedReviewDirectory ||
-            (outside(root, selectedReviewDirectory) && outside(selectedReviewDirectory, root))),
-      ) &&
-        (!selectedReviewDirectory ||
-          (outside(directory, selectedReviewDirectory) &&
-            outside(selectedReviewDirectory, directory))),
+      roots.every((root) => outside(root, directory) && outside(directory, root)),
       "delivery-state-inside-checkout",
     );
   }
@@ -867,10 +898,8 @@ export async function deliveryStep(
   if (source === ABSENT_RECORD) {
     source = await adapter.source(config);
     validateSourceRecord(config, source);
-    await record(directory, "delivery-source", source);
   }
   validateSourceRecord(config, source);
-  if (needsConfigRecord) await record(directory, "delivery-config", { fingerprint });
 
   let plan: DeliveryPlan;
   if (savedPlan === ABSENT_RECORD) {
@@ -885,17 +914,19 @@ export async function deliveryStep(
     plan = savedPlan.plan as DeliveryPlan;
   }
   const planDigest = digest(plan);
-  await record(directory, "delivery-plan", {
-    head: config.candidateHead,
-    digest: planDigest,
-    plan,
-  });
-  await record(directory, "delivery-plan-authorization", {
-    head: config.candidateHead,
-    digest: planDigest,
-    policyDigest: digest(config.policy),
-    controller: config.authority.controller,
-  });
+  if (!needsConfigRecord) {
+    await record(directory, "delivery-plan", {
+      head: config.candidateHead,
+      digest: planDigest,
+      plan,
+    });
+    await record(directory, "delivery-plan-authorization", {
+      head: config.candidateHead,
+      digest: planDigest,
+      policyDigest: digest(config.policy),
+      controller: config.authority.controller,
+    });
+  }
 
   if (savedPublication !== ABSENT_RECORD)
     validatePublicationRecord(config, plan, planDigest, savedPublication, adapter);
@@ -935,7 +966,8 @@ export async function deliveryStep(
       await adapter.verifyWorkspace(config, config.candidateHead),
       "candidate-workspace-drift",
     );
-    const runGates = async (gates: string[], offset: number) => {
+    const runGates = async (gates: string[], offset: number, transient: boolean) => {
+      const passedReceipts: { name: string; gate: string }[] = [];
       for (const [index, gate] of gates.entries()) {
         const name = `gate-${offset + index + 1}`;
         const receipt = await optionalRecord(directory, name);
@@ -948,19 +980,84 @@ export async function deliveryStep(
           );
           continue;
         }
-        await record(directory, `${name}-intent`, { head: config.candidateHead, name: gate });
+        const attempt = retry === ABSENT_RECORD ? 1 : 2;
+        await gateIntent(directory, `${name}-intent`, {
+          head: config.candidateHead,
+          name: gate,
+          attempt,
+        });
         demand(
           await adapter.verifyWorkspace(config, config.candidateHead),
           "candidate-workspace-drift",
         );
-        demand(
-          (await adapter.runGate(config, gate, config.candidateHead)) === "passed",
-          `gate-failed:${gate}`,
-        );
-        await record(directory, name, { head: config.candidateHead, name: gate });
+        const observed = await adapter.runGate(config, gate, config.candidateHead);
+        const passed =
+          observed === "passed" || (typeof observed === "object" && observed.status === "passed");
+        if (!passed) {
+          const output =
+            typeof observed === "object" &&
+            observed.status === "failed" &&
+            typeof observed.output === "string"
+              ? gateOutput(observed.output)
+              : "gate exited without output";
+          if (transient && ["typecheck", "format:check"].includes(gate)) {
+            if (attempt === 2) {
+              const reason = `gate-retry-exhausted:${gate}`;
+              await record(directory, "gate-retry-stop", {
+                reason,
+                count: 2,
+                head: config.candidateHead,
+                gate,
+                output,
+              });
+              throw new DeliveryBlocked(reason, output);
+            }
+            const failure = {
+              reason: `gate-failed:${gate}`,
+              count: 1 as const,
+              head: config.candidateHead,
+              gate,
+              output,
+            };
+            await record(directory, "gate-retry", failure);
+            return {
+              status: "correcting-gate" as const,
+              run: config.run,
+              issue: config.issue,
+              head: config.candidateHead,
+              reviewId: source.reviewId,
+              gate,
+              output,
+              count: 1 as const,
+            };
+          }
+          throw new DeliveryBlocked(`gate-failed:${gate}`);
+        }
+        passedReceipts.push({ name, gate });
       }
+      for (const passed of passedReceipts)
+        await record(directory, passed.name, {
+          head: config.candidateHead,
+          name: passed.gate,
+        });
     };
-    await runGates(plan.gates.beforeMirror, 0);
+    const gateFailure = await runGates(plan.gates.beforeMirror, 0, true);
+    if (gateFailure) return gateFailure;
+    if (needsConfigRecord) {
+      await record(directory, "delivery-source", source);
+      await record(directory, "delivery-config", { fingerprint });
+      await record(directory, "delivery-plan", {
+        head: config.candidateHead,
+        digest: planDigest,
+        plan,
+      });
+      await record(directory, "delivery-plan-authorization", {
+        head: config.candidateHead,
+        digest: planDigest,
+        policyDigest: digest(config.policy),
+        controller: config.authority.controller,
+      });
+    }
 
     for (const draft of plan.drafts) {
       demand(
@@ -989,7 +1086,7 @@ export async function deliveryStep(
         `malformed-record:draft-${draft.key}`,
       );
     }
-    await runGates(plan.gates.afterMirror, plan.gates.beforeMirror.length);
+    await runGates(plan.gates.afterMirror, plan.gates.beforeMirror.length, false);
   }
 
   const publication =

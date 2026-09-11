@@ -17,8 +17,6 @@ import type {
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
 import type { RepairAdapter } from "../../scripts/dogfood/repair.js";
 import { repairDigest } from "../../scripts/dogfood/repair-policy.js";
-import { reviewedReviewRecoveryAdapter } from "../../scripts/dogfood/review-recovery-adapter.mjs";
-import { reviewRecoveryAuthority } from "../../scripts/dogfood/review-policy.mjs";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import {
   itemAuthority,
@@ -75,6 +73,7 @@ async function fixture(history: QueueParticipant[] = []) {
     allowedPaths: ["scripts/dogfood/queue.ts"],
     repository: "fixture/repository",
     requiredChecks: ["linux", "windows", "macos"],
+    exitReceiptWindowMs: 30_000,
     author: { model: "gpt-author", effort: "high", prompt: "author prompt" },
     reviewer: {
       model: "gpt-reviewer",
@@ -169,64 +168,6 @@ async function fixture(history: QueueParticipant[] = []) {
   return { root, paths, source, item, config };
 }
 
-async function writeMalformedSource(current: Awaited<ReturnType<typeof fixture>>) {
-  const prompts = [current.source.author.prompt, current.source.reviewer.prompt];
-  const fingerprint = repairDigest({ config: current.source, prompts });
-  await Promise.all([
-    writeFile(
-      resolve(current.paths.source, "config.json"),
-      JSON.stringify({ fingerprint, config: current.source }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "candidate.json"),
-      JSON.stringify({ head: candidate, changed: current.source.allowedPaths }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "author-attempt.json"),
-      JSON.stringify({
-        id: "source-author",
-        pid: 1,
-        trace: resolve(current.paths.source, "author.jsonl"),
-      }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "author-terminal.json"),
-      JSON.stringify({ id: "source-author", status: "passed", head: base }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "reviewer-intent.json"),
-      JSON.stringify({ fingerprint, role: "reviewer", head: candidate }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "reviewer-attempt.json"),
-      JSON.stringify({
-        id: "source-reviewer",
-        pid: 2,
-        trace: resolve(current.paths.source, "reviewer.jsonl"),
-      }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "reviewer-terminal.json"),
-      JSON.stringify({ id: "source-reviewer", status: "malformed", head: candidate }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "review-recovery-authority.json"),
-      JSON.stringify(
-        reviewRecoveryAuthority({
-          controller: current.source.owner,
-          run: current.source.run,
-          stateDirectory: current.paths.source,
-          configFingerprint: fingerprint,
-          authorAttempt: "source-author",
-          candidateHead: candidate,
-          originalReview: "source-reviewer",
-          reviewer: current.source.reviewer,
-        }),
-      ),
-    ),
-  ]);
-}
-
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -286,6 +227,7 @@ it("directly composes the accepted setup transition before source work", async (
 
 it("directly composes the accepted flow and delivery transitions with exact identities", async () => {
   const current = await fixture();
+  const corrected = "f".repeat(40);
   current.item.implementationAttempt = 2;
   current.item.delivery.refresh = {
     number: 337,
@@ -310,16 +252,16 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         reviewHead = String(args.at(-1));
         return "";
       }
-      if (args[0] === "merge-base") return base;
+      if (args[0] === "merge-base") return String(args[1]);
       if (args[0] === "diff") return args.includes("--cached") ? "" : `scripts/dogfood/queue.ts\0`;
       if (args[0] === "ls-files") return "";
       if (args[0] === "commit") {
-        sourceHead = candidate;
+        sourceHead = sourceHead === base ? candidate : corrected;
         return "";
       }
       return "";
     },
-    async launch(role, _config, prompt): Promise<Attempt> {
+    async launch(role, selectedConfig, prompt): Promise<Attempt> {
       const ordinal = launches.length + 1;
       expect(
         JSON.parse(
@@ -333,19 +275,34 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         expect(prompt).toContain("is there a simpler way?");
         expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
       }
-      launches.push(role);
-      return { id: `source-${role}`, pid: pid++, trace: resolve(current.root, `${role}.jsonl`) };
+      const selected = selectedConfig.artifactPrefix
+        ? `${selectedConfig.artifactPrefix}-${role}`
+        : role;
+      launches.push(selected);
+      return {
+        id: `source-${selected}`,
+        pid: pid++,
+        trace: resolve(current.root, `${selected}.jsonl`),
+      };
     },
-    async observe(role, _config, attempt) {
+    async observe(role, selectedConfig, attempt) {
+      const correction = selectedConfig.artifactPrefix === "gate-retry";
+      const terminalHead = correction
+        ? role === "author"
+          ? candidate
+          : corrected
+        : role === "author"
+          ? base
+          : candidate;
       return {
         status: "passed",
         id: attempt.id,
-        head: role === "author" ? base : candidate,
+        head: terminalHead,
         usage: {
           input_tokens: role === "author" ? 11 : 7,
           output_tokens: role === "author" ? 3 : 2,
         },
-        ...(role === "reviewer" ? { summary: passingReviewSummary(candidate) } : {}),
+        ...(role === "reviewer" ? { summary: passingReviewSummary(terminalHead) } : {}),
       };
     },
     async checks() {
@@ -387,7 +344,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   const publication = (): PublicationEvidence => ({
     number: 338,
     url: "https://example.test/pull/338",
-    head: candidate,
+    head: corrected,
     repository: current.source.repository,
     sourceBranch: plan.publication.sourceBranch,
     baseBranch: plan.publication.baseBranch,
@@ -396,13 +353,16 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     planDigest: publishedDigest,
   });
   let capturedDelivery: DeliveryConfig | undefined;
+  let gateCalls = 0;
+  let hostedReady = false;
   const delivery: DeliveryAdapter = {
     publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
     async source(config) {
       capturedDelivery = config;
       return {
-        head: candidate,
-        reviewId: "source-reviewer",
+        head: config.candidateHead,
+        reviewId:
+          config.candidateHead === corrected ? "source-gate-retry-reviewer" : "source-reviewer",
         controller: current.source.owner,
         run: config.run,
         issue: config.issue,
@@ -418,7 +378,8 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       return true;
     },
     async runGate() {
-      return "passed";
+      gateCalls += 1;
+      return gateCalls === 1 ? { status: "failed", output: "transient typecheck" } : "passed";
     },
     async observeDraft() {
       return draft ? { state: "confirmed", value: { issue: 338 } } : { state: "needs-mutation" };
@@ -437,17 +398,17 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     },
     async checks(config) {
       return {
-        head: candidate,
+        head: corrected,
         checks: config.requiredChecks.map((name) => ({
           name,
-          bucket: "pass" as const,
+          bucket: hostedReady ? ("pass" as const) : ("pending" as const),
           link: `https://example.test/check/${name}`,
         })),
       };
     },
     async observeMerge() {
       return merged
-        ? { state: "confirmed", value: { number: 338, head: candidate, mergeCommit } }
+        ? { state: "confirmed", value: { number: 338, head: corrected, mergeCommit } }
         : { state: "needs-mutation" };
     },
     async merge() {
@@ -498,12 +459,20 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   ]);
   if (accepted.status !== "accepted") throw new Error("fixture source did not accept");
   await expect(adapter.delivery(current.item, accepted)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+    head: corrected,
+    reviewId: "source-gate-retry-reviewer",
+  });
+  const effectsAfterCorrection = { launches: [...launches], gateCalls };
+  hostedReady = true;
+  await expect(adapter.delivery(current.item, accepted)).resolves.toMatchObject({
     status: "complete",
-    head: candidate,
-    reviewId: "source-reviewer",
+    head: corrected,
+    reviewId: "source-gate-retry-reviewer",
     mergeCommit,
   });
-  expect(launches).toEqual(["author", "reviewer"]);
+  expect({ launches, gateCalls }).toEqual(effectsAfterCorrection);
+  expect(launches).toEqual(["author", "reviewer", "gate-retry-author", "gate-retry-reviewer"]);
   expect({ draft, published, merged, cleaned }).toEqual({
     draft: true,
     published: true,
@@ -514,341 +483,6 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     refresh: current.item.delivery.refresh,
     authority: { refresh: current.item.delivery.refresh },
   });
-});
-
-it.each([
-  ["malformed terminal transport", { status: "malformed" as const }],
-  ["malformed nested report", { status: "passed" as const, summary: "{not-json" }],
-])(
-  "replaces only %s and binds the selected review without relaunch on restart",
-  async (_case, malformedReview) => {
-    const current = await fixture();
-    let sourceHead = base;
-    let reviewHead = base;
-    const launches: string[] = [];
-    const native: Adapter = {
-      async preflight() {},
-      async git(worktree, args) {
-        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
-        if (args[0] === "rev-parse" && args[1] === "HEAD") {
-          if (worktree === current.paths.pilot) return stable;
-          return worktree === current.paths.review ? reviewHead : sourceHead;
-        }
-        if (args[0] === "status") return "";
-        if (args[0] === "checkout") {
-          reviewHead = String(args.at(-1));
-          return "";
-        }
-        if (args[0] === "merge-base") return base;
-        if (args[0] === "diff")
-          return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
-        if (args[0] === "ls-files") return "";
-        if (args[0] === "commit") {
-          sourceHead = candidate;
-          return "";
-        }
-        return "";
-      },
-      async launch(role, config, prompt) {
-        const replacement = config.artifactPrefix === "review-recovery";
-        launches.push(replacement ? "replacement-reviewer" : role);
-        if (replacement) {
-          expect(prompt).toContain("sole authority-bound replacement");
-          expect(prompt).toContain("is there a simpler way?");
-        }
-        return {
-          id: replacement ? "selected-reviewer" : `source-${role}`,
-          pid: launches.length,
-          trace: resolve(
-            current.paths.source,
-            `${replacement ? "review-recovery." : ""}${role}.jsonl`,
-          ),
-        };
-      },
-      async observe(_role, _config, attempt) {
-        if (attempt.id === "source-author")
-          return { status: "passed", id: attempt.id, head: base, usage: { input_tokens: 3 } };
-        if (attempt.id === "source-reviewer")
-          return {
-            ...malformedReview,
-            id: attempt.id,
-            head: candidate,
-            usage: { input_tokens: 9 },
-          };
-        return {
-          status: "passed",
-          id: attempt.id,
-          head: candidate,
-          usage: { output_tokens: 4 },
-          summary: passingReviewSummary(candidate),
-        };
-      },
-      async checks() {
-        return { head: candidate, checks: [] };
-      },
-    };
-    const fingerprint = repairDigest({
-      config: current.source,
-      prompts: ["author prompt", "review prompt"],
-    });
-    await writeFile(
-      resolve(current.paths.source, "review-recovery-authority.json"),
-      JSON.stringify(
-        reviewRecoveryAuthority({
-          controller: current.source.owner,
-          run: current.source.run,
-          stateDirectory: current.paths.source,
-          configFingerprint: fingerprint,
-          authorAttempt: "source-author",
-          candidateHead: candidate,
-          originalReview: "source-reviewer",
-          reviewer: current.source.reviewer,
-        }),
-      ),
-    );
-    const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
-
-    await expect(adapter.source(current.item)).resolves.toEqual({
-      status: "accepted",
-      head: candidate,
-      reviewId: "selected-reviewer",
-      stateDirectory: current.paths.source,
-    });
-    expect(launches).toEqual(["author", "reviewer", "replacement-reviewer"]);
-    expect(await adapter.history()).toEqual([
-      expect.objectContaining({ id: "source-author", outcome: "passed" }),
-      expect.objectContaining({
-        id: "source-reviewer",
-        outcome: "malformed",
-        usage: {
-          inputTokens: { status: "known", value: 9 },
-          outputTokens: unavailable,
-          costUsd: unavailable,
-        },
-      }),
-      expect.objectContaining({
-        id: "selected-reviewer",
-        outcome: "passed",
-        usage: {
-          inputTokens: unavailable,
-          outputTokens: { status: "known", value: 4 },
-          costUsd: unavailable,
-        },
-      }),
-    ]);
-    expect(
-      JSON.parse(
-        await readFile(resolve(current.paths.source, "source-review-binding.json"), "utf8"),
-      ),
-    ).toMatchObject({
-      source: {
-        run: current.source.run,
-        candidateHead: candidate,
-        authorAttempt: "source-author",
-      },
-      originalReview: { attempt: "source-reviewer", disposition: "malformed" },
-      selectedReview: { attempt: "selected-reviewer", disposition: "passed" },
-    });
-
-    const completedFiles = (await readdir(current.paths.source)).sort();
-    const completedState = await Promise.all(
-      completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
-    );
-
-    await expect(adapter.source(current.item)).resolves.toMatchObject({
-      status: "accepted",
-      reviewId: "selected-reviewer",
-    });
-    expect(launches).toHaveLength(3);
-    expect((await readdir(current.paths.source)).sort()).toEqual(completedFiles);
-    expect(
-      await Promise.all(
-        completedFiles.map((name) => readFile(resolve(current.paths.source, name), "utf8")),
-      ),
-    ).toEqual(completedState);
-  },
-);
-
-it("blocks a replacement intent without launch identity instead of redispatching", async () => {
-  const current = await fixture();
-  const prompts = ["author prompt", "review prompt"];
-  const fingerprint = repairDigest({ config: current.source, prompts });
-  await Promise.all([
-    writeFile(
-      resolve(current.paths.source, "config.json"),
-      JSON.stringify({ fingerprint, config: current.source }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "candidate.json"),
-      JSON.stringify({ head: candidate, changed: current.source.allowedPaths }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "author-attempt.json"),
-      JSON.stringify({
-        id: "source-author",
-        pid: 1,
-        trace: resolve(current.paths.source, "author.jsonl"),
-      }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "author-terminal.json"),
-      JSON.stringify({ id: "source-author", status: "passed", head: base }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "reviewer-intent.json"),
-      JSON.stringify({ fingerprint, role: "reviewer", head: candidate }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "reviewer-attempt.json"),
-      JSON.stringify({
-        id: "source-reviewer",
-        pid: 2,
-        trace: resolve(current.paths.source, "reviewer.jsonl"),
-      }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "reviewer-terminal.json"),
-      JSON.stringify({ id: "source-reviewer", status: "malformed", head: candidate }),
-    ),
-    writeFile(
-      resolve(current.paths.source, "review-recovery-authority.json"),
-      JSON.stringify(
-        reviewRecoveryAuthority({
-          controller: current.source.owner,
-          run: current.source.run,
-          stateDirectory: current.paths.source,
-          configFingerprint: fingerprint,
-          authorAttempt: "source-author",
-          candidateHead: candidate,
-          originalReview: "source-reviewer",
-          reviewer: current.source.reviewer,
-        }),
-      ),
-    ),
-  ]);
-  let launches = 0;
-  const recovery = reviewedReviewRecoveryAdapter({
-    async preflight() {},
-    async git(_worktree, args) {
-      return args[0] === "status" ? "" : candidate;
-    },
-    async launch() {
-      launches += 1;
-      throw new Error("synthetic launch result unknown");
-    },
-    async observe() {
-      throw new Error("must not observe without identity");
-    },
-    async checks() {
-      return { head: candidate, checks: [] };
-    },
-  });
-
-  await expect(recovery.recover(current.source)).rejects.toThrow("synthetic launch result unknown");
-  await expect(recovery.recover(current.source)).rejects.toThrow(
-    "review-recovery-launch-identity-unknown-reconcile",
-  );
-  expect(launches).toBe(1);
-});
-
-it("stops after a malformed replacement instead of shopping another reviewer", async () => {
-  const current = await fixture();
-  await writeMalformedSource(current);
-  let launches = 0;
-  const recovery = reviewedReviewRecoveryAdapter({
-    async preflight() {},
-    async git(_worktree, args) {
-      return args[0] === "status" ? "" : candidate;
-    },
-    async launch(_role, config) {
-      launches += 1;
-      return {
-        id: "replacement-reviewer",
-        pid: 3,
-        trace: resolve(current.paths.source, `${config.artifactPrefix}.reviewer.jsonl`),
-      };
-    },
-    async observe(_role, _config, attempt) {
-      return { id: attempt.id, status: "malformed", head: candidate };
-    },
-    async checks() {
-      return { head: candidate, checks: [] };
-    },
-  });
-
-  await expect(recovery.recover(current.source)).rejects.toThrow("replacement-review-malformed");
-  await expect(recovery.recover(current.source)).rejects.toThrow("replacement-review-malformed");
-  expect(launches).toBe(1);
-});
-
-it("requires explicit recovery authority before replacement adapter effects", async () => {
-  const current = await fixture();
-  await writeMalformedSource(current);
-  await rm(resolve(current.paths.source, "review-recovery-authority.json"));
-  let effects = 0;
-  const recovery = reviewedReviewRecoveryAdapter({
-    async preflight() {
-      effects += 1;
-    },
-    async git() {
-      effects += 1;
-      return "";
-    },
-    async launch() {
-      effects += 1;
-      throw new Error("must not launch");
-    },
-    async observe() {
-      effects += 1;
-      throw new Error("must not observe");
-    },
-    async checks() {
-      effects += 1;
-      return { head: candidate, checks: [] };
-    },
-  });
-
-  await expect(recovery.recover(current.source)).rejects.toThrow(
-    "missing-review-recovery-source:review-recovery-authority",
-  );
-  expect(effects).toBe(0);
-});
-
-it("rejects a substituted original review transport path before replacement effects", async () => {
-  const current = await fixture();
-  await writeMalformedSource(current);
-  const original = JSON.parse(
-    await readFile(resolve(current.paths.source, "reviewer-attempt.json"), "utf8"),
-  );
-  original.trace = resolve(current.paths.source, "substituted-reviewer.jsonl");
-  await writeFile(resolve(current.paths.source, "reviewer-attempt.json"), JSON.stringify(original));
-  let effects = 0;
-  const recovery = reviewedReviewRecoveryAdapter({
-    async preflight() {
-      effects += 1;
-    },
-    async git() {
-      effects += 1;
-      return "";
-    },
-    async launch() {
-      effects += 1;
-      throw new Error("must not launch");
-    },
-    async observe() {
-      effects += 1;
-      throw new Error("must not observe");
-    },
-    async checks() {
-      effects += 1;
-      return { head: candidate, checks: [] };
-    },
-  });
-
-  await expect(recovery.recover(current.source)).rejects.toThrow(
-    "review-recovery-source-lineage-mismatch",
-  );
-  expect(effects).toBe(0);
 });
 
 it("persists the genuine adapter result and restarts four-participant completion without effects", async () => {
@@ -1326,7 +960,7 @@ it("persists the genuine adapter result and restarts four-participant completion
   ).toEqual(originalBytes);
 });
 
-it("directly composes the accepted repair transition from a complete fixable review", async () => {
+it("accepts and restarts a repair whose malformed review passes on its one retry", async () => {
   const sourceHistory: QueueParticipant[] = [
     {
       ordinal: 1,
@@ -1444,8 +1078,15 @@ it("directly composes the accepted repair transition from a complete fixable rev
     async dispatch(config) {
       captured = config;
       const records = [
-        { ordinal: 3, id: "repair-author", role: "author", head: candidate },
-        { ordinal: 4, id: "repair-reviewer", role: "reviewer", head: repaired },
+        { ordinal: 3, id: "repair-author", role: "author", head: candidate, stem: "author" },
+        { ordinal: 4, id: "repair-reviewer", role: "reviewer", head: repaired, stem: "reviewer" },
+        {
+          ordinal: 5,
+          id: "repair-reviewer-retry",
+          role: "reviewer",
+          head: repaired,
+          stem: "reviewer-retry",
+        },
       ] as const;
       for (const row of records) {
         await writeFile(
@@ -1470,7 +1111,7 @@ it("directly composes the accepted repair transition from a complete fixable rev
           }),
         );
         await writeFile(
-          resolve(current.paths.repair, `${row.role}-attempt.json`),
+          resolve(current.paths.repair, `${row.stem}-attempt.json`),
           JSON.stringify({
             id: row.id,
             pid: row.ordinal,
@@ -1478,15 +1119,25 @@ it("directly composes the accepted repair transition from a complete fixable rev
           }),
         );
         await writeFile(
-          resolve(current.paths.repair, `${row.role}-terminal.json`),
+          resolve(current.paths.repair, `${row.stem}-terminal.json`),
           JSON.stringify({
-            status: "passed",
+            status: row.id === "repair-reviewer" ? "malformed" : "passed",
             id: row.id,
             head: row.head,
             usage: { input_tokens: 5, output_tokens: 2 },
+            ...(row.id === "repair-reviewer-retry" ? { summary: deltaSummary } : {}),
           }),
         );
       }
+      await writeFile(
+        resolve(current.paths.repair, "reviewer-retry-intent.json"),
+        JSON.stringify({
+          reason: "malformed-review",
+          count: 1,
+          head: repaired,
+          parseError: "malformed-worker-verdict",
+        }),
+      );
       return { status: "awaiting-publication" };
     },
     async loadDeltaReview() {
@@ -1499,13 +1150,13 @@ it("directly composes the accepted repair transition from a complete fixable rev
           trace: resolve(current.root, "repair-author.jsonl"),
         },
         reviewerAttempt: {
-          id: "repair-reviewer",
-          pid: 4,
-          trace: resolve(current.root, "repair-reviewer.jsonl"),
+          id: "repair-reviewer-retry",
+          pid: 5,
+          trace: resolve(current.root, "repair-reviewer-retry.jsonl"),
         },
         terminal: {
           status: "passed",
-          id: "repair-reviewer",
+          id: "repair-reviewer-retry",
           head: repaired,
           summary: deltaSummary,
         },
@@ -1536,7 +1187,13 @@ it("directly composes the accepted repair transition from a complete fixable rev
   await expect(adapter.repair(current.item)).resolves.toEqual({
     status: "accepted",
     head: repaired,
-    reviewId: "repair-reviewer",
+    reviewId: "repair-reviewer-retry",
+    stateDirectory: current.paths.repair,
+  });
+  await expect(adapter.repair(current.item)).resolves.toEqual({
+    status: "accepted",
+    head: repaired,
+    reviewId: "repair-reviewer-retry",
     stateDirectory: current.paths.repair,
   });
   expect(captured).toMatchObject({
@@ -1581,5 +1238,276 @@ it("directly composes the accepted repair transition from a complete fixable rev
     "source-reviewer",
     "repair-author",
     "repair-reviewer",
+    "repair-reviewer-retry",
   ]);
+});
+
+it("advances once when a malformed repair review retry returns a valid FAIL", async () => {
+  const current = await fixture();
+  const prompts: [string, string] = [current.source.author.prompt, current.source.reviewer.prompt];
+  const fingerprint = repairDigest({ config: current.source, prompts });
+  const sourceSummary = JSON.stringify({
+    run: current.source.run,
+    role: "reviewer",
+    head: candidate,
+    verdict: "FAIL",
+    findings: [
+      {
+        file: current.source.allowedPaths[0],
+        line: 1,
+        severity: "blocking",
+        text: "repair the source candidate",
+      },
+    ],
+    g0: "Repair is the smallest change.",
+  });
+  const retrySummary = JSON.stringify({
+    run: current.source.run,
+    role: "reviewer",
+    head: repaired,
+    verdict: "FAIL",
+    findings: [
+      {
+        file: current.source.allowedPaths[0],
+        line: 2,
+        severity: "blocking",
+        text: "repair remains incomplete",
+      },
+    ],
+    g0: "Another candidate is required.",
+  });
+  const seedSource = async () => {
+    const sourceParticipants = [
+      {
+        ordinal: 1,
+        id: "source-author",
+        item: current.item.id,
+        stage: "source",
+        role: "author",
+        outcome: "passed",
+        usage: queueUsage({ input_tokens: 3 }),
+      },
+      {
+        ordinal: 2,
+        id: "source-reviewer",
+        item: current.item.id,
+        stage: "source",
+        role: "reviewer",
+        outcome: "failed",
+        usage: queueUsage({ output_tokens: 2 }),
+      },
+    ];
+    await Promise.all([
+      ...sourceParticipants.flatMap((participant) => [
+        writeFile(
+          resolve(current.paths.queue, `participant-${participant.ordinal}-intent.json`),
+          JSON.stringify({
+            schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
+            ordinal: participant.ordinal,
+            item: participant.item,
+            stage: participant.stage,
+            role: participant.role,
+          }),
+        ),
+        writeFile(
+          resolve(current.paths.queue, `participant-${participant.ordinal}-attempt.json`),
+          JSON.stringify({
+            schemaVersion: "dogfood-bounded-queue-participant/v1",
+            ordinal: participant.ordinal,
+            id: participant.id,
+            item: participant.item,
+            stage: participant.stage,
+            role: participant.role,
+          }),
+        ),
+        writeFile(
+          resolve(current.paths.queue, `participant-${participant.ordinal}-terminal.json`),
+          JSON.stringify(participant),
+        ),
+      ]),
+      writeFile(
+        resolve(current.paths.source, "config.json"),
+        JSON.stringify({ fingerprint, config: current.source, host: "synthetic" }),
+      ),
+      writeFile(
+        resolve(current.paths.source, "candidate.json"),
+        JSON.stringify({ head: candidate, changed: current.source.allowedPaths }),
+      ),
+      writeFile(
+        resolve(current.paths.source, "author-attempt.json"),
+        JSON.stringify({
+          id: "source-author",
+          pid: 1,
+          trace: resolve(current.root, "author.jsonl"),
+        }),
+      ),
+      writeFile(
+        resolve(current.paths.source, "reviewer-attempt.json"),
+        JSON.stringify({
+          id: "source-reviewer",
+          pid: 2,
+          trace: resolve(current.root, "reviewer.jsonl"),
+        }),
+      ),
+      writeFile(
+        resolve(current.paths.source, "reviewer-terminal.json"),
+        JSON.stringify({
+          status: "failed",
+          id: "source-reviewer",
+          head: candidate,
+          summary: sourceSummary,
+        }),
+      ),
+    ]);
+  };
+  const repairAdapter: RepairAdapter = {
+    async loadSourceReview() {
+      return {
+        configRecord: { fingerprint, config: current.source, host: "synthetic" },
+        candidate: { head: candidate, changed: current.source.allowedPaths },
+        authorAttempt: {
+          id: "source-author",
+          pid: 1,
+          trace: resolve(current.root, "author.jsonl"),
+        },
+        reviewerAttempt: {
+          id: "source-reviewer",
+          pid: 2,
+          trace: resolve(current.root, "reviewer.jsonl"),
+        },
+        terminal: {
+          status: "failed",
+          id: "source-reviewer",
+          head: candidate,
+          summary: sourceSummary,
+        },
+        changedFiles: current.source.allowedPaths,
+        lineCounts: { [current.source.allowedPaths[0]!]: 10 },
+        sourceHead: candidate,
+        reviewHead: candidate,
+        sourceClean: true,
+        reviewClean: true,
+        promptContents: prompts,
+      };
+    },
+    async dispatch() {
+      const attempts = [
+        {
+          ordinal: 3,
+          stem: "author",
+          id: "repair-author",
+          role: "author",
+          status: "passed",
+          head: candidate,
+        },
+        {
+          ordinal: 4,
+          stem: "reviewer",
+          id: "repair-reviewer",
+          role: "reviewer",
+          status: "malformed",
+          head: repaired,
+        },
+        {
+          ordinal: 5,
+          stem: "reviewer-retry",
+          id: "repair-reviewer-retry",
+          role: "reviewer",
+          status: "failed",
+          head: repaired,
+        },
+      ] as const;
+      await writeFile(
+        resolve(current.paths.repair, "candidate.json"),
+        JSON.stringify({ head: repaired, changed: current.source.allowedPaths }),
+      );
+      await writeFile(
+        resolve(current.paths.repair, "reviewer-retry-intent.json"),
+        JSON.stringify({
+          reason: "malformed-review",
+          count: 1,
+          head: repaired,
+          parseError: "malformed-worker-verdict",
+        }),
+      );
+      for (const attempt of attempts) {
+        await Promise.all([
+          writeFile(
+            resolve(current.paths.queue, `participant-${attempt.ordinal}-intent.json`),
+            JSON.stringify({
+              schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
+              ordinal: attempt.ordinal,
+              item: current.item.id,
+              stage: "repair",
+              role: attempt.role,
+            }),
+          ),
+          writeFile(
+            resolve(current.paths.queue, `participant-${attempt.ordinal}-attempt.json`),
+            JSON.stringify({
+              schemaVersion: "dogfood-bounded-queue-participant/v1",
+              ordinal: attempt.ordinal,
+              id: attempt.id,
+              item: current.item.id,
+              stage: "repair",
+              role: attempt.role,
+            }),
+          ),
+          writeFile(
+            resolve(current.paths.repair, `${attempt.stem}-attempt.json`),
+            JSON.stringify({
+              id: attempt.id,
+              pid: attempt.ordinal,
+              trace: resolve(current.root, `${attempt.id}.jsonl`),
+            }),
+          ),
+          writeFile(
+            resolve(current.paths.repair, `${attempt.stem}-terminal.json`),
+            JSON.stringify({
+              status: attempt.status,
+              id: attempt.id,
+              head: attempt.head,
+              ...(attempt.id === "repair-reviewer-retry" ? { summary: retrySummary } : {}),
+            }),
+          ),
+        ]);
+      }
+      throw new Error("reviewer-failed");
+    },
+    async loadDeltaReview() {
+      throw new Error("delta review must not load after the flow failure");
+    },
+  };
+  const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
+    native: {} as never,
+    repair: repairAdapter,
+  });
+  const adapter: QueueAdapter = {
+    async assertAuthority() {},
+    history: repository.history,
+    async setup() {
+      return { status: "ready" };
+    },
+    async source() {
+      await seedSource();
+      return {
+        status: "fixable-review",
+        head: candidate,
+        reviewId: "source-reviewer",
+        findings: JSON.parse(sourceSummary).findings,
+      };
+    },
+    repair: repository.repair,
+    async delivery() {
+      throw new Error("delivery must not run");
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({
+    status: "advancing-attempt",
+    cursor: 2,
+  });
+  expect(
+    JSON.parse(await readFile(resolve(current.paths.queue, "item-1-failed.json"), "utf8")),
+  ).toMatchObject({ candidateAttempt: 2, head: repaired, reviewer: "repair-reviewer-retry" });
 });
