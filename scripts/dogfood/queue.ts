@@ -436,17 +436,17 @@ export async function queueConfigFromLoop(
   for (;;) {
     const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
     const priorQueue = resolve(runState, priorSlug);
-    const failed = await optionalRecord(priorQueue, "attempt");
-    if (failed === ABSENT) break;
-    validateFailedAttempt(failed, sourceAttempt, config.attemptCeiling);
+    const attempt = await optionalRecord(priorQueue, "attempt");
+    if (attempt === ABSENT || attempt.phase !== "failed") break;
+    validateFailedAttempt(attempt, sourceAttempt, config.attemptCeiling);
     demand(
-      failed.candidateAttempt < config.attemptCeiling,
+      attempt.candidateAttempt < config.attemptCeiling,
       "implementation-attempt-ceiling-exhausted",
     );
-    sourceAttempt = failed.candidateAttempt + 1;
-    attemptBase = failed.head;
-    initialHistory = failed.history;
-    prescribedFindings = failed.findings;
+    sourceAttempt = attempt.candidateAttempt + 1;
+    attemptBase = attempt.head;
+    initialHistory = attempt.history;
+    prescribedFindings = attempt.findings;
   }
   const slug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {

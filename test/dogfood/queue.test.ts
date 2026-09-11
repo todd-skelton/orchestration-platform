@@ -289,6 +289,54 @@ it("derives the complete internal queue from one compact loop config and selecte
   expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
 }, 30_000);
 
+it("recomposes a polled attempt and resumes its recorded phase", async () => {
+  const { loop, repository, selected } = await loopFixture();
+  const first = await queueConfigFromLoop(loop, repository, selected);
+  const history: QueueParticipant[] = [];
+  let setupCalls = 0;
+  let sourceCalls = 0;
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      setupCalls += 1;
+      return { status: "ready" };
+    },
+    async source(item) {
+      sourceCalls += 1;
+      if (sourceCalls === 1) return { status: "observing-author" };
+      history.push(
+        participant(1, item.id, "source", "author", "passed"),
+        participant(2, item.id, "source", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: "b".repeat(40),
+        reviewId: history[1]!.id,
+        stateDirectory: item.source.stateDirectory,
+      };
+    },
+    async repair() {
+      throw new Error("repair must not run");
+    },
+    async delivery(item, accepted) {
+      return deliveryCompletion(item, accepted.head, accepted.reviewId, 1, "codex/iss-104");
+    },
+  };
+
+  await expect(queueStep(first, adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  const restarted = await queueConfigFromLoop(loop, repository, selected);
+  expect(restarted.stateDirectory).toBe(first.stateDirectory);
+  await expect(queueStep(restarted, adapter)).resolves.toMatchObject({
+    status: "complete",
+  });
+  expect({ setupCalls, sourceCalls }).toEqual({ setupCalls: 1, sourceCalls: 2 });
+}, 30_000);
+
 it("runs the composed self-repository setup through the real Git adapter", async () => {
   const { loop, repository, gitExecutable, selected } = await loopFixture();
   const queue = await queueConfigFromLoop(loop, repository, selected);
