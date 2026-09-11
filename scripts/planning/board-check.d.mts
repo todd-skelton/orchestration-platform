@@ -6,6 +6,7 @@ export interface BoardItem {
   body: string;
   milestone: string | null;
   state?: "OPEN" | "CLOSED";
+  labels?: string[];
 }
 
 export interface BoardSnapshot {

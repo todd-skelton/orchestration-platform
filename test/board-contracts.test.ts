@@ -224,6 +224,7 @@ describe("board contract", () => {
       body: "",
       milestone: null,
       state: "OPEN",
+      labels: { nodes: index === 0 ? [{ name: "ready" }] : [] },
     }));
   }
 
@@ -256,7 +257,10 @@ describe("board contract", () => {
     expect(boardSnapshotFromGraphqlPages("owner/repository", pages)).toEqual({
       repository: "owner/repository",
       totalCount: 101,
-      issues: nodes,
+      issues: nodes.map(({ labels, ...node }) => ({
+        ...node,
+        labels: labels.nodes.map(({ name }) => name),
+      })),
     });
   });
 

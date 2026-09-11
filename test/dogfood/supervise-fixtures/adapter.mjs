@@ -1,24 +1,56 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
-import { itemAuthority, participantIdentity, queueDigest } from "../../../scripts/dogfood/queue.ts";
-export { QueueBlocked, queueStep } from "../../../scripts/dogfood/queue.ts";
+import {
+  itemAuthority,
+  participantIdentity,
+  QueueBlocked,
+  queueDigest,
+} from "../../../scripts/dogfood/queue.ts";
+import { expectedBoardItems } from "../../../scripts/planning/board-check.mjs";
+import { loadPlanningSnapshot } from "../../../scripts/planning/check.mjs";
+let sourceObserved = false;
+export {
+  currentCandidateAttempt,
+  hasStartedDelivery,
+  queueStep,
+  reconcileCompletedQueue,
+  validateLoopConfig,
+} from "../../../scripts/dogfood/queue.ts";
+export { QueueBlocked };
+export {
+  completeCycle,
+  nextCycle,
+  persistCycle,
+  reconcilePendingStop,
+  startCycle,
+  stopCycle,
+} from "../../../scripts/dogfood/supervision.ts";
 
-export async function currentCandidateAttempt(config) {
-  return config.items[0].implementationAttempt;
+export async function validateLoopExecutor(loop, executingRoot) {
+  await Promise.all([
+    mkdir(loop.stateRoot, { recursive: true }),
+    mkdir(loop.worktreeRoot, { recursive: true }),
+  ]);
+  return {
+    executor: executingRoot,
+    stateRoot: loop.stateRoot,
+    worktreeRoot: loop.worktreeRoot,
+    controllerRevision: "a".repeat(40),
+  };
 }
 
-export async function queueConfigFromLoop(loop, executingRoot) {
-  const stateDirectory = resolve(loop.stateRoot, loop.run, "queue");
-  const sourceState = resolve(loop.stateRoot, loop.run, "source");
-  const repairState = resolve(loop.stateRoot, loop.run, "repair");
+export async function queueConfigFromLoop(loop, executingRoot, selected, initialHistory) {
+  const stateDirectory = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-queue`);
+  const sourceState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-source`);
+  const repairState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-repair`);
   await Promise.all(
     [stateDirectory, sourceState, repairState].map((path) => mkdir(path, { recursive: true })),
   );
-  const base = "a".repeat(40);
-  const issue = `https://github.com/${loop.repository}/issues/${loop.issue.number}`;
+  const base = selected.base;
+  const issue = `https://github.com/${loop.repository}/issues/${selected.number}`;
   const requiredChecks = ["linux", "windows", "macos"];
   const item = {
-    id: `${loop.issue.key}:1`,
+    id: `${selected.key}:1`,
     issue,
     base,
     implementationAttempt: 1,
@@ -31,6 +63,7 @@ export async function queueConfigFromLoop(loop, executingRoot) {
       stateDirectory: sourceState,
       allowedPaths: ["."],
       requiredChecks,
+      exitReceiptWindowMs: loop.exitReceiptWindowMs,
     },
     repair: {
       stateDirectory: repairState,
@@ -48,7 +81,7 @@ export async function queueConfigFromLoop(loop, executingRoot) {
     stateDirectory,
     limit: 1,
     nativeLaunchCeiling: loop.nativeLaunchCeiling,
-    initialHistory: [],
+    initialHistory,
     items: [item],
   };
   config.authority = {
@@ -67,6 +100,65 @@ export async function queueConfigFromLoop(loop, executingRoot) {
   return config;
 }
 
+export function repositorySupervisionAdapter() {
+  const issuePath = (config) => resolve(config.stateRoot, config.run, "command-issue.json");
+  const readIssue = async (config) => readJson(issuePath(config));
+  const writeIssue = async (config, issue) =>
+    writeFile(issuePath(config), `${JSON.stringify(issue)}\n`);
+  return {
+    async board() {
+      const root = resolve(import.meta.dirname, "../../..");
+      const planning = await loadPlanningSnapshot(root);
+      const issue = await readJson(
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json"),
+      );
+      const expected = expectedBoardItems(planning);
+      return {
+        repository: planning.roadmap.repository,
+        totalCount: expected.length,
+        issues: expected.map((item, index) => ({
+          number: item.key === "ISS-105" ? 362 : index + 1,
+          title: item.title,
+          body: item.body,
+          milestone: item.milestone,
+          state: item.key === "ISS-105" ? issue.state : "CLOSED",
+          labels: item.key === "ISS-105" ? issue.labels : [],
+        })),
+      };
+    },
+    async currentMain(config) {
+      const controls = await readJson(
+        resolve(config.stateRoot, config.run, "command-controls.json"),
+        {},
+      );
+      return controls.main ?? "a".repeat(40);
+    },
+    async issue(config) {
+      return readIssue(config);
+    },
+    async removeReady(config) {
+      const issue = await readIssue(config);
+      issue.labels = issue.labels.filter((label) => label !== "ready");
+      await writeIssue(config, issue);
+    },
+    async restoreReady(config) {
+      const issue = await readIssue(config);
+      if (!issue.labels.includes("ready")) issue.labels.push("ready");
+      await writeIssue(config, issue);
+    },
+    async close(config) {
+      const issue = await readIssue(config);
+      issue.state = "CLOSED";
+      await writeIssue(config, issue);
+    },
+    async comment(config, _number, body) {
+      const issue = await readIssue(config);
+      issue.comments.push(body);
+      await writeIssue(config, issue);
+    },
+  };
+}
+
 async function readJson(path, fallback) {
   try {
     return JSON.parse(await readFile(path, "utf8"));
@@ -79,17 +171,13 @@ async function readJson(path, fallback) {
 export function repositoryQueueAdapter(config, _executingRoot, options) {
   if (process.env.PATH.split(delimiter)[0] !== dirname(options.gitExecutable))
     throw new Error("selected-git-missing-from-worker-path");
-  const callsPath = resolve(dirname(config.stateDirectory), "command-calls.json");
-  const controlsPath = resolve(dirname(config.stateDirectory), "command-controls.json");
-  const changeCalls = async (name) => {
-    const calls = await readJson(callsPath, { setup: 0, source: 0, delivery: 0 });
-    calls[name] += 1;
-    await writeFile(callsPath, `${JSON.stringify(calls)}\n`);
-    return calls;
-  };
   const history = async () => {
-    const participants = [];
-    for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
+    const participants = [...config.initialHistory];
+    for (
+      let ordinal = config.initialHistory.length + 1;
+      ordinal <= config.nativeLaunchCeiling;
+      ordinal += 1
+    ) {
       const participant = await readJson(
         resolve(config.stateDirectory, `participant-${ordinal}-terminal.json`),
         undefined,
@@ -105,9 +193,10 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
       outputTokens: { status: "known", value: 2 },
       costUsd: { status: "unavailable" },
     };
+    const first = config.initialHistory.length + 1;
     const participants = [
       {
-        ordinal: 1,
+        ordinal: first,
         id: `${item.id}-source-author`,
         item: item.id,
         stage: "source",
@@ -116,7 +205,7 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
         usage,
       },
       {
-        ordinal: 2,
+        ordinal: first + 1,
         id: `${item.id}-source-reviewer`,
         item: item.id,
         stage: "source",
@@ -144,20 +233,19 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
     async assertAuthority() {},
     history,
     async setup() {
-      await changeCalls("setup");
       return { status: "ready" };
     },
     async source(item) {
-      const calls = await changeCalls("source");
-      const controls = await readJson(controlsPath, { mode: "complete" });
-      if (controls.mode === "wait" && calls.source === 1) return { status: "observing-author" };
+      if (!sourceObserved) {
+        sourceObserved = true;
+        return { status: "observing-author" };
+      }
       return accept(item);
     },
     async repair() {
       throw new Error("fixture repair must not run");
     },
     async delivery(item, accepted) {
-      await changeCalls("delivery");
       return {
         status: "complete",
         run: item.source.run,

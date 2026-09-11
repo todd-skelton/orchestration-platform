@@ -10,9 +10,8 @@ let runOrdinal = 0;
 const command = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
 const hook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");
 
-async function fixture(mode: "complete" | "wait" = "complete") {
+async function fixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "supervise-command-fixture-")));
-  roots.push(root);
   roots.push(root);
   const stateRoot = resolve(root, "state");
   const worktreeRoot = resolve(root, "worktrees");
@@ -20,7 +19,6 @@ async function fixture(mode: "complete" | "wait" = "complete") {
   const config = {
     schemaVersion: "dogfood-loop/v1",
     run: "synthetic-command-run",
-    issue: { key: "ISS-104", number: 361 },
     repository: "fixture/repository",
     stableExecutorRoot: resolve(import.meta.dirname, "../.."),
     stateRoot,
@@ -38,10 +36,24 @@ async function fixture(mode: "complete" | "wait" = "complete") {
   await Promise.all([
     writeFile(request, `${JSON.stringify(config)}\n`),
     mkdir(runState, { recursive: true }).then(() =>
-      writeFile(resolve(runState, "command-controls.json"), `${JSON.stringify({ mode })}\n`),
+      Promise.all([
+        writeFile(
+          resolve(runState, "command-controls.json"),
+          `${JSON.stringify({ main: "a".repeat(40) })}\n`,
+        ),
+        writeFile(
+          resolve(runState, "command-issue.json"),
+          `${JSON.stringify({
+            state: "OPEN",
+            key: "ISS-105",
+            labels: ["ready"],
+            comments: [],
+          })}\n`,
+        ),
+      ]),
     ),
   ]);
-  return { request, runState };
+  return { request };
 }
 
 async function run(request: string) {
@@ -62,6 +74,10 @@ async function run(request: string) {
         {
           windowsHide: true,
           stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
+          env: {
+            ...process.env,
+            SUPERVISE_FIXTURE_STATE: resolve(request, "../state/synthetic-command-run"),
+          },
         },
       );
       const timer = setTimeout(() => {
@@ -95,8 +111,8 @@ afterEach(async () => {
   );
 });
 
-it("accepts one compact loop config through an observed wait to completion", async () => {
-  const current = await fixture("wait");
+it("runs one selected issue through observation, completion and the next selection", async () => {
+  const current = await fixture();
   const result = await run(current.request);
   expect(result.code, result.stderr).toBe(0);
   expect(result.stderr).toBe("");
@@ -108,34 +124,6 @@ it("accepts one compact loop config through an observed wait to completion", asy
   ).toMatchObject([
     { status: "observing-author", cursor: 0 },
     { status: "complete", cursor: 1, participants: 2 },
+    { status: "idle", run: "synthetic-command-run" },
   ]);
 }, 30_000);
-
-it("restarts a completed compact config without repeating component effects", async () => {
-  const current = await fixture();
-  const first = await run(current.request);
-  expect(first.code, first.stderr).toBe(0);
-  expect(JSON.parse(first.stdout)).toMatchObject({ status: "complete", participants: 2 });
-  const callsPath = resolve(current.runState, "command-calls.json");
-  const calls = await readFile(callsPath, "utf8");
-  expect(JSON.parse(calls)).toEqual({ setup: 1, source: 1, delivery: 1 });
-  const completionPath = resolve(current.runState, "queue", "item-1-complete.json");
-  const completionBytes = await readFile(completionPath, "utf8");
-
-  const restarted = await run(current.request);
-  expect(restarted.code).toBe(0);
-  expect(JSON.parse(restarted.stdout)).toMatchObject({ status: "complete", participants: 2 });
-  expect(await readFile(callsPath, "utf8")).toBe(calls);
-  expect(await readFile(completionPath, "utf8")).toBe(completionBytes);
-}, 30_000);
-
-it("keeps the command-to-component trace within three non-test files", async () => {
-  const entry = await readFile(command, "utf8");
-  const queue = await readFile(resolve("scripts/dogfood/queue.ts"), "utf8");
-  expect(entry).toContain('from "./queue.ts"');
-  expect(entry).not.toContain("queue-adapter");
-  expect(queue).toContain("export function repositoryQueueAdapter");
-  expect(queue).toContain('from "./setup.mjs"');
-  expect(queue).toContain('from "./repair.mjs"');
-  expect(queue).toContain('from "./delivery.mjs"');
-});

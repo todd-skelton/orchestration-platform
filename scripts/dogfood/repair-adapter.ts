@@ -42,6 +42,8 @@ const FLOW_REFUSALS = new Set([
   "reviewer-failed",
   "reviewer-retry-exhausted",
   "exit-receipt-timeout",
+  "author-temp-unavailable",
+  "author-offline-pnpm-unavailable",
 ]);
 function demand(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new RepairBlocked(reason);

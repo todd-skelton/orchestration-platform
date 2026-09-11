@@ -113,7 +113,6 @@ export interface QueueConfig {
 export interface LoopConfig {
   schemaVersion: typeof LOOP_CONFIG_SCHEMA;
   run: string;
-  issue: { key: string; number: number };
   repository: string;
   stableExecutorRoot: string;
   stateRoot: string;
@@ -125,6 +124,28 @@ export interface LoopConfig {
   exitReceiptWindowMs: number;
   nativeLaunchCeiling: number;
   attemptCeiling: number;
+}
+
+export const ACTIONABLE_STOP_REASONS = [
+  "completed-issue-state-unknown",
+  "issue-observation-unavailable",
+  "selected-base-unavailable",
+  "current-main-unavailable",
+  "gate-retry-exhausted:typecheck",
+  "gate-retry-exhausted:format:check",
+  "reviewer-retry-exhausted",
+  "exit-receipt-timeout",
+  "native-launch-ceiling-exhausted",
+  "implementation-attempt-ceiling-exhausted",
+  "author-temp-unavailable",
+  "author-offline-pnpm-unavailable",
+] as const;
+export type ActionableStopReason = (typeof ACTIONABLE_STOP_REASONS)[number];
+
+export interface SelectedLoopIssue {
+  key: string;
+  number: number;
+  base: string;
 }
 
 export type QueueSourceResult =
@@ -223,12 +244,11 @@ export function itemAuthority(item: QueueItem) {
   };
 }
 
-function validateLoopConfig(config: LoopConfig) {
+export function validateLoopConfig(config: LoopConfig) {
   demand(
     exactKeys(config, [
       "schemaVersion",
       "run",
-      "issue",
       "repository",
       "stableExecutorRoot",
       "stateRoot",
@@ -249,13 +269,6 @@ function validateLoopConfig(config: LoopConfig) {
       config.exitReceiptWindowMs >= 0 &&
       config.exitReceiptWindowMs <= 300_000,
     "invalid-exit-receipt-window",
-  );
-  demand(
-    exactKeys(config.issue, ["key", "number"]) &&
-      /^ISS-\d{3}$/.test(config.issue.key) &&
-      Number.isSafeInteger(config.issue.number) &&
-      config.issue.number > 0,
-    "invalid-selected-issue",
   );
   demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
   for (const name of [
@@ -343,7 +356,7 @@ function validateFailedAttempt(
   );
 }
 
-export async function queueConfigFromLoop(config: LoopConfig, executingRoot: string) {
+export async function validateLoopExecutor(config: LoopConfig, executingRoot: string) {
   validateLoopConfig(config);
   const [executor, configured] = await Promise.all([
     realpath(executingRoot),
@@ -374,17 +387,15 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
         maxBuffer: 8 * 1024 * 1024,
       })
     ).stdout.trim();
-  const [base, branch, status, version, planning, loopRules] = await Promise.all([
+  const [controllerRevision, branch, status, version] = await Promise.all([
     git(["rev-parse", "HEAD"]),
     git(["branch", "--show-current"]),
     git(["status", "--porcelain"]),
     exec(config.gitExecutable, ["--version"], { windowsHide: true }).then((result) =>
       result.stdout.trim(),
     ),
-    readFile(resolve(executor, "planning/roadmap.json"), "utf8").then(JSON.parse),
-    readFile(resolve(executor, "docs/loop.md"), "utf8"),
   ]);
-  demand(SHA.test(base) && branch === "main" && status === "", "unstable-executor");
+  demand(SHA.test(controllerRevision) && branch === "main" && status === "", "unstable-executor");
   if (process.platform === "win32") {
     const match = /git version (\d+)\.(\d+)/.exec(version);
     demand(
@@ -392,25 +403,58 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
       "incompatible-git",
     );
   }
-  const registered = planning?.issues?.find((issue: any) => issue.key === config.issue.key);
+  return { executor, stateRoot, worktreeRoot, controllerRevision };
+}
+
+export async function queueConfigFromLoop(
+  config: LoopConfig,
+  executingRoot: string,
+  selected: SelectedLoopIssue,
+  priorHistory: QueueParticipant[] = [],
+) {
+  validateLoopConfig(config);
   demand(
-    registered?.file === `planning/drafts/${config.issue.key}.md`,
-    "selected-issue-unregistered",
+    exactKeys(selected, ["key", "number", "base"]) &&
+      /^ISS-\d{3}$/.test(selected.key) &&
+      Number.isSafeInteger(selected.number) &&
+      selected.number > 0 &&
+      SHA.test(selected.base),
+    "invalid-selected-issue",
   );
+  validateHistory(priorHistory, config.nativeLaunchCeiling);
+  const { executor, stateRoot, worktreeRoot, controllerRevision } = await validateLoopExecutor(
+    config,
+    executingRoot,
+  );
+  const git = async (args: string[]) =>
+    (
+      await exec(config.gitExecutable, ["-C", executor, ...args], {
+        windowsHide: true,
+        maxBuffer: 8 * 1024 * 1024,
+      })
+    ).stdout.trim();
+  const [selectedBase, planning, loopRules] = await Promise.all([
+    git(["rev-parse", "--verify", `${selected.base}^{commit}`]),
+    readFile(resolve(executor, "planning/roadmap.json"), "utf8").then(JSON.parse),
+    readFile(resolve(executor, "docs/loop.md"), "utf8"),
+  ]);
+  demand(selectedBase === selected.base, "selected-base-unavailable");
+  const registered = planning?.issues?.find((issue: any) => issue.key === selected.key);
+  demand(registered?.file === `planning/drafts/${selected.key}.md`, "selected-issue-unregistered");
   demand(planning.repository === config.repository, "planning-repository-mismatch");
   const draft = await readFile(resolve(executor, registered.file), "utf8");
   const title = draftTitle(draft);
-  const issueUrl = `https://github.com/${config.repository}/issues/${config.issue.number}`;
-  const promptContext = `Repository loop rules:\n\n${loopRules.trim()}\n\nSelected issue ${config.issue.key} (#${config.issue.number}):\n\n${draft.trim()}`;
+  const issueUrl = `https://github.com/${config.repository}/issues/${selected.number}`;
+  const promptContext = `Repository loop rules:\n\n${loopRules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${draft.trim()}`;
   const baseSourcePrompt = `Implement the selected issue completely. Keep the loop smaller and stay within the issue scope.\n\n${promptContext}`;
   const reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
   const runState = resolve(stateRoot, config.run);
   let sourceAttempt = 1;
-  let attemptBase = base;
-  let initialHistory: QueueParticipant[] = [];
+  let attemptBase = selected.base;
+  let initialHistory: QueueParticipant[] = [...priorHistory];
   let prescribedFindings: ReviewFinding[] | undefined;
   for (;;) {
-    const priorSlug = `${config.issue.key.toLowerCase()}-attempt-${sourceAttempt}`;
+    const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
     const priorQueue = resolve(runState, priorSlug, "queue");
     const failed = await optionalRecord(priorQueue, "item-1-failed");
     if (failed === ABSENT) break;
@@ -424,7 +468,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     initialHistory = failed.history;
     prescribedFindings = failed.findings;
   }
-  const slug = `${config.issue.key.toLowerCase()}-attempt-${sourceAttempt}`;
+  const slug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {
     queue: resolve(runState, slug, "queue"),
     setup: resolve(runState, slug, "setup"),
@@ -440,7 +484,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     ),
   );
   const controller = `loop:${config.run}`;
-  const sourceBranch = `codex/${config.issue.key.toLowerCase()}${
+  const sourceBranch = `codex/${selected.key.toLowerCase()}${
     sourceAttempt === 1 ? "" : `-attempt-${sourceAttempt}`
   }`;
   const sourcePrompt = prescribedFindings
@@ -452,8 +496,8 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     repository: config.repository,
     repositoryRoot: executor,
     controllerRoot: executor,
-    controllerRevision: base,
-    pilotRevision: base,
+    controllerRevision,
+    pilotRevision: controllerRevision,
     base: attemptBase,
     baseBranch: "main",
     sourceBranch,
@@ -475,7 +519,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     owner: controller,
     run: config.run,
     issue: issueUrl,
-    pilotRevision: base,
+    pilotRevision: controllerRevision,
     base: attemptBase,
     worktree: paths.sourceWorktree,
     reviewWorktree: paths.reviewWorktree,
@@ -493,7 +537,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
   };
   const item: QueueItem = {
-    id: `${config.issue.key}:${sourceAttempt}`,
+    id: `${selected.key}:${sourceAttempt}`,
     issue: issueUrl,
     base: attemptBase,
     implementationAttempt: sourceAttempt,
@@ -510,12 +554,12 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
       requiredChecks: [...source.requiredChecks],
       policy: {
         kind: "orchestration-platform-self/v1",
-        planningKey: config.issue.key,
-        planningIssue: config.issue.number,
+        planningKey: selected.key,
+        planningIssue: selected.number,
         sourceBranch,
         baseBranch: "main",
-        pullRequestTitle: `[${config.issue.key}] ${title}`,
-        pullRequestBody: `Closes #${config.issue.number}`,
+        pullRequestTitle: `[${selected.key}] ${title}`,
+        pullRequestBody: `Closes #${selected.number}`,
       },
     },
   };
@@ -523,7 +567,7 @@ export async function queueConfigFromLoop(config: LoopConfig, executingRoot: str
     schemaVersion: QUEUE_CONFIG_SCHEMA,
     run: config.run,
     controllerRoot: executor,
-    controllerRevision: base,
+    controllerRevision,
     stateDirectory: paths.queue,
     limit: 1,
     nativeLaunchCeiling: config.nativeLaunchCeiling,
@@ -717,6 +761,16 @@ export async function currentCandidateAttempt(config: QueueConfig) {
   demand(item, "missing-queue-item");
   const repaired = (await optionalRecord(config.stateDirectory, "item-1-repair-intent")) !== ABSENT;
   return Math.min(item.implementationAttempt + Number(repaired), item.implementationAttemptCeiling);
+}
+
+export async function hasStartedDelivery(config: QueueConfig) {
+  validateQueueConfig(config);
+  const [intent, itemComplete, queueComplete] = await Promise.all([
+    optionalRecord(config.stateDirectory, "item-1-delivery-intent"),
+    optionalRecord(config.stateDirectory, "item-1-complete"),
+    optionalRecord(config.stateDirectory, "queue-complete"),
+  ]);
+  return intent !== ABSENT || itemComplete !== ABSENT || queueComplete !== ABSENT;
 }
 async function record(directory: string, name: string, value: unknown) {
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
@@ -2185,7 +2239,14 @@ export function repositoryQueueAdapter(
         await syncParticipants(item, "source", item.source.stateDirectory);
         if (error instanceof QueueBlocked) throw error;
         const reason = error instanceof Error ? error.message : "";
-        if (["reviewer-retry-exhausted", "exit-receipt-timeout"].includes(reason))
+        if (
+          [
+            "reviewer-retry-exhausted",
+            "exit-receipt-timeout",
+            "author-temp-unavailable",
+            "author-offline-pnpm-unavailable",
+          ].includes(reason)
+        )
           throw new QueueBlocked(reason);
         demand(reason === "reviewer-failed", "source-flow-state-unknown");
         const [candidate, selected] = await Promise.all([
@@ -2360,7 +2421,14 @@ export function repositoryQueueAdapter(
             } catch (error) {
               await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
               const reason = error instanceof Error ? error.message : "";
-              if (["reviewer-retry-exhausted", "exit-receipt-timeout"].includes(reason))
+              if (
+                [
+                  "reviewer-retry-exhausted",
+                  "exit-receipt-timeout",
+                  "author-temp-unavailable",
+                  "author-offline-pnpm-unavailable",
+                ].includes(reason)
+              )
                 throw new QueueBlocked(reason);
               demand(reason === "reviewer-failed", "gate-correction-state-unknown");
               const [candidate, selected] = await Promise.all([

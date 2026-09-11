@@ -279,6 +279,32 @@ it("refuses a different loaded controller root before intent or direct dispatch 
   expect(effects).toBe(0);
 }, 30_000);
 
+it.each(["author-temp-unavailable", "author-offline-pnpm-unavailable"])(
+  "preserves the typed author preflight stop %s at the repair boundary",
+  async (reason) => {
+    const current = await realFixture();
+    const native = {
+      async preflight() {
+        throw new Error(reason);
+      },
+      async git(worktree: string, args: string[]) {
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
+        if (args[0] === "rev-parse" && args[1] === "HEAD")
+          return worktree === current.config.controllerRoot
+            ? current.config.controllerRevision
+            : current.repairBase;
+        if (args[0] === "status") return "";
+        throw new Error(`unexpected git command: ${args.join(" ")}`);
+      },
+    } as unknown as Adapter;
+    const adapter = reviewedRepairAdapter(native);
+    const source = await adapter.loadSourceReview(current.config);
+    const handoff = repairPolicy().prepare(current.config, source);
+    await expect(adapter.dispatch(current.config, handoff)).rejects.toMatchObject({ reason });
+  },
+  30_000,
+);
+
 it("refuses substituted predecessor prompt text before recording intent", async () => {
   const current = await realFixture();
   current.config.authority.source.author.prompt = "substituted author prompt";
