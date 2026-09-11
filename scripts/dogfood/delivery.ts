@@ -285,7 +285,7 @@ async function gateIntent(
       `conflicting-record:${name}`,
     );
   const temporary = resolve(directory, `${name}.next.json`);
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", flush: true });
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flush: true });
   await rename(temporary, resolve(directory, `${name}.json`));
 }
 

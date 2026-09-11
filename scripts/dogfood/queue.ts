@@ -2264,19 +2264,24 @@ export function repositoryQueueAdapter(
           throw new QueueBlocked("repair-history-state-unknown");
         }
         if (error instanceof QueueBlocked) throw error;
-        if (error instanceof RepairBlocked && error.reason === "delta-review-failed") {
-          const [candidate, reviewer, terminal] = await Promise.all([
+        const reason =
+          error instanceof RepairBlocked
+            ? error.reason
+            : error instanceof Error
+              ? error.message
+              : "";
+        if (["delta-review-failed", "reviewer-failed"].includes(reason)) {
+          const [candidate, selected] = await Promise.all([
             json(item.repair.stateDirectory, "candidate"),
-            json(item.repair.stateDirectory, "reviewer-attempt"),
-            json(item.repair.stateDirectory, "reviewer-terminal"),
+            selectedSourceReview({ stateDirectory: item.repair.stateDirectory }),
           ]);
           await acceptedPair(item, "repair", "failed");
           return {
             status: "failed",
             ...blockingReview(
               candidate,
-              reviewer,
-              terminal,
+              selected.attempt as unknown as Record<string, any>,
+              selected.terminal as unknown as Record<string, any>,
               item.source.run,
               "repair-review-state-unknown",
             ),
@@ -2319,8 +2324,8 @@ export function repositoryQueueAdapter(
       try {
         let current = accepted;
         let retry = await adapterOptional(accepted.stateDirectory, "gate-retry");
-        if ((await adapterOptional(accepted.stateDirectory, "delivery-config")) !== ABSENT)
-          retry = ABSENT;
+        const deliveryPrepared =
+          (await adapterOptional(accepted.stateDirectory, "delivery-config")) !== ABSENT;
         let result;
         if (retry === ABSENT) {
           const delivery = deliveryConfig(current);
@@ -2338,49 +2343,51 @@ export function repositoryQueueAdapter(
               prompt: `${item.source.author.prompt}\n\nCorrect the ${retry.gate} gate failure on this same branch. The gate output was:\n${retry.output}`,
             },
           };
-          try {
-            const correction = await gateCorrectionStep(
-              gateConfig,
-              boundedNative(item, stage),
-              item.setup.pilotWorktree,
-            );
-            await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
-            if (
-              correction.status === "observing-author" ||
-              correction.status === "observing-reviewer"
-            )
-              return { status: correction.status };
-            demand(correction.status === "awaiting-publication", "gate-correction-state-unknown");
-            const [candidate, selected] = await Promise.all([
-              json(accepted.stateDirectory, "gate-retry-candidate"),
-              selectedSourceReview(gateConfig, "gate-retry-"),
-            ]);
-            current = {
-              head: candidate.head,
-              reviewId: selected.attempt.id,
-              stateDirectory: accepted.stateDirectory,
-            };
-          } catch (error) {
-            await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
-            const reason = error instanceof Error ? error.message : "";
-            if (["reviewer-retry-exhausted", "exit-receipt-timeout"].includes(reason))
-              throw new QueueBlocked(reason);
-            demand(reason === "reviewer-failed", "gate-correction-state-unknown");
-            const [candidate, selected] = await Promise.all([
-              json(accepted.stateDirectory, "gate-retry-candidate"),
-              selectedSourceReview(gateConfig, "gate-retry-"),
-            ]);
-            return {
-              status: "failed",
-              ...blockingReview(
-                candidate,
-                selected.attempt as unknown as Record<string, any>,
-                selected.terminal as unknown as Record<string, any>,
-                item.source.run,
-                "gate-review-state-unknown",
-              ),
-            };
+          if (!deliveryPrepared) {
+            try {
+              const correction = await gateCorrectionStep(
+                gateConfig,
+                boundedNative(item, stage),
+                item.setup.pilotWorktree,
+              );
+              await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
+              if (
+                correction.status === "observing-author" ||
+                correction.status === "observing-reviewer"
+              )
+                return { status: correction.status };
+              demand(correction.status === "awaiting-publication", "gate-correction-state-unknown");
+            } catch (error) {
+              await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
+              const reason = error instanceof Error ? error.message : "";
+              if (["reviewer-retry-exhausted", "exit-receipt-timeout"].includes(reason))
+                throw new QueueBlocked(reason);
+              demand(reason === "reviewer-failed", "gate-correction-state-unknown");
+              const [candidate, selected] = await Promise.all([
+                json(accepted.stateDirectory, "gate-retry-candidate"),
+                selectedSourceReview(gateConfig, "gate-retry-"),
+              ]);
+              return {
+                status: "failed",
+                ...blockingReview(
+                  candidate,
+                  selected.attempt as unknown as Record<string, any>,
+                  selected.terminal as unknown as Record<string, any>,
+                  item.source.run,
+                  "gate-review-state-unknown",
+                ),
+              };
+            }
           }
+          const [candidate, selected] = await Promise.all([
+            json(accepted.stateDirectory, "gate-retry-candidate"),
+            selectedSourceReview(gateConfig, "gate-retry-"),
+          ]);
+          current = {
+            head: candidate.head,
+            reviewId: selected.attempt.id,
+            stateDirectory: accepted.stateDirectory,
+          };
           const delivery = deliveryConfig(current);
           await assertExecutor(delivery, executingRoot, gitExecutable);
           result = await deliveryStep(delivery, deliveryAdapter, deliveryPolicy);

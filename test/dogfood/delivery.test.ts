@@ -788,10 +788,17 @@ it("records a second transient gate failure and does not run a third gate on res
   f.config.candidateHead = correctedHead;
   f.config.authority.head = correctedHead;
   f.adapter.source = async (config) => ({ ...(await source(config)), head: correctedHead });
+  await writeFile(
+    resolve(f.config.stateDirectory, "gate-1-intent.next.json"),
+    `${JSON.stringify({ head: correctedHead, name: "typecheck", attempt: 2 }, null, 2)}\n`,
+  );
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
     reason: "gate-retry-exhausted:typecheck",
     diagnostics: "failure 2",
   });
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "gate-1-intent.next.json"), "utf8"),
+  ).rejects.toThrow();
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
     reason: "gate-retry-exhausted:typecheck",
     diagnostics: "failure 2",
