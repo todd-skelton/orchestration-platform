@@ -465,17 +465,14 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
     board: loadBoardSnapshot,
     async currentMain(config, executingRoot) {
       try {
+        const main = "refs/remotes/origin/main";
         await run(
           config.gitExecutable,
-          ["-C", executingRoot, "fetch", "--no-tags", "origin", "refs/heads/main"],
+          ["-C", executingRoot, "fetch", "--no-tags", "origin", `refs/heads/main:${main}`],
           executingRoot,
         );
         return (
-          await run(
-            config.gitExecutable,
-            ["-C", executingRoot, "rev-parse", "FETCH_HEAD"],
-            executingRoot,
-          )
+          await run(config.gitExecutable, ["-C", executingRoot, "rev-parse", main], executingRoot)
         ).stdout.trim();
       } catch {
         throw new QueueBlocked("current-main-unavailable");

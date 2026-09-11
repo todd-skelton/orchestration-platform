@@ -16,6 +16,7 @@ import {
   type PublicationEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
 import {
+  candidateLineChanges,
   selfDeliveryPolicy,
   selfPlanFromSnapshots,
 } from "../../scripts/dogfood/self-delivery-policy.mjs";
@@ -1149,7 +1150,11 @@ it("keeps repository identities and mirror rules in the explicit private policy 
       { number: 332, title: "reserved seed", body: "reserved" },
     ],
   };
-  const plan = selfPlanFromSnapshots(current, planning, board);
+  const plan = selfPlanFromSnapshots(current, planning, board, {
+    total: { added: 7, deleted: 6 },
+    scripts: { added: 1, deleted: 3 },
+    test: { added: 4, deleted: 2 },
+  });
   expect(plan.gates).toEqual({
     beforeMirror: ["typecheck", "format:check", "planning:check"],
     afterMirror: ["planning:board-check"],
@@ -1161,7 +1166,13 @@ it("keeps repository identities and mirror rules in the explicit private policy 
     "Minimum orchestration kernel",
   ]);
   expect(plan.drafts[0]!.body.startsWith("<!-- planning-key: ISS-074 -->\n")).toBe(true);
-  expect(plan.publication.body).toBe("reviewed delivery candidate");
+  expect(plan.publication.body).toBe(
+    "reviewed delivery candidate\n\n" +
+      "Line changes:\n" +
+      "- Total: 7 added, 6 deleted, net +1\n" +
+      "- Source (`scripts/`): 1 added, 3 deleted, net -2\n" +
+      "- Tests (`test/`): 4 added, 2 deleted, net +2",
+  );
   expect(plan.publication.body).not.toMatch(/quality packet|profile|pairs/i);
   expect(plan.mergePolicy).toEqual({ method: "squash" });
   expect(plan.cleanup).toEqual({
@@ -1180,6 +1191,132 @@ it("keeps repository identities and mirror rules in the explicit private policy 
     "utf8",
   );
   expect(privatePolicy).not.toMatch(/ISS-074|\b332\b/);
+});
+
+it("uses the later-cycle merge base for repaired candidate line counts", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "delivery-line-counts-"));
+  roots.push(root);
+  const current = await cleanController(root);
+  const git = async (args: string[], cwd = current.controllerRoot) =>
+    (await promisify(execFile)("git", args, { cwd, windowsHide: true })).stdout.trim();
+  await Promise.all(
+    ["scripts", "test", "notes"].map((directory) =>
+      mkdir(resolve(current.controllerRoot, directory)),
+    ),
+  );
+  await Promise.all([
+    writeFile(resolve(current.controllerRoot, "scripts/old.ts"), "one\ntwo\nthree\n"),
+    writeFile(resolve(current.controllerRoot, "test/old.test.ts"), "one\ntwo\n"),
+    writeFile(resolve(current.controllerRoot, "notes/old.md"), "one\n"),
+  ]);
+  await git(["add", "."]);
+  await git([
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--quiet",
+    "-m",
+    "later cycle base",
+  ]);
+  const selectedBase = await git(["rev-parse", "HEAD"]);
+  await git(["update-ref", "refs/remotes/origin/main", selectedBase]);
+  await git(["reset", "--hard", current.controllerRevision]);
+  await git(["worktree", "add", "-b", "candidate", current.worktree, selectedBase]);
+  await git(["worktree", "add", "--detach", current.reviewWorktree, selectedBase]);
+
+  await Promise.all(
+    ["scripts/old.ts", "test/old.test.ts", "notes/old.md"].map((path) =>
+      rm(resolve(current.worktree, path)),
+    ),
+  );
+  await Promise.all([
+    writeFile(resolve(current.worktree, "scripts/new.ts"), "one\n"),
+    writeFile(resolve(current.worktree, "test/new.test.ts"), "one\ntwo\nthree\nfour\n"),
+    writeFile(resolve(current.worktree, "notes/new.md"), "one\ntwo\n"),
+  ]);
+  await git(["add", "-A"], current.worktree);
+  await git(
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "candidate",
+    ],
+    current.worktree,
+  );
+  current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
+  current.authority.head = current.candidateHead;
+
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  const exactGit = (
+    await promisify(execFile)(locator, ["git"], { windowsHide: true })
+  ).stdout.split(/\r?\n/)[0]!;
+  await expect(candidateLineChanges(current, exactGit)).resolves.toEqual({
+    total: { added: 7, deleted: 6 },
+    scripts: { added: 1, deleted: 3 },
+    test: { added: 4, deleted: 2 },
+  });
+
+  await Promise.all([
+    writeFile(resolve(current.worktree, "scripts/repair.ts"), "one\ntwo\n"),
+    writeFile(resolve(current.worktree, "test/repair.test.ts"), "one\n"),
+  ]);
+  await git(["add", "-A"], current.worktree);
+  await git(
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "repair and gate correction",
+    ],
+    current.worktree,
+  );
+  current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
+  current.authority.head = current.candidateHead;
+  vi.stubEnv("PATH", root);
+  const changes = await candidateLineChanges(current, exactGit);
+  expect(changes).toEqual({
+    total: { added: 10, deleted: 6 },
+    scripts: { added: 3, deleted: 3 },
+    test: { added: 5, deleted: 2 },
+  });
+
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: [ISS-073]\n---\n\n## Why\n\nFixture.\n`;
+  const plan = selfPlanFromSnapshots(
+    current,
+    {
+      roadmap: {
+        repository: current.repository,
+        milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
+        issues: [
+          {
+            key: "ISS-074",
+            file: "planning/drafts/ISS-074.md",
+            milestone: "M2",
+            blockedBy: ["ISS-073"],
+          },
+        ],
+      },
+      issueDrafts: { "ISS-074": issue },
+    },
+    { issues: [{ number: 332, title: "reserved seed", body: "reserved" }] },
+    changes,
+  );
+  expect(plan.publication.body).toContain(
+    "- Total: 10 added, 6 deleted, net +4\n" +
+      "- Source (`scripts/`): 3 added, 3 deleted, net 0\n" +
+      "- Tests (`test/`): 5 added, 2 deleted, net +3",
+  );
 });
 
 it("fails self policy closed before provider access for the wrong repository or check set", async () => {
