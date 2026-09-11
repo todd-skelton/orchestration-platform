@@ -1,13 +1,12 @@
-import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 
-const execute = promisify(execFile);
 const roots: string[] = [];
+let runOrdinal = 0;
 const command = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
 const hook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");
 
@@ -46,17 +45,46 @@ async function fixture(mode: "complete" | "wait" = "complete") {
 }
 
 async function run(request: string) {
+  const token = `command-${++runOrdinal}`;
+  const stdoutPath = resolve(dirname(request), `${token}.stdout`);
+  const stderrPath = resolve(dirname(request), `${token}.stderr`);
+  const [stdoutFile, stderrFile] = await Promise.all([
+    open(stdoutPath, "w"),
+    open(stderrPath, "w"),
+  ]);
+  let code: number;
   try {
-    const { stdout, stderr } = await execute(
-      process.execPath,
-      ["--import", pathToFileURL(hook).href, command, request],
-      { timeout: 25_000, windowsHide: true },
-    );
-    return { code: 0, stdout, stderr };
-  } catch (error) {
-    const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
-    return { code: failure.code, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
+    code = await new Promise<number>((done, reject) => {
+      let timedOut = false;
+      const child = spawn(
+        process.execPath,
+        ["--import", pathToFileURL(hook).href, command, request],
+        {
+          windowsHide: true,
+          stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
+        },
+      );
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+      }, 25_000);
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once("close", (status) => {
+        clearTimeout(timer);
+        done(timedOut ? 124 : (status ?? 1));
+      });
+    });
+  } finally {
+    await Promise.all([stdoutFile.close(), stderrFile.close()]);
   }
+  return {
+    code,
+    stdout: await readFile(stdoutPath, "utf8"),
+    stderr: await readFile(stderrPath, "utf8"),
+  };
 }
 
 afterEach(async () => {

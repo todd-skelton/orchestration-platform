@@ -855,14 +855,21 @@ it.each([
 );
 
 it("imports the portable delivery composition directly in Node 24", async () => {
-  const { stdout } = await promisify(execFile)(
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-import-")));
+  roots.push(root);
+  const output = resolve(root, "result.json");
+  await promisify(execFile)(
     process.execPath,
     [
       "--input-type=module",
       "-e",
-      'import("./scripts/dogfood/delivery.mjs").then(m=>process.stdout.write(JSON.stringify([typeof m.deliveryStep,m.DELIVERY_AUTHORITY_SCHEMA])))',
+      'import("./scripts/dogfood/delivery.mjs").then(async m=>(await import("node:fs/promises")).writeFile(process.argv[1],JSON.stringify([typeof m.deliveryStep,m.DELIVERY_AUTHORITY_SCHEMA])))',
+      output,
     ],
     { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
   );
-  expect(JSON.parse(stdout)).toEqual(["function", "dogfood-delivery-authority/v1"]);
+  expect(JSON.parse(await readFile(output, "utf8"))).toEqual([
+    "function",
+    "dogfood-delivery-authority/v1",
+  ]);
 });

@@ -1,8 +1,9 @@
 import { execFile, spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { delimiter, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { resolvePnpmLauncher, type PnpmLauncher } from "../pnpm-launcher.mjs";
 import type { Adapter, Attempt, Config, Role, Terminal } from "./flow.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
 
@@ -24,6 +25,127 @@ const artifact = (config: Config, role: Role, suffix: string) =>
     config.stateDirectory,
     `${config.artifactPrefix ? `${config.artifactPrefix}.` : ""}${role}.${suffix}`,
   );
+export const authorTemporaryRoot = (config: Config) =>
+  resolve(config.stateDirectory, "author-temp");
+const toml = (value: string) => JSON.stringify(value);
+const shell = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+function authorEnvironment(config: Config, environment: NodeJS.ProcessEnv) {
+  const temporary = authorTemporaryRoot(config);
+  return {
+    ...environment,
+    PATH: `${temporary}${delimiter}${environment.PATH ?? ""}`,
+    TEMP: temporary,
+    TMP: temporary,
+    TMPDIR: temporary,
+  };
+}
+const expectedPnpmVersion = async (config: Config) => {
+  const value = JSON.parse(
+    await readFile(resolve(config.worktree, "package.json"), "utf8"),
+  ).packageManager;
+  check(
+    typeof value === "string" && /^pnpm@\d+\.\d+\.\d+$/.test(value),
+    "author-offline-pnpm-unavailable",
+  );
+  return value.slice("pnpm@".length);
+};
+function pnpmWrapper(launcher: PnpmLauncher) {
+  return `const { spawnSync } = require("node:child_process");
+const result = spawnSync(${JSON.stringify(launcher.executable)}, ${JSON.stringify(launcher.prefixArgs)}.concat(process.argv.slice(2)), { stdio: "inherit", env: { ...process.env, COREPACK_ENABLE_NETWORK: "0" } });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`;
+}
+export async function prepareAuthorRuntime(
+  config: Config,
+  launcherResolver: () => Promise<PnpmLauncher> = resolvePnpmLauncher,
+) {
+  const temporary = authorTemporaryRoot(config);
+  try {
+    await mkdir(temporary, { recursive: true });
+    const probe = await mkdtemp(resolve(temporary, "preflight-"));
+    await rm(probe, { recursive: true });
+  } catch {
+    throw new Error("author-temp-unavailable");
+  }
+  let launcher: PnpmLauncher;
+  try {
+    launcher = await launcherResolver();
+  } catch {
+    throw new Error("author-offline-pnpm-unavailable");
+  }
+  const wrapper = resolve(temporary, "pnpm.cjs");
+  try {
+    const files = [
+      [wrapper, pnpmWrapper(launcher)],
+      [resolve(temporary, "pnpm.cmd"), `@"${process.execPath}" "${wrapper}" %*\r\n`],
+      [
+        resolve(temporary, "pnpm"),
+        `#!/bin/sh\nexec ${shell(process.execPath)} ${shell(wrapper)} "$@"\n`,
+      ],
+    ] as const;
+    for (const [path, bytes] of files) {
+      try {
+        await writeFile(path, bytes, { flag: "wx" });
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== "EEXIST" ||
+          (await readFile(path, "utf8")) !== bytes
+        )
+          throw error;
+      }
+    }
+    await chmod(resolve(temporary, "pnpm"), 0o755);
+  } catch {
+    throw new Error("author-temp-unavailable");
+  }
+  let versionDirectory: string;
+  try {
+    versionDirectory = await mkdtemp(resolve(temporary, "pnpm-version-"));
+  } catch {
+    throw new Error("author-temp-unavailable");
+  }
+  try {
+    const versionPath = resolve(versionDirectory, "stdout.txt");
+    const output = await open(versionPath, "w");
+    try {
+      await new Promise<void>((done, reject) => {
+        let timedOut = false;
+        const child = spawn(launcher.executable, [...launcher.prefixArgs, "--version"], {
+          cwd: config.worktree,
+          windowsHide: true,
+          stdio: ["ignore", output.fd, "ignore"],
+          env: { ...process.env, COREPACK_ENABLE_NETWORK: "0" },
+        });
+        const timer = setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, 15_000);
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", (code) => {
+          clearTimeout(timer);
+          if (timedOut || code !== 0) reject(new Error("pnpm version unavailable"));
+          else done();
+        });
+      });
+    } finally {
+      await output.close();
+    }
+    const version = (await readFile(versionPath, "utf8")).trim();
+    check(version === (await expectedPnpmVersion(config)), "author-offline-pnpm-unavailable");
+  } catch {
+    throw new Error("author-offline-pnpm-unavailable");
+  } finally {
+    try {
+      await rm(versionDirectory, { recursive: true, force: true });
+    } catch {
+      throw new Error("author-temp-unavailable");
+    }
+  }
+}
 // POSIX copies only these exact spellings. Windows environment names are
 // case-insensitive, so an allowed alias is copied once under this canonical spelling.
 export const WORKER_ENVIRONMENT_ALLOWLIST = [
@@ -80,12 +202,13 @@ export function workerEnvironment(
 export async function launchObserver(
   request: string,
   observer = fileURLToPath(new URL("./observe-process.mjs", import.meta.url)),
+  environment = process.env,
 ) {
   const child = spawn(process.execPath, [observer, request], {
     detached: true,
     windowsHide: true,
     stdio: "ignore",
-    env: workerEnvironment(process.env),
+    env: workerEnvironment(environment),
   });
   await new Promise<void>((done, reject) => {
     child.once("spawn", done);
@@ -111,13 +234,21 @@ export function launchArguments(config: Config, role: Role, platform = process.p
     `model_reasoning_effort=${config[role].effort}`,
     "-c",
     'approval_policy="never"',
-    ...(platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : []),
+    ...(platform === "win32" ? ["-c", 'windows.sandbox="elevated"'] : []),
     "-c",
     "sandbox_workspace_write.exclude_slash_tmp=true",
     "-c",
     "sandbox_workspace_write.exclude_tmpdir_env_var=true",
     "-c",
-    "sandbox_workspace_write.writable_roots=[]",
+    role === "author"
+      ? `sandbox_workspace_write.writable_roots=[${toml(authorTemporaryRoot(config))}]`
+      : "sandbox_workspace_write.writable_roots=[]",
+    ...(role === "author"
+      ? [
+          "-c",
+          `shell_environment_policy.set={ TEMP=${toml(authorTemporaryRoot(config))}, TMP=${toml(authorTemporaryRoot(config))}, TMPDIR=${toml(authorTemporaryRoot(config))}, PATH=${toml(`${authorTemporaryRoot(config)}${delimiter}${process.env.PATH ?? ""}`)}, COREPACK_ENABLE_NETWORK="0" }`,
+        ]
+      : []),
     "--output-schema",
     artifact(config, role, "output-schema.json"),
     "-s",
@@ -270,6 +401,7 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         "--output-schema",
       ])
         check(help.includes(flag), "incompatible-codex-cli");
+      await prepareAuthorRuntime(config);
     },
     async launch(role, config, prompt) {
       await writeFile(artifact(config, role, "prompt.txt"), prompt, { flag: "wx" });
@@ -293,7 +425,11 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         }),
         { flag: "wx" },
       );
-      await launchObserver(request);
+      await launchObserver(
+        request,
+        undefined,
+        role === "author" ? authorEnvironment(config, process.env) : process.env,
+      );
       for (let count = 0; count < 120; count++) {
         const identity = await optionalText(artifact(config, role, "process.json"));
         const text = await optionalText(trace);
