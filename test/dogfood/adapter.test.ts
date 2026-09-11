@@ -473,16 +473,12 @@ it("reports typed author runtime preflight failures before launch", async () => 
     }),
   ).rejects.toThrow("author-offline-pnpm-unavailable");
 });
-it("observes a missing exit receipt for one configured window before a typed stop", async () => {
+it("observes a missing exit receipt for the module window before a typed stop", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-exit-wait-")));
   cleanup.push(root);
   let now = 1_000;
-  const current = {
-    ...config,
-    stateDirectory: root,
-    exitReceiptWindowMs: 500,
-  };
-  const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl") };
+  const current = { ...config, stateDirectory: root };
+  const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
   const kill = vi.spyOn(process, "kill").mockImplementation(() => {
     throw Object.assign(new Error("gone"), { code: "ESRCH" });
   });
@@ -492,17 +488,11 @@ it("observes a missing exit receipt for one configured window before a typed sto
       id,
       status: "running",
     });
-    expect(JSON.parse(await readFile(resolve(root, "author.exit-wait.json"), "utf8"))).toEqual({
-      reason: "delayed-exit-receipt",
-      count: 1,
-      attempt: id,
-      observedAt: 1_000,
-    });
-    now = 1_499;
+    now = 30_999;
     await expect(adapter.observe("author", current, attempt)).resolves.toMatchObject({
       status: "running",
     });
-    now = 1_500;
+    now = 31_000;
     await expect(adapter.observe("author", current, attempt)).rejects.toThrow(
       "exit-receipt-timeout",
     );

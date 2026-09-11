@@ -107,7 +107,6 @@ function loop(root: string): LoopConfig {
     reviewer: { model: "reviewer", effort: "high" },
     codexExecutable: resolve(root, "codex"),
     gitExecutable: resolve(root, "git"),
-    exitReceiptWindowMs: 30_000,
     nativeLaunchCeiling: 8,
     attemptCeiling: 4,
   };

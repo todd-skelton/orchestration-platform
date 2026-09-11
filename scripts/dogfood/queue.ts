@@ -17,8 +17,9 @@ import {
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { codexAdapter } from "./dispatch-adapter.ts";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { gateCorrectionStep, selectedSourceReview, step } from "./flow.ts";
+import { correctGate, QueueBlocked, step } from "./flow.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
+export { QueueBlocked };
 import { reviewedRepairAdapter, sourceReviewerReportPrompt } from "./repair-adapter.mjs";
 import { repairStep, type RepairAdapter } from "./repair.mjs";
 import {
@@ -105,7 +106,6 @@ export interface LoopConfig {
   reviewer: { model: string; effort: string };
   codexExecutable: string;
   gitExecutable: string;
-  exitReceiptWindowMs: number;
   nativeLaunchCeiling: number;
   attemptCeiling: number;
 }
@@ -117,7 +117,7 @@ export const ACTIONABLE_STOP_REASONS = [
   "current-main-unavailable",
   "gate-retry-exhausted:typecheck",
   "gate-retry-exhausted:format:check",
-  "reviewer-retry-exhausted",
+  "reviewer-malformed",
   "exit-receipt-timeout",
   "native-launch-ceiling-exhausted",
   "implementation-attempt-ceiling-exhausted",
@@ -133,17 +133,29 @@ export interface SelectedLoopIssue {
 }
 
 export type QueueSourceResult =
-  | { status: "observing-author" | "observing-reviewer" }
-  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string }
-  | { status: "fixable-review"; head: string; reviewId: string; findings: ReviewFinding[] };
+  | { status: "observing-author" | "observing-reviewer"; retries?: number }
+  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string; retries?: number }
+  | {
+      status: "fixable-review";
+      head: string;
+      reviewId: string;
+      findings: ReviewFinding[];
+      retries?: number;
+    };
 export type QueueRepairResult =
-  | { status: "observing-author" | "observing-reviewer" }
-  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string }
-  | { status: "failed"; head: string; reviewId: string; findings: ReviewFinding[] };
+  | { status: "observing-author" | "observing-reviewer"; retries?: number }
+  | { status: "accepted"; head: string; reviewId: string; stateDirectory: string; retries?: number }
+  | {
+      status: "failed";
+      head: string;
+      reviewId: string;
+      findings: ReviewFinding[];
+      retries?: number;
+    };
 export type QueueDeliveryResult =
-  | { status: "observing-author" | "observing-reviewer" }
+  | { status: "observing-author" | "observing-reviewer"; retries?: number }
   | { status: "failed"; head: string; reviewId: string; findings: ReviewFinding[] }
-  | { status: "observing-hosted-checks"; head: string; reviewId: string }
+  | { status: "observing-hosted-checks"; head: string; reviewId: string; retries?: number }
   | Extract<DeliveryResult, { status: "complete" }>;
 
 export interface QueueAdapter {
@@ -154,7 +166,7 @@ export interface QueueAdapter {
   repair(item: QueueItem): Promise<QueueRepairResult>;
   delivery(
     item: QueueItem,
-    accepted: { head: string; reviewId: string; stateDirectory: string },
+    accepted: { head: string; reviewId: string; stateDirectory: string; retries?: number },
   ): Promise<QueueDeliveryResult>;
 }
 
@@ -174,16 +186,6 @@ export type QueueResult =
       cursor: number;
     }
   | { status: "complete"; run: string; cursor: number; items: number; participants: number };
-
-export class QueueBlocked extends Error {
-  readonly reason: string;
-  readonly diagnostics: string | undefined;
-  constructor(reason: string, diagnostics?: string) {
-    super(reason);
-    this.reason = reason;
-    this.diagnostics = diagnostics;
-  }
-}
 
 function demand(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new QueueBlocked(reason);
@@ -223,19 +225,12 @@ export function validateLoopConfig(config: LoopConfig) {
       "reviewer",
       "codexExecutable",
       "gitExecutable",
-      "exitReceiptWindowMs",
       "nativeLaunchCeiling",
       "attemptCeiling",
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
-  demand(
-    Number.isSafeInteger(config.exitReceiptWindowMs) &&
-      config.exitReceiptWindowMs >= 0 &&
-      config.exitReceiptWindowMs <= 300_000,
-    "invalid-exit-receipt-window",
-  );
   demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
   for (const name of [
     "stableExecutorRoot",
@@ -503,7 +498,6 @@ export async function queueConfigFromLoop(
       "Node 24 / windows-latest",
       "Node 24 / macos-latest",
     ],
-    exitReceiptWindowMs: config.exitReceiptWindowMs,
     author: { ...config.author, prompt: sourcePrompt },
     reviewer: { ...config.reviewer, prompt: reviewerPrompt },
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
@@ -754,12 +748,6 @@ interface AttemptRecord {
   stateDirectory: string | null;
 }
 
-function retries(item: string, history: QueueParticipant[]) {
-  return history.filter(
-    (participant) => participant.item === item && participant.outcome === "malformed",
-  ).length;
-}
-
 function initialAttempt(
   config: QueueConfig,
   item: QueueItem,
@@ -779,7 +767,7 @@ function initialAttempt(
     reviewId: null,
     findings: [],
     history,
-    retries: retries(item.id, history),
+    retries: 0,
     acceptedStage: null,
     stateDirectory: null,
   };
@@ -815,7 +803,7 @@ function advance(
   history: QueueParticipant[],
   fields: Partial<AttemptRecord>,
 ): AttemptRecord {
-  return { ...attempt, ...fields, history, retries: retries(attempt.item, history) };
+  return { ...attempt, ...fields, history };
 }
 
 function validCompletedChecks(item: QueueItem, checks: unknown): checks is CheckEvidence[] {
@@ -874,6 +862,7 @@ function validCompletedDeliveryResult(
       "checks",
       "mergeCommit",
       "cleanup",
+      "retries",
     ]) && validCompletedDeliveryFields(item, delivery)
   );
 }
@@ -903,11 +892,11 @@ function participantGroups(participants: QueueParticipant[], reason: string) {
   }
   for (const group of groups)
     demand(
-      [2, 3].includes(group.length) &&
+      [1, 2, 3].includes(group.length) &&
         group[0]!.role === "author" &&
         group[0]!.outcome === "passed" &&
         group.slice(1).every((participant) => participant.role === "reviewer") &&
-        (group.length === 2 || group[1]!.outcome === "malformed") &&
+        (group.length < 3 || group[1]!.outcome === "malformed") &&
         new Set(group.map((participant) => participant.id)).size === group.length,
       reason,
     );
@@ -938,14 +927,14 @@ function assertItemReviewHistory(
   const sourceReview = source[0]?.at(-1);
   const baseRepair = repair[0]?.at(-1);
   const gate = source[1] ?? repair[1];
-  const selected = gate?.at(-1) ?? (repaired ? baseRepair : sourceReview);
+  const selected = gate?.length === 2 ? gate.at(-1) : repaired ? baseRepair : sourceReview;
   demand(
     source.length >= 1 &&
-      source.length <= 2 &&
-      repair.length <= 2 &&
+      source.length <= 3 &&
+      repair.length <= 3 &&
       sourceReview?.outcome === (repaired ? "failed" : "passed") &&
       (repaired ? repair.length >= 1 && baseRepair?.outcome === "passed" : repair.length === 0) &&
-      !(source.length === 2 && repair.length === 2) &&
+      !(source.length > 1 && repair.length > 1) &&
       selected?.outcome === "passed" &&
       selected.id === reviewId,
     "item-review-history-mismatch",
@@ -1007,6 +996,7 @@ function attemptFailureRecord(
   candidateAttempt: number,
   review: { head: string; reviewId: string; findings: ReviewFinding[] },
   history: QueueParticipant[],
+  retries: number,
 ): FailedAttemptReceipt {
   return {
     schemaVersion: "dogfood-bounded-queue-attempt/v1",
@@ -1021,7 +1011,7 @@ function attemptFailureRecord(
     reviewId: review.reviewId,
     findings: review.findings,
     history,
-    retries: retries(item.id, history),
+    retries,
     acceptedStage: null,
     stateDirectory: null,
   };
@@ -1076,7 +1066,9 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       const source = await adapter.source(item);
       const history = await adapter.history();
       if (source.status === "observing-author" || source.status === "observing-reviewer") {
-        attempt = advance(attempt, history, {});
+        attempt = advance(attempt, history, {
+          retries: Math.max(attempt.retries, source.retries ?? 0),
+        });
         await record(directory, "attempt", attempt);
         return {
           status: source.status,
@@ -1092,7 +1084,14 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           await record(
             directory,
             "attempt",
-            attemptFailureRecord(config, item, item.implementationAttempt, source, history),
+            attemptFailureRecord(
+              config,
+              item,
+              item.implementationAttempt,
+              source,
+              history,
+              Math.max(attempt.retries, source.retries ?? 0),
+            ),
           );
           throw new QueueBlocked("implementation-attempt-ceiling-exhausted");
         }
@@ -1102,6 +1101,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           head: source.head,
           reviewId: source.reviewId,
           findings: source.findings,
+          retries: Math.max(attempt.retries, source.retries ?? 0),
         });
         await record(directory, "attempt", attempt);
         continue;
@@ -1115,6 +1115,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         findings: [],
         acceptedStage: "source",
         stateDirectory: source.stateDirectory,
+        retries: Math.max(attempt.retries, source.retries ?? 0),
       });
       await record(directory, "attempt", attempt);
       continue;
@@ -1124,7 +1125,9 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       const repair = await adapter.repair(item);
       const history = await adapter.history();
       if (repair.status === "observing-author" || repair.status === "observing-reviewer") {
-        attempt = advance(attempt, history, {});
+        attempt = advance(attempt, history, {
+          retries: Math.max(attempt.retries, repair.retries ?? 0),
+        });
         await record(directory, "attempt", attempt);
         return {
           status: repair.status,
@@ -1139,7 +1142,14 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         await record(
           directory,
           "attempt",
-          attemptFailureRecord(config, item, attempt.candidateAttempt, repair, history),
+          attemptFailureRecord(
+            config,
+            item,
+            attempt.candidateAttempt,
+            repair,
+            history,
+            Math.max(attempt.retries, repair.retries ?? 0),
+          ),
         );
         demand(
           attempt.candidateAttempt < item.implementationAttemptCeiling,
@@ -1162,6 +1172,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         findings: [],
         acceptedStage: "repair",
         stateDirectory: repair.stateDirectory,
+        retries: Math.max(attempt.retries, repair.retries ?? 0),
       });
       await record(directory, "attempt", attempt);
       continue;
@@ -1178,6 +1189,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       head: attempt.head,
       reviewId: attempt.reviewId,
       stateDirectory: attempt.stateDirectory,
+      retries: attempt.retries,
     });
     const history = await adapter.history();
     if (delivery.status === "observing-author" || delivery.status === "observing-reviewer") {
@@ -1195,7 +1207,14 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       await record(
         directory,
         "attempt",
-        attemptFailureRecord(config, item, attempt.candidateAttempt, delivery, history),
+        attemptFailureRecord(
+          config,
+          item,
+          attempt.candidateAttempt,
+          delivery,
+          history,
+          attempt.retries,
+        ),
       );
       demand(
         attempt.candidateAttempt < item.implementationAttemptCeiling,
@@ -1225,6 +1244,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
     attempt = advance(attempt, history, {
       head: delivery.head,
       reviewId: delivery.reviewId,
+      retries: delivery.retries ?? attempt.retries,
     });
     await record(directory, "attempt", attempt);
     if (delivery.status === "observing-hosted-checks")
@@ -1494,13 +1514,11 @@ export function repositoryQueueAdapter(
     item: QueueItem,
     stage: "source" | "repair",
     directory: string,
-    recordPrefix = "",
   ) => {
     for (const role of ["author", "reviewer"] as const) {
-      const attempt = await optionalRecord(directory, `${recordPrefix}${role}-attempt`);
-      let terminal = await optionalRecord(directory, `${recordPrefix}${role}-terminal`);
+      const attempt = await optionalRecord(directory, `${role}-attempt`);
+      let terminal = await optionalRecord(directory, `${role}-terminal`);
       if (
-        recordPrefix === "" &&
         stage === "source" &&
         role === "reviewer" &&
         terminal !== ABSENT &&
@@ -1516,17 +1534,13 @@ export function repositoryQueueAdapter(
           terminal = { ...terminal, status: "malformed" };
       }
       await syncParticipant(item, stage, role, attempt, terminal);
-      if (role === "reviewer") {
-        await syncParticipant(
-          item,
-          stage,
-          role,
-          await optionalRecord(directory, `${recordPrefix}reviewer-retry-attempt`),
-          await optionalRecord(directory, `${recordPrefix}reviewer-retry-terminal`),
-        );
-      }
     }
   };
+
+  const reviewPair = async (directory: string) => ({
+    attempt: await json(directory, "reviewer-attempt"),
+    terminal: await json(directory, "reviewer-terminal"),
+  });
 
   const acceptedPair = async (
     item: QueueItem,
@@ -1550,7 +1564,7 @@ export function repositoryQueueAdapter(
   const passingSourceReview = async (item: QueueItem) => {
     const [candidate, selected] = await Promise.all([
       json(item.source.stateDirectory, "candidate"),
-      selectedSourceReview(item.source),
+      reviewPair(item.source.stateDirectory),
     ]);
     demand(
       selected.terminal.status === "passed" && selected.terminal.head === candidate.head,
@@ -1648,7 +1662,6 @@ export function repositoryQueueAdapter(
       sourcePaths: candidate.changed,
       acceptanceCriteria: item.repair.acceptanceCriteria,
       requiredChecks: item.source.requiredChecks,
-      exitReceiptWindowMs: item.source.exitReceiptWindowMs,
       history: projected,
       implementationAttempts: item.implementationAttempt + 1,
       implementationAttemptCeiling: item.implementationAttemptCeiling,
@@ -1748,16 +1761,6 @@ export function repositoryQueueAdapter(
         (await optionalRecord(item.source.stateDirectory, "publication")) === ABSENT,
         "source-cannot-publish",
       );
-      if ((await optionalRecord(item.source.stateDirectory, "gate-retry")) !== ABSENT) {
-        await syncParticipants(item, "source", item.source.stateDirectory);
-        const { candidate, selected } = await passingSourceReview(item);
-        return {
-          status: "accepted",
-          head: candidate.head,
-          reviewId: selected.attempt.id,
-          stateDirectory: item.source.stateDirectory,
-        };
-      }
       try {
         const result = await step(
           item.source,
@@ -1766,7 +1769,10 @@ export function repositoryQueueAdapter(
         );
         await syncParticipants(item, "source", item.source.stateDirectory);
         if (result.status === "observing-author" || result.status === "observing-reviewer")
-          return { status: result.status };
+          return {
+            status: result.status,
+            ...(result.retries ? { retries: result.retries } : {}),
+          };
         demand(result.status === "awaiting-publication", "unexpected-source-flow-status");
         await acceptedPair(item, "source", "passed");
         const { candidate, selected } = await passingSourceReview(item);
@@ -1775,24 +1781,17 @@ export function repositoryQueueAdapter(
           head: candidate.head,
           reviewId: selected.attempt.id,
           stateDirectory: item.source.stateDirectory,
+          ...(result.retries ? { retries: result.retries } : {}),
         };
       } catch (error) {
         await syncParticipants(item, "source", item.source.stateDirectory);
-        if (error instanceof QueueBlocked) throw error;
-        const reason = error instanceof Error ? error.message : "";
-        if (
-          [
-            "reviewer-retry-exhausted",
-            "exit-receipt-timeout",
-            "author-temp-unavailable",
-            "author-offline-pnpm-unavailable",
-          ].includes(reason)
-        )
-          throw new QueueBlocked(reason);
-        demand(reason === "reviewer-failed", "source-flow-state-unknown");
+        if (!(error instanceof QueueBlocked) || error.reason !== "reviewer-failed") {
+          if (error instanceof QueueBlocked) throw error;
+          throw new QueueBlocked("source-flow-state-unknown");
+        }
         const [candidate, selected] = await Promise.all([
           json(item.source.stateDirectory, "candidate"),
-          selectedSourceReview(item.source),
+          reviewPair(item.source.stateDirectory),
         ]);
         const reviewer = selected.attempt;
         const terminal = selected.terminal;
@@ -1805,6 +1804,7 @@ export function repositoryQueueAdapter(
         await acceptedPair(item, "source", "failed");
         return {
           status: "fixable-review",
+          ...(error.retries ? { retries: error.retries } : {}),
           ...blockingReview(
             candidate,
             reviewer,
@@ -1816,26 +1816,6 @@ export function repositoryQueueAdapter(
       }
     },
     async repair(item): Promise<QueueRepairResult> {
-      if ((await optionalRecord(item.repair.stateDirectory, "gate-retry")) !== ABSENT) {
-        await syncParticipants(item, "repair", item.repair.stateDirectory);
-        const [completed, selected] = await Promise.all([
-          json(item.repair.stateDirectory, "repair-complete"),
-          selectedSourceReview({ stateDirectory: item.repair.stateDirectory }),
-        ]);
-        const review = parseReview(selected.terminal.summary, item.source.run, completed.head);
-        demand(
-          selected.terminal.status === "passed" &&
-            selected.terminal.head === completed.head &&
-            review.verdict === "PASS",
-          "repair-review-state-unknown",
-        );
-        return {
-          status: "accepted",
-          head: completed.head,
-          reviewId: selected.attempt.id,
-          stateDirectory: item.repair.stateDirectory,
-        };
-      }
       try {
         const repair = await buildRepair(item);
         const result = await repairStep(
@@ -1845,17 +1825,19 @@ export function repositoryQueueAdapter(
         );
         await syncParticipants(item, "repair", item.repair.stateDirectory);
         if (result.status === "observing-author" || result.status === "observing-reviewer")
-          return { status: result.status };
+          return {
+            status: result.status,
+            ...(result.retries ? { retries: result.retries } : {}),
+          };
         demand(result.status === "awaiting-delivery", "unexpected-repair-status");
         await acceptedPair(item, "repair", "passed");
-        const reviewer = (
-          await selectedSourceReview({ stateDirectory: item.repair.stateDirectory })
-        ).attempt;
+        const reviewer = (await reviewPair(item.repair.stateDirectory)).attempt;
         return {
           status: "accepted",
           head: result.head,
           reviewId: reviewer.id,
           stateDirectory: item.repair.stateDirectory,
+          ...(result.retries ? { retries: result.retries } : {}),
         };
       } catch (error) {
         try {
@@ -1864,21 +1846,22 @@ export function repositoryQueueAdapter(
           if (historyError instanceof QueueBlocked) throw historyError;
           throw new QueueBlocked("repair-history-state-unknown");
         }
-        if (error instanceof QueueBlocked) throw error;
+        if (error instanceof QueueBlocked && error.reason !== "reviewer-failed") throw error;
         const reason =
-          error instanceof RepairBlocked
+          error instanceof QueueBlocked
             ? error.reason
-            : error instanceof Error
-              ? error.message
+            : error instanceof RepairBlocked
+              ? error.reason
               : "";
         if (["delta-review-failed", "reviewer-failed"].includes(reason)) {
           const [candidate, selected] = await Promise.all([
             json(item.repair.stateDirectory, "candidate"),
-            selectedSourceReview({ stateDirectory: item.repair.stateDirectory }),
+            reviewPair(item.repair.stateDirectory),
           ]);
           await acceptedPair(item, "repair", "failed");
           return {
             status: "failed",
+            ...(error instanceof QueueBlocked && error.retries ? { retries: error.retries } : {}),
             ...blockingReview(
               candidate,
               selected.attempt as unknown as Record<string, any>,
@@ -1897,7 +1880,29 @@ export function repositoryQueueAdapter(
       const stage = samePath(accepted.stateDirectory, item.source.stateDirectory)
         ? "source"
         : "repair";
-      const deliveryConfig = (current: typeof accepted): DeliveryConfig => ({
+      const reviewerAttempt = await optionalRecord(accepted.stateDirectory, "reviewer-attempt");
+      const flowRetries = reviewerAttempt !== ABSENT && reviewerAttempt.retries === 1 ? 1 : 0;
+      let savedAttempt = await optionalRecord(state, "attempt");
+      if (savedAttempt !== ABSENT) validateAttempt(savedAttempt, config);
+      let gateRetryCounted =
+        savedAttempt !== ABSENT &&
+        savedAttempt.phase === "delivery" &&
+        savedAttempt.item === item.id &&
+        savedAttempt.retries > flowRetries;
+      let retries = savedAttempt === ABSENT ? (accepted.retries ?? 0) : savedAttempt.retries;
+      const persistDeliveryAttempt = async (fields: Partial<AttemptRecord>) => {
+        if (savedAttempt === ABSENT) return;
+        demand(
+          savedAttempt.phase === "delivery" &&
+            savedAttempt.item === item.id &&
+            savedAttempt.reviewId === accepted.reviewId &&
+            savedAttempt.stateDirectory === accepted.stateDirectory,
+          "delivery-source-drift",
+        );
+        savedAttempt = advance(savedAttempt, await readHistory(), fields);
+        await record(state, "attempt", savedAttempt);
+      };
+      const delivery: DeliveryConfig = {
         controller: config.controller,
         run: item.source.run,
         issue: item.issue,
@@ -1906,98 +1911,72 @@ export function repositoryQueueAdapter(
         controllerRevision: config.controllerRevision,
         worktree: item.source.worktree,
         reviewWorktree: item.source.reviewWorktree,
-        stateDirectory: current.stateDirectory,
-        candidateHead: current.head,
+        stateDirectory: accepted.stateDirectory,
+        candidateHead: accepted.head,
+        retries: accepted.retries ?? 0,
         ...(item.delivery.refresh ? { refresh: item.delivery.refresh } : {}),
         requiredChecks: item.delivery.requiredChecks,
         policy: item.delivery.policy,
-      });
-      try {
-        let current = accepted;
-        let retry = await optionalRecord(accepted.stateDirectory, "gate-retry");
-        const deliveryPrepared =
-          (await optionalRecord(accepted.stateDirectory, "delivery-config")) !== ABSENT;
-        let result;
-        if (retry === ABSENT) {
-          const delivery = deliveryConfig(current);
-          await assertExecutor(delivery, executingRoot, gitExecutable);
-          result = await deliveryStep(delivery, deliveryAdapter, deliveryPolicy);
-          if (result.status === "correcting-gate") retry = result;
-        }
-        if (retry !== ABSENT) {
-          const gateConfig: SourceConfig = {
-            ...item.source,
-            base: retry.head,
-            stateDirectory: accepted.stateDirectory,
-            author: {
-              ...item.source.author,
-              prompt: `${item.source.author.prompt}\n\nCorrect the ${retry.gate} gate failure on this same branch. The gate output was:\n${retry.output}`,
-            },
-          };
-          if (!deliveryPrepared) {
-            try {
-              const correction = await gateCorrectionStep(
-                gateConfig,
-                boundedNative(item, stage),
-                item.setup.pilotWorktree,
-              );
-              await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
-              if (
-                correction.status === "observing-author" ||
-                correction.status === "observing-reviewer"
-              )
-                return { status: correction.status };
-              demand(correction.status === "awaiting-publication", "gate-correction-state-unknown");
-            } catch (error) {
-              await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
-              const reason = error instanceof Error ? error.message : "";
-              if (
-                [
-                  "reviewer-retry-exhausted",
-                  "exit-receipt-timeout",
-                  "author-temp-unavailable",
-                  "author-offline-pnpm-unavailable",
-                ].includes(reason)
-              )
-                throw new QueueBlocked(reason);
-              demand(reason === "reviewer-failed", "gate-correction-state-unknown");
-              const [candidate, selected] = await Promise.all([
-                json(accepted.stateDirectory, "gate-retry-candidate"),
-                selectedSourceReview(gateConfig, "gate-retry-"),
-              ]);
-              return {
-                status: "failed",
-                ...blockingReview(
-                  candidate,
-                  selected.attempt as unknown as Record<string, any>,
-                  selected.terminal as unknown as Record<string, any>,
-                  item.source.run,
-                  "gate-review-state-unknown",
-                ),
-              };
-            }
+      };
+      const correctionNative = boundedNative(item, stage);
+      const inlineDelivery: DeliveryAdapter = {
+        ...deliveryAdapter,
+        async source(current) {
+          const reviewed = await optionalRecord(accepted.stateDirectory, "candidate");
+          const source = await deliveryAdapter.source(
+            reviewed !== ABSENT && SHA.test(reviewed.head)
+              ? { ...current, candidateHead: reviewed.head }
+              : current,
+          );
+          return { ...source, head: current.candidateHead };
+        },
+        async verifyWorkspace(current, head) {
+          return (
+            (await deliveryAdapter.verifyWorkspace(current, head)) ||
+            (gateRetryCounted && head === current.candidateHead)
+          );
+        },
+        async correctGate(current, gate, output) {
+          const resuming = gateRetryCounted;
+          if (!gateRetryCounted) {
+            retries = (accepted.retries ?? 0) + 1;
+            await persistDeliveryAttempt({ retries });
+            gateRetryCounted = true;
           }
-          const [candidate, selected] = await Promise.all([
-            json(accepted.stateDirectory, "gate-retry-candidate"),
-            selectedSourceReview(gateConfig, "gate-retry-"),
-          ]);
-          current = {
-            head: candidate.head,
-            reviewId: selected.attempt.id,
-            stateDirectory: accepted.stateDirectory,
-          };
-          const delivery = deliveryConfig(current);
-          await assertExecutor(delivery, executingRoot, gitExecutable);
-          result = await deliveryStep(delivery, deliveryAdapter, deliveryPolicy);
-        }
-        demand(result !== undefined, "delivery-state-unknown");
-        demand(result.status !== "correcting-gate", "gate-retry-state-unknown");
+          const correctionBase = resuming
+            ? await correctionNative.git(current.worktree, ["rev-parse", "HEAD"])
+            : current.candidateHead;
+          const correction = await correctGate(
+            {
+              ...item.source,
+              base: correctionBase,
+              stateDirectory: accepted.stateDirectory,
+            },
+            correctionNative,
+            item.setup.pilotWorktree,
+            gate,
+            output,
+            resuming,
+          );
+          await syncParticipant(item, stage, "author", correction.attempt, correction.terminal);
+          await persistDeliveryAttempt({ head: correction.head, retries });
+          return { head: correction.head, retries };
+        },
+      };
+      try {
+        await assertExecutor(delivery, executingRoot, gitExecutable);
+        const result = await deliveryStep(delivery, inlineDelivery, deliveryPolicy);
         demand(
-          result.head === current.head && result.reviewId === current.reviewId,
+          result.reviewId === accepted.reviewId && result.retries >= (accepted.retries ?? 0),
           "delivery-source-drift",
         );
         if (result.status === "observing-hosted-checks")
-          return { status: result.status, head: result.head, reviewId: result.reviewId };
+          return {
+            status: result.status,
+            head: result.head,
+            reviewId: result.reviewId,
+            retries: result.retries,
+          };
         return result;
       } catch (error) {
         if (error instanceof QueueBlocked) throw error;

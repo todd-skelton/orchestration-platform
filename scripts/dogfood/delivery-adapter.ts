@@ -2,8 +2,6 @@ import { execFile } from "node:child_process";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-// @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { selectedSourceReview } from "./flow.ts";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
 import { normalizeBody } from "../planning/board-check.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
@@ -71,15 +69,6 @@ async function json(path: string, reason: string) {
   }
 }
 
-async function optionalJson(path: string) {
-  try {
-    return JSON.parse(await readFile(path, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new DeliveryBlocked("malformed-source-record");
-  }
-}
-
 async function stagedFile(config: DeliveryConfig, name: string, contents: string) {
   const path = resolve(config.stateDirectory, name);
   try {
@@ -107,23 +96,25 @@ function validAttempt(
   value: any,
   config: DeliveryConfig,
   role: "author" | "reviewer",
-  artifactPrefix = "",
   stateDirectory = config.stateDirectory,
 ) {
   return (
     value &&
-    Object.keys(value).length === 3 &&
-    ["id", "pid", "trace"].every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).length === (value.retries === undefined ? 4 : 5) &&
+    ["id", "pid", "trace", "launchedAt"].every((key) => Object.hasOwn(value, key)) &&
+    (value.retries === undefined || (role === "reviewer" && value.retries === 1)) &&
     typeof value.id === "string" &&
     ATTEMPT_ID.test(value.id) &&
     Number.isSafeInteger(value.pid) &&
     value.pid > 0 &&
     typeof value.trace === "string" &&
     isAbsolute(value.trace) &&
-    samePath(
-      value.trace,
-      resolve(stateDirectory, `${artifactPrefix ? `${artifactPrefix}.` : ""}${role}.jsonl`),
-    )
+    samePath(resolve(value.trace, ".."), stateDirectory) &&
+    new RegExp(`^${role}(?:-[0-9a-f-]{36})?\\.jsonl$`).test(
+      value.trace.split(/[\\/]/).at(-1) ?? "",
+    ) &&
+    Number.isFinite(value.launchedAt) &&
+    value.launchedAt > 0
   );
 }
 
@@ -427,38 +418,27 @@ export function githubDeliveryAdapter(
   return {
     publicationUrl,
     async source(config) {
-      const recordPrefix = (await optionalJson(
-        resolve(config.stateDirectory, "gate-retry-candidate.json"),
-      ))
-        ? "gate-retry-"
-        : "";
-      const record = (name: string) => `${recordPrefix}${name}.json`;
       const pinned = await json(
-        resolve(config.stateDirectory, record("config")),
+        resolve(config.stateDirectory, "config.json"),
         "missing-pilot-config-record",
       );
       const candidate = await json(
-        resolve(config.stateDirectory, record("candidate")),
+        resolve(config.stateDirectory, "candidate.json"),
         "missing-candidate-record",
       );
       const author = await json(
-        resolve(config.stateDirectory, record("author-attempt")),
+        resolve(config.stateDirectory, "author-attempt.json"),
         "missing-author-record",
       );
       const authorTerminal = await json(
-        resolve(config.stateDirectory, record("author-terminal")),
+        resolve(config.stateDirectory, "author-terminal.json"),
         "missing-author-terminal-record",
       );
       const pilot = pinned?.config;
-      let reviewer: any;
-      let reviewerAttempt: any;
-      try {
-        const selected = await selectedSourceReview(pilot, recordPrefix);
-        reviewer = selected.terminal;
-        reviewerAttempt = selected.attempt;
-      } catch (error) {
-        throw new DeliveryBlocked("selected-review-state-unknown");
-      }
+      const [reviewer, reviewerAttempt] = await Promise.all([
+        json(resolve(config.stateDirectory, "reviewer-terminal.json"), "missing-reviewer-terminal"),
+        json(resolve(config.stateDirectory, "reviewer-attempt.json"), "missing-reviewer-record"),
+      ]);
       let reviewerReportAccepted = false;
       try {
         reviewerReportAccepted =
@@ -491,14 +471,8 @@ export function githubDeliveryAdapter(
         reviewer?.status !== "passed" ||
         !reviewerReportAccepted ||
         reviewer?.head !== config.candidateHead ||
-        !validAttempt(author, config, "author", recordPrefix ? "gate-retry" : "") ||
-        (!validAttempt(reviewerAttempt, config, "reviewer", recordPrefix ? "gate-retry" : "") &&
-          !validAttempt(
-            reviewerAttempt,
-            config,
-            "reviewer",
-            recordPrefix ? "gate-review-retry" : "review-retry",
-          )) ||
+        !validAttempt(author, config, "author") ||
+        !validAttempt(reviewerAttempt, config, "reviewer") ||
         reviewer?.id !== reviewerAttempt.id ||
         author.id === reviewerAttempt.id
       )
@@ -534,6 +508,9 @@ export function githubDeliveryAdapter(
           output: [failure.stdout, failure.stderr, failure.message].filter(Boolean).join("\n"),
         };
       }
+    },
+    async correctGate() {
+      throw new DeliveryBlocked("gate-correction-unavailable");
     },
     async observeDraft(config, draft) {
       try {

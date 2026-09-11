@@ -25,6 +25,11 @@ const exactKeys = (value: unknown, keys: string[]) =>
   object(value) &&
   Object.keys(value).length === keys.length &&
   keys.every((key) => Object.hasOwn(value, key));
+const attemptKeys = (value: unknown, reviewer = false) =>
+  exactKeys(value, ["id", "pid", "trace", "launchedAt"]) ||
+  (reviewer &&
+    exactKeys(value, ["id", "pid", "trace", "launchedAt", "retries"]) &&
+    (value as { retries?: unknown }).retries === 1);
 const bounded = (value: unknown, maximum: number) =>
   typeof value === "string" &&
   value.length > 0 &&
@@ -78,7 +83,6 @@ export interface RepairConfig {
   sourcePaths: string[];
   acceptanceCriteria: string[];
   requiredChecks: string[];
-  exitReceiptWindowMs: number;
   history: ParticipantHistory[];
   implementationAttempts: number;
   implementationAttemptCeiling: number;
@@ -95,8 +99,8 @@ export interface RepairConfig {
 export interface SourceReviewArtifacts {
   configRecord: { fingerprint: string; config: Record<string, any>; host: string };
   candidate: { head: string; changed: string[] };
-  authorAttempt: { id: string; pid: number; trace: string };
-  reviewerAttempt: { id: string; pid: number; trace: string };
+  authorAttempt: { id: string; pid: number; trace: string; launchedAt: number };
+  reviewerAttempt: { id: string; pid: number; trace: string; launchedAt: number };
   terminal: Record<string, any>;
   changedFiles: string[];
   lineCounts: Record<string, number>;
@@ -215,7 +219,6 @@ export function validateRepairConfig(config: RepairConfig) {
       "sourcePaths",
       "acceptanceCriteria",
       "requiredChecks",
-      "exitReceiptWindowMs",
       "history",
       "implementationAttempts",
       "implementationAttemptCeiling",
@@ -272,12 +275,6 @@ export function validateRepairConfig(config: RepairConfig) {
     "malformed-source-footprint",
   );
   demand(strings(config.requiredChecks, 16, 160), "malformed-required-checks");
-  demand(
-    Number.isSafeInteger(config.exitReceiptWindowMs) &&
-      config.exitReceiptWindowMs >= 0 &&
-      config.exitReceiptWindowMs <= 300_000,
-    "malformed-exit-receipt-window",
-  );
   demand(validAdapter(config.adapter), "unsupported-repair-adapter");
   for (const actor of [config.author, config.reviewer])
     demand(validActor(actor), "malformed-repair-actor");
@@ -457,7 +454,6 @@ export function repairPolicy() {
           "allowedPaths",
           "repository",
           "requiredChecks",
-          "exitReceiptWindowMs",
           "author",
           "reviewer",
           "adapter",
@@ -467,7 +463,6 @@ export function repairPolicy() {
           prior.issue === config.issue &&
           prior.pilotRevision === config.controllerRevision &&
           prior.repository === config.repository &&
-          prior.exitReceiptWindowMs === config.exitReceiptWindowMs &&
           prior.base === config.mainBase &&
           prior.worktree === config.worktree &&
           prior.reviewWorktree === config.reviewWorktree &&
@@ -494,12 +489,14 @@ export function repairPolicy() {
           "source-workspace-not-clean-at-candidate",
         );
       demand(
-        exactKeys(artifacts.authorAttempt, ["id", "pid", "trace"]) &&
-          exactKeys(artifacts.reviewerAttempt, ["id", "pid", "trace"]) &&
+        attemptKeys(artifacts.authorAttempt) &&
+          attemptKeys(artifacts.reviewerAttempt, true) &&
           [artifacts.authorAttempt, artifacts.reviewerAttempt].every(
             (attempt) =>
               Number.isSafeInteger(attempt.pid) &&
               attempt.pid > 0 &&
+              Number.isFinite(attempt.launchedAt) &&
+              attempt.launchedAt > 0 &&
               typeof attempt.trace === "string" &&
               isAbsolute(attempt.trace),
           ) &&
@@ -603,8 +600,8 @@ export function repairPolicy() {
         "delta-workspace-not-clean-at-candidate",
       );
       demand(
-        exactKeys(artifacts.authorAttempt, ["id", "pid", "trace"]) &&
-          exactKeys(artifacts.reviewerAttempt, ["id", "pid", "trace"]) &&
+        attemptKeys(artifacts.authorAttempt) &&
+          attemptKeys(artifacts.reviewerAttempt, true) &&
           artifacts.terminal.id === artifacts.reviewerAttempt.id &&
           artifacts.terminal.head === artifacts.candidate.head &&
           artifacts.authorAttempt.id !== artifacts.reviewerAttempt.id &&

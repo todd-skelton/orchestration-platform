@@ -77,7 +77,6 @@ export async function queueConfigFromLoop(loop, executingRoot, selected, initial
       allowedPaths: ["."],
       repository: loop.repository,
       requiredChecks,
-      exitReceiptWindowMs: loop.exitReceiptWindowMs,
     },
     repair: {
       stateDirectory: repairState,
@@ -262,6 +261,7 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
         })),
         mergeCommit: "c".repeat(40),
         cleanup: { status: "confirmed", branch: "codex/synthetic-338" },
+        retries: 0,
       };
     },
   };

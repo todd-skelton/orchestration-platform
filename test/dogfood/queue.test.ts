@@ -72,6 +72,7 @@ function deliveryCompletion(
     })),
     mergeCommit: "d".repeat(40),
     cleanup: { status: "confirmed", branch },
+    retries: 0,
   };
 }
 
@@ -124,7 +125,6 @@ async function fixture(itemCount = 1) {
         allowedPaths: ["scripts/dogfood/queue.ts"],
         repository: "fixture/repository",
         requiredChecks,
-        exitReceiptWindowMs: 30_000,
         author: { model: "author-model", effort: "high", prompt: "author prompt" },
         reviewer: { model: "reviewer-model", effort: "high", prompt: "reviewer prompt" },
         adapter: { kind: "codex-exec", executable: process.execPath },
@@ -212,7 +212,6 @@ async function loopFixture(withRuntime = false) {
     reviewer: { model: "gpt-5.6-sol", effort: "high" },
     codexExecutable: process.execPath,
     gitExecutable,
-    exitReceiptWindowMs: 30_000,
     nativeLaunchCeiling: 8,
     attemptCeiling: 4,
   };
@@ -386,6 +385,7 @@ it("preserves registered multiline criteria through the genuine repository repai
         id: `${repair ? "repair" : "source"}-${role}`,
         pid: pid++,
         trace: resolve(queue.stateDirectory, `${repair ? "repair" : "source"}-${role}.jsonl`),
+        launchedAt: 1,
       };
     },
     async observe(role, config, attempt) {
@@ -1029,7 +1029,7 @@ it("restarts a persisted candidate-two failure by advancing to candidate three",
   const adapter: QueueAdapter = {
     async assertExecutor() {},
     async history() {
-      return history;
+      return [...history];
     },
     async setup() {
       throw new Error("setup must not repeat");
@@ -1210,4 +1210,43 @@ it.each([
   };
   await expect(queueStep(current.config, adapter)).rejects.toThrow(reason);
   expect(adapterEntries).toBe(0);
+});
+
+it("stores an inline gate retry count in the single attempt record", async () => {
+  const current = await fixture();
+  const item = current.config.items[0]!;
+  const acceptedHead = "b".repeat(40);
+  const history = [
+    participant(1, item.id, "source", "author", "passed"),
+    participant(2, item.id, "source", "reviewer", "passed"),
+  ];
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source() {
+      return {
+        status: "accepted",
+        head: acceptedHead,
+        reviewId: history[1]!.id,
+        stateDirectory: item.source.stateDirectory,
+      };
+    },
+    async repair() {
+      throw new Error("repair must not run");
+    },
+    async delivery() {
+      history.push(participant(3, item.id, "source", "author", "passed"));
+      return { ...deliveryCompletion(item, "c".repeat(40), history[1]!.id), retries: 1 };
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete" });
+  expect(
+    JSON.parse(await readFile(resolve(current.config.stateDirectory, "attempt.json"), "utf8")),
+  ).toMatchObject({ phase: "complete", retries: 1 });
 });

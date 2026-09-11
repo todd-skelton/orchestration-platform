@@ -2,7 +2,7 @@ import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { gateCorrectionStep, step, workerPrompt } from "../../scripts/dogfood/flow.js";
+import { step, workerPrompt } from "../../scripts/dogfood/flow.js";
 import type { Adapter, Check, Config, Role, Terminal } from "../../scripts/dogfood/flow.js";
 
 const base = "a".repeat(40),
@@ -35,7 +35,6 @@ async function fixture() {
     allowedPaths: ["scripts/repair.mjs"],
     repository: "owner/repo",
     requiredChecks: ["linux", "macos", "windows"],
-    exitReceiptWindowMs: 30_000,
     author: { model: "test", effort: "low", prompt: "Improve the selected issue." },
     reviewer: { model: "test", effort: "low", prompt: "Improve the selected issue." },
     adapter: { kind: "codex-exec", executable: process.execPath },
@@ -100,25 +99,19 @@ async function fixture() {
     async launch(role, selectedConfig, prompt) {
       expect(prompt).toContain(role === "author" ? base : head);
       launches.push(role);
+      const retry = role === "reviewer" && launches.filter((launch) => launch === role).length > 1;
       return {
-        id:
-          selectedConfig.artifactPrefix !== undefined
-            ? `${selectedConfig.artifactPrefix}-${role}`
-            : role === "reviewer" && sameIdentity
-              ? "author"
-              : role,
+        id: retry ? "reviewer-retry" : role === "reviewer" && sameIdentity ? "author" : role,
         pid: 123,
         trace: resolve(root, `${role}.jsonl`),
+        launchedAt: 1,
       };
     },
-    async observe(role, selectedConfig, attempt) {
+    async observe(role, _selectedConfig, attempt) {
       observations.push(role);
-      const status = selectedConfig.artifactPrefix?.includes("review-retry")
-        ? retryStatus
-        : statuses[role];
-      const summary = selectedConfig.artifactPrefix?.includes("review-retry")
-        ? retrySummary
-        : summaries[role];
+      const retry = attempt.id === "reviewer-retry";
+      const status = retry ? retryStatus : statuses[role];
+      const summary = retry ? retrySummary : summaries[role];
       return {
         status,
         id: attempt.id,
@@ -131,7 +124,6 @@ async function fixture() {
     },
   };
   const run = () => step(config, adapter, pilot);
-  const runGateCorrection = () => gateCorrectionStep(config, adapter, pilot);
   const authorDone = () => {
     statuses.author = "passed";
   };
@@ -155,7 +147,6 @@ async function fixture() {
     config,
     adapter,
     run,
-    runGateCorrection,
     launches,
     observations,
     pilot,
@@ -424,22 +415,15 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await f.run();
     f.statuses.reviewer = "malformed";
     f.retry("running");
-    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
     expect(
       JSON.parse(
         await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
       ),
     ).toMatchObject({ status: "malformed", id: "reviewer", head });
-    expect(
-      JSON.parse(
-        await readFile(resolve(f.config.stateDirectory, "reviewer-retry-intent.json"), "utf8"),
-      ),
-    ).toEqual({
-      reason: "malformed-review",
-      count: 1,
-      head,
-      parseError: "malformed-worker-verdict",
-    });
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "reviewer-retry-attempt.json"), "utf8"),
+    ).rejects.toThrow();
     f.retry(
       "passed",
       JSON.stringify({
@@ -453,9 +437,18 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     );
     await expect(f.run()).resolves.toMatchObject({
       status: "awaiting-publication",
-      reviewer: { id: "review-retry-reviewer" },
+      reviewer: { id: "reviewer-retry" },
+      retries: 1,
     });
-    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+    await expect(f.run()).resolves.toMatchObject({
+      status: "awaiting-publication",
+      reviewer: { id: "reviewer-retry", retries: 1 },
+      retries: 1,
+    });
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8")),
+    ).toMatchObject({ id: "reviewer-retry", retries: 1 });
   });
   it("stops with a typed reason when the reviewer retry is malformed", async () => {
     const f = await fixture();
@@ -464,11 +457,11 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await f.run();
     f.statuses.reviewer = "malformed";
     f.retry("malformed");
-    await expect(f.run()).rejects.toThrow("reviewer-retry-exhausted");
-    await expect(f.run()).rejects.toThrow("reviewer-retry-exhausted");
-    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+    await expect(f.run()).rejects.toThrow("reviewer-malformed");
+    await expect(f.run()).rejects.toThrow("reviewer-malformed");
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
   });
-  it("keeps the original semantic parse error while a reviewer retry is running", async () => {
+  it("retries a semantically invalid reviewer report", async () => {
     const f = await fixture();
     await f.run();
     f.authorDone();
@@ -485,30 +478,6 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
         g0: "No simpler change.",
       }),
     );
-    f.retry("running");
-    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
-    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
-    expect(
-      JSON.parse(
-        await readFile(resolve(f.config.stateDirectory, "reviewer-retry-intent.json"), "utf8"),
-      ).parseError,
-    ).toBe("inconsistent-source-review-verdict");
-  });
-  it("keeps gate reviewer retry artifacts distinct from an earlier reviewer retry", async () => {
-    const f = await fixture();
-    const originalAttempt = JSON.stringify({ id: "original-review-retry" });
-    const originalTerminal = JSON.stringify({ status: "passed", id: "original-review-retry" });
-    await Promise.all([
-      writeFile(resolve(f.config.stateDirectory, "reviewer-retry-attempt.json"), originalAttempt),
-      writeFile(resolve(f.config.stateDirectory, "reviewer-retry-terminal.json"), originalTerminal),
-    ]);
-
-    await expect(f.runGateCorrection()).resolves.toMatchObject({ status: "observing-author" });
-    f.authorDone();
-    await expect(f.runGateCorrection()).resolves.toMatchObject({ status: "observing-reviewer" });
-    f.statuses.reviewer = "malformed";
-    f.retry("running");
-    await expect(f.runGateCorrection()).resolves.toMatchObject({ status: "observing-reviewer" });
     f.retry(
       "passed",
       JSON.stringify({
@@ -520,24 +489,9 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
         g0: "No simpler change.",
       }),
     );
-    await expect(f.runGateCorrection()).resolves.toMatchObject({
-      status: "awaiting-publication",
-      reviewer: { id: "gate-review-retry-reviewer" },
-    });
-    expect(
-      await readFile(resolve(f.config.stateDirectory, "reviewer-retry-attempt.json"), "utf8"),
-    ).toBe(originalAttempt);
-    expect(
-      await readFile(resolve(f.config.stateDirectory, "reviewer-retry-terminal.json"), "utf8"),
-    ).toBe(originalTerminal);
-    expect(
-      JSON.parse(
-        await readFile(
-          resolve(f.config.stateDirectory, "gate-retry-reviewer-retry-attempt.json"),
-          "utf8",
-        ),
-      ),
-    ).toMatchObject({ id: "gate-review-retry-reviewer" });
+
+    await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication", retries: 1 });
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
   });
   it("keeps failure reasons authoritative while surfacing bounded advisory diagnostics", async () => {
     const failed = await fixture();

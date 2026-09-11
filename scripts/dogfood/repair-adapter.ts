@@ -3,10 +3,8 @@ import { readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes the private TypeScript composition directly.
-import { step } from "./flow.ts";
+import { QueueBlocked, step } from "./flow.ts";
 import type { Adapter, Attempt, Config, Role } from "./flow.js";
-// @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { selectedSourceReview } from "./flow.ts";
 import type { RepairAdapter } from "./repair.mjs";
 import {
   RepairBlocked,
@@ -19,32 +17,6 @@ import {
 const exec = promisify(execFile);
 
 const IDENTITY = /^[A-Za-z0-9._:-]{1,128}$/;
-const FLOW_REFUSALS = new Set([
-  "author-launch-identity-unknown-reconcile",
-  "reviewer-launch-identity-unknown-reconcile",
-  "commit-result-unknown-reconcile",
-  "dirty-author",
-  "dirty-reviewer",
-  "dirty-pilot",
-  "changed-base",
-  "candidate-head-moved",
-  "author-head-moved",
-  "author-wrong-head",
-  "reviewer-wrong-head",
-  "missing-candidate-commit",
-  "outside-footprint",
-  "malformed-terminal",
-  "invalid-attempt-identity",
-  "author-is-reviewer",
-  "reviewer-modified-worktree",
-  "pilot-revision-moved",
-  "author-failed",
-  "reviewer-failed",
-  "reviewer-retry-exhausted",
-  "exit-receipt-timeout",
-  "author-temp-unavailable",
-  "author-offline-pnpm-unavailable",
-]);
 function demand(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new RepairBlocked(reason);
 }
@@ -148,13 +120,10 @@ async function loadArtifacts(
     readJson(directory, "candidate"),
     readJson(directory, "author-attempt"),
   ]);
-  let reviewerAttempt: any;
-  let terminal: any;
-  try {
-    ({ attempt: reviewerAttempt, terminal } = await selectedSourceReview(configRecord.config));
-  } catch (error) {
-    throw new RepairBlocked("selected-review-state-unknown");
-  }
+  const [reviewerAttempt, terminal] = await Promise.all([
+    readJson(directory, "reviewer-attempt"),
+    readJson(directory, "reviewer-terminal"),
+  ]);
   demand(candidate && /^[a-f0-9]{40}$/.test(candidate.head), "source-candidate-mismatch");
   const [sourceHead, reviewHead, sourceStatus, reviewStatus, changedOutput, presentOutput] =
     await Promise.all([
@@ -212,7 +181,6 @@ function flowConfig(config: RepairConfig): Config {
     allowedPaths: config.allowedPaths,
     repository: config.repository,
     requiredChecks: config.requiredChecks,
-    exitReceiptWindowMs: config.exitReceiptWindowMs,
     author: config.author,
     reviewer: config.reviewer,
     adapter: config.adapter,
@@ -307,9 +275,9 @@ export function reviewedRepairAdapter(native: Adapter, gitExecutable = "git"): R
           config.controllerRoot,
         );
       } catch (error) {
+        if (error instanceof QueueBlocked) throw error;
         if (error instanceof RepairBlocked) throw error;
-        const reason = error instanceof Error ? error.message : "";
-        throw new RepairBlocked(FLOW_REFUSALS.has(reason) ? reason : "repair-flow-state-unknown");
+        throw new RepairBlocked("repair-flow-state-unknown");
       }
     },
     async loadDeltaReview(config) {

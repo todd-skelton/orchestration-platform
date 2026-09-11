@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { queueStep, queueUsage, repositoryQueueAdapter } from "../../scripts/dogfood/queue.js";
+import {
+  QueueBlocked,
+  queueStep,
+  queueUsage,
+  repositoryQueueAdapter,
+} from "../../scripts/dogfood/queue.js";
 import type {
   DeliveryAdapter,
   DeliveryConfig,
@@ -65,7 +70,6 @@ async function fixture(history: QueueParticipant[] = []) {
     allowedPaths: ["scripts/dogfood/queue.ts"],
     repository: "fixture/repository",
     requiredChecks: ["linux", "windows", "macos"],
-    exitReceiptWindowMs: 30_000,
     author: { model: "gpt-author", effort: "high", prompt: "author prompt" },
     reviewer: {
       model: "gpt-reviewer",
@@ -139,7 +143,7 @@ it.each(["author-temp-unavailable", "author-offline-pnpm-unavailable"])(
     const current = await fixture();
     const native = {
       async preflight() {
-        throw new Error(reason);
+        throw new QueueBlocked(reason);
       },
       async git(worktree: string, args: string[]) {
         if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
@@ -219,6 +223,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   let sourceHead = base;
   let reviewHead = base;
   let pid = 10;
+  let interruptGateCommit = true;
   const launches: string[] = [];
   const native: Adapter = {
     async preflight() {},
@@ -235,10 +240,17 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         return "";
       }
       if (args[0] === "merge-base") return String(args[1]);
-      if (args[0] === "diff") return args.includes("--cached") ? "" : `scripts/dogfood/queue.ts\0`;
+      if (args[0] === "diff")
+        return args.includes("--cached") || sourceHead === corrected
+          ? ""
+          : `scripts/dogfood/queue.ts\0`;
       if (args[0] === "ls-files") return "";
       if (args[0] === "commit") {
         sourceHead = sourceHead === base ? candidate : corrected;
+        if (sourceHead === corrected && interruptGateCommit) {
+          interruptGateCommit = false;
+          throw new Error("simulated restart after gate commit");
+        }
         return "";
       }
       return "";
@@ -248,25 +260,18 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         expect(prompt).toContain("is there a simpler way?");
         expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
       }
-      const selected = selectedConfig.artifactPrefix
-        ? `${selectedConfig.artifactPrefix}-${role}`
-        : role;
+      const selected = prompt.includes("Correct the") ? `gate-${role}` : role;
       launches.push(selected);
       return {
-        id: `source-${selected}`,
+        id: `source-${selected}${selected === `gate-${role}` ? `-${pid}` : ""}`,
         pid: pid++,
         trace: resolve(current.root, `${selected}.jsonl`),
+        launchedAt: 1,
       };
     },
     async observe(role, selectedConfig, attempt) {
-      const correction = selectedConfig.artifactPrefix === "gate-retry";
-      const terminalHead = correction
-        ? role === "author"
-          ? candidate
-          : corrected
-        : role === "author"
-          ? base
-          : candidate;
+      const correction = attempt.id.startsWith("source-gate-");
+      const terminalHead = correction ? selectedConfig.base : role === "author" ? base : candidate;
       return {
         status: "passed",
         id: attempt.id,
@@ -311,12 +316,14 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   };
   let draft = false;
   let published = false;
+  let publicationMutations = 0;
   let publishedDigest = "";
   let merged = false;
+  let mergeMutations = 0;
   let cleaned = false;
   const publication = (): PublicationEvidence => ({
-    number: 338,
-    url: "https://example.test/pull/338",
+    number: 337,
+    url: "https://example.test/pull/337",
     head: corrected,
     repository: current.source.repository,
     sourceBranch: plan.publication.sourceBranch,
@@ -347,11 +354,13 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         requiredChecks: [...config.requiredChecks],
       };
     },
-    async verifyWorkspace() {
-      return true;
+    async verifyWorkspace(_config, head) {
+      return sourceHead === head && reviewHead === head;
     },
-    async runGate() {
+    async runGate(config) {
       gateCalls += 1;
+      if (sourceHead !== config.candidateHead || reviewHead !== config.candidateHead)
+        return { status: "failed", output: "candidate workspace drifted before gate" };
       return gateCalls === 1 ? { status: "failed", output: "transient typecheck" } : "passed";
     },
     async observeDraft() {
@@ -367,6 +376,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         : { state: "needs-mutation", target: "absent" };
     },
     async publish() {
+      publicationMutations += 1;
       published = true;
     },
     async checks(config) {
@@ -381,10 +391,11 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     },
     async observeMerge() {
       return merged
-        ? { state: "confirmed", value: { number: 338, head: corrected, mergeCommit } }
+        ? { state: "confirmed", value: { number: 337, head: corrected, mergeCommit } }
         : { state: "needs-mutation" };
     },
     async merge() {
+      mergeMutations += 1;
       merged = true;
     },
     async observeCleanup() {
@@ -409,6 +420,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     },
     assertExecutor: async () => {},
   });
+  const queueAdapter: QueueAdapter = { ...adapter, async assertExecutor() {} };
 
   const accepted = await adapter.source(current.item);
   expect(accepted).toEqual({
@@ -431,26 +443,56 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     expect.objectContaining({ ordinal: 2, id: "source-reviewer", outcome: "passed" }),
   ]);
   if (accepted.status !== "accepted") throw new Error("fixture source did not accept");
-  await expect(adapter.delivery(current.item, accepted)).resolves.toMatchObject({
+  await writeFile(
+    resolve(current.paths.queue, "attempt.json"),
+    `${JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      phase: "delivery",
+      run: current.config.run,
+      index: 0,
+      item: current.item.id,
+      issue: current.item.issue,
+      base: current.item.base,
+      candidateAttempt: current.item.implementationAttempt,
+      head: accepted.head,
+      reviewId: accepted.reviewId,
+      findings: [],
+      history: await adapter.history(),
+      retries: 0,
+      acceptedStage: "source",
+      stateDirectory: accepted.stateDirectory,
+    })}\n`,
+  );
+  await expect(queueStep(current.config, queueAdapter)).rejects.toThrow("delivery-state-unknown");
+  const interrupted = JSON.parse(
+    await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
+  );
+  expect(interrupted).toMatchObject({ head: candidate, retries: 1 });
+  await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
     status: "observing-hosted-checks",
-    head: corrected,
-    reviewId: "source-gate-retry-reviewer",
   });
+  await expect(
+    readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
+  ).resolves.toMatchObject({ head: corrected, reviewId: "source-reviewer", retries: 1 });
   const effectsAfterCorrection = { launches: [...launches], gateCalls };
   hostedReady = true;
-  await expect(adapter.delivery(current.item, accepted)).resolves.toMatchObject({
+  await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
     status: "complete",
-    head: corrected,
-    reviewId: "source-gate-retry-reviewer",
-    mergeCommit,
   });
+  await expect(
+    readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
+  ).resolves.toMatchObject({ phase: "complete", head: corrected, retries: 1 });
   expect({ launches, gateCalls }).toEqual(effectsAfterCorrection);
-  expect(launches).toEqual(["author", "reviewer", "gate-retry-author", "gate-retry-reviewer"]);
+  expect(launches).toEqual(["author", "reviewer", "gate-author", "gate-author"]);
   expect({ draft, published, merged, cleaned }).toEqual({
     draft: true,
     published: true,
     merged: true,
     cleaned: true,
+  });
+  expect({ publicationMutations, mergeMutations }).toEqual({
+    publicationMutations: 1,
+    mergeMutations: 1,
   });
   expect(capturedDelivery).toMatchObject({
     refresh: current.item.delivery.refresh,
@@ -514,6 +556,7 @@ it("persists the genuine adapter result and restarts four-participant completion
         id: `synthetic-source-${role}`,
         pid: pid++,
         trace: resolve(current.root, `synthetic-source-${role}.jsonl`),
+        launchedAt: 1,
       };
     },
     async observe(role, _config, attempt) {
@@ -584,6 +627,7 @@ it("persists the genuine adapter result and restarts four-participant completion
               id: row.id,
               pid: row.ordinal + 100,
               trace: resolve(current.root, `${row.id}.jsonl`),
+              launchedAt: 1,
             }),
           ),
           writeFile(
@@ -608,11 +652,13 @@ it("persists the genuine adapter result and restarts four-participant completion
           id: "synthetic-repair-author",
           pid: config.admission.reservations[0].ordinal + 100,
           trace: resolve(current.root, "synthetic-repair-author.jsonl"),
+          launchedAt: 1,
         },
         reviewerAttempt: {
           id: "synthetic-repair-reviewer",
           pid: config.admission.reservations[1].ordinal + 100,
           trace: resolve(current.root, "synthetic-repair-reviewer.jsonl"),
+          launchedAt: 1,
         },
         terminal: {
           status: "passed",
@@ -1009,11 +1055,13 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
           id: "source-author",
           pid: 1,
           trace: resolve(current.root, "author.jsonl"),
+          launchedAt: 1,
         },
         reviewerAttempt: {
           id: "source-reviewer",
           pid: 2,
           trace: resolve(current.root, "reviewer.jsonl"),
+          launchedAt: 1,
         },
         terminal: {
           status: "failed",
@@ -1033,13 +1081,12 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
       captured = config;
       const records = [
         { ordinal: 3, id: "repair-author", role: "author", head: candidate, stem: "author" },
-        { ordinal: 4, id: "repair-reviewer", role: "reviewer", head: repaired, stem: "reviewer" },
         {
-          ordinal: 5,
+          ordinal: 4,
           id: "repair-reviewer-retry",
           role: "reviewer",
           head: repaired,
-          stem: "reviewer-retry",
+          stem: "reviewer",
         },
       ] as const;
       for (const row of records) {
@@ -1054,7 +1101,7 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
         await writeFile(
           resolve(current.paths.repair, `${row.stem}-terminal.json`),
           JSON.stringify({
-            status: row.id === "repair-reviewer" ? "malformed" : "passed",
+            status: "passed",
             id: row.id,
             head: row.head,
             usage: { input_tokens: 5, output_tokens: 2 },
@@ -1062,16 +1109,7 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
           }),
         );
       }
-      await writeFile(
-        resolve(current.paths.repair, "reviewer-retry-intent.json"),
-        JSON.stringify({
-          reason: "malformed-review",
-          count: 1,
-          head: repaired,
-          parseError: "malformed-worker-verdict",
-        }),
-      );
-      return { status: "awaiting-publication" };
+      return { status: "awaiting-publication", retries: 1 };
     },
     async loadDeltaReview() {
       return {
@@ -1081,11 +1119,13 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
           id: "repair-author",
           pid: 3,
           trace: resolve(current.root, "repair-author.jsonl"),
+          launchedAt: 1,
         },
         reviewerAttempt: {
           id: "repair-reviewer-retry",
-          pid: 5,
+          pid: 4,
           trace: resolve(current.root, "repair-reviewer-retry.jsonl"),
+          launchedAt: 1,
         },
         terminal: {
           status: "passed",
@@ -1122,6 +1162,7 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
     head: repaired,
     reviewId: "repair-reviewer-retry",
     stateDirectory: current.paths.repair,
+    retries: 1,
   });
   await expect(adapter.repair(current.item)).resolves.toEqual({
     status: "accepted",
@@ -1163,7 +1204,6 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
     "source-author",
     "source-reviewer",
     "repair-author",
-    "repair-reviewer",
     "repair-reviewer-retry",
   ]);
 });
@@ -1244,6 +1284,7 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
           id: "source-author",
           pid: 1,
           trace: resolve(current.root, "author.jsonl"),
+          launchedAt: 1,
         }),
       ),
       writeFile(
@@ -1252,6 +1293,7 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
           id: "source-reviewer",
           pid: 2,
           trace: resolve(current.root, "reviewer.jsonl"),
+          launchedAt: 1,
         }),
       ),
       writeFile(
@@ -1274,11 +1316,13 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
           id: "source-author",
           pid: 1,
           trace: resolve(current.root, "author.jsonl"),
+          launchedAt: 1,
         },
         reviewerAttempt: {
           id: "source-reviewer",
           pid: 2,
           trace: resolve(current.root, "reviewer.jsonl"),
+          launchedAt: 1,
         },
         terminal: {
           status: "failed",
@@ -1307,14 +1351,6 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
         {
           ordinal: 4,
           stem: "reviewer",
-          id: "repair-reviewer",
-          role: "reviewer",
-          status: "malformed",
-          head: repaired,
-        },
-        {
-          ordinal: 5,
-          stem: "reviewer-retry",
           id: "repair-reviewer-retry",
           role: "reviewer",
           status: "failed",
@@ -1324,15 +1360,6 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
       await writeFile(
         resolve(current.paths.repair, "candidate.json"),
         JSON.stringify({ head: repaired, changed: current.source.allowedPaths }),
-      );
-      await writeFile(
-        resolve(current.paths.repair, "reviewer-retry-intent.json"),
-        JSON.stringify({
-          reason: "malformed-review",
-          count: 1,
-          head: repaired,
-          parseError: "malformed-worker-verdict",
-        }),
       );
       for (const attempt of attempts) {
         await Promise.all([
@@ -1355,7 +1382,7 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
           ),
         ]);
       }
-      throw new Error("reviewer-failed");
+      throw new QueueBlocked("reviewer-failed", undefined, 1);
     },
     async loadDeltaReview() {
       throw new Error("delta review must not load after the flow failure");
