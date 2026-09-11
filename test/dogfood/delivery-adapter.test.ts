@@ -1361,14 +1361,18 @@ it("requires the actual controller executor to remain at its clean authorized re
 });
 
 it("imports both concrete delivery adapters directly in Node 24", async () => {
-  const { stdout } = await promisify(execFile)(
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-adapter-import-")));
+  roots.push(root);
+  const output = resolve(root, "result.json");
+  await promisify(execFile)(
     process.execPath,
     [
       "--input-type=module",
       "-e",
-      'Promise.all([import("./scripts/dogfood/delivery-adapter.mjs"),import("./scripts/dogfood/self-delivery-policy.mjs")]).then(([a,p])=>process.stdout.write(JSON.stringify([typeof a.assertControllerExecutor,typeof a.githubDeliveryAdapter,typeof p.selfDeliveryPolicy])))',
+      'Promise.all([import("./scripts/dogfood/delivery-adapter.mjs"),import("./scripts/dogfood/self-delivery-policy.mjs")]).then(async ([a,p])=>(await import("node:fs/promises")).writeFile(process.argv[1],JSON.stringify([typeof a.assertControllerExecutor,typeof a.githubDeliveryAdapter,typeof p.selfDeliveryPolicy])))',
+      output,
     ],
     { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
   );
-  expect(JSON.parse(stdout)).toEqual(["function", "function", "function"]);
+  expect(JSON.parse(await readFile(output, "utf8"))).toEqual(["function", "function", "function"]);
 });

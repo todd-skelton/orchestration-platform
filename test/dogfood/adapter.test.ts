@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, realpath, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -271,7 +271,9 @@ it("uses distinct sandbox roles, finite stdin and exact output shape without amb
   expect(reviewer).toContain("--ignore-rules");
   expect(reviewer).toContain("--output-schema");
   expect(reviewer).toContain("sandbox_workspace_write.writable_roots=[]");
-  expect(reviewer.join("\n")).not.toContain("author-temp");
+  expect(reviewer.some((argument) => argument.startsWith("shell_environment_policy.set="))).toBe(
+    false,
+  );
   expect(reviewer.at(-1)).toBe("-");
   expect(reviewer).not.toContain("--dangerously-bypass-approvals-and-sandbox");
 });
@@ -444,6 +446,11 @@ it("prepares one writable author temp root with the exact installed pnpm offline
   expect(await readFile(resolve(authorTemporaryRoot(current), "pnpm"), "utf8")).toContain(
     "pnpm.cjs",
   );
+  expect((await readdir(authorTemporaryRoot(current))).sort()).toEqual([
+    "pnpm",
+    "pnpm.cjs",
+    "pnpm.cmd",
+  ]);
 });
 it("reports typed author runtime preflight failures before launch", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-runtime-")));

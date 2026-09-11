@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -99,18 +99,51 @@ export async function prepareAuthorRuntime(
   } catch {
     throw new Error("author-temp-unavailable");
   }
+  let versionDirectory: string;
   try {
-    const version = (
-      await exec(process.execPath, [wrapper, "--version"], {
-        cwd: config.worktree,
-        windowsHide: true,
-        timeout: 15_000,
-        env: { ...process.env, COREPACK_ENABLE_NETWORK: "0" },
-      })
-    ).stdout.trim();
+    versionDirectory = await mkdtemp(resolve(temporary, "pnpm-version-"));
+  } catch {
+    throw new Error("author-temp-unavailable");
+  }
+  try {
+    const versionPath = resolve(versionDirectory, "stdout.txt");
+    const output = await open(versionPath, "w");
+    try {
+      await new Promise<void>((done, reject) => {
+        let timedOut = false;
+        const child = spawn(launcher.executable, [...launcher.prefixArgs, "--version"], {
+          cwd: config.worktree,
+          windowsHide: true,
+          stdio: ["ignore", output.fd, "ignore"],
+          env: { ...process.env, COREPACK_ENABLE_NETWORK: "0" },
+        });
+        const timer = setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, 15_000);
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", (code) => {
+          clearTimeout(timer);
+          if (timedOut || code !== 0) reject(new Error("pnpm version unavailable"));
+          else done();
+        });
+      });
+    } finally {
+      await output.close();
+    }
+    const version = (await readFile(versionPath, "utf8")).trim();
     check(version === (await expectedPnpmVersion(config)), "author-offline-pnpm-unavailable");
   } catch {
     throw new Error("author-offline-pnpm-unavailable");
+  } finally {
+    try {
+      await rm(versionDirectory, { recursive: true, force: true });
+    } catch {
+      throw new Error("author-temp-unavailable");
+    }
   }
 }
 // POSIX copies only these exact spellings. Windows environment names are
