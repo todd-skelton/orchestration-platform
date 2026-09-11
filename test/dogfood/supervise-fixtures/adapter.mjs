@@ -8,7 +8,6 @@ export {
   currentCandidateAttempt,
   hasStartedDelivery,
   queueStep,
-  reconcileCompletedQueue,
   validateLoopConfig,
 } from "../../../scripts/dogfood/queue.ts";
 export { QueueBlocked };
