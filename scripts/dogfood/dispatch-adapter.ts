@@ -201,7 +201,7 @@ export function launchArguments(config: Config, role: Role, platform = process.p
     `model_reasoning_effort=${config[role].effort}`,
     "-c",
     'approval_policy="never"',
-    ...(platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : []),
+    ...(platform === "win32" ? ["-c", 'windows.sandbox="elevated"'] : []),
     "-c",
     "sandbox_workspace_write.exclude_slash_tmp=true",
     "-c",

@@ -61,7 +61,7 @@ it.each(["win32", "linux", "darwin"] as const)(
   (platform) => {
     for (const role of ["author", "reviewer"] as const) {
       const args = launchArguments(config, role, platform);
-      expect(args.includes('windows.sandbox="unelevated"')).toBe(platform === "win32");
+      expect(args.includes('windows.sandbox="elevated"')).toBe(platform === "win32");
       expect(args[args.indexOf("-s") + 1]).toBe(
         role === "author" ? "workspace-write" : "read-only",
       );
