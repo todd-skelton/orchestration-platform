@@ -495,6 +495,69 @@ it("can resume merge for an already-ready PR with unchanged approved identity", 
   ]);
 });
 
+it("enqueues an unchanged ready PR and observes its queue membership", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const effects: string[][] = [];
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson(_config, args) {
+      if (args[0] === "api") {
+        expect(args.slice(0, 2)).toEqual(["api", "graphql"]);
+        expect(args[3]).toContain("mergeQueueEntry{state}");
+        return {
+          data: {
+            repository: {
+              pullRequest: publicationRow(publication, {
+                isDraft: false,
+                mergeQueueEntry: { state: "QUEUED" },
+              }),
+            },
+          },
+        };
+      }
+      return publicationRow(publication, { isDraft: false });
+    },
+  });
+  await expect(adapter.observeMerge(current, publication, { method: "queue" })).resolves.toEqual({
+    state: "pending",
+  });
+  await expect(adapter.merge(current, publication, { method: "queue" })).resolves.toBeUndefined();
+  expect(effects).toEqual([["pr", "merge", "44", "--squash"]]);
+});
+
+it("observes when an unchanged ready PR is removed from the merge queue", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const adapter = githubDeliveryAdapter({
+    async gh() {
+      throw new Error("unexpected provider mutation");
+    },
+    async ghJson() {
+      return {
+        data: {
+          repository: {
+            pullRequest: publicationRow(publication, {
+              isDraft: false,
+              mergeQueueEntry: null,
+            }),
+          },
+        },
+      };
+    },
+  });
+  await expect(adapter.observeMerge(current, publication, { method: "queue" })).resolves.toEqual({
+    state: "needs-mutation",
+  });
+});
+
 it.each([undefined, null, "false", "true", 0, 1])(
   "rejects a malformed initial draft flag %s before ready or merge",
   async (isDraft) => {
@@ -1176,7 +1239,7 @@ it("keeps repository identities and mirror rules in the explicit private policy 
     test: { added: 4, deleted: 2 },
   });
   expect(plan.gates).toEqual({
-    beforeMirror: ["typecheck", "format:check", "planning:check"],
+    beforeMirror: ["typecheck", "format:check", "test"],
     afterMirror: ["planning:board-check"],
   });
   expect(plan.drafts.map(({ key, issue: number }) => ({ key, number }))).toEqual([

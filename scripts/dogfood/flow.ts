@@ -17,6 +17,7 @@ export interface Config {
   allowedPaths: string[];
   repository: string;
   requiredChecks: string[];
+  localGates?: string[];
   author: { model: string; effort: string; prompt: string };
   reviewer: { model: string; effort: string; prompt: string };
   adapter: { kind: "codex-exec"; executable: string };
@@ -125,6 +126,14 @@ export function validateConfig(config: Config) {
       new Set(config.requiredChecks).size === config.requiredChecks.length,
     "invalid-required-checks",
   );
+  requireThat(
+    config.localGates === undefined ||
+      (Array.isArray(config.localGates) &&
+        config.localGates.length > 0 &&
+        config.localGates.every((gate) => typeof gate === "string" && gate.length > 0) &&
+        new Set(config.localGates).size === config.localGates.length),
+    "invalid-local-gates",
+  );
   for (const role of ["author", "reviewer"] as const) {
     const actor = config[role];
     requireThat(
@@ -138,9 +147,15 @@ export function validateConfig(config: Config) {
 }
 
 export function workerPrompt(config: Config, role: Role, head: string, prompt: string): string {
+  const gates = config.localGates ?? ["typecheck", "format:check", "test"];
+  const commands = gates.map((gate) => `\`pnpm ${gate}\``);
+  const gateList =
+    commands.length === 1
+      ? commands[0]
+      : `${commands.slice(0, -1).join(", ")} and ${commands.at(-1)}`;
   const localVerification =
     role === "author"
-      ? " Before reporting, run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in this worktree, and fix what fails."
+      ? ` Before reporting, run ${gateList} in this worktree, and fix what fails.`
       : "";
   const report =
     role === "author"

@@ -13,6 +13,8 @@ import {
   validateBoardSnapshot,
 } from "../scripts/planning/board-check.mjs";
 import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const EXPECTED_REPOSITORY = "todd-skelton/orchestration-platform";
 const REQUIRED_CHECKS = [
@@ -37,7 +39,7 @@ function policy(config) {
     value &&
       Object.keys(value).length === 4 &&
       ["key", "number", "title", "sourceBranch"].every((key) => Object.hasOwn(value, key)) &&
-      /^ISS-\d{3}$/.test(value.key) &&
+      /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.key) &&
       Number.isSafeInteger(value.number) &&
       value.number > 0 &&
       typeof value.title === "string" &&
@@ -72,8 +74,13 @@ function boardByKey(board) {
   return { open, closed };
 }
 
-export function selectCandidates({ repository, planning, board }) {
+export async function selectCandidates({ repository, executorRoot, planning, board }) {
   validateRepository(repository);
+  if (!planning || !board)
+    [planning, board] = await Promise.all([
+      loadPlanningSnapshot(executorRoot),
+      loadBoardSnapshot(repository),
+    ]);
   validatePlanningSnapshot(planning);
   validateBoardSnapshot(planning, board);
   const observed = boardByKey(board);
@@ -97,6 +104,39 @@ export function selectCandidates({ repository, planning, board }) {
     });
 }
 
+function listItems(section) {
+  const items = [];
+  let current;
+  for (const line of section.split(/\r?\n/)) {
+    const item = /^\s*[-*+]\s+(.+)$/.exec(line);
+    if (item) {
+      if (current) items.push(current);
+      current = item[1].trim();
+    } else if (current && /^\s+\S/.test(line)) current += `\n${line.trim()}`;
+  }
+  if (current) items.push(current);
+  return items;
+}
+
+export async function issueContext({ repository, key, executorRoot }) {
+  validateRepository(repository);
+  const planning = await loadPlanningSnapshot(executorRoot);
+  const registered = planning.roadmap.issues.find((issue) => issue.key === key);
+  requirePolicy(registered, "selected-issue-unregistered");
+  const draft = planning.issueDrafts[key];
+  const frontmatter = parseFrontmatter(draft, registered.file);
+  const section = /\n## Done when\s*\n([\s\S]*?)(?=\n## |$)/.exec(draft)?.[1]?.trim();
+  requirePolicy(section, "selected-issue-criteria-missing");
+  const acceptanceCriteria = listItems(section);
+  requirePolicy(acceptanceCriteria.length > 0, "selected-issue-criteria-missing");
+  return {
+    title: frontmatter.title,
+    body: draft,
+    acceptanceCriteria,
+    rules: await readFile(resolve(executorRoot, "docs/loop.md"), "utf8"),
+  };
+}
+
 export function branchName({ key, attempt }) {
   return `codex/${key.toLowerCase()}${attempt === 1 ? "" : `-attempt-${attempt}`}`;
 }
@@ -104,6 +144,11 @@ export function branchName({ key, attempt }) {
 export function requiredChecks({ repository }) {
   validateRepository(repository);
   return [...REQUIRED_CHECKS];
+}
+
+export function localGates({ repository }) {
+  validateRepository(repository);
+  return ["typecheck", "format:check", "test"];
 }
 
 function describeLineChanges({ added, deleted }) {
@@ -189,7 +234,7 @@ function planningMirror(config, planning, board) {
   requirePolicy(target, "self-draft-target-missing");
   return {
     gates: {
-      beforeMirror: ["typecheck", "format:check", "planning:check"],
+      beforeMirror: [],
       afterMirror: ["planning:board-check"],
     },
     drafts: [
@@ -227,6 +272,10 @@ export function selfPlanFromSnapshots(config, planning, board, lineChanges) {
   const pr = publication(config, lineChanges);
   return {
     ...mirror,
+    gates: {
+      beforeMirror: localGates({ repository: config.repository }),
+      afterMirror: mirror.gates.afterMirror,
+    },
     publication: pr,
     mergePolicy: mergeMethod({ config }),
     cleanup: { worktrees: [config.worktree, config.reviewWorktree], branch: pr.sourceBranch },

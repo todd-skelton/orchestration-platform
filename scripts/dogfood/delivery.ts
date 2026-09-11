@@ -120,7 +120,10 @@ export type DeliveryResult =
     };
 
 export type Observation<T> =
-  { state: "confirmed"; value: T } | { state: "needs-mutation" } | { state: "unknown" };
+  | { state: "confirmed"; value: T }
+  | { state: "needs-mutation" }
+  | { state: "pending" }
+  | { state: "unknown" };
 
 export type PublicationObservation =
   | { state: "confirmed"; value: PublicationEvidence }
@@ -165,6 +168,7 @@ export interface DeliveryAdapter {
   observeMerge(
     config: DeliveryConfig,
     publication: PublicationEvidence,
+    policy: unknown,
   ): Promise<Observation<MergeEvidence>>;
   merge(config: DeliveryConfig, publication: PublicationEvidence, policy: unknown): Promise<void>;
   observeCleanup(
@@ -313,7 +317,7 @@ function validateConfig(config: DeliveryConfig) {
     );
   demand(
     Array.isArray(config.requiredChecks) &&
-      config.requiredChecks.length >= 3 &&
+      config.requiredChecks.length > 0 &&
       config.requiredChecks.every(
         (name) => typeof name === "string" && /^[^\r\n]{1,200}$/.test(name),
       ) &&
@@ -419,6 +423,61 @@ async function confirmMutation<T>(
   const value = { head, ...project(observation.value) };
   validate(value);
   await record(directory, name, value);
+  return value;
+}
+
+async function confirmMerge(
+  directory: string,
+  config: DeliveryConfig,
+  adapter: DeliveryAdapter,
+  publication: PublicationEvidence,
+  policy: unknown,
+) {
+  const intent = await optionalRecord(directory, "merge-intent");
+  if (intent !== ABSENT_RECORD)
+    demand(
+      exactKeys(intent, ["head", "operation"]) &&
+        intent.head === config.candidateHead &&
+        intent.operation === digest({ name: "merge", head: config.candidateHead }),
+      "malformed-merge-intent",
+    );
+  let observation = await adapter.observeMerge(config, publication, policy);
+  if (observation.state === "confirmed") {
+    const value = observation.value;
+    validateMergeRecord(config, value);
+    await record(directory, "merge", value);
+    return value;
+  }
+  if (observation.state === "pending") {
+    if (intent === ABSENT_RECORD)
+      await record(directory, "merge-intent", {
+        head: config.candidateHead,
+        operation: digest({ name: "merge", head: config.candidateHead }),
+      });
+    return undefined;
+  }
+  demand(observation.state !== "unknown", "merge-state-unknown");
+  const queued =
+    policy !== null &&
+    typeof policy === "object" &&
+    !Array.isArray(policy) &&
+    (policy as { method?: unknown }).method === "queue";
+  if (intent !== ABSENT_RECORD && queued) throw new DeliveryBlocked("merge-queue-removed");
+  await record(directory, "merge-intent", {
+    head: config.candidateHead,
+    operation: digest({ name: "merge", head: config.candidateHead }),
+  });
+  try {
+    await adapter.merge(config, publication, policy);
+  } catch {}
+  observation = await adapter.observeMerge(config, publication, policy);
+  demand(observation.state !== "unknown", "merge-outcome-unknown");
+  if (observation.state === "pending") return undefined;
+  if (observation.state === "needs-mutation" && queued) return undefined;
+  demand(observation.state === "confirmed", "merge-unconfirmed-reconcile-before-retry");
+  const value = observation.value;
+  validateMergeRecord(config, value);
+  await record(directory, "merge", value);
   return value;
 }
 
@@ -992,7 +1051,7 @@ export async function deliveryStep(
   if (merge === ABSENT_RECORD && checks?.every((check) => check.bucket === "pass")) {
     // A successful remote merge may have lost both its response and local receipt.
     // Reconcile that outcome before the OPEN-only checks path, using saved proof.
-    const observed = await adapter.observeMerge(config, publication);
+    const observed = await adapter.observeMerge(config, publication, plan.mergePolicy);
     demand(observed.state !== "unknown", "merge-state-unknown");
     if (observed.state === "confirmed") {
       validateMergeRecord(config, observed.value);
@@ -1024,18 +1083,25 @@ export async function deliveryStep(
       };
     }
     await record(directory, "hosted-checks", { head: config.candidateHead, checks });
-    const reconciledMerge = await confirmMutation(
+    const reconciledMerge = await confirmMerge(
       directory,
-      "merge",
-      config.candidateHead,
-      () => adapter.observeMerge(config, publication),
-      () => adapter.merge(config, publication, plan.mergePolicy),
-      (value) => value,
-      (value) => {
-        validateMergeRecord(config, value);
-        demand(value.number === publication.number, "malformed-merge-receipt");
-      },
+      config,
+      adapter,
+      publication,
+      plan.mergePolicy,
     );
+    if (!reconciledMerge)
+      return {
+        status: "observing-hosted-checks",
+        run: config.run,
+        issue: config.issue,
+        head: config.candidateHead,
+        reviewId: source.reviewId,
+        publication: { number: publication.number, url: publication.url },
+        checks,
+        retries: config.retries,
+      };
+    demand(reconciledMerge.number === publication.number, "malformed-merge-receipt");
     validateMergeRecord(config, reconciledMerge);
     merge = reconciledMerge;
   }

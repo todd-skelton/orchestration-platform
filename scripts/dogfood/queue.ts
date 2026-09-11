@@ -263,18 +263,6 @@ export function validateLoopConfig(config: LoopConfig) {
   );
 }
 
-function draftTitle(draft: string) {
-  const title = /^title:\s*"([^"]+)"\s*$/m.exec(draft)?.[1];
-  demand(title, "selected-issue-title-missing");
-  return title;
-}
-
-function doneWhen(draft: string) {
-  const section = /\n## Done when\s*\n([\s\S]*?)(?=\n## |$)/.exec(draft)?.[1]?.trim();
-  demand(section, "selected-issue-criteria-missing");
-  return [section];
-}
-
 interface FailedAttemptReceipt {
   schemaVersion: "dogfood-bounded-queue-attempt/v1";
   phase: "failed";
@@ -394,7 +382,7 @@ export async function queueConfigFromLoop(
 ) {
   demand(
     exactKeys(selected, ["key", "number", "base"]) &&
-      /^ISS-\d{3}$/.test(selected.key) &&
+      /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(selected.key) &&
       Number.isSafeInteger(selected.number) &&
       selected.number > 0 &&
       SHA.test(selected.base),
@@ -410,19 +398,33 @@ export async function queueConfigFromLoop(
         maxBuffer: 8 * 1024 * 1024,
       })
     ).stdout.trim();
-  const [selectedBase, planning, loopRules] = await Promise.all([
+  const [selectedBase, issueContext] = await Promise.all([
     git(["rev-parse", "--verify", `${selected.base}^{commit}`]),
-    readFile(resolve(executor, "planning/roadmap.json"), "utf8").then(JSON.parse),
-    readFile(resolve(executor, "docs/loop.md"), "utf8"),
+    repositoryAdapter.issueContext({
+      repository: config.repository,
+      key: selected.key,
+      number: selected.number,
+      executorRoot: executor,
+    }),
   ]);
   demand(selectedBase === selected.base, "selected-base-unavailable");
-  const registered = planning?.issues?.find((issue: any) => issue.key === selected.key);
-  demand(registered?.file === `planning/drafts/${selected.key}.md`, "selected-issue-unregistered");
-  demand(planning.repository === config.repository, "planning-repository-mismatch");
-  const draft = await readFile(resolve(executor, registered.file), "utf8");
-  const title = draftTitle(draft);
+  demand(
+    exactKeys(issueContext, ["title", "body", "acceptanceCriteria", "rules"]) &&
+      typeof issueContext.title === "string" &&
+      issueContext.title.length > 0 &&
+      typeof issueContext.body === "string" &&
+      issueContext.body.length > 0 &&
+      Array.isArray(issueContext.acceptanceCriteria) &&
+      issueContext.acceptanceCriteria.length > 0 &&
+      issueContext.acceptanceCriteria.every(
+        (criterion) => typeof criterion === "string" && criterion.length > 0,
+      ) &&
+      typeof issueContext.rules === "string" &&
+      issueContext.rules.length > 0,
+    "malformed-issue-context",
+  );
   const issueUrl = `https://github.com/${config.repository}/issues/${selected.number}`;
-  const promptContext = `Repository loop rules:\n\n${loopRules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${draft.trim()}`;
+  const promptContext = `Repository loop rules:\n\n${issueContext.rules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${issueContext.body.trim()}`;
   const baseSourcePrompt = `Implement the selected issue completely. Keep the loop smaller and stay within the issue scope.\n\n${promptContext}`;
   const reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
   const runState = resolve(stateRoot, config.run);
@@ -463,9 +465,16 @@ export async function queueConfigFromLoop(
   const controller = `loop:${config.run}`;
   const sourceBranch = await repositoryAdapter.branchName({
     key: selected.key,
+    number: selected.number,
+    title: issueContext.title,
     attempt: sourceAttempt,
   });
-  const hostedChecks = await repositoryAdapter.requiredChecks({ repository: config.repository });
+  const [hostedChecks, localGates] = await Promise.all([
+    repositoryAdapter.requiredChecks({ repository: config.repository }),
+    repositoryAdapter.localGates
+      ? repositoryAdapter.localGates({ repository: config.repository })
+      : Promise.resolve(undefined),
+  ]);
   const sourcePrompt = prescribedFindings
     ? `${baseSourcePrompt}\n\nStart from rejected candidate ${attemptBase}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
     : baseSourcePrompt;
@@ -498,6 +507,7 @@ export async function queueConfigFromLoop(
     allowedPaths: ["."],
     repository: config.repository,
     requiredChecks: hostedChecks,
+    ...(localGates ? { localGates } : {}),
     author: { ...config.author, prompt: sourcePrompt },
     reviewer: { ...config.reviewer, prompt: reviewerPrompt },
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
@@ -512,7 +522,7 @@ export async function queueConfigFromLoop(
     source,
     repair: {
       stateDirectory: paths.repair,
-      acceptanceCriteria: doneWhen(draft),
+      acceptanceCriteria: issueContext.acceptanceCriteria,
       author: { ...config.author, prompt: sourcePrompt },
       reviewer: { ...config.reviewer, prompt: reviewerPrompt },
     },
@@ -521,7 +531,7 @@ export async function queueConfigFromLoop(
       policy: {
         key: selected.key,
         number: selected.number,
-        title,
+        title: issueContext.title,
         sourceBranch,
       },
     },

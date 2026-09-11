@@ -1,8 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
 import { QueueBlocked } from "../../../scripts/dogfood/queue.ts";
-import { expectedBoardItems } from "../../../scripts/planning/board-check.mjs";
-import { loadPlanningSnapshot } from "../../../scripts/planning/check.mjs";
 let sourceObserved = false;
 export {
   currentCandidateAttempt,
@@ -35,10 +33,18 @@ export async function validateLoopExecutor(loop, executingRoot) {
 
 export async function loadRepositoryAdapter() {
   return {
-    selectCandidates: ({ board }) => {
-      const issue = board.issues.find((item) => item.number === 362 && item.state === "OPEN");
-      return issue ? [{ key: "ISS-105", number: issue.number }] : [];
+    selectCandidates: async () => {
+      const issue = await readJson(
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json"),
+      );
+      return issue.state === "OPEN" ? [{ key: "ISS-105", number: 362 }] : [];
     },
+    issueContext: () => ({
+      title: "fixture",
+      body: "fixture body",
+      acceptanceCriteria: ["fixture criterion"],
+      rules: "fixture rules",
+    }),
     branchName: () => "codex/iss-105",
     pullRequest: () => {
       throw new Error("unused pullRequest");
@@ -129,26 +135,6 @@ export function repositorySupervisionAdapter() {
   const writeIssue = async (config, issue) =>
     writeFile(issuePath(config), `${JSON.stringify(issue)}\n`);
   return {
-    async board() {
-      const root = resolve(import.meta.dirname, "../../..");
-      const planning = await loadPlanningSnapshot(root);
-      const issue = await readJson(
-        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json"),
-      );
-      const expected = expectedBoardItems(planning);
-      return {
-        repository: planning.roadmap.repository,
-        totalCount: expected.length,
-        issues: expected.map((item, index) => ({
-          number: item.key === "ISS-105" ? 362 : index + 1,
-          title: item.title,
-          body: item.body,
-          milestone: item.milestone,
-          state: item.key === "ISS-105" ? issue.state : "CLOSED",
-          labels: item.key === "ISS-105" ? issue.labels : [],
-        })),
-      };
-    },
     async currentMain(config) {
       const controls = await readJson(
         resolve(config.stateRoot, config.run, "command-controls.json"),

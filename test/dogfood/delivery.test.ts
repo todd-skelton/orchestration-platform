@@ -512,6 +512,34 @@ it("does not double merge after a lost provider response", async () => {
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
 });
 
+it("observes an enqueued merge across polls and stops if the queue removes it", async () => {
+  const f = await fixture();
+  f.plan.mergePolicy = { method: "queue" };
+  f.publication.planDigest = digest(f.plan);
+  let queued = false;
+  f.adapter.observeMerge = async () =>
+    f.state.merged
+      ? {
+          state: "confirmed",
+          value: { number: 44, head, mergeCommit },
+        }
+      : queued
+        ? { state: "pending" }
+        : { state: "needs-mutation" };
+  f.adapter.merge = async () => {
+    f.calls.push("merge");
+    queued = true;
+  };
+
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+  });
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  queued = false;
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow("merge-queue-removed");
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+});
+
 it("refuses partial cleanup and never starts a second cleanup mutation", async () => {
   const f = await fixture();
   f.adapter.cleanup = async () => {
