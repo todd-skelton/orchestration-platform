@@ -758,15 +758,32 @@ export function githubDeliveryAdapter(
             "name,bucket,link",
           ]);
         } catch (error) {
-          const result = error as { code?: number; stdout?: string };
-          if (![1, 8].includes(result.code ?? -1) || typeof result.stdout !== "string") throw error;
-          stdout = result.stdout;
+          const result = error as { code?: number; stdout?: string; stderr?: string };
+          if (
+            result.code === 1 &&
+            result.stdout === "" &&
+            /^no checks reported on the '.+' branch\s*$/.test(result.stderr ?? "")
+          )
+            stdout = "[]";
+          else {
+            if (
+              ![1, 8].includes(result.code ?? -1) ||
+              typeof result.stdout !== "string" ||
+              result.stdout === ""
+            )
+              throw error;
+            stdout = result.stdout;
+          }
         }
         const after = await readIdentity();
         if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("publication moved");
         return { head: before.headRefOid, checks: JSON.parse(stdout) };
-      } catch {
-        throw new DeliveryBlocked("hosted-observation-unavailable");
+      } catch (error) {
+        const failure = error as { stderr?: string; message?: string };
+        const detail = [failure.stderr, failure.message].find(
+          (value) => typeof value === "string" && value.trim() !== "",
+        );
+        throw new DeliveryBlocked("hosted-observation-unavailable", detail?.trim().slice(0, 500));
       }
     },
     async observeMerge(config, current) {

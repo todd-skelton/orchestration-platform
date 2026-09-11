@@ -90,7 +90,7 @@ async function fixture() {
     merged: false,
     cleanup: "present" as "present" | "partial" | "complete",
     publicationOutcome: "confirmed" as "confirmed" | "unknown",
-    checks: "pass" as "pass" | "pending" | "duplicate" | "missing" | "skipping",
+    checks: "pass" as "pass" | "empty" | "pending" | "duplicate" | "missing" | "skipping",
   };
   const adapter: DeliveryAdapter = {
     publicationUrl(_config, number) {
@@ -143,6 +143,7 @@ async function fixture() {
     },
     async checks() {
       calls.push("checks");
+      if (state.checks === "empty") return { head, checks: [] };
       const values = config.requiredChecks.map((name) => ({
         name,
         bucket: (state.checks === "pending" && name === "macos" ? "pending" : "pass") as
@@ -282,8 +283,13 @@ it("rejects a self-consistent saved plan that was not authorized by policy", asy
   expect(f.calls).toEqual(["source", "policy"]);
 });
 
-it("observes pending hosted checks without merging or cleanup and resumes without republishing", async () => {
+it("observes check startup and pending checks without republishing", async () => {
   const f = await fixture();
+  f.state.checks = "empty";
+  expect(await deliveryStep(f.config, f.adapter, f.policy)).toMatchObject({
+    status: "observing-hosted-checks",
+    checks: [],
+  });
   f.state.checks = "pending";
   expect(await deliveryStep(f.config, f.adapter, f.policy)).toMatchObject({
     status: "observing-hosted-checks",

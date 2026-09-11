@@ -288,6 +288,7 @@ function stopMessage(
   stop: number,
   reason: string,
   attempts: number,
+  diagnostics?: string,
 ) {
   const marker = `loop-stop:${config.run}:${selection.cycle}:${stop}`;
   const runState = resolve(config.stateRoot, config.run);
@@ -305,9 +306,10 @@ function stopMessage(
     ? exact(context)
     : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
   const count = `after ${attempts} implementation attempt${attempts === 1 ? "" : "s"}`;
+  const detail = diagnostics?.trim().slice(0, 500);
   return {
     marker,
-    body: `<!-- ${marker} --> The loop stopped on ${selection.key} because \`${reason}\` ${count}. A person should ${change}.`,
+    body: `<!-- ${marker} --> The loop stopped on ${selection.key} because \`${reason}\` ${count}. A person should ${change}.${detail ? ` Diagnostic: ${JSON.stringify(detail)}.` : ""}`,
   };
 }
 
@@ -338,6 +340,7 @@ export async function stopCycle(
   reason: string,
   attempts: number,
   adapter: SupervisionAdapter,
+  diagnostics?: string,
 ) {
   const directory = stateDirectory(config);
   let stop = 1;
@@ -354,7 +357,7 @@ export async function stopCycle(
         stop,
         reason,
         attempts,
-        ...stopMessage(config, cycle.selection, stop, reason, attempts),
+        ...stopMessage(config, cycle.selection, stop, reason, attempts, diagnostics),
       };
       await record(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`, intent);
       break;
