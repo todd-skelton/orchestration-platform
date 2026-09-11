@@ -48,7 +48,11 @@ async function git(
 
 async function gh(config: DeliveryConfig, args: string[]) {
   return (
-    await run("gh", [...args, "--repo", `github.com/${config.repository}`], config.controllerRoot)
+    await run(
+      "gh",
+      [...args, ...(args[0] === "api" ? [] : ["--repo", `github.com/${config.repository}`])],
+      config.controllerRoot,
+    )
   ).stdout.trim();
 }
 
@@ -765,17 +769,35 @@ export function githubDeliveryAdapter(
     },
     async observeMerge(config, current, policy) {
       try {
-        const row = await commands.ghJson(config, [
-          "pr",
-          "view",
-          String(current.number),
-          "--json",
-          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body,mergeCommit,mergeStateStatus",
-        ]);
+        const queued = (policy as { method?: unknown })?.method === "queue";
+        const [owner, name] = config.repository.split("/");
+        const response = await commands.ghJson(
+          config,
+          queued
+            ? [
+                "api",
+                "graphql",
+                "-f",
+                `query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number url headRefOid headRefName baseRefName state isDraft title body mergeCommit{oid} mergeQueueEntry{state}}}}`,
+                "-F",
+                `owner=${owner}`,
+                "-F",
+                `name=${name}`,
+                "-F",
+                `number=${current.number}`,
+              ]
+            : [
+                "pr",
+                "view",
+                String(current.number),
+                "--json",
+                "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body,mergeCommit",
+              ],
+        );
+        const row = queued ? response?.data?.repository?.pullRequest : response;
         if (!matchesPublication(row, current, config)) return { state: "unknown" };
         if (row.state === "OPEN")
-          return (policy as { method?: unknown })?.method === "queue" &&
-            row.mergeStateStatus === "QUEUED"
+          return queued && typeof row.mergeQueueEntry?.state === "string"
             ? { state: "pending" }
             : { state: "needs-mutation" };
         if (row.state !== "MERGED" || !SHA.test(row.mergeCommit?.oid)) return { state: "unknown" };

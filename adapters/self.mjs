@@ -148,7 +148,7 @@ export function requiredChecks({ repository }) {
 
 export function localGates({ repository }) {
   validateRepository(repository);
-  return ["typecheck", "format:check", "planning:check"];
+  return ["typecheck", "format:check", "test"];
 }
 
 function describeLineChanges({ added, deleted }) {
