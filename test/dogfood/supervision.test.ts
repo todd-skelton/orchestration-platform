@@ -334,6 +334,8 @@ it("has an exact recovery row for every finite emitted literal and fixed domain"
     visit(parsed.ast);
   }
   const fixed = [
+    "author-temp-unavailable",
+    "author-offline-pnpm-unavailable",
     ...["typecheck", "format:check", "planning:check", "planning:board-check"].map(
       (gate) => `gate-failed:${gate}`,
     ),
@@ -386,6 +388,29 @@ it("uses the explicit unmapped fallback for an external reason value", async () 
   await stopCycle(config, cycle, "malformed-record:draft-ISS-999", 1, fixture.adapter);
   expect(fixture.observation.comments[0]).toContain("this stop reason is unmapped");
   expect(fixture.observation.comments[0]).toContain("newest retained queue/component record");
+});
+
+it("gives author sandbox preflight stops exact recovery actions", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-author-preflight-stop-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const fixture = fakeAdapter({
+    state: "OPEN",
+    key: "ISS-105",
+    labels: [],
+    comments: [],
+  });
+  await persistCycle(config, cycle);
+  await stopCycle(config, cycle, "author-temp-unavailable", 1, fixture.adapter);
+  await stopCycle(config, cycle, "author-offline-pnpm-unavailable", 1, fixture.adapter);
+  expect(fixture.observation.comments[0]).toContain(
+    "restore host write access to the run's private author-temp directory",
+  );
+  expect(fixture.observation.comments[1]).toContain(
+    "install or cache the exact packageManager pnpm version",
+  );
+  expect(fixture.observation.comments[1]).toContain("matching installed npm_execpath");
 });
 
 it("gives the three prescribed stops exact actions without forbidden advice", async () => {

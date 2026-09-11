@@ -2231,7 +2231,14 @@ export function repositoryQueueAdapter(
         await syncParticipants(item, "source", item.source.stateDirectory);
         if (error instanceof QueueBlocked) throw error;
         const reason = error instanceof Error ? error.message : "";
-        if (["reviewer-retry-exhausted", "exit-receipt-timeout"].includes(reason))
+        if (
+          [
+            "reviewer-retry-exhausted",
+            "exit-receipt-timeout",
+            "author-temp-unavailable",
+            "author-offline-pnpm-unavailable",
+          ].includes(reason)
+        )
           throw new QueueBlocked(reason);
         demand(reason === "reviewer-failed", "source-flow-state-unknown");
         const [candidate, selected] = await Promise.all([
@@ -2406,7 +2413,14 @@ export function repositoryQueueAdapter(
             } catch (error) {
               await syncParticipants(item, stage, accepted.stateDirectory, "gate-retry-");
               const reason = error instanceof Error ? error.message : "";
-              if (["reviewer-retry-exhausted", "exit-receipt-timeout"].includes(reason))
+              if (
+                [
+                  "reviewer-retry-exhausted",
+                  "exit-receipt-timeout",
+                  "author-temp-unavailable",
+                  "author-offline-pnpm-unavailable",
+                ].includes(reason)
+              )
                 throw new QueueBlocked(reason);
               demand(reason === "reviewer-failed", "gate-correction-state-unknown");
               const [candidate, selected] = await Promise.all([

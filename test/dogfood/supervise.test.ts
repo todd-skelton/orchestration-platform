@@ -81,6 +81,10 @@ async function run(request: string) {
         {
           windowsHide: true,
           stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
+          env: {
+            ...process.env,
+            SUPERVISE_FIXTURE_STATE: resolve(request, "../state/synthetic-command-run"),
+          },
         },
       );
       const timer = setTimeout(() => {

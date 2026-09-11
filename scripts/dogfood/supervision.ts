@@ -243,6 +243,10 @@ type RecoveryContext = {
 type RecoveryAction = (context: RecoveryContext) => string;
 
 const recovery = {
+  authorTemp: ({ evidence }: RecoveryContext) =>
+    `restore host write access to the run's private author-temp directory under ${evidence}/source or ${evidence}/repair, and restart`,
+  authorPnpm: () =>
+    "install or cache the exact packageManager pnpm version, or launch the loop with a matching installed npm_execpath, and restart",
   completedIssue: ({ issue }: RecoveryContext) =>
     `check PR delivery for issue #${issue} on GitHub; if the PR merged, close the issue by hand and restart so the cycle reconciles`,
   issueObservation: () => "restore `gh` authentication or network access and restart",
@@ -277,6 +281,8 @@ const recovery = {
 } satisfies Record<string, RecoveryAction>;
 
 const exactRecoveryRows: readonly (readonly [string, RecoveryAction])[] = [
+  ["author-offline-pnpm-unavailable", recovery.authorPnpm],
+  ["author-temp-unavailable", recovery.authorTemp],
   ["ambiguous-local-cleanup-branch", recovery.delivery],
   ["ambiguous-remote-cleanup-branch", recovery.delivery],
   ["author-failed", recovery.source],
