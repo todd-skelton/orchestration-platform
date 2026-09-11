@@ -8,7 +8,6 @@ import { afterEach, expect, it } from "vitest";
 import {
   currentCandidateAttempt,
   queueConfigFromLoop,
-  reconcileCompletedQueue,
   repositoryQueueAdapter,
   queueStep,
   validateQueueConfig,
@@ -256,7 +255,7 @@ it("admits repository-wide source scope without a pre-authored repair path list"
 });
 
 it("derives the complete internal queue from one compact loop config and selected issue", async () => {
-  const { loop, repository, selected } = await loopFixture();
+  const { loop, repository, stateRoot, selected } = await loopFixture();
   await expect(queueConfigFromLoop({ ...loop, run: ".." }, repository, selected)).rejects.toThrow(
     "invalid-run",
   );
@@ -281,6 +280,10 @@ it("derives the complete internal queue from one compact loop config and selecte
       },
     },
   });
+  expect(queue.stateDirectory).toBe(resolve(stateRoot, loop.run, "iss-104-attempt-1"));
+  expect(queue.items[0]!.setup.stateDirectory).toBe(resolve(queue.stateDirectory, "setup"));
+  expect(queue.items[0]!.source.stateDirectory).toBe(resolve(queue.stateDirectory, "source"));
+  expect(queue.items[0]!.repair.stateDirectory).toBe(resolve(queue.stateDirectory, "repair"));
   expect(queue.items[0]!.source.author.prompt).toContain("Keep it small.");
   expect(queue.items[0]!.source.author.prompt).toContain("One file drives the run.");
   expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
@@ -421,9 +424,26 @@ it("counts a genuine repair as the next candidate without a new counter", async 
   const current = await fixture();
   current.items[0]!.implementationAttempt = 2;
   await expect(currentCandidateAttempt(current.config)).resolves.toBe(2);
+  const item = current.items[0]!;
   await writeFile(
-    resolve(current.stateDirectory, "item-1-repair-intent.json"),
-    `${JSON.stringify({ item: current.items[0]!.id, base: current.items[0]!.base })}\n`,
+    resolve(current.stateDirectory, "attempt.json"),
+    `${JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      phase: "repair",
+      run: current.config.run,
+      index: 0,
+      item: item.id,
+      issue: item.issue,
+      base: item.base,
+      candidateAttempt: 3,
+      head: "b".repeat(40),
+      reviewId: "source-reviewer",
+      findings: [],
+      history: [],
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
+    })}\n`,
   );
   await expect(currentCandidateAttempt(current.config)).resolves.toBe(3);
 });
@@ -455,21 +475,26 @@ it("starts candidate three at the rejected candidate two with its prescription v
     participant(3, "ISS-104:1", "repair", "author", "passed"),
     participant(4, "ISS-104:1", "repair", "reviewer", "failed"),
   ];
-  const queueState = resolve(stateRoot, loop.run, "iss-104-attempt-1", "queue");
+  const queueState = resolve(stateRoot, loop.run, "iss-104-attempt-1");
   await mkdir(queueState, { recursive: true });
   await writeFile(
-    resolve(queueState, "item-1-failed.json"),
+    resolve(queueState, "attempt.json"),
     `${JSON.stringify({
-      schemaVersion: "dogfood-bounded-queue-attempt-failure/v1",
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      phase: "failed",
       run: loop.run,
+      index: 0,
       item: "ISS-104:1",
       issue: "https://github.com/fixture/repository/issues/361",
       base: main,
       candidateAttempt: 2,
       head: rejectedHead,
-      reviewer: firstHistory[3]!.id,
+      reviewId: firstHistory[3]!.id,
       findings: prescribed,
       history: firstHistory,
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
     })}\n`,
   );
   const third = await queueConfigFromLoop(loop, repository, selected);
@@ -572,10 +597,7 @@ it("advances every finite item and completed restart repeats no effects", async 
     "delivery:synthetic-2",
   ]);
   expect([...deliveryEffects]).toEqual(["synthetic-1", "synthetic-2"]);
-  const firstComplete = await readFile(
-    resolve(current.stateDirectory, "item-1-complete.json"),
-    "utf8",
-  );
+  const firstComplete = await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8");
 
   await expect(queueStep(current.config, adapter)).resolves.toMatchObject({
     status: "complete",
@@ -583,104 +605,10 @@ it("advances every finite item and completed restart repeats no effects", async 
   });
   expect(calls.slice(7)).toEqual(["executor"]);
   expect([...deliveryEffects]).toEqual(["synthetic-1", "synthetic-2"]);
-  expect(await readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8")).toBe(
+  expect(await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8")).toBe(
     firstComplete,
   );
   expect(JSON.parse(firstComplete).history.slice(0, 2)).toEqual(priorHistory);
-});
-
-it.each([
-  ["wrong delivery run", (receipt: Record<string, any>) => (receipt.run = "synthetic-wrong-run")],
-  ["wrong completed head", (receipt: Record<string, any>) => (receipt.head = "f".repeat(40))],
-  [
-    "wrong hosted check identity",
-    (receipt: Record<string, any>) => (receipt.checks[0].name = "synthetic-unrelated-check"),
-  ],
-  ["unsupported extra field", (receipt: Record<string, any>) => (receipt.extra = true)],
-  ["missing run", (receipt: Record<string, any>) => delete receipt.run],
-  ["missing checks", (receipt: Record<string, any>) => delete receipt.checks],
-  ["missing required check", (receipt: Record<string, any>) => receipt.checks.pop()],
-  ["substituted publication", (receipt: Record<string, any>) => (receipt.publication.number = 351)],
-  [
-    "changed reviewer",
-    (receipt: Record<string, any>) => (receipt.reviewId = "synthetic-other-reviewer"),
-  ],
-  [
-    "changed participant history",
-    (receipt: Record<string, any>) => (receipt.history[1].id = "synthetic-other-reviewer"),
-  ],
-  ["malformed checks collection", (receipt: Record<string, any>) => (receipt.checks = {})],
-  [
-    "incompatible completion state",
-    (receipt: Record<string, any>) => (receipt.status = "observing-hosted-checks"),
-  ],
-])("read-only reconciliation rejects historical completion with %s", async (_name, mutate) => {
-  const current = await fixture();
-  const item = current.items[0]!;
-  item.implementationAttempt = 2;
-  item.delivery.refresh = {
-    number: 350,
-    url: "https://example.test/pull/350",
-    head: item.base,
-  };
-  const history: QueueParticipant[] = [];
-  const effects: string[] = [];
-  const adapter: QueueAdapter = {
-    async assertExecutor() {
-      effects.push("executor");
-    },
-    async history() {
-      return [...history];
-    },
-    async setup() {
-      effects.push("setup");
-      return { status: "ready" };
-    },
-    async source(selected) {
-      effects.push("source");
-      history.push(
-        participant(1, selected.id, "source", "author", "passed"),
-        participant(2, selected.id, "source", "reviewer", "passed"),
-      );
-      return {
-        status: "accepted",
-        head: "b".repeat(40),
-        reviewId: history[1]!.id,
-        stateDirectory: selected.source.stateDirectory,
-      };
-    },
-    async repair() {
-      throw new Error("repair must not run");
-    },
-    async delivery(selected, accepted) {
-      effects.push("delivery");
-      return deliveryCompletion(selected, accepted.head, accepted.reviewId, 350);
-    },
-  };
-
-  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete" });
-  const immutablePaths = [
-    "item-1-accepted.json",
-    "item-1-complete.json",
-    "queue-complete.json",
-  ].map((name) => resolve(current.stateDirectory, name));
-  const originalBytes = await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")));
-  const beforeReadOnly = effects.length;
-  await expect(
-    reconcileCompletedQueue(current.config, { history: adapter.history }),
-  ).resolves.toMatchObject({ status: "complete", participants: 2 });
-  expect(effects).toHaveLength(beforeReadOnly);
-  expect(await Promise.all(immutablePaths.map((path) => readFile(path, "utf8")))).toEqual(
-    originalBytes,
-  );
-
-  const completion = JSON.parse(originalBytes[1]!) as Record<string, any>;
-  mutate(completion);
-  await writeFile(immutablePaths[1]!, `${JSON.stringify(completion, null, 2)}\n`);
-  await expect(
-    reconcileCompletedQueue(current.config, { history: adapter.history }),
-  ).rejects.toBeInstanceOf(Error);
-  expect(effects).toHaveLength(beforeReadOnly);
 });
 
 it.each([
@@ -738,11 +666,8 @@ it.each([
   await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-delivery-completion");
   expect(deliveryCalls).toBe(1);
   await expect(
-    readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8"),
-  ).rejects.toMatchObject({ code: "ENOENT" });
-  await expect(
-    readFile(resolve(current.stateDirectory, "queue-complete.json"), "utf8"),
-  ).rejects.toMatchObject({ code: "ENOENT" });
+    readFile(resolve(current.stateDirectory, "attempt.json"), "utf8"),
+  ).resolves.toContain('"phase": "delivery"');
 });
 
 it("hands a genuine failed source review to repair without losing participants or usage", async () => {
@@ -779,11 +704,9 @@ it("hands a genuine failed source review to repair without losing participants o
     async repair(item) {
       calls.push("repair");
       expect(
-        JSON.parse(
-          await readFile(resolve(current.stateDirectory, "item-1-source-failure.json"), "utf8"),
-        ),
+        JSON.parse(await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8")),
       ).toMatchObject({
-        status: "fixable-review",
+        phase: "repair",
         history: [
           {
             ordinal: 1,
@@ -818,9 +741,9 @@ it("hands a genuine failed source review to repair without losing participants o
   });
   expect(calls).toEqual(["repair"]);
   expect(
-    JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8")),
+    JSON.parse(await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8")),
   ).toMatchObject({
-    stage: "delivery",
+    phase: "complete",
     head: "c".repeat(40),
     history: [{ ordinal: 1 }, { ordinal: 2 }, { ordinal: 3 }, { ordinal: 4 }],
   });
@@ -882,7 +805,7 @@ it.each([
     );
     expect({ sourceCalls, repairCalls }).toEqual({ sourceCalls: 1, repairCalls: 0 });
     expect(
-      JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-failed.json"), "utf8")),
+      JSON.parse(await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8")),
     ).toMatchObject({ candidateAttempt: attempt, head: "b".repeat(40), findings });
     await expect(queueStep(current.config, adapter)).rejects.toThrow(
       "implementation-attempt-ceiling-exhausted",
@@ -945,7 +868,7 @@ it("counts a failed genuine repair as candidate two and stops at ceiling two", a
     "implementation-attempt-ceiling-exhausted",
   );
   expect(
-    JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-failed.json"), "utf8")),
+    JSON.parse(await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8")),
   ).toMatchObject({ candidateAttempt: 2, head: "c".repeat(40), findings });
 });
 
@@ -1012,8 +935,8 @@ it("keeps a gate correction on repaired candidate two and stops at that ceiling"
     "implementation-attempt-ceiling-exhausted",
   );
   expect(
-    JSON.parse(await readFile(resolve(current.stateDirectory, "item-1-failed.json"), "utf8")),
-  ).toMatchObject({ candidateAttempt: 2, head: "e".repeat(40), reviewer: "gate-reviewer" });
+    JSON.parse(await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8")),
+  ).toMatchObject({ candidateAttempt: 2, head: "e".repeat(40), reviewId: "gate-reviewer" });
 });
 
 it("restarts a persisted candidate-two failure by advancing to candidate three", async () => {
@@ -1034,18 +957,23 @@ it("restarts a persisted candidate-two failure by advancing to candidate three",
     },
   ];
   await writeFile(
-    resolve(current.stateDirectory, "item-1-failed.json"),
+    resolve(current.stateDirectory, "attempt.json"),
     `${JSON.stringify({
-      schemaVersion: "dogfood-bounded-queue-attempt-failure/v1",
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      phase: "failed",
       run: current.config.run,
+      index: 0,
       item: item.id,
       issue: item.issue,
       base: item.base,
       candidateAttempt: 2,
       head: "c".repeat(40),
-      reviewer: history[3]!.id,
+      reviewId: history[3]!.id,
       findings,
       history,
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
     })}\n`,
   );
   const adapter: QueueAdapter = {
@@ -1112,14 +1040,14 @@ it("retains an interrupted wait target and refuses a moved delivery identity", a
     status: "observing-author",
     cursor: 0,
   });
-  expect(
-    await readFile(resolve(current.stateDirectory, "item-1-source-intent.json"), "utf8"),
-  ).toContain(current.items[0]!.id);
+  expect(await readFile(resolve(current.stateDirectory, "attempt.json"), "utf8")).toContain(
+    '"phase": "source"',
+  );
   await expect(queueStep(current.config, adapter)).rejects.toThrow("delivery-identity-drift");
   expect(setupCalls).toBe(1);
   await expect(
-    readFile(resolve(current.stateDirectory, "item-1-complete.json"), "utf8"),
-  ).rejects.toMatchObject({ code: "ENOENT" });
+    readFile(resolve(current.stateDirectory, "attempt.json"), "utf8"),
+  ).resolves.toContain('"phase": "delivery"');
 });
 
 it("binds an accepted review identity to the exact stage history before delivery", async () => {
@@ -1158,140 +1086,8 @@ it("binds an accepted review identity to the exact stage history before delivery
   await expect(queueStep(current.config, adapter)).rejects.toThrow("item-review-history-mismatch");
   expect(deliveryCalls).toBe(0);
   await expect(
-    readFile(resolve(current.stateDirectory, "item-1-delivery-intent.json"), "utf8"),
-  ).rejects.toMatchObject({ code: "ENOENT" });
-});
-
-it("refuses an orphan queue completion before item component effects", async () => {
-  const current = await fixture();
-  await writeFile(
-    resolve(current.stateDirectory, "queue-complete.json"),
-    `${JSON.stringify({
-      status: "complete",
-      run: current.config.run,
-      cursor: 1,
-      items: 1,
-      participants: 0,
-    })}\n`,
-  );
-  const componentCalls: string[] = [];
-  const adapter: QueueAdapter = {
-    async assertExecutor() {},
-    async history() {
-      return [];
-    },
-    async setup() {
-      componentCalls.push("setup");
-      return { status: "ready" };
-    },
-    async source() {
-      componentCalls.push("source");
-      return { status: "observing-author" };
-    },
-    async repair() {
-      componentCalls.push("repair");
-      return { status: "observing-author" };
-    },
-    async delivery() {
-      componentCalls.push("delivery");
-      return {
-        status: "observing-hosted-checks",
-        head: "b".repeat(40),
-        reviewId: "review",
-      };
-    },
-  };
-
-  await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-queue-complete");
-  expect(componentCalls).toEqual([]);
-});
-
-it("refuses conflicting completion metrics before repeating a completed item", async () => {
-  const current = await fixture();
-  const item = current.items[0]!;
-  const history = [
-    participant(1, item.id, "source", "author", "passed"),
-    participant(2, item.id, "source", "reviewer", "passed"),
-  ];
-  const common = {
-    schemaVersion: "dogfood-bounded-queue-stage/v1",
-    item: item.id,
-    issue: item.issue,
-    base: item.base,
-    history,
-  };
-  await Promise.all([
-    writeFile(
-      resolve(current.stateDirectory, "item-1-accepted.json"),
-      `${JSON.stringify({
-        ...common,
-        stage: "source",
-        status: "accepted",
-        head: "b".repeat(40),
-        reviewId: history[1]!.id,
-        stateDirectory: item.source.stateDirectory,
-      })}\n`,
-    ),
-    writeFile(
-      resolve(current.stateDirectory, "item-1-complete.json"),
-      `${JSON.stringify({
-        ...common,
-        stage: "delivery",
-        status: "complete",
-        run: item.source.run,
-        head: "b".repeat(40),
-        reviewId: history[1]!.id,
-        publication: { number: 1, url: "https://example.test/1" },
-        checks: item.delivery.requiredChecks.map((name) => ({
-          name,
-          bucket: "pass",
-          link: `https://example.test/check/${name}`,
-        })),
-        mergeCommit: "c".repeat(40),
-        cleanup: { status: "confirmed", branch: "codex/synthetic-1" },
-      })}\n`,
-    ),
-    writeFile(
-      resolve(current.stateDirectory, "queue-complete.json"),
-      `${JSON.stringify({
-        status: "complete",
-        run: current.config.run,
-        cursor: 1,
-        items: 1,
-        participants: 3,
-      })}\n`,
-    ),
-  ]);
-  const componentCalls: string[] = [];
-  const adapter: QueueAdapter = {
-    async assertExecutor() {},
-    async history() {
-      return history;
-    },
-    async setup() {
-      componentCalls.push("setup");
-      return { status: "ready" };
-    },
-    async source() {
-      componentCalls.push("source");
-      return { status: "observing-author" };
-    },
-    async repair() {
-      componentCalls.push("repair");
-      return { status: "observing-author" };
-    },
-    async delivery() {
-      componentCalls.push("delivery");
-      return {
-        status: "observing-hosted-checks",
-        head: "b".repeat(40),
-        reviewId: history[1]!.id,
-      };
-    },
-  };
-
-  await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-queue-complete");
-  expect(componentCalls).toEqual([]);
+    readFile(resolve(current.stateDirectory, "attempt.json"), "utf8"),
+  ).resolves.toContain('"phase": "source"');
 });
 
 it.each([
@@ -1364,34 +1160,4 @@ it.each([
   };
   await expect(queueStep(current.config, adapter)).rejects.toThrow(reason);
   expect(adapterEntries).toBe(0);
-});
-
-it("does not advance through a forged completion receipt", async () => {
-  const current = await fixture();
-  await writeFile(
-    resolve(current.stateDirectory, "item-1-complete.json"),
-    JSON.stringify({
-      item: current.items[0]!.id,
-      issue: current.items[0]!.issue,
-      base: current.items[0]!.base,
-      stage: "delivery",
-      status: "complete",
-      head: "not-a-head",
-      reviewId: "review",
-      history: [],
-    }),
-  );
-  const adapter = {
-    assertExecutor: async () => {},
-    history: async () => [],
-    setup: async () => ({ status: "ready" as const }),
-    source: async () => ({ status: "observing-author" as const }),
-    repair: async () => ({ status: "observing-author" as const }),
-    delivery: async () => ({
-      status: "observing-hosted-checks" as const,
-      head: "b".repeat(40),
-      reviewId: "review",
-    }),
-  };
-  await expect(queueStep(current.config, adapter)).rejects.toThrow("malformed-completed-item");
 });

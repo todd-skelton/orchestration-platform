@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
@@ -146,10 +146,6 @@ export type QueueDeliveryResult =
   | { status: "observing-hosted-checks"; head: string; reviewId: string }
   | Extract<DeliveryResult, { status: "complete" }>;
 
-export interface CompletedQueueReader {
-  history(): Promise<QueueParticipant[]>;
-}
-
 export interface QueueAdapter {
   assertExecutor(): Promise<void>;
   history(): Promise<QueueParticipant[]>;
@@ -284,16 +280,21 @@ function doneWhen(draft: string) {
 }
 
 interface FailedAttemptReceipt {
-  schemaVersion: "dogfood-bounded-queue-attempt-failure/v1";
+  schemaVersion: "dogfood-bounded-queue-attempt/v1";
+  phase: "failed";
   run: string;
+  index: number;
   item: string;
   issue: string;
   base: string;
   candidateAttempt: number;
   head: string;
-  reviewer: string;
+  reviewId: string;
   findings: ReviewFinding[];
   history: QueueParticipant[];
+  retries: number;
+  acceptedStage: null;
+  stateDirectory: null;
 }
 
 function validateFailedAttempt(
@@ -304,24 +305,35 @@ function validateFailedAttempt(
   demand(
     exactKeys(value, [
       "schemaVersion",
+      "phase",
       "run",
+      "index",
       "item",
       "issue",
       "base",
       "candidateAttempt",
       "head",
-      "reviewer",
+      "reviewId",
       "findings",
       "history",
+      "retries",
+      "acceptedStage",
+      "stateDirectory",
     ]) &&
-      value.schemaVersion === "dogfood-bounded-queue-attempt-failure/v1" &&
+      value.schemaVersion === "dogfood-bounded-queue-attempt/v1" &&
+      value.phase === "failed" &&
+      value.index === 0 &&
       Number.isSafeInteger(value.candidateAttempt) &&
       [sourceAttempt, sourceAttempt + 1].includes(value.candidateAttempt) &&
       value.candidateAttempt <= attemptCeiling &&
       SHA.test(value.head) &&
-      typeof value.reviewer === "string" &&
+      typeof value.reviewId === "string" &&
       Array.isArray(value.findings) &&
-      Array.isArray(value.history),
+      Array.isArray(value.history) &&
+      Number.isSafeInteger(value.retries) &&
+      value.retries >= 0 &&
+      value.acceptedStage === null &&
+      value.stateDirectory === null,
     "malformed-failed-attempt",
   );
 }
@@ -423,8 +435,8 @@ export async function queueConfigFromLoop(
   let prescribedFindings: ReviewFinding[] | undefined;
   for (;;) {
     const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
-    const priorQueue = resolve(runState, priorSlug, "queue");
-    const failed = await optionalRecord(priorQueue, "item-1-failed");
+    const priorQueue = resolve(runState, priorSlug);
+    const failed = await optionalRecord(priorQueue, "attempt");
     if (failed === ABSENT) break;
     validateFailedAttempt(failed, sourceAttempt, config.attemptCeiling);
     demand(
@@ -438,7 +450,7 @@ export async function queueConfigFromLoop(
   }
   const slug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {
-    queue: resolve(runState, slug, "queue"),
+    queue: resolve(runState, slug),
     setup: resolve(runState, slug, "setup"),
     source: resolve(runState, slug, "source"),
     repair: resolve(runState, slug, "repair"),
@@ -707,72 +719,103 @@ async function optionalRecord(directory: string, name: string) {
 export async function currentCandidateAttempt(config: QueueConfig) {
   const item = config.items[0];
   demand(item, "missing-queue-item");
-  const repaired = (await optionalRecord(config.stateDirectory, "item-1-repair-intent")) !== ABSENT;
-  return Math.min(item.implementationAttempt + Number(repaired), item.implementationAttemptCeiling);
+  const attempt = await optionalRecord(config.stateDirectory, "attempt");
+  return attempt === ABSENT ? item.implementationAttempt : attempt.candidateAttempt;
 }
 
 export async function hasStartedDelivery(config: QueueConfig) {
-  const [intent, itemComplete, queueComplete] = await Promise.all([
-    optionalRecord(config.stateDirectory, "item-1-delivery-intent"),
-    optionalRecord(config.stateDirectory, "item-1-complete"),
-    optionalRecord(config.stateDirectory, "queue-complete"),
-  ]);
-  return intent !== ABSENT || itemComplete !== ABSENT || queueComplete !== ABSENT;
+  const attempt = await optionalRecord(config.stateDirectory, "attempt");
+  return attempt !== ABSENT && ["delivery", "complete"].includes(attempt.phase);
 }
 async function record(directory: string, name: string, value: unknown) {
+  const path = resolve(directory, `${name}.json`);
+  const temporary = `${path}.tmp`;
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
-  try {
-    await writeFile(resolve(directory, `${name}.json`), bytes, { flag: "wx", flush: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    demand(
-      (await readFile(resolve(directory, `${name}.json`), "utf8")) === bytes,
-      `conflicting-queue-record:${name}`,
-    );
-  }
+  await writeFile(temporary, bytes, { flush: true });
+  await rename(temporary, path);
 }
 
-async function assertQueueStateCensus(config: QueueConfig, directory: string) {
-  const allowed = new Set(["queue-complete.json"]);
-  for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1)
-    for (const suffix of ["intent", "attempt", "terminal"])
-      allowed.add(`participant-${ordinal}-${suffix}.json`);
-  for (const index of config.items.keys())
-    for (const suffix of [
-      "cursor",
-      "setup-intent",
-      "setup",
-      "source-intent",
-      "source-failure",
-      "repair-intent",
-      "failed",
-      "accepted",
-      "delivery-intent",
-      "complete",
-    ])
-      allowed.add(`item-${index + 1}-${suffix}.json`);
-  const entries = await readdir(directory, { withFileTypes: true });
-  demand(
-    entries.every((entry) => entry.isFile() && allowed.has(entry.name)),
-    "unexpected-queue-state",
-  );
+type AttemptPhase = "setup" | "source" | "repair" | "delivery" | "failed" | "complete";
+interface AttemptRecord {
+  schemaVersion: "dogfood-bounded-queue-attempt/v1";
+  phase: AttemptPhase;
+  run: string;
+  index: number;
+  item: string;
+  issue: string;
+  base: string;
+  candidateAttempt: number;
+  head: string;
+  reviewId: string | null;
+  findings: ReviewFinding[];
+  history: QueueParticipant[];
+  retries: number;
+  acceptedStage: "source" | "repair" | null;
+  stateDirectory: string | null;
 }
-function stageRecord(item: QueueItem, stage: string, history: QueueParticipant[], value: object) {
-  const unavailable: QueueMeasure = { status: "unavailable" };
+
+function retries(item: string, history: QueueParticipant[]) {
+  return history.filter(
+    (participant) => participant.item === item && participant.outcome === "malformed",
+  ).length;
+}
+
+function initialAttempt(
+  config: QueueConfig,
+  item: QueueItem,
+  index: number,
+  history = config.initialHistory,
+): AttemptRecord {
   return {
-    schemaVersion: "dogfood-bounded-queue-stage/v1",
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "setup",
+    run: config.run,
+    index,
     item: item.id,
     issue: item.issue,
     base: item.base,
-    stage,
-    history: history.map((participant) => ({
-      ...participantWithoutUsage(participant),
-      usage: validUsage(participant.usage)
-        ? participant.usage
-        : { inputTokens: unavailable, outputTokens: unavailable, costUsd: unavailable },
-    })),
-    ...value,
+    candidateAttempt: item.implementationAttempt,
+    head: item.base,
+    reviewId: null,
+    findings: [],
+    history,
+    retries: retries(item.id, history),
+    acceptedStage: null,
+    stateDirectory: null,
   };
+}
+
+function validateAttempt(value: unknown, config: QueueConfig): asserts value is AttemptRecord {
+  demand(
+    object(value) &&
+      value.schemaVersion === "dogfood-bounded-queue-attempt/v1" &&
+      ["setup", "source", "repair", "delivery", "failed", "complete"].includes(value.phase) &&
+      value.run === config.run &&
+      Number.isSafeInteger(value.index) &&
+      value.index >= 0 &&
+      value.index < config.items.length &&
+      value.item === config.items[value.index]?.id &&
+      value.issue === config.items[value.index]?.issue &&
+      value.base === config.items[value.index]?.base &&
+      Number.isSafeInteger(value.candidateAttempt) &&
+      SHA.test(value.head) &&
+      (value.reviewId === null || typeof value.reviewId === "string") &&
+      Array.isArray(value.findings) &&
+      Array.isArray(value.history) &&
+      Number.isSafeInteger(value.retries) &&
+      value.retries >= 0 &&
+      (["source", "repair", null] as unknown[]).includes(value.acceptedStage) &&
+      (value.stateDirectory === null || typeof value.stateDirectory === "string"),
+    "malformed-attempt-record",
+  );
+}
+
+function advance(
+  attempt: AttemptRecord,
+  history: QueueParticipant[],
+  fields: Partial<AttemptRecord>,
+): AttemptRecord {
+  return { ...attempt, ...fields, history, retries: retries(attempt.item, history) };
 }
 
 function validCompletedChecks(item: QueueItem, checks: unknown): checks is CheckEvidence[] {
@@ -835,22 +878,6 @@ function validCompletedDeliveryResult(
   );
 }
 
-function completedStageRecord(
-  item: QueueItem,
-  history: QueueParticipant[],
-  delivery: Extract<QueueDeliveryResult, { status: "complete" }>,
-) {
-  return stageRecord(item, "delivery", history, {
-    status: delivery.status,
-    run: delivery.run,
-    head: delivery.head,
-    reviewId: delivery.reviewId,
-    publication: delivery.publication,
-    checks: delivery.checks,
-    mergeCommit: delivery.mergeCommit,
-    cleanup: delivery.cleanup,
-  });
-}
 function assertHistoryPrefix(config: QueueConfig, history: QueueParticipant[]) {
   validateHistory(history, config.nativeLaunchCeiling);
   demand(history.length >= config.initialHistory.length, "participant-history-truncated");
@@ -859,24 +886,6 @@ function assertHistoryPrefix(config: QueueConfig, history: QueueParticipant[]) {
       (participant, index) =>
         JSON.stringify(participantWithoutUsage(participant)) ===
         JSON.stringify(participantWithoutUsage(history[index]!)),
-    ),
-    "participant-history-drift",
-  );
-}
-
-function assertHistorySnapshot(
-  config: QueueConfig,
-  snapshot: QueueParticipant[],
-  current: QueueParticipant[],
-) {
-  assertHistoryPrefix(config, snapshot);
-  assertHistoryPrefix(config, current);
-  demand(snapshot.length <= current.length, "participant-history-truncated");
-  demand(
-    snapshot.every(
-      (participant, index) =>
-        JSON.stringify(participantWithoutUsage(participant)) ===
-        JSON.stringify(participantWithoutUsage(current[index]!)),
     ),
     "participant-history-drift",
   );
@@ -992,13 +1001,6 @@ function assertRepairFailureHistory(
   );
 }
 
-async function failedItemReceipt(directory: string, prefix: string, item: QueueItem) {
-  const failed = await optionalRecord(directory, `${prefix}-failed`);
-  if (failed === ABSENT) return ABSENT;
-  validateFailedAttempt(failed, item.implementationAttempt, item.implementationAttemptCeiling);
-  return failed;
-}
-
 function attemptFailureRecord(
   config: QueueConfig,
   item: QueueItem,
@@ -1007,390 +1009,41 @@ function attemptFailureRecord(
   history: QueueParticipant[],
 ): FailedAttemptReceipt {
   return {
-    schemaVersion: "dogfood-bounded-queue-attempt-failure/v1",
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "failed",
     run: config.run,
+    index: config.items.indexOf(item),
     item: item.id,
     issue: item.issue,
     base: item.base,
     candidateAttempt,
     head: review.head,
-    reviewer: review.reviewId,
+    reviewId: review.reviewId,
     findings: review.findings,
     history,
+    retries: retries(item.id, history),
+    acceptedStage: null,
+    stateDirectory: null,
   };
-}
-
-async function completedItemReceipt(
-  config: QueueConfig,
-  directory: string,
-  prefix: string,
-  item: QueueItem,
-  currentHistory: QueueParticipant[],
-) {
-  const completed = await optionalRecord(directory, `${prefix}-complete`);
-  if (completed === ABSENT) return ABSENT;
-  demand(
-    exactKeys(completed, [
-      "schemaVersion",
-      "item",
-      "issue",
-      "base",
-      "stage",
-      "history",
-      "status",
-      "run",
-      "head",
-      "reviewId",
-      "publication",
-      "checks",
-      "mergeCommit",
-      "cleanup",
-    ]) &&
-      completed.schemaVersion === "dogfood-bounded-queue-stage/v1" &&
-      completed.item === item.id &&
-      completed.issue === item.issue &&
-      completed.base === item.base &&
-      completed.stage === "delivery" &&
-      validCompletedDeliveryFields(item, completed) &&
-      Array.isArray(completed.history),
-    "malformed-completed-item",
-  );
-  assertItemReviewHistory(
-    completed.history,
-    item,
-    completed.history.some(
-      (participant: QueueParticipant) =>
-        participant.ordinal > config.initialHistory.length &&
-        participant.item === item.id &&
-        participant.stage === "repair",
-    ),
-    completed.reviewId,
-    config.initialHistory.length,
-  );
-  assertHistorySnapshot(config, completed.history, currentHistory);
-  const accepted = await optionalRecord(directory, `${prefix}-accepted`);
-  demand(
-    accepted !== ABSENT &&
-      exactKeys(accepted, [
-        "schemaVersion",
-        "item",
-        "issue",
-        "base",
-        "stage",
-        "history",
-        "status",
-        "head",
-        "reviewId",
-        "stateDirectory",
-      ]) &&
-      accepted.schemaVersion === "dogfood-bounded-queue-stage/v1" &&
-      accepted.item === item.id &&
-      accepted.issue === item.issue &&
-      accepted.base === item.base &&
-      accepted.status === "accepted" &&
-      accepted.head === completed.head &&
-      accepted.reviewId === completed.reviewId &&
-      ((accepted.stage === "source" && accepted.stateDirectory === item.source.stateDirectory) ||
-        (accepted.stage === "repair" && accepted.stateDirectory === item.repair.stateDirectory)) &&
-      Array.isArray(accepted.history),
-    "malformed-completed-item",
-  );
-  assertItemReviewHistory(
-    accepted.history,
-    item,
-    accepted.stage === "repair",
-    accepted.reviewId,
-    config.initialHistory.length,
-  );
-  assertHistorySnapshot(config, accepted.history, currentHistory);
-  demand(
-    accepted.history.length === completed.history.length &&
-      accepted.history.every(
-        (participant: QueueParticipant, index: number) =>
-          JSON.stringify(participantWithoutUsage(participant)) ===
-          JSON.stringify(participantWithoutUsage(completed.history[index])),
-      ),
-    "completed-item-history-drift",
-  );
-  return completed;
-}
-
-async function completedQueueState(
-  config: QueueConfig,
-  directory: string,
-  currentHistory: QueueParticipant[],
-) {
-  const queueComplete = await optionalRecord(directory, "queue-complete");
-  const completedItems: (typeof ABSENT | Record<string, any>)[] = [];
-  let incompleteSeen = false;
-  for (const [index, item] of config.items.entries()) {
-    const complete = await completedItemReceipt(
-      config,
-      directory,
-      `item-${index + 1}`,
-      item,
-      currentHistory,
-    );
-    completedItems.push(complete);
-    if (complete === ABSENT) incompleteSeen = true;
-    else demand(!incompleteSeen, "queue-cursor-gap");
-  }
-  if (queueComplete !== ABSENT)
-    demand(
-      exactKeys(queueComplete, ["status", "run", "cursor", "items", "participants"]) &&
-        queueComplete.status === "complete" &&
-        queueComplete.run === config.run &&
-        queueComplete.cursor === config.items.length &&
-        queueComplete.items === config.items.length &&
-        queueComplete.participants === currentHistory.length &&
-        !incompleteSeen,
-      "malformed-queue-complete",
-    );
-  return { queueComplete, completedItems };
-}
-
-// External promotion may use this closed, read-only view of an older
-// executor's terminal state. It validates the config and receipts but has no
-// component-effect capability.
-export async function reconcileCompletedQueue(
-  config: QueueConfig,
-  reader: CompletedQueueReader,
-): Promise<Extract<QueueResult, { status: "complete" }>> {
-  validateQueueConfig(config);
-  const directory = await realpath(config.stateDirectory);
-  await assertQueueStateCensus(config, directory);
-  const currentHistory = await reader.history();
-  assertHistoryPrefix(config, currentHistory);
-  const { queueComplete } = await completedQueueState(config, directory, currentHistory);
-  demand(queueComplete !== ABSENT, "incomplete-queue-reconciliation");
-  return queueComplete as Extract<QueueResult, { status: "complete" }>;
 }
 
 export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
   validateQueueConfig(config);
   const directory = await realpath(config.stateDirectory);
   await adapter.assertExecutor();
-  await assertQueueStateCensus(config, directory);
+  const entryHistory = await adapter.history();
+  assertHistoryPrefix(config, entryHistory);
+  const saved = await optionalRecord(directory, "attempt");
+  let attempt =
+    saved === ABSENT ? initialAttempt(config, config.items[0]!, 0) : (saved as AttemptRecord);
+  if (saved === ABSENT) await record(directory, "attempt", attempt);
+  else validateAttempt(attempt, config);
 
-  const currentHistory = await adapter.history();
-  assertHistoryPrefix(config, currentHistory);
-  for (const [index, item] of config.items.entries()) {
-    const failed = await failedItemReceipt(directory, `item-${index + 1}`, item);
-    if (failed === ABSENT) continue;
-    demand(
-      failed.candidateAttempt < item.implementationAttemptCeiling,
-      "implementation-attempt-ceiling-exhausted",
-    );
-    return {
-      status: "advancing-attempt",
-      run: config.run,
-      item: item.id,
-      issue: item.issue,
-      cursor: failed.candidateAttempt,
-    };
-  }
-  const { queueComplete, completedItems } = await completedQueueState(
-    config,
-    directory,
-    currentHistory,
-  );
-  if (queueComplete !== ABSENT) {
-    return queueComplete as QueueResult;
-  }
-
-  for (const [index, item] of config.items.entries()) {
-    const prefix = `item-${index + 1}`;
-    const completed = completedItems[index]!;
-    if (completed !== ABSENT) {
-      continue;
-    }
-    await record(directory, `${prefix}-cursor`, {
-      schemaVersion: "dogfood-bounded-queue-cursor/v1",
-      index,
-      item: item.id,
-      issue: item.issue,
-      base: item.base,
-    });
-
-    const setupReceipt = await optionalRecord(directory, `${prefix}-setup`);
-    if (setupReceipt === ABSENT) {
-      await record(directory, `${prefix}-setup-intent`, { item: item.id, base: item.base });
-      const setup = await adapter.setup(item);
-      demand(setup.status === "ready", setup.reason ?? "setup-incomplete");
-      const history = await adapter.history();
-      assertHistoryPrefix(config, history);
-      await record(directory, `${prefix}-setup`, stageRecord(item, "setup", history, setup));
-    } else {
+  for (;;) {
+    const item = config.items[attempt.index]!;
+    if (attempt.phase === "failed") {
       demand(
-        setupReceipt.schemaVersion === "dogfood-bounded-queue-stage/v1" &&
-          setupReceipt.item === item.id &&
-          setupReceipt.issue === item.issue &&
-          setupReceipt.base === item.base &&
-          setupReceipt.stage === "setup" &&
-          setupReceipt.status === "ready" &&
-          Array.isArray(setupReceipt.history),
-        "malformed-setup-stage",
-      );
-      if ((await optionalRecord(directory, `${prefix}-source-intent`)) === ABSENT) {
-        const setup = await adapter.setup(item);
-        demand(setup.status === "ready", setup.reason ?? "setup-incomplete");
-      }
-      assertHistorySnapshot(config, setupReceipt.history, await adapter.history());
-    }
-
-    let accepted = await optionalRecord(directory, `${prefix}-accepted`);
-    if (accepted === ABSENT) {
-      const sourceFailure = await optionalRecord(directory, `${prefix}-source-failure`);
-      if (sourceFailure === ABSENT) {
-        await record(directory, `${prefix}-source-intent`, { item: item.id, base: item.base });
-        const source = await adapter.source(item);
-        const history = await adapter.history();
-        assertHistoryPrefix(config, history);
-        if (source.status === "observing-author" || source.status === "observing-reviewer")
-          return {
-            status: source.status,
-            run: config.run,
-            item: item.id,
-            issue: item.issue,
-            cursor: index,
-          };
-        demand("reviewId" in source, "unexpected-source-flow-status");
-        if (source.status === "fixable-review") {
-          assertSourceFailureHistory(history, item, source.reviewId, config.initialHistory.length);
-          await record(
-            directory,
-            `${prefix}-source-failure`,
-            stageRecord(item, "source", history, source),
-          );
-        } else {
-          assertItemReviewHistory(
-            history,
-            item,
-            false,
-            source.reviewId,
-            config.initialHistory.length,
-          );
-          accepted = stageRecord(item, "source", history, source);
-        }
-      } else
-        demand(
-          sourceFailure.schemaVersion === "dogfood-bounded-queue-stage/v1" &&
-            sourceFailure.item === item.id &&
-            sourceFailure.issue === item.issue &&
-            sourceFailure.base === item.base &&
-            sourceFailure.stage === "source" &&
-            sourceFailure.status === "fixable-review" &&
-            SHA.test(sourceFailure.head) &&
-            typeof sourceFailure.reviewId === "string" &&
-            Array.isArray(sourceFailure.history),
-          "malformed-source-failure-stage",
-        );
-      if (sourceFailure !== ABSENT) {
-        assertSourceFailureHistory(
-          sourceFailure.history,
-          item,
-          sourceFailure.reviewId,
-          config.initialHistory.length,
-        );
-      }
-      if (accepted === ABSENT) {
-        const failedSource = await optionalRecord(directory, `${prefix}-source-failure`);
-        demand(failedSource !== ABSENT, "malformed-source-failure-stage");
-        if (item.implementationAttempt >= item.implementationAttemptCeiling) {
-          const history = await adapter.history();
-          assertHistoryPrefix(config, history);
-          await record(
-            directory,
-            `${prefix}-failed`,
-            attemptFailureRecord(config, item, item.implementationAttempt, failedSource, history),
-          );
-          throw new QueueBlocked("implementation-attempt-ceiling-exhausted");
-        }
-        await record(directory, `${prefix}-repair-intent`, { item: item.id, base: item.base });
-        const repair = await adapter.repair(item);
-        const history = await adapter.history();
-        assertHistoryPrefix(config, history);
-        if (repair.status === "observing-author" || repair.status === "observing-reviewer")
-          return {
-            status: repair.status,
-            run: config.run,
-            item: item.id,
-            issue: item.issue,
-            cursor: index,
-          };
-        demand("reviewId" in repair, "unexpected-repair-status");
-        if (repair.status === "failed") {
-          assertRepairFailureHistory(history, item, repair.reviewId, config.initialHistory.length);
-          await record(
-            directory,
-            `${prefix}-failed`,
-            attemptFailureRecord(config, item, item.implementationAttempt + 1, repair, history),
-          );
-          demand(
-            item.implementationAttempt + 1 < item.implementationAttemptCeiling,
-            "implementation-attempt-ceiling-exhausted",
-          );
-          return {
-            status: "advancing-attempt",
-            run: config.run,
-            item: item.id,
-            issue: item.issue,
-            cursor: item.implementationAttempt + 1,
-          };
-        }
-        assertItemReviewHistory(history, item, true, repair.reviewId, config.initialHistory.length);
-        accepted = stageRecord(item, "repair", history, repair);
-      }
-    }
-
-    demand(
-      object(accepted) &&
-        accepted.schemaVersion === "dogfood-bounded-queue-stage/v1" &&
-        accepted.item === item.id &&
-        accepted.issue === item.issue &&
-        accepted.base === item.base &&
-        ["source", "repair"].includes(accepted.stage) &&
-        accepted.status === "accepted" &&
-        SHA.test(accepted.head) &&
-        typeof accepted.reviewId === "string" &&
-        ((accepted.stage === "source" && accepted.stateDirectory === item.source.stateDirectory) ||
-          (accepted.stage === "repair" &&
-            accepted.stateDirectory === item.repair.stateDirectory)) &&
-        Array.isArray(accepted.history),
-      "malformed-accepted-stage",
-    );
-    assertHistoryPrefix(config, accepted.history);
-    assertItemReviewHistory(
-      accepted.history,
-      item,
-      accepted.stage === "repair",
-      accepted.reviewId,
-      config.initialHistory.length,
-    );
-    const delivery = await adapter.delivery(item, {
-      head: accepted.head,
-      reviewId: accepted.reviewId,
-      stateDirectory: accepted.stateDirectory,
-    });
-    const history = await adapter.history();
-    assertHistoryPrefix(config, history);
-    if (delivery.status === "observing-author" || delivery.status === "observing-reviewer")
-      return {
-        status: delivery.status,
-        run: config.run,
-        item: item.id,
-        issue: item.issue,
-        cursor: index,
-      };
-    if (delivery.status === "failed") {
-      const candidateAttempt = item.implementationAttempt + (accepted.stage === "repair" ? 1 : 0);
-      await record(
-        directory,
-        `${prefix}-failed`,
-        attemptFailureRecord(config, item, candidateAttempt, delivery, history),
-      );
-      demand(
-        candidateAttempt < item.implementationAttemptCeiling,
+        attempt.candidateAttempt < item.implementationAttemptCeiling,
         "implementation-attempt-ceiling-exhausted",
       );
       return {
@@ -1398,62 +1051,205 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         run: config.run,
         item: item.id,
         issue: item.issue,
-        cursor: candidateAttempt,
+        cursor: attempt.candidateAttempt,
+      };
+    }
+    if (attempt.phase === "complete")
+      return {
+        status: "complete",
+        run: config.run,
+        cursor: config.items.length,
+        items: config.items.length,
+        participants: attempt.history.length,
+      };
+
+    if (attempt.phase === "setup") {
+      const setup = await adapter.setup(item);
+      demand(setup.status === "ready", setup.reason ?? "setup-incomplete");
+      const history = await adapter.history();
+      attempt = advance(attempt, history, { phase: "source" });
+      await record(directory, "attempt", attempt);
+      continue;
+    }
+
+    if (attempt.phase === "source") {
+      const source = await adapter.source(item);
+      const history = await adapter.history();
+      if (source.status === "observing-author" || source.status === "observing-reviewer") {
+        attempt = advance(attempt, history, {});
+        await record(directory, "attempt", attempt);
+        return {
+          status: source.status,
+          run: config.run,
+          item: item.id,
+          issue: item.issue,
+          cursor: attempt.index,
+        };
+      }
+      if (source.status === "fixable-review") {
+        assertSourceFailureHistory(history, item, source.reviewId, config.initialHistory.length);
+        if (item.implementationAttempt >= item.implementationAttemptCeiling) {
+          await record(
+            directory,
+            "attempt",
+            attemptFailureRecord(config, item, item.implementationAttempt, source, history),
+          );
+          throw new QueueBlocked("implementation-attempt-ceiling-exhausted");
+        }
+        attempt = advance(attempt, history, {
+          phase: "repair",
+          candidateAttempt: item.implementationAttempt + 1,
+          head: source.head,
+          reviewId: source.reviewId,
+          findings: source.findings,
+        });
+        await record(directory, "attempt", attempt);
+        continue;
+      }
+      demand(source.status === "accepted", "unexpected-source-flow-status");
+      assertItemReviewHistory(history, item, false, source.reviewId, config.initialHistory.length);
+      attempt = advance(attempt, history, {
+        phase: "delivery",
+        head: source.head,
+        reviewId: source.reviewId,
+        findings: [],
+        acceptedStage: "source",
+        stateDirectory: source.stateDirectory,
+      });
+      await record(directory, "attempt", attempt);
+      continue;
+    }
+
+    if (attempt.phase === "repair") {
+      const repair = await adapter.repair(item);
+      const history = await adapter.history();
+      if (repair.status === "observing-author" || repair.status === "observing-reviewer") {
+        attempt = advance(attempt, history, {});
+        await record(directory, "attempt", attempt);
+        return {
+          status: repair.status,
+          run: config.run,
+          item: item.id,
+          issue: item.issue,
+          cursor: attempt.index,
+        };
+      }
+      if (repair.status === "failed") {
+        assertRepairFailureHistory(history, item, repair.reviewId, config.initialHistory.length);
+        await record(
+          directory,
+          "attempt",
+          attemptFailureRecord(config, item, attempt.candidateAttempt, repair, history),
+        );
+        demand(
+          attempt.candidateAttempt < item.implementationAttemptCeiling,
+          "implementation-attempt-ceiling-exhausted",
+        );
+        return {
+          status: "advancing-attempt",
+          run: config.run,
+          item: item.id,
+          issue: item.issue,
+          cursor: attempt.candidateAttempt,
+        };
+      }
+      demand(repair.status === "accepted", "unexpected-repair-status");
+      assertItemReviewHistory(history, item, true, repair.reviewId, config.initialHistory.length);
+      attempt = advance(attempt, history, {
+        phase: "delivery",
+        head: repair.head,
+        reviewId: repair.reviewId,
+        findings: [],
+        acceptedStage: "repair",
+        stateDirectory: repair.stateDirectory,
+      });
+      await record(directory, "attempt", attempt);
+      continue;
+    }
+
+    demand(
+      attempt.phase === "delivery" &&
+        attempt.reviewId !== null &&
+        attempt.acceptedStage !== null &&
+        attempt.stateDirectory !== null,
+      "malformed-attempt-record",
+    );
+    const delivery = await adapter.delivery(item, {
+      head: attempt.head,
+      reviewId: attempt.reviewId,
+      stateDirectory: attempt.stateDirectory,
+    });
+    const history = await adapter.history();
+    if (delivery.status === "observing-author" || delivery.status === "observing-reviewer") {
+      attempt = advance(attempt, history, {});
+      await record(directory, "attempt", attempt);
+      return {
+        status: delivery.status,
+        run: config.run,
+        item: item.id,
+        issue: item.issue,
+        cursor: attempt.index,
+      };
+    }
+    if (delivery.status === "failed") {
+      await record(
+        directory,
+        "attempt",
+        attemptFailureRecord(config, item, attempt.candidateAttempt, delivery, history),
+      );
+      demand(
+        attempt.candidateAttempt < item.implementationAttemptCeiling,
+        "implementation-attempt-ceiling-exhausted",
+      );
+      return {
+        status: "advancing-attempt",
+        run: config.run,
+        item: item.id,
+        issue: item.issue,
+        cursor: attempt.candidateAttempt,
       };
     }
     demand("head" in delivery && "reviewId" in delivery, "delivery-identity-drift");
     assertItemReviewHistory(
       history,
       item,
-      accepted.stage === "repair",
+      attempt.acceptedStage === "repair",
       delivery.reviewId,
       config.initialHistory.length,
     );
     demand(
-      (delivery.head === accepted.head && delivery.reviewId === accepted.reviewId) ||
-        history.length > accepted.history.length,
+      (delivery.head === attempt.head && delivery.reviewId === attempt.reviewId) ||
+        history.length > attempt.history.length,
       "delivery-identity-drift",
     );
-    accepted = stageRecord(item, accepted.stage, history, {
-      status: "accepted",
+    attempt = advance(attempt, history, {
       head: delivery.head,
       reviewId: delivery.reviewId,
-      stateDirectory: accepted.stateDirectory,
     });
-    await record(directory, `${prefix}-accepted`, accepted);
-    await record(directory, `${prefix}-delivery-intent`, {
-      item: item.id,
-      head: accepted.head,
-      reviewId: accepted.reviewId,
-      stateDirectory: accepted.stateDirectory,
-    });
-    demand(
-      delivery.head === accepted.head && delivery.reviewId === accepted.reviewId,
-      "delivery-identity-drift",
-    );
+    await record(directory, "attempt", attempt);
     if (delivery.status === "observing-hosted-checks")
       return {
         status: delivery.status,
         run: config.run,
         item: item.id,
         issue: item.issue,
-        cursor: index,
+        cursor: attempt.index,
       };
     demand(validCompletedDeliveryResult(item, delivery), "malformed-delivery-completion");
-    await record(directory, `${prefix}-complete`, completedStageRecord(item, history, delivery));
+    const next = config.items[attempt.index + 1];
+    attempt = next
+      ? initialAttempt(config, next, attempt.index + 1, history)
+      : advance(attempt, history, { phase: "complete" });
+    await record(directory, "attempt", attempt);
+    if (!next)
+      return {
+        status: "complete",
+        run: config.run,
+        cursor: config.items.length,
+        items: config.items.length,
+        participants: history.length,
+      };
   }
-
-  const history = await adapter.history();
-  assertHistoryPrefix(config, history);
-  const complete = {
-    status: "complete" as const,
-    run: config.run,
-    cursor: config.items.length,
-    items: config.items.length,
-    participants: history.length,
-  };
-  await record(directory, "queue-complete", complete);
-  return complete;
 }
 // The repository adapter is co-located with the queue engine module so an
 // entry-to-component trace crosses only the command, this module and the
@@ -1482,26 +1278,6 @@ async function json(directory: string, name: string) {
     return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
   } catch {
     throw new QueueBlocked(`malformed-component-record:${name}`);
-  }
-}
-
-async function adapterOptional(directory: string, name: string) {
-  try {
-    return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return ABSENT;
-    throw new QueueBlocked(`malformed-queue-record:${name}`);
-  }
-}
-
-async function adapterRecord(directory: string, name: string, value: unknown) {
-  const path = resolve(directory, `${name}.json`);
-  const bytes = `${JSON.stringify(value, null, 2)}\n`;
-  try {
-    await writeFile(path, bytes, { flag: "wx", flush: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    demand((await readFile(path, "utf8")) === bytes, `conflicting-queue-record:${name}`);
   }
 }
 
@@ -1608,7 +1384,7 @@ export function repositoryQueueAdapter(
     const history: QueueParticipant[] = [];
     let gap = false;
     for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-      const participant = await adapterOptional(state, `participant-${ordinal}-terminal`);
+      const participant = await optionalRecord(state, `participant-${ordinal}-terminal`);
       if (participant === ABSENT) {
         gap = true;
         continue;
@@ -1619,26 +1395,7 @@ export function repositoryQueueAdapter(
         usage: queueUsage((participant as QueueParticipant).usage),
       };
       if (ordinal > config.initialHistory.length) {
-        const [intent, attempt] = await Promise.all([
-          adapterOptional(state, `participant-${ordinal}-intent`),
-          adapterOptional(state, `participant-${ordinal}-attempt`),
-        ]);
-        demand(
-          intent !== ABSENT &&
-            attempt !== ABSENT &&
-            intent.schemaVersion === "dogfood-bounded-queue-participant-intent/v1" &&
-            attempt.schemaVersion === "dogfood-bounded-queue-participant/v1" &&
-            intent.ordinal === ordinal &&
-            attempt.ordinal === ordinal &&
-            intent.item === normalized.item &&
-            attempt.item === normalized.item &&
-            intent.stage === normalized.stage &&
-            attempt.stage === normalized.stage &&
-            intent.role === normalized.role &&
-            attempt.role === normalized.role &&
-            attempt.id === normalized.id,
-          "participant-history-unobserved",
-        );
+        demand(normalized.ordinal === ordinal, "participant-history-unobserved");
       }
       history.push(normalized);
     }
@@ -1649,9 +1406,9 @@ export function repositoryQueueAdapter(
   const seedHistory = async () => {
     for (const participant of config.initialHistory) {
       const name = `participant-${participant.ordinal}-terminal`;
-      const existing = await adapterOptional(state, name);
+      const existing = await optionalRecord(state, name);
       if (existing === ABSENT)
-        await adapterRecord(state, name, { ...participant, usage: queueUsage(participant.usage) });
+        await record(state, name, { ...participant, usage: queueUsage(participant.usage) });
       else
         demand(
           object(existing) && sameParticipantIdentity(existing as QueueParticipant, participant),
@@ -1660,34 +1417,11 @@ export function repositoryQueueAdapter(
     }
   };
 
-  const nextOrdinal = async () => {
-    for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-      const intent = await adapterOptional(state, `participant-${ordinal}-intent`);
-      const terminal = await adapterOptional(state, `participant-${ordinal}-terminal`);
-      if (intent === ABSENT && terminal === ABSENT) return ordinal;
-      if (intent === ABSENT && terminal !== ABSENT) continue;
-      const attempt = await adapterOptional(state, `participant-${ordinal}-attempt`);
-      demand(attempt !== ABSENT, "native-launch-identity-unknown-reconcile");
-    }
-    throw new QueueBlocked("native-launch-ceiling-exhausted");
-  };
-
   const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
     ...native,
     async launch(role: Role, current: SourceConfig, prompt: string): Promise<Attempt> {
       const priorHistory = await readHistory();
-      const ordinal = await nextOrdinal();
-      const context = {
-        schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
-        ordinal,
-        item: item.id,
-        issue: item.issue,
-        stage,
-        role,
-        model: current[role].model,
-        effort: current[role].effort,
-      };
-      await adapterRecord(state, `participant-${ordinal}-intent`, context);
+      demand(priorHistory.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
       const repairCompatiblePrompt =
         stage === "source" && role === "reviewer"
           ? `${prompt}\n\n${sourceReviewerReportPrompt(
@@ -1703,46 +1437,41 @@ export function repositoryQueueAdapter(
         !priorHistory.some((participant) => participant.id === attempt.id),
         "reused-participant-identity",
       );
-      await adapterRecord(state, `participant-${ordinal}-attempt`, {
-        schemaVersion: "dogfood-bounded-queue-participant/v1",
-        ordinal,
-        id: attempt.id,
-        item: item.id,
-        stage,
-        role,
-      });
       return attempt;
+    },
+    async observe(role: Role, current: SourceConfig, attempt: Attempt) {
+      const terminal = await native.observe(role, current, attempt);
+      if (terminal.status !== "running") {
+        const observed =
+          role === "reviewer" &&
+          ["passed", "failed"].includes(terminal.status) &&
+          terminal.head &&
+          classifyReview(terminal.summary, current.run, terminal.head).disposition === "malformed"
+            ? { ...terminal, status: "malformed" }
+            : terminal;
+        await syncParticipant(item, stage, role, attempt, observed);
+      }
+      return terminal;
     },
   });
 
-  const syncParticipant = async (
+  async function syncParticipant(
     item: QueueItem,
     stage: "source" | "repair",
     role: Role,
     attempt: any,
     terminal: any,
-  ) => {
+  ) {
     if (attempt === ABSENT || terminal === ABSENT || terminal.status === "running") return;
-    let matchedOrdinal: number | undefined;
-    for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-      const saved = await adapterOptional(state, `participant-${ordinal}-attempt`);
-      if (saved !== ABSENT && saved.id === attempt.id) {
-        demand(
-          saved.item === item.id && saved.stage === stage && saved.role === role,
-          "participant-context-drift",
-        );
-        matchedOrdinal = ordinal;
-        break;
-      }
-    }
-    demand(matchedOrdinal !== undefined, "participant-attempt-unreserved");
+    const history = await readHistory();
+    const existingParticipant = history.find((participant) => participant.id === attempt.id);
     const outcome: QueueParticipant["outcome"] = ["passed", "failed", "malformed"].includes(
       terminal.status,
     )
       ? terminal.status
       : "unknown";
     const participant: QueueParticipant = {
-      ordinal: matchedOrdinal,
+      ordinal: existingParticipant?.ordinal ?? history.length + 1,
       id: attempt.id,
       item: item.id,
       stage,
@@ -1750,15 +1479,16 @@ export function repositoryQueueAdapter(
       outcome,
       usage: queueUsage(terminal.usage),
     };
-    const existing = await adapterOptional(state, `participant-${matchedOrdinal}-terminal`);
-    if (existing === ABSENT)
-      await adapterRecord(state, `participant-${matchedOrdinal}-terminal`, participant);
-    else
+    if (existingParticipant)
       demand(
-        sameParticipantIdentity(existing as QueueParticipant, participant),
+        sameParticipantIdentity(existingParticipant, participant),
         "participant-terminal-drift",
       );
-  };
+    else {
+      demand(history.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+      await record(state, `participant-${participant.ordinal}-terminal`, participant);
+    }
+  }
 
   const syncParticipants = async (
     item: QueueItem,
@@ -1767,8 +1497,8 @@ export function repositoryQueueAdapter(
     recordPrefix = "",
   ) => {
     for (const role of ["author", "reviewer"] as const) {
-      const attempt = await adapterOptional(directory, `${recordPrefix}${role}-attempt`);
-      let terminal = await adapterOptional(directory, `${recordPrefix}${role}-terminal`);
+      const attempt = await optionalRecord(directory, `${recordPrefix}${role}-attempt`);
+      let terminal = await optionalRecord(directory, `${recordPrefix}${role}-terminal`);
       if (
         recordPrefix === "" &&
         stage === "source" &&
@@ -1776,7 +1506,7 @@ export function repositoryQueueAdapter(
         terminal !== ABSENT &&
         ["passed", "failed"].includes(terminal.status)
       ) {
-        const candidate = await adapterOptional(directory, "candidate");
+        const candidate = await optionalRecord(directory, "candidate");
         if (
           candidate !== ABSENT &&
           SHA.test(candidate.head) &&
@@ -1791,24 +1521,11 @@ export function repositoryQueueAdapter(
           item,
           stage,
           role,
-          await adapterOptional(directory, `${recordPrefix}reviewer-retry-attempt`),
-          await adapterOptional(directory, `${recordPrefix}reviewer-retry-terminal`),
+          await optionalRecord(directory, `${recordPrefix}reviewer-retry-attempt`),
+          await optionalRecord(directory, `${recordPrefix}reviewer-retry-terminal`),
         );
       }
     }
-  };
-
-  const sourceReviewDisposition = async (item: QueueItem) => {
-    const [candidate, original, retry] = await Promise.all([
-      adapterOptional(item.source.stateDirectory, "candidate"),
-      adapterOptional(item.source.stateDirectory, "reviewer-terminal"),
-      adapterOptional(item.source.stateDirectory, "reviewer-retry-terminal"),
-    ]);
-    const terminal = retry === ABSENT ? original : retry;
-    if (candidate === ABSENT || terminal === ABSENT || !SHA.test(candidate.head)) return undefined;
-    if (terminal.status === "malformed") return "malformed" as const;
-    if (!["passed", "failed"].includes(terminal.status)) return undefined;
-    return classifyReview(terminal.summary, item.source.run, candidate.head).disposition;
   };
 
   const acceptedPair = async (
@@ -1959,14 +1676,23 @@ export function repositoryQueueAdapter(
         ].map((path) => realpath(path)),
       );
       demand(executor !== undefined, "controller-executor-unverified");
+      const [controller, attemptState, ...componentStates] = roots;
       demand(
-        roots.every((root, index) =>
-          roots.every((other, otherIndex) => index === otherIndex || outside(root, other)),
-        ),
+        controller !== undefined && attemptState !== undefined,
+        "controller-executor-unverified",
+      );
+      demand(
+        outside(controller, attemptState) &&
+          outside(attemptState, controller) &&
+          componentStates.every(
+            (root, index) =>
+              !outside(attemptState, root) &&
+              componentStates.every(
+                (other, otherIndex) => index === otherIndex || outside(root, other),
+              ),
+          ),
         "queue-state-overlap",
       );
-      const controller = roots[0]!;
-      const queueState = roots[1]!;
       demand(samePath(executor, controller), "controller-executor-mismatch");
       const selectedRoots = await Promise.all(
         config.items
@@ -1980,9 +1706,7 @@ export function repositoryQueueAdapter(
           .map(canonicalSelectedPath),
       );
       demand(
-        outside(controller, queueState) &&
-          outside(queueState, controller) &&
-          selectedRoots.every((root) => outside(root, queueState) && outside(queueState, root)),
+        selectedRoots.every((root) => outside(root, attemptState) && outside(attemptState, root)),
         "queue-state-inside-checkout",
       );
       const git = async (args: string[]) =>
@@ -2021,10 +1745,10 @@ export function repositoryQueueAdapter(
     },
     async source(item): Promise<QueueSourceResult> {
       demand(
-        (await adapterOptional(item.source.stateDirectory, "publication")) === ABSENT,
+        (await optionalRecord(item.source.stateDirectory, "publication")) === ABSENT,
         "source-cannot-publish",
       );
-      if ((await adapterOptional(item.source.stateDirectory, "gate-retry")) !== ABSENT) {
+      if ((await optionalRecord(item.source.stateDirectory, "gate-retry")) !== ABSENT) {
         await syncParticipants(item, "source", item.source.stateDirectory);
         const { candidate, selected } = await passingSourceReview(item);
         return {
@@ -2092,7 +1816,7 @@ export function repositoryQueueAdapter(
       }
     },
     async repair(item): Promise<QueueRepairResult> {
-      if ((await adapterOptional(item.repair.stateDirectory, "gate-retry")) !== ABSENT) {
+      if ((await optionalRecord(item.repair.stateDirectory, "gate-retry")) !== ABSENT) {
         await syncParticipants(item, "repair", item.repair.stateDirectory);
         const [completed, selected] = await Promise.all([
           json(item.repair.stateDirectory, "repair-complete"),
@@ -2190,9 +1914,9 @@ export function repositoryQueueAdapter(
       });
       try {
         let current = accepted;
-        let retry = await adapterOptional(accepted.stateDirectory, "gate-retry");
+        let retry = await optionalRecord(accepted.stateDirectory, "gate-retry");
         const deliveryPrepared =
-          (await adapterOptional(accepted.stateDirectory, "delivery-config")) !== ABSENT;
+          (await optionalRecord(accepted.stateDirectory, "delivery-config")) !== ABSENT;
         let result;
         if (retry === ABSENT) {
           const delivery = deliveryConfig(current);

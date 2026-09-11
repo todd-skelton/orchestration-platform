@@ -2,12 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import {
-  queueStep,
-  queueUsage,
-  reconcileCompletedQueue,
-  repositoryQueueAdapter,
-} from "../../scripts/dogfood/queue.js";
+import { queueStep, queueUsage, repositoryQueueAdapter } from "../../scripts/dogfood/queue.js";
 import type {
   DeliveryAdapter,
   DeliveryConfig,
@@ -50,14 +45,14 @@ async function fixture(history: QueueParticipant[] = []) {
     repository: resolve(root, "repository"),
     controller: resolve(root, "controller"),
     queue: resolve(root, "queue"),
-    setup: resolve(root, "setup"),
-    source: resolve(root, "source"),
-    repair: resolve(root, "repair"),
+    setup: resolve(root, "queue/setup"),
+    source: resolve(root, "queue/source"),
+    repair: resolve(root, "queue/repair"),
     pilot: resolve(root, "pilot"),
     author: resolve(root, "author"),
     review: resolve(root, "review"),
   };
-  await Promise.all(Object.values(paths).map((path) => mkdir(path)));
+  await Promise.all(Object.values(paths).map((path) => mkdir(path, { recursive: true })));
   const source = {
     owner: "synthetic-controller",
     run: "synthetic-item-run",
@@ -249,15 +244,6 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       return "";
     },
     async launch(role, selectedConfig, prompt): Promise<Attempt> {
-      const ordinal = launches.length + 1;
-      expect(
-        JSON.parse(
-          await readFile(
-            resolve(current.paths.queue, `participant-${ordinal}-intent.json`),
-            "utf8",
-          ),
-        ),
-      ).toMatchObject({ ordinal, item: current.item.id, stage: "source", role });
       if (role === "reviewer") {
         expect(prompt).toContain("is there a simpler way?");
         expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
@@ -593,27 +579,6 @@ it("persists the genuine adapter result and restarts four-participant completion
       for (const row of rows) {
         await Promise.all([
           writeFile(
-            resolve(current.paths.queue, `participant-${row.ordinal}-intent.json`),
-            JSON.stringify({
-              schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
-              ordinal: row.ordinal,
-              item: current.item.id,
-              stage: "repair",
-              role: row.role,
-            }),
-          ),
-          writeFile(
-            resolve(current.paths.queue, `participant-${row.ordinal}-attempt.json`),
-            JSON.stringify({
-              schemaVersion: "dogfood-bounded-queue-participant/v1",
-              ordinal: row.ordinal,
-              id: row.id,
-              item: current.item.id,
-              stage: "repair",
-              role: row.role,
-            }),
-          ),
-          writeFile(
             resolve(current.paths.repair, `${row.role}-attempt.json`),
             JSON.stringify({
               id: row.id,
@@ -835,33 +800,36 @@ it("persists the genuine adapter result and restarts four-participant completion
     participants: 4,
   });
   const completed = JSON.parse(
-    await readFile(resolve(current.paths.queue, "item-1-complete.json"), "utf8"),
+    await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
   );
   expect(Object.keys(completed).sort()).toEqual(
     [
       "schemaVersion",
+      "phase",
+      "index",
       "item",
       "issue",
       "base",
-      "stage",
       "history",
-      "status",
       "run",
       "head",
       "reviewId",
-      "publication",
-      "checks",
-      "mergeCommit",
-      "cleanup",
+      "candidateAttempt",
+      "findings",
+      "retries",
+      "acceptedStage",
+      "stateDirectory",
     ].sort(),
   );
   expect(completed).toMatchObject({
-    status: "complete",
-    run: current.source.run,
+    phase: "complete",
+    run: current.config.run,
     issue: current.item.issue,
     head: repaired,
     reviewId: "synthetic-repair-reviewer",
-    checks: current.source.requiredChecks.map((name) => ({ name, bucket: "pass" })),
+    retries: 0,
+    acceptedStage: "repair",
+    stateDirectory: current.paths.repair,
     history: [
       { id: "synthetic-source-author", outcome: "passed", usage: { costUsd: unavailable } },
       {
@@ -891,13 +859,6 @@ it("persists the genuine adapter result and restarts four-participant completion
       costUsd: unavailable,
     },
   ]);
-  expect(completed.checks).toEqual(
-    current.source.requiredChecks.map((name) => ({
-      name,
-      bucket: "pass",
-      link: `https://example.test/check/${name}`,
-    })),
-  );
   expect(mutationEffects).toEqual([
     "gate:typecheck",
     "gate:format:check",
@@ -915,7 +876,17 @@ it("persists the genuine adapter result and restarts four-participant completion
     "repair:reviewer",
   ]);
   expect(componentEntries).toEqual(["executor", "setup", "source", "repair", "delivery"]);
-  const queueFiles = (await readdir(current.paths.queue)).sort();
+  const queueFiles = (await readdir(current.paths.queue, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  expect(queueFiles).toEqual([
+    "attempt.json",
+    "participant-1-terminal.json",
+    "participant-2-terminal.json",
+    "participant-3-terminal.json",
+    "participant-4-terminal.json",
+  ]);
   const originalBytes = await Promise.all(
     queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
   );
@@ -925,19 +896,18 @@ it("persists the genuine adapter result and restarts four-participant completion
   await expect(queueStep(current.config, adapter)).resolves.toMatchObject({ status: "complete" });
   expect(componentEntries.slice(entriesAfterCompletion)).toEqual(["executor"]);
   expect(mutationEffects).toHaveLength(effectsAfterCompletion);
-  const entriesBeforeReadOnly = componentEntries.length;
-  await expect(
-    reconcileCompletedQueue(current.config, { history: repository.history }),
-  ).resolves.toMatchObject({ status: "complete", participants: 4 });
-  expect(componentEntries).toHaveLength(entriesBeforeReadOnly);
-  expect(mutationEffects).toHaveLength(effectsAfterCompletion);
   expect(workerEffects).toEqual([
     "source:author",
     "source:reviewer",
     "repair:author",
     "repair:reviewer",
   ]);
-  expect((await readdir(current.paths.queue)).sort()).toEqual(queueFiles);
+  expect(
+    (await readdir(current.paths.queue, { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort(),
+  ).toEqual(queueFiles);
   expect(
     await Promise.all(
       queueFiles.map((name) => readFile(resolve(current.paths.queue, name), "utf8")),
@@ -1073,27 +1043,6 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
         },
       ] as const;
       for (const row of records) {
-        await writeFile(
-          resolve(current.paths.queue, `participant-${row.ordinal}-intent.json`),
-          JSON.stringify({
-            schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
-            ordinal: row.ordinal,
-            item: current.item.id,
-            stage: "repair",
-            role: row.role,
-          }),
-        );
-        await writeFile(
-          resolve(current.paths.queue, `participant-${row.ordinal}-attempt.json`),
-          JSON.stringify({
-            schemaVersion: "dogfood-bounded-queue-participant/v1",
-            ordinal: row.ordinal,
-            id: row.id,
-            item: current.item.id,
-            stage: "repair",
-            role: row.role,
-          }),
-        );
         await writeFile(
           resolve(current.paths.repair, `${row.stem}-attempt.json`),
           JSON.stringify({
@@ -1275,33 +1224,12 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
       },
     ];
     await Promise.all([
-      ...sourceParticipants.flatMap((participant) => [
-        writeFile(
-          resolve(current.paths.queue, `participant-${participant.ordinal}-intent.json`),
-          JSON.stringify({
-            schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
-            ordinal: participant.ordinal,
-            item: participant.item,
-            stage: participant.stage,
-            role: participant.role,
-          }),
-        ),
-        writeFile(
-          resolve(current.paths.queue, `participant-${participant.ordinal}-attempt.json`),
-          JSON.stringify({
-            schemaVersion: "dogfood-bounded-queue-participant/v1",
-            ordinal: participant.ordinal,
-            id: participant.id,
-            item: participant.item,
-            stage: participant.stage,
-            role: participant.role,
-          }),
-        ),
+      ...sourceParticipants.map((participant) =>
         writeFile(
           resolve(current.paths.queue, `participant-${participant.ordinal}-terminal.json`),
           JSON.stringify(participant),
         ),
-      ]),
+      ),
       writeFile(
         resolve(current.paths.source, "config.json"),
         JSON.stringify({ fingerprint, config: current.source, host: "synthetic" }),
@@ -1409,27 +1337,6 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
       for (const attempt of attempts) {
         await Promise.all([
           writeFile(
-            resolve(current.paths.queue, `participant-${attempt.ordinal}-intent.json`),
-            JSON.stringify({
-              schemaVersion: "dogfood-bounded-queue-participant-intent/v1",
-              ordinal: attempt.ordinal,
-              item: current.item.id,
-              stage: "repair",
-              role: attempt.role,
-            }),
-          ),
-          writeFile(
-            resolve(current.paths.queue, `participant-${attempt.ordinal}-attempt.json`),
-            JSON.stringify({
-              schemaVersion: "dogfood-bounded-queue-participant/v1",
-              ordinal: attempt.ordinal,
-              id: attempt.id,
-              item: current.item.id,
-              stage: "repair",
-              role: attempt.role,
-            }),
-          ),
-          writeFile(
             resolve(current.paths.repair, `${attempt.stem}-attempt.json`),
             JSON.stringify({
               id: attempt.id,
@@ -1484,6 +1391,12 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
     cursor: 2,
   });
   expect(
-    JSON.parse(await readFile(resolve(current.paths.queue, "item-1-failed.json"), "utf8")),
-  ).toMatchObject({ candidateAttempt: 2, head: repaired, reviewer: "repair-reviewer-retry" });
+    JSON.parse(await readFile(resolve(current.paths.queue, "attempt.json"), "utf8")),
+  ).toMatchObject({
+    phase: "failed",
+    candidateAttempt: 2,
+    head: repaired,
+    reviewId: "repair-reviewer-retry",
+    retries: 1,
+  });
 });
