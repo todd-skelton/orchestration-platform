@@ -8,12 +8,26 @@
     "url": "https://github.com/users/todd-skelton/projects/1"
   },
   "milestones": [
-    { "key": "M1", "title": "Unattended self-improvement" },
-    { "key": "M2", "title": "Chase Sets delivery adapter" },
-    { "key": "M3", "title": "Chase Sets adoption" }
+    {
+      "key": "M1",
+      "title": "Unattended self-improvement"
+    },
+    {
+      "key": "M2",
+      "title": "Chase Sets delivery adapter"
+    },
+    {
+      "key": "M3",
+      "title": "Chase Sets adoption"
+    }
   ],
   "issues": [
-    { "key": "ISS-100", "file": "planning/drafts/ISS-100.md", "milestone": "M1", "blockedBy": [] },
+    {
+      "key": "ISS-100",
+      "file": "planning/drafts/ISS-100.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
     {
       "key": "ISS-101",
       "file": "planning/drafts/ISS-101.md",
@@ -48,7 +62,7 @@
       "key": "ISS-106",
       "file": "planning/drafts/ISS-106.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-103", "ISS-105"]
+      "blockedBy": ["ISS-103", "ISS-105", "ISS-112"]
     },
     {
       "key": "ISS-107",
@@ -79,6 +93,12 @@
       "file": "planning/drafts/ISS-111.md",
       "milestone": "M3",
       "blockedBy": ["ISS-110"]
+    },
+    {
+      "key": "ISS-112",
+      "file": "planning/drafts/ISS-112.md",
+      "milestone": "M1",
+      "blockedBy": ["ISS-101"]
     }
   ]
 }
