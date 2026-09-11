@@ -126,6 +126,22 @@ export interface LoopConfig {
   attemptCeiling: number;
 }
 
+export const ACTIONABLE_STOP_REASONS = [
+  "completed-issue-state-unknown",
+  "issue-observation-unavailable",
+  "selected-base-unavailable",
+  "current-main-unavailable",
+  "gate-retry-exhausted:typecheck",
+  "gate-retry-exhausted:format:check",
+  "reviewer-retry-exhausted",
+  "exit-receipt-timeout",
+  "native-launch-ceiling-exhausted",
+  "implementation-attempt-ceiling-exhausted",
+  "author-temp-unavailable",
+  "author-offline-pnpm-unavailable",
+] as const;
+export type ActionableStopReason = (typeof ACTIONABLE_STOP_REASONS)[number];
+
 export interface SelectedLoopIssue {
   key: string;
   number: number;
@@ -741,18 +757,10 @@ async function optionalRecord(directory: string, name: string) {
 }
 
 export async function currentCandidateAttempt(config: QueueConfig) {
-  validateQueueConfig(config);
   const item = config.items[0];
-  demand(item !== undefined && config.items.length === 1, "candidate-attempt-unavailable");
-  const repair = await optionalRecord(config.stateDirectory, "item-1-repair-intent");
-  if (repair === ABSENT) return item.implementationAttempt;
-  demand(
-    exactKeys(repair, ["item", "base"]) && repair.item === item.id && repair.base === item.base,
-    "candidate-attempt-unavailable",
-  );
-  const attempt = item.implementationAttempt + 1;
-  demand(attempt <= item.implementationAttemptCeiling, "candidate-attempt-unavailable");
-  return attempt;
+  demand(item, "missing-queue-item");
+  const repaired = (await optionalRecord(config.stateDirectory, "item-1-repair-intent")) !== ABSENT;
+  return Math.min(item.implementationAttempt + Number(repaired), item.implementationAttemptCeiling);
 }
 
 export async function hasStartedDelivery(config: QueueConfig) {

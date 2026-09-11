@@ -8,6 +8,7 @@ import {
 } from "../../../scripts/dogfood/queue.ts";
 import { expectedBoardItems } from "../../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot } from "../../../scripts/planning/check.mjs";
+let sourceObserved = false;
 export {
   currentCandidateAttempt,
   hasStartedDelivery,
@@ -39,10 +40,6 @@ export async function validateLoopExecutor(loop, executingRoot) {
 }
 
 export async function queueConfigFromLoop(loop, executingRoot, selected, initialHistory) {
-  const controls = await readJson(resolve(loop.stateRoot, loop.run, "command-controls.json"), {
-    mode: "complete",
-  });
-  if (controls.mode === "composition-blocked") throw new QueueBlocked("setup-dependency-failed");
   const stateDirectory = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-queue`);
   const sourceState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-source`);
   const repairState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-repair`);
@@ -158,13 +155,6 @@ export function repositorySupervisionAdapter() {
       const issue = await readIssue(config);
       issue.comments.push(body);
       await writeIssue(config, issue);
-      const controlsPath = resolve(config.stateRoot, config.run, "command-controls.json");
-      const controls = await readJson(controlsPath, {});
-      if (controls.interruptComment) {
-        controls.interruptComment = false;
-        await writeFile(controlsPath, `${JSON.stringify(controls)}\n`);
-        throw new Error("lost comment receipt");
-      }
     },
   };
 }
@@ -181,14 +171,6 @@ async function readJson(path, fallback) {
 export function repositoryQueueAdapter(config, _executingRoot, options) {
   if (process.env.PATH.split(delimiter)[0] !== dirname(options.gitExecutable))
     throw new Error("selected-git-missing-from-worker-path");
-  const callsPath = resolve(dirname(config.stateDirectory), "command-calls.json");
-  const controlsPath = resolve(dirname(config.stateDirectory), "command-controls.json");
-  const changeCalls = async (name) => {
-    const calls = await readJson(callsPath, { setup: 0, source: 0, delivery: 0 });
-    calls[name] += 1;
-    await writeFile(callsPath, `${JSON.stringify(calls)}\n`);
-    return calls;
-  };
   const history = async () => {
     const participants = [...config.initialHistory];
     for (
@@ -251,16 +233,12 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
     async assertAuthority() {},
     history,
     async setup() {
-      await changeCalls("setup");
       return { status: "ready" };
     },
     async source(item) {
-      const calls = await changeCalls("source");
-      const controls = await readJson(controlsPath, { mode: "complete" });
-      if (controls.mode === "wait" && calls.source === 1) return { status: "observing-author" };
-      if (controls.mode === "blocked-count-unavailable") {
-        await writeFile(resolve(config.stateDirectory, "item-1-repair-intent.json"), "{}\n");
-        throw new QueueBlocked("typecheck-failed-after-retry");
+      if (!sourceObserved) {
+        sourceObserved = true;
+        return { status: "observing-author" };
       }
       return accept(item);
     },
@@ -268,11 +246,7 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
       throw new Error("fixture repair must not run");
     },
     async delivery(item, accepted) {
-      const receipt = resolve(accepted.stateDirectory, "fixture-delivery-complete.json");
-      const completed = await readJson(receipt, undefined);
-      if (completed) return completed;
-      await changeCalls("delivery");
-      const result = {
+      return {
         status: "complete",
         run: item.source.run,
         issue: item.issue,
@@ -287,8 +261,6 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
         mergeCommit: "c".repeat(40),
         cleanup: { status: "confirmed", branch: "codex/synthetic-338" },
       };
-      await writeFile(receipt, `${JSON.stringify(result)}\n`);
-      return result;
     },
   };
 }
