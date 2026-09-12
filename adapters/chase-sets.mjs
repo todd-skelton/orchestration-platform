@@ -252,6 +252,12 @@ export function localGates({ repository }) {
   return ["verify:static:scoped", "typecheck"];
 }
 
+export async function park({ repository, number }) {
+  requireRepository(repository);
+  await gh(["issue", "edit", String(number), "--add-label", "status:needs-replan"], repository);
+  return "remove the `status:needs-replan` label after acting on the note";
+}
+
 function policy(config) {
   requireRepository(config.repository);
   const value = config.policy;

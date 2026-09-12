@@ -53,6 +53,7 @@ case "$*" in
   *graphql*) printf '%s' '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I5","number":5,"title":"Issue 5","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p1"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I9","number":9,"title":"Issue 9","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I11","number":11,"title":"Needs operator","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"},{"name":"status:needs-operator"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I12","number":12,"title":"Ops work","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:ops"},{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I3","number":3,"title":"Issue 3","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":2,"state":"OPEN"}]}}]}}}}' ;;
   *run*list*) printf '%s' '[{"databaseId":42,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-11T00:00:00Z"}]' ;;
   *run*view*) printf '%s' '{"jobs":[{"name":"Deploy Staging","status":"completed","conclusion":"success","steps":[{"name":"Verified immutable active release","conclusion":"success"}]}]}' ;;
+  *issue*edit*) printf '%s' "$*" > '${resolve(root, "park-call")}' ;;
   *issue*view*) printf '%s' '{"number":9,"title":"Issue 9","body":"## Context\\nFixture.\\n\\n## Acceptance Criteria\\n\\n- First result\\n- Second result\\n  with detail\\n"}' ;;
   *) exit 2 ;;
 esac
@@ -104,6 +105,16 @@ it.skipIf(process.platform === "win32")(
         "The worker finishes with the JSON report required by the prompt.\n\n" +
         "Product rules.\n\nDelivery skill.\n",
     });
+    await expect(
+      chaseSets.park({
+        repository: "chase-sets/chase-sets",
+        number: 9,
+        reason: "implementation-attempt-ceiling-exhausted",
+      }),
+    ).resolves.toBe("remove the `status:needs-replan` label after acting on the note");
+    await expect(readFile(resolve(executorRoot, "park-call"), "utf8")).resolves.toBe(
+      "issue edit 9 --add-label status:needs-replan --repo chase-sets/chase-sets",
+    );
     await expect(chaseSets.dryRun(executorRoot)).resolves.toEqual({
       milestone: { id: "M1", number: 7, title: "Outcome" },
       issue: { key: "cs-9", number: 9, title: "Issue 9" },
@@ -260,6 +271,7 @@ it("loads the complete Chase Sets seam and declares its delivery policy", async 
     "pullRequest",
     "requiredChecks",
     "localGates",
+    "park",
     "mergeMethod",
     "afterMerge",
   ] as const)

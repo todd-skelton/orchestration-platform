@@ -11,6 +11,7 @@ export {
 export { QueueBlocked };
 export {
   completeCycle,
+  isRunStopReason,
   nextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -50,6 +51,22 @@ export async function loadRepositoryAdapter() {
       throw new Error("unused pullRequest");
     },
     requiredChecks: () => ["linux", "windows", "macos"],
+    async park() {
+      const directory = process.env.SUPERVISE_FIXTURE_STATE;
+      const issuePath = resolve(directory, "command-issue.json");
+      const controlsPath = resolve(directory, "command-controls.json");
+      const [issue, controls] = await Promise.all([
+        readJson(issuePath),
+        readJson(controlsPath, {}),
+      ]);
+      issue.labels = issue.labels.filter((label) => label !== "ready");
+      controls.parkCalls = (controls.parkCalls ?? 0) + 1;
+      await Promise.all([
+        writeFile(issuePath, `${JSON.stringify(issue)}\n`),
+        writeFile(controlsPath, `${JSON.stringify(controls)}\n`),
+      ]);
+      return "add the `ready` label after acting on the note";
+    },
     mergeMethod: () => ({ method: "squash" }),
     afterMerge: () => {},
   };
@@ -150,11 +167,6 @@ export function repositorySupervisionAdapter() {
       issue.labels = issue.labels.filter((label) => label !== "ready");
       await writeIssue(config, issue);
     },
-    async restoreReady(config) {
-      const issue = await readIssue(config);
-      if (!issue.labels.includes("ready")) issue.labels.push("ready");
-      await writeIssue(config, issue);
-    },
     async close(config) {
       const issue = await readIssue(config);
       issue.state = "CLOSED";
@@ -245,6 +257,11 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
       return { status: "ready" };
     },
     async source(item) {
+      const controls = await readJson(
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
+        {},
+      );
+      if (controls.stopReason) throw new QueueBlocked(controls.stopReason);
       if (!sourceObserved) {
         sourceObserved = true;
         return { status: "observing-author" };

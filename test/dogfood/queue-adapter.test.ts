@@ -323,6 +323,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     branchName: () => plan.publication.sourceBranch,
     pullRequest: () => plan.publication,
     requiredChecks: () => [...current.source.requiredChecks],
+    park: () => "add the `ready` label after acting on the note",
     mergeMethod: () => plan.mergePolicy,
     afterMerge({ config, delivery: completed }) {
       expect(config.candidateHead).toBe(corrected);

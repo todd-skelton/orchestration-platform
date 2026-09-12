@@ -43,6 +43,7 @@ export interface RepositoryAdapter {
     gitExecutable: string;
   }): Promise<PublicationPlan> | PublicationPlan;
   requiredChecks(input: { repository: string }): Promise<string[]> | string[];
+  park(input: { repository: string; number: number; reason: string }): Promise<string> | string;
   localGates?(input: { repository: string }): Promise<string[]> | string[];
   mergeMethod(input: { config: DeliveryConfig }): Promise<unknown> | unknown;
   afterMerge(input: {
@@ -75,6 +76,7 @@ export function validateRepositoryAdapter(value: unknown): asserts value is Repo
       "branchName",
       "pullRequest",
       "requiredChecks",
+      "park",
       "mergeMethod",
       "afterMerge",
     ].some((name) => typeof (value as Record<string, unknown>)[name] !== "function") ||

@@ -37,9 +37,18 @@ export interface SupervisionAdapter {
   currentMain(config: LoopConfig, executingRoot: string): Promise<string>;
   issue(config: LoopConfig, number: number): Promise<IssueObservation>;
   removeReady(config: LoopConfig, number: number): Promise<void>;
-  restoreReady(config: LoopConfig, number: number): Promise<void>;
   close(config: LoopConfig, number: number): Promise<void>;
   comment(config: LoopConfig, number: number, body: string): Promise<void>;
+}
+
+export function isRunStopReason(reason: string) {
+  return (
+    reason === "current-main-unavailable" ||
+    reason === "issue-observation-unavailable" ||
+    reason === "native-launch-ceiling-exhausted" ||
+    reason.startsWith("malformed-supervision-record:") ||
+    reason === "queue-internal-error"
+  );
 }
 
 function exactKeys(value: unknown, keys: string[]): value is Record<string, any> {
@@ -83,6 +92,24 @@ async function record(directory: string, name: string, value: unknown) {
   }
 }
 
+async function completedItemStop(directory: string, cycle: number, selection: SelectedIssue) {
+  for (let stop = 1; ; stop += 1) {
+    const intent = await optionalRecord(directory, `cycle-${cycle}-stop-${stop}`);
+    if (intent === ABSENT) return undefined;
+    const completed = await optionalRecord(directory, `cycle-${cycle}-stop-${stop}-complete`);
+    if (completed === ABSENT) return undefined;
+    if (
+      typeof intent?.reason !== "string" ||
+      !exactKeys(completed, ["selection", "stop", "history"]) ||
+      JSON.stringify(completed.selection) !== JSON.stringify(selection) ||
+      completed.stop !== stop ||
+      !Array.isArray(completed.history)
+    )
+      throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-stop-${stop}-complete`);
+    if (!isRunStopReason(intent.reason)) return completed.history as QueueParticipant[];
+  }
+}
+
 function stateDirectory(config: LoopConfig) {
   return resolve(config.stateRoot, config.run);
 }
@@ -116,6 +143,13 @@ export async function nextCycle(
     if (selected !== ABSENT) {
       if (!validSelection(selected, cycle))
         throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-selected`);
+      const stoppedHistory = await completedItemStop(directory, cycle, selected);
+      if (stoppedHistory) {
+        validateHistory(stoppedHistory, config.nativeLaunchCeiling);
+        initialHistory = stoppedHistory;
+        cycle += 1;
+        continue;
+      }
       return { selection: selected, initialHistory };
     }
 
@@ -233,7 +267,7 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
   "native-launch-ceiling-exhausted": ({ evidence }) =>
     `inspect ${evidence} and the nativeLaunchCeiling field, then start an authorized run with enough launch budget`,
   "implementation-attempt-ceiling-exhausted": ({ evidence }) =>
-    `inspect ${evidence}, apply the final blocking findings, and start an authorized implementation attempt`,
+    `inspect ${evidence} and apply the final blocking findings before unparking the issue`,
 };
 function stopMessage(
   config: LoopConfig,
@@ -293,8 +327,10 @@ export async function stopCycle(
   reason: string,
   attempts: number,
   adapter: SupervisionAdapter,
+  repositoryAdapter: RepositoryAdapter,
   diagnostics?: string,
 ) {
+  validateHistory(cycle.initialHistory, config.nativeLaunchCeiling);
   const directory = stateDirectory(config);
   let stop = 1;
   let intent: any;
@@ -310,6 +346,7 @@ export async function stopCycle(
         stop,
         reason,
         attempts,
+        history: cycle.initialHistory,
         ...stopMessage(config, cycle.selection, stop, reason, attempts, diagnostics),
       };
       await record(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`, intent);
@@ -322,53 +359,70 @@ export async function stopCycle(
     stop += 1;
   }
   if (
-    !exactKeys(intent, ["selection", "stop", "reason", "attempts", "marker", "body"]) ||
+    !exactKeys(intent, ["selection", "stop", "reason", "attempts", "history", "marker", "body"]) ||
     JSON.stringify(intent.selection) !== JSON.stringify(cycle.selection) ||
     intent.stop !== stop ||
     typeof intent.reason !== "string" ||
     !Number.isSafeInteger(intent.attempts) ||
+    !Array.isArray(intent.history) ||
     typeof intent.marker !== "string" ||
     typeof intent.body !== "string"
   )
     throw new QueueBlocked(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
+  validateHistory(intent.history, config.nativeLaunchCeiling);
+  const scope = isRunStopReason(intent.reason) ? "run" : "item";
 
-  let observed = await postLearningNote(
+  const unpark =
+    scope === "item"
+      ? await repositoryAdapter.park({
+          repository: config.repository,
+          number: cycle.selection.number,
+          reason: intent.reason,
+        })
+      : undefined;
+  await postLearningNote(
     config,
     cycle.selection,
-    { marker: intent.marker, body: intent.body },
+    {
+      marker: intent.marker,
+      body: `${intent.body}${unpark ? ` To unpark, ${unpark}.` : ""}`,
+    },
     adapter,
   );
-  if (!observed.labels.includes("ready")) {
-    await adapter.restoreReady(config, cycle.selection.number);
-    observed = await adapter.issue(config, cycle.selection.number);
-    assertIssue(cycle.selection, observed);
-    if (observed.state !== "OPEN" || !observed.labels.includes("ready"))
-      throw new QueueBlocked("restored-label-state-unknown");
-  }
   await record(directory, `cycle-${cycle.selection.cycle}-stop-${stop}-complete`, {
     selection: cycle.selection,
     stop,
+    history: intent.history,
   });
+  return scope;
 }
 
 export async function reconcilePendingStop(
   config: LoopConfig,
   cycle: SupervisedCycle,
   adapter: SupervisionAdapter,
+  repositoryAdapter: RepositoryAdapter,
 ) {
   const directory = stateDirectory(config);
   for (let stop = 1; ; stop += 1) {
     const intent = await optionalRecord(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`);
-    if (intent === ABSENT) return false;
+    if (intent === ABSENT) return undefined;
     const completed = await optionalRecord(
       directory,
       `cycle-${cycle.selection.cycle}-stop-${stop}-complete`,
     );
     if (completed !== ABSENT) continue;
-    await stopCycle(config, cycle, intent.reason, intent.attempts, adapter);
-    return true;
+    const scope = await stopCycle(
+      config,
+      { ...cycle, initialHistory: intent.history },
+      intent.reason,
+      intent.attempts,
+      adapter,
+      repositoryAdapter,
+    );
+    return { scope, reason: intent.reason };
   }
 }
 
@@ -436,9 +490,6 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
     issue: observe,
     async removeReady(config, number) {
       await gh(config, ["issue", "edit", String(number), "--remove-label", "ready"]);
-    },
-    async restoreReady(config, number) {
-      await gh(config, ["issue", "edit", String(number), "--add-label", "ready"]);
     },
     async close(config, number) {
       await gh(config, ["issue", "close", String(number)]);
