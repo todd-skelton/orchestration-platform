@@ -10,8 +10,10 @@ const runFile = promisify(execFile);
 const DEPLOY_WORKFLOW = "platform-production.yml";
 const DEPLOY_JOB = "Deploy Staging";
 const DIGEST_STEP = "Verified immutable active release";
-const DEPLOY_WINDOW_MS = 10 * 60_000;
-const POLL_MS = 10_000;
+const DEPLOY_WINDOW_MS = 45 * 60_000;
+const POLL_MS = 30_000;
+const LANE_RULES =
+  "Lane mode applies. The loop owns publishing, landing, and deploy verification. The worker finishes with the JSON report required by the prompt.";
 
 const MILESTONES_QUERY = `
 query($owner:String!, $name:String!, $after:String) {
@@ -153,7 +155,12 @@ function candidatesFromAuthority(snapshot) {
   return snapshot.issues
     .filter(
       (issue) =>
-        issue.milestone?.id === snapshot.window.id && snapshot.product.isRunnableRefined(issue),
+        issue.milestone?.id === snapshot.window.id &&
+        snapshot.product.isRunnableRefined(issue) &&
+        !issue.labels.some((label) => {
+          const name = label.name.toLowerCase();
+          return name.startsWith("status:needs-") || name === "kind:ops";
+        }),
     )
     .sort((left, right) => priority(left) - priority(right) || left.number - right.number)
     .map((issue) => ({ key: `cs-${issue.number}`, number: issue.number }));
@@ -193,11 +200,23 @@ export async function issueContext({ repository, key, number, executorRoot }) {
         .trim()
     : "";
   const acceptanceCriteria = listItems(section);
+  let deliverySkill;
+  try {
+    deliverySkill = await readFile(
+      resolve(executorRoot, ".agents/skills/delivery/SKILL.md"),
+      "utf8",
+    );
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "ENOENT")
+      throw new DeliveryBlocked("missing-chase-sets-delivery-skill");
+    throw error;
+  }
+  const productRules = await readFile(resolve(executorRoot, "AGENTS.md"), "utf8");
   return {
     title: row.title,
     body: row.body,
     acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : [row.body],
-    rules: await readFile(resolve(executorRoot, "AGENTS.md"), "utf8"),
+    rules: `${LANE_RULES}\n\n${productRules.trimEnd()}\n\n${deliverySkill}`,
   };
 }
 

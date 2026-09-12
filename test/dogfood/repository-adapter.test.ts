@@ -171,6 +171,8 @@ it("loads the named self adapter with the complete repository seam", async () =>
       expect.stringContaining("`adapters/self.mjs` reproduces"),
       expect.stringContaining("Tests exercise the loop"),
     ],
-    rules: expect.stringContaining("# The loop"),
+    rules: expect.stringMatching(
+      /# The loop[\s\S]*Keep the loop smaller: prefer deleting to adding\.\n$/,
+    ),
   });
 });

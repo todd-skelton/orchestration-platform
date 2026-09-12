@@ -129,11 +129,12 @@ export async function issueContext({ repository, key, executorRoot }) {
   requirePolicy(section, "selected-issue-criteria-missing");
   const acceptanceCriteria = listItems(section);
   requirePolicy(acceptanceCriteria.length > 0, "selected-issue-criteria-missing");
+  const loopRules = await readFile(resolve(executorRoot, "docs/loop.md"), "utf8");
   return {
     title: frontmatter.title,
     body: draft,
     acceptanceCriteria,
-    rules: await readFile(resolve(executorRoot, "docs/loop.md"), "utf8"),
+    rules: `${loopRules.trimEnd()}\n\nKeep the loop smaller: prefer deleting to adding.\n`,
   };
 }
 
