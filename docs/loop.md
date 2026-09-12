@@ -90,6 +90,14 @@ hosted CI only.
 - Check: `wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log`.
   A final `idle` line means nothing is `ready`; a non-zero exit means a stop
   whose learning note is on the issue.
+- Workers read `/root/orchestration-m1/codex-home/config.toml`, the executor's
+  own Codex home, so that file selects the model provider. It routes through
+  the local subscription pool on the Windows host, which listens on
+  `127.0.0.1:8317` only, so `scripts/executor/pool-bridge.mjs` forwards the
+  WSL-facing host address to it. Start the loop with
+  `scripts/executor/start-loop.ps1` from Windows: it starts the bridge when
+  needed, and the launcher refuses to start without it. No worker holds a
+  native Codex login.
 - Chase Sets runs use `/root/orchestration-m2/repo` and
   `/root/orchestration-m2/loop.json` with the same tools (ISS-110).
 

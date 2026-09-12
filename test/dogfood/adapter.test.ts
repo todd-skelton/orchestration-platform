@@ -271,7 +271,7 @@ it("uses distinct sandbox roles, finite stdin and exact output shape without amb
   expect(author.join("\n")).not.toContain("PATH=");
   expect(reviewer).toContain("read-only");
   expect(reviewer).not.toContain("--add-dir");
-  expect(reviewer).toContain("--ignore-user-config");
+  expect(reviewer).not.toContain("--ignore-user-config");
   expect(reviewer).toContain("--ignore-rules");
   expect(reviewer).toContain("--output-schema");
   expect(reviewer).toContain("sandbox_workspace_write.writable_roots=[]");
