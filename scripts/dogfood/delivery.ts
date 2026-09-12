@@ -12,6 +12,7 @@ export interface DeliveryConfig {
   issue: string;
   repository: string;
   controllerRoot: string;
+  repositoryRoot: string;
   controllerRevision: string;
   worktree: string;
   reviewWorktree: string;
@@ -284,6 +285,7 @@ function validateConfig(config: DeliveryConfig) {
       "issue",
       "repository",
       "controllerRoot",
+      "repositoryRoot",
       "controllerRevision",
       "worktree",
       "reviewWorktree",
@@ -306,7 +308,13 @@ function validateConfig(config: DeliveryConfig) {
     typeof config.repository === "string" && /^[^/\s]+\/[^/\s]+$/.test(config.repository),
     "invalid-repository",
   );
-  for (const name of ["controllerRoot", "worktree", "reviewWorktree", "stateDirectory"] as const)
+  for (const name of [
+    "controllerRoot",
+    "repositoryRoot",
+    "worktree",
+    "reviewWorktree",
+    "stateDirectory",
+  ] as const)
     demand(typeof config[name] === "string" && isAbsolute(config[name]), `invalid-${name}`);
   demand(
     typeof config.candidateHead === "string" && SHA.test(config.candidateHead),
@@ -743,15 +751,23 @@ export async function deliveryStep(
       "conflicting-delivery-config",
     );
   else {
-    const roots = await Promise.all(
-      [config.controllerRoot, config.worktree, config.reviewWorktree].map((path) => realpath(path)),
-    );
+    const selectedPaths = [
+      config.controllerRoot,
+      config.repositoryRoot,
+      config.worktree,
+      config.reviewWorktree,
+    ];
+    const roots = await Promise.all(selectedPaths.map((path) => realpath(path)));
     demand(
       roots.every(
         (root, index) =>
-          root ===
-            resolve([config.controllerRoot, config.worktree, config.reviewWorktree][index]!) &&
-          roots.every((other, otherIndex) => index === otherIndex || outside(root, other)),
+          root === resolve(selectedPaths[index]!) &&
+          roots.every(
+            (other, otherIndex) =>
+              index === otherIndex ||
+              (index < 2 && otherIndex < 2 && root === other) ||
+              outside(root, other),
+          ),
       ),
       "delivery-worktree-overlap",
     );

@@ -340,11 +340,10 @@ function validateFailedAttempt(
 
 export async function validateLoopExecutor(config: LoopConfig, executingRoot: string) {
   validateLoopConfig(config);
-  const [executor, configured] = await Promise.all([
+  const [controllerRoot, repositoryRoot] = await Promise.all([
     realpath(executingRoot),
     realpath(config.stableExecutorRoot),
   ]);
-  demand(samePath(executor, configured), "controller-executor-mismatch");
   await Promise.all([
     mkdir(config.stateRoot, { recursive: true }),
     mkdir(config.worktreeRoot, { recursive: true }),
@@ -354,30 +353,60 @@ export async function validateLoopExecutor(config: LoopConfig, executingRoot: st
     realpath(config.worktreeRoot),
   ]);
   demand(
-    outside(executor, stateRoot) &&
-      outside(stateRoot, executor) &&
-      outside(executor, worktreeRoot) &&
-      outside(worktreeRoot, executor) &&
+    [controllerRoot, repositoryRoot].every(
+      (root) =>
+        outside(root, stateRoot) &&
+        outside(stateRoot, root) &&
+        outside(root, worktreeRoot) &&
+        outside(worktreeRoot, root),
+    ) &&
+      (samePath(controllerRoot, repositoryRoot) ||
+        (outside(controllerRoot, repositoryRoot) && outside(repositoryRoot, controllerRoot))) &&
       outside(stateRoot, worktreeRoot) &&
       outside(worktreeRoot, stateRoot),
     "loop-roots-overlap",
   );
-  const git = async (args: string[]) =>
+  const git = async (root: string, args: string[]) =>
     (
-      await exec(config.gitExecutable, ["-C", executor, ...args], {
+      await exec(config.gitExecutable, ["-C", root, ...args], {
         windowsHide: true,
         maxBuffer: 8 * 1024 * 1024,
       })
     ).stdout.trim();
-  const [controllerRevision, branch, status, version] = await Promise.all([
-    git(["rev-parse", "HEAD"]),
-    git(["branch", "--show-current"]),
-    git(["status", "--porcelain"]),
+  const [
+    controllerTop,
+    controllerRevision,
+    controllerStatus,
+    repositoryTop,
+    repositoryRevision,
+    repositoryBranch,
+    repositoryStatus,
+    version,
+  ] = await Promise.all([
+    git(controllerRoot, ["rev-parse", "--show-toplevel"]),
+    git(controllerRoot, ["rev-parse", "HEAD"]),
+    git(controllerRoot, ["status", "--porcelain"]),
+    git(repositoryRoot, ["rev-parse", "--show-toplevel"]),
+    git(repositoryRoot, ["rev-parse", "HEAD"]),
+    git(repositoryRoot, ["branch", "--show-current"]),
+    git(repositoryRoot, ["status", "--porcelain"]),
     exec(config.gitExecutable, ["--version"], { windowsHide: true }).then((result) =>
       result.stdout.trim(),
     ),
   ]);
-  demand(SHA.test(controllerRevision) && branch === "main" && status === "", "unstable-executor");
+  demand(
+    samePath(await realpath(controllerTop), controllerRoot) &&
+      SHA.test(controllerRevision) &&
+      controllerStatus === "",
+    "unstable-executor",
+  );
+  demand(
+    samePath(await realpath(repositoryTop), repositoryRoot) &&
+      SHA.test(repositoryRevision) &&
+      repositoryBranch === "main" &&
+      repositoryStatus === "",
+    "unstable-executor",
+  );
   if (process.platform === "win32") {
     const match = /git version (\d+)\.(\d+)/.exec(version);
     demand(
@@ -385,7 +414,14 @@ export async function validateLoopExecutor(config: LoopConfig, executingRoot: st
       "incompatible-git",
     );
   }
-  return { executor, stateRoot, worktreeRoot, controllerRevision };
+  return {
+    controllerRoot,
+    repositoryRoot,
+    stateRoot,
+    worktreeRoot,
+    controllerRevision,
+    repositoryRevision,
+  };
 }
 
 export async function queueConfigFromLoop(
@@ -405,11 +441,17 @@ export async function queueConfigFromLoop(
     "invalid-selected-issue",
   );
   validateHistory(priorHistory, config.nativeLaunchCeiling);
-  const { executor, stateRoot, worktreeRoot, controllerRevision } =
-    validatedExecutor ?? (await validateLoopExecutor(config, executingRoot));
+  const {
+    controllerRoot,
+    repositoryRoot,
+    stateRoot,
+    worktreeRoot,
+    controllerRevision,
+    repositoryRevision,
+  } = validatedExecutor ?? (await validateLoopExecutor(config, executingRoot));
   const git = async (args: string[]) =>
     (
-      await exec(config.gitExecutable, ["-C", executor, ...args], {
+      await exec(config.gitExecutable, ["-C", repositoryRoot, ...args], {
         windowsHide: true,
         maxBuffer: 8 * 1024 * 1024,
       })
@@ -427,7 +469,7 @@ export async function queueConfigFromLoop(
       repository: config.repository,
       key: selected.key,
       number: selected.number,
-      executorRoot: executor,
+      executorRoot: repositoryRoot,
     }),
   ]);
   demand(selectedBase === selected.base, "selected-base-unavailable");
@@ -548,10 +590,10 @@ export async function queueConfigFromLoop(
     run: config.run,
     issue: issueUrl,
     repository: config.repository,
-    repositoryRoot: executor,
-    controllerRoot: executor,
+    repositoryRoot,
+    controllerRoot,
     controllerRevision,
-    pilotRevision: controllerRevision,
+    pilotRevision: repositoryRevision,
     base: attemptBase,
     baseBranch: "main",
     sourceBranch,
@@ -564,7 +606,7 @@ export async function queueConfigFromLoop(
     owner: controller,
     run: config.run,
     issue: issueUrl,
-    pilotRevision: controllerRevision,
+    pilotRevision: repositoryRevision,
     base: attemptBase,
     worktree: paths.sourceWorktree,
     reviewWorktree: paths.reviewWorktree,
@@ -605,7 +647,7 @@ export async function queueConfigFromLoop(
     schemaVersion: QUEUE_CONFIG_SCHEMA,
     controller,
     run: config.run,
-    controllerRoot: executor,
+    controllerRoot,
     controllerRevision,
     stateDirectory: paths.queue,
     limit: 1,
@@ -731,14 +773,10 @@ export function validateQueueConfig(config: QueueConfig) {
     );
     demand(item.base === item.source.base && item.base === item.setup.base, "queue-base-drift");
     demand(item.source.owner === config.controller, "queue-controller-drift");
-    demand(
-      item.source.pilotRevision === config.controllerRevision,
-      "candidate-as-executor-selection",
-    );
+    demand(item.source.pilotRevision === item.setup.pilotRevision, "candidate-as-pilot-selection");
     demand(
       item.setup.controllerRoot === config.controllerRoot &&
         item.setup.controllerRevision === config.controllerRevision &&
-        item.setup.pilotRevision === config.controllerRevision &&
         item.setup.controller === config.controller,
       "queue-executor-drift",
     );
@@ -1906,7 +1944,7 @@ export function repositoryQueueAdapter(
         const { repair, handoff } = await buildRepair(item);
         const result = await (
           options.repair ??
-          reviewedRepairAdapter(boundedNative(item, "repair"), config.controllerRoot)
+          reviewedRepairAdapter(boundedNative(item, "repair"), item.setup.pilotWorktree)
         ).dispatch(repair, handoff);
         await syncParticipants(item, "repair", item.repair.stateDirectory);
         if (result.status === "observing-author" || result.status === "observing-reviewer")
@@ -1998,6 +2036,7 @@ export function repositoryQueueAdapter(
         issue: item.issue,
         repository: item.source.repository,
         controllerRoot: config.controllerRoot,
+        repositoryRoot: item.setup.repositoryRoot,
         controllerRevision: config.controllerRevision,
         worktree: item.source.worktree,
         reviewWorktree: item.source.reviewWorktree,

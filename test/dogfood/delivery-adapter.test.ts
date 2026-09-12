@@ -45,6 +45,7 @@ function config(root: string): DeliveryConfig {
     issue: "https://github.com/todd-skelton/orchestration-platform/issues/332",
     repository: "todd-skelton/orchestration-platform",
     controllerRoot: resolve(root, "controller"),
+    repositoryRoot: resolve(root, "controller"),
     controllerRevision: "c".repeat(40),
     worktree: resolve(root, "author"),
     reviewWorktree: resolve(root, "reviewer"),
@@ -149,6 +150,10 @@ async function cleanController(root: string) {
     ),
   );
   await promisify(execFile)("git", ["init", "--quiet"], {
+    cwd: current.controllerRoot,
+    windowsHide: true,
+  });
+  await promisify(execFile)("git", ["branch", "-M", "main"], {
     cwd: current.controllerRoot,
     windowsHide: true,
   });
@@ -1203,6 +1208,56 @@ it("rejects matching heads from a different Git worktree family", async () => {
   ).resolves.toBe(false);
 });
 
+it("verifies and cleans repository worktrees while leaving a separate controller untouched", async () => {
+  const { current, git } = await localRemoteRepositoryFixture();
+  const repositoryRoot = current.repositoryRoot;
+  const externalController = resolve(repositoryRoot, "..", "external-controller");
+  await mkdir(externalController);
+  const controllerGit = async (args: string[]) =>
+    (
+      await promisify(execFile)("git", args, {
+        cwd: externalController,
+        windowsHide: true,
+      })
+    ).stdout.trim();
+  await controllerGit(["init", "-b", "main", "--quiet"]);
+  await writeFile(resolve(externalController, "controller.txt"), "platform controller\n");
+  await controllerGit(["add", "."]);
+  await controllerGit([
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--quiet",
+    "-m",
+    "controller",
+  ]);
+  const controllerRevision = await controllerGit(["rev-parse", "HEAD"]);
+  current.controllerRoot = externalController;
+  current.controllerRevision = controllerRevision;
+  const controllerWorktrees = await controllerGit(["worktree", "list", "--porcelain"]);
+
+  const adapter = githubDeliveryAdapter();
+  await expect(assertControllerExecutor(current, externalController)).resolves.toBeUndefined();
+  await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+  await adapter.cleanup(
+    current,
+    {
+      worktrees: [current.worktree, current.reviewWorktree],
+      branch: "codex/iss-074-delivery",
+    },
+    { number: 44, head: current.candidateHead, mergeCommit: "b".repeat(40) },
+  );
+
+  expect(await controllerGit(["worktree", "list", "--porcelain"])).toBe(controllerWorktrees);
+  expect(await controllerGit(["rev-parse", "HEAD"])).toBe(controllerRevision);
+  expect(await controllerGit(["status", "--porcelain"])).toBe("");
+  expect(await git(["worktree", "list", "--porcelain"], repositoryRoot)).not.toContain(
+    current.worktree,
+  );
+}, 30_000);
+
 it("keeps repository identities and mirror rules in the explicit private policy adapter", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "delivery-policy-"));
   roots.push(root);
@@ -1532,41 +1587,36 @@ it.each([{ fingerprint: ["e".repeat(64)] }, { fingerprint: "e".repeat(40) }])(
   },
 );
 
-it.each([
-  "reviewer-attempt",
-  "run",
-  "repository",
-  "worktree",
-  "pilot-revision",
-  "controller",
-] as const)("rejects pilot %s identity drift before provider effects", async (mode) => {
-  const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
-  roots.push(root);
-  const current = config(root);
-  await mkdir(current.stateDirectory);
-  const pinned = pilotConfig(current);
-  if (mode === "run") pinned.run = "unrelated-run";
-  if (mode === "repository") pinned.repository = "foreign/repository";
-  if (mode === "worktree") pinned.worktree = resolve(root, "unrelated-author");
-  if (mode === "pilot-revision") pinned.pilotRevision = "f".repeat(40);
-  if (mode === "controller") pinned.owner = "unknown-controller";
-  await writePilotEvidence(current, {
-    pinnedConfig: pinned,
-    ...(mode === "reviewer-attempt"
-      ? {
-          reviewerAttempt: {
-            id: "33333333-3333-3333-3333-333333333333",
-            pid: 303,
-            trace: resolve(current.stateDirectory, "reviewer.jsonl"),
-          },
-          reviewerTerminal: { id: reviewId, status: "passed", head },
-        }
-      : {}),
-  });
-  await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
-    "unreviewed-delivery-source",
-  );
-});
+it.each(["reviewer-attempt", "run", "repository", "worktree", "controller"] as const)(
+  "rejects pilot %s identity drift before provider effects",
+  async (mode) => {
+    const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
+    roots.push(root);
+    const current = config(root);
+    await mkdir(current.stateDirectory);
+    const pinned = pilotConfig(current);
+    if (mode === "run") pinned.run = "unrelated-run";
+    if (mode === "repository") pinned.repository = "foreign/repository";
+    if (mode === "worktree") pinned.worktree = resolve(root, "unrelated-author");
+    if (mode === "controller") pinned.owner = "unknown-controller";
+    await writePilotEvidence(current, {
+      pinnedConfig: pinned,
+      ...(mode === "reviewer-attempt"
+        ? {
+            reviewerAttempt: {
+              id: "33333333-3333-3333-3333-333333333333",
+              pid: 303,
+              trace: resolve(current.stateDirectory, "reviewer.jsonl"),
+            },
+            reviewerTerminal: { id: reviewId, status: "passed", head },
+          }
+        : {}),
+    });
+    await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
+      "unreviewed-delivery-source",
+    );
+  },
+);
 
 it("requires the actual controller executor to remain at its clean authorized revision", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "delivery-executor-"));

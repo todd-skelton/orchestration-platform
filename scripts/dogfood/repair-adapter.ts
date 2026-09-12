@@ -60,10 +60,10 @@ function repairPromptAdapter(handoff: RepairHandoff, native: Adapter): Adapter {
   };
 }
 
-export function reviewedRepairAdapter(native: Adapter, controllerRoot: string): RepairAdapter {
+export function reviewedRepairAdapter(native: Adapter, pilotRoot: string): RepairAdapter {
   return {
     async dispatch(config, handoff) {
-      return step(config, repairPromptAdapter(handoff, native), controllerRoot);
+      return step(config, repairPromptAdapter(handoff, native), pilotRoot);
     },
   };
 }

@@ -162,7 +162,7 @@ export async function nextCycle(
 
     const candidates = await repositoryAdapter.selectCandidates({
       repository: config.repository,
-      executorRoot: executingRoot,
+      executorRoot: config.stableExecutorRoot,
     });
     if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
     const issue = candidates[0];
@@ -176,7 +176,7 @@ export async function nextCycle(
       throw new QueueBlocked("malformed-repository-candidates");
     let base;
     try {
-      base = await adapter.currentMain(config, executingRoot);
+      base = await adapter.currentMain(config, config.stableExecutorRoot);
       if (!SHA.test(base)) throw new QueueBlocked("current-main-unavailable");
     } catch {
       const target = { cycle, ...issue };
@@ -499,16 +499,16 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
     }
   };
   return {
-    async currentMain(config, executingRoot) {
+    async currentMain(config, repositoryRoot) {
       try {
         const main = "refs/remotes/origin/main";
         await run(
           config.gitExecutable,
-          ["-C", executingRoot, "fetch", "--no-tags", "origin", `refs/heads/main:${main}`],
-          executingRoot,
+          ["-C", repositoryRoot, "fetch", "--no-tags", "origin", `refs/heads/main:${main}`],
+          repositoryRoot,
         );
         return (
-          await run(config.gitExecutable, ["-C", executingRoot, "rev-parse", main], executingRoot)
+          await run(config.gitExecutable, ["-C", repositoryRoot, "rev-parse", main], repositoryRoot)
         ).stdout.trim();
       } catch {
         throw new QueueBlocked("current-main-unavailable");

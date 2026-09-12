@@ -250,6 +250,48 @@ it("removes ready and resumes the selected cycle", async () => {
   await expect(nextCycle(config, root, adapter, repositoryPolicy)).resolves.toEqual(cycle);
 });
 
+it("selects candidates and main from the configured repository root", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-split-roots-"));
+  roots.push(root);
+  const repositoryRoot = resolve(root, "repository");
+  const controllerRoot = resolve(root, "controller");
+  await Promise.all([repositoryRoot, controllerRoot].map((path) => mkdir(path)));
+  await Promise.all(
+    [repositoryRoot, controllerRoot].map((cwd) =>
+      execute("git", ["init", "-b", "main", "--quiet"], { cwd, windowsHide: true }),
+    ),
+  );
+  const config = { ...loop(root), stableExecutorRoot: repositoryRoot };
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: ["ready"],
+    comments: [],
+  };
+  const adapter = fakeAdapter(observation);
+  let mainRoot = "";
+  adapter.currentMain = async (_config, selectedRoot) => {
+    mainRoot = selectedRoot;
+    return "a".repeat(40);
+  };
+  let candidateRoot = "";
+  const repository: RepositoryAdapter = {
+    ...repositoryPolicy,
+    selectCandidates: ({ executorRoot }) => {
+      candidateRoot = executorRoot;
+      return [{ key: "ISS-105", number: 362 }];
+    },
+  };
+
+  await expect(nextCycle(config, controllerRoot, adapter, repository)).resolves.toMatchObject({
+    selection: { key: "ISS-105", base: "a".repeat(40) },
+  });
+  expect({ candidateRoot, mainRoot }).toEqual({
+    candidateRoot: repositoryRoot,
+    mainRoot: repositoryRoot,
+  });
+});
+
 it("posts one current-main learning note before selection persistence and keeps ready", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-main-stop-"));
   roots.push(root);
@@ -511,6 +553,45 @@ it("exits after one selection when a stop happens before a cycle is active", asy
   expect(failure?.stderr).toContain('"reason":"malformed-repository-candidates"');
   expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({ selectCalls: 1 });
   expect(JSON.parse(await readFile(issuePath, "utf8")).comments).toEqual([]);
+});
+
+it("prints a plain pre-cycle error message as queue-internal-error diagnostics", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-error-"));
+  roots.push(root);
+  const config = loop(root);
+  const runState = resolve(config.stateRoot, config.run);
+  const request = resolve(root, "loop.json");
+  await mkdir(runState, { recursive: true });
+  await Promise.all([
+    writeFile(request, `${JSON.stringify(config)}\n`),
+    writeFile(
+      resolve(runState, "command-controls.json"),
+      `${JSON.stringify({ selectionMessage: "adapter module was not found" })}\n`,
+    ),
+    writeFile(
+      resolve(runState, "command-issue.json"),
+      `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
+    ),
+  ]);
+
+  let failure: { code?: number | string; stderr?: string } | undefined;
+  try {
+    await execute(
+      process.execPath,
+      ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
+      {
+        env: { ...process.env, SUPERVISE_FIXTURE_STATE: runState },
+        timeout: 10_000,
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    failure = error as { code?: number | string; stderr?: string };
+  }
+
+  expect(failure).toMatchObject({ code: 1 });
+  expect(failure?.stderr).toContain('"reason":"queue-internal-error"');
+  expect(failure?.stderr).toContain('"diagnostics":"adapter module was not found"');
 });
 
 it("preserves adapter reasons in stop notes", async () => {

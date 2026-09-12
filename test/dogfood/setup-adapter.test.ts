@@ -67,7 +67,7 @@ async function fixture() {
     repositoryRoot: repository,
     controllerRoot: controller,
     controllerRevision: pilotRevision,
-    pilotRevision,
+    pilotRevision: base,
     base,
     baseBranch: "main",
     sourceBranch: "synthetic/iss-075",

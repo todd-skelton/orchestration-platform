@@ -32,11 +32,18 @@ let supervisor;
 
 function blocked(error, lifecycleReason) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
+  const diagnostics =
+    error instanceof QueueBlocked
+      ? error.diagnostics
+      : error instanceof Error
+        ? error.message
+        : String(error);
   writeFileSync(
     process.stderr.fd,
     `${JSON.stringify({
       status: "blocked",
       reason,
+      ...(diagnostics ? { diagnostics } : {}),
       ...(lifecycleReason ? { lifecycleReason } : {}),
     })}\n`,
   );

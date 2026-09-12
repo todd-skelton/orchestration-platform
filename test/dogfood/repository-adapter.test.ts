@@ -17,6 +17,7 @@ const config: DeliveryConfig = {
   issue: "https://github.com/fixture/repository/issues/1",
   repository,
   controllerRoot: "/fixture/controller",
+  repositoryRoot: "/fixture/controller",
   controllerRevision: "a".repeat(40),
   worktree: "/fixture/source",
   reviewWorktree: "/fixture/review",

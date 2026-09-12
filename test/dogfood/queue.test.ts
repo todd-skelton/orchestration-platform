@@ -10,6 +10,7 @@ import {
   queueConfigFromLoop,
   repositoryQueueAdapter,
   queueStep,
+  validateLoopExecutor,
   validateQueueConfig,
   type QueueAdapter,
   type QueueConfig,
@@ -387,6 +388,77 @@ it("runs the composed self-repository setup through the real Git adapter", async
   await expect(
     execute(gitExecutable, ["-C", setup.sourceWorktree, "rev-parse", "HEAD"]),
   ).resolves.toMatchObject({ stdout: `${selected.base}\n` });
+}, 30_000);
+
+it("derives and prepares a repository cycle without modifying the controller repository", async () => {
+  const { loop, repository, gitExecutable, selected } = await loopFixture();
+  const controller = resolve(repository, "..", "controller");
+  await mkdir(controller);
+  await execute(gitExecutable, ["init", "-b", "main", controller]);
+  await execute(gitExecutable, ["-C", controller, "config", "user.name", "Fixture"]);
+  await execute(gitExecutable, ["-C", controller, "config", "user.email", "fixture@example.test"]);
+  await writeFile(resolve(controller, "controller.txt"), "platform controller\n");
+  await execute(gitExecutable, ["-C", controller, "add", "."]);
+  await execute(gitExecutable, ["-C", controller, "commit", "-m", "controller"]);
+  const controllerRevision = (
+    await execute(gitExecutable, ["-C", controller, "rev-parse", "HEAD"])
+  ).stdout.trim();
+
+  const validated = await validateLoopExecutor(loop, controller);
+  const queue = await queueConfigFromLoop(
+    loop,
+    controller,
+    selected,
+    repositoryPolicy,
+    [],
+    validated,
+  );
+  const setup = queue.items[0]!.setup;
+  expect(queue).toMatchObject({ controllerRoot: controller, controllerRevision });
+  expect(setup).toMatchObject({
+    controllerRoot: controller,
+    repositoryRoot: repository,
+    controllerRevision,
+    pilotRevision: selected.base,
+    base: selected.base,
+  });
+
+  await setupStep(
+    setup,
+    gitSetupAdapter({
+      gitExecutable,
+      async install(_launcher, _args, cwd) {
+        await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+        await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+        return "succeeded";
+      },
+    }),
+    controller,
+  );
+  const repositoryWorktrees = (
+    await execute(gitExecutable, ["-C", repository, "worktree", "list", "--porcelain"])
+  ).stdout;
+  const controllerWorktrees = (
+    await execute(gitExecutable, ["-C", controller, "worktree", "list", "--porcelain"])
+  ).stdout;
+  expect(repositoryWorktrees).toContain(setup.sourceWorktree);
+  expect(repositoryWorktrees).toContain(setup.reviewWorktree);
+  expect(controllerWorktrees).not.toContain(setup.sourceWorktree);
+  expect(await execute(gitExecutable, ["-C", controller, "status", "--porcelain"])).toMatchObject({
+    stdout: "",
+  });
+  expect(
+    (await execute(gitExecutable, ["-C", controller, "rev-parse", "HEAD"])).stdout.trim(),
+  ).toBe(controllerRevision);
+  for (const [field, path] of [
+    ["stateRoot", resolve(controller, "runtime-state")],
+    ["worktreeRoot", resolve(controller, "runtime-worktrees")],
+    ["stateRoot", resolve(repository, "runtime-state")],
+    ["worktreeRoot", resolve(repository, "runtime-worktrees")],
+  ] as const)
+    await expect(validateLoopExecutor({ ...loop, [field]: path }, controller)).rejects.toThrow(
+      "loop-roots-overlap",
+    );
 }, 30_000);
 
 it("preserves registered multiline criteria through the genuine repository repair path", async () => {
@@ -1288,7 +1360,7 @@ it.each([
     (config: QueueConfig) => {
       config.controllerRevision = "f".repeat(40);
     },
-    "candidate-as-executor-selection",
+    "queue-executor-drift",
   ],
   [
     "drifted item run binding",
