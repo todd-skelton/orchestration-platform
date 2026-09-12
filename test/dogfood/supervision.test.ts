@@ -1,6 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
@@ -21,6 +24,9 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
+const execute = promisify(execFile);
+const supervisorCommand = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
+const supervisorHook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");
 const repositoryPolicy: RepositoryAdapter = {
   selectCandidates: () => [{ key: "ISS-105", number: 362 }],
   issueContext: async () => {
@@ -393,6 +399,50 @@ it("classifies a run stop for exit without parking the issue", async () => {
   await expect(nextCycle(config, root, fakeAdapter(observation), repository)).resolves.toEqual(
     cycle,
   );
+});
+
+it("exits the supervisor command on a run stop without parking the issue", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-command-run-stop-"));
+  roots.push(root);
+  const config = loop(root);
+  const runState = resolve(config.stateRoot, config.run);
+  const request = resolve(root, "loop.json");
+  const controlsPath = resolve(runState, "command-controls.json");
+  const issuePath = resolve(runState, "command-issue.json");
+  await mkdir(runState, { recursive: true });
+  await Promise.all([
+    writeFile(request, `${JSON.stringify(config)}\n`),
+    writeFile(
+      controlsPath,
+      `${JSON.stringify({ main: "a".repeat(40), stopReason: "native-launch-ceiling-exhausted", parkCalls: 0 })}\n`,
+    ),
+    writeFile(
+      issuePath,
+      `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
+    ),
+  ]);
+
+  let failure: { code?: number | string; stderr?: string } | undefined;
+  try {
+    await execute(
+      process.execPath,
+      ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
+      {
+        env: { ...process.env, SUPERVISE_FIXTURE_STATE: runState },
+        timeout: 10_000,
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    failure = error as { code?: number | string; stderr?: string };
+  }
+
+  expect(failure).toMatchObject({ code: 1 });
+  expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({ parkCalls: 0 });
+  const issue = JSON.parse(await readFile(issuePath, "utf8"));
+  expect(issue.comments).toHaveLength(1);
+  expect(issue.comments[0]).toContain("native-launch-ceiling-exhausted");
+  expect(issue.comments[0]).not.toContain("To unpark");
 });
 
 it("uses the generic fallback with the evidence directory and verbatim reason", async () => {

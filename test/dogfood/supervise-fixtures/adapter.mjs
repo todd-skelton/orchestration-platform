@@ -52,10 +52,19 @@ export async function loadRepositoryAdapter() {
     },
     requiredChecks: () => ["linux", "windows", "macos"],
     async park() {
-      const path = resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json");
-      const issue = await readJson(path);
+      const directory = process.env.SUPERVISE_FIXTURE_STATE;
+      const issuePath = resolve(directory, "command-issue.json");
+      const controlsPath = resolve(directory, "command-controls.json");
+      const [issue, controls] = await Promise.all([
+        readJson(issuePath),
+        readJson(controlsPath, {}),
+      ]);
       issue.labels = issue.labels.filter((label) => label !== "ready");
-      await writeFile(path, `${JSON.stringify(issue)}\n`);
+      controls.parkCalls = (controls.parkCalls ?? 0) + 1;
+      await Promise.all([
+        writeFile(issuePath, `${JSON.stringify(issue)}\n`),
+        writeFile(controlsPath, `${JSON.stringify(controls)}\n`),
+      ]);
       return "add the `ready` label after acting on the note";
     },
     mergeMethod: () => ({ method: "squash" }),
@@ -248,6 +257,11 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
       return { status: "ready" };
     },
     async source(item) {
+      const controls = await readJson(
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
+        {},
+      );
+      if (controls.stopReason) throw new QueueBlocked(controls.stopReason);
       if (!sourceObserved) {
         sourceObserved = true;
         return { status: "observing-author" };
