@@ -45,6 +45,7 @@ const repositoryPolicy: RepositoryAdapter = {
     "Node 24 / windows-latest",
     "Node 24 / macos-latest",
   ],
+  park: () => "add the `ready` label after acting on the note",
   mergeMethod: () => ({ method: "squash" }),
   afterMerge: () => {},
 };

@@ -1,5 +1,7 @@
-import { resolve } from "node:path";
-import { expect, it } from "vitest";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { delimiter, resolve } from "node:path";
+import { expect, it, vi } from "vitest";
 import * as self from "../../adapters/self.mjs";
 import {
   loadRepositoryAdapter,
@@ -63,6 +65,10 @@ it("composes every fake repository decision without a planning mirror", async ()
       calls.push("localGates");
       return ["typecheck"];
     },
+    park: () => {
+      calls.push("park");
+      return "unpark fixture";
+    },
     mergeMethod: () => {
       calls.push("mergeMethod");
       return { method: "fixture" };
@@ -87,6 +93,7 @@ it("composes every fake repository decision without a planning mirror", async ()
     "topic/iss-001",
   );
   expect(await fake.requiredChecks({ repository })).toEqual(["linux", "windows", "macos"]);
+  expect(await fake.park({ repository, number: 1, reason: "fixture-stop" })).toBe("unpark fixture");
   await expect(repositoryDeliveryPolicy(fake, "/fixture/git").plan(config)).resolves.toEqual({
     gates: { beforeMirror: ["typecheck"], afterMirror: [] },
     drafts: [],
@@ -123,6 +130,7 @@ it("composes every fake repository decision without a planning mirror", async ()
     "issueContext",
     "branchName",
     "requiredChecks",
+    "park",
     "pullRequest",
     "mergeMethod",
     "localGates",
@@ -139,6 +147,7 @@ it("loads the named self adapter with the complete repository seam", async () =>
     "pullRequest",
     "requiredChecks",
     "localGates",
+    "park",
     "mergeMethod",
     "afterMerge",
     "mirrorPlanning",
@@ -175,4 +184,29 @@ it("loads the named self adapter with the complete repository seam", async () =>
       /# The loop[\s\S]*Keep the loop smaller: prefer deleting to adding\.\n$/,
     ),
   });
+});
+
+it.skipIf(process.platform === "win32")("parks self work by removing ready", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "self-park-"));
+  const executable = resolve(root, "gh");
+  const call = resolve(root, "call");
+  await writeFile(executable, '#!/bin/sh\nprintf \'%s\' "$*" > "$SELF_PARK_CALL"\n');
+  await chmod(executable, 0o755);
+  vi.stubEnv("SELF_PARK_CALL", call);
+  vi.stubEnv("PATH", `${root}${delimiter}${process.env.PATH ?? ""}`);
+  try {
+    await expect(
+      self.park({
+        repository: "todd-skelton/orchestration-platform",
+        number: 402,
+        reason: "implementation-attempt-ceiling-exhausted",
+      }),
+    ).resolves.toBe("add the `ready` label after acting on the note");
+    await expect(readFile(call, "utf8")).resolves.toBe(
+      "issue edit 402 --remove-label ready --repo todd-skelton/orchestration-platform",
+    );
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -152,6 +152,20 @@ export function localGates({ repository }) {
   return ["typecheck", "format:check", "test"];
 }
 
+export async function park({ repository, number }) {
+  validateRepository(repository);
+  await runFile("gh", [
+    "issue",
+    "edit",
+    String(number),
+    "--remove-label",
+    "ready",
+    "--repo",
+    repository,
+  ]);
+  return "add the `ready` label after acting on the note";
+}
+
 function describeLineChanges({ added, deleted }) {
   const net = added - deleted;
   return `${added} added, ${deleted} deleted, net ${net > 0 ? "+" : ""}${net}`;

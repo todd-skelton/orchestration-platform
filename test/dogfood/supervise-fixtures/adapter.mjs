@@ -11,6 +11,7 @@ export {
 export { QueueBlocked };
 export {
   completeCycle,
+  isRunStopReason,
   nextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -50,6 +51,13 @@ export async function loadRepositoryAdapter() {
       throw new Error("unused pullRequest");
     },
     requiredChecks: () => ["linux", "windows", "macos"],
+    async park() {
+      const path = resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json");
+      const issue = await readJson(path);
+      issue.labels = issue.labels.filter((label) => label !== "ready");
+      await writeFile(path, `${JSON.stringify(issue)}\n`);
+      return "add the `ready` label after acting on the note";
+    },
     mergeMethod: () => ({ method: "squash" }),
     afterMerge: () => {},
   };
@@ -148,11 +156,6 @@ export function repositorySupervisionAdapter() {
     async removeReady(config) {
       const issue = await readIssue(config);
       issue.labels = issue.labels.filter((label) => label !== "ready");
-      await writeIssue(config, issue);
-    },
-    async restoreReady(config) {
-      const issue = await readIssue(config);
-      if (!issue.labels.includes("ready")) issue.labels.push("ready");
       await writeIssue(config, issue);
     },
     async close(config) {

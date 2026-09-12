@@ -9,6 +9,7 @@ import { selectCandidates } from "../../adapters/self.mjs";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import {
   completeCycle,
+  isRunStopReason,
   nextCycle,
   persistCycle,
   startCycle,
@@ -30,6 +31,7 @@ const repositoryPolicy: RepositoryAdapter = {
     throw new Error("unused pullRequest");
   },
   requiredChecks: () => ["linux", "windows", "macos"],
+  park: () => "add the `ready` label after acting on the note",
   mergeMethod: () => ({ method: "squash" }),
   afterMerge: () => {},
 };
@@ -148,9 +150,6 @@ function fakeAdapter(observation: IssueObservation): SupervisionAdapter {
     async removeReady() {
       observation.labels = observation.labels.filter((label) => label !== "ready");
     },
-    async restoreReady() {
-      if (!observation.labels.includes("ready")) observation.labels.push("ready");
-    },
     async close() {
       observation.state = "CLOSED";
     },
@@ -268,7 +267,7 @@ it("posts one current-main learning note before selection persistence and keeps 
   expect(observation.labels).toContain("ready");
 });
 
-it("posts one learning note after an interrupted comment and restores ready", async () => {
+it("posts one learning note after an interrupted comment and parks the issue", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-stop-"));
   roots.push(root);
   const config = loop(root);
@@ -291,15 +290,109 @@ it("posts one learning note after an interrupted comment and restores ready", as
   };
 
   await persistCycle(config, cycle);
-  await expect(stopCycle(config, cycle, "synthetic-stop", 2, adapter)).rejects.toThrow(
-    "lost comment receipt",
-  );
-  await stopCycle(config, cycle, "synthetic-stop", 2, adapter);
+  await expect(
+    stopCycle(config, cycle, "synthetic-stop", 2, adapter, repositoryPolicy),
+  ).rejects.toThrow("lost comment receipt");
+  await stopCycle(config, cycle, "synthetic-stop", 2, adapter, repositoryPolicy);
 
   expect(observation.comments).toHaveLength(1);
   expect(observation.comments[0]).toContain("synthetic-stop");
   expect(observation.comments[0]).toContain("2 implementation attempts");
-  expect(observation.labels).toContain("ready");
+  expect(observation.comments[0]).toContain(
+    "To unpark, add the `ready` label after acting on the note.",
+  );
+  expect(observation.labels).not.toContain("ready");
+});
+
+it("parks an item stop and advances selection to a different issue", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-park-next-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: [],
+    comments: [],
+  };
+  const adapter = fakeAdapter(observation);
+  adapter.currentMain = async () => "b".repeat(40);
+  const parked: Array<{ number: number; reason: string }> = [];
+  const candidates = [
+    { key: "ISS-105", number: 362 },
+    { key: "ISS-106", number: 363 },
+  ];
+  const repository: RepositoryAdapter = {
+    ...repositoryPolicy,
+    selectCandidates: () =>
+      candidates.filter(({ number }) => !parked.some((row) => row.number === number)),
+    park: ({ number, reason }) => {
+      parked.push({ number, reason });
+      return "add the `ready` label after acting on the note";
+    },
+  };
+
+  await persistCycle(config, cycle);
+  await expect(
+    stopCycle(config, cycle, "implementation-attempt-ceiling-exhausted", 4, adapter, repository),
+  ).resolves.toBe("item");
+  await expect(nextCycle(config, root, adapter, repository)).resolves.toMatchObject({
+    selection: { cycle: 2, key: "ISS-106", number: 363, base: "b".repeat(40) },
+  });
+  expect(parked).toEqual([{ number: 362, reason: "implementation-attempt-ceiling-exhausted" }]);
+  expect(observation.comments[0]).toContain(
+    "apply the final blocking findings before unparking the issue",
+  );
+  expect(observation.comments[0]).not.toContain("restart");
+  expect(observation.comments[0]).not.toContain("\n");
+});
+
+it("classifies a run stop for exit without parking the issue", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-run-stop-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: [],
+    comments: [],
+  };
+  let parks = 0;
+  const repository: RepositoryAdapter = {
+    ...repositoryPolicy,
+    park: () => {
+      parks += 1;
+      return "unpark fixture";
+    },
+  };
+
+  await persistCycle(config, cycle);
+  await expect(
+    stopCycle(
+      config,
+      cycle,
+      "native-launch-ceiling-exhausted",
+      2,
+      fakeAdapter(observation),
+      repository,
+    ),
+  ).resolves.toBe("run");
+  expect(
+    [
+      "current-main-unavailable",
+      "issue-observation-unavailable",
+      "native-launch-ceiling-exhausted",
+      "malformed-supervision-record:cycle-1-selected",
+      "queue-internal-error",
+    ].every(isRunStopReason),
+  ).toBe(true);
+  expect(isRunStopReason("implementation-attempt-ceiling-exhausted")).toBe(false);
+  expect(parks).toBe(0);
+  expect(observation.comments[0]).not.toContain("To unpark");
+  await expect(nextCycle(config, root, fakeAdapter(observation), repository)).resolves.toEqual(
+    cycle,
+  );
 });
 
 it("uses the generic fallback with the evidence directory and verbatim reason", async () => {
@@ -320,6 +413,7 @@ it("uses the generic fallback with the evidence directory and verbatim reason", 
     "synthetic-unmapped-reason",
     1,
     fakeAdapter(observation),
+    repositoryPolicy,
     "provider refused the observation",
   );
   expect(observation.comments[0]).toContain("synthetic-unmapped-reason");
@@ -345,7 +439,7 @@ it("gives the three prescribed stops exact actions without forbidden advice", as
     "issue-observation-unavailable",
     "selected-base-unavailable",
   ])
-    await stopCycle(config, cycle, reason, 1, adapter);
+    await stopCycle(config, cycle, reason, 1, adapter, repositoryPolicy);
 
   const [completed, unavailable, selectedBase] = observation.comments;
   expect(completed).toContain("if the PR merged, close the issue by hand and restart");
