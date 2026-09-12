@@ -445,9 +445,18 @@ it("derives and prepares a repository cycle without modifying the controller rep
   const controllerWorktrees = (
     await execute(gitExecutable, ["-C", controller, "worktree", "list", "--porcelain"])
   ).stdout;
-  expect(repositoryWorktrees).toContain(setup.sourceWorktree);
-  expect(repositoryWorktrees).toContain(setup.reviewWorktree);
-  expect(controllerWorktrees).not.toContain(setup.sourceWorktree);
+  const comparablePath = (path: string) => {
+    const absolute = resolve(path);
+    return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+  };
+  const worktreePaths = (output: string) =>
+    output
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => comparablePath(line.slice(9)));
+  expect(worktreePaths(repositoryWorktrees)).toContain(comparablePath(setup.sourceWorktree));
+  expect(worktreePaths(repositoryWorktrees)).toContain(comparablePath(setup.reviewWorktree));
+  expect(worktreePaths(controllerWorktrees)).not.toContain(comparablePath(setup.sourceWorktree));
   expect(await execute(gitExecutable, ["-C", controller, "status", "--porcelain"])).toMatchObject({
     stdout: "",
   });

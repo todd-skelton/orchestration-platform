@@ -1253,9 +1253,16 @@ it("verifies and cleans repository worktrees while leaving a separate controller
   expect(await controllerGit(["worktree", "list", "--porcelain"])).toBe(controllerWorktrees);
   expect(await controllerGit(["rev-parse", "HEAD"])).toBe(controllerRevision);
   expect(await controllerGit(["status", "--porcelain"])).toBe("");
-  expect(await git(["worktree", "list", "--porcelain"], repositoryRoot)).not.toContain(
-    current.worktree,
-  );
+  const comparablePath = (value: string) => {
+    const path = resolve(value);
+    return process.platform === "win32" ? path.toLowerCase() : path;
+  };
+  const repositoryWorktrees = (await git(["worktree", "list", "--porcelain"], repositoryRoot))
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => comparablePath(line.slice(9)));
+  expect(repositoryWorktrees).not.toContain(comparablePath(current.worktree));
+  expect(repositoryWorktrees).not.toContain(comparablePath(current.reviewWorktree));
 }, 30_000);
 
 it("keeps repository identities and mirror rules in the explicit private policy adapter", async () => {
