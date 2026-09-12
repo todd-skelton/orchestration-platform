@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { readFile, realpath } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
 import {
@@ -12,7 +13,6 @@ import {
 } from "./queue.ts";
 import {
   completeCycle,
-  isRunStopReason,
   nextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -32,7 +32,8 @@ let supervisor;
 
 function blocked(error, lifecycleReason) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
-  process.stderr.write(
+  writeFileSync(
+    process.stderr.fd,
     `${JSON.stringify({
       status: "blocked",
       reason,
@@ -84,8 +85,8 @@ try {
           process.stdout.write(`${JSON.stringify({ status: "idle", run: loop.run })}\n`);
           break;
         }
-        validatedExecutor = await validateLoopExecutor(loop, executingRoot);
         await persistCycle(loop, active);
+        validatedExecutor = await validateLoopExecutor(loop, executingRoot);
         const pending = await reconcilePendingStop(loop, active, supervisor, repositoryAdapter);
         if (pending?.scope === "run") {
           blocked(new QueueBlocked(pending.reason));
@@ -130,14 +131,15 @@ try {
       validatedExecutor = undefined;
     } catch (error) {
       const outcome = await stop(error);
-      if (outcome.lifecycleReason || isRunStopReason(outcome.reason)) {
-        blocked(error, outcome.lifecycleReason);
-        break;
+      if (outcome.scope === "item") {
+        active = undefined;
+        config = undefined;
+        queueAdapter = undefined;
+        validatedExecutor = undefined;
+        continue;
       }
-      active = undefined;
-      config = undefined;
-      queueAdapter = undefined;
-      validatedExecutor = undefined;
+      blocked(error, outcome.lifecycleReason);
+      break;
     }
   }
 } catch (error) {

@@ -41,13 +41,20 @@ export interface SupervisionAdapter {
   comment(config: LoopConfig, number: number, body: string): Promise<void>;
 }
 
-export function isRunStopReason(reason: string) {
+export function isItemStopReason(reason: string) {
   return (
-    reason === "current-main-unavailable" ||
-    reason === "issue-observation-unavailable" ||
-    reason === "native-launch-ceiling-exhausted" ||
-    reason.startsWith("malformed-supervision-record:") ||
-    reason === "queue-internal-error"
+    [
+      "implementation-attempt-ceiling-exhausted",
+      "reviewer-malformed",
+      "exit-receipt-timeout",
+      "launcher-failed",
+      "rebase-conflict",
+      "deploy-not-verified",
+      "source-finding-location-outside-candidate",
+    ].includes(reason) ||
+    reason.startsWith("gate-retry-exhausted:") ||
+    reason.startsWith("hosted-check-failed:") ||
+    reason.startsWith("hosted-check-log-unavailable:")
   );
 }
 
@@ -106,7 +113,7 @@ async function completedItemStop(directory: string, cycle: number, selection: Se
       !Array.isArray(completed.history)
     )
       throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-stop-${stop}-complete`);
-    if (!isRunStopReason(intent.reason)) return completed.history as QueueParticipant[];
+    if (isItemStopReason(intent.reason)) return completed.history as QueueParticipant[];
   }
 }
 
@@ -276,8 +283,9 @@ function stopMessage(
   reason: string,
   attempts: number,
   diagnostics?: string,
+  markerSuffix = "",
 ) {
-  const marker = `loop-stop:${config.run}:${selection.cycle}:${stop}`;
+  const marker = `loop-stop:${config.run}:${selection.cycle}:${stop}${markerSuffix}`;
   const runState = resolve(config.stateRoot, config.run);
   const evidence = runState;
   const context = {
@@ -372,16 +380,35 @@ export async function stopCycle(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
   validateHistory(intent.history, config.nativeLaunchCeiling);
-  const scope = isRunStopReason(intent.reason) ? "run" : "item";
+  const scope = isItemStopReason(intent.reason) ? "item" : "run";
 
-  const unpark =
-    scope === "item"
-      ? await repositoryAdapter.park({
-          repository: config.repository,
-          number: cycle.selection.number,
-          reason: intent.reason,
-        })
-      : undefined;
+  let unpark: string | undefined;
+  if (scope === "item") {
+    try {
+      unpark = await repositoryAdapter.park({
+        repository: config.repository,
+        number: cycle.selection.number,
+        reason: intent.reason,
+      });
+    } catch (error) {
+      if (!(error instanceof QueueBlocked)) throw error;
+      await postLearningNote(
+        config,
+        cycle.selection,
+        stopMessage(
+          config,
+          cycle.selection,
+          stop,
+          error.reason,
+          intent.attempts,
+          error.diagnostics,
+          ":park",
+        ),
+        adapter,
+      );
+      throw error;
+    }
+  }
   await postLearningNote(
     config,
     cycle.selection,

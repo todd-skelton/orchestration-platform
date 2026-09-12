@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -152,6 +152,15 @@ it("loads the named self adapter with the complete repository seam", async () =>
     "afterMerge",
     "mirrorPlanning",
   ] as const)
+    expect(loaded[name]).toBeTypeOf("function");
+  for (const name of [
+    "pullRequest",
+    "requiredChecks",
+    "localGates",
+    "mergeMethod",
+    "afterMerge",
+    "mirrorPlanning",
+  ] as const)
     expect(loaded[name]).toBe(self[name]);
 
   expect(self.branchName({ key: "ISS-107", number: 364, title: "fixture", attempt: 1 })).toBe(
@@ -184,6 +193,40 @@ it("loads the named self adapter with the complete repository seam", async () =>
       /# The loop[\s\S]*Keep the loop smaller: prefer deleting to adding\.\n$/,
     ),
   });
+});
+
+it("preserves typed reasons from queue-facing adapter calls", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "repository-adapter-reasons-"));
+  const adapters = resolve(root, "adapters");
+  await mkdir(adapters);
+  await writeFile(
+    resolve(adapters, "fixture.mjs"),
+    `export const selectCandidates=()=>{throw {reason:"selection-unavailable"}};
+export const issueContext=()=>{throw {reason:"context-unavailable"}};
+export const branchName=()=>{throw {reason:"branch-unavailable"}};
+export const pullRequest=()=>({});
+export const requiredChecks=()=>[];
+export const park=()=>{throw {reason:"park-unavailable"}};
+export const mergeMethod=()=>({});
+export const afterMerge=()=>{};\n`,
+  );
+  try {
+    const loaded = await loadRepositoryAdapter("fixture", root);
+    await expect(loaded.selectCandidates({ repository, executorRoot: root })).rejects.toMatchObject(
+      { reason: "selection-unavailable" },
+    );
+    await expect(
+      loaded.issueContext({ repository, key: "ISS-001", number: 1, executorRoot: root }),
+    ).rejects.toMatchObject({ reason: "context-unavailable" });
+    await expect(
+      loaded.branchName({ key: "ISS-001", number: 1, title: "fixture", attempt: 1 }),
+    ).rejects.toMatchObject({ reason: "branch-unavailable" });
+    await expect(loaded.park({ repository, number: 1, reason: "fixture" })).rejects.toMatchObject({
+      reason: "park-unavailable",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it.skipIf(process.platform === "win32")("parks self work by removing ready", async () => {

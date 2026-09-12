@@ -1,18 +1,20 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptions } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
 import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
 import { selectCandidates } from "../../adapters/self.mjs";
-import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
+import {
+  loadRepositoryAdapter,
+  type RepositoryAdapter,
+} from "../../scripts/dogfood/repository-adapter.js";
 import {
   completeCycle,
-  isRunStopReason,
+  isItemStopReason,
   nextCycle,
   persistCycle,
   startCycle,
@@ -24,7 +26,13 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
-const execute = promisify(execFile);
+const execute = (file: string, args: string[], options: ExecFileOptions) =>
+  new Promise<void>((resolvePromise, reject) => {
+    execFile(file, args, { ...options, encoding: "utf8" }, (error, _stdout, stderr) => {
+      if (error) reject({ code: error.code, stderr });
+      else resolvePromise();
+    });
+  });
 const supervisorCommand = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
 const supervisorHook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");
 const repositoryPolicy: RepositoryAdapter = {
@@ -273,7 +281,7 @@ it("posts one current-main learning note before selection persistence and keeps 
   expect(observation.labels).toContain("ready");
 });
 
-it("posts one learning note after an interrupted comment and parks the issue", async () => {
+it("posts one learning note after an interrupted comment and parks an item stop", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-stop-"));
   roots.push(root);
   const config = loop(root);
@@ -297,12 +305,12 @@ it("posts one learning note after an interrupted comment and parks the issue", a
 
   await persistCycle(config, cycle);
   await expect(
-    stopCycle(config, cycle, "synthetic-stop", 2, adapter, repositoryPolicy),
+    stopCycle(config, cycle, "launcher-failed", 2, adapter, repositoryPolicy),
   ).rejects.toThrow("lost comment receipt");
-  await stopCycle(config, cycle, "synthetic-stop", 2, adapter, repositoryPolicy);
+  await stopCycle(config, cycle, "launcher-failed", 2, adapter, repositoryPolicy);
 
   expect(observation.comments).toHaveLength(1);
-  expect(observation.comments[0]).toContain("synthetic-stop");
+  expect(observation.comments[0]).toContain("launcher-failed");
   expect(observation.comments[0]).toContain("2 implementation attempts");
   expect(observation.comments[0]).toContain(
     "To unpark, add the `ready` label after acting on the note.",
@@ -353,7 +361,7 @@ it("parks an item stop and advances selection to a different issue", async () =>
   expect(observation.comments[0]).not.toContain("\n");
 });
 
-it("classifies a run stop for exit without parking the issue", async () => {
+it("parks only the explicit item stop reasons", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-run-stop-"));
   roots.push(root);
   const config = loop(root);
@@ -386,14 +394,20 @@ it("classifies a run stop for exit without parking the issue", async () => {
   ).resolves.toBe("run");
   expect(
     [
-      "current-main-unavailable",
-      "issue-observation-unavailable",
-      "native-launch-ceiling-exhausted",
-      "malformed-supervision-record:cycle-1-selected",
-      "queue-internal-error",
-    ].every(isRunStopReason),
+      "implementation-attempt-ceiling-exhausted",
+      "gate-retry-exhausted:typecheck",
+      "reviewer-malformed",
+      "exit-receipt-timeout",
+      "launcher-failed",
+      "rebase-conflict",
+      "hosted-check-failed:linux",
+      "hosted-check-log-unavailable:windows",
+      "deploy-not-verified",
+      "source-finding-location-outside-candidate",
+    ].every(isItemStopReason),
   ).toBe(true);
-  expect(isRunStopReason("implementation-attempt-ceiling-exhausted")).toBe(false);
+  expect(isItemStopReason("native-launch-ceiling-exhausted")).toBe(false);
+  expect(isItemStopReason("unstable-executor")).toBe(false);
   expect(parks).toBe(0);
   expect(observation.comments[0]).not.toContain("To unpark");
   await expect(nextCycle(config, root, fakeAdapter(observation), repository)).resolves.toEqual(
@@ -401,8 +415,64 @@ it("classifies a run stop for exit without parking the issue", async () => {
   );
 });
 
-it("exits the supervisor command on a run stop without parking the issue", async () => {
+it("exits on an environmental stop without parking or selecting again", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-command-run-stop-"));
+  roots.push(root);
+  const config = loop(root);
+  const runState = resolve(config.stateRoot, config.run);
+  const fixtureState = resolve(root, "fixture-state");
+  const request = resolve(root, "loop.json");
+  const controlsPath = resolve(fixtureState, "command-controls.json");
+  const issuePath = resolve(fixtureState, "command-issue.json");
+  await mkdir(fixtureState, { recursive: true });
+  await Promise.all([
+    writeFile(request, `${JSON.stringify(config)}\n`),
+    writeFile(
+      controlsPath,
+      `${JSON.stringify({
+        main: "a".repeat(40),
+        validationStopReason: "controller-executor-mismatch",
+        parkCalls: 0,
+      })}\n`,
+    ),
+    writeFile(
+      issuePath,
+      `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
+    ),
+  ]);
+
+  let failure: { code?: number | string; stderr?: string } | undefined;
+  try {
+    await execute(
+      process.execPath,
+      ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
+      {
+        env: { ...process.env, SUPERVISE_FIXTURE_STATE: fixtureState },
+        timeout: 10_000,
+        windowsHide: true,
+      },
+    );
+  } catch (error) {
+    failure = error as { code?: number | string; stderr?: string };
+  }
+
+  expect(failure).toMatchObject({ code: 1 });
+  expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({
+    parkCalls: 0,
+    selectCalls: 1,
+  });
+  const issue = JSON.parse(await readFile(issuePath, "utf8"));
+  expect(issue.comments).toHaveLength(1);
+  expect(issue.comments[0]).toContain("controller-executor-mismatch");
+  expect(issue.comments[0]).not.toContain("To unpark");
+  expect(failure?.stderr).toContain('"reason":"controller-executor-mismatch"');
+  await expect(
+    readFile(resolve(runState, "cycle-1-stop-1-complete.json"), "utf8"),
+  ).resolves.toEqual(expect.any(String));
+});
+
+it("exits after one selection when a stop happens before a cycle is active", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-stop-"));
   roots.push(root);
   const config = loop(root);
   const runState = resolve(config.stateRoot, config.run);
@@ -414,7 +484,7 @@ it("exits the supervisor command on a run stop without parking the issue", async
     writeFile(request, `${JSON.stringify(config)}\n`),
     writeFile(
       controlsPath,
-      `${JSON.stringify({ main: "a".repeat(40), stopReason: "native-launch-ceiling-exhausted", parkCalls: 0 })}\n`,
+      `${JSON.stringify({ selectionReason: "malformed-repository-candidates", selectCalls: 0 })}\n`,
     ),
     writeFile(
       issuePath,
@@ -438,11 +508,66 @@ it("exits the supervisor command on a run stop without parking the issue", async
   }
 
   expect(failure).toMatchObject({ code: 1 });
-  expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({ parkCalls: 0 });
-  const issue = JSON.parse(await readFile(issuePath, "utf8"));
-  expect(issue.comments).toHaveLength(1);
-  expect(issue.comments[0]).toContain("native-launch-ceiling-exhausted");
-  expect(issue.comments[0]).not.toContain("To unpark");
+  expect(failure?.stderr).toContain('"reason":"malformed-repository-candidates"');
+  expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({ selectCalls: 1 });
+  expect(JSON.parse(await readFile(issuePath, "utf8")).comments).toEqual([]);
+});
+
+it("preserves adapter reasons in stop notes", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-adapter-reason-"));
+  roots.push(root);
+  const adapterRoot = resolve(root, "adapter-root");
+  await mkdir(resolve(adapterRoot, "adapters"), { recursive: true });
+  await writeFile(
+    resolve(adapterRoot, "adapters", "fixture.mjs"),
+    `export const selectCandidates=()=>[];
+export const issueContext=()=>{throw {reason:"missing-fixture-delivery-skill"}};
+export const branchName=()=>"fixture";
+export const pullRequest=()=>({});
+export const requiredChecks=()=>[];
+export const park=()=>{throw {reason:"fixture-park-unavailable"}};
+export const mergeMethod=()=>({});
+export const afterMerge=()=>{};\n`,
+  );
+  const repository = await loadRepositoryAdapter("fixture", adapterRoot);
+  const config = loop(root);
+  const cycle = selected();
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: [],
+    comments: [],
+  };
+  await persistCycle(config, cycle);
+
+  let reason = "queue-internal-error";
+  try {
+    await repository.issueContext({
+      repository: config.repository,
+      key: cycle.selection.key,
+      number: cycle.selection.number,
+      executorRoot: root,
+    });
+  } catch (error) {
+    if (error instanceof QueueBlocked) reason = error.reason;
+  }
+  await expect(
+    stopCycle(config, cycle, reason, 0, fakeAdapter(observation), repository),
+  ).resolves.toBe("run");
+  expect(observation.comments[0]).toContain("missing-fixture-delivery-skill");
+  expect(observation.comments[0]).not.toContain("queue-internal-error");
+  await expect(
+    stopCycle(
+      config,
+      cycle,
+      "implementation-attempt-ceiling-exhausted",
+      1,
+      fakeAdapter(observation),
+      repository,
+    ),
+  ).rejects.toMatchObject({ reason: "fixture-park-unavailable" });
+  expect(observation.comments[1]).toContain("fixture-park-unavailable");
+  expect(observation.comments[1]).not.toContain("To unpark");
 });
 
 it("uses the generic fallback with the evidence directory and verbatim reason", async () => {

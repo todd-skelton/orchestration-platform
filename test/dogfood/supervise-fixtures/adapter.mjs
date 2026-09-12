@@ -11,7 +11,6 @@ export {
 export { QueueBlocked };
 export {
   completeCycle,
-  isRunStopReason,
   nextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -24,6 +23,11 @@ export async function validateLoopExecutor(loop, executingRoot) {
     mkdir(loop.stateRoot, { recursive: true }),
     mkdir(loop.worktreeRoot, { recursive: true }),
   ]);
+  const controls = await readJson(
+    resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
+    {},
+  );
+  if (controls.validationStopReason) throw new QueueBlocked(controls.validationStopReason);
   return {
     executor: executingRoot,
     stateRoot: loop.stateRoot,
@@ -35,9 +39,15 @@ export async function validateLoopExecutor(loop, executingRoot) {
 export async function loadRepositoryAdapter() {
   return {
     selectCandidates: async () => {
-      const issue = await readJson(
-        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json"),
-      );
+      const directory = process.env.SUPERVISE_FIXTURE_STATE;
+      const controlsPath = resolve(directory, "command-controls.json");
+      const [issue, controls] = await Promise.all([
+        readJson(resolve(directory, "command-issue.json")),
+        readJson(controlsPath, {}),
+      ]);
+      controls.selectCalls = (controls.selectCalls ?? 0) + 1;
+      await writeFile(controlsPath, `${JSON.stringify(controls)}\n`);
+      if (controls.selectionReason) throw new QueueBlocked(controls.selectionReason);
       return issue.state === "OPEN" ? [{ key: "ISS-105", number: 362 }] : [];
     },
     issueContext: () => ({
@@ -147,14 +157,14 @@ export async function queueConfigFromLoop(
 }
 
 export function repositorySupervisionAdapter() {
-  const issuePath = (config) => resolve(config.stateRoot, config.run, "command-issue.json");
+  const issuePath = () => resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json");
   const readIssue = async (config) => readJson(issuePath(config));
   const writeIssue = async (config, issue) =>
     writeFile(issuePath(config), `${JSON.stringify(issue)}\n`);
   return {
     async currentMain(config) {
       const controls = await readJson(
-        resolve(config.stateRoot, config.run, "command-controls.json"),
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
         {},
       );
       return controls.main ?? "a".repeat(40);
