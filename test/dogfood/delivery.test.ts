@@ -91,7 +91,8 @@ async function fixture() {
     merged: false,
     cleanup: "present" as "present" | "partial" | "complete",
     publicationOutcome: "confirmed" as "confirmed" | "unknown",
-    checks: "pass" as "pass" | "empty" | "pending" | "duplicate" | "missing" | "skipping",
+    checks: "pass" as
+      "pass" | "empty" | "pending" | "duplicate" | "missing" | "skipping" | "fail" | "cancel",
   };
   const adapter: DeliveryAdapter = {
     publicationUrl(_config, number) {
@@ -150,14 +151,18 @@ async function fixture() {
       if (state.checks === "empty") return { head, checks: [] };
       const values = config.requiredChecks.map((name) => ({
         name,
-        bucket: (state.checks === "pending" && name === "macos" ? "pending" : "pass") as
-          "pass" | "pending",
-        link: `https://example.test/check/${name}`,
+        bucket: (["pending", "fail", "cancel"].includes(state.checks) && name === "macos"
+          ? state.checks
+          : "pass") as "pass" | "pending" | "fail" | "cancel",
+        link: `https://github.com/fixture/repository/actions/runs/123/job/${name}`,
       }));
       if (state.checks === "duplicate") values.push({ ...values[0]! });
       if (state.checks === "missing") values.pop();
       if (state.checks === "skipping") values[0]!.bucket = "skipping" as never;
       return { head, checks: values };
+    },
+    async failedCheckLog() {
+      throw new Error("unexpected failed check log");
     },
     async observeMerge() {
       calls.push("observe-merge");
@@ -316,6 +321,40 @@ it.each([
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
   expect(f.calls).not.toContain("merge");
 });
+
+it.each(["fail", "cancel"] as const)(
+  "returns a repair finding with the bounded failed run log for a %s check",
+  async (bucket) => {
+    const f = await fixture();
+    f.state.checks = bucket;
+    const output = `discarded-${"x".repeat(200)}${"useful-log".repeat(500)}`;
+    const provider = githubDeliveryAdapter({
+      async gh(_config, args) {
+        expect(args).toEqual(["run", "view", "123", "--log-failed"]);
+        return output;
+      },
+      async ghJson() {
+        throw new Error("unexpected JSON request");
+      },
+    });
+    f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
+
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toEqual({
+      status: "failed",
+      head,
+      reviewId: "review-fixture",
+      findings: [
+        {
+          file: "macos",
+          line: 1,
+          severity: "blocking",
+          text: output.slice(-4_000),
+        },
+      ],
+    });
+    expect(f.calls).not.toContain("merge");
+  },
+);
 
 it("invalidates readiness when hosted observation moves from the reviewed head", async () => {
   const f = await fixture();
@@ -512,7 +551,7 @@ it("does not double merge after a lost provider response", async () => {
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
 });
 
-it("observes an enqueued merge across polls and stops if the queue removes it", async () => {
+it("returns a repair finding when the merge queue removes an enqueued pull request", async () => {
   const f = await fixture();
   f.plan.mergePolicy = { method: "queue" };
   f.publication.planDigest = digest(f.plan);
@@ -525,7 +564,7 @@ it("observes an enqueued merge across polls and stops if the queue removes it", 
         }
       : queued
         ? { state: "pending" }
-        : { state: "needs-mutation" };
+        : { state: "needs-mutation", detail: "absent" };
   f.adapter.merge = async () => {
     f.calls.push("merge");
     queued = true;
@@ -536,7 +575,12 @@ it("observes an enqueued merge across polls and stops if the queue removes it", 
   });
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
   queued = false;
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow("merge-queue-removed");
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toEqual({
+    status: "failed",
+    head,
+    reviewId: "review-fixture",
+    findings: [{ file: "merge-queue", line: 1, severity: "blocking", text: "absent" }],
+  });
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
 });
 

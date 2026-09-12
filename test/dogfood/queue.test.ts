@@ -527,7 +527,7 @@ it("counts a genuine repair as the next candidate without a new counter", async 
   await expect(currentCandidateAttempt(current.config)).resolves.toBe(3);
 });
 
-it("starts candidate three at the rejected candidate two with its prescription verbatim", async () => {
+it("starts candidate three at the rejected head rebased onto current origin/main", async () => {
   const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();
   await execute(gitExecutable, ["-C", repository, "checkout", "-b", "rejected"]);
   await writeFile(resolve(repository, "rejected.txt"), "candidate two\n");
@@ -537,6 +537,20 @@ it("starts candidate three at the rejected candidate two with its prescription v
     await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
   ).stdout.trim();
   await execute(gitExecutable, ["-C", repository, "checkout", "main"]);
+  const remote = resolve(repository, "..", "remote.git");
+  const updater = resolve(repository, "..", "updater");
+  await execute(gitExecutable, ["clone", "--bare", repository, remote]);
+  await execute(gitExecutable, ["-C", repository, "remote", "add", "origin", remote]);
+  await execute(gitExecutable, ["clone", remote, updater]);
+  await execute(gitExecutable, ["-C", updater, "config", "user.name", "Fixture"]);
+  await execute(gitExecutable, ["-C", updater, "config", "user.email", "fixture@example.test"]);
+  await writeFile(resolve(updater, "main.txt"), "new main\n");
+  await execute(gitExecutable, ["-C", updater, "add", "."]);
+  await execute(gitExecutable, ["-C", updater, "commit", "-m", "advance main"]);
+  await execute(gitExecutable, ["-C", updater, "push", "origin", "main"]);
+  const currentMain = (
+    await execute(gitExecutable, ["-C", updater, "rev-parse", "HEAD"])
+  ).stdout.trim();
   const main = (
     await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
   ).stdout.trim();
@@ -577,19 +591,97 @@ it("starts candidate three at the rejected candidate two with its prescription v
     })}\n`,
   );
   const third = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+  const rebasedBase = third.items[0]!.base;
   expect(third.items[0]).toMatchObject({
     id: "ISS-104:3",
-    base: rejectedHead,
+    base: rebasedBase,
     implementationAttempt: 3,
-    source: { base: rejectedHead },
-    setup: { base: rejectedHead },
+    source: { base: rebasedBase },
+    setup: { base: rebasedBase },
   });
+  expect(rebasedBase).not.toBe(rejectedHead);
+  await expect(
+    execute(gitExecutable, [
+      "-C",
+      repository,
+      "merge-base",
+      "--is-ancestor",
+      currentMain,
+      rebasedBase,
+    ]),
+  ).resolves.toMatchObject({ stdout: "" });
+  await expect(
+    execute(gitExecutable, ["-C", repository, "show", `${rebasedBase}:rejected.txt`]),
+  ).resolves.toMatchObject({ stdout: "candidate two\n" });
+  await expect(
+    readFile(resolve(queueState, "attempt.json"), "utf8").then(JSON.parse),
+  ).resolves.toMatchObject({ head: rejectedHead, rebasedBase });
   expect(third.initialHistory).toEqual(firstHistory);
   expect(third.stateDirectory).toContain("iss-104-attempt-3");
+  expect(third.items[0]!.source.author.prompt).toContain(rejectedHead);
   expect(third.items[0]!.source.author.prompt).toContain(JSON.stringify(prescribed));
   await expect(
     gitSetupAdapter({ gitExecutable }).assertExecutor(third.items[0]!.setup, repository),
   ).resolves.toBeUndefined();
+}, 15_000);
+
+it("stops with rebase-conflict before launching the next author", async () => {
+  const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();
+  const remote = resolve(repository, "..", "remote.git");
+  const updater = resolve(repository, "..", "updater");
+  await execute(gitExecutable, ["clone", "--bare", repository, remote]);
+  await execute(gitExecutable, ["-C", repository, "remote", "add", "origin", remote]);
+
+  await execute(gitExecutable, ["-C", repository, "checkout", "-b", "rejected"]);
+  await writeFile(resolve(repository, "docs/loop.md"), "# The rejected loop\n");
+  await execute(gitExecutable, ["-C", repository, "add", "."]);
+  await execute(gitExecutable, ["-C", repository, "commit", "-m", "rejected change"]);
+  const rejectedHead = (
+    await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
+  ).stdout.trim();
+  await execute(gitExecutable, ["-C", repository, "checkout", "main"]);
+
+  await execute(gitExecutable, ["clone", remote, updater]);
+  await execute(gitExecutable, ["-C", updater, "config", "user.name", "Fixture"]);
+  await execute(gitExecutable, ["-C", updater, "config", "user.email", "fixture@example.test"]);
+  await writeFile(resolve(updater, "docs/loop.md"), "# The current loop\n");
+  await execute(gitExecutable, ["-C", updater, "add", "."]);
+  await execute(gitExecutable, ["-C", updater, "commit", "-m", "current main change"]);
+  await execute(gitExecutable, ["-C", updater, "push", "origin", "main"]);
+
+  const history = [
+    participant(1, "ISS-104:1", "source", "author", "passed"),
+    participant(2, "ISS-104:1", "source", "reviewer", "failed"),
+  ];
+  const queueState = resolve(stateRoot, loop.run, "iss-104-attempt-1");
+  await mkdir(queueState, { recursive: true });
+  await writeFile(
+    resolve(queueState, "attempt.json"),
+    `${JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      phase: "failed",
+      run: loop.run,
+      index: 0,
+      item: "ISS-104:1",
+      issue: "https://github.com/fixture/repository/issues/361",
+      base: selected.base,
+      candidateAttempt: 1,
+      head: rejectedHead,
+      reviewId: history[1]!.id,
+      findings: [{ file: "linux", line: 1, severity: "blocking", text: "fix the hosted failure" }],
+      history,
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
+    })}\n`,
+  );
+
+  await expect(queueConfigFromLoop(loop, repository, selected, repositoryPolicy)).rejects.toThrow(
+    "rebase-conflict",
+  );
+  await expect(
+    readFile(resolve(queueState, "attempt.json"), "utf8").then(JSON.parse),
+  ).resolves.not.toHaveProperty("rebasedBase");
 }, 15_000);
 
 it("advances every finite item and completed restart repeats no effects", async () => {

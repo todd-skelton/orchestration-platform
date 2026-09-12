@@ -279,6 +279,7 @@ interface FailedAttemptReceipt {
   retries: number;
   acceptedStage: null;
   stateDirectory: null;
+  rebasedBase?: string;
 }
 
 function validateFailedAttempt(
@@ -303,6 +304,7 @@ function validateFailedAttempt(
       "retries",
       "acceptedStage",
       "stateDirectory",
+      ...(object(value) && Object.hasOwn(value, "rebasedBase") ? ["rebasedBase"] : []),
     ]) &&
       value.schemaVersion === "dogfood-bounded-queue-attempt/v1" &&
       value.phase === "failed" &&
@@ -317,7 +319,21 @@ function validateFailedAttempt(
       Number.isSafeInteger(value.retries) &&
       value.retries >= 0 &&
       value.acceptedStage === null &&
-      value.stateDirectory === null,
+      value.stateDirectory === null &&
+      (value.rebasedBase === undefined || SHA.test(value.rebasedBase)) &&
+      value.findings.every(
+        (finding: unknown) =>
+          exactKeys(finding, ["file", "line", "severity", "text"]) &&
+          typeof finding.file === "string" &&
+          finding.file.length > 0 &&
+          finding.file.length <= 500 &&
+          Number.isSafeInteger(finding.line) &&
+          finding.line > 0 &&
+          ["blocking", "note"].includes(finding.severity as string) &&
+          typeof finding.text === "string" &&
+          finding.text.length > 0 &&
+          finding.text.length <= 4_000,
+      ),
     "malformed-failed-attempt",
   );
 }
@@ -398,6 +414,13 @@ export async function queueConfigFromLoop(
         maxBuffer: 8 * 1024 * 1024,
       })
     ).stdout.trim();
+  const gitAt = async (cwd: string, args: string[]) =>
+    (
+      await exec(config.gitExecutable, ["-C", cwd, ...args], {
+        windowsHide: true,
+        maxBuffer: 8 * 1024 * 1024,
+      })
+    ).stdout.trim();
   const [selectedBase, issueContext] = await Promise.all([
     git(["rev-parse", "--verify", `${selected.base}^{commit}`]),
     repositoryAdapter.issueContext({
@@ -432,6 +455,8 @@ export async function queueConfigFromLoop(
   let attemptBase = selected.base;
   let initialHistory: QueueParticipant[] = [...priorHistory];
   let prescribedFindings: ReviewFinding[] | undefined;
+  let rejectedHead: string | undefined;
+  let pendingRebase: { directory: string; slug: string; attempt: FailedAttemptReceipt } | undefined;
   for (;;) {
     const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
     const priorQueue = resolve(runState, priorSlug);
@@ -443,9 +468,49 @@ export async function queueConfigFromLoop(
       "implementation-attempt-ceiling-exhausted",
     );
     sourceAttempt = attempt.candidateAttempt + 1;
-    attemptBase = attempt.head;
+    rejectedHead = attempt.head;
+    attemptBase = attempt.rebasedBase ?? attempt.head;
+    pendingRebase = attempt.rebasedBase
+      ? undefined
+      : { directory: priorQueue, slug: priorSlug, attempt };
     initialHistory = attempt.history;
     prescribedFindings = attempt.findings;
+  }
+  if (pendingRebase) {
+    let currentMain: string;
+    try {
+      const main = "refs/remotes/origin/main";
+      await git(["fetch", "--no-tags", "origin", `refs/heads/main:${main}`]);
+      currentMain = await git(["rev-parse", "--verify", `${main}^{commit}`]);
+      demand(SHA.test(currentMain), "current-main-unavailable");
+    } catch {
+      throw new QueueBlocked("current-main-unavailable");
+    }
+    const rebaseWorktree = resolve(worktreeRoot, `${pendingRebase.slug}-rebase-${process.pid}`);
+    let added = false;
+    try {
+      await git(["worktree", "add", "--detach", rebaseWorktree, pendingRebase.attempt.head]);
+      added = true;
+      try {
+        await gitAt(rebaseWorktree, ["rebase", currentMain]);
+      } catch {
+        try {
+          await gitAt(rebaseWorktree, ["rebase", "--abort"]);
+        } catch {}
+        throw new QueueBlocked("rebase-conflict");
+      }
+      attemptBase = await gitAt(rebaseWorktree, ["rev-parse", "HEAD"]);
+      demand(SHA.test(attemptBase), "rebase-conflict");
+    } finally {
+      if (added)
+        try {
+          await git(["worktree", "remove", "--force", rebaseWorktree]);
+        } catch {}
+    }
+    await record(pendingRebase.directory, "attempt", {
+      ...pendingRebase.attempt,
+      rebasedBase: attemptBase,
+    });
   }
   const slug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {
@@ -476,7 +541,7 @@ export async function queueConfigFromLoop(
       : Promise.resolve(undefined),
   ]);
   const sourcePrompt = prescribedFindings
-    ? `${baseSourcePrompt}\n\nStart from rejected candidate ${attemptBase}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
+    ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
     : baseSourcePrompt;
   const setup: SetupConfig = {
     controller,
@@ -1991,10 +2056,9 @@ export function repositoryQueueAdapter(
       try {
         await assertExecutor(delivery, executingRoot, gitExecutable);
         const result = await deliveryStep(delivery, inlineDelivery, deliveryPolicy);
-        demand(
-          result.reviewId === accepted.reviewId && result.retries >= (accepted.retries ?? 0),
-          "delivery-source-drift",
-        );
+        demand(result.reviewId === accepted.reviewId, "delivery-source-drift");
+        if (result.status === "failed") return result;
+        demand(result.retries >= (accepted.retries ?? 0), "delivery-source-drift");
         if (result.status === "observing-hosted-checks")
           return {
             status: result.status,
