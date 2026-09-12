@@ -113,7 +113,6 @@ export function launchArguments(
   return [
     "exec",
     "--json",
-    "--ignore-user-config",
     "--ignore-rules",
     "-C",
     role === "author" ? config.worktree : config.reviewWorktree,
@@ -283,13 +282,7 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
       const help = (
         await exec(config.adapter.executable, ["exec", "--help"], { windowsHide: true })
       ).stdout;
-      for (const flag of [
-        "--json",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--sandbox",
-        "--output-schema",
-      ])
+      for (const flag of ["--json", "--ignore-rules", "--sandbox", "--output-schema"])
         check(help.includes(flag), "incompatible-codex-cli");
     },
     async launch(role, config, prompt) {
