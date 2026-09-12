@@ -32,109 +32,148 @@
       "key": "ISS-101",
       "file": "planning/drafts/ISS-101.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-100"]
+      "blockedBy": [
+        "ISS-100"
+      ]
     },
     {
       "key": "ISS-102",
       "file": "planning/drafts/ISS-102.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-100"]
+      "blockedBy": [
+        "ISS-100"
+      ]
     },
     {
       "key": "ISS-103",
       "file": "planning/drafts/ISS-103.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-101", "ISS-102"]
+      "blockedBy": [
+        "ISS-101",
+        "ISS-102"
+      ]
     },
     {
       "key": "ISS-104",
       "file": "planning/drafts/ISS-104.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-100"]
+      "blockedBy": [
+        "ISS-100"
+      ]
     },
     {
       "key": "ISS-105",
       "file": "planning/drafts/ISS-105.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-104"]
+      "blockedBy": [
+        "ISS-104"
+      ]
     },
     {
       "key": "ISS-106",
       "file": "planning/drafts/ISS-106.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-103", "ISS-105", "ISS-112"]
+      "blockedBy": [
+        "ISS-103",
+        "ISS-105",
+        "ISS-112"
+      ]
     },
     {
       "key": "ISS-107",
       "file": "planning/drafts/ISS-107.md",
       "milestone": "M2",
-      "blockedBy": ["ISS-106"]
+      "blockedBy": [
+        "ISS-106"
+      ]
     },
     {
       "key": "ISS-108",
       "file": "planning/drafts/ISS-108.md",
       "milestone": "M2",
-      "blockedBy": ["ISS-107"]
+      "blockedBy": [
+        "ISS-107"
+      ]
     },
     {
       "key": "ISS-109",
       "file": "planning/drafts/ISS-109.md",
       "milestone": "M2",
-      "blockedBy": ["ISS-107"]
+      "blockedBy": [
+        "ISS-107"
+      ]
     },
     {
       "key": "ISS-110",
       "file": "planning/drafts/ISS-110.md",
       "milestone": "M2",
-      "blockedBy": ["ISS-108"]
+      "blockedBy": [
+        "ISS-124"
+      ]
     },
     {
       "key": "ISS-111",
       "file": "planning/drafts/ISS-111.md",
       "milestone": "M3",
-      "blockedBy": ["ISS-110"]
+      "blockedBy": [
+        "ISS-110"
+      ]
     },
     {
       "key": "ISS-112",
       "file": "planning/drafts/ISS-112.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-101"]
+      "blockedBy": [
+        "ISS-101"
+      ]
     },
     {
       "key": "ISS-113",
       "file": "planning/drafts/ISS-113.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-105"]
+      "blockedBy": [
+        "ISS-105"
+      ]
     },
     {
       "key": "ISS-114",
       "file": "planning/drafts/ISS-114.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-113"]
+      "blockedBy": [
+        "ISS-113"
+      ]
     },
     {
       "key": "ISS-115",
       "file": "planning/drafts/ISS-115.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-114"]
+      "blockedBy": [
+        "ISS-114"
+      ]
     },
     {
       "key": "ISS-116",
       "file": "planning/drafts/ISS-116.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-115"]
+      "blockedBy": [
+        "ISS-115"
+      ]
     },
     {
       "key": "ISS-117",
       "file": "planning/drafts/ISS-117.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-112"]
+      "blockedBy": [
+        "ISS-112"
+      ]
     },
     {
       "key": "ISS-118",
       "file": "planning/drafts/ISS-118.md",
       "milestone": "M1",
-      "blockedBy": ["ISS-105"]
+      "blockedBy": [
+        "ISS-105"
+      ]
     },
     {
       "key": "ISS-119",
@@ -153,6 +192,30 @@
       "file": "planning/drafts/ISS-121.md",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-122",
+      "file": "planning/drafts/ISS-122.md",
+      "milestone": "M2",
+      "blockedBy": [
+        "ISS-108"
+      ]
+    },
+    {
+      "key": "ISS-123",
+      "file": "planning/drafts/ISS-123.md",
+      "milestone": "M2",
+      "blockedBy": [
+        "ISS-122"
+      ]
+    },
+    {
+      "key": "ISS-124",
+      "file": "planning/drafts/ISS-124.md",
+      "milestone": "M2",
+      "blockedBy": [
+        "ISS-123"
+      ]
     }
   ]
 }
