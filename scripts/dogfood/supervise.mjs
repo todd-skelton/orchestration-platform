@@ -85,8 +85,8 @@ try {
           process.stdout.write(`${JSON.stringify({ status: "idle", run: loop.run })}\n`);
           break;
         }
-        validatedExecutor = await validateLoopExecutor(loop, executingRoot);
         await persistCycle(loop, active);
+        validatedExecutor = await validateLoopExecutor(loop, executingRoot);
         const pending = await reconcilePendingStop(loop, active, supervisor, repositoryAdapter);
         if (pending?.scope === "run") {
           blocked(new QueueBlocked(pending.reason));

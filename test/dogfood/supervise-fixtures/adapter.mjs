@@ -23,6 +23,11 @@ export async function validateLoopExecutor(loop, executingRoot) {
     mkdir(loop.stateRoot, { recursive: true }),
     mkdir(loop.worktreeRoot, { recursive: true }),
   ]);
+  const controls = await readJson(
+    resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
+    {},
+  );
+  if (controls.validationStopReason) throw new QueueBlocked(controls.validationStopReason);
   return {
     executor: executingRoot,
     stateRoot: loop.stateRoot,
@@ -152,14 +157,14 @@ export async function queueConfigFromLoop(
 }
 
 export function repositorySupervisionAdapter() {
-  const issuePath = (config) => resolve(config.stateRoot, config.run, "command-issue.json");
+  const issuePath = () => resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json");
   const readIssue = async (config) => readJson(issuePath(config));
   const writeIssue = async (config, issue) =>
     writeFile(issuePath(config), `${JSON.stringify(issue)}\n`);
   return {
     async currentMain(config) {
       const controls = await readJson(
-        resolve(config.stateRoot, config.run, "command-controls.json"),
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
         {},
       );
       return controls.main ?? "a".repeat(40);
