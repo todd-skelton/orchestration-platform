@@ -108,7 +108,7 @@
       "file": "planning/drafts/ISS-110.md",
       "milestone": "M2",
       "blockedBy": [
-        "ISS-125"
+        "ISS-126"
       ]
     },
     {
@@ -223,6 +223,14 @@
       "milestone": "M2",
       "blockedBy": [
         "ISS-124"
+      ]
+    },
+    {
+      "key": "ISS-126",
+      "file": "planning/drafts/ISS-126.md",
+      "milestone": "M2",
+      "blockedBy": [
+        "ISS-125"
       ]
     }
   ]
