@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import type { ReviewFinding } from "./repair-policy.mjs";
 
 const SHA = /^[a-f0-9]{40}$/;
 const ABSENT_RECORD = Symbol("absent-record");
@@ -97,6 +98,12 @@ export interface CheckEvidence {
 
 export type DeliveryResult =
   | {
+      status: "failed";
+      head: string;
+      reviewId: string;
+      findings: ReviewFinding[];
+    }
+  | {
       status: "observing-hosted-checks";
       run: string;
       issue: string;
@@ -122,6 +129,12 @@ export type DeliveryResult =
 export type Observation<T> =
   | { state: "confirmed"; value: T }
   | { state: "needs-mutation" }
+  | { state: "pending" }
+  | { state: "unknown" };
+
+export type MergeObservation =
+  | { state: "confirmed"; value: MergeEvidence }
+  | { state: "needs-mutation"; detail?: string }
   | { state: "pending" }
   | { state: "unknown" };
 
@@ -165,11 +178,12 @@ export interface DeliveryAdapter {
     head: string;
     checks: CheckEvidence[];
   }>;
+  failedCheckLog?(config: DeliveryConfig, check: CheckEvidence): Promise<string>;
   observeMerge(
     config: DeliveryConfig,
     publication: PublicationEvidence,
     policy: unknown,
-  ): Promise<Observation<MergeEvidence>>;
+  ): Promise<MergeObservation>;
   merge(config: DeliveryConfig, publication: PublicationEvidence, policy: unknown): Promise<void>;
   observeCleanup(
     config: DeliveryConfig,
@@ -462,7 +476,7 @@ async function confirmMerge(
     typeof policy === "object" &&
     !Array.isArray(policy) &&
     (policy as { method?: unknown }).method === "queue";
-  if (intent !== ABSENT_RECORD && queued) throw new DeliveryBlocked("merge-queue-removed");
+  if (intent !== ABSENT_RECORD && queued) return { removed: observation.detail ?? "absent" };
   await record(directory, "merge-intent", {
     head: config.candidateHead,
     operation: digest({ name: "merge", head: config.candidateHead }),
@@ -688,10 +702,24 @@ function validateChecks(config: DeliveryConfig, head: string, checks: CheckEvide
         check.link.startsWith("https://"),
       `malformed-check:${name}`,
     );
-    demand(!["fail", "cancel", "skipping"].includes(check.bucket), `hosted-check-failed:${name}`);
+    demand(check.bucket !== "skipping", `hosted-check-failed:${name}`);
     projected.push({ name, bucket: check.bucket, link: check.link });
   }
   return projected;
+}
+
+function failedResult(
+  head: string,
+  reviewId: string,
+  file: string,
+  text: string,
+): Extract<DeliveryResult, { status: "failed" }> {
+  return {
+    status: "failed",
+    head,
+    reviewId,
+    findings: [{ file, line: 1, severity: "blocking", text }],
+  };
 }
 
 export async function deliveryStep(
@@ -1070,6 +1098,13 @@ export async function deliveryStep(
       demand(observed.head === config.candidateHead, "hosted-head-drift");
       checks = [];
     } else checks = validateChecks(config, observed.head, observed.checks);
+    const failed = checks.find((check) => ["fail", "cancel"].includes(check.bucket));
+    if (failed) {
+      demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${failed.name}`);
+      const log = (await adapter.failedCheckLog(config, failed)).slice(-4_000);
+      demand(log.trim().length > 0, `hosted-check-log-unavailable:${failed.name}`);
+      return failedResult(config.candidateHead, source.reviewId, failed.name, log);
+    }
     if (checks.length === 0 || checks.some((check) => check.bucket === "pending")) {
       return {
         status: "observing-hosted-checks",
@@ -1090,6 +1125,13 @@ export async function deliveryStep(
       publication,
       plan.mergePolicy,
     );
+    if (reconciledMerge && "removed" in reconciledMerge)
+      return failedResult(
+        config.candidateHead,
+        source.reviewId,
+        "merge-queue",
+        reconciledMerge.removed,
+      );
     if (!reconciledMerge)
       return {
         status: "observing-hosted-checks",

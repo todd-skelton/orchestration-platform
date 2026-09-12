@@ -555,6 +555,7 @@ it("observes when an unchanged ready PR is removed from the merge queue", async 
   });
   await expect(adapter.observeMerge(current, publication, { method: "queue" })).resolves.toEqual({
     state: "needs-mutation",
+    detail: "absent",
   });
 });
 

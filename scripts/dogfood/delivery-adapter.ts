@@ -767,6 +767,25 @@ export function githubDeliveryAdapter(
         throw new DeliveryBlocked("hosted-observation-unavailable", detail?.trim().slice(0, 500));
       }
     },
+    async failedCheckLog(config, check) {
+      const match =
+        /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/([1-9][0-9]*)(?:\/|$)/.exec(
+          check.link,
+        );
+      if (!match) throw new DeliveryBlocked(`hosted-check-log-unavailable:${check.name}`);
+      try {
+        return await commands.gh(config, ["run", "view", match[1]!, "--log-failed"]);
+      } catch (error) {
+        const failure = error as { stderr?: string; message?: string };
+        const detail = [failure.stderr, failure.message].find(
+          (value) => typeof value === "string" && value.trim() !== "",
+        );
+        throw new DeliveryBlocked(
+          `hosted-check-log-unavailable:${check.name}`,
+          detail?.trim().slice(0, 500),
+        );
+      }
+    },
     async observeMerge(config, current, policy) {
       try {
         const queued = (policy as { method?: unknown })?.method === "queue";
@@ -799,7 +818,10 @@ export function githubDeliveryAdapter(
         if (row.state === "OPEN")
           return queued && typeof row.mergeQueueEntry?.state === "string"
             ? { state: "pending" }
-            : { state: "needs-mutation" };
+            : {
+                state: "needs-mutation",
+                ...(queued ? { detail: String(row.mergeQueueEntry?.state ?? "absent") } : {}),
+              };
         if (row.state !== "MERGED" || !SHA.test(row.mergeCommit?.oid)) return { state: "unknown" };
         return {
           state: "confirmed",
