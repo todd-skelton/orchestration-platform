@@ -275,6 +275,14 @@ it("loads the complete Chase Sets seam and declares its delivery policy", async 
     "mergeMethod",
     "afterMerge",
   ] as const)
+    expect(loaded[name]).toBeTypeOf("function");
+  for (const name of [
+    "pullRequest",
+    "requiredChecks",
+    "localGates",
+    "mergeMethod",
+    "afterMerge",
+  ] as const)
     expect(loaded[name]).toBe(chaseSets[name]);
 
   const config = {

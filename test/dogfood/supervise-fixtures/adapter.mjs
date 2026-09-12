@@ -11,7 +11,6 @@ export {
 export { QueueBlocked };
 export {
   completeCycle,
-  isRunStopReason,
   nextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -35,9 +34,15 @@ export async function validateLoopExecutor(loop, executingRoot) {
 export async function loadRepositoryAdapter() {
   return {
     selectCandidates: async () => {
-      const issue = await readJson(
-        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-issue.json"),
-      );
+      const directory = process.env.SUPERVISE_FIXTURE_STATE;
+      const controlsPath = resolve(directory, "command-controls.json");
+      const [issue, controls] = await Promise.all([
+        readJson(resolve(directory, "command-issue.json")),
+        readJson(controlsPath, {}),
+      ]);
+      controls.selectCalls = (controls.selectCalls ?? 0) + 1;
+      await writeFile(controlsPath, `${JSON.stringify(controls)}\n`);
+      if (controls.selectionReason) throw new QueueBlocked(controls.selectionReason);
       return issue.state === "OPEN" ? [{ key: "ISS-105", number: 362 }] : [];
     },
     issueContext: () => ({

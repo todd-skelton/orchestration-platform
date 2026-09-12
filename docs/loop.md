@@ -24,10 +24,11 @@ capability is added only when a real cycle records a blocker.
 6. Authority does not move. Workers never push, publish, merge, or edit the
    running loop. The executor is the checked-out stable `main`. The author
    never reviews its own work.
-7. Every stop parks the issue with one paragraph: what stopped it, how many
-   attempts, what a person should change, and how to unpark it. The loop then
-   continues with the next runnable issue. A recurring note becomes the next
-   issue. That is the only intake.
+7. A stop caused by the work parks the issue with one paragraph: what stopped
+   it, how many attempts, what a person should change, and how to unpark it;
+   the loop then continues with the next runnable issue. A stop caused by the
+   host or executor posts its paragraph without parking and exits. A recurring
+   note becomes the next issue. That is the only intake.
 8. Runtime state lives outside the checkout.
 9. A restart may repeat the last in-flight step at the cost of one worker
    launch. Records exist so the loop can resume, not to prove anything to a

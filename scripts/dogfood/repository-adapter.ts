@@ -1,5 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { QueueBlocked } from "./flow.ts";
 import type {
   DeliveryConfig,
   DeliveryPlan,
@@ -93,7 +95,34 @@ export async function loadRepositoryAdapter(name: string, root: string) {
     pathToFileURL(resolve(root, "adapters", `${adapterName(name)}.mjs`)).href
   );
   validateRepositoryAdapter(loaded);
-  return loaded;
+  const preserveReason = async <Value>(call: () => Promise<Value> | Value): Promise<Value> => {
+    try {
+      return await call();
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "reason" in error &&
+        typeof error.reason === "string"
+      ) {
+        throw new QueueBlocked(
+          error.reason,
+          "diagnostics" in error && typeof error.diagnostics === "string"
+            ? error.diagnostics
+            : undefined,
+          "retries" in error && Number.isSafeInteger(error.retries) ? Number(error.retries) : 0,
+        );
+      }
+      throw error;
+    }
+  };
+  return {
+    ...loaded,
+    selectCandidates: (input) => preserveReason(() => loaded.selectCandidates(input)),
+    issueContext: (input) => preserveReason(() => loaded.issueContext(input)),
+    branchName: (input) => preserveReason(() => loaded.branchName(input)),
+    park: (input) => preserveReason(() => loaded.park(input)),
+  } satisfies RepositoryAdapter;
 }
 
 export function repositoryDeliveryPolicy(
