@@ -32,6 +32,7 @@ async function fixture() {
     issue: "fixture-issue",
     repository: "fixture/repository",
     controllerRoot: paths[0]!,
+    repositoryRoot: paths[0]!,
     controllerRevision: "c".repeat(40),
     worktree: paths[1]!,
     reviewWorktree: paths[2]!,

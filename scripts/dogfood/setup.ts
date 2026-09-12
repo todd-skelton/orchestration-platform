@@ -135,7 +135,6 @@ function validateConfig(config: SetupConfig) {
   );
   for (const name of ["controllerRevision", "pilotRevision", "base"] as const)
     demand(typeof config[name] === "string" && SHA.test(config[name]), `invalid-${name}`);
-  demand(config.controllerRevision === config.pilotRevision, "unreviewed-pilot-selection");
   for (const name of ["baseBranch", "sourceBranch"] as const)
     demand(
       typeof config[name] === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(config[name]),

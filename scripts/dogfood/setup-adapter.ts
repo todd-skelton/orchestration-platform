@@ -192,12 +192,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
         ]);
         if (comparable(actualExecuting) !== comparable(controller))
           throw new SetupBlocked("controller-path-mismatch");
-        const [controllerCommon, repositoryCommon] = await Promise.all([
-          commonDirectory(gitExecutable, config, controller),
-          commonDirectory(gitExecutable, config, repository),
-        ]);
-        if (comparable(controllerCommon) !== comparable(repositoryCommon))
-          throw new SetupBlocked("setup-repository-mismatch");
+        const repositoryCommon = await commonDirectory(gitExecutable, config, repository);
         const [statePath, ...requestedPaths] = await Promise.all(
           [
             config.stateDirectory,
@@ -223,25 +218,29 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
         )
           throw new SetupBlocked("setup-path-overlaps-existing-checkout");
 
-        const [controllerHead, repositoryHead, repositoryBranch, pilotObject, baseObject] =
-          await Promise.all([
-            git(gitExecutable, config, ["rev-parse", "HEAD"], controller),
-            git(gitExecutable, config, ["rev-parse", "HEAD"], repository),
-            git(gitExecutable, config, ["branch", "--show-current"], repository),
-            git(gitExecutable, config, [
-              "rev-parse",
-              "--verify",
-              `${config.pilotRevision}^{commit}`,
-            ]),
-            git(gitExecutable, config, ["rev-parse", "--verify", `${config.base}^{commit}`]),
-          ]);
+        const [
+          controllerTop,
+          controllerHead,
+          repositoryTop,
+          repositoryHead,
+          repositoryBranch,
+          pilotObject,
+          baseObject,
+        ] = await Promise.all([
+          git(gitExecutable, config, ["rev-parse", "--show-toplevel"], controller),
+          git(gitExecutable, config, ["rev-parse", "HEAD"], controller),
+          git(gitExecutable, config, ["rev-parse", "--show-toplevel"], repository),
+          git(gitExecutable, config, ["rev-parse", "HEAD"], repository),
+          git(gitExecutable, config, ["branch", "--show-current"], repository),
+          git(gitExecutable, config, ["rev-parse", "--verify", `${config.pilotRevision}^{commit}`]),
+          git(gitExecutable, config, ["rev-parse", "--verify", `${config.base}^{commit}`]),
+        ]);
         if (
+          comparable(await realpath(controllerTop)) !== comparable(controller) ||
           controllerHead !== config.controllerRevision ||
+          comparable(await realpath(repositoryTop)) !== comparable(repository) ||
           pilotObject !== config.pilotRevision ||
-          repositoryHead !==
-            (comparable(repository) === comparable(controller)
-              ? config.controllerRevision
-              : config.base) ||
+          repositoryHead !== config.pilotRevision ||
           baseObject !== config.base ||
           repositoryBranch !== config.baseBranch
         )

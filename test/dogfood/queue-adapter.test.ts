@@ -491,6 +491,8 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     mergeMutations: 1,
   });
   expect(capturedDelivery).toMatchObject({
+    controllerRoot: current.paths.controller,
+    repositoryRoot: current.paths.repository,
     refresh: current.item.delivery.refresh,
   });
   expect(postMerge).toEqual([mergeCommit]);

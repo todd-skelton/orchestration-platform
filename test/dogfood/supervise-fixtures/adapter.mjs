@@ -47,6 +47,7 @@ export async function loadRepositoryAdapter() {
       ]);
       controls.selectCalls = (controls.selectCalls ?? 0) + 1;
       await writeFile(controlsPath, `${JSON.stringify(controls)}\n`);
+      if (controls.selectionMessage) throw new Error(controls.selectionMessage);
       if (controls.selectionReason) throw new QueueBlocked(controls.selectionReason);
       return issue.state === "OPEN" ? [{ key: "ISS-105", number: 362 }] : [];
     },
