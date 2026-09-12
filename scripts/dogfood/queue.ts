@@ -425,7 +425,7 @@ export async function queueConfigFromLoop(
   );
   const issueUrl = `https://github.com/${config.repository}/issues/${selected.number}`;
   const promptContext = `Repository loop rules:\n\n${issueContext.rules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${issueContext.body.trim()}`;
-  const baseSourcePrompt = `Implement the selected issue completely. Keep the loop smaller and stay within the issue scope.\n\n${promptContext}`;
+  const baseSourcePrompt = `Implement the selected issue completely and stay within its scope.\n\n${promptContext}`;
   const reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
   const runState = resolve(stateRoot, config.run);
   let sourceAttempt = 1;
