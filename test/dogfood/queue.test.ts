@@ -403,6 +403,10 @@ it("derives and prepares a repository cycle without modifying the controller rep
   const controllerRevision = (
     await execute(gitExecutable, ["-C", controller, "rev-parse", "HEAD"])
   ).stdout.trim();
+  const [canonicalController, canonicalRepository] = await Promise.all([
+    realpath(controller),
+    realpath(repository),
+  ]);
 
   const validated = await validateLoopExecutor(loop, controller);
   const queue = await queueConfigFromLoop(
@@ -414,10 +418,10 @@ it("derives and prepares a repository cycle without modifying the controller rep
     validated,
   );
   const setup = queue.items[0]!.setup;
-  expect(queue).toMatchObject({ controllerRoot: controller, controllerRevision });
+  expect(queue).toMatchObject({ controllerRoot: canonicalController, controllerRevision });
   expect(setup).toMatchObject({
-    controllerRoot: controller,
-    repositoryRoot: repository,
+    controllerRoot: canonicalController,
+    repositoryRoot: canonicalRepository,
     controllerRevision,
     pilotRevision: selected.base,
     base: selected.base,
