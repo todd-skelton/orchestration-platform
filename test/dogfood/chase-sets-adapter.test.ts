@@ -8,6 +8,7 @@ import {
   readdir,
   rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { delimiter, resolve } from "node:path";
@@ -213,7 +214,11 @@ it.skipIf(process.platform === "win32")(
       await cp(resolve(source, name), resolve(controller, name), { recursive: true });
     await writeFile(resolve(controller, "package.json"), '{"type":"module"}');
     const execute = promisify(execFile);
-    const gitExecutable = (await execute("which", ["git"])).stdout.trim();
+    const hostGit = (await execute("which", ["git"])).stdout.trim();
+    // The supervisor prepends Git's directory to PATH. Keep that directory
+    // beside the fixture gh, even when the host installs Git and gh together.
+    const gitExecutable = resolve(executorRoot, "tools/git");
+    await symlink(hostGit, gitExecutable);
     const commit = async (root: string) => {
       for (const args of [
         ["init", "-b", "main"],
