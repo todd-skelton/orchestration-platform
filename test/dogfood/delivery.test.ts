@@ -778,7 +778,7 @@ it("does not double merge after a lost provider response", async () => {
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
 });
 
-it("returns a repair finding when the merge queue removes an enqueued pull request", async () => {
+it("stops without a source finding or re-enqueue when an admitted pull request leaves the queue", async () => {
   const f = await fixture();
   f.plan.mergePolicy = { method: "queue" };
   f.publication.planDigest = digest(f.plan);
@@ -802,11 +802,8 @@ it("returns a repair finding when the merge queue removes an enqueued pull reque
   });
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
   queued = false;
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toEqual({
-    status: "failed",
-    head,
-    reviewId: "review-fixture",
-    findings: [{ file: "merge-queue", line: 1, severity: "blocking", text: "absent" }],
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+    reason: "merge-queue-removed",
   });
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
 });

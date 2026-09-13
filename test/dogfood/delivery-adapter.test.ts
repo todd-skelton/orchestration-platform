@@ -17,6 +17,14 @@ import {
 } from "../../scripts/dogfood/delivery.mjs";
 import { candidateLineChanges, selfPlanFromSnapshots } from "../../adapters/self.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
+import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import {
+  queueStep,
+  queueUsage,
+  type QueueConfig,
+  type QueueAdapter,
+  type QueueParticipant,
+} from "../../scripts/dogfood/queue.js";
 
 const head = "a".repeat(40);
 const authorId = "11111111-1111-1111-1111-111111111111";
@@ -304,6 +312,7 @@ function publicationEvidence(current: DeliveryConfig): PublicationEvidence {
 
 function publicationRow(current: PublicationEvidence, values: Record<string, unknown> = {}) {
   return {
+    id: "PR_fixture",
     number: current.number,
     url: current.url,
     headRefOid: current.head,
@@ -454,32 +463,35 @@ it("distinguishes the installed CLI no-check response from provider failure", as
   });
 });
 
-it("revalidates full publication identity after making a draft ready", async () => {
-  const { current } = await repositoryFixture(
-    "https://github.com/todd-skelton/orchestration-platform.git",
-  );
-  const publication = publicationEvidence(current);
-  const effects: string[][] = [];
-  let observations = 0;
-  const adapter = githubDeliveryAdapter({
-    async gh(_config, args) {
-      effects.push(args);
-      return "";
-    },
-    async ghJson() {
-      observations += 1;
-      return publicationRow(
-        publication,
-        observations === 1 ? {} : { baseRefName: "release", isDraft: false },
-      );
-    },
-  });
-  await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow(
-    "merge-head-drift",
-  );
-  expect(effects).toEqual([["pr", "ready", "44"]]);
-  expect(effects.some((args) => args.includes("merge"))).toBe(false);
-});
+it.each(["squash", "queue"])(
+  "revalidates exact publication head after making a draft ready (%s)",
+  async (method) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const publication = publicationEvidence(current);
+    const effects: string[][] = [];
+    let observations = 0;
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson() {
+        observations += 1;
+        return publicationRow(
+          publication,
+          observations === 1 ? {} : { headRefOid: "f".repeat(40), isDraft: false },
+        );
+      },
+    });
+    await expect(adapter.merge(current, publication, { method })).rejects.toThrow(
+      "merge-head-drift",
+    );
+    expect(effects).toEqual([["pr", "ready", "44"]]);
+    expect(effects.some((args) => args.includes("merge"))).toBe(false);
+  },
+);
 
 it("can resume merge for an already-ready PR with unchanged approved identity", async () => {
   const { current } = await repositoryFixture(
@@ -516,6 +528,10 @@ it("enqueues an unchanged ready PR and observes its queue membership", async () 
     async ghJson(_config, args) {
       if (args[0] === "api") {
         expect(args.slice(0, 2)).toEqual(["api", "graphql"]);
+        if (args[3]!.includes("enqueuePullRequest")) {
+          effects.push(args);
+          return { data: { enqueuePullRequest: { mergeQueueEntry: { id: "MQ_fixture" } } } };
+        }
         expect(args[3]).toContain("mergeQueueEntry{state}");
         return {
           data: {
@@ -535,7 +551,18 @@ it("enqueues an unchanged ready PR and observes its queue membership", async () 
     state: "pending",
   });
   await expect(adapter.merge(current, publication, { method: "queue" })).resolves.toBeUndefined();
-  expect(effects).toEqual([["pr", "merge", "44", "--squash"]]);
+  expect(effects).toEqual([
+    [
+      "api",
+      "graphql",
+      "-f",
+      "query=mutation($pullRequestId:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$head,jump:false}){mergeQueueEntry{id}}}",
+      "-F",
+      "pullRequestId=PR_fixture",
+      "-F",
+      `head=${current.candidateHead}`,
+    ],
+  ]);
 });
 
 it("observes when an unchanged ready PR is removed from the merge queue", async () => {
@@ -909,7 +936,9 @@ it("refuses a reviewed refresh that is not forward from the prior publication he
   );
 }, 30_000);
 
-async function preUpgradeDeliveryFixture() {
+async function preUpgradeDeliveryFixture(
+  admission: "merged" | "pending" | "failed" | "lost" | "absent" = "merged",
+) {
   const { current, git } = await repositoryFixture(
     "https://github.com/todd-skelton/orchestration-platform.git",
   );
@@ -939,7 +968,8 @@ async function preUpgradeDeliveryFixture() {
   let pending = true,
     ready = false,
     merged = false,
-    cleaned = false;
+    cleaned = false,
+    queued = false;
   const adapter = githubDeliveryAdapter({
     async gh(_config, args) {
       calls.push(args.slice(0, 2).join(" "));
@@ -956,11 +986,23 @@ async function preUpgradeDeliveryFixture() {
       return "";
     },
     async ghJson(_config, args) {
+      if (args[0] === "api" && args[3]?.includes("enqueuePullRequest")) {
+        calls.push("enqueue");
+        if (admission === "failed")
+          throw Object.assign(new Error("enqueue failed"), {
+            stderr:
+              "GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)",
+          });
+        queued = admission === "pending" || admission === "lost";
+        merged = admission === "merged";
+        if (admission === "lost") throw new Error("lost enqueue response");
+        return { data: { enqueuePullRequest: { mergeQueueEntry: { id: "MQ_fixture" } } } };
+      }
       const row = publicationRow(publication, {
         isDraft: !ready,
         state: merged ? "MERGED" : "OPEN",
         mergeCommit: merged ? { oid: "b".repeat(40) } : null,
-        mergeQueueEntry: null,
+        mergeQueueEntry: queued ? { state: "QUEUED" } : null,
       });
       return args[0] === "api" ? { data: { repository: { pullRequest: row } } } : row;
     },
@@ -1032,6 +1074,12 @@ async function preUpgradeDeliveryFixture() {
     pass: () => {
       pending = false;
     },
+    merged: () => {
+      merged = true;
+    },
+    removed: () => {
+      queued = false;
+    },
   };
 }
 
@@ -1046,11 +1094,194 @@ it("resumes legacy published delivery records after a stopped executor upgrade a
   expect(f.calls).toEqual(["pr checks"]);
   f.pass();
   await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
-  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "pr merge"]);
+  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "enqueue"]);
   const after = await stateSnapshot(f.current.stateDirectory);
   for (const [name, contents] of Object.entries(f.before)) expect(after[name]).toBe(contents);
   await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
-  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "pr merge"]);
+  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "enqueue"]);
+});
+
+it.each(["pending", "lost"] as const)(
+  "observes native queue admission then merge without another enqueue (%s response)",
+  async (mode) => {
+    const f = await preUpgradeDeliveryFixture(mode);
+    f.pass();
+    await expect(f.resume()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    await expect(f.resume()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.calls.filter((call) => call === "enqueue")).toHaveLength(1);
+    expect(
+      JSON.parse(
+        await readFile(resolve(f.current.stateDirectory, "merge-queue-admission.json"), "utf8"),
+      ),
+    ).toEqual({ head: f.current.candidateHead, number: 44 });
+    f.merged();
+    await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
+    expect(f.calls.filter((call) => call === "enqueue")).toHaveLength(1);
+  },
+);
+
+it.each(["failed", "absent"] as const)(
+  "preserves an admission host stop and never reenqueues an unconfirmed intent (%s)",
+  async (mode) => {
+    const f = await preUpgradeDeliveryFixture(mode);
+    f.pass();
+    const reason =
+      mode === "failed" ? "merge-queue-admission-failed" : "merge-queue-admission-unconfirmed";
+    await expect(f.resume()).rejects.toMatchObject({
+      reason,
+      ...(mode === "failed"
+        ? {
+            diagnostics:
+              "GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)",
+          }
+        : {}),
+    });
+    expect(isItemStopReason(reason)).toBe(false);
+    await expect(f.resume()).rejects.toMatchObject({ reason: "merge-queue-admission-unconfirmed" });
+    expect(f.calls.filter((call) => call === "enqueue")).toHaveLength(1);
+    await expect(
+      readFile(resolve(f.current.stateDirectory, "merge-queue-admission.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+it("does not infer admission from the legacy failed merge intent", async () => {
+  const f = await preUpgradeDeliveryFixture();
+  f.pass();
+  await writeFile(
+    resolve(f.current.stateDirectory, "merge-intent.json"),
+    JSON.stringify({
+      head: f.current.candidateHead,
+      operation: sha(JSON.stringify({ name: "merge", head: f.current.candidateHead })),
+    }),
+  );
+  await expect(f.resume()).rejects.toMatchObject({ reason: "merge-queue-admission-unconfirmed" });
+  expect(f.calls).not.toContain("enqueue");
+});
+
+it("keeps the queue on its accepted delivery without another author or attempt after native admission failure", async () => {
+  const f = await preUpgradeDeliveryFixture("failed");
+  f.pass();
+  const current = f.current;
+  const stateDirectory = resolve(current.stateDirectory, "..", "queue");
+  await mkdir(stateDirectory);
+  const actor = { model: "fixture", effort: "high", prompt: "fixture" };
+  const queue: QueueConfig = {
+    schemaVersion: "dogfood-bounded-queue-config/v1",
+    controller: current.controller,
+    run: current.run,
+    controllerRoot: current.controllerRoot,
+    controllerRevision: current.controllerRevision,
+    stateDirectory,
+    limit: 1,
+    nativeLaunchCeiling: 8,
+    initialHistory: [],
+    items: [
+      {
+        id: "fixture",
+        issue: current.issue,
+        base: current.candidateHead,
+        implementationAttempt: 1,
+        implementationAttemptCeiling: 4,
+        setup: {
+          controller: current.controller,
+          run: current.run,
+          issue: current.issue,
+          repository: current.repository,
+          repositoryRoot: current.repositoryRoot,
+          controllerRoot: current.controllerRoot,
+          controllerRevision: current.controllerRevision,
+          pilotRevision: current.controllerRevision,
+          base: current.candidateHead,
+          baseBranch: "main",
+          sourceBranch: "codex/iss-074-delivery",
+          pilotWorktree: resolve(stateDirectory, "..", "pilot"),
+          sourceWorktree: current.worktree,
+          reviewWorktree: current.reviewWorktree,
+          stateDirectory: resolve(stateDirectory, "setup"),
+        },
+        source: {
+          owner: current.controller,
+          run: current.run,
+          issue: current.issue,
+          pilotRevision: current.controllerRevision,
+          base: current.candidateHead,
+          worktree: current.worktree,
+          reviewWorktree: current.reviewWorktree,
+          stateDirectory: current.stateDirectory,
+          allowedPaths: ["."],
+          repository: current.repository,
+          requiredChecks: current.requiredChecks,
+          author: actor,
+          reviewer: actor,
+          adapter: { kind: "codex-exec", executable: process.execPath },
+        },
+        repair: {
+          stateDirectory: resolve(stateDirectory, "repair"),
+          acceptanceCriteria: ["fixture"],
+          author: actor,
+          reviewer: actor,
+        },
+        delivery: { requiredChecks: current.requiredChecks, policy: current.policy },
+      },
+    ],
+  };
+  const history: QueueParticipant[] = ["author", "reviewer"].map((role, index) => ({
+    ordinal: index + 1,
+    id: role === "author" ? authorId : reviewId,
+    item: "fixture",
+    stage: "source",
+    role: role as "author" | "reviewer",
+    outcome: "passed",
+    usage: queueUsage(undefined),
+  }));
+  const saved = {
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "delivery",
+    run: queue.run,
+    index: 0,
+    item: "fixture",
+    issue: current.issue,
+    base: current.candidateHead,
+    candidateAttempt: 1,
+    head: current.candidateHead,
+    reviewId,
+    findings: [],
+    history,
+    retries: 0,
+    acceptedStage: "source",
+    stateDirectory: current.stateDirectory,
+  };
+  const path = resolve(stateDirectory, "attempt.json");
+  await writeFile(path, JSON.stringify(saved));
+  let authors = 0;
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return history;
+    },
+    async setup() {
+      throw new Error("unexpected setup");
+    },
+    async source() {
+      authors += 1;
+      throw new Error("unexpected author");
+    },
+    async repair() {
+      authors += 1;
+      throw new Error("unexpected repair");
+    },
+    async delivery() {
+      return f.resume();
+    },
+  };
+  await expect(queueStep(queue, adapter)).rejects.toMatchObject({
+    reason: "merge-queue-admission-failed",
+    diagnostics: expect.stringContaining("enablePullRequestAutoMerge"),
+  });
+  expect(await readFile(path, "utf8")).toBe(JSON.stringify(saved));
+  expect(authors).toBe(0);
+  expect(isItemStopReason("merge-queue-admission-failed")).toBe(false);
 });
 
 it.each([
