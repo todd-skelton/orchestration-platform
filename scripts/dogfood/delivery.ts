@@ -458,6 +458,25 @@ async function confirmMerge(
   policy: unknown,
 ) {
   const intent = await optionalRecord(directory, "merge-intent");
+  const queued =
+    policy !== null &&
+    typeof policy === "object" &&
+    !Array.isArray(policy) &&
+    (policy as { method?: unknown }).method === "queue";
+  const admission = queued
+    ? await optionalRecord(directory, "merge-queue-admission")
+    : ABSENT_RECORD;
+  const recordPending = async () => {
+    await record(directory, "merge-intent", {
+      head: config.candidateHead,
+      operation: digest({ name: "merge", head: config.candidateHead }),
+    });
+    if (queued)
+      await record(directory, "merge-queue-admission", {
+        head: config.candidateHead,
+        number: publication.number,
+      });
+  };
   if (intent !== ABSENT_RECORD)
     demand(
       exactKeys(intent, ["head", "operation"]) &&
@@ -473,31 +492,46 @@ async function confirmMerge(
     return value;
   }
   if (observation.state === "pending") {
-    if (intent === ABSENT_RECORD)
-      await record(directory, "merge-intent", {
-        head: config.candidateHead,
-        operation: digest({ name: "merge", head: config.candidateHead }),
-      });
+    await recordPending();
     return undefined;
   }
   demand(observation.state !== "unknown", "merge-state-unknown");
-  const queued =
-    policy !== null &&
-    typeof policy === "object" &&
-    !Array.isArray(policy) &&
-    (policy as { method?: unknown }).method === "queue";
-  if (intent !== ABSENT_RECORD && queued) return { removed: observation.detail ?? "absent" };
+  if (intent !== ABSENT_RECORD && queued)
+    throw new DeliveryBlocked(
+      admission === ABSENT_RECORD ? "merge-queue-admission-unconfirmed" : "merge-queue-removed",
+      admission === ABSENT_RECORD
+        ? "The prior enqueue request has no confirmed queue entry; inspect admission before retrying."
+        : "The previously observed queue entry is now absent; inspect the queue removal before retrying.",
+    );
   await record(directory, "merge-intent", {
     head: config.candidateHead,
     operation: digest({ name: "merge", head: config.candidateHead }),
   });
+  let mutationError: unknown;
   try {
     await adapter.merge(config, publication, policy);
-  } catch {}
+  } catch (error) {
+    mutationError = error;
+  }
   observation = await adapter.observeMerge(config, publication, policy);
+  if (queued && mutationError && !["pending", "confirmed"].includes(observation.state)) {
+    if (mutationError instanceof DeliveryBlocked) throw mutationError;
+    const failure = mutationError as { stderr?: string; message?: string };
+    throw new DeliveryBlocked(
+      "merge-queue-admission-failed",
+      (failure.stderr || failure.message || String(mutationError)).trim().slice(0, 4_000),
+    );
+  }
   demand(observation.state !== "unknown", "merge-outcome-unknown");
-  if (observation.state === "pending") return undefined;
-  if (observation.state === "needs-mutation" && queued) return undefined;
+  if (observation.state === "pending") {
+    await recordPending();
+    return undefined;
+  }
+  if (observation.state === "needs-mutation" && queued)
+    throw new DeliveryBlocked(
+      "merge-queue-admission-unconfirmed",
+      "The enqueue request did not produce an observed queue entry.",
+    );
   demand(observation.state === "confirmed", "merge-unconfirmed-reconcile-before-retry");
   const value = observation.value;
   validateMergeRecord(config, value);
@@ -1163,13 +1197,6 @@ export async function deliveryStep(
       publication,
       plan.mergePolicy,
     );
-    if (reconciledMerge && "removed" in reconciledMerge)
-      return failedResult(
-        config.candidateHead,
-        source.reviewId,
-        "merge-queue",
-        reconciledMerge.removed,
-      );
     if (!reconciledMerge)
       return {
         status: "observing-hosted-checks",

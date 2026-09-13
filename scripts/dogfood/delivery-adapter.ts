@@ -893,7 +893,7 @@ export function githubDeliveryAdapter(
         "view",
         String(current.number),
         "--json",
-        "number,url,headRefOid,headRefName,baseRefName,isDraft,state,title,body",
+        `${(policy as { method: string }).method === "queue" ? "id," : ""}number,url,headRefOid,headRefName,baseRefName,isDraft,state,title,body`,
       ]);
       if (
         !matchesPublication(row, current, config) ||
@@ -917,10 +917,40 @@ export function githubDeliveryAdapter(
         )
           throw new DeliveryBlocked("merge-head-drift");
       }
-      const merge = ["pr", "merge", String(current.number), "--squash"];
-      if ((policy as { method: string }).method === "squash")
-        merge.push("--match-head-commit", config.candidateHead);
-      await commands.gh(config, merge);
+      if ((policy as { method: string }).method === "queue") {
+        try {
+          if (typeof row.id !== "string" || !row.id)
+            throw new Error("Missing approved pull request node ID.");
+          const result = await commands.ghJson(config, [
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation($pullRequestId:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$head,jump:false}){mergeQueueEntry{id}}}",
+            "-F",
+            `pullRequestId=${row.id}`,
+            "-F",
+            `head=${config.candidateHead}`,
+          ]);
+          if (result?.errors?.length)
+            throw new Error(
+              result.errors.map((error: { message: string }) => error.message).join("; "),
+            );
+        } catch (error) {
+          const failure = error as { stderr?: string; message?: string };
+          throw new DeliveryBlocked(
+            "merge-queue-admission-failed",
+            (failure.stderr || failure.message || String(error)).trim().slice(0, 4_000),
+          );
+        }
+      } else
+        await commands.gh(config, [
+          "pr",
+          "merge",
+          String(current.number),
+          "--squash",
+          "--match-head-commit",
+          config.candidateHead,
+        ]);
     },
     async observeCleanup(config, plan) {
       try {
