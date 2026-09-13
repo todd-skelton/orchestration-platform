@@ -909,6 +909,182 @@ it("refuses a reviewed refresh that is not forward from the prior publication he
   );
 }, 30_000);
 
+async function preUpgradeDeliveryFixture() {
+  const { current, git } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  await commitCandidate(current, git);
+  current.requiredChecks = ["PR Required"];
+  await writePilotEvidence(current);
+  const publication = publicationEvidence(current);
+  const plan: DeliveryPlan = {
+    gates: { beforeMirror: ["verify:static:scoped", "typecheck"], afterMirror: [] },
+    drafts: [],
+    publication: {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: "main",
+      title: publication.title,
+      body: publication.body,
+      draft: true,
+    },
+    mergePolicy: { method: "queue" },
+    cleanup: {
+      worktrees: [current.worktree, current.reviewWorktree],
+      branch: publication.sourceBranch,
+    },
+  };
+  const planDigest = sha(JSON.stringify(plan));
+  publication.planDigest = planDigest;
+  const calls: string[] = [];
+  let pending = true,
+    ready = false,
+    merged = false,
+    cleaned = false;
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      calls.push(args.slice(0, 2).join(" "));
+      if (args[1] === "checks")
+        return JSON.stringify([
+          {
+            name: "PR Required",
+            bucket: pending ? "pending" : "pass",
+            link: "https://github.com/fixture/repository/actions/runs/123/job/456",
+          },
+        ]);
+      if (args[1] === "ready") ready = true;
+      if (args[1] === "merge") merged = true;
+      return "";
+    },
+    async ghJson(_config, args) {
+      const row = publicationRow(publication, {
+        isDraft: !ready,
+        state: merged ? "MERGED" : "OPEN",
+        mergeCommit: merged ? { oid: "b".repeat(40) } : null,
+        mergeQueueEntry: null,
+      });
+      return args[0] === "api" ? { data: { repository: { pullRequest: row } } } : row;
+    },
+  });
+  // Freeze the prior executor's on-disk contract, including its whole-config hash.
+  // Do not create these receipts by calling the revised deliveryStep.
+  const records = {
+    "delivery-config": { fingerprint: sha(JSON.stringify(current)) },
+    "delivery-source": await adapter.source(current),
+    "delivery-plan": { head: current.candidateHead, digest: planDigest, plan },
+    "delivery-plan-authorization": {
+      head: current.candidateHead,
+      digest: planDigest,
+      policyDigest: sha(JSON.stringify(current.policy)),
+      controller: current.controller,
+    },
+    "gate-1": { head: current.candidateHead, name: "verify:static:scoped" },
+    "gate-2": { head: current.candidateHead, name: "typecheck" },
+    publication,
+    stop: { reason: "missing-or-duplicate-check:PR Required" },
+  };
+  await Promise.all(
+    Object.entries(records).map(([name, value]) =>
+      writeFile(
+        resolve(current.stateDirectory, `${name}.json`),
+        `${JSON.stringify(value, null, 2)}\n`,
+      ),
+    ),
+  );
+  const before = await stateSnapshot(current.stateDirectory);
+  await git([
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--allow-empty",
+    "-m",
+    "upgrade stopped executor",
+  ]);
+  current.controllerRevision = await git(["rev-parse", "HEAD"]);
+  adapter.runGate = async () => {
+    throw new Error("must not rerun completed gates");
+  };
+  adapter.source = async () => {
+    throw new Error("must not replace historical source evidence");
+  };
+  adapter.publish = async () => {
+    throw new Error("must not republish");
+  };
+  adapter.observeCleanup = async () =>
+    cleaned ? { state: "confirmed", value: plan.cleanup } : { state: "needs-mutation" };
+  adapter.cleanup = async () => {
+    cleaned = true;
+  };
+  const resume = async () => {
+    await assertControllerExecutor(current, current.controllerRoot);
+    return deliveryStep(current, adapter, {
+      async plan() {
+        throw new Error("must retain the saved delivery plan");
+      },
+    });
+  };
+  return {
+    current,
+    before,
+    calls,
+    resume,
+    pass: () => {
+      pending = false;
+    },
+  };
+}
+
+it("resumes legacy published delivery records after a stopped executor upgrade and lands through real checks", async () => {
+  const f = await preUpgradeDeliveryFixture();
+  const historicalRevision = JSON.parse(f.before["delivery-source.json"]!).controllerRevision;
+  expect(historicalRevision).not.toBe(f.current.controllerRevision);
+  expect(JSON.parse(f.before["delivery-config.json"]!).fingerprint).toBe(
+    sha(JSON.stringify({ ...f.current, controllerRevision: historicalRevision })),
+  );
+  await expect(f.resume()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.calls).toEqual(["pr checks"]);
+  f.pass();
+  await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
+  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "pr merge"]);
+  const after = await stateSnapshot(f.current.stateDirectory);
+  for (const [name, contents] of Object.entries(f.before)) expect(after[name]).toBe(contents);
+  await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
+  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "pr merge"]);
+});
+
+it.each([
+  "candidate",
+  "repository",
+  "issue",
+  "required checks",
+  "policy",
+  "publication",
+  "source head",
+  "source review",
+  "wrong executor",
+  "dirty executor",
+])("still blocks %s drift after an executor upgrade", async (mode) => {
+  const f = await preUpgradeDeliveryFixture();
+  if (mode === "candidate") f.current.candidateHead = "f".repeat(40);
+  if (mode === "repository") f.current.repository = "other/repository";
+  if (mode === "issue") f.current.issue = "other-issue";
+  if (mode === "required checks") f.current.requiredChecks = ["other-check"];
+  if (mode === "policy") f.current.policy = { kind: "other-policy" };
+  if (mode === "wrong executor") f.current.controllerRevision = "f".repeat(40);
+  if (mode === "dirty executor")
+    await writeFile(resolve(f.current.controllerRoot, "dirty.txt"), "uncommitted\n");
+  if (["publication", "source head", "source review"].includes(mode)) {
+    const name = mode === "publication" ? "publication" : "delivery-source";
+    const record = JSON.parse(f.before[`${name}.json`]!);
+    if (mode === "source review") record.reviewId = "";
+    else record.head = "f".repeat(40);
+    await writeFile(resolve(f.current.stateDirectory, `${name}.json`), JSON.stringify(record));
+  }
+  await expect(f.resume()).rejects.toThrow();
+  expect(f.calls).toEqual([]);
+});
+
 it("reconciles a lost merge through the engine and the real OPEN-only checks adapter", async () => {
   const { current } = await repositoryFixture(
     "https://github.com/todd-skelton/orchestration-platform.git",

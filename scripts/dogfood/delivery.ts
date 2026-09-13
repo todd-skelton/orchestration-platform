@@ -587,7 +587,8 @@ function validateSourceRecord(
       source.run === config.run &&
       source.issue === config.issue &&
       source.repository === config.repository &&
-      source.controllerRevision === config.controllerRevision &&
+      typeof source.controllerRevision === "string" &&
+      SHA.test(source.controllerRevision) &&
       source.worktree === config.worktree &&
       source.reviewWorktree === config.reviewWorktree &&
       source.stateDirectory === config.stateDirectory &&
@@ -750,7 +751,16 @@ export async function deliveryStep(
       "malformed-publication-refresh",
     );
   const directory = await realpath(config.stateDirectory);
-  let fingerprint = digest(config);
+  const savedSource = await optionalRecord(directory, "delivery-source");
+  if (savedSource !== ABSENT_RECORD) validateSourceRecord(config, savedSource);
+  // ISS-133: fingerprint the work against its recorded executor provenance, not a later host upgrade.
+  const fingerprintFor = (current: DeliveryConfig) =>
+    digest({
+      ...current,
+      controllerRevision:
+        savedSource === ABSENT_RECORD ? current.controllerRevision : savedSource.controllerRevision,
+    });
+  let fingerprint = fingerprintFor(config);
   const pinned = await optionalRecord(directory, "delivery-config");
   const needsConfigRecord = pinned === ABSENT_RECORD;
   if (pinned !== ABSENT_RECORD)
@@ -786,13 +796,11 @@ export async function deliveryStep(
   }
 
   const completed = await optionalRecord(directory, "cleanup");
-  const savedSource = await optionalRecord(directory, "delivery-source");
   const savedPublication = await optionalRecord(directory, "publication");
   const savedChecks = await optionalRecord(directory, "hosted-checks");
   const savedMerge = await optionalRecord(directory, "merge");
   const savedPlan = await optionalRecord(directory, "delivery-plan");
   const savedPlanAuthorization = await optionalRecord(directory, "delivery-plan-authorization");
-  if (savedSource !== ABSENT_RECORD) validateSourceRecord(config, savedSource);
   if (savedPublication !== ABSENT_RECORD)
     validatePublicationShape(config, savedPublication, adapter);
   let checks: CheckEvidence[] | undefined;
@@ -1033,7 +1041,7 @@ export async function deliveryStep(
             retries: correction.retries ?? config.retries + 1,
           };
           source = { ...(source as SourceEvidence), head: correction.head };
-          fingerprint = digest(config);
+          fingerprint = fingerprintFor(config);
           corrected = true;
           break;
         }
