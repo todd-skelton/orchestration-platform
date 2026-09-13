@@ -112,7 +112,7 @@ async function readers(executorRoot) {
   return { ...dispatch, ...milestone, ...backlog };
 }
 
-async function authority(repository, executorRoot) {
+async function authority(repository, executorRoot, targetMilestone) {
   requireRepository(repository);
   const [milestoneRows, issueRows, product] = await Promise.all([
     connection(MILESTONES_QUERY, "milestones", repository),
@@ -139,7 +139,13 @@ async function authority(repository, executorRoot) {
       })),
     };
   });
-  const window = product.derivePullWindow({ milestones, issues })[0];
+  const window = product.derivePullWindow({
+    milestones:
+      targetMilestone === undefined
+        ? milestones
+        : milestones.filter((milestone) => milestone.number === targetMilestone),
+    issues,
+  })[0];
   return { product, milestones, issues, window };
 }
 
@@ -166,8 +172,8 @@ function candidatesFromAuthority(snapshot) {
     .map((issue) => ({ key: `cs-${issue.number}`, number: issue.number }));
 }
 
-export async function selectCandidates({ repository, executorRoot }) {
-  return candidatesFromAuthority(await authority(repository, executorRoot));
+export async function selectCandidates({ repository, executorRoot, targetMilestone }) {
+  return candidatesFromAuthority(await authority(repository, executorRoot, targetMilestone));
 }
 
 function listItems(section) {
@@ -184,14 +190,28 @@ function listItems(section) {
   return items;
 }
 
-export async function issueContext({ repository, key, number, executorRoot }) {
+export async function issueContext({ repository, key, number, executorRoot, targetMilestone }) {
   requireRepository(repository);
   if (key !== `cs-${number}`) throw new Error("wrong-chase-sets-issue");
   const row = JSON.parse(
-    await gh(["issue", "view", String(number), "--json", "number,title,body"], repository),
+    await gh(
+      [
+        "issue",
+        "view",
+        String(number),
+        "--json",
+        targetMilestone === undefined ? "number,title,body" : "number,title,body,milestone",
+      ],
+      repository,
+    ),
   );
   if (row?.number !== number || typeof row.title !== "string" || typeof row.body !== "string")
     throw new Error("malformed-chase-sets-issue");
+  if (targetMilestone !== undefined && row.milestone?.number !== targetMilestone)
+    throw new DeliveryBlocked(
+      "selected-milestone-mismatch",
+      `Issue #${number} belongs to milestone ${row.milestone?.number ?? "none"}, outside target milestone ${targetMilestone}. Preserve the saved cycle and scope before restarting.`,
+    );
   const heading = /^#{1,6}\s+Acceptance(?: Criteria)?\s*$/im.exec(row.body);
   const section = heading
     ? row.body

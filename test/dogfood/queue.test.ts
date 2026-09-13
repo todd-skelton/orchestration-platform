@@ -13,6 +13,7 @@ import {
   validateLoopExecutor,
   validateLoopConfig,
   validateQueueConfig,
+  type LoopConfig,
   type QueueAdapter,
   type QueueConfig,
   type QueueDeliveryResult,
@@ -259,6 +260,34 @@ async function loopFixture(withRuntime = false) {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+it("validates an optional Chase Sets milestone number and keeps self runs unscoped", async () => {
+  const { loop } = await loopFixture();
+  expect(() => validateLoopConfig(loop)).not.toThrow();
+  expect(() =>
+    validateLoopConfig({ ...loop, adapter: "chase-sets", targetMilestone: 155 }),
+  ).not.toThrow();
+  for (const targetMilestone of [
+    0,
+    -1,
+    1.5,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    "155",
+    null,
+  ]) {
+    expect(() =>
+      validateLoopConfig({
+        ...loop,
+        adapter: "chase-sets",
+        targetMilestone,
+      } as unknown as LoopConfig),
+    ).toThrow("invalid-target-milestone");
+  }
+  expect(() => validateLoopConfig({ ...loop, targetMilestone: 155 })).toThrow(
+    "target-milestone-unsupported-adapter",
+  );
 });
 
 it("validates and carries the provider outage ceiling into worker configuration", async () => {

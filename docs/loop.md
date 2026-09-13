@@ -90,8 +90,9 @@ hosted CI only.
 - Start from Windows (the launcher detaches itself and prints the PID):
   `wsl -d Ubuntu -- bash /root/orchestration-m1/repo/scripts/executor/run-loop.sh [config.json]`
 - Check: `wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log`.
-  A final `idle` line means nothing is `ready`; a non-zero exit means a stop
-  whose learning note is on the issue.
+  A final `idle` line means nothing is runnable in the configured scope; it
+  does not establish milestone completion while admitted work is blocked.
+  A non-zero exit means a stop whose learning note is on the issue.
 - Workers read `/root/orchestration-m1/codex-home/config.toml`, the executor's
   own Codex home, so that file selects the model provider. It routes through
   the local subscription pool on the Windows host, which listens on
@@ -109,6 +110,32 @@ hosted CI only.
   and the single dead-worker retry. No worker holds a native Codex login.
 - Chase Sets runs use `/root/orchestration-m2/repo` and
   `/root/orchestration-m2/loop.json` with the same tools (ISS-110).
+- A Chase Sets config may set `"targetMilestone": 155`, using the positive
+  repository milestone number, to limit the native pull window to that
+  milestone (ISS-135). Product readiness, dependencies and exclusions still
+  apply. An exhausted or blocked target reaches `idle` without selecting other
+  outcomes. The default remains the unscoped native window; self runs omit
+  this option. Queue composition verifies issue membership before worktree
+  setup or author dispatch, including when resuming a saved selection. A
+  mismatch stops the run with `selected-milestone-mismatch` and a host note;
+  it does not park or complete the selected issue.
+
+ISS-135 recovery for `m2-payout-fees-replanned-20260913`: with supervisors and
+the interrupted #4382 author stopped, the host first preserves the runtime and
+uses the reviewed stable executor with `targetMilestone: 155`. Restart with
+the original `cycle-2-selected.json` present to verify the typed scope stop.
+Preserve completed cycle 1 (#7821, PR #7973, merge `a9d697bd`, verified deploy
+run `34767773892`) and the interrupted `cs-4382-attempt-1` records, source
+worktree and traces unchanged. To rederive selection, the host explicitly
+archives `cycle-2-selected.json` together with every `cycle-2-stop-*.json`
+record, including stop completion receipts, outside the active scheduling
+record locations. Those receipts belong to the original selection; leaving
+them active can conflict with a later selection that reuses cycle 2. Restart
+the same scoped run: with #7820 still `status:needs-operator`, it should reach
+`idle`. Do not write a cycle 2 completion, invent a worker result, reset an
+attempt budget, or delete the interrupted attempt. This is a specific host
+reconciliation of the preserved incident, not an automatic migration. Seller
+Payout Fees remains incomplete until its operator-blocked work is resolved.
 
 ## Milestones
 

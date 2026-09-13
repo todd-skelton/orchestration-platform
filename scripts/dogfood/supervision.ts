@@ -163,6 +163,7 @@ export async function nextCycle(
     const candidates = await repositoryAdapter.selectCandidates({
       repository: config.repository,
       executorRoot: config.stableExecutorRoot,
+      ...(config.targetMilestone === undefined ? {} : { targetMilestone: config.targetMilestone }),
     });
     if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
     const issue = candidates[0];
