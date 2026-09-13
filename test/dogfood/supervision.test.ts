@@ -457,61 +457,64 @@ it("parks only the explicit item stop reasons", async () => {
   );
 });
 
-it("exits on an environmental stop without parking or selecting again", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "supervision-command-run-stop-"));
-  roots.push(root);
-  const config = loop(root);
-  const runState = resolve(config.stateRoot, config.run);
-  const fixtureState = resolve(root, "fixture-state");
-  const request = resolve(root, "loop.json");
-  const controlsPath = resolve(fixtureState, "command-controls.json");
-  const issuePath = resolve(fixtureState, "command-issue.json");
-  await mkdir(fixtureState, { recursive: true });
-  await Promise.all([
-    writeFile(request, `${JSON.stringify(config)}\n`),
-    writeFile(
-      controlsPath,
-      `${JSON.stringify({
-        main: "a".repeat(40),
-        validationStopReason: "controller-executor-mismatch",
-        parkCalls: 0,
-      })}\n`,
-    ),
-    writeFile(
-      issuePath,
-      `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
-    ),
-  ]);
+it.each(["controller-executor-mismatch", "provider-unavailable"])(
+  "exits on %s without parking or selecting again",
+  async (reason) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-command-run-stop-"));
+    roots.push(root);
+    const config = loop(root);
+    const runState = resolve(config.stateRoot, config.run);
+    const fixtureState = resolve(root, "fixture-state");
+    const request = resolve(root, "loop.json");
+    const controlsPath = resolve(fixtureState, "command-controls.json");
+    const issuePath = resolve(fixtureState, "command-issue.json");
+    await mkdir(fixtureState, { recursive: true });
+    await Promise.all([
+      writeFile(request, `${JSON.stringify(config)}\n`),
+      writeFile(
+        controlsPath,
+        `${JSON.stringify({
+          main: "a".repeat(40),
+          validationStopReason: reason,
+          parkCalls: 0,
+        })}\n`,
+      ),
+      writeFile(
+        issuePath,
+        `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
+      ),
+    ]);
 
-  let failure: { code?: number | string; stderr?: string } | undefined;
-  try {
-    await execute(
-      process.execPath,
-      ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
-      {
-        env: { ...process.env, SUPERVISE_FIXTURE_STATE: fixtureState },
-        timeout: 10_000,
-        windowsHide: true,
-      },
-    );
-  } catch (error) {
-    failure = error as { code?: number | string; stderr?: string };
-  }
+    let failure: { code?: number | string; stderr?: string } | undefined;
+    try {
+      await execute(
+        process.execPath,
+        ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
+        {
+          env: { ...process.env, SUPERVISE_FIXTURE_STATE: fixtureState },
+          timeout: 10_000,
+          windowsHide: true,
+        },
+      );
+    } catch (error) {
+      failure = error as { code?: number | string; stderr?: string };
+    }
 
-  expect(failure).toMatchObject({ code: 1 });
-  expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({
-    parkCalls: 0,
-    selectCalls: 1,
-  });
-  const issue = JSON.parse(await readFile(issuePath, "utf8"));
-  expect(issue.comments).toHaveLength(1);
-  expect(issue.comments[0]).toContain("controller-executor-mismatch");
-  expect(issue.comments[0]).not.toContain("To unpark");
-  expect(failure?.stderr).toContain('"reason":"controller-executor-mismatch"');
-  await expect(
-    readFile(resolve(runState, "cycle-1-stop-1-complete.json"), "utf8"),
-  ).resolves.toEqual(expect.any(String));
-});
+    expect(failure).toMatchObject({ code: 1 });
+    expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({
+      parkCalls: 0,
+      selectCalls: 1,
+    });
+    const issue = JSON.parse(await readFile(issuePath, "utf8"));
+    expect(issue.comments).toHaveLength(1);
+    expect(issue.comments[0]).toContain(reason);
+    expect(issue.comments[0]).not.toContain("To unpark");
+    expect(failure?.stderr).toContain(`"reason":"${reason}"`);
+    await expect(
+      readFile(resolve(runState, "cycle-1-stop-1-complete.json"), "utf8"),
+    ).resolves.toEqual(expect.any(String));
+  },
+);
 
 it("exits after one selection when a stop happens before a cycle is active", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-stop-"));

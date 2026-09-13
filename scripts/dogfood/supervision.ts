@@ -271,6 +271,8 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
     `inspect ${evidence} for the reviewer terminal, correct the verdict/findings/G0 shape, and restart`,
   "exit-receipt-timeout": ({ evidence }) =>
     `inspect ${evidence} for the worker attempt and trace, restore the missing exit receipt, and restart`,
+  "provider-unavailable": () =>
+    "restore the subscription pool and its authentication helper, then restart the supervisor; the issue remains ready",
   "native-launch-ceiling-exhausted": ({ evidence }) =>
     `inspect ${evidence} and the nativeLaunchCeiling field, then start an authorized run with enough launch budget`,
   "implementation-attempt-ceiling-exhausted": ({ evidence }) =>

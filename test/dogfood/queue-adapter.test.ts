@@ -190,320 +190,341 @@ it("directly composes the accepted setup transition before source work", async (
   expect([...dependencies]).toEqual(["pilot", "source", "review"]);
 });
 
-it("counts an author retry and first gate correction separately across delivery restart", async () => {
-  const current = await fixture();
-  const corrected = "f".repeat(40);
-  current.item.implementationAttempt = 2;
-  current.item.delivery.refresh = {
-    number: 337,
-    url: "https://example.test/pull/337",
-    head: current.item.base,
-  };
-  let sourceHead = base;
-  let reviewHead = base;
-  let pid = 10;
-  let interruptGateCommit = true;
-  const launches: string[] = [];
-  const native: Adapter = {
-    async preflight() {},
-    async git(worktree, args) {
-      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
-      if (args[0] === "rev-parse" && args[1] === "HEAD") {
-        if (worktree === current.paths.pilot) return stable;
-        if (worktree === current.paths.review) return reviewHead;
-        return sourceHead;
-      }
-      if (args[0] === "status") return "";
-      if (args[0] === "checkout") {
-        reviewHead = String(args.at(-1));
-        return "";
-      }
-      if (args[0] === "merge-base") return String(args[1]);
-      if (args[0] === "diff")
-        return args.includes("--cached") || sourceHead === corrected
-          ? ""
-          : `scripts/dogfood/queue.ts\0`;
-      if (args[0] === "ls-files") return "";
-      if (args[0] === "commit") {
-        sourceHead = sourceHead === base ? candidate : corrected;
-        if (sourceHead === corrected && interruptGateCommit) {
-          interruptGateCommit = false;
-          throw new Error("simulated restart after gate commit");
+it.each([false, true])(
+  "lands after an author death and gate correction across restart (provider outage: %s)",
+  async (providerFailure) => {
+    const current = await fixture();
+    const corrected = "f".repeat(40);
+    current.item.implementationAttempt = 2;
+    current.item.delivery.refresh = {
+      number: 337,
+      url: "https://example.test/pull/337",
+      head: current.item.base,
+    };
+    let sourceHead = base;
+    let reviewHead = base;
+    let pid = 10;
+    let interruptGateCommit = true;
+    const launches: string[] = [];
+    const native: Adapter = {
+      async preflight() {},
+      async git(worktree, args) {
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
+        if (args[0] === "rev-parse" && args[1] === "HEAD") {
+          if (worktree === current.paths.pilot) return stable;
+          if (worktree === current.paths.review) return reviewHead;
+          return sourceHead;
+        }
+        if (args[0] === "status") return "";
+        if (args[0] === "checkout") {
+          reviewHead = String(args.at(-1));
+          return "";
+        }
+        if (args[0] === "merge-base") return String(args[1]);
+        if (args[0] === "diff")
+          return args.includes("--cached") || sourceHead === corrected
+            ? ""
+            : `scripts/dogfood/queue.ts\0`;
+        if (args[0] === "ls-files") return "";
+        if (args[0] === "commit") {
+          sourceHead = sourceHead === base ? candidate : corrected;
+          if (sourceHead === corrected && interruptGateCommit) {
+            interruptGateCommit = false;
+            throw new Error("simulated restart after gate commit");
+          }
+          return "";
         }
         return "";
-      }
-      return "";
-    },
-    async launch(role, selectedConfig, prompt): Promise<Attempt> {
-      if (role === "reviewer") {
-        expect(prompt).toContain("is there a simpler way?");
-        expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
-      }
-      const selected = prompt.includes("Correct the") ? `gate-${role}` : role;
-      const deadAuthor = selected === "author" && launches.length === 0;
-      launches.push(selected);
-      return {
-        id: deadAuthor
-          ? "dead-author"
-          : `source-${selected}${selected === `gate-${role}` ? `-${pid}` : ""}`,
-        pid: pid++,
-        trace: resolve(current.root, `${selected}.jsonl`),
-        launchedAt: 1,
-      };
-    },
-    async observe(role, selectedConfig, attempt) {
-      if (attempt.id === "dead-author")
-        return { id: attempt.id, status: "dead", summary: "provider disconnected" };
-      const correction = attempt.id.startsWith("source-gate-");
-      const terminalHead = correction ? selectedConfig.base : role === "author" ? base : candidate;
-      return {
-        status: "passed",
-        id: attempt.id,
-        head: terminalHead,
-        usage: {
-          input_tokens: role === "author" ? 11 : 7,
-          output_tokens: role === "author" ? 3 : 2,
+      },
+      async launch(role, selectedConfig, prompt): Promise<Attempt> {
+        if (role === "reviewer") {
+          expect(prompt).toContain("is there a simpler way?");
+          expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
+        }
+        const selected = prompt.includes("Correct the") ? `gate-${role}` : role;
+        const deadAuthor = selected === "author" && launches.length === 0;
+        launches.push(selected);
+        return {
+          id: deadAuthor
+            ? "dead-author"
+            : `source-${selected}${selected === `gate-${role}` ? `-${pid}` : ""}`,
+          pid: pid++,
+          trace: resolve(current.root, `${selected}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, selectedConfig, attempt) {
+        if (attempt.id === "dead-author")
+          return {
+            id: attempt.id,
+            status: "dead",
+            summary: providerFailure ? "HTTP 503" : "worker crashed",
+            ...(providerFailure ? { providerFailure: true } : {}),
+          };
+        const correction = attempt.id.startsWith("source-gate-");
+        const terminalHead = correction
+          ? selectedConfig.base
+          : role === "author"
+            ? base
+            : candidate;
+        return {
+          status: "passed",
+          id: attempt.id,
+          head: terminalHead,
+          usage: {
+            input_tokens: role === "author" ? 11 : 7,
+            output_tokens: role === "author" ? 3 : 2,
+          },
+          ...(role === "reviewer" ? { summary: passingReviewSummary(terminalHead) } : {}),
+        };
+      },
+      async checks() {
+        return { head: candidate, checks: [] };
+      },
+    };
+    const plan: DeliveryPlan = {
+      gates: {
+        beforeMirror: ["typecheck", "format:check", "planning:check"],
+        afterMirror: ["planning:board-check"],
+      },
+      drafts: [
+        {
+          key: "ISS-FIXTURE",
+          issue: 338,
+          title: "fixture",
+          body: "fixture body",
+          attributes: { milestone: "M2" },
         },
-        ...(role === "reviewer" ? { summary: passingReviewSummary(terminalHead) } : {}),
-      };
-    },
-    async checks() {
-      return { head: candidate, checks: [] };
-    },
-  };
-  const plan: DeliveryPlan = {
-    gates: {
-      beforeMirror: ["typecheck", "format:check", "planning:check"],
-      afterMirror: ["planning:board-check"],
-    },
-    drafts: [
-      {
-        key: "ISS-FIXTURE",
-        issue: 338,
+      ],
+      publication: {
+        sourceBranch: "codex/fixture-338",
+        baseBranch: "main",
         title: "fixture",
         body: "fixture body",
-        attributes: { milestone: "M2" },
+        draft: true,
       },
-    ],
-    publication: {
-      sourceBranch: "codex/fixture-338",
-      baseBranch: "main",
-      title: "fixture",
-      body: "fixture body",
-      draft: true,
-    },
-    mergePolicy: { method: "squash" },
-    cleanup: {
-      worktrees: [current.paths.author, current.paths.review],
-      branch: "codex/fixture-338",
-    },
-  };
-  let draft = false;
-  let published = false;
-  let publicationMutations = 0;
-  let publishedDigest = "";
-  let merged = false;
-  let mergeMutations = 0;
-  let cleaned = false;
-  const publication = (): PublicationEvidence => ({
-    number: 337,
-    url: "https://example.test/pull/337",
-    head: corrected,
-    repository: current.source.repository,
-    sourceBranch: plan.publication.sourceBranch,
-    baseBranch: plan.publication.baseBranch,
-    title: plan.publication.title,
-    body: plan.publication.body,
-    planDigest: publishedDigest,
-  });
-  let capturedDelivery: DeliveryConfig | undefined;
-  let gateCalls = 0;
-  let hostedReady = false;
-  const postMerge: string[] = [];
-  const repositoryPolicy: RepositoryAdapter = {
-    selectCandidates: () => [],
-    issueContext: async () => {
-      throw new Error("unused");
-    },
-    branchName: () => plan.publication.sourceBranch,
-    pullRequest: () => plan.publication,
-    requiredChecks: () => [...current.source.requiredChecks],
-    park: () => "add the `ready` label after acting on the note",
-    mergeMethod: () => plan.mergePolicy,
-    afterMerge({ config, delivery: completed }) {
-      expect(config.candidateHead).toBe(corrected);
-      postMerge.push(completed.mergeCommit);
-    },
-  };
-  const delivery: DeliveryAdapter = {
-    publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
-    async source(config) {
-      capturedDelivery = config;
-      return {
-        head: config.candidateHead,
-        reviewId:
-          config.candidateHead === corrected ? "source-gate-retry-reviewer" : "source-reviewer",
-        controller: current.source.owner,
-        run: config.run,
-        issue: config.issue,
-        repository: config.repository,
-        controllerRevision: stable,
-        worktree: config.worktree,
-        reviewWorktree: config.reviewWorktree,
-        stateDirectory: config.stateDirectory,
-        requiredChecks: [...config.requiredChecks],
-      };
-    },
-    async verifyWorkspace(_config, head) {
-      return sourceHead === head && reviewHead === head;
-    },
-    async runGate(config) {
-      gateCalls += 1;
-      if (sourceHead !== config.candidateHead || reviewHead !== config.candidateHead)
-        return { status: "failed", output: "candidate workspace drifted before gate" };
-      return gateCalls === 1 ? { status: "failed", output: "transient typecheck" } : "passed";
-    },
-    async observeDraft() {
-      return draft ? { state: "confirmed", value: { issue: 338 } } : { state: "needs-mutation" };
-    },
-    async applyDraft() {
-      draft = true;
-    },
-    async observePublication(_config, _plan, planDigest) {
-      publishedDigest = planDigest;
-      return published
-        ? { state: "confirmed", value: publication() }
-        : { state: "needs-mutation", target: "absent" };
-    },
-    async publish() {
-      publicationMutations += 1;
-      published = true;
-    },
-    async checks(config) {
-      return {
-        head: corrected,
-        checks: config.requiredChecks.map((name) => ({
-          name,
-          bucket: hostedReady ? ("pass" as const) : ("pending" as const),
-          link: `https://example.test/check/${name}`,
-        })),
-      };
-    },
-    async observeMerge() {
-      return merged
-        ? { state: "confirmed", value: { number: 337, head: corrected, mergeCommit } }
-        : { state: "needs-mutation" };
-    },
-    async merge() {
-      mergeMutations += 1;
-      merged = true;
-    },
-    async observeCleanup() {
-      return cleaned
-        ? {
-            state: "confirmed",
-            value: { worktrees: [...plan.cleanup.worktrees], branch: plan.cleanup.branch },
-          }
-        : { state: "needs-mutation" };
-    },
-    async cleanup() {
-      cleaned = true;
-    },
-  };
-  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
-    native,
-    delivery,
-    deliveryPolicy: {
-      async plan() {
-        return plan;
+      mergePolicy: { method: "squash" },
+      cleanup: {
+        worktrees: [current.paths.author, current.paths.review],
+        branch: "codex/fixture-338",
       },
-    },
-    repository: repositoryPolicy,
-    assertExecutor: async () => {},
-  });
-  const queueAdapter: QueueAdapter = { ...adapter, async assertExecutor() {} };
+    };
+    let draft = false;
+    let published = false;
+    let publicationMutations = 0;
+    let publishedDigest = "";
+    let merged = false;
+    let mergeMutations = 0;
+    let cleaned = false;
+    const publication = (): PublicationEvidence => ({
+      number: 337,
+      url: "https://example.test/pull/337",
+      head: corrected,
+      repository: current.source.repository,
+      sourceBranch: plan.publication.sourceBranch,
+      baseBranch: plan.publication.baseBranch,
+      title: plan.publication.title,
+      body: plan.publication.body,
+      planDigest: publishedDigest,
+    });
+    let capturedDelivery: DeliveryConfig | undefined;
+    let gateCalls = 0;
+    let hostedReady = false;
+    const postMerge: string[] = [];
+    const repositoryPolicy: RepositoryAdapter = {
+      selectCandidates: () => [],
+      issueContext: async () => {
+        throw new Error("unused");
+      },
+      branchName: () => plan.publication.sourceBranch,
+      pullRequest: () => plan.publication,
+      requiredChecks: () => [...current.source.requiredChecks],
+      park: () => "add the `ready` label after acting on the note",
+      mergeMethod: () => plan.mergePolicy,
+      afterMerge({ config, delivery: completed }) {
+        expect(config.candidateHead).toBe(corrected);
+        postMerge.push(completed.mergeCommit);
+      },
+    };
+    const delivery: DeliveryAdapter = {
+      publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
+      async source(config) {
+        capturedDelivery = config;
+        return {
+          head: config.candidateHead,
+          reviewId:
+            config.candidateHead === corrected ? "source-gate-retry-reviewer" : "source-reviewer",
+          controller: current.source.owner,
+          run: config.run,
+          issue: config.issue,
+          repository: config.repository,
+          controllerRevision: stable,
+          worktree: config.worktree,
+          reviewWorktree: config.reviewWorktree,
+          stateDirectory: config.stateDirectory,
+          requiredChecks: [...config.requiredChecks],
+        };
+      },
+      async verifyWorkspace(_config, head) {
+        return sourceHead === head && reviewHead === head;
+      },
+      async runGate(config) {
+        gateCalls += 1;
+        if (sourceHead !== config.candidateHead || reviewHead !== config.candidateHead)
+          return { status: "failed", output: "candidate workspace drifted before gate" };
+        return gateCalls === 1 ? { status: "failed", output: "transient typecheck" } : "passed";
+      },
+      async observeDraft() {
+        return draft ? { state: "confirmed", value: { issue: 338 } } : { state: "needs-mutation" };
+      },
+      async applyDraft() {
+        draft = true;
+      },
+      async observePublication(_config, _plan, planDigest) {
+        publishedDigest = planDigest;
+        return published
+          ? { state: "confirmed", value: publication() }
+          : { state: "needs-mutation", target: "absent" };
+      },
+      async publish() {
+        publicationMutations += 1;
+        published = true;
+      },
+      async checks(config) {
+        return {
+          head: corrected,
+          checks: config.requiredChecks.map((name) => ({
+            name,
+            bucket: hostedReady ? ("pass" as const) : ("pending" as const),
+            link: `https://example.test/check/${name}`,
+          })),
+        };
+      },
+      async observeMerge() {
+        return merged
+          ? { state: "confirmed", value: { number: 337, head: corrected, mergeCommit } }
+          : { state: "needs-mutation" };
+      },
+      async merge() {
+        mergeMutations += 1;
+        merged = true;
+      },
+      async observeCleanup() {
+        return cleaned
+          ? {
+              state: "confirmed",
+              value: { worktrees: [...plan.cleanup.worktrees], branch: plan.cleanup.branch },
+            }
+          : { state: "needs-mutation" };
+      },
+      async cleanup() {
+        cleaned = true;
+      },
+    };
+    const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
+      native,
+      delivery,
+      deliveryPolicy: {
+        async plan() {
+          return plan;
+        },
+      },
+      repository: repositoryPolicy,
+      assertExecutor: async () => {},
+    });
+    const queueAdapter: QueueAdapter = { ...adapter, async assertExecutor() {} };
 
-  const accepted = await adapter.source(current.item);
-  expect(accepted).toEqual({
-    status: "accepted",
-    head: candidate,
-    reviewId: "source-reviewer",
-    stateDirectory: current.paths.source,
-    retries: 1,
-  });
-  expect(await adapter.history()).toEqual([
-    expect.objectContaining({ ordinal: 1, id: "dead-author", outcome: "dead" }),
-    expect.objectContaining({
-      ordinal: 2,
-      id: "source-author",
-      outcome: "passed",
-      usage: {
-        inputTokens: { status: "known", value: 11 },
-        outputTokens: { status: "known", value: 3 },
-        costUsd: unavailable,
-      },
-    }),
-    expect.objectContaining({ ordinal: 3, id: "source-reviewer", outcome: "passed" }),
-  ]);
-  if (accepted.status !== "accepted") throw new Error("fixture source did not accept");
-  await writeFile(
-    resolve(current.paths.queue, "attempt.json"),
-    `${JSON.stringify({
-      schemaVersion: "dogfood-bounded-queue-attempt/v1",
-      phase: "delivery",
-      run: current.config.run,
-      index: 0,
-      item: current.item.id,
-      issue: current.item.issue,
-      base: current.item.base,
-      candidateAttempt: current.item.implementationAttempt,
-      head: accepted.head,
-      reviewId: accepted.reviewId,
-      findings: [],
-      history: await adapter.history(),
-      retries: accepted.retries,
-      acceptedStage: "source",
-      stateDirectory: accepted.stateDirectory,
-    })}\n`,
-  );
-  await expect(queueStep(current.config, queueAdapter)).rejects.toThrow("delivery-state-unknown");
-  const interrupted = JSON.parse(
-    await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
-  );
-  expect(interrupted).toMatchObject({ head: candidate, retries: 2 });
-  await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
-    status: "observing-hosted-checks",
-  });
-  await expect(
-    readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
-  ).resolves.toMatchObject({ head: corrected, reviewId: "source-reviewer", retries: 2 });
-  const effectsAfterCorrection = { launches: [...launches], gateCalls };
-  hostedReady = true;
-  await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
-    status: "complete",
-  });
-  await expect(
-    readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
-  ).resolves.toMatchObject({ phase: "complete", head: corrected, retries: 2 });
-  expect({ launches, gateCalls }).toEqual(effectsAfterCorrection);
-  expect(launches).toEqual(["author", "author", "reviewer", "gate-author", "gate-author"]);
-  expect({ draft, published, merged, cleaned }).toEqual({
-    draft: true,
-    published: true,
-    merged: true,
-    cleaned: true,
-  });
-  expect({ publicationMutations, mergeMutations }).toEqual({
-    publicationMutations: 1,
-    mergeMutations: 1,
-  });
-  expect(capturedDelivery).toMatchObject({
-    controllerRoot: current.paths.controller,
-    repositoryRoot: current.paths.repository,
-    refresh: current.item.delivery.refresh,
-  });
-  expect(postMerge).toEqual([mergeCommit]);
-});
+    const accepted = await adapter.source(current.item);
+    expect(accepted).toEqual({
+      status: "accepted",
+      head: candidate,
+      reviewId: "source-reviewer",
+      stateDirectory: current.paths.source,
+      ...(providerFailure ? {} : { retries: 1 }),
+    });
+    expect(await adapter.history()).toEqual([
+      expect.objectContaining({ ordinal: 1, id: "dead-author", outcome: "dead" }),
+      expect.objectContaining({
+        ordinal: 2,
+        id: "source-author",
+        outcome: "passed",
+        usage: {
+          inputTokens: { status: "known", value: 11 },
+          outputTokens: { status: "known", value: 3 },
+          costUsd: unavailable,
+        },
+      }),
+      expect.objectContaining({ ordinal: 3, id: "source-reviewer", outcome: "passed" }),
+    ]);
+    if (accepted.status !== "accepted") throw new Error("fixture source did not accept");
+    await writeFile(
+      resolve(current.paths.queue, "attempt.json"),
+      `${JSON.stringify({
+        schemaVersion: "dogfood-bounded-queue-attempt/v1",
+        phase: "delivery",
+        run: current.config.run,
+        index: 0,
+        item: current.item.id,
+        issue: current.item.issue,
+        base: current.item.base,
+        candidateAttempt: current.item.implementationAttempt,
+        head: accepted.head,
+        reviewId: accepted.reviewId,
+        findings: [],
+        history: await adapter.history(),
+        retries: accepted.retries ?? 0,
+        acceptedStage: "source",
+        stateDirectory: accepted.stateDirectory,
+      })}\n`,
+    );
+    await expect(queueStep(current.config, queueAdapter)).rejects.toThrow("delivery-state-unknown");
+    const interrupted = JSON.parse(
+      await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
+    );
+    expect(interrupted).toMatchObject({ head: candidate, retries: providerFailure ? 1 : 2 });
+    await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
+    await expect(
+      readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
+    ).resolves.toMatchObject({
+      head: corrected,
+      reviewId: "source-reviewer",
+      retries: providerFailure ? 1 : 2,
+    });
+    const effectsAfterCorrection = { launches: [...launches], gateCalls };
+    hostedReady = true;
+    await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
+      status: "complete",
+    });
+    await expect(
+      readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
+    ).resolves.toMatchObject({
+      phase: "complete",
+      head: corrected,
+      retries: providerFailure ? 1 : 2,
+      candidateAttempt: 2,
+    });
+    expect({ launches, gateCalls }).toEqual(effectsAfterCorrection);
+    expect(launches).toEqual(["author", "author", "reviewer", "gate-author", "gate-author"]);
+    expect({ draft, published, merged, cleaned }).toEqual({
+      draft: true,
+      published: true,
+      merged: true,
+      cleaned: true,
+    });
+    expect({ publicationMutations, mergeMutations }).toEqual({
+      publicationMutations: 1,
+      mergeMutations: 1,
+    });
+    expect(capturedDelivery).toMatchObject({
+      controllerRoot: current.paths.controller,
+      repositoryRoot: current.paths.repository,
+      refresh: current.item.delivery.refresh,
+    });
+    expect(postMerge).toEqual([mergeCommit]);
+  },
+);
 
 it("persists the genuine adapter result and restarts four-participant completion without effects", async () => {
   const current = await fixture();

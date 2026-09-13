@@ -109,6 +109,7 @@ export interface LoopConfig {
   gitExecutable: string;
   nativeLaunchCeiling: number;
   attemptCeiling: number;
+  providerOutageCeilingMs?: number;
 }
 
 export const ACTIONABLE_STOP_REASONS = [
@@ -120,6 +121,7 @@ export const ACTIONABLE_STOP_REASONS = [
   "gate-retry-exhausted:format:check",
   "reviewer-malformed",
   "exit-receipt-timeout",
+  "provider-unavailable",
   "native-launch-ceiling-exhausted",
   "implementation-attempt-ceiling-exhausted",
 ] as const;
@@ -227,10 +229,16 @@ export function validateLoopConfig(config: LoopConfig) {
       "gitExecutable",
       "nativeLaunchCeiling",
       "attemptCeiling",
+      ...(config.providerOutageCeilingMs === undefined ? [] : ["providerOutageCeilingMs"]),
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
+  demand(
+    config.providerOutageCeilingMs === undefined ||
+      (Number.isSafeInteger(config.providerOutageCeilingMs) && config.providerOutageCeilingMs > 0),
+    "invalid-provider-outage-ceiling",
+  );
   demand(/^[a-z0-9][a-z0-9-]*$/.test(config.adapter), "invalid-repository-adapter");
   demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
   for (const name of [
@@ -615,6 +623,9 @@ export async function queueConfigFromLoop(
     repository: config.repository,
     requiredChecks: hostedChecks,
     ...(localGates ? { localGates } : {}),
+    ...(config.providerOutageCeilingMs === undefined
+      ? {}
+      : { providerOutageCeilingMs: config.providerOutageCeilingMs }),
     author: { ...config.author, prompt: sourcePrompt },
     reviewer: { ...config.reviewer, prompt: reviewerPrompt },
     adapter: { kind: "codex-exec", executable: config.codexExecutable },

@@ -18,6 +18,7 @@ export interface Config {
   repository: string;
   requiredChecks: string[];
   localGates?: string[];
+  providerOutageCeilingMs?: number;
   author: { model: string; effort: string; prompt: string };
   reviewer: { model: string; effort: string; prompt: string };
   adapter: { kind: "codex-exec"; executable: string };
@@ -28,6 +29,7 @@ export interface Attempt {
   trace: string;
   launchedAt: number;
   retries?: 1;
+  retryContext?: string;
 }
 export interface Terminal {
   status: "running" | "passed" | "failed" | "malformed" | "dead";
@@ -35,6 +37,7 @@ export interface Terminal {
   head?: string;
   usage?: unknown;
   summary?: string;
+  providerFailure?: boolean;
 }
 export interface Check {
   name: string;
@@ -43,6 +46,7 @@ export interface Check {
 }
 export interface Adapter {
   preflight(config: Config): Promise<void>;
+  waitForProvider?(config: Config): Promise<void>;
   git(worktree: string, args: string[]): Promise<string>;
   launch(role: Role, config: Config, prompt: string): Promise<Attempt>;
   observe(role: Role, config: Config, attempt: Attempt): Promise<Terminal>;
@@ -269,22 +273,17 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
     const reviewed = await get("candidate");
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
     let terminal: Terminal | undefined = await get(`${role}-terminal`);
-    if (attempt?.retries === 1) {
-      retries = 1;
-      if (terminal?.id !== attempt.id) terminal = undefined;
-    }
+    if (attempt?.retries === 1) retries = 1;
+    if (terminal?.id !== attempt?.id) terminal = undefined;
     let parseError: string | undefined;
-    let retryCause: "dead" | "malformed" | undefined;
-    for (let iteration = 0; iteration < 2; iteration += 1) {
-      const retry = iteration === 1 || attempt?.retries === 1;
-      if (iteration === 1) {
-        retries = 1;
-        attempt = undefined;
-        terminal = undefined;
-      }
+    let retryContext = attempt?.retryContext ?? "";
+    let retry = attempt?.retries === 1;
+    let relaunch = false;
+    for (;;) {
       if (!attempt) {
+        await adapter.waitForProvider?.(config);
         let reviewerHead: string | undefined;
-        if (!retry) {
+        if (!relaunch) {
           requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
           // Reserve before the first launch. A retry replaces this attempt once launched.
           const intentHead = role === "author" ? config.base : reviewed?.head;
@@ -296,7 +295,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
           });
         }
         if (role === "author") {
-          if (retry) {
+          if (relaunch) {
             // ISS-127 recorded that a dead author can leave partial edits behind.
             const discarded = await adapter.git(config.worktree, ["status", "--porcelain"]);
             await adapter.git(config.worktree, ["reset", "--hard", config.base]);
@@ -320,7 +319,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
           const candidateHead = (await candidate(config, adapter)).head;
           requireThat(candidateHead === reviewed.head, "candidate-head-moved");
           reviewerHead = candidateHead;
-          if (!retry) {
+          if (!relaunch) {
             requireThat(
               (await adapter.git(config.reviewWorktree, ["status", "--porcelain"])) === "",
               "dirty-reviewer",
@@ -330,10 +329,6 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
         }
         const reviewHead = role === "author" ? config.base : reviewerHead;
         requireThat(typeof reviewHead === "string", "review-head-identity-unknown");
-        const retryContext =
-          retry && retryCause === "malformed"
-            ? `\nThe previous reviewer report could not be parsed (${parseError ?? "malformed-review-report"}). Review the unchanged candidate independently and return one valid report.\n`
-            : "";
         const prompt = `${workerPrompt(
           config,
           role,
@@ -341,9 +336,12 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
           prompts[role === "author" ? 0 : 1],
         )}${retryContext}`;
         const launched = await adapter.launch(role, config, prompt);
-        attempt = retry ? { ...launched, retries: 1 } : launched;
-        if (retry) await replace(directory, `${role}-attempt`, attempt);
-        else await put(`${role}-attempt`, attempt);
+        attempt = {
+          ...launched,
+          ...(retry ? { retries: 1 as const } : {}),
+          ...(retryContext ? { retryContext } : {}),
+        };
+        await replace(directory, `${role}-attempt`, attempt);
       }
       requireThat(
         typeof attempt.id === "string" &&
@@ -384,12 +382,17 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
       }
       if (terminal.status === "dead") {
         const diagnostics = terminalSummary(terminal.summary);
-        if (!retry) {
-          retryCause = "dead";
-          if (!(await get(`${role}-terminal`))) await put(`${role}-terminal`, terminal);
-          continue;
+        await replace(directory, `${role}-terminal`, terminal);
+        // ISS-129: an outage spends native launches, not the ISS-127 retry.
+        if (!terminal.providerFailure) {
+          if (retry) throw new QueueBlocked("launcher-failed", diagnostics, retries);
+          retry = true;
+          retries = 1;
         }
-        throw new QueueBlocked("launcher-failed", diagnostics, retries);
+        relaunch = true;
+        attempt = undefined;
+        terminal = undefined;
+        continue;
       }
       if (role === "reviewer" && ["passed", "failed"].includes(terminal.status)) {
         try {
@@ -403,16 +406,18 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
       if (role === "reviewer" && terminal.status === "malformed") {
         parseError ??= "malformed-worker-verdict";
         if (!retry) {
-          retryCause = "malformed";
-          if (!(await get(`${role}-terminal`))) await put(`${role}-terminal`, terminal);
+          retryContext = `\nThe previous reviewer report could not be parsed (${parseError}). Review the unchanged candidate independently and return one valid report.\n`;
+          await replace(directory, `${role}-terminal`, terminal);
+          retry = true;
+          retries = 1;
+          relaunch = true;
+          attempt = undefined;
+          terminal = undefined;
           continue;
         }
         throw new QueueBlocked("reviewer-malformed", undefined, retries);
       }
-      if (retry) {
-        await replace(directory, `${role}-attempt`, attempt);
-        await replace(directory, `${role}-terminal`, terminal);
-      } else if (!(await get(`${role}-terminal`))) await put(`${role}-terminal`, terminal);
+      await replace(directory, `${role}-terminal`, terminal);
       break;
     }
     requireThat(attempt && terminal, `${role}-state-incomplete`);
@@ -566,26 +571,44 @@ export async function correctGate(
     "candidate-workspace-drift",
   );
   const prompt = `${workerPrompt(config, "author", config.base, config.author.prompt)}\nCorrect the ${gate} gate failure on this same branch. The gate output was:\n${output}\n`;
-  const attempt = await adapter.launch("author", config, prompt);
-  requireThat(
-    typeof attempt.id === "string" &&
-      attempt.id.length > 0 &&
-      Number.isSafeInteger(attempt.pid) &&
-      attempt.pid > 0 &&
-      isAbsolute(attempt.trace) &&
-      Number.isFinite(attempt.launchedAt) &&
-      attempt.launchedAt > 0,
-    "invalid-attempt-identity",
-  );
+  let attempt: Attempt;
   let terminal: Terminal;
+  let relaunch = false;
+  let retries = 0;
   for (;;) {
-    terminal = await adapter.observe("author", config, attempt);
+    await adapter.waitForProvider?.(config);
+    if (relaunch) {
+      await adapter.git(config.worktree, ["reset", "--hard", config.base]);
+      await adapter.git(config.worktree, ["clean", "-fd"]);
+    }
+    attempt = await adapter.launch("author", config, prompt);
     requireThat(
-      terminal.id === attempt.id && ["running", "passed", "failed"].includes(terminal.status),
-      "malformed-terminal",
+      typeof attempt.id === "string" &&
+        attempt.id.length > 0 &&
+        Number.isSafeInteger(attempt.pid) &&
+        attempt.pid > 0 &&
+        isAbsolute(attempt.trace) &&
+        Number.isFinite(attempt.launchedAt) &&
+        attempt.launchedAt > 0,
+      "invalid-attempt-identity",
     );
-    if (terminal.status !== "running") break;
-    await new Promise((done) => setTimeout(done, 1_000));
+    for (;;) {
+      terminal = await adapter.observe("author", config, attempt);
+      requireThat(
+        terminal.id === attempt.id &&
+          ["running", "passed", "failed", "dead"].includes(terminal.status),
+        "malformed-terminal",
+      );
+      if (terminal.status !== "running") break;
+      await new Promise((done) => setTimeout(done, 1_000));
+    }
+    if (terminal.status !== "dead") break;
+    if (!terminal.providerFailure) {
+      if (retries)
+        throw new QueueBlocked("launcher-failed", terminalSummary(terminal.summary), retries);
+      retries = 1;
+    }
+    relaunch = true;
   }
   if (terminal.status !== "passed")
     throw new QueueBlocked("gate-correction-failed", terminalSummary(terminal.summary));

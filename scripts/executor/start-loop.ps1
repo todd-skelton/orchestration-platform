@@ -21,4 +21,4 @@ if (-not $listening) {
   Write-Host "pool bridge already listening on ${address}:$port"
 }
 
-wsl -d Ubuntu -- bash /root/orchestration-m1/run-loop.sh $Config
+wsl -d Ubuntu -- bash /root/orchestration-m1/repo/scripts/executor/run-loop.sh $Config

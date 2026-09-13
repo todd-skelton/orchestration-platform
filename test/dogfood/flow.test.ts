@@ -2,7 +2,7 @@ import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { step, workerPrompt } from "../../scripts/dogfood/flow.js";
+import { correctGate, QueueBlocked, step, workerPrompt } from "../../scripts/dogfood/flow.js";
 import type { Adapter, Check, Config, Role, Terminal } from "../../scripts/dogfood/flow.js";
 import {
   deliveryStep,
@@ -13,11 +13,25 @@ import {
   repositoryDeliveryPolicy,
   type RepositoryAdapter,
 } from "../../scripts/dogfood/repository-adapter.js";
+import { parseTrace, waitForProvider } from "../../scripts/dogfood/dispatch-adapter.js";
+import { stopCycle } from "../../scripts/dogfood/supervision.js";
+import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
   pilotRevision = "c".repeat(40);
 const cleanup: string[] = [];
+const providerBaseUrl = "http://provider.test/v1";
+function deadTrace(message: string, config: Config) {
+  const trace =
+    [
+      { type: "thread.started", thread_id: "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0" },
+      { type: "turn.failed", error: { message } },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join("\n") + "\n";
+  return parseTrace(trace, true, "author", config, undefined, true, providerBaseUrl);
+}
 afterEach(async () => {
   for (const path of cleanup.splice(0)) await rm(path, { recursive: true, force: true });
 });
@@ -127,9 +141,14 @@ async function fixture() {
       expect(prompt).toContain(role === "author" ? base : head);
       launches.push(role);
       launchPrompts.push(prompt);
-      const retry = launches.filter((launch) => launch === role).length > 1;
+      const count = launches.filter((launch) => launch === role).length;
+      const retry = count > 1;
       return {
-        id: retry ? `${role}-retry` : role === "reviewer" && sameIdentity ? "author" : role,
+        id: retry
+          ? `${role}-retry${count > 2 ? count : ""}`
+          : role === "reviewer" && sameIdentity
+            ? "author"
+            : role,
         pid: 123,
         trace: resolve(root, `${role}.jsonl`),
         launchedAt: 1,
@@ -137,12 +156,13 @@ async function fixture() {
     },
     async observe(role, _selectedConfig, attempt) {
       observations.push(role);
-      const retry = attempt.retries === 1;
+      const retry = attempt.id.startsWith(`${role}-retry`);
       const status = retry ? retryStatus : statuses[role];
       const summary = retry ? retrySummary : summaries[role];
       if (role === "author" && status === "dead") authorDirty = true;
       if (role === "author" && status === "passed") authorComplete = true;
       return {
+        ...(status === "dead" ? deadTrace(String(summary ?? "worker exited"), config) : {}),
         status,
         id: attempt.id,
         ...(status === "running" ? {} : { head: role === "author" ? base : head }),
@@ -223,7 +243,224 @@ async function fixture() {
     },
   };
 }
+
+function fakeProvider(f: Awaited<ReturnType<typeof fixture>>, responses: (string | undefined)[]) {
+  let now = 0;
+  const polls: { at: number; launches: number }[] = [];
+  const statuses: object[] = [];
+  f.adapter.waitForProvider = (config) =>
+    waitForProvider(
+      config,
+      async () => {
+        polls.push({ at: now, launches: f.launches.length });
+        const error = responses.shift();
+        if (error) throw new Error(error);
+      },
+      {
+        now: () => now,
+        pause: async (ms) => {
+          now += ms;
+        },
+      },
+      (status) => {
+        statuses.push(status);
+      },
+    );
+  return { polls, statuses };
+}
+
 describe("supervised sequential pilot (fake attempts, never live acceptance)", () => {
+  it("waits before gate corrections and replaces a provider-dead correction", async () => {
+    const f = await fixture();
+    const probe = fakeProvider(f, [undefined, "offline", undefined]);
+    f.statuses.author = "dead";
+    f.summarize("author", "HTTP 502");
+    f.retry("passed");
+    const result = await correctGate(f.config, f.adapter, f.pilot, "typecheck", "type error");
+    expect(result.head).toBe(head);
+    expect(f.launches).toEqual(["author", "author"]);
+    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    expect(probe.polls).toEqual([
+      { at: 0, launches: 0 },
+      { at: 0, launches: 1 },
+      { at: 10_000, launches: 1 },
+    ]);
+  });
+
+  it("preserves the malformed-review retry prompt through a provider death after restart", async () => {
+    const f = await fixture();
+    fakeProvider(f, []);
+    await f.run();
+    f.authorDone();
+    await f.run();
+    f.statuses.reviewer = "malformed";
+    f.retry("running");
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+    f.retry("dead", "stream disconnected");
+    const observe = f.adapter.observe;
+    f.adapter.observe = async (role, config, attempt) => {
+      if (attempt.id === "reviewer-retry3")
+        f.retry(
+          "passed",
+          JSON.stringify({
+            run: config.run,
+            role,
+            head,
+            verdict: "PASS",
+            findings: [],
+            g0: "No simpler change.",
+          }),
+        );
+      return observe(role, config, attempt);
+    };
+    await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication", retries: 1 });
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    expect(f.launchPrompts[2]).toContain("previous reviewer report could not be parsed");
+    expect(f.launchPrompts[3]).toBe(f.launchPrompts[2]);
+  });
+  it("waits out a provider-dead author and reaches publication and passing CI in the same attempt", async () => {
+    const f = await fixture();
+    const probe = fakeProvider(f, [undefined, "HTTP 503", "connection refused", undefined]);
+    f.statuses.author = "dead";
+    f.summarize("author", `stream disconnected before completion: ${providerBaseUrl}/responses`);
+    f.retry("running");
+    await expect(f.run()).resolves.toMatchObject({
+      status: "observing-author",
+      attempt: { id: "author-retry" },
+    });
+    expect(probe.polls).toEqual([
+      { at: 0, launches: 0 },
+      { at: 0, launches: 1 },
+      { at: 10_000, launches: 1 },
+      { at: 20_000, launches: 1 },
+    ]);
+    expect(probe.statuses).toEqual([
+      {
+        status: "waiting-provider",
+        run: f.config.run,
+        issue: f.config.issue,
+        diagnostics: "HTTP 503",
+      },
+      {
+        status: "waiting-provider",
+        run: f.config.run,
+        issue: f.config.issue,
+        diagnostics: "connection refused",
+      },
+    ]);
+    // Reload the attempt while its provider replacement is still running.
+    expect(await f.run()).not.toHaveProperty("retries");
+    f.retry("passed");
+    await f.run();
+    f.reviewerDone();
+    expect(await f.run()).toMatchObject({ status: "awaiting-publication" });
+    await f.publish();
+    const landed = await f.run();
+    expect(landed.status).toBe("ready");
+    expect(landed).not.toHaveProperty("retries");
+    expect(f.launches).toEqual(["author", "author", "reviewer"]);
+    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    expect(f.resets).toEqual([["reset", "--hard", base]]);
+    expect(f.commits).toHaveLength(1);
+    expect(probe.polls.at(-1)?.launches).toBe(2); // reviewer was probed too
+  });
+
+  it("stops a probe that never answers with provider-unavailable and posts a host note without parking", async () => {
+    const f = await fixture();
+    f.config.providerOutageCeilingMs = 25_000;
+    const probe = fakeProvider(f, ["HTTP 503", "HTTP 502", "connection refused"]);
+    let stopped: QueueBlocked | undefined;
+    try {
+      await f.run();
+    } catch (error) {
+      stopped = error as QueueBlocked;
+    }
+    expect(stopped).toMatchObject({
+      reason: "provider-unavailable",
+      diagnostics: "connection refused",
+      retries: 0,
+    });
+    expect(probe.polls.map((poll) => poll.at)).toEqual([0, 10_000, 20_000]);
+    expect(f.launches).toEqual([]);
+    const comments: string[] = [];
+    let parks = 0;
+    await mkdir(resolve(f.config.stateDirectory, "..", f.config.run));
+    const scope = await stopCycle(
+      {
+        run: f.config.run,
+        stateRoot: resolve(f.config.stateDirectory, ".."),
+        nativeLaunchCeiling: 4,
+      } as LoopConfig,
+      { selection: { cycle: 1, key: "ISS-129", number: 421, base }, initialHistory: [] },
+      stopped!.reason,
+      0,
+      {
+        currentMain: async () => base,
+        issue: async () => ({ state: "OPEN", key: "ISS-129", labels: ["ready"], comments }),
+        comment: async (_config, _number, body) => {
+          comments.push(body);
+        },
+        removeReady: async () => {
+          throw new Error("must remain ready");
+        },
+        close: async () => {
+          throw new Error("must remain open");
+        },
+      },
+      {
+        park: () => {
+          parks += 1;
+          return "unpark";
+        },
+      } as unknown as RepositoryAdapter,
+      stopped!.diagnostics,
+    );
+    expect(scope).toBe("run");
+    expect(parks).toBe(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain("provider-unavailable");
+    expect(comments[0]).toContain("connection refused");
+    expect(comments[0]).not.toContain("To unpark");
+    // The failed prelaunch probe did not reserve a launch intent.
+    fakeProvider(f, []);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  });
+
+  it("preserves the one worker retry across provider deaths before and after it", async () => {
+    const f = await fixture();
+    const probe = fakeProvider(f, []);
+    const observe = f.adapter.observe;
+    const errors = ["HTTP 503", "worker process crashed", "stream disconnected"];
+    f.retry("passed");
+    f.adapter.observe = async (role, config, attempt) => {
+      const message = role === "author" ? errors[f.launches.length - 1] : undefined;
+      return message
+        ? { ...deadTrace(message, config), id: attempt.id }
+        : observe(role, config, attempt);
+    };
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+    expect(f.launches).toEqual(["author", "author", "author", "author", "reviewer"]);
+    expect(probe.polls).toHaveLength(5);
+    expect(f.launchPrompts.slice(0, 4).every((prompt) => prompt === f.launchPrompts[0])).toBe(true);
+  });
+
+  it("bounds a flapping provider only by native launches", async () => {
+    const f = await fixture();
+    fakeProvider(f, []);
+    f.statuses.author = "dead";
+    f.summarize("author", "HTTP 503");
+    f.retry("dead", "HTTP 503");
+    const launch = f.adapter.launch;
+    f.adapter.launch = async (...args) => {
+      if (f.launches.length === 3) throw new QueueBlocked("native-launch-ceiling-exhausted");
+      return launch(...args);
+    };
+    await expect(f.run()).rejects.toMatchObject({
+      reason: "native-launch-ceiling-exhausted",
+      retries: 0,
+    });
+    expect(f.launches).toEqual(["author", "author", "author"]);
+  });
   it("requires local author verification and otherwise preserves the reviewer prompt", async () => {
     const f = await fixture();
     expect(workerPrompt(f.config, "author", base, "Improve the selected issue.")).toBe(
@@ -463,7 +700,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     f.authorDone();
     await f.run();
     f.statuses.reviewer = "dead";
-    f.summarize("reviewer", "review stream disconnected");
+    f.summarize("reviewer", "review worker crashed");
     f.retry(
       "passed",
       JSON.stringify({
