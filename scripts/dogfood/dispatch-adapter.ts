@@ -156,19 +156,39 @@ export function parseTrace(
   role: Role,
   config: Config,
   expected?: string,
+  launcherFailed = false,
 ): Terminal {
-  const rows = events(trace, complete);
+  const rows = events(trace, complete && !launcherFailed);
   const ids = rows.filter((row) => row.type === "thread.started").map((row) => row.thread_id);
+  const receiptOnlyIdentity =
+    launcherFailed && (ids.length !== 1 || ids[0] !== expected) ? expected : undefined;
   check(
-    ids.length === 1 && typeof ids[0] === "string" && /^[a-f0-9-]{36}$/.test(ids[0]),
+    (typeof receiptOnlyIdentity === "string" && /^[a-f0-9-]{36}$/.test(receiptOnlyIdentity)) ||
+      (ids.length === 1 && typeof ids[0] === "string" && /^[a-f0-9-]{36}$/.test(ids[0])),
     "missing-or-ambiguous-thread-identity",
   );
-  const id = ids[0] as string;
-  check(expected === undefined || id === expected, "attempt-identity-changed");
-  if (!complete) return { id, status: "running" };
-  const turns = rows.filter((row) => row.type === "turn.completed");
+  const id = receiptOnlyIdentity ?? (ids[0] as string);
   check(
-    turns.length === 1 && !rows.some((row) => ["turn.failed", "error"].includes(row.type)),
+    receiptOnlyIdentity !== undefined || expected === undefined || id === expected,
+    "attempt-identity-changed",
+  );
+  const turns = rows.filter((row) => row.type === "turn.completed");
+  const dead = launcherFailed || (turns.length === 0 && rows.at(-1)?.type === "turn.failed");
+  if (dead) {
+    let summary: string | undefined;
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      const message = row?.error?.message ?? row?.message;
+      if (typeof message === "string" && message.trim()) {
+        summary = terminalSummary(message);
+        break;
+      }
+    }
+    return { id, status: "dead", ...(summary ? { summary } : {}) };
+  }
+  if (!complete) return { id, status: "running" };
+  check(
+    turns.length === 1 && !rows.some((row) => row.type === "turn.failed"),
     "missing-successful-terminal",
   );
   const messages = rows.filter(
@@ -317,36 +337,25 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
       for (let count = 0; count < 120; count++) {
         const identity = await optionalText(artifact(config, role, launch, "process.json"));
         const text = await optionalText(trace);
+        const exit = await optionalText(artifact(config, role, launch, "exit.json"));
+        if (identity && exit && JSON.parse(exit).code !== 0)
+          return { id: launch, pid: JSON.parse(identity).pid, trace, launchedAt: now() };
         if (identity && text.includes('"thread.started"')) {
           const terminal = parseTrace(text, false, role, config);
           return { id: terminal.id, pid: JSON.parse(identity).pid, trace, launchedAt: now() };
         }
-        check(
-          !(await optionalText(artifact(config, role, launch, "exit.json"))),
-          "launcher-exited-before-identity-reconcile",
-        );
+        check(!exit, "launcher-exited-before-identity-reconcile");
         await pause(1000);
       }
       throw new QueueBlocked("launch-identity-timeout-reconcile");
     },
     async observe(role, config, attempt: Attempt) {
       const exit = await optionalText(attemptArtifact(attempt, "exit.json"));
-      if (exit) check(JSON.parse(exit).code === 0, "launcher-failed");
-      else {
-        try {
-          process.kill(attempt.pid, 0);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-            if (now() - attempt.launchedAt < EXIT_RECEIPT_WINDOW_MS)
-              return { id: attempt.id, status: "running" };
-            throw new QueueBlocked("exit-receipt-timeout");
-          }
-          throw error;
-        }
-      }
       const trace = await readFile(attempt.trace, "utf8");
+      const launcherFailed = Boolean(exit) && JSON.parse(exit).code !== 0;
+      let terminal: Terminal;
       try {
-        return parseTrace(trace, Boolean(exit), role, config, attempt.id);
+        terminal = parseTrace(trace, Boolean(exit), role, config, attempt.id, launcherFailed);
       } catch (error) {
         if (
           role === "reviewer" &&
@@ -362,6 +371,19 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
           };
         throw error;
       }
+      if (!exit && terminal.status !== "dead") {
+        try {
+          process.kill(attempt.pid, 0);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+            if (now() - attempt.launchedAt < EXIT_RECEIPT_WINDOW_MS)
+              return { id: attempt.id, status: "running" };
+            throw new QueueBlocked("exit-receipt-timeout");
+          }
+          throw error;
+        }
+      }
+      return terminal;
     },
     async checks(config, url) {
       const head = async () =>

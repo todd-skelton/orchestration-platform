@@ -57,7 +57,7 @@ export interface QueueParticipant {
   item: string;
   stage: "source" | "repair";
   role: "author" | "reviewer";
-  outcome: "passed" | "failed" | "unknown" | "malformed";
+  outcome: "passed" | "failed" | "unknown" | "malformed" | "dead";
   usage: QueueUsage;
 }
 
@@ -688,7 +688,7 @@ export function validateHistory(history: QueueParticipant[], ceiling: number) {
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.item) &&
         ["source", "repair"].includes(participant.stage) &&
         ["author", "reviewer"].includes(participant.role) &&
-        ["passed", "failed", "unknown", "malformed"].includes(participant.outcome) &&
+        ["passed", "failed", "unknown", "malformed", "dead"].includes(participant.outcome) &&
         validUsage(participant.usage),
       "malformed-participant-history",
     );
@@ -993,6 +993,9 @@ function assertHistoryPrefix(config: QueueConfig, history: QueueParticipant[]) {
 function participantGroups(participants: QueueParticipant[], reason: string) {
   const groups: QueueParticipant[][] = [];
   for (const participant of participants) {
+    // ISS-127 still charges dead processes to the native ceiling, but they did
+    // not produce author/reviewer evidence for a logical review pair.
+    if (participant.outcome === "dead") continue;
     if (participant.role === "author") groups.push([participant]);
     else {
       const group = groups.at(-1);
@@ -1586,7 +1589,7 @@ export function repositoryQueueAdapter(
     if (attempt === ABSENT || terminal === ABSENT || terminal.status === "running") return;
     const history = await readHistory();
     const existingParticipant = history.find((participant) => participant.id === attempt.id);
-    const outcome: QueueParticipant["outcome"] = ["passed", "failed", "malformed"].includes(
+    const outcome: QueueParticipant["outcome"] = ["passed", "failed", "malformed", "dead"].includes(
       terminal.status,
     )
       ? terminal.status
@@ -1619,6 +1622,7 @@ export function repositoryQueueAdapter(
     for (const role of ["author", "reviewer"] as const) {
       const attempt = await optionalRecord(directory, `${role}-attempt`);
       let terminal = await optionalRecord(directory, `${role}-terminal`);
+      if (attempt !== ABSENT && terminal !== ABSENT && attempt.id !== terminal.id) continue;
       if (
         stage === "source" &&
         role === "reviewer" &&
@@ -2008,8 +2012,16 @@ export function repositoryQueueAdapter(
       const stage = samePath(accepted.stateDirectory, item.source.stateDirectory)
         ? "source"
         : "repair";
-      const reviewerAttempt = await optionalRecord(accepted.stateDirectory, "reviewer-attempt");
-      const flowRetries = reviewerAttempt !== ABSENT && reviewerAttempt.retries === 1 ? 1 : 0;
+      const flowAttempts = await Promise.all(
+        ["author", "reviewer"].map((role) =>
+          optionalRecord(accepted.stateDirectory, `${role}-attempt`),
+        ),
+      );
+      const flowRetries = flowAttempts.some(
+        (attempt) => attempt !== ABSENT && attempt.retries === 1,
+      )
+        ? 1
+        : 0;
       let savedAttempt = await optionalRecord(state, "attempt");
       if (savedAttempt !== ABSENT) validateAttempt(savedAttempt, config);
       let gateRetryCounted =

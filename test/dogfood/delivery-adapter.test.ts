@@ -1478,37 +1478,48 @@ it("fails self policy closed before provider access for the wrong repository or 
   ).rejects.toThrow("wrong-self-hosted-checks");
 });
 
-it("reduces an exact primary reviewer report to delivery evidence", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
-  roots.push(root);
-  const current = config(root);
-  await Promise.all(
-    [current.controllerRoot, current.worktree, current.reviewWorktree, current.stateDirectory].map(
-      (path) => mkdir(path),
-    ),
-  );
-  await writePilotEvidence(current, {
-    reviewerTerminal: {
-      id: reviewId,
-      status: "passed",
+it.each(["none", "author", "reviewer"])(
+  "reduces an exact report after a %s retry to delivery evidence",
+  async (retriedRole) => {
+    const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
+    roots.push(root);
+    const current = config(root);
+    await Promise.all(
+      [
+        current.controllerRoot,
+        current.worktree,
+        current.reviewWorktree,
+        current.stateDirectory,
+      ].map((path) => mkdir(path)),
+    );
+    await writePilotEvidence(current, {
+      reviewerTerminal: {
+        id: reviewId,
+        status: "passed",
+        head,
+        summary: reviewerReport(current),
+      },
+    });
+    if (retriedRole !== "none") {
+      const path = resolve(current.stateDirectory, `${retriedRole}-attempt.json`);
+      const attempt = JSON.parse(await readFile(path, "utf8"));
+      await writeFile(path, JSON.stringify({ ...attempt, retries: 1 }));
+    }
+    await expect(githubDeliveryAdapter().source(current)).resolves.toEqual({
       head,
-      summary: reviewerReport(current),
-    },
-  });
-  await expect(githubDeliveryAdapter().source(current)).resolves.toEqual({
-    head,
-    reviewId,
-    controller: current.controller,
-    run: current.run,
-    issue: current.issue,
-    repository: current.repository,
-    controllerRevision: current.controllerRevision,
-    worktree: current.worktree,
-    reviewWorktree: current.reviewWorktree,
-    stateDirectory: current.stateDirectory,
-    requiredChecks: current.requiredChecks,
-  });
-});
+      reviewId,
+      controller: current.controller,
+      run: current.run,
+      issue: current.issue,
+      repository: current.repository,
+      controllerRevision: current.controllerRevision,
+      worktree: current.worktree,
+      reviewWorktree: current.reviewWorktree,
+      stateDirectory: current.stateDirectory,
+      requiredChecks: current.requiredChecks,
+    });
+  },
+);
 
 it.each([
   [
@@ -1543,6 +1554,30 @@ it.each([
     "unreviewed-delivery-source",
   );
 });
+
+it.each(["author", "reviewer"])(
+  "rejects malformed %s retry markers in delivery evidence",
+  async (role) => {
+    const root = await mkdtemp(resolve(tmpdir(), "delivery-retry-marker-"));
+    roots.push(root);
+    const current = config(root);
+    await mkdir(current.stateDirectory);
+    await writePilotEvidence(current);
+    const path = resolve(current.stateDirectory, `${role}-attempt.json`);
+    const attempt = JSON.parse(await readFile(path, "utf8"));
+    for (const marker of [
+      { retries: 0 },
+      { retries: 2 },
+      { retries: "1" },
+      { retries: 1, extra: true },
+    ]) {
+      await writeFile(path, JSON.stringify({ ...attempt, ...marker }));
+      await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
+        "unreviewed-delivery-source",
+      );
+    }
+  },
+);
 
 it.each([
   ["missing author identity", {}, { id: reviewId, status: "passed", head }],

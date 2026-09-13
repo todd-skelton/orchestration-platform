@@ -45,7 +45,8 @@ const rows = [
   },
   { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
 ];
-const trace = (events = rows) => events.map((row) => JSON.stringify(row)).join("\n") + "\n";
+const trace = (events: unknown[] = rows) =>
+  events.map((row) => JSON.stringify(row)).join("\n") + "\n";
 type MutableFixture<T> = T extends string
   ? string
   : T extends number
@@ -302,6 +303,69 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
 });
+it.each(["PASS", "FAIL"])(
+  "reads a completed %s report after transient reconnect errors",
+  (verdict) => {
+    // ISS-127 / #418: the reviewer recovered after five reconnect errors and returned FAIL.
+    const report = { ...rows[1]!, item: { ...rows[1]!.item! } };
+    report.item.text = JSON.stringify({ ...JSON.parse(report.item.text!), verdict });
+    const recovered = [
+      rows[0]!,
+      ...Array.from({ length: 5 }, (_, index) => ({
+        type: "error",
+        message: `Reconnecting... ${index + 1}/5`,
+      })),
+      report,
+      rows[2]!,
+    ];
+    expect(parseTrace(trace(recovered), true, "reviewer", config, id)).toMatchObject({
+      id,
+      head,
+      status: verdict === "PASS" ? "passed" : "failed",
+      summary: report.item.text,
+      usage: rows[2]!.usage,
+    });
+    expect(parseTrace(trace(recovered), true, "reviewer", config, id, true).status).toBe("dead");
+    expect(() =>
+      parseTrace(trace([...recovered, { type: "turn.failed" }]), true, "reviewer", config, id),
+    ).toThrow("missing-successful-terminal");
+    expect(() =>
+      parseTrace(trace(recovered.filter((row) => row !== report)), true, "reviewer", config, id),
+    ).toThrow("malformed-worker-verdict");
+    expect(() =>
+      parseTrace(trace(recovered.filter((row) => row !== rows[2])), true, "reviewer", config, id),
+    ).toThrow("missing-successful-terminal");
+    expect(() => parseTrace(trace(recovered), true, "reviewer", config, "other")).toThrow(
+      "attempt-identity-changed",
+    );
+    expect(() =>
+      parseTrace(trace(recovered), true, "reviewer", { ...config, run: "other" }, id),
+    ).toThrow("worker-verdict-identity-mismatch");
+  },
+);
+it("classifies a failed turn or non-zero launcher exit as dead and keeps the last trace error", () => {
+  const failed = trace([
+    rows[0]!,
+    { type: "turn.failed", error: { message: "upstream TLS handshake timed out" } },
+  ] as typeof rows);
+  expect(parseTrace(failed, true, "author", config, id)).toEqual({
+    id,
+    status: "dead",
+    summary: "upstream TLS handshake timed out",
+  });
+  expect(parseTrace(failed, false, "author", config, id).status).toBe("dead");
+  expect(
+    parseTrace(
+      trace([rows[0]!, { type: "error", message: "provider returned 503" }] as typeof rows),
+      true,
+      "author",
+      config,
+      id,
+      true,
+    ),
+  ).toEqual({ id, status: "dead", summary: "provider returned 503" });
+  expect(parseTrace("", true, "author", config, id, true)).toEqual({ id, status: "dead" });
+});
 it("retains exact reviewer reports and rejects oversized or obsolete output", () => {
   const verdict = (g0: unknown, extra: Record<string, unknown> = {}) =>
     trace([
@@ -422,12 +486,52 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
 it("refuses a CLI without the observed native interface before launching", async () => {
   await expect(codexAdapter().preflight(config)).rejects.toThrow();
 });
+it("observes a terminal failed trace as dead before its exit receipt arrives", async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-dead-trace-")));
+  cleanup.push(root);
+  const current = { ...config, stateDirectory: root };
+  const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
+  await writeFile(
+    attempt.trace,
+    trace([
+      rows[0]!,
+      { type: "turn.failed", error: { message: "stream disconnected" } },
+    ] as typeof rows),
+  );
+
+  await expect(codexAdapter().observe("author", current, attempt)).resolves.toEqual({
+    id,
+    status: "dead",
+    summary: "stream disconnected",
+  });
+});
+it("treats a non-zero exit as dead when the trace ends with partial JSON", async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-dead-partial-trace-")));
+  cleanup.push(root);
+  const current = { ...config, stateDirectory: root };
+  const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
+  await writeFile(
+    attempt.trace,
+    `${trace([
+      rows[0]!,
+      { type: "error", message: "provider returned 503" },
+    ] as typeof rows)}{"type":"turn.failed"`,
+  );
+  await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 1 }));
+
+  await expect(codexAdapter().observe("author", current, attempt)).resolves.toEqual({
+    id,
+    status: "dead",
+    summary: "provider returned 503",
+  });
+});
 it("observes a missing exit receipt for the module window before a typed stop", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-exit-wait-")));
   cleanup.push(root);
   let now = 1_000;
   const current = { ...config, stateDirectory: root };
   const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
+  await writeFile(attempt.trace, trace([rows[0]!]));
   const kill = vi.spyOn(process, "kill").mockImplementation(() => {
     throw Object.assign(new Error("gone"), { code: "ESRCH" });
   });
