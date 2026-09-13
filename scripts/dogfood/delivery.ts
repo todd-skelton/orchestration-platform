@@ -178,6 +178,7 @@ export interface DeliveryAdapter {
   ): Promise<{
     head: string;
     checks: CheckEvidence[];
+    workflowPending?: boolean;
   }>;
   /** Returns null while the check's run is not completed. */
   failedCheckLog?(config: DeliveryConfig, check: CheckEvidence): Promise<string | null>;
@@ -697,12 +698,18 @@ function validateCleanupRecord(
   );
 }
 
-function validateChecks(config: DeliveryConfig, head: string, checks: CheckEvidence[]) {
+function validateChecks(
+  config: DeliveryConfig,
+  head: string,
+  checks: CheckEvidence[],
+  allowMissing = false,
+) {
   demand(head === config.candidateHead, "hosted-head-drift");
-  demand(Array.isArray(checks) && checks.length > 0, "empty-hosted-checks");
+  demand(Array.isArray(checks), "empty-hosted-checks");
   const projected: CheckEvidence[] = [];
   for (const name of config.requiredChecks) {
     const matches = checks.filter((check) => check?.name === name);
+    if (allowMissing && matches.length === 0) continue;
     demand(matches.length === 1, `missing-or-duplicate-check:${name}`);
     const check = matches[0]!;
     demand(
@@ -1111,10 +1118,13 @@ export async function deliveryStep(
       "candidate-workspace-drift",
     );
     const observed = await adapter.checks(config, publication);
-    if (observed.checks.length === 0) {
-      demand(observed.head === config.candidateHead, "hosted-head-drift");
-      checks = [];
-    } else checks = validateChecks(config, observed.head, observed.checks);
+    checks = validateChecks(
+      config,
+      observed.head,
+      observed.checks,
+      observed.workflowPending === true,
+    );
+    const awaitingRequired = checks.length < config.requiredChecks.length;
     const failed = checks.find((check) => ["fail", "cancel"].includes(check.bucket));
     if (failed) {
       demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${failed.name}`);
@@ -1125,7 +1135,7 @@ export async function deliveryStep(
         return failedResult(config.candidateHead, source.reviewId, failed.name, boundedLog);
       }
     }
-    if (failed || checks.length === 0 || checks.some((check) => check.bucket === "pending")) {
+    if (failed || awaitingRequired || checks.some((check) => check.bucket === "pending")) {
       return {
         status: "observing-hosted-checks",
         run: config.run,

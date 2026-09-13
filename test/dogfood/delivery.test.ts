@@ -13,6 +13,7 @@ import {
   type DeliveryPlan,
   type PublicationObservation,
   type PublicationEvidence,
+  type CheckEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
 
 const head = "a".repeat(40);
@@ -149,7 +150,7 @@ async function fixture() {
     },
     async checks() {
       calls.push("checks");
-      if (state.checks === "empty") return { head, checks: [] };
+      if (state.checks === "empty") return { head, checks: [], workflowPending: true };
       const values = config.requiredChecks.map((name) => ({
         name,
         bucket: (["pending", "fail", "cancel"].includes(state.checks) && name === "macos"
@@ -204,6 +205,58 @@ async function fixture() {
 
 async function writeState(config: DeliveryConfig, name: string, value: unknown) {
   await writeFile(resolve(config.stateDirectory, `${name}.json`), `${JSON.stringify(value)}\n`);
+}
+
+async function aggregateFixture() {
+  const f = await fixture();
+  f.config.requiredChecks = ["PR Required"];
+  f.publication.url = `https://github.com/${f.config.repository}/pull/${f.publication.number}`;
+  f.adapter.publicationUrl = (_config, number) =>
+    `https://github.com/${f.config.repository}/pull/${number}`;
+  const evidence = {
+    checks: [] as CheckEvidence[],
+    runs: [
+      { head_sha: head, pull_requests: [{ number: f.publication.number }], status: "in_progress" },
+    ],
+    driftAfterWorkflow: false,
+  };
+  let publicationHead = head;
+  const provider = githubDeliveryAdapter({
+    async gh(_config, args) {
+      expect(args.slice(0, 3)).toEqual(["pr", "checks", String(f.publication.number)]);
+      return JSON.stringify(evidence.checks);
+    },
+    async ghJson(_config, args) {
+      if (args[0] === "api") {
+        expect(args).toEqual([
+          "api",
+          `repos/${f.config.repository}/actions/runs?head_sha=${head}&event=pull_request&per_page=100`,
+          "--paginate",
+          "--slurp",
+        ]);
+        if (evidence.driftAfterWorkflow) publicationHead = "f".repeat(40);
+        return [{ workflow_runs: evidence.runs }];
+      }
+      return {
+        number: f.publication.number,
+        url: f.publication.url,
+        headRefOid: publicationHead,
+        headRefName: f.publication.sourceBranch,
+        baseRefName: f.publication.baseBranch,
+        state: "OPEN",
+        title: f.publication.title,
+        body: f.publication.body,
+      };
+    },
+  });
+  f.adapter.checks = provider.checks;
+  f.adapter.failedCheckLog = async () => "PR Required failed";
+  const check = (name: string, bucket: CheckEvidence["bucket"]): CheckEvidence => ({
+    name,
+    bucket,
+    link: `https://github.com/${f.config.repository}/actions/runs/123/job/456`,
+  });
+  return { ...f, evidence, check };
 }
 
 function expectNoProviderAction(calls: string[]) {
@@ -310,6 +363,86 @@ it("observes check startup and pending checks without republishing", async () =>
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
   expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
   expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+});
+
+it("waits across intermediate jobs and job gaps for the real required aggregate without republishing", async () => {
+  const f = await aggregateFixture();
+  for (const [status, checks] of [
+    ["queued", []],
+    ["in_progress", [f.check("Change Scope", "pending")]],
+    ["in_progress", [f.check("Change Scope", "pass")]],
+    ["in_progress", [f.check("Static", "pass"), f.check("Unit", "pass")]],
+  ] as const) {
+    f.evidence.runs[0]!.status = status;
+    f.evidence.checks = [...checks];
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      checks: [],
+    });
+    expect(f.calls).not.toContain("merge");
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "hosted-checks.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  f.evidence.checks = [f.check("PR Required", "pending")];
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+    checks: f.evidence.checks,
+  });
+  f.evidence.runs[0]!.status = "completed";
+  f.evidence.checks = [f.check("PR Required", "pass")];
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "complete",
+  });
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+  expect(
+    JSON.parse(await readFile(resolve(f.config.stateDirectory, "hosted-checks.json"), "utf8"))
+      .checks,
+  ).toEqual(f.evidence.checks);
+});
+
+it.each([
+  "terminal missing",
+  "unknown workflow",
+  "no workflow",
+  "wrong workflow head",
+  "wrong PR",
+  "duplicate",
+  "fail",
+  "cancel",
+  "skipping",
+  "publication drift",
+])("refuses merge after waiting when aggregate evidence becomes %s", async (mode) => {
+  const f = await aggregateFixture();
+  f.evidence.checks = [f.check("Change Scope", "pass")];
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+  });
+  if (mode === "terminal missing") f.evidence.runs[0]!.status = "completed";
+  if (mode === "unknown workflow") f.evidence.runs[0]!.status = "unknown";
+  if (mode === "no workflow") f.evidence.runs = [];
+  if (mode === "wrong workflow head") f.evidence.runs[0]!.head_sha = "f".repeat(40);
+  if (mode === "wrong PR") f.evidence.runs[0]!.pull_requests[0]!.number += 1;
+  if (mode === "publication drift") f.evidence.driftAfterWorkflow = true;
+  if (mode === "duplicate")
+    f.evidence.checks = [f.check("PR Required", "pass"), f.check("PR Required", "pass")];
+  if (["fail", "cancel", "skipping"].includes(mode))
+    f.evidence.checks = [f.check("PR Required", mode as CheckEvidence["bucket"])];
+  const result = deliveryStep(f.config, f.adapter, f.policy);
+  if (mode === "fail" || mode === "cancel")
+    await expect(result).resolves.toMatchObject({ status: "failed" });
+  else
+    await expect(result).rejects.toThrow(
+      mode === "publication drift"
+        ? "hosted-observation-unavailable"
+        : mode === "skipping"
+          ? "hosted-check-failed:PR Required"
+          : "missing-or-duplicate-check:PR Required",
+    );
+  expect(f.calls).not.toContain("merge");
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
 });
 
 it.each([
