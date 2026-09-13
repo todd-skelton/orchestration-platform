@@ -190,7 +190,7 @@ it("directly composes the accepted setup transition before source work", async (
   expect([...dependencies]).toEqual(["pilot", "source", "review"]);
 });
 
-it("directly composes the accepted flow and delivery transitions with exact identities", async () => {
+it("counts an author retry and first gate correction separately across delivery restart", async () => {
   const current = await fixture();
   const corrected = "f".repeat(40);
   current.item.implementationAttempt = 2;
@@ -240,15 +240,20 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
       }
       const selected = prompt.includes("Correct the") ? `gate-${role}` : role;
+      const deadAuthor = selected === "author" && launches.length === 0;
       launches.push(selected);
       return {
-        id: `source-${selected}${selected === `gate-${role}` ? `-${pid}` : ""}`,
+        id: deadAuthor
+          ? "dead-author"
+          : `source-${selected}${selected === `gate-${role}` ? `-${pid}` : ""}`,
         pid: pid++,
         trace: resolve(current.root, `${selected}.jsonl`),
         launchedAt: 1,
       };
     },
     async observe(role, selectedConfig, attempt) {
+      if (attempt.id === "dead-author")
+        return { id: attempt.id, status: "dead", summary: "provider disconnected" };
       const correction = attempt.id.startsWith("source-gate-");
       const terminalHead = correction ? selectedConfig.base : role === "author" ? base : candidate;
       return {
@@ -424,10 +429,12 @@ it("directly composes the accepted flow and delivery transitions with exact iden
     head: candidate,
     reviewId: "source-reviewer",
     stateDirectory: current.paths.source,
+    retries: 1,
   });
   expect(await adapter.history()).toEqual([
+    expect.objectContaining({ ordinal: 1, id: "dead-author", outcome: "dead" }),
     expect.objectContaining({
-      ordinal: 1,
+      ordinal: 2,
       id: "source-author",
       outcome: "passed",
       usage: {
@@ -436,7 +443,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
         costUsd: unavailable,
       },
     }),
-    expect.objectContaining({ ordinal: 2, id: "source-reviewer", outcome: "passed" }),
+    expect.objectContaining({ ordinal: 3, id: "source-reviewer", outcome: "passed" }),
   ]);
   if (accepted.status !== "accepted") throw new Error("fixture source did not accept");
   await writeFile(
@@ -454,7 +461,7 @@ it("directly composes the accepted flow and delivery transitions with exact iden
       reviewId: accepted.reviewId,
       findings: [],
       history: await adapter.history(),
-      retries: 0,
+      retries: accepted.retries,
       acceptedStage: "source",
       stateDirectory: accepted.stateDirectory,
     })}\n`,
@@ -463,13 +470,13 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   const interrupted = JSON.parse(
     await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
   );
-  expect(interrupted).toMatchObject({ head: candidate, retries: 1 });
+  expect(interrupted).toMatchObject({ head: candidate, retries: 2 });
   await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
     status: "observing-hosted-checks",
   });
   await expect(
     readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
-  ).resolves.toMatchObject({ head: corrected, reviewId: "source-reviewer", retries: 1 });
+  ).resolves.toMatchObject({ head: corrected, reviewId: "source-reviewer", retries: 2 });
   const effectsAfterCorrection = { launches: [...launches], gateCalls };
   hostedReady = true;
   await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
@@ -477,9 +484,9 @@ it("directly composes the accepted flow and delivery transitions with exact iden
   });
   await expect(
     readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
-  ).resolves.toMatchObject({ phase: "complete", head: corrected, retries: 1 });
+  ).resolves.toMatchObject({ phase: "complete", head: corrected, retries: 2 });
   expect({ launches, gateCalls }).toEqual(effectsAfterCorrection);
-  expect(launches).toEqual(["author", "reviewer", "gate-author", "gate-author"]);
+  expect(launches).toEqual(["author", "author", "reviewer", "gate-author", "gate-author"]);
   expect({ draft, published, merged, cleaned }).toEqual({
     draft: true,
     published: true,

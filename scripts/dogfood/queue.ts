@@ -2012,8 +2012,16 @@ export function repositoryQueueAdapter(
       const stage = samePath(accepted.stateDirectory, item.source.stateDirectory)
         ? "source"
         : "repair";
-      const reviewerAttempt = await optionalRecord(accepted.stateDirectory, "reviewer-attempt");
-      const flowRetries = reviewerAttempt !== ABSENT && reviewerAttempt.retries === 1 ? 1 : 0;
+      const flowAttempts = await Promise.all(
+        ["author", "reviewer"].map((role) =>
+          optionalRecord(accepted.stateDirectory, `${role}-attempt`),
+        ),
+      );
+      const flowRetries = flowAttempts.some(
+        (attempt) => attempt !== ABSENT && attempt.retries === 1,
+      )
+        ? 1
+        : 0;
       let savedAttempt = await optionalRecord(state, "attempt");
       if (savedAttempt !== ABSENT) validateAttempt(savedAttempt, config);
       let gateRetryCounted =
