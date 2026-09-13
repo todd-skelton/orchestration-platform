@@ -1622,6 +1622,7 @@ export function repositoryQueueAdapter(
     for (const role of ["author", "reviewer"] as const) {
       const attempt = await optionalRecord(directory, `${role}-attempt`);
       let terminal = await optionalRecord(directory, `${role}-terminal`);
+      if (attempt !== ABSENT && terminal !== ABSENT && attempt.id !== terminal.id) continue;
       if (
         stage === "source" &&
         role === "reviewer" &&

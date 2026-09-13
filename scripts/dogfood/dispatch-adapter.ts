@@ -188,7 +188,7 @@ export function parseTrace(
   }
   if (!complete) return { id, status: "running" };
   check(
-    turns.length === 1 && !rows.some((row) => ["turn.failed", "error"].includes(row.type)),
+    turns.length === 1 && !rows.some((row) => row.type === "turn.failed"),
     "missing-successful-terminal",
   );
   const messages = rows.filter(

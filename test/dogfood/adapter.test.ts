@@ -45,7 +45,8 @@ const rows = [
   },
   { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
 ];
-const trace = (events = rows) => events.map((row) => JSON.stringify(row)).join("\n") + "\n";
+const trace = (events: unknown[] = rows) =>
+  events.map((row) => JSON.stringify(row)).join("\n") + "\n";
 type MutableFixture<T> = T extends string
   ? string
   : T extends number
@@ -302,6 +303,46 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
 });
+it.each(["PASS", "FAIL"])(
+  "reads a completed %s report after transient reconnect errors",
+  (verdict) => {
+    // ISS-127 / #418: the reviewer recovered after five reconnect errors and returned FAIL.
+    const report = { ...rows[1]!, item: { ...rows[1]!.item! } };
+    report.item.text = JSON.stringify({ ...JSON.parse(report.item.text!), verdict });
+    const recovered = [
+      rows[0]!,
+      ...Array.from({ length: 5 }, (_, index) => ({
+        type: "error",
+        message: `Reconnecting... ${index + 1}/5`,
+      })),
+      report,
+      rows[2]!,
+    ];
+    expect(parseTrace(trace(recovered), true, "reviewer", config, id)).toMatchObject({
+      id,
+      head,
+      status: verdict === "PASS" ? "passed" : "failed",
+      summary: report.item.text,
+      usage: rows[2]!.usage,
+    });
+    expect(parseTrace(trace(recovered), true, "reviewer", config, id, true).status).toBe("dead");
+    expect(() =>
+      parseTrace(trace([...recovered, { type: "turn.failed" }]), true, "reviewer", config, id),
+    ).toThrow("missing-successful-terminal");
+    expect(() =>
+      parseTrace(trace(recovered.filter((row) => row !== report)), true, "reviewer", config, id),
+    ).toThrow("malformed-worker-verdict");
+    expect(() =>
+      parseTrace(trace(recovered.filter((row) => row !== rows[2])), true, "reviewer", config, id),
+    ).toThrow("missing-successful-terminal");
+    expect(() => parseTrace(trace(recovered), true, "reviewer", config, "other")).toThrow(
+      "attempt-identity-changed",
+    );
+    expect(() =>
+      parseTrace(trace(recovered), true, "reviewer", { ...config, run: "other" }, id),
+    ).toThrow("worker-verdict-identity-mismatch");
+  },
+);
 it("classifies a failed turn or non-zero launcher exit as dead and keeps the last trace error", () => {
   const failed = trace([
     rows[0]!,

@@ -594,6 +594,122 @@ it("preserves registered multiline criteria through the genuine repository repai
   expect(JSON.parse(encodedCriteria!)).toEqual(item.repair.acceptanceCriteria);
 }, 30_000);
 
+it.each(["author", "reviewer"] as const)(
+  "resumes a running %s retry through the composed queue without recording a stale dead terminal",
+  async (deadRole) => {
+    const { loop, repository, gitExecutable, selected } = await loopFixture(true);
+    const queue = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+    const item = queue.items[0]!;
+    const fixtureQueue = (await import(
+      /* @vite-ignore */ pathToFileURL(resolve(repository, "scripts/dogfood/queue.ts")).href
+    )) as { repositoryQueueAdapter: typeof repositoryQueueAdapter };
+    const launches = { author: 0, reviewer: 0 };
+    let retryRunning = true;
+    const native: Adapter = {
+      async preflight() {},
+      async git(worktree, args) {
+        const result = await execute(gitExecutable, ["-C", worktree, ...args]);
+        return args.includes("-z") ? result.stdout : result.stdout.trim();
+      },
+      async launch(role, config) {
+        launches[role] += 1;
+        if (role === "author")
+          await writeFile(resolve(config.worktree, "change.txt"), "candidate change\n");
+        return {
+          id: `${role}-${launches[role]}`,
+          pid: launches.author + launches.reviewer,
+          trace: resolve(queue.stateDirectory, `${role}-${launches[role]}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, config, attempt) {
+        if (role === deadRole && attempt.id === `${role}-1`)
+          return { id: attempt.id, status: "dead", summary: "provider disconnected" };
+        if (role === deadRole && retryRunning) return { id: attempt.id, status: "running" };
+        const head =
+          role === "author"
+            ? config.base
+            : await native.git(config.reviewWorktree, ["rev-parse", "HEAD"]);
+        return {
+          id: attempt.id,
+          status: "passed",
+          head,
+          ...(role === "reviewer"
+            ? {
+                summary: JSON.stringify({
+                  run: config.run,
+                  role,
+                  head,
+                  verdict: "PASS",
+                  findings: [],
+                  g0: "The change is already minimal.",
+                }),
+              }
+            : {}),
+        };
+      },
+      async checks() {
+        return { head: selected.base, checks: [] };
+      },
+    };
+    const compose = () => ({
+      ...fixtureQueue.repositoryQueueAdapter(queue, repository, {
+        gitExecutable,
+        native,
+        setup: gitSetupAdapter({
+          gitExecutable,
+          async install(_launcher, _args, cwd) {
+            await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+            await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+            return "succeeded";
+          },
+        }),
+      }),
+      async delivery(current: QueueItem, accepted: { head: string; reviewId: string }) {
+        return deliveryCompletion(current, accepted.head, accepted.reviewId);
+      },
+    });
+    const adapter = compose();
+    await expect(queueStep(queue, adapter)).resolves.toMatchObject({
+      status: `observing-${deadRole}`,
+    });
+    const readState = async (name: string) =>
+      JSON.parse(
+        await readFile(resolve(item.source.stateDirectory, `${deadRole}-${name}.json`), "utf8"),
+      );
+    expect(await readState("attempt")).toMatchObject({ id: `${deadRole}-2`, retries: 1 });
+    expect(await readState("terminal")).toMatchObject({ id: `${deadRole}-1`, status: "dead" });
+    expect((await adapter.history()).map(({ id, outcome }) => ({ id, outcome }))).toEqual([
+      ...(deadRole === "reviewer" ? [{ id: "author-1", outcome: "passed" }] : []),
+      { id: `${deadRole}-1`, outcome: "dead" },
+    ]);
+
+    retryRunning = false;
+    const resumed = compose();
+    await expect(queueStep(queue, resumed)).resolves.toMatchObject({
+      status: "complete",
+      participants: 3,
+    });
+    expect((await resumed.history()).map(({ id, outcome }) => ({ id, outcome }))).toEqual(
+      deadRole === "author"
+        ? [
+            { id: "author-1", outcome: "dead" },
+            { id: "author-2", outcome: "passed" },
+            { id: "reviewer-1", outcome: "passed" },
+          ]
+        : [
+            { id: "author-1", outcome: "passed" },
+            { id: "reviewer-1", outcome: "dead" },
+            { id: "reviewer-2", outcome: "passed" },
+          ],
+    );
+    expect(launches).toEqual(
+      deadRole === "author" ? { author: 2, reviewer: 1 } : { author: 1, reviewer: 2 },
+    );
+  },
+  30_000,
+);
+
 it("keeps the executor pinned while starting a cycle from the selected main commit", async () => {
   const { loop, repository, gitExecutable, selected } = await loopFixture();
   await execute(gitExecutable, ["-C", repository, "checkout", "-b", "fresh-main"]);
