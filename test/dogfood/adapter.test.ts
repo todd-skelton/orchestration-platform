@@ -464,6 +464,26 @@ it("observes a terminal failed trace as dead before its exit receipt arrives", a
     summary: "stream disconnected",
   });
 });
+it("treats a non-zero exit as dead when the trace ends with partial JSON", async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-dead-partial-trace-")));
+  cleanup.push(root);
+  const current = { ...config, stateDirectory: root };
+  const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
+  await writeFile(
+    attempt.trace,
+    `${trace([
+      rows[0]!,
+      { type: "error", message: "provider returned 503" },
+    ] as typeof rows)}{"type":"turn.failed"`,
+  );
+  await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 1 }));
+
+  await expect(codexAdapter().observe("author", current, attempt)).resolves.toEqual({
+    id,
+    status: "dead",
+    summary: "provider returned 503",
+  });
+});
 it("observes a missing exit receipt for the module window before a typed stop", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-exit-wait-")));
   cleanup.push(root);

@@ -158,7 +158,7 @@ export function parseTrace(
   expected?: string,
   launcherFailed = false,
 ): Terminal {
-  const rows = events(trace, complete);
+  const rows = events(trace, complete && !launcherFailed);
   const ids = rows.filter((row) => row.type === "thread.started").map((row) => row.thread_id);
   const receiptOnlyIdentity =
     launcherFailed && (ids.length !== 1 || ids[0] !== expected) ? expected : undefined;
@@ -352,16 +352,10 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
     async observe(role, config, attempt: Attempt) {
       const exit = await optionalText(attemptArtifact(attempt, "exit.json"));
       const trace = await readFile(attempt.trace, "utf8");
+      const launcherFailed = Boolean(exit) && JSON.parse(exit).code !== 0;
       let terminal: Terminal;
       try {
-        terminal = parseTrace(
-          trace,
-          Boolean(exit),
-          role,
-          config,
-          attempt.id,
-          Boolean(exit) && JSON.parse(exit).code !== 0,
-        );
+        terminal = parseTrace(trace, Boolean(exit), role, config, attempt.id, launcherFailed);
       } catch (error) {
         if (
           role === "reviewer" &&

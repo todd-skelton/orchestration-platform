@@ -263,12 +263,15 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
     const reviewed = await get("candidate");
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
     let terminal: Terminal | undefined = await get(`${role}-terminal`);
-    if (attempt?.retries === 1) retries = 1;
+    if (attempt?.retries === 1) {
+      retries = 1;
+      if (terminal?.id !== attempt.id) terminal = undefined;
+    }
     let parseError: string | undefined;
     let retryCause: "dead" | "malformed" | undefined;
     for (let iteration = 0; iteration < 2; iteration += 1) {
-      const retry = iteration === 1;
-      if (retry) {
+      const retry = iteration === 1 || attempt?.retries === 1;
+      if (iteration === 1) {
         retries = 1;
         attempt = undefined;
         terminal = undefined;
@@ -277,8 +280,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
         let reviewerHead: string | undefined;
         if (!retry) {
           requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
-          // Reserve before the first launch. A retry is deliberately disposable:
-          // Rule 9 allows a restart to repeat it once.
+          // Reserve before the first launch. A retry replaces this attempt once launched.
           const intentHead = role === "author" ? config.base : reviewed?.head;
           await put(`${role}-intent`, {
             at: new Date().toISOString(),
@@ -334,7 +336,8 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
         )}${retryContext}`;
         const launched = await adapter.launch(role, config, prompt);
         attempt = retry ? { ...launched, retries: 1 } : launched;
-        if (!retry) await put(`${role}-attempt`, attempt);
+        if (retry) await replace(directory, `${role}-attempt`, attempt);
+        else await put(`${role}-attempt`, attempt);
       }
       requireThat(
         typeof attempt.id === "string" &&

@@ -262,8 +262,20 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     const f = await fixture();
     f.statuses.author = "dead";
     f.summarize("author", "upstream TLS handshake timed out");
-    f.retry("passed");
+    f.retry("running");
 
+    await expect(f.run()).resolves.toMatchObject({
+      status: "observing-author",
+      attempt: { id: "author-retry", retries: 1 },
+      retries: 1,
+    });
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "author-attempt.json"), "utf8")),
+    ).toMatchObject({ id: "author-retry", retries: 1 });
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author", retries: 1 });
+    expect(f.launches).toEqual(["author", "author"]);
+
+    f.retry("passed");
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
     f.reviewerDone();
     await expect(f.run()).resolves.toMatchObject({
@@ -515,9 +527,9 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
         await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
       ),
     ).toMatchObject({ status: "malformed", id: "reviewer", head });
-    await expect(
-      readFile(resolve(f.config.stateDirectory, "reviewer-retry-attempt.json"), "utf8"),
-    ).rejects.toThrow();
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8")),
+    ).toMatchObject({ id: "reviewer-retry", retries: 1 });
     f.retry(
       "passed",
       JSON.stringify({
@@ -539,7 +551,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       reviewer: { id: "reviewer-retry", retries: 1 },
       retries: 1,
     });
-    expect(f.launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
     expect(
       JSON.parse(await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8")),
     ).toMatchObject({ id: "reviewer-retry", retries: 1 });
@@ -553,7 +565,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     f.retry("malformed");
     await expect(f.run()).rejects.toThrow("reviewer-malformed");
     await expect(f.run()).rejects.toThrow("reviewer-malformed");
-    expect(f.launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
   });
   it("retries a semantically invalid reviewer report", async () => {
     const f = await fixture();
