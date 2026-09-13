@@ -155,7 +155,9 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
       : `${commands.slice(0, -1).join(", ")} and ${commands.at(-1)}`;
   const localVerification =
     role === "author"
-      ? ` Before reporting, run ${gateList} in this worktree, and fix what fails.`
+      ? config.localGates
+        ? ` Before reporting, run applicable focused checks in this worktree and fix concrete source defects. Report source readiness: a remaining concrete source defect requires FAIL. The executor will commit the candidate and must run ${gateList} before publication. Checks that require a committed candidate or unavailable sandbox operations are not prerequisites for your source report; describe their limitations and all observed failures honestly in progress messages and the final summary for executor verification. Do not claim an unrun or failed check passed, or change product source to evade a sandbox limitation.`
+        : ` Before reporting, run ${gateList} in this worktree, and fix what fails.`
       : "";
   const report =
     role === "author"
