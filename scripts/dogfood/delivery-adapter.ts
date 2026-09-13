@@ -790,6 +790,8 @@ export function githubDeliveryAdapter(
           check.link,
         );
       if (!match) throw new DeliveryBlocked(`hosted-check-log-unavailable:${check.name}`);
+      const run = await commands.ghJson(config, ["run", "view", match[1]!, "--json", "status"]);
+      if (run.status !== "completed") return null;
       try {
         return await commands.gh(config, ["run", "view", match[1]!, "--log-failed"]);
       } catch (error) {

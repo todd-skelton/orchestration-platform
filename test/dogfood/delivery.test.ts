@@ -334,8 +334,9 @@ it.each(["fail", "cancel"] as const)(
         expect(args).toEqual(["run", "view", "123", "--log-failed"]);
         return output;
       },
-      async ghJson() {
-        throw new Error("unexpected JSON request");
+      async ghJson(_config, args) {
+        expect(args).toEqual(["run", "view", "123", "--json", "status"]);
+        return { status: "completed" };
       },
     });
     f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
@@ -353,6 +354,98 @@ it.each(["fail", "cancel"] as const)(
         },
       ],
     });
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it.each(["fail", "cancel"] as const)(
+  "waits for a %s check's run to complete before fetching its log",
+  async (bucket) => {
+    const f = await fixture();
+    f.state.checks = bucket;
+    let status = "in_progress";
+    const requests: string[][] = [];
+    const provider = githubDeliveryAdapter({
+      async ghJson(_config, args) {
+        requests.push(args);
+        expect(args).toEqual(["run", "view", "123", "--json", "status"]);
+        return { status };
+      },
+      async gh(_config, args) {
+        requests.push(args);
+        expect(args).toEqual(["run", "view", "123", "--log-failed"]);
+        return "macos job failed";
+      },
+    });
+    f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
+
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      checks: [
+        { name: "linux", bucket: "pass" },
+        { name: "windows", bucket: "pass" },
+        { name: "macos", bucket },
+      ],
+    });
+    expect(requests).toEqual([["run", "view", "123", "--json", "status"]]);
+    expect(f.calls).not.toContain("merge");
+
+    status = "completed";
+    const checks = f.adapter.checks;
+    f.adapter.checks = async (config, publication) => {
+      const observed = await checks(config, publication);
+      observed.checks[0]!.bucket = "pending";
+      return observed;
+    };
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toEqual({
+      status: "failed",
+      head,
+      reviewId: "review-fixture",
+      findings: [{ file: "macos", line: 1, severity: "blocking", text: "macos job failed" }],
+    });
+    expect(requests).toEqual([
+      ["run", "view", "123", "--json", "status"],
+      ["run", "view", "123", "--json", "status"],
+      ["run", "view", "123", "--log-failed"],
+    ]);
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it.each(["empty log", "log error", "no run id"])(
+  "blocks an unavailable failed check log: %s",
+  async (mode) => {
+    const f = await fixture();
+    f.state.checks = "fail";
+    const requests: string[][] = [];
+    const provider = githubDeliveryAdapter({
+      async ghJson(_config, args) {
+        requests.push(args);
+        expect(args).toEqual(["run", "view", "123", "--json", "status"]);
+        return { status: "completed" };
+      },
+      async gh(_config, args) {
+        requests.push(args);
+        expect(args).toEqual(["run", "view", "123", "--log-failed"]);
+        if (mode === "log error") throw new Error("log unavailable");
+        return " \n";
+      },
+    });
+    f.adapter.failedCheckLog = (config, check) =>
+      provider.failedCheckLog!(config, mode === "no run id" ? { ...check, link: "" } : check);
+
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+      "hosted-check-log-unavailable:macos",
+    );
+    expect(requests).toEqual(
+      mode === "no run id"
+        ? []
+        : [
+            ["run", "view", "123", "--json", "status"],
+            ["run", "view", "123", "--log-failed"],
+          ],
+    );
     expect(f.calls).not.toContain("merge");
   },
 );

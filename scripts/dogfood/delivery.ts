@@ -179,7 +179,8 @@ export interface DeliveryAdapter {
     head: string;
     checks: CheckEvidence[];
   }>;
-  failedCheckLog?(config: DeliveryConfig, check: CheckEvidence): Promise<string>;
+  /** Returns null while the check's run is not completed. */
+  failedCheckLog?(config: DeliveryConfig, check: CheckEvidence): Promise<string | null>;
   observeMerge(
     config: DeliveryConfig,
     publication: PublicationEvidence,
@@ -1117,11 +1118,14 @@ export async function deliveryStep(
     const failed = checks.find((check) => ["fail", "cancel"].includes(check.bucket));
     if (failed) {
       demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${failed.name}`);
-      const log = (await adapter.failedCheckLog(config, failed)).slice(-4_000);
-      demand(log.trim().length > 0, `hosted-check-log-unavailable:${failed.name}`);
-      return failedResult(config.candidateHead, source.reviewId, failed.name, log);
+      const log = await adapter.failedCheckLog(config, failed);
+      if (log !== null) {
+        const boundedLog = log.slice(-4_000);
+        demand(boundedLog.trim().length > 0, `hosted-check-log-unavailable:${failed.name}`);
+        return failedResult(config.candidateHead, source.reviewId, failed.name, boundedLog);
+      }
     }
-    if (checks.length === 0 || checks.some((check) => check.bucket === "pending")) {
+    if (failed || checks.length === 0 || checks.some((check) => check.bucket === "pending")) {
       return {
         status: "observing-hosted-checks",
         run: config.run,
