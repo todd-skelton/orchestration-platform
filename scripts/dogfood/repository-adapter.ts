@@ -27,12 +27,14 @@ export interface RepositoryAdapter {
   selectCandidates(input: {
     repository: string;
     executorRoot: string;
+    targetMilestone?: number;
   }): Promise<RepositoryCandidate[]> | RepositoryCandidate[];
   issueContext(input: {
     repository: string;
     key: string;
     number: number;
     executorRoot: string;
+    targetMilestone?: number;
   }): Promise<RepositoryIssueContext> | RepositoryIssueContext;
   branchName(input: {
     key: string;

@@ -296,6 +296,14 @@
       "blockedBy": [
         "ISS-133"
       ]
+    },
+    {
+      "key": "ISS-135",
+      "file": "planning/drafts/ISS-135.md",
+      "milestone": "M2",
+      "blockedBy": [
+        "ISS-134"
+      ]
     }
   ]
 }

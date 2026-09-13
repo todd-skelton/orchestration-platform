@@ -1,5 +1,15 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { delimiter, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -7,6 +17,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as chaseSets from "../../adapters/chase-sets.mjs";
 import { DeliveryBlocked, type DeliveryConfig } from "../../scripts/dogfood/delivery.js";
 import { loadRepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
+import { type LoopConfig } from "../../scripts/dogfood/queue.js";
+import { nextCycle, type SupervisionAdapter } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
 
@@ -69,6 +81,242 @@ esac
   vi.stubEnv("PATH", `${tools}${delimiter}${process.env.PATH ?? ""}`);
   return root;
 }
+
+async function scopedFixture() {
+  const executorRoot = await fixture();
+  const runtime = await mkdtemp(resolve(tmpdir(), "chase-sets-scope-runtime-"));
+  roots.push(runtime);
+  const milestones = [148, 155].map((number) => ({
+    id: `M${number}`,
+    number,
+    title: `Outcome ${number}`,
+    description: "committed",
+    state: "OPEN",
+  }));
+  const issue = (
+    number: number,
+    milestone: number,
+    extraLabels: string[] = [],
+    dependencies: number[] = [],
+  ) => ({
+    id: `I${number}`,
+    number,
+    title: `Issue ${number}`,
+    body: "## Acceptance Criteria\n\n- Ship the result.\n",
+    state: "OPEN",
+    issueType: { name: "Slice" },
+    milestone: { id: `M${milestone}`, number: milestone },
+    labels: {
+      pageInfo: { hasNextPage: false },
+      nodes: ["kind:slice", "priority:p0", ...extraLabels].map((name) => ({ name })),
+    },
+    blockedBy: {
+      pageInfo: { hasNextPage: false },
+      nodes: dependencies.map((number) => ({ number, state: "OPEN" })),
+    },
+  });
+  const issues = [issue(4382, 148), issue(7820, 155, ["status:needs-operator"])];
+  const dataPath = resolve(runtime, "provider.json");
+  const save = () => writeFile(dataPath, JSON.stringify({ milestones, issues }));
+  await save();
+  const callsPath = resolve(runtime, "calls.jsonl");
+  const commentsPath = resolve(runtime, "comments.json");
+  await writeFile(commentsPath, "[]");
+  await writeFile(
+    resolve(executorRoot, "tools/gh"),
+    `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");
+const { milestones, issues } = JSON.parse(fs.readFileSync(${JSON.stringify(dataPath)}, "utf8"));
+const commentsPath = ${JSON.stringify(commentsPath)};
+const comments = JSON.parse(fs.readFileSync(commentsPath, "utf8"));
+if (args[0] === "api") {
+  const name = args.some((arg) => arg.includes("milestones(")) ? "milestones" : "issues";
+  console.log(JSON.stringify({ data: { repository: { [name]: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: name === "milestones" ? milestones : issues } } } }));
+} else if (args[0] === "issue" && args[1] === "view") {
+  const issue = issues.find((issue) => issue.number === Number(args[2]));
+  console.log(JSON.stringify({ ...issue, labels: issue.labels.nodes, comments }));
+} else if (args[0] === "issue" && args[1] === "comment") {
+  comments.push({ body: args[args.indexOf("--body") + 1] });
+  fs.writeFileSync(commentsPath, JSON.stringify(comments));
+} else { process.exit(2); }
+`,
+  );
+  return { executorRoot, runtime, issues, issue, save, callsPath, commentsPath };
+}
+
+it.skipIf(process.platform === "win32")(
+  "scopes native selection without admitting dependencies, needs labels, or ops work",
+  async () => {
+    const current = await scopedFixture();
+    const input = { repository: "chase-sets/chase-sets", executorRoot: current.executorRoot };
+    await expect(chaseSets.selectCandidates(input)).resolves.toEqual([
+      { key: "cs-4382", number: 4382 },
+    ]);
+    await expect(chaseSets.selectCandidates({ ...input, targetMilestone: 155 })).resolves.toEqual(
+      [],
+    );
+    current.issues.push(
+      current.issue(7822, 155, [], [4382]),
+      current.issue(7823, 155, ["status:needs-replan"]),
+      current.issue(7824, 155, ["kind:ops"]),
+      current.issue(7825, 155),
+    );
+    await current.save();
+    const config = {
+      repository: input.repository,
+      stableExecutorRoot: input.executorRoot,
+      stateRoot: current.runtime,
+      run: "fresh",
+      targetMilestone: 155,
+    } as LoopConfig;
+    const adapter = await loadRepositoryAdapter(
+      "chase-sets",
+      resolve(import.meta.dirname, "../.."),
+    );
+    const unused = async (): Promise<never> => {
+      throw new Error("unexpected supervision action");
+    };
+    const supervisor: SupervisionAdapter = {
+      currentMain: async () => "a".repeat(40),
+      issue: unused,
+      removeReady: unused,
+      close: unused,
+      comment: unused,
+    };
+    await expect(nextCycle(config, input.executorRoot, supervisor, adapter)).resolves.toMatchObject(
+      { selection: { cycle: 1, key: "cs-7825", number: 7825 } },
+    );
+    await expect(
+      adapter.issueContext({ ...input, targetMilestone: 155, key: "cs-7825", number: 7825 }),
+    ).resolves.toMatchObject({ title: "Issue 7825" });
+    current.issues[2]!.blockedBy.nodes[0]!.state = "CLOSED";
+    await current.save();
+    await expect(chaseSets.selectCandidates({ ...input, targetMilestone: 155 })).resolves.toEqual([
+      { key: "cs-7822", number: 7822 },
+      { key: "cs-7825", number: 7825 },
+    ]);
+    await expect(chaseSets.selectCandidates({ ...input, targetMilestone: 999 })).resolves.toEqual(
+      [],
+    );
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "stops saved cycle 2 before dispatch and rederives scoped idle after the host archives its scheduling records",
+  async () => {
+    const { executorRoot, runtime, callsPath, commentsPath } = await scopedFixture();
+    const controller = resolve(runtime, "controller");
+    const source = resolve(import.meta.dirname, "../..");
+    for (const name of ["scripts", "adapters"])
+      await cp(resolve(source, name), resolve(controller, name), { recursive: true });
+    await writeFile(resolve(controller, "package.json"), '{"type":"module"}');
+    const execute = promisify(execFile);
+    const gitExecutable = (await execute("which", ["git"])).stdout.trim();
+    const commit = async (root: string) => {
+      for (const args of [
+        ["init", "-b", "main"],
+        ["config", "user.name", "Fixture"],
+        ["config", "user.email", "fixture@example.test"],
+        ["add", "."],
+        ["commit", "-m", "fixture"],
+      ])
+        await execute(gitExecutable, ["-C", root, ...args]);
+      return (await execute(gitExecutable, ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+    };
+    await commit(controller);
+    const base = await commit(executorRoot);
+    const worktreeRoot = resolve(runtime, "worktrees");
+    const config: LoopConfig = {
+      schemaVersion: "dogfood-loop/v1",
+      run: "m2-scope",
+      adapter: "chase-sets",
+      repository: "chase-sets/chase-sets",
+      stableExecutorRoot: executorRoot,
+      stateRoot: resolve(runtime, "state"),
+      worktreeRoot,
+      author: { model: "author", effort: "high" },
+      reviewer: { model: "reviewer", effort: "high" },
+      gitExecutable,
+      codexExecutable: resolve(runtime, "author-must-not-launch"),
+      nativeLaunchCeiling: 8,
+      attemptCeiling: 4,
+      targetMilestone: 155,
+    };
+    const runState = resolve(config.stateRoot, config.run);
+    await mkdir(resolve(runState, "cs-4382-attempt-1"), { recursive: true });
+    await mkdir(resolve(worktreeRoot, "interrupted-cs-4382"), { recursive: true });
+    const preserved: Record<string, string> = {
+      "cycle-1-selected.json": JSON.stringify({ cycle: 1, key: "cs-7821", number: 7821, base }),
+      "cycle-1-complete.json": JSON.stringify({
+        selection: { cycle: 1, key: "cs-7821", number: 7821, base },
+        history: [],
+      }),
+      "cycle-2-selected.json":
+        JSON.stringify({ cycle: 2, key: "cs-4382", number: 4382, base }, null, 2) + "\n",
+      "cs-4382-attempt-1/attempt.json": '{"phase":"authoring","implementationAttempt":1}',
+      "cs-4382-attempt-1/native-trace.jsonl": '{"status":"interrupted"}\n',
+    };
+    for (const [name, bytes] of Object.entries(preserved))
+      await writeFile(resolve(runState, name), bytes);
+    const configPath = resolve(runtime, "loop.json");
+    await writeFile(configPath, JSON.stringify(config));
+    const run = () =>
+      execute(process.execPath, [resolve(controller, "scripts/dogfood/supervise.mjs"), configPath]);
+    for (let restart = 1; restart <= 2; restart += 1) {
+      await expect(run()).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining('"reason":"selected-milestone-mismatch"'),
+      });
+      for (const [name, bytes] of Object.entries(preserved))
+        await expect(readFile(resolve(runState, name), "utf8")).resolves.toBe(bytes);
+      const stop = JSON.parse(
+        await readFile(resolve(runState, `cycle-2-stop-${restart}.json`), "utf8"),
+      );
+      expect(stop).toMatchObject({
+        reason: "selected-milestone-mismatch",
+        selection: { number: 4382 },
+      });
+      expect(stop.body).toContain("outside target milestone 155");
+      await expect(
+        readFile(resolve(runState, `cycle-2-stop-${restart}-complete.json`), "utf8"),
+      ).resolves.toContain('"stop"');
+      await expect(readFile(resolve(runState, "cycle-2-complete.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await readdir(worktreeRoot)).toEqual(["interrupted-cs-4382"]);
+    }
+    expect(JSON.parse(await readFile(commentsPath, "utf8"))).toHaveLength(2);
+    const calls = (await readFile(callsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(
+      calls.every((args) => args[0] === "issue" && ["view", "comment"].includes(args[1]!)),
+    ).toBe(true);
+    // This is an explicit host recovery in the fixture, never an automatic loop migration.
+    const archive = resolve(runtime, "archived-cycle-2");
+    await mkdir(archive);
+    for (const name of (await readdir(runState)).filter((name) => name.startsWith("cycle-2-")))
+      await rename(resolve(runState, name), resolve(archive, name));
+    await expect(run()).resolves.toMatchObject({
+      stdout: expect.stringContaining('"status":"idle"'),
+      stderr: "",
+    });
+    for (const [name, bytes] of Object.entries(preserved))
+      await expect(
+        readFile(resolve(name === "cycle-2-selected.json" ? archive : runState, name), "utf8"),
+      ).resolves.toBe(bytes);
+    expect(await readdir(worktreeRoot)).toEqual(["interrupted-cs-4382"]);
+    await expect(readFile(resolve(runState, "cycle-2-selected.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(readFile(resolve(runState, "cycle-2-complete.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "uses product readers and provider facts for pull-window order and issue context",

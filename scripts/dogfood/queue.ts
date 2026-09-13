@@ -110,6 +110,7 @@ export interface LoopConfig {
   nativeLaunchCeiling: number;
   attemptCeiling: number;
   providerOutageCeilingMs?: number;
+  targetMilestone?: number;
 }
 
 export const ACTIONABLE_STOP_REASONS = [
@@ -230,6 +231,7 @@ export function validateLoopConfig(config: LoopConfig) {
       "nativeLaunchCeiling",
       "attemptCeiling",
       ...(config.providerOutageCeilingMs === undefined ? [] : ["providerOutageCeilingMs"]),
+      ...(config.targetMilestone === undefined ? [] : ["targetMilestone"]),
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
@@ -240,6 +242,15 @@ export function validateLoopConfig(config: LoopConfig) {
     "invalid-provider-outage-ceiling",
   );
   demand(/^[a-z0-9][a-z0-9-]*$/.test(config.adapter), "invalid-repository-adapter");
+  demand(
+    config.targetMilestone === undefined ||
+      (Number.isSafeInteger(config.targetMilestone) && config.targetMilestone > 0),
+    "invalid-target-milestone",
+  );
+  demand(
+    config.targetMilestone === undefined || config.adapter === "chase-sets",
+    "target-milestone-unsupported-adapter",
+  );
   demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
   for (const name of [
     "stableExecutorRoot",
@@ -478,6 +489,7 @@ export async function queueConfigFromLoop(
       key: selected.key,
       number: selected.number,
       executorRoot: repositoryRoot,
+      ...(config.targetMilestone === undefined ? {} : { targetMilestone: config.targetMilestone }),
     }),
   ]);
   demand(selectedBase === selected.base, "selected-base-unavailable");
