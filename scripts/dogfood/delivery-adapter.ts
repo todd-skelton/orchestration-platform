@@ -773,9 +773,31 @@ export function githubDeliveryAdapter(
             stdout = result.stdout;
           }
         }
+        const checks = JSON.parse(stdout);
+        if (!Array.isArray(checks)) throw new Error("malformed hosted checks");
+        let workflowPending = false;
+        if (config.requiredChecks.some((name) => !checks.some((check) => check?.name === name))) {
+          // ISS-132: aggregate jobs can be absent between jobs of a running workflow.
+          const pages = await commands.ghJson(config, [
+            "api",
+            `repos/${config.repository}/actions/runs?head_sha=${before.headRefOid}&event=pull_request&per_page=100`,
+            "--paginate",
+            "--slurp",
+          ]);
+          if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page?.workflow_runs)))
+            throw new Error("malformed workflow observation");
+          workflowPending = pages.some((page) =>
+            page.workflow_runs.some(
+              (run: any) =>
+                run.head_sha === before.headRefOid &&
+                run.pull_requests?.some((pull: any) => pull.number === current.number) &&
+                ["queued", "in_progress"].includes(run.status),
+            ),
+          );
+        }
         const after = await readIdentity();
         if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("publication moved");
-        return { head: before.headRefOid, checks: JSON.parse(stdout) };
+        return { head: before.headRefOid, checks, ...(workflowPending ? { workflowPending } : {}) };
       } catch (error) {
         const failure = error as { stderr?: string; message?: string };
         const detail = [failure.stderr, failure.message].find(

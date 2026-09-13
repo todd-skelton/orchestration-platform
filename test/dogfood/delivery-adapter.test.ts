@@ -397,7 +397,8 @@ it("revalidates full publication identity after checks before ready or merge eff
       if (args[1] === "ready" || args[1] === "merge") effects.push(args);
       return "[]";
     },
-    async ghJson() {
+    async ghJson(_config, args) {
+      if (args[0] === "api") return [{ workflow_runs: [] }];
       return publicationRow(publication, drifted ? { baseRefName: "release" } : {});
     },
   });
@@ -425,7 +426,8 @@ it("distinguishes the installed CLI no-check response from provider failure", as
         stderr: "no checks reported on the 'codex/iss-113' branch\n",
       });
     },
-    async ghJson() {
+    async ghJson(_config, args) {
+      if (args[0] === "api") return [{ workflow_runs: [] }];
       return publicationRow(publication);
     },
   });
