@@ -15,7 +15,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(digestConclusion = "success") {
   const root = await mkdtemp(resolve(tmpdir(), "chase-sets-adapter-"));
   roots.push(root);
   const scripts = resolve(root, "scripts");
@@ -52,7 +52,7 @@ case "$*" in
   *milestones*) printf '%s' '{"data":{"repository":{"milestones":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"M1","number":7,"title":"Outcome","description":"committed","state":"OPEN"}]}}}}' ;;
   *graphql*) printf '%s' '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I5","number":5,"title":"Issue 5","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p1"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I9","number":9,"title":"Issue 9","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I11","number":11,"title":"Needs operator","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"},{"name":"status:needs-operator"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I12","number":12,"title":"Ops work","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:ops"},{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I3","number":3,"title":"Issue 3","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":2,"state":"OPEN"}]}}]}}}}' ;;
   *run*list*) printf '%s' '[{"databaseId":42,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-11T00:00:00Z"}]' ;;
-  *run*view*) printf '%s' '{"jobs":[{"name":"Deploy Staging","status":"completed","conclusion":"success","steps":[{"name":"Verified immutable active release","conclusion":"success"}]}]}' ;;
+  *run*view*) printf '%s' '{"jobs":[{"name":"Deploy Staging","status":"completed","conclusion":"success","steps":${JSON.stringify(digestConclusion === "missing" ? [] : [{ name: "Verify immutable active release image", conclusion: digestConclusion }])}}]}' ;;
   *issue*edit*) printf '%s' "$*" > '${resolve(root, "park-call")}' ;;
   *issue*view*) printf '%s' '{"number":9,"title":"Issue 9","body":"## Context\\nFixture.\\n\\n## Acceptance Criteria\\n\\n- First result\\n- Second result\\n  with detail\\n"}' ;;
   *) exit 2 ;;
@@ -156,6 +156,27 @@ it.skipIf(process.platform === "win32")(
         delivery: { mergeCommit: "a".repeat(40) } as never,
       }),
     ).resolves.toBeUndefined();
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["missing", "failure", "skipped"])(
+  "rejects a successful staging job with a %s immutable-image verification step",
+  async (digestConclusion) => {
+    await fixture(digestConclusion);
+    const config = {
+      repository: "chase-sets/chase-sets",
+      issue: "https://github.com/chase-sets/chase-sets/issues/9",
+      requiredChecks: ["PR Required"],
+      policy: {
+        key: "cs-9",
+        number: 9,
+        title: "Issue 9",
+        sourceBranch: "codex/9-issue-9-g1",
+      },
+    } as DeliveryConfig;
+    await expect(
+      chaseSets.afterMerge({ config, delivery: { mergeCommit: "a".repeat(40) } as never }),
+    ).rejects.toMatchObject({ reason: "deploy-not-verified" });
   },
 );
 
