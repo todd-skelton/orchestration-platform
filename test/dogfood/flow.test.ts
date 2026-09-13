@@ -4,6 +4,15 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { step, workerPrompt } from "../../scripts/dogfood/flow.js";
 import type { Adapter, Check, Config, Role, Terminal } from "../../scripts/dogfood/flow.js";
+import {
+  deliveryStep,
+  type DeliveryAdapter,
+  type DeliveryConfig,
+} from "../../scripts/dogfood/delivery.js";
+import {
+  repositoryDeliveryPolicy,
+  type RepositoryAdapter,
+} from "../../scripts/dogfood/repository-adapter.js";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
@@ -228,6 +237,137 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
         `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block. Review every changed assertion independently.\n`,
     );
   });
+  it("leaves configured commit-bound gates to the executor while requiring honest source readiness", async () => {
+    const f = await fixture();
+    f.config.localGates = ["verify:static:scoped", "typecheck"];
+    const prompt = workerPrompt(f.config, "author", base, "Improve the selected issue.");
+    expect(prompt).toContain(
+      "do not stage, commit, or change Git metadata; leave HEAD at the exact base",
+    );
+    expect(prompt).toContain("Before reporting, run applicable focused checks");
+    expect(prompt).toContain("a remaining concrete source defect requires FAIL");
+    expect(prompt).toContain(
+      "The executor will commit the candidate and must run `pnpm verify:static:scoped` and `pnpm typecheck` before publication",
+    );
+    expect(prompt).toContain(
+      "Checks that require a committed candidate or unavailable sandbox operations are not prerequisites for your source report",
+    );
+    expect(prompt).toContain(
+      "describe their limitations and all observed failures honestly in progress messages and the final summary",
+    );
+    expect(prompt).toContain(
+      "Do not claim an unrun or failed check passed, or change product source to evade a sandbox limitation",
+    );
+    expect(prompt).not.toContain("Before reporting, run `pnpm verify:static:scoped`");
+    const { localGates: _gates, ...defaultConfig } = f.config;
+    expect(workerPrompt(f.config, "reviewer", head, "Review independently.")).toBe(
+      workerPrompt(defaultConfig, "reviewer", head, "Review independently."),
+    );
+  });
+  it.each(["failed", undefined] as const)(
+    "runs configured executor gates after committing and blocks publication for a %s gate result",
+    async (gateResult) => {
+      const f = await fixture();
+      const events: string[] = [];
+      f.config.localGates = ["verify:static:scoped", "typecheck"];
+      const git = f.adapter.git;
+      f.adapter.git = async (tree, args) => {
+        const result = await git(tree, args);
+        if (args[0] === "commit") events.push("executor-commit");
+        return result;
+      };
+      f.authorDone();
+      f.summarize(
+        "author",
+        "Focused checks passed; static gate requires the executor's committed candidate.",
+      );
+      f.reviewerDone();
+      await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication" });
+      expect(f.commits).toHaveLength(1);
+      const config: DeliveryConfig = {
+        controller: f.config.owner,
+        run: f.config.run,
+        issue: f.config.issue,
+        repository: f.config.repository,
+        controllerRoot: f.pilot,
+        repositoryRoot: f.pilot,
+        controllerRevision: pilotRevision,
+        worktree: f.config.worktree,
+        reviewWorktree: f.config.reviewWorktree,
+        stateDirectory: f.config.stateDirectory,
+        candidateHead: head,
+        retries: 0,
+        requiredChecks: f.config.requiredChecks,
+        policy: { kind: "fixture" },
+      };
+      const unexpectedEffect = async () => {
+        throw new Error("unexpected delivery effect before passing gates");
+      };
+      const repository: RepositoryAdapter = {
+        selectCandidates: unexpectedEffect,
+        issueContext: unexpectedEffect,
+        branchName: unexpectedEffect,
+        requiredChecks: unexpectedEffect,
+        park: unexpectedEffect,
+        afterMerge: unexpectedEffect,
+        localGates: () => f.config.localGates!,
+        pullRequest: () => ({
+          sourceBranch: "codex/fixture",
+          baseBranch: "main",
+          title: "Fixture",
+          body: "Fixture",
+          draft: true,
+        }),
+        mergeMethod: () => ({ method: "squash" }),
+      };
+      const delivery: DeliveryAdapter = {
+        publicationUrl: (_config, number) => `https://example.test/pull/${number}`,
+        observeDraft: unexpectedEffect,
+        applyDraft: unexpectedEffect,
+        observePublication: unexpectedEffect,
+        checks: unexpectedEffect,
+        observeMerge: unexpectedEffect,
+        merge: unexpectedEffect,
+        observeCleanup: unexpectedEffect,
+        cleanup: unexpectedEffect,
+        async source() {
+          return {
+            head,
+            reviewId: "reviewer",
+            controller: config.controller,
+            run: config.run,
+            issue: config.issue,
+            repository: config.repository,
+            controllerRevision: config.controllerRevision,
+            worktree: config.worktree,
+            reviewWorktree: config.reviewWorktree,
+            stateDirectory: config.stateDirectory,
+            requiredChecks: config.requiredChecks,
+          };
+        },
+        async verifyWorkspace() {
+          return true;
+        },
+        async runGate(_config, gate, candidateHead) {
+          expect(await f.adapter.git(f.config.worktree, ["rev-parse", "HEAD"])).toBe(head);
+          expect(await f.adapter.git(f.config.worktree, ["status", "--porcelain"])).toBe("");
+          expect(candidateHead).toBe(head);
+          events.push(`gate:${gate}`);
+          return gateResult as "failed";
+        },
+        async publish() {
+          events.push("publish");
+        },
+      };
+      await expect(
+        deliveryStep(config, delivery, repositoryDeliveryPolicy(repository, "git")),
+      ).rejects.toMatchObject({ reason: "gate-failed:verify:static:scoped" });
+      expect(events).toEqual(["executor-commit", "gate:verify:static:scoped"]);
+      await expect(
+        readFile(resolve(f.config.stateDirectory, "publication.json"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
   it("drives author and independent exact-head review, hands off publication, and resumes without redispatch", async () => {
     const f = await fixture();
     expect((await f.run()).status).toBe("observing-author");
