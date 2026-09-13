@@ -30,7 +30,7 @@ export interface Attempt {
   retries?: 1;
 }
 export interface Terminal {
-  status: "running" | "passed" | "failed" | "malformed";
+  status: "running" | "passed" | "failed" | "malformed" | "dead";
   id: string;
   head?: string;
   usage?: unknown;
@@ -263,9 +263,10 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
     const reviewed = await get("candidate");
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
     let terminal: Terminal | undefined = await get(`${role}-terminal`);
-    if (role === "reviewer" && attempt?.retries === 1) retries = 1;
+    if (attempt?.retries === 1) retries = 1;
     let parseError: string | undefined;
-    for (let iteration = 0; iteration < (role === "reviewer" ? 2 : 1); iteration += 1) {
+    let retryCause: "dead" | "malformed" | undefined;
+    for (let iteration = 0; iteration < 2; iteration += 1) {
       const retry = iteration === 1;
       if (retry) {
         retries = 1;
@@ -287,6 +288,17 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
           });
         }
         if (role === "author") {
+          if (retry) {
+            // ISS-127 recorded that a dead author can leave partial edits behind.
+            const discarded = await adapter.git(config.worktree, ["status", "--porcelain"]);
+            await adapter.git(config.worktree, ["reset", "--hard", config.base]);
+            await adapter.git(config.worktree, ["clean", "-fd"]);
+            await replace(directory, "author-retry-discard", {
+              at: new Date().toISOString(),
+              base: config.base,
+              discarded,
+            });
+          }
           requireThat(
             (await adapter.git(config.worktree, ["rev-parse", "HEAD"])) === config.base,
             "changed-base",
@@ -310,9 +322,10 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
         }
         const reviewHead = role === "author" ? config.base : reviewerHead;
         requireThat(typeof reviewHead === "string", "review-head-identity-unknown");
-        const retryContext = retry
-          ? `\nThe previous reviewer report could not be parsed (${parseError ?? "malformed-review-report"}). Review the unchanged candidate independently and return one valid report.\n`
-          : "";
+        const retryContext =
+          retry && retryCause === "malformed"
+            ? `\nThe previous reviewer report could not be parsed (${parseError ?? "malformed-review-report"}). Review the unchanged candidate independently and return one valid report.\n`
+            : "";
         const prompt = `${workerPrompt(
           config,
           role,
@@ -345,7 +358,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
         requireThat(
           terminal &&
             terminal.id === attempt.id &&
-            ["running", "passed", "failed", "malformed"].includes(terminal.status),
+            ["running", "passed", "failed", "malformed", "dead"].includes(terminal.status),
           "malformed-terminal",
         );
         const oversizedReviewSummary =
@@ -360,6 +373,15 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
         } else if (summary) terminal.summary = summary;
         if (terminal.status === "running") return finish(`observing-${role}`, { attempt });
       }
+      if (terminal.status === "dead") {
+        const diagnostics = terminalSummary(terminal.summary);
+        if (!retry) {
+          retryCause = "dead";
+          if (!(await get(`${role}-terminal`))) await put(`${role}-terminal`, terminal);
+          continue;
+        }
+        throw new QueueBlocked("launcher-failed", diagnostics, retries);
+      }
       if (role === "reviewer" && ["passed", "failed"].includes(terminal.status)) {
         try {
           parseReview(terminal.summary, config.run, reviewed.head);
@@ -372,6 +394,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string) {
       if (role === "reviewer" && terminal.status === "malformed") {
         parseError ??= "malformed-worker-verdict";
         if (!retry) {
+          retryCause = "malformed";
           if (!(await get(`${role}-terminal`))) await put(`${role}-terminal`, terminal);
           continue;
         }

@@ -63,7 +63,7 @@ function participant(
   item: string,
   stage: "source" | "repair",
   role: "author" | "reviewer",
-  outcome: "passed" | "failed",
+  outcome: QueueParticipant["outcome"],
 ): QueueParticipant {
   return {
     ordinal,
@@ -366,6 +366,47 @@ it("recomposes a polled attempt and resumes its recorded phase", async () => {
   });
   expect({ setupCalls, sourceCalls }).toEqual({ setupCalls: 1, sourceCalls: 2 });
 }, 30_000);
+
+it("counts dead launches while excluding them from the accepted author-review pair", async () => {
+  const current = await fixture();
+  current.config.nativeLaunchCeiling = 4;
+  const item = current.config.items[0]!;
+  const history = [
+    { ...participant(1, item.id, "source", "author", "dead"), id: "dead-author" },
+    participant(2, item.id, "source", "author", "passed"),
+    { ...participant(3, item.id, "source", "reviewer", "dead"), id: "dead-reviewer" },
+    participant(4, item.id, "source", "reviewer", "passed"),
+  ];
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return [...history];
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source() {
+      return {
+        status: "accepted",
+        head: "b".repeat(40),
+        reviewId: history[3]!.id,
+        stateDirectory: item.source.stateDirectory,
+        retries: 1,
+      };
+    },
+    async repair() {
+      throw new Error("repair must not run");
+    },
+    async delivery(_item, accepted) {
+      return deliveryCompletion(item, accepted.head, accepted.reviewId);
+    },
+  };
+
+  await expect(queueStep(current.config, adapter)).resolves.toMatchObject({
+    status: "complete",
+    participants: 4,
+  });
+});
 
 it("runs the composed self-repository setup through the real Git adapter", async () => {
   const { loop, repository, gitExecutable, selected } = await loopFixture();

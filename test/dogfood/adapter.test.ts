@@ -302,6 +302,29 @@ it("reads actual Codex event shape and retains usage as advisory data", () => {
   });
   expect(parseTrace(trace() + '{"partial":', false, "reviewer", config, id).status).toBe("running");
 });
+it("classifies a failed turn or non-zero launcher exit as dead and keeps the last trace error", () => {
+  const failed = trace([
+    rows[0]!,
+    { type: "turn.failed", error: { message: "upstream TLS handshake timed out" } },
+  ] as typeof rows);
+  expect(parseTrace(failed, true, "author", config, id)).toEqual({
+    id,
+    status: "dead",
+    summary: "upstream TLS handshake timed out",
+  });
+  expect(parseTrace(failed, false, "author", config, id).status).toBe("dead");
+  expect(
+    parseTrace(
+      trace([rows[0]!, { type: "error", message: "provider returned 503" }] as typeof rows),
+      true,
+      "author",
+      config,
+      id,
+      true,
+    ),
+  ).toEqual({ id, status: "dead", summary: "provider returned 503" });
+  expect(parseTrace("", true, "author", config, id, true)).toEqual({ id, status: "dead" });
+});
 it("retains exact reviewer reports and rejects oversized or obsolete output", () => {
   const verdict = (g0: unknown, extra: Record<string, unknown> = {}) =>
     trace([
@@ -422,12 +445,32 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
 it("refuses a CLI without the observed native interface before launching", async () => {
   await expect(codexAdapter().preflight(config)).rejects.toThrow();
 });
+it("observes a terminal failed trace as dead before its exit receipt arrives", async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-dead-trace-")));
+  cleanup.push(root);
+  const current = { ...config, stateDirectory: root };
+  const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
+  await writeFile(
+    attempt.trace,
+    trace([
+      rows[0]!,
+      { type: "turn.failed", error: { message: "stream disconnected" } },
+    ] as typeof rows),
+  );
+
+  await expect(codexAdapter().observe("author", current, attempt)).resolves.toEqual({
+    id,
+    status: "dead",
+    summary: "stream disconnected",
+  });
+});
 it("observes a missing exit receipt for the module window before a typed stop", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-exit-wait-")));
   cleanup.push(root);
   let now = 1_000;
   const current = { ...config, stateDirectory: root };
   const attempt = { id, pid: 999_999, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
+  await writeFile(attempt.trace, trace([rows[0]!]));
   const kill = vi.spyOn(process, "kill").mockImplementation(() => {
     throw Object.assign(new Error("gone"), { code: "ESRCH" });
   });

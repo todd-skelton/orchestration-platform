@@ -47,15 +47,20 @@ async function fixture() {
     ciHead = head;
   let unavailable = false,
     reviewerDirty = false,
-    sameIdentity = false;
+    sameIdentity = false,
+    authorDirty = false,
+    authorComplete = false;
   const statuses: Record<Role, Terminal["status"]> = { author: "running", reviewer: "running" };
   let retryStatus: Terminal["status"] = "running";
   const summaries: Partial<Record<Role, unknown>> = {};
   let retrySummary: unknown;
   const launches: Role[] = [],
-    observations: Role[] = [];
+    observations: Role[] = [],
+    launchPrompts: string[] = [];
   const staged: string[][] = [],
-    commits: string[][] = [];
+    commits: string[][] = [],
+    resets: string[][] = [],
+    cleans: string[][] = [];
   let checks: Check[] = config.requiredChecks.map((name) => ({
     name,
     bucket: "pass",
@@ -70,7 +75,7 @@ async function fixture() {
       if (args[0] === "status")
         return tree === reviewWorktree && reviewerDirty
           ? " M file"
-          : tree === worktree && statuses.author === "passed" && currentHead === base
+          : tree === worktree && (authorDirty || authorComplete) && currentHead === base
             ? " M source"
             : "";
       if (args[0] === "rev-parse")
@@ -90,6 +95,19 @@ async function fixture() {
         cached = "";
         return "";
       }
+      if (args[0] === "reset") {
+        resets.push(args);
+        currentHead = args[2]!;
+        authorDirty = false;
+        authorComplete = false;
+        cached = "";
+        return "";
+      }
+      if (args[0] === "clean") {
+        cleans.push(args);
+        untracked = "";
+        return "";
+      }
       if (args[0] === "checkout") {
         reviewHead = args[2]!;
         return "";
@@ -99,9 +117,10 @@ async function fixture() {
     async launch(role, selectedConfig, prompt) {
       expect(prompt).toContain(role === "author" ? base : head);
       launches.push(role);
-      const retry = role === "reviewer" && launches.filter((launch) => launch === role).length > 1;
+      launchPrompts.push(prompt);
+      const retry = launches.filter((launch) => launch === role).length > 1;
       return {
-        id: retry ? "reviewer-retry" : role === "reviewer" && sameIdentity ? "author" : role,
+        id: retry ? `${role}-retry` : role === "reviewer" && sameIdentity ? "author" : role,
         pid: 123,
         trace: resolve(root, `${role}.jsonl`),
         launchedAt: 1,
@@ -109,9 +128,11 @@ async function fixture() {
     },
     async observe(role, _selectedConfig, attempt) {
       observations.push(role);
-      const retry = attempt.id === "reviewer-retry";
+      const retry = attempt.retries === 1;
       const status = retry ? retryStatus : statuses[role];
       const summary = retry ? retrySummary : summaries[role];
+      if (role === "author" && status === "dead") authorDirty = true;
+      if (role === "author" && status === "passed") authorComplete = true;
       return {
         status,
         id: attempt.id,
@@ -149,9 +170,12 @@ async function fixture() {
     run,
     launches,
     observations,
+    launchPrompts,
     pilot,
     staged,
     commits,
+    resets,
+    cleans,
     authorDone,
     reviewerDone,
     publish,
@@ -233,6 +257,76 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await expect(f.run()).rejects.toThrow("crash after spawn");
     await expect(f.run()).rejects.toThrow("author-launch-identity-unknown-reconcile");
     expect(f.launches).toEqual(["author"]);
+  });
+  it("relaunches one dead author with the same prompt after recording a clean-base discard", async () => {
+    const f = await fixture();
+    f.statuses.author = "dead";
+    f.summarize("author", "upstream TLS handshake timed out");
+    f.retry("passed");
+
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+    f.reviewerDone();
+    await expect(f.run()).resolves.toMatchObject({
+      status: "awaiting-publication",
+      author: { id: "author-retry", retries: 1 },
+      retries: 1,
+    });
+    expect(f.launches).toEqual(["author", "author", "reviewer"]);
+    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    expect(f.resets).toEqual([["reset", "--hard", base]]);
+    expect(f.cleans).toEqual([["clean", "-fd"]]);
+    expect(
+      JSON.parse(
+        await readFile(resolve(f.config.stateDirectory, "author-retry-discard.json"), "utf8"),
+      ),
+    ).toMatchObject({ base, discarded: " M source" });
+  });
+  it("stops after two dead launches with the last trace diagnostic", async () => {
+    const f = await fixture();
+    f.statuses.author = "dead";
+    f.summarize("author", "first provider failure");
+    f.retry("dead", "second provider failure");
+
+    await expect(f.run()).rejects.toMatchObject({
+      message: "launcher-failed",
+      diagnostics: "second provider failure",
+      retries: 1,
+    });
+    expect(f.launches).toEqual(["author", "author"]);
+  });
+  it("relaunches once when restarting over a recorded dead launch", async () => {
+    const f = await fixture();
+    expect((await f.run()).status).toBe("observing-author");
+    f.statuses.author = "dead";
+    f.summarize("author", "recorded provider failure");
+    f.retry("passed");
+
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+    expect(f.launches).toEqual(["author", "author", "reviewer"]);
+    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+  });
+  it("uses the same prompt when a recorded reviewer launch dies", async () => {
+    const f = await fixture();
+    await f.run();
+    f.authorDone();
+    await f.run();
+    f.statuses.reviewer = "dead";
+    f.summarize("reviewer", "review stream disconnected");
+    f.retry(
+      "passed",
+      JSON.stringify({
+        run: f.config.run,
+        role: "reviewer",
+        head,
+        verdict: "PASS",
+        findings: [],
+        g0: "No simpler change.",
+      }),
+    );
+
+    await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication", retries: 1 });
+    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+    expect(f.launchPrompts[2]).toBe(f.launchPrompts[1]);
   });
   it("refuses another controller/configuration and changed prompts before dispatch", async () => {
     const f = await fixture();
