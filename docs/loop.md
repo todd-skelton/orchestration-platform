@@ -88,7 +88,7 @@ hosted CI only.
   `/root/orchestration-m1/runtime/<run>`; worktrees under
   `/root/orchestration-m1/worktrees`; log `/root/orchestration-m1/supervisor.log`.
 - Start from Windows (the launcher detaches itself and prints the PID):
-  `wsl -d Ubuntu -- bash /root/orchestration-m1/run-loop.sh [config.json]`
+  `wsl -d Ubuntu -- bash /root/orchestration-m1/repo/scripts/executor/run-loop.sh [config.json]`
 - Check: `wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log`.
   A final `idle` line means nothing is `ready`; a non-zero exit means a stop
   whose learning note is on the issue.
@@ -98,8 +98,15 @@ hosted CI only.
   `127.0.0.1:8317` only, so `scripts/executor/pool-bridge.mjs` forwards the
   WSL-facing host address to it. Start the loop with
   `scripts/executor/start-loop.ps1` from Windows: it starts the bridge when
-  needed, and the launcher refuses to start without it. No worker holds a
-  native Codex login.
+  needed. The versioned `scripts/executor/run-loop.sh` exports
+  `CODEX_PROVIDER_BASE_URL` and `CODEX_PROVIDER_AUTH_COMMAND` (the same
+  `/root/orchestration-m1/pool-key.sh` helper used by the Codex home) to the
+  supervisor. Before each worker launch it probes the authenticated `/models`
+  endpoint, printing `waiting-provider` every ten seconds while unavailable.
+  `providerOutageCeilingMs` in the loop config defaults to thirty minutes;
+  expiry posts a `provider-unavailable` note and exits without parking (ISS-129).
+  Provider deaths spend native launches but preserve the implementation attempt
+  and the single dead-worker retry. No worker holds a native Codex login.
 - Chase Sets runs use `/root/orchestration-m2/repo` and
   `/root/orchestration-m2/loop.json` with the same tools (ISS-110).
 

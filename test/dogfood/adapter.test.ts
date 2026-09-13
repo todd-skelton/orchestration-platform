@@ -12,6 +12,9 @@ import {
   launchArguments,
   outputSchema,
   parseTrace,
+  probeProvider,
+  waitForProvider,
+  DEFAULT_PROVIDER_OUTAGE_CEILING_MS,
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
@@ -363,9 +366,126 @@ it("classifies a failed turn or non-zero launcher exit as dead and keeps the las
       id,
       true,
     ),
-  ).toEqual({ id, status: "dead", summary: "provider returned 503" });
+  ).toEqual({ id, status: "dead", summary: "provider returned 503", providerFailure: true });
   expect(parseTrace("", true, "author", config, id, true)).toEqual({ id, status: "dead" });
 });
+it.each([
+  ["request to http://pool.test/v1/responses failed", true],
+  ["provider returned HTTP 502", true],
+  ["provider returned 5xx", true],
+  ["stream disconnected before completion", true],
+  ["process crashed", false],
+  ["revoked token", false],
+  ["HTTP 401", false],
+  ["HTTP 429", false],
+] as const)("classifies only the final error message: %s", (message, outage) => {
+  const terminal = parseTrace(
+    trace([
+      rows[0],
+      { type: "error", message: "HTTP 503" },
+      { type: "turn.failed", error: { message } },
+      { type: "progress", message: "HTTP 500 in an unrelated event" },
+    ]),
+    true,
+    "author",
+    config,
+    id,
+    true,
+    "http://pool.test/v1",
+  );
+  expect(terminal.summary).toBe(message);
+  expect(terminal.providerFailure ?? false).toBe(outage);
+});
+it("classifies an outage before bounding the diagnostic summary", () => {
+  const terminal = parseTrace(
+    trace([
+      rows[0],
+      { type: "error", message: `${"x".repeat(2100)} http://pool.test/v1/responses` },
+    ]),
+    true,
+    "author",
+    config,
+    id,
+    true,
+    "http://pool.test/v1",
+  );
+  expect(terminal.summary).toHaveLength(2000);
+  expect(terminal.providerFailure).toBe(true);
+});
+it("defaults provider waiting to thirty minutes", async () => {
+  let now = 0;
+  const statuses: object[] = [];
+  await expect(
+    waitForProvider(
+      config,
+      async () => {
+        throw new Error("offline");
+      },
+      {
+        now: () => now,
+        pause: async (ms) => {
+          now += ms;
+        },
+      },
+      (status) => {
+        statuses.push(status);
+      },
+    ),
+  ).rejects.toMatchObject({ reason: "provider-unavailable", diagnostics: "offline" });
+  expect(now).toBe(30 * 60_000);
+  expect(DEFAULT_PROVIDER_OUTAGE_CEILING_MS).toBe(now);
+  expect(statuses).toHaveLength(180);
+});
+it("aborts a hanging probe at the outage ceiling", async () => {
+  vi.useFakeTimers();
+  try {
+    const pending = waitForProvider(
+      { ...config, providerOutageCeilingMs: 20 },
+      async (signal) => {
+        await new Promise((_done, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("probe timed out")), {
+            once: true,
+          }),
+        );
+      },
+      { now: Date.now, pause: async () => {} },
+      () => {},
+    );
+    // AbortSignal.timeout uses native timers; leave the ceiling clock advanced.
+    vi.setSystemTime(Date.now() + 20);
+    await expect(pending).rejects.toMatchObject({
+      reason: "provider-unavailable",
+      diagnostics: "probe timed out",
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+it.skipIf(process.platform === "win32")(
+  "uses the worker auth helper for every models probe and rejects HTTP errors",
+  async () => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "provider-probe-")));
+    cleanup.push(root);
+    const helper = resolve(root, "auth.sh");
+    await writeFile(helper, "#!/bin/sh\nprintf 'test-provider-key\\n'\n", { mode: 0o700 });
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 503 }));
+    const signal = AbortSignal.timeout(5_000);
+    await expect(probeProvider("http://pool.test/v1/", helper, signal, request)).rejects.toThrow(
+      "HTTP 503",
+    );
+    expect(request).toHaveBeenCalledWith("http://pool.test/v1/models", {
+      headers: { Authorization: "Bearer test-provider-key" },
+      signal,
+    });
+    await writeFile(helper, "#!/bin/sh\nprintf 'refreshed-key\\n'\n");
+    request.mockResolvedValue(new Response(null, { status: 200 }));
+    await probeProvider("http://pool.test/v1", helper, signal, request);
+    expect(request).toHaveBeenLastCalledWith("http://pool.test/v1/models", {
+      headers: { Authorization: "Bearer refreshed-key" },
+      signal,
+    });
+  },
+);
 it("retains exact reviewer reports and rejects oversized or obsolete output", () => {
   const verdict = (g0: unknown, extra: Record<string, unknown> = {}) =>
     trace([
@@ -503,6 +623,7 @@ it("observes a terminal failed trace as dead before its exit receipt arrives", a
     id,
     status: "dead",
     summary: "stream disconnected",
+    providerFailure: true,
   });
 });
 it("treats a non-zero exit as dead when the trace ends with partial JSON", async () => {
@@ -523,6 +644,7 @@ it("treats a non-zero exit as dead when the trace ends with partial JSON", async
     id,
     status: "dead",
     summary: "provider returned 503",
+    providerFailure: true,
   });
 });
 it("observes a missing exit receipt for the module window before a typed stop", async () => {

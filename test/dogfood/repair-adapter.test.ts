@@ -53,8 +53,12 @@ it("checks the repository pilot worktree instead of the controller during repair
     adapter: { kind: "codex-exec", executable: process.execPath },
   };
   const checked: string[] = [];
+  let probes = 0;
   const native: Adapter = {
     async preflight() {},
+    async waitForProvider() {
+      probes += 1;
+    },
     async git(path, args) {
       if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return path;
       if (args[0] === "rev-parse" && args[1] === "HEAD") {
@@ -65,6 +69,7 @@ it("checks the repository pilot worktree instead of the controller during repair
       throw new Error(`unexpected git operation ${args.join(" ")}`);
     },
     async launch() {
+      expect(probes).toBe(1);
       return { id: "repair-author", pid: 1, trace: resolve(root, "author.jsonl"), launchedAt: 1 };
     },
     async observe() {

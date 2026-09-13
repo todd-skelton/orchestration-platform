@@ -11,6 +11,7 @@ import {
   repositoryQueueAdapter,
   queueStep,
   validateLoopExecutor,
+  validateLoopConfig,
   validateQueueConfig,
   type QueueAdapter,
   type QueueConfig,
@@ -258,6 +259,22 @@ async function loopFixture(withRuntime = false) {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+it("validates and carries the provider outage ceiling into worker configuration", async () => {
+  const { loop, repository, selected } = await loopFixture();
+  for (const value of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
+    expect(() => validateLoopConfig({ ...loop, providerOutageCeilingMs: value })).toThrow(
+      "invalid-provider-outage-ceiling",
+    );
+  }
+  const queue = await queueConfigFromLoop(
+    { ...loop, providerOutageCeilingMs: 12_345 },
+    repository,
+    selected,
+    repositoryPolicy,
+  );
+  expect(queue.items[0]!.source.providerOutageCeilingMs).toBe(12_345);
 });
 
 it("binds a refresh to a later attempt whose exact prior head is its source base", async () => {

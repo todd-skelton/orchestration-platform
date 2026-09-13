@@ -23,6 +23,60 @@ async function optionalText(path: string) {
   }
 }
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
+export const DEFAULT_PROVIDER_OUTAGE_CEILING_MS = 30 * 60_000;
+type ProviderProbe = (signal: AbortSignal) => Promise<void>;
+
+// ISS-129 recorded multi-minute pool outages; a launch-time probe alone was insufficient.
+export async function waitForProvider(
+  config: Config,
+  probe: ProviderProbe,
+  clock = { now: Date.now, pause },
+  report: (status: object) => void = (status) =>
+    process.stdout.write(`${JSON.stringify(status)}\n`),
+) {
+  const deadline =
+    clock.now() + (config.providerOutageCeilingMs ?? DEFAULT_PROVIDER_OUTAGE_CEILING_MS);
+  for (;;) {
+    try {
+      await probe(AbortSignal.timeout(Math.max(1, Math.min(5_000, deadline - clock.now()))));
+      return;
+    } catch (error) {
+      const diagnostics = error instanceof Error ? error.message : String(error);
+      report({ status: "waiting-provider", run: config.run, issue: config.issue, diagnostics });
+      if (clock.now() >= deadline) throw new QueueBlocked("provider-unavailable", diagnostics);
+      await clock.pause(Math.min(10_000, deadline - clock.now()));
+      if (clock.now() >= deadline) throw new QueueBlocked("provider-unavailable", diagnostics);
+    }
+  }
+}
+
+export async function probeProvider(
+  baseUrl: string,
+  authCommand: string,
+  signal: AbortSignal,
+  request = fetch,
+) {
+  let token: string;
+  try {
+    // The executor's Codex home uses this same command for provider auth.
+    token = (await exec(authCommand, [], { signal, windowsHide: true })).stdout.trim();
+  } catch {
+    throw new Error("provider authentication command failed");
+  }
+  const response = await request(`${baseUrl.replace(/\/$/, "")}/models`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  await response.body?.cancel();
+  if (!response.ok) throw new Error(`provider models probe returned HTTP ${response.status}`);
+}
+
+function providerFailure(message: string, baseUrl?: string) {
+  return Boolean(
+    (baseUrl && message.includes(baseUrl.replace(/\/$/, ""))) ||
+    /\b5\d\d\b|\b5xx\b|\bstream disconnect(?:ed|ion)?\b/i.test(message),
+  );
+}
 const artifact = (config: Config, role: Role, launch: string, suffix: string) =>
   resolve(config.stateDirectory, `${role}-${launch}.${suffix}`);
 const attemptArtifact = (attempt: Attempt, suffix: string) =>
@@ -157,6 +211,7 @@ export function parseTrace(
   config: Config,
   expected?: string,
   launcherFailed = false,
+  providerBaseUrl = process.env.CODEX_PROVIDER_BASE_URL,
 ): Terminal {
   const rows = events(trace, complete && !launcherFailed);
   const ids = rows.filter((row) => row.type === "thread.started").map((row) => row.thread_id);
@@ -176,15 +231,23 @@ export function parseTrace(
   const dead = launcherFailed || (turns.length === 0 && rows.at(-1)?.type === "turn.failed");
   if (dead) {
     let summary: string | undefined;
+    let outage = false;
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const row = rows[index];
+      if (row?.type !== "error" && row?.type !== "turn.failed") continue;
       const message = row?.error?.message ?? row?.message;
       if (typeof message === "string" && message.trim()) {
+        outage = providerFailure(message, providerBaseUrl);
         summary = terminalSummary(message);
         break;
       }
     }
-    return { id, status: "dead", ...(summary ? { summary } : {}) };
+    return {
+      id,
+      status: "dead",
+      ...(summary ? { summary } : {}),
+      ...(outage ? { providerFailure: true } : {}),
+    };
   }
   if (!complete) return { id, status: "running" };
   check(
@@ -293,6 +356,12 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
   };
   return {
     git,
+    async waitForProvider(config) {
+      const baseUrl = process.env.CODEX_PROVIDER_BASE_URL;
+      const authCommand = process.env.CODEX_PROVIDER_AUTH_COMMAND;
+      check(baseUrl && authCommand, "provider-configuration-unavailable");
+      await waitForProvider(config, (signal) => probeProvider(baseUrl!, authCommand!, signal));
+    },
     async preflight(config) {
       launchArguments(config, "author");
       check(
