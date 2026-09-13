@@ -19,6 +19,8 @@ import {
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
+import { workerPrompt } from "../../scripts/dogfood/flow.js";
+import * as selfAdapter from "../../adapters/self.mjs";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
@@ -318,6 +320,25 @@ it("derives the complete internal queue from one compact loop config and selecte
   expect(queue.items[0]!.source.author.prompt).toContain("One file drives the run.");
   expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
 }, 30_000);
+
+it("keeps the real self adapter's configured author gates mandatory before reporting", async () => {
+  const { loop, repository, selected } = await loopFixture();
+  const queue = await queueConfigFromLoop(
+    { ...loop, repository: "todd-skelton/orchestration-platform" },
+    repository,
+    selected,
+    selfAdapter,
+  );
+  const source = queue.items[0]!.source;
+  expect(source.localGates).toEqual(["typecheck", "format:check", "test"]);
+  const prompt = workerPrompt(source, "author", source.base, source.author.prompt);
+  expect(prompt).toContain(
+    "Before reporting, run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in this worktree, and fix what fails.",
+  );
+  expect(prompt).not.toContain("are not prerequisites for your source report");
+  const { localGates: _gates, ...implicitDefaults } = source;
+  expect(prompt).toBe(workerPrompt(implicitDefaults, "author", source.base, source.author.prompt));
+});
 
 it("recomposes a polled attempt and resumes its recorded phase", async () => {
   const { loop, repository, selected } = await loopFixture();
