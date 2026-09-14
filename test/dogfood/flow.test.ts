@@ -99,7 +99,9 @@ async function fixture() {
       if (args[0] === "status")
         return tree === reviewWorktree && reviewerDirty
           ? " M file"
-          : tree === worktree && (authorDirty || authorComplete) && currentHead === base
+          : tree === worktree &&
+              (authorDirty || (authorComplete && (changed || cached || untracked))) &&
+              currentHead === base
             ? " M source"
             : "";
       if (args[0] === "rev-parse")
@@ -139,7 +141,7 @@ async function fixture() {
       throw new Error(`unexpected git operation ${args}`);
     },
     async launch(role, selectedConfig, prompt) {
-      expect(prompt).toContain(role === "author" ? base : head);
+      expect(prompt).toContain(role === "author" ? selectedConfig.base : head);
       launches.push(role);
       launchPrompts.push(prompt);
       const count = launches.filter((launch) => launch === role).length;
@@ -166,7 +168,7 @@ async function fixture() {
         ...(status === "dead" ? deadTrace(String(summary ?? "worker exited"), config) : {}),
         status,
         id: attempt.id,
-        ...(status === "running" ? {} : { head: role === "author" ? base : head }),
+        ...(status === "running" ? {} : { head: role === "author" ? _selectedConfig.base : head }),
         ...(summary === undefined ? {} : { summary: summary as string }),
       };
     },
@@ -288,6 +290,91 @@ function fakeProvider(f: Awaited<ReturnType<typeof fixture>>, responses: (string
 }
 
 describe("supervised sequential pilot (fake attempts, never live acceptance)", () => {
+  it.each([false, true])(
+    "reviews an unchanged rejected candidate after author PASS (resume: %s)",
+    async (resume) => {
+      const f = await fixture();
+      Object.assign(f.config, { base: head, mainBase: base });
+      f.setHead(head);
+      f.setChanged("");
+      const git = f.adapter.git;
+      f.adapter.git = async (tree, args) => {
+        if (args[0] === "merge-base") return args[1]!;
+        if (args[0] === "diff" && args.includes(base)) return "scripts/repair.mjs\0";
+        return git(tree, args);
+      };
+      if (resume) await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+      f.authorDone();
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+      expect(f.commits).toEqual([]);
+      expect(f.staged).toEqual([]);
+      expect(
+        JSON.parse(await readFile(resolve(f.config.stateDirectory, "candidate.json"), "utf8")),
+      ).toEqual({ head, changed: ["scripts/repair.mjs"] });
+      await expectAuthorEvidence(f.config, f.launchPrompts[1]!);
+      expect(f.launchPrompts[1]).toContain(`Delivery main base: ${base}`);
+      f.reviewerDone();
+      await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication", head });
+      await f.publish();
+      await expect(f.run()).resolves.toMatchObject({ status: "ready", head });
+      expect(f.launches).toEqual(["author", "reviewer"]);
+    },
+  );
+
+  it.each(["failed-author", "failed-reviewer", "empty-implementation", "outside-footprint"])(
+    "rejects unchanged corrective handoff: %s",
+    async (failure) => {
+      const f = await fixture();
+      f.config.base = head;
+      f.config.mainBase = base;
+      f.setHead(head);
+      f.setChanged("");
+      const git = f.adapter.git;
+      f.adapter.git = async (tree, args) => {
+        if (args[0] === "merge-base") return args[1]!;
+        if (args[0] === "diff" && args.includes(base))
+          return failure === "empty-implementation"
+            ? ""
+            : failure === "outside-footprint"
+              ? "unapproved/file\0"
+              : "scripts/repair.mjs\0";
+        return git(tree, args);
+      };
+      f.authorDone();
+      if (failure === "failed-author") f.statuses.author = "failed";
+      f.statuses.reviewer = "failed";
+      f.summarize(
+        "reviewer",
+        JSON.stringify({
+          run: f.config.run,
+          role: "reviewer",
+          head,
+          verdict: "FAIL",
+          findings: [
+            {
+              file: "scripts/repair.mjs",
+              line: 1,
+              severity: "blocking",
+              text: "Execution evidence is still inadequate.",
+            },
+          ],
+          g0: "Obtain the required evidence.",
+        }),
+      );
+      await expect(f.run()).rejects.toThrow(
+        failure === "failed-author"
+          ? "author-failed"
+          : failure === "failed-reviewer"
+            ? "reviewer-failed"
+            : "outside-footprint",
+      );
+      expect(f.commits).toEqual([]);
+      expect(f.launches).toEqual(
+        failure === "failed-reviewer" ? ["author", "reviewer"] : ["author"],
+      );
+    },
+  );
+
   it("discovers persisted author execution records when initial review resumes after commit", async () => {
     const f = await fixture();
     await f.run();
@@ -886,7 +973,9 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       await f.run();
       f.authorDone();
       f.setChanged(changed);
-      await expect(f.run()).rejects.toThrow("outside-footprint");
+      await expect(f.run()).rejects.toThrow(
+        changed ? "outside-footprint" : "missing-candidate-commit",
+      );
       expect(f.launches).toEqual(["author"]);
     },
   );

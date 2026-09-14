@@ -1887,7 +1887,7 @@ it("fails self policy closed before provider access for the wrong repository or 
   ).rejects.toThrow("wrong-self-hosted-checks");
 });
 
-it.each(["none", "author", "reviewer"])(
+it.each(["none", "author", "reviewer", "unchanged-correction"])(
   "reduces an exact report after a %s retry to delivery evidence",
   async (retriedRole) => {
     const root = await mkdtemp(resolve(tmpdir(), "delivery-adapter-"));
@@ -1902,6 +1902,12 @@ it.each(["none", "author", "reviewer"])(
       ].map((path) => mkdir(path)),
     );
     await writePilotEvidence(current, {
+      ...(retriedRole === "unchanged-correction"
+        ? {
+            pinnedConfig: { ...pilotConfig(current), base: head, mainBase: "d".repeat(40) },
+            authorTerminal: { id: authorId, status: "passed", head },
+          }
+        : {}),
       reviewerTerminal: {
         id: reviewId,
         status: "passed",
@@ -1909,7 +1915,7 @@ it.each(["none", "author", "reviewer"])(
         summary: reviewerReport(current),
       },
     });
-    if (retriedRole !== "none") {
+    if (retriedRole === "author" || retriedRole === "reviewer") {
       const path = resolve(current.stateDirectory, `${retriedRole}-attempt.json`);
       const attempt = JSON.parse(await readFile(path, "utf8"));
       await writeFile(path, JSON.stringify({ ...attempt, retries: 1 }));

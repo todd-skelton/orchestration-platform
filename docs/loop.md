@@ -50,6 +50,21 @@ candidate, distinguish execution from claims and sandbox limitations, and make
 their own read-only verdict. Author PASS is not review authority; required but
 missing or inadequate test evidence remains a finding.
 
+ISS-140 records the next #7766 blocker: evidence-informed correction required
+no material source edit, but the loop rejected an empty corrective delta.
+A corrective author may now finish with PASS without changing the rejected
+candidate. The controller reuses that commit, not an empty commit or an old
+review verdict. The corrective author base stays distinct from the delivery
+main base; after native continuation rebases, its existing attempt record
+also retains the main revision used for that rebase. Review and footprint
+checks retain the full implementation diff against that main base, not just
+the latest correction. Initial no-op submissions and candidates with no real
+implementation diff still fail. Fresh and resumed attempts require the current
+author's completion and independent exact-head review with current execution
+evidence, followed by all ordinary local gates, publication, hosted CI, merge
+and deployment. Attempt ceilings, consumed attempts and rejected reviews remain
+unchanged. This behavior does not unpark #7766 or restart its preserved run.
+
 ## Planning
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a

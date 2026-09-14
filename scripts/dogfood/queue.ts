@@ -299,6 +299,7 @@ interface FailedAttemptReceipt {
   acceptedStage: null;
   stateDirectory: null;
   rebasedBase?: string;
+  rebasedMainBase?: string;
 }
 
 function validateFailedAttempt(
@@ -324,6 +325,7 @@ function validateFailedAttempt(
       "acceptedStage",
       "stateDirectory",
       ...(object(value) && Object.hasOwn(value, "rebasedBase") ? ["rebasedBase"] : []),
+      ...(object(value) && Object.hasOwn(value, "rebasedMainBase") ? ["rebasedMainBase"] : []),
     ]) &&
       value.schemaVersion === "dogfood-bounded-queue-attempt/v1" &&
       value.phase === "failed" &&
@@ -340,6 +342,7 @@ function validateFailedAttempt(
       value.acceptedStage === null &&
       value.stateDirectory === null &&
       (value.rebasedBase === undefined || SHA.test(value.rebasedBase)) &&
+      (value.rebasedMainBase === undefined || SHA.test(value.rebasedMainBase)) &&
       value.findings.every(
         (finding: unknown) =>
           exactKeys(finding, ["file", "line", "severity", "text"]) &&
@@ -515,6 +518,7 @@ export async function queueConfigFromLoop(
   const runState = resolve(stateRoot, config.run);
   let sourceAttempt = 1;
   let attemptBase = selected.base;
+  let mainBase = selected.base;
   let initialHistory: QueueParticipant[] = [...priorHistory];
   let prescribedFindings: ReviewFinding[] | undefined;
   let rejectedHead: string | undefined;
@@ -532,6 +536,7 @@ export async function queueConfigFromLoop(
     sourceAttempt = attempt.candidateAttempt + 1;
     rejectedHead = attempt.head;
     attemptBase = attempt.rebasedBase ?? attempt.head;
+    mainBase = attempt.rebasedMainBase ?? selected.base;
     pendingRebase = attempt.rebasedBase
       ? undefined
       : { directory: priorQueue, slug: priorSlug, attempt };
@@ -545,6 +550,7 @@ export async function queueConfigFromLoop(
       await git(["fetch", "--no-tags", "origin", `refs/heads/main:${main}`]);
       currentMain = await git(["rev-parse", "--verify", `${main}^{commit}`]);
       demand(SHA.test(currentMain), "current-main-unavailable");
+      mainBase = currentMain;
     } catch {
       throw new QueueBlocked("current-main-unavailable");
     }
@@ -572,6 +578,7 @@ export async function queueConfigFromLoop(
     await record(pendingRebase.directory, "attempt", {
       ...pendingRebase.attempt,
       rebasedBase: attemptBase,
+      rebasedMainBase: mainBase,
     });
   }
   const slug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
@@ -628,6 +635,7 @@ export async function queueConfigFromLoop(
     issue: issueUrl,
     pilotRevision: repositoryRevision,
     base: attemptBase,
+    ...(sourceAttempt > 1 ? { mainBase } : {}),
     worktree: paths.sourceWorktree,
     reviewWorktree: paths.reviewWorktree,
     stateDirectory: paths.source,
@@ -1798,6 +1806,7 @@ export function repositoryQueueAdapter(
     const repair: RepairConfig = {
       ...item.source,
       base: candidate.head,
+      mainBase: item.source.mainBase ?? item.base,
       stateDirectory: item.repair.stateDirectory,
       author: item.repair.author,
       reviewer: item.repair.reviewer,
@@ -1805,7 +1814,7 @@ export function repositoryQueueAdapter(
     return {
       repair,
       handoff: {
-        mainBase: item.base,
+        mainBase: item.source.mainBase ?? item.base,
         correctiveBase: candidate.head,
         failedReview: { findings: source.findings },
         predecessorCompleteSweep: source.reviewId,

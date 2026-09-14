@@ -526,8 +526,9 @@ it.each([false, true])(
   },
 );
 
-it("persists the genuine adapter result and restarts four-participant completion without effects", async () => {
+it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged) => {
   const current = await fixture();
+  const repaired = unchanged ? candidate : "d".repeat(40);
   const sourceSummary = JSON.stringify({
     run: current.source.run,
     role: "reviewer",
@@ -568,8 +569,11 @@ it("persists the genuine adapter result and restarts four-participant completion
         reviewHead = String(args.at(-1));
         return "";
       }
-      if (args[0] === "merge-base") return base;
-      if (args[0] === "diff") return args.includes("--cached") ? "" : "scripts/dogfood/queue.ts\0";
+      if (args[0] === "merge-base") return args[1]!;
+      if (args[0] === "diff")
+        return args.includes("--cached") || (args.at(-1) === "HEAD" && sourceHead === candidate)
+          ? ""
+          : "scripts/dogfood/queue.ts\0";
       if (args[0] === "ls-files") return "";
       if (args[0] === "show") return args.includes("-z") ? "\none\n\n" : "one";
       if (args[0] === "commit") {
@@ -578,16 +582,36 @@ it("persists the genuine adapter result and restarts four-participant completion
       }
       return "";
     },
-    async launch(role) {
-      workerEffects.push(`source:${role}`);
+    async launch(role, config, prompt) {
+      const stage = config.stateDirectory === current.paths.repair ? "repair" : "source";
+      workerEffects.push(`${stage}:${role}`);
+      if (stage === "repair") {
+        expect(config).toMatchObject({ base: candidate, mainBase: base });
+        expect(prompt).toContain(
+          role === "author"
+            ? `distinct delivery main base remains ${base}`
+            : `Delivery main base: ${base}`,
+        );
+        if (role === "reviewer")
+          expect(prompt).toContain("Selected author attempt synthetic-repair-author");
+      }
       return {
-        id: `synthetic-source-${role}`,
+        id: `synthetic-${stage}-${role}`,
         pid: pid++,
-        trace: resolve(current.root, `synthetic-source-${role}.jsonl`),
+        trace: resolve(config.stateDirectory, `${role}.jsonl`),
         launchedAt: 1,
       };
     },
     async observe(role, _config, attempt) {
+      if (_config.stateDirectory === current.paths.repair)
+        return {
+          status: "passed",
+          id: attempt.id,
+          head: candidate,
+          ...(role === "reviewer"
+            ? { usage: { input_tokens: 5, output_tokens: 2 }, summary: deltaSummary }
+            : {}),
+        };
       return role === "author"
         ? {
             status: "passed",
@@ -775,7 +799,7 @@ it("persists the genuine adapter result and restarts four-participant completion
   };
   const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
     native,
-    repair: repairAdapter,
+    ...(unchanged ? {} : { repair: repairAdapter }),
     delivery,
     deliveryPolicy: {
       async plan() {
@@ -843,6 +867,7 @@ it("persists the genuine adapter result and restarts four-participant completion
     issue: current.item.issue,
     head: repaired,
     reviewId: "synthetic-repair-reviewer",
+    candidateAttempt: 2,
     retries: 0,
     acceptedStage: "repair",
     stateDirectory: current.paths.repair,

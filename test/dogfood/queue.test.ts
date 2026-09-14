@@ -836,103 +836,197 @@ it("counts a genuine repair as the next candidate without a new counter", async 
   await expect(currentCandidateAttempt(current.config)).resolves.toBe(3);
 });
 
-it("starts candidate three at the rejected head rebased onto current origin/main", async () => {
-  const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();
-  await execute(gitExecutable, ["-C", repository, "checkout", "-b", "rejected"]);
-  await writeFile(resolve(repository, "rejected.txt"), "candidate two\n");
-  await execute(gitExecutable, ["-C", repository, "add", "."]);
-  await execute(gitExecutable, ["-C", repository, "commit", "-m", "candidate two"]);
-  const rejectedHead = (
-    await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
-  ).stdout.trim();
-  await execute(gitExecutable, ["-C", repository, "checkout", "main"]);
-  const remote = resolve(repository, "..", "remote.git");
-  const updater = resolve(repository, "..", "updater");
-  await execute(gitExecutable, ["clone", "--bare", repository, remote]);
-  await execute(gitExecutable, ["-C", repository, "remote", "add", "origin", remote]);
-  await execute(gitExecutable, ["clone", remote, updater]);
-  await execute(gitExecutable, ["-C", updater, "config", "user.name", "Fixture"]);
-  await execute(gitExecutable, ["-C", updater, "config", "user.email", "fixture@example.test"]);
-  await writeFile(resolve(updater, "main.txt"), "new main\n");
-  await execute(gitExecutable, ["-C", updater, "add", "."]);
-  await execute(gitExecutable, ["-C", updater, "commit", "-m", "advance main"]);
-  await execute(gitExecutable, ["-C", updater, "push", "origin", "main"]);
-  const currentMain = (
-    await execute(gitExecutable, ["-C", updater, "rev-parse", "HEAD"])
-  ).stdout.trim();
-  const main = (
-    await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
-  ).stdout.trim();
-  const prescribed = [
-    {
-      file: "scripts/dogfood/queue.ts",
-      line: 1,
-      severity: "blocking" as const,
-      text: "Preserve the rejected candidate and apply this exact fix.",
-    },
-  ];
-  const firstHistory = [
-    participant(1, "ISS-104:1", "source", "author", "passed"),
-    participant(2, "ISS-104:1", "source", "reviewer", "failed"),
-    participant(3, "ISS-104:1", "repair", "author", "passed"),
-    participant(4, "ISS-104:1", "repair", "reviewer", "failed"),
-  ];
-  const queueState = resolve(stateRoot, loop.run, "iss-104-attempt-1");
-  await mkdir(queueState, { recursive: true });
-  await writeFile(
-    resolve(queueState, "attempt.json"),
-    `${JSON.stringify({
-      schemaVersion: "dogfood-bounded-queue-attempt/v1",
-      phase: "failed",
-      run: loop.run,
-      index: 0,
-      item: "ISS-104:1",
-      issue: "https://github.com/fixture/repository/issues/361",
-      base: main,
-      candidateAttempt: 2,
-      head: rejectedHead,
-      reviewId: firstHistory[3]!.id,
-      findings: prescribed,
-      history: firstHistory,
-      retries: 0,
-      acceptedStage: null,
-      stateDirectory: null,
-    })}\n`,
-  );
-  const third = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
-  const rebasedBase = third.items[0]!.base;
-  expect(third.items[0]).toMatchObject({
-    id: "ISS-104:3",
-    base: rebasedBase,
-    implementationAttempt: 3,
-    source: { base: rebasedBase },
-    setup: { base: rebasedBase },
-  });
-  expect(rebasedBase).not.toBe(rejectedHead);
-  await expect(
-    execute(gitExecutable, [
-      "-C",
+it.each([false, true])(
+  "rebased attempt 3 (changed: %s)",
+  async (correctiveChanges) => {
+    const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();
+    await execute(gitExecutable, ["-C", repository, "checkout", "-b", "rejected"]);
+    await writeFile(resolve(repository, "rejected.txt"), "candidate two\n");
+    await execute(gitExecutable, ["-C", repository, "add", "."]);
+    await execute(gitExecutable, ["-C", repository, "commit", "-m", "candidate two"]);
+    const rejectedHead = (
+      await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
+    ).stdout.trim();
+    await execute(gitExecutable, ["-C", repository, "checkout", "main"]);
+    const remote = resolve(repository, "..", "remote.git");
+    const updater = resolve(repository, "..", "updater");
+    await execute(gitExecutable, ["clone", "--bare", repository, remote]);
+    await execute(gitExecutable, ["-C", repository, "remote", "add", "origin", remote]);
+    await execute(gitExecutable, ["clone", remote, updater]);
+    await execute(gitExecutable, ["-C", updater, "config", "user.name", "Fixture"]);
+    await execute(gitExecutable, ["-C", updater, "config", "user.email", "fixture@example.test"]);
+    await writeFile(resolve(updater, "main.txt"), "new main\n");
+    await execute(gitExecutable, ["-C", updater, "add", "."]);
+    await execute(gitExecutable, ["-C", updater, "commit", "-m", "advance main"]);
+    await execute(gitExecutable, ["-C", updater, "push", "origin", "main"]);
+    const currentMain = (
+      await execute(gitExecutable, ["-C", updater, "rev-parse", "HEAD"])
+    ).stdout.trim();
+    const main = (
+      await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])
+    ).stdout.trim();
+    const prescribed = [
+      {
+        file: "scripts/dogfood/queue.ts",
+        line: 1,
+        severity: "blocking" as const,
+        text: "Preserve the rejected candidate and apply this exact fix.",
+      },
+    ];
+    const firstHistory = [
+      participant(1, "ISS-104:1", "source", "author", "passed"),
+      participant(2, "ISS-104:1", "source", "reviewer", "failed"),
+      participant(3, "ISS-104:1", "repair", "author", "passed"),
+      participant(4, "ISS-104:1", "repair", "reviewer", "failed"),
+    ];
+    const queueState = resolve(stateRoot, loop.run, "iss-104-attempt-1");
+    await mkdir(queueState, { recursive: true });
+    await writeFile(
+      resolve(queueState, "attempt.json"),
+      `${JSON.stringify({
+        schemaVersion: "dogfood-bounded-queue-attempt/v1",
+        phase: "failed",
+        run: loop.run,
+        index: 0,
+        item: "ISS-104:1",
+        issue: "https://github.com/fixture/repository/issues/361",
+        base: main,
+        candidateAttempt: 2,
+        head: rejectedHead,
+        reviewId: firstHistory[3]!.id,
+        findings: prescribed,
+        history: firstHistory,
+        retries: 0,
+        acceptedStage: null,
+        stateDirectory: null,
+      })}\n`,
+    );
+    const third = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+    const rebasedBase = third.items[0]!.base;
+    expect(third.items[0]).toMatchObject({
+      id: "ISS-104:3",
+      base: rebasedBase,
+      implementationAttempt: 3,
+      source: { base: rebasedBase, mainBase: currentMain, pilotRevision: main },
+      setup: { base: rebasedBase },
+    });
+    expect(rebasedBase).not.toBe(rejectedHead);
+    await expect(
+      execute(gitExecutable, [
+        "-C",
+        repository,
+        "merge-base",
+        "--is-ancestor",
+        currentMain,
+        rebasedBase,
+      ]),
+    ).resolves.toMatchObject({ stdout: "" });
+    await expect(
+      execute(gitExecutable, ["-C", repository, "show", `${rebasedBase}:rejected.txt`]),
+    ).resolves.toMatchObject({ stdout: "candidate two\n" });
+    await expect(
+      readFile(resolve(queueState, "attempt.json"), "utf8").then(JSON.parse),
+    ).resolves.toMatchObject({ head: rejectedHead, rebasedBase, rebasedMainBase: currentMain });
+    expect(third.initialHistory).toEqual(firstHistory);
+    expect(third.stateDirectory).toContain("iss-104-attempt-3");
+    expect(third.items[0]!.source.author.prompt).toContain(rejectedHead);
+    expect(third.items[0]!.source.author.prompt).toContain(JSON.stringify(prescribed));
+    await expect(
+      gitSetupAdapter({ gitExecutable }).assertExecutor(third.items[0]!.setup, repository),
+    ).resolves.toBeUndefined();
+    expect(await queueConfigFromLoop(loop, repository, selected, repositoryPolicy)).toEqual(third);
+    const item = third.items[0]!;
+    await setupStep(
+      item.setup,
+      gitSetupAdapter({
+        gitExecutable,
+        async install(_launcher, _args, cwd) {
+          await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+          await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
       repository,
-      "merge-base",
-      "--is-ancestor",
-      currentMain,
-      rebasedBase,
-    ]),
-  ).resolves.toMatchObject({ stdout: "" });
-  await expect(
-    execute(gitExecutable, ["-C", repository, "show", `${rebasedBase}:rejected.txt`]),
-  ).resolves.toMatchObject({ stdout: "candidate two\n" });
-  await expect(
-    readFile(resolve(queueState, "attempt.json"), "utf8").then(JSON.parse),
-  ).resolves.toMatchObject({ head: rejectedHead, rebasedBase });
-  expect(third.initialHistory).toEqual(firstHistory);
-  expect(third.stateDirectory).toContain("iss-104-attempt-3");
-  expect(third.items[0]!.source.author.prompt).toContain(rejectedHead);
-  expect(third.items[0]!.source.author.prompt).toContain(JSON.stringify(prescribed));
-  await expect(
-    gitSetupAdapter({ gitExecutable }).assertExecutor(third.items[0]!.setup, repository),
-  ).resolves.toBeUndefined();
-}, 15_000);
+    );
+    const failedRecord = await readFile(resolve(queueState, "attempt.json"), "utf8");
+    const launches: string[] = [];
+    let passReview = false;
+    let reviewedHead = rebasedBase;
+    const native: Adapter = {
+      async preflight() {},
+      async git(tree, args) {
+        return (await execute(gitExecutable, ["-C", tree, ...args])).stdout.trim();
+      },
+      async launch(role, config, prompt) {
+        launches.push(role);
+        if (role === "author" && correctiveChanges)
+          await writeFile(resolve(config.worktree, "correction.txt"), "new corrective work\n");
+        if (role === "reviewer") {
+          expect(prompt).toContain(`Delivery main base: ${currentMain}`);
+          expect(prompt).toContain("Selected author attempt continued-author");
+          reviewedHead = (
+            await execute(gitExecutable, ["-C", config.worktree, "rev-parse", "HEAD"])
+          ).stdout.trim();
+        }
+        return {
+          id: `continued-${role}`,
+          pid: launches.length,
+          trace: resolve(config.stateDirectory, `${role}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, config, attempt) {
+        if (role === "author") return { status: "passed", id: attempt.id, head: config.base };
+        return {
+          status: passReview ? "passed" : "running",
+          id: attempt.id,
+          head: reviewedHead,
+          summary: JSON.stringify({
+            run: config.run,
+            role,
+            head: reviewedHead,
+            verdict: "PASS",
+            findings: [],
+            g0: "No source churn is needed.",
+          }),
+        };
+      },
+      async checks() {
+        throw new Error("source must not publish");
+      },
+    };
+    const sourceAdapter = repositoryQueueAdapter(third, repository, { native, gitExecutable });
+    await sourceAdapter.assertExecutor();
+    await expect(sourceAdapter.source(item)).resolves.toMatchObject({
+      status: "observing-reviewer",
+    });
+    expect(reviewedHead === rebasedBase).toBe(!correctiveChanges);
+    expect(
+      JSON.parse(await readFile(resolve(item.source.stateDirectory, "candidate.json"), "utf8")),
+    ).toEqual({
+      head: reviewedHead,
+      changed: correctiveChanges ? ["correction.txt", "rejected.txt"] : ["rejected.txt"],
+    });
+    passReview = true;
+    const resumed = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+    await expect(
+      repositoryQueueAdapter(resumed, repository, { native }).source(resumed.items[0]!),
+    ).resolves.toMatchObject({
+      status: "accepted",
+      head: reviewedHead,
+      reviewId: "continued-reviewer",
+    });
+    expect(launches).toEqual(["author", "reviewer"]);
+    expect(await currentCandidateAttempt(resumed)).toBe(3);
+    expect(
+      (await repositoryQueueAdapter(resumed, repository, { native }).history()).map(
+        (row) => row.outcome,
+      ),
+    ).toEqual(["passed", "failed", "passed", "failed", "passed", "passed"]);
+    expect(await readFile(resolve(queueState, "attempt.json"), "utf8")).toBe(failedRecord);
+  },
+  30_000,
+);
 
 it("stops with rebase-conflict before launching the next author", async () => {
   const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();
