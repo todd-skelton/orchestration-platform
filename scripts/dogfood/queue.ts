@@ -21,6 +21,8 @@ import { codexAdapter } from "./dispatch-adapter.ts";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { correctGate, QueueBlocked, step } from "./flow.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { currentMain, rebaseOnto, refreshDelivery } from "./refresh.ts";
 export { QueueBlocked };
 import {
   reviewedRepairAdapter,
@@ -66,7 +68,7 @@ export interface QueueParticipant {
   ordinal: number;
   id: string;
   item: string;
-  stage: "source" | "repair";
+  stage: "source" | "repair" | "refresh";
   role: "author" | "reviewer";
   outcome: "passed" | "failed" | "unknown" | "malformed" | "dead";
   usage: QueueUsage;
@@ -624,30 +626,13 @@ export async function queueConfigFromLoop(
     prescribedFindings = attempt.findings;
   }
   if (pendingRebase) {
-    let currentMain: string;
-    try {
-      const main = "refs/remotes/origin/main";
-      await git(["fetch", "--no-tags", "origin", `refs/heads/main:${main}`]);
-      currentMain = await git(["rev-parse", "--verify", `${main}^{commit}`]);
-      demand(SHA.test(currentMain), "current-main-unavailable");
-      mainBase = currentMain;
-    } catch {
-      throw new QueueBlocked("current-main-unavailable");
-    }
+    mainBase = await currentMain(git);
     const rebaseWorktree = resolve(worktreeRoot, `${pendingRebase.slug}-rebase-${process.pid}`);
     let added = false;
     try {
       await git(["worktree", "add", "--detach", rebaseWorktree, pendingRebase.attempt.head]);
       added = true;
-      try {
-        await gitAt(rebaseWorktree, ["rebase", currentMain]);
-      } catch {
-        try {
-          await gitAt(rebaseWorktree, ["rebase", "--abort"]);
-        } catch {}
-        throw new QueueBlocked("rebase-conflict");
-      }
-      attemptBase = await gitAt(rebaseWorktree, ["rev-parse", "HEAD"]);
+      attemptBase = await rebaseOnto((args: string[]) => gitAt(rebaseWorktree, args), mainBase);
       demand(SHA.test(attemptBase), "rebase-conflict");
     } finally {
       if (added)
@@ -812,7 +797,7 @@ export function validateHistory(history: QueueParticipant[], ceiling: number) {
         participant.ordinal === index + 1 &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.id) &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.item) &&
-        ["source", "repair"].includes(participant.stage) &&
+        ["source", "repair", "refresh"].includes(participant.stage) &&
         ["author", "reviewer"].includes(participant.role) &&
         ["passed", "failed", "unknown", "malformed", "dead"].includes(participant.outcome) &&
         validUsage(participant.usage),
@@ -1199,7 +1184,14 @@ function assertItemReviewHistory(
   const sourceReview = source[0]?.at(-1);
   const baseRepair = repair[0]?.at(-1);
   const gate = source[1] ?? repair[1];
-  const selected = gate?.length === 2 ? gate.at(-1) : repaired ? baseRepair : sourceReview;
+  const refresh = history.findLast(
+    (participant) =>
+      participant.ordinal > priorParticipants &&
+      participant.item === item.id &&
+      participant.stage === "refresh",
+  );
+  const selected =
+    refresh ?? (gate?.length === 2 ? gate.at(-1) : repaired ? baseRepair : sourceReview);
   demand(
     source.length >= 1 &&
       source.length <= 3 &&
@@ -1692,7 +1684,9 @@ export function repositoryQueueAdapter(
     const prior = await optionalRecord(priorDirectory, "attempt");
     if (prior === ABSENT || prior.phase !== "failed" || prior.issue !== item.issue) return "";
     for (const stage of ["source", "repair"]) {
-      const directory = resolve(priorDirectory, stage);
+      const originalDirectory = resolve(priorDirectory, stage);
+      const refreshed = await optionalRecord(originalDirectory, "native-refresh");
+      const directory = refreshed === ABSENT ? originalDirectory : refreshed.directory;
       const publication = await optionalRecord(directory, "publication");
       if (publication === ABSENT || publication.head !== prior.head) continue;
       const source = await json(directory, "delivery-source");
@@ -1720,7 +1714,7 @@ export function repositoryQueueAdapter(
     return "";
   };
 
-  const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
+  const boundedNative = (item: QueueItem, stage: QueueParticipant["stage"]): Adapter => ({
     ...native,
     async waitForProvider(current) {
       await native.waitForProvider?.(current);
@@ -1769,7 +1763,7 @@ export function repositoryQueueAdapter(
 
   async function syncParticipant(
     item: QueueItem,
-    stage: "source" | "repair",
+    stage: QueueParticipant["stage"],
     role: Role,
     attempt: any,
     terminal: any,
@@ -2231,7 +2225,7 @@ export function repositoryQueueAdapter(
         savedAttempt = advance(savedAttempt, await readHistory(), fields);
         await record(state, "attempt", savedAttempt);
       };
-      const delivery: DeliveryConfig = {
+      let delivery: DeliveryConfig = {
         controller: config.controller,
         run: item.source.run,
         issue: item.issue,
@@ -2248,17 +2242,36 @@ export function repositoryQueueAdapter(
         requiredChecks: item.delivery.requiredChecks,
         policy: item.delivery.policy,
       };
+      // The accepted source stays immutable. Each refreshed head owns new gate/review records.
+      const originalCandidate = await json(accepted.stateDirectory, "candidate");
+      await assertExecutor(delivery, executingRoot, gitExecutable);
+      const originalConfig = await json(accepted.stateDirectory, "config");
+      const originalEvidence = await deliveryAdapter.source({
+        ...delivery,
+        candidateHead: originalCandidate.head,
+      });
+      const refreshed = await refreshDelivery(
+        delivery,
+        originalConfig.config,
+        originalEvidence,
+        boundedNative(item, "refresh"),
+        item.setup.pilotWorktree,
+        flowRetries,
+      );
+      if (refreshed.status === "observing-reviewer") return refreshed;
+      delivery = refreshed.config;
+      const refreshedSource = refreshed.evidence;
+      if (refreshed.flowRetried) gateRetryCounted = delivery.retries > Math.max(flowRetries, 1);
+      if (
+        delivery.stateDirectory !== accepted.stateDirectory &&
+        (await optionalRecord(delivery.stateDirectory, "cleanup")) === ABSENT
+      )
+        await passingReview(item, delivery.stateDirectory, "refresh-review-not-accepted");
       const correctionNative = boundedNative(item, stage);
       const inlineDelivery: DeliveryAdapter = {
         ...deliveryAdapter,
-        async source(current) {
-          const reviewed = await optionalRecord(accepted.stateDirectory, "candidate");
-          const source = await deliveryAdapter.source(
-            reviewed !== ABSENT && SHA.test(reviewed.head)
-              ? { ...current, candidateHead: reviewed.head }
-              : current,
-          );
-          return { ...source, head: current.candidateHead };
+        async source() {
+          return refreshedSource;
         },
         async verifyWorkspace(current, head) {
           return (
@@ -2267,6 +2280,19 @@ export function repositoryQueueAdapter(
           );
         },
         async correctGate(current, gate, output) {
+          if (current.stateDirectory !== accepted.stateDirectory) {
+            // ISS-148: retry a transient gate on the exact delta-reviewed head.
+            // A semantic correction needs its own review; do not import the old verdict.
+            demand(!gateRetryCounted, `gate-retry-exhausted:${gate}`);
+            retries = current.retries + 1;
+            await persistDeliveryAttempt({
+              head: current.candidateHead,
+              reviewId: refreshedSource.reviewId,
+              retries,
+            });
+            gateRetryCounted = true;
+            return { head: current.candidateHead, retries };
+          }
           const resuming = gateRetryCounted;
           if (!gateRetryCounted) {
             retries = (accepted.retries ?? 0) + 1;
@@ -2280,7 +2306,7 @@ export function repositoryQueueAdapter(
             {
               ...item.source,
               base: correctionBase,
-              stateDirectory: accepted.stateDirectory,
+              stateDirectory: current.stateDirectory,
             },
             correctionNative,
             item.setup.pilotWorktree,
@@ -2296,7 +2322,7 @@ export function repositoryQueueAdapter(
       try {
         await assertExecutor(delivery, executingRoot, gitExecutable);
         const result = await deliveryStep(delivery, inlineDelivery, deliveryPolicy);
-        demand(result.reviewId === accepted.reviewId, "delivery-source-drift");
+        demand(result.reviewId === refreshedSource.reviewId, "delivery-source-drift");
         if (result.status === "failed") return result;
         demand(result.retries >= (accepted.retries ?? 0), "delivery-source-drift");
         if (result.status === "observing-hosted-checks")

@@ -1120,10 +1120,7 @@ export async function deliveryStep(
           if (run === 1) throw new DeliveryBlocked(`gate-retry-exhausted:${gate}`, output);
           demand(adapter.correctGate, "gate-correction-unavailable");
           const correction = await adapter.correctGate(config, gate, output);
-          demand(
-            SHA.test(correction.head) && correction.head !== config.candidateHead,
-            "gate-correction-failed",
-          );
+          demand(SHA.test(correction.head), "gate-correction-failed");
           config = {
             ...config,
             candidateHead: correction.head,

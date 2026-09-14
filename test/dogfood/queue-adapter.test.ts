@@ -471,6 +471,7 @@ it.each([false, true])(
     const native: Adapter = {
       async preflight() {},
       async git(worktree, args) {
+        if (args[0] === "rev-parse" && args[1] === "--verify") return base;
         if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
         if (args[0] === "rev-parse" && args[1] === "HEAD") {
           if (worktree === current.paths.pilot) return stable;
@@ -821,6 +822,7 @@ it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged)
   const native: Adapter = {
     async preflight() {},
     async git(worktree, args) {
+      if (args[0] === "rev-parse" && args[1] === "--verify") return base;
       if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
       if (args[0] === "rev-parse" && args[1] === "HEAD") {
         if (worktree === current.paths.pilot) return stable;
@@ -895,6 +897,17 @@ it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged)
   };
   const repairAdapter: RepairAdapter = {
     async dispatch() {
+      await writeFile(
+        resolve(current.paths.repair, "config.json"),
+        JSON.stringify({
+          config: {
+            ...current.source,
+            base: candidate,
+            mainBase: base,
+            stateDirectory: current.paths.repair,
+          },
+        }),
+      );
       const rows = [
         {
           ordinal: 3,

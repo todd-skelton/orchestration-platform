@@ -442,6 +442,7 @@ it("parks only the explicit item stop reasons", async () => {
       "exit-receipt-timeout",
       "launcher-failed",
       "rebase-conflict",
+      "refresh-review-failed",
       "hosted-check-failed:linux",
       "hosted-check-log-unavailable:windows",
       "deploy-not-verified",

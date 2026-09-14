@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
 import { normalizeBody } from "../planning/board-check.mjs";
+import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 import {
   DeliveryBlocked,
@@ -516,8 +517,15 @@ export function githubDeliveryAdapter(
       if (!(await verifyWorkspace(config, head)))
         return { status: "failed", output: "candidate workspace drifted before gate" };
       try {
-        const launcher = await resolvePnpmLauncher();
-        await run(launcher.executable, [...launcher.prefixArgs, "run", name], config.worktree);
+        if (
+          name === "planning:board-check" &&
+          config.repository === "todd-skelton/orchestration-platform"
+        ) {
+          await checkCandidateBoard(config.worktree, head, gitExecutable);
+        } else {
+          const launcher = await resolvePnpmLauncher();
+          await run(launcher.executable, [...launcher.prefixArgs, "run", name], config.worktree);
+        }
         return (await verifyWorkspace(config, head))
           ? { status: "passed" as const }
           : { status: "failed" as const, output: "candidate workspace drifted after gate" };
