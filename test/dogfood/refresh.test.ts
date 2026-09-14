@@ -1,6 +1,15 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -70,8 +79,9 @@ function planning(keys: string[]): PlanningSnapshot {
   };
 }
 
-async function fixture(seedKeys = ["ISS-100"]) {
-  const root = await mkdtemp(resolve(tmpdir(), "native-refresh-"));
+async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
+  // Delivery expects canonical roots, including macOS /var and Windows temp aliases.
+  const root = await realpath(await mkdtemp(resolve(temporaryRoot, "native-refresh-")));
   roots.push(root);
   const repo = resolve(root, "repo");
   const origin = resolve(root, "remote.git");
@@ -641,28 +651,39 @@ it("refreshes first and resumed self gates with current registrations and candid
   ]);
 });
 
-it("runs the first genuine self gate successfully after a separate registration lands", async () => {
-  const f = await fixture();
-  const oldReceipt = JSON.stringify({ head: f.head, name: "planning:board-check" });
-  await writeFile(resolve(f.sourceState, "gate-1.json"), oldReceipt);
-  await f.advanceMain();
-  await f.saveAttempt();
-  const step = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
-  await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-  await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-  expect(f.gateHeads).toHaveLength(1);
-  expect(f.publication()?.head).toBe(f.gateHeads[0]);
-  const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
-  expect(attempt).toMatchObject({
-    head: f.gateHeads[0],
-    candidateAttempt: 1,
-    acceptedStage: "source",
-    stateDirectory: f.sourceState,
-  });
-  expect(attempt.reviewId).not.toBe(f.reviewer.id);
-  expect(attempt.history).toHaveLength(3);
-  expect(await readFile(resolve(f.sourceState, "gate-1.json"), "utf8")).toBe(oldReceipt);
-});
+it.each([false, true])(
+  "runs the first genuine self gate after a registration lands (temporary path alias: %s)",
+  async (aliased) => {
+    let temporaryRoot = tmpdir();
+    if (aliased) {
+      const root = await realpath(await mkdtemp(resolve(tmpdir(), "refresh-alias-")));
+      roots.push(root);
+      temporaryRoot = resolve(root, "alias");
+      // Junctions also exercise a real filesystem alias on Windows without symlink privileges.
+      await symlink(await realpath(tmpdir()), temporaryRoot, "junction");
+    }
+    const f = await fixture(undefined, temporaryRoot);
+    const oldReceipt = JSON.stringify({ head: f.head, name: "planning:board-check" });
+    await writeFile(resolve(f.sourceState, "gate-1.json"), oldReceipt);
+    await f.advanceMain();
+    await f.saveAttempt();
+    const step = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+    await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.gateHeads).toHaveLength(1);
+    expect(f.publication()?.head).toBe(f.gateHeads[0]);
+    const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
+    expect(attempt).toMatchObject({
+      head: f.gateHeads[0],
+      candidateAttempt: 1,
+      acceptedStage: "source",
+      stateDirectory: f.sourceState,
+    });
+    expect(attempt.reviewId).not.toBe(f.reviewer.id);
+    expect(attempt.history).toHaveLength(3);
+    expect(await readFile(resolve(f.sourceState, "gate-1.json"), "utf8")).toBe(oldReceipt);
+  },
+);
 
 it("reconciles a completed rebase whose response was lost without repeating it", async () => {
   const f = await fixture();
