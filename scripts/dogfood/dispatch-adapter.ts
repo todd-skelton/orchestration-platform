@@ -291,7 +291,13 @@ export function parseTrace(
   );
   let verdict: any;
   try {
-    verdict = JSON.parse(messages.at(-1)?.item.text ?? "null");
+    const message = messages.at(-1)?.item.text ?? "null";
+    // ISS-150: tolerate reviewer prose before the sole top-level object. Parsing
+    // the whole suffix rejects trailing text and additional objects without
+    // salvaging a nested object or skipping an earlier verdict.
+    const start = role === "reviewer" ? message.indexOf("{") : 0;
+    check(start >= 0, "malformed-worker-verdict");
+    verdict = JSON.parse(message.slice(start));
   } catch {
     throw new Error("malformed-worker-verdict");
   }
@@ -314,8 +320,7 @@ export function parseTrace(
             Object.hasOwn(verdict, key),
           ) &&
           Array.isArray(verdict.findings) &&
-          typeof verdict.g0 === "string" &&
-          JSON.stringify(verdict).length <= MAX_TERMINAL_SUMMARY_LENGTH
+          typeof verdict.g0 === "string"
       : Object.keys(verdict).length === 5 &&
           ["run", "role", "head", "verdict", "summary"].every((key) =>
             Object.hasOwn(verdict, key),
@@ -325,6 +330,11 @@ export function parseTrace(
     "malformed-worker-verdict",
   );
   const summary = role === "reviewer" ? JSON.stringify(verdict) : terminalSummary(verdict.summary);
+  if (role === "reviewer" && summary && summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
+    throw new QueueBlocked(
+      "malformed-worker-verdict",
+      `Reviewer verdict serialized length is ${summary.length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`,
+    );
   return {
     id,
     status: verdict.verdict === "PASS" ? "passed" : "failed",
@@ -477,6 +487,8 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
           if (modelRefused(stderr)) terminal.modelRefused = true;
         }
       } catch (error) {
+        const summary =
+          error instanceof QueueBlocked ? terminalSummary(error.diagnostics) : undefined;
         if (
           role === "reviewer" &&
           Boolean(exit) &&
@@ -488,6 +500,7 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
             status: "malformed",
             head: await git(config.reviewWorktree, ["rev-parse", "HEAD"]),
             usage: events(trace, true).find((row) => row.type === "turn.completed")?.usage,
+            ...(summary ? { summary } : {}),
           };
         throw error;
       }

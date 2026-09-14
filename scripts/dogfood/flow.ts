@@ -197,7 +197,7 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
   const report =
     role === "author"
       ? `Final response must be ONLY JSON: {"run":"${config.run}","role":"author","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings.`
-      : `Final response must be ONLY JSON: {"run":"${config.run}","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block.`;
+      : `Final response must be ONLY JSON: {"run":"${config.run}","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block.`;
   return (
     `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
     `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
@@ -488,7 +488,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
       if (role === "reviewer" && terminal.status === "malformed") {
         parseError ??= "malformed-worker-verdict";
         if (!retry) {
-          retryContext = `\nThe previous reviewer report could not be parsed (${parseError}). Review the unchanged candidate independently and return one valid report.\n`;
+          retryContext = `\nThe previous reviewer report could not be parsed (${parseError}).${terminal.summary ? ` Diagnostics: ${terminal.summary}` : ""} Review the unchanged candidate independently and return one valid report.\n`;
           await replace(directory, `${role}-terminal`, terminal);
           retry = true;
           retries = 1;

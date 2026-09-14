@@ -848,7 +848,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     });
     expect(f.launches).toEqual(["author", "author", "author"]);
   });
-  it("requires local author verification and otherwise preserves the reviewer prompt", async () => {
+  it("preserves the author prompt and states the reviewer's total serialized length cap", async () => {
     const f = await fixture();
     expect(workerPrompt(f.config, "author", base, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role author; exact base: ${base}.\n` +
@@ -858,7 +858,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role reviewer; exact review head: ${head}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block. Review every changed assertion independently.\n`,
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Return the JSON object alone; its serialized length (JSON.stringify) must be at most 2000 characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block. Review every changed assertion independently.\n`,
     );
   });
   it("leaves configured commit-bound gates to the executor while requiring honest source readiness", async () => {
@@ -1314,48 +1314,74 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     other.dirtyReview();
     await expect(other.run()).rejects.toThrow("reviewer-modified-worktree");
   });
-  it("retries a malformed reviewer once with the parse error and resumes after observation", async () => {
-    const f = await fixture();
-    await f.run();
-    f.authorDone();
-    await f.run();
-    f.statuses.reviewer = "malformed";
-    f.retry("running");
-    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
-    expect(
-      JSON.parse(
-        await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
-      ),
-    ).toMatchObject({ status: "malformed", id: "reviewer", head });
-    expect(
-      JSON.parse(await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8")),
-    ).toMatchObject({ id: "reviewer-retry", retries: 1 });
-    f.retry(
-      "passed",
-      JSON.stringify({
-        run: f.config.run,
-        role: "reviewer",
-        head,
-        verdict: "PASS",
-        findings: [],
-        g0: "No simpler change.",
-      }),
-    );
-    await expect(f.run()).resolves.toMatchObject({
-      status: "awaiting-publication",
-      reviewer: { id: "reviewer-retry" },
-      retries: 1,
-    });
-    await expect(f.run()).resolves.toMatchObject({
-      status: "awaiting-publication",
-      reviewer: { id: "reviewer-retry", retries: 1 },
-      retries: 1,
-    });
-    expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
-    expect(
-      JSON.parse(await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8")),
-    ).toMatchObject({ id: "reviewer-retry", retries: 1 });
-  });
+  it.each([undefined, 2276, 2302])(
+    "retries a malformed reviewer with its length diagnostic (%s) and resumes",
+    async (length) => {
+      const f = await fixture();
+      await f.run();
+      f.authorDone();
+      await f.run();
+      f.statuses.reviewer = "malformed";
+      const diagnostic =
+        length === undefined
+          ? undefined
+          : `Reviewer verdict serialized length is ${length} characters; maximum is 2000. Shorten findings and G0 to fit.`;
+      if (diagnostic) f.summarize("reviewer", diagnostic);
+      f.retry("running");
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+      expect(
+        JSON.parse(
+          await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
+        ),
+      ).toMatchObject({ status: "malformed", id: "reviewer", head });
+      expect(f.launchPrompts.at(-1)).toContain("malformed-worker-verdict");
+      if (diagnostic) {
+        expect(f.launchPrompts.at(-1)).toContain(diagnostic);
+        expect(
+          JSON.parse(
+            await readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json"), "utf8"),
+          ).summary,
+        ).toBe(diagnostic);
+        expect(
+          JSON.parse(
+            await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
+          ).retryContext,
+        ).toContain(diagnostic);
+      }
+      expect(
+        JSON.parse(
+          await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
+        ),
+      ).toMatchObject({ id: "reviewer-retry", retries: 1 });
+      f.retry(
+        "passed",
+        JSON.stringify({
+          run: f.config.run,
+          role: "reviewer",
+          head,
+          verdict: "PASS",
+          findings: [],
+          g0: "No simpler change.",
+        }),
+      );
+      await expect(f.run()).resolves.toMatchObject({
+        status: "awaiting-publication",
+        reviewer: { id: "reviewer-retry" },
+        retries: 1,
+      });
+      await expect(f.run()).resolves.toMatchObject({
+        status: "awaiting-publication",
+        reviewer: { id: "reviewer-retry", retries: 1 },
+        retries: 1,
+      });
+      expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+      expect(
+        JSON.parse(
+          await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
+        ),
+      ).toMatchObject({ id: "reviewer-retry", retries: 1 });
+    },
+  );
   it("stops with a typed reason when the reviewer retry is malformed", async () => {
     const f = await fixture();
     await f.run();

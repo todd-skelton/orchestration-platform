@@ -36,6 +36,19 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+ISS-150 records the two `reviewer-malformed` launches for ISS-147 in
+`m1-intake-refresh-20260914T1635`: one verdict exceeded the unstated length cap,
+and its retry prefixed valid JSON with prose. Reviewer prompts now require the
+JSON object alone, with `JSON.stringify(verdict).length` at most
+`MAX_TERMINAL_SUMMARY_LENGTH` (2000) characters, including findings and G0.
+Extraction accepts the last complete top-level JSON object in the final agent
+message when prose precedes it, provided it is the only object and only
+whitespace follows. Trailing prose, multiple objects, missing objects and
+invalid verdicts remain malformed; key, identity, head, enum and findings
+checks remain unchanged. An otherwise valid over-length verdict remains
+malformed with its measured length and cap in the terminal summary and the
+existing single automatic retry context. Author prompts and parsing are unchanged.
+
 ISS-139 records an evidence-discovery failure in M2 run `m2-jpeg-20260914`:
 Chase Sets #7766 exhausted its implementation budget after two blocking reviews
 reported missing mutant execution evidence already present in author traces.
