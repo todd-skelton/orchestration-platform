@@ -484,6 +484,60 @@ it.skipIf(process.platform === "win32")(
       headers: { Authorization: "Bearer refreshed-key" },
       signal,
     });
+    request.mockResolvedValueOnce(Response.json({ data: [{ id: "claude-opus-5" }] }));
+    await expect(
+      probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+    ).resolves.toBeUndefined();
+    request.mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-5.6-sol" }] }));
+    await expect(
+      probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+    ).rejects.toMatchObject({ reason: "provider-model-refused" });
+    request.mockResolvedValueOnce(Response.json({ error: "temporary provider failure" }));
+    await expect(
+      probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+    ).rejects.toThrow("malformed provider models response");
+    for (const payload of [
+      null,
+      { data: [{}] },
+      { data: [null] },
+      { data: ["gpt-5.6-sol"] },
+      { data: [{ id: 42 }] },
+      { data: [{ id: "" }] },
+      { data: [{ id: "   " }] },
+      { data: [{ id: "gpt-5.6-sol" }, {}] },
+      { data: [{ id: "claude-opus-5" }, {}] },
+    ]) {
+      request.mockResolvedValueOnce(Response.json(payload));
+      await expect(
+        probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+      ).rejects.toThrow("malformed provider models response");
+    }
+    request.mockResolvedValueOnce(Response.json({ data: [] }));
+    await expect(
+      probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+    ).rejects.toMatchObject({ reason: "provider-model-refused" });
+    request.mockResolvedValueOnce(Response.json({ data: [{}] }));
+    let now = 0;
+    const waits: number[] = [];
+    await expect(
+      waitForProvider(
+        { ...config, providerOutageCeilingMs: 10 },
+        (probeSignal) =>
+          probeProvider("http://pool.test/v1", helper, probeSignal, request, "claude-opus-5"),
+        {
+          now: () => now,
+          pause: async (ms) => {
+            waits.push(ms);
+            now += ms;
+          },
+        },
+        () => {},
+      ),
+    ).rejects.toMatchObject({
+      reason: "provider-unavailable",
+      diagnostics: "malformed provider models response",
+    });
+    expect(waits).toEqual([10]);
   },
 );
 it("retains exact reviewer reports and rejects oversized or obsolete output", () => {

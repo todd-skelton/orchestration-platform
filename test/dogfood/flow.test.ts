@@ -17,6 +17,7 @@ import { parseTrace, waitForProvider } from "../../scripts/dogfood/dispatch-adap
 import { stopCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
+import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
@@ -246,6 +247,166 @@ async function fixture() {
     },
   };
 }
+
+it.each(["probe", "launch"])(
+  "uses one reviewer fallback only for %s model refusal, retaining it on resume",
+  async (refusal) => {
+    const f = await fixture();
+    f.config.routing = SELF_ROUTING;
+    f.config.author = { ...SELF_ROUTING.author, prompt: "author" };
+    f.config.reviewer = { ...SELF_ROUTING.reviewer, prompt: "reviewer" };
+    const launch = f.adapter.launch;
+    const observe = f.adapter.observe;
+    const models: string[] = [];
+    f.adapter.launch = async (role, config, prompt) => {
+      models.push(config[role].model);
+      if (role === "reviewer" && config.reviewer.model === "claude-opus-5" && refusal === "probe")
+        throw new QueueBlocked("provider-model-refused");
+      return launch(role, config, prompt);
+    };
+    f.adapter.observe = async (role, config, attempt) => {
+      if (role === "reviewer") {
+        if (config.reviewer.model === "claude-opus-5")
+          return { id: attempt.id, status: "dead", modelRefused: true };
+        expect(config.reviewer.model).toBe("gpt-5.6-sol");
+        return { id: attempt.id, status: "running" };
+      }
+      return observe(role, config, attempt);
+    };
+    f.authorDone();
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(models).toEqual(["gpt-6-astra", "claude-opus-5", "gpt-5.6-sol"]);
+    const attempt = JSON.parse(
+      await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
+    );
+    expect(attempt).toMatchObject({
+      routing: { row: "self" },
+      placement: { model: "gpt-5.6-sol", effort: "high" },
+      models: { author: "gpt-6-astra", reviewer: "gpt-5.6-sol" },
+    });
+    expect(attempt.retries).toBeUndefined();
+  },
+);
+
+it.each(["verdict", "malformed", "outage", "death"])(
+  "does not change reviewer model after %s",
+  async (failure) => {
+    const f = await fixture();
+    f.config.reviewer = { ...SELF_ROUTING.reviewer, prompt: "reviewer" };
+    const launch = f.adapter.launch;
+    const observe = f.adapter.observe;
+    const models: string[] = [];
+    f.adapter.launch = async (role, config, prompt) => {
+      if (role === "reviewer") models.push(config.reviewer.model);
+      return launch(role, config, prompt);
+    };
+    f.adapter.observe = async (role, config, attempt) => {
+      if (role !== "reviewer") return observe(role, config, attempt);
+      if (models.length > 1) return { id: attempt.id, status: "running" };
+      if (failure === "verdict")
+        return {
+          id: attempt.id,
+          status: "failed",
+          head,
+          summary: JSON.stringify({
+            run: config.run,
+            role,
+            head,
+            verdict: "FAIL",
+            findings: [
+              { file: "scripts/repair.mjs", line: 1, severity: "blocking", text: "Fix behavior" },
+            ],
+            g0: "Simplify",
+          }),
+        };
+      if (failure === "malformed") return { id: attempt.id, status: "malformed", head };
+      return {
+        id: attempt.id,
+        status: "dead",
+        ...(failure === "outage" ? { providerFailure: true } : {}),
+      };
+    };
+    f.authorDone();
+    if (failure === "verdict") await expect(f.run()).rejects.toThrow("reviewer-failed");
+    else await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(models).toEqual(
+      failure === "verdict" ? ["claude-opus-5"] : ["claude-opus-5", "claude-opus-5"],
+    );
+  },
+);
+
+it("stops when the fallback is also refused and does not fall back for arbitrary launch errors", async () => {
+  for (const reason of [
+    "provider-model-refused",
+    "provider-unavailable",
+    "launch-identity-timeout-reconcile",
+  ]) {
+    const f = await fixture();
+    f.config.reviewer = { ...SELF_ROUTING.reviewer, prompt: "reviewer" };
+    const launch = f.adapter.launch;
+    const models: string[] = [];
+    f.adapter.launch = async (role, config, prompt) => {
+      if (role === "reviewer") {
+        models.push(config.reviewer.model);
+        throw new QueueBlocked(reason);
+      }
+      return launch(role, config, prompt);
+    };
+    f.authorDone();
+    await expect(f.run()).rejects.toThrow(reason);
+    expect(models).toEqual(
+      reason === "provider-model-refused" ? ["claude-opus-5", "gpt-5.6-sol"] : ["claude-opus-5"],
+    );
+  }
+});
+
+it("recognizes a model refusal only before the worker has produced work", async () => {
+  const f = await fixture();
+  const rows = [
+    { type: "thread.started", thread_id: "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0" },
+    { type: "turn.failed", error: { message: "Model claude-opus-5 is not supported" } },
+  ];
+  const parse = () =>
+    parseTrace(
+      rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+      true,
+      "reviewer",
+      f.config,
+    );
+  expect(parse()).toMatchObject({ status: "dead", modelRefused: true });
+  rows.splice(1, 0, { type: "item.started", thread_id: "unused" });
+  expect(parse().modelRefused).toBeUndefined();
+});
+
+it("keeps models endpoint outages in the provider wait while returning explicit refusals immediately", async () => {
+  const f = await fixture();
+  expect(deadTrace("models endpoint unavailable: HTTP 503", f.config).modelRefused).toBeUndefined();
+  expect(deadTrace("model provider unavailable: HTTP 503", f.config).modelRefused).toBeUndefined();
+  let calls = 0;
+  let now = 0;
+  const waits: number[] = [];
+  await expect(
+    waitForProvider(
+      f.config,
+      async () => {
+        calls++;
+        if (calls === 1) throw new Error("provider models probe returned HTTP 503");
+        throw new QueueBlocked("provider-model-refused", "claude-opus-5");
+      },
+      {
+        now: () => now,
+        pause: async (ms) => {
+          waits.push(ms);
+          now += ms;
+        },
+      },
+      () => {},
+    ),
+  ).rejects.toMatchObject({ reason: "provider-model-refused" });
+  expect(waits).toEqual([10_000]);
+  expect(calls).toBe(2);
+});
 
 async function expectAuthorEvidence(config: Config, prompt: string) {
   const author = JSON.parse(

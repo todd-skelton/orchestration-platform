@@ -25,7 +25,7 @@ async function fixture() {
     stateRoot,
     worktreeRoot,
     author: { model: "gpt-5.6-sol", effort: "high" },
-    reviewer: { model: "gpt-5.6-sol", effort: "high" },
+    reviewer: { model: "claude-opus-5", effort: "high" },
     codexExecutable: process.execPath,
     gitExecutable: process.execPath,
     nativeLaunchCeiling: 8,

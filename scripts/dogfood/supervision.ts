@@ -19,6 +19,7 @@ export interface SelectedIssue {
   key: string;
   number: number;
   base: string;
+  routing?: import("./routing.mjs").RoutingSelection;
 }
 
 export interface SupervisedCycle {
@@ -71,7 +72,13 @@ function exactKeys(value: unknown, keys: string[]): value is Record<string, any>
 
 function validSelection(value: unknown, cycle: number): value is SelectedIssue {
   return (
-    exactKeys(value, ["cycle", "key", "number", "base"]) &&
+    exactKeys(value, [
+      "cycle",
+      "key",
+      "number",
+      "base",
+      ...(value && typeof value === "object" && Object.hasOwn(value, "routing") ? ["routing"] : []),
+    ]) &&
     value.cycle === cycle &&
     /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.key) &&
     Number.isSafeInteger(value.number) &&
@@ -205,7 +212,11 @@ export async function nextCycle(
     const issue = candidates[0];
     if (!issue) return undefined;
     if (
-      !exactKeys(issue, ["key", "number"]) ||
+      !exactKeys(issue, [
+        "key",
+        "number",
+        ...(Object.hasOwn(issue, "routing") ? ["routing"] : []),
+      ]) ||
       !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(issue.key) ||
       !Number.isSafeInteger(issue.number) ||
       issue.number <= 0
@@ -317,12 +328,14 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
 };
 function stopMessage(
   config: LoopConfig,
-  selection: Pick<SelectedIssue, "cycle" | "key" | "number">,
+  selection: Pick<SelectedIssue, "cycle" | "key" | "number" | "routing">,
   stop: number,
   reason: string,
   attempts: number,
   diagnostics?: string,
   markerSuffix = "",
+  history: QueueParticipant[] = [],
+  routing = selection.routing,
 ) {
   const marker = `loop-stop:${config.run}:${selection.cycle}:${stop}${markerSuffix}`;
   const runState = resolve(config.stateRoot, config.run);
@@ -343,9 +356,26 @@ function stopMessage(
       : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
   const count = `after ${attempts} implementation attempt${attempts === 1 ? "" : "s"}`;
   const detail = diagnostics?.trim().slice(0, 500);
+  const placements = history
+    .filter(
+      (participant) =>
+        participant.item.toLowerCase().startsWith(`${selection.key.toLowerCase()}:`) ||
+        participant.item.toLowerCase().startsWith(`${selection.key.toLowerCase()}-`),
+    )
+    .map(({ role, routing, placement, outcome }) => ({
+      row: routing?.row ?? "unrecorded",
+      review: routing?.review,
+      role,
+      model: placement?.model ?? "unrecorded",
+      effort: placement?.effort,
+      outcome,
+    }));
+  const routingDetail = placements.length
+    ? ` Routing and exact worker launches: ${JSON.stringify(placements)}.`
+    : ` Routing: ${routing ? JSON.stringify(routing) : config.adapter === "self" ? "self" : "unresolved"}; no recorded author or reviewer launches.`;
   return {
     marker,
-    body: `<!-- ${marker} --> The loop stopped on ${selection.key} because \`${reason}\` ${count}. A person should ${change}.${detail ? ` Diagnostic: ${JSON.stringify(detail)}.` : ""}`,
+    body: `<!-- ${marker} --> The loop stopped on ${selection.key} because \`${reason}\` ${count}. A person should ${change}.${detail ? ` Diagnostic: ${JSON.stringify(detail)}.` : ""}${routingDetail}`,
   };
 }
 
@@ -381,6 +411,18 @@ export async function stopCycle(
 ) {
   validateHistory(cycle.initialHistory, config.nativeLaunchCeiling);
   const directory = stateDirectory(config);
+  // A setup stop can have a selected row without having launched a worker yet.
+  let routing = cycle.selection.routing;
+  const slugs = config.acceptedReplan
+    ? [ACCEPTED_REPLAN.slug]
+    : Array.from(
+        { length: config.attemptCeiling },
+        (_, index) => `${cycle.selection.key.toLowerCase()}-attempt-${index + 1}`,
+      );
+  for (const slug of slugs) {
+    const attempt = await optionalRecord(resolve(directory, slug), "attempt");
+    if (attempt !== ABSENT && attempt.routing) routing = attempt.routing;
+  }
   let stop = 1;
   let intent: any;
   for (;;) {
@@ -396,7 +438,17 @@ export async function stopCycle(
         reason,
         attempts,
         history: cycle.initialHistory,
-        ...stopMessage(config, cycle.selection, stop, reason, attempts, diagnostics),
+        ...stopMessage(
+          config,
+          cycle.selection,
+          stop,
+          reason,
+          attempts,
+          diagnostics,
+          "",
+          cycle.initialHistory,
+          routing,
+        ),
       };
       await record(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`, intent);
       break;
@@ -444,6 +496,8 @@ export async function stopCycle(
           intent.attempts,
           error.diagnostics,
           ":park",
+          cycle.initialHistory,
+          routing,
         ),
         adapter,
       );

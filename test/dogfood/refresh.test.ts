@@ -22,7 +22,7 @@ import {
   type QueueConfig,
   type QueueItem,
 } from "../../scripts/dogfood/queue.js";
-import type { Adapter, Config } from "../../scripts/dogfood/flow.js";
+import type { Adapter, Config, Attempt } from "../../scripts/dogfood/flow.js";
 import type {
   DeliveryAdapter,
   DeliveryConfig,
@@ -159,7 +159,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     trace: resolve(sourceState, "author.jsonl"),
     launchedAt: 1,
   };
-  const reviewer = {
+  const reviewer: Attempt = {
     id: randomUUID(),
     pid: 101,
     trace: resolve(sourceState, "reviewer.jsonl"),
@@ -303,6 +303,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   let moveDuringReview = false;
   let lostIntegrationResponse = false;
   const prompts: string[] = [];
+  const reviewerModels: string[] = [];
   const native: Adapter = {
     async preflight() {},
     async git(tree, args) {
@@ -320,6 +321,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     },
     async launch(role, _config, prompt) {
       expect(role).toBe("reviewer");
+      reviewerModels.push(_config.reviewer.model);
       prompts.push(prompt);
       return {
         id: randomUUID(),
@@ -563,6 +565,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     deliver,
     commands,
     prompts,
+    reviewerModels,
     gateHeads,
     adapter,
     saveAttempt,
@@ -602,6 +605,21 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     },
   };
 }
+
+it("retains the chosen fallback reviewer for current-main delta review", async () => {
+  const f = await fixture();
+  f.source.reviewer = {
+    model: "claude-opus-5",
+    effort: "high",
+    prompt: "review",
+    fallback: { model: "gpt-5.6-sol", effort: "high" },
+  };
+  f.reviewer.placement = { model: "gpt-5.6-sol", effort: "high" };
+  await f.pinSource();
+  await f.advanceMain();
+  await f.deliver();
+  expect(f.reviewerModels).toEqual(["gpt-5.6-sol"]);
+});
 
 it("refreshes first and resumed self gates with current registrations and candidate planning, preserving mutations and review history", async () => {
   const f = await fixture();
