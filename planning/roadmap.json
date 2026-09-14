@@ -400,6 +400,12 @@
       "file": "planning/drafts/ISS-147.md",
       "milestone": "M2",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-148",
+      "file": "planning/drafts/ISS-148.md",
+      "milestone": "M2",
+      "blockedBy": []
     }
   ]
 }
