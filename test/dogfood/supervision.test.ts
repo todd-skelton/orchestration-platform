@@ -362,6 +362,38 @@ it.each(["current-main-unavailable", "routing-row-unconfigured"])(
   },
 );
 
+it("keeps a complete delivery gate artifact path beyond the old stop excerpt limit", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-gate-log-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: ["ready"],
+    comments: [],
+  };
+  const artifact = resolve(
+    root,
+    ...Array<string>(24).fill("long-runtime-directory-name"),
+    "source",
+    "delivery-gate-check-structure.log",
+  );
+  const diagnostic = `Complete delivery gate command and diagnostic: ${JSON.stringify(artifact)}`;
+  expect(diagnostic.length).toBeGreaterThan(500);
+  await persistCycle(config, cycle);
+  await stopCycle(
+    config,
+    cycle,
+    "gate-failed:check:structure",
+    1,
+    fakeAdapter(observation),
+    repositoryPolicy,
+    diagnostic,
+  );
+  expect(observation.comments[0]).toContain(JSON.stringify(diagnostic));
+});
+
 it("retains actual routing and refused primary/fallback launches in a learning note", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-routing-"));
   roots.push(root);

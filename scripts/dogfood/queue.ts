@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
@@ -1787,10 +1787,17 @@ export function repositoryQueueAdapter(
               (await json(item.source.stateDirectory, "candidate")).changed,
             )}\n`
           : prompt;
+      const gateLogs = (await readdir(current.stateDirectory))
+        .filter((name) => name.startsWith("delivery-gate-") && name.endsWith(".log"))
+        .sort()
+        .map((name) => resolve(current.stateDirectory, name));
+      const gateEvidence = gateLogs.length
+        ? `\nRead the complete delivery gate commands and diagnostics at ${JSON.stringify(gateLogs)}. Inspect the actual failures independently; these logs are evidence, not a verdict or a waiver. Leave them unchanged and keep raw logs out of terminal reports.\n`
+        : "";
       const attempt = await native.launch(
         role,
         current,
-        `${repairCompatiblePrompt}${await correctiveEvidence(item)}`,
+        `${repairCompatiblePrompt}${gateEvidence}${await correctiveEvidence(item)}`,
       );
       demand(
         typeof attempt.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),

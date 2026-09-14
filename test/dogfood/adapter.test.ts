@@ -292,6 +292,24 @@ it("rejects obsolete extra Git write configuration instead of exposing hooks/con
   const unsafe = { ...config, adapter: { ...config.adapter, authorGitDirectory: "/shared/.git" } };
   expect(() => launchArguments(unsafe, "author")).toThrow("unsupported-adapter-configuration");
 });
+it("creates author-temp before launch and reuses its evidence on correction and resume", async () => {
+  const stateDirectory = await mkdtemp(resolve(tmpdir(), "author-scratch-"));
+  cleanup.push(stateDirectory);
+  // Stop at argument validation so no real worker/provider is launched.
+  const current = {
+    ...config,
+    stateDirectory,
+    adapter: { ...config.adapter, unsupported: true },
+  };
+  const evidence = resolve(authorTemporaryRoot(current), "executed.txt");
+  for (const base of ["a".repeat(40), "b".repeat(40), "b".repeat(40)]) {
+    await expect(codexAdapter().launch("author", { ...current, base }, "fixture")).rejects.toThrow(
+      "unsupported-adapter-configuration",
+    );
+    if (base.startsWith("a")) await writeFile(evidence, "preserved execution evidence");
+    else expect(await readFile(evidence, "utf8")).toBe("preserved execution evidence");
+  }
+});
 it("reads actual Codex event shape and retains usage as advisory data", () => {
   expect(parseTrace(trace(), true, "reviewer", config, id)).toEqual({
     id,

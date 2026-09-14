@@ -294,6 +294,35 @@ incorrect board bodies and missing project membership still fail. The ordinary
 This behavior does not edit or restart the preserved ISS-146 run, change issue
 order, waive hosted bootstrap or grant workers mutation authority.
 
+ISS-146 records the local static-gate stop on #7766 at candidate
+`42bac8439e31b8354447f2675edfaea72890d4b5`: two empty ignored author scratch
+directories failed structure validation, and the stop excerpt hid the subcheck.
+Every author launch creates or reuses the existing external `author-temp` root
+without clearing it. The shared prompt confines scratch, temporary fixtures and
+execution evidence there; product source and committed tests remain in the
+allowed source paths. The existing workspace-write sandbox still permits source
+edits; this is a worker instruction, not a new per-file authority mechanism.
+
+Each local delivery gate uses a fresh detached checkout of the exact reviewed
+commit under its delivery runtime. Pnpm gates use the same offline,
+frozen-lockfile, ignore-scripts dependency install as setup; the executor's
+internal board gate needs no candidate dependencies. Ignored files and even empty ignored
+directories in the author worktree cannot influence the gate. Source and review
+worktrees, tracked edits and unrelated paths are never cleaned. Ordinary workspace
+drift checks remain in place. The executor removes only its disposable gate
+checkout; an interrupted checkout can remain as runtime history. Resume creates
+another disposable checkout for an unfinished gate, retaining existing gate
+receipts, workers, reviews and implementation counts.
+
+`delivery-gate-<gate>-<uuid>.log` retains the candidate, command arguments, working
+directory, full stdout/stderr and exit status, including install and cleanup
+failures. Output streams to the runtime file rather than an in-memory excerpt.
+Stops name that absolute artifact path; native recovery launches receive existing
+gate log paths as execution evidence. Logs survive failed gates and resume. Missing
+offline dependencies still fail delivery; this does not weaken any local or
+hosted check or replace independent exact-head review. This change neither
+restarts #7766 nor authorizes changes to its preserved worktrees or runtime.
+
 ## Planning
 
 ISS-149 implements Todd's routing ruling on #368: model placement comes from

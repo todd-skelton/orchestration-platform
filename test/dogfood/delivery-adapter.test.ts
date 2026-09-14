@@ -217,6 +217,154 @@ async function repositoryFixture(remote: string) {
   return { current, git };
 }
 
+async function structureGateFixture(committedFailure = false, mutatesSource = false) {
+  const f = await repositoryFixture("https://github.com/todd-skelton/orchestration-platform.git");
+  const { current, git } = f;
+  // Keep package acquisition out of this Git/structure regression. The launcher
+  // checks the install contract, then executes the committed script in its cwd.
+  const launcher = resolve(current.stateDirectory, "..", "fixture-pnpm.mjs");
+  await writeFile(
+    launcher,
+    `
+import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const args = process.argv.slice(2);
+if (args[0] === 'install') assert.deepEqual(args, ['install', '--offline', '--frozen-lockfile', '--ignore-scripts']);
+else {
+  assert.deepEqual(args, ['run', 'check:structure']);
+  await import(pathToFileURL(resolve('structure.mjs')));
+}
+`,
+  );
+  vi.stubEnv("npm_execpath", launcher);
+  const scratch = "bounded-contexts/marketplace/artifacts/jpeg-corrective";
+  await writeFile(resolve(current.worktree, ".gitignore"), "artifacts/\nnode_modules/\n");
+  await writeFile(
+    resolve(current.worktree, "package.json"),
+    JSON.stringify({
+      name: "gate-fixture",
+      private: true,
+      scripts: { "check:structure": "node structure.mjs" },
+    }),
+  );
+  await writeFile(
+    resolve(current.worktree, "pnpm-lock.yaml"),
+    "lockfileVersion: '9.0'\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\nimporters:\n  .: {}\n",
+  );
+  await writeFile(
+    resolve(current.worktree, "structure.mjs"),
+    `
+import { existsSync, writeFileSync } from 'node:fs';
+${mutatesSource ? "writeFileSync('stable.txt', 'gate changed source');" : ""}
+if (existsSync(${JSON.stringify(scratch)})) {
+  writeFileSync(1, 'static preamble\\n' + 'x'.repeat(33 * 1024 * 1024));
+  writeFileSync(2, '\\ncheck:structure rejected ${scratch}\\nEND-OF-DIAGNOSTIC\\n');
+  process.exitCode = 1;
+}
+`,
+  );
+  if (committedFailure) {
+    await mkdir(resolve(current.worktree, scratch), { recursive: true });
+    await writeFile(resolve(current.worktree, scratch, "committed.txt"), "actual product defect\n");
+    await git(["add", "-f", `${scratch}/committed.txt`], current.worktree);
+  }
+  await git(["add", "."], current.worktree);
+  await git(
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "-m",
+      "structure gate",
+    ],
+    current.worktree,
+  );
+  current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
+  await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+  return { ...f, scratch: resolve(current.worktree, scratch) };
+}
+
+it.each(["clean", "empty ignored", "nonempty ignored"])(
+  "runs committed structure validation with %s source scratch and preserves the source",
+  async (contamination) => {
+    const f = await structureGateFixture();
+    if (contamination !== "clean") await mkdir(f.scratch, { recursive: true });
+    if (contamination === "nonempty ignored")
+      await writeFile(resolve(f.scratch, "evidence.txt"), "preserve me");
+    const adapter = githubDeliveryAdapter();
+    expect(await adapter.runGate(f.current, "check:structure", f.current.candidateHead)).toEqual({
+      status: "passed",
+    });
+    if (contamination === "empty ignored") expect(await readdir(f.scratch)).toEqual([]);
+    if (contamination === "nonempty ignored")
+      expect(await readFile(resolve(f.scratch, "evidence.txt"), "utf8")).toBe("preserve me");
+    expect(await f.git(["status", "--porcelain"], f.current.worktree)).toBe("");
+    expect(await f.git(["rev-parse", "HEAD"], f.current.worktree)).toBe(f.current.candidateHead);
+    expect((await readdir(f.current.stateDirectory)).every((name) => name.endsWith(".log"))).toBe(
+      true,
+    );
+  },
+);
+
+it("retains complete committed structure failures beyond the old buffer and excerpt limits on resume", async () => {
+  const f = await structureGateFixture(true);
+  await writePilotEvidence(f.current);
+  const before = await stateSnapshot(f.current.stateDirectory);
+  const adapter = githubDeliveryAdapter();
+  for (let resume = 0; resume < 2; resume++) {
+    const result = await adapter.runGate(f.current, "check:structure", f.current.candidateHead);
+    expect(result).toMatchObject({ status: "failed" });
+    if (typeof result !== "object" || result.status !== "failed")
+      throw new Error("expected failure");
+    const path = JSON.parse(result.output.slice(result.output.indexOf('"')));
+    const log = await readFile(path, "utf8");
+    expect(log).toContain(`Candidate: ${f.current.candidateHead}`);
+    expect(log).toContain('"run","check:structure"');
+    expect(log).toContain('"install","--offline","--frozen-lockfile","--ignore-scripts"');
+    expect(log).toContain('Exit: {"code":1,"signal":null}');
+    expect(log.length).toBeGreaterThan(33 * 1024 * 1024);
+    expect(log).toContain("END-OF-DIAGNOSTIC");
+  }
+  for (const [name, contents] of Object.entries(before))
+    expect(await readFile(resolve(f.current.stateDirectory, name), "utf8")).toBe(contents);
+  expect(
+    (await readdir(f.current.stateDirectory)).filter((name) => name.endsWith(".log")),
+  ).toHaveLength(2);
+  expect(await readFile(resolve(f.scratch, "committed.txt"), "utf8")).toBe(
+    "actual product defect\n",
+  );
+});
+
+it("refuses tracked and untracked edits without cleaning source paths", async () => {
+  const f = await structureGateFixture();
+  await writeFile(resolve(f.current.worktree, "stable.txt"), "tracked edit\n");
+  await writeFile(resolve(f.current.worktree, "untracked.txt"), "untracked evidence\n");
+  expect(
+    await githubDeliveryAdapter().runGate(f.current, "check:structure", f.current.candidateHead),
+  ).toMatchObject({ status: "failed" });
+  expect(await readFile(resolve(f.current.worktree, "stable.txt"), "utf8")).toBe("tracked edit\n");
+  expect(await readFile(resolve(f.current.worktree, "untracked.txt"), "utf8")).toBe(
+    "untracked evidence\n",
+  );
+  expect(await readdir(f.current.stateDirectory)).toEqual([]);
+});
+
+it("rejects a gate that changes its committed checkout even when its command exits zero", async () => {
+  const f = await structureGateFixture(false, true);
+  const result = await githubDeliveryAdapter().runGate(
+    f.current,
+    "check:structure",
+    f.current.candidateHead,
+  );
+  if (typeof result !== "object" || result.status !== "failed") throw new Error("expected failure");
+  const path = JSON.parse(result.output.slice(result.output.indexOf('"')));
+  expect(await readFile(path, "utf8")).toContain("M stable.txt");
+  expect(await readFile(resolve(f.current.worktree, "stable.txt"), "utf8")).toBe("stable\n");
+});
+
 async function localRemoteRepositoryFixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-cleanup-")));
   roots.push(root);

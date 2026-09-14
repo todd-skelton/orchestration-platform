@@ -355,7 +355,7 @@ function stopMessage(
       ? exact(context)
       : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
   const count = `after ${attempts} implementation attempt${attempts === 1 ? "" : "s"}`;
-  const detail = diagnostics?.trim().slice(0, 500);
+  const detail = diagnostics?.trim();
   const placements = history
     .filter(
       (participant) =>

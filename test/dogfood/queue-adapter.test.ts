@@ -505,6 +505,18 @@ it.each([false, true])(
           expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
         }
         const selected = prompt.includes("Correct the") ? `gate-${role}` : role;
+        if (role === "author") {
+          expect(prompt).toContain(
+            JSON.stringify(resolve(selectedConfig.stateDirectory, "author-temp")),
+          );
+          expect(prompt).toContain("do not create scratch directories in the source tree");
+        }
+        if (selected === "gate-author") {
+          expect(prompt).toContain(
+            JSON.stringify(resolve(selectedConfig.stateDirectory, "delivery-gate-fixture.log")),
+          );
+          expect(prompt).toContain("Inspect the actual failures independently");
+        }
         const deadAuthor = selected === "author" && launches.length === 0;
         launches.push(selected);
         return {
@@ -633,6 +645,11 @@ it.each([false, true])(
       },
       async runGate(config) {
         gateCalls += 1;
+        if (gateCalls === 1)
+          await writeFile(
+            resolve(config.stateDirectory, "delivery-gate-fixture.log"),
+            "pnpm run typecheck\nComplete diagnostic\n",
+          );
         if (sourceHead !== config.candidateHead || reviewHead !== config.candidateHead)
           return { status: "failed", output: "candidate workspace drifted before gate" };
         return gateCalls === 1 ? { status: "failed", output: "transient typecheck" } : "passed";

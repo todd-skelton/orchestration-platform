@@ -1,5 +1,6 @@
-import { execFile } from "node:child_process";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { open, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
@@ -36,6 +37,101 @@ async function run(executable: string, args: string[], cwd: string) {
     windowsHide: true,
     maxBuffer: 32 * 1024 * 1024,
   });
+}
+
+// ISS-146: source worktrees can contain invisible empty ignored directories.
+// Only this disposable checkout is removed; source and review are never cleaned.
+async function committedGate(
+  config: DeliveryConfig,
+  name: string,
+  head: string,
+  gitExecutable: string,
+) {
+  const id = randomUUID();
+  const worktree = resolve(config.stateDirectory, `delivery-gate-${id}`);
+  const path = resolve(
+    config.stateDirectory,
+    `delivery-gate-${name.replaceAll(":", "-")}-${id}.log`,
+  );
+  const log = await open(path, "wx");
+  let added = false;
+  let failed = false;
+  const command = async (executable: string, args: string[], cwd: string) => {
+    await log.write(`\nCommand: ${JSON.stringify([executable, ...args])}\nCwd: ${cwd}\n`);
+    const result = await new Promise<{ code: number | null; signal: string | null }>(
+      (done, reject) => {
+        const child = spawn(executable, args, {
+          cwd,
+          windowsHide: true,
+          stdio: ["ignore", log.fd, log.fd],
+        });
+        child.once("error", reject);
+        child.once("close", (code, signal) => done({ code, signal }));
+      },
+    );
+    await log.write(`\nExit: ${JSON.stringify(result)}\n`);
+    if (result.code !== 0)
+      throw new Error(`Command failed: ${JSON.stringify([executable, ...args])}`);
+  };
+  try {
+    await log.write(
+      `Run: ${config.run}\nIssue: ${config.issue}\nCandidate: ${head}\nGate: ${name}\nSource: ${config.worktree}\n`,
+    );
+    await command(
+      gitExecutable,
+      ["worktree", "add", "--detach", worktree, head],
+      config.repositoryRoot,
+    );
+    added = true;
+    if (
+      name === "planning:board-check" &&
+      config.repository === "todd-skelton/orchestration-platform"
+    ) {
+      await log.write(
+        `\nCommand: checkCandidateBoard(${JSON.stringify(worktree)}, ${JSON.stringify(head)})\n`,
+      );
+      await checkCandidateBoard(worktree, head, gitExecutable);
+    } else {
+      const launcher = await resolvePnpmLauncher();
+      await command(
+        launcher.executable,
+        [...launcher.prefixArgs, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
+        worktree,
+      );
+      await command(launcher.executable, [...launcher.prefixArgs, "run", name], worktree);
+    }
+    const gateHead = await git(gitExecutable, config, ["rev-parse", "HEAD"], worktree);
+    const changes = await git(gitExecutable, config, ["status", "--porcelain"], worktree);
+    if (gateHead !== head || changes)
+      throw new Error(`Candidate gate checkout drifted after gate: HEAD ${gateHead}\n${changes}`);
+  } catch (error) {
+    failed = true;
+    const failure = error as { stdout?: string; stderr?: string; stack?: string };
+    await log.write(
+      [failure.stdout, failure.stderr, failure.stack ?? String(error)].filter(Boolean).join("\n") +
+        "\n",
+    );
+  } finally {
+    try {
+      if (added)
+        await command(
+          gitExecutable,
+          ["worktree", "remove", "--force", worktree],
+          config.repositoryRoot,
+        );
+    } catch (error) {
+      failed = true;
+      await log.write(`Cleanup failed: ${String(error)}\n`);
+    } finally {
+      await log.close();
+    }
+  }
+  return failed
+    ? {
+        status: "failed" as const,
+        output: `Complete delivery gate command and diagnostic: ${JSON.stringify(path)}`,
+      }
+    : { status: "passed" as const };
 }
 
 async function git(
@@ -516,26 +612,11 @@ export function githubDeliveryAdapter(
     async runGate(config, name, head) {
       if (!(await verifyWorkspace(config, head)))
         return { status: "failed", output: "candidate workspace drifted before gate" };
-      try {
-        if (
-          name === "planning:board-check" &&
-          config.repository === "todd-skelton/orchestration-platform"
-        ) {
-          await checkCandidateBoard(config.worktree, head, gitExecutable);
-        } else {
-          const launcher = await resolvePnpmLauncher();
-          await run(launcher.executable, [...launcher.prefixArgs, "run", name], config.worktree);
-        }
-        return (await verifyWorkspace(config, head))
-          ? { status: "passed" as const }
-          : { status: "failed" as const, output: "candidate workspace drifted after gate" };
-      } catch (error) {
-        const failure = error as { stdout?: string; stderr?: string; message?: string };
-        return {
-          status: "failed",
-          output: [failure.stdout, failure.stderr, failure.message].filter(Boolean).join("\n"),
-        };
-      }
+      const result = await committedGate(config, name, head, gitExecutable);
+      if (result.status === "failed") return result;
+      return (await verifyWorkspace(config, head))
+        ? result
+        : { status: "failed", output: "candidate workspace drifted after gate" };
     },
     async correctGate() {
       throw new DeliveryBlocked("gate-correction-unavailable");
