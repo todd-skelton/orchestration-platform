@@ -14,4 +14,5 @@ export function assertControllerExecutor(
 export function githubDeliveryAdapter(
   commands?: GithubDeliveryCommands,
   gitExecutable?: string,
+  pause?: (ms: number) => Promise<void>,
 ): DeliveryAdapter;

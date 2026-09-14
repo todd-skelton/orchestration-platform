@@ -402,16 +402,20 @@ it("revalidates full publication identity after checks before ready or merge eff
   const publication = publicationEvidence(current);
   const effects: string[][] = [];
   let drifted = false;
-  const adapter = githubDeliveryAdapter({
-    async gh(_config, args) {
-      if (args[1] === "ready" || args[1] === "merge") effects.push(args);
-      return "[]";
+  const adapter = githubDeliveryAdapter(
+    {
+      async gh(_config, args) {
+        if (args[1] === "ready" || args[1] === "merge") effects.push(args);
+        return "[]";
+      },
+      async ghJson(_config, args) {
+        if (args[0] === "api") return [{ workflow_runs: [] }];
+        return publicationRow(publication, drifted ? { baseRefName: "release" } : {});
+      },
     },
-    async ghJson(_config, args) {
-      if (args[0] === "api") return [{ workflow_runs: [] }];
-      return publicationRow(publication, drifted ? { baseRefName: "release" } : {});
-    },
-  });
+    "git",
+    async () => {},
+  );
   await expect(adapter.checks(current, publication)).resolves.toEqual({
     head: current.candidateHead,
     checks: [],
@@ -428,19 +432,23 @@ it("distinguishes the installed CLI no-check response from provider failure", as
     "https://github.com/todd-skelton/orchestration-platform.git",
   );
   const publication = publicationEvidence(current);
-  const noChecks = githubDeliveryAdapter({
-    async gh() {
-      throw Object.assign(new Error("no checks"), {
-        code: 1,
-        stdout: "",
-        stderr: "no checks reported on the 'codex/iss-113' branch\n",
-      });
+  const noChecks = githubDeliveryAdapter(
+    {
+      async gh() {
+        throw Object.assign(new Error("no checks"), {
+          code: 1,
+          stdout: "",
+          stderr: "no checks reported on the 'codex/iss-113' branch\n",
+        });
+      },
+      async ghJson(_config, args) {
+        if (args[0] === "api") return [{ workflow_runs: [] }];
+        return publicationRow(publication);
+      },
     },
-    async ghJson(_config, args) {
-      if (args[0] === "api") return [{ workflow_runs: [] }];
-      return publicationRow(publication);
-    },
-  });
+    "git",
+    async () => {},
+  );
   await expect(noChecks.checks(current, publication)).resolves.toEqual({
     head: current.candidateHead,
     checks: [],

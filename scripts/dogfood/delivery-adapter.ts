@@ -406,6 +406,7 @@ export async function assertControllerExecutor(
 export function githubDeliveryAdapter(
   commands: GithubDeliveryCommands = { gh, ghJson },
   gitExecutable = "git",
+  pause: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms)),
 ): DeliveryAdapter {
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
@@ -742,66 +743,82 @@ export function githubDeliveryAdapter(
           throw new Error("publication moved");
         return row;
       };
-      try {
-        const before = await readIdentity();
-        let stdout: string;
+      for (let retry = 0; ; retry += 1) {
         try {
-          stdout = await commands.gh(config, [
-            "pr",
-            "checks",
-            String(current.number),
-            "--json",
-            "name,bucket,link",
-          ]);
-        } catch (error) {
-          const result = error as { code?: number; stdout?: string; stderr?: string };
-          if (
-            result.code === 1 &&
-            result.stdout === "" &&
-            /^no checks reported on the '.+' branch\s*$/.test(result.stderr ?? "")
-          )
-            stdout = "[]";
-          else {
+          const before = await readIdentity();
+          let stdout: string;
+          try {
+            stdout = await commands.gh(config, [
+              "pr",
+              "checks",
+              String(current.number),
+              "--json",
+              "name,bucket,link",
+            ]);
+          } catch (error) {
+            const result = error as { code?: number; stdout?: string; stderr?: string };
             if (
-              ![1, 8].includes(result.code ?? -1) ||
-              typeof result.stdout !== "string" ||
-              result.stdout === ""
+              result.code === 1 &&
+              result.stdout === "" &&
+              /^no checks reported on the '.+' branch\s*$/.test(result.stderr ?? "")
             )
-              throw error;
-            stdout = result.stdout;
+              stdout = "[]";
+            else {
+              if (
+                ![1, 8].includes(result.code ?? -1) ||
+                typeof result.stdout !== "string" ||
+                result.stdout === ""
+              )
+                throw error;
+              stdout = result.stdout;
+            }
           }
-        }
-        const checks = JSON.parse(stdout);
-        if (!Array.isArray(checks)) throw new Error("malformed hosted checks");
-        let workflowPending = false;
-        if (config.requiredChecks.some((name) => !checks.some((check) => check?.name === name))) {
-          // ISS-132: aggregate jobs can be absent between jobs of a running workflow.
-          const pages = await commands.ghJson(config, [
-            "api",
-            `repos/${config.repository}/actions/runs?head_sha=${before.headRefOid}&event=pull_request&per_page=100`,
-            "--paginate",
-            "--slurp",
-          ]);
-          if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page?.workflow_runs)))
-            throw new Error("malformed workflow observation");
-          workflowPending = pages.some((page) =>
-            page.workflow_runs.some(
-              (run: any) =>
-                run.head_sha === before.headRefOid &&
-                run.pull_requests?.some((pull: any) => pull.number === current.number) &&
-                ["queued", "in_progress"].includes(run.status),
-            ),
+          const checks = JSON.parse(stdout);
+          if (!Array.isArray(checks)) throw new Error("malformed hosted checks");
+          let workflowPending = false;
+          let startupInvisible = false;
+          if (config.requiredChecks.some((name) => !checks.some((check) => check?.name === name))) {
+            // ISS-132: aggregate jobs can be absent between jobs of a running workflow.
+            const pages = await commands.ghJson(config, [
+              "api",
+              `repos/${config.repository}/actions/runs?head_sha=${before.headRefOid}&event=pull_request&per_page=100`,
+              "--paginate",
+              "--slurp",
+            ]);
+            if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page?.workflow_runs)))
+              throw new Error("malformed workflow observation");
+            startupInvisible =
+              pages.every((page) => page.workflow_runs.length === 0) &&
+              config.requiredChecks.every((name) => !checks.some((check) => check?.name === name));
+            workflowPending = pages.some((page) =>
+              page.workflow_runs.some(
+                (run: any) =>
+                  run.head_sha === before.headRefOid &&
+                  run.pull_requests?.some((pull: any) => pull.number === current.number) &&
+                  ["queued", "in_progress"].includes(run.status),
+              ),
+            );
+          }
+          const after = await readIdentity();
+          if (JSON.stringify(before) !== JSON.stringify(after))
+            throw new Error("publication moved");
+          // ISS-143: GitHub can expose advisory checks before any required check or workflow run.
+          if (startupInvisible && retry < 12) {
+            await pause(10_000);
+            continue;
+          }
+          return {
+            head: before.headRefOid,
+            checks,
+            ...(workflowPending ? { workflowPending } : {}),
+          };
+        } catch (error) {
+          const failure = error as { stderr?: string; message?: string };
+          const detail = [failure.stderr, failure.message].find(
+            (value) => typeof value === "string" && value.trim() !== "",
           );
+          throw new DeliveryBlocked("hosted-observation-unavailable", detail?.trim().slice(0, 500));
         }
-        const after = await readIdentity();
-        if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("publication moved");
-        return { head: before.headRefOid, checks, ...(workflowPending ? { workflowPending } : {}) };
-      } catch (error) {
-        const failure = error as { stderr?: string; message?: string };
-        const detail = [failure.stderr, failure.message].find(
-          (value) => typeof value === "string" && value.trim() !== "",
-        );
-        throw new DeliveryBlocked("hosted-observation-unavailable", detail?.trim().slice(0, 500));
       }
     },
     async failedCheckLog(config, check) {
