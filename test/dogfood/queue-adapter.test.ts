@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -18,6 +20,8 @@ import { sha, type Adapter, type Attempt } from "../../scripts/dogfood/flow.js";
 import type { RepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
+import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import {
   type QueueConfig,
   type QueueAdapter,
@@ -136,6 +140,264 @@ async function fixture(history: QueueParticipant[] = []) {
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+it.each(["initial", "legacy retry", "failed fetch", "spent retry"])(
+  "hands full hosted diagnostics to corrective workers on %s without rewriting historical prompts",
+  async (mode) => {
+    const current = await fixture([
+      {
+        ordinal: 1,
+        id: "previous-reviewer",
+        item: "ISS-141:3",
+        stage: "source",
+        role: "reviewer",
+        outcome: "passed",
+        usage: queueUsage(undefined),
+      },
+    ]);
+    current.item.id = "ISS-141:4";
+    current.item.implementationAttempt = 4;
+    current.source.author.prompt = "Fix prior failure: " + "PR Required boilerplate ".repeat(170);
+    const previous = resolve(current.paths.queue, "..", "iss-141-attempt-3");
+    const previousSource = resolve(previous, "source");
+    await mkdir(previousSource, { recursive: true });
+    const findings = [
+      {
+        file: "PR Required",
+        line: 1,
+        severity: "blocking",
+        text: "PR Required boilerplate ".repeat(170),
+      },
+    ];
+    const priorBytes = JSON.stringify({
+      phase: "failed",
+      head: base,
+      issue: current.item.issue,
+      retries: 0,
+      findings,
+    });
+    const publication = {
+      number: 8002,
+      head: base,
+      url: "https://github.com/fixture/repository/pull/8002",
+    };
+    await writeFile(resolve(previous, "attempt.json"), priorBytes);
+    await writeFile(resolve(previousSource, "publication.json"), JSON.stringify(publication));
+    await writeFile(
+      resolve(previousSource, "delivery-source.json"),
+      JSON.stringify({
+        controller: current.source.owner,
+        run: current.source.run,
+        issue: current.source.issue,
+        repository: current.source.repository,
+        controllerRevision: stable,
+        worktree: current.source.worktree,
+        reviewWorktree: current.source.reviewWorktree,
+        stateDirectory: previousSource,
+        requiredChecks: current.source.requiredChecks,
+        head: base,
+        reviewId: "previous-reviewer",
+      }),
+    );
+    const configBytes = JSON.stringify({
+      fingerprint: sha(
+        JSON.stringify({
+          config: current.source,
+          prompts: [current.source.author.prompt, current.source.reviewer.prompt],
+        }),
+      ),
+      config: current.source,
+    });
+    await writeFile(resolve(current.paths.source, "config.json"), configBytes);
+    const oldTrace = resolve(current.paths.source, "interrupted-author.jsonl");
+    const interruptedId = "01a09eec-d3a9-7e53-8b40-34d9e363dcdd";
+    const traceBytes = `${JSON.stringify({ type: "thread.started", thread_id: interruptedId })}\n${JSON.stringify({ type: "item.completed", item: { id: "item_46", type: "command_execution", command: "pnpm test", exit_code: 0 } })}\n`;
+    await writeFile(oldTrace, traceBytes);
+    const child = spawn(process.execPath, ["-e", ""], { windowsHide: true, stdio: "ignore" });
+    await once(child, "exit");
+    expect(() => process.kill(child.pid!, 0)).toThrow();
+    if (mode !== "initial")
+      await writeFile(
+        resolve(current.paths.source, "author-attempt.json"),
+        JSON.stringify({
+          id: interruptedId,
+          pid: child.pid,
+          trace: oldTrace,
+          launchedAt: 1,
+          ...(mode === "spent retry" ? { retries: 1 } : {}),
+        }),
+      );
+    const patch =
+      "diff --git a/fixture.ts b/fixture.ts\n--- a/fixture.ts\n+++ b/fixture.ts\n@@ -1 +1 @@\n-process.cwd()\n+import.meta.url\n";
+    let dirty = mode !== "initial";
+    let sourceHead = base;
+    let reviewHead = base;
+    let authorDone = false;
+    const prompts: { role: string; prompt: string }[] = [];
+    const mutations: string[] = [];
+    const native: Adapter = {
+      async preflight() {},
+      async git(tree, args) {
+        if (args[0] === "rev-parse")
+          return args[1] === "--show-toplevel"
+            ? tree
+            : tree === current.paths.pilot
+              ? stable
+              : tree === current.paths.review
+                ? reviewHead
+                : sourceHead;
+        if (args[0] === "status")
+          return tree === current.paths.author && dirty ? " M fixture.ts" : "";
+        if (args[0] === "diff")
+          return args.includes("--binary")
+            ? patch
+            : args.includes("--cached")
+              ? ""
+              : `${current.source.allowedPaths[0]}\0`;
+        if (args[0] === "reset") {
+          expect(await readFile(resolve(previousSource, "hosted-failure.log"), "utf8")).toContain(
+            "actual underlying diagnostic",
+          );
+          expect(
+            await readFile(
+              resolve(current.paths.source, `author-retry-${interruptedId}.patch`),
+              "utf8",
+            ),
+          ).toBe(`${patch}\n`);
+          mutations.push("reset");
+          dirty = false;
+          return "";
+        }
+        if (args[0] === "clean") {
+          mutations.push("clean");
+          return "";
+        }
+        if (args[0] === "checkout") {
+          reviewHead = args.at(-1)!;
+          return "";
+        }
+        if (args[0] === "commit") {
+          sourceHead = candidate;
+          return "";
+        }
+        if (args[0] === "merge-base") return base;
+        return "";
+      },
+      async launch(role, config, prompt) {
+        prompts.push({ role, prompt });
+        return {
+          id: `new-${role}`,
+          pid: 2 + prompts.length,
+          trace: resolve(config.stateDirectory, `new-${role}.jsonl`),
+          launchedAt: 2,
+        };
+      },
+      async observe(role, _config, attempt) {
+        if (attempt.id === interruptedId)
+          return codexAdapter("git", () => 60_000).observe(role, _config, attempt);
+        return {
+          id: attempt.id,
+          status: role === "author" && authorDone ? "passed" : "running",
+          head: role === "author" ? base : candidate,
+          summary: "",
+        };
+      },
+      async checks() {
+        throw new Error("unused");
+      },
+    };
+    const checks = ["PR Required", "Static Checks", "Unit Tests", "E2E"].map((name, index) => ({
+      name,
+      bucket: "fail" as const,
+      link: `https://github.com/fixture/repository/actions/runs/${index === 3 ? 34818999246 : 34818999245}/job/${index + 1}`,
+    }));
+    let fetches = 0;
+    const delivery = {
+      async checks(config: DeliveryConfig, observedPublication: PublicationEvidence) {
+        expect(config.candidateHead).toBe(base);
+        expect(config.controllerRoot).toBe(current.paths.controller);
+        expect(config.repositoryRoot).toBe(current.paths.repository);
+        expect(observedPublication).toEqual(publication);
+        return { head: base, checks };
+      },
+      async failedCheckLog(config: DeliveryConfig, check: { name: string }) {
+        expect(config.candidateHead).toBe(base);
+        fetches++;
+        if (mode === "failed fetch") throw new Error("hosted logs unavailable");
+        return `${(check.name === "E2E" ? ["E2E"] : ["PR Required", "Static Checks", "Unit Tests"]).map((name) => `${name}: actual underlying diagnostic`).join("\n")}\n${"PR Required aggregate boilerplate\n".repeat(200)}`;
+      },
+    } as DeliveryAdapter;
+    const adapter = () =>
+      repositoryQueueAdapter(current.config, current.paths.controller, { native, delivery });
+    if (mode === "spent retry") {
+      await expect(adapter().source(current.item)).rejects.toMatchObject({
+        reason: "launcher-failed",
+        retries: 1,
+      });
+      expect(fetches).toBe(0);
+      expect(prompts).toEqual([]);
+      expect(mutations).toEqual([]);
+      expect(current.item.implementationAttempt).toBe(4);
+      return;
+    }
+    if (mode === "failed fetch") {
+      await expect(adapter().source(current.item)).rejects.toMatchObject({
+        reason: "hosted-failure-evidence-unavailable",
+      });
+      expect(isItemStopReason("hosted-failure-evidence-unavailable")).toBe(false);
+      expect(prompts).toEqual([]);
+      expect(mutations).toEqual([]);
+      expect(dirty).toBe(true);
+      return;
+    }
+    await expect(adapter().source(current.item)).resolves.toMatchObject({
+      status: "observing-author",
+      ...(mode === "legacy retry" ? { retries: 1 } : {}),
+    });
+    const evidencePath = resolve(previousSource, "hosted-failure.log");
+    const evidence = await readFile(evidencePath, "utf8");
+    for (const check of checks) {
+      expect(evidence).toContain(`${check.name}: actual underlying diagnostic`);
+      expect(evidence).toContain(check.link);
+    }
+    expect(evidence).toContain(base);
+    expect(evidence).toContain('"number":8002');
+    expect(prompts[0]!.prompt).toContain(JSON.stringify(evidencePath));
+    expect(prompts[0]!.prompt.length).toBeLessThan(8000);
+    expect(prompts[0]!.prompt).not.toContain("actual underlying diagnostic");
+    if (mode === "legacy retry") {
+      expect(prompts[0]!.prompt).toContain(JSON.stringify(oldTrace));
+      expect(prompts[0]!.prompt).toContain("author-retry-discard.json");
+      expect(
+        await readFile(
+          resolve(current.paths.source, `author-retry-${interruptedId}.patch`),
+          "utf8",
+        ),
+      ).toBe(`${patch}\n`);
+      expect(mutations).toEqual(["reset", "clean"]);
+    }
+    await expect(adapter().source(current.item)).resolves.toMatchObject({
+      status: "observing-author",
+    });
+    authorDone = true;
+    await expect(adapter().source(current.item)).resolves.toMatchObject({
+      status: "observing-reviewer",
+    });
+    expect(prompts[1]!.role).toBe("reviewer");
+    expect(prompts[1]!.prompt).toContain(JSON.stringify(evidencePath));
+    expect(prompts[1]!.prompt).toContain("author-terminal.json");
+    expect(prompts[1]!.prompt).toContain("new-author.jsonl");
+    expect(fetches).toBe(2);
+    expect(evidence.match(/Static Checks: actual underlying diagnostic/g)).toHaveLength(1);
+    expect(await readFile(resolve(previous, "attempt.json"), "utf8")).toBe(priorBytes);
+    expect(await readFile(resolve(current.paths.source, "config.json"), "utf8")).toBe(configBytes);
+    expect(await readFile(oldTrace, "utf8")).toBe(traceBytes);
+    await expect(
+      readFile(resolve(current.paths.source, "interrupted-author.exit.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(current.item.implementationAttempt).toBe(4);
+  },
+);
 
 it("directly composes the accepted setup transition before source work", async () => {
   const current = await fixture();

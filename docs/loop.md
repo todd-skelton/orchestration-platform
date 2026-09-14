@@ -65,6 +65,42 @@ evidence, followed by all ordinary local gates, publication, hosted CI, merge
 and deployment. Attempt ceilings, consumed attempts and rejected reviews remain
 unchanged. This behavior does not unpark #7766 or restart its preserved run.
 
+ISS-141 records the hosted-failure handoff blocker at
+https://github.com/todd-skelton/orchestration-platform/issues/367#issuecomment-5660899933
+(clarification: issue comment `5660913866`). Chase Sets PR #8002, exact head
+`181c1d4c5f1bb3f4330cd4ae50f0fd688de3280e`, failed run `34818999245`;
+the last 4000 log characters contained only PR Required aggregate boilerplate.
+Actual diagnostics included stale source-line references, stale lockfile-bound
+owner-context hashes, a grant-test timeout and an E2E DockerHub TCP reset.
+Complete failed-run logs now live in the delivery runtime's `hosted-failure.log`,
+with exact candidate, publication and failed check/run URLs. Each run is fetched
+once even when several jobs fail. Corrective author and reviewer launches get
+the absolute evidence path rather than raw logs in prompts or terminal reports.
+They inspect underlying diagnostics independently; this supplies neither a
+verdict nor a waiver, and all ordinary delivery gates remain mandatory.
+
+For the stopped `cs-7766-attempt-4` author, the host preserves the runtime, trace
+and partial fixture-path edit, installs the reviewed stable executor, then
+restarts the same run with its existing records. For its receiptless author,
+the observer validates the trace identity and waits the existing receipt window.
+Only an absent PID with no terminal turn becomes `dead`; a still-live process,
+unknown process/trace identity or completed turn is not reclassified. No exit
+receipt or worker verdict is invented. The ordinary single dead-worker retry
+acquires missing logs from attempt 3's existing publication before dispatch or
+clean-base reset. Evidence is appended at launch, leaving the old findings and
+source config fingerprint unchanged. Failure to acquire it stops the host
+without launching an uninformed worker. Before the existing clean-base reset,
+`author-retry-<attempt-id>.patch` captures tracked staged and unstaged changes
+without overwriting that attempt's patch on replay; the existing
+`author-retry-discard.json` also retains the interrupted attempt and terminal
+context. The retry sees these paths and the old trace, reapplies useful work and
+verifies it. Untracked files are not in that patch; host preservation is still
+required. No historical verdict, implementation count or retry ceiling is reset.
+This recovery requires the previous publication to remain on the recorded head
+and GitHub to retain its logs until capture. Once captured, resumed worker
+launches use the runtime file without refetching. This repair does not restart
+the preserved run, fix JPEG, rerun CI or establish M2 completion.
+
 ## Planning
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a

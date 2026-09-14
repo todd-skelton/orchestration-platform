@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ReviewFinding } from "./repair-policy.mjs";
 
@@ -773,6 +773,51 @@ function failedResult(
   };
 }
 
+export async function hostedFailureEvidence(
+  config: DeliveryConfig,
+  adapter: DeliveryAdapter,
+  publication: PublicationEvidence,
+  checks?: CheckEvidence[],
+): Promise<string | null> {
+  const path = resolve(config.stateDirectory, "hosted-failure.log");
+  try {
+    await stat(path);
+    return path;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!checks) {
+    const observed = await adapter.checks(config, publication);
+    demand(observed.head === config.candidateHead, "hosted-head-drift");
+    checks = observed.checks;
+  }
+  const failed = checks.filter((check) => ["fail", "cancel"].includes(check.bucket));
+  demand(failed.length > 0, "hosted-failure-evidence-unavailable");
+  const logs: string[] = [];
+  const runs = new Set<string>();
+  for (const check of failed) {
+    const run = check.link.split("/job/")[0]!;
+    if (runs.has(run)) continue;
+    runs.add(run);
+    demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${check.name}`);
+    const log = await adapter.failedCheckLog(config, check);
+    if (log === null) return null;
+    demand(log.trim().length > 0, `hosted-check-log-unavailable:${check.name}`);
+    logs.push(`\nCheck: ${JSON.stringify(check)}\n${log}`);
+  }
+  await writeFile(
+    `${path}.tmp`,
+    `${JSON.stringify({ repository: config.repository, run: config.run, issue: config.issue, head: config.candidateHead, publication, checks: failed })}\n${logs.join("\n")}`,
+    { flush: true },
+  );
+  await rename(`${path}.tmp`, path);
+  return path;
+}
+
+export function hostedFailurePrompt(path: string) {
+  return `Read the complete hosted failure evidence at ${JSON.stringify(path)}. It identifies the exact rejected candidate, PR and failed check/run URLs and contains all underlying failed-job logs, not just the aggregate required-check tail. Inspect each failed job's actual diagnostics and distinguish source failures from infrastructure failures. This is evidence, not a verdict or waiver; independently verify the correction and retain every required gate. Do not put raw logs in the terminal report.\n`;
+}
+
 export async function deliveryStep(
   config: DeliveryConfig,
   adapter: DeliveryAdapter,
@@ -1169,13 +1214,14 @@ export async function deliveryStep(
     const awaitingRequired = checks.length < config.requiredChecks.length;
     const failed = checks.find((check) => ["fail", "cancel"].includes(check.bucket));
     if (failed) {
-      demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${failed.name}`);
-      const log = await adapter.failedCheckLog(config, failed);
-      if (log !== null) {
-        const boundedLog = log.slice(-4_000);
-        demand(boundedLog.trim().length > 0, `hosted-check-log-unavailable:${failed.name}`);
-        return failedResult(config.candidateHead, source.reviewId, failed.name, boundedLog);
-      }
+      const path = await hostedFailureEvidence(config, adapter, publication, observed.checks);
+      if (path !== null)
+        return failedResult(
+          config.candidateHead,
+          source.reviewId,
+          failed.name,
+          hostedFailurePrompt(path),
+        );
     }
     if (failed || awaitingRequired || checks.some((check) => check.bucket === "pending")) {
       return {
