@@ -226,6 +226,37 @@ function events(trace: string, complete: boolean): any[] {
   if (!complete && !trace.endsWith("\n")) lines.pop();
   return lines.filter((line) => line.trim()).map((line) => JSON.parse(line));
 }
+function reviewerVerdict(message: string): unknown {
+  // ISS-150: prose braces need not begin JSON. Once a complete object parses,
+  // require it to end the message, rejecting additional objects or trailing prose.
+  for (let start = message.indexOf("{"); start >= 0; start = message.indexOf("{", start + 1)) {
+    let depth = 0;
+    let quoted = false;
+    for (let end = start; end < message.length; end += 1) {
+      const character = message[end];
+      if (quoted) {
+        if (character === "\\") end += 1;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth !== 0) continue;
+        let object: unknown;
+        try {
+          object = JSON.parse(message.slice(start, end + 1));
+        } catch {
+          break;
+        }
+        check(message.slice(end + 1).trim() === "", "malformed-worker-verdict");
+        return object;
+      }
+    }
+  }
+  throw new Error("malformed-worker-verdict");
+}
 export function parseTrace(
   trace: string,
   complete: boolean,
@@ -292,12 +323,7 @@ export function parseTrace(
   let verdict: any;
   try {
     const message = messages.at(-1)?.item.text ?? "null";
-    // ISS-150: tolerate reviewer prose before the sole top-level object. Parsing
-    // the whole suffix rejects trailing text and additional objects without
-    // salvaging a nested object or skipping an earlier verdict.
-    const start = role === "reviewer" ? message.indexOf("{") : 0;
-    check(start >= 0, "malformed-worker-verdict");
-    verdict = JSON.parse(message.slice(start));
+    verdict = role === "reviewer" ? reviewerVerdict(message) : JSON.parse(message);
   } catch {
     throw new Error("malformed-worker-verdict");
   }

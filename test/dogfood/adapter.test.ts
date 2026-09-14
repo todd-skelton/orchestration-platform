@@ -658,10 +658,33 @@ it.each([2000, 2001])("enforces the serialized review boundary at %i characters"
   else expect(parse).toThrow("malformed-worker-verdict");
 });
 it.each([
+  "I inspected call({ option: true })",
+  "I inspected the opening { brace.",
+  'I inspected { option: "a } brace" } and { another: true }.',
+  'I inspected { an unfinished "quote.',
+])("accepts a sole reviewer object after non-JSON brace text: %s", (prefix) => {
+  const events = structuredClone(rows);
+  const verdict = JSON.parse(events[1]!.item!.text);
+  events[1]!.item!.text = `${prefix}\n${JSON.stringify(verdict)}\n`;
+  const terminal = parseTrace(trace(events), true, "reviewer", config);
+  expect(terminal.status).toBe("passed");
+  expect(JSON.parse(terminal.summary!)).toEqual(verdict);
+});
+it.each([
   ["trailing prose", (object: string) => `${object}\nDone.`],
   ["two objects", (object: string) => `${object}\n${object}`],
   ["an earlier non-verdict object", (object: string) => `{}\nReview complete.\n${object}`],
+  [
+    "two objects after non-JSON brace text",
+    (object: string) => `I inspected call({ option: true })\n${object}\n${object}`,
+  ],
+  ["an earlier nested object", (object: string) => `{"review":${object}}\n${object}`],
+  [
+    "trailing prose after brace-prefixed JSON",
+    (object: string) => `I inspected call({ option: true })\n${object}\nDone.`,
+  ],
   ["no object", () => "Review complete. PASS."],
+  ["only non-JSON brace text", () => "I inspected call({ option: true })"],
   ["array wrapper", (object: string) => `[${object}]`],
   ["nested verdict", (object: string) => `{"review":${object}}`],
 ] as const)("rejects reviewer framing with %s", (_name, frame) => {
