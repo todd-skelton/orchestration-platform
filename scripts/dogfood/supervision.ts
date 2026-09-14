@@ -49,6 +49,7 @@ export function isItemStopReason(reason: string) {
       "exit-receipt-timeout",
       "launcher-failed",
       "rebase-conflict",
+      "refresh-review-failed",
       "deploy-not-verified",
       "source-finding-location-outside-candidate",
     ].includes(reason) ||

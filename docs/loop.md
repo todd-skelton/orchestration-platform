@@ -216,6 +216,54 @@ from the host, or claim milestone 158 or ISS-110 exit evidence. After the
 bounded cycle fails to land or a new loop defect stops it, the host proposes
 rollback and waits for Todd; another config/run name is not authorization.
 
+ISS-148 records ISS-146's two `planning:board-check` stops in
+`m1-accepted-replan-20260914T1416`: a later registration had landed on main,
+but the gates still read the author's older roadmap. Native delivery now
+fetches actual `refs/remotes/origin/main` before entering unpublished delivery
+gates, including on resume. It rebases an aged candidate through the same
+native rebase operation used for corrective continuation. When delivery refreshes
+an existing PR, integration merges main instead, retaining the recorded published
+head as an ancestor for the unchanged forward-only publication and remote-head
+lease checks (ISS-145). Unavailable,
+incompatible or moving main stops with `current-main-unavailable`,
+`current-main-incompatible` or `current-main-moved`. Conflicts use the existing
+`rebase-conflict` stop, the shared handoff point for ISS-147; there is no
+second conflict-resolution loop here.
+
+The original source author, review, traces and attempt remain unchanged.
+`native-refresh.json` in that source's runtime remembers the integration;
+each resulting main base has a `refresh-<main>` directory for its delta review
+and delivery evidence. Resume reconciles a completed integration and resumes an
+in-flight reviewer rather than launching another author or spending another
+implementation attempt. Delta reviewers use the ordinary native launch ceiling
+and reviewer retry, retain prior participants (including failures), inherit
+the original review and execution evidence, and inspect semantic changes and
+direct callers at the exact resulting head. A clean rebase is not evidence of
+semantic equivalence. A failed delta review stops as `refresh-review-failed`
+and follows the ordinary work-caused stop and parking policy.
+Main moving during review requires another refresh before any gates run.
+
+A refreshed head requires new local gate receipts and its current delta review;
+old gate receipts remain history. Its transient typecheck/format retry reruns
+the same reviewed head once; a persistent failure stops, without an unreviewed
+source correction or renewed implementation budget. Draft mutations are
+observed before applying them, so an already matching mirror is not repeated.
+Publication, hosted checks and merge/deploy remain bound to the resulting head.
+Published delivery, including a pending publication intent whose response may
+have been lost, resumes its existing reconciliation, checks and mutations; it
+does not rewrite an in-flight publication merely because main moved.
+
+The self adapter's `afterMirror` board gate validates candidate planning locally
+and checks only keys changed by its planning delta against the live board and
+project. Ownership compares both sides of the diff, including deleted rows,
+drafts, milestone changes and project changes. This uses current main plus the
+candidate's own planning work after refresh; unrelated registration windows
+cannot fail a live candidate, while candidate omissions, malformed planning,
+incorrect board bodies and missing project membership still fail. The ordinary
+`pnpm planning:board-check` and selection retain their full-board validation.
+This behavior does not edit or restart the preserved ISS-146 run, change issue
+order, waive hosted bootstrap or grant workers mutation authority.
+
 ## Planning
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a
