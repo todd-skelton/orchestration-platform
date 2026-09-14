@@ -575,7 +575,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     expect(landed.status).toBe("ready");
     expect(landed).not.toHaveProperty("retries");
     expect(f.launches).toEqual(["author", "author", "reviewer"]);
-    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    expect(f.launchPrompts[1]).toContain(f.launchPrompts[0]);
     expect(f.resets).toEqual([["reset", "--hard", base]]);
     expect(f.commits).toHaveLength(1);
     expect(probe.polls.at(-1)?.launches).toBe(2); // reviewer was probed too
@@ -657,7 +657,17 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
     expect(f.launches).toEqual(["author", "author", "author", "author", "reviewer"]);
     expect(probe.polls).toHaveLength(5);
-    expect(f.launchPrompts.slice(0, 4).every((prompt) => prompt === f.launchPrompts[0])).toBe(true);
+    expect(
+      f.launchPrompts.slice(0, 4).every((prompt) => prompt.includes(f.launchPrompts[0]!)),
+    ).toBe(true);
+    for (const [index, id] of ["author", "author-retry", "author-retry3"].entries()) {
+      const patch = resolve(f.config.stateDirectory, `author-retry-${id}.patch`);
+      expect(await readFile(patch, "utf8")).not.toBe("");
+      expect(f.launchPrompts[index + 1]).toContain(JSON.stringify(patch));
+      expect(f.launchPrompts[index + 1]).toContain(
+        JSON.stringify(resolve(f.config.stateDirectory, `author-${index + 1}.jsonl`)),
+      );
+    }
   });
 
   it("bounds a flapping provider only by native launches", async () => {
@@ -851,7 +861,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await expect(f.run()).rejects.toThrow("author-launch-identity-unknown-reconcile");
     expect(f.launches).toEqual(["author"]);
   });
-  it("relaunches one dead author with the same prompt after recording a clean-base discard", async () => {
+  it("relaunches one dead author with preserved patch and terminal context after clean-base discard", async () => {
     const f = await fixture();
     f.statuses.author = "dead";
     f.summarize("author", "upstream TLS handshake timed out");
@@ -877,7 +887,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       retries: 1,
     });
     expect(f.launches).toEqual(["author", "author", "reviewer"]);
-    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    expect(f.launchPrompts[1]).toContain(f.launchPrompts[0]);
     await expectAuthorEvidence(f.config, f.launchPrompts[2]!);
     expect(f.launchPrompts[2]).not.toContain(
       JSON.stringify(resolve(f.config.stateDirectory, "author-1.jsonl")),
@@ -888,7 +898,22 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       JSON.parse(
         await readFile(resolve(f.config.stateDirectory, "author-retry-discard.json"), "utf8"),
       ),
-    ).toMatchObject({ base, discarded: " M source" });
+    ).toMatchObject({
+      base,
+      discarded: " M source",
+      patch: resolve(f.config.stateDirectory, "author-retry-author.patch"),
+      attempt: { id: "author" },
+      terminal: { status: "dead" },
+    });
+    expect(f.launchPrompts[1]).toContain(
+      JSON.stringify(resolve(f.config.stateDirectory, "author-retry-author.patch")),
+    );
+    expect(f.launchPrompts[1]).toContain(
+      JSON.stringify(resolve(f.config.stateDirectory, "author-1.jsonl")),
+    );
+    expect(
+      await readFile(resolve(f.config.stateDirectory, "author-retry-author.patch"), "utf8"),
+    ).not.toBe("");
   });
   it("stops after two dead launches with the last trace diagnostic", async () => {
     const f = await fixture();
@@ -903,6 +928,20 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     });
     expect(f.launches).toEqual(["author", "author"]);
   });
+  it("keeps the captured patch when replay resumes after the clean-base reset", async () => {
+    const f = await fixture();
+    await f.run();
+    const path = resolve(f.config.stateDirectory, "author-retry-author.patch");
+    const patch = "preserved tracked patch from before reset\n";
+    await writeFile(path, patch);
+    const git = f.adapter.git;
+    f.adapter.git = async (tree, args) => (args.includes("--binary") ? "" : git(tree, args));
+    f.statuses.author = "dead";
+    f.retry("running");
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author", retries: 1 });
+    expect(await readFile(path, "utf8")).toBe(patch);
+    expect(f.launchPrompts[1]).toContain(JSON.stringify(path));
+  });
   it("relaunches once when restarting over a recorded dead launch", async () => {
     const f = await fixture();
     expect((await f.run()).status).toBe("observing-author");
@@ -912,7 +951,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
 
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
     expect(f.launches).toEqual(["author", "author", "reviewer"]);
-    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    expect(f.launchPrompts[1]).toContain(f.launchPrompts[0]);
   });
   it("uses the same prompt when a recorded reviewer launch dies", async () => {
     const f = await fixture();

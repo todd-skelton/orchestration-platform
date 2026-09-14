@@ -7,6 +7,8 @@ import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adap
 import {
   DeliveryBlocked,
   deliveryStep,
+  hostedFailureEvidence,
+  hostedFailurePrompt,
   type CheckEvidence,
   type DeliveryAdapter,
   type DeliveryConfig,
@@ -1572,8 +1574,54 @@ export function repositoryQueueAdapter(
     }
   };
 
+  const correctiveEvidence = async (item: QueueItem) => {
+    const predecessor = config.initialHistory.findLast(
+      (participant) => participant.role === "reviewer" && participant.item !== item.id,
+    );
+    if (!predecessor) return "";
+    const priorDirectory = resolve(
+      config.stateDirectory,
+      "..",
+      predecessor.item.toLowerCase().replace(/:(\d+)$/, "-attempt-$1"),
+    );
+    const prior = await optionalRecord(priorDirectory, "attempt");
+    if (prior === ABSENT || prior.phase !== "failed" || prior.issue !== item.issue) return "";
+    for (const stage of ["source", "repair"]) {
+      const directory = resolve(priorDirectory, stage);
+      const publication = await optionalRecord(directory, "publication");
+      if (publication === ABSENT || publication.head !== prior.head) continue;
+      const source = await json(directory, "delivery-source");
+      const evidence = await hostedFailureEvidence(
+        {
+          ...source,
+          controllerRoot: config.controllerRoot,
+          repositoryRoot: item.setup.repositoryRoot,
+          candidateHead: publication.head,
+          stateDirectory: directory,
+          retries: prior.retries,
+          policy: item.delivery.policy,
+        },
+        deliveryAdapter,
+        publication,
+      ).catch((error: unknown) => {
+        throw new QueueBlocked(
+          "hosted-failure-evidence-unavailable",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+      demand(evidence !== null, "hosted-failure-evidence-unavailable");
+      return `\n${hostedFailurePrompt(evidence)}`;
+    }
+    return "";
+  };
+
   const boundedNative = (item: QueueItem, stage: "source" | "repair"): Adapter => ({
     ...native,
+    async waitForProvider(current) {
+      await native.waitForProvider?.(current);
+      // Acquire missing legacy evidence before the clean-base dead-worker retry.
+      await correctiveEvidence(item);
+    },
     async launch(role: Role, current: SourceConfig, prompt: string): Promise<Attempt> {
       const priorHistory = await readHistory();
       demand(priorHistory.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
@@ -1583,7 +1631,11 @@ export function repositoryQueueAdapter(
               (await json(item.source.stateDirectory, "candidate")).changed,
             )}\n`
           : prompt;
-      const attempt = await native.launch(role, current, repairCompatiblePrompt);
+      const attempt = await native.launch(
+        role,
+        current,
+        `${repairCompatiblePrompt}${await correctiveEvidence(item)}`,
+      );
       demand(
         typeof attempt.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),
         "invalid-participant-identity",

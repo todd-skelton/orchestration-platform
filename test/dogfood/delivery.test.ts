@@ -8,6 +8,7 @@ import { afterEach, expect, it } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   deliveryStep,
+  hostedFailurePrompt,
   type DeliveryAdapter,
   type DeliveryConfig,
   type DeliveryPlan,
@@ -461,15 +462,15 @@ it.each(["fail", "cancel"] as const)(
   async (bucket) => {
     const f = await fixture();
     f.state.checks = bucket;
-    const output = `discarded-${"x".repeat(200)}${"useful-log".repeat(500)}`;
+    const output = `Static Checks: invalid source-line references\nUnit Tests: stale lockfileSha256\nE2E: pgvector pull TCP reset\n${"PR Required aggregate shell boilerplate\n".repeat(200)}`;
     const provider = githubDeliveryAdapter({
       async gh(_config, args) {
         expect(args).toEqual(["run", "view", "123", "--log-failed"]);
         return output;
       },
       async ghJson(_config, args) {
-        expect(args).toEqual(["run", "view", "123", "--json", "status"]);
-        return { status: "completed" };
+        expect(args).toEqual(["run", "view", "123", "--json", "status,headSha"]);
+        return { status: "completed", headSha: head };
       },
     });
     f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
@@ -483,8 +484,22 @@ it.each(["fail", "cancel"] as const)(
           file: "macos",
           line: 1,
           severity: "blocking",
-          text: output.slice(-4_000),
+          text: hostedFailurePrompt(resolve(f.config.stateDirectory, "hosted-failure.log")),
         },
+      ],
+    });
+    const evidence = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+    expect(evidence).toContain(output);
+    expect(evidence).toContain(head);
+    expect(evidence).toContain('"number":44');
+    expect(evidence).toContain("actions/runs/123");
+    f.adapter.failedCheckLog = async () => {
+      throw new Error("must reuse persisted full evidence");
+    };
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "failed",
+      findings: [
+        { text: hostedFailurePrompt(resolve(f.config.stateDirectory, "hosted-failure.log")) },
       ],
     });
     expect(f.calls).not.toContain("merge");
@@ -501,8 +516,8 @@ it.each(["fail", "cancel"] as const)(
     const provider = githubDeliveryAdapter({
       async ghJson(_config, args) {
         requests.push(args);
-        expect(args).toEqual(["run", "view", "123", "--json", "status"]);
-        return { status };
+        expect(args).toEqual(["run", "view", "123", "--json", "status,headSha"]);
+        return { status, headSha: head };
       },
       async gh(_config, args) {
         requests.push(args);
@@ -520,7 +535,7 @@ it.each(["fail", "cancel"] as const)(
         { name: "macos", bucket },
       ],
     });
-    expect(requests).toEqual([["run", "view", "123", "--json", "status"]]);
+    expect(requests).toEqual([["run", "view", "123", "--json", "status,headSha"]]);
     expect(f.calls).not.toContain("merge");
 
     status = "completed";
@@ -534,11 +549,18 @@ it.each(["fail", "cancel"] as const)(
       status: "failed",
       head,
       reviewId: "review-fixture",
-      findings: [{ file: "macos", line: 1, severity: "blocking", text: "macos job failed" }],
+      findings: [
+        {
+          file: "macos",
+          line: 1,
+          severity: "blocking",
+          text: hostedFailurePrompt(resolve(f.config.stateDirectory, "hosted-failure.log")),
+        },
+      ],
     });
     expect(requests).toEqual([
-      ["run", "view", "123", "--json", "status"],
-      ["run", "view", "123", "--json", "status"],
+      ["run", "view", "123", "--json", "status,headSha"],
+      ["run", "view", "123", "--json", "status,headSha"],
       ["run", "view", "123", "--log-failed"],
     ]);
     expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
@@ -555,8 +577,8 @@ it.each(["empty log", "log error", "no run id"])(
     const provider = githubDeliveryAdapter({
       async ghJson(_config, args) {
         requests.push(args);
-        expect(args).toEqual(["run", "view", "123", "--json", "status"]);
-        return { status: "completed" };
+        expect(args).toEqual(["run", "view", "123", "--json", "status,headSha"]);
+        return { status: "completed", headSha: head };
       },
       async gh(_config, args) {
         requests.push(args);
@@ -575,7 +597,7 @@ it.each(["empty log", "log error", "no run id"])(
       mode === "no run id"
         ? []
         : [
-            ["run", "view", "123", "--json", "status"],
+            ["run", "view", "123", "--json", "status,headSha"],
             ["run", "view", "123", "--log-failed"],
           ],
     );
@@ -587,6 +609,25 @@ it("invalidates readiness when hosted observation moves from the reviewed head",
   const f = await fixture();
   f.adapter.checks = async () => ({ head: "c".repeat(40), checks: [] });
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow("hosted-head-drift");
+  expect(f.calls).not.toContain("merge");
+});
+
+it("does not attach logs from a workflow run on a different candidate", async () => {
+  const f = await fixture();
+  f.state.checks = "fail";
+  const provider = githubDeliveryAdapter({
+    async ghJson() {
+      return { status: "completed", headSha: "f".repeat(40) };
+    },
+    async gh() {
+      throw new Error("must not fetch another head's logs");
+    },
+  });
+  f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow("hosted-head-drift");
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
   expect(f.calls).not.toContain("merge");
 });
 
