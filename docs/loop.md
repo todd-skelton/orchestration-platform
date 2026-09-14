@@ -36,6 +36,22 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+ISS-151 records the pre-author `worktree-collision:source` stop for ISS-146 in
+`m1-intake-refresh-20260914T1635`: a preserved worktree from an earlier run
+still held `codex/iss-146`. New ordinary attempts use the local source branch
+`codex/run-<sha256(run)>/<issue-key>-attempt-<attempt>`; the hash keeps every
+accepted run name valid in a Git ref. Pilot and review remain detached.
+Resume reads the branch from the existing setup plan, including legacy names.
+Published branch names, PR identity and forward-only refresh rules stay the same;
+delivery publishes the candidate to that existing name and cleans up its own
+local branch. A preserved worktree is never removed, moved or reused by a fresh
+attempt. A remaining branch checkout collision stops as `worktree-collision:source`
+with the holder's path in the stop diagnostics. Worktree directory collisions
+still stop; fresh runs need distinct worktree roots. If an existing PR fails
+publication identity checks, `publication-state-unknown` also names any preserved
+worktree holding that published branch; the local naming change does not admit
+that PR. ISS-145's accepted-replan branch and preservation behavior are unchanged.
+
 ISS-150 records the two `reviewer-malformed` launches for ISS-147 in
 `m1-intake-refresh-20260914T1635`: one verdict exceeded the unstated length cap,
 and its retry prefixed valid JSON with prose. Reviewer prompts now require the

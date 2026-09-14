@@ -19,6 +19,7 @@ export interface DeliveryConfig {
   stateDirectory: string;
   candidateHead: string;
   retries: number;
+  localBranch?: string;
   refresh?: PublicationRefresh;
   requiredChecks: string[];
   policy: unknown;
@@ -297,6 +298,7 @@ function validateConfig(config: DeliveryConfig) {
       "candidateHead",
       "retries",
       ...(hasRefresh ? ["refresh"] : []),
+      ...(config.localBranch === undefined ? [] : ["localBranch"]),
       "requiredChecks",
       "policy",
     ]),
@@ -420,7 +422,8 @@ function validatePlan(config: DeliveryConfig, plan: DeliveryPlan) {
       plan.cleanup.worktrees.every((path) => isAbsolute(path)) &&
       plan.cleanup.worktrees.includes(config.worktree) &&
       plan.cleanup.worktrees.includes(config.reviewWorktree) &&
-      plan.cleanup.branch === (config.refresh?.localBranch ?? plan.publication.sourceBranch),
+      plan.cleanup.branch ===
+        (config.localBranch ?? config.refresh?.localBranch ?? plan.publication.sourceBranch),
     "malformed-cleanup-plan",
   );
 }

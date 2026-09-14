@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -212,6 +212,22 @@ it("keeps a malformed source branch lookup unknown", async () => {
   await expect(current.adapter.observeWorktree(current.config, "source", false)).resolves.toEqual({
     state: "unknown",
   });
+});
+
+it("names the preserved holder when an unscoped published branch still collides", async () => {
+  const current = await fixture();
+  const preserved = resolve(current.root, "preserved source");
+  await git(current.repository, ["worktree", "add", "-b", current.config.sourceBranch, preserved]);
+  await writeFile(resolve(preserved, "unfinished.txt"), "preserve\n");
+  await expect(
+    setupStep(current.config, current.adapter, current.controller),
+  ).rejects.toMatchObject({
+    reason: "worktree-collision:source",
+    diagnostics: await realpath(preserved),
+  });
+  expect(await readFile(resolve(preserved, "unfinished.txt"), "utf8")).toBe("preserve\n");
+  expect(await git(preserved, ["branch", "--show-current"])).toBe(current.config.sourceBranch);
+  await expect(access(current.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("fails closed on a moving base and on dirty reconciled state", async () => {

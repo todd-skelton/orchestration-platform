@@ -28,6 +28,7 @@ export interface SetupConfig {
 
 export interface WorktreeObservation {
   state: "absent" | "confirmed" | "collision" | "unknown";
+  collisionPath?: string;
   head?: string;
   branch?: string | null;
 }
@@ -62,10 +63,12 @@ export interface SetupResult {
 
 export class SetupBlocked extends Error {
   readonly reason: string;
+  readonly diagnostics: string | undefined;
 
-  constructor(reason: string) {
+  constructor(reason: string, diagnostics?: string) {
     super(reason);
     this.reason = reason;
+    this.diagnostics = diagnostics;
   }
 }
 
@@ -383,7 +386,8 @@ export async function setupStep(
       role,
       receipt !== ABSENT || intent !== ABSENT,
     );
-    demand(observation.state !== "collision", `worktree-collision:${role}`);
+    if (observation.state === "collision")
+      throw new SetupBlocked(`worktree-collision:${role}`, observation.collisionPath);
     demand(observation.state !== "unknown", `worktree-state-unknown:${role}`);
     if (receipt !== ABSENT)
       demand(matchesObservation(config, role, observation), `worktree-state-drift:${role}`);
@@ -436,7 +440,8 @@ export async function setupStep(
         await adapter.createWorktree(config, role);
       } catch {}
       observation = await adapter.observeWorktree(config, role, true);
-      demand(observation.state !== "collision", `worktree-collision:${role}`);
+      if (observation.state === "collision")
+        throw new SetupBlocked(`worktree-collision:${role}`, observation.collisionPath);
       demand(observation.state !== "unknown", `worktree-state-unknown:${role}`);
       if (observation.state === "absent")
         return result(config, "incomplete", "worktrees", "worktree-unconfirmed");

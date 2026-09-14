@@ -306,6 +306,19 @@ it("completes the authorized normal path once with intent-backed mutations", asy
   expect(f.calls.indexOf("draft:332")).toBeLessThan(f.calls.indexOf("gate:planning:board-check"));
 });
 
+it("delivers and resumes a separate local branch while retaining the published identity", async () => {
+  const f = await fixture();
+  f.config.localBranch = "codex/run-fresh/iss-074-attempt-1";
+  f.plan.cleanup.branch = f.config.localBranch;
+  f.publication.planDigest = digest(f.plan);
+  const result = await deliveryStep(f.config, f.adapter, f.policy);
+  expect(result).toMatchObject({ status: "complete", cleanup: { branch: f.config.localBranch } });
+  expect(f.state.publication?.sourceBranch).toBe("codex/fixture");
+  expect(await deliveryStep(f.config, f.adapter, f.policy)).toEqual(result);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "cleanup")).toHaveLength(1);
+});
+
 it("resumes completed delivery after deleted candidate worktrees without consulting source or policy", async () => {
   const f = await fixture();
   await deliveryStep(f.config, f.adapter, f.policy);

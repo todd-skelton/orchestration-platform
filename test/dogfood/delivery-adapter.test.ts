@@ -740,7 +740,102 @@ it("refuses to edit a draft that appeared after an absence observation", async (
   expect(effects).toEqual([]);
 });
 
-it.each([false, true])(
+it("publishes a run branch under the existing PR branch name and cleans up only its own worktrees", async () => {
+  const { current, git } = await localRemoteRepositoryFixture();
+  const priorHead = current.candidateHead;
+  current.localBranch = "codex/run-fresh/iss-074-attempt-1";
+  await git(["checkout", "-b", current.localBranch], current.worktree);
+  const preserved = resolve(current.worktree, "..", "preserved-source");
+  await git(["worktree", "add", preserved, "codex/iss-074-delivery"]);
+  await writeFile(resolve(preserved, "unfinished.txt"), "preserved\n");
+  await git(["push", "origin", "--delete", "codex/iss-074-delivery"]);
+  const candidate = await commitCandidate(current, git);
+  const publication = publicationEvidence(current);
+  const plan = {
+    sourceBranch: publication.sourceBranch,
+    baseBranch: publication.baseBranch,
+    title: publication.title,
+    body: publication.body,
+    draft: true as const,
+  };
+  const effects: string[][] = [];
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson() {
+      return [];
+    },
+  });
+  await expect(adapter.observePublication(current, plan, publication.planDigest)).resolves.toEqual({
+    state: "needs-mutation",
+    target: "absent",
+  });
+  await adapter.publish(current, plan, "absent");
+  expect(effects[0]).toContain("create");
+  expect(effects[0]).toContain(publication.sourceBranch);
+  expect(effects[0]).not.toContain(current.localBranch);
+  expect(
+    await git(["ls-remote", "--heads", "origin", `refs/heads/${publication.sourceBranch}`]),
+  ).toContain(candidate);
+  expect(await git(["ls-remote", "--heads", "origin", `refs/heads/${current.localBranch}`])).toBe(
+    "",
+  );
+  const cleanup = {
+    worktrees: [current.worktree, current.reviewWorktree],
+    branch: current.localBranch,
+  };
+  const merge = { head: candidate, number: 44, mergeCommit: "d".repeat(40) };
+  await adapter.cleanup(current, cleanup, merge);
+  await expect(adapter.observeCleanup(current, cleanup, merge)).resolves.toEqual({
+    state: "confirmed",
+    value: cleanup,
+  });
+  expect(await git(["rev-parse", "HEAD"], preserved)).toBe(priorHead);
+  expect(await readFile(resolve(preserved, "unfinished.txt"), "utf8")).toBe("preserved\n");
+  expect(
+    await git(["ls-remote", "--heads", "origin", `refs/heads/${publication.sourceBranch}`]),
+  ).toContain(candidate);
+}, 30_000);
+
+it("keeps a published head collision blocked and identifies its preserved worktree", async () => {
+  const { current, git } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const priorHead = current.candidateHead;
+  current.localBranch = "codex/run-fresh/iss-074-attempt-1";
+  await git(["checkout", "-b", current.localBranch], current.worktree);
+  const preserved = resolve(current.worktree, "..", "preserved-source");
+  await git(["worktree", "add", preserved, "codex/iss-074-delivery"]);
+  await commitCandidate(current, git);
+  const publication = publicationEvidence(current);
+  const plan = {
+    sourceBranch: publication.sourceBranch,
+    baseBranch: publication.baseBranch,
+    title: publication.title,
+    body: publication.body,
+    draft: true as const,
+  };
+  const effects: string[][] = [];
+  const adapter = githubDeliveryAdapter({
+    async gh(_config, args) {
+      effects.push(args);
+      return "";
+    },
+    async ghJson() {
+      return [publicationRow(publication, { headRefOid: priorHead })];
+    },
+  });
+  await expect(
+    adapter.observePublication(current, plan, publication.planDigest),
+  ).rejects.toMatchObject({ reason: "publication-state-unknown", diagnostics: preserved });
+  await expect(adapter.publish(current, plan, "pr:44")).rejects.toThrow("publication-target-drift");
+  expect(effects).toEqual([]);
+  expect(await git(["rev-parse", "HEAD"], preserved)).toBe(priorHead);
+});
+
+it.each([false, true, "run-scoped"])(
   "refreshes one exact existing draft forward (preserved prior branch: %s)",
   async (preservePrior) => {
     const { current, git } = await localRemoteRepositoryFixture();
@@ -756,8 +851,9 @@ it.each([false, true])(
       number: 44,
       url: `https://github.com/${current.repository}/pull/44`,
       head: priorHead,
-      ...(preservePrior ? { localBranch } : {}),
+      ...(preservePrior === true ? { localBranch } : {}),
     };
+    if (preservePrior === "run-scoped") current.localBranch = localBranch;
     const publication = publicationEvidence(current);
     const plan = {
       sourceBranch: publication.sourceBranch,

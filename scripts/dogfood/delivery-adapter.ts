@@ -626,12 +626,23 @@ export function githubDeliveryAdapter(
           rows[0]?.state !== "OPEN" ||
           rows[0]?.isDraft !== true ||
           (target !== undefined && target !== "absent" && target !== `pr:${rows[0].number}`)
-        )
+        ) {
+          // ISS-151: retain the publication stop and identify its preserved local holder.
+          if (config.localBranch) {
+            const holder = (await worktrees(gitExecutable, config)).find(
+              (row) => row.branch === `refs/heads/${plan.sourceBranch}`,
+            );
+            if (holder?.path)
+              throw new DeliveryBlocked("publication-state-unknown", resolve(holder.path));
+          }
           return { state: "unknown" };
+        }
         if (value) return { state: "confirmed", value };
         if (target === "absent") return { state: "unknown" };
         return { state: "needs-mutation", target: `pr:${rows[0].number}` };
-      } catch {
+      } catch (error) {
+        if (error instanceof DeliveryBlocked && error.reason === "publication-state-unknown")
+          throw error;
         return { state: "unknown" };
       }
     },
@@ -646,7 +657,7 @@ export function githubDeliveryAdapter(
         ["branch", "--show-current"],
         config.worktree,
       );
-      if (branch !== (refresh?.localBranch ?? plan.sourceBranch))
+      if (branch !== (config.localBranch ?? refresh?.localBranch ?? plan.sourceBranch))
         throw new DeliveryBlocked("publication-branch-mismatch");
       const readTarget = async (expectedHead?: string) => {
         const rows = await commands.ghJson(config, [

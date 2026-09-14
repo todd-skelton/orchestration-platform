@@ -94,6 +94,7 @@ export interface QueueItem {
     reviewer: SourceConfig["reviewer"];
   };
   delivery: {
+    localBranch?: string;
     requiredChecks: string[];
     policy: DeliveryConfig["policy"];
     refresh?: PublicationRefresh;
@@ -705,12 +706,20 @@ export async function queueConfigFromLoop(
     ),
   );
   const controller = `loop:${config.run}`;
-  const sourceBranch = await repositoryAdapter.branchName({
+  const publishedBranch = await repositoryAdapter.branchName({
     key: selected.key,
     number: selected.number,
     title: issueContext.title,
     attempt: sourceAttempt,
   });
+  // ISS-151: preserve saved setup names, including attempts created before run scoping.
+  const savedSetup = await optionalRecord(paths.setup, "setup-plan");
+  const sourceBranch =
+    savedSetup !== ABSENT
+      ? savedSetup.sourceBranch
+      : replan
+        ? publishedBranch
+        : `codex/run-${createHash("sha256").update(config.run).digest("hex")}/${slug}`;
   const [hostedChecks, localGates] = await Promise.all([
     repositoryAdapter.requiredChecks({ repository: config.repository }),
     repositoryAdapter.localGates
@@ -779,6 +788,7 @@ export async function queueConfigFromLoop(
       reviewer: { ...reviewer, prompt: reviewerPrompt },
     },
     delivery: {
+      ...(sourceBranch !== publishedBranch && !replan ? { localBranch: sourceBranch } : {}),
       ...(replan
         ? {
             refresh: {
@@ -794,7 +804,7 @@ export async function queueConfigFromLoop(
         key: selected.key,
         number: selected.number,
         title: issueContext.title,
-        sourceBranch: replan?.publication.sourceBranch ?? sourceBranch,
+        sourceBranch: replan?.publication.sourceBranch ?? publishedBranch,
       },
     },
   };
@@ -2109,6 +2119,7 @@ export function repositoryQueueAdapter(
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(
           error instanceof SetupBlocked ? error.reason : "setup-state-unknown",
+          error instanceof SetupBlocked ? error.diagnostics : undefined,
         );
       }
     },
@@ -2288,6 +2299,7 @@ export function repositoryQueueAdapter(
         stateDirectory: accepted.stateDirectory,
         candidateHead: accepted.head,
         retries: accepted.retries ?? 0,
+        ...(item.delivery.localBranch ? { localBranch: item.delivery.localBranch } : {}),
         ...(item.delivery.refresh ? { refresh: item.delivery.refresh } : {}),
         requiredChecks: item.delivery.requiredChecks,
         policy: item.delivery.policy,
