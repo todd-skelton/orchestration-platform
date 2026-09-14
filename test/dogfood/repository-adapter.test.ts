@@ -28,116 +28,137 @@ const config: DeliveryConfig = {
   policy: { key: "ISS-001" },
 };
 
-it("composes every fake repository decision without a planning mirror", async () => {
-  const calls: string[] = [];
-  const fake: RepositoryAdapter = {
-    selectCandidates: () => {
-      calls.push("selectCandidates");
-      return [{ key: "ISS-001", number: 1 }];
-    },
-    issueContext: () => {
-      calls.push("issueContext");
-      return {
-        title: "fixture",
-        body: "fixture body",
-        acceptanceCriteria: ["fixture criterion"],
-        rules: "fixture rules",
-      };
-    },
-    branchName: () => {
-      calls.push("branchName");
-      return "topic/iss-001";
-    },
-    pullRequest: () => {
-      calls.push("pullRequest");
-      return {
+it.each([false, true])(
+  "composes repository decisions (separate refresh branch: %s)",
+  async (refresh) => {
+    const current = refresh
+      ? {
+          ...config,
+          refresh: {
+            number: 1,
+            url: "https://example.test/pull/1",
+            head: "a".repeat(40),
+            localBranch: "topic/correction",
+          },
+        }
+      : config;
+    const calls: string[] = [];
+    const fake: RepositoryAdapter = {
+      selectCandidates: () => {
+        calls.push("selectCandidates");
+        return [{ key: "ISS-001", number: 1 }];
+      },
+      issueContext: () => {
+        calls.push("issueContext");
+        return {
+          title: "fixture",
+          body: "fixture body",
+          acceptanceCriteria: ["fixture criterion"],
+          rules: "fixture rules",
+        };
+      },
+      branchName: () => {
+        calls.push("branchName");
+        return "topic/iss-001";
+      },
+      pullRequest: () => {
+        calls.push("pullRequest");
+        return {
+          sourceBranch: "topic/iss-001",
+          baseBranch: "trunk",
+          title: "fixture title",
+          body: "fixture body",
+          draft: true,
+        };
+      },
+      requiredChecks: () => {
+        calls.push("requiredChecks");
+        return ["linux", "windows", "macos"];
+      },
+      localGates: () => {
+        calls.push("localGates");
+        return ["typecheck"];
+      },
+      park: () => {
+        calls.push("park");
+        return "unpark fixture";
+      },
+      mergeMethod: () => {
+        calls.push("mergeMethod");
+        return { method: "fixture" };
+      },
+      afterMerge: () => {
+        calls.push("afterMerge");
+      },
+    };
+
+    expect(await fake.selectCandidates({ repository, executorRoot: "/fixture" })).toEqual([
+      { key: "ISS-001", number: 1 },
+    ]);
+    expect(
+      await fake.issueContext({
+        repository,
+        key: "fixture-1",
+        number: 1,
+        executorRoot: "/fixture",
+      }),
+    ).toEqual({
+      title: "fixture",
+      body: "fixture body",
+      acceptanceCriteria: ["fixture criterion"],
+      rules: "fixture rules",
+    });
+    expect(await fake.branchName({ key: "ISS-001", number: 1, title: "fixture", attempt: 1 })).toBe(
+      "topic/iss-001",
+    );
+    expect(await fake.requiredChecks({ repository })).toEqual(["linux", "windows", "macos"]);
+    expect(await fake.park({ repository, number: 1, reason: "fixture-stop" })).toBe(
+      "unpark fixture",
+    );
+    await expect(repositoryDeliveryPolicy(fake, "/fixture/git").plan(current)).resolves.toEqual({
+      gates: { beforeMirror: ["typecheck"], afterMirror: [] },
+      drafts: [],
+      publication: {
         sourceBranch: "topic/iss-001",
         baseBranch: "trunk",
         title: "fixture title",
         body: "fixture body",
         draft: true,
-      };
-    },
-    requiredChecks: () => {
-      calls.push("requiredChecks");
-      return ["linux", "windows", "macos"];
-    },
-    localGates: () => {
-      calls.push("localGates");
-      return ["typecheck"];
-    },
-    park: () => {
-      calls.push("park");
-      return "unpark fixture";
-    },
-    mergeMethod: () => {
-      calls.push("mergeMethod");
-      return { method: "fixture" };
-    },
-    afterMerge: () => {
-      calls.push("afterMerge");
-    },
-  };
-
-  expect(await fake.selectCandidates({ repository, executorRoot: "/fixture" })).toEqual([
-    { key: "ISS-001", number: 1 },
-  ]);
-  expect(
-    await fake.issueContext({ repository, key: "fixture-1", number: 1, executorRoot: "/fixture" }),
-  ).toEqual({
-    title: "fixture",
-    body: "fixture body",
-    acceptanceCriteria: ["fixture criterion"],
-    rules: "fixture rules",
-  });
-  expect(await fake.branchName({ key: "ISS-001", number: 1, title: "fixture", attempt: 1 })).toBe(
-    "topic/iss-001",
-  );
-  expect(await fake.requiredChecks({ repository })).toEqual(["linux", "windows", "macos"]);
-  expect(await fake.park({ repository, number: 1, reason: "fixture-stop" })).toBe("unpark fixture");
-  await expect(repositoryDeliveryPolicy(fake, "/fixture/git").plan(config)).resolves.toEqual({
-    gates: { beforeMirror: ["typecheck"], afterMirror: [] },
-    drafts: [],
-    publication: {
-      sourceBranch: "topic/iss-001",
-      baseBranch: "trunk",
-      title: "fixture title",
-      body: "fixture body",
-      draft: true,
-    },
-    mergePolicy: { method: "fixture" },
-    cleanup: {
-      worktrees: [config.worktree, config.reviewWorktree],
-      branch: "topic/iss-001",
-    },
-  });
-  await fake.afterMerge({
-    config,
-    delivery: {
-      status: "complete",
-      run: config.run,
-      issue: config.issue,
-      head: config.candidateHead,
-      reviewId: "reviewer",
-      publication: { number: 1, url: "https://example.test/pull/1" },
-      checks: [],
-      mergeCommit: "c".repeat(40),
-      cleanup: { status: "confirmed", branch: "topic/iss-001" },
-      retries: 0,
-    },
-  });
-  expect(calls).toEqual([
-    "selectCandidates",
-    "issueContext",
-    "branchName",
-    "requiredChecks",
-    "park",
-    "pullRequest",
-    "mergeMethod",
-    "localGates",
-    "afterMerge",
-  ]);
-});
+      },
+      mergePolicy: { method: "fixture" },
+      cleanup: {
+        worktrees: [config.worktree, config.reviewWorktree],
+        branch: refresh ? "topic/correction" : "topic/iss-001",
+      },
+    });
+    await fake.afterMerge({
+      config,
+      delivery: {
+        status: "complete",
+        run: config.run,
+        issue: config.issue,
+        head: config.candidateHead,
+        reviewId: "reviewer",
+        publication: { number: 1, url: "https://example.test/pull/1" },
+        checks: [],
+        mergeCommit: "c".repeat(40),
+        cleanup: { status: "confirmed", branch: "topic/iss-001" },
+        retries: 0,
+      },
+    });
+    expect(calls).toEqual([
+      "selectCandidates",
+      "issueContext",
+      "branchName",
+      "requiredChecks",
+      "park",
+      "pullRequest",
+      "mergeMethod",
+      "localGates",
+      "afterMerge",
+    ]);
+  },
+);
 
 it("loads the named self adapter with the complete repository seam", async () => {
   const loaded = await loadRepositoryAdapter("self", resolve(import.meta.dirname, "../.."));

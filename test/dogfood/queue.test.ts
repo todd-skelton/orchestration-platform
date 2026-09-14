@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
+  ACCEPTED_REPLAN,
   currentCandidateAttempt,
   queueConfigFromLoop,
   repositoryQueueAdapter,
@@ -26,6 +27,7 @@ import * as selfAdapter from "../../adapters/self.mjs";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
+import { nextCycle, persistCycle } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
 const repositoryPolicy: RepositoryAdapter = {
@@ -261,6 +263,331 @@ async function loopFixture(withRuntime = false) {
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+async function acceptedReplanFixture() {
+  const f = await loopFixture();
+  const git = async (args: string[]) =>
+    (await execute(f.gitExecutable, ["-C", f.repository, ...args])).stdout.trim();
+  await git(["checkout", "-b", "codex/7766-jpeg-g4"]);
+  await writeFile(resolve(f.repository, "jpeg.txt"), "preserved JPEG implementation\n");
+  await git(["add", "."]);
+  await git(["commit", "-m", "rejected candidate"]);
+  const head = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "main"]);
+  const loop: LoopConfig = {
+    ...f.loop,
+    run: ACCEPTED_REPLAN.run,
+    adapter: "chase-sets",
+    repository: "chase-sets/chase-sets",
+    targetMilestone: 158,
+    acceptedReplan: ACCEPTED_REPLAN.id,
+    nativeLaunchCeiling: 16,
+  };
+  const selected = { ...f.selected, key: "cs-7766", number: 7766 };
+  const policy: RepositoryAdapter = {
+    ...repositoryPolicy,
+    issueContext: () => ({
+      title: "JPEG",
+      body: "Repair JPEG",
+      acceptanceCriteria: ["JPEG"],
+      rules: "Keep scope",
+    }),
+    branchName: ({ attempt }) => `codex/7766-jpeg-g${attempt}`,
+    requiredChecks: () => ["PR Required"],
+  };
+  const history = [
+    participant(1, "cs-7766:1", "source", "author", "passed"),
+    participant(2, "cs-7766:1", "source", "reviewer", "failed"),
+    participant(3, "cs-7766:1", "repair", "author", "passed"),
+    participant(4, "cs-7766:1", "repair", "reviewer", "failed"),
+    participant(5, "cs-7766:3", "source", "author", "passed"),
+    participant(6, "cs-7766:3", "source", "reviewer", "passed"),
+    { ...participant(7, "cs-7766:4", "source", "author", "dead"), id: "dead-author" },
+    participant(8, "cs-7766:4", "source", "author", "passed"),
+    participant(9, "cs-7766:4", "source", "reviewer", "passed"),
+  ];
+  const priorDirectory = resolve(loop.stateRoot, ACCEPTED_REPLAN.priorRun, "cs-7766-attempt-4");
+  const priorSource = resolve(priorDirectory, "source");
+  await mkdir(priorSource, { recursive: true });
+  const prior = {
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "failed",
+    run: ACCEPTED_REPLAN.priorRun,
+    index: 0,
+    item: "cs-7766:4",
+    issue: "https://github.com/chase-sets/chase-sets/issues/7766",
+    base: selected.base,
+    candidateAttempt: 4,
+    head,
+    reviewId: history[8]!.id,
+    findings: [
+      { file: "PR Required", line: 1, severity: "blocking", text: "route-collision inventory" },
+    ],
+    history,
+    retries: 1,
+    acceptedStage: null,
+    stateDirectory: null,
+  };
+  const publication = {
+    number: 8005,
+    url: "https://github.com/chase-sets/chase-sets/pull/8005",
+    head,
+    repository: loop.repository,
+    sourceBranch: "codex/7766-jpeg-g4",
+  };
+  const preserved = new Map<string, string>([
+    [resolve(priorDirectory, "attempt.json"), JSON.stringify(prior)],
+    [resolve(priorSource, "publication.json"), JSON.stringify(publication)],
+    [resolve(priorSource, "config.json"), JSON.stringify({ config: { mainBase: selected.base } })],
+    [
+      resolve(priorSource, "hosted-failure.log"),
+      "Original failed run: route-collision inventory\n",
+    ],
+  ]);
+  // The fresh run already stopped in setup, while old attempt-1 worktrees exist.
+  const freshAttempt = resolve(loop.stateRoot, loop.run, "cs-7766-attempt-1", "attempt.json");
+  await mkdir(resolve(freshAttempt, ".."), { recursive: true });
+  preserved.set(
+    freshAttempt,
+    JSON.stringify({
+      ...prior,
+      phase: "setup",
+      run: loop.run,
+      candidateAttempt: 1,
+      head: selected.base,
+      history: [],
+      findings: [],
+    }),
+  );
+  for (const [path, value] of preserved) await writeFile(path, value);
+  for (const role of ["pilot", "source", "review"]) {
+    const path = resolve(loop.worktreeRoot, `cs-7766-attempt-1-${role}`);
+    await git(["worktree", "add", "--detach", path, selected.base]);
+  }
+  const oldSource = resolve(loop.worktreeRoot, "cs-7766-attempt-4-source");
+  await git(["worktree", "add", oldSource, publication.sourceBranch]);
+  const compose = (config = loop) => queueConfigFromLoop(config, f.repository, selected, policy);
+  const setup = gitSetupAdapter({
+    gitExecutable: f.gitExecutable,
+    async install(_launcher, _args, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+      return "succeeded";
+    },
+  });
+  return { ...f, loop, selected, head, history, preserved, oldSource, git, compose, setup };
+}
+
+it("admits only the accepted replan beside preserved workspaces and refuses renewal by run name", async () => {
+  const f = await acceptedReplanFixture();
+  const { acceptedReplan: _accepted, ...absent } = f.loop;
+  await expect(f.compose(absent)).rejects.toThrow("accepted-replan-required");
+  await expect(f.compose({ ...f.loop, run: "another-fresh-run" })).rejects.toThrow(
+    "invalid-accepted-replan",
+  );
+  await expect(f.compose({ ...f.loop, targetMilestone: 155 })).rejects.toThrow(
+    "invalid-accepted-replan",
+  );
+  const queue = await f.compose();
+  validateQueueConfig(queue);
+  const item = queue.items[0]!;
+  expect(item).toMatchObject({
+    implementationAttempt: 5,
+    implementationAttemptCeiling: 5,
+    base: f.head,
+    source: { base: f.head, mainBase: f.selected.base },
+    delivery: {
+      refresh: { number: 8005, head: f.head, localBranch: "codex/7766-jpeg-g5" },
+      policy: { sourceBranch: "codex/7766-jpeg-g4" },
+    },
+  });
+  expect(queue.initialHistory).toEqual(f.history);
+  for (const actor of [item.source.author, item.source.reviewer]) {
+    expect(actor.prompt).toContain("route-collision inventory");
+    expect(actor.prompt).toContain("hosted-failure.log");
+    expect(actor.prompt).toContain("5665159522");
+    expect(actor.prompt).toContain("cs-7766-attempt-4");
+  }
+  await expect(setupStep(item.setup, f.setup, f.repository)).resolves.toMatchObject({
+    status: "ready",
+  });
+  expect(await f.compose()).toEqual(queue);
+  for (const [path, value] of f.preserved) expect(await readFile(path, "utf8")).toBe(value);
+  expect(await f.git(["rev-parse", "codex/7766-jpeg-g4"])).toBe(f.head);
+  expect(await readFile(resolve(item.source.worktree, "jpeg.txt"), "utf8")).toBe(
+    "preserved JPEG implementation\n",
+  );
+  expect(await f.git(["status", "--porcelain"])).toBe("");
+}, 30_000);
+
+it.each(["pilot", "source", "review", "branch"])(
+  "refuses an unrelated accepted-replan %s collision",
+  async (role) => {
+    const f = await acceptedReplanFixture();
+    const item = (await f.compose()).items[0]!;
+    if (role === "branch") await f.git(["branch", item.setup.sourceBranch, f.head]);
+    else {
+      const path =
+        role === "pilot"
+          ? item.setup.pilotWorktree
+          : role === "source"
+            ? item.source.worktree
+            : item.source.reviewWorktree;
+      await mkdir(path, { recursive: true });
+      await writeFile(resolve(path, "unrelated.txt"), "preserve me\n");
+    }
+    await expect(setupStep(item.setup, f.setup, f.repository)).rejects.toThrow(
+      `worktree-collision:${role === "branch" ? "source" : role}`,
+    );
+    for (const [path, value] of f.preserved) expect(await readFile(path, "utf8")).toBe(value);
+  },
+  30_000,
+);
+
+it("stops accepted correction before setup when its original failed log is unavailable", async () => {
+  const f = await acceptedReplanFixture();
+  const evidence = [...f.preserved.keys()].find((path) => path.endsWith("hosted-failure.log"))!;
+  await rm(evidence);
+  await expect(f.compose()).rejects.toThrow("hosted-failure-evidence-unavailable");
+  await expect(
+    readFile(resolve(f.loop.stateRoot, f.loop.run, ACCEPTED_REPLAN.slug, "attempt.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  const { acceptedReplan: _accepted, ...absent } = f.loop;
+  await expect(
+    f.compose({ ...absent, stateRoot: resolve(f.loop.stateRoot, "new-state") }),
+  ).rejects.toThrow("accepted-replan-required");
+}, 30_000);
+
+it.each([false, true])(
+  "retains accepted lineage on external closure (current participants: %s)",
+  async (launched) => {
+    const f = await acceptedReplanFixture();
+    const cycle = { selection: { ...f.selected, cycle: 1 }, initialHistory: [] };
+    await persistCycle(f.loop, cycle);
+    const queue = await f.compose();
+    const history = launched
+      ? [
+          ...f.history,
+          participant(10, queue.items[0]!.id, "source", "author", "passed"),
+          participant(11, queue.items[0]!.id, "source", "reviewer", "failed"),
+        ]
+      : f.history;
+    if (launched)
+      for (const value of history)
+        await writeFile(
+          resolve(queue.stateDirectory, `participant-${value.ordinal}-terminal.json`),
+          JSON.stringify(value),
+        );
+    const adapter = {
+      async issue() {
+        return { number: 7766, key: "cs-7766", state: "CLOSED" as const, labels: [], comments: [] };
+      },
+      async currentMain(): Promise<string> {
+        throw new Error("No successor");
+      },
+      async removeReady() {
+        throw new Error("Already closed");
+      },
+      async close() {
+        throw new Error("Already closed");
+      },
+      async comment() {
+        throw new Error("No stop");
+      },
+    };
+    const policy = { ...repositoryPolicy, selectCandidates: () => [] };
+    await expect(nextCycle(f.loop, f.repository, adapter, policy)).resolves.toBeUndefined();
+    await expect(nextCycle(f.loop, f.repository, adapter, policy)).resolves.toBeUndefined();
+    const completed = JSON.parse(
+      await readFile(resolve(f.loop.stateRoot, f.loop.run, "cycle-1-complete.json"), "utf8"),
+    );
+    expect(completed.history).toEqual(history);
+    for (const [path, value] of f.preserved) expect(await readFile(path, "utf8")).toBe(value);
+  },
+  30_000,
+);
+
+it.each(["review-failure", "hosted-failure", "complete"])(
+  "consumes one accepted correction through %s and restart",
+  async (outcome) => {
+    const f = await acceptedReplanFixture();
+    const queue = await f.compose();
+    const history = structuredClone(f.history);
+    const calls: string[] = [];
+    let observing = true;
+    const findings = [
+      { file: "jpeg.txt", line: 1, severity: "blocking" as const, text: "Fix route inventory" },
+    ];
+    const adapter: QueueAdapter = {
+      async assertExecutor() {},
+      async history() {
+        return history;
+      },
+      async setup() {
+        calls.push("setup");
+        return { status: "ready" };
+      },
+      async source(item) {
+        if (observing) return { status: "observing-author" };
+        calls.push("current-author-and-review");
+        history.push(
+          participant(10, item.id, "source", "author", "passed"),
+          participant(
+            11,
+            item.id,
+            "source",
+            "reviewer",
+            outcome === "review-failure" ? "failed" : "passed",
+          ),
+        );
+        return outcome === "review-failure"
+          ? { status: "fixable-review", head: "b".repeat(40), reviewId: history[10]!.id, findings }
+          : {
+              status: "accepted",
+              head: "b".repeat(40),
+              reviewId: history[10]!.id,
+              stateDirectory: item.source.stateDirectory,
+            };
+      },
+      async repair() {
+        throw new Error("No second correction authorized");
+      },
+      async delivery(item, accepted) {
+        calls.push("current-delivery");
+        return outcome === "hosted-failure"
+          ? { status: "failed", head: accepted.head, reviewId: accepted.reviewId, findings }
+          : deliveryCompletion(
+              item,
+              accepted.head,
+              accepted.reviewId,
+              8005,
+              item.setup.sourceBranch,
+            );
+      },
+    };
+    await expect(queueStep(queue, adapter)).resolves.toMatchObject({ status: "observing-author" });
+    expect(calls).toEqual(["setup"]);
+    observing = false;
+    const finish = async () => queueStep(await f.compose(), adapter);
+    if (outcome === "complete") {
+      await expect(finish()).resolves.toMatchObject({ status: "complete", participants: 11 });
+      await expect(finish()).resolves.toMatchObject({ status: "complete", participants: 11 });
+    } else {
+      await expect(finish()).rejects.toThrow("implementation-attempt-ceiling-exhausted");
+      await expect(finish()).rejects.toThrow("implementation-attempt-ceiling-exhausted");
+    }
+    expect(calls).toEqual([
+      "setup",
+      "current-author-and-review",
+      ...(outcome === "review-failure" ? [] : ["current-delivery"]),
+    ]);
+    const saved = JSON.parse(await readFile(resolve(queue.stateDirectory, "attempt.json"), "utf8"));
+    expect(saved.candidateAttempt).toBe(5);
+    expect(saved.history.slice(0, 9)).toEqual(f.history);
+    for (const [path, value] of f.preserved) expect(await readFile(path, "utf8")).toBe(value);
+  },
+  30_000,
+);
 
 it("validates an optional Chase Sets milestone number and keeps self runs unscoped", async () => {
   const { loop } = await loopFixture();
