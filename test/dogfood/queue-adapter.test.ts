@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -19,6 +21,7 @@ import type { RepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import {
   type QueueConfig,
   type QueueAdapter,
@@ -138,7 +141,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-it.each(["initial", "legacy retry", "failed fetch"])(
+it.each(["initial", "legacy retry", "failed fetch", "spent retry"])(
   "hands full hosted diagnostics to corrective workers on %s without rewriting historical prompts",
   async (mode) => {
     const current = await fixture([
@@ -207,11 +210,22 @@ it.each(["initial", "legacy retry", "failed fetch"])(
     });
     await writeFile(resolve(current.paths.source, "config.json"), configBytes);
     const oldTrace = resolve(current.paths.source, "interrupted-author.jsonl");
-    await writeFile(oldTrace, "actual prior execution trace\n");
+    const interruptedId = "01a09eec-d3a9-7e53-8b40-34d9e363dcdd";
+    const traceBytes = `${JSON.stringify({ type: "thread.started", thread_id: interruptedId })}\n${JSON.stringify({ type: "item.completed", item: { id: "item_46", type: "command_execution", command: "pnpm test", exit_code: 0 } })}\n`;
+    await writeFile(oldTrace, traceBytes);
+    const child = spawn(process.execPath, ["-e", ""], { windowsHide: true, stdio: "ignore" });
+    await once(child, "exit");
+    expect(() => process.kill(child.pid!, 0)).toThrow();
     if (mode !== "initial")
       await writeFile(
         resolve(current.paths.source, "author-attempt.json"),
-        JSON.stringify({ id: "interrupted-author", pid: 1, trace: oldTrace, launchedAt: 1 }),
+        JSON.stringify({
+          id: interruptedId,
+          pid: child.pid,
+          trace: oldTrace,
+          launchedAt: 1,
+          ...(mode === "spent retry" ? { retries: 1 } : {}),
+        }),
       );
     const patch =
       "diff --git a/fixture.ts b/fixture.ts\n--- a/fixture.ts\n+++ b/fixture.ts\n@@ -1 +1 @@\n-process.cwd()\n+import.meta.url\n";
@@ -241,6 +255,15 @@ it.each(["initial", "legacy retry", "failed fetch"])(
               ? ""
               : `${current.source.allowedPaths[0]}\0`;
         if (args[0] === "reset") {
+          expect(await readFile(resolve(previousSource, "hosted-failure.log"), "utf8")).toContain(
+            "actual underlying diagnostic",
+          );
+          expect(
+            await readFile(
+              resolve(current.paths.source, `author-retry-${interruptedId}.patch`),
+              "utf8",
+            ),
+          ).toBe(`${patch}\n`);
           mutations.push("reset");
           dirty = false;
           return "";
@@ -270,16 +293,13 @@ it.each(["initial", "legacy retry", "failed fetch"])(
         };
       },
       async observe(role, _config, attempt) {
+        if (attempt.id === interruptedId)
+          return codexAdapter("git", () => 60_000).observe(role, _config, attempt);
         return {
           id: attempt.id,
-          status:
-            attempt.id === "interrupted-author"
-              ? "dead"
-              : role === "author" && authorDone
-                ? "passed"
-                : "running",
+          status: role === "author" && authorDone ? "passed" : "running",
           head: role === "author" ? base : candidate,
-          summary: attempt.id === "interrupted-author" ? "stopped before terminal" : "",
+          summary: "",
         };
       },
       async checks() {
@@ -309,6 +329,17 @@ it.each(["initial", "legacy retry", "failed fetch"])(
     } as DeliveryAdapter;
     const adapter = () =>
       repositoryQueueAdapter(current.config, current.paths.controller, { native, delivery });
+    if (mode === "spent retry") {
+      await expect(adapter().source(current.item)).rejects.toMatchObject({
+        reason: "launcher-failed",
+        retries: 1,
+      });
+      expect(fetches).toBe(0);
+      expect(prompts).toEqual([]);
+      expect(mutations).toEqual([]);
+      expect(current.item.implementationAttempt).toBe(4);
+      return;
+    }
     if (mode === "failed fetch") {
       await expect(adapter().source(current.item)).rejects.toMatchObject({
         reason: "hosted-failure-evidence-unavailable",
@@ -339,7 +370,7 @@ it.each(["initial", "legacy retry", "failed fetch"])(
       expect(prompts[0]!.prompt).toContain("author-retry-discard.json");
       expect(
         await readFile(
-          resolve(current.paths.source, "author-retry-interrupted-author.patch"),
+          resolve(current.paths.source, `author-retry-${interruptedId}.patch`),
           "utf8",
         ),
       ).toBe(`${patch}\n`);
@@ -360,7 +391,10 @@ it.each(["initial", "legacy retry", "failed fetch"])(
     expect(evidence.match(/Static Checks: actual underlying diagnostic/g)).toHaveLength(1);
     expect(await readFile(resolve(previous, "attempt.json"), "utf8")).toBe(priorBytes);
     expect(await readFile(resolve(current.paths.source, "config.json"), "utf8")).toBe(configBytes);
-    expect(await readFile(oldTrace, "utf8")).toBe("actual prior execution trace\n");
+    expect(await readFile(oldTrace, "utf8")).toBe(traceBytes);
+    await expect(
+      readFile(resolve(current.paths.source, "interrupted-author.exit.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     expect(current.item.implementationAttempt).toBe(4);
   },
 );

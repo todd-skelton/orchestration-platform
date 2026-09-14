@@ -447,6 +447,18 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
           if ((error as NodeJS.ErrnoException).code === "ESRCH") {
             if (now() - attempt.launchedAt < EXIT_RECEIPT_WINDOW_MS)
               return { id: attempt.id, status: "running" };
+            // ISS-141: the stopped host left a known author without a receipt or terminal turn.
+            if (
+              role === "author" &&
+              !events(trace, false).some((row) =>
+                ["turn.completed", "turn.failed"].includes(row.type),
+              )
+            )
+              return {
+                id: attempt.id,
+                status: "dead",
+                summary: "Author process exited without an exit receipt or terminal turn.",
+              };
             throw new QueueBlocked("exit-receipt-timeout");
           }
           throw error;

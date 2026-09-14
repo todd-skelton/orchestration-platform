@@ -81,7 +81,11 @@ verdict nor a waiver, and all ordinary delivery gates remain mandatory.
 
 For the stopped `cs-7766-attempt-4` author, the host preserves the runtime, trace
 and partial fixture-path edit, installs the reviewed stable executor, then
-restarts the same run with its existing records. The ordinary dead-worker retry
+restarts the same run with its existing records. For its receiptless author,
+the observer validates the trace identity and waits the existing receipt window.
+Only an absent PID with no terminal turn becomes `dead`; a still-live process,
+unknown process/trace identity or completed turn is not reclassified. No exit
+receipt or worker verdict is invented. The ordinary single dead-worker retry
 acquires missing logs from attempt 3's existing publication before dispatch or
 clean-base reset. Evidence is appended at launch, leaving the old findings and
 source config fingerprint unchanged. Failure to acquire it stops the host

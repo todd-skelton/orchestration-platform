@@ -647,7 +647,7 @@ it("treats a non-zero exit as dead when the trace ends with partial JSON", async
     providerFailure: true,
   });
 });
-it("observes a missing exit receipt for the module window before a typed stop", async () => {
+it("observes a missing exit receipt for the module window before a dead author retry", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-exit-wait-")));
   cleanup.push(root);
   let now = 1_000;
@@ -668,9 +668,88 @@ it("observes a missing exit receipt for the module window before a typed stop", 
       status: "running",
     });
     now = 31_000;
-    await expect(adapter.observe("author", current, attempt)).rejects.toThrow(
-      "exit-receipt-timeout",
-    );
+    await expect(adapter.observe("author", current, attempt)).resolves.toMatchObject({
+      id,
+      status: "dead",
+      summary: "Author process exited without an exit receipt or terminal turn.",
+    });
+  } finally {
+    kill.mockRestore();
+  }
+});
+it.each([
+  "live",
+  "unknown process",
+  "unknown thread",
+  "changed thread",
+  "completed turn",
+  "delayed receipt",
+])("does not turn a receiptless author into a dead retry for %s", async (mode) => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-receiptless-")));
+  cleanup.push(root);
+  const current = { ...config, stateDirectory: root };
+  const attempt = { id, pid: process.pid, trace: resolve(root, "author.jsonl"), launchedAt: 1_000 };
+  const authorRows = [
+    rows[0]!,
+    {
+      type: "item.completed",
+      item: {
+        type: "agent_message",
+        text: JSON.stringify({
+          run: current.run,
+          role: "author",
+          head,
+          verdict: "PASS",
+          summary: "",
+        }),
+      },
+    },
+    { type: "turn.completed" },
+  ];
+  await writeFile(
+    attempt.trace,
+    trace(
+      mode === "unknown thread"
+        ? []
+        : mode === "changed thread"
+          ? [{ type: "thread.started", thread_id: "01a048fe-90c8-7cb3-8da5-938c1f5cb5f1" }]
+          : mode === "completed turn" || mode === "delayed receipt"
+            ? authorRows
+            : [rows[0]!],
+    ),
+  );
+  const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+    if (mode === "live") return true;
+    throw Object.assign(new Error("process probe"), {
+      code: mode === "unknown process" ? "EPERM" : "ESRCH",
+    });
+  });
+  try {
+    let now = mode === "delayed receipt" ? 30_999 : 60_000;
+    const adapter = codexAdapter("git", () => now);
+    if (mode === "live" || mode === "delayed receipt") {
+      await expect(adapter.observe("author", current, attempt)).resolves.toMatchObject({
+        status: "running",
+      });
+      if (mode === "delayed receipt") {
+        await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 0 }));
+        now = 60_000;
+        await expect(adapter.observe("author", current, attempt)).resolves.toMatchObject({
+          status: "passed",
+          head,
+        });
+      }
+    } else {
+      await expect(adapter.observe("author", current, attempt)).rejects.toThrow(
+        mode === "unknown process"
+          ? "process probe"
+          : mode === "unknown thread"
+            ? "missing-or-ambiguous-thread-identity"
+            : mode === "changed thread"
+              ? "attempt-identity-changed"
+              : "exit-receipt-timeout",
+      );
+    }
   } finally {
     kill.mockRestore();
   }
