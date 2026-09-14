@@ -43,7 +43,8 @@ JSON object alone, with `JSON.stringify(verdict).length` at most
 `MAX_TERMINAL_SUMMARY_LENGTH` (2000) characters, including findings and G0.
 Extraction accepts the last complete top-level JSON object in the final agent
 message when prose precedes it, provided it is the only object and only
-whitespace follows. Trailing prose, multiple objects, missing objects and
+whitespace follows. Balanced non-JSON prefix fragments are ignored as a whole,
+including any nested JSON objects. Trailing prose, multiple objects, missing objects and
 invalid verdicts remain malformed; key, identity, head, enum and findings
 checks remain unchanged. An otherwise valid over-length verdict remains
 malformed with its measured length and cap in the terminal summary and the

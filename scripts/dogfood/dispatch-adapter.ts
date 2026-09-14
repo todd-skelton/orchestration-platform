@@ -248,6 +248,9 @@ function reviewerVerdict(message: string): unknown {
         try {
           object = JSON.parse(message.slice(start, end + 1));
         } catch {
+          // Ignore the entire balanced non-JSON fragment; its nested objects
+          // are not top-level verdict candidates.
+          start = end;
           break;
         }
         check(message.slice(end + 1).trim() === "", "malformed-worker-verdict");

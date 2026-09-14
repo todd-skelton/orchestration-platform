@@ -659,6 +659,7 @@ it.each([2000, 2001])("enforces the serialized review boundary at %i characters"
 });
 it.each([
   "I inspected call({ option: true })",
+  'I inspected call({ option: {"nested":true} })',
   "I inspected the opening { brace.",
   'I inspected { option: "a } brace" } and { another: true }.',
   'I inspected { an unfinished "quote.',
