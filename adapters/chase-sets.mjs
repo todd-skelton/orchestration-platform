@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
+import { parseRoutingMarker } from "../scripts/dogfood/routing.mjs";
 
 const EXPECTED_REPOSITORY = "chase-sets/chase-sets";
 const runFile = promisify(execFile);
@@ -169,7 +170,17 @@ function candidatesFromAuthority(snapshot) {
         }),
     )
     .sort((left, right) => priority(left) - priority(right) || left.number - right.number)
-    .map((issue) => ({ key: `cs-${issue.number}`, number: issue.number }));
+    .flatMap((issue) => {
+      try {
+        parseRoutingMarker(issue.body);
+        return [{ key: `cs-${issue.number}`, number: issue.number }];
+      } catch (error) {
+        process.stdout.write(
+          `${JSON.stringify({ status: "not-runnable", issue: issue.number, reason: error.reason })}\n`,
+        );
+        return [];
+      }
+    });
 }
 
 export async function selectCandidates({ repository, executorRoot, targetMilestone }) {
@@ -213,6 +224,7 @@ export async function issueContext({ repository, key, number, executorRoot, targ
       `Issue #${number} belongs to milestone ${row.milestone?.number ?? "none"}, outside target milestone ${targetMilestone}. Preserve the saved cycle and scope before restarting.`,
     );
   const heading = /^#{1,6}\s+Acceptance(?: Criteria)?\s*$/im.exec(row.body);
+  const routing = parseRoutingMarker(row.body);
   const section = heading
     ? row.body
         .slice(heading.index + heading[0].length)
@@ -234,6 +246,7 @@ export async function issueContext({ repository, key, number, executorRoot, targ
   const productRules = await readFile(resolve(executorRoot, "AGENTS.md"), "utf8");
   return {
     title: row.title,
+    routing,
     body: row.body,
     acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : [row.body],
     rules: `${LANE_RULES}\n\n${productRules.trimEnd()}\n\n${deliverySkill}`,

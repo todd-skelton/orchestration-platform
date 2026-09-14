@@ -139,6 +139,7 @@ export async function refreshDelivery(
   const head = active.head;
   const refreshed: DeliveryConfig = { ...delivery, stateDirectory: directory, candidateHead: head };
   if (!published && !publishing && !complete) {
+    const originalReviewer = await readOptional(resolve(origin, "reviewer-attempt.json"));
     const config: Config = {
       ...source,
       base: active.main,
@@ -146,6 +147,7 @@ export async function refreshDelivery(
       stateDirectory: directory,
       reviewer: {
         ...source.reviewer,
+        ...originalReviewer?.placement,
         prompt: `${source.reviewer.prompt}\nThis is an independent DELTA review of native current-main integration from ${active.previousHead} onto ${active.main}, producing ${head}. Inherit source review ${active.previousReview} and original records at ${origin}. Inspect the old and new implementation diffs, changed semantic hunks and their direct callers, and execution evidence. A clean rebase does not establish semantic equivalence. Preserve every acceptance criterion; missing evidence remains a finding. Do not restart a full source sweep.`,
       },
     };

@@ -323,6 +323,103 @@ it("posts one current-main learning note before selection persistence and keeps 
   expect(observation.labels).toContain("ready");
 });
 
+it("retains actual routing and refused primary/fallback launches in a learning note", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-routing-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const usage = {
+    inputTokens: { status: "unavailable" as const },
+    outputTokens: { status: "unavailable" as const },
+    costUsd: { status: "unavailable" as const },
+  };
+  cycle.initialHistory = [
+    {
+      ordinal: 1,
+      id: "author",
+      item: "ISS-105:1",
+      stage: "source",
+      role: "author",
+      outcome: "passed",
+      routing: { row: "self" },
+      placement: { model: "gpt-6-astra", effort: "high" },
+      usage,
+    },
+    {
+      ordinal: 2,
+      id: "primary",
+      item: "ISS-105:1",
+      stage: "source",
+      role: "reviewer",
+      outcome: "dead",
+      routing: { row: "self" },
+      placement: { model: "claude-opus-5", effort: "high" },
+      usage,
+    },
+    {
+      ordinal: 3,
+      id: "fallback",
+      item: "ISS-105:1",
+      stage: "source",
+      role: "reviewer",
+      outcome: "failed",
+      routing: { row: "self" },
+      placement: { model: "gpt-5.6-sol", effort: "high" },
+      usage,
+    },
+  ];
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: ["ready"],
+    comments: [],
+  };
+  await persistCycle(config, cycle);
+  await stopCycle(
+    config,
+    cycle,
+    "provider-model-refused",
+    1,
+    fakeAdapter(observation),
+    repositoryPolicy,
+  );
+  expect(observation.comments).toHaveLength(1);
+  for (const model of ["gpt-6-astra", "claude-opus-5", "gpt-5.6-sol"])
+    expect(observation.comments[0]).toContain(`"model":"${model}"`);
+  expect(observation.comments[0]).toContain('"row":"self"');
+  expect(observation.comments[0]).toContain('"outcome":"dead"');
+});
+
+it("includes the selected routing row in a setup stop before worker launches", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-routing-setup-"));
+  roots.push(root);
+  const config = { ...loop(root), adapter: "chase-sets", routingRows: [] };
+  const cycle = selected();
+  await persistCycle(config, cycle);
+  const directory = resolve(config.stateRoot, config.run, "iss-105-attempt-1");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    resolve(directory, "attempt.json"),
+    JSON.stringify({ routing: { row: 7, review: 11 } }),
+  );
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: "ISS-105",
+    labels: ["ready"],
+    comments: [],
+  };
+  await stopCycle(
+    config,
+    cycle,
+    "worktree-collision:source",
+    1,
+    fakeAdapter(observation),
+    repositoryPolicy,
+  );
+  expect(observation.comments[0]).toContain('Routing: {"row":7,"review":11}');
+  expect(observation.comments[0]).toContain("no recorded author or reviewer launches");
+});
+
 it("posts one learning note after an interrupted comment and parks an item stop", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-stop-"));
   roots.push(root);
@@ -524,6 +621,7 @@ it("exits an accepted corrective run on an item stop and asks Todd before furthe
     ...loop(root),
     run: ACCEPTED_REPLAN.run,
     adapter: "chase-sets",
+    routingRows: [],
     repository: "chase-sets/chase-sets",
     targetMilestone: 158,
     acceptedReplan: ACCEPTED_REPLAN.id,

@@ -484,6 +484,18 @@ it.skipIf(process.platform === "win32")(
       headers: { Authorization: "Bearer refreshed-key" },
       signal,
     });
+    request.mockResolvedValueOnce(Response.json({ data: [{ id: "claude-opus-5" }] }));
+    await expect(
+      probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+    ).resolves.toBeUndefined();
+    request.mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-5.6-sol" }] }));
+    await expect(
+      probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+    ).rejects.toMatchObject({ reason: "provider-model-refused" });
+    request.mockResolvedValueOnce(Response.json({ error: "temporary provider failure" }));
+    await expect(
+      probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
+    ).rejects.toThrow("malformed provider models response");
   },
 );
 it("retains exact reviewer reports and rejects oversized or obsolete output", () => {

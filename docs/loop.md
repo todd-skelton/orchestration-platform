@@ -266,6 +266,74 @@ order, waive hosted bootstrap or grant workers mutation authority.
 
 ## Planning
 
+ISS-149 implements Todd's routing ruling on #368: model placement comes from
+the adapter's planning row, before setup. For Chase Sets, the operator adds
+exactly one marker to the issue body when refining it:
+
+```html
+<!-- routing: {"version":1,"row":7,"review":11} -->
+```
+
+`row` selects the author placement and `review` explicitly selects review row
+11 or 12. The loop does not classify labels or issue text. Absent, duplicate,
+and malformed markers exclude an otherwise eligible issue with a
+`not-runnable` diagnostic (`routing-marker-absent`, `routing-marker-duplicate`,
+or `routing-marker-malformed`). Saved selections are checked again before
+setup. A valid marker without a configured matching pair stops with
+`routing-row-unconfigured`; it never falls through to the static pair.
+
+Set the loop config's `routingRows` to the array shipped in
+`adapters/chase-sets-routing.json`. Each entry has `row`, `review`, author
+`{model, effort}`, reviewer `{model, effort, fallback: {model, effort}}`, and
+repair `{model, effort}`. For example:
+
+```json
+{
+  "row": 7,
+  "review": 11,
+  "author": { "model": "gpt-6-astra", "effort": "high" },
+  "reviewer": {
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "fallback": { "model": "claude-opus-5", "effort": "high" }
+  },
+  "repair": { "model": "gpt-6-astra", "effort": "high" }
+}
+```
+
+The shipped author placements are Astra/high for rows 7, 14 and 15, Sol/high
+for rows 4 and 10, Terra/medium for row 2, and Sonnet/medium for row 3. Review
+11 is Sol/high with Opus/high fallback; review 12 is Opus/high with
+Sonnet/medium fallback. Repair repeats the author placement. Rows 4 and 10
+must use review 12; row 3 must use review 11. Other shipped author rows offer
+both choices. The omitted combinations would make the primary or fallback
+reviewer equal the author. Configuration rejects that overlap with either
+author or repair, and rejects Terra and Fable reviewers.
+
+The self adapter returns row `self`: Astra/high author and repair, Opus/high
+reviewer with Sol/high fallback. Existing static `author` and `reviewer`
+config fields remain accepted only as the self adapter's fallback when an
+adapter context has no routing row. Chase Sets requires `routingRows` and
+ignores any static pair. Workers still use the existing Codex launcher and
+account_pool provider; no Claude Code launcher is introduced.
+
+Reviewer fallback occurs only when the models probe omits the primary model
+or the launch reports an explicit model refusal before any worker items.
+An outage, unknown launch error, malformed report, dead worker after work,
+or PASS/FAIL verdict does not select a different model. A refused launch
+that created a worker remains charged in participant history; a probe refusal
+does not launch a worker. A running fallback and its ordinary retries retain
+the chosen placement on resume. There is only one fallback, and its refusal
+stops the host. Corrective authors and gate corrections use the repair
+placement; delta reviews use the selected reviewer policy.
+
+Queue attempts retain the routing row and participant history; worker attempts
+and participants retain exact model/effort placements and author/reviewer
+models (reviewer is null until launched). Learning notes include the row and
+actual launch placements and outcomes, including refused launches. Older
+records without placements remain unrecorded history. This adds row defaults,
+not incumbent quotas, reserves, spend accounting, or model classification.
+
 `planning/roadmap.json` registers milestones and issues. Each issue has a
 draft at `planning/drafts/<key>.md`:
 

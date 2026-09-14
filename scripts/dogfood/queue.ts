@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
 import {
   DeliveryBlocked,
@@ -65,6 +66,9 @@ export type QueueUsage = {
 };
 
 export interface QueueParticipant {
+  routing?: import("./routing.mjs").RoutingSelection;
+  models?: { author: string; reviewer: string | null };
+  placement?: import("./routing.mjs").ModelPlacement;
   ordinal: number;
   id: string;
   item: string;
@@ -117,8 +121,9 @@ export interface LoopConfig {
   stableExecutorRoot: string;
   stateRoot: string;
   worktreeRoot: string;
-  author: { model: string; effort: string };
-  reviewer: { model: string; effort: string };
+  author?: { model: string; effort: string };
+  reviewer?: { model: string; effort: string };
+  routingRows?: RoutingRow[];
   codexExecutable: string;
   gitExecutable: string;
   nativeLaunchCeiling: number;
@@ -239,8 +244,9 @@ export function validateLoopConfig(config: LoopConfig) {
       "stableExecutorRoot",
       "stateRoot",
       "worktreeRoot",
-      "author",
-      "reviewer",
+      ...(config.author === undefined ? [] : ["author"]),
+      ...(config.reviewer === undefined ? [] : ["reviewer"]),
+      ...(config.routingRows === undefined ? [] : ["routingRows"]),
       "codexExecutable",
       "gitExecutable",
       "nativeLaunchCeiling",
@@ -286,14 +292,33 @@ export function validateLoopConfig(config: LoopConfig) {
     "gitExecutable",
   ] as const)
     demand(typeof config[name] === "string" && isAbsolute(config[name]), `invalid-${name}`);
-  for (const role of ["author", "reviewer"] as const)
+  demand(config.adapter === "self" || Array.isArray(config.routingRows), "routing-table-required");
+  if (config.routingRows !== undefined) {
+    demand(Array.isArray(config.routingRows), "invalid-routing-table");
+    const keys = new Set();
+    for (const row of config.routingRows) {
+      validateRoutingRow(row);
+      demand(
+        (row.row === "self" || (Number.isSafeInteger(row.row) && Number(row.row) > 0)) &&
+          (row.row === "self" || [11, 12].includes(row.review!)),
+        "invalid-routing-row",
+      );
+      const key = `${row.row}:${row.review}`;
+      demand(!keys.has(key), "duplicate-routing-row");
+      keys.add(key);
+    }
+  }
+  for (const role of ["author", "reviewer"] as const) {
+    const placement = config[role];
+    if (placement === undefined) continue;
     demand(
-      exactKeys(config[role], ["model", "effort"]) &&
-        [config[role].model, config[role].effort].every(
+      exactKeys(placement, ["model", "effort"]) &&
+        [placement.model, placement.effort].every(
           (value) => typeof value === "string" && value.length > 0,
         ),
       `invalid-${role}`,
     );
+  }
   demand(
     Number.isSafeInteger(config.nativeLaunchCeiling) &&
       config.nativeLaunchCeiling > 0 &&
@@ -309,6 +334,7 @@ export function validateLoopConfig(config: LoopConfig) {
 }
 
 interface FailedAttemptReceipt {
+  routing?: import("./routing.mjs").RoutingSelection;
   schemaVersion: "dogfood-bounded-queue-attempt/v1";
   phase: "failed";
   run: string;
@@ -352,6 +378,7 @@ function validateFailedAttempt(
       "stateDirectory",
       ...(object(value) && Object.hasOwn(value, "rebasedBase") ? ["rebasedBase"] : []),
       ...(object(value) && Object.hasOwn(value, "rebasedMainBase") ? ["rebasedMainBase"] : []),
+      ...(object(value) && Object.hasOwn(value, "routing") ? ["routing"] : []),
     ]) &&
       value.schemaVersion === "dogfood-bounded-queue-attempt/v1" &&
       value.phase === "failed" &&
@@ -524,7 +551,13 @@ export async function queueConfigFromLoop(
   ]);
   demand(selectedBase === selected.base, "selected-base-unavailable");
   demand(
-    exactKeys(issueContext, ["title", "body", "acceptanceCriteria", "rules"]) &&
+    exactKeys(issueContext, [
+      "title",
+      "body",
+      "acceptanceCriteria",
+      "rules",
+      ...(issueContext.routing ? ["routing"] : []),
+    ]) &&
       typeof issueContext.title === "string" &&
       issueContext.title.length > 0 &&
       typeof issueContext.body === "string" &&
@@ -539,6 +572,14 @@ export async function queueConfigFromLoop(
     "malformed-issue-context",
   );
   const issueUrl = `https://github.com/${config.repository}/issues/${selected.number}`;
+  const routing = resolveRouting(config.adapter, issueContext.routing, config.routingRows);
+  const author = routing?.author ?? config.author;
+  const reviewer = routing?.reviewer ?? config.reviewer;
+  demand(author && reviewer, "routing-row-unconfigured");
+  demand(
+    author.model !== reviewer.model && !/fable|terra/i.test(reviewer.model),
+    "routing-reviewer-not-independent",
+  );
   const promptContext = `Repository loop rules:\n\n${issueContext.rules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${issueContext.body.trim()}`;
   const baseSourcePrompt = `Implement the selected issue completely and stay within its scope.\n\n${promptContext}`;
   let reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
@@ -715,8 +756,11 @@ export async function queueConfigFromLoop(
     ...(config.providerOutageCeilingMs === undefined
       ? {}
       : { providerOutageCeilingMs: config.providerOutageCeilingMs }),
-    author: { ...config.author, prompt: sourcePrompt },
-    reviewer: { ...config.reviewer, prompt: reviewerPrompt },
+    routing: routing
+      ? { row: routing.row, ...(routing.review ? { review: routing.review } : {}) }
+      : { row: "self" },
+    author: { ...(sourceAttempt > 1 ? (routing?.repair ?? author) : author), prompt: sourcePrompt },
+    reviewer: { ...reviewer, prompt: reviewerPrompt },
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
   };
   const item: QueueItem = {
@@ -731,8 +775,8 @@ export async function queueConfigFromLoop(
     repair: {
       stateDirectory: paths.repair,
       acceptanceCriteria: issueContext.acceptanceCriteria,
-      author: { ...config.author, prompt: sourcePrompt },
-      reviewer: { ...config.reviewer, prompt: reviewerPrompt },
+      author: { ...(routing?.repair ?? author), prompt: sourcePrompt },
+      reviewer: { ...reviewer, prompt: reviewerPrompt },
     },
     delivery: {
       ...(replan
@@ -793,7 +837,7 @@ export function validateHistory(history: QueueParticipant[], ceiling: number) {
   const identities = new Set<string>();
   for (const [index, participant] of history.entries()) {
     demand(
-      exactKeys(participant, ["ordinal", "id", "item", "stage", "role", "outcome", "usage"]) &&
+      object(participant) &&
         participant.ordinal === index + 1 &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.id) &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.item) &&
@@ -906,7 +950,7 @@ export function validateQueueConfig(config: QueueConfig) {
     demand(item.source.repository === item.setup.repository, "queue-repository-drift");
     for (const actor of [item.repair.author, item.repair.reviewer])
       demand(
-        exactKeys(actor, ["model", "effort", "prompt"]) &&
+        object(actor) &&
           [actor.model, actor.effort].every(
             (value) => typeof value === "string" && value.length > 0,
           ) &&
@@ -985,6 +1029,7 @@ async function record(directory: string, name: string, value: unknown) {
 
 type AttemptPhase = "setup" | "source" | "repair" | "delivery" | "failed" | "complete";
 interface AttemptRecord {
+  routing?: import("./routing.mjs").RoutingSelection;
   schemaVersion: "dogfood-bounded-queue-attempt/v1";
   phase: AttemptPhase;
   run: string;
@@ -1010,6 +1055,7 @@ function initialAttempt(
 ): AttemptRecord {
   return {
     schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    ...(item.source.routing ? { routing: item.source.routing } : {}),
     phase: "setup",
     run: config.run,
     index,
@@ -1263,6 +1309,7 @@ function attemptFailureRecord(
   retries: number,
 ): FailedAttemptReceipt {
   return {
+    ...(item.source.routing ? { routing: item.source.routing } : {}),
     schemaVersion: "dogfood-bounded-queue-attempt/v1",
     phase: "failed",
     run: config.run,
@@ -1784,6 +1831,9 @@ export function repositoryQueueAdapter(
       role,
       outcome,
       usage: queueUsage(terminal.usage),
+      ...(attempt.routing ? { routing: attempt.routing } : {}),
+      ...(attempt.models ? { models: attempt.models } : {}),
+      ...(attempt.placement ? { placement: attempt.placement } : {}),
     };
     if (existingParticipant)
       demand(
@@ -2305,6 +2355,7 @@ export function repositoryQueueAdapter(
           const correction = await correctGate(
             {
               ...item.source,
+              author: item.repair.author,
               base: correctionBase,
               stateDirectory: current.stateDirectory,
             },

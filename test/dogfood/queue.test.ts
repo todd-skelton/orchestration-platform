@@ -28,6 +28,7 @@ import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
 import { nextCycle, persistCycle } from "../../scripts/dogfood/supervision.js";
+import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 
 const roots: string[] = [];
 const repositoryPolicy: RepositoryAdapter = {
@@ -244,7 +245,7 @@ async function loopFixture(withRuntime = false) {
     stateRoot,
     worktreeRoot,
     author: { model: "gpt-5.6-sol", effort: "high" },
-    reviewer: { model: "gpt-5.6-sol", effort: "high" },
+    reviewer: { model: "claude-opus-5", effort: "high" },
     codexExecutable: process.execPath,
     gitExecutable,
     nativeLaunchCeiling: 8,
@@ -278,6 +279,7 @@ async function acceptedReplanFixture() {
     ...f.loop,
     run: ACCEPTED_REPLAN.run,
     adapter: "chase-sets",
+    routingRows: [{ ...SELF_ROUTING, row: 7, review: 11 }],
     repository: "chase-sets/chase-sets",
     targetMilestone: 158,
     acceptedReplan: ACCEPTED_REPLAN.id,
@@ -288,6 +290,7 @@ async function acceptedReplanFixture() {
     ...repositoryPolicy,
     issueContext: () => ({
       title: "JPEG",
+      routing: { row: 7, review: 11 },
       body: "Repair JPEG",
       acceptanceCriteria: ["JPEG"],
       rules: "Keep scope",
@@ -593,7 +596,7 @@ it("validates an optional Chase Sets milestone number and keeps self runs unscop
   const { loop } = await loopFixture();
   expect(() => validateLoopConfig(loop)).not.toThrow();
   expect(() =>
-    validateLoopConfig({ ...loop, adapter: "chase-sets", targetMilestone: 155 }),
+    validateLoopConfig({ ...loop, adapter: "chase-sets", targetMilestone: 155, routingRows: [] }),
   ).not.toThrow();
   for (const targetMilestone of [
     0,
@@ -657,6 +660,68 @@ it("admits repository-wide source scope without a pre-authored repair path list"
   expect(() => validateQueueConfig(current.config)).not.toThrow();
 });
 
+it("resolves routing before any setup, uses repair placement, and keeps the self policy fixed", async () => {
+  const f = await loopFixture();
+  const row = {
+    ...SELF_ROUTING,
+    row: 7,
+    review: 11 as const,
+    repair: { model: "repair-model", effort: "medium" },
+  };
+  const policy: RepositoryAdapter = {
+    ...repositoryPolicy,
+    issueContext: async (input) => ({
+      ...(await repositoryPolicy.issueContext(input)),
+      routing: { row: 7, review: 11 },
+    }),
+  };
+  const config = { ...f.loop, adapter: "chase-sets", routingRows: [] };
+  await expect(queueConfigFromLoop(config, f.repository, f.selected, policy)).rejects.toThrow(
+    "routing-row-unconfigured",
+  );
+  await expect(
+    readFile(resolve(f.stateRoot, config.run, "iss-104-attempt-1/setup/config.json"), "utf8"),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  const queue = await queueConfigFromLoop(
+    { ...config, routingRows: [row] },
+    f.repository,
+    f.selected,
+    policy,
+  );
+  expect(queue.items[0]?.source).toMatchObject({
+    routing: { row: 7, review: 11 },
+    author: row.author,
+    reviewer: row.reviewer,
+  });
+  expect(queue.items[0]?.repair.author).toMatchObject(row.repair);
+  const self = await queueConfigFromLoop(
+    { ...f.loop, routingRows: [row] },
+    f.repository,
+    f.selected,
+    {
+      ...policy,
+      issueContext: async (input) => ({
+        ...(await policy.issueContext(input)),
+        routing: { row: "self" },
+      }),
+    },
+  );
+  expect(self.items[0]?.source).toMatchObject({
+    routing: { row: "self" },
+    author: SELF_ROUTING.author,
+    reviewer: SELF_ROUTING.reviewer,
+  });
+  const {
+    author: _author,
+    reviewer: _reviewer,
+    ...withoutStatic
+  } = { ...config, routingRows: [row] };
+  expect(() => validateLoopConfig(withoutStatic)).not.toThrow();
+  expect(() => validateLoopConfig({ ...f.loop, adapter: "chase-sets" })).toThrow(
+    "routing-table-required",
+  );
+});
+
 it("derives the complete internal queue from one compact loop config and selected issue", async () => {
   const { loop, repository, stateRoot, selected } = await loopFixture();
   await expect(
@@ -673,7 +738,7 @@ it("derives the complete internal queue from one compact loop config and selecte
     source: {
       allowedPaths: ["."],
       author: { model: "gpt-5.6-sol", effort: "high" },
-      reviewer: { model: "gpt-5.6-sol", effort: "high" },
+      reviewer: { model: "claude-opus-5", effort: "high" },
     },
     delivery: {
       policy: {

@@ -6,6 +6,7 @@ import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary
 
 export type Role = "author" | "reviewer";
 export interface Config {
+  routing?: import("./routing.mjs").RoutingSelection;
   owner: string;
   run: string;
   issue: string;
@@ -21,10 +22,18 @@ export interface Config {
   localGates?: string[];
   providerOutageCeilingMs?: number;
   author: { model: string; effort: string; prompt: string };
-  reviewer: { model: string; effort: string; prompt: string };
+  reviewer: {
+    model: string;
+    effort: string;
+    prompt: string;
+    fallback?: import("./routing.mjs").ModelPlacement;
+  };
   adapter: { kind: "codex-exec"; executable: string };
 }
 export interface Attempt {
+  routing?: import("./routing.mjs").RoutingSelection;
+  models?: { author: string; reviewer: string | null };
+  placement?: import("./routing.mjs").ModelPlacement;
   id: string;
   pid: number;
   trace: string;
@@ -39,6 +48,19 @@ export interface Terminal {
   usage?: unknown;
   summary?: string;
   providerFailure?: boolean;
+  modelRefused?: boolean;
+}
+
+function routedAttempt(config: Config, role: Role, attempt: Attempt): Attempt {
+  return {
+    ...attempt,
+    ...(config.routing ? { routing: config.routing } : {}),
+    placement: { model: config[role].model, effort: config[role].effort },
+    models: {
+      author: config.author.model,
+      reviewer: role === "reviewer" ? config.reviewer.model : null,
+    },
+  };
 }
 export interface Check {
   name: string;
@@ -290,6 +312,13 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
     let parseError: string | undefined;
     let retryContext = attempt?.retryContext ?? "";
     let retry = attempt?.retries === 1;
+    let placement = attempt?.placement ?? config[role];
+    const fallback = role === "reviewer" ? config.reviewer.fallback : undefined;
+    const useFallback = () => {
+      requireThat(fallback && placement.model !== fallback.model, "provider-model-refused");
+      placement = fallback;
+    };
+    const launchConfig = () => ({ ...config, [role]: { ...config[role], ...placement } });
     let relaunch = false;
     for (;;) {
       if (!attempt) {
@@ -372,9 +401,17 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           reviewHead,
           prompts[role === "author" ? 0 : 1],
         )}${authorEvidence}${retryContext}`;
-        const launched = await adapter.launch(role, config, prompt);
+        let launched: Attempt;
+        try {
+          launched = await adapter.launch(role, launchConfig(), prompt);
+        } catch (error) {
+          if (!(error instanceof QueueBlocked) || error.reason !== "provider-model-refused")
+            throw error;
+          useFallback();
+          launched = await adapter.launch(role, launchConfig(), prompt);
+        }
         attempt = {
-          ...launched,
+          ...routedAttempt(launchConfig(), role, launched),
           ...(retry ? { retries: 1 as const } : {}),
           ...(retryContext ? { retryContext } : {}),
         };
@@ -398,7 +435,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
         "author-is-reviewer",
       );
       if (!terminal) {
-        terminal = await adapter.observe(role, config, attempt);
+        terminal = await adapter.observe(role, launchConfig(), attempt);
         requireThat(
           terminal &&
             terminal.id === attempt.id &&
@@ -420,6 +457,14 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
       if (terminal.status === "dead") {
         const diagnostics = terminalSummary(terminal.summary);
         await replace(directory, `${role}-terminal`, terminal);
+        if (terminal.modelRefused) {
+          useFallback();
+          // Keep the refused launch in participant history; it performed no review.
+          relaunch = true;
+          attempt = undefined;
+          terminal = undefined;
+          continue;
+        }
         // ISS-129: an outage spends native launches, not the ISS-127 retry.
         if (!terminal.providerFailure) {
           if (retry) throw new QueueBlocked("launcher-failed", diagnostics, retries);
@@ -633,7 +678,7 @@ export async function correctGate(
       await adapter.git(config.worktree, ["reset", "--hard", config.base]);
       await adapter.git(config.worktree, ["clean", "-fd"]);
     }
-    attempt = await adapter.launch("author", config, prompt);
+    attempt = routedAttempt(config, "author", await adapter.launch("author", config, prompt));
     requireThat(
       typeof attempt.id === "string" &&
         attempt.id.length > 0 &&

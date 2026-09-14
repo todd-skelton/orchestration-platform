@@ -41,6 +41,7 @@ export async function waitForProvider(
       await probe(AbortSignal.timeout(Math.max(1, Math.min(5_000, deadline - clock.now()))));
       return;
     } catch (error) {
+      if (error instanceof QueueBlocked && error.reason === "provider-model-refused") throw error;
       const diagnostics = error instanceof Error ? error.message : String(error);
       report({ status: "waiting-provider", run: config.run, issue: config.issue, diagnostics });
       if (clock.now() >= deadline) throw new QueueBlocked("provider-unavailable", diagnostics);
@@ -55,6 +56,7 @@ export async function probeProvider(
   authCommand: string,
   signal: AbortSignal,
   request = fetch,
+  model?: string,
 ) {
   let token: string;
   try {
@@ -67,8 +69,22 @@ export async function probeProvider(
     headers: { Authorization: `Bearer ${token}` },
     signal,
   });
-  await response.body?.cancel();
-  if (!response.ok) throw new Error(`provider models probe returned HTTP ${response.status}`);
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`provider models probe returned HTTP ${response.status}`);
+  }
+  if (model) {
+    const models = (await response.json()) as { data?: { id: string }[] };
+    if (!Array.isArray(models.data)) throw new Error("malformed provider models response");
+    if (!models.data.some((entry) => entry.id === model))
+      throw new QueueBlocked("provider-model-refused", model);
+  } else await response.body?.cancel();
+}
+
+export function modelRefused(message: string) {
+  return /(?:\bmodel\b[^\n]*(?:not found|does not exist|not supported|unsupported|not allowed|access denied)|(?:unsupported|unknown|invalid) model\b|\bmodel_not_found\b)/i.test(
+    message,
+  );
 }
 
 function providerFailure(message: string, baseUrl?: string) {
@@ -232,12 +248,21 @@ export function parseTrace(
   if (dead) {
     let summary: string | undefined;
     let outage = false;
+    let refusal = false;
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const row = rows[index];
       if (row?.type !== "error" && row?.type !== "turn.failed") continue;
       const message = row?.error?.message ?? row?.message;
       if (typeof message === "string" && message.trim()) {
         outage = providerFailure(message, providerBaseUrl);
+        refusal =
+          modelRefused(message) &&
+          !rows.some(
+            (event) =>
+              event.type === "item.started" ||
+              event.type === "item.completed" ||
+              event.type === "turn.completed",
+          );
         summary = terminalSummary(message);
         break;
       }
@@ -247,6 +272,7 @@ export function parseTrace(
       status: "dead",
       ...(summary ? { summary } : {}),
       ...(outage ? { providerFailure: true } : {}),
+      ...(refusal ? { modelRefused: true } : {}),
     };
   }
   if (!complete) return { id, status: "running" };
@@ -375,6 +401,12 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         check(help.includes(flag), "incompatible-codex-cli");
     },
     async launch(role, config, prompt) {
+      const baseUrl = process.env.CODEX_PROVIDER_BASE_URL;
+      const authCommand = process.env.CODEX_PROVIDER_AUTH_COMMAND;
+      if (baseUrl && authCommand)
+        await waitForProvider(config, (signal) =>
+          probeProvider(baseUrl, authCommand, signal, fetch, config[role].model),
+        );
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(
@@ -425,6 +457,19 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
       let terminal: Terminal;
       try {
         terminal = parseTrace(trace, Boolean(exit), role, config, attempt.id, launcherFailed);
+        if (
+          launcherFailed &&
+          terminal.status === "dead" &&
+          !events(trace, false).some(
+            (event) =>
+              event.type === "item.started" ||
+              event.type === "item.completed" ||
+              event.type === "turn.completed",
+          )
+        ) {
+          const stderr = await optionalText(attemptArtifact(attempt, "err.log"));
+          if (modelRefused(stderr)) terminal.modelRefused = true;
+        }
       } catch (error) {
         if (
           role === "reviewer" &&

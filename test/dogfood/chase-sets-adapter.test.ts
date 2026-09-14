@@ -64,11 +64,11 @@ async function fixture(digestConclusion = "success") {
     `#!/bin/sh
 case "$*" in
   *milestones*) printf '%s' '{"data":{"repository":{"milestones":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"M1","number":7,"title":"Outcome","description":"committed","state":"OPEN"}]}}}}' ;;
-  *graphql*) printf '%s' '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I5","number":5,"title":"Issue 5","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p1"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I9","number":9,"title":"Issue 9","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I11","number":11,"title":"Needs operator","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"},{"name":"status:needs-operator"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I12","number":12,"title":"Ops work","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:ops"},{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I3","number":3,"title":"Issue 3","body":"","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":2,"state":"OPEN"}]}}]}}}}' ;;
+  *graphql*) printf '%s' '{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I5","number":5,"title":"Issue 5","body":"<!-- routing: {\\\"version\\\":1,\\\"row\\\":7,\\\"review\\\":11} -->","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p1"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I9","number":9,"title":"Issue 9","body":"<!-- routing: {\\\"version\\\":1,\\\"row\\\":7,\\\"review\\\":11} -->","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I11","number":11,"title":"Needs operator","body":"<!-- routing: {\\\"version\\\":1,\\\"row\\\":7,\\\"review\\\":11} -->","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"},{"name":"status:needs-operator"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I12","number":12,"title":"Ops work","body":"<!-- routing: {\\\"version\\\":1,\\\"row\\\":7,\\\"review\\\":11} -->","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:ops"},{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[]}},{"id":"I3","number":3,"title":"Issue 3","body":"<!-- routing: {\\\"version\\\":1,\\\"row\\\":7,\\\"review\\\":11} -->","state":"OPEN","issueType":{"name":"Slice"},"milestone":{"id":"M1"},"labels":{"pageInfo":{"hasNextPage":false},"nodes":[{"name":"kind:slice"},{"name":"priority:p0"}]},"blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":2,"state":"OPEN"}]}}]}}}}' ;;
   *run*list*) printf '%s' '[{"databaseId":42,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-11T00:00:00Z"}]' ;;
   *run*view*) printf '%s' '{"jobs":[{"name":"Deploy Staging","status":"completed","conclusion":"success","steps":${JSON.stringify(digestConclusion === "missing" ? [] : [{ name: "Verify immutable active release image", conclusion: digestConclusion }])}}]}' ;;
   *issue*edit*) printf '%s' "$*" > '${resolve(root, "park-call")}' ;;
-  *issue*view*) printf '%s' '{"number":9,"title":"Issue 9","body":"## Context\\nFixture.\\n\\n## Acceptance Criteria\\n\\n- First result\\n- Second result\\n  with detail\\n"}' ;;
+  *issue*view*) printf '%s' '{"number":9,"title":"Issue 9","body":"<!-- routing: {\\\"version\\\":1,\\\"row\\\":7,\\\"review\\\":11} -->\\n## Context\\nFixture.\\n\\n## Acceptance Criteria\\n\\n- First result\\n- Second result\\n  with detail\\n"}' ;;
   *) exit 2 ;;
 esac
 `,
@@ -104,7 +104,7 @@ async function scopedFixture() {
     id: `I${number}`,
     number,
     title: `Issue ${number}`,
-    body: "## Acceptance Criteria\n\n- Ship the result.\n",
+    body: '<!-- routing: {"version":1,"row":7,"review":11} -->\n## Acceptance Criteria\n\n- Ship the result.\n',
     state: "OPEN",
     issueType: { name: "Slice" },
     milestone: { id: `M${milestone}`, number: milestone },
@@ -147,6 +147,43 @@ if (args[0] === "api") {
   );
   return { executorRoot, runtime, issues, issue, save, callsPath, commentsPath };
 }
+
+it.skipIf(process.platform === "win32")(
+  "excludes missing, duplicate and malformed planning routes with typed diagnostics",
+  async () => {
+    const current = await scopedFixture();
+    const issue = current.issues.find((row) => row.number === 4382)!;
+    const valid = issue.body;
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      for (const [body, reason] of [
+        ["No planning route", "routing-marker-absent"],
+        [`${valid}\n${valid}`, "routing-marker-duplicate"],
+        ["<!-- routing: invalid -->", "routing-marker-malformed"],
+      ]) {
+        issue.body = body!;
+        await current.save();
+        expect(
+          await chaseSets.selectCandidates({
+            repository: "chase-sets/chase-sets",
+            executorRoot: current.executorRoot,
+          }),
+        ).toEqual([]);
+        expect(output).toHaveBeenCalledWith(expect.stringContaining(`"reason":"${reason}"`));
+        await expect(
+          chaseSets.issueContext({
+            repository: "chase-sets/chase-sets",
+            executorRoot: current.executorRoot,
+            key: "cs-4382",
+            number: 4382,
+          }),
+        ).rejects.toMatchObject({ reason });
+      }
+    } finally {
+      output.mockRestore();
+    }
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "scopes native selection without admitting dependencies, needs labels, or ops work",
@@ -238,6 +275,7 @@ it.skipIf(process.platform === "win32")(
       schemaVersion: "dogfood-loop/v1",
       run: "m2-scope",
       adapter: "chase-sets",
+      routingRows: [],
       repository: "chase-sets/chase-sets",
       stableExecutorRoot: executorRoot,
       stateRoot: resolve(runtime, "state"),
@@ -379,7 +417,8 @@ it.skipIf(process.platform === "win32")(
       }),
     ).resolves.toEqual({
       title: "Issue 9",
-      body: "## Context\nFixture.\n\n## Acceptance Criteria\n\n- First result\n- Second result\n  with detail\n",
+      routing: { row: 7, review: 11 },
+      body: '<!-- routing: {"version":1,"row":7,"review":11} -->\n## Context\nFixture.\n\n## Acceptance Criteria\n\n- First result\n- Second result\n  with detail\n',
       acceptanceCriteria: ["First result", "Second result\nwith detail"],
       rules:
         "Lane mode applies. The loop owns publishing, landing, and deploy verification. " +

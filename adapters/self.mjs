@@ -132,6 +132,7 @@ export async function issueContext({ repository, key, executorRoot }) {
   const loopRules = await readFile(resolve(executorRoot, "docs/loop.md"), "utf8");
   return {
     title: frontmatter.title,
+    routing: { row: "self" },
     body: draft,
     acceptanceCriteria,
     rules: `${loopRules.trimEnd()}\n\nKeep the loop smaller: prefer deleting to adding.\n`,

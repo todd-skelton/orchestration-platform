@@ -17,6 +17,7 @@ export interface RepositoryCandidate {
 }
 
 export interface RepositoryIssueContext {
+  routing?: import("./routing.mjs").RoutingSelection;
   title: string;
   body: string;
   acceptanceCriteria: string[];
