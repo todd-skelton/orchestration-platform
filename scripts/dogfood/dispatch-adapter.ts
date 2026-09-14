@@ -74,8 +74,14 @@ export async function probeProvider(
     throw new Error(`provider models probe returned HTTP ${response.status}`);
   }
   if (model) {
-    const models = (await response.json()) as { data?: { id: string }[] };
-    if (!Array.isArray(models.data)) throw new Error("malformed provider models response");
+    const models = (await response.json()) as { data?: { id: string }[] } | null;
+    if (
+      !Array.isArray(models?.data) ||
+      !models.data.every(
+        (entry) => entry && typeof entry.id === "string" && entry.id.trim().length > 0,
+      )
+    )
+      throw new Error("malformed provider models response");
     if (!models.data.some((entry) => entry.id === model))
       throw new QueueBlocked("provider-model-refused", model);
   } else await response.body?.cancel();

@@ -172,8 +172,8 @@ function candidatesFromAuthority(snapshot) {
     .sort((left, right) => priority(left) - priority(right) || left.number - right.number)
     .flatMap((issue) => {
       try {
-        parseRoutingMarker(issue.body);
-        return [{ key: `cs-${issue.number}`, number: issue.number }];
+        const routing = parseRoutingMarker(issue.body);
+        return [{ key: `cs-${issue.number}`, number: issue.number, routing }];
       } catch (error) {
         process.stdout.write(
           `${JSON.stringify({ status: "not-runnable", issue: issue.number, reason: error.reason })}\n`,

@@ -14,6 +14,7 @@ import type {
 export interface RepositoryCandidate {
   key: string;
   number: number;
+  routing?: import("./routing.mjs").RoutingSelection;
 }
 
 export interface RepositoryIssueContext {

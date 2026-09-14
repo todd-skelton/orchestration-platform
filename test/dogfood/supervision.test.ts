@@ -323,6 +323,45 @@ it("posts one current-main learning note before selection persistence and keeps 
   expect(observation.labels).toContain("ready");
 });
 
+it.each(["current-main-unavailable", "routing-row-unconfigured"])(
+  "retains the selected routing row in a %s note without an attempt record",
+  async (reason) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-routing-selection-"));
+    roots.push(root);
+    const config = { ...loop(root), adapter: "chase-sets", routingRows: [] };
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "cs-105",
+      labels: ["ready"],
+      comments: [],
+    };
+    const adapter = fakeAdapter(observation);
+    const repository: RepositoryAdapter = {
+      ...repositoryPolicy,
+      selectCandidates: () => [{ key: "cs-105", number: 105, routing: { row: 7, review: 11 } }],
+    };
+    if (reason === "current-main-unavailable") {
+      for (let scan = 0; scan < 2; scan++)
+        await expect(nextCycle(config, root, adapter, repository)).rejects.toThrow(reason);
+    } else {
+      adapter.currentMain = async () => "a".repeat(40);
+      const cycle = (await nextCycle(config, root, adapter, repository))!;
+      await persistCycle(config, cycle);
+      const resumed = (await nextCycle(config, root, adapter, repository))!;
+      expect(resumed).toEqual(cycle);
+      await stopCycle(config, resumed, reason, 0, adapter, repository);
+      await expect(
+        readFile(resolve(config.stateRoot, config.run, "cs-105-attempt-1", "attempt.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(observation.comments).toHaveLength(1);
+    expect(observation.comments[0]).toContain('Routing: {"row":7,"review":11}');
+    expect(observation.comments[0]).toContain("no recorded author or reviewer launches");
+    expect(observation.comments[0]).toContain("after 0 implementation attempts");
+    expect(observation.labels).toContain("ready");
+  },
+);
+
 it("retains actual routing and refused primary/fallback launches in a learning note", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-routing-"));
   roots.push(root);

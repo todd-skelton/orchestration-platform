@@ -19,6 +19,7 @@ export interface SelectedIssue {
   key: string;
   number: number;
   base: string;
+  routing?: import("./routing.mjs").RoutingSelection;
 }
 
 export interface SupervisedCycle {
@@ -71,7 +72,13 @@ function exactKeys(value: unknown, keys: string[]): value is Record<string, any>
 
 function validSelection(value: unknown, cycle: number): value is SelectedIssue {
   return (
-    exactKeys(value, ["cycle", "key", "number", "base"]) &&
+    exactKeys(value, [
+      "cycle",
+      "key",
+      "number",
+      "base",
+      ...(value && typeof value === "object" && Object.hasOwn(value, "routing") ? ["routing"] : []),
+    ]) &&
     value.cycle === cycle &&
     /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.key) &&
     Number.isSafeInteger(value.number) &&
@@ -205,7 +212,11 @@ export async function nextCycle(
     const issue = candidates[0];
     if (!issue) return undefined;
     if (
-      !exactKeys(issue, ["key", "number"]) ||
+      !exactKeys(issue, [
+        "key",
+        "number",
+        ...(Object.hasOwn(issue, "routing") ? ["routing"] : []),
+      ]) ||
       !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(issue.key) ||
       !Number.isSafeInteger(issue.number) ||
       issue.number <= 0
@@ -317,14 +328,14 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
 };
 function stopMessage(
   config: LoopConfig,
-  selection: Pick<SelectedIssue, "cycle" | "key" | "number">,
+  selection: Pick<SelectedIssue, "cycle" | "key" | "number" | "routing">,
   stop: number,
   reason: string,
   attempts: number,
   diagnostics?: string,
   markerSuffix = "",
   history: QueueParticipant[] = [],
-  routing?: import("./routing.mjs").RoutingSelection,
+  routing = selection.routing,
 ) {
   const marker = `loop-stop:${config.run}:${selection.cycle}:${stop}${markerSuffix}`;
   const runState = resolve(config.stateRoot, config.run);
@@ -401,7 +412,7 @@ export async function stopCycle(
   validateHistory(cycle.initialHistory, config.nativeLaunchCeiling);
   const directory = stateDirectory(config);
   // A setup stop can have a selected row without having launched a worker yet.
-  let routing: import("./routing.mjs").RoutingSelection | undefined;
+  let routing = cycle.selection.routing;
   const slugs = config.acceptedReplan
     ? [ACCEPTED_REPLAN.slug]
     : Array.from(

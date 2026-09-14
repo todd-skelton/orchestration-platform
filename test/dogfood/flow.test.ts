@@ -337,7 +337,11 @@ it.each(["verdict", "malformed", "outage", "death"])(
 );
 
 it("stops when the fallback is also refused and does not fall back for arbitrary launch errors", async () => {
-  for (const reason of ["provider-model-refused", "launch-identity-timeout-reconcile"]) {
+  for (const reason of [
+    "provider-model-refused",
+    "provider-unavailable",
+    "launch-identity-timeout-reconcile",
+  ]) {
     const f = await fixture();
     f.config.reviewer = { ...SELF_ROUTING.reviewer, prompt: "reviewer" };
     const launch = f.adapter.launch;

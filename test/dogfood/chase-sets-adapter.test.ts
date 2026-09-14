@@ -191,7 +191,7 @@ it.skipIf(process.platform === "win32")(
     const current = await scopedFixture();
     const input = { repository: "chase-sets/chase-sets", executorRoot: current.executorRoot };
     await expect(chaseSets.selectCandidates(input)).resolves.toEqual([
-      { key: "cs-4382", number: 4382 },
+      { key: "cs-4382", number: 4382, routing: { row: 7, review: 11 } },
     ]);
     await expect(chaseSets.selectCandidates({ ...input, targetMilestone: 155 })).resolves.toEqual(
       [],
@@ -225,7 +225,7 @@ it.skipIf(process.platform === "win32")(
       comment: unused,
     };
     await expect(nextCycle(config, input.executorRoot, supervisor, adapter)).resolves.toMatchObject(
-      { selection: { cycle: 1, key: "cs-7825", number: 7825 } },
+      { selection: { cycle: 1, key: "cs-7825", number: 7825, routing: { row: 7, review: 11 } } },
     );
     await expect(
       adapter.issueContext({ ...input, targetMilestone: 155, key: "cs-7825", number: 7825 }),
@@ -233,8 +233,8 @@ it.skipIf(process.platform === "win32")(
     current.issues[2]!.blockedBy.nodes[0]!.state = "CLOSED";
     await current.save();
     await expect(chaseSets.selectCandidates({ ...input, targetMilestone: 155 })).resolves.toEqual([
-      { key: "cs-7822", number: 7822 },
-      { key: "cs-7825", number: 7825 },
+      { key: "cs-7822", number: 7822, routing: { row: 7, review: 11 } },
+      { key: "cs-7825", number: 7825, routing: { row: 7, review: 11 } },
     ]);
     await expect(chaseSets.selectCandidates({ ...input, targetMilestone: 999 })).resolves.toEqual(
       [],
@@ -405,8 +405,8 @@ it.skipIf(process.platform === "win32")(
     await expect(
       chaseSets.selectCandidates({ repository: "chase-sets/chase-sets", executorRoot }),
     ).resolves.toEqual([
-      { key: "cs-9", number: 9 },
-      { key: "cs-5", number: 5 },
+      { key: "cs-9", number: 9, routing: { row: 7, review: 11 } },
+      { key: "cs-5", number: 5, routing: { row: 7, review: 11 } },
     ]);
     await expect(
       chaseSets.issueContext({
