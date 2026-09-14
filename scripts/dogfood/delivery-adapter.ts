@@ -104,8 +104,6 @@ function validAttempt(
 ) {
   return (
     value &&
-    Object.keys(value).length === (value.retries === undefined ? 4 : 5) &&
-    ["id", "pid", "trace", "launchedAt"].every((key) => Object.hasOwn(value, key)) &&
     (value.retries === undefined || value.retries === 1) &&
     typeof value.id === "string" &&
     ATTEMPT_ID.test(value.id) &&
