@@ -864,6 +864,34 @@ export async function hasStartedDelivery(config: QueueConfig) {
   const attempt = await optionalRecord(config.stateDirectory, "attempt");
   return attempt !== ABSENT && ["delivery", "complete"].includes(attempt.phase);
 }
+
+export async function readQueueHistory(
+  config: Pick<QueueConfig, "stateDirectory" | "nativeLaunchCeiling" | "initialHistory">,
+) {
+  const history: QueueParticipant[] = [];
+  let gap = false;
+  for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
+    const participant = await optionalRecord(
+      config.stateDirectory,
+      `participant-${ordinal}-terminal`,
+    );
+    if (participant === ABSENT) {
+      gap = true;
+      continue;
+    }
+    demand(!gap, "participant-history-gap");
+    const normalized = {
+      ...(participant as QueueParticipant),
+      usage: queueUsage((participant as QueueParticipant).usage),
+    };
+    if (ordinal > config.initialHistory.length) {
+      demand(normalized.ordinal === ordinal, "participant-history-unobserved");
+    }
+    history.push(normalized);
+  }
+  validateHistory(history, config.nativeLaunchCeiling);
+  return history;
+}
 async function record(directory: string, name: string, value: unknown) {
   const path = resolve(directory, `${name}.json`);
   const temporary = `${path}.tmp`;
@@ -1527,28 +1555,7 @@ export function repositoryQueueAdapter(
   const assertExecutor = options.assertExecutor ?? assertControllerExecutor;
   const state = config.stateDirectory;
 
-  const readHistory = async () => {
-    const history: QueueParticipant[] = [];
-    let gap = false;
-    for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
-      const participant = await optionalRecord(state, `participant-${ordinal}-terminal`);
-      if (participant === ABSENT) {
-        gap = true;
-        continue;
-      }
-      demand(!gap, "participant-history-gap");
-      const normalized = {
-        ...(participant as QueueParticipant),
-        usage: queueUsage((participant as QueueParticipant).usage),
-      };
-      if (ordinal > config.initialHistory.length) {
-        demand(normalized.ordinal === ordinal, "participant-history-unobserved");
-      }
-      history.push(normalized);
-    }
-    validateHistory(history, config.nativeLaunchCeiling);
-    return history;
-  };
+  const readHistory = () => readQueueHistory(config);
 
   const seedHistory = async () => {
     for (const participant of config.initialHistory) {

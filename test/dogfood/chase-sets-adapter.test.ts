@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   chmod,
   cp,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -134,10 +135,10 @@ const commentsPath = ${JSON.stringify(commentsPath)};
 const comments = JSON.parse(fs.readFileSync(commentsPath, "utf8"));
 if (args[0] === "api") {
   const name = args.some((arg) => arg.includes("milestones(")) ? "milestones" : "issues";
-  console.log(JSON.stringify({ data: { repository: { [name]: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: name === "milestones" ? milestones : issues } } } }));
+  fs.writeFileSync(process.stdout.fd, JSON.stringify({ data: { repository: { [name]: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: name === "milestones" ? milestones : issues } } } }) + "\\n");
 } else if (args[0] === "issue" && args[1] === "view") {
   const issue = issues.find((issue) => issue.number === Number(args[2]));
-  console.log(JSON.stringify({ ...issue, labels: issue.labels.nodes, comments }));
+  fs.writeFileSync(process.stdout.fd, JSON.stringify({ ...issue, labels: issue.labels.nodes, comments }) + "\\n");
 } else if (args[0] === "issue" && args[1] === "comment") {
   comments.push({ body: args[args.indexOf("--body") + 1] });
   fs.writeFileSync(commentsPath, JSON.stringify(comments));
@@ -267,8 +268,35 @@ it.skipIf(process.platform === "win32")(
       await writeFile(resolve(runState, name), bytes);
     const configPath = resolve(runtime, "loop.json");
     await writeFile(configPath, JSON.stringify(config));
-    const run = () =>
-      execute(process.execPath, [resolve(controller, "scripts/dogfood/supervise.mjs"), configPath]);
+    const run = async () => {
+      // Capture stdout to a file, as in supervise.test.ts: sandboxed Node children
+      // can lose asynchronous output when stdout is a pipe.
+      const stdoutPath = resolve(runtime, "supervise.stdout");
+      const stdout = await open(stdoutPath, "w");
+      let stderr = "";
+      let code;
+      try {
+        code = await new Promise<number | null>((done, reject) => {
+          const child = spawn(
+            process.execPath,
+            [resolve(controller, "scripts/dogfood/supervise.mjs"), configPath],
+            {
+              stdio: ["ignore", stdout.fd, "pipe"],
+              timeout: 10_000,
+            },
+          );
+          child.stderr!.on("data", (chunk) => {
+            stderr += chunk;
+          });
+          child.once("error", reject);
+          child.once("close", done);
+        });
+      } finally {
+        await stdout.close();
+      }
+      if (code !== 0) throw { code, stderr };
+      return { stdout: await readFile(stdoutPath, "utf8"), stderr };
+    };
     for (let restart = 1; restart <= 2; restart += 1) {
       await expect(run()).rejects.toMatchObject({
         code: 1,
