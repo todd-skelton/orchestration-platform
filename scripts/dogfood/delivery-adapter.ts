@@ -638,7 +638,8 @@ export function githubDeliveryAdapter(
         ["branch", "--show-current"],
         config.worktree,
       );
-      if (branch !== plan.sourceBranch) throw new DeliveryBlocked("publication-branch-mismatch");
+      if (branch !== (refresh?.localBranch ?? plan.sourceBranch))
+        throw new DeliveryBlocked("publication-branch-mismatch");
       const readTarget = async (expectedHead?: string) => {
         const rows = await commands.ghJson(config, [
           "pr",

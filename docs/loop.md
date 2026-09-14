@@ -162,6 +162,60 @@ The host may resume the preserved run only after this reviewed implementation
 lands and is installed as the stable executor. Workers do not restart it or
 edit its runtime, worktrees or executor.
 
+ISS-145 records the pre-author `worktree-collision:pilot` stop of
+`m2-jpeg-corrective-20260914T1402` on executor
+`ea27eb3b5ead377bde002775666ac9f4dc2be2af`, reported on Chase Sets #7766
+in comment `5665208168`. Todd's ruling on #4388, comment `5665159522`,
+accepted plan #8014 and #7766 comment `5665196633` authorize one correction
+of the route-collision inventory failure on PR #8005 at
+`ac2c54ce80865c0501d71aae4676c719b0d1eaf1`.
+
+The native config opt-in `"acceptedReplan": "cs-7766-plan-8014"` admits only
+that plan, only in the recorded fresh run, with `targetMilestone: 158` and
+`attemptCeiling: 4`. Native composition reads attempt 4, its publication,
+source config and original `source/hosted-failure.log` from
+`stateRoot/m2-jpeg-20260914/cs-7766-attempt-4`. Missing history or logs stops
+before authoring. All nine prior participants, including failed reviews and
+the dead author launch, remain charged to the native launch ceiling. The
+original four attempts remain history; only this queue item admits attempt 5,
+with ceiling 5. A current blocking review or hosted failure cannot dispatch
+a sixth attempt or a repair pair. Ordinary transient retries remain bounded
+inside this one attempt. Any stop exits this corrective invocation and its
+note asks the host to propose rollback and wait for Todd.
+
+The new queue uses `cs-7766-replan-8014-attempt-5` under the fresh run, with
+matching pilot/source/review worktree names and a new `-g5` local branch.
+Its author starts at the preserved rejected candidate, retaining the original
+main base for the full implementation review. It does not rebase or edit the
+old candidate/worktrees. Both workers receive the accepted scope and the
+original attempt/source/trace and hosted-log paths. Current author completion
+and independent exact-head review remain required. Native delivery uses the
+existing forward-only PR refresh and observed remote-head lease to update
+PR #8005's `-g4` branch from the new local branch. Cleanup removes only the
+new source/review worktrees and local branch; it leaves the preserved local
+`-g4` branch and worktrees intact. The published PR branch may remain remotely
+unless GitHub deletes it after merge. Local gates, hosted green, native merge
+and verified actual deployment remain mandatory.
+
+To resume, the host first preserves both runtimes and all old worktrees while
+the supervisors are stopped, then installs this reviewed implementation as
+the stable platform executor. Add the opt-in above to the existing corrective
+loop config; retain `run: "m2-jpeg-corrective-20260914T1402"`, the same
+`stateRoot` and `worktreeRoot`, `targetMilestone: 158`, `attemptCeiling: 4`
+and the existing native launch ceiling. Start from Windows using the canonical
+`scripts/executor/start-loop.ps1 -Config <absolute-WSL-corrective-config-path>`.
+Do not change or archive the old run's records or the fresh run's selection,
+setup attempt or stop records. Native composition leaves them untouched and
+resumes the dedicated attempt-5 directory. A repeated restart selects the
+same attempt, including its failure or completion; changing the run name
+cannot renew admission. Fresh #7766 authoring without this accepted replan
+is refused. There is no new admission receipt or record migration.
+
+This implementation does not restart either run, repair JPEG, touch PR #8005
+from the host, or claim milestone 158 or ISS-110 exit evidence. After the
+bounded cycle fails to land or a new loop defect stops it, the host proposes
+rollback and waits for Todd; another config/run name is not authorization.
+
 ## Planning
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a

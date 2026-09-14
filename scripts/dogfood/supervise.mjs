@@ -138,7 +138,7 @@ try {
       validatedExecutor = undefined;
     } catch (error) {
       const outcome = await stop(error);
-      if (outcome.scope === "item") {
+      if (outcome.scope === "item" && !loop.acceptedReplan) {
         active = undefined;
         config = undefined;
         queueAdapter = undefined;

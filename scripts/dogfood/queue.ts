@@ -46,6 +46,15 @@ const SHA = /^[a-f0-9]{40}$/;
 const ABSENT = Symbol("absent");
 const exec = promisify(execFile);
 
+// ISS-145: Todd accepted this one continuation, not a renewable attempt budget.
+export const ACCEPTED_REPLAN = {
+  id: "cs-7766-plan-8014",
+  run: "m2-jpeg-corrective-20260914T1402",
+  priorRun: "m2-jpeg-20260914",
+  key: "cs-7766",
+  slug: "cs-7766-replan-8014-attempt-5",
+} as const;
+
 export type QueueMeasure = { status: "known"; value: number } | { status: "unavailable" };
 export type QueueUsage = {
   inputTokens: QueueMeasure;
@@ -64,6 +73,7 @@ export interface QueueParticipant {
 }
 
 export interface QueueItem {
+  acceptedReplan?: typeof ACCEPTED_REPLAN.id;
   id: string;
   issue: string;
   base: string;
@@ -113,6 +123,7 @@ export interface LoopConfig {
   attemptCeiling: number;
   providerOutageCeilingMs?: number;
   targetMilestone?: number;
+  acceptedReplan?: typeof ACCEPTED_REPLAN.id;
 }
 
 export const ACTIONABLE_STOP_REASONS = [
@@ -234,10 +245,21 @@ export function validateLoopConfig(config: LoopConfig) {
       "attemptCeiling",
       ...(config.providerOutageCeilingMs === undefined ? [] : ["providerOutageCeilingMs"]),
       ...(config.targetMilestone === undefined ? [] : ["targetMilestone"]),
+      ...(config.acceptedReplan === undefined ? [] : ["acceptedReplan"]),
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
+  demand(
+    config.acceptedReplan === undefined ||
+      (config.acceptedReplan === ACCEPTED_REPLAN.id &&
+        config.run === ACCEPTED_REPLAN.run &&
+        config.adapter === "chase-sets" &&
+        config.repository === "chase-sets/chase-sets" &&
+        config.targetMilestone === 158 &&
+        config.attemptCeiling === 4),
+    "invalid-accepted-replan",
+  );
   demand(
     config.providerOutageCeilingMs === undefined ||
       (Number.isSafeInteger(config.providerOutageCeilingMs) && config.providerOutageCeilingMs > 0),
@@ -456,6 +478,7 @@ export async function queueConfigFromLoop(
   priorHistory: QueueParticipant[] = [],
   validatedExecutor?: Awaited<ReturnType<typeof validateLoopExecutor>>,
 ) {
+  validateLoopConfig(config);
   demand(
     exactKeys(selected, ["key", "number", "base"]) &&
       /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(selected.key) &&
@@ -516,7 +539,7 @@ export async function queueConfigFromLoop(
   const issueUrl = `https://github.com/${config.repository}/issues/${selected.number}`;
   const promptContext = `Repository loop rules:\n\n${issueContext.rules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${issueContext.body.trim()}`;
   const baseSourcePrompt = `Implement the selected issue completely and stay within its scope.\n\n${promptContext}`;
-  const reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
+  let reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
   const runState = resolve(stateRoot, config.run);
   let sourceAttempt = 1;
   let attemptBase = selected.base;
@@ -524,8 +547,63 @@ export async function queueConfigFromLoop(
   let initialHistory: QueueParticipant[] = [...priorHistory];
   let prescribedFindings: ReviewFinding[] | undefined;
   let rejectedHead: string | undefined;
+  let replan:
+    | {
+        publication: { number: number; url: string; head: string; sourceBranch: string };
+        prompt: string;
+      }
+    | undefined;
   let pendingRebase: { directory: string; slug: string; attempt: FailedAttemptReceipt } | undefined;
-  for (;;) {
+  const priorReplanDirectory = resolve(stateRoot, ACCEPTED_REPLAN.priorRun, "cs-7766-attempt-4");
+  if (config.repository === "chase-sets/chase-sets" && selected.key === ACCEPTED_REPLAN.key) {
+    const prior = await optionalRecord(priorReplanDirectory, "attempt");
+    if (config.run !== ACCEPTED_REPLAN.priorRun)
+      demand(config.acceptedReplan === ACCEPTED_REPLAN.id, "accepted-replan-required");
+    if (config.acceptedReplan) {
+      demand(selected.number === 7766 && prior !== ABSENT, "accepted-replan-history-unavailable");
+      validateFailedAttempt(prior, 4, 4);
+      const priorSource = resolve(priorReplanDirectory, "source");
+      const publication = await optionalRecord(priorSource, "publication");
+      const original = await optionalRecord(priorSource, "config");
+      demand(
+        prior.run === ACCEPTED_REPLAN.priorRun &&
+          prior.issue === issueUrl &&
+          prior.candidateAttempt === 4 &&
+          publication !== ABSENT &&
+          publication.number === 8005 &&
+          publication.head === prior.head &&
+          publication.repository === config.repository &&
+          publication.url === "https://github.com/chase-sets/chase-sets/pull/8005" &&
+          typeof publication.sourceBranch === "string" &&
+          original !== ABSENT &&
+          SHA.test(original.config?.mainBase),
+        "accepted-replan-history-unavailable",
+      );
+      // Keep the rejected head as an ancestor so the existing PR refresh is forward-only.
+      demand(
+        (await git(["rev-parse", "--verify", `${prior.head}^{commit}`])) === prior.head,
+        "selected-base-unavailable",
+      );
+      const evidence = resolve(priorSource, "hosted-failure.log");
+      let log: string;
+      try {
+        log = await readFile(evidence, "utf8");
+      } catch {
+        throw new QueueBlocked("hosted-failure-evidence-unavailable");
+      }
+      demand(log.trim().length > 0, "hosted-failure-evidence-unavailable");
+      initialHistory = prior.history;
+      validateHistory(initialHistory, config.nativeLaunchCeiling);
+      sourceAttempt = 5;
+      attemptBase = prior.head;
+      mainBase = original.config.mainBase;
+      const prompt = `Accepted corrective plan https://github.com/chase-sets/chase-sets/issues/8014; Todd's ruling https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5665159522 and acceptance https://github.com/chase-sets/chase-sets/issues/7766#issuecomment-5665196633. Exactly one correction is authorized, solely for the route-collision inventory failure on PR #8005 at ${prior.head}. Preserve the JPEG acceptance and existing implementation; this is not initial authoring. The four original attempts and all reviews/participants remain history at ${resolve(stateRoot, ACCEPTED_REPLAN.priorRun)}. Read the prior attempt ${resolve(priorReplanDirectory, "attempt.json")} and source records/traces in ${priorSource}. Prior PASS is not current review authority. Verify current execution independently and retain every local, review, hosted, merge and actual deployment gate. After failure or a new loop defect, the host proposes rollback and waits for Todd.\n${hostedFailurePrompt(evidence)}`;
+      replan = { publication, prompt };
+      reviewerPrompt += `\n\n${prompt}`;
+    }
+  }
+  demand(!config.acceptedReplan || replan, "accepted-replan-issue-mismatch");
+  while (!replan) {
     const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
     const priorQueue = resolve(runState, priorSlug);
     const attempt = await optionalRecord(priorQueue, "attempt");
@@ -583,7 +661,9 @@ export async function queueConfigFromLoop(
       rebasedMainBase: mainBase,
     });
   }
-  const slug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
+  const slug = replan
+    ? ACCEPTED_REPLAN.slug
+    : `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {
     queue: resolve(runState, slug),
     setup: resolve(runState, slug, "setup"),
@@ -611,9 +691,11 @@ export async function queueConfigFromLoop(
       ? repositoryAdapter.localGates({ repository: config.repository })
       : Promise.resolve(undefined),
   ]);
-  const sourcePrompt = prescribedFindings
-    ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
-    : baseSourcePrompt;
+  const sourcePrompt = replan
+    ? `${baseSourcePrompt}\n\n${replan.prompt}`
+    : prescribedFindings
+      ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
+      : baseSourcePrompt;
   const setup: SetupConfig = {
     controller,
     run: config.run,
@@ -653,11 +735,12 @@ export async function queueConfigFromLoop(
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
   };
   const item: QueueItem = {
-    id: `${selected.key}:${sourceAttempt}`,
+    ...(replan ? { acceptedReplan: ACCEPTED_REPLAN.id } : {}),
+    id: replan ? "cs-7766-replan-8014:5" : `${selected.key}:${sourceAttempt}`,
     issue: issueUrl,
     base: attemptBase,
     implementationAttempt: sourceAttempt,
-    implementationAttemptCeiling: config.attemptCeiling,
+    implementationAttemptCeiling: replan ? 5 : config.attemptCeiling,
     setup,
     source,
     repair: {
@@ -667,12 +750,22 @@ export async function queueConfigFromLoop(
       reviewer: { ...config.reviewer, prompt: reviewerPrompt },
     },
     delivery: {
+      ...(replan
+        ? {
+            refresh: {
+              number: replan.publication.number,
+              url: replan.publication.url,
+              head: replan.publication.head,
+              localBranch: sourceBranch,
+            },
+          }
+        : {}),
       requiredChecks: [...source.requiredChecks],
       policy: {
         key: selected.key,
         number: selected.number,
         title: issueContext.title,
-        sourceBranch,
+        sourceBranch: replan?.publication.sourceBranch ?? sourceBranch,
       },
     },
   };
@@ -780,6 +873,7 @@ export function validateQueueConfig(config: QueueConfig) {
         "source",
         "repair",
         "delivery",
+        ...(item.acceptedReplan === undefined ? [] : ["acceptedReplan"]),
       ]) &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(item.id) &&
         typeof item.issue === "string" &&
@@ -789,7 +883,11 @@ export function validateQueueConfig(config: QueueConfig) {
         item.implementationAttempt > 0 &&
         Number.isSafeInteger(item.implementationAttemptCeiling) &&
         item.implementationAttemptCeiling > 0 &&
-        item.implementationAttemptCeiling <= 4 &&
+        (item.acceptedReplan === ACCEPTED_REPLAN.id
+          ? config.run === ACCEPTED_REPLAN.run &&
+            item.implementationAttempt === 5 &&
+            item.implementationAttemptCeiling === 5
+          : item.acceptedReplan === undefined && item.implementationAttemptCeiling <= 4) &&
         item.implementationAttempt <= item.implementationAttemptCeiling,
       "malformed-queue-item",
     );

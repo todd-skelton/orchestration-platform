@@ -740,64 +740,93 @@ it("refuses to edit a draft that appeared after an absence observation", async (
   expect(effects).toEqual([]);
 });
 
-it("refreshes one exact existing draft forward under its observed remote lease", async () => {
-  const { current, git } = await localRemoteRepositoryFixture();
-  const priorHead = current.candidateHead;
-  const candidate = await commitCandidate(current, git);
-  current.refresh = {
-    number: 44,
-    url: `https://github.com/${current.repository}/pull/44`,
-    head: priorHead,
-  };
-  const publication = publicationEvidence(current);
-  const plan = {
-    sourceBranch: publication.sourceBranch,
-    baseBranch: publication.baseBranch,
-    title: publication.title,
-    body: publication.body,
-    draft: true as const,
-  };
-  const effects: string[][] = [];
-  const remoteHead = async () =>
-    (await git(["ls-remote", "--heads", "origin", `refs/heads/${plan.sourceBranch}`])).split(
-      /\s+/,
-    )[0]!;
-  const adapter = githubDeliveryAdapter({
-    async gh(_config, args) {
-      effects.push(args);
-      return "";
-    },
-    async ghJson() {
-      return [
-        publicationRow(publication, {
-          headRefOid: await remoteHead(),
-          title: "earlier failed attempt",
-        }),
-      ];
-    },
-  });
+it.each([false, true])(
+  "refreshes one exact existing draft forward (preserved prior branch: %s)",
+  async (preservePrior) => {
+    const { current, git } = await localRemoteRepositoryFixture();
+    const priorHead = current.candidateHead;
+    const localBranch = "codex/accepted-correction";
+    const preserved = resolve(current.worktree, "..", "preserved-source");
+    if (preservePrior) {
+      await git(["checkout", "-b", localBranch], current.worktree);
+      await git(["worktree", "add", preserved, "codex/iss-074-delivery"]);
+    }
+    const candidate = await commitCandidate(current, git);
+    current.refresh = {
+      number: 44,
+      url: `https://github.com/${current.repository}/pull/44`,
+      head: priorHead,
+      ...(preservePrior ? { localBranch } : {}),
+    };
+    const publication = publicationEvidence(current);
+    const plan = {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: publication.baseBranch,
+      title: publication.title,
+      body: publication.body,
+      draft: true as const,
+    };
+    const effects: string[][] = [];
+    const remoteHead = async () =>
+      (await git(["ls-remote", "--heads", "origin", `refs/heads/${plan.sourceBranch}`])).split(
+        /\s+/,
+      )[0]!;
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson() {
+        return [
+          publicationRow(publication, {
+            headRefOid: await remoteHead(),
+            title: "earlier failed attempt",
+          }),
+        ];
+      },
+    });
 
-  await expect(adapter.observePublication(current, plan, "f".repeat(64))).resolves.toEqual({
-    state: "needs-mutation",
-    target: "pr:44",
-  });
-  await expect(adapter.observePublication(current, plan, "f".repeat(64), "pr:44")).resolves.toEqual(
-    { state: "unknown" },
-  );
-  await expect(adapter.publish(current, plan, "pr:44")).resolves.toBeUndefined();
-  expect(await remoteHead()).toBe(candidate);
-  expect(effects).toEqual([
-    [
-      "pr",
-      "edit",
-      "44",
-      "--title",
-      publication.title,
-      "--body-file",
-      resolve(current.stateDirectory, "approved-pull-request.md"),
-    ],
-  ]);
-}, 30_000);
+    await expect(adapter.observePublication(current, plan, "f".repeat(64))).resolves.toEqual({
+      state: "needs-mutation",
+      target: "pr:44",
+    });
+    await expect(
+      adapter.observePublication(current, plan, "f".repeat(64), "pr:44"),
+    ).resolves.toEqual({ state: "unknown" });
+    await expect(adapter.publish(current, plan, "pr:44")).resolves.toBeUndefined();
+    expect(await remoteHead()).toBe(candidate);
+    expect(effects).toEqual([
+      [
+        "pr",
+        "edit",
+        "44",
+        "--title",
+        publication.title,
+        "--body-file",
+        resolve(current.stateDirectory, "approved-pull-request.md"),
+      ],
+    ]);
+    if (preservePrior) {
+      expect(await git(["rev-parse", "HEAD"], preserved)).toBe(priorHead);
+      const cleanup = {
+        worktrees: [current.worktree, current.reviewWorktree],
+        branch: localBranch,
+      };
+      const merge = { head: candidate, number: 44, mergeCommit: "d".repeat(40) };
+      await expect(adapter.observeCleanup(current, cleanup, merge)).resolves.toEqual({
+        state: "needs-mutation",
+      });
+      await adapter.cleanup(current, cleanup, merge);
+      await expect(adapter.observeCleanup(current, cleanup, merge)).resolves.toEqual({
+        state: "confirmed",
+        value: cleanup,
+      });
+      expect(await git(["rev-parse", "HEAD"], preserved)).toBe(priorHead);
+      expect(await remoteHead()).toBe(candidate);
+    }
+  },
+  30_000,
+);
 
 it.each([
   ["absent", () => []],

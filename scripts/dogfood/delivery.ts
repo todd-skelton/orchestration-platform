@@ -44,6 +44,8 @@ export interface PublicationRefresh {
   number: number;
   url: string;
   head: string;
+  // ISS-145: the prior PR branch may still belong to a preserved worktree.
+  localBranch?: string;
 }
 
 export interface CleanupPlan {
@@ -329,7 +331,15 @@ function validateConfig(config: DeliveryConfig) {
   );
   if (hasRefresh)
     demand(
-      exactKeys(config.refresh, ["number", "url", "head"]) &&
+      exactKeys(config.refresh, [
+        "number",
+        "url",
+        "head",
+        ...(config.refresh?.localBranch === undefined ? [] : ["localBranch"]),
+      ]) &&
+        (config.refresh.localBranch === undefined ||
+          (typeof config.refresh.localBranch === "string" &&
+            config.refresh.localBranch.length > 0)) &&
         Number.isSafeInteger(config.refresh.number) &&
         config.refresh.number > 0 &&
         typeof config.refresh.url === "string" &&
@@ -410,7 +420,7 @@ function validatePlan(config: DeliveryConfig, plan: DeliveryPlan) {
       plan.cleanup.worktrees.every((path) => isAbsolute(path)) &&
       plan.cleanup.worktrees.includes(config.worktree) &&
       plan.cleanup.worktrees.includes(config.reviewWorktree) &&
-      plan.cleanup.branch === plan.publication.sourceBranch,
+      plan.cleanup.branch === (config.refresh?.localBranch ?? plan.publication.sourceBranch),
     "malformed-cleanup-plan",
   );
 }

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { QueueBlocked, readQueueHistory, validateHistory } from "./queue.ts";
+import { ACCEPTED_REPLAN, QueueBlocked, readQueueHistory, validateHistory } from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
 
 type ActionableStopReason = import("./queue.js").ActionableStopReason;
@@ -161,9 +161,24 @@ export async function nextCycle(
       const observed = await adapter.issue(config, selected.number);
       assertIssue(selected, observed);
       if (observed.state === "CLOSED") {
-        for (let attempt = 1; attempt <= config.attemptCeiling; attempt += 1) {
+        const slugs = Array.from(
+          { length: config.attemptCeiling },
+          (_, index) => `${selected.key.toLowerCase()}-attempt-${index + 1}`,
+        );
+        if (config.acceptedReplan && selected.key === ACCEPTED_REPLAN.key) {
+          const prior = await optionalRecord(
+            resolve(config.stateRoot, ACCEPTED_REPLAN.priorRun, "cs-7766-attempt-4"),
+            "attempt",
+          );
+          if (prior !== ABSENT) {
+            validateHistory(prior.history, config.nativeLaunchCeiling);
+            if (prior.history.length > initialHistory.length) initialHistory = prior.history;
+          }
+          slugs.push(ACCEPTED_REPLAN.slug);
+        }
+        for (const slug of slugs) {
           const history = await readQueueHistory({
-            stateDirectory: resolve(directory, `${selected.key.toLowerCase()}-attempt-${attempt}`),
+            stateDirectory: resolve(directory, slug),
             nativeLaunchCeiling: config.nativeLaunchCeiling,
             initialHistory,
           });
@@ -320,9 +335,11 @@ function stopMessage(
   const exact = Object.hasOwn(stopRecoveryActions, reason)
     ? stopRecoveryActions[reason as ActionableStopReason]
     : undefined;
-  const change = exact
-    ? exact(context)
-    : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
+  const change = config.acceptedReplan
+    ? "preserve this run and the original four attempts, propose rollback, and wait for Todd; do not start another corrective cycle or restart after a new loop defect without his decision"
+    : exact
+      ? exact(context)
+      : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
   const count = `after ${attempts} implementation attempt${attempts === 1 ? "" : "s"}`;
   const detail = diagnostics?.trim().slice(0, 500);
   return {

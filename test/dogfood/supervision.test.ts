@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
-import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
+import { ACCEPTED_REPLAN, QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
 import { selectCandidates } from "../../adapters/self.mjs";
 import {
   loadRepositoryAdapter,
@@ -515,6 +515,61 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
     ).resolves.toEqual(expect.any(String));
   },
 );
+
+it("exits an accepted corrective run on an item stop and asks Todd before further work", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-accepted-replan-stop-"));
+  roots.push(root);
+  const config: LoopConfig = {
+    ...loop(root),
+    run: ACCEPTED_REPLAN.run,
+    adapter: "chase-sets",
+    repository: "chase-sets/chase-sets",
+    targetMilestone: 158,
+    acceptedReplan: ACCEPTED_REPLAN.id,
+  };
+  const runState = resolve(config.stateRoot, config.run);
+  const request = resolve(root, "loop.json");
+  await mkdir(runState, { recursive: true });
+  await persistCycle(config, {
+    selection: { cycle: 1, key: "cs-7766", number: 7766, base: "a".repeat(40) },
+    initialHistory: [],
+  });
+  await writeFile(request, JSON.stringify(config));
+  await writeFile(
+    resolve(runState, "command-controls.json"),
+    JSON.stringify({
+      validationStopReason: "implementation-attempt-ceiling-exhausted",
+      parkCalls: 0,
+    }),
+  );
+  await writeFile(
+    resolve(runState, "command-issue.json"),
+    JSON.stringify({
+      state: "OPEN",
+      key: "cs-7766",
+      labels: [],
+      comments: [],
+    }),
+  );
+  await expect(
+    execute(
+      process.execPath,
+      ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
+      {
+        env: { ...process.env, SUPERVISE_FIXTURE_STATE: runState },
+        timeout: 10_000,
+        windowsHide: true,
+      },
+    ),
+  ).rejects.toMatchObject({ code: 1 });
+  const controls = JSON.parse(await readFile(resolve(runState, "command-controls.json"), "utf8"));
+  expect(controls.parkCalls).toBe(1);
+  expect(controls.selectCalls).toBeUndefined();
+  const issue = JSON.parse(await readFile(resolve(runState, "command-issue.json"), "utf8"));
+  expect(issue.comments).toHaveLength(1);
+  expect(issue.comments[0]).toContain("propose rollback, and wait for Todd");
+  expect(issue.comments[0]).toContain("do not start another corrective cycle");
+});
 
 it("exits after one selection when a stop happens before a cycle is active", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-stop-"));
