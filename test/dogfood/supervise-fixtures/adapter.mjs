@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
 import { QueueBlocked } from "../../../scripts/dogfood/queue.ts";
 let sourceObserved = false;
@@ -90,6 +90,13 @@ export async function queueConfigFromLoop(
   _repositoryAdapter,
   initialHistory,
 ) {
+  await call(`workspace:${selected.key}`);
+  const controls = await readJson(
+    resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
+    {},
+  );
+  if (controls.workspaceStops?.[selected.key])
+    throw new QueueBlocked(controls.workspaceStops[selected.key]);
   const stateDirectory = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-queue`);
   const sourceState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-source`);
   const repairState = resolve(loop.stateRoot, loop.run, `${selected.key.toLowerCase()}-repair`);
@@ -170,7 +177,15 @@ export function repositorySupervisionAdapter() {
       );
       return controls.main ?? "a".repeat(40);
     },
-    async issue(config) {
+    async issue(config, number) {
+      await call(`issue:${number}`);
+      const controls = await readJson(
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
+        {},
+      );
+      if (controls.issueObservationStops?.[number])
+        throw new QueueBlocked(controls.issueObservationStops[number]);
+      if (controls.issueObservations?.[number]) return controls.issueObservations[number];
       return readIssue(config);
     },
     async removeReady(config) {
@@ -189,6 +204,10 @@ export function repositorySupervisionAdapter() {
       await writeIssue(config, issue);
     },
   };
+}
+
+async function call(event) {
+  await appendFile(resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-calls.log"), `${event}\n`);
 }
 
 async function readJson(path, fallback) {
@@ -264,25 +283,29 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
   return {
     async assertExecutor() {},
     history,
-    async setup() {
+    async setup(item) {
+      await call(`setup:${item.id}`);
       return { status: "ready" };
     },
     async source(item) {
+      await call(`source:${item.id}`);
       const controls = await readJson(
         resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
         {},
       );
       if (controls.stopReason) throw new QueueBlocked(controls.stopReason);
-      if (!sourceObserved) {
+      if (!sourceObserved && !controls.observeImmediately) {
         sourceObserved = true;
         return { status: "observing-author" };
       }
       return accept(item);
     },
     async repair() {
+      await call("repair");
       throw new Error("fixture repair must not run");
     },
     async delivery(item, accepted) {
+      await call(`delivery:${item.id}`);
       return {
         status: "complete",
         run: item.source.run,

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { QueueBlocked, validateHistory } from "./queue.ts";
+import { QueueBlocked, readQueueHistory, validateHistory } from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
 
 type ActionableStopReason = import("./queue.js").ActionableStopReason;
@@ -157,6 +157,26 @@ export async function nextCycle(
         cycle += 1;
         continue;
       }
+      // ISS-144: external closure supersedes workspace recovery and pending stops.
+      const observed = await adapter.issue(config, selected.number);
+      assertIssue(selected, observed);
+      if (observed.state === "CLOSED") {
+        for (let attempt = 1; attempt <= config.attemptCeiling; attempt += 1) {
+          const history = await readQueueHistory({
+            stateDirectory: resolve(directory, `${selected.key.toLowerCase()}-attempt-${attempt}`),
+            nativeLaunchCeiling: config.nativeLaunchCeiling,
+            initialHistory,
+          });
+          if (history.length >= initialHistory.length) initialHistory = history;
+        }
+        await record(directory, `cycle-${cycle}-complete`, {
+          selection: selected,
+          history: initialHistory,
+        });
+        cycle += 1;
+        continue;
+      }
+      if (observed.state !== "OPEN") throw new QueueBlocked("issue-observation-unavailable");
       return { selection: selected, initialHistory };
     }
 
