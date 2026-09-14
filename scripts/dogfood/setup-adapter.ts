@@ -298,11 +298,11 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
 
         if (await exists(rolePath(config, role))) return { state: "collision" };
         if (expectedBranch !== null) {
+          const holder = rows.find((row) => row.branch === `refs/heads/${expectedBranch}`);
+          if (holder) return { state: "collision", collisionPath: resolve(holder.path) };
           const existingHead = await branchHead(gitExecutable, config, expectedBranch);
           if (existingHead !== undefined) {
             if (!owned || existingHead !== roleHead(config, role)) return { state: "collision" };
-            if (rows.some((row) => row.branch === `refs/heads/${expectedBranch}`))
-              return { state: "collision" };
           }
         }
         return { state: "absent" };

@@ -28,20 +28,23 @@ const config: DeliveryConfig = {
   policy: { key: "ISS-001" },
 };
 
-it.each([false, true])(
+it.each([false, true, "run-scoped"])(
   "composes repository decisions (separate refresh branch: %s)",
   async (refresh) => {
-    const current = refresh
-      ? {
-          ...config,
-          refresh: {
-            number: 1,
-            url: "https://example.test/pull/1",
-            head: "a".repeat(40),
-            localBranch: "topic/correction",
-          },
-        }
-      : config;
+    const current =
+      refresh === "run-scoped"
+        ? { ...config, localBranch: "topic/run-source" }
+        : refresh
+          ? {
+              ...config,
+              refresh: {
+                number: 1,
+                url: "https://example.test/pull/1",
+                head: "a".repeat(40),
+                localBranch: "topic/correction",
+              },
+            }
+          : config;
     const calls: string[] = [];
     const fake: RepositoryAdapter = {
       selectCandidates: () => {
@@ -128,7 +131,12 @@ it.each([false, true])(
       mergePolicy: { method: "fixture" },
       cleanup: {
         worktrees: [config.worktree, config.reviewWorktree],
-        branch: refresh ? "topic/correction" : "topic/iss-001",
+        branch:
+          refresh === "run-scoped"
+            ? "topic/run-source"
+            : refresh
+              ? "topic/correction"
+              : "topic/iss-001",
       },
     });
     await fake.afterMerge({

@@ -153,7 +153,7 @@ export function repositoryDeliveryPolicy(
         mergePolicy,
         cleanup: {
           worktrees: [config.worktree, config.reviewWorktree],
-          branch: config.refresh?.localBranch ?? publication.sourceBranch,
+          branch: config.localBranch ?? config.refresh?.localBranch ?? publication.sourceBranch,
         },
       };
     },
