@@ -36,6 +36,20 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+ISS-139 records an evidence-discovery failure in M2 run `m2-jpeg-20260914`:
+Chase Sets #7766 exhausted its implementation budget after two blocking reviews
+reported missing mutant execution evidence already present in author traces.
+The run reached idle without a PR, merge, deployment or issue completion; M2
+remains incomplete. Preserve its failed records and candidate commits
+`eee1509fdedea776d7afb557f7baf5d061b131a8` and
+`bdc0e2973562a70a494d37b04c863230326bbc85`; this repair does not unpark or restart it.
+Initial and delta reviewers now receive the selected author's captured trace
+and existing attempt, terminal and candidate record paths, including on resume
+and retry. Reviewers inspect relevant commands and outputs alongside the exact
+candidate, distinguish execution from claims and sandbox limitations, and make
+their own read-only verdict. Author PASS is not review authority; required but
+missing or inadequate test evidence remains a finding.
+
 ## Planning
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a

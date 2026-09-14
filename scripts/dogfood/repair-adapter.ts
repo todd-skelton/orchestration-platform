@@ -38,6 +38,7 @@ export function sourceReviewerReportPrompt(reviewPaths: string[]) {
 function reviewerReportPrompt(handoff: RepairHandoff) {
   return (
     `This is a DELTA review inheriting complete predecessor ${handoff.predecessorCompleteSweep}. ` +
+    `Delivery main base: ${handoff.mainBase}; corrective author base: ${handoff.correctiveBase}; implementation candidate ${handoff.implementation.attempts} of ${handoff.implementation.ceiling}. ` +
     `Inspect only the prescribed remedies ${JSON.stringify(handoff.failedReview.findings)} and their direct callers; preserve all acceptance criteria and assertions.\n` +
     "The final reviewer report has exactly run, role, head, verdict, findings and g0. " +
     'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +

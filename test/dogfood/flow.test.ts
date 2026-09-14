@@ -16,6 +16,7 @@ import {
 import { parseTrace, waitForProvider } from "../../scripts/dogfood/dispatch-adapter.js";
 import { stopCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
+import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
@@ -150,7 +151,7 @@ async function fixture() {
             ? "author"
             : role,
         pid: 123,
-        trace: resolve(root, `${role}.jsonl`),
+        trace: resolve(selectedConfig.stateDirectory, `${role}-${count}.jsonl`),
         launchedAt: 1,
       };
     },
@@ -244,6 +245,23 @@ async function fixture() {
   };
 }
 
+async function expectAuthorEvidence(config: Config, prompt: string) {
+  const author = JSON.parse(
+    await readFile(resolve(config.stateDirectory, "author-attempt.json"), "utf8"),
+  );
+  expect(prompt).toContain(`Selected author attempt ${author.id}`);
+  expect(prompt).toContain(`exact author base: ${config.base}; exact candidate: ${head}`);
+  expect(prompt).toContain(`Captured execution trace: ${JSON.stringify(author.trace)}`);
+  for (const name of ["author-attempt", "author-terminal", "candidate"])
+    expect(prompt).toContain(JSON.stringify(resolve(config.stateDirectory, `${name}.json`)));
+  expect(prompt).toContain("Read the relevant recorded commands and outputs");
+  expect(prompt).toContain("Distinguish actual executed results from author claims");
+  expect(prompt).toContain("unrun checks and sandbox limitations");
+  expect(prompt).toContain("author PASS never determines your verdict");
+  expect(prompt).toContain("missing or inadequate test results remain findings");
+  expect(prompt).toContain("Leave the records and review worktree unchanged");
+}
+
 function fakeProvider(f: Awaited<ReturnType<typeof fixture>>, responses: (string | undefined)[]) {
   let now = 0;
   const polls: { at: number; launches: number }[] = [];
@@ -270,6 +288,116 @@ function fakeProvider(f: Awaited<ReturnType<typeof fixture>>, responses: (string
 }
 
 describe("supervised sequential pilot (fake attempts, never live acceptance)", () => {
+  it("discovers persisted author execution records when initial review resumes after commit", async () => {
+    const f = await fixture();
+    await f.run();
+    const author = JSON.parse(
+      await readFile(resolve(f.config.stateDirectory, "author-attempt.json"), "utf8"),
+    );
+    const execution = JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "command_execution",
+        command: "pnpm test -- ownership-mutant",
+        exit_code: 1,
+        aggregated_output: "fixture mutant red evidence, not an author assertion",
+      },
+    });
+    await writeFile(author.trace, `${execution}\n`);
+    f.authorDone();
+    f.adapter.waitForProvider = async () => {
+      throw new Error("pause before reviewer launch");
+    };
+    await expect(f.run()).rejects.toThrow("pause before reviewer launch");
+    const before = await Promise.all(
+      ["author-attempt", "author-terminal", "candidate"].map((name) =>
+        readFile(resolve(f.config.stateDirectory, `${name}.json`), "utf8"),
+      ),
+    );
+    f.adapter.waitForProvider = async () => {};
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    await expectAuthorEvidence(f.config, f.launchPrompts[1]!);
+    expect(f.launchPrompts[1]).not.toContain(execution);
+    expect(f.launchPrompts[0]).not.toContain("Selected author attempt");
+    expect(await readFile(author.trace, "utf8")).toBe(`${execution}\n`);
+    expect(
+      await Promise.all(
+        ["author-attempt", "author-terminal", "candidate"].map((name) =>
+          readFile(resolve(f.config.stateDirectory, `${name}.json`), "utf8"),
+        ),
+      ),
+    ).toEqual(before);
+    expect(f.launches).toEqual(["author", "reviewer"]);
+    expect(f.commits).toHaveLength(1);
+  });
+
+  it.each(["malformed", "dead"] as const)(
+    "keeps selected repair evidence and delta scope discoverable across resume and %s reviewer retry",
+    async (failure) => {
+      const f = await fixture();
+      const initialTrace = resolve(f.config.stateDirectory, "initial-author.jsonl");
+      await writeFile(
+        resolve(f.config.stateDirectory, "author-attempt.json"),
+        JSON.stringify({ id: "initial-author", trace: initialTrace }),
+      );
+      f.config.stateDirectory = resolve(f.config.stateDirectory, "repair");
+      await mkdir(f.config.stateDirectory);
+      const handoff = {
+        mainBase: pilotRevision,
+        correctiveBase: base,
+        failedReview: {
+          findings: [
+            {
+              file: "scripts/repair.mjs",
+              line: 1,
+              severity: "blocking" as const,
+              text: "show executed mutant evidence",
+            },
+          ],
+        },
+        predecessorCompleteSweep: "initial-reviewer",
+        implementation: { attempts: 2, ceiling: 4 },
+        sourcePaths: ["scripts/repair.mjs"],
+        acceptanceCriteria: ["execute and restore the ownership/status mutants"],
+      };
+      const dispatch = () => reviewedRepairAdapter(f.adapter, f.pilot).dispatch(f.config, handoff);
+      await expect(dispatch()).resolves.toMatchObject({ status: "observing-author" });
+      f.authorDone();
+      await expect(dispatch()).resolves.toMatchObject({ status: "observing-reviewer" });
+      await expect(dispatch()).resolves.toMatchObject({ status: "observing-reviewer" });
+      expect(f.launchPrompts[0]).toContain("Author PASS uses an empty summary");
+      f.statuses.reviewer = failure;
+      f.retry("running");
+      await expect(dispatch()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+      for (const prompt of f.launchPrompts.slice(1)) {
+        await expectAuthorEvidence(f.config, prompt);
+        expect(prompt).not.toContain(JSON.stringify(initialTrace));
+        expect(prompt).toContain("DELTA review inheriting complete predecessor initial-reviewer");
+        expect(prompt).toContain(
+          `Delivery main base: ${pilotRevision}; corrective author base: ${base}; implementation candidate 2 of 4`,
+        );
+        expect(prompt).toContain(JSON.stringify(handoff.failedReview.findings));
+      }
+      f.retry(
+        "passed",
+        JSON.stringify({
+          run: f.config.run,
+          role: "reviewer",
+          head,
+          verdict: "PASS",
+          findings: [],
+          g0: "No simpler change.",
+        }),
+      );
+      await expect(dispatch()).resolves.toMatchObject({
+        status: "awaiting-publication",
+        retries: 1,
+      });
+      expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+      expect(f.commits).toHaveLength(1);
+    },
+  );
+
   it("waits before gate corrections and replaces a provider-dead correction", async () => {
     const f = await fixture();
     const probe = fakeProvider(f, [undefined, "offline", undefined]);
@@ -316,6 +444,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication", retries: 1 });
     expect(f.launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
     expect(f.launchPrompts[2]).toContain("previous reviewer report could not be parsed");
+    await expectAuthorEvidence(f.config, f.launchPrompts[2]!);
     expect(f.launchPrompts[3]).toBe(f.launchPrompts[2]);
   });
   it("waits out a provider-dead author and reaches publication and passing CI in the same attempt", async () => {
@@ -662,6 +791,10 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     });
     expect(f.launches).toEqual(["author", "author", "reviewer"]);
     expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    await expectAuthorEvidence(f.config, f.launchPrompts[2]!);
+    expect(f.launchPrompts[2]).not.toContain(
+      JSON.stringify(resolve(f.config.stateDirectory, "author-1.jsonl")),
+    );
     expect(f.resets).toEqual([["reset", "--hard", base]]);
     expect(f.cleans).toEqual([["clean", "-fd"]]);
     expect(
@@ -716,6 +849,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication", retries: 1 });
     expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
     expect(f.launchPrompts[2]).toBe(f.launchPrompts[1]);
+    await expectAuthorEvidence(f.config, f.launchPrompts[2]!);
   });
   it("refuses another controller/configuration and changed prompts before dispatch", async () => {
     const f = await fixture();
