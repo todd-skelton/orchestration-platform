@@ -116,6 +116,24 @@ imported verdict or budget reset is required. Exact-head independent review,
 local gates, hosted checks, publication, merge and deployment remain required.
 This repair does not restart the run or claim M2 completion.
 
+ISS-143 records recurring hosted-check startup stops at
+https://github.com/todd-skelton/orchestration-platform/issues/367#issuecomment-5662310822
+and earlier comment `5660812394`. PR #8005's required check and linked workflow
+became visible after the initial observation had stopped delivery. The initial
+snapshot was not captured; advisory checks may already have been visible.
+When all required checks and all workflow runs are absent, the checks adapter
+now waits ten seconds and reobserves, at most twelve times in that observation
+call (two minutes of waits, plus API request time). Advisory check rows do not
+prevent this startup retry. Each poll revalidates exact publication identity.
+Any visible workflow run or required-check row leaves startup retry and follows
+the existing validation; wrong-head/PR, malformed, duplicate, failed or skipped
+required evidence is not converted into success. Persistent absence still
+stops at the existing missing-check error. A linked pending workflow follows
+ordinary observation until actual required green, with no republishing or
+worker/implementation retry budget consumed. A host interruption can repeat
+this bounded in-flight observation under rule 9; no new runtime schema or
+migration is required. This repair does not edit or restart the running loop.
+
 ## Planning
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a

@@ -208,7 +208,7 @@ async function writeState(config: DeliveryConfig, name: string, value: unknown) 
   await writeFile(resolve(config.stateDirectory, `${name}.json`), `${JSON.stringify(value)}\n`);
 }
 
-async function aggregateFixture() {
+async function aggregateFixture(pause: (ms: number) => Promise<void> = async () => {}) {
   const f = await fixture();
   f.config.requiredChecks = ["PR Required"];
   f.publication.url = `https://github.com/${f.config.repository}/pull/${f.publication.number}`;
@@ -222,34 +222,38 @@ async function aggregateFixture() {
     driftAfterWorkflow: false,
   };
   let publicationHead = head;
-  const provider = githubDeliveryAdapter({
-    async gh(_config, args) {
-      expect(args.slice(0, 3)).toEqual(["pr", "checks", String(f.publication.number)]);
-      return JSON.stringify(evidence.checks);
+  const provider = githubDeliveryAdapter(
+    {
+      async gh(_config, args) {
+        expect(args.slice(0, 3)).toEqual(["pr", "checks", String(f.publication.number)]);
+        return JSON.stringify(evidence.checks);
+      },
+      async ghJson(_config, args) {
+        if (args[0] === "api") {
+          expect(args).toEqual([
+            "api",
+            `repos/${f.config.repository}/actions/runs?head_sha=${head}&event=pull_request&per_page=100`,
+            "--paginate",
+            "--slurp",
+          ]);
+          if (evidence.driftAfterWorkflow) publicationHead = "f".repeat(40);
+          return [{ workflow_runs: evidence.runs }];
+        }
+        return {
+          number: f.publication.number,
+          url: f.publication.url,
+          headRefOid: publicationHead,
+          headRefName: f.publication.sourceBranch,
+          baseRefName: f.publication.baseBranch,
+          state: "OPEN",
+          title: f.publication.title,
+          body: f.publication.body,
+        };
+      },
     },
-    async ghJson(_config, args) {
-      if (args[0] === "api") {
-        expect(args).toEqual([
-          "api",
-          `repos/${f.config.repository}/actions/runs?head_sha=${head}&event=pull_request&per_page=100`,
-          "--paginate",
-          "--slurp",
-        ]);
-        if (evidence.driftAfterWorkflow) publicationHead = "f".repeat(40);
-        return [{ workflow_runs: evidence.runs }];
-      }
-      return {
-        number: f.publication.number,
-        url: f.publication.url,
-        headRefOid: publicationHead,
-        headRefName: f.publication.sourceBranch,
-        baseRefName: f.publication.baseBranch,
-        state: "OPEN",
-        title: f.publication.title,
-        body: f.publication.body,
-      };
-    },
-  });
+    "git",
+    pause,
+  );
   f.adapter.checks = provider.checks;
   f.adapter.failedCheckLog = async () => "PR Required failed";
   const check = (name: string, bucket: CheckEvidence["bucket"]): CheckEvidence => ({
@@ -404,6 +408,65 @@ it("waits across intermediate jobs and job gaps for the real required aggregate 
   ).toEqual(f.evidence.checks);
 });
 
+it.each([false, true])(
+  "reobserves invisible required-check startup with advisory rows=%s",
+  async (advisory) => {
+    const waits: number[] = [];
+    const f = await aggregateFixture(async (ms) => {
+      waits.push(ms);
+      expect(f.calls).not.toContain("merge");
+      if (waits.length === 3)
+        f.evidence.runs = [
+          { head_sha: head, pull_requests: [{ number: f.publication.number }], status: "queued" },
+        ];
+    });
+    f.evidence.runs = [];
+    if (advisory)
+      f.evidence.checks = [f.check("PR Scope", "pass"), f.check("Risk Review", "pending")];
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      checks: [],
+      retries: 0,
+    });
+    expect(waits).toEqual([10_000, 10_000, 10_000]);
+    expect(f.calls).not.toContain("merge");
+    f.evidence.runs[0]!.status = "in_progress";
+    f.evidence.checks = [f.check("PR Required", "pending")];
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.checks = [f.check("PR Required", "pass")];
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "complete",
+      retries: 0,
+    });
+    expect(waits).toHaveLength(3);
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+    expect(f.calls.filter((call) => call === "source")).toHaveLength(1);
+    expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+  },
+);
+
+it.each([false, true])(
+  "bounds invisible workflow startup with advisory rows=%s",
+  async (advisory) => {
+    const waits: number[] = [];
+    const f = await aggregateFixture(async (ms) => {
+      waits.push(ms);
+    });
+    f.evidence.runs = [];
+    if (advisory) f.evidence.checks = [f.check("PR Scope", "pass")];
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+      "missing-or-duplicate-check:PR Required",
+    );
+    expect(waits).toEqual(Array(12).fill(10_000));
+    expect(f.calls).not.toContain("merge");
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  },
+);
+
 it.each([
   "terminal missing",
   "unknown workflow",
@@ -414,9 +477,13 @@ it.each([
   "fail",
   "cancel",
   "skipping",
+  "malformed",
   "publication drift",
 ])("refuses merge after waiting when aggregate evidence becomes %s", async (mode) => {
-  const f = await aggregateFixture();
+  const waits: number[] = [];
+  const f = await aggregateFixture(async (ms) => {
+    waits.push(ms);
+  });
   f.evidence.checks = [f.check("Change Scope", "pass")];
   await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
     status: "observing-hosted-checks",
@@ -431,6 +498,7 @@ it.each([
     f.evidence.checks = [f.check("PR Required", "pass"), f.check("PR Required", "pass")];
   if (["fail", "cancel", "skipping"].includes(mode))
     f.evidence.checks = [f.check("PR Required", mode as CheckEvidence["bucket"])];
+  if (mode === "malformed") f.evidence.checks = [{ ...f.check("PR Required", "pass"), link: "" }];
   const result = deliveryStep(f.config, f.adapter, f.policy);
   if (mode === "fail" || mode === "cancel")
     await expect(result).resolves.toMatchObject({ status: "failed" });
@@ -440,8 +508,26 @@ it.each([
         ? "hosted-observation-unavailable"
         : mode === "skipping"
           ? "hosted-check-failed:PR Required"
-          : "missing-or-duplicate-check:PR Required",
+          : mode === "malformed"
+            ? "malformed-check:PR Required"
+            : "missing-or-duplicate-check:PR Required",
     );
+  expect(f.calls).not.toContain("merge");
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(waits).toHaveLength(mode === "no workflow" ? 12 : 0);
+});
+
+it("revalidates publication identity during the startup retry", async () => {
+  const waits: number[] = [];
+  const f = await aggregateFixture(async (ms) => {
+    waits.push(ms);
+    f.evidence.driftAfterWorkflow = true;
+  });
+  f.evidence.runs = [];
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "hosted-observation-unavailable",
+  );
+  expect(waits).toEqual([10_000]);
   expect(f.calls).not.toContain("merge");
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
 });
