@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
-import { sha } from "../../scripts/dogfood/flow.js";
+import { sha, step, type Adapter, type Config } from "../../scripts/dogfood/flow.js";
 import {
   assertControllerExecutor,
   githubDeliveryAdapter,
@@ -12,6 +12,7 @@ import {
 import {
   deliveryStep,
   type DeliveryConfig,
+  type DeliveryAdapter,
   type DeliveryPlan,
   type PublicationEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
@@ -1887,6 +1888,208 @@ it("fails self policy closed before provider access for the wrong repository or 
   ).rejects.toThrow("wrong-self-hosted-checks");
 });
 
+it.each(["author", "reviewer"] as const)(
+  "delivers actual native %s retry records and restarts without worker replay",
+  async (retriedRole) => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-produced-retry-")));
+    roots.push(root);
+    const current = config(root);
+    await Promise.all(
+      [
+        current.controllerRoot,
+        current.worktree,
+        current.reviewWorktree,
+        current.stateDirectory,
+      ].map((path) => mkdir(path)),
+    );
+    const source: Config = {
+      ...pilotConfig(current),
+      allowedPaths: ["source.txt"],
+      author: { model: "fixture", effort: "low", prompt: "Implement the issue" },
+      reviewer: { model: "fixture", effort: "low", prompt: "Review independently" },
+      adapter: { kind: "codex-exec", executable: process.execPath },
+    };
+    let sourceHead = source.base;
+    let reviewHead = source.base;
+    const launches: string[] = [];
+    const interruptedId = "33333333-3333-3333-3333-333333333333";
+    const native: Adapter = {
+      async preflight() {},
+      async git(tree, args) {
+        if (args[0] === "rev-parse")
+          return args[1] === "--show-toplevel"
+            ? tree
+            : tree === current.controllerRoot
+              ? current.controllerRevision
+              : tree === current.worktree
+                ? sourceHead
+                : reviewHead;
+        if (args[0] === "status") return "";
+        if (args[0] === "diff")
+          return args.includes("--binary")
+            ? "interrupted tracked patch"
+            : args.includes("--cached")
+              ? ""
+              : "source.txt\0";
+        if (args[0] === "commit") sourceHead = head;
+        if (args[0] === "checkout") reviewHead = args.at(-1)!;
+        if (args[0] === "merge-base") return source.base;
+        return "";
+      },
+      async launch(role, config) {
+        launches.push(role);
+        const id =
+          role === retriedRole && launches.filter((value) => value === role).length === 1
+            ? interruptedId
+            : role === "author"
+              ? authorId
+              : reviewId;
+        return {
+          id,
+          pid: 100 + launches.length,
+          trace: resolve(config.stateDirectory, `${role}-${id}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, _config, attempt) {
+        if (attempt.id === interruptedId)
+          return { id: attempt.id, status: role === "author" ? "dead" : "malformed" };
+        return {
+          id: attempt.id,
+          status: "passed",
+          head: role === "author" ? source.base : head,
+          ...(role === "reviewer" ? { summary: reviewerReport(current) } : {}),
+        };
+      },
+      async checks() {
+        throw new Error("unexpected worker CI observation");
+      },
+    };
+    await expect(step(source, native, current.controllerRoot)).resolves.toMatchObject({
+      status: "awaiting-publication",
+      retries: 1,
+    });
+    current.retries = 1;
+    const retry = JSON.parse(
+      await readFile(resolve(current.stateDirectory, `${retriedRole}-attempt.json`), "utf8"),
+    );
+    expect(retry.retries).toBe(1);
+    expect(retry.retryContext).toEqual(expect.any(String));
+    expect(retry.retryContext.length).toBeGreaterThan(0);
+    const before = await stateSnapshot(current.stateDirectory);
+    const producer = await step(source, native, current.controllerRoot);
+    expect(producer).toMatchObject({ status: "awaiting-publication", retries: 1 });
+    expect(launches).toHaveLength(3);
+    const github = githubDeliveryAdapter();
+    await expect(github.source(current)).resolves.toMatchObject({ head, reviewId });
+    const plan: DeliveryPlan = {
+      gates: {
+        beforeMirror: ["typecheck", "format:check", "planning:check", "test"],
+        afterMirror: [],
+      },
+      drafts: [],
+      publication: {
+        sourceBranch: "codex/iss-142",
+        baseBranch: "main",
+        title: "Deliver retry",
+        body: "Fixture",
+        draft: true,
+      },
+      mergePolicy: { method: "squash" },
+      cleanup: { worktrees: [current.worktree, current.reviewWorktree], branch: "codex/iss-142" },
+    };
+    const effects: string[] = [];
+    let published = false;
+    let merged = false;
+    let cleaned = false;
+    const delivery: DeliveryAdapter = {
+      ...github,
+      async verifyWorkspace() {
+        return true;
+      },
+      async runGate(_config, name) {
+        effects.push(name);
+        return "passed";
+      },
+      async observePublication(_config, approved, digest) {
+        const { draft: _draft, ...publication } = approved;
+        return published
+          ? {
+              state: "confirmed",
+              value: {
+                ...publication,
+                repository: current.repository,
+                head,
+                number: 44,
+                url: github.publicationUrl(current, 44),
+                planDigest: digest,
+              },
+            }
+          : { state: "needs-mutation", target: "absent" };
+      },
+      async publish() {
+        effects.push("publish");
+        published = true;
+      },
+      async checks() {
+        effects.push("checks");
+        return {
+          head,
+          checks: current.requiredChecks.map((name) => ({
+            name,
+            bucket: "pass",
+            link: "https://github.com/fixture/repository/actions/runs/123",
+          })),
+        };
+      },
+      async observeMerge() {
+        return merged
+          ? { state: "confirmed", value: { head, number: 44, mergeCommit: "e".repeat(40) } }
+          : { state: "needs-mutation" };
+      },
+      async merge() {
+        effects.push("merge");
+        merged = true;
+      },
+      async observeCleanup() {
+        return cleaned ? { state: "confirmed", value: plan.cleanup } : { state: "needs-mutation" };
+      },
+      async cleanup() {
+        effects.push("cleanup");
+        cleaned = true;
+      },
+    };
+    const policy = { plan: async () => plan };
+    await expect(deliveryStep(current, delivery, policy)).resolves.toMatchObject({
+      status: "complete",
+      head,
+      reviewId,
+      retries: 1,
+    });
+    expect(effects).toEqual([
+      "typecheck",
+      "format:check",
+      "planning:check",
+      "test",
+      "publish",
+      "checks",
+      "merge",
+      "cleanup",
+    ]);
+    const completed = await stateSnapshot(current.stateDirectory);
+    effects.length = 0;
+    await expect(deliveryStep(current, delivery, policy)).resolves.toMatchObject({
+      status: "complete",
+      retries: 1,
+    });
+    expect(effects).toEqual([]);
+    expect(await stateSnapshot(current.stateDirectory)).toEqual(completed);
+    for (const [name, bytes] of Object.entries(before)) expect(completed[name]).toBe(bytes);
+    expect(launches).toHaveLength(3);
+    expect(current.retries).toBe(1);
+  },
+);
+
 it.each(["none", "author", "reviewer", "unchanged-correction"])(
   "reduces an exact report after a %s retry to delivery evidence",
   async (retriedRole) => {
@@ -1980,12 +2183,7 @@ it.each(["author", "reviewer"])(
     await writePilotEvidence(current);
     const path = resolve(current.stateDirectory, `${role}-attempt.json`);
     const attempt = JSON.parse(await readFile(path, "utf8"));
-    for (const marker of [
-      { retries: 0 },
-      { retries: 2 },
-      { retries: "1" },
-      { retries: 1, extra: true },
-    ]) {
+    for (const marker of [{ retries: 0 }, { retries: 2 }, { retries: "1" }]) {
       await writeFile(path, JSON.stringify({ ...attempt, ...marker }));
       await expect(githubDeliveryAdapter().source(current)).rejects.toThrow(
         "unreviewed-delivery-source",

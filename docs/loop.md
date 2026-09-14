@@ -101,6 +101,21 @@ and GitHub to retain its logs until capture. Once captured, resumed worker
 launches use the runtime file without refetching. This repair does not restart
 the preserved run, fix JPEG, rerun CI or establish M2 completion.
 
+ISS-142 records the next stopped delivery at
+https://github.com/todd-skelton/orchestration-platform/issues/367#issuecomment-5661692847.
+ISS-141 recovery reached author PASS and independent reviewer PASS for exact
+candidate `ac2c54ce80865c0501d71aae4676c719b0d1eaf1`, but delivery rejected
+the native author's `retryContext` field as `unreviewed-delivery-source`.
+The delivery consumer now checks the identity and verdict fields it needs,
+not an exact key count for the single writer's attempt record. Native author
+and reviewer retry context does not invalidate an otherwise reviewed source.
+The host can install the reviewed stable executor while stopped and resume
+the same attempt 4 in delivery, retaining its one consumed worker retry and
+all existing worker records. No record migration, new worker, fifth attempt,
+imported verdict or budget reset is required. Exact-head independent review,
+local gates, hosted checks, publication, merge and deployment remain required.
+This repair does not restart the run or claim M2 completion.
+
 ## Planning
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a
