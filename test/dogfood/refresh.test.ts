@@ -639,7 +639,9 @@ it("refreshes first and resumed self gates with current registrations and candid
   expect(f.prompts).toHaveLength(1);
   expect(f.prompts[0]).toContain("independent DELTA review");
   expect(f.prompts[0]).toContain(f.reviewer.id);
-  expect(f.prompts[0]).toContain(resolve(f.sourceState, "author.jsonl"));
+  expect(f.prompts[0]).toContain(
+    `Captured execution trace: ${JSON.stringify(resolve(f.sourceState, "author.jsonl"))}.`,
+  );
   expect(f.drafts()).toBe(1);
   expect(f.commands.filter((args) => args[0] === "rebase")).toHaveLength(1);
   expect(f.publication()?.head).toBe(refreshed);
