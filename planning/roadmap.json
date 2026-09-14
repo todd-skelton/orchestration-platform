@@ -116,7 +116,9 @@
       "file": "planning/drafts/ISS-111.md",
       "milestone": "M3",
       "blockedBy": [
-        "ISS-110"
+        "ISS-110",
+        "ISS-137",
+        "ISS-138"
       ]
     },
     {
@@ -303,6 +305,30 @@
       "milestone": "M2",
       "blockedBy": [
         "ISS-134"
+      ]
+    },
+    {
+      "key": "ISS-136",
+      "file": "planning/drafts/ISS-136.md",
+      "milestone": "M3",
+      "blockedBy": [
+        "ISS-135"
+      ]
+    },
+    {
+      "key": "ISS-137",
+      "file": "planning/drafts/ISS-137.md",
+      "milestone": "M3",
+      "blockedBy": [
+        "ISS-136"
+      ]
+    },
+    {
+      "key": "ISS-138",
+      "file": "planning/drafts/ISS-138.md",
+      "milestone": "M3",
+      "blockedBy": [
+        "ISS-136"
       ]
     },
     {
