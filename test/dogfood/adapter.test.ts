@@ -18,6 +18,9 @@ import {
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
+import { parseReview } from "../../scripts/dogfood/repair-policy.mjs";
+import overlengthReview from "./fixtures/iss-150-overlength.json" with { type: "json" };
+import prefixedReview from "./fixtures/iss-150-prefixed.json" with { type: "json" };
 
 const id = "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
   head = "b".repeat(40);
@@ -587,6 +590,144 @@ it("requests the exact verdict, findings and G0 reviewer shape", () => {
   expect(schema.properties.findings).toMatchObject({ type: "array" });
   expect(schema.properties.g0).toEqual({ type: "string" });
   expect(schema.additionalProperties).toBe(false);
+});
+// Final agent messages and terminal events copied verbatim from ISS-147's
+// reviewer-725338a3 and reviewer-e6dc02bc traces in m1-intake-refresh-20260914T1635.
+// The preserved first verdict measures 2276, despite ISS-150's stated 2302.
+const preservedConfig = { ...config, run: "m1-intake-refresh-20260914T1635" };
+const preservedHead = "e535d57f413db9c07556af53f61389053aedffd1";
+it("accepts the preserved prose-prefixed final message by its sole verdict object", () => {
+  const message = prefixedReview[1]!.item!.text;
+  expect(message.length).toBe(2143);
+  const terminal = parseTrace(trace(prefixedReview), true, "reviewer", preservedConfig);
+  expect(terminal).toMatchObject({ status: "passed", head: preservedHead });
+  expect(terminal.summary).toHaveLength(1621);
+  expect(parseReview(terminal.summary, preservedConfig.run, preservedHead)).toEqual(
+    JSON.parse(message.slice(message.indexOf("{"))),
+  );
+});
+it.each([2276, 2302])(
+  "rejects an otherwise valid %i-character verdict only for length and records the diagnostic",
+  async (length) => {
+    const captured = JSON.parse(overlengthReview[1]!.item!.text);
+    expect(JSON.stringify(captured)).toHaveLength(2276);
+    // Keep the captured fixture unchanged; cover the issue's stated length separately.
+    const verdict = { ...captured, g0: captured.g0 + "x".repeat(length - 2276) };
+    // Removing only the excess G0 text satisfies all existing semantic checks.
+    expect(
+      parseReview(
+        JSON.stringify({ ...verdict, g0: "No simpler change." }),
+        preservedConfig.run,
+        preservedHead,
+      ).verdict,
+    ).toBe("PASS");
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-review-length-")));
+    cleanup.push(root);
+    const events = structuredClone(overlengthReview);
+    events[1]!.item!.text = JSON.stringify(verdict);
+    const attempt = {
+      id: events[0]!.thread_id!,
+      pid: 999_999,
+      trace: resolve(root, "reviewer.jsonl"),
+      launchedAt: 1,
+    };
+    const diagnostic = `Reviewer verdict serialized length is ${length} characters; maximum is 2000. Shorten findings and G0 to fit.`;
+    expect(() => parseTrace(trace(events), true, "reviewer", preservedConfig)).toThrow(
+      "malformed-worker-verdict",
+    );
+    await writeFile(attempt.trace, trace(events));
+    await writeFile(resolve(root, "reviewer.exit.json"), JSON.stringify({ code: 0 }));
+    await expect(
+      codexAdapter().observe(
+        "reviewer",
+        { ...preservedConfig, reviewWorktree: resolve(import.meta.dirname, "../..") },
+        attempt,
+      ),
+    ).resolves.toMatchObject({ status: "malformed", summary: diagnostic });
+  },
+);
+it.each([2000, 2001])("enforces the serialized review boundary at %i characters", (length) => {
+  const verdict = JSON.parse(rows[1]!.item!.text);
+  verdict.g0 = "";
+  verdict.g0 = "x".repeat(length - JSON.stringify(verdict).length);
+  const events = structuredClone(rows);
+  // Message whitespace is excluded from the serialized-object limit.
+  events[1]!.item!.text = `Review complete.\n${JSON.stringify(verdict, null, 2)}\n`;
+  const parse = () => parseTrace(trace(events), true, "reviewer", config);
+  if (length === 2000) expect(parse().summary).toHaveLength(2000);
+  else expect(parse).toThrow("malformed-worker-verdict");
+});
+it.each([
+  "I inspected call({ option: true })",
+  'I inspected call({ option: {"nested":true} })',
+  "I inspected the opening { brace.",
+  'I inspected { option: "a } brace" } and { another: true }.',
+  'I inspected { an unfinished "quote.',
+])("accepts a sole reviewer object after non-JSON brace text: %s", (prefix) => {
+  const events = structuredClone(rows);
+  const verdict = JSON.parse(events[1]!.item!.text);
+  events[1]!.item!.text = `${prefix}\n${JSON.stringify(verdict)}\n`;
+  const terminal = parseTrace(trace(events), true, "reviewer", config);
+  expect(terminal.status).toBe("passed");
+  expect(JSON.parse(terminal.summary!)).toEqual(verdict);
+});
+it.each([
+  ["trailing prose", (object: string) => `${object}\nDone.`],
+  ["two objects", (object: string) => `${object}\n${object}`],
+  ["an earlier non-verdict object", (object: string) => `{}\nReview complete.\n${object}`],
+  [
+    "two objects after non-JSON brace text",
+    (object: string) => `I inspected call({ option: true })\n${object}\n${object}`,
+  ],
+  ["an earlier nested object", (object: string) => `{"review":${object}}\n${object}`],
+  [
+    "trailing prose after brace-prefixed JSON",
+    (object: string) => `I inspected call({ option: true })\n${object}\nDone.`,
+  ],
+  ["no object", () => "Review complete. PASS."],
+  ["only non-JSON brace text", () => "I inspected call({ option: true })"],
+  ["array wrapper", (object: string) => `[${object}]`],
+  ["nested verdict", (object: string) => `{"review":${object}}`],
+] as const)("rejects reviewer framing with %s", (_name, frame) => {
+  const events = structuredClone(rows);
+  events[1]!.item!.text = frame(events[1]!.item!.text);
+  expect(() => parseTrace(trace(events), true, "reviewer", config)).toThrow(
+    "malformed-worker-verdict",
+  );
+});
+it("parses nested findings and escaped braces and quotes without changing the verdict", () => {
+  const verdict = {
+    ...JSON.parse(rows[1]!.item!.text),
+    findings: [{ file: "file.ts", line: 1, severity: "note", text: 'Check {x: "a\\b"} and }.' }],
+  };
+  const events = structuredClone(rows);
+  events[1]!.item!.text = `Review complete.\n${JSON.stringify(verdict)}\n`;
+  expect(JSON.parse(parseTrace(trace(events), true, "reviewer", config).summary!)).toEqual(verdict);
+});
+it.each([
+  { extra: true },
+  { run: "other" },
+  { role: "author" },
+  { head: "invalid" },
+  { verdict: "MAYBE" },
+  { findings: "none" },
+  { g0: 1 },
+])("retains existing reviewer validation with a prose prefix (%j)", (invalid) => {
+  const events = structuredClone(rows);
+  events[1]!.item!.text = `Review complete.\n${JSON.stringify({ ...JSON.parse(events[1]!.item!.text), ...invalid })}`;
+  expect(() => parseTrace(trace(events), true, "reviewer", config)).toThrow(
+    "malformed-worker-verdict",
+  );
+});
+it("continues requiring an author verdict to occupy the whole final message", () => {
+  const events = structuredClone(rows);
+  const verdict = { run: config.run, role: "author", head, verdict: "PASS", summary: "" };
+  events[1]!.item!.text = JSON.stringify(verdict);
+  expect(parseTrace(trace(events), true, "author", config).status).toBe("passed");
+  events[1]!.item!.text = `Work complete.\n${JSON.stringify(verdict)}`;
+  expect(() => parseTrace(trace(events), true, "author", config)).toThrow(
+    "malformed-worker-verdict",
+  );
 });
 it.skipIf(process.env.GITHUB_ACTIONS !== "true")(
   "loads the adapter in a hosted child Node process with its native TypeScript imports",

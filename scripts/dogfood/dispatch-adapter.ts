@@ -226,6 +226,40 @@ function events(trace: string, complete: boolean): any[] {
   if (!complete && !trace.endsWith("\n")) lines.pop();
   return lines.filter((line) => line.trim()).map((line) => JSON.parse(line));
 }
+function reviewerVerdict(message: string): unknown {
+  // ISS-150: prose braces need not begin JSON. Once a complete object parses,
+  // require it to end the message, rejecting additional objects or trailing prose.
+  for (let start = message.indexOf("{"); start >= 0; start = message.indexOf("{", start + 1)) {
+    let depth = 0;
+    let quoted = false;
+    for (let end = start; end < message.length; end += 1) {
+      const character = message[end];
+      if (quoted) {
+        if (character === "\\") end += 1;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth !== 0) continue;
+        let object: unknown;
+        try {
+          object = JSON.parse(message.slice(start, end + 1));
+        } catch {
+          // Ignore the entire balanced non-JSON fragment; its nested objects
+          // are not top-level verdict candidates.
+          start = end;
+          break;
+        }
+        check(message.slice(end + 1).trim() === "", "malformed-worker-verdict");
+        return object;
+      }
+    }
+  }
+  throw new Error("malformed-worker-verdict");
+}
 export function parseTrace(
   trace: string,
   complete: boolean,
@@ -291,7 +325,8 @@ export function parseTrace(
   );
   let verdict: any;
   try {
-    verdict = JSON.parse(messages.at(-1)?.item.text ?? "null");
+    const message = messages.at(-1)?.item.text ?? "null";
+    verdict = role === "reviewer" ? reviewerVerdict(message) : JSON.parse(message);
   } catch {
     throw new Error("malformed-worker-verdict");
   }
@@ -314,8 +349,7 @@ export function parseTrace(
             Object.hasOwn(verdict, key),
           ) &&
           Array.isArray(verdict.findings) &&
-          typeof verdict.g0 === "string" &&
-          JSON.stringify(verdict).length <= MAX_TERMINAL_SUMMARY_LENGTH
+          typeof verdict.g0 === "string"
       : Object.keys(verdict).length === 5 &&
           ["run", "role", "head", "verdict", "summary"].every((key) =>
             Object.hasOwn(verdict, key),
@@ -325,6 +359,11 @@ export function parseTrace(
     "malformed-worker-verdict",
   );
   const summary = role === "reviewer" ? JSON.stringify(verdict) : terminalSummary(verdict.summary);
+  if (role === "reviewer" && summary && summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
+    throw new QueueBlocked(
+      "malformed-worker-verdict",
+      `Reviewer verdict serialized length is ${summary.length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`,
+    );
   return {
     id,
     status: verdict.verdict === "PASS" ? "passed" : "failed",
@@ -477,6 +516,8 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
           if (modelRefused(stderr)) terminal.modelRefused = true;
         }
       } catch (error) {
+        const summary =
+          error instanceof QueueBlocked ? terminalSummary(error.diagnostics) : undefined;
         if (
           role === "reviewer" &&
           Boolean(exit) &&
@@ -488,6 +529,7 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
             status: "malformed",
             head: await git(config.reviewWorktree, ["rev-parse", "HEAD"]),
             usage: events(trace, true).find((row) => row.type === "turn.completed")?.usage,
+            ...(summary ? { summary } : {}),
           };
         throw error;
       }

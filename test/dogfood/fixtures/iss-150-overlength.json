@@ -1,0 +1,23 @@
+[
+  {
+    "type": "thread.started",
+    "thread_id": "01a0a0dd-608d-7620-8511-749481912990"
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_39",
+      "type": "agent_message",
+      "text": "{\"run\":\"m1-intake-refresh-20260914T1635\",\"role\":\"reviewer\",\"head\":\"e535d57f413db9c07556af53f61389053aedffd1\",\"verdict\":\"PASS\",\"findings\":[{\"file\":\"scripts/dogfood/delivery-adapter.ts\",\"line\":623,\"severity\":\"note\",\"text\":\"The draft requirement is relaxed to any boolean for every refresh observation and publish target, not only conflicted PRs, so an ordinary forward refresh now also accepts a ready-for-review PR. Identity, target and remote-head lease checks still hold, and docs/loop.md states this, so it is acceptable under the single-writer design; flagged only as a widened non-conflict path.\"},{\"file\":\"scripts/dogfood/flow.ts\",\"line\":362,\"severity\":\"note\",\"text\":\"The delta-review prompt says the resolved hunks are 'recorded in conflict-resolution.json', but that record holds the merge tree OID, conflicting paths and retained review identity; the hunks must be derived by diffing the tree against the candidate. The scope prompt supplies tree and paths, so the reviewer is not blocked, but the wording overstates the record.\"}],\"g0\":\"Verified independently: conflictingTree/commitConflict drive real git (merge-tree --write-tree --name-only -z, read-tree, commit-tree with reviewed head and observed main as parents), and confinedResolution byte-locks everything outside the recorded marker blocks, with path, untracked, mode and template checks before commit; candidate() still footprints the full diff against mainBase, so the implementation lineage and review scope are preserved. Restart safety uses resolved-commit.json, and the single bounded resolution is reserved by conflict-resolution.json with a second conflict named conflict-resolution-exhausted. test/dogfood/conflict.test.ts exercises these against a real repository (single-list hunk, conflict-free, exhaustion, crash between commit and reset, scope/semantic escape, failed delta review, published DIRTY vs unknown, charged history, JPEG replan refusal), and the author's trace shows typecheck, format:check, planning:check and 478 tests passing after the final edits. A simpler route (rebase and re-review the whole candidate) would violate the no-full-sweep and no-patch-equivalence criteria, so the added module is justified; the only trim I would consider is folding conflict.ts into flow.ts.\"}"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "usage": {
+      "input_tokens": 2027515,
+      "cached_input_tokens": 1910199,
+      "output_tokens": 30900,
+      "reasoning_output_tokens": 0
+    }
+  }
+]
