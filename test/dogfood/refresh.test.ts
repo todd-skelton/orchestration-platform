@@ -39,6 +39,7 @@ const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 function planning(keys: string[]): PlanningSnapshot {
@@ -290,16 +291,20 @@ async function fixture(seedKeys = ["ISS-100"]) {
   let malformedReview = false;
   let unavailableMain = false;
   let moveDuringReview = false;
-  let lostRebaseResponse = false;
+  let lostIntegrationResponse = false;
   const prompts: string[] = [];
   const native: Adapter = {
     async preflight() {},
     async git(tree, args) {
       if (unavailableMain && args[0] === "fetch") throw new Error("offline");
       const result = await git(tree, args);
-      if (lostRebaseResponse && args[0] === "rebase" && args[1] !== "--abort") {
-        lostRebaseResponse = false;
-        throw new Error("lost completed rebase response");
+      if (
+        lostIntegrationResponse &&
+        ["rebase", "merge"].includes(args[0]!) &&
+        args[1] !== "--abort"
+      ) {
+        lostIntegrationResponse = false;
+        throw new Error("lost completed integration response");
       }
       return result;
     },
@@ -336,6 +341,7 @@ async function fixture(seedKeys = ["ISS-100"]) {
     },
   };
   const realDelivery = githubDeliveryAdapter();
+  let refreshPublication: DeliveryAdapter | undefined;
   let publication: PublicationEvidence | undefined;
   let plannedPublication: PublicationEvidence;
   let lostPublicationObservation = false;
@@ -373,7 +379,17 @@ async function fixture(seedKeys = ["ISS-100"]) {
         milestone: draft.attributes.milestone,
       });
     },
-    async observePublication(current, plan, digest) {
+    async observePublication(current, plan, digest, target) {
+      if (refreshPublication) {
+        const observation = await refreshPublication.observePublication(
+          current,
+          plan,
+          digest,
+          target,
+        );
+        if (observation.state === "confirmed") publication = observation.value;
+        return observation;
+      }
       if (publication && lostPublicationObservation) {
         lostPublicationObservation = false;
         throw new Error("lost publication observation");
@@ -393,8 +409,9 @@ async function fixture(seedKeys = ["ISS-100"]) {
         ? { state: "confirmed", value: publication }
         : { state: "needs-mutation", target: "absent" };
     },
-    async publish() {
+    async publish(current, plan, target) {
       publications++;
+      if (refreshPublication) return refreshPublication.publish(current, plan, target);
       publication = plannedPublication;
     },
     async checks(current) {
@@ -417,6 +434,8 @@ async function fixture(seedKeys = ["ISS-100"]) {
       });
       // This fixture exercises the real self afterMirror gate; bootstrap gates have their own tests.
       plan.gates.beforeMirror = withTypecheck ? ["typecheck"] : [];
+      // Model ISS-145's preserved PR branch while retaining the genuine self planning gate.
+      if (current.refresh?.localBranch) plan.cleanup.branch = current.refresh.localBranch;
       return plan;
     },
   };
@@ -427,6 +446,71 @@ async function fixture(seedKeys = ["ISS-100"]) {
       deliveryPolicy: policy,
       async assertExecutor() {},
     });
+  const enablePublicationRefresh = async () => {
+    // Exercise the real forward-only publication and lease against a local bare remote.
+    const ssh = resolve(root, "fixture-ssh.mjs");
+    await writeFile(
+      ssh,
+      [
+        'import { spawn } from "node:child_process";',
+        `const repository = ${JSON.stringify(origin)};`,
+        'const service = process.argv.some((value) => value.includes("git-receive-pack"))',
+        '  ? "receive-pack" : "upload-pack";',
+        'const child = spawn("git", [service, repository], { stdio: "inherit", windowsHide: true });',
+        'child.once("error", () => process.exit(1));',
+        'child.once("close", (code) => process.exit(code ?? 1));',
+        "",
+      ].join("\n"),
+    );
+    const commandPath = (value: string) =>
+      `"${value.replaceAll("\\", "/").replaceAll('"', '\\"')}"`;
+    vi.stubEnv("GIT_SSH_COMMAND", `${commandPath(process.execPath)} ${commandPath(ssh)}`);
+    vi.stubEnv("GIT_SSH_VARIANT", "ssh");
+    await git(repo, [
+      "remote",
+      "set-url",
+      "origin",
+      `ssh://git@github.com/${source.repository}.git`,
+    ]);
+    await git(repo, ["push", origin, `${head}:refs/heads/codex/iss-100`]);
+    const localBranch = "codex/accepted-correction";
+    await git(sourceTree, ["checkout", "-b", localBranch]);
+    const preserved = resolve(root, "preserved-source");
+    await git(repo, ["worktree", "add", preserved, "codex/iss-100"]);
+    item.delivery.refresh = {
+      number: 200,
+      url: `https://github.com/${source.repository}/pull/200`,
+      head,
+      localBranch,
+    };
+    let title = "Earlier rejected candidate";
+    let body = "Earlier review evidence";
+    const remoteHead = () => git(origin, ["rev-parse", "refs/heads/codex/iss-100"]);
+    refreshPublication = githubDeliveryAdapter({
+      async gh(_current, args) {
+        expect(args.slice(0, 3)).toEqual(["pr", "edit", "200"]);
+        title = args[args.indexOf("--title") + 1]!;
+        body = await readFile(args[args.indexOf("--body-file") + 1]!, "utf8");
+        return "";
+      },
+      async ghJson() {
+        return [
+          {
+            number: 200,
+            url: item.delivery.refresh!.url,
+            headRefOid: await remoteHead(),
+            headRefName: "codex/iss-100",
+            baseRefName: "main",
+            state: "OPEN",
+            isDraft: true,
+            title,
+            body,
+          },
+        ];
+      },
+    });
+    return { remoteHead, preserved };
+  };
   const deliver = () =>
     adapter().delivery(item, { head, reviewId: reviewer.id, stateDirectory: sourceState });
   const saveAttempt = async () =>
@@ -472,6 +556,7 @@ async function fixture(seedKeys = ["ISS-100"]) {
     gateHeads,
     adapter,
     saveAttempt,
+    enablePublicationRefresh,
     malformReview: () => {
       malformedReview = true;
     },
@@ -484,8 +569,8 @@ async function fixture(seedKeys = ["ISS-100"]) {
       typecheckFailures = count;
       interruptGateRetry = interrupt;
     },
-    loseRebaseResponse: () => {
-      lostRebaseResponse = true;
+    loseIntegrationResponse: () => {
+      lostIntegrationResponse = true;
     },
     board: () => board,
     drafts: () => drafts,
@@ -582,7 +667,7 @@ it("runs the first genuine self gate successfully after a separate registration 
 it("reconciles a completed rebase whose response was lost without repeating it", async () => {
   const f = await fixture();
   await f.advanceMain();
-  f.loseRebaseResponse();
+  f.loseIntegrationResponse();
   await expect(f.deliver()).rejects.toThrow("rebase-conflict");
   const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
   expect(head).not.toBe(f.head);
@@ -591,6 +676,67 @@ it("reconciles a completed rebase whose response was lost without repeating it",
     1,
   );
 });
+
+it.each([false, true])(
+  "refreshes an aged existing PR forward through real gates and publication (lost integration response: %s)",
+  async (lostResponse) => {
+    const f = await fixture();
+    const { remoteHead, preserved } = await f.enablePublicationRefresh();
+    await writeFile(resolve(f.sourceTree, "feature.txt"), "accepted correction\n");
+    const correction = await f.commit(f.sourceTree);
+    await f.pinSource();
+    const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
+    const main = await f.advanceMain();
+    if (lostResponse) {
+      f.loseIntegrationResponse();
+      await expect(f.deliver()).rejects.toThrow("rebase-conflict");
+      expect(f.gateHeads).toEqual([]);
+    } else {
+      f.setStopGate(true);
+      await expect(f.deliver()).rejects.toThrow("gate-failed:planning:board-check");
+      f.setStopGate(false);
+    }
+    const refreshed = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+    expect(refreshed).not.toBe(correction);
+    expect(await remoteHead()).toBe(f.head);
+    await expect(f.deliver()).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      head: refreshed,
+    });
+    for (const ancestor of [f.head, correction, main])
+      expect(await f.git(f.sourceTree, ["merge-base", ancestor, refreshed])).toBe(ancestor);
+    await expect(f.deliver()).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      head: refreshed,
+    });
+    expect(await remoteHead()).toBe(refreshed);
+    expect(f.publications()).toBe(1);
+    expect(f.publication()?.head).toBe(refreshed);
+    expect(new Set(f.gateHeads)).toEqual(new Set([refreshed]));
+    expect(f.prompts).toHaveLength(1);
+    expect(f.prompts[0]).toContain(refreshed);
+    expect(f.prompts[0]).toContain(f.reviewer.id);
+    expect(f.commands.filter((args) => args[0] === "merge" && args[1] !== "--abort")).toHaveLength(
+      1,
+    );
+    expect(f.commands.some((args) => args[0] === "rebase")).toBe(false);
+    expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
+    expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe(
+      "accepted correction\n",
+    );
+    expect(
+      (await loadPlanningSnapshot(f.sourceTree)).roadmap.issues.map(
+        (row: { key: string }) => row.key,
+      ),
+    ).toEqual(["ISS-100", "ISS-101"]);
+    expect(await readFile(resolve(f.sourceState, "candidate.json"), "utf8")).toBe(original);
+    expect((await f.adapter().history()).map((row) => [row.stage, row.outcome])).toEqual([
+      ["source", "passed"],
+      ["source", "passed"],
+      ["refresh", "passed"],
+    ]);
+  },
+);
 
 it("reconciles a publication with a lost receipt before considering newer main", async () => {
   const f = await fixture();
@@ -694,16 +840,20 @@ it("retains a failed delta review and stops without starting another implementat
   });
 });
 
-it("uses the existing typed rebase conflict stop for the ISS-147 handoff", async () => {
-  const f = await fixture();
-  await writeFile(resolve(f.repo, "feature.txt"), "conflicting main\n");
-  await f.advanceMain();
-  await expect(f.deliver()).rejects.toThrow("rebase-conflict");
-  expect(await f.git(f.sourceTree, ["rev-parse", "HEAD"])).toBe(f.head);
-  expect(await f.git(f.sourceTree, ["status", "--porcelain"])).toBe("");
-  expect(f.prompts).toEqual([]);
-  expect(f.gateHeads).toEqual([]);
-});
+it.each([false, true])(
+  "uses the existing typed rebase conflict stop for the ISS-147 handoff (existing PR: %s)",
+  async (existingPR) => {
+    const f = await fixture();
+    if (existingPR) await f.enablePublicationRefresh();
+    await writeFile(resolve(f.repo, "feature.txt"), "conflicting main\n");
+    await f.advanceMain();
+    await expect(f.deliver()).rejects.toThrow("rebase-conflict");
+    expect(await f.git(f.sourceTree, ["rev-parse", "HEAD"])).toBe(f.head);
+    expect(await f.git(f.sourceTree, ["status", "--porcelain"])).toBe("");
+    expect(f.prompts).toEqual([]);
+    expect(f.gateHeads).toEqual([]);
+  },
+);
 
 it.each(["pass", "exhausted", "restart"])(
   "keeps a refreshed gate retry on its reviewed head: %s",

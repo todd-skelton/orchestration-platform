@@ -20,17 +20,21 @@ export async function currentMain(git: Git): Promise<string> {
   }
 }
 
-export async function rebaseOnto(git: Git, main: string) {
+async function integrateMain(git: Git, main: string, operation: "rebase" | "merge") {
   try {
-    await git(["rebase", main]);
+    await git([operation, ...(operation === "merge" ? ["--no-edit"] : []), main]);
     return await git(["rev-parse", "HEAD"]);
   } catch {
     try {
-      await git(["rebase", "--abort"]);
+      await git([operation, "--abort"]);
     } catch {}
     // Shared with corrective continuation; ISS-147 can route this one native stop.
     throw new QueueBlocked("rebase-conflict");
   }
+}
+
+export function rebaseOnto(git: Git, main: string) {
+  return integrateMain(git, main, "rebase");
 }
 
 async function save(directory: string, name: string, value: unknown) {
@@ -119,13 +123,17 @@ export async function refreshDelivery(
     if ((await git(["status", "--porcelain"])) !== "")
       throw new QueueBlocked("candidate-workspace-drift");
     const head = await git(["rev-parse", "HEAD"]);
-    // A completed rebase can lose its response. Its new main ancestor reconciles it.
+    // A completed integration can lose its response. Its new main ancestor reconciles it.
     if (
       head !== active.previousHead &&
       (await git(["merge-base", active.main, head])) !== active.main
     )
       throw new QueueBlocked("candidate-workspace-drift");
-    active.head = head === active.previousHead ? await rebaseOnto(git, active.main) : head;
+    // ISS-145's existing PR refresh must remain forward from its recorded published head.
+    active.head =
+      head === active.previousHead
+        ? await integrateMain(git, active.main, delivery.refresh ? "merge" : "rebase")
+        : head;
     await save(origin, "native-refresh", active);
   }
   const head = active.head;

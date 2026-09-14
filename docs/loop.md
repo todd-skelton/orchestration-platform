@@ -221,7 +221,10 @@ ISS-148 records ISS-146's two `planning:board-check` stops in
 but the gates still read the author's older roadmap. Native delivery now
 fetches actual `refs/remotes/origin/main` before entering unpublished delivery
 gates, including on resume. It rebases an aged candidate through the same
-native rebase operation used for corrective continuation. Unavailable,
+native rebase operation used for corrective continuation. When delivery refreshes
+an existing PR, integration merges main instead, retaining the recorded published
+head as an ancestor for the unchanged forward-only publication and remote-head
+lease checks (ISS-145). Unavailable,
 incompatible or moving main stops with `current-main-unavailable`,
 `current-main-incompatible` or `current-main-moved`. Conflicts use the existing
 `rebase-conflict` stop, the shared handoff point for ISS-147; there is no
@@ -230,7 +233,7 @@ second conflict-resolution loop here.
 The original source author, review, traces and attempt remain unchanged.
 `native-refresh.json` in that source's runtime remembers the integration;
 each resulting main base has a `refresh-<main>` directory for its delta review
-and delivery evidence. Resume reconciles a completed rebase and resumes an
+and delivery evidence. Resume reconciles a completed integration and resumes an
 in-flight reviewer rather than launching another author or spending another
 implementation attempt. Delta reviewers use the ordinary native launch ceiling
 and reviewer retry, retain prior participants (including failures), inherit
