@@ -62,10 +62,7 @@ export function validateRoutingRow(row: RoutingRow) {
   )
     throw new QueueBlocked("invalid-routing-row");
   for (const reviewer of [row.reviewer, row.reviewer.fallback]) {
-    if (
-      /fable|terra/i.test(reviewer.model) ||
-      [row.author.model, row.repair.model].includes(reviewer.model)
-    )
+    if ([row.author.model, row.repair.model].includes(reviewer.model))
       throw new QueueBlocked("routing-reviewer-not-independent");
   }
   if (row.reviewer.model === row.reviewer.fallback.model)
