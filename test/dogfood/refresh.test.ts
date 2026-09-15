@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { evidenceDescriptor, replanPacket, writeEvidence } from "./fixtures/continuation.js";
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -46,6 +47,7 @@ vi.mock("../../scripts/planning/board-check.mjs", async (original) => ({
 }));
 
 const exec = promisify(execFile);
+const gateAuthority = "https://github.com/fixture/repository/issues/494#issuecomment-5687186310";
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -679,6 +681,607 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir(), routeLi
     },
   };
 }
+
+async function savedGateStop(
+  afterMirror = false,
+  refreshed = false,
+  corrected = false,
+  repaired = false,
+) {
+  const f = await gateCorrectionFixture(afterMirror, refreshed);
+  let acceptedDirectory = f.sourceState;
+  if (repaired) {
+    acceptedDirectory = f.item.repair.stateDirectory;
+    await cp(f.sourceState, acceptedDirectory, { recursive: true });
+    const pinned = JSON.parse(await readFile(resolve(acceptedDirectory, "config.json"), "utf8"));
+    pinned.config.stateDirectory = acceptedDirectory;
+    await writeFile(resolve(acceptedDirectory, "config.json"), JSON.stringify(pinned));
+    const prior = await f.adapter().history();
+    await writeFile(
+      resolve(f.state, "participant-2-terminal.json"),
+      JSON.stringify({ ...prior[1], outcome: "failed" }),
+    );
+    for (const [index, role] of (["author", "reviewer"] as const).entries()) {
+      const id = randomUUID();
+      for (const suffix of ["attempt", "terminal"]) {
+        const path = resolve(acceptedDirectory, `${role}-${suffix}.json`);
+        const record = JSON.parse(await readFile(path, "utf8"));
+        if (suffix === "attempt") record.trace = resolve(acceptedDirectory, `${role}.jsonl`);
+        await writeFile(path, JSON.stringify({ ...record, id }));
+      }
+      await writeFile(
+        resolve(f.state, `participant-${index + 3}-terminal.json`),
+        JSON.stringify({ ...prior[index], ordinal: index + 3, id, stage: "repair" }),
+      );
+    }
+    const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
+    const review = JSON.parse(
+      await readFile(resolve(acceptedDirectory, "reviewer-attempt.json"), "utf8"),
+    );
+    await writeFile(
+      resolve(f.state, "attempt.json"),
+      JSON.stringify({
+        ...attempt,
+        acceptedStage: "repair",
+        candidateAttempt: 2,
+        stateDirectory: acceptedDirectory,
+        reviewId: review.id,
+        history: await f.adapter().history(),
+      }),
+    );
+  }
+  if (corrected) {
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+    f.secondFailure("typecheck");
+  }
+  f.setCause("unknown");
+  const gate = corrected ? "typecheck" : "test";
+  await expect(f.run()).rejects.toThrow(`gate-attribution-unknown:${gate}`);
+  const stoppedHead = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  const failedDirectory = f.gates.at(-1)!.directory;
+  const artifacts = resolve(
+    failedDirectory,
+    `gate-${createHash("sha256").update(gate).digest("hex")}`,
+  );
+  await mkdir(artifacts);
+  // Synthetic execution artifacts with the production gate paths, not host verification.
+  await writeFile(
+    resolve(artifacts, "candidate.log"),
+    await readFile(resolve(failedDirectory, "full-gate.log")),
+  );
+  await writeFile(
+    resolve(artifacts, "candidate-terminal.json"),
+    JSON.stringify({
+      head: stoppedHead,
+      command: {
+        executable: process.execPath,
+        argv: ["fixture-pnpm", "run", gate],
+        cwd: f.sourceTree,
+      },
+      code: 1,
+      signal: null,
+    }),
+  );
+  const preserved = new Map<string, Buffer>();
+  for (const directory of new Set([acceptedDirectory, failedDirectory, artifacts])) {
+    for (const file of await readdir(directory, { withFileTypes: true })) {
+      if (file.isFile())
+        preserved.set(resolve(directory, file.name), await readFile(resolve(directory, file.name)));
+    }
+  }
+  const main = await f.advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
+  const authorization = {
+    stateDirectory: acceptedDirectory,
+    candidateHead: stoppedHead,
+    repairSha: main,
+    authorityUrl: gateAuthority,
+  };
+  const grant = () => {
+    f.config.gateStopAuthorization = authorization;
+  };
+  const gates: { head: string; gate: string; directory: string }[] = [];
+  f.delivery.runGate = async (current, name, head) => {
+    gates.push({ head, gate: name, directory: current.stateDirectory });
+    return "passed";
+  };
+  return {
+    ...f,
+    sourceState: acceptedDirectory,
+    grant,
+    authorization,
+    artifacts,
+    preserved,
+    gates,
+    main,
+    stoppedHead,
+  };
+}
+
+it.each([
+  [false, false, false, false],
+  [true, false, false, false],
+  [false, true, false, false],
+  [true, true, false, false],
+  [false, false, true, false],
+  [true, false, false, true],
+])(
+  "continues a saved queue gate stop once with fresh DELTA and gates (mirror %s, refresh %s, correction %s, repaired %s)",
+  async (afterMirror, refreshed, corrected, repaired) => {
+    const f = await savedGateStop(afterMirror, refreshed, corrected, repaired);
+    const oldPrompts = f.prompts.length;
+    const oldAuthors = f.authorPrompts.length;
+    const oldHistory = await f.adapter().history();
+    await expect(f.run()).rejects.toThrow("gate-attribution-unknown:");
+    expect(f.prompts).toHaveLength(oldPrompts);
+    f.grant();
+    f.setReviewRunning(true);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    const reservationPath = resolve(f.sourceState, "gate-stop-continuation.json");
+    const reservation = await readFile(reservationPath, "utf8");
+    const retained = JSON.parse(reservation);
+    expect(retained.authorization).toEqual(f.authorization);
+    expect(retained.sourceEvidence.head).toBe(f.stoppedHead);
+    expect(f.prompts.at(-1)).toContain(resolve(f.artifacts, "candidate.log"));
+    expect(f.prompts.at(-1)).toContain(resolve(f.artifacts, "candidate-terminal.json"));
+    expect(f.prompts.at(-1)).toContain(f.main);
+    expect(f.prompts.at(-1)).toContain(gateAuthority);
+    expect(f.prompts.at(-1)).toContain("DELTA");
+    expect(f.prompts.at(-1)).toContain("Captured execution trace:");
+    expect(f.gates).toEqual([]);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(f.prompts).toHaveLength(oldPrompts + 1);
+    f.setReviewRunning(false);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+    expect(head).not.toBe(f.stoppedHead);
+    expect(await f.git(f.sourceTree, ["merge-base", head, f.main])).toBe(f.main);
+    expect(f.gates.map((row) => row.gate)).toEqual(
+      afterMirror
+        ? ["typecheck", "planning:board-check", "test"]
+        : ["typecheck", "test", "planning:board-check"],
+    );
+    expect(
+      f.gates.every(
+        (row) =>
+          row.head === head &&
+          row.directory.startsWith(resolve(f.sourceState, "gate-stop-continuation", "refresh-")),
+      ),
+    ).toBe(true);
+    expect(f.authorPrompts).toHaveLength(oldAuthors);
+    const history = await f.adapter().history();
+    expect(history.slice(0, oldHistory.length)).toEqual(oldHistory);
+    expect(history).toHaveLength(oldHistory.length + 1);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(await f.adapter().history()).toEqual(history);
+    expect(f.publications()).toBe(1);
+    expect(await readFile(reservationPath, "utf8")).toBe(reservation);
+    for (const [path, bytes] of f.preserved) expect(await readFile(path)).toEqual(bytes);
+  },
+);
+
+it.each([
+  "absent",
+  "directory",
+  "head",
+  "unavailable",
+  "unchanged",
+  "missing-repair",
+  "included-repair",
+  "work",
+  "base",
+  "legacy",
+  "replan",
+])(
+  "refuses saved gate recovery with only %s changed before launches or publication",
+  async (mode) => {
+    const f = await savedGateStop();
+    f.grant();
+    let reason = "gate-attribution-unknown:test";
+    if (mode === "absent") delete f.config.gateStopAuthorization;
+    if (mode === "directory") f.config.gateStopAuthorization!.stateDirectory = f.state;
+    if (mode === "head") {
+      f.config.gateStopAuthorization!.candidateHead = f.source.base;
+      reason = "gate-stop-head-mismatch";
+    }
+    if (mode === "unavailable") {
+      f.setUnavailable();
+      reason = "current-main-unavailable";
+    }
+    if (mode === "unchanged") {
+      await f.git(f.repo, [
+        "push",
+        "--force",
+        resolve(f.root, "remote.git"),
+        `${f.source.base}:refs/heads/main`,
+      ]);
+      await f.git(f.repo, ["update-ref", "refs/remotes/origin/main", f.source.base]);
+      reason = "gate-stop-repair-not-applicable";
+    }
+    if (mode === "missing-repair") {
+      f.config.gateStopAuthorization!.repairSha = f.stoppedHead;
+      reason = "gate-stop-repair-not-applicable";
+    }
+    if (mode === "included-repair") {
+      f.config.gateStopAuthorization!.repairSha = f.source.base;
+      reason = "gate-stop-repair-not-applicable";
+    }
+    if (["work", "base", "legacy"].includes(mode)) {
+      reason =
+        mode === "work"
+          ? "gate-correction-exhausted:test"
+          : mode === "base"
+            ? "gate-base-failed:test"
+            : "gate-failed:test";
+      await writeFile(resolve(f.sourceState, "gate-stop.json"), JSON.stringify({ reason }));
+    }
+    if (mode === "replan") f.item.acceptedReplan = replanPacket(f.root, f.head);
+    // Direct native adapter admission avoids unrelated accepted-replan config validation.
+    await expect(f.deliver()).rejects.toThrow(reason);
+    expect(f.prompts).toEqual([]);
+    expect(f.authorPrompts).toEqual([]);
+    expect(f.publications()).toBe(0);
+    await expect(readFile(resolve(f.sourceState, "gate-stop-continuation.json"))).rejects.toThrow();
+  },
+);
+
+it("retains a new failed DELTA stop without spending another recovery after main moves", async () => {
+  const f = await savedGateStop();
+  f.grant();
+  f.setFailReview();
+  await expect(f.run()).rejects.toThrow("refresh-review-failed");
+  const reservation = await readFile(resolve(f.sourceState, "gate-stop-continuation.json"));
+  const history = await f.adapter().history();
+  await f.advanceMain(["ISS-100", "ISS-101", "ISS-102", "ISS-103"]);
+  await expect(f.run()).rejects.toThrow("refresh-review-failed");
+  expect(await f.adapter().history()).toEqual(history);
+  expect(await readFile(resolve(f.sourceState, "gate-stop-continuation.json"))).toEqual(
+    reservation,
+  );
+  expect(f.prompts).toHaveLength(1);
+  expect(f.gates).toEqual([]);
+  expect(f.publications()).toBe(0);
+  for (const [path, bytes] of f.preserved) expect(await readFile(path)).toEqual(bytes);
+});
+
+it.each(["reservation", "integration", "gates"])(
+  "resumes saved recovery after interruption at %s",
+  async (mode) => {
+    const f = await savedGateStop();
+    f.grant();
+    const git = f.native.git;
+    const runGate = f.delivery.runGate;
+    let fetches = 0;
+    if (mode === "reservation")
+      f.native.git = async (tree, args) => {
+        if (args[0] === "fetch" && ++fetches === 2) throw new Error("host interrupted");
+        return git(tree, args);
+      };
+    if (mode === "integration") f.loseIntegrationResponse();
+    if (mode === "gates")
+      f.delivery.runGate = async () => {
+        throw new Error("host interrupted");
+      };
+    await expect(f.run()).rejects.toThrow(
+      mode === "reservation"
+        ? "current-main-unavailable"
+        : mode === "integration"
+          ? "rebase-conflict"
+          : "delivery-state-unknown",
+    );
+    const reservation = await readFile(resolve(f.sourceState, "gate-stop-continuation.json"));
+    f.native.git = git;
+    f.delivery.runGate = runGate;
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.prompts).toHaveLength(1);
+    expect(f.authorPrompts).toEqual([]);
+    expect(f.publications()).toBe(1);
+    expect(f.commands.filter((args) => args[0] === "rebase" && args[1] !== "--abort")).toHaveLength(
+      1,
+    );
+    expect(await f.adapter().history()).toHaveLength(3);
+    expect(await readFile(resolve(f.sourceState, "gate-stop-continuation.json"))).toEqual(
+      reservation,
+    );
+  },
+);
+
+it.each(["gate", "stale-review", "launch-ceiling"])(
+  "keeps recovery stopped after %s with no publication",
+  async (mode) => {
+    const f = await savedGateStop();
+    f.grant();
+    if (mode === "gate") f.delivery.runGate = async () => "failed";
+    if (mode === "launch-ceiling") f.config.nativeLaunchCeiling = 2;
+    if (mode === "stale-review") {
+      const observe = f.native.observe;
+      f.native.observe = async (role, current, attempt) => {
+        const result = await observe(role, current, attempt);
+        if (result.summary)
+          result.summary = JSON.stringify({ ...JSON.parse(result.summary), head: f.stoppedHead });
+        return result;
+      };
+    }
+    const reason =
+      mode === "gate"
+        ? "gate-attribution-unknown:typecheck"
+        : mode === "stale-review"
+          ? "reviewer-malformed"
+          : "native-launch-ceiling-exhausted";
+    await expect(f.run()).rejects.toThrow(reason);
+    const history = await f.adapter().history();
+    f.delivery.runGate = async () => "passed";
+    await expect(f.run()).rejects.toThrow(reason);
+    expect(await f.adapter().history()).toEqual(history);
+    expect(f.publications()).toBe(0);
+    expect(
+      JSON.parse(
+        await readFile(resolve(f.sourceState, "gate-stop-continuation/gate-stop.json"), "utf8"),
+      ),
+    ).toMatchObject({ reason });
+    if (mode !== "gate") expect(f.gates).toEqual([]);
+  },
+);
+
+it("requires another DELTA and every gate for main movement without renewing recovery", async () => {
+  const f = await savedGateStop(true);
+  f.grant();
+  const observe = f.native.observe;
+  let moved = false;
+  f.native.observe = async (...args) => {
+    if (!moved) {
+      moved = true;
+      await f.advanceMain(["ISS-100", "ISS-101", "ISS-102", "ISS-103"]);
+    }
+    return observe(...args);
+  };
+  await expect(f.run()).rejects.toThrow("current-main-moved");
+  const reservation = await readFile(resolve(f.sourceState, "gate-stop-continuation.json"));
+  expect(f.gates).toEqual([]);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.prompts).toHaveLength(2);
+  expect(f.gates.map((row) => row.gate)).toEqual(["typecheck", "planning:board-check", "test"]);
+  expect(new Set(f.gates.map((row) => row.head)).size).toBe(1);
+  expect(await readFile(resolve(f.sourceState, "gate-stop-continuation.json"))).toEqual(
+    reservation,
+  );
+});
+
+it("completes recovery and replays without another worker, publication or merge", async () => {
+  const f = await savedGateStop();
+  f.grant();
+  let merges = 0;
+  let cleanups = 0;
+  f.delivery.checks = async (current) => ({
+    head: current.candidateHead,
+    checks: current.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: "https://example.test/check",
+    })),
+  });
+  f.delivery.observeMerge = async (current, publication) =>
+    merges
+      ? {
+          state: "confirmed",
+          value: {
+            number: publication.number,
+            head: current.candidateHead,
+            mergeCommit: current.candidateHead,
+          },
+        }
+      : { state: "needs-mutation" };
+  f.delivery.merge = async () => {
+    merges++;
+  };
+  f.delivery.observeCleanup = async (_current, plan) =>
+    cleanups
+      ? { state: "confirmed", value: { worktrees: plan.worktrees, branch: plan.branch } }
+      : { state: "needs-mutation" };
+  f.delivery.cleanup = async () => {
+    cleanups++;
+  };
+  await expect(f.run()).resolves.toMatchObject({ status: "complete" });
+  const attempt = await readFile(resolve(f.state, "attempt.json"));
+  await expect(f.run()).resolves.toMatchObject({ status: "complete" });
+  await expect(f.deliver()).resolves.toMatchObject({ status: "complete" });
+  expect(await readFile(resolve(f.state, "attempt.json"))).toEqual(attempt);
+  expect([f.prompts.length, f.publications(), merges, cleanups]).toEqual([1, 1, 1, 1]);
+});
+
+it("retains failed hosted recovery evidence without dispatching a new implementation attempt", async () => {
+  const f = await savedGateStop();
+  f.grant();
+  f.delivery.checks = async (current) => ({
+    head: current.candidateHead,
+    checks: current.requiredChecks.map((name) => ({
+      name,
+      bucket: "fail",
+      link: "https://example.test/check",
+    })),
+  });
+  f.delivery.failedCheckLog = async () => "Synthetic complete underlying job diagnostics\n";
+  await expect(f.run()).rejects.toThrow("hosted-check-failed:");
+  const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
+  expect(attempt).toMatchObject({ phase: "delivery", candidateAttempt: 1 });
+  await expect(f.run()).rejects.toThrow("hosted-check-failed:");
+  expect(f.publications()).toBe(1);
+  expect(f.prompts).toHaveLength(1);
+  expect(f.authorPrompts).toEqual([]);
+});
+
+it("resumes the single bounded conflict author and its independent DELTA during recovery", async () => {
+  const f = await savedGateStop();
+  f.grant();
+  await writeFile(resolve(f.repo, "feature.txt"), "main repair\n");
+  const main = await f.advanceMain(["ISS-100", "ISS-101", "ISS-102", "ISS-103"]);
+  f.setResolution(() =>
+    writeFile(resolve(f.sourceTree, "feature.txt"), "candidate\nmain repair\n"),
+  );
+  f.setRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.authorPrompts[0]).toContain(f.authorization.repairSha);
+  expect(f.authorPrompts[0]).toContain("only Git's marked conflicting hunks");
+  f.setRunning(false);
+  f.setReviewRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.publications()).toBe(0);
+  f.setReviewRunning(false);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  const head = f.publication()!.head;
+  for (const ancestor of [main, f.stoppedHead])
+    expect(await f.git(f.sourceTree, ["merge-base", head, ancestor])).toBe(ancestor);
+  expect(f.prompts).toHaveLength(1);
+  expect(f.prompts[0]).toContain(resolve(f.artifacts, "candidate.log"));
+  expect(await f.adapter().history()).toHaveLength(4);
+});
+
+it("refuses recovery conflict authoring when the original refresh spent that resolution", async () => {
+  const f = await conflictingFixture();
+  await f.saveAttempt();
+  f.delivery.runGate = async () => "failed";
+  const run = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+  await expect(run()).rejects.toThrow("gate-attribution-unknown:planning:board-check");
+  const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  await writeFile(resolve(f.repo, "feature.txt"), "second main conflict\n");
+  const main = await f.advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
+  f.config.gateStopAuthorization = {
+    stateDirectory: f.sourceState,
+    candidateHead: head,
+    repairSha: main,
+    authorityUrl: gateAuthority,
+  };
+  f.delivery.runGate = async () => "passed";
+  await expect(run()).rejects.toThrow("conflict-resolution-exhausted");
+  await expect(run()).rejects.toThrow("conflict-resolution-exhausted");
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+  expect(f.publications()).toBe(0);
+});
+
+it.each([false, true])(
+  "retains the existing correction allowance during recovery (already used: %s)",
+  async (used) => {
+    const f = await savedGateStop(false, false, used);
+    f.grant();
+    f.setCause("candidate");
+    let corrected = false;
+    f.setResolution(async () => {
+      await writeFile(resolve(f.sourceTree, "feature.txt"), "candidate fixed again\n");
+      corrected = true;
+    });
+    f.delivery.runGate = async (current, gate, head) => {
+      if (corrected || gate !== "test") return "passed";
+      const log = resolve(current.stateDirectory, "fresh-failure.log");
+      await writeFile(log, "FAIL feature.test.ts > fixture\nAssertionError: fixture\n");
+      return {
+        status: "failed",
+        output: "fixture",
+        evidence: {
+          head,
+          log,
+          cause: "diagnostic",
+          command: { executable: process.execPath, argv: ["fixture", gate], cwd: f.sourceTree },
+          diagnostics: ["feature.test.ts > fixture"],
+        },
+      };
+    };
+    if (used) {
+      await expect(f.run()).rejects.toThrow("gate-correction-exhausted:test");
+      await expect(f.run()).rejects.toThrow("gate-correction-exhausted:test");
+      expect(f.publications()).toBe(0);
+    } else {
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      expect(f.publications()).toBe(1);
+      expect(await f.adapter().history()).toHaveLength(5);
+      expect(f.prompts.at(-1)).toContain("Independent DELTA review");
+    }
+    expect(f.authorPrompts).toHaveLength(1);
+    for (const [path, bytes] of f.preserved) expect(await readFile(path)).toEqual(bytes);
+  },
+);
+
+it("does not renew a reserved recovery when the authorization changes", async () => {
+  const f = await savedGateStop();
+  f.grant();
+  f.setReviewRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  const reservation = await readFile(resolve(f.sourceState, "gate-stop-continuation.json"));
+  f.config.gateStopAuthorization = {
+    ...f.authorization,
+    authorityUrl: "https://github.com/fixture/repository/issues/494#issuecomment-999999",
+  };
+  await expect(f.run()).rejects.toThrow("gate-stop-authorization-mismatch");
+  expect(f.prompts).toHaveLength(1);
+  expect(await readFile(resolve(f.sourceState, "gate-stop-continuation.json"))).toEqual(
+    reservation,
+  );
+  f.grant();
+  f.setReviewRunning(false);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.prompts).toHaveLength(1);
+});
+
+it.each(["pending", "published", "wrong-remote", "lease-moved"])(
+  "reconciles %s publication before saved-stop recovery and preserves the same forward lease",
+  async (mode) => {
+    const f = await fixture();
+    const { remoteHead, preserved } = await f.enablePublicationRefresh();
+    await writeFile(resolve(f.sourceTree, "feature.txt"), "published correction\n");
+    const stoppedHead = await f.commit(f.sourceTree);
+    await f.pinSource();
+    await f.saveAttempt();
+    if (mode === "pending") f.losePublicationObservation();
+    if (mode === "pending") await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+    else await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    // Synthetic retained stop alongside a publication whose receipt may be pending.
+    const stopped = JSON.stringify({ reason: "gate-host-failed:test" });
+    await writeFile(resolve(f.sourceState, "gate-stop.json"), stopped);
+    const intent = await readFile(resolve(f.sourceState, "publication-intent.json"));
+    const main = await f.advanceMain();
+    f.config.gateStopAuthorization = {
+      stateDirectory: f.sourceState,
+      candidateHead: stoppedHead,
+      repairSha: main,
+      authorityUrl: gateAuthority,
+    };
+    const moveRemote = () =>
+      f.git(resolve(f.root, "remote.git"), ["update-ref", "refs/heads/codex/iss-100", main]);
+    if (mode === "wrong-remote") await moveRemote();
+    if (mode === "lease-moved") {
+      const runGate = f.delivery.runGate;
+      f.delivery.runGate = async (...args) => {
+        await moveRemote();
+        return runGate(...args);
+      };
+    }
+    const run = f.deliver;
+    if (mode === "wrong-remote" || mode === "lease-moved") {
+      await expect(run()).rejects.toThrow("publication-state-unknown");
+      expect(f.publications()).toBe(1);
+      expect(f.prompts).toHaveLength(mode === "wrong-remote" ? 0 : 1);
+      expect(await remoteHead()).toBe(main);
+    } else {
+      await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      const head = await remoteHead();
+      expect(head).not.toBe(f.head);
+      for (const ancestor of [main, stoppedHead])
+        expect(await f.git(f.sourceTree, ["merge-base", ancestor, head])).toBe(ancestor);
+      await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      expect(f.publications()).toBe(2);
+      expect(f.publication()?.number).toBe(200);
+      expect(f.prompts).toHaveLength(1);
+      expect(f.commands.some((args) => args[0] === "rebase")).toBe(false);
+    }
+    expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
+    expect(await readFile(resolve(f.sourceState, "publication-intent.json"))).toEqual(intent);
+    expect(await readFile(resolve(f.sourceState, "gate-stop.json"), "utf8")).toBe(stopped);
+  },
+);
 
 it("requires new exact-head host evidence after main refresh while reviewing the full implementation", async () => {
   const f = await fixture();

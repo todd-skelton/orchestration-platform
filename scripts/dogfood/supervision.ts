@@ -558,6 +558,29 @@ export async function reconcilePendingStop(
       adapter,
       repositoryAdapter,
     );
+    // ISS-157: finish the old learning note, then let native delivery admit the grant.
+    // Completed notes already follow that path. The saved stop itself remains untouched.
+    const grant = config.gateStopAuthorization;
+    if (
+      scope === "run" &&
+      grant &&
+      !config.acceptedReplan &&
+      /^gate-(host-failed|attribution-unknown):.+$/.test(intent.reason)
+    ) {
+      const attempt = await optionalRecord(resolve(grant.stateDirectory, ".."), "attempt");
+      const stopped = await optionalRecord(grant.stateDirectory, "gate-stop");
+      if (
+        attempt !== ABSENT &&
+        stopped !== ABSENT &&
+        attempt.run === config.run &&
+        attempt.phase === "delivery" &&
+        attempt.stateDirectory === grant.stateDirectory &&
+        attempt.issue ===
+          `https://github.com/${config.repository}/issues/${cycle.selection.number}` &&
+        stopped.reason === intent.reason
+      )
+        return undefined;
+    }
     return { scope, reason: intent.reason };
   }
 }

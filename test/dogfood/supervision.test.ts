@@ -508,6 +508,76 @@ it.each(["operator-evidence-required", "operator-evidence-authority", "operator-
   },
 );
 
+it.each(["pending", "complete", "absent", "wrong-directory", "work"])(
+  "replays the saved selection and %s learning note before native gate-stop admission",
+  async (mode) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-gate-recovery-"));
+    roots.push(root);
+    const config = loop(root);
+    const cycle = selected();
+    const directory = resolve(config.stateRoot, config.run, "iss-105-attempt-2");
+    const source = resolve(directory, "repair");
+    await mkdir(source, { recursive: true });
+    const reason = mode === "work" ? "gate-base-failed:test" : "gate-attribution-unknown:test";
+    await writeFile(
+      resolve(directory, "attempt.json"),
+      JSON.stringify({
+        run: config.run,
+        phase: "delivery",
+        stateDirectory: source,
+        issue: `https://github.com/${config.repository}/issues/362`,
+      }),
+    );
+    await writeFile(resolve(source, "gate-stop.json"), JSON.stringify({ reason }));
+    config.gateStopAuthorization = {
+      stateDirectory: source,
+      candidateHead: "b".repeat(40),
+      repairSha: "c".repeat(40),
+      authorityUrl: "https://github.com/fixture/repository/issues/494#issuecomment-5687186310",
+    };
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "ISS-105",
+      labels: [],
+      comments: [],
+    };
+    const adapter = fakeAdapter(observation);
+    const comment = adapter.comment;
+    await persistCycle(config, cycle);
+    if (mode !== "complete")
+      adapter.comment = async (...args) => {
+        await comment(...args);
+        throw new Error("lost receipt");
+      };
+    const stopping = stopCycle(config, cycle, reason, 2, adapter, repositoryPolicy);
+    if (mode !== "complete") await expect(stopping).rejects.toThrow("lost receipt");
+    else await expect(stopping).resolves.toBe("run");
+    adapter.comment = comment;
+    const originalNote = await readFile(
+      resolve(config.stateRoot, config.run, "cycle-1-stop-1.json"),
+    );
+    if (mode === "absent") delete config.gateStopAuthorization;
+    if (mode === "wrong-directory")
+      config.gateStopAuthorization!.stateDirectory = resolve(directory, "source");
+    const resumed = await nextCycle(config, root, adapter, repositoryPolicy);
+    expect(resumed).toEqual(cycle);
+    const result = await reconcilePendingStop(config, resumed!, adapter, repositoryPolicy);
+    if (mode === "absent" || mode === "wrong-directory" || mode === "work")
+      expect(result).toEqual({ scope: "run", reason });
+    else expect(result).toBeUndefined();
+    expect(observation.comments).toHaveLength(1);
+    expect(await readFile(resolve(config.stateRoot, config.run, "cycle-1-stop-1.json"))).toEqual(
+      originalNote,
+    );
+    expect(JSON.parse(await readFile(resolve(source, "gate-stop.json"), "utf8"))).toEqual({
+      reason,
+    });
+    await expect(
+      reconcilePendingStop(config, resumed!, adapter, repositoryPolicy),
+    ).resolves.toBeUndefined();
+  },
+);
+
 it("posts one learning note after an interrupted comment and parks an item stop", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-stop-"));
   roots.push(root);

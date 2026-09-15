@@ -463,6 +463,28 @@ are unchanged. This isolates the fixture race, not the retained aggregate's
 load attribution. ISS-157 handles the separate saved-stop barrier; this repair
 does not resume ISS-155 or alter its retained evidence.
 
+ISS-157 records the separate saved-stop barrier in that same ISS-155 run.
+Optional `gateStopAuthorization` has only `stateDirectory` (the accepted source
+or repair directory holding `gate-stop.json`), `candidateHead` (the stopped
+delivery head), `repairSha` (the landed repair), and `authorityUrl` (the host's
+grant with review and executed hosted-green evidence). It stays outside source
+fingerprints. Only ordinary delivery's `gate-host-failed:<gate>` and
+`gate-attribution-unknown:<gate>` stops qualify, after fetching main and proving
+the repair is present there and absent from the stopped head and base. Without
+that grant the stop remains inert. A single `gate-stop-continuation.json`
+reservation retains the original stop, gate logs/terminal, source/review and
+history; its sibling directory owns fresh native refresh, independent exact-head
+DELTA review and all local gates, including after-mirror gates. Replay resumes
+workers and publication reconciliation with the existing PR and forward lease;
+new failures retain a separate stop and cannot spend another recovery. Existing
+correction, conflict, worker retry, native launch and implementation ceilings
+remain in force. Pending learning notes finish before native admission. Hosted
+checks, native landing and applicable deployment still bind the final head.
+Only the host, after reviewed three-OS-green ISS-156/157 landing, may install
+the stable executor with supervisors absent, supply the grant and resume the
+same run. This change neither clears retained evidence nor restarts ISS-155,
+changes its product work, or establishes M2 completion.
+
 ## Planning
 
 ISS-149 implements Todd's routing ruling on #368: model placement comes from
