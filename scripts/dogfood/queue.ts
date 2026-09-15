@@ -98,6 +98,7 @@ export interface QueueItem {
 }
 
 export interface QueueConfig {
+  gateStopAuthorization?: GateStopAuthorization;
   schemaVersion: typeof QUEUE_CONFIG_SCHEMA;
   controller: string;
   run: string;
@@ -111,6 +112,7 @@ export interface QueueConfig {
 }
 
 export interface LoopConfig {
+  gateStopAuthorization?: GateStopAuthorization;
   schemaVersion: typeof LOOP_CONFIG_SCHEMA;
   run: string;
   adapter: string;
@@ -128,6 +130,29 @@ export interface LoopConfig {
   providerOutageCeilingMs?: number;
   targetMilestone?: number;
   acceptedReplan?: AcceptedReplan;
+}
+
+export interface GateStopAuthorization {
+  stateDirectory: string;
+  candidateHead: string;
+  repairSha: string;
+  authorityUrl: string;
+}
+
+function validateGateStopAuthorization(value: GateStopAuthorization) {
+  demand(
+    exactKeys(value, ["stateDirectory", "candidateHead", "repairSha", "authorityUrl"]) &&
+      typeof value.stateDirectory === "string" &&
+      isAbsolute(value.stateDirectory) &&
+      resolve(value.stateDirectory) === value.stateDirectory &&
+      SHA.test(value.candidateHead) &&
+      SHA.test(value.repairSha) &&
+      typeof value.authorityUrl === "string" &&
+      /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
+        value.authorityUrl,
+      ),
+    "invalid-gate-stop-authorization",
+  );
 }
 
 export const ACTIONABLE_STOP_REASONS = [
@@ -251,10 +276,13 @@ export function validateLoopConfig(config: LoopConfig) {
       ...(config.providerOutageCeilingMs === undefined ? [] : ["providerOutageCeilingMs"]),
       ...(config.targetMilestone === undefined ? [] : ["targetMilestone"]),
       ...(config.acceptedReplan === undefined ? [] : ["acceptedReplan"]),
+      ...(config.gateStopAuthorization === undefined ? [] : ["gateStopAuthorization"]),
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
+  if (config.gateStopAuthorization !== undefined)
+    validateGateStopAuthorization(config.gateStopAuthorization);
   if (config.acceptedReplan !== undefined) {
     validateAcceptedReplan(config.acceptedReplan);
     demand(
@@ -895,6 +923,9 @@ export async function queueConfigFromLoop(
     },
   };
   const queue: QueueConfig = {
+    ...(config.gateStopAuthorization
+      ? { gateStopAuthorization: config.gateStopAuthorization }
+      : {}),
     schemaVersion: QUEUE_CONFIG_SCHEMA,
     controller,
     run: config.run,
@@ -949,6 +980,8 @@ export function validateHistory(history: QueueParticipant[], ceiling: number) {
 }
 
 export function validateQueueConfig(config: QueueConfig) {
+  if (config.gateStopAuthorization !== undefined)
+    validateGateStopAuthorization(config.gateStopAuthorization);
   demand(
     exactKeys(config, [
       "schemaVersion",
@@ -961,6 +994,7 @@ export function validateQueueConfig(config: QueueConfig) {
       "nativeLaunchCeiling",
       "initialHistory",
       "items",
+      ...(config.gateStopAuthorization === undefined ? [] : ["gateStopAuthorization"]),
     ]) &&
       config.schemaVersion === QUEUE_CONFIG_SCHEMA &&
       /^[A-Za-z0-9._:-]{1,128}$/.test(config.controller) &&
@@ -2443,9 +2477,30 @@ export function repositoryQueueAdapter(
     },
     async delivery(item, accepted): Promise<QueueDeliveryResult> {
       const stopped = await optionalRecord(accepted.stateDirectory, "gate-stop");
-      if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+      const recoveryDirectory = resolve(accepted.stateDirectory, "gate-stop-continuation");
+      const grant = config.gateStopAuthorization;
+      let recovery = await optionalRecord(accepted.stateDirectory, "gate-stop-continuation");
+      const recovering = stopped !== ABSENT;
+      if (recovering) {
+        if (
+          !grant ||
+          grant.stateDirectory !== accepted.stateDirectory ||
+          item.acceptedReplan ||
+          !/^gate-(host-failed|attribution-unknown):.+$/.test(stopped.reason)
+        )
+          throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+        if (recovery !== ABSENT)
+          demand(
+            Object.keys(grant).every(
+              (key) => grant[key as keyof GateStopAuthorization] === recovery.authorization[key],
+            ),
+            "gate-stop-authorization-mismatch",
+          );
+        const nextStop = await optionalRecord(recoveryDirectory, "gate-stop");
+        if (nextStop !== ABSENT) throw new QueueBlocked(nextStop.reason, nextStop.diagnostics);
+      }
       const stopGate = async (reason: string, diagnostics?: string): Promise<never> => {
-        await record(accepted.stateDirectory, "gate-stop", {
+        await record(recovering ? recoveryDirectory : accepted.stateDirectory, "gate-stop", {
           reason,
           ...(diagnostics ? { diagnostics } : {}),
         });
@@ -2463,12 +2518,31 @@ export function repositoryQueueAdapter(
         : 0;
       const savedAttempt = await optionalRecord(state, "attempt");
       if (savedAttempt !== ABSENT) validateAttempt(savedAttempt, config);
+      if (recovering && recovery === ABSENT)
+        demand(
+          savedAttempt !== ABSENT && savedAttempt.phase === "delivery",
+          "gate-stop-not-delivery",
+        );
       const previousRefresh = await optionalRecord(accepted.stateDirectory, "native-refresh");
+      const originalCorrection = await optionalRecord(accepted.stateDirectory, "gate-correction");
+      const recoveryCorrection = recovering
+        ? await optionalRecord(recoveryDirectory, "gate-correction")
+        : ABSENT;
+      const recoveryRefresh = recovering
+        ? await optionalRecord(recoveryDirectory, "native-refresh")
+        : ABSENT;
       const legacyCorrectionUsed =
         savedAttempt !== ABSENT &&
         savedAttempt.retries >
-          Math.max(flowRetries, previousRefresh !== ABSENT && previousRefresh.flowRetried ? 1 : 0);
-      const correctionRecord = await optionalRecord(accepted.stateDirectory, "gate-correction");
+          Math.max(
+            flowRetries,
+            previousRefresh !== ABSENT && previousRefresh.flowRetried ? 1 : 0,
+            recoveryRefresh !== ABSENT && recoveryRefresh.flowRetried ? 1 : 0,
+          );
+      const correctionRecord =
+        recoveryCorrection !== ABSENT ? recoveryCorrection : originalCorrection;
+      const correctionOrigin =
+        recoveryCorrection !== ABSENT ? recoveryDirectory : accepted.stateDirectory;
       let delivery: DeliveryConfig = {
         controller: config.controller,
         run: item.source.run,
@@ -2500,7 +2574,7 @@ export function repositoryQueueAdapter(
       delivery.candidateHead = originalCandidate.head;
       if (correctionRecord !== ABSENT) {
         const correction = correctionRecord;
-        let completed = await optionalRecord(accepted.stateDirectory, "gate-correction-result");
+        let completed = await optionalRecord(correctionOrigin, "gate-correction-result");
         if (completed === ABSENT) {
           let result;
           try {
@@ -2556,7 +2630,7 @@ export function repositoryQueueAdapter(
             reviewId: pair.selected.attempt.id,
             retries: correction.delivery.retries + 1 + (result.retries && !flowRetries ? 1 : 0),
           };
-          await record(accepted.stateDirectory, "gate-correction-result", completed);
+          await record(correctionOrigin, "gate-correction-result", completed);
         }
         delivery = {
           ...correction.delivery,
@@ -2573,16 +2647,153 @@ export function repositoryQueueAdapter(
           "gate-correction-review-failed",
         );
       }
-      const refreshed = await refreshDelivery(
-        delivery,
-        sourceConfig,
-        sourceEvidence,
-        boundedNative(item, "refresh"),
-        item.setup.pilotWorktree,
-        flowRetries,
-        deliveryAdapter,
-        previousRefresh !== ABSENT && previousRefresh.resolutionUsed === true,
-      );
+      let resolutionUsed =
+        (previousRefresh !== ABSENT && previousRefresh.resolutionUsed === true) ||
+        (recoveryRefresh !== ABSENT && recoveryRefresh.resolutionUsed === true);
+      let inheritedRetries = flowRetries;
+      if (recovering) {
+        if (recovery === ABSENT) {
+          const inheritedDirectory = delivery.stateDirectory;
+          // Reconstruct the last reviewed delivery, including correction and refresh siblings.
+          const prior = await optionalRecord(delivery.stateDirectory, "native-refresh");
+          if (prior !== ABSENT) {
+            demand(prior.head, "gate-stop-review-unavailable");
+            const pair = await passingReview(item, prior.directory, "gate-stop-review-unavailable");
+            delivery = {
+              ...delivery,
+              stateDirectory: prior.directory,
+              candidateHead: pair.candidate.head,
+              retries: Math.max(delivery.retries, prior.retries),
+              ...(prior.publicationRefresh ? { refresh: prior.publicationRefresh } : {}),
+            };
+            sourceConfig = (await json(prior.directory, "config")).config;
+            sourceEvidence = {
+              ...sourceEvidence,
+              head: pair.candidate.head,
+              stateDirectory: prior.directory,
+              reviewId: pair.selected.attempt.id,
+            };
+            resolutionUsed ||= prior.resolutionUsed === true;
+            inheritedRetries ||= prior.flowRetried ? 1 : 0;
+          }
+          demand(delivery.candidateHead === grant!.candidateHead, "gate-stop-head-mismatch");
+          const git = (args: string[]) => native.git(delivery.worktree, args);
+          const main = await currentMain(git);
+          const base = sourceConfig.mainBase ?? sourceConfig.base;
+          let repairPresent = false;
+          try {
+            repairPresent =
+              (await git(["merge-base", grant!.repairSha, main])) === grant!.repairSha &&
+              (await git(["merge-base", grant!.repairSha, base])) !== grant!.repairSha &&
+              (await git(["merge-base", grant!.repairSha, delivery.candidateHead])) !==
+                grant!.repairSha;
+          } catch {}
+          demand(main !== base && repairPresent, "gate-stop-repair-not-applicable");
+          // Reconcile an existing publication read-only before preserving its forward lease.
+          const publication = await optionalRecord(delivery.stateDirectory, "publication");
+          const intent = await optionalRecord(delivery.stateDirectory, "publication-intent");
+          if (publication !== ABSENT || intent !== ABSENT) {
+            const plan = await json(delivery.stateDirectory, "delivery-plan");
+            const observation = await deliveryAdapter.observePublication(
+              delivery,
+              plan.plan.publication,
+              plan.digest,
+              intent === ABSENT ? undefined : intent.target,
+            );
+            demand(
+              observation.state === "confirmed" || observation.state === "conflicting",
+              "publication-state-unknown",
+            );
+            demand(
+              observation.value.head === delivery.candidateHead &&
+                (publication === ABSENT || observation.value.number === publication.number),
+              "publication-state-unknown",
+            );
+            delivery.refresh = {
+              number: observation.value.number,
+              url: observation.value.url,
+              head: observation.value.head,
+              ...(delivery.localBranch || delivery.refresh?.localBranch
+                ? { localBranch: (delivery.localBranch ?? delivery.refresh?.localBranch)! }
+                : {}),
+            };
+          }
+          const gate = stopped.reason.slice(stopped.reason.indexOf(":") + 1);
+          const artifacts = resolve(
+            delivery.stateDirectory,
+            `gate-${createHash("sha256").update(gate).digest("hex")}`,
+          );
+          const context = `ISS-157 authorized saved gate-stop continuation. Original stop: ${resolve(accepted.stateDirectory, "gate-stop.json")}; failed gate log: ${resolve(artifacts, "candidate.log")}; terminal: ${resolve(artifacts, "candidate-terminal.json")}. Stopped exact head ${delivery.candidateHead}, main base ${base}; landed repair ${grant!.repairSha}, admission main ${main}; authority ${grant!.authorityUrl}. Original source/review and execution traces: ${accepted.stateDirectory}; stopped delivery evidence: ${delivery.stateDirectory}. Inspect full gate output and terminal, repair provenance, source-to-current-main changes and exact-result native gate execution. Historical PASS and a clean integration are not changed-head authority.`;
+          recovery = {
+            authorization: grant,
+            main,
+            delivery,
+            sourceConfig,
+            sourceEvidence,
+            inheritedDirectory,
+            resolutionUsed,
+            inheritedRetries,
+            context,
+          };
+          await mkdir(recoveryDirectory, { recursive: true });
+          // One single-writer reservation; neither main movement nor another grant renews it.
+          await record(accepted.stateDirectory, "gate-stop-continuation", recovery);
+        }
+        if (recoveryCorrection === ABSENT) {
+          delivery = {
+            ...recovery.delivery,
+            controllerRevision: config.controllerRevision,
+            stateDirectory: recoveryDirectory,
+          };
+          sourceConfig = recovery.sourceConfig;
+          sourceEvidence = recovery.sourceEvidence;
+        }
+        resolutionUsed ||= recovery.resolutionUsed;
+        inheritedRetries = Math.max(inheritedRetries, recovery.inheritedRetries);
+      }
+      let refreshed;
+      try {
+        refreshed = await refreshDelivery(
+          delivery,
+          sourceConfig,
+          sourceEvidence,
+          boundedNative(item, "refresh"),
+          item.setup.pilotWorktree,
+          inheritedRetries,
+          deliveryAdapter,
+          resolutionUsed,
+          recovering
+            ? {
+                context: recovery.context,
+                main: recovery.main,
+                inheritedDirectory:
+                  recoveryCorrection !== ABSENT
+                    ? delivery.stateDirectory
+                    : recovery.inheritedDirectory,
+              }
+            : undefined,
+        );
+      } catch (error) {
+        // A lost integration response is reconciled by native refresh on replay.
+        if (
+          recovering &&
+          error instanceof QueueBlocked &&
+          error.reason === "rebase-conflict" &&
+          !error.diagnostics &&
+          (await native.git(delivery.worktree, ["merge-base", recovery.main, "HEAD"])) ===
+            recovery.main
+        )
+          throw error;
+        if (
+          recovering &&
+          error instanceof QueueBlocked &&
+          !["current-main-moved", "current-main-unavailable", "provider-unavailable"].includes(
+            error.reason,
+          )
+        )
+          return stopGate(error.reason, error.diagnostics);
+        throw error;
+      }
       if (refreshed.status !== "ready") return refreshed;
       delivery = refreshed.config;
       const refreshedSource = refreshed.evidence;
@@ -2601,7 +2812,14 @@ export function repositoryQueueAdapter(
         await assertExecutor(delivery, executingRoot, gitExecutable);
         const result = await deliveryStep(delivery, inlineDelivery, deliveryPolicy);
         demand(result.reviewId === refreshedSource.reviewId, "delivery-source-drift");
-        if (result.status === "failed") return result;
+        if (result.status === "failed") {
+          if (recovering)
+            return stopGate(
+              `hosted-check-failed:${result.findings[0]!.file}`,
+              JSON.stringify(result),
+            );
+          return result;
+        }
         demand(result.retries >= (accepted.retries ?? 0), "delivery-source-drift");
         if (result.status === "observing-hosted-checks")
           return {
@@ -2642,10 +2860,11 @@ export function repositoryQueueAdapter(
           if (correctionRecord !== ABSENT || legacyCorrectionUsed)
             return stopGate(`gate-correction-exhausted:${error.gate}`, failure.log);
           if (item.acceptedReplan) return stopGate("gate-correction-not-authorized", failure.log);
-          const directory = resolve(accepted.stateDirectory, "gate-correction");
+          const correctionRoot = recovering ? recoveryDirectory : accepted.stateDirectory;
+          const directory = resolve(correctionRoot, "gate-correction");
           const context = `Failed exact reviewed head: ${delivery.candidateHead}; delivery main base: ${main}; predecessor complete review: ${refreshedSource.reviewId}. Exact failed command: ${JSON.stringify(failure.command)}. Full diagnostic artifact: ${failure.log}; failing identities/diagnostics: ${JSON.stringify(failure.diagnostics)}. Base control and attribution: ${resolve(delivery.stateDirectory, "gate-attribution.json")}. Original acceptance and preserved author/reviewer records and captured traces: ${accepted.stateDirectory}; predecessor delivery and review records: ${delivery.stateDirectory}. Read both directories' config, candidate, author/reviewer attempt and terminal files and the trace paths they name. Start from the failed head, retain the full implementation diff against main, and correct only this failure and its direct causes. All original acceptance criteria remain mandatory.`;
           await mkdir(directory, { recursive: true });
-          await record(accepted.stateDirectory, "gate-correction", {
+          await record(correctionRoot, "gate-correction", {
             failedHead: delivery.candidateHead,
             main,
             previousReview: refreshedSource.reviewId,

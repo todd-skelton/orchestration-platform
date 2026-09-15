@@ -33,7 +33,14 @@ import * as selfAdapter from "../../adapters/self.mjs";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
-import { nextCycle, persistCycle } from "../../scripts/dogfood/supervision.js";
+import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
+import {
+  nextCycle,
+  persistCycle,
+  reconcilePendingStop,
+  stopCycle,
+  type SupervisionAdapter,
+} from "../../scripts/dogfood/supervision.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 
 const roots: string[] = [];
@@ -270,6 +277,213 @@ async function loopFixture(
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+it("composes a four-input saved-stop grant outside immutable source and delivery inputs", async () => {
+  const f = await loopFixture();
+  const original = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+  const grant = {
+    stateDirectory: original.items[0]!.source.stateDirectory,
+    candidateHead: f.selected.base,
+    repairSha: "b".repeat(40),
+    authorityUrl: "https://github.com/fixture/repository/issues/494#issuecomment-5687186310",
+  };
+  const resumed = await queueConfigFromLoop(
+    { ...f.loop, gateStopAuthorization: grant },
+    f.repository,
+    f.selected,
+    repositoryPolicy,
+  );
+  expect(resumed.gateStopAuthorization).toEqual(grant);
+  const { gateStopAuthorization: _grant, ...unchanged } = resumed;
+  expect(unchanged).toEqual(original);
+  for (const invalid of [
+    null,
+    { ...grant, id: "another-recovery" },
+    { ...grant, authorityUrl: "" },
+    { ...grant, stateDirectory: "relative" },
+  ])
+    expect(() =>
+      validateLoopConfig({ ...f.loop, gateStopAuthorization: invalid } as LoopConfig),
+    ).toThrow("invalid-gate-stop-authorization");
+});
+
+it("recomposes a saved selection after its pending gate-stop note and admits one native DELTA", async () => {
+  const f = await loopFixture();
+  const git = async (tree: string, args: string[]) =>
+    (
+      await execute(f.gitExecutable, [
+        "-C",
+        tree,
+        ...(args[0] === "fetch"
+          ? args.map((arg) => (arg === "origin" ? f.repository : arg))
+          : args),
+      ])
+    ).stdout.trim();
+  await git(f.repository, [
+    "remote",
+    "add",
+    "origin",
+    `https://github.com/${f.loop.repository}.git`,
+  ]);
+  const cycle = { selection: { cycle: 1, ...f.selected }, initialHistory: [] };
+  await persistCycle(f.loop, cycle);
+  let q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+  const item = q.items[0]!;
+  const launches: { role: string; directory: string; prompt: string }[] = [];
+  const native: Adapter = {
+    async preflight() {},
+    git,
+    async launch(role, current, prompt) {
+      launches.push({ role, directory: current.stateDirectory, prompt });
+      if (role === "author")
+        await writeFile(resolve(current.worktree, "feature.txt"), "reviewed feature\n");
+      const trace = resolve(current.stateDirectory, `${role}.jsonl`);
+      await writeFile(trace, "synthetic native worker execution\n");
+      return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
+    },
+    async observe(role, current, attempt) {
+      if (current.stateDirectory !== item.source.stateDirectory)
+        return { id: attempt.id, status: "running" };
+      const head =
+        role === "author" ? current.base : await git(current.worktree, ["rev-parse", "HEAD"]);
+      return {
+        id: attempt.id,
+        status: "passed",
+        head,
+        ...(role === "reviewer"
+          ? {
+              summary: JSON.stringify({
+                run: current.run,
+                role,
+                head,
+                verdict: "PASS",
+                findings: [],
+                g0: "Small fixture",
+              }),
+            }
+          : {}),
+      };
+    },
+    async checks() {
+      throw new Error("No hosted observation before fresh review");
+    },
+  };
+  const delivery = githubDeliveryAdapter();
+  delivery.runGate = async (current, gate, head) => {
+    const path = resolve(
+      current.stateDirectory,
+      `gate-${createHash("sha256").update(gate).digest("hex")}`,
+    );
+    await mkdir(path, { recursive: true });
+    await writeFile(resolve(path, "candidate.log"), "Synthetic unknown failure\n");
+    await writeFile(resolve(path, "candidate-terminal.json"), JSON.stringify({ head, code: 1 }));
+    return "failed";
+  };
+  const adapter = () =>
+    repositoryQueueAdapter(q, f.repository, {
+      native,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      async assertExecutor() {},
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, tree) {
+          await mkdir(resolve(tree, "node_modules"), { recursive: true });
+          await writeFile(resolve(tree, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
+      deliveryPolicy: {
+        async plan(current) {
+          return {
+            gates: { beforeMirror: ["test"], afterMirror: [] },
+            drafts: [],
+            publication: {
+              sourceBranch: "codex/iss-104",
+              baseBranch: "main",
+              title: "fixture",
+              body: "fixture",
+              draft: true,
+            },
+            cleanup: {
+              worktrees: [current.worktree, current.reviewWorktree],
+              branch: current.localBranch!,
+            },
+            mergePolicy: {},
+          };
+        },
+      },
+    });
+  await expect(queueStep(q, adapter())).rejects.toThrow("gate-attribution-unknown:test");
+  const candidate = JSON.parse(
+    await readFile(resolve(item.source.stateDirectory, "candidate.json"), "utf8"),
+  );
+  const oldConfig = await readFile(resolve(item.source.stateDirectory, "config.json"));
+  const oldStop = await readFile(resolve(item.source.stateDirectory, "gate-stop.json"));
+  const comments: string[] = [];
+  const supervisor: SupervisionAdapter = {
+    async issue() {
+      return { state: "OPEN", key: f.selected.key, labels: [], comments };
+    },
+    async currentMain() {
+      throw new Error("Saved selection must keep its pinned base");
+    },
+    async removeReady() {},
+    async close() {},
+    async comment(_config, _number, body) {
+      comments.push(body);
+      throw new Error("lost note receipt");
+    },
+  };
+  const history = await adapter().history();
+  await expect(
+    stopCycle(
+      f.loop,
+      { ...cycle, initialHistory: history },
+      "gate-attribution-unknown:test",
+      1,
+      supervisor,
+      repositoryPolicy,
+    ),
+  ).rejects.toThrow("lost note receipt");
+  await writeFile(resolve(f.repository, "landed-repair.txt"), "landed repair\n");
+  await git(f.repository, ["add", "."]);
+  await git(f.repository, ["commit", "-m", "landed repair"]);
+  const repairSha = await git(f.repository, ["rev-parse", "HEAD"]);
+  const loop = {
+    ...f.loop,
+    gateStopAuthorization: {
+      stateDirectory: item.source.stateDirectory,
+      candidateHead: candidate.head,
+      repairSha,
+      authorityUrl: "https://github.com/fixture/repository/issues/494#issuecomment-5687186310",
+    },
+  };
+  const resumed = (await nextCycle(loop, f.repository, supervisor, repositoryPolicy))!;
+  expect(resumed.selection.base).toBe(f.selected.base);
+  await expect(
+    reconcilePendingStop(loop, resumed, supervisor, repositoryPolicy),
+  ).resolves.toBeUndefined();
+  for (let replay = 0; replay < 2; replay++) {
+    q = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
+    await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "observing-reviewer" });
+  }
+  expect(launches.map((row) => row.role)).toEqual(["author", "reviewer", "reviewer"]);
+  expect(launches.at(-1)!.prompt).toContain("independent DELTA");
+  const reservation = JSON.parse(
+    await readFile(resolve(item.source.stateDirectory, "gate-stop-continuation.json"), "utf8"),
+  );
+  expect(reservation.context).toContain(
+    resolve(
+      item.source.stateDirectory,
+      `gate-${createHash("sha256").update("test").digest("hex")}/candidate-terminal.json`,
+    ),
+  );
+  expect(reservation.main).toBe(repairSha);
+  expect(comments).toHaveLength(1);
+  expect(await readFile(resolve(item.source.stateDirectory, "config.json"))).toEqual(oldConfig);
+  expect(await readFile(resolve(item.source.stateDirectory, "gate-stop.json"))).toEqual(oldStop);
 });
 
 async function acceptedReplanFixture() {
