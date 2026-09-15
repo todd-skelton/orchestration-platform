@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -192,14 +192,15 @@ async function fixture(itemCount = 1) {
   return { root, stateDirectory, config, items };
 }
 
-async function loopFixture(withRuntime = false) {
+async function loopFixture(
+  withRuntime = false,
+  acceptanceCriteria = "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.",
+) {
   const root = await mkdtemp(resolve(tmpdir(), "loop-config-fixture-"));
   roots.push(root);
   const repository = resolve(root, "repository");
   const stateRoot = resolve(root, "state");
   const worktreeRoot = resolve(root, "worktrees");
-  const acceptanceCriteria =
-    "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.";
   await Promise.all([
     mkdir(resolve(repository, "docs"), { recursive: true }),
     mkdir(resolve(repository, "planning/drafts"), { recursive: true }),
@@ -1055,6 +1056,43 @@ it("derives and prepares a repository cycle without modifying the controller rep
       "loop-roots-overlap",
     );
 }, 30_000);
+
+it.each([true, false])(
+  "uses real self criteria before setup for a valid selection (supported items: %s)",
+  async (supported) => {
+    const { loop, repository, gitExecutable, selected } = await loopFixture(
+      false,
+      supported
+        ? "1. First criterion\n   Continued detail\n2. Second criterion"
+        : "   Orphan continuation without an item.",
+    );
+    const queue = queueConfigFromLoop(
+      { ...loop, repository: "todd-skelton/orchestration-platform" },
+      repository,
+      selected,
+      selfAdapter,
+    );
+    if (supported) {
+      const item = (await queue).items[0]!;
+      expect(item.repair.acceptanceCriteria).toEqual([
+        "First criterion\nContinued detail",
+        "Second criterion",
+      ]);
+      expect(item.implementationAttempt).toBe(1);
+      expect(item.implementationAttemptCeiling).toBe(4);
+    } else {
+      await expect(queue).rejects.toMatchObject({ reason: "selected-issue-criteria-missing" });
+      expect(await readdir(loop.stateRoot)).toEqual([]);
+    }
+    expect(await readdir(loop.worktreeRoot)).toEqual([]);
+    expect((await execute(gitExecutable, ["-C", repository, "status", "--porcelain"])).stdout).toBe(
+      "",
+    );
+    expect(
+      (await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])).stdout.trim(),
+    ).toBe(selected.base);
+  },
+);
 
 it("preserves registered multiline criteria through the genuine repository repair path", async () => {
   const { loop, repository, gitExecutable, acceptanceCriteria, selected } = await loopFixture(true);

@@ -108,7 +108,7 @@ function listItems(section) {
   const items = [];
   let current;
   for (const line of section.split(/\r?\n/)) {
-    const item = /^\s*[-*+]\s+(.+)$/.exec(line);
+    const item = /^(?:\s*[-*+]|\d+\.)\s+(.+)$/.exec(line);
     if (item) {
       if (current) items.push(current);
       current = item[1].trim();
@@ -125,7 +125,7 @@ export async function issueContext({ repository, key, executorRoot }) {
   requirePolicy(registered, "selected-issue-unregistered");
   const draft = planning.issueDrafts[key];
   const frontmatter = parseFrontmatter(draft, registered.file);
-  const section = /\n## Done when\s*\n([\s\S]*?)(?=\n## |$)/.exec(draft)?.[1]?.trim();
+  const section = /\n## Done when[ \t]*\r?\n([\s\S]*?)(?=\n## |$)/.exec(draft)?.[1];
   requirePolicy(section, "selected-issue-criteria-missing");
   const acceptanceCriteria = listItems(section);
   requirePolicy(acceptanceCriteria.length > 0, "selected-issue-criteria-missing");
