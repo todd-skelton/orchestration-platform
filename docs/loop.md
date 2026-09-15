@@ -309,7 +309,8 @@ executor merges the reviewed head with that same current main and pins the
 marked text as an intermediate merge commit. This input preserves both parents
 and supplies a clean, repeatable base for the ordinary author lifecycle; it is
 never an accepted delivery head. The existing author placement resolves only
-the marked hunks. Text outside them, other files and file modes cannot change.
+the marked hunks. Text outside them (including line endings), other files and
+file modes cannot change.
 Only ordinary text conflicts with both sides present are supported; unsupported
 conflicts stop as `conflict-resolution-unsupported`. Scope escape or author
 failure stops as `conflict-resolution-scope-escape` or

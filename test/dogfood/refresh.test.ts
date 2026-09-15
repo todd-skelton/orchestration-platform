@@ -949,9 +949,17 @@ it("retains a failed delta review and stops without starting another implementat
   });
 });
 
-it.each([false, true])(
-  "resolves the recorded single-list-hunk conflict and preserves both parents (existing PR: %s)",
-  async (existingPR) => {
+it.each([
+  { existingPR: false, autocrlf: false },
+  { existingPR: true, autocrlf: false },
+  { existingPR: false, autocrlf: true },
+  { existingPR: true, autocrlf: true },
+])(
+  "resolves the recorded single-list-hunk conflict and preserves both parents (existing PR: $existingPR, autocrlf: $autocrlf)",
+  async ({ existingPR, autocrlf }) => {
+    vi.stubEnv("GIT_CONFIG_COUNT", "1");
+    vi.stubEnv("GIT_CONFIG_KEY_0", "core.autocrlf");
+    vi.stubEnv("GIT_CONFIG_VALUE_0", String(autocrlf));
     const f = await fixture(undefined, undefined, true);
     if (existingPR) await f.enablePublicationRefresh();
     const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
@@ -960,7 +968,12 @@ it.each([false, true])(
       "const routes = [\n  'existing',\n  'incumbent',\n];\n",
     );
     const main = await f.advanceMain();
-    const resolved = "const routes = [\n  'existing',\n  'reviewed',\n  'incumbent',\n];\n";
+    // Git's checkout line endings outside the hunk are part of the immutable text.
+    const resolved =
+      "const routes = [\n  'existing',\n  'reviewed',\n  'incumbent',\n];\n".replaceAll(
+        "\n",
+        autocrlf ? "\r\n" : "\n",
+      );
     f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), resolved));
     await f.saveAttempt();
     const run = existingPR
@@ -1000,15 +1013,22 @@ async function conflictingFixture() {
   return f;
 }
 
-it("limits edits to actual hunks, including fixed text between multiple hunks", () => {
+it.each(["\n", "\r\n"])("limits edits to actual hunks with line ending %j", (eol) => {
   const before =
-    "const routes = [\n<<<<<<< HEAD\n'a',\n=======\n'b',\n>>>>>>> main\n// Keep this assertion\n<<<<<<< HEAD\n'c',\n=======\n'd',\n>>>>>>> main\n];\n";
-  const after = "const routes = [\n'a',\n'b',\n// Keep this assertion\n'c',\n'd',\n];\n";
+    "const routes = [\n<<<<<<< HEAD\n'a',\n=======\n'b',\n>>>>>>> main\n// Keep this assertion\n<<<<<<< HEAD\n'c',\n=======\n'd',\n>>>>>>> main\n];\n".replaceAll(
+      "\n",
+      eol,
+    );
+  const after = "const routes = [\n'a',\n'b',\n// Keep this assertion\n'c',\n'd',\n];\n".replaceAll(
+    "\n",
+    eol,
+  );
   expect(withinConflictHunks(before, after)).toBe(true);
   for (const changed of [
     before,
     after.replace("const routes", "const disabled"),
-    after.replace("// Keep this assertion\n", ""),
+    after.replace(`// Keep this assertion${eol}`, ""),
+    after.replaceAll(eol, eol === "\n" ? "\r\n" : "\n"),
     after + "extra\n",
   ])
     expect(withinConflictHunks(before, changed)).toBe(false);
