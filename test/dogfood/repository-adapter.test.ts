@@ -225,6 +225,86 @@ it("loads the named self adapter with the complete repository seam", async () =>
   });
 });
 
+it("consumes all seven ordered criteria and continuations from registered ISS-152", async () => {
+  const executorRoot = resolve(import.meta.dirname, "../..");
+  const draft = await readFile(resolve(executorRoot, "planning/drafts/ISS-152.md"), "utf8");
+  const context = await self.issueContext({
+    repository: "todd-skelton/orchestration-platform",
+    key: "ISS-152",
+    number: 474,
+    executorRoot,
+  });
+  expect(context.body).toBe(draft);
+  expect(context.routing).toEqual({ row: "self" });
+  expect(context.acceptanceCriteria).toEqual([
+    expect.stringMatching(/^\*\*AC1: Attribute before correction\.\*\*/u),
+    expect.stringMatching(/^\*\*AC2: Correct from the failed artifact once\.\*\*/u),
+    expect.stringMatching(/^\*\*AC3: Renew review authority\.\*\*/u),
+    expect.stringMatching(/^\*\*AC4: Deliver normally\.\*\*/u),
+    expect.stringMatching(/^\*\*AC5: Keep the ceiling finite\.\*\*/u),
+    expect.stringMatching(/^\*\*AC6: Resume without erasure\.\*\*/u),
+    expect.stringMatching(/^\*\*AC7: Document in `docs\/loop\.md`\.\*\*/u),
+  ]);
+  // Reconstruct the registered Markdown to check every continuation and boundary.
+  expect(
+    context.acceptanceCriteria
+      .map((criterion, index) => `${index + 1}. ${criterion.replaceAll("\n", "\n   ")}`)
+      .join("\n"),
+  ).toBe(draft.split("\n## Done when\n")[1]!.split("\n## Scope fence\n")[0]!.trim());
+  expect(context.rules).toContain(
+    "`## Done when` accepts unordered `-`, `*`, or `+` items or ordinary top-level\n`N.` ordered items, with indented continuation lines.",
+  );
+});
+
+it.each([
+  ["dash", "## Done when\n\n- First\n  continued\n- Second", ["First\ncontinued", "Second"]],
+  ["star", "## Done when\n\n* First\n  continued\n* Second", ["First\ncontinued", "Second"]],
+  ["plus", "## Done when\n\n+ First\n  continued\n+ Second", ["First\ncontinued", "Second"]],
+  [
+    "ordered with nested continuation",
+    "## Done when\n\n1. First\n   continued\n   1. Nested detail\n10. Second",
+    ["First\ncontinued\n1. Nested detail", "Second"],
+  ],
+  [
+    "ordered CRLF",
+    "## Done when\r\n\r\n1. First\r\n   continued\r\n2. Second",
+    ["First\ncontinued", "Second"],
+  ],
+  ["missing heading", "## Why\n\n- Not acceptance", null],
+  ["empty section", "## Done when\n\n", null],
+  ["prose only", "## Done when\n\nAn unsupported paragraph.", null],
+  ["orphan continuation", "## Done when\n\n   Continuation before any item.", null],
+  ["indented ordered continuation only", "## Done when\n   1. Not a top-level item", null],
+  ["unsupported delimiter", "## Done when\n\n1) Not supported", null],
+  ["missing marker space", "## Done when\n\n1.Not supported", null],
+  ["empty ordered item", "## Done when\n\n1. ", null],
+] as const)("self criteria: %s", async (_name, section, expected) => {
+  const root = await mkdtemp(resolve(tmpdir(), "self-criteria-"));
+  try {
+    await mkdir(resolve(root, "planning/drafts"), { recursive: true });
+    await mkdir(resolve(root, "docs"));
+    await writeFile(resolve(root, "docs/loop.md"), "# The loop\n");
+    await writeFile(
+      resolve(root, "planning/roadmap.json"),
+      JSON.stringify({ issues: [{ key: "ISS-001", file: "planning/drafts/ISS-001.md" }] }),
+    );
+    await writeFile(
+      resolve(root, "planning/drafts/ISS-001.md"),
+      `---\nkey: ISS-001\ntitle: "Criteria fixture"\n---\n\n${section}\n\n## Out of scope\n\n- Never a criterion\n`,
+    );
+    const context = self.issueContext({
+      repository: "todd-skelton/orchestration-platform",
+      key: "ISS-001",
+      number: 1,
+      executorRoot: root,
+    });
+    if (expected) await expect(context).resolves.toMatchObject({ acceptanceCriteria: expected });
+    else await expect(context).rejects.toMatchObject({ reason: "selected-issue-criteria-missing" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("preserves typed reasons from queue-facing adapter calls", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "repository-adapter-reasons-"));
   const adapters = resolve(root, "adapters");

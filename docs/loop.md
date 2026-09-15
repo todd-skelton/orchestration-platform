@@ -434,6 +434,12 @@ blocked_by: [ISS-120, ISS-121]
 ## Out of scope
 ```
 
+`## Done when` accepts unordered `-`, `*`, or `+` items or ordinary top-level
+`N.` ordered items, with indented continuation lines. The self adapter consumes
+each item as one acceptance criterion; a section without supported list items
+stops with `selected-issue-criteria-missing`, never a whole-body fallback.
+ISS-153 fixes the ordered form recorded in ISS-152's pre-dispatch stop.
+
 `pnpm planning:check` proves drafts and roadmap agree and the graph is
 acyclic. `pnpm planning:board-check` proves every open registered issue on
 GitHub carries the marker, the draft link and the verbatim draft, has the
