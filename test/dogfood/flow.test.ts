@@ -162,17 +162,6 @@ it("reconciles an interrupted final author commit without another author", async
   expect(f.commits).toHaveLength(1);
 });
 
-it("bounds provider deaths inside the final author's existing retry", async () => {
-  const f = await fixture();
-  f.config.correctionPaths = ["scripts/repair.mjs"];
-  f.statuses.author = "dead";
-  f.summarize("author", "http://provider.test/v1 connection refused");
-  f.retry("dead", "http://provider.test/v1 connection refused");
-  await expect(f.run()).rejects.toThrow("launcher-failed");
-  await expect(f.run()).rejects.toThrow("launcher-failed");
-  expect(f.launches).toEqual(["author", "author"]);
-});
-
 it.each(["sibling", "untracked", "rename"])(
   "rejects %s outside the closed correction paths before committing or reviewing",
   async (mode) => {

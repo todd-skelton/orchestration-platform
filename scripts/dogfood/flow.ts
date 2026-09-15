@@ -497,7 +497,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           continue;
         }
         // ISS-129: an outage spends native launches, not the ISS-127 retry.
-        if (!terminal.providerFailure || config.correctionPaths) {
+        if (!terminal.providerFailure) {
           if (retry) throw new QueueBlocked("launcher-failed", diagnostics, retries);
           retry = true;
           retries = 1;

@@ -286,8 +286,7 @@ parsed identities, results and decision. Replay and reviewer prompts use only
 this snapshot. External replacement or removal cannot turn failure into PASS.
 
 An accepted snapshot admits the ordinary independent reviewer lifecycle once.
-Provider/dead-worker retry remains bounded inside the same final attempt;
-no ordinary repair, gate correction, conflict author or chained continuation
+No ordinary repair, gate correction, conflict author or chained continuation
 is admitted. Current-main integration still requires delta review and, when
 declared, new exact-head host evidence. Local gates, hosted green, native merge
 and applicable actual deployment remain required. Host/authority observation
