@@ -472,6 +472,36 @@ it("distinguishes the installed CLI no-check response from provider failure", as
   });
 });
 
+it("does not mistake asynchronously computed mergeability for publication identity drift", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  let reads = 0;
+  const adapter = githubDeliveryAdapter(
+    {
+      async gh() {
+        return "[]";
+      },
+      async ghJson(_config, args) {
+        if (args[0] === "api") return [{ workflow_runs: [] }];
+        return publicationRow(
+          publication,
+          ++reads % 2
+            ? { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }
+            : { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" },
+        );
+      },
+    },
+    "git",
+    async () => {},
+  );
+  await expect(adapter.checks(current, publication)).resolves.toEqual({
+    head: current.candidateHead,
+    checks: [],
+  });
+});
+
 it.each(["squash", "queue"])(
   "revalidates exact publication head after making a draft ready (%s)",
   async (method) => {
@@ -835,7 +865,7 @@ it("keeps a published head collision blocked and identifies its preserved worktr
   expect(await git(["rev-parse", "HEAD"], preserved)).toBe(priorHead);
 });
 
-it.each([false, true, "run-scoped"])(
+it.each([false, true, "run-scoped", "ready"])(
   "refreshes one exact existing draft forward (preserved prior branch: %s)",
   async (preservePrior) => {
     const { current, git } = await localRemoteRepositoryFixture();
@@ -853,7 +883,8 @@ it.each([false, true, "run-scoped"])(
       head: priorHead,
       ...(preservePrior === true ? { localBranch } : {}),
     };
-    if (preservePrior === "run-scoped") current.localBranch = localBranch;
+    if (preservePrior === "run-scoped" || preservePrior === "ready")
+      current.localBranch = localBranch;
     const publication = publicationEvidence(current);
     const plan = {
       sourceBranch: publication.sourceBranch,
@@ -877,6 +908,7 @@ it.each([false, true, "run-scoped"])(
           publicationRow(publication, {
             headRefOid: await remoteHead(),
             title: "earlier failed attempt",
+            isDraft: preservePrior !== "ready",
           }),
         ];
       },
@@ -922,6 +954,60 @@ it.each([false, true, "run-scoped"])(
     }
   },
   30_000,
+);
+
+it.each(["DIRTY", "CONFLICTING"])(
+  "classifies exact published %s separately from unknown remote/PR identity",
+  async (state) => {
+    const { current, git } = await localRemoteRepositoryFixture();
+    const publication = publicationEvidence(current);
+    const plan = {
+      sourceBranch: publication.sourceBranch,
+      baseBranch: publication.baseBranch,
+      title: publication.title,
+      body: publication.body,
+      draft: true as const,
+    };
+    let row = publicationRow(publication, {
+      isDraft: false,
+      ...(state === "DIRTY" ? { mergeStateStatus: state } : { mergeable: state }),
+    });
+    const effects: string[][] = [];
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        return "";
+      },
+      async ghJson(_config, args) {
+        return args[1] === "view" ? row : [row];
+      },
+    });
+    await expect(
+      adapter.observePublication(current, plan, publication.planDigest, "absent"),
+    ).resolves.toEqual({ state: "conflicting", value: publication });
+    await expect(adapter.conflictingPublication!(current, publication)).resolves.toBe(true);
+    await expect(adapter.checks(current, publication)).rejects.toThrow(
+      "published-candidate-conflict",
+    );
+    row = { ...row, headRefOid: "f".repeat(40) };
+    await expect(
+      adapter.observePublication(current, plan, publication.planDigest, "absent"),
+    ).resolves.toEqual({ state: "unknown" });
+    await expect(adapter.conflictingPublication!(current, publication)).rejects.toThrow(
+      "publication-state-unknown",
+    );
+    row = { ...row, headRefOid: publication.head };
+    const moved = await commitCandidate(current, git);
+    await git(["push", "origin", `${moved}:refs/heads/${publication.sourceBranch}`]);
+    const old = { ...current, candidateHead: publication.head };
+    await expect(
+      adapter.observePublication(old, plan, publication.planDigest, "absent"),
+    ).resolves.toEqual({ state: "unknown" });
+    await expect(adapter.conflictingPublication!(old, publication)).rejects.toThrow(
+      "publication-state-unknown",
+    );
+    expect(effects).toEqual([]);
+  },
 );
 
 it.each([

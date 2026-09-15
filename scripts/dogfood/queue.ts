@@ -2319,8 +2319,9 @@ export function repositoryQueueAdapter(
         boundedNative(item, "refresh"),
         item.setup.pilotWorktree,
         flowRetries,
+        deliveryAdapter,
       );
-      if (refreshed.status === "observing-reviewer") return refreshed;
+      if (refreshed.status !== "ready") return refreshed;
       delivery = refreshed.config;
       const refreshedSource = refreshed.evidence;
       if (refreshed.flowRetried) gateRetryCounted = delivery.retries > Math.max(flowRetries, 1);
@@ -2402,6 +2403,18 @@ export function repositoryQueueAdapter(
           });
         return result;
       } catch (error) {
+        if (error instanceof DeliveryBlocked && error.reason === "published-candidate-conflict") {
+          if ((await optionalRecord(delivery.stateDirectory, "publication-conflict")) === ABSENT)
+            await record(delivery.stateDirectory, "publication-conflict", {
+              head: delivery.candidateHead,
+            });
+          return {
+            status: "observing-hosted-checks",
+            head: delivery.candidateHead,
+            reviewId: refreshedSource.reviewId,
+            retries: delivery.retries,
+          };
+        }
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(
           error instanceof DeliveryBlocked ? error.reason : "delivery-state-unknown",

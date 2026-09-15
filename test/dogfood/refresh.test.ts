@@ -23,6 +23,7 @@ import {
   type QueueItem,
 } from "../../scripts/dogfood/queue.js";
 import type { Adapter, Config, Attempt } from "../../scripts/dogfood/flow.js";
+import { withinConflictHunks } from "../../scripts/dogfood/conflict.js";
 import type {
   DeliveryAdapter,
   DeliveryConfig,
@@ -79,7 +80,7 @@ function planning(keys: string[]): PlanningSnapshot {
   };
 }
 
-async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
+async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir(), routeList = false) {
   // Delivery expects canonical roots, including macOS /var and Windows temp aliases.
   const root = await realpath(await mkdtemp(resolve(temporaryRoot, "native-refresh-")));
   roots.push(root);
@@ -117,7 +118,10 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   await git(repo, ["config", "user.email", "fixture@example.test"]);
   await git(repo, ["config", "user.name", "Fixture"]);
   await writePlanning(repo, planning(seedKeys));
-  await writeFile(resolve(repo, "feature.txt"), "old\n");
+  await writeFile(
+    resolve(repo, "feature.txt"),
+    routeList ? "const routes = [\n  'existing',\n];\n" : "old\n",
+  );
   const base = await commit(repo);
   await git(repo, ["clone", "--bare", repo, origin]);
   await git(repo, [
@@ -132,7 +136,10 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   const candidatePlanning = planning(seedKeys);
   candidatePlanning.issueDrafts["ISS-100"] += "\nCandidate planning delta.\n";
   await writePlanning(sourceTree, candidatePlanning);
-  await writeFile(resolve(sourceTree, "feature.txt"), "candidate\n");
+  await writeFile(
+    resolve(sourceTree, "feature.txt"),
+    routeList ? "const routes = [\n  'existing',\n  'reviewed',\n];\n" : "candidate\n",
+  );
   let head = await commit(sourceTree);
   await git(repo, ["worktree", "add", "--detach", reviewTree, head]);
   const checks = requiredChecks({ repository: planning([]).roadmap.repository }) as string[];
@@ -188,6 +195,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     writeFile(resolve(sourceState, `${name}.json`), JSON.stringify(value));
   const pinSource = async () => {
     head = await git(sourceTree, ["rev-parse", "HEAD"]);
+    await git(reviewTree, ["checkout", "--detach", head]);
     await record("config", { fingerprint: "a".repeat(64), config: source });
     await record("candidate", { head, changed: ["feature.txt", "planning/drafts/ISS-100.md"] });
     await record("author-attempt", author);
@@ -297,18 +305,31 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     return main;
   };
   let running = false;
+  let reviewRunning = false;
+  let lostCommit: "input" | "resolution" | undefined;
   let failReview = false;
   let malformedReview = false;
   let unavailableMain = false;
   let moveDuringReview = false;
   let lostIntegrationResponse = false;
   const prompts: string[] = [];
+  const authorPrompts: string[] = [];
+  let resolution: (() => Promise<void>) | undefined;
+  let failAuthor = false;
   const reviewerModels: string[] = [];
   const native: Adapter = {
     async preflight() {},
     async git(tree, args) {
       if (unavailableMain && args[0] === "fetch") throw new Error("offline");
       const result = await git(tree, args);
+      if (
+        args[0] === "commit" &&
+        lostCommit &&
+        args.at(-1)!.endsWith("conflict input") === (lostCommit === "input")
+      ) {
+        lostCommit = undefined;
+        throw new Error("lost conflict commit response");
+      }
       if (
         lostIntegrationResponse &&
         ["rebase", "merge"].includes(args[0]!) &&
@@ -320,18 +341,36 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
       return result;
     },
     async launch(role, _config, prompt) {
-      expect(role).toBe("reviewer");
-      reviewerModels.push(_config.reviewer.model);
-      prompts.push(prompt);
+      if (role === "author") {
+        authorPrompts.push(prompt);
+        await resolution?.();
+      } else {
+        reviewerModels.push(_config.reviewer.model);
+        prompts.push(prompt);
+      }
       return {
         id: randomUUID(),
         pid: 200 + prompts.length,
-        trace: resolve(state, `delta-${prompts.length}.jsonl`),
+        trace: resolve(state, `${role}-delta-${prompts.length + authorPrompts.length}.jsonl`),
         launchedAt: 1,
       };
     },
     async observe(_role, current, attempt) {
-      if (running) return { id: attempt.id, status: "running" };
+      if (running || (_role === "reviewer" && reviewRunning))
+        return { id: attempt.id, status: "running" };
+      if (_role === "author")
+        return {
+          id: attempt.id,
+          status: failAuthor ? "failed" : "passed",
+          head: current.base,
+          summary: JSON.stringify({
+            run: current.run,
+            role: "author",
+            head: current.base,
+            verdict: failAuthor ? "FAIL" : "PASS",
+            summary: "",
+          }),
+        };
       if (malformedReview) {
         malformedReview = false;
         return { id: attempt.id, status: "malformed" };
@@ -354,6 +393,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   };
   const realDelivery = githubDeliveryAdapter();
   let refreshPublication: DeliveryAdapter | undefined;
+  let publicationDirty = false;
   let publication: PublicationEvidence | undefined;
   let plannedPublication: PublicationEvidence;
   let lostPublicationObservation = false;
@@ -399,7 +439,13 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
           digest,
           target,
         );
-        if (observation.state === "confirmed") publication = observation.value;
+        if (observation.state === "confirmed" || observation.state === "conflicting") {
+          publication = observation.value;
+          if (lostPublicationObservation) {
+            lostPublicationObservation = false;
+            throw new Error("lost publication observation");
+          }
+        }
         return observation;
       }
       if (publication && lostPublicationObservation) {
@@ -426,7 +472,13 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
       if (refreshPublication) return refreshPublication.publish(current, plan, target);
       publication = plannedPublication;
     },
-    async checks(current) {
+    async conflictingPublication(current, value) {
+      return refreshPublication
+        ? refreshPublication.conflictingPublication!(current, value)
+        : false;
+    },
+    async checks(current, value) {
+      if (publicationDirty && refreshPublication) return refreshPublication.checks(current, value);
       return {
         head: current.candidateHead,
         checks: checks.map((name) => ({
@@ -505,20 +557,20 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
         body = await readFile(args[args.indexOf("--body-file") + 1]!, "utf8");
         return "";
       },
-      async ghJson() {
-        return [
-          {
-            number: 200,
-            url: item.delivery.refresh!.url,
-            headRefOid: await remoteHead(),
-            headRefName: "codex/iss-100",
-            baseRefName: "main",
-            state: "OPEN",
-            isDraft: true,
-            title,
-            body,
-          },
-        ];
+      async ghJson(_current, args) {
+        const row = {
+          number: 200,
+          url: item.delivery.refresh!.url,
+          headRefOid: await remoteHead(),
+          headRefName: "codex/iss-100",
+          baseRefName: "main",
+          state: "OPEN",
+          isDraft: true,
+          title,
+          body,
+          ...(publicationDirty ? { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } : {}),
+        };
+        return args[1] === "view" ? row : [row];
       },
     });
     return { remoteHead, preserved };
@@ -565,11 +617,27 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     deliver,
     commands,
     prompts,
+    authorPrompts,
+    loseCommit: (phase: "input" | "resolution") => {
+      lostCommit = phase;
+    },
+    setReviewRunning: (value: boolean) => {
+      reviewRunning = value;
+    },
+    setResolution: (callback: () => Promise<void>) => {
+      resolution = callback;
+    },
+    failAuthor: () => {
+      failAuthor = true;
+    },
     reviewerModels,
     gateHeads,
     adapter,
     saveAttempt,
     enablePublicationRefresh,
+    setPublicationDirty: (value: boolean) => {
+      publicationDirty = value;
+    },
     malformReview: () => {
       malformedReview = true;
     },
@@ -882,19 +950,224 @@ it("retains a failed delta review and stops without starting another implementat
 });
 
 it.each([false, true])(
-  "uses the existing typed rebase conflict stop for the ISS-147 handoff (existing PR: %s)",
+  "resolves the recorded single-list-hunk conflict and preserves both parents (existing PR: %s)",
   async (existingPR) => {
-    const f = await fixture();
+    const f = await fixture(undefined, undefined, true);
     if (existingPR) await f.enablePublicationRefresh();
-    await writeFile(resolve(f.repo, "feature.txt"), "conflicting main\n");
-    await f.advanceMain();
-    await expect(f.deliver()).rejects.toThrow("rebase-conflict");
-    expect(await f.git(f.sourceTree, ["rev-parse", "HEAD"])).toBe(f.head);
+    const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
+    await writeFile(
+      resolve(f.repo, "feature.txt"),
+      "const routes = [\n  'existing',\n  'incumbent',\n];\n",
+    );
+    const main = await f.advanceMain();
+    const resolved = "const routes = [\n  'existing',\n  'reviewed',\n  'incumbent',\n];\n";
+    f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), resolved));
+    await f.saveAttempt();
+    const run = existingPR
+      ? f.deliver
+      : () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+    await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+    for (const parent of [main, f.head])
+      expect(await f.git(f.sourceTree, ["merge-base", parent, head])).toBe(parent);
     expect(await f.git(f.sourceTree, ["status", "--porcelain"])).toBe("");
-    expect(f.prompts).toEqual([]);
+    expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe(resolved);
+    expect(await readFile(resolve(f.sourceState, "candidate.json"), "utf8")).toBe(original);
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(1);
+    expect(f.prompts[0]).toContain(f.reviewer.id);
+    expect(f.prompts[0]).toContain(resolve(f.sourceState, "author.jsonl"));
+    expect(f.prompts[0]).toContain("author-delta-1.jsonl");
+    expect(f.gateHeads).toEqual([head]);
+    expect(f.publications()).toBe(1);
+    const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
+    expect(attempt.candidateAttempt).toBe(1);
+    expect((await f.adapter().history()).map((row) => [row.stage, row.role])).toEqual([
+      ["source", "author"],
+      ["source", "reviewer"],
+      ["refresh", "author"],
+      ["refresh", "reviewer"],
+    ]);
+  },
+);
+
+async function conflictingFixture() {
+  const f = await fixture();
+  await writeFile(resolve(f.repo, "feature.txt"), "main\n");
+  await f.advanceMain();
+  f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), "candidate\nmain\n"));
+  return f;
+}
+
+it("limits edits to actual hunks, including fixed text between multiple hunks", () => {
+  const before =
+    "const routes = [\n<<<<<<< HEAD\n'a',\n=======\n'b',\n>>>>>>> main\n// Keep this assertion\n<<<<<<< HEAD\n'c',\n=======\n'd',\n>>>>>>> main\n];\n";
+  const after = "const routes = [\n'a',\n'b',\n// Keep this assertion\n'c',\n'd',\n];\n";
+  expect(withinConflictHunks(before, after)).toBe(true);
+  for (const changed of [
+    before,
+    after.replace("const routes", "const disabled"),
+    after.replace("// Keep this assertion\n", ""),
+    after + "extra\n",
+  ])
+    expect(withinConflictHunks(before, changed)).toBe(false);
+});
+
+it.each([false, true])(
+  "routes a published DIRTY candidate through bounded resolution and forward publication (lost receipt: %s)",
+  async (lostReceipt) => {
+    const f = await fixture();
+    const { remoteHead, preserved } = await f.enablePublicationRefresh();
+    await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\n");
+    const publishedHead = await f.commit(f.sourceTree);
+    await f.pinSource();
+    if (lostReceipt) {
+      f.losePublicationObservation();
+      await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+    } else {
+      await expect(f.deliver()).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+        head: publishedHead,
+      });
+    }
+    expect(await remoteHead()).toBe(publishedHead);
+    await writeFile(resolve(f.repo, "feature.txt"), "new main\n");
+    const main = await f.advanceMain();
+    f.setPublicationDirty(true);
+    await expect(f.deliver()).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      head: publishedHead,
+    });
+    const originalPublication = await readFile(resolve(f.sourceState, "publication.json"), "utf8");
+    expect(f.publications()).toBe(1);
+    f.setResolution(async () => {
+      await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\nnew main\n");
+      f.setPublicationDirty(false);
+    });
+    // Lose the refresh observation too: restart must reconcile that exact remote head.
+    f.losePublicationObservation();
+    await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+    const resolved = await remoteHead();
+    expect(resolved).not.toBe(publishedHead);
+    await expect(f.deliver()).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      head: resolved,
+    });
+    await expect(f.deliver()).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      head: resolved,
+    });
+    expect(f.publications()).toBe(2);
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(1);
+    for (const parent of [publishedHead, main])
+      expect(await f.git(f.sourceTree, ["merge-base", parent, resolved])).toBe(parent);
+    expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
+    expect(await readFile(resolve(f.sourceState, "publication.json"), "utf8")).toBe(
+      originalPublication,
+    );
+    expect(new Set(f.gateHeads)).toEqual(new Set([publishedHead, resolved]));
+  },
+);
+
+it("resumes the conflict author and delta reviewer with partial edits and original participants", async () => {
+  const f = await conflictingFixture();
+  f.setRunning(true);
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-author" });
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-author" });
+  expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe("candidate\nmain\n");
+  f.setRunning(false);
+  f.setReviewRunning(true);
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-reviewer" });
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-reviewer" });
+  f.setReviewRunning(false);
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+  expect(await f.adapter().history()).toHaveLength(4);
+});
+
+it("resumes a rebase interrupted at its actual conflict before the handoff record", async () => {
+  const f = await conflictingFixture();
+  const main = await f.git(f.repo, ["rev-parse", "HEAD"]);
+  const directory = resolve(f.sourceState, `refresh-${main}`);
+  await mkdir(directory);
+  await writeFile(
+    resolve(f.sourceState, "native-refresh.json"),
+    JSON.stringify({
+      main,
+      previousHead: f.head,
+      previousReview: f.reviewer.id,
+      directory,
+      flowRetried: false,
+      retries: 0,
+    }),
+  );
+  await expect(f.git(f.sourceTree, ["rebase", main])).rejects.toThrow();
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+});
+
+it("charges conflict resolution to the existing native launch ceiling", async () => {
+  const f = await conflictingFixture();
+  f.config.nativeLaunchCeiling = 3;
+  await expect(f.deliver()).rejects.toThrow("native-launch-ceiling-exhausted");
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toEqual([]);
+  expect(await f.adapter().history()).toHaveLength(3);
+  expect(f.publications()).toBe(0);
+});
+
+it.each(["input", "resolution"] as const)(
+  "reconciles a lost %s commit response without a new resolution",
+  async (phase) => {
+    const f = await conflictingFixture();
+    f.loseCommit(phase);
+    await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(1);
+  },
+);
+
+it.each(["scope", "author", "review"])(
+  "retains a failed bounded %s across restarts without another repair",
+  async (failure) => {
+    const f = await conflictingFixture();
+    if (failure === "scope")
+      f.setResolution(async () => {
+        await writeFile(resolve(f.sourceTree, "feature.txt"), "candidate\nmain\n");
+        await writeFile(resolve(f.sourceTree, "extra.txt"), "scope expansion\n");
+      });
+    if (failure === "author") f.failAuthor();
+    if (failure === "review") f.setFailReview();
+    const reason =
+      failure === "scope"
+        ? "conflict-resolution-scope-escape"
+        : failure === "author"
+          ? "conflict-resolution-failed"
+          : "refresh-review-failed";
+    await expect(f.deliver()).rejects.toThrow(reason);
+    await expect(f.deliver()).rejects.toThrow(reason);
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(failure === "review" ? 1 : 0);
     expect(f.gateHeads).toEqual([]);
   },
 );
+
+it("cannot renew a consumed resolution when main conflicts again across restarts", async () => {
+  const f = await conflictingFixture();
+  f.setStopGate(true);
+  await expect(f.deliver()).rejects.toThrow("gate-failed:planning:board-check");
+  await writeFile(resolve(f.repo, "feature.txt"), "second main conflict\n");
+  await f.advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
+  await expect(f.deliver()).rejects.toThrow("conflict-resolution-exhausted");
+  await expect(f.deliver()).rejects.toThrow("conflict-resolution-exhausted");
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+});
 
 it.each(["pass", "exhausted", "restart"])(
   "keeps a refreshed gate retry on its reviewed head: %s",
