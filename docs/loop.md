@@ -38,6 +38,14 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+ISS-155 records ISS-146's `queue-internal-error` in
+`m1-iss146-147-20260914T2325`: compiling a large fixed source segment as a
+regular expression exceeded the engine's pattern limit before conflict author
+dispatch. Conflict boundaries now use anchored literal prefix/suffix checks
+and an ordered, non-overlapping forward scan of the intervening fixed text.
+The Git hunk grammar, immutable outside bytes and bounded resolution lifecycle
+are unchanged; this does not restart or alter the preserved run.
+
 ISS-151 records the pre-author `worktree-collision:source` stop for ISS-146 in
 `m1-intake-refresh-20260914T1635`: a preserved worktree from an earlier run
 still held `codex/iss-146`. New ordinary attempts use the local source branch
