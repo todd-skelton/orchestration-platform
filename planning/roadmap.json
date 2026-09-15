@@ -96,14 +96,6 @@
       ]
     },
     {
-      "key": "ISS-109",
-      "file": "planning/drafts/ISS-109.md",
-      "milestone": "M3",
-      "blockedBy": [
-        "ISS-107"
-      ]
-    },
-    {
       "key": "ISS-110",
       "file": "planning/drafts/ISS-110.md",
       "milestone": "M2",
