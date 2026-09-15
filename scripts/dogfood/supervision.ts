@@ -51,6 +51,9 @@ export function isItemStopReason(reason: string) {
       "launcher-failed",
       "rebase-conflict",
       "refresh-review-failed",
+      "gate-correction-failed",
+      "gate-correction-review-failed",
+      "gate-correction-not-authorized",
       "conflict-resolution-failed",
       "conflict-resolution-exhausted",
       "conflict-resolution-scope-escape",
@@ -59,6 +62,7 @@ export function isItemStopReason(reason: string) {
       "source-finding-location-outside-candidate",
     ].includes(reason) ||
     reason.startsWith("gate-retry-exhausted:") ||
+    reason.startsWith("gate-correction-exhausted:") ||
     reason.startsWith("hosted-check-failed:") ||
     reason.startsWith("hosted-check-log-unavailable:")
   );

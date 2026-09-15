@@ -152,6 +152,20 @@ export interface DeliveryPolicyAdapter {
   plan(config: DeliveryConfig): Promise<DeliveryPlan>;
 }
 
+export interface GateFailureEvidence {
+  head: string;
+  command: { executable: string; argv: string[]; cwd: string };
+  log: string;
+  cause: "diagnostic" | "host" | "unknown";
+  diagnostics: string[];
+}
+
+export type GateResult =
+  | "passed"
+  | "failed"
+  | { status: "passed" }
+  | { status: "failed"; output: string; evidence?: GateFailureEvidence };
+
 export interface DeliveryAdapter {
   conflictingPublication?(
     config: DeliveryConfig,
@@ -161,16 +175,13 @@ export interface DeliveryAdapter {
   publicationUrl(config: DeliveryConfig, number: number): string;
   source(config: DeliveryConfig): Promise<SourceEvidence>;
   verifyWorkspace(config: DeliveryConfig, head: string): Promise<boolean>;
-  runGate(
+  runGate(config: DeliveryConfig, name: string, head: string): Promise<GateResult>;
+  attributeGate?(
     config: DeliveryConfig,
     name: string,
-    head: string,
-  ): Promise<"passed" | "failed" | { status: "passed" } | { status: "failed"; output: string }>;
-  correctGate?(
-    config: DeliveryConfig,
-    name: string,
-    output: string,
-  ): Promise<{ head: string; retries?: number }>;
+    evidence: GateFailureEvidence,
+    main: string,
+  ): Promise<{ cause: "candidate" | "base" | "host" | "unknown"; log: string; main: string }>;
   observeDraft(config: DeliveryConfig, draft: DraftPlan): Promise<Observation<{ issue: number }>>;
   applyDraft(config: DeliveryConfig, draft: DraftPlan): Promise<void>;
   observePublication(
@@ -212,6 +223,19 @@ export class DeliveryBlocked extends Error {
     super(reason);
     this.reason = reason;
     this.diagnostics = diagnostics;
+  }
+}
+
+export class LocalGateFailure extends DeliveryBlocked {
+  readonly gate: string;
+  readonly evidence: GateFailureEvidence | undefined;
+  constructor(gate: string, evidence: GateFailureEvidence | undefined, output: string) {
+    super(
+      `gate-${evidence?.cause === "host" ? "host-failed" : "attribution-unknown"}:${gate}`,
+      output,
+    );
+    this.gate = gate;
+    this.evidence = evidence;
   }
 }
 
@@ -1095,65 +1119,49 @@ export async function deliveryStep(
       await adapter.verifyWorkspace(config, config.candidateHead),
       "candidate-workspace-drift",
     );
-    const runGates = async (gates: string[], offset: number, transient: boolean) => {
-      for (let run = 0; run < (transient ? 2 : 1); run += 1) {
-        const passedReceipts: { name: string; gate: string }[] = [];
-        let corrected = false;
-        for (const [index, gate] of gates.entries()) {
-          const name = `gate-${offset + index + 1}`;
-          const receipt = await optionalRecord(directory, name);
-          if (receipt !== ABSENT_RECORD) {
-            demand(
-              exactKeys(receipt, ["head", "name"]) &&
-                receipt.head === config.candidateHead &&
-                receipt.name === gate,
-              `malformed-record:${name}`,
-            );
-            continue;
-          }
-          demand(
-            await adapter.verifyWorkspace(config, config.candidateHead),
-            "candidate-workspace-drift",
-          );
-          const observed = await adapter.runGate(config, gate, config.candidateHead);
-          const passed =
-            observed === "passed" || (typeof observed === "object" && observed.status === "passed");
-          if (passed) {
-            passedReceipts.push({ name, gate });
-            continue;
-          }
-          const output =
-            typeof observed === "object" &&
-            observed.status === "failed" &&
-            typeof observed.output === "string"
-              ? gateOutput(observed.output)
-              : "gate exited without output";
-          if (!transient || !["typecheck", "format:check"].includes(gate))
-            throw new DeliveryBlocked(`gate-failed:${gate}`, output);
-          if (run === 1) throw new DeliveryBlocked(`gate-retry-exhausted:${gate}`, output);
-          demand(adapter.correctGate, "gate-correction-unavailable");
-          const correction = await adapter.correctGate(config, gate, output);
-          demand(SHA.test(correction.head), "gate-correction-failed");
-          config = {
-            ...config,
-            candidateHead: correction.head,
-            retries: correction.retries ?? config.retries + 1,
+    const runGates = async (gates: string[], offset: number) => {
+      for (const [index, gate] of gates.entries()) {
+        const name = `gate-${offset + index + 1}`;
+        const receipt = await optionalRecord(directory, name);
+        if (receipt !== ABSENT_RECORD) continue;
+        const savedFailure = await optionalRecord(directory, `${name}-failure`);
+        if (savedFailure !== ABSENT_RECORD) {
+          const failed = savedFailure as {
+            head: string;
+            output: string;
+            evidence?: GateFailureEvidence;
           };
-          source = { ...(source as SourceEvidence), head: correction.head };
-          fingerprint = fingerprintFor(config);
-          corrected = true;
-          break;
+          demand(failed.head === config.candidateHead, "gate-failure-head-drift");
+          throw new LocalGateFailure(gate, failed.evidence, failed.output);
         }
-        if (corrected) continue;
-        for (const passed of passedReceipts)
-          await record(directory, passed.name, {
-            head: config.candidateHead,
-            name: passed.gate,
-          });
-        return;
+        demand(
+          await adapter.verifyWorkspace(config, config.candidateHead),
+          "candidate-workspace-drift",
+        );
+        const observed = await adapter.runGate(config, gate, config.candidateHead);
+        if (
+          observed === "passed" ||
+          (typeof observed === "object" && observed.status === "passed")
+        ) {
+          await record(directory, name, { head: config.candidateHead, name: gate });
+          continue;
+        }
+        const failure =
+          typeof observed === "object" ? observed : { output: "gate exited without output" };
+        const evidence = "evidence" in failure ? failure.evidence : undefined;
+        demand(!evidence || evidence.head === config.candidateHead, "gate-failure-head-drift");
+        const output = gateOutput(
+          "output" in failure ? failure.output : "gate exited without output",
+        );
+        await record(directory, `${name}-failure`, {
+          head: config.candidateHead,
+          output,
+          ...(evidence ? { evidence } : {}),
+        });
+        throw new LocalGateFailure(gate, evidence, output);
       }
     };
-    await runGates(plan.gates.beforeMirror, 0, true);
+    await runGates(plan.gates.beforeMirror, 0);
     if (needsConfigRecord) {
       await record(directory, "delivery-source", source);
       await record(directory, "delivery-config", { fingerprint });
@@ -1197,7 +1205,7 @@ export async function deliveryStep(
         `malformed-record:draft-${draft.key}`,
       );
     }
-    await runGates(plan.gates.afterMirror, plan.gates.beforeMirror.length, false);
+    await runGates(plan.gates.afterMirror, plan.gates.beforeMirror.length);
   }
 
   const publication =

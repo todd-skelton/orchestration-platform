@@ -7,6 +7,7 @@ import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.m
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
 import {
   DeliveryBlocked,
+  LocalGateFailure,
   deliveryStep,
   hostedFailureEvidence,
   hostedFailurePrompt,
@@ -1514,7 +1515,9 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
     });
     const history = await adapter.history();
     if (delivery.status === "observing-author" || delivery.status === "observing-reviewer") {
-      attempt = advance(attempt, history, {});
+      attempt = advance(attempt, history, {
+        retries: Math.max(attempt.retries, delivery.retries ?? 0),
+      });
       await record(directory, "attempt", attempt);
       return {
         status: delivery.status,
@@ -1742,8 +1745,11 @@ export function repositoryQueueAdapter(
     if (prior === ABSENT || prior.phase !== "failed" || prior.issue !== item.issue) return "";
     for (const stage of ["source", "repair"]) {
       const originalDirectory = resolve(priorDirectory, stage);
-      const refreshed = await optionalRecord(originalDirectory, "native-refresh");
-      const directory = refreshed === ABSENT ? originalDirectory : refreshed.directory;
+      const correction = await optionalRecord(originalDirectory, "gate-correction-result");
+      const acceptedDirectory =
+        correction === ABSENT ? originalDirectory : resolve(originalDirectory, "gate-correction");
+      const refreshed = await optionalRecord(acceptedDirectory, "native-refresh");
+      const directory = refreshed === ABSENT ? acceptedDirectory : refreshed.directory;
       const publication = await optionalRecord(directory, "publication");
       if (publication === ABSENT || publication.head !== prior.head) continue;
       const source = await json(directory, "delivery-source");
@@ -2253,9 +2259,15 @@ export function repositoryQueueAdapter(
       }
     },
     async delivery(item, accepted): Promise<QueueDeliveryResult> {
-      const stage = samePath(accepted.stateDirectory, item.source.stateDirectory)
-        ? "source"
-        : "repair";
+      const stopped = await optionalRecord(accepted.stateDirectory, "gate-stop");
+      if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+      const stopGate = async (reason: string, diagnostics?: string): Promise<never> => {
+        await record(accepted.stateDirectory, "gate-stop", {
+          reason,
+          ...(diagnostics ? { diagnostics } : {}),
+        });
+        throw new QueueBlocked(reason, diagnostics);
+      };
       const flowAttempts = await Promise.all(
         ["author", "reviewer"].map((role) =>
           optionalRecord(accepted.stateDirectory, `${role}-attempt`),
@@ -2266,26 +2278,14 @@ export function repositoryQueueAdapter(
       )
         ? 1
         : 0;
-      let savedAttempt = await optionalRecord(state, "attempt");
+      const savedAttempt = await optionalRecord(state, "attempt");
       if (savedAttempt !== ABSENT) validateAttempt(savedAttempt, config);
-      let gateRetryCounted =
+      const previousRefresh = await optionalRecord(accepted.stateDirectory, "native-refresh");
+      const legacyCorrectionUsed =
         savedAttempt !== ABSENT &&
-        savedAttempt.phase === "delivery" &&
-        savedAttempt.item === item.id &&
-        savedAttempt.retries > flowRetries;
-      let retries = savedAttempt === ABSENT ? (accepted.retries ?? 0) : savedAttempt.retries;
-      const persistDeliveryAttempt = async (fields: Partial<AttemptRecord>) => {
-        if (savedAttempt === ABSENT) return;
-        demand(
-          savedAttempt.phase === "delivery" &&
-            savedAttempt.item === item.id &&
-            savedAttempt.reviewId === accepted.reviewId &&
-            savedAttempt.stateDirectory === accepted.stateDirectory,
-          "delivery-source-drift",
-        );
-        savedAttempt = advance(savedAttempt, await readHistory(), fields);
-        await record(state, "attempt", savedAttempt);
-      };
+        savedAttempt.retries >
+          Math.max(flowRetries, previousRefresh !== ABSENT && previousRefresh.flowRetried ? 1 : 0);
+      const correctionRecord = await optionalRecord(accepted.stateDirectory, "gate-correction");
       let delivery: DeliveryConfig = {
         controller: config.controller,
         run: item.source.run,
@@ -2312,75 +2312,106 @@ export function repositoryQueueAdapter(
         ...delivery,
         candidateHead: originalCandidate.head,
       });
+      let sourceConfig: SourceConfig = originalConfig.config;
+      let sourceEvidence = originalEvidence;
+      delivery.candidateHead = originalCandidate.head;
+      if (correctionRecord !== ABSENT) {
+        const correction = correctionRecord;
+        let completed = await optionalRecord(accepted.stateDirectory, "gate-correction-result");
+        if (completed === ABSENT) {
+          let result;
+          try {
+            result = await correctGate(
+              correction.source,
+              boundedNative(item, "refresh"),
+              item.setup.pilotWorktree,
+              correction.gate,
+              correction.context,
+            );
+          } catch (error) {
+            if (
+              error instanceof QueueBlocked &&
+              ["author-failed", "reviewer-failed"].includes(error.reason)
+            )
+              return stopGate(
+                error.reason === "author-failed"
+                  ? "gate-correction-failed"
+                  : "gate-correction-review-failed",
+                error.diagnostics,
+              );
+            if (
+              error instanceof QueueBlocked &&
+              [
+                "native-launch-ceiling-exhausted",
+                "provider-model-refused",
+                "launcher-failed",
+                "reviewer-malformed",
+              ].includes(error.reason)
+            )
+              return stopGate(error.reason, error.diagnostics);
+            throw error;
+          }
+          if (result.status === "observing-author" || result.status === "observing-reviewer")
+            return { status: result.status, retries: correction.delivery.retries + 1 };
+          demand(result.status === "awaiting-publication", "gate-correction-failed");
+          const pair = await passingReview(
+            item,
+            correction.directory,
+            "gate-correction-review-failed",
+          );
+          demand(
+            pair.candidate.head !== correction.failedHead &&
+              (await native.git(delivery.worktree, [
+                "merge-base",
+                correction.failedHead,
+                pair.candidate.head,
+              ])) === correction.failedHead,
+            "gate-correction-failed",
+          );
+          completed = {
+            head: pair.candidate.head,
+            reviewId: pair.selected.attempt.id,
+            retries: correction.delivery.retries + 1 + (result.retries && !flowRetries ? 1 : 0),
+          };
+          await record(accepted.stateDirectory, "gate-correction-result", completed);
+        }
+        delivery = {
+          ...correction.delivery,
+          controllerRevision: config.controllerRevision,
+          stateDirectory: correction.directory,
+          candidateHead: completed.head,
+          retries: completed.retries,
+        };
+        sourceConfig = (await json(correction.directory, "config")).config;
+        sourceEvidence = await deliveryAdapter.source(delivery);
+        demand(
+          sourceEvidence.reviewId === completed.reviewId &&
+            sourceEvidence.reviewId !== correction.previousReview,
+          "gate-correction-review-failed",
+        );
+      }
       const refreshed = await refreshDelivery(
         delivery,
-        originalConfig.config,
-        originalEvidence,
+        sourceConfig,
+        sourceEvidence,
         boundedNative(item, "refresh"),
         item.setup.pilotWorktree,
         flowRetries,
         deliveryAdapter,
+        previousRefresh !== ABSENT && previousRefresh.resolutionUsed === true,
       );
       if (refreshed.status !== "ready") return refreshed;
       delivery = refreshed.config;
       const refreshedSource = refreshed.evidence;
-      if (refreshed.flowRetried) gateRetryCounted = delivery.retries > Math.max(flowRetries, 1);
       if (
         delivery.stateDirectory !== accepted.stateDirectory &&
         (await optionalRecord(delivery.stateDirectory, "cleanup")) === ABSENT
       )
         await passingReview(item, delivery.stateDirectory, "refresh-review-not-accepted");
-      const correctionNative = boundedNative(item, stage);
       const inlineDelivery: DeliveryAdapter = {
         ...deliveryAdapter,
         async source() {
           return refreshedSource;
-        },
-        async verifyWorkspace(current, head) {
-          return (
-            (await deliveryAdapter.verifyWorkspace(current, head)) ||
-            (gateRetryCounted && head === current.candidateHead)
-          );
-        },
-        async correctGate(current, gate, output) {
-          if (current.stateDirectory !== accepted.stateDirectory) {
-            // ISS-148: retry a transient gate on the exact delta-reviewed head.
-            // A semantic correction needs its own review; do not import the old verdict.
-            demand(!gateRetryCounted, `gate-retry-exhausted:${gate}`);
-            retries = current.retries + 1;
-            await persistDeliveryAttempt({
-              head: current.candidateHead,
-              reviewId: refreshedSource.reviewId,
-              retries,
-            });
-            gateRetryCounted = true;
-            return { head: current.candidateHead, retries };
-          }
-          const resuming = gateRetryCounted;
-          if (!gateRetryCounted) {
-            retries = (accepted.retries ?? 0) + 1;
-            await persistDeliveryAttempt({ retries });
-            gateRetryCounted = true;
-          }
-          const correctionBase = resuming
-            ? await correctionNative.git(current.worktree, ["rev-parse", "HEAD"])
-            : current.candidateHead;
-          const correction = await correctGate(
-            {
-              ...item.source,
-              author: item.repair.author,
-              base: correctionBase,
-              stateDirectory: current.stateDirectory,
-            },
-            correctionNative,
-            item.setup.pilotWorktree,
-            gate,
-            output,
-            resuming,
-          );
-          await syncParticipant(item, stage, "author", correction.attempt, correction.terminal);
-          await persistDeliveryAttempt({ head: correction.head, retries });
-          return { head: correction.head, retries };
         },
       };
       try {
@@ -2403,6 +2434,57 @@ export function repositoryQueueAdapter(
           });
         return result;
       } catch (error) {
+        if (error instanceof LocalGateFailure) {
+          const failure = error.evidence;
+          if (!failure || failure.cause !== "diagnostic" || !deliveryAdapter.attributeGate)
+            return stopGate(error.reason, error.diagnostics);
+          const currentSource = (await json(delivery.stateDirectory, "config"))
+            .config as SourceConfig;
+          const main = currentSource.mainBase ?? currentSource.base;
+          let attribution = await optionalRecord(delivery.stateDirectory, "gate-attribution");
+          if (attribution === ABSENT) {
+            attribution = {
+              ...(await deliveryAdapter.attributeGate(delivery, error.gate, failure, main)),
+              head: delivery.candidateHead,
+              gate: error.gate,
+              evidence: failure,
+            };
+            await record(delivery.stateDirectory, "gate-attribution", attribution);
+          }
+          if (attribution.cause !== "candidate")
+            return stopGate(
+              `gate-${attribution.cause === "base" ? "base-failed" : attribution.cause === "host" ? "host-failed" : "attribution-unknown"}:${error.gate}`,
+              `Failed head ${delivery.candidateHead}, delivery main ${main}; diagnostics ${failure.log}; control ${attribution.log}`,
+            );
+          if (correctionRecord !== ABSENT || legacyCorrectionUsed)
+            return stopGate(`gate-correction-exhausted:${error.gate}`, failure.log);
+          if (item.acceptedReplan) return stopGate("gate-correction-not-authorized", failure.log);
+          const directory = resolve(accepted.stateDirectory, "gate-correction");
+          const context = `Failed exact reviewed head: ${delivery.candidateHead}; delivery main base: ${main}; predecessor complete review: ${refreshedSource.reviewId}. Exact failed command: ${JSON.stringify(failure.command)}. Full diagnostic artifact: ${failure.log}; failing identities/diagnostics: ${JSON.stringify(failure.diagnostics)}. Base control and attribution: ${resolve(delivery.stateDirectory, "gate-attribution.json")}. Original acceptance and preserved author/reviewer records and captured traces: ${accepted.stateDirectory}; predecessor delivery and review records: ${delivery.stateDirectory}. Read both directories' config, candidate, author/reviewer attempt and terminal files and the trace paths they name. Start from the failed head, retain the full implementation diff against main, and correct only this failure and its direct causes. All original acceptance criteria remain mandatory.`;
+          await mkdir(directory, { recursive: true });
+          await record(accepted.stateDirectory, "gate-correction", {
+            failedHead: delivery.candidateHead,
+            main,
+            previousReview: refreshedSource.reviewId,
+            gate: error.gate,
+            directory,
+            context,
+            delivery,
+            source: {
+              ...currentSource,
+              base: delivery.candidateHead,
+              mainBase: main,
+              stateDirectory: directory,
+              author: { ...item.source.author, ...item.repair.author },
+              reviewer: {
+                ...item.source.reviewer,
+                ...(await json(delivery.stateDirectory, "reviewer-attempt")).placement,
+              },
+            },
+          });
+          return { status: "observing-author", retries: delivery.retries + 1 };
+        }
+
         if (error instanceof DeliveryBlocked && error.reason === "published-candidate-conflict") {
           if ((await optionalRecord(delivery.stateDirectory, "publication-conflict")) === ABSENT)
             await record(delivery.stateDirectory, "publication-conflict", {
@@ -2415,6 +2497,12 @@ export function repositoryQueueAdapter(
             retries: delivery.retries,
           };
         }
+        if (
+          error instanceof DeliveryBlocked &&
+          (error.reason.startsWith("gate-host-failed:") ||
+            error.reason.startsWith("gate-attribution-unknown:"))
+        )
+          return stopGate(error.reason, error.diagnostics);
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(
           error instanceof DeliveryBlocked ? error.reason : "delivery-state-unknown",
