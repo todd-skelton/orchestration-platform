@@ -250,8 +250,14 @@ it("consumes all seven ordered criteria and continuations from registered ISS-15
     context.acceptanceCriteria
       .map((criterion, index) => `${index + 1}. ${criterion.replaceAll("\n", "\n   ")}`)
       .join("\n"),
-  ).toBe(draft.split("\n## Done when\n")[1]!.split("\n## Scope fence\n")[0]!.trim());
-  expect(context.rules).toContain(
+  ).toBe(
+    draft
+      .replaceAll("\r\n", "\n")
+      .split("\n## Done when\n")[1]!
+      .split("\n## Scope fence\n")[0]!
+      .trim(),
+  );
+  expect(context.rules.replaceAll("\r\n", "\n")).toContain(
     "`## Done when` accepts unordered `-`, `*`, or `+` items or ordinary top-level\n`N.` ordered items, with indented continuation lines.",
   );
 });
