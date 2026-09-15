@@ -18,9 +18,11 @@ capability is added only when a real cycle records a blocker.
    answer: is there a simpler way. A blocking finding fails the review. Two
    blocking rounds force a third repair that applies the reviewer's prescribed
    fixes verbatim.
-5. Transient failures get one automatic retry inside the same attempt: a
-   failed typecheck or format gate, an unparsable verdict, a delayed exit
-   receipt. Four attempts per issue, then stop.
+5. Transient worker failures get one automatic retry inside the same attempt:
+   an unparsable verdict or a delayed exit receipt. One candidate-caused local
+   gate failure may receive the attributed correction and fresh review below;
+   this replaces the old typecheck/format correction. Four attempts per issue,
+   then stop.
 6. Authority does not move. Workers never push, publish, merge, or edit the
    running loop. The executor is the checked-out stable `main`. The author
    never reviews its own work.
@@ -273,9 +275,8 @@ and follows the ordinary work-caused stop and parking policy.
 Main moving during review requires another refresh before any gates run.
 
 A refreshed head requires new local gate receipts and its current delta review;
-old gate receipts remain history. Its transient typecheck/format retry reruns
-the same reviewed head once; a persistent failure stops, without an unreviewed
-source correction or renewed implementation budget. Draft mutations are
+old gate receipts remain history. ISS-152's shared, attributed correction applies
+to refreshed gates too, without renewing the allowance. Draft mutations are
 observed before applying them, so an already matching mirror is not repeated.
 Publication, hosted checks and merge/deploy remain bound to the resulting head.
 Published delivery, including a pending publication intent whose response may
@@ -344,6 +345,60 @@ repair JPEG or PR #8005, alter preserved M2 runtime/worktrees, reset historical
 reviews, or establish milestone completion. Milestone 158 remains incumbent-owned
 and only milestone 155 remains platform-owned; milestone 159 needs Todd's
 separate assignment. The historical rollback and stop evidence remain intact.
+
+ISS-152 records ISS-146 (#457)'s `gate-failed:test` after author and independent
+review PASS in `m1-iss146-147-20260914T2325`. Native delivery now captures the
+complete gate output and terminal execution before considering correction.
+The candidate terminal records the exact executable, arguments, working directory
+and reviewed head. Recognized compiler, formatter or completed test assertion
+diagnostics must name committed candidate files. The same command runs in an
+isolated committed tree at the recorded delivery main base, with an offline,
+frozen dependency install. Changed manifests or lockfiles remain unknown.
+The candidate and base logs and terminal records remain in the delivery runtime.
+
+Only a passing base control admits candidate attribution. Base reproduction
+stops as `gate-base-failed:<gate>`. Startup, install, log I/O and cleanup failures
+stop as `gate-host-failed:<gate>`; drift retains its workspace stop. Missing or
+incomplete diagnostics, unsupported gates, timeouts, resource failures and mixed
+causes stop as `gate-attribution-unknown:<gate>`. These stops do not dispatch a
+correction or publish; host and unknown stops do not park the issue. No timeout
+increase, test skip, passing subset or author opinion establishes attribution.
+
+`gate-correction.json` beneath the accepted source reserves the existing single
+local correction allowance across all gate names, original and refreshed
+delivery, and gates before or after mirroring. Its author starts at the exact
+failed head, retaining the main base and full implementation diff. The prompt
+names the complete diagnostic artifact, command, failing identities, acceptance
+and preserved source/review records and traces. Scope is the failure and its
+direct causes. The ordinary native lifecycle retains attempts, terminals,
+execution evidence and a descendant candidate in its `gate-correction` directory.
+An independent DELTA reviewer inspects the correction and direct callers with
+the predecessor review and correction execution evidence. Only this current
+exact-head PASS authorizes changed code; the predecessor PASS stays unchanged.
+
+All gates run again at the resulting reviewed head, including prior green gates
+and after-mirror gates. Further main movement requires another delta review and
+new receipts, without another correction allowance. Existing mirrors are observed
+before mutation; publication intents still reconcile normally. Publication,
+hosted checks, merge and applicable deployment remain mandatory at the final head.
+Second candidate failure stops as `gate-correction-exhausted:<gate>`; author FAIL
+or blocking DELTA review stops as `gate-correction-failed` or
+`gate-correction-review-failed`. These are work stops with ordinary parking,
+not another implementation attempt or pair. ISS-145's smaller authority refuses
+the pair as `gate-correction-not-authorized`. Native launch ceilings, routing,
+placements, participant history and bounded worker retries remain in force.
+
+Resume observes the saved author or reviewer, reconciles an interrupted correction
+commit, and uses `gate-correction-result.json` for subsequent delivery and refresh.
+The first failure, original source and review records remain unchanged. `gate-stop.json`
+retains a terminal gate stop; replay cannot bypass it by moving main. Completed
+delivery reuses its receipts without another worker, publication or merge.
+Legacy untyped failures supply no correction eligibility.
+
+#457 remains unready until ISS-152 lands independently reviewed and hosted-green
+and the host installs that stable executor. Landing permits the host to restore
+readiness; it does not authorize restarting or editing the preserved run. Workers
+do not change #457, its preserved records or worktrees, or the running executor.
 
 ## Planning
 

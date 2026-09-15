@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -7,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { sha, step, type Adapter, type Config } from "../../scripts/dogfood/flow.js";
 import {
   assertControllerExecutor,
+  gateDiagnostics,
   githubDeliveryAdapter,
 } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
@@ -31,6 +33,199 @@ const head = "a".repeat(40);
 const authorId = "11111111-1111-1111-1111-111111111111";
 const reviewId = "22222222-2222-2222-2222-222222222222";
 const roots: string[] = [];
+
+const gateFaults = vi.hoisted(() => ({ cleanup: false }));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const execute = promisify(actual.execFile);
+  const injected = actual.execFile.bind(null);
+  Object.defineProperty(injected, promisify.custom, {
+    value: (
+      executable: string,
+      args: string[],
+      options: import("node:child_process").ExecFileOptions,
+    ) => {
+      if (gateFaults.cleanup && args[0] === "worktree" && args[1] === "remove")
+        return Promise.reject(new Error("fixture control cleanup failed"));
+      return execute(executable, args, options);
+    },
+  });
+  return { ...actual, execFile: injected };
+});
+
+it.each(["startup", "log-io"])(
+  "attributes gate %s failure to the host before correction",
+  async (cause) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const adapter = githubDeliveryAdapter();
+    if (cause === "log-io") {
+      const directory = resolve(
+        current.stateDirectory,
+        `gate-${createHash("sha256").update("typecheck").digest("hex")}`,
+      );
+      await writeFile(directory, "prevents opening the diagnostic directory");
+      await expect(adapter.runGate(current, "typecheck", current.candidateHead)).rejects.toThrow(
+        "gate-host-failed:typecheck",
+      );
+      expect(await readFile(directory, "utf8")).toBe("prevents opening the diagnostic directory");
+    } else {
+      const executable = resolve(current.stateDirectory, "missing-pnpm.exe");
+      vi.stubEnv("npm_execpath", executable);
+      const result = await adapter.runGate(current, "typecheck", current.candidateHead);
+      expect(result).toMatchObject({
+        status: "failed",
+        evidence: {
+          cause: "host",
+          head: current.candidateHead,
+          command: { executable, argv: ["run", "typecheck"], cwd: current.worktree },
+        },
+      });
+      if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
+        throw new Error("missing startup evidence");
+      const terminal = JSON.parse(
+        await readFile(resolve(result.evidence.log, "../candidate-terminal.json"), "utf8"),
+      );
+      expect(terminal).toMatchObject({ code: null, startup: expect.stringContaining("ENOENT") });
+    }
+    expect(await git(["status", "--porcelain"], current.worktree)).toBe("");
+  },
+);
+
+it.each([
+  ["candidate", "candidate"],
+  ["base", "base"],
+  ["install", "host"],
+  ["cleanup", "host"],
+  ["base-drift", "host"],
+  ["timeout", "unknown"],
+  ["mixed", "unknown"],
+  ["unrecognized", "unknown"],
+  ["missing-file", "unknown"],
+  ["drift", "drift"],
+])(
+  "captures a complete terminal gate and attributes %s with an isolated base control",
+  async (mode, expected) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const commit = async () => {
+      await git(["add", "."], current.worktree);
+      await git(
+        [
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "-m",
+          "gate fixture",
+        ],
+        current.worktree,
+      );
+      return git(["rev-parse", "HEAD"], current.worktree);
+    };
+    await writeFile(
+      resolve(current.worktree, "package.json"),
+      JSON.stringify({ scripts: { typecheck: "tsc --noEmit" } }),
+    );
+    await writeFile(resolve(current.worktree, "pnpm-lock.yaml"), "fixture lock\n");
+    await writeFile(resolve(current.worktree, "feature.ts"), "base\n");
+    const main = await commit();
+    await writeFile(resolve(current.worktree, "feature.ts"), "candidate\n");
+    current.candidateHead = await commit();
+    await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+    const launcher = resolve(current.stateDirectory, "gate-tool.mjs");
+    await writeFile(
+      launcher,
+      `
+    import { readFileSync, writeFileSync } from "node:fs";
+    const mode = ${JSON.stringify(mode)};
+    if (process.argv[2] === "install") {
+      if (mode === "base-drift") writeFileSync("feature.ts", "uncommitted change");
+      process.exit(mode === "install" ? 1 : 0);
+    }
+    const candidate = readFileSync("feature.ts", "utf8").includes("candidate");
+    if (!candidate && mode !== "base") { console.log("base passed"); process.exit(0); }
+    if (mode === "drift") writeFileSync("feature.ts", "drift");
+    if (mode === "timeout") console.log("Test timed out in 30000ms");
+    else if (mode === "unrecognized") console.log("nonzero exit alone");
+    else console.log((mode === "missing-file" ? "absent.ts" : "feature.ts") + "(1,1): error TS2322: incorrect type");
+    if (mode === "mixed") console.log("FATAL ERROR: JavaScript heap out of memory");
+    console.log("retained output".repeat(1000));
+    process.exit(1);
+  `,
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    gateFaults.cleanup = mode === "cleanup";
+    const adapter = githubDeliveryAdapter();
+    if (expected === "drift") {
+      await expect(adapter.runGate(current, "typecheck", current.candidateHead)).rejects.toThrow(
+        "candidate-workspace-drift",
+      );
+      return;
+    }
+    const result = await adapter.runGate(current, "typecheck", current.candidateHead);
+    expect(typeof result).toBe("object");
+    if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
+      throw new Error("missing gate evidence");
+    const failure = result.evidence;
+    expect(failure.command).toEqual({
+      executable: process.execPath,
+      argv: [launcher, "run", "typecheck"],
+      cwd: current.worktree,
+    });
+    const bytes = await readFile(failure.log, "utf8");
+    expect(bytes.length).toBeGreaterThan(4000);
+    if (expected === "unknown") expect(failure.cause).toBe("unknown");
+    else {
+      expect(failure.cause).toBe("diagnostic");
+      const control = await adapter.attributeGate!(current, "typecheck", failure, main);
+      expect(control).toMatchObject({ cause: expected, main });
+      if (!["install", "base-drift"].includes(mode)) {
+        const terminal = JSON.parse(
+          await readFile(resolve(control.log, "../base-terminal.json"), "utf8"),
+        );
+        expect(terminal).toMatchObject({
+          head: main,
+          command: { executable: failure.command.executable, argv: failure.command.argv },
+        });
+        expect(terminal.command.cwd).not.toBe(current.worktree);
+        if (mode === "cleanup")
+          expect(await readFile(resolve(terminal.command.cwd, "feature.ts"), "utf8")).toBe(
+            "base\n",
+          );
+        else await expect(readFile(resolve(terminal.command.cwd, "feature.ts"))).rejects.toThrow();
+      }
+      expect(await git(["rev-parse", "HEAD"], current.worktree)).toBe(current.candidateHead);
+    }
+    expect(await readFile(failure.log, "utf8")).toBe(bytes);
+    await expect(adapter.runGate(current, "typecheck", current.candidateHead)).resolves.toEqual(
+      result,
+    );
+  },
+);
+
+it("recognizes complete assertion identities but rejects incomplete and mixed test output", () => {
+  const output =
+    " FAIL test/feature.test.ts > preserves behavior\nAssertionError: expected 1 to be 2\nTest Files 1 failed\nTests 1 failed | 68 passed\n";
+  expect(gateDiagnostics("test", output)).toEqual(["test/feature.test.ts > preserves behavior"]);
+  for (const invalid of [
+    output.replace("Tests 1 failed | 68 passed", ""),
+    output + "Unhandled Error: worker exited",
+    output + "Test timed out",
+    output.replace("Tests 1 failed", "Tests 2 failed"),
+  ])
+    expect(gateDiagnostics("test", invalid)).toEqual([]);
+  expect(
+    gateDiagnostics(
+      "format:check",
+      "[warn] feature.ts\n[warn] Code style issues found in the above file. Run Prettier with --write to fix.\n",
+    ),
+  ).toEqual(["feature.ts"]);
+});
 
 function reviewerReport(
   current: DeliveryConfig,
@@ -198,6 +393,7 @@ async function cleanController(root: string) {
 }
 
 afterEach(async () => {
+  gateFaults.cleanup = false;
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });

@@ -75,6 +75,7 @@ export async function refreshDelivery(
   pilot: string,
   sourceRetries: number,
   deliveryAdapter?: DeliveryAdapter,
+  resolutionUsed = false,
 ): Promise<
   | { status: "observing-author" | "observing-reviewer" }
   | { status: "ready"; config: DeliveryConfig; evidence: SourceEvidence; flowRetried: boolean }
@@ -139,7 +140,7 @@ export async function refreshDelivery(
           directory: resolve(origin, `refresh-${main}`),
           flowRetried: active?.flowRetried ?? false,
           retries: Math.max(delivery.retries, active?.retries ?? 0),
-          resolutionUsed: active?.resolutionUsed ?? false,
+          resolutionUsed: active?.resolutionUsed ?? resolutionUsed,
           ...(dirty
             ? {
                 publicationRefresh: {

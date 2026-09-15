@@ -1,5 +1,7 @@
 import type { DeliveryAdapter, DeliveryConfig } from "./delivery.mjs";
 
+export function gateDiagnostics(name: string, raw: string): string[];
+
 export interface GithubDeliveryCommands {
   gh(config: DeliveryConfig, args: string[]): Promise<string>;
   ghJson(config: DeliveryConfig, args: string[]): Promise<unknown>;

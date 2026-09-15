@@ -17,6 +17,7 @@ import {
   isItemStopReason,
   nextCycle,
   persistCycle,
+  reconcilePendingStop,
   startCycle,
   stopCycle,
   type IssueObservation,
@@ -592,6 +593,47 @@ it("parks only the explicit item stop reasons", async () => {
   await expect(nextCycle(config, root, fakeAdapter(observation), repository)).resolves.toEqual(
     cycle,
   );
+});
+
+it.each([
+  ["gate-base-failed:test", false],
+  ["gate-host-failed:test", false],
+  ["gate-attribution-unknown:test", false],
+  ["gate-correction-exhausted:test", true],
+  ["gate-correction-failed", true],
+  ["gate-correction-review-failed", true],
+] as const)("retains one learning note and the parking policy for %s", async (reason, parked) => {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-gate-stop-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  const observation: IssueObservation = { state: "OPEN", key: "ISS-105", labels: [], comments: [] };
+  let parks = 0;
+  const repository: RepositoryAdapter = {
+    ...repositoryPolicy,
+    park: () => {
+      parks++;
+      return "restore readiness after addressing the diagnostic";
+    },
+  };
+  const adapter = fakeAdapter(observation);
+  await persistCycle(config, cycle);
+  await expect(
+    stopCycle(
+      config,
+      cycle,
+      reason,
+      1,
+      adapter,
+      repository,
+      "full candidate and base logs in runtime",
+    ),
+  ).resolves.toBe(parked ? "item" : "run");
+  await expect(reconcilePendingStop(config, cycle, adapter, repository)).resolves.toBeUndefined();
+  expect(parks).toBe(parked ? 1 : 0);
+  expect(observation.comments).toHaveLength(1);
+  expect(observation.comments[0]).toContain(reason);
+  expect(observation.comments[0]).toContain("1 implementation attempt");
 });
 
 it.each(["controller-executor-mismatch", "provider-unavailable"])(
