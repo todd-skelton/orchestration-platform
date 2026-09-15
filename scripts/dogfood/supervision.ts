@@ -51,6 +51,10 @@ export function isItemStopReason(reason: string) {
       "launcher-failed",
       "rebase-conflict",
       "refresh-review-failed",
+      "conflict-resolution-failed",
+      "conflict-resolution-exhausted",
+      "conflict-resolution-scope-escape",
+      "conflict-resolution-unsupported",
       "deploy-not-verified",
       "source-finding-location-outside-candidate",
     ].includes(reason) ||

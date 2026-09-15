@@ -68,6 +68,7 @@ export interface Check {
   link: string;
 }
 export interface Adapter {
+  validateAuthorChanges?(config: Config): Promise<void>;
   preflight(config: Config): Promise<void>;
   waitForProvider?(config: Config): Promise<void>;
   git(worktree: string, args: string[]): Promise<string>;
@@ -510,6 +511,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
     if (role === "author") {
       requireThat(terminal.head === config.base, "author-wrong-head");
       if (!reviewed) {
+        await adapter.validateAuthorChanges?.(config);
         requireThat(!(await get("commit-intent")), "commit-result-unknown-reconcile");
         requireThat(
           (await adapter.git(config.worktree, ["rev-parse", "HEAD"])) === config.base,

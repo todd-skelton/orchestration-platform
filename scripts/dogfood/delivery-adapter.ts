@@ -15,6 +15,7 @@ import {
   type MergeEvidence,
   type PublicationEvidence,
   type PublicationPlan,
+  type PublicationObservation,
 } from "./delivery.mjs";
 
 const exec = promisify(execFile);
@@ -158,6 +159,10 @@ function matchesPublicationTarget(row: any, config: DeliveryConfig, plan: Public
     row.headRefName === plan.sourceBranch &&
     row.baseRefName === plan.baseBranch
   );
+}
+
+function isConflicting(row: any) {
+  return row.mergeable === "CONFLICTING" || row.mergeStateStatus === "DIRTY";
 }
 
 function matchesPublicationIdentity(
@@ -438,6 +443,27 @@ export function githubDeliveryAdapter(
   };
   return {
     publicationUrl,
+    async conflictingPublication(config, current) {
+      try {
+        const row = await commands.ghJson(config, [
+          "pr",
+          "view",
+          String(current.number),
+          "--json",
+          "number,url,headRefOid,headRefName,baseRefName,state,title,body,mergeable,mergeStateStatus",
+        ]);
+        if (
+          !matchesPublication(row, current, config) ||
+          row.state !== "OPEN" ||
+          (await publicationRemoteBranchHead(gitExecutable, config, current.sourceBranch)) !==
+            current.head
+        )
+          throw new Error("publication moved");
+        return isConflicting(row);
+      } catch {
+        throw new DeliveryBlocked("publication-state-unknown");
+      }
+    },
     async source(config) {
       const pinned = await json(
         resolve(config.stateDirectory, "config.json"),
@@ -579,6 +605,18 @@ export function githubDeliveryAdapter(
     },
     async observePublication(config, plan, planDigest, target) {
       try {
+        const observed = async (
+          row: any,
+          value: PublicationEvidence,
+        ): Promise<PublicationObservation> => {
+          if (!isConflicting(row)) return { state: "confirmed", value };
+          if (
+            (await publicationRemoteBranchHead(gitExecutable, config, plan.sourceBranch)) !==
+            value.head
+          )
+            return { state: "unknown" };
+          return { state: "conflicting", value };
+        };
         if (target !== undefined && !validPublicationTarget(target)) return { state: "unknown" };
         const refresh = publicationRefresh(config);
         const rows = await commands.ghJson(config, [
@@ -591,7 +629,7 @@ export function githubDeliveryAdapter(
           "--state",
           "all",
           "--json",
-          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body",
+          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body,mergeable,mergeStateStatus",
         ]);
         if (!Array.isArray(rows) || rows.length > 1) return { state: "unknown" };
         if (rows.length === 0) {
@@ -606,14 +644,14 @@ export function githubDeliveryAdapter(
           if (
             !matchesPublicationIdentity(row, config, plan, refresh.number) ||
             row?.state !== "OPEN" ||
-            row?.isDraft !== true ||
+            typeof row?.isDraft !== "boolean" ||
             (target !== undefined && target !== selectedTarget)
           )
             return { state: "unknown" };
           if (row.headRefOid === config.candidateHead) {
             const value = publication(row, config, plan, planDigest);
             return value
-              ? { state: "confirmed", value }
+              ? await observed(row, value)
               : { state: "needs-mutation", target: selectedTarget };
           }
           return row.headRefOid === refresh.head && target === undefined
@@ -621,6 +659,15 @@ export function githubDeliveryAdapter(
             : { state: "unknown" };
         }
         const value = publication(rows[0], config, plan, planDigest);
+        // An exact published head can become conflicting after leaving draft state.
+        // Reconcile it before applying the prerequisites for a new publication.
+        if (
+          value &&
+          isConflicting(rows[0]) &&
+          rows[0].state === "OPEN" &&
+          (target === undefined || target === "absent" || target === `pr:${rows[0].number}`)
+        )
+          return await observed(rows[0], value);
         if (
           !matchesPublicationTarget(rows[0], config, plan) ||
           rows[0]?.state !== "OPEN" ||
@@ -637,7 +684,7 @@ export function githubDeliveryAdapter(
           }
           return { state: "unknown" };
         }
-        if (value) return { state: "confirmed", value };
+        if (value) return await observed(rows[0], value);
         if (target === "absent") return { state: "unknown" };
         return { state: "needs-mutation", target: `pr:${rows[0].number}` };
       } catch (error) {
@@ -686,7 +733,7 @@ export function githubDeliveryAdapter(
                 : !matchesPublicationTarget(rows[0], config, plan)) ||
               target !== `pr:${rows[0].number}` ||
               rows[0].state !== "OPEN" ||
-              rows[0].isDraft !== true ||
+              (refresh ? typeof rows[0].isDraft !== "boolean" : rows[0].isDraft !== true) ||
               typeof rows[0].title !== "string" ||
               typeof rows[0].body !== "string")
         )
@@ -757,11 +804,22 @@ export function githubDeliveryAdapter(
           "view",
           String(current.number),
           "--json",
-          "number,url,headRefOid,headRefName,baseRefName,state,title,body",
+          "number,url,headRefOid,headRefName,baseRefName,state,title,body,mergeable,mergeStateStatus",
         ]);
         if (row?.state !== "OPEN" || !matchesPublication(row, current, config))
           throw new Error("publication moved");
-        return row;
+        if (isConflicting(row)) {
+          if (
+            (await publicationRemoteBranchHead(gitExecutable, config, current.sourceBranch)) !==
+            current.head
+          )
+            throw new DeliveryBlocked("publication-state-unknown");
+          throw new DeliveryBlocked("published-candidate-conflict");
+        }
+        // GitHub computes mergeability asynchronously; only publication identity
+        // must stay equal across the hosted-check observation.
+        const { mergeable: _mergeable, mergeStateStatus: _mergeStateStatus, ...identity } = row;
+        return identity;
       };
       for (let retry = 0; ; retry += 1) {
         try {
@@ -833,6 +891,11 @@ export function githubDeliveryAdapter(
             ...(workflowPending ? { workflowPending } : {}),
           };
         } catch (error) {
+          if (
+            error instanceof DeliveryBlocked &&
+            ["published-candidate-conflict", "publication-state-unknown"].includes(error.reason)
+          )
+            throw error;
           const failure = error as { stderr?: string; message?: string };
           const detail = [failure.stderr, failure.message].find(
             (value) => typeof value === "string" && value.trim() !== "",

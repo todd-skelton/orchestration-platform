@@ -256,9 +256,8 @@ an existing PR, integration merges main instead, retaining the recorded publishe
 head as an ancestor for the unchanged forward-only publication and remote-head
 lease checks (ISS-145). Unavailable,
 incompatible or moving main stops with `current-main-unavailable`,
-`current-main-incompatible` or `current-main-moved`. Conflicts use the existing
-`rebase-conflict` stop, the shared handoff point for ISS-147; there is no
-second conflict-resolution loop here.
+`current-main-incompatible` or `current-main-moved`. Conflicts use the bounded
+ISS-147 handoff below; other integration failures retain `rebase-conflict`.
 
 The original source author, review, traces and attempt remain unchanged.
 `native-refresh.json` in that source's runtime remembers the integration;
@@ -281,7 +280,8 @@ observed before applying them, so an already matching mirror is not repeated.
 Publication, hosted checks and merge/deploy remain bound to the resulting head.
 Published delivery, including a pending publication intent whose response may
 have been lost, resumes its existing reconciliation, checks and mutations; it
-does not rewrite an in-flight publication merely because main moved.
+does not rewrite an in-flight publication merely because main moved. An exact
+published conflict follows ISS-147 after publication reconciliation.
 
 The self adapter's `afterMirror` board gate validates candidate planning locally
 and checks only keys changed by its planning delta against the live board and
@@ -293,6 +293,56 @@ incorrect board bodies and missing project membership still fail. The ordinary
 `pnpm planning:board-check` and selection retain their full-board validation.
 This behavior does not edit or restart the preserved ISS-146 run, change issue
 order, waive hosted bootstrap or grant workers mutation authority.
+
+ISS-147 records the `publication-outcome-unknown` stop for reviewed Chase Sets
+candidate `42bac8439e31b8354447f2675edfaea72890d4b5` on PR #8005 in
+`m2-jpeg-corrective-20260914T1402`. Read-only reconciliation found the published
+head DIRTY/CONFLICTING against main `78848d23d610d3eba6c8f980fef81e6d82b56b42`,
+with one list-hunk conflict in
+`deployables/platform-api/__tests__/route-collision.test.ts`. Todd accepted
+milestone 158 rollback and ordered this bounded capability in #4388 comment
+`5666826318`; #7766 comment `5666729434` retains the original stop.
+
+A reviewed delivery candidate's conflict now consumes one resolution in its
+existing `native-refresh.json`. After aborting the conflicting integration, the
+executor merges the reviewed head with that same current main and pins the
+marked text as an intermediate merge commit. This input preserves both parents
+and supplies a clean, repeatable base for the ordinary author lifecycle; it is
+never an accepted delivery head. The existing author placement resolves only
+the marked hunks. Text outside them, other files and file modes cannot change.
+Only ordinary text conflicts with both sides present are supported; unsupported
+conflicts stop as `conflict-resolution-unsupported`. Scope escape or author
+failure stops as `conflict-resolution-scope-escape` or
+`conflict-resolution-failed`.
+
+The independent delta reviewer inherits the original review, author trace and
+source records, plus the resolution author's captured execution evidence. It
+checks the resolved hunks and direct callers for semantic expansion or lost
+feature/main behavior at the exact resulting head. A failed review remains
+`refresh-review-failed`; neither a clean merge nor author PASS supplies review
+authority. The existing per-main refresh directory retains worker attempts,
+terminals, candidate and review evidence. Restart resumes those workers and
+reconciles interrupted commits; it does not reset implementation attempts,
+participants or native launch charges. Ordinary worker retries remain inside
+this resolution. A later conflict in the same delivery lineage stops as
+`conflict-resolution-exhausted`, including across main movements and restarts.
+Conflict-free refresh still uses the existing delta review without an author.
+
+An exact remote/PR head with DIRTY or CONFLICTING status is a confirmed
+publication with a conflict, including when a publish response was lost or the
+PR already left draft state. Delivery retains its publication receipt and
+`publication-conflict.json`, then revalidates actual remote and PR identity
+before current-main integration. Unknown or wrong heads cannot authorize a
+repeat mutation. The resolved head passes a new delta review and local gates,
+then updates the same PR forward from its recorded remote head using the
+existing lease. Hosted checks, native landing and verified deployment still
+apply to the resulting head; prior gate and publication records remain history.
+
+This capability does not reopen, unpark or restart the rolled-back JPEG run,
+repair JPEG or PR #8005, alter preserved M2 runtime/worktrees, reset historical
+reviews, or establish milestone completion. Milestone 158 remains incumbent-owned
+and only milestone 155 remains platform-owned; milestone 159 needs Todd's
+separate assignment. The historical rollback and stop evidence remain intact.
 
 ## Planning
 
