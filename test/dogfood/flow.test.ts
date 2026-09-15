@@ -653,13 +653,14 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     f.summarize("author", "HTTP 502");
     f.retry("passed");
     const result = await correctGate(f.config, f.adapter, f.pilot, "typecheck", "type error");
-    expect(result.head).toBe(head);
-    expect(f.launches).toEqual(["author", "author"]);
-    expect(f.launchPrompts[1]).toBe(f.launchPrompts[0]);
+    expect(result.status).toBe("observing-reviewer");
+    expect(f.launches).toEqual(["author", "author", "reviewer"]);
+    expect(f.launchPrompts[1]).toContain("type error");
     expect(probe.polls).toEqual([
       { at: 0, launches: 0 },
       { at: 0, launches: 1 },
       { at: 10_000, launches: 1 },
+      { at: 10_000, launches: 2 },
     ]);
   });
 
@@ -985,7 +986,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       };
       await expect(
         deliveryStep(config, delivery, repositoryDeliveryPolicy(repository, "git")),
-      ).rejects.toMatchObject({ reason: "gate-failed:verify:static:scoped" });
+      ).rejects.toMatchObject({ reason: "gate-attribution-unknown:verify:static:scoped" });
       expect(events).toEqual(["executor-commit", "gate:verify:static:scoped"]);
       await expect(
         readFile(resolve(f.config.stateDirectory, "publication.json"), "utf8"),
