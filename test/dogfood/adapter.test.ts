@@ -470,9 +470,26 @@ it.skipIf(process.platform === "win32")(
     const root = await realpath(await mkdtemp(resolve(tmpdir(), "provider-probe-")));
     cleanup.push(root);
     const helper = resolve(root, "auth.sh");
-    await writeFile(helper, "#!/bin/sh\nprintf 'test-provider-key\\n'\n", { mode: 0o700 });
-    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 503 }));
-    const signal = AbortSignal.timeout(5_000);
+    for (const name of [
+      ...forbiddenNames,
+      "CODEX_PROVIDER_BASE_URL",
+      "CODEX_PROVIDER_AUTH_COMMAND",
+    ])
+      vi.stubEnv(name, undefined);
+    await writeFile(
+      helper,
+      '#!/bin/sh\nprintf "test-provider-key\\n" >> "$0.invoked"\nprintf "test-provider-key\\n"\n',
+      { mode: 0o700 },
+    );
+    let requests = 0;
+    const request = vi.fn<typeof fetch>().mockImplementationOnce(async () => {
+      // A normally exiting child must run before HTTP, without a timing budget.
+      expect(await readFile(`${helper}.invoked`, "utf8")).toBe("test-provider-key\n");
+      expect(requests).toBe(0);
+      requests += 1;
+      return new Response(null, { status: 503 });
+    });
+    const signal = new AbortController().signal;
     await expect(probeProvider("http://pool.test/v1/", helper, signal, request)).rejects.toThrow(
       "HTTP 503",
     );
@@ -480,7 +497,11 @@ it.skipIf(process.platform === "win32")(
       headers: { Authorization: "Bearer test-provider-key" },
       signal,
     });
-    await writeFile(helper, "#!/bin/sh\nprintf 'refreshed-key\\n'\n");
+    expect(requests).toBe(1);
+    await writeFile(
+      helper,
+      '#!/bin/sh\nprintf "refreshed-key\\n" >> "$0.invoked"\nprintf "refreshed-key\\n"\n',
+    );
     request.mockResolvedValue(new Response(null, { status: 200 }));
     await probeProvider("http://pool.test/v1", helper, signal, request);
     expect(request).toHaveBeenLastCalledWith("http://pool.test/v1/models", {
@@ -520,13 +541,32 @@ it.skipIf(process.platform === "win32")(
       probeProvider("http://pool.test/v1", helper, signal, request, "claude-opus-5"),
     ).rejects.toMatchObject({ reason: "provider-model-refused" });
     request.mockResolvedValueOnce(Response.json({ data: [{}] }));
+    const requestsBeforeMalformed = request.mock.calls.length;
+    const malformed = await probeProvider(
+      "http://pool.test/v1",
+      helper,
+      signal,
+      request,
+      "claude-opus-5",
+    ).catch((error: unknown) => error);
+    expect(malformed).toEqual(new Error("malformed provider models response"));
+    expect(request.mock.calls.length - requestsBeforeMalformed).toBe(1);
+    expect(await readFile(`${helper}.invoked`, "utf8")).toBe(
+      "test-provider-key\n" + "refreshed-key\n".repeat(request.mock.calls.length - 1),
+    );
+    for (const [, options] of request.mock.calls.slice(1)) {
+      expect(options).toEqual({ headers: { Authorization: "Bearer refreshed-key" }, signal });
+    }
+    // ISS-156: replay the observed error through the existing probe seam. The
+    // logical outage clock must not impose a real deadline on auth startup.
     let now = 0;
     const waits: number[] = [];
     await expect(
       waitForProvider(
         { ...config, providerOutageCeilingMs: 10 },
-        (probeSignal) =>
-          probeProvider("http://pool.test/v1", helper, probeSignal, request, "claude-opus-5"),
+        async () => {
+          throw malformed;
+        },
         {
           now: () => now,
           pause: async (ms) => {
@@ -541,6 +581,7 @@ it.skipIf(process.platform === "win32")(
       diagnostics: "malformed provider models response",
     });
     expect(waits).toEqual([10]);
+    expect(request.mock.calls.length - requestsBeforeMalformed).toBe(1);
   },
 );
 it("retains exact reviewer reports and rejects oversized or obsolete output", () => {
@@ -951,6 +992,7 @@ it.each([
 });
 const cleanup: string[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const root of cleanup.splice(0)) await rm(root, { recursive: true, force: true });
 });
 it("filters the actual controller-to-observer child environment", async () => {

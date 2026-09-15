@@ -452,6 +452,17 @@ and the host installs that stable executor. Landing permits the host to restore
 readiness; it does not authorize restarting or editing the preserved run. Workers
 do not change #457, its preserved records or worktrees, or the running executor.
 
+ISS-156 records ISS-155's `gate-attribution-unknown:test` stop in
+`m1-iss155-20260915T1900`: the provider fixture coupled a synthetic 10 ms
+outage clock to real auth-process startup. A delayed synthetic helper reproduces
+auth failure before HTTP; separating the real probe from logical error replay
+reaches HTTP with the malformed payload and retains the same `[10]` wait.
+The fixture checks helper invocation before HTTP and refreshed authorization
+on each probe; the injected hanging-probe ceiling test and production behavior
+are unchanged. This isolates the fixture race, not the retained aggregate's
+load attribution. ISS-157 handles the separate saved-stop barrier; this repair
+does not resume ISS-155 or alter its retained evidence.
+
 ## Planning
 
 ISS-149 implements Todd's routing ruling on #368: model placement comes from
