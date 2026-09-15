@@ -1795,60 +1795,70 @@ it.each(["\n", "\r\n"])("limits edits to actual hunks with line ending %j", (eol
     expect(withinConflictHunks(before, changed)).toBe(false);
 });
 
-describe("large ordinary-text conflict lifecycle", () => {
-  let f: Awaited<ReturnType<typeof fixture>>;
-  const suffix = "fixed suffix stays immutable\n";
-  const resolved = largeFixed + "candidate\nmain\n" + suffix;
-  beforeEach(async () => {
-    f = await fixture(undefined, undefined, false, { prefix: largeFixed, suffix });
-    await writeFile(resolve(f.repo, "feature.txt"), largeFixed + "main\n" + suffix);
-    await f.advanceMain();
-    f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), resolved));
-  });
+describe.each([false, true])(
+  "large ordinary-text conflict lifecycle (autocrlf: %s)",
+  (autocrlf) => {
+    let f: Awaited<ReturnType<typeof fixture>>;
+    const suffix = "fixed suffix stays immutable\n";
+    // Preserve Git's checked-out fixed bytes, including Windows CRLF, in the author edit.
+    const resolved = (largeFixed + "candidate\nmain\n" + suffix).replaceAll(
+      "\n",
+      autocrlf ? "\r\n" : "\n",
+    );
+    beforeEach(async () => {
+      vi.stubEnv("GIT_CONFIG_COUNT", "1");
+      vi.stubEnv("GIT_CONFIG_KEY_0", "core.autocrlf");
+      vi.stubEnv("GIT_CONFIG_VALUE_0", String(autocrlf));
+      f = await fixture(undefined, undefined, false, { prefix: largeFixed, suffix });
+      await writeFile(resolve(f.repo, "feature.txt"), largeFixed + "main\n" + suffix);
+      await f.advanceMain();
+      f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), resolved));
+    });
 
-  it.each(["fresh", "input", "resolution"] as const)(
-    "validates large text before author and after author on %s delivery",
-    async (phase) => {
-      const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
-      if (phase !== "fresh") {
-        f.loseCommit(phase);
-        await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
-      }
-      await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-      await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-      const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
-      expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe(resolved);
-      expect(await readFile(resolve(f.sourceState, "candidate.json"), "utf8")).toBe(original);
-      expect(f.authorPrompts).toHaveLength(1);
-      expect(f.prompts).toHaveLength(1);
-      expect(f.prompts[0]).toContain(head);
-      expect(f.gateHeads).toEqual([head]);
-      expect(f.publication()?.head).toBe(head);
-      expect(f.publications()).toBe(1);
-      expect(await f.adapter().history()).toHaveLength(4);
-    },
-  );
+    it.each(["fresh", "input", "resolution"] as const)(
+      "validates large text before author and after author on %s delivery",
+      async (phase) => {
+        const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
+        if (phase !== "fresh") {
+          f.loseCommit(phase);
+          await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
+        }
+        await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+        await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+        const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+        expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe(resolved);
+        expect(await readFile(resolve(f.sourceState, "candidate.json"), "utf8")).toBe(original);
+        expect(f.authorPrompts).toHaveLength(1);
+        expect(f.prompts).toHaveLength(1);
+        expect(f.prompts[0]).toContain(head);
+        expect(f.gateHeads).toEqual([head]);
+        expect(f.publication()?.head).toBe(head);
+        expect(f.publications()).toBe(1);
+        expect(await f.adapter().history()).toHaveLength(4);
+      },
+    );
 
-  it.each(["author", "commit reconciliation"])(
-    "rejects only an outside-hunk suffix edit during %s before review or publication",
-    async (phase) => {
-      const escaped = resolved.replace("immutable", "immuTable");
-      if (phase === "author") {
-        f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), escaped));
-      } else {
-        f.loseCommit("resolution");
-        await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
-        await writeFile(resolve(f.sourceTree, "feature.txt"), escaped);
-      }
-      await expect(f.deliver()).rejects.toThrow("conflict-resolution-scope-escape");
-      await expect(f.deliver()).rejects.toThrow("conflict-resolution-scope-escape");
-      expect(f.authorPrompts).toHaveLength(1);
-      expect(f.prompts).toEqual([]);
-      expect(f.gateHeads).toEqual([]);
-      expect(f.publications()).toBe(0);
-    },
-  );
-});
+    it.each(["author", "commit reconciliation"])(
+      "rejects only an outside-hunk suffix edit during %s before review or publication",
+      async (phase) => {
+        const escaped = resolved.replace("immutable", "immuTable");
+        if (phase === "author") {
+          f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), escaped));
+        } else {
+          f.loseCommit("resolution");
+          await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
+          await writeFile(resolve(f.sourceTree, "feature.txt"), escaped);
+        }
+        await expect(f.deliver()).rejects.toThrow("conflict-resolution-scope-escape");
+        await expect(f.deliver()).rejects.toThrow("conflict-resolution-scope-escape");
+        expect(f.authorPrompts).toHaveLength(1);
+        expect(f.prompts).toEqual([]);
+        expect(f.gateHeads).toEqual([]);
+        expect(f.publications()).toBe(0);
+      },
+    );
+  },
+);
 
 it.each(["no-hunk", "binary", "missing-side", "unsupported-mode"])(
   "retains unsupported refusal for a %s Git conflict before author dispatch",
