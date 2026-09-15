@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { evidenceDescriptor, replanPacket, writeEvidence } from "./fixtures/continuation.js";
 import {
   mkdir,
   mkdtemp,
@@ -678,6 +679,36 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir(), routeLi
     },
   };
 }
+
+it("requires new exact-head host evidence after main refresh while reviewing the full implementation", async () => {
+  const f = await fixture();
+  const descriptor = evidenceDescriptor(resolve(f.root, "operator-evidence"));
+  f.source.correctionPaths = ["feature.txt"];
+  f.source.preReviewEvidence = descriptor;
+  await f.pinSource();
+  await writeEvidence(descriptor, f.source.repository, f.head);
+  const main = await f.advanceMain();
+  await expect(f.deliver()).rejects.toThrow("operator-evidence-authority");
+  expect(f.prompts).toEqual([]);
+  expect(f.authorPrompts).toEqual([]);
+  expect(f.gateHeads).toEqual([]);
+  const directory = resolve(f.sourceState, `refresh-${main}`);
+  const candidate = JSON.parse(await readFile(resolve(directory, "candidate.json"), "utf8"));
+  expect(candidate.head).not.toBe(f.head);
+  expect(candidate.changed).toContain("planning/drafts/ISS-100.md");
+  await writeEvidence(descriptor, f.source.repository, candidate.head);
+  f.setReviewRunning(true);
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+  await Promise.all(Object.values(descriptor.bundle).map((path) => rm(path)));
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.prompts).toHaveLength(1);
+  expect(f.prompts[0]).toContain(resolve(directory, "pre-review-evidence/acceptance.json"));
+  expect(f.authorPrompts).toEqual([]);
+  f.setReviewRunning(false);
+  await f.deliver();
+  expect(f.gateHeads.every((head) => head === candidate.head)).toBe(true);
+  expect(f.gateHeads.length).toBeGreaterThan(0);
+});
 
 it("retains the chosen fallback reviewer for current-main delta review", async () => {
   const f = await fixture();
@@ -1586,7 +1617,8 @@ it.each(["author", "reviewer", "second-gate", "launch-ceiling", "accepted-replan
   "stops the correction at %s without a second pair",
   async (mode) => {
     const f = await gateCorrectionFixture(false, true);
-    if (mode === "accepted-replan") f.item.acceptedReplan = "cs-7766-plan-8014";
+    if (mode === "accepted-replan")
+      f.item.acceptedReplan = replanPacket(f.item.source.stateDirectory);
     const run = mode === "accepted-replan" ? f.deliver : f.run;
     if (mode === "accepted-replan") {
       await expect(run()).rejects.toThrow("gate-correction-not-authorized");

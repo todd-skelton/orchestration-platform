@@ -3,6 +3,9 @@ import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { parseReview, RepairBlocked } from "./repair-policy.mjs";
 import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import * as continuation from "./continuation.ts";
+import type { PreReviewEvidence } from "./continuation.js";
 
 export type Role = "author" | "reviewer";
 export interface Config {
@@ -17,6 +20,8 @@ export interface Config {
   reviewWorktree: string;
   stateDirectory: string;
   allowedPaths: string[];
+  correctionPaths?: string[];
+  preReviewEvidence?: PreReviewEvidence;
   repository: string;
   requiredChecks: string[];
   localGates?: string[];
@@ -120,6 +125,9 @@ async function replace(directory: string, name: string, value: unknown) {
   await rename(temporary, path);
 }
 export function validateConfig(config: Config) {
+  if (config.correctionPaths !== undefined)
+    continuation.validateCorrectionPaths(config.correctionPaths);
+  if (config.preReviewEvidence) continuation.validatePreReviewEvidence(config.preReviewEvidence);
   requireThat(config && /^[\w.-]{1,64}$/.test(config.run), "invalid-run");
   requireThat(
     config.adapter &&
@@ -201,7 +209,7 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
       : `Final response must be ONLY JSON: {"run":"${config.run}","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block.`;
   return (
     `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
-    `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
+    `Allowed author paths: ${JSON.stringify(config.correctionPaths ?? config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
     `Explain substantive findings in progress messages before the final response; these remain in the captured trace. ${report} Review every changed assertion independently.${localVerification}\n` +
     (role === "author" && config.mainBase && config.mainBase !== config.base
       ? "This corrective base already contains implementation work. If inspection and executed checks support the existing source, report PASS without manufacturing source changes; the unchanged candidate still requires independent review and all delivery gates.\n"
@@ -224,7 +232,7 @@ function footprint(config: Config, changed: string[]) {
   return changed;
 }
 const paths = (output: string) => output.split("\0").filter(Boolean);
-async function candidate(config: Config, adapter: Adapter) {
+async function candidate(config: Config, adapter: Adapter, correction = true) {
   requireThat(
     (await adapter.git(config.worktree, ["status", "--porcelain"])) === "",
     "dirty-author",
@@ -249,6 +257,19 @@ async function candidate(config: Config, adapter: Adapter) {
       ]),
     ),
   );
+  if (correction && config.correctionPaths) {
+    const delta = paths(
+      await adapter.git(config.worktree, [
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        config.base,
+        head,
+      ]),
+    );
+    if (delta.length) footprint({ ...config, allowedPaths: config.correctionPaths }, delta);
+  }
   return { head, changed };
 }
 async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inherited?: string) {
@@ -306,6 +327,15 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
   });
   for (const role of inherited ? (["reviewer"] as const) : (["author", "reviewer"] as const)) {
     const reviewed = await get("candidate");
+    const hostEvidence =
+      role === "reviewer" && config.preReviewEvidence
+        ? await continuation.retainPreReviewEvidence(
+            directory,
+            config.repository,
+            reviewed?.head,
+            config.preReviewEvidence,
+          )
+        : "";
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
     let terminal: Terminal | undefined = await get(`${role}-terminal`);
     if (attempt?.retries === 1) retries = 1;
@@ -325,7 +355,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
       if (!attempt) {
         await adapter.waitForProvider?.(config);
         let reviewerHead: string | undefined;
-        let authorEvidence = "";
+        let authorEvidence = hostEvidence;
         if (!relaunch) {
           requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
           // Reserve before the first launch. A retry replaces this attempt once launched.
@@ -374,14 +404,14 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           );
         } else {
           requireThat(reviewed, "candidate-head-moved");
-          const candidateHead = (await candidate(config, adapter)).head;
+          const candidateHead = (await candidate(config, adapter, !inherited)).head;
           requireThat(candidateHead === reviewed.head, "candidate-head-moved");
           reviewerHead = candidateHead;
           const author: Attempt = await get("author-attempt");
           const authorBase = inherited
             ? (await readOptional(resolve(inherited, "config.json"))).config.base
             : config.base;
-          authorEvidence =
+          authorEvidence +=
             `\nSelected author attempt ${author.id}; exact author base: ${authorBase}; exact candidate: ${candidateHead}. Captured execution trace: ${JSON.stringify(author.trace)}. ` +
             `Delivery main base: ${config.mainBase ?? config.base}; inspect the full implementation diff from this base to the candidate, including when the corrective delta is empty. ` +
             `Existing attempt, terminal report and candidate records: ${JSON.stringify([resolve(inherited ?? directory, "author-attempt.json"), resolve(inherited ?? directory, "author-terminal.json"), resolve(directory, "candidate.json")])}.\n` +
@@ -467,7 +497,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           continue;
         }
         // ISS-129: an outage spends native launches, not the ISS-127 retry.
-        if (!terminal.providerFailure) {
+        if (!terminal.providerFailure || config.correctionPaths) {
           if (retry) throw new QueueBlocked("launcher-failed", diagnostics, retries);
           retry = true;
           retries = 1;
@@ -548,7 +578,10 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           ]),
         ];
         if (changed.length > 0) {
-          footprint(config, changed);
+          footprint(
+            { ...config, allowedPaths: config.correctionPaths ?? config.allowedPaths },
+            changed,
+          );
           await put("commit-intent", { base: config.base, changed });
           await adapter.git(config.worktree, [
             "--literal-pathspecs",
@@ -565,7 +598,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
       requireThat(current.head === (await get("candidate")).head, "candidate-head-moved");
       continue;
     }
-    const current = await candidate(config, adapter);
+    const current = await candidate(config, adapter, !inherited);
     requireThat(terminal.head === current.head, `${role}-wrong-head`);
     if (role === "reviewer") {
       requireThat(reviewed.head === current.head, "candidate-head-moved");
@@ -635,6 +668,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
 }
 
 export async function step(config: Config, adapter: Adapter, pilotRoot: string) {
+  if (config.correctionPaths) await reconcileCorrectionCommit(config, adapter);
   return runStep(config, adapter, pilotRoot);
 }
 
@@ -646,18 +680,12 @@ export async function reviewRefresh(
   inherited: string,
 ) {
   if (!(await readOptional(resolve(config.stateDirectory, "candidate.json"))))
-    await record(config.stateDirectory, "candidate", await candidate(config, adapter));
+    await record(config.stateDirectory, "candidate", await candidate(config, adapter, false));
   return runStep(config, adapter, pilotRoot, inherited);
 }
 
 // ISS-152: corrections use the same persisted author/reviewer lifecycle and retries.
-export async function correctGate(
-  config: Config,
-  adapter: Adapter,
-  pilotRoot: string,
-  gate: string,
-  evidence: string,
-) {
+async function reconcileCorrectionCommit(config: Config, adapter: Adapter) {
   const intent = await readOptional(resolve(config.stateDirectory, "commit-intent.json"));
   if (intent && !(await readOptional(resolve(config.stateDirectory, "candidate.json")))) {
     const terminal = await readOptional(resolve(config.stateDirectory, "author-terminal.json"));
@@ -667,7 +695,10 @@ export async function correctGate(
     );
     let head = await adapter.git(config.worktree, ["rev-parse", "HEAD"]);
     if (head === config.base) {
-      const changed = footprint(config, intent.changed);
+      const changed = footprint(
+        { ...config, allowedPaths: config.correctionPaths ?? config.allowedPaths },
+        intent.changed,
+      );
       await adapter.git(config.worktree, ["--literal-pathspecs", "add", "--all", "--", ...changed]);
       await adapter.git(config.worktree, ["commit", "-m", `dogfood: ${config.run}`]);
       head = await adapter.git(config.worktree, ["rev-parse", "HEAD"]);
@@ -678,6 +709,16 @@ export async function correctGate(
     );
     await record(config.stateDirectory, "candidate", await candidate(config, adapter));
   }
+}
+
+export async function correctGate(
+  config: Config,
+  adapter: Adapter,
+  pilotRoot: string,
+  gate: string,
+  evidence: string,
+) {
+  await reconcileCorrectionCommit(config, adapter);
   return step(
     {
       ...config,

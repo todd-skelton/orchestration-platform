@@ -18,6 +18,7 @@ import { stopCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { evidenceDescriptor, writeEvidence } from "./fixtures/continuation.js";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
@@ -34,6 +35,160 @@ function deadTrace(message: string, config: Config) {
       .join("\n") + "\n";
   return parseTrace(trace, true, "author", config, undefined, true, providerBaseUrl);
 }
+it("pauses a completed author before reviewer intent and resumes once from a retained host snapshot", async () => {
+  const f = await fixture();
+  const e = evidenceDescriptor(resolve(f.config.stateDirectory, "external"));
+  f.config.preReviewEvidence = e;
+  f.config.correctionPaths = ["scripts/repair.mjs"];
+  f.authorDone();
+  for (let i = 0; i < 2; i++) await expect(f.run()).rejects.toThrow("operator-evidence-required");
+  expect(f.launches).toEqual(["author"]);
+  expect(f.commits).toHaveLength(1);
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "reviewer-intent.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  expect(
+    JSON.parse(await readFile(resolve(f.config.stateDirectory, "candidate.json"), "utf8")).head,
+  ).toBe(head);
+  await writeEvidence(e, f.config.repository, head);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  const snapshot = resolve(f.config.stateDirectory, "pre-review-evidence");
+  const saved = await readFile(resolve(snapshot, "acceptance.json"), "utf8");
+  expect(JSON.parse(saved)).toMatchObject({
+    head,
+    passed: true,
+    result: { tests: 386, skips: 0, cases: e.requiredCases },
+  });
+  for (const path of Object.values(e.bundle)) await rm(path);
+  f.reviewerDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication" });
+  await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication" });
+  expect(f.launches).toEqual(["author", "reviewer"]);
+  expect(f.commits).toHaveLength(1);
+  expect(f.launchPrompts[1]).toContain(resolve(snapshot, "acceptance.json"));
+  expect(await readFile(resolve(snapshot, "acceptance.json"), "utf8")).toBe(saved);
+  for (const name of ["receipt", "runMetadata", "preflightLog", "verifierLog"])
+    expect((await readFile(resolve(snapshot, name))).length).toBeGreaterThan(0);
+});
+
+it.each([
+  "wrong-head",
+  "wrong-command",
+  "wrong-repository",
+  "duplicate-case",
+  "duplicate-key",
+  "contradictory",
+  "malformed",
+])("rejects %s host authority before review and retains the same author", async (mode) => {
+  const f = await fixture();
+  const e = evidenceDescriptor(resolve(f.config.stateDirectory, "external"));
+  f.config.preReviewEvidence = e;
+  f.authorDone();
+  await expect(f.run()).rejects.toThrow("operator-evidence-required");
+  await writeEvidence(
+    e,
+    f.config.repository,
+    head,
+    mode === "wrong-head"
+      ? { head: base }
+      : mode === "wrong-command"
+        ? { command: { ...e.command, args: ["test:subset"] } }
+        : mode === "wrong-repository"
+          ? { repository: "other/repo" }
+          : mode === "duplicate-case"
+            ? { cases: [e.requiredCases[0], e.requiredCases[0]] }
+            : {},
+    mode === "contradictory"
+      ? (receipt) => {
+          receipt.tests = 1;
+        }
+      : undefined,
+  );
+  if (mode === "malformed") await writeFile(e.bundle.receipt, "{");
+  if (mode === "duplicate-key") {
+    const receipt = await readFile(e.bundle.receipt, "utf8");
+    await writeFile(e.bundle.receipt, receipt.replace("{", '{"head":"' + head + '",'));
+  }
+  await expect(f.run()).rejects.toThrow("operator-evidence-authority");
+  expect(f.launches).toEqual(["author"]);
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "pre-review-evidence/acceptance.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  await writeEvidence(e, f.config.repository, head);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.launches).toEqual(["author", "reviewer"]);
+});
+
+it.each([
+  { exitCode: 1 },
+  { exitCode: -1 },
+  { skips: 1 },
+  { tests: 384 },
+  { files: 17 },
+  { cases: [] },
+])("makes identity-valid failed execution %j irreversible for this candidate", async (changes) => {
+  const f = await fixture();
+  const e = evidenceDescriptor(resolve(f.config.stateDirectory, "external"));
+  f.config.preReviewEvidence = e;
+  f.authorDone();
+  await writeEvidence(e, f.config.repository, head, changes);
+  await expect(f.run()).rejects.toThrow("operator-evidence-failed");
+  const path = resolve(f.config.stateDirectory, "pre-review-evidence/acceptance.json");
+  const failure = await readFile(path, "utf8");
+  await writeEvidence(e, f.config.repository, head);
+  await expect(f.run()).rejects.toThrow("operator-evidence-failed");
+  expect(await readFile(path, "utf8")).toBe(failure);
+  expect(f.launches).toEqual(["author"]);
+});
+
+it("reconciles an interrupted final author commit without another author", async () => {
+  const f = await fixture();
+  f.config.correctionPaths = ["scripts/repair.mjs"];
+  f.authorDone();
+  const git = f.adapter.git;
+  let interrupted = false;
+  f.adapter.git = async (tree, args) => {
+    if (args[0] === "rev-parse" && args[1]?.endsWith("^")) return base;
+    const result = await git(tree, args);
+    if (args[0] === "commit" && !interrupted) {
+      interrupted = true;
+      throw new Error("lost commit response");
+    }
+    return result;
+  };
+  await expect(f.run()).rejects.toThrow("lost commit response");
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.launches).toEqual(["author", "reviewer"]);
+  expect(f.commits).toHaveLength(1);
+});
+
+it("bounds provider deaths inside the final author's existing retry", async () => {
+  const f = await fixture();
+  f.config.correctionPaths = ["scripts/repair.mjs"];
+  f.statuses.author = "dead";
+  f.summarize("author", "http://provider.test/v1 connection refused");
+  f.retry("dead", "http://provider.test/v1 connection refused");
+  await expect(f.run()).rejects.toThrow("launcher-failed");
+  await expect(f.run()).rejects.toThrow("launcher-failed");
+  expect(f.launches).toEqual(["author", "author"]);
+});
+
+it.each(["sibling", "untracked", "rename"])(
+  "rejects %s outside the closed correction paths before committing or reviewing",
+  async (mode) => {
+    const f = await fixture();
+    f.config.allowedPaths = ["."];
+    f.config.correctionPaths = ["scripts/repair.mjs"];
+    if (mode === "sibling") f.setChanged("scripts/sibling.mjs\0");
+    if (mode === "untracked") f.setUntracked("scripts/new.mjs\0");
+    if (mode === "rename") f.setChanged("scripts/repair.mjs\0scripts/renamed.mjs\0");
+    f.authorDone();
+    await expect(f.run()).rejects.toThrow("outside-footprint");
+    expect(f.commits).toHaveLength(0);
+    expect(f.launches).toEqual(["author"]);
+  },
+);
+
 afterEach(async () => {
   for (const path of cleanup.splice(0)) await rm(path, { recursive: true, force: true });
 });
