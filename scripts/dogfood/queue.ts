@@ -592,10 +592,7 @@ export async function queueConfigFromLoop(
   const author = routing?.author ?? config.author;
   const reviewer = routing?.reviewer ?? config.reviewer;
   demand(author && reviewer, "routing-row-unconfigured");
-  demand(
-    author.model !== reviewer.model && !/fable|terra/i.test(reviewer.model),
-    "routing-reviewer-not-independent",
-  );
+  demand(author.model !== reviewer.model, "routing-reviewer-not-independent");
   const promptContext = `Repository loop rules:\n\n${issueContext.rules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${issueContext.body.trim()}`;
   const baseSourcePrompt = `Implement the selected issue completely and stay within its scope.\n\n${promptContext}`;
   let reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;

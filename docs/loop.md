@@ -481,22 +481,24 @@ repair `{model, effort}`. For example:
   "review": 11,
   "author": { "model": "gpt-6-astra", "effort": "high" },
   "reviewer": {
-    "model": "gpt-5.6-sol",
+    "model": "claude-opus-5",
     "effort": "high",
-    "fallback": { "model": "claude-opus-5", "effort": "high" }
+    "fallback": { "model": "gpt-5.6-sol", "effort": "high" }
   },
   "repair": { "model": "gpt-6-astra", "effort": "high" }
 }
 ```
 
-The shipped author placements are Astra/high for rows 7, 14 and 15, Sol/high
-for rows 4 and 10, Terra/medium for row 2, and Sonnet/medium for row 3. Review
-11 is Sol/high with Opus/high fallback; review 12 is Opus/high with
-Sonnet/medium fallback. Repair repeats the author placement. Rows 4 and 10
-must use review 12; row 3 must use review 11. Other shipped author rows offer
-both choices. The omitted combinations would make the primary or fallback
-reviewer equal the author. Configuration rejects that overlap with either
-author or repair, and rejects Terra and Fable reviewers.
+The shipped author placements are Astra/high for row 7, Astra/medium for row
+4, Sol/high for row 10, Luna/high for row 2, Sonnet/medium for row 3,
+Opus/medium for row 14 and Opus/high for row 15. Every author row offers both
+review choices. The primary reviewer is the other vendor's judge: Opus for GPT
+authors, Sol for Claude authors; review 11 runs it at high, review 12 at
+medium. The fallback is the remaining flagship with the same effort, or Sonnet
+when that flagship is the author. Repair repeats the author placement.
+Configuration rejects a reviewer or fallback whose model equals the author or
+repair model; it does not otherwise restrict which models may review.
+`docs/model-selection.md` records the benchmark basis for the placements.
 
 The self adapter returns row `self`: Astra/high author and repair, Opus/high
 reviewer with Sol/high fallback. Existing static `author` and `reviewer`
