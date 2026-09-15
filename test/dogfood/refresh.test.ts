@@ -1364,7 +1364,9 @@ it.each([
     expect(result).toMatchObject({ head: corrected, retries: 1 });
     expect(result.reviewId).not.toBe(capture.previousReview);
     expect(f.prompts.at(-1)).toContain("Independent DELTA review");
-    expect(f.prompts.at(-1)).toContain(resolve(capture.directory, "author.jsonl"));
+    expect(f.prompts.at(-1)).toContain(
+      `Captured execution trace: ${JSON.stringify(resolve(capture.directory, "author.jsonl"))}.`,
+    );
     expect(f.gates.filter((gate) => gate.head === corrected).map((gate) => gate.gate)).toEqual(
       afterMirror
         ? ["typecheck", "planning:board-check", "test"]
