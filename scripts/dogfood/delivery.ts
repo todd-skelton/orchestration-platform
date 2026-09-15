@@ -144,6 +144,7 @@ export type MergeObservation =
 
 export type PublicationObservation =
   | { state: "confirmed"; value: PublicationEvidence }
+  | { state: "conflicting"; value: PublicationEvidence }
   | { state: "needs-mutation"; target: string }
   | { state: "unknown" };
 
@@ -152,6 +153,10 @@ export interface DeliveryPolicyAdapter {
 }
 
 export interface DeliveryAdapter {
+  conflictingPublication?(
+    config: DeliveryConfig,
+    publication: PublicationEvidence,
+  ): Promise<boolean>;
   /** Pure provider identity formatting; this method must not perform I/O. */
   publicationUrl(config: DeliveryConfig, number: number): string;
   source(config: DeliveryConfig): Promise<SourceEvidence>;
@@ -581,7 +586,7 @@ async function confirmPublication(
     target = intent.target;
   }
   let observation = await adapter.observePublication(config, plan.publication, planDigest, target);
-  if (observation.state !== "confirmed") {
+  if (observation.state !== "confirmed" && observation.state !== "conflicting") {
     demand(observation.state === "needs-mutation", "publication-state-unknown");
     demand(
       typeof observation.target === "string" &&
@@ -601,10 +606,15 @@ async function confirmPublication(
     } catch {}
     observation = await adapter.observePublication(config, plan.publication, planDigest, target);
     demand(observation.state !== "unknown", "publication-outcome-unknown");
-    demand(observation.state === "confirmed", "publication-unconfirmed-reconcile-before-retry");
+    demand(
+      observation.state === "confirmed" || observation.state === "conflicting",
+      "publication-unconfirmed-reconcile-before-retry",
+    );
   }
   validatePublicationRecord(config, plan, planDigest, observation.value, adapter);
   await record(directory, "publication", observation.value);
+  if (observation.state === "conflicting")
+    throw new DeliveryBlocked("published-candidate-conflict");
   return observation.value;
 }
 

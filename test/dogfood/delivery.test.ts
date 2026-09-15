@@ -8,6 +8,7 @@ import { afterEach, expect, it } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   deliveryStep,
+  DeliveryBlocked,
   hostedFailurePrompt,
   type DeliveryAdapter,
   type DeliveryConfig,
@@ -749,6 +750,33 @@ it("does not retry an uncertain publication and reconciles it on restart", async
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
   await deliveryStep(f.config, f.adapter, f.policy);
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+});
+
+it("retains an exact conflicting publication after a lost publish response without repeating mutation", async () => {
+  const f = await fixture();
+  let observations = 0;
+  f.adapter.observePublication = async () =>
+    ++observations === 1
+      ? { state: "needs-mutation", target: "fixture-absent" }
+      : { state: "conflicting", value: f.publication };
+  f.adapter.publish = async () => {
+    f.calls.push("publish");
+    throw new Error("lost response");
+  };
+  f.adapter.checks = async () => {
+    throw new DeliveryBlocked("published-candidate-conflict");
+  };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "published-candidate-conflict",
+  );
+  expect(
+    JSON.parse(await readFile(resolve(f.config.stateDirectory, "publication.json"), "utf8")),
+  ).toEqual(f.publication);
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "published-candidate-conflict",
+  );
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls).not.toContain("merge");
 });
 
 it.each([false, true])(
