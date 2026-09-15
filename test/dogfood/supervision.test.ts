@@ -6,7 +6,8 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
-import { ACCEPTED_REPLAN, QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
+import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
+import { ACCEPTED_REPLAN, replanPacket } from "./fixtures/continuation.js";
 import { selectCandidates } from "../../adapters/self.mjs";
 import {
   loadRepositoryAdapter,
@@ -460,6 +461,53 @@ it("includes the selected routing row in a setup stop before worker launches", a
   expect(observation.comments[0]).toContain("no recorded author or reviewer launches");
 });
 
+it.each(["operator-evidence-required", "operator-evidence-authority", "operator-evidence-failed"])(
+  "resumes the %s stop with the ruled parking policy",
+  async (reason) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-evidence-"));
+    roots.push(root);
+    const config = loop(root);
+    config.acceptedReplan = replanPacket(config.stateRoot);
+    const cycle = selected();
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "ISS-105",
+      labels: [],
+      comments: [],
+    };
+    let parks = 0;
+    const repository = {
+      ...repositoryPolicy,
+      park() {
+        parks++;
+        return "obtain new authority before unparking";
+      },
+    };
+    const adapter = fakeAdapter(observation);
+    await persistCycle(config, cycle);
+    const comment = adapter.comment;
+    adapter.comment = async (...args) => {
+      await comment(...args);
+      throw new Error("interrupted receipt");
+    };
+    await expect(stopCycle(config, cycle, reason, 5, adapter, repository)).rejects.toThrow(
+      "interrupted receipt",
+    );
+    adapter.comment = comment;
+    const resumed = await reconcilePendingStop(config, cycle, adapter, repository);
+    expect(resumed).toEqual({
+      scope: reason === "operator-evidence-failed" ? "item" : "run",
+      reason,
+    });
+    expect(parks).toBe(reason === "operator-evidence-failed" ? 2 : 0);
+    expect(observation.comments).toHaveLength(1);
+    expect(observation.comments[0]).toContain("after 5 implementation attempts");
+    if (reason !== "operator-evidence-failed")
+      expect(observation.comments[0]).toContain("resume this same run");
+    await expect(reconcilePendingStop(config, cycle, adapter, repository)).resolves.toBeUndefined();
+  },
+);
+
 it("posts one learning note after an interrupted comment and parks an item stop", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-stop-"));
   roots.push(root);
@@ -705,7 +753,7 @@ it("exits an accepted corrective run on an item stop and asks Todd before furthe
     routingRows: [],
     repository: "chase-sets/chase-sets",
     targetMilestone: 158,
-    acceptedReplan: ACCEPTED_REPLAN.id,
+    acceptedReplan: replanPacket(loop(root).stateRoot),
   };
   const runState = resolve(config.stateRoot, config.run);
   const request = resolve(root, "loop.json");

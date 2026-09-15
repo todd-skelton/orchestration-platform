@@ -202,51 +202,103 @@ accepted plan #8014 and #7766 comment `5665196633` authorize one correction
 of the route-collision inventory failure on PR #8005 at
 `ac2c54ce80865c0501d71aae4676c719b0d1eaf1`.
 
-The native config opt-in `"acceptedReplan": "cs-7766-plan-8014"` admits only
-that plan, only in the recorded fresh run, with `targetMilestone: 158` and
-`attemptCeiling: 4`. Native composition reads attempt 4, its publication,
-source config and original `source/hosted-failure.log` from
-`stateRoot/m2-jpeg-20260914/cs-7766-attempt-4`. Missing history or logs stops
-before authoring. All nine prior participants, including failed reviews and
-the dead author launch, remain charged to the native launch ceiling. The
-original four attempts remain history; only this queue item admits attempt 5,
-with ceiling 5. A current blocking review or hosted failure cannot dispatch
-a sixth attempt or a repair pair. Ordinary transient retries remain bounded
-inside this one attempt. Any stop exits this corrective invocation and its
-note asks the host to propose rollback and wait for Todd.
+That historical continuation used `cs-7766-replan-8014-attempt-5`, retaining
+all nine participants and the original main base. Its published candidate
+used the existing forward-only refresh of PR #8005's `-g4` branch from a new
+local `-g5` branch. Those records, branches and worktrees remain history;
+the singleton string configuration is replaced by ISS-154's packet below.
+No historical record migration or restart is authorized.
 
-The new queue uses `cs-7766-replan-8014-attempt-5` under the fresh run, with
-matching pilot/source/review worktree names and a new `-g5` local branch.
-Its author starts at the preserved rejected candidate, retaining the original
-main base for the full implementation review. It does not rebase or edit the
-old candidate/worktrees. Both workers receive the accepted scope and the
-original attempt/source/trace and hosted-log paths. Current author completion
-and independent exact-head review remain required. Native delivery uses the
-existing forward-only PR refresh and observed remote-head lease to update
-PR #8005's `-g4` branch from the new local branch. Cleanup removes only the
-new source/review worktrees and local branch; it leaves the preserved local
-`-g4` branch and worktrees intact. The published PR branch may remain remotely
-unless GitHub deletes it after merge. Local gates, hosted green, native merge
-and verified actual deployment remain mandatory.
+ISS-154 records the next closed ruling, Chase Sets #4388 comment `5681842811`.
+#7844 exhausted four absolute attempts in `m2-purchase-limit-20260915T0132`.
+Its final unpublished head is `25b602832b8d33768c6e1aab1b611c48ad4d3f21`;
+absolute attempt 4 is the repair in `cs-7844-attempt-3`, not a directory named
+attempt-4. Real PostgreSQL execution in comment `5678264608` ran 386 tests
+with zero skips; only the two day +0/+1 source-retry concurrency cases failed
+at the unsupported `fromVersion: 0` reads before the cancellation proof.
+Todd authorizes one final Astra/high correction of those reads, followed by
+exact-head host evidence and fresh Sol/high review. Any work non-PASS parks
+at absolute ceiling five; there is no attempt six or second repair.
 
-To resume, the host first preserves both runtimes and all old worktrees while
-the supervisors are stopped, then installs this reviewed implementation as
-the stable platform executor. Add the opt-in above to the existing corrective
-loop config; retain `run: "m2-jpeg-corrective-20260914T1402"`, the same
-`stateRoot` and `worktreeRoot`, `targetMilestone: 158`, `attemptCeiling: 4`
-and the existing native launch ceiling. Start from Windows using the canonical
-`scripts/executor/start-loop.ps1 -Config <absolute-WSL-corrective-config-path>`.
-Do not change or archive the old run's records or the fresh run's selection,
-setup attempt or stop records. Native composition leaves them untouched and
-resumes the dedicated attempt-5 directory. A repeated restart selects the
-same attempt, including its failure or completion; changing the run name
-cannot renew admission. Fresh #7766 authoring without this accepted replan
-is refused. There is no new admission receipt or record migration.
+`LoopConfig.acceptedReplan` is now an exact-key object. Its closed fields are:
 
-This implementation does not restart either run, repair JPEG, touch PR #8005
-from the host, or claim milestone 158 or ISS-110 exit evidence. After the
-bounded cycle fails to land or a new loop defect stops it, the host proposes
-rollback and waits for Todd; another config/run name is not authorization.
+- `schemaVersion: "dogfood-accepted-replan/v1"`, `repository`, `issueKey`,
+  `issueUrl`, `priorRun`, and absolute normalized `priorAttemptDirectory`.
+  The directory is immediately beneath `stateRoot/priorRun` and names the
+  actual queue attempt record, including a repair's containing directory.
+- `priorAbsoluteAttempt: 4`, `nextAbsoluteAttempt: 5`, `absoluteCeiling: 5`,
+  `candidateHead` (full immutable SHA), and `priorHistoryDigest` (SHA-256 of
+  `JSON.stringify(prior.history)`). The failed prior attempt, repository,
+  issue, head and accumulated participant history must agree. Source or
+  repair evidence follows the prior absolute attempt; historical PASS is
+  never imported as current authority.
+- `targetRun` (equal to the loop's run), `attemptSlug` (a normalized name
+  ending in `-attempt-5`), `authorityUrl` (the immutable ruling comment),
+  `scope` (the ruled correction), and `allowedPaths`. Paths are unique exact
+  repository-relative tracked regular files, not directories, globs, parent
+  traversals or absolute paths. For #7844 the sole path is
+  `bounded-contexts/ordering/features/orders/api/purchase-limits.db.test.ts`.
+  Both sides of renames and untracked additions count against the boundary.
+- `publication` is either `null` or exactly `{number, url, head, sourceBranch}`
+  matching the prior publication. Published continuation retains its branch
+  and forward-refresh lease; unpublished continuation invents no PR or receipt.
+- `preReviewEvidence` is either `null` or the descriptor below. Ordinary
+  loop routing supplies the ruled worker placements; the packet does not
+  classify models or issue prose. The host must configure the ruled pair.
+
+The ordinary loop config still caps `attemptCeiling` at four. Before setup,
+composition reserves the exact packet in
+`stateRoot/accepted-replan-<sha256({repository,issue})>.json`, outside both runs.
+This single lineage reservation prevents changed run names, paths or packets
+from spending another continuation. Replay uses the same attempt directory.
+Fresh ordinary composition also refuses recorded exhausted lineages on this
+host. The reservation and all prior records remain history. No running executor
+or preserved runtime is edited to admit work.
+
+The optional pre-review descriptor has exactly `receiptSchema` (currently
+`"dogfood-host-verification/v1"`), `workspace`, `gate`, `command` (exactly
+`{executable, args}`), `bundle` (absolute distinct paths named `receipt`,
+`runMetadata`, `preflightLog`, `verifierLog`), positive complete-suite `files`
+and `tests` counts, `skips: 0`, and unique `requiredCases` identities. The host
+sets actual verifier identities and the complete workspace file count; a
+subset or an inferred count is not accepted evidence.
+
+The host verifier receipt has exactly `schemaVersion`, `repository`, `head`,
+`workspace`, `gate`, `command`, `runId`, `exitCode`, `files`, `tests`, `skips`,
+`cases` (executed case identities), and `artifacts`. `artifacts` binds SHA-256
+digests of the raw `runMetadata`, `preflightLog` and `verifierLog` bytes. Run
+metadata repeats every identity and result field, omits `artifacts`, and uses
+`schemaVersion: "dogfood-host-verification-run/v1"`. Logs must be nonempty.
+The platform consumes this closed host receipt contract; it does not infer
+PostgreSQL execution from author claims or reinterpret a log as authority.
+The installed host verifier must supply that contract before resume.
+
+Author PASS pins the candidate and yields `operator-evidence-required` before
+any reviewer intent or launch. Missing material keeps that non-parking stop.
+Malformed, duplicate, wrong-identity or contradictory material stops as
+`operator-evidence-authority`, also without parking or new authoring. An
+identity-valid nonzero exit, skip, wrong complete-suite count or missing
+required case is `operator-evidence-failed`: terminal failure and parking,
+without review or another attempt. Valid bundles, including failed executions,
+are atomically retained under `source/pre-review-evidence`, together with
+`acceptance.json` (`dogfood-pre-review-acceptance/v1`) binding their digests,
+parsed identities, results and decision. Replay and reviewer prompts use only
+this snapshot. External replacement or removal cannot turn failure into PASS.
+
+An accepted snapshot admits the ordinary independent reviewer lifecycle once.
+No ordinary repair, gate correction, conflict author or chained continuation
+is admitted. Current-main integration still requires delta review and, when
+declared, new exact-head host evidence. Local gates, hosted green, native merge
+and applicable actual deployment remain required. Host/authority observation
+stops retain the same in-flight step; work failures record terminal history.
+
+After this issue lands with three-OS bootstrap green, only the operator may
+advance the stable executor while both supervisors are absent and write the
+exact ruled continuation config. After author PASS the operator runs the
+installed PostgreSQL host verifier and resumes the same run with its bundle.
+This implementation does not author the product fix, start either loop,
+install an executor, alter old records or milestone ownership, or claim M2
+completion. The historical JPEG rollback remains intact.
 
 ISS-148 records ISS-146's two `planning:board-check` stops in
 `m1-accepted-replan-20260914T1416`: a later registration had landed on main,
