@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   repositoryQueueAdapter,
@@ -1070,60 +1070,74 @@ it.each(["\n", "\r\n"])("limits edits to actual hunks with line ending %j", (eol
     expect(withinConflictHunks(before, changed)).toBe(false);
 });
 
-it.each([false, true])(
+describe.each([false, true])(
   "routes a published DIRTY candidate through bounded resolution and forward publication (lost receipt: %s)",
-  async (lostReceipt) => {
-    const f = await fixture();
-    const { remoteHead, preserved } = await f.enablePublicationRefresh();
-    await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\n");
-    const publishedHead = await f.commit(f.sourceTree);
-    await f.pinSource();
-    if (lostReceipt) {
-      f.losePublicationObservation();
-      await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
-    } else {
+  (lostReceipt) => {
+    let f: Awaited<ReturnType<typeof fixture>>;
+    let remoteHead: () => Promise<string>;
+    let preserved: string;
+    let publishedHead: string;
+    let main: string;
+    let originalPublication: string;
+
+    // ISS-154 hosted Windows failure: build the published-conflict fixture in
+    // its own bounded hook so setup and recovery do not share one test timeout.
+    beforeEach(async () => {
+      f = await fixture();
+      ({ remoteHead, preserved } = await f.enablePublicationRefresh());
+      await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\n");
+      publishedHead = await f.commit(f.sourceTree);
+      await f.pinSource();
+      if (lostReceipt) {
+        f.losePublicationObservation();
+        await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+      } else {
+        await expect(f.deliver()).resolves.toMatchObject({
+          status: "observing-hosted-checks",
+          head: publishedHead,
+        });
+      }
+      expect(await remoteHead()).toBe(publishedHead);
+      await writeFile(resolve(f.repo, "feature.txt"), "new main\n");
+      main = await f.advanceMain();
+      f.setPublicationDirty(true);
       await expect(f.deliver()).resolves.toMatchObject({
         status: "observing-hosted-checks",
         head: publishedHead,
       });
-    }
-    expect(await remoteHead()).toBe(publishedHead);
-    await writeFile(resolve(f.repo, "feature.txt"), "new main\n");
-    const main = await f.advanceMain();
-    f.setPublicationDirty(true);
-    await expect(f.deliver()).resolves.toMatchObject({
-      status: "observing-hosted-checks",
-      head: publishedHead,
+      originalPublication = await readFile(resolve(f.sourceState, "publication.json"), "utf8");
+      expect(f.publications()).toBe(1);
     });
-    const originalPublication = await readFile(resolve(f.sourceState, "publication.json"), "utf8");
-    expect(f.publications()).toBe(1);
-    f.setResolution(async () => {
-      await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\nnew main\n");
-      f.setPublicationDirty(false);
+
+    it("resolves and reconciles both refresh observations without repeating workers or publication", async () => {
+      f.setResolution(async () => {
+        await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\nnew main\n");
+        f.setPublicationDirty(false);
+      });
+      // Lose the refresh observation too: restart must reconcile that exact remote head.
+      f.losePublicationObservation();
+      await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+      const resolved = await remoteHead();
+      expect(resolved).not.toBe(publishedHead);
+      await expect(f.deliver()).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+        head: resolved,
+      });
+      await expect(f.deliver()).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+        head: resolved,
+      });
+      expect(f.publications()).toBe(2);
+      expect(f.authorPrompts).toHaveLength(1);
+      expect(f.prompts).toHaveLength(1);
+      for (const parent of [publishedHead, main])
+        expect(await f.git(f.sourceTree, ["merge-base", parent, resolved])).toBe(parent);
+      expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
+      expect(await readFile(resolve(f.sourceState, "publication.json"), "utf8")).toBe(
+        originalPublication,
+      );
+      expect(new Set(f.gateHeads)).toEqual(new Set([publishedHead, resolved]));
     });
-    // Lose the refresh observation too: restart must reconcile that exact remote head.
-    f.losePublicationObservation();
-    await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
-    const resolved = await remoteHead();
-    expect(resolved).not.toBe(publishedHead);
-    await expect(f.deliver()).resolves.toMatchObject({
-      status: "observing-hosted-checks",
-      head: resolved,
-    });
-    await expect(f.deliver()).resolves.toMatchObject({
-      status: "observing-hosted-checks",
-      head: resolved,
-    });
-    expect(f.publications()).toBe(2);
-    expect(f.authorPrompts).toHaveLength(1);
-    expect(f.prompts).toHaveLength(1);
-    for (const parent of [publishedHead, main])
-      expect(await f.git(f.sourceTree, ["merge-base", parent, resolved])).toBe(parent);
-    expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
-    expect(await readFile(resolve(f.sourceState, "publication.json"), "utf8")).toBe(
-      originalPublication,
-    );
-    expect(new Set(f.gateHeads)).toEqual(new Set([publishedHead, resolved]));
   },
 );
 
