@@ -6,6 +6,9 @@ export default defineConfig({
     environment: "node",
     passWithNoTests: false,
     sequence: { concurrent: false },
+    // ISS-160 / PR #509: bound competing real-Git fixtures after a Windows timeout.
+    // Vitest uses one worker when file parallelism is disabled.
+    fileParallelism: false,
     // Real-Git fixtures routinely take 5 to 6 seconds on the hosted Windows runner.
     testTimeout: 30_000,
     hookTimeout: 30_000,

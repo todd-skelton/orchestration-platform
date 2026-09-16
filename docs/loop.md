@@ -73,6 +73,11 @@ executor, or alter its retained runtime or worktrees. Host installation requires
 independent exact-head PASS and three-OS bootstrap green with supervisors absent;
 #457 dispatch still requires Todd's amended answer and explicit planning unpark.
 
+ISS-160's PR #509 Windows gate timed out in the `refresh-review-fail` lifecycle
+fixture, followed by locked-worktree cleanup. Vitest now runs files serially
+with one worker to bound competing real-Git fixtures. Every test and the existing
+test/hook timeouts remain in place for local and hosted bootstrap gates.
+
 ISS-155 records ISS-146's `queue-internal-error` in
 `m1-iss146-147-20260914T2325`: compiling a large fixed source segment as a
 regular expression exceeded the engine's pattern limit before conflict author
