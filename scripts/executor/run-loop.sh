@@ -9,6 +9,8 @@ if [ "${LOOP_DETACHED:-}" != "1" ]; then
   export CODEX_PROVIDER_BASE_URL="http://$HOST:8317/v1"
   # This is also the auth.command configured in the executor's Codex home.
   export CODEX_PROVIDER_AUTH_COMMAND="$TASK_ROOT/pool-key.sh"
+  # ISS-162: read-only pool status consulted before each worker launch.
+  export CODEX_POOL_STATUS_URL="http://$HOST:8318/api/status"
   sed -i "s#http://[0-9.]*:8317/v1#$CODEX_PROVIDER_BASE_URL#" "$TASK_ROOT/codex-home/config.toml"
   # ISS-129: the supervisor waits for the authenticated models probe before each
   # worker, so an outage at startup gets the same bounded wait and learning note.

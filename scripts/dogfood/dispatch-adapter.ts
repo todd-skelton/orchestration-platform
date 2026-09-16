@@ -87,6 +87,49 @@ export async function probeProvider(
   } else await response.body?.cancel();
 }
 
+// ISS-162: `m1-iss154-20260915T1004` attempt 1 spent five native launches on
+// `auth_unavailable` while every Codex credential was cooling down; the models
+// probe still listed the model. The pool supervisor's per-account, per-model
+// routing status is the launch admission check. A block that clears inside the
+// outage ceiling waits like an outage; a longer one (a weekly window) is a
+// refusal, so the role advances its ISS-158 ladder (other vendor last) and an
+// exhausted ladder stops the host with the reset time, not after a wasted
+// ceiling.
+export async function probePoolModel(
+  statusUrl: string,
+  model: string,
+  signal: AbortSignal,
+  ceilingMs: number,
+  request = fetch,
+  now = Date.now,
+) {
+  const response = await request(statusUrl, { signal });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`pool status probe returned HTTP ${response.status}`);
+  }
+  const status = (await response.json()) as {
+    accounts?: { disabled?: boolean; routingModels?: Record<string, unknown> }[];
+  } | null;
+  if (!Array.isArray(status?.accounts)) throw new Error("malformed pool status response");
+  const entries = status.accounts
+    .filter((account) => account && !account.disabled)
+    .map((account) => account.routingModels?.[model])
+    .filter((entry): entry is { status?: unknown; next_retry_after?: unknown } => !!entry);
+  // The pool does not know the model, or its observations are stale: the
+  // models probe alone decides.
+  if (entries.length === 0) return;
+  if (entries.some((entry) => entry.status === "ready")) return;
+  const resets = entries
+    .map((entry) => Date.parse(String(entry.next_retry_after)))
+    .filter((time) => Number.isFinite(time) && time > now());
+  const until = resets.length ? new Date(Math.min(...resets)).toISOString() : undefined;
+  const diagnostics = `pool blocks ${model} at every account${until ? ` until ${until}` : ""}`;
+  if (until && Date.parse(until) - now() > ceilingMs)
+    throw new QueueBlocked("provider-model-refused", diagnostics);
+  throw new Error(diagnostics);
+}
+
 export function modelRefused(message: string) {
   return /(?:\bmodel\b[^\n]*(?:not found|does not exist|not supported|unsupported|not allowed|access denied)|(?:unsupported|unknown|invalid) model\b|\bmodel_not_found\b)/i.test(
     message,
@@ -448,10 +491,18 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
     async launch(role, config, prompt) {
       const baseUrl = process.env.CODEX_PROVIDER_BASE_URL;
       const authCommand = process.env.CODEX_PROVIDER_AUTH_COMMAND;
+      const statusUrl = process.env.CODEX_POOL_STATUS_URL;
       if (baseUrl && authCommand)
-        await waitForProvider(config, (signal) =>
-          probeProvider(baseUrl, authCommand, signal, fetch, config[role].model),
-        );
+        await waitForProvider(config, async (signal) => {
+          await probeProvider(baseUrl, authCommand, signal, fetch, config[role].model);
+          if (statusUrl)
+            await probePoolModel(
+              statusUrl,
+              config[role].model,
+              signal,
+              config.providerOutageCeilingMs ?? DEFAULT_PROVIDER_OUTAGE_CEILING_MS,
+            );
+        });
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(

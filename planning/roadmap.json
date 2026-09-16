@@ -482,6 +482,12 @@
       "file": "planning/drafts/ISS-161.md",
       "milestone": "M2",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-162",
+      "file": "planning/drafts/ISS-162.md",
+      "milestone": "M2",
+      "blockedBy": []
     }
   ]
 }
