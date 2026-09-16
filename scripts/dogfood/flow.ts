@@ -17,6 +17,7 @@ export interface Config {
   pilotRevision: string;
   base: string;
   mainBase?: string;
+  inheritedWorkerRetry?: boolean;
   worktree: string;
   reviewWorktree: string;
   stateDirectory: string;
@@ -252,6 +253,8 @@ async function candidate(config: Config, adapter: Adapter, correction = true) {
   const head = await adapter.git(config.worktree, ["rev-parse", "HEAD"]);
   const mainBase = config.mainBase ?? config.base;
   requireThat(/^[a-f0-9]{40}$/.test(head) && head !== mainBase, "missing-candidate-commit");
+  if (correction && config.inheritedWorkerRetry !== undefined)
+    requireThat(head !== config.base, "missing-candidate-commit");
   requireThat(
     (await adapter.git(config.worktree, ["merge-base", config.base, head])) === config.base,
     "changed-base",
@@ -284,7 +287,13 @@ async function candidate(config: Config, adapter: Adapter, correction = true) {
   }
   return { head, changed };
 }
-async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inherited?: string) {
+async function runStep(
+  config: Config,
+  adapter: Adapter,
+  pilotRoot: string,
+  inherited?: string,
+  inheritedRetry = 0,
+) {
   validateConfig(config);
   const roots = await Promise.all(
     [pilotRoot, config.worktree, config.reviewWorktree].map((p) => realpath(p)),
@@ -329,7 +338,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
       resolve(inherited && name.startsWith("author-") ? inherited : directory, `${name}.json`),
     );
   const put = (name: string, value: unknown) => record(directory, name, value);
-  let retries = 0;
+  let retries = Math.max(config.inheritedWorkerRetry ? 1 : 0, inheritedRetry);
   const finish = async (status: string, detail: object = {}) => ({
     status,
     run: config.run,
@@ -354,7 +363,8 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
     if (terminal?.id !== attempt?.id) terminal = undefined;
     let parseError: string | undefined;
     let retryContext = attempt?.retryContext ?? "";
-    let retry = attempt?.retries === 1;
+    let retry =
+      attempt?.retries === 1 || (config.inheritedWorkerRetry !== undefined && retries === 1);
     const ladder = config[role].ladder;
     const selectedAuthor: Attempt | undefined =
       role === "reviewer" ? await get("author-attempt") : undefined;
@@ -703,7 +713,8 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
 }
 
 export async function step(config: Config, adapter: Adapter, pilotRoot: string) {
-  if (config.correctionPaths) await reconcileCorrectionCommit(config, adapter);
+  if (config.correctionPaths || config.inheritedWorkerRetry !== undefined)
+    await reconcileCorrectionCommit(config, adapter);
   return runStep(config, adapter, pilotRoot);
 }
 
@@ -713,10 +724,11 @@ export async function reviewRefresh(
   adapter: Adapter,
   pilotRoot: string,
   inherited: string,
+  inheritedRetry = 0,
 ) {
   if (!(await readOptional(resolve(config.stateDirectory, "candidate.json"))))
     await record(config.stateDirectory, "candidate", await candidate(config, adapter, false));
-  return runStep(config, adapter, pilotRoot, inherited);
+  return runStep(config, adapter, pilotRoot, inherited, inheritedRetry);
 }
 
 // ISS-152: corrections use the same persisted author/reviewer lifecycle and retries.
