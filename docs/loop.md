@@ -38,6 +38,46 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+ISS-160 records ISS-146's unpublished conflict-author FAIL in
+`m1-iss146-147-20260914T2325`. Before scanning failed attempts, composition
+observes the matching failed author terminal at the pinned conflict seed and
+advances the stale delivery projection to failed once. It retains the original
+base, attempt number and historical review identity/findings, recovers native
+participants, and clears the accepted stage and directory. Source, review,
+refresh, worker, stop and completed-stop records and the old worktree remain
+unchanged. Nonfailed and in-flight authors do not establish this transition.
+
+Completed stops still skip their cycle, and pending notes reconcile before
+composition. Only explicit planning unpark can select the issue again in the
+same run. Ordinary setup then creates attempt 2 in new worktrees, based on the
+unaccepted seed with its recorded integration main as the full-diff base.
+This unresolved-seed continuation alone defers pre-author rebase until native
+delivery refresh, which merges later main to retain both seed parents instead
+of replaying the original conflict. No successful rebase is invented. The run's accumulated
+history, including intervening issues, stays charged.
+
+The successor uses native authoring, commit reconciliation and independent
+exact-head DELTA review. Both parents, source review and execution trace, failed
+conflict-author trace and the selected brief accompany the workers. A no-op
+cannot accept the unresolved seed. Historical PASS and gate receipts never
+authorize the successor. Conflict resolution remains consumed; worker retry
+and local correction allowances carry forward into actual launch and delivery
+decisions. Author FAIL or blocking DELTA parks without source repair or automatic
+attempt 3. A new conflict or exhausted correction also stops. Current-main
+integration requires fresh DELTA and all local and after-mirror gates, publication,
+hosted checks, landing and applicable deployment at the final head. Replay uses
+the same successor and ordinary mutation reconciliation.
+
+Landing this repair does not ready, restart or complete #457, install an
+executor, or alter its retained runtime or worktrees. Host installation requires
+independent exact-head PASS and three-OS bootstrap green with supervisors absent;
+#457 dispatch still requires Todd's amended answer and explicit planning unpark.
+
+ISS-160's PR #509 Windows gate timed out in the `refresh-review-fail` lifecycle
+fixture, followed by locked-worktree cleanup. Vitest now runs files serially
+with one worker to bound competing real-Git fixtures. Every test and the existing
+test/hook timeouts remain in place for local and hosted bootstrap gates.
+
 ISS-155 records ISS-146's `queue-internal-error` in
 `m1-iss146-147-20260914T2325`: compiling a large fixed source segment as a
 regular expression exceeded the engine's pattern limit before conflict author
