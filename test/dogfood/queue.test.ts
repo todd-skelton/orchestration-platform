@@ -2406,7 +2406,7 @@ it("projects the retained failure once and selects attempt 2 only after unpark, 
   unparked = true;
   const cycle = await nextCycle(f.loop, f.repository, host, policy);
   expect(cycle).toEqual({
-    selection: { cycle: 3, ...f.selected, base: f.main },
+    selection: { cycle: 3, ...f.selected, base: f.main, planningRevision: f.main },
     initialHistory: later,
   });
   // An interrupted atomic projection write is not a completed transition.

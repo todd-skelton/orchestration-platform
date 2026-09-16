@@ -6,10 +6,13 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
+import * as planningLoader from "../../scripts/planning/check.mjs";
 import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
 import { ACCEPTED_REPLAN, replanPacket } from "./fixtures/continuation.js";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { selectCandidates } from "../../adapters/self.mjs";
+import * as boardLoader from "../../scripts/planning/board-check.mjs";
+import { planningSelectionFixture, retainedFiles } from "./fixtures/planning-selection.js";
 import {
   loadRepositoryAdapter,
   type RepositoryAdapter,
@@ -317,6 +320,7 @@ function fakeAdapter(observation: IssueObservation): SupervisionAdapter {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -435,7 +439,7 @@ it("selects candidates and main from the configured repository root", async () =
   });
 });
 
-it("posts one current-main learning note before selection persistence and keeps ready", async () => {
+it("refuses unavailable self main before selection persistence without an issue note", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-main-stop-"));
   roots.push(root);
   const repository = resolve(import.meta.dirname, "../..");
@@ -458,13 +462,338 @@ it("posts one current-main learning note before selection persistence and keeps 
   await expect(nextCycle(config, repository, adapter, repositoryPolicy)).rejects.toThrow(
     "current-main-unavailable",
   );
-  expect(observation.comments).toHaveLength(1);
-  expect(observation.comments[0]).toContain(
-    "check the stableExecutorRoot and gitExecutable fields in the loop config",
-  );
-  expect(observation.comments[0]).toContain("after 0 implementation attempts");
+  expect(observation.comments).toEqual([]);
   expect(observation.labels).toContain("ready");
 });
+
+it("fresh self selection sees later registration", async () => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  const before = await f.installed();
+  const board = await f.board();
+  const census = vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(board);
+  const fetch = vi.spyOn(f.host, "currentMain");
+  // The old checkout cannot reconcile the new board registration.
+  await expect(
+    f.policy.selectCandidates({ repository: f.loop.repository, executorRoot: f.executor }),
+  ).rejects.toThrow("unregistered planning key ISS-002");
+  const cycle = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+  expect(cycle.selection).toEqual({
+    cycle: 1,
+    key: "ISS-002",
+    number: 2,
+    base: f.current,
+    planningRevision: f.current,
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(census).toHaveBeenCalledTimes(2);
+  // Before persistence a new call reobserves; same-main ordering remains stable.
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toEqual(cycle);
+  await persistCycle(f.loop, cycle);
+  const selectedBytes = await retainedFiles(resolve(f.loop.stateRoot, f.loop.run));
+  f.host.issue = async () => ({ key: "ISS-002", state: "OPEN", labels: [], comments: [] });
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toEqual(cycle);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(await retainedFiles(resolve(f.loop.stateRoot, f.loop.run))).toEqual(selectedBytes);
+  // External closure advances once, then respects the same-main dependency and milestone.
+  board.issues[1]!.state = "CLOSED";
+  f.host.issue = async () => ({ key: "ISS-002", state: "CLOSED", labels: [], comments: [] });
+  const successor = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+  expect(successor.selection).toMatchObject({
+    cycle: 2,
+    key: "ISS-003",
+    base: f.current,
+    planningRevision: f.current,
+  });
+  await persistCycle(f.loop, successor);
+  f.host.issue = async () => ({ key: "ISS-003", state: "OPEN", labels: [], comments: [] });
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toEqual(successor);
+  board.issues[2]!.labels = [];
+  const stopComments: string[] = [];
+  await stopCycle(
+    f.loop,
+    successor,
+    "gate-correction-failed",
+    1,
+    {
+      ...f.host,
+      issue: async () => ({ key: "ISS-003", state: "OPEN", labels: [], comments: stopComments }),
+      comment: async (_config, _number, body) => {
+        stopComments.push(body);
+      },
+    },
+    { ...f.policy, park: () => "synthetic unpark" },
+  );
+  // An open, unready earliest milestone must not select M2.
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toBeUndefined();
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toBeUndefined();
+  await f.add("ISS-005");
+  const newer = await f.commit("Synthetic successor registration");
+  const laterBoard = await f.board();
+  laterBoard.issues[1]!.state = "CLOSED";
+  laterBoard.issues[2]!.labels = [];
+  census.mockResolvedValue(laterBoard);
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toMatchObject({
+    selection: { cycle: 3, key: "ISS-005", base: newer, planningRevision: newer },
+  });
+  expect(await f.installed()).toEqual(before);
+});
+
+it.each([
+  "fetch",
+  "git read",
+  "partial Git read",
+  "incomplete census",
+  "failed fetch command",
+  "orphan draft",
+  "unknown key",
+  "malformed key",
+  "wrong body",
+  "wrong milestone",
+  "duplicate key",
+  "registration ahead",
+])("selection authority failure refuses: %s", async (failure) => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  const before = await f.installed();
+  const board = await f.board();
+  const loader = vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(board);
+  let reason = "queue-internal-error";
+  let diagnostics: string;
+  const acquiredPaths: string[] = [];
+  if (failure === "fetch") {
+    reason = "current-main-unavailable";
+    // A BOARD-shaped message at the fetch site is still an acquisition failure.
+    diagnostics = "Error: BOARD_CONTRACT_MISMATCH: synthetic fetch denied\nfull original detail";
+    f.host.currentMain = async () => {
+      throw new Error(diagnostics.slice(7));
+    };
+  } else if (failure === "failed fetch command") {
+    reason = "current-main-unavailable";
+    await f.git(f.executor, ["remote", "set-url", "origin", resolve(f.root, "missing-origin")]);
+    let original: unknown;
+    try {
+      await f.git(f.executor, [
+        "fetch",
+        "--no-tags",
+        "origin",
+        "refs/heads/main:refs/remotes/origin/main",
+      ]);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    diagnostics = String(original);
+  } else if (failure === "partial Git read") {
+    reason = "current-main-unavailable";
+    await f.host.currentMain(f.loop, f.executor);
+    const missing = `${f.current}:planning/drafts/missing.md`;
+    let original: unknown;
+    try {
+      await f.git(f.executor, ["show", missing]);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    diagnostics = String(original);
+    const load = planningLoader.loadPlanningSnapshot;
+    vi.spyOn(planningLoader, "loadPlanningSnapshot").mockImplementation((root, pinned) =>
+      load(
+        root,
+        pinned && {
+          ...pinned,
+          git: async (args) => {
+            acquiredPaths.push(args[1]!);
+            return pinned.git(
+              args[1] === `${f.current}:planning/drafts/ISS-003.md` ? ["show", missing] : args,
+            );
+          },
+        },
+      ),
+    );
+  } else if (failure === "git read") {
+    reason = "current-main-unavailable";
+    f.loop.gitExecutable = resolve(f.root, "missing-git");
+    f.host.currentMain = async () => f.current;
+    diagnostics = ""; // Assert the full native child error below, not only its reason.
+  } else if (failure === "incomplete census") {
+    reason = "issue-observation-unavailable";
+    let original: unknown;
+    try {
+      boardLoader.boardSnapshotFromGraphqlPages(f.loop.repository, [
+        {
+          data: {
+            repository: {
+              issues: {
+                totalCount: 179,
+                nodes: [],
+                pageInfo: { hasNextPage: true, endCursor: "synthetic-first-page" },
+              },
+            },
+          },
+        },
+      ]);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    loader.mockRejectedValue(original);
+    diagnostics = String(original);
+  } else {
+    if (failure === "orphan draft") {
+      await writeFile(resolve(f.remote, "planning/drafts/ISS-099.md"), "orphan\n");
+      await f.commit("Synthetic orphan");
+    }
+    if (failure === "unknown key")
+      board.issues[1]!.body = board.issues[1]!.body.replaceAll("ISS-002", "ISS-999");
+    if (failure === "malformed key")
+      board.issues[1]!.body = board.issues[1]!.body.replaceAll("ISS-002", "ISS-malformed");
+    if (failure === "wrong body") board.issues[1]!.body += "\nwrong body";
+    if (failure === "wrong milestone") board.issues[1]!.milestone = "Wrong";
+    if (failure === "duplicate key") board.issues[2]!.body = board.issues[1]!.body;
+    if (failure === "registration ahead") {
+      board.issues.splice(1, 1);
+      board.totalCount--;
+    }
+    // Independently obtain the validator's full message, outside acquisition.
+    const planning = await loadPlanningSnapshot(f.remote);
+    let original: unknown;
+    try {
+      const { validatePlanningSnapshot } = await import("../../scripts/planning/check.mjs");
+      validatePlanningSnapshot(planning);
+      boardLoader.validateBoardSnapshot(planning, board);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    diagnostics = (original as Error).message;
+  }
+  for (let retry = 0; retry < 2; retry++) {
+    let caught: unknown;
+    try {
+      await nativeNextCycle(f.loop, f.executor, f.host, f.policy);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const actual =
+      caught instanceof QueueBlocked
+        ? { reason: caught.reason, diagnostics: caught.diagnostics }
+        : { reason: "queue-internal-error", diagnostics: (caught as Error).message };
+    expect(actual.reason).toBe(reason);
+    if (failure === "git read") {
+      expect(actual.diagnostics).toContain(f.loop.gitExecutable);
+      expect(actual.diagnostics).toContain("ENOENT");
+    } else expect(actual.diagnostics).toBe(diagnostics);
+  }
+  expect(await f.installed()).toEqual(before);
+  if (failure === "partial Git read") {
+    expect(acquiredPaths).toContain(`${f.current}:planning/roadmap.json`);
+    expect(acquiredPaths).toContain(`${f.current}:planning/drafts/ISS-002.md`);
+    expect(acquiredPaths).toContain(`${f.current}:planning/drafts/ISS-003.md`);
+  }
+  await expect(
+    readFile(resolve(f.loop.stateRoot, f.loop.run, "cycle-1-selected.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(retainedFiles(f.loop.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it.each(["open", "closed", "completed", "item-stopped"])(
+  "selection refresh preserves legacy resume and M2: %s",
+  async (state) => {
+    const f = await planningSelectionFixture();
+    roots.push(f.root);
+    const cycle = {
+      selection: { cycle: 1, key: "ISS-001", number: 1, base: f.old },
+      initialHistory: [],
+    };
+    await persistCycle(f.loop, cycle);
+    const run = resolve(f.loop.stateRoot, f.loop.run);
+    // Byte-sensitive retained evidence includes a spent allowance and participant records.
+    const history = [
+      {
+        ordinal: 1,
+        id: "prior-author",
+        item: "ISS-001:1",
+        stage: "source" as const,
+        role: "author" as const,
+        outcome: "failed" as const,
+        usage: {
+          inputTokens: { status: "unavailable" as const },
+          outputTokens: { status: "unavailable" as const },
+          costUsd: { status: "unavailable" as const },
+        },
+      },
+    ];
+    const attempt = resolve(run, "iss-001-attempt-1");
+    await mkdir(attempt);
+    await writeFile(
+      resolve(attempt, "participant-1-terminal.json"),
+      JSON.stringify(history[0], null, 3),
+    );
+    await writeFile(
+      resolve(attempt, "attempt.json"),
+      JSON.stringify({ candidateAttempt: 1, retries: 1, history }, null, 3),
+    );
+    const sentinel = resolve(f.root, "synthetic-m2");
+    await mkdir(sentinel);
+    await writeFile(resolve(sentinel, "runtime.json"), '{ "spent": 4, "running": true }\n');
+    f.host.issue = async () => ({
+      key: "ISS-001",
+      state: state === "closed" ? "CLOSED" : "OPEN",
+      labels: [],
+      comments: [],
+    });
+    if (state === "completed")
+      await writeFile(
+        resolve(run, "cycle-1-complete.json"),
+        JSON.stringify({ selection: cycle.selection, history }, null, 3),
+      );
+    if (state === "item-stopped") {
+      const comments: string[] = [];
+      await stopCycle(
+        f.loop,
+        { ...cycle, initialHistory: history },
+        "gate-correction-failed",
+        1,
+        {
+          ...f.host,
+          issue: async () => ({ key: "ISS-001", state: "OPEN", labels: [], comments }),
+          comment: async (_config, _number, body) => {
+            comments.push(body);
+          },
+        },
+        { ...f.policy, park: () => "synthetic unpark" },
+      );
+    }
+    const retained = await retainedFiles(run);
+    const m2 = await retainedFiles(sentinel);
+    const installed = await f.installed();
+    vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(await f.board());
+    const fetch = vi.spyOn(f.host, "currentMain");
+    const select = vi.spyOn(f.policy, "selectCandidates");
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const resumed = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+      if (state === "open") expect(resumed).toEqual(cycle);
+      else {
+        expect(resumed.selection).toMatchObject({
+          cycle: 2,
+          key: "ISS-002",
+          planningRevision: f.current,
+        });
+        expect(resumed.initialHistory).toEqual(history);
+        await persistCycle(f.loop, resumed);
+        f.host.issue = async () => ({ key: "ISS-002", state: "OPEN", labels: [], comments: [] });
+      }
+      const now = await retainedFiles(run);
+      for (const [path, evidence] of retained) expect(now.get(path), path).toEqual(evidence);
+    }
+    expect(fetch).toHaveBeenCalledTimes(state === "open" ? 0 : 1);
+    expect(select).toHaveBeenCalledTimes(state === "open" ? 0 : 1);
+    expect(await retainedFiles(sentinel)).toEqual(m2);
+    expect(await f.installed()).toEqual(installed);
+  },
+);
 
 it.each(["current-main-unavailable", "routing-row-unconfigured"])(
   "retains the selected routing row in a %s note without an attempt record",
@@ -1091,44 +1420,97 @@ it("exits after one selection when a stop happens before a cycle is active", asy
   expect(JSON.parse(await readFile(issuePath, "utf8")).comments).toEqual([]);
 });
 
-it("prints a plain pre-cycle error message as queue-internal-error diagnostics", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-error-"));
-  roots.push(root);
-  const config = loop(root);
-  const runState = resolve(config.stateRoot, config.run);
-  const request = resolve(root, "loop.json");
-  await mkdir(runState, { recursive: true });
-  await Promise.all([
-    writeFile(request, `${JSON.stringify(config)}\n`),
-    writeFile(
-      resolve(runState, "command-controls.json"),
-      `${JSON.stringify({ selectionMessage: "adapter module was not found" })}\n`,
-    ),
-    writeFile(
-      resolve(runState, "command-issue.json"),
-      `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
-    ),
-  ]);
+it.each([
+  {
+    reason: "queue-internal-error",
+    diagnostics: "PLANNING_CONTRACT_MISMATCH: orphan draft\n  full validation detail",
+  },
+  {
+    reason: "queue-internal-error",
+    diagnostics: "BOARD_CONTRACT_MISMATCH: unregistered key\n  full board detail",
+  },
+  {
+    reason: "current-main-unavailable",
+    diagnostics: "Error: BOARD_CONTRACT_MISMATCH: fetch failed\n  full acquisition detail",
+  },
+  {
+    reason: "issue-observation-unavailable",
+    diagnostics: "Error: BOARD_CONTRACT_MISMATCH: incomplete census\n  full pagination detail",
+  },
+])(
+  "prints full pre-cycle $reason diagnostics without an issue note",
+  async ({ reason, diagnostics }) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-error-"));
+    roots.push(root);
+    const config = loop(root);
+    const runState = resolve(config.stateRoot, config.run);
+    const request = resolve(root, "loop.json");
+    await mkdir(runState, { recursive: true });
+    await Promise.all([
+      writeFile(request, `${JSON.stringify(config)}\n`),
+      writeFile(
+        resolve(runState, "command-controls.json"),
+        `${JSON.stringify(
+          reason === "queue-internal-error"
+            ? { selectionMessage: diagnostics }
+            : { selectionReason: reason, selectionDiagnostics: diagnostics },
+        )}\n`,
+      ),
+      writeFile(
+        resolve(runState, "command-issue.json"),
+        `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
+      ),
+    ]);
 
-  let failure: { code?: number | string; stderr?: string } | undefined;
-  try {
-    await execute(
-      process.execPath,
-      ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
-      {
-        env: { ...process.env, SUPERVISE_FIXTURE_STATE: runState },
-        timeout: 10_000,
-        windowsHide: true,
-      },
+    let failure: { code?: number | string; stderr?: string } | undefined;
+    try {
+      await execute(
+        process.execPath,
+        ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
+        {
+          env: { ...process.env, SUPERVISE_FIXTURE_STATE: runState },
+          timeout: 10_000,
+          windowsHide: true,
+        },
+      );
+    } catch (error) {
+      failure = error as { code?: number | string; stderr?: string };
+    }
+
+    expect(failure).toMatchObject({ code: 1 });
+    expect(failure?.stderr).toContain(`"reason":${JSON.stringify(reason)}`);
+    expect(failure?.stderr).toContain(`"diagnostics":${JSON.stringify(diagnostics)}`);
+    expect(
+      JSON.parse(await readFile(resolve(runState, "command-issue.json"), "utf8")).comments,
+    ).toEqual([]);
+    await expect(readFile(resolve(runState, "cycle-1-selected.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.each(["main", "b".repeat(40), "", null])(
+  "rejects malformed or unequal saved planningRevision: %s",
+  async (planningRevision) => {
+    const root = await mkdtemp(resolve(tmpdir(), "invalid-planning-revision-"));
+    roots.push(root);
+    const config = loop(root);
+    const directory = resolve(config.stateRoot, config.run);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      resolve(directory, "cycle-1-selected.json"),
+      JSON.stringify({ ...selected().selection, planningRevision }),
     );
-  } catch (error) {
-    failure = error as { code?: number | string; stderr?: string };
-  }
-
-  expect(failure).toMatchObject({ code: 1 });
-  expect(failure?.stderr).toContain('"reason":"queue-internal-error"');
-  expect(failure?.stderr).toContain('"diagnostics":"adapter module was not found"');
-});
+    const retained = await retainedFiles(directory);
+    const host = fakeAdapter({ key: "ISS-105", state: "OPEN", labels: [], comments: [] });
+    const issue = vi.spyOn(host, "issue");
+    await expect(nextCycle(config, root, host, repositoryPolicy)).rejects.toMatchObject({
+      reason: "malformed-supervision-record:cycle-1-selected",
+    });
+    expect(issue).not.toHaveBeenCalled();
+    expect(await retainedFiles(directory)).toEqual(retained);
+  },
+);
 
 it("preserves adapter reasons in stop notes", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-adapter-reason-"));
