@@ -153,7 +153,7 @@ it.each(
 function participant(
   ordinal: number,
   item: string,
-  stage: "source" | "repair",
+  stage: QueueParticipant["stage"],
   role: "author" | "reviewer",
   outcome: QueueParticipant["outcome"],
 ): QueueParticipant {
@@ -2208,6 +2208,615 @@ it.each([false, true])(
   },
   30_000,
 );
+
+async function stoppedConflictFixture(status = "failed", spent = false, legacy = false) {
+  const f = await loopFixture();
+  const git = async (args: string[], tree = f.repository) =>
+    (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
+  const original = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+  const old = original.items[0]!;
+  await git(["checkout", "-b", "reviewed"]);
+  await writeFile(resolve(f.repository, "docs/loop.md"), "# Reviewed feature\n");
+  await git(["commit", "-am", "feature"]);
+  const reviewed = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "main"]);
+  await writeFile(resolve(f.repository, "docs/loop.md"), "# Integration main\n");
+  await git(["commit", "-am", "main"]);
+  const main = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "reviewed"]);
+  await expect(git(["merge", "--no-commit", "main"])).rejects.toThrow();
+  await git(["add", "docs/loop.md"]);
+  await git(["commit", "-m", "unaccepted marker seed"]);
+  const seed = await git(["rev-parse", "HEAD"]);
+  await git(["checkout", "main"]);
+  const preservedTree = resolve(f.loop.worktreeRoot, "preserved-source");
+  await git(["worktree", "add", "--detach", preservedTree, seed]);
+  const remote = resolve(f.repository, "..", "remote.git");
+  await execute(f.gitExecutable, ["clone", "--bare", f.repository, remote]);
+  await git(["remote", "add", "origin", remote]);
+  const directory = resolve(old.source.stateDirectory, `refresh-${main}`);
+  await mkdir(directory, { recursive: true });
+  const history = [
+    participant(1, old.id, "source", "author", "passed"),
+    participant(2, old.id, "source", "reviewer", "passed"),
+    { ...participant(3, old.id, "refresh", "author", "failed"), id: "failed-resolution" },
+  ];
+  const projection = {
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "delivery",
+    run: f.loop.run,
+    index: 0,
+    item: old.id,
+    issue: old.issue,
+    base: f.selected.base,
+    candidateAttempt: 1,
+    head: reviewed,
+    reviewId: history[1]!.id,
+    findings: [],
+    history: history.slice(0, 2),
+    retries: spent && !legacy ? 2 : 0,
+    acceptedStage: "source",
+    stateDirectory: old.source.stateDirectory,
+  };
+  const retained = new Map<string, string>();
+  const put = async (path: string, value: unknown) => {
+    const bytes = JSON.stringify(value, null, 2) + "\n";
+    await writeFile(path, bytes);
+    retained.set(path, bytes);
+  };
+  await writeFile(resolve(original.stateDirectory, "attempt.json"), JSON.stringify(projection));
+  for (const p of history)
+    await put(resolve(original.stateDirectory, `participant-${p.ordinal}-terminal.json`), p);
+  await put(resolve(old.source.stateDirectory, "native-refresh.json"), {
+    main,
+    previousHead: reviewed,
+    previousReview: projection.reviewId,
+    previousDirectory: old.source.stateDirectory,
+    directory,
+    resolutionUsed: true,
+    flowRetried: spent,
+    retries: spent ? 2 : 0,
+    conflict: { seed, files: { "docs/loop.md": await git(["show", `${seed}:docs/loop.md`]) } },
+  });
+  for (const role of ["author", "reviewer"])
+    await put(resolve(old.source.stateDirectory, `${role}-attempt.json`), {
+      id: `source-${role}`,
+      trace: resolve(old.source.stateDirectory, `${role}.jsonl`),
+    });
+  await put(resolve(old.source.stateDirectory, "reviewer-terminal.json"), {
+    id: projection.reviewId,
+    head: reviewed,
+    status: "passed",
+  });
+  await put(resolve(old.source.stateDirectory, "candidate.json"), {
+    head: reviewed,
+    changed: ["docs/loop.md"],
+  });
+  await put(resolve(old.source.stateDirectory, "gate-1.json"), {
+    head: reviewed,
+    name: "typecheck",
+  });
+  await put(resolve(old.source.stateDirectory, "author.jsonl"), {
+    type: "turn.completed",
+    head: reviewed,
+  });
+  await put(resolve(directory, "author.jsonl"), {
+    type: "turn.completed",
+    head: seed,
+    verdict: "FAIL",
+  });
+  await put(resolve(directory, "author-attempt.json"), {
+    id: "failed-resolution",
+    trace: resolve(directory, "author.jsonl"),
+    ...(spent ? { retries: 1 } : {}),
+  });
+  await put(resolve(directory, "author-terminal.json"), {
+    id: "failed-resolution",
+    status,
+    head: seed,
+  });
+  if (spent && !legacy)
+    await put(resolve(old.source.stateDirectory, "gate-correction.json"), { failedHead: reviewed });
+  const selection = { ...f.selected, cycle: 1 };
+  const runState = resolve(f.loop.stateRoot, f.loop.run);
+  await put(resolve(runState, "cycle-1-selected.json"), selection);
+  await put(resolve(runState, "cycle-1-stop-1.json"), {
+    selection,
+    stop: 1,
+    reason: "conflict-resolution-failed",
+    attempts: 1,
+  });
+  await put(resolve(runState, "cycle-1-stop-1-complete.json"), { selection, stop: 1, history });
+  const compose = (prior: QueueParticipant[] = []) =>
+    queueConfigFromLoop(
+      f.loop,
+      f.repository,
+      { ...f.selected, base: main },
+      repositoryPolicy,
+      prior,
+    );
+  const unchanged = async () => {
+    for (const [path, bytes] of retained) expect(await readFile(path, "utf8")).toBe(bytes);
+    expect(await git(["rev-parse", "HEAD"], preservedTree)).toBe(seed);
+    expect(await git(["status", "--porcelain"], preservedTree)).toBe("");
+  };
+  return {
+    ...f,
+    git,
+    original,
+    old,
+    projection,
+    history,
+    seed,
+    main,
+    reviewed,
+    compose,
+    unchanged,
+  };
+}
+
+it.each(["running", "passed", "dead"])("does not advance a %s conflict author", async (status) => {
+  const f = await stoppedConflictFixture(status);
+  const before = await readFile(resolve(f.original.stateDirectory, "attempt.json"), "utf8");
+  expect((await f.compose()).items[0]!.implementationAttempt).toBe(1);
+  expect(await readFile(resolve(f.original.stateDirectory, "attempt.json"), "utf8")).toBe(before);
+  await f.unchanged();
+});
+
+it("projects the retained failure once and selects attempt 2 only after unpark, retaining later launches", async () => {
+  const f = await stoppedConflictFixture();
+  let unparked = false;
+  const policy = {
+    ...repositoryPolicy,
+    selectCandidates: () => (unparked ? [{ key: f.selected.key, number: f.selected.number }] : []),
+  };
+  const host: SupervisionAdapter = {
+    currentMain: async () => f.main,
+    issue: async () => ({ state: "OPEN", key: f.selected.key, labels: [], comments: [] }),
+    removeReady: async () => {
+      throw new Error("must not mutate readiness");
+    },
+    close: async () => {
+      throw new Error("must not close");
+    },
+    comment: async () => {
+      throw new Error("completed note must not repeat");
+    },
+  };
+  expect(await nextCycle(f.loop, f.repository, host, policy)).toBeUndefined();
+  // A later completed issue is part of this run's launch budget too.
+  const later = [
+    ...f.history,
+    participant(4, "ISS-105:1", "source", "author", "passed"),
+    participant(5, "ISS-105:1", "source", "reviewer", "passed"),
+  ];
+  const selection = { cycle: 2, key: "ISS-105", number: 362, base: f.main };
+  const state = resolve(f.loop.stateRoot, f.loop.run);
+  await writeFile(resolve(state, "cycle-2-selected.json"), JSON.stringify(selection));
+  await writeFile(
+    resolve(state, "cycle-2-complete.json"),
+    JSON.stringify({ selection, history: later }),
+  );
+  unparked = true;
+  const cycle = await nextCycle(f.loop, f.repository, host, policy);
+  expect(cycle).toEqual({
+    selection: { cycle: 3, ...f.selected, base: f.main },
+    initialHistory: later,
+  });
+  // An interrupted atomic projection write is not a completed transition.
+  await writeFile(
+    resolve(f.original.stateDirectory, "attempt.json.tmp"),
+    "interrupted projection\n",
+  );
+  const q = await f.compose(cycle!.initialHistory);
+  expect(q.initialHistory).toEqual(later);
+  expect(q.items[0]).toMatchObject({
+    id: "ISS-104:2",
+    implementationAttempt: 2,
+    base: f.seed,
+    source: { base: f.seed, mainBase: f.main, inheritedWorkerRetry: false },
+    conflictContinuation: { directory: f.old.source.stateDirectory, correctionUsed: false },
+  });
+  expect(q.items[0]!.setup.sourceWorktree).toContain("iss-104-attempt-2-source");
+  expect(q.items[0]!.source.reviewer.prompt).toContain("Independent DELTA");
+  for (const value of [
+    f.seed,
+    f.main,
+    f.reviewed,
+    f.projection.reviewId,
+    "author.jsonl",
+    "One file drives the run.",
+  ])
+    expect(q.items[0]!.source.reviewer.prompt).toContain(value);
+  const failed = JSON.parse(
+    await readFile(resolve(f.original.stateDirectory, "attempt.json"), "utf8"),
+  );
+  expect(failed).toEqual({
+    ...f.projection,
+    phase: "failed",
+    head: f.seed,
+    history: f.history,
+    acceptedStage: null,
+    stateDirectory: null,
+  });
+  for (let replay = 0; replay < 2; replay++) expect(await f.compose(later)).toEqual(q);
+  await f.unchanged();
+});
+
+it.each([
+  "pass",
+  "author-fail",
+  "review-fail",
+  "spent-retry",
+  "lost-commit",
+  "no-change",
+  "delivery",
+  "moved-main",
+  "new-conflict",
+  "spent-correction",
+  "spent-legacy-correction",
+  "correction",
+  "stale-review",
+  "stale-receipt",
+  "spent-refresh-retry",
+  "refresh-review-fail",
+])("runs the unresolved-seed successor through native lifecycle: %s", async (mode) => {
+  const f = await stoppedConflictFixture(
+    "failed",
+    ["spent-retry", "spent-correction", "spent-legacy-correction", "spent-refresh-retry"].includes(
+      mode,
+    ),
+    mode === "spent-legacy-correction",
+  );
+  const q = await f.compose();
+  expect(await f.compose()).toEqual(q);
+  const item = q.items[0]!;
+  const launches: string[] = [];
+  let ready = false;
+  let lost = false;
+  const deliver = [
+    "delivery",
+    "moved-main",
+    "new-conflict",
+    "spent-correction",
+    "spent-legacy-correction",
+    "correction",
+    "stale-review",
+    "stale-receipt",
+    "spent-refresh-retry",
+    "refresh-review-fail",
+  ].includes(mode);
+  const effects: string[] = [];
+  const setup = gitSetupAdapter({
+    gitExecutable: f.gitExecutable,
+    async install(_launcher, _args, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+      return "succeeded";
+    },
+  });
+  const native: Adapter = {
+    async preflight() {},
+    async git(tree, args) {
+      const result = await f.git(args, tree);
+      if (mode === "lost-commit" && args[0] === "commit" && !lost) {
+        lost = true;
+        throw new Error("lost commit response");
+      }
+      return result;
+    },
+    async launch(role, config, prompt) {
+      const stage =
+        config.stateDirectory === item.source.stateDirectory
+          ? ""
+          : config.stateDirectory.endsWith("gate-correction")
+            ? "correction-"
+            : "refresh-";
+      launches.push(`${stage}${role}`);
+      if (role === "author" && mode !== "no-change")
+        await writeFile(
+          resolve(config.worktree, "docs/loop.md"),
+          `# Reviewed feature and integration main${stage ? " corrected" : ""}\n`,
+        );
+      if (role === "reviewer") {
+        expect(prompt.toLowerCase()).toContain("independent delta");
+        if (!stage || mode !== "new-conflict") expect(prompt).toContain(f.reviewed);
+        if (!stage) expect(prompt).toContain(`Delivery main base: ${f.main}`);
+      }
+      return {
+        id: randomUUID(),
+        pid: launches.length,
+        trace: resolve(config.stateDirectory, `${role}.jsonl`),
+        launchedAt: 1,
+      };
+    },
+    async observe(role, config, attempt) {
+      if (!ready) return { status: "running", id: attempt.id };
+      if (role === "author")
+        return {
+          status: mode === "author-fail" ? "failed" : mode === "spent-retry" ? "dead" : "passed",
+          id: attempt.id,
+          head: config.base,
+        };
+      const head = await f.git(["rev-parse", "HEAD"], config.worktree);
+      if (mode === "spent-refresh-retry" && config.stateDirectory !== item.source.stateDirectory)
+        return { id: attempt.id, status: "malformed", summary: "invalid JSON" };
+      const fail =
+        mode === "review-fail" ||
+        (mode === "refresh-review-fail" && config.stateDirectory !== item.source.stateDirectory);
+      return {
+        status: fail ? "failed" : "passed",
+        id: attempt.id,
+        head,
+        summary: JSON.stringify({
+          run: config.run,
+          role,
+          head,
+          verdict: fail ? "FAIL" : "PASS",
+          findings: fail
+            ? [{ file: "docs/loop.md", line: 1, severity: "blocking", text: "Lost behavior." }]
+            : [],
+          g0: "Preserve both behaviors.",
+        }),
+      };
+    },
+    async checks() {
+      throw new Error("no source publication");
+    },
+  };
+  const delivery = githubDeliveryAdapter();
+  delivery.verifyWorkspace = async (config, head) =>
+    (await f.git(["rev-parse", "HEAD"], config.worktree)) === head &&
+    (await f.git(["status", "--porcelain"], config.worktree)) === "";
+  delivery.runGate = async (config, name, head) => {
+    effects.push(`gate:${name}:${head}`);
+    if (
+      ["spent-correction", "spent-legacy-correction", "correction"].includes(mode) &&
+      !config.stateDirectory.endsWith("gate-correction")
+    ) {
+      return {
+        status: "failed",
+        output: "attributed assertion",
+        evidence: {
+          head,
+          log: resolve(config.stateDirectory, "candidate.log"),
+          cause: "diagnostic",
+          diagnostics: ["docs/loop.md:1: failed assertion"],
+          command: { executable: process.execPath, argv: ["fixture"], cwd: config.worktree },
+        },
+      };
+    }
+    return "passed";
+  };
+  delivery.attributeGate = async (_config, _name, _evidence, main) => ({
+    cause: "candidate",
+    main,
+    log: resolve(item.source.stateDirectory, "base-control.log"),
+  });
+  let draft = false;
+  let published = false;
+  let merged = false;
+  let cleaned = false;
+  let publishedHead = "";
+  delivery.observeDraft = async () =>
+    draft ? { state: "confirmed", value: { issue: 361 } } : { state: "needs-mutation" };
+  delivery.applyDraft = async () => {
+    draft = true;
+    effects.push("draft");
+  };
+  delivery.observePublication = async (config, plan, planDigest) =>
+    published
+      ? {
+          state: "confirmed",
+          value: {
+            number: 400,
+            url: "https://github.com/fixture/repository/pull/400",
+            head: publishedHead,
+            repository: config.repository,
+            sourceBranch: plan.sourceBranch,
+            baseBranch: plan.baseBranch,
+            title: plan.title,
+            body: plan.body,
+            planDigest,
+          },
+        }
+      : { state: "needs-mutation", target: "absent" };
+  delivery.publish = async (config) => {
+    published = true;
+    publishedHead = config.candidateHead;
+    effects.push("publish");
+    throw new Error("lost publish response");
+  };
+  delivery.checks = async (config) => ({
+    head: publishedHead,
+    checks: config.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: `https://example.test/check/${encodeURIComponent(name)}`,
+    })),
+  });
+  delivery.observeMerge = async () =>
+    merged
+      ? {
+          state: "confirmed",
+          value: { number: 400, head: publishedHead, mergeCommit: "e".repeat(40) },
+        }
+      : { state: "needs-mutation" };
+  delivery.merge = async () => {
+    merged = true;
+    effects.push("merge");
+    throw new Error("lost merge response");
+  };
+  delivery.observeCleanup = async (_config, plan) =>
+    cleaned ? { state: "confirmed", value: plan } : { state: "needs-mutation" };
+  delivery.cleanup = async () => {
+    cleaned = true;
+    effects.push("cleanup");
+  };
+  const adapter = () =>
+    repositoryQueueAdapter(q, f.repository, {
+      native,
+      setup,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      async assertExecutor() {},
+      repository: {
+        ...repositoryPolicy,
+        async afterMerge() {
+          effects.push("deployment");
+        },
+      },
+      deliveryPolicy: {
+        async plan(config) {
+          return {
+            gates: {
+              beforeMirror: ["typecheck", "format:check", "planning:check", "test"],
+              afterMirror: ["planning:board-check"],
+            },
+            drafts: [
+              { key: "ISS-104", issue: 361, title: "fixture", body: "fixture", attributes: {} },
+            ],
+            publication: {
+              sourceBranch: "codex/iss-104",
+              baseBranch: "main",
+              title: "fixture",
+              body: "fixture",
+              draft: true,
+            },
+            mergePolicy: {},
+            cleanup: {
+              worktrees: [config.worktree, config.reviewWorktree],
+              branch: config.localBranch!,
+            },
+          };
+        },
+      },
+    });
+  const run = () =>
+    queueStep(q, {
+      ...adapter(),
+      async delivery() {
+        throw new Error("fresh delivery reached");
+      },
+      async repair() {
+        throw new Error("repair forbidden");
+      },
+    });
+  for (let replay = 0; replay < 2; replay++)
+    await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+  expect(launches).toEqual(["author"]);
+  ready = true;
+  if (deliver) {
+    await expect(run()).rejects.toThrow("fresh delivery reached");
+    if (
+      ["moved-main", "new-conflict", "spent-refresh-retry", "refresh-review-fail"].includes(mode)
+    ) {
+      const updater = resolve(f.repository, "..", "updater");
+      await execute(f.gitExecutable, ["clone", resolve(f.repository, "..", "remote.git"), updater]);
+      await f.git(["config", "user.name", "Fixture"], updater);
+      await f.git(["config", "user.email", "fixture@example.test"], updater);
+      await writeFile(
+        resolve(updater, mode === "new-conflict" ? "docs/loop.md" : "main.txt"),
+        "new main behavior\n",
+      );
+      await f.git(["add", "."], updater);
+      await f.git(["commit", "-m", "advance main before delivery"], updater);
+      await f.git(["push", "origin", "main"], updater);
+    }
+    if (mode === "stale-review") {
+      const path = resolve(item.source.stateDirectory, "reviewer-terminal.json");
+      const terminal = JSON.parse(await readFile(path, "utf8"));
+      terminal.head = f.reviewed;
+      await writeFile(path, JSON.stringify(terminal));
+    }
+    if (mode === "stale-receipt")
+      await writeFile(
+        resolve(item.source.stateDirectory, "gate-1.json"),
+        JSON.stringify({ head: f.reviewed, name: "typecheck" }),
+      );
+    const workFailure = [
+      "new-conflict",
+      "spent-correction",
+      "spent-legacy-correction",
+      "spent-refresh-retry",
+      "refresh-review-fail",
+    ].includes(mode);
+    if (workFailure || ["stale-review", "stale-receipt"].includes(mode)) {
+      for (let replay = 0; replay < 2; replay++)
+        await expect(queueStep(q, adapter())).rejects.toThrow(
+          workFailure
+            ? "continuation-failed"
+            : mode === "stale-review"
+              ? "unreviewed-delivery-source"
+              : "malformed-record:gate-1",
+        );
+      expect(launches).toEqual(
+        ["spent-refresh-retry", "refresh-review-fail"].includes(mode)
+          ? ["author", "reviewer", "refresh-reviewer"]
+          : ["author", "reviewer"],
+      );
+      expect(effects.filter((e) => ["publish", "merge"].includes(e))).toEqual([]);
+      if (mode === "new-conflict") {
+        const refresh = JSON.parse(
+          await readFile(resolve(item.source.stateDirectory, "native-refresh.json"), "utf8"),
+        );
+        expect(refresh.resolutionUsed).toBe(true);
+        expect(refresh.conflict).toBeUndefined();
+      }
+    } else {
+      let completed = false;
+      for (let poll = 0; poll < 8 && !completed; poll++) {
+        try {
+          completed = (await queueStep(q, adapter())).status === "complete";
+        } catch (error) {
+          expect(String(error)).toMatch(/publication-outcome-unknown|merge-outcome-unknown/);
+        }
+      }
+      expect(completed).toBe(true);
+      const after = [...effects];
+      for (let replay = 0; replay < 2; replay++)
+        await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "complete" });
+      expect(effects).toEqual(after);
+      expect(effects.filter((e) => ["publish", "merge", "deployment"].includes(e))).toEqual([
+        "publish",
+        "merge",
+        "deployment",
+      ]);
+      expect(
+        effects
+          .filter((e) => e.startsWith("gate:") && e.endsWith(publishedHead))
+          .map((e) => e.split(":").slice(1, -1).join(":")),
+      ).toEqual(["typecheck", "format:check", "planning:check", "test", "planning:board-check"]);
+      expect(launches).toEqual(
+        mode === "moved-main"
+          ? ["author", "reviewer", "refresh-reviewer"]
+          : mode === "correction"
+            ? ["author", "reviewer", "correction-author", "correction-reviewer"]
+            : ["author", "reviewer"],
+      );
+    }
+    await f.unchanged();
+    return;
+  }
+  if (mode === "lost-commit") await expect(run()).rejects.toThrow("source-flow-state-unknown");
+  const success = ["pass", "lost-commit"].includes(mode);
+  for (let replay = 0; replay < 2; replay++)
+    await expect(run()).rejects.toThrow(success ? "fresh delivery reached" : "continuation-failed");
+  expect(launches).toEqual(
+    ["pass", "lost-commit", "review-fail"].includes(mode) ? ["author", "reviewer"] : ["author"],
+  );
+  if (success) {
+    const candidate = JSON.parse(
+      await readFile(resolve(item.source.stateDirectory, "candidate.json"), "utf8"),
+    );
+    expect(candidate.head).not.toBe(f.seed);
+    expect(candidate.changed).toEqual(["docs/loop.md"]);
+    expect(await f.git(["rev-parse", `${candidate.head}^`], item.source.worktree)).toBe(f.seed);
+    expect(await f.compose()).toEqual(q);
+  } else await expect(f.compose()).rejects.toThrow("continuation-failed");
+  if (mode === "spent-retry") expect(item.conflictContinuation!.correctionUsed).toBe(true);
+  await f.unchanged();
+});
 
 it("stops with rebase-conflict before launching the next author", async () => {
   const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();

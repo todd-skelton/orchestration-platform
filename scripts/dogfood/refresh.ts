@@ -77,6 +77,7 @@ export async function refreshDelivery(
   deliveryAdapter?: DeliveryAdapter,
   resolutionUsed = false,
   continuation?: { context: string; main: string; inheritedDirectory: string },
+  preserveMerge = false,
 ): Promise<
   | { status: "observing-author" | "observing-reviewer" }
   | { status: "ready"; config: DeliveryConfig; evidence: SourceEvidence; flowRetried: boolean }
@@ -178,7 +179,10 @@ export async function refreshDelivery(
 
   if (!active.head && !active.conflict && (await git(["diff", "--name-only", "--diff-filter=U"]))) {
     // Resume an integration interrupted before its conflict handoff was saved.
-    await git([delivery.refresh || active.publicationRefresh ? "merge" : "rebase", "--abort"]);
+    await git([
+      delivery.refresh || active.publicationRefresh || preserveMerge ? "merge" : "rebase",
+      "--abort",
+    ]);
     if (active.resolutionUsed) throw new QueueBlocked("conflict-resolution-exhausted");
     active.resolutionUsed = true;
     active.conflict = {};
@@ -202,7 +206,7 @@ export async function refreshDelivery(
           ? await integrateMain(
               git,
               active.main,
-              delivery.refresh || active.publicationRefresh ? "merge" : "rebase",
+              delivery.refresh || active.publicationRefresh || preserveMerge ? "merge" : "rebase",
             )
           : head;
     } catch (error) {
@@ -293,7 +297,15 @@ export async function refreshDelivery(
     try {
       result = active.conflict
         ? { retries: 0, status: "awaiting-publication" }
-        : await reviewRefresh(config, native, pilot, inherited);
+        : await reviewRefresh(
+            config,
+            native,
+            pilot,
+            inherited,
+            source.inheritedWorkerRetry === undefined
+              ? 0
+              : sourceRetries || (active.flowRetried ? 1 : 0),
+          );
     } catch (error) {
       if (error instanceof QueueBlocked && error.reason === "reviewer-failed")
         throw new QueueBlocked("refresh-review-failed", error.diagnostics);
