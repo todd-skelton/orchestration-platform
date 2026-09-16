@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eu
-TASK_ROOT=/root/orchestration-m1
+# Overridable so a local test can exercise the detach path with fakes (ISS-162).
+TASK_ROOT="${TASK_ROOT:-/root/orchestration-m1}"
 CONFIG="${1:-$TASK_ROOT/loop.json}"
 # One log per config, including Chase Sets runs under orchestration-m2.
 LOG="$(cd "$(dirname "$CONFIG")" && pwd)/supervisor.log"

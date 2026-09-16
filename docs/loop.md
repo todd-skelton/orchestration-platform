@@ -564,8 +564,10 @@ When every account blocks the model, a block clearing inside
 `providerOutageCeilingMs` waits as `waiting-provider` with the pool's reset
 time, and a longer block is `provider-model-refused`: the worker advances its
 ISS-158 ladder, whose last rung is the other vendor, and an exhausted ladder
-stops the host with the reset time. Malformed
-or failing status waits like an outage. The pool also publishes a per-provider
+stops the host with the reset time. The block's end is compared with the one
+absolute wait deadline the models probe already owns, never a fresh duration.
+A block whose end is unknown, past or unparsable at any account is
+uncertainty and waits; malformed or failing status waits like an outage. The pool also publishes a per-provider
 pace projection and on-change usage samples; the loop does not read them.
 Routing by quota state stays with the operator's marker and ISS-158's ladders.
 
@@ -715,8 +717,9 @@ hosted CI only.
   `providerOutageCeilingMs` in the loop config defaults to thirty minutes;
   expiry posts a `provider-unavailable` note and exits without parking (ISS-129).
   `run-loop.sh` also exports `CODEX_POOL_STATUS_URL` (the supervisor's
-  `/api/status` on port 8318, bridged like 8317) and the launch probe admits a
-  model only when the pool reports a ready account for it (ISS-162).
+  `/api/status` on port 8318, bridged like 8317); the launch probe admits a
+  reported-ready model and otherwise defers genuinely unmentioned models to
+  the authenticated models probe (ISS-162).
   Provider deaths spend native launches but preserve the implementation attempt
   and the single dead-worker retry. No worker holds a native Codex login.
 - Chase Sets runs use `/root/orchestration-m2/repo` and
