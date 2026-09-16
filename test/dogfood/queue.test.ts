@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
   currentCandidateAttempt,
+  QueueBlocked,
   queueConfigFromLoop,
   repositoryQueueAdapter,
   queueStep,
@@ -77,6 +78,77 @@ const usage = (input: number, output: number) => ({
   outputTokens: { status: "known" as const, value: output },
   costUsd: unavailable,
 });
+
+it.each(
+  [499, 500, 501].flatMap((length) => ["native", "windows"].map((style) => ({ length, style }))),
+)(
+  "forwards a $length-character $style setup path intact or uses the supervisor's run-state anchor",
+  async ({ length, style }) => {
+    const f = await loopFixture();
+    const q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+    const prefix = style === "windows" ? "C:\\synthetic\\setup\\" : resolve(f.stateRoot) + "/";
+    const diagnostics = (prefix + "x".repeat(length)).slice(0, length);
+    const adapter: QueueAdapter = {
+      async assertExecutor() {},
+      async history() {
+        return [];
+      },
+      async setup() {
+        return { status: "incomplete", reason: "dependency-install-failed", diagnostics };
+      },
+      async source() {
+        throw new Error("no worker on setup failure");
+      },
+      async repair() {
+        throw new Error("no repair on setup failure");
+      },
+      async delivery() {
+        throw new Error("no delivery on setup failure");
+      },
+    };
+    let failure: QueueBlocked | undefined;
+    try {
+      await queueStep(q, adapter);
+    } catch (error) {
+      failure = error as QueueBlocked;
+    }
+    expect(failure).toMatchObject({ reason: "dependency-install-failed" });
+    expect(failure!.diagnostics).toBe(length <= 500 ? diagnostics : undefined);
+    const comments: string[] = [];
+    const supervisor: SupervisionAdapter = {
+      async currentMain() {
+        return f.selected.base;
+      },
+      async issue() {
+        return { state: "OPEN", key: f.selected.key, labels: ["ready"], comments };
+      },
+      async comment(_config, _number, body) {
+        comments.push(body);
+      },
+      async removeReady() {
+        throw new Error("no parking");
+      },
+      async close() {
+        throw new Error("no closure");
+      },
+    };
+    await stopCycle(
+      f.loop,
+      { selection: { cycle: 1, ...f.selected }, initialHistory: [] },
+      failure!.reason,
+      1,
+      supervisor,
+      repositoryPolicy,
+      failure!.diagnostics,
+    );
+    // Stop notes JSON-quote diagnostics, including Windows path separators.
+    if (length <= 500) expect(comments[0]).toContain(`Diagnostic: ${JSON.stringify(diagnostics)}.`);
+    else {
+      expect(comments[0]).not.toContain(" Diagnostic:");
+      expect(comments[0]).toContain(resolve(f.loop.stateRoot, f.loop.run));
+    }
+  },
+);
 
 function participant(
   ordinal: number,
