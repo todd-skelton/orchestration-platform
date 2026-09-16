@@ -897,9 +897,16 @@ it.each([
   expect(observation.comments[0]).toContain("1 implementation attempt");
 });
 
-it.each(["controller-executor-mismatch", "provider-unavailable"])(
-  "exits on %s without parking or selecting again",
-  async (reason) => {
+it.each(
+  ["controller-executor-mismatch", "unstable-executor", "provider-unavailable"].flatMap((reason) =>
+    ["fresh", "saved", "pending-item-stop", "completed-item-stop"].map((shape) => ({
+      reason,
+      shape,
+    })),
+  ),
+)(
+  "exits on $reason from $shape with a host note without parking or selecting again",
+  async ({ reason, shape }) => {
     const root = await mkdtemp(resolve(tmpdir(), "supervision-command-run-stop-"));
     roots.push(root);
     const config = loop(root);
@@ -908,7 +915,29 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
     const request = resolve(root, "loop.json");
     const controlsPath = resolve(fixtureState, "command-controls.json");
     const issuePath = resolve(fixtureState, "command-issue.json");
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "ISS-105",
+      labels: ["ready"],
+      comments: [],
+    };
     await mkdir(fixtureState, { recursive: true });
+    if (shape !== "fresh") await persistCycle(config, selected());
+    if (shape.endsWith("item-stop"))
+      await stopCycle(
+        config,
+        selected(),
+        "gate-correction-failed",
+        1,
+        fakeAdapter(observation),
+        repositoryPolicy,
+      );
+    if (shape === "pending-item-stop") {
+      await rm(resolve(runState, "cycle-1-stop-1-complete.json"));
+      observation.comments = [];
+    }
+    const prior = shape === "fresh" ? new Map<string, string>() : await snapshot(runState);
+    const priorNotes = [...observation.comments];
     await Promise.all([
       writeFile(request, `${JSON.stringify(config)}\n`),
       writeFile(
@@ -919,10 +948,7 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
           parkCalls: 0,
         })}\n`,
       ),
-      writeFile(
-        issuePath,
-        `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
-      ),
+      writeFile(issuePath, `${JSON.stringify(observation)}\n`),
     ]);
 
     let failure: { code?: number | string; stderr?: string } | undefined;
@@ -941,17 +967,28 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
     }
 
     expect(failure).toMatchObject({ code: 1 });
-    expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({
-      parkCalls: 0,
-      selectCalls: 1,
-    });
+    const controls = JSON.parse(await readFile(controlsPath, "utf8"));
+    expect(controls.parkCalls).toBe(0);
+    expect(controls.selectCalls ?? 0).toBe(shape === "fresh" ? 1 : 0);
     const issue = JSON.parse(await readFile(issuePath, "utf8"));
-    expect(issue.comments).toHaveLength(1);
-    expect(issue.comments[0]).toContain(reason);
-    expect(issue.comments[0]).not.toContain("To unpark");
+    expect(issue.state).toBe("OPEN");
+    expect(issue.labels).toEqual(observation.labels);
+    expect(issue.comments.slice(0, priorNotes.length)).toEqual(priorNotes);
+    expect(issue.comments).toHaveLength(priorNotes.length + 1);
+    expect(issue.comments.at(-1)).toContain(reason);
+    expect(issue.comments.at(-1)).not.toContain("To unpark");
     expect(failure?.stderr).toContain(`"reason":"${reason}"`);
+    for (const [path, bytes] of prior) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await readFile(resolve(fixtureState, "command-calls.log"), "utf8")).not.toContain(
+      "workspace:",
+    );
+    if (shape === "pending-item-stop")
+      await expect(
+        readFile(resolve(runState, "cycle-1-stop-1-complete.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    const ordinal = shape.endsWith("item-stop") ? 2 : 1;
     await expect(
-      readFile(resolve(runState, "cycle-1-stop-1-complete.json"), "utf8"),
+      readFile(resolve(runState, `cycle-1-stop-${ordinal}-complete.json`), "utf8"),
     ).resolves.toEqual(expect.any(String));
   },
 );

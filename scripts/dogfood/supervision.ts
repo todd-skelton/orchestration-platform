@@ -182,7 +182,26 @@ export async function nextCycle(
     if (selected !== ABSENT) {
       if (!validSelection(selected, cycle))
         throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-selected`);
-      await validateExecutor();
+      try {
+        await validateExecutor();
+      } catch (error) {
+        // ISS-161: the caller has no active cycle until nextCycle returns. Report
+        // executor rejection here, without reconciling any pending work stop.
+        let stop = 1;
+        while ((await optionalRecord(directory, `cycle-${cycle}-stop-${stop}`)) !== ABSENT)
+          stop += 1;
+        await stopCycle(
+          config,
+          { selection: selected, initialHistory },
+          error instanceof QueueBlocked ? error.reason : "queue-internal-error",
+          0,
+          adapter,
+          repositoryAdapter,
+          error instanceof QueueBlocked ? error.diagnostics : undefined,
+          stop,
+        );
+        throw error;
+      }
       const stoppedHistory = await completedItemStop(directory, cycle, selected);
       if (stoppedHistory) {
         validateHistory(stoppedHistory, config.nativeLaunchCeiling);

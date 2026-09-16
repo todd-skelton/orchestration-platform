@@ -111,9 +111,13 @@ it("FAIL requires matching terminal and stable executor: live executor", async (
   const old = await snapshot(f.runState);
   await writeFile(resolve(f.repository, "product.txt"), "synthetic dirty executor\n");
   await expect(f.advance()).rejects.toMatchObject({ reason: "unstable-executor" });
-  expect(f.calls.filter((call) => call.startsWith("park:") || call.startsWith("note:"))).toEqual(
-    [],
-  );
+  expect(f.calls.filter((call) => call.startsWith("park:"))).toEqual([]);
+  expect(f.calls.filter((call) => call.startsWith("note:"))).toEqual(["note:110"]);
+  expect(f.rows[0]!.comments.at(-1)).toContain("unstable-executor");
+  expect(f.rows[0]!.comments.at(-1)).not.toContain("To unpark");
+  await expect(
+    readFile(resolve(f.runState, `cycle-${f.cycle.selection.cycle}-stop-2-complete.json`)),
+  ).rejects.toMatchObject({ code: "ENOENT" });
   for (const [path, bytes] of old) expect(await readFile(path, "utf8"), path).toBe(bytes);
   await f.git(f.repository, ["restore", "product.txt"]);
   await f.upgrade();
