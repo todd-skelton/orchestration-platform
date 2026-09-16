@@ -824,7 +824,7 @@ it.each([false, true])(
     });
     await stopCycle(loop, cycle, failure!.reason, 1, supervisor, policy, failure!.diagnostics);
     expect(comments).toHaveLength(2);
-    expect(comments[1]).toContain(failure!.diagnostics);
+    expect(comments[1]).toContain(`Diagnostic: ${JSON.stringify(failure!.diagnostics)}.`);
     expect(comments[1]).not.toContain("FAKE_");
     expect(comments[1]).not.toContain("--frozen-lockfile");
     expect(comments[1]).not.toContain("trailing error");

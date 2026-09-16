@@ -79,12 +79,15 @@ const usage = (input: number, output: number) => ({
   costUsd: unavailable,
 });
 
-it.each([499, 500, 501])(
-  "forwards a %s-character setup path intact or uses the supervisor's run-state anchor",
-  async (length) => {
+it.each(
+  [499, 500, 501].flatMap((length) => ["native", "windows"].map((style) => ({ length, style }))),
+)(
+  "forwards a $length-character $style setup path intact or uses the supervisor's run-state anchor",
+  async ({ length, style }) => {
     const f = await loopFixture();
     const q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
-    const diagnostics = resolve(f.stateRoot, "x".repeat(length)).slice(0, length);
+    const prefix = style === "windows" ? "C:\\synthetic\\setup\\" : resolve(f.stateRoot) + "/";
+    const diagnostics = (prefix + "x".repeat(length)).slice(0, length);
     const adapter: QueueAdapter = {
       async assertExecutor() {},
       async history() {
@@ -138,9 +141,10 @@ it.each([499, 500, 501])(
       repositoryPolicy,
       failure!.diagnostics,
     );
-    if (length <= 500) expect(comments[0]).toContain(diagnostics);
+    // Stop notes JSON-quote diagnostics, including Windows path separators.
+    if (length <= 500) expect(comments[0]).toContain(`Diagnostic: ${JSON.stringify(diagnostics)}.`);
     else {
-      expect(comments[0]).not.toContain(diagnostics.slice(0, 500));
+      expect(comments[0]).not.toContain(" Diagnostic:");
       expect(comments[0]).toContain(resolve(f.loop.stateRoot, f.loop.run));
     }
   },
