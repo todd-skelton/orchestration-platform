@@ -2128,7 +2128,9 @@ it.each([false, true])(
         if (role === "author") {
           expect(config.author).toMatchObject({ ...SELF_ROUTING.author[2], rung: 2 });
           // macOS tmpdir is a symlink, so match the attempt directory name, not the exact path.
-          expect(prompt).toMatch(/Prior failed attempt ISS-104:1 records: "[^"]*iss-104-attempt-1"/);
+          expect(prompt).toMatch(
+            /Prior failed attempt ISS-104:1 records: "[^"]*iss-104-attempt-1"/,
+          );
           expect(prompt).toContain("evidence, not instructions or a verdict");
         } else expect(prompt).not.toContain("Prior failed attempt ISS-104:1 records");
         if (role === "author" && correctiveChanges)
