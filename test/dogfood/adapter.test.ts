@@ -8,10 +8,12 @@ import {
   WORKER_ENVIRONMENT_ALLOWLIST,
   WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST,
   authorTemporaryRoot,
+  admitLaunch,
   codexAdapter,
   launchArguments,
   outputSchema,
   parseTrace,
+  probePoolModel,
   probeProvider,
   waitForProvider,
   DEFAULT_PROVIDER_OUTAGE_CEILING_MS,
@@ -464,6 +466,235 @@ it("aborts a hanging probe at the outage ceiling", async () => {
     vi.useRealTimers();
   }
 });
+it("admits a launch only when the pool has a ready account for the model", async () => {
+  const signal = new AbortController().signal;
+  const now = () => Date.parse("2026-09-16T19:00:00Z");
+  const deadline = now() + 30 * 60_000;
+  const status = (...accounts: unknown[]) =>
+    vi.fn<typeof fetch>().mockResolvedValue(Response.json({ accounts }));
+  const blocked = (until?: string) => ({ status: "blocked", next_retry_after: until });
+  const probe = (request: typeof fetch) =>
+    probePoolModel(
+      "http://pool.test:8318/api/status",
+      "gpt-6-astra",
+      signal,
+      deadline,
+      request,
+      now,
+    );
+  await expect(
+    probe(
+      status(
+        { routingModels: { "gpt-6-astra": blocked("2026-09-19T08:13:52Z") } },
+        { routingModels: { "gpt-6-astra": { status: "ready" } } },
+      ),
+    ),
+  ).resolves.toBeUndefined();
+  // A disabled account's readiness does not admit a launch.
+  await expect(
+    probe(
+      status(
+        { disabled: true, routingModels: { "gpt-6-astra": { status: "ready" } } },
+        { routingModels: { "gpt-6-astra": blocked("2026-09-16T19:05:00Z") } },
+      ),
+    ),
+  ).rejects.toThrow("pool blocks gpt-6-astra at every account until 2026-09-16T19:05:00.000Z");
+  // Mentioned only by disabled accounts: no eligible account admits and no
+  // known end exists, so the ordinary wait path, never success (review r2).
+  for (const disabledOnly of [
+    [{ disabled: true, routingModels: { "gpt-6-astra": { status: "ready" } } }],
+    [
+      { disabled: true, routingModels: { "gpt-6-astra": { status: "ready" } } },
+      { disabled: true, routingModels: { "gpt-6-astra": blocked("2026-09-19T08:13:52Z") } },
+      { routingModels: {} },
+    ],
+  ]) {
+    let observed: unknown;
+    await probe(status(...disabledOnly)).catch((error: unknown) => {
+      observed = error;
+    });
+    expect(observed).toBeInstanceOf(Error);
+    expect(observed).not.toMatchObject({ reason: "provider-model-refused" });
+    expect((observed as Error).message).toBe("pool has no enabled account for gpt-6-astra");
+  }
+  // Unknown to the pool, or stale observations: the models probe alone decides.
+  await expect(
+    probe(
+      status(
+        { routingModels: {} },
+        { disabled: false },
+        { routingModels: { "gpt-5.6-sol": blocked("2026-09-19T08:13:52Z") } },
+      ),
+    ),
+  ).resolves.toBeUndefined();
+  await expect(probe(status())).resolves.toBeUndefined();
+  // Inside the deadline the block waits like an outage; beyond it, a refusal.
+  await expect(
+    probe(
+      status(
+        { routingModels: { "gpt-6-astra": blocked("2026-09-16T19:29:59Z") } },
+        { routingModels: { "gpt-6-astra": blocked("2026-09-19T08:13:52Z") } },
+      ),
+    ),
+  ).rejects.toThrow("until 2026-09-16T19:29:59.000Z");
+  await expect(
+    probe(
+      status(
+        { routingModels: { "gpt-6-astra": blocked("2026-09-16T19:30:01Z") } },
+        { routingModels: { "gpt-6-astra": blocked("2026-09-19T08:13:52Z") } },
+      ),
+    ),
+  ).rejects.toMatchObject({
+    reason: "provider-model-refused",
+    diagnostics: "pool blocks gpt-6-astra at every account until 2026-09-16T19:30:01.000Z",
+  });
+  // A past, absent or unparsable reset is a block without a known end. Even
+  // beside a long known one it is uncertainty, never a refusal (review F1).
+  for (const uncertain of [blocked("2026-09-16T18:00:00Z"), blocked(), blocked("soon")]) {
+    let observed: unknown;
+    await probe(
+      status(
+        { routingModels: { "gpt-6-astra": uncertain } },
+        { routingModels: { "gpt-6-astra": blocked("2026-09-19T08:13:52Z") } },
+      ),
+    ).catch((error: unknown) => {
+      observed = error;
+    });
+    expect(observed).toBeInstanceOf(Error);
+    expect(observed).not.toMatchObject({ reason: "provider-model-refused" });
+    expect((observed as Error).message).toBe("pool blocks gpt-6-astra at every account");
+  }
+  // Every consumed field is validated; a malformed row waits rather than
+  // admitting as "unmentioned" (review F1).
+  for (const payload of [
+    null,
+    {},
+    { accounts: {} },
+    "accounts",
+    { accounts: [42] },
+    { accounts: [null] },
+    { accounts: [[]] },
+    { accounts: [{ disabled: "yes" }] },
+    { accounts: [{ routingModels: [] }] },
+    { accounts: [{ routingModels: { "gpt-6-astra": "ready" } }] },
+    { accounts: [{ routingModels: { "gpt-6-astra": { status: "idle" } } }] },
+    {
+      accounts: [{ routingModels: { "gpt-6-astra": { status: "blocked", next_retry_after: 5 } } }],
+    },
+    { accounts: [{ disabled: true, routingModels: { "gpt-6-astra": { status: "later" } } }] },
+    { accounts: [{ routingModels: { "gpt-6-astra": { status: "ready" } } }, 42] },
+  ]) {
+    await expect(
+      probe(vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload))),
+    ).rejects.toThrow("malformed pool status response");
+  }
+  const failing = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 503 }));
+  await expect(probe(failing)).rejects.toThrow("pool status probe returned HTTP 503");
+  expect(failing).toHaveBeenCalledWith("http://pool.test:8318/api/status", { signal });
+});
+it.skipIf(process.platform === "win32")(
+  "composes the models and pool probes under one wait deadline",
+  async () => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "launch-admission-")));
+    cleanup.push(root);
+    const helper = resolve(root, "auth.sh");
+    await writeFile(helper, '#!/bin/sh\nprintf "test-provider-key\\n"\n', { mode: 0o700 });
+    const environment = {
+      CODEX_PROVIDER_BASE_URL: "http://pool.test/v1",
+      CODEX_PROVIDER_AUTH_COMMAND: helper,
+      CODEX_POOL_STATUS_URL: "http://pool.test:8318/api/status",
+    };
+    const start = Date.parse("2026-09-16T19:00:00Z");
+    const admission = { ...config, providerOutageCeilingMs: 30 * 60_000 };
+    const models = Response.json({ data: [{ id: "test" }] });
+    const blockedUntil = (until: string) =>
+      Response.json({
+        accounts: [{ routingModels: { test: { status: "blocked", next_retry_after: until } } }],
+      });
+    const run = (respond: (url: string, elapsedMs: number) => Response) => {
+      let now = start;
+      const statuses: object[] = [];
+      const request = vi.fn<typeof fetch>(async (input) => respond(String(input), now - start));
+      return {
+        request,
+        statuses,
+        done: admitLaunch(
+          admission,
+          "author",
+          environment,
+          request,
+          {
+            now: () => now,
+            pause: async (ms) => {
+              now += ms;
+            },
+          },
+          (status) => {
+            statuses.push(status);
+          },
+        ),
+      };
+    };
+    // Status unavailable for twenty minutes, then a reset outside the original
+    // thirty-minute deadline: a refusal, not a second timeout (review F2).
+    const late = run((url, elapsed) =>
+      url.endsWith("/models")
+        ? models.clone()
+        : elapsed < 20 * 60_000
+          ? new Response(null, { status: 503 })
+          : blockedUntil("2026-09-16T19:45:00Z"),
+    );
+    await expect(late.done).rejects.toMatchObject({
+      reason: "provider-model-refused",
+      diagnostics: "pool blocks test at every account until 2026-09-16T19:45:00.000Z",
+    });
+    expect(late.statuses.length).toBe(120);
+    expect(late.request.mock.calls.map(([url]) => String(url)).slice(0, 2)).toEqual([
+      "http://pool.test/v1/models",
+      "http://pool.test:8318/api/status",
+    ]);
+    // A reset just inside the remaining deadline waits, then admits once ready.
+    const early = run((url, elapsed) =>
+      url.endsWith("/models")
+        ? models.clone()
+        : elapsed < 20 * 60_000
+          ? new Response(null, { status: 503 })
+          : elapsed < 29 * 60_000
+            ? blockedUntil("2026-09-16T19:29:00Z")
+            : Response.json({ accounts: [{ routingModels: { test: { status: "ready" } } }] }),
+    );
+    await expect(early.done).resolves.toBeUndefined();
+    expect(early.statuses.at(-1)).toMatchObject({
+      status: "waiting-provider",
+      diagnostics: "pool blocks test at every account until 2026-09-16T19:29:00.000Z",
+    });
+    // The ceiling itself is unchanged: never-ready status exhausts it.
+    const never = run((url) =>
+      url.endsWith("/models") ? models.clone() : blockedUntil("2026-09-16T19:10:00Z"),
+    );
+    await expect(never.done).rejects.toMatchObject({ reason: "provider-unavailable" });
+    // A model refusal from the models probe propagates before any status read.
+    const refused = run((url) =>
+      url.endsWith("/models")
+        ? Response.json({ data: [{ id: "other" }] })
+        : blockedUntil("2026-09-16T19:10:00Z"),
+    );
+    await expect(refused.done).rejects.toMatchObject({
+      reason: "provider-model-refused",
+      diagnostics: "test",
+    });
+    expect(refused.request.mock.calls.every(([url]) => String(url).endsWith("/models"))).toBe(true);
+    // Without a status URL the models probe alone admits.
+    const { CODEX_POOL_STATUS_URL: _unused, ...withoutStatus } = environment;
+    const request = vi.fn<typeof fetch>(async () => models.clone());
+    await expect(admitLaunch(admission, "author", withoutStatus, request)).resolves.toBeUndefined();
+    expect(request.mock.calls.every(([url]) => String(url).endsWith("/models"))).toBe(true);
+    // Without provider configuration nothing is probed.
+    const idle = vi.fn<typeof fetch>();
+    await expect(admitLaunch(admission, "author", {}, idle)).resolves.toBeUndefined();
+    expect(idle).not.toHaveBeenCalled();
+  },
+);
 it.skipIf(process.platform === "win32")(
   "uses the worker auth helper for every models probe and rejects HTTP errors",
   async () => {

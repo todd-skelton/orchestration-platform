@@ -24,7 +24,9 @@ async function optionalText(path: string) {
 }
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 export const DEFAULT_PROVIDER_OUTAGE_CEILING_MS = 30 * 60_000;
-type ProviderProbe = (signal: AbortSignal) => Promise<void>;
+// The probe receives the one absolute wait deadline so a late observation
+// compares a known reset with the remaining budget, never a fresh duration.
+type ProviderProbe = (signal: AbortSignal, deadline: number) => Promise<void>;
 
 // ISS-129 recorded multi-minute pool outages; a launch-time probe alone was insufficient.
 export async function waitForProvider(
@@ -38,7 +40,10 @@ export async function waitForProvider(
     clock.now() + (config.providerOutageCeilingMs ?? DEFAULT_PROVIDER_OUTAGE_CEILING_MS);
   for (;;) {
     try {
-      await probe(AbortSignal.timeout(Math.max(1, Math.min(5_000, deadline - clock.now()))));
+      await probe(
+        AbortSignal.timeout(Math.max(1, Math.min(5_000, deadline - clock.now()))),
+        deadline,
+      );
       return;
     } catch (error) {
       if (error instanceof QueueBlocked && error.reason === "provider-model-refused") throw error;
@@ -85,6 +90,94 @@ export async function probeProvider(
     if (!models.data.some((entry) => entry.id === model))
       throw new QueueBlocked("provider-model-refused", model);
   } else await response.body?.cancel();
+}
+
+// ISS-162: `m1-iss154-20260915T1004` attempt 1 spent five native launches on
+// `auth_unavailable` while every Codex credential was cooling down; the models
+// probe still listed the model. The pool supervisor's per-account, per-model
+// routing status is the launch admission check. A block that clears inside the
+// outage ceiling waits like an outage; a longer one (a weekly window) is a
+// refusal, so the role advances its ISS-158 ladder (other vendor last) and an
+// exhausted ladder stops the host with the reset time, not after a wasted
+// ceiling.
+export async function probePoolModel(
+  statusUrl: string,
+  model: string,
+  signal: AbortSignal,
+  deadline: number,
+  request = fetch,
+  now = Date.now,
+) {
+  const response = await request(statusUrl, { signal });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`pool status probe returned HTTP ${response.status}`);
+  }
+  const status = (await response.json()) as { accounts?: unknown } | null;
+  const malformed = () => new Error("malformed pool status response");
+  if (!Array.isArray(status?.accounts)) throw malformed();
+  const entries: { status: "ready" | "blocked"; next_retry_after?: string }[] = [];
+  let mentioned = false;
+  for (const account of status.accounts as unknown[]) {
+    if (!isRecord(account)) throw malformed();
+    const { disabled, routingModels } = account;
+    if (disabled !== undefined && typeof disabled !== "boolean") throw malformed();
+    if (routingModels !== undefined && !isRecord(routingModels)) throw malformed();
+    if (!routingModels || !(model in routingModels)) continue;
+    const entry = routingModels[model];
+    if (
+      !isRecord(entry) ||
+      (entry.status !== "ready" && entry.status !== "blocked") ||
+      (entry.next_retry_after !== undefined && typeof entry.next_retry_after !== "string")
+    )
+      throw malformed();
+    mentioned = true;
+    if (disabled) continue;
+    entries.push(entry as { status: "ready" | "blocked"; next_retry_after?: string });
+  }
+  // The pool does not know the model, or its observations are stale: the
+  // models probe alone decides.
+  if (!mentioned) return;
+  if (entries.some((entry) => entry.status === "ready")) return;
+  // Mentioned only by disabled accounts: no eligible account, no known end.
+  if (entries.length === 0) throw new Error(`pool has no enabled account for ${model}`);
+  // Only a block whose every end is a known future time can be measured
+  // against the deadline; an unknown or past end is uncertainty, so wait.
+  const resets = entries.map((entry) => Date.parse(entry.next_retry_after ?? ""));
+  const known = resets.every((time) => Number.isFinite(time) && time > now());
+  const until = known ? new Date(Math.min(...resets)).toISOString() : undefined;
+  const diagnostics = `pool blocks ${model} at every account${until ? ` until ${until}` : ""}`;
+  if (until && Date.parse(until) > deadline)
+    throw new QueueBlocked("provider-model-refused", diagnostics);
+  throw new Error(diagnostics);
+}
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+// One wait for both admission probes: the models probe (ISS-129) and the pool
+// status probe, sharing the single outage ceiling and its reporting cadence.
+export async function admitLaunch(
+  config: Config,
+  role: Role,
+  environment: NodeJS.ProcessEnv = process.env,
+  request = fetch,
+  clock?: { now: () => number; pause: (ms: number) => Promise<void> },
+  report?: (status: object) => void,
+) {
+  const baseUrl = environment.CODEX_PROVIDER_BASE_URL;
+  const authCommand = environment.CODEX_PROVIDER_AUTH_COMMAND;
+  const statusUrl = environment.CODEX_POOL_STATUS_URL;
+  if (!(baseUrl && authCommand)) return;
+  await waitForProvider(
+    config,
+    async (signal, deadline) => {
+      await probeProvider(baseUrl, authCommand, signal, request, config[role].model);
+      if (statusUrl)
+        await probePoolModel(statusUrl, config[role].model, signal, deadline, request, clock?.now);
+    },
+    clock,
+    report,
+  );
 }
 
 export function modelRefused(message: string) {
@@ -446,12 +539,7 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         check(help.includes(flag), "incompatible-codex-cli");
     },
     async launch(role, config, prompt) {
-      const baseUrl = process.env.CODEX_PROVIDER_BASE_URL;
-      const authCommand = process.env.CODEX_PROVIDER_AUTH_COMMAND;
-      if (baseUrl && authCommand)
-        await waitForProvider(config, (signal) =>
-          probeProvider(baseUrl, authCommand, signal, fetch, config[role].model),
-        );
+      await admitLaunch(config, role);
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(

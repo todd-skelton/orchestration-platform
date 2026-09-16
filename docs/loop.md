@@ -573,6 +573,27 @@ controller root, a new validated executor may resume an old setup plan with only
 agrees, and old plans, invocations, stops and worker budgets remain unchanged.
 This neither diagnoses pnpm's historical failure nor restarts the preserved run.
 
+ISS-162 records the five dead `gpt-6-astra/high` author launches in
+`m1-iss154-20260915T1004` attempt 1: every Codex credential was cooling down
+(`503 auth_unavailable`), yet the models probe listed the model, because the
+pool keeps a model listed while all of its credentials are suspended. A weekly
+quota block has the same shape and returns `429 model_cooldown`, which is
+neither a refusal nor an outage to the trace classifier, so two such deaths
+park an issue as `launcher-failed`. The launch probe now also reads the pool
+supervisor's per-account, per-model routing status from `CODEX_POOL_STATUS_URL`
+after the models probe. Any non-disabled account reporting the model `ready`
+admits the launch; a model no account mentions is left to the models probe.
+When every account blocks the model, a block clearing inside
+`providerOutageCeilingMs` waits as `waiting-provider` with the pool's reset
+time, and a longer block is `provider-model-refused`: the worker advances its
+ISS-158 ladder, whose last rung is the other vendor, and an exhausted ladder
+stops the host with the reset time. The block's end is compared with the one
+absolute wait deadline the models probe already owns, never a fresh duration.
+A block whose end is unknown, past or unparsable at any account is
+uncertainty and waits; malformed or failing status waits like an outage. The pool also publishes a per-provider
+pace projection and on-change usage samples; the loop does not read them.
+Routing by quota state stays with the operator's marker and ISS-158's ladders.
+
 ## Planning
 
 ISS-149 implements Todd's routing ruling on #368: model placement comes from
@@ -718,6 +739,10 @@ hosted CI only.
   endpoint, printing `waiting-provider` every ten seconds while unavailable.
   `providerOutageCeilingMs` in the loop config defaults to thirty minutes;
   expiry posts a `provider-unavailable` note and exits without parking (ISS-129).
+  `run-loop.sh` also exports `CODEX_POOL_STATUS_URL` (the supervisor's
+  `/api/status` on port 8318, bridged like 8317); the launch probe admits a
+  reported-ready model and otherwise defers genuinely unmentioned models to
+  the authenticated models probe (ISS-162).
   Provider deaths spend native launches but preserve the implementation attempt
   and the single dead-worker retry. No worker holds a native Codex login.
 - Chase Sets runs use `/root/orchestration-m2/repo` and

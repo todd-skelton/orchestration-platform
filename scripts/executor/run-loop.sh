@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eu
-TASK_ROOT=/root/orchestration-m1
+# Overridable so a local test can exercise the detach path with fakes (ISS-162).
+TASK_ROOT="${TASK_ROOT:-/root/orchestration-m1}"
 CONFIG="${1:-$TASK_ROOT/loop.json}"
 # One log per config, including Chase Sets runs under orchestration-m2.
 LOG="$(cd "$(dirname "$CONFIG")" && pwd)/supervisor.log"
@@ -9,6 +10,8 @@ if [ "${LOOP_DETACHED:-}" != "1" ]; then
   export CODEX_PROVIDER_BASE_URL="http://$HOST:8317/v1"
   # This is also the auth.command configured in the executor's Codex home.
   export CODEX_PROVIDER_AUTH_COMMAND="$TASK_ROOT/pool-key.sh"
+  # ISS-162: read-only pool status consulted before each worker launch.
+  export CODEX_POOL_STATUS_URL="http://$HOST:8318/api/status"
   sed -i "s#http://[0-9.]*:8317/v1#$CODEX_PROVIDER_BASE_URL#" "$TASK_ROOT/codex-home/config.toml"
   # ISS-129: the supervisor waits for the authenticated models probe before each
   # worker, so an outage at startup gets the same bounded wait and learning note.
