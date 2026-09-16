@@ -24,6 +24,26 @@ const base = "a".repeat(40),
   head = "b".repeat(40),
   pilotRevision = "c".repeat(40);
 const cleanup: string[] = [];
+
+it("FAIL requires matching terminal and stable executor: source identity has no exemption", async () => {
+  const f = await fixture();
+  f.statuses.author = "failed";
+  await expect(f.run()).rejects.toThrow("author-failed");
+  const path = resolve(f.config.stateDirectory, "author-terminal.json");
+  const bytes = await readFile(path, "utf8");
+  await writeFile(path, JSON.stringify({ ...JSON.parse(bytes), id: "another-author" }));
+  f.statuses.author = "running";
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  expect(f.observations).toEqual(["author", "author"]);
+  await writeFile(path, bytes);
+  f.config.pilotRevision = "d".repeat(40);
+  await expect(f.run()).rejects.toThrow("pilot-revision-moved");
+  f.config.pilotRevision = pilotRevision;
+  f.config.author.prompt += " Changed synthetic instruction.";
+  await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
+  expect(f.launches).toEqual(["author"]);
+  expect(f.commits).toEqual([]);
+});
 const providerBaseUrl = "http://provider.test/v1";
 function deadTrace(message: string, config: Config) {
   const trace =
