@@ -1,14 +1,18 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
   QueueBlocked,
   queueStep,
   queueUsage,
   repositoryQueueAdapter,
+  queueConfigFromLoop,
+  type LoopConfig,
 } from "../../scripts/dogfood/queue.js";
 import type {
   DeliveryAdapter,
@@ -20,7 +24,15 @@ import { sha, type Adapter, type Attempt } from "../../scripts/dogfood/flow.js";
 import type { RepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
-import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import {
+  isItemStopReason,
+  persistCycle,
+  stopCycle,
+  reconcilePendingStop,
+  nextCycle,
+  type SupervisionAdapter,
+} from "../../scripts/dogfood/supervision.js";
+import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import {
@@ -613,6 +625,241 @@ it("directly composes the accepted setup transition before source work", async (
   expect([...present]).toEqual(["pilot", "source", "review"]);
   expect([...dependencies]).toEqual(["pilot", "source", "review"]);
 });
+
+it.each([false, true])(
+  "resumes native setup at the same controller after an upgrade, with pending note %s",
+  async (pendingNote) => {
+    const f = await fixture();
+    const execute = promisify(execFile);
+    const gitExecutable = (
+      await execute(process.platform === "win32" ? "where.exe" : "which", ["git"])
+    ).stdout
+      .trim()
+      .split(/\r?\n/)[0]!;
+    const git = async (cwd: string, args: string[]) =>
+      (await execute(gitExecutable, ["-C", cwd, ...args])).stdout.trim();
+    for (const root of [f.paths.repository, f.paths.controller]) {
+      await git(root, ["init", "-b", "main"]);
+      await git(root, ["config", "user.name", "Synthetic Fixture"]);
+      await git(root, ["config", "user.email", "fixture@example.test"]);
+      await writeFile(resolve(root, ".gitignore"), "node_modules/\n");
+      await git(root, ["add", "."]);
+      await git(root, ["commit", "-m", "synthetic old executor"]);
+    }
+    const loop: LoopConfig = {
+      schemaVersion: "dogfood-loop/v1",
+      run: "synthetic-setup-upgrade",
+      adapter: "chase-sets",
+      repository: "fixture/repository",
+      stableExecutorRoot: f.paths.repository,
+      stateRoot: resolve(f.root, "loop-state"),
+      worktreeRoot: resolve(f.root, "loop-worktrees"),
+      codexExecutable: process.execPath,
+      gitExecutable,
+      nativeLaunchCeiling: 8,
+      attemptCeiling: 4,
+      routingRows: [{ ...SELF_ROUTING, row: 7, review: 11 }],
+    };
+    const selected = {
+      key: "fixture-159",
+      number: 159,
+      base: await git(f.paths.repository, ["rev-parse", "HEAD"]),
+    };
+    const policy: RepositoryAdapter = {
+      selectCandidates: () => [],
+      issueContext: async () => ({
+        title: "Synthetic setup",
+        body: "Synthetic setup criteria",
+        acceptanceCriteria: ["retain diagnostics"],
+        rules: "Keep setup bounded",
+        routing: { row: 7, review: 11 },
+      }),
+      branchName: () => "codex/synthetic-setup",
+      requiredChecks: () => ["synthetic-check"],
+      pullRequest: async () => {
+        throw new Error("no publication during setup");
+      },
+      park: () => {
+        throw new Error("setup failure must not park");
+      },
+      mergeMethod: () => ({ method: "squash" }),
+      afterMerge: () => {},
+    };
+    const compose = () => queueConfigFromLoop(loop, f.paths.controller, selected, policy);
+    let q = await compose();
+    const item = q.items[0]!;
+    const script = resolve(f.root, "synthetic-installer.cjs");
+    const allow = resolve(f.root, "allow-source");
+    await writeFile(
+      script,
+      `
+    const fs = require('node:fs');
+    if (process.cwd().endsWith('-source') && !fs.existsSync(${JSON.stringify(allow)})) {
+      fs.writeSync(1, 'leading source\\nAuthorization: FAKE_SOURCE_SECRET\\ntrailing source\\n');
+      fs.writeSync(2, 'source failure https://FAKE_URL_SECRET@host/path\\ntrailing error\\n');
+      process.exitCode = 7;
+    } else {
+      fs.mkdirSync('node_modules', { recursive: true });
+      fs.writeFileSync('node_modules/.modules.yaml', 'fixture: true\\n');
+    }
+  `,
+    );
+    const launcher = async () => ({ executable: process.execPath, prefixArgs: [script] });
+    // Execute the pre-ISS-159 contract: real child, outcome only, no retained stdout.
+    const oldSetup = gitSetupAdapter({
+      gitExecutable,
+      resolveLauncher: launcher,
+      async install(command, args, cwd) {
+        try {
+          await execute(command.executable, [...command.prefixArgs, ...args], { cwd });
+          return "succeeded";
+        } catch {
+          return "failed";
+        }
+      },
+    });
+    const launches: string[] = [];
+    const native: Adapter = {
+      async preflight() {},
+      git,
+      async launch(role, config) {
+        launches.push(role);
+        const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+        await writeFile(trace, "synthetic running worker\n");
+        return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
+      },
+      async observe(_role, _config, attempt) {
+        return { id: attempt.id, status: "running" };
+      },
+      async checks() {
+        throw new Error("no hosted checks during setup");
+      },
+    };
+    const adapter = (setup: SetupAdapter) =>
+      repositoryQueueAdapter(q, f.paths.controller, { gitExecutable, native, setup });
+    await expect(queueStep(q, adapter(oldSetup))).rejects.toMatchObject({
+      reason: "dependency-install-failed",
+      diagnostics: undefined,
+    });
+    expect(launches).toEqual([]);
+    const planPath = resolve(item.setup.stateDirectory, "setup-plan.json");
+    const oldPlan = await readFile(planPath, "utf8");
+    const attemptPath = resolve(q.stateDirectory, "attempt.json");
+    const oldAttempt = await readFile(attemptPath, "utf8");
+    expect(JSON.parse(oldAttempt)).toMatchObject({
+      phase: "setup",
+      candidateAttempt: 1,
+      retries: 0,
+      history: [],
+      routing: { row: 7, review: 11 },
+    });
+    const cycle = { selection: { cycle: 1, ...selected }, initialHistory: [] };
+    await persistCycle(loop, cycle);
+    const comments: string[] = [];
+    let loseReceipt = pendingNote;
+    const supervisor: SupervisionAdapter = {
+      async currentMain() {
+        throw new Error("saved selection must keep base");
+      },
+      async issue() {
+        return { state: "OPEN", key: selected.key, labels: ["ready"], comments };
+      },
+      async removeReady() {
+        throw new Error("no parking");
+      },
+      async close() {
+        throw new Error("no closure");
+      },
+      async comment(_config, _number, body) {
+        comments.push(body);
+        if (loseReceipt) throw new Error("synthetic lost comment receipt");
+      },
+    };
+    const stop = stopCycle(loop, cycle, "dependency-install-failed", 1, supervisor, policy);
+    if (pendingNote) await expect(stop).rejects.toThrow("synthetic lost comment receipt");
+    else await stop;
+    const stopPath = resolve(loop.stateRoot, loop.run, "cycle-1-stop-1.json");
+    const oldStop = await readFile(stopPath, "utf8");
+    await git(f.paths.controller, ["commit", "--allow-empty", "-m", "synthetic upgraded executor"]);
+    loseReceipt = false;
+    await reconcilePendingStop(loop, cycle, supervisor, policy);
+    expect(comments).toHaveLength(1);
+    expect(await nextCycle(loop, f.paths.controller, supervisor, policy)).toMatchObject(cycle);
+    q = await compose();
+    expect(q.controllerRoot).toBe(item.setup.controllerRoot);
+    expect(q.controllerRevision).not.toBe(item.setup.controllerRevision);
+    const setup = gitSetupAdapter({ gitExecutable, resolveLauncher: launcher });
+    for (const field of ["base", "ignoreScripts"]) {
+      const changed = JSON.parse(oldPlan);
+      if (field === "base") changed.base = "f".repeat(40);
+      else changed.dependencies.ignoreScripts = false;
+      await writeFile(planPath, JSON.stringify(changed, null, 2) + "\n");
+      await expect(queueStep(q, adapter(setup))).rejects.toMatchObject({
+        reason: "conflicting-record:setup-plan",
+      });
+      expect(launches).toEqual([]);
+      await writeFile(planPath, oldPlan);
+    }
+    let failure: QueueBlocked | undefined;
+    try {
+      await queueStep(q, adapter(setup));
+    } catch (error) {
+      failure = error as QueueBlocked;
+    }
+    expect(failure).toMatchObject({ reason: "dependency-install-failed" });
+    expect(launches).toEqual([]);
+    expect(await readFile(attemptPath, "utf8")).toBe(oldAttempt);
+    expect(await readFile(planPath, "utf8")).toBe(oldPlan);
+    const metadata = JSON.parse(await readFile(failure!.diagnostics!, "utf8"));
+    expect(metadata.role).toBe("source");
+    const stdout = await readFile(metadata.stdout, "utf8");
+    const stderr = await readFile(metadata.stderr, "utf8");
+    const terminal = await readFile(metadata.terminal, "utf8");
+    expect(stdout).toBe("leading source\n[REDACTED]\ntrailing source\n");
+    expect(stderr).toBe("source failure https:[REDACTED]\ntrailing error\n");
+    expect(JSON.parse(terminal)).toMatchObject({
+      status: "failed",
+      exitCode: 7,
+      head: selected.base,
+    });
+    await stopCycle(loop, cycle, failure!.reason, 1, supervisor, policy, failure!.diagnostics);
+    expect(comments).toHaveLength(2);
+    expect(comments[1]).toContain(failure!.diagnostics);
+    expect(comments[1]).not.toContain("FAKE_");
+    expect(comments[1]).not.toContain("--frozen-lockfile");
+    expect(comments[1]).not.toContain("trailing error");
+    const names = await readdir(item.setup.stateDirectory);
+    expect(names.some((name) => name.startsWith("dependency-pilot-install-"))).toBe(false);
+    expect(names.some((name) => name.startsWith("dependency-review"))).toBe(false);
+    await writeFile(allow, "explicit resume\n");
+    q = await compose();
+    expect(await queueStep(q, adapter(setup))).toMatchObject({ status: "observing-author" });
+    expect(launches).toEqual(["author"]);
+    expect(JSON.parse(await readFile(attemptPath, "utf8"))).toMatchObject({
+      phase: "source",
+      candidateAttempt: 1,
+      retries: 0,
+      routing: { row: 7, review: 11 },
+    });
+    const completeNames = await readdir(item.setup.stateDirectory);
+    expect(
+      completeNames.filter((name) => /^dependency-source-install-.*\.terminal\.json$/.test(name)),
+    ).toHaveLength(2);
+    expect(await adapter(setup).setup(q.items[0]!)).toMatchObject({ status: "ready" });
+    expect(await readdir(item.setup.stateDirectory)).toEqual(completeNames);
+    expect(await readFile(metadata.terminal, "utf8")).toBe(terminal);
+    expect(await readFile(metadata.stdout, "utf8")).toBe(stdout);
+    expect(await readFile(metadata.stderr, "utf8")).toBe(stderr);
+    expect(await readFile(planPath, "utf8")).toBe(oldPlan);
+    expect(await readFile(stopPath, "utf8")).toBe(oldStop);
+    // The live revision check is still mandatory after admission.
+    await git(f.paths.controller, ["commit", "--allow-empty", "-m", "synthetic unexpected drift"]);
+    await expect(queueStep(q, adapter(setup))).rejects.toMatchObject({
+      reason: "controller-executor-revision-moved",
+    });
+  },
+  30_000,
+);
 
 it.each([false, true])(
   "lands after an author death and gate correction across restart (provider outage: %s)",

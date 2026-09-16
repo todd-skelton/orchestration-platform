@@ -493,6 +493,23 @@ the stable executor with supervisors absent, supply the grant and resume the
 same run. This change neither clears retained evidence nor restarts ISS-155,
 changes its product work, or establishes M2 completion.
 
+ISS-159 records the pre-worker `dependency-install-failed` stop for #8021 in
+`m2-market-diagnostics-20260915T2345`; its old pnpm output remains unavailable.
+Setup now retains each invocation's command, role, head, sanitized stdout/stderr
+and terminal outcome in exclusive-create files inside that attempt's setup
+directory. Bounded pipe pumps suppress credential markers through line endings,
+URL authorities/tails through whitespace, and `file:` frames before any disk
+write; capture failure terminates and reaps the child and cannot mean success.
+Failure notes name only that role's evidence path, falling back to the existing
+run-state anchor when the path exceeds the detail limit. Partial output is not
+completion. Absent dependencies may replay once per native pass; present or
+unknown dependencies without a completion receipt remain unknown. Pilot/source/
+review order and offline frozen no-scripts flags are unchanged. At the same
+controller root, a new validated executor may resume an old setup plan with only
+`controllerRevision` excluded from comparison; every other plan field still
+agrees, and old plans, invocations, stops and worker budgets remain unchanged.
+This neither diagnoses pnpm's historical failure nor restarts the preserved run.
+
 ## Planning
 
 ISS-149 implements Todd's routing ruling on #368: model placement comes from
