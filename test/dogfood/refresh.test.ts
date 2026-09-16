@@ -83,7 +83,12 @@ function planning(keys: string[]): PlanningSnapshot {
   };
 }
 
-async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir(), routeList = false) {
+async function fixture(
+  seedKeys = ["ISS-100"],
+  temporaryRoot = tmpdir(),
+  routeList = false,
+  fixed = { prefix: "", suffix: "" },
+) {
   // Delivery expects canonical roots, including macOS /var and Windows temp aliases.
   const root = await realpath(await mkdtemp(resolve(temporaryRoot, "native-refresh-")));
   roots.push(root);
@@ -123,7 +128,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir(), routeLi
   await writePlanning(repo, planning(seedKeys));
   await writeFile(
     resolve(repo, "feature.txt"),
-    routeList ? "const routes = [\n  'existing',\n];\n" : "old\n",
+    routeList ? "const routes = [\n  'existing',\n];\n" : `${fixed.prefix}old\n${fixed.suffix}`,
   );
   const base = await commit(repo);
   await git(repo, ["clone", "--bare", repo, origin]);
@@ -141,7 +146,9 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir(), routeLi
   await writePlanning(sourceTree, candidatePlanning);
   await writeFile(
     resolve(sourceTree, "feature.txt"),
-    routeList ? "const routes = [\n  'existing',\n  'reviewed',\n];\n" : "candidate\n",
+    routeList
+      ? "const routes = [\n  'existing',\n  'reviewed',\n];\n"
+      : `${fixed.prefix}candidate\n${fixed.suffix}`,
   );
   let head = await commit(sourceTree);
   await git(repo, ["worktree", "add", "--detach", reviewTree, head]);
@@ -1652,6 +1659,121 @@ async function conflictingFixture() {
   return f;
 }
 
+const conflictHunk = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n";
+const marked = (...fixed: string[]) => fixed.join(conflictHunk);
+const largeFixed =
+  "literal .*+?^${}()|[]\\ near-match! ".repeat(8192).slice(0, 128 * 1024 - 1) + "\n";
+
+describe.each(["\n", "\r\n"])("literal conflict boundaries with %j", (eol) => {
+  const lines = (text: string) => text.replaceAll("\n", eol);
+  const prefix = "prefix .*+?^${}()|[]\\ \t\n";
+  const suffix = "suffix immutable\n";
+  it.each([
+    ["one hunk", marked(prefix, suffix), prefix + "resolved\n" + suffix],
+    ["empty resolution", marked(prefix, suffix), prefix + suffix],
+    ["multiple hunks", marked(prefix, "middle\n", suffix), prefix + "one\nmiddle\ntwo\n" + suffix],
+    ["empty resolutions", marked(prefix, "middle\n", suffix), prefix + "middle\n" + suffix],
+    ["adjacent hunks", marked(prefix, "", suffix), prefix + "resolved\n" + suffix],
+    ["empty prefix", marked("", suffix), "resolved\n" + suffix],
+    ["empty suffix", marked(prefix, ""), prefix + "resolved\n"],
+    ["whole file", marked("", ""), "resolved\n"],
+    ["empty whole file", marked("", ""), ""],
+    ["empty adjacent whole-file hunks", marked("", "", ""), ""],
+    [
+      "repeated fixed segments",
+      marked(prefix, "same\n", "same\n", suffix),
+      prefix + "same\nsame\nsame\n" + suffix,
+    ],
+    [
+      "suffix inside resolution",
+      marked(prefix, "middle\n", suffix),
+      prefix + suffix + "middle\n" + suffix + suffix,
+    ],
+    [
+      "earliest middle match leaves room",
+      marked(prefix, "middle\n", "last\n", suffix),
+      prefix + "middle\nlast\nmiddle\n" + suffix,
+    ],
+  ])("accepts %s", (_name, before, after) => {
+    expect(withinConflictHunks(lines(before!), lines(after!))).toBe(true);
+  });
+
+  const before = marked(prefix, "middle one\n", "middle two\n", suffix);
+  const valid = prefix + "resolved\nmiddle one\nresolved\nmiddle two\nresolved\n" + suffix;
+  it.each([
+    ["prefix byte", valid.replace("prefix", "prefiX")],
+    ["suffix interior byte", valid.replace("immutable", "immuTable")],
+    ["middle byte", valid.replace("middle one", "middle One")],
+    ["middle omission", valid.replace("middle one\n", "")],
+    [
+      "segment order",
+      valid
+        .replace("middle one", "placeholder")
+        .replace("middle two", "middle one")
+        .replace("placeholder", "middle two"),
+    ],
+    ["leading extra text", "extra\n" + valid],
+    ["trailing extra text", valid + "extra\n"],
+    ["literal metacharacter", valid.replace(".*+?", ".*+!")],
+    ["fixed whitespace", valid.replace(" \t\n", "  \n")],
+    ["retained opening marker", valid.replace("resolved", "<<<<<<< HEAD")],
+    ["retained separator", valid.replace("resolved", "=======")],
+    ["retained closing marker", valid.replace("resolved", ">>>>>>> main")],
+  ])("rejects only a changed %s", (_name, after) => {
+    expect(withinConflictHunks(lines(before), lines(valid))).toBe(true);
+    expect(withinConflictHunks(lines(before), lines(after!))).toBe(false);
+  });
+
+  it("rejects only an outside-hunk line ending change", () => {
+    const after = lines(valid);
+    expect(withinConflictHunks(lines(before), after)).toBe(true);
+    expect(
+      withinConflictHunks(
+        lines(before),
+        after.replace(`middle one${eol}`, `middle one${eol === "\n" ? "\r\n" : "\n"}`),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["no hunk", prefix + suffix, prefix + suffix],
+    ["incomplete hunk", prefix + "<<<<<<< HEAD\nours\n=======\ntheirs\n", prefix],
+    ["unchanged markers", before, before],
+    ["prefix/suffix byte reuse", marked("same\n", "same\n"), "same\n"],
+    ["middle/suffix byte reuse", marked(prefix, "same\n", "same\n"), prefix + "same\n"],
+    ["reused middle", marked(prefix, "same\n", "same\n", suffix), prefix + "same\n" + suffix],
+    [
+      "overlapping middles",
+      marked(prefix, "a\nb\n", "b\nc\n", suffix),
+      prefix + "a\nb\nc\n" + suffix,
+    ],
+    ["middle overlaps suffix", marked(prefix, "a\nb\n", "b\nc\n"), prefix + "a\nb\nc\n"],
+  ])("refuses %s", (_name, input, after) => {
+    expect(withinConflictHunks(lines(input!), lines(after!))).toBe(false);
+  });
+});
+
+it("matches a synthetic single contiguous 128 KiB fixed segment without compiling it", () => {
+  expect(Buffer.byteLength(largeFixed)).toBe(128 * 1024);
+  const before = marked(largeFixed, "fixed suffix\n");
+  const after = largeFixed + "resolved\nfixed suffix\n";
+  expect(withinConflictHunks(before, after)).toBe(true);
+  expect(withinConflictHunks(before, after.replace("fixed suffix", "fixed suffiX"))).toBe(false);
+});
+
+it("scans a synthetic many-hunk MiB with near-matches and late failures", () => {
+  const segment = "a".repeat(1010) + ".*+?[]\\!\n";
+  const near = segment.replace("!", "?");
+  const count = 1024;
+  const before = marked("prefix\n", ...Array<string>(count).fill(segment), "fixed suffix\n");
+  const after = "prefix\n" + (near + segment).repeat(count) + "fixed suffix\n";
+  expect(Buffer.byteLength(before)).toBeGreaterThan(1024 * 1024);
+  expect(withinConflictHunks(before, after)).toBe(true);
+  expect(withinConflictHunks(before, after.replace("fixed suffix", "fixed suffiX"))).toBe(false);
+  const last = after.lastIndexOf(segment);
+  expect(withinConflictHunks(before, after.slice(0, last) + near + "fixed suffix\n")).toBe(false);
+});
+
 it.each(["\n", "\r\n"])("limits edits to actual hunks with line ending %j", (eol) => {
   const before =
     "const routes = [\n<<<<<<< HEAD\n'a',\n=======\n'b',\n>>>>>>> main\n// Keep this assertion\n<<<<<<< HEAD\n'c',\n=======\n'd',\n>>>>>>> main\n];\n".replaceAll(
@@ -1672,6 +1794,104 @@ it.each(["\n", "\r\n"])("limits edits to actual hunks with line ending %j", (eol
   ])
     expect(withinConflictHunks(before, changed)).toBe(false);
 });
+
+describe.each([false, true])(
+  "large ordinary-text conflict lifecycle (autocrlf: %s)",
+  (autocrlf) => {
+    let f: Awaited<ReturnType<typeof fixture>>;
+    const suffix = "fixed suffix stays immutable\n";
+    // Preserve Git's checked-out fixed bytes, including Windows CRLF, in the author edit.
+    const resolved = (largeFixed + "candidate\nmain\n" + suffix).replaceAll(
+      "\n",
+      autocrlf ? "\r\n" : "\n",
+    );
+    beforeEach(async () => {
+      vi.stubEnv("GIT_CONFIG_COUNT", "1");
+      vi.stubEnv("GIT_CONFIG_KEY_0", "core.autocrlf");
+      vi.stubEnv("GIT_CONFIG_VALUE_0", String(autocrlf));
+      f = await fixture(undefined, undefined, false, { prefix: largeFixed, suffix });
+      await writeFile(resolve(f.repo, "feature.txt"), largeFixed + "main\n" + suffix);
+      await f.advanceMain();
+      f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), resolved));
+    });
+
+    it.each(["fresh", "input", "resolution"] as const)(
+      "validates large text before author and after author on %s delivery",
+      async (phase) => {
+        const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
+        if (phase !== "fresh") {
+          f.loseCommit(phase);
+          await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
+        }
+        await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+        await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+        const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+        expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe(resolved);
+        expect(await readFile(resolve(f.sourceState, "candidate.json"), "utf8")).toBe(original);
+        expect(f.authorPrompts).toHaveLength(1);
+        expect(f.prompts).toHaveLength(1);
+        expect(f.prompts[0]).toContain(head);
+        expect(f.gateHeads).toEqual([head]);
+        expect(f.publication()?.head).toBe(head);
+        expect(f.publications()).toBe(1);
+        expect(await f.adapter().history()).toHaveLength(4);
+      },
+    );
+
+    it.each(["author", "commit reconciliation"])(
+      "rejects only an outside-hunk suffix edit during %s before review or publication",
+      async (phase) => {
+        const escaped = resolved.replace("immutable", "immuTable");
+        if (phase === "author") {
+          f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), escaped));
+        } else {
+          f.loseCommit("resolution");
+          await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
+          await writeFile(resolve(f.sourceTree, "feature.txt"), escaped);
+        }
+        await expect(f.deliver()).rejects.toThrow("conflict-resolution-scope-escape");
+        await expect(f.deliver()).rejects.toThrow("conflict-resolution-scope-escape");
+        expect(f.authorPrompts).toHaveLength(1);
+        expect(f.prompts).toEqual([]);
+        expect(f.gateHeads).toEqual([]);
+        expect(f.publications()).toBe(0);
+      },
+    );
+  },
+);
+
+it.each(["no-hunk", "binary", "missing-side", "unsupported-mode"])(
+  "retains unsupported refusal for a %s Git conflict before author dispatch",
+  async (mode) => {
+    const f = await fixture(undefined, undefined, false, {
+      prefix: mode === "binary" ? "binary\0" : "",
+      suffix: "",
+    });
+    if (mode === "no-hunk") {
+      // Git's binary merge attribute leaves unresolved index stages but no markers,
+      // even when the file itself is ordinary text without NUL bytes.
+      const attributes = await f.git(f.sourceTree, ["rev-parse", "--git-path", "info/attributes"]);
+      await writeFile(resolve(f.sourceTree, attributes), "feature.txt -merge\n");
+    }
+    if (mode === "missing-side") await f.git(f.repo, ["rm", "feature.txt"]);
+    else
+      await writeFile(
+        resolve(f.repo, "feature.txt"),
+        `${mode === "binary" ? "binary\0" : ""}main\n`,
+      );
+    if (mode === "unsupported-mode") {
+      // Index mode control also works on Windows filesystems without executable bits.
+      await f.git(f.repo, ["config", "core.filemode", "false"]);
+      await f.git(f.repo, ["update-index", "--chmod=+x", "feature.txt"]);
+    }
+    await f.advanceMain();
+    await expect(f.deliver()).rejects.toThrow("conflict-resolution-unsupported");
+    expect(f.authorPrompts).toEqual([]);
+    expect(f.prompts).toEqual([]);
+    expect(f.gateHeads).toEqual([]);
+    expect(f.publications()).toBe(0);
+  },
+);
 
 describe.each([false, true])(
   "routes a published DIRTY candidate through bounded resolution and forward publication (lost receipt: %s)",
