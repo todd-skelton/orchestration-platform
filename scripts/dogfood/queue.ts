@@ -206,7 +206,9 @@ export type QueueDeliveryResult =
 export interface QueueAdapter {
   assertExecutor(): Promise<void>;
   history(): Promise<QueueParticipant[]>;
-  setup(item: QueueItem): Promise<{ status: "ready" | "incomplete"; reason?: string }>;
+  setup(
+    item: QueueItem,
+  ): Promise<{ status: "ready" | "incomplete"; reason?: string; diagnostics?: string }>;
   source(item: QueueItem): Promise<QueueSourceResult>;
   repair(item: QueueItem): Promise<QueueRepairResult>;
   delivery(
@@ -1627,7 +1629,11 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
 
     if (attempt.phase === "setup") {
       const setup = await adapter.setup(item);
-      demand(setup.status === "ready", setup.reason ?? "setup-incomplete");
+      if (setup.status !== "ready")
+        throw new QueueBlocked(
+          setup.reason ?? "setup-incomplete",
+          setup.diagnostics && setup.diagnostics.length <= 500 ? setup.diagnostics : undefined,
+        );
       const history = await adapter.history();
       attempt = advance(attempt, history, { phase: "source" });
       await record(directory, "attempt", attempt);
@@ -2416,7 +2422,9 @@ export function repositoryQueueAdapter(
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(
           error instanceof SetupBlocked ? error.reason : "setup-state-unknown",
-          error instanceof SetupBlocked ? error.diagnostics : undefined,
+          error instanceof SetupBlocked && (error.diagnostics?.length ?? 0) <= 500
+            ? error.diagnostics
+            : undefined,
         );
       }
     },

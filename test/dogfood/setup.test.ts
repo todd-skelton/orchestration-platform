@@ -170,6 +170,82 @@ it("writes ownership intent before every bounded worktree and dependency mutatio
   ]);
 });
 
+it("does not infer completion or reinstall from a marker without prior intent", async () => {
+  const current = await fixture();
+  current.dependencies.add("pilot");
+  expect(
+    await setupStep(current.config, current.adapter, current.config.controllerRoot),
+  ).toMatchObject({ status: "incomplete", reason: "dependency-install-unknown" });
+  expect(current.calls.filter((call) => call.startsWith("install:"))).toEqual([]);
+});
+
+it.each(["base", "ignoreScripts"])(
+  "compares saved %s independently when only controllerRevision may change",
+  async (field) => {
+    const current = await fixture();
+    current.setInstallOutcome("failed");
+    await setupStep(current.config, current.adapter, current.config.controllerRoot);
+    const path = resolve(current.config.stateDirectory, "setup-plan.json");
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    if (field === "base") saved.base = "c".repeat(40);
+    else saved.dependencies.ignoreScripts = false;
+    await writeFile(path, JSON.stringify(saved, null, 2) + "\n");
+    const installs = current.calls.filter((call) => call.startsWith("install:"));
+    await expect(
+      setupStep(current.config, current.adapter, current.config.controllerRoot),
+    ).rejects.toMatchObject({ reason: "conflicting-record:setup-plan" });
+    expect(current.calls.filter((call) => call.startsWith("install:"))).toEqual(installs);
+  },
+);
+
+it.each(["directory", "unowned-name"])(
+  "rejects an invocation census %s without installing",
+  async (kind) => {
+    const current = await fixture();
+    const name =
+      kind === "directory"
+        ? "dependency-source-install-1700000000000-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.json"
+        : "unrelated.stdout.log";
+    const path = resolve(current.config.stateDirectory, name);
+    if (kind === "directory") await mkdir(path);
+    else await writeFile(path, "unrelated");
+    await expect(
+      setupStep(current.config, current.adapter, current.config.controllerRoot),
+    ).rejects.toMatchObject({ reason: "unexpected-setup-state" });
+    expect(current.calls.filter((call) => call.startsWith("install:"))).toEqual([]);
+  },
+);
+
+it.each(["absent", "present", "unknown"] as const)(
+  "keeps interrupted output nonterminal with %s dependencies",
+  async (observation) => {
+    const current = await fixture();
+    current.setInstallOutcome("failed");
+    await setupStep(current.config, current.adapter, current.config.controllerRoot);
+    const prefix = resolve(
+      current.config.stateDirectory,
+      "dependency-pilot-install-1700000000000-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    );
+    await writeFile(`${prefix}.json`, '{"role":"pilot"}\n');
+    await writeFile(`${prefix}.stdout.log`, "interrupted partial output\n");
+    current.adapter.observeDependencies = async () => observation;
+    const installs = current.calls.filter((call) => call.startsWith("install:")).length;
+    const result = await setupStep(current.config, current.adapter, current.config.controllerRoot);
+    expect(result).toMatchObject({
+      status: "incomplete",
+      reason: observation === "absent" ? "dependency-install-failed" : "dependency-install-unknown",
+    });
+    expect(current.calls.filter((call) => call.startsWith("install:"))).toHaveLength(
+      installs + (observation === "absent" ? 1 : 0),
+    );
+    if (observation !== "absent") expect(result.diagnostics).toBe(`${prefix}.json`);
+    await expect(
+      readFile(resolve(current.config.stateDirectory, "dependency-pilot.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(`${prefix}.stdout.log`, "utf8")).toBe("interrupted partial output\n");
+  },
+);
+
 it("reconciles an interrupted worktree creation and does not duplicate mutations on resume", async () => {
   const current = await fixture();
   current.interrupt("source");

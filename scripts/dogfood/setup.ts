@@ -7,6 +7,27 @@ const SHA = /^[a-f0-9]{40}$/;
 const ABSENT = Symbol("absent");
 
 export type SetupRole = (typeof SETUP_ROLES)[number];
+export type InstallStatus = "succeeded" | "failed" | "unknown";
+export interface InstallResult {
+  status: InstallStatus;
+  diagnostics: string;
+}
+
+// ISS-159: invocation files are owned flat files, never dependency completion receipts.
+const INSTALL_FILE =
+  /^dependency-(pilot|source|review)-install-\d{13}-[a-f0-9-]{36}\.(json|stdout\.log|stderr\.log|terminal\.json)$/;
+
+async function priorInstallEvidence(config: SetupConfig, role: SetupRole) {
+  const names = (await readdir(config.stateDirectory))
+    .filter(
+      (name) =>
+        INSTALL_FILE.test(name) &&
+        name.startsWith(`dependency-${role}-install-`) &&
+        name.endsWith(".json"),
+    )
+    .sort();
+  return names.length ? resolve(config.stateDirectory, names.at(-1)!) : undefined;
+}
 
 export interface SetupConfig {
   controller: string;
@@ -45,10 +66,7 @@ export interface SetupAdapter {
     config: SetupConfig,
     role: SetupRole,
   ): Promise<"present" | "absent" | "unknown">;
-  installDependencies(
-    config: SetupConfig,
-    role: SetupRole,
-  ): Promise<"succeeded" | "failed" | "unknown">;
+  installDependencies(config: SetupConfig, role: SetupRole): Promise<InstallStatus | InstallResult>;
 }
 
 export interface SetupResult {
@@ -59,6 +77,7 @@ export interface SetupResult {
   heads: { pilot: string; source: string; review: string };
   worktrees: { pilot: string; source: string; review: string };
   phase: "worktrees" | "dependencies" | "complete";
+  diagnostics?: string;
 }
 
 export class SetupBlocked extends Error {
@@ -276,7 +295,9 @@ async function assertStateCensus(config: SetupConfig) {
   const allowed = allowedStateNames();
   const entries = await readdir(config.stateDirectory, { withFileTypes: true });
   demand(
-    entries.every((entry) => entry.isFile() && allowed.has(entry.name)),
+    entries.every(
+      (entry) => entry.isFile() && (allowed.has(entry.name) || INSTALL_FILE.test(entry.name)),
+    ),
     "unexpected-setup-state",
   );
 }
@@ -338,10 +359,12 @@ function result(
   status: SetupResult["status"],
   phase: SetupResult["phase"],
   reason?: SetupResult["reason"],
+  diagnostics?: string,
 ): SetupResult {
   return {
     status,
     ...(reason ? { reason } : {}),
+    ...(diagnostics ? { diagnostics } : {}),
     run: config.run,
     issue: config.issue,
     heads: { pilot: config.pilotRevision, source: config.base, review: config.base },
@@ -409,7 +432,7 @@ export async function setupStep(
       exactRecord(intent, dependencyIntent(config, role), `malformed-dependency-intent:${role}`);
   }
 
-  await record(config.stateDirectory, "setup-plan", {
+  const plan = {
     schemaVersion: "dogfood-setup-plan/v1",
     run: config.run,
     issue: config.issue,
@@ -425,7 +448,15 @@ export async function setupStep(
     sourceBranch: config.sourceBranch,
     worktrees: SETUP_ROLES.map((role) => worktreeRecord(config, role)),
     dependencies: { launcher: "pnpm", offline: true, frozenLockfile: true, ignoreScripts: true },
-  });
+  };
+  const savedPlan = await optionalRecord(config.stateDirectory, "setup-plan");
+  if (savedPlan === ABSENT) await record(config.stateDirectory, "setup-plan", plan);
+  else {
+    // Only the installed executor may change on replay. Keep the old plan bytes.
+    const { controllerRevision: _revision, ...expected } = plan;
+    const { controllerRevision: _savedRevision, ...saved } = savedPlan as typeof plan;
+    exactRecord(saved, expected, "conflicting-record:setup-plan");
+  }
 
   for (const role of SETUP_ROLES) {
     let observation = observations.get(role)!;
@@ -465,21 +496,26 @@ export async function setupStep(
     if (intent !== ABSENT) exactRecord(intent, intentValue, `malformed-dependency-intent:${role}`);
     else await record(config.stateDirectory, `dependency-${role}-intent`, intentValue);
 
-    if (intent !== ABSENT) {
-      const dependencies = await adapter.observeDependencies(config, role);
-      if (dependencies !== "absent")
-        return result(config, "incomplete", "dependencies", "dependency-install-unknown");
-    }
-
-    const outcome = await adapter.installDependencies(config, role);
-    const worktree = await adapter.observeWorktree(config, role, true);
-    demand(matchesObservation(config, role, worktree), `worktree-state-drift:${role}`);
-    if (outcome !== "succeeded")
+    if ((await adapter.observeDependencies(config, role)) !== "absent")
       return result(
         config,
         "incomplete",
         "dependencies",
-        outcome === "failed" ? "dependency-install-failed" : "dependency-install-unknown",
+        "dependency-install-unknown",
+        await priorInstallEvidence(config, role),
+      );
+
+    const outcome = await adapter.installDependencies(config, role);
+    const status = typeof outcome === "string" ? outcome : outcome.status;
+    const worktree = await adapter.observeWorktree(config, role, true);
+    demand(matchesObservation(config, role, worktree), `worktree-state-drift:${role}`);
+    if (status !== "succeeded")
+      return result(
+        config,
+        "incomplete",
+        "dependencies",
+        status === "failed" ? "dependency-install-failed" : "dependency-install-unknown",
+        typeof outcome === "string" ? undefined : outcome.diagnostics,
       );
     const dependencies = await adapter.observeDependencies(config, role);
     demand(dependencies === "present", `dependency-state-unconfirmed:${role}`);
