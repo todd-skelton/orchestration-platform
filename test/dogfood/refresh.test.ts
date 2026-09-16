@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { evidenceDescriptor, replanPacket, writeEvidence } from "./fixtures/continuation.js";
 import {
   mkdir,
   mkdtemp,
@@ -13,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   repositoryQueueAdapter,
@@ -23,6 +24,7 @@ import {
   type QueueItem,
 } from "../../scripts/dogfood/queue.js";
 import type { Adapter, Config, Attempt } from "../../scripts/dogfood/flow.js";
+import { withinConflictHunks } from "../../scripts/dogfood/conflict.js";
 import type {
   DeliveryAdapter,
   DeliveryConfig,
@@ -79,7 +81,7 @@ function planning(keys: string[]): PlanningSnapshot {
   };
 }
 
-async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
+async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir(), routeList = false) {
   // Delivery expects canonical roots, including macOS /var and Windows temp aliases.
   const root = await realpath(await mkdtemp(resolve(temporaryRoot, "native-refresh-")));
   roots.push(root);
@@ -117,7 +119,10 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   await git(repo, ["config", "user.email", "fixture@example.test"]);
   await git(repo, ["config", "user.name", "Fixture"]);
   await writePlanning(repo, planning(seedKeys));
-  await writeFile(resolve(repo, "feature.txt"), "old\n");
+  await writeFile(
+    resolve(repo, "feature.txt"),
+    routeList ? "const routes = [\n  'existing',\n];\n" : "old\n",
+  );
   const base = await commit(repo);
   await git(repo, ["clone", "--bare", repo, origin]);
   await git(repo, [
@@ -132,7 +137,10 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   const candidatePlanning = planning(seedKeys);
   candidatePlanning.issueDrafts["ISS-100"] += "\nCandidate planning delta.\n";
   await writePlanning(sourceTree, candidatePlanning);
-  await writeFile(resolve(sourceTree, "feature.txt"), "candidate\n");
+  await writeFile(
+    resolve(sourceTree, "feature.txt"),
+    routeList ? "const routes = [\n  'existing',\n  'reviewed',\n];\n" : "candidate\n",
+  );
   let head = await commit(sourceTree);
   await git(repo, ["worktree", "add", "--detach", reviewTree, head]);
   const checks = requiredChecks({ repository: planning([]).roadmap.repository }) as string[];
@@ -188,6 +196,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     writeFile(resolve(sourceState, `${name}.json`), JSON.stringify(value));
   const pinSource = async () => {
     head = await git(sourceTree, ["rev-parse", "HEAD"]);
+    await git(reviewTree, ["checkout", "--detach", head]);
     await record("config", { fingerprint: "a".repeat(64), config: source });
     await record("candidate", { head, changed: ["feature.txt", "planning/drafts/ISS-100.md"] });
     await record("author-attempt", author);
@@ -297,18 +306,31 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     return main;
   };
   let running = false;
+  let reviewRunning = false;
+  let lostCommit: "input" | "resolution" | undefined;
   let failReview = false;
   let malformedReview = false;
   let unavailableMain = false;
   let moveDuringReview = false;
   let lostIntegrationResponse = false;
   const prompts: string[] = [];
+  const authorPrompts: string[] = [];
+  let resolution: (() => Promise<void>) | undefined;
+  let failAuthor = false;
   const reviewerModels: string[] = [];
   const native: Adapter = {
     async preflight() {},
     async git(tree, args) {
       if (unavailableMain && args[0] === "fetch") throw new Error("offline");
       const result = await git(tree, args);
+      if (
+        args[0] === "commit" &&
+        lostCommit &&
+        args.at(-1)!.endsWith("conflict input") === (lostCommit === "input")
+      ) {
+        lostCommit = undefined;
+        throw new Error("lost conflict commit response");
+      }
       if (
         lostIntegrationResponse &&
         ["rebase", "merge"].includes(args[0]!) &&
@@ -320,18 +342,38 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
       return result;
     },
     async launch(role, _config, prompt) {
-      expect(role).toBe("reviewer");
-      reviewerModels.push(_config.reviewer.model);
-      prompts.push(prompt);
+      if (role === "author") {
+        authorPrompts.push(prompt);
+        await resolution?.();
+      } else {
+        reviewerModels.push(_config.reviewer.model);
+        prompts.push(prompt);
+      }
       return {
         id: randomUUID(),
         pid: 200 + prompts.length,
-        trace: resolve(state, `delta-${prompts.length}.jsonl`),
+        trace: _config.stateDirectory.endsWith("gate-correction")
+          ? resolve(_config.stateDirectory, `${role}.jsonl`)
+          : resolve(state, `${role}-delta-${prompts.length + authorPrompts.length}.jsonl`),
         launchedAt: 1,
       };
     },
     async observe(_role, current, attempt) {
-      if (running) return { id: attempt.id, status: "running" };
+      if (running || (_role === "reviewer" && reviewRunning))
+        return { id: attempt.id, status: "running" };
+      if (_role === "author")
+        return {
+          id: attempt.id,
+          status: failAuthor ? "failed" : "passed",
+          head: current.base,
+          summary: JSON.stringify({
+            run: current.run,
+            role: "author",
+            head: current.base,
+            verdict: failAuthor ? "FAIL" : "PASS",
+            summary: "",
+          }),
+        };
       if (malformedReview) {
         malformedReview = false;
         return { id: attempt.id, status: "malformed" };
@@ -354,6 +396,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   };
   const realDelivery = githubDeliveryAdapter();
   let refreshPublication: DeliveryAdapter | undefined;
+  let publicationDirty = false;
   let publication: PublicationEvidence | undefined;
   let plannedPublication: PublicationEvidence;
   let lostPublicationObservation = false;
@@ -374,7 +417,7 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
         if (interruptGateRetry && typechecks === 2) throw new Error("interrupted gate retry");
         return typechecks <= typecheckFailures ? "failed" : "passed";
       }
-      if (stopGate) return { status: "failed", output: "interrupted gate" };
+      if (stopGate) throw new Error("interrupted gate observation");
       return realDelivery.runGate(current, name, candidate);
     },
     async observeDraft(_current, draft) {
@@ -399,7 +442,13 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
           digest,
           target,
         );
-        if (observation.state === "confirmed") publication = observation.value;
+        if (observation.state === "confirmed" || observation.state === "conflicting") {
+          publication = observation.value;
+          if (lostPublicationObservation) {
+            lostPublicationObservation = false;
+            throw new Error("lost publication observation");
+          }
+        }
         return observation;
       }
       if (publication && lostPublicationObservation) {
@@ -426,7 +475,13 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
       if (refreshPublication) return refreshPublication.publish(current, plan, target);
       publication = plannedPublication;
     },
-    async checks(current) {
+    async conflictingPublication(current, value) {
+      return refreshPublication
+        ? refreshPublication.conflictingPublication!(current, value)
+        : false;
+    },
+    async checks(current, value) {
+      if (publicationDirty && refreshPublication) return refreshPublication.checks(current, value);
       return {
         head: current.candidateHead,
         checks: checks.map((name) => ({
@@ -505,20 +560,20 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
         body = await readFile(args[args.indexOf("--body-file") + 1]!, "utf8");
         return "";
       },
-      async ghJson() {
-        return [
-          {
-            number: 200,
-            url: item.delivery.refresh!.url,
-            headRefOid: await remoteHead(),
-            headRefName: "codex/iss-100",
-            baseRefName: "main",
-            state: "OPEN",
-            isDraft: true,
-            title,
-            body,
-          },
-        ];
+      async ghJson(_current, args) {
+        const row = {
+          number: 200,
+          url: item.delivery.refresh!.url,
+          headRefOid: await remoteHead(),
+          headRefName: "codex/iss-100",
+          baseRefName: "main",
+          state: "OPEN",
+          isDraft: true,
+          title,
+          body,
+          ...(publicationDirty ? { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } : {}),
+        };
+        return args[1] === "view" ? row : [row];
       },
     });
     return { remoteHead, preserved };
@@ -554,6 +609,9 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     state,
     source,
     config,
+    delivery,
+    native,
+    policy,
     item,
     head,
     reviewer,
@@ -565,11 +623,27 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
     deliver,
     commands,
     prompts,
+    authorPrompts,
+    loseCommit: (phase: "input" | "resolution") => {
+      lostCommit = phase;
+    },
+    setReviewRunning: (value: boolean) => {
+      reviewRunning = value;
+    },
+    setResolution: (callback: () => Promise<void>) => {
+      resolution = callback;
+    },
+    failAuthor: () => {
+      failAuthor = true;
+    },
     reviewerModels,
     gateHeads,
     adapter,
     saveAttempt,
     enablePublicationRefresh,
+    setPublicationDirty: (value: boolean) => {
+      publicationDirty = value;
+    },
     malformReview: () => {
       malformedReview = true;
     },
@@ -606,6 +680,36 @@ async function fixture(seedKeys = ["ISS-100"], temporaryRoot = tmpdir()) {
   };
 }
 
+it("requires new exact-head host evidence after main refresh while reviewing the full implementation", async () => {
+  const f = await fixture();
+  const descriptor = evidenceDescriptor(resolve(f.root, "operator-evidence"));
+  f.source.correctionPaths = ["feature.txt"];
+  f.source.preReviewEvidence = descriptor;
+  await f.pinSource();
+  await writeEvidence(descriptor, f.source.repository, f.head);
+  const main = await f.advanceMain();
+  await expect(f.deliver()).rejects.toThrow("operator-evidence-authority");
+  expect(f.prompts).toEqual([]);
+  expect(f.authorPrompts).toEqual([]);
+  expect(f.gateHeads).toEqual([]);
+  const directory = resolve(f.sourceState, `refresh-${main}`);
+  const candidate = JSON.parse(await readFile(resolve(directory, "candidate.json"), "utf8"));
+  expect(candidate.head).not.toBe(f.head);
+  expect(candidate.changed).toContain("planning/drafts/ISS-100.md");
+  await writeEvidence(descriptor, f.source.repository, candidate.head);
+  f.setReviewRunning(true);
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+  await Promise.all(Object.values(descriptor.bundle).map((path) => rm(path)));
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.prompts).toHaveLength(1);
+  expect(f.prompts[0]).toContain(resolve(directory, "pre-review-evidence/acceptance.json"));
+  expect(f.authorPrompts).toEqual([]);
+  f.setReviewRunning(false);
+  await f.deliver();
+  expect(f.gateHeads.every((head) => head === candidate.head)).toBe(true);
+  expect(f.gateHeads.length).toBeGreaterThan(0);
+});
+
 it("retains the chosen fallback reviewer for current-main delta review", async () => {
   const f = await fixture();
   f.source.reviewer = {
@@ -626,7 +730,7 @@ it("refreshes first and resumed self gates with current registrations and candid
   const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
   const main = await f.advanceMain();
   f.setStopGate(true);
-  await expect(f.deliver()).rejects.toThrow("gate-failed:planning:board-check");
+  await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
   const refreshed = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
   expect(refreshed).not.toBe(f.head);
   expect(await f.git(f.sourceTree, ["merge-base", main, refreshed])).toBe(main);
@@ -773,7 +877,7 @@ it.each([false, true])(
       expect(f.gateHeads).toEqual([]);
     } else {
       f.setStopGate(true);
-      await expect(f.deliver()).rejects.toThrow("gate-failed:planning:board-check");
+      await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
       f.setStopGate(false);
     }
     const refreshed = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
@@ -872,7 +976,7 @@ it.each(["missing board item", "omitted registration", "deleted registration"])(
       f.board().issues = f.board().issues.filter((row) => row.number !== 103);
       f.board().totalCount--;
     }
-    await expect(f.deliver()).rejects.toThrow("gate-failed:planning:board-check");
+    await expect(f.deliver()).rejects.toThrow("gate-attribution-unknown:planning:board-check");
     expect(f.publication()).toBeUndefined();
   },
 );
@@ -920,43 +1024,276 @@ it("retains a failed delta review and stops without starting another implementat
   });
 });
 
-it.each([false, true])(
-  "uses the existing typed rebase conflict stop for the ISS-147 handoff (existing PR: %s)",
-  async (existingPR) => {
-    const f = await fixture();
+it.each([
+  { existingPR: false, autocrlf: false },
+  { existingPR: true, autocrlf: false },
+  { existingPR: false, autocrlf: true },
+  { existingPR: true, autocrlf: true },
+])(
+  "resolves the recorded single-list-hunk conflict and preserves both parents (existing PR: $existingPR, autocrlf: $autocrlf)",
+  async ({ existingPR, autocrlf }) => {
+    vi.stubEnv("GIT_CONFIG_COUNT", "1");
+    vi.stubEnv("GIT_CONFIG_KEY_0", "core.autocrlf");
+    vi.stubEnv("GIT_CONFIG_VALUE_0", String(autocrlf));
+    const f = await fixture(undefined, undefined, true);
     if (existingPR) await f.enablePublicationRefresh();
-    await writeFile(resolve(f.repo, "feature.txt"), "conflicting main\n");
-    await f.advanceMain();
-    await expect(f.deliver()).rejects.toThrow("rebase-conflict");
-    expect(await f.git(f.sourceTree, ["rev-parse", "HEAD"])).toBe(f.head);
+    const original = await readFile(resolve(f.sourceState, "candidate.json"), "utf8");
+    await writeFile(
+      resolve(f.repo, "feature.txt"),
+      "const routes = [\n  'existing',\n  'incumbent',\n];\n",
+    );
+    const main = await f.advanceMain();
+    // Git's checkout line endings outside the hunk are part of the immutable text.
+    const resolved =
+      "const routes = [\n  'existing',\n  'reviewed',\n  'incumbent',\n];\n".replaceAll(
+        "\n",
+        autocrlf ? "\r\n" : "\n",
+      );
+    f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), resolved));
+    await f.saveAttempt();
+    const run = existingPR
+      ? f.deliver
+      : () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+    await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+    for (const parent of [main, f.head])
+      expect(await f.git(f.sourceTree, ["merge-base", parent, head])).toBe(parent);
     expect(await f.git(f.sourceTree, ["status", "--porcelain"])).toBe("");
-    expect(f.prompts).toEqual([]);
+    expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe(resolved);
+    expect(await readFile(resolve(f.sourceState, "candidate.json"), "utf8")).toBe(original);
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(1);
+    expect(f.prompts[0]).toContain(f.reviewer.id);
+    expect(f.prompts[0]).toContain(resolve(f.sourceState, "author.jsonl"));
+    expect(f.prompts[0]).toContain("author-delta-1.jsonl");
+    expect(f.gateHeads).toEqual([head]);
+    expect(f.publications()).toBe(1);
+    const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
+    expect(attempt.candidateAttempt).toBe(1);
+    expect((await f.adapter().history()).map((row) => [row.stage, row.role])).toEqual([
+      ["source", "author"],
+      ["source", "reviewer"],
+      ["refresh", "author"],
+      ["refresh", "reviewer"],
+    ]);
+  },
+);
+
+async function conflictingFixture() {
+  const f = await fixture();
+  await writeFile(resolve(f.repo, "feature.txt"), "main\n");
+  await f.advanceMain();
+  f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), "candidate\nmain\n"));
+  return f;
+}
+
+it.each(["\n", "\r\n"])("limits edits to actual hunks with line ending %j", (eol) => {
+  const before =
+    "const routes = [\n<<<<<<< HEAD\n'a',\n=======\n'b',\n>>>>>>> main\n// Keep this assertion\n<<<<<<< HEAD\n'c',\n=======\n'd',\n>>>>>>> main\n];\n".replaceAll(
+      "\n",
+      eol,
+    );
+  const after = "const routes = [\n'a',\n'b',\n// Keep this assertion\n'c',\n'd',\n];\n".replaceAll(
+    "\n",
+    eol,
+  );
+  expect(withinConflictHunks(before, after)).toBe(true);
+  for (const changed of [
+    before,
+    after.replace("const routes", "const disabled"),
+    after.replace(`// Keep this assertion${eol}`, ""),
+    after.replaceAll(eol, eol === "\n" ? "\r\n" : "\n"),
+    after + "extra\n",
+  ])
+    expect(withinConflictHunks(before, changed)).toBe(false);
+});
+
+describe.each([false, true])(
+  "routes a published DIRTY candidate through bounded resolution and forward publication (lost receipt: %s)",
+  (lostReceipt) => {
+    let f: Awaited<ReturnType<typeof fixture>>;
+    let remoteHead: () => Promise<string>;
+    let preserved: string;
+    let publishedHead: string;
+    let main: string;
+    let originalPublication: string;
+
+    // ISS-154 hosted Windows failure: build the published-conflict fixture in
+    // its own bounded hook so setup and recovery do not share one test timeout.
+    beforeEach(async () => {
+      f = await fixture();
+      ({ remoteHead, preserved } = await f.enablePublicationRefresh());
+      await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\n");
+      publishedHead = await f.commit(f.sourceTree);
+      await f.pinSource();
+      if (lostReceipt) {
+        f.losePublicationObservation();
+        await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+      } else {
+        await expect(f.deliver()).resolves.toMatchObject({
+          status: "observing-hosted-checks",
+          head: publishedHead,
+        });
+      }
+      expect(await remoteHead()).toBe(publishedHead);
+      await writeFile(resolve(f.repo, "feature.txt"), "new main\n");
+      main = await f.advanceMain();
+      f.setPublicationDirty(true);
+      await expect(f.deliver()).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+        head: publishedHead,
+      });
+      originalPublication = await readFile(resolve(f.sourceState, "publication.json"), "utf8");
+      expect(f.publications()).toBe(1);
+    });
+
+    it("resolves and reconciles both refresh observations without repeating workers or publication", async () => {
+      f.setResolution(async () => {
+        await writeFile(resolve(f.sourceTree, "feature.txt"), "reviewed correction\nnew main\n");
+        f.setPublicationDirty(false);
+      });
+      // Lose the refresh observation too: restart must reconcile that exact remote head.
+      f.losePublicationObservation();
+      await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+      const resolved = await remoteHead();
+      expect(resolved).not.toBe(publishedHead);
+      await expect(f.deliver()).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+        head: resolved,
+      });
+      await expect(f.deliver()).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+        head: resolved,
+      });
+      expect(f.publications()).toBe(2);
+      expect(f.authorPrompts).toHaveLength(1);
+      expect(f.prompts).toHaveLength(1);
+      for (const parent of [publishedHead, main])
+        expect(await f.git(f.sourceTree, ["merge-base", parent, resolved])).toBe(parent);
+      expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
+      expect(await readFile(resolve(f.sourceState, "publication.json"), "utf8")).toBe(
+        originalPublication,
+      );
+      expect(new Set(f.gateHeads)).toEqual(new Set([publishedHead, resolved]));
+    });
+  },
+);
+
+it("resumes the conflict author and delta reviewer with partial edits and original participants", async () => {
+  const f = await conflictingFixture();
+  f.setRunning(true);
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-author" });
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-author" });
+  expect(await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).toBe("candidate\nmain\n");
+  f.setRunning(false);
+  f.setReviewRunning(true);
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-reviewer" });
+  await expect(f.deliver()).resolves.toEqual({ status: "observing-reviewer" });
+  f.setReviewRunning(false);
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+  expect(await f.adapter().history()).toHaveLength(4);
+});
+
+it("resumes a rebase interrupted at its actual conflict before the handoff record", async () => {
+  const f = await conflictingFixture();
+  const main = await f.git(f.repo, ["rev-parse", "HEAD"]);
+  const directory = resolve(f.sourceState, `refresh-${main}`);
+  await mkdir(directory);
+  await writeFile(
+    resolve(f.sourceState, "native-refresh.json"),
+    JSON.stringify({
+      main,
+      previousHead: f.head,
+      previousReview: f.reviewer.id,
+      directory,
+      flowRetried: false,
+      retries: 0,
+    }),
+  );
+  await expect(f.git(f.sourceTree, ["rebase", main])).rejects.toThrow();
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+});
+
+it("charges conflict resolution to the existing native launch ceiling", async () => {
+  const f = await conflictingFixture();
+  f.config.nativeLaunchCeiling = 3;
+  await expect(f.deliver()).rejects.toThrow("native-launch-ceiling-exhausted");
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toEqual([]);
+  expect(await f.adapter().history()).toHaveLength(3);
+  expect(f.publications()).toBe(0);
+});
+
+it.each(["input", "resolution"] as const)(
+  "reconciles a lost %s commit response without a new resolution",
+  async (phase) => {
+    const f = await conflictingFixture();
+    f.loseCommit(phase);
+    await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(1);
+  },
+);
+
+it.each(["scope", "author", "review"])(
+  "retains a failed bounded %s across restarts without another repair",
+  async (failure) => {
+    const f = await conflictingFixture();
+    if (failure === "scope")
+      f.setResolution(async () => {
+        await writeFile(resolve(f.sourceTree, "feature.txt"), "candidate\nmain\n");
+        await writeFile(resolve(f.sourceTree, "extra.txt"), "scope expansion\n");
+      });
+    if (failure === "author") f.failAuthor();
+    if (failure === "review") f.setFailReview();
+    const reason =
+      failure === "scope"
+        ? "conflict-resolution-scope-escape"
+        : failure === "author"
+          ? "conflict-resolution-failed"
+          : "refresh-review-failed";
+    await expect(f.deliver()).rejects.toThrow(reason);
+    await expect(f.deliver()).rejects.toThrow(reason);
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(failure === "review" ? 1 : 0);
     expect(f.gateHeads).toEqual([]);
   },
 );
 
-it.each(["pass", "exhausted", "restart"])(
-  "keeps a refreshed gate retry on its reviewed head: %s",
-  async (mode) => {
-    const f = await fixture();
-    await f.advanceMain();
-    await f.saveAttempt();
-    f.failTypecheck(mode === "exhausted" ? 2 : 1, mode === "restart");
-    const step = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
-    if (mode === "exhausted") {
-      await expect(step()).rejects.toThrow("gate-retry-exhausted:typecheck");
-      expect(f.publication()).toBeUndefined();
-    } else {
-      if (mode === "restart") await expect(step()).rejects.toThrow("delivery-state-unknown");
-      await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-    }
-    const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
-    expect(attempt).toMatchObject({ retries: 1, candidateAttempt: 1, head: f.gateHeads[0] });
-    expect(attempt.reviewId).not.toBe(f.reviewer.id);
-    expect(f.prompts).toHaveLength(1);
-    expect(new Set(f.gateHeads).size).toBe(1);
-  },
-);
+it("cannot renew a consumed resolution when main conflicts again across restarts", async () => {
+  const f = await conflictingFixture();
+  f.setStopGate(true);
+  await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+  await writeFile(resolve(f.repo, "feature.txt"), "second main conflict\n");
+  await f.advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
+  await expect(f.deliver()).rejects.toThrow("conflict-resolution-exhausted");
+  await expect(f.deliver()).rejects.toThrow("conflict-resolution-exhausted");
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+});
+
+it.each([false, true])("does not correct an untyped failure (refreshed: %s)", async (refresh) => {
+  const f = await fixture();
+  if (refresh) await f.advanceMain();
+  await f.saveAttempt();
+  f.failTypecheck(1);
+  const run = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+  for (let replay = 0; replay < 2; replay++)
+    await expect(run()).rejects.toThrow("gate-attribution-unknown:typecheck");
+  expect(f.publication()).toBeUndefined();
+  expect(f.gateHeads).toHaveLength(1);
+  expect(f.authorPrompts).toEqual([]);
+  expect(JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"))).toMatchObject({
+    candidateAttempt: 1,
+    retries: 0,
+  });
+});
 
 it("stops incompatible main history before integration or gates", async () => {
   const f = await fixture();
@@ -974,18 +1311,16 @@ it("stops incompatible main history before integration or gates", async () => {
   expect(f.prompts).toEqual([]);
 });
 
-it("retains the delta reviewer retry and gate retry across queue resume", async () => {
+it("retains the delta reviewer retry across queue resume", async () => {
   const f = await fixture();
   await f.advanceMain();
   await f.saveAttempt();
   f.malformReview();
-  f.failTypecheck(1, true);
   const step = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
-  await expect(step()).rejects.toThrow("delivery-state-unknown");
   await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
   await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
   const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
-  expect(attempt).toMatchObject({ retries: 2, candidateAttempt: 1 });
+  expect(attempt).toMatchObject({ retries: 1, candidateAttempt: 1 });
   expect(f.prompts).toHaveLength(2);
   expect(attempt.history.map((row: { outcome: string }) => row.outcome)).toEqual([
     "passed",
@@ -994,3 +1329,373 @@ it("retains the delta reviewer retry and gate retry across queue resume", async 
     "passed",
   ]);
 });
+
+async function gateCorrectionFixture(afterMirror = false, refresh = false) {
+  const f = await fixture();
+  if (refresh) await f.advanceMain();
+  await f.saveAttempt();
+  const gates: { head: string; gate: string; directory: string }[] = [];
+  const controls: { head: string; main: string; gate: string }[] = [];
+  let cause: "candidate" | "base" | "host" | "unknown" = "candidate";
+  let secondGate: string | undefined;
+  const plan = f.policy.plan;
+  f.policy.plan = async (current) => {
+    const value = await plan(current);
+    value.gates = afterMirror
+      ? { beforeMirror: ["typecheck"], afterMirror: ["planning:board-check", "test"] }
+      : { beforeMirror: ["typecheck", "test"], afterMirror: ["planning:board-check"] };
+    return value;
+  };
+  f.delivery.runGate = async (current, gate, head) => {
+    gates.push({ head, gate, directory: current.stateDirectory });
+    const corrected = (await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).includes(
+      "fixed",
+    );
+    if ((!corrected && gate === "test") || (corrected && gate === secondGate)) {
+      const log = resolve(current.stateDirectory, "full-gate.log");
+      await writeFile(
+        log,
+        `FAIL feature.test.ts > preserves behavior\nAssertionError: wrong value\n${"full output\n".repeat(600)}`,
+        { flag: "wx" },
+      );
+      return {
+        status: "failed",
+        output: "AssertionError: wrong value",
+        evidence: {
+          head,
+          command: {
+            executable: process.execPath,
+            argv: ["fixture-pnpm", "run", gate],
+            cwd: f.sourceTree,
+          },
+          log,
+          cause: "diagnostic",
+          diagnostics: ["feature.test.ts > preserves behavior"],
+        },
+      };
+    }
+    return "passed";
+  };
+  f.delivery.attributeGate = async (_config, gate, failure, main) => {
+    controls.push({ head: failure.head, main, gate });
+    return { cause, log: resolve(f.state, "base-control.log"), main };
+  };
+  f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), "candidate fixed\n"));
+  const run = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+  return {
+    ...f,
+    run,
+    gates,
+    controls,
+    setCause(value: typeof cause) {
+      cause = value;
+    },
+    secondFailure(gate: string) {
+      secondGate = gate;
+    },
+  };
+}
+
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])(
+  "corrects once with fresh review and resumes all gates (after mirror: %s, refresh: %s)",
+  async (afterMirror, refresh) => {
+    const f = await gateCorrectionFixture(afterMirror, refresh);
+    const originals = await Promise.all(
+      [
+        "candidate",
+        "author-attempt",
+        "author-terminal",
+        "reviewer-attempt",
+        "reviewer-terminal",
+      ].map(
+        async (name) =>
+          [name, await readFile(resolve(f.sourceState, `${name}.json`), "utf8")] as const,
+      ),
+    );
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+    const capture = JSON.parse(
+      await readFile(resolve(f.sourceState, "gate-correction.json"), "utf8"),
+    );
+    const log = await readFile(resolve(capture.delivery.stateDirectory, "full-gate.log"), "utf8");
+    expect(log.length).toBeGreaterThan(4000);
+    f.setRunning(true);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.authorPrompts[0]).toContain(capture.failedHead);
+    expect(f.authorPrompts[0]).toContain(capture.main);
+    expect(f.authorPrompts[0]).toContain("fixture-pnpm");
+    expect(f.authorPrompts[0]).toContain("full-gate.log");
+    expect(f.authorPrompts[0]).toContain(f.sourceState);
+    f.setRunning(false);
+    f.setReviewRunning(true);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    f.setReviewRunning(false);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    const corrected = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+    expect(await f.git(f.sourceTree, ["merge-base", capture.failedHead, corrected])).toBe(
+      capture.failedHead,
+    );
+    const result = JSON.parse(
+      await readFile(resolve(f.sourceState, "gate-correction-result.json"), "utf8"),
+    );
+    expect(result).toMatchObject({ head: corrected, retries: 1 });
+    expect(result.reviewId).not.toBe(capture.previousReview);
+    expect(f.prompts.at(-1)).toContain("Independent DELTA review");
+    expect(f.prompts.at(-1)).toContain(
+      `Captured execution trace: ${JSON.stringify(resolve(capture.directory, "author.jsonl"))}.`,
+    );
+    expect(f.gates.filter((gate) => gate.head === corrected).map((gate) => gate.gate)).toEqual(
+      afterMirror
+        ? ["typecheck", "planning:board-check", "test"]
+        : ["typecheck", "test", "planning:board-check"],
+    );
+    expect(f.controls).toEqual([{ head: capture.failedHead, main: capture.main, gate: "test" }]);
+    const history = await f.adapter().history();
+    const ids = history.map((row) => row.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(history.slice(-2).map((row) => [row.role, row.outcome, row.placement?.model])).toEqual([
+      ["author", "passed", "author"],
+      ["reviewer", "passed", "reviewer"],
+    ]);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect((await f.adapter().history()).map((row) => row.id)).toEqual(ids);
+    expect(f.publications()).toBe(1);
+    for (const [name, bytes] of originals)
+      expect(await readFile(resolve(f.sourceState, `${name}.json`), "utf8")).toBe(bytes);
+    expect(await readFile(resolve(capture.delivery.stateDirectory, "full-gate.log"), "utf8")).toBe(
+      log,
+    );
+    expect(JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"))).toMatchObject({
+      candidateAttempt: 1,
+      head: corrected,
+      reviewId: result.reviewId,
+    });
+  },
+);
+
+it.each(["base", "host", "unknown"] as const)(
+  "stops %s attribution without consuming correction or publishing",
+  async (cause) => {
+    const f = await gateCorrectionFixture();
+    f.setCause(cause);
+    const reason = `gate-${cause === "base" ? "base-failed" : cause === "host" ? "host-failed" : "attribution-unknown"}:test`;
+    await expect(f.run()).rejects.toThrow(reason);
+    await f.advanceMain();
+    await expect(f.run()).rejects.toThrow(reason);
+    expect(f.authorPrompts).toEqual([]);
+    expect(f.controls).toHaveLength(1);
+    expect(f.publications()).toBe(0);
+    await expect(readFile(resolve(f.sourceState, "gate-correction.json"))).rejects.toThrow();
+  },
+);
+
+it("corrects an accepted review repair without changing its rejected predecessor or implementation count", async () => {
+  const f = await gateCorrectionFixture();
+  const acceptedHistory = await f.adapter().history();
+  const prior = resolve(f.state, "prior-source");
+  await mkdir(prior);
+  f.item.source = { ...f.source, stateDirectory: prior };
+  f.item.repair.stateDirectory = f.sourceState;
+  const failedId = randomUUID();
+  const history = [
+    { ...acceptedHistory[0]!, ordinal: 1, id: randomUUID() },
+    { ...acceptedHistory[1]!, ordinal: 2, id: failedId, outcome: "failed" },
+    ...acceptedHistory.map((row) => ({ ...row, ordinal: row.ordinal + 2, stage: "repair" })),
+  ];
+  const rejected = JSON.stringify({
+    id: failedId,
+    head: f.head,
+    status: "failed",
+    summary: "Preserved blocking predecessor",
+  });
+  await writeFile(resolve(prior, "reviewer-terminal.json"), rejected);
+  for (const row of history)
+    await writeFile(
+      resolve(f.state, `participant-${row.ordinal}-terminal.json`),
+      JSON.stringify(row),
+    );
+  const path = resolve(f.state, "attempt.json");
+  const attempt = JSON.parse(await readFile(path, "utf8"));
+  await writeFile(
+    path,
+    JSON.stringify({ ...attempt, acceptedStage: "repair", candidateAttempt: 2, history }),
+  );
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+    candidateAttempt: 2,
+    acceptedStage: "repair",
+    retries: 1,
+  });
+  expect(await readFile(resolve(prior, "reviewer-terminal.json"), "utf8")).toBe(rejected);
+  expect((await f.adapter().history()).map((row) => row.outcome)).toEqual([
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+  ]);
+  expect(f.authorPrompts).toHaveLength(1);
+});
+
+it.each([false, true])(
+  "retains the correction allowance and fresh authority when main moves again (second failure: %s)",
+  async (secondFailure) => {
+    const f = await gateCorrectionFixture(true);
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+    f.setMoving();
+    if (secondFailure) f.secondFailure("typecheck");
+    if (secondFailure) {
+      await expect(f.run()).rejects.toThrow("gate-correction-exhausted:typecheck");
+      await expect(f.run()).rejects.toThrow("gate-correction-exhausted:typecheck");
+    } else {
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      const corrected = JSON.parse(
+        await readFile(resolve(f.sourceState, "gate-correction-result.json"), "utf8"),
+      );
+      expect(f.publication()?.head).not.toBe(corrected.head);
+      expect(f.gates.slice(-3).map((row) => row.head)).toEqual(
+        Array(3).fill(f.publication()?.head),
+      );
+      expect(f.gates.slice(-3).map((row) => row.gate)).toEqual([
+        "typecheck",
+        "planning:board-check",
+        "test",
+      ]);
+    }
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(2);
+  },
+);
+
+it("reconciles the correction commit and completes delivery without repeating completed effects", async () => {
+  const f = await gateCorrectionFixture();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  f.loseCommit("resolution");
+  await expect(f.run()).rejects.toThrow("lost conflict commit response");
+  let merged = false;
+  let cleaned = false;
+  let mergeCount = 0;
+  let cleanupCount = 0;
+  f.delivery.checks = async (current) => ({
+    head: current.candidateHead,
+    checks: current.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: "https://example.test/check",
+    })),
+  });
+  f.delivery.observeMerge = async (current, publication) =>
+    merged
+      ? {
+          state: "confirmed",
+          value: {
+            number: publication.number,
+            head: current.candidateHead,
+            mergeCommit: current.candidateHead,
+          },
+        }
+      : { state: "needs-mutation" };
+  f.delivery.merge = async () => {
+    mergeCount++;
+    merged = true;
+  };
+  f.delivery.observeCleanup = async (_current, plan) =>
+    cleaned
+      ? { state: "confirmed", value: { worktrees: plan.worktrees, branch: plan.branch } }
+      : { state: "needs-mutation" };
+  f.delivery.cleanup = async () => {
+    cleanupCount++;
+    cleaned = true;
+  };
+  await expect(f.run()).resolves.toMatchObject({ status: "complete" });
+  const attempt = await readFile(resolve(f.state, "attempt.json"), "utf8");
+  await expect(f.run()).resolves.toMatchObject({ status: "complete" });
+  await expect(f.deliver()).resolves.toMatchObject({ status: "complete" });
+  expect(await readFile(resolve(f.state, "attempt.json"), "utf8")).toBe(attempt);
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+  expect([f.publications(), mergeCount, cleanupCount]).toEqual([1, 1, 1]);
+});
+
+it.each(["terminal-head", "report-head", "author-identity"])(
+  "rejects correction review with stale %s",
+  async (mode) => {
+    const f = await gateCorrectionFixture();
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+    const observe = f.native.observe;
+    f.native.observe = async (role, current, attempt) => {
+      const terminal = await observe(role, current, attempt);
+      if (role === "reviewer") {
+        if (mode === "terminal-head") terminal.head = f.head;
+        if (mode === "report-head")
+          terminal.summary = terminal.summary!.replace(terminal.head!, f.head);
+        if (mode === "author-identity")
+          terminal.id = JSON.parse(
+            await readFile(resolve(current.stateDirectory, "author-attempt.json"), "utf8"),
+          ).id;
+      }
+      return terminal;
+    };
+    const failure = await f.run().then(
+      () => undefined,
+      (error: Error & { reason: string }) => error,
+    );
+    expect({
+      reason: failure?.reason,
+      publications: f.publications(),
+      gates: f.gates.length,
+    }).toEqual({
+      reason:
+        mode === "terminal-head"
+          ? "reviewer-wrong-head"
+          : mode === "report-head"
+            ? "reviewer-malformed"
+            : "malformed-terminal",
+      publications: 0,
+      gates: 2,
+    });
+  },
+);
+
+it.each(["author", "reviewer", "second-gate", "launch-ceiling", "accepted-replan"])(
+  "stops the correction at %s without a second pair",
+  async (mode) => {
+    const f = await gateCorrectionFixture(false, true);
+    if (mode === "accepted-replan")
+      f.item.acceptedReplan = replanPacket(f.item.source.stateDirectory);
+    const run = mode === "accepted-replan" ? f.deliver : f.run;
+    if (mode === "accepted-replan") {
+      await expect(run()).rejects.toThrow("gate-correction-not-authorized");
+      expect(f.authorPrompts).toEqual([]);
+      return;
+    }
+    await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    if (mode === "author") f.failAuthor();
+    if (mode === "reviewer") f.setFailReview();
+    if (mode === "second-gate") f.secondFailure("typecheck");
+    if (mode === "launch-ceiling") f.config.nativeLaunchCeiling = 3;
+    const reason =
+      mode === "author"
+        ? "gate-correction-failed"
+        : mode === "reviewer"
+          ? "gate-correction-review-failed"
+          : mode === "second-gate"
+            ? "gate-correction-exhausted:typecheck"
+            : "native-launch-ceiling-exhausted";
+    await expect(run()).rejects.toThrow(reason);
+    const ids = (await f.adapter().history()).map((row) => row.id);
+    await expect(run()).rejects.toThrow(reason);
+    expect((await f.adapter().history()).map((row) => row.id)).toEqual(ids);
+    expect(f.authorPrompts.length).toBeLessThanOrEqual(1);
+    expect(f.publications()).toBe(0);
+  },
+);

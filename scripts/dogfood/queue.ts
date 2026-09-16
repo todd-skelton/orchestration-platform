@@ -1,12 +1,21 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+<<<<<<< HEAD
 import { mkdir, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+=======
+import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
+>>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { continuationSlug, validateAcceptedReplan } from "./continuation.ts";
+import type { AcceptedReplan } from "./continuation.js";
+export { continuationSlug };
 import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
 import {
   DeliveryBlocked,
+  LocalGateFailure,
   deliveryStep,
   hostedFailureEvidence,
   hostedFailurePrompt,
@@ -49,15 +58,6 @@ const SHA = /^[a-f0-9]{40}$/;
 const ABSENT = Symbol("absent");
 const exec = promisify(execFile);
 
-// ISS-145: Todd accepted this one continuation, not a renewable attempt budget.
-export const ACCEPTED_REPLAN = {
-  id: "cs-7766-plan-8014",
-  run: "m2-jpeg-corrective-20260914T1402",
-  priorRun: "m2-jpeg-20260914",
-  key: "cs-7766",
-  slug: "cs-7766-replan-8014-attempt-5",
-} as const;
-
 export type QueueMeasure = { status: "known"; value: number } | { status: "unavailable" };
 export type QueueUsage = {
   inputTokens: QueueMeasure;
@@ -79,7 +79,7 @@ export interface QueueParticipant {
 }
 
 export interface QueueItem {
-  acceptedReplan?: typeof ACCEPTED_REPLAN.id;
+  acceptedReplan?: AcceptedReplan;
   id: string;
   issue: string;
   base: string;
@@ -131,7 +131,7 @@ export interface LoopConfig {
   attemptCeiling: number;
   providerOutageCeilingMs?: number;
   targetMilestone?: number;
-  acceptedReplan?: typeof ACCEPTED_REPLAN.id;
+  acceptedReplan?: AcceptedReplan;
 }
 
 export const ACTIONABLE_STOP_REASONS = [
@@ -259,16 +259,35 @@ export function validateLoopConfig(config: LoopConfig) {
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
-  demand(
-    config.acceptedReplan === undefined ||
-      (config.acceptedReplan === ACCEPTED_REPLAN.id &&
-        config.run === ACCEPTED_REPLAN.run &&
-        config.adapter === "chase-sets" &&
-        config.repository === "chase-sets/chase-sets" &&
-        config.targetMilestone === 158 &&
-        config.attemptCeiling === 4),
-    "invalid-accepted-replan",
-  );
+  if (config.acceptedReplan !== undefined) {
+    validateAcceptedReplan(config.acceptedReplan);
+    demand(
+      config.run === config.acceptedReplan.targetRun &&
+        config.repository === config.acceptedReplan.repository &&
+        config.attemptCeiling === 4,
+      "invalid-accepted-replan",
+    );
+    demand(
+      resolve(config.acceptedReplan.priorAttemptDirectory, "..") ===
+        resolve(config.stateRoot, config.acceptedReplan.priorRun),
+      "invalid-accepted-replan",
+    );
+    if (config.acceptedReplan.preReviewEvidence) {
+      const workerTemporaryRoot = resolve(
+        config.stateRoot,
+        config.run,
+        config.acceptedReplan.attemptSlug,
+        "source",
+        "author-temp",
+      );
+      demand(
+        Object.values(config.acceptedReplan.preReviewEvidence.bundle).every(
+          (path) => outside(config.worktreeRoot, path) && outside(workerTemporaryRoot, path),
+        ),
+        "invalid-accepted-replan-evidence",
+      );
+    }
+  }
   demand(
     config.providerOutageCeilingMs === undefined ||
       (Number.isSafeInteger(config.providerOutageCeilingMs) && config.providerOutageCeilingMs > 0),
@@ -585,6 +604,25 @@ export async function queueConfigFromLoop(
   const baseSourcePrompt = `Implement the selected issue completely and stay within its scope.\n\n${promptContext}`;
   let reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
   const runState = resolve(stateRoot, config.run);
+  if (!config.acceptedReplan) {
+    // A fresh run cannot renew an exhausted lineage already recorded on this host.
+    for (const run of await readdir(stateRoot, { withFileTypes: true })) {
+      if (!run.isDirectory() || run.name === config.run) continue;
+      for (const sourceAttempt of [3, 4]) {
+        const prior = await optionalRecord(
+          resolve(stateRoot, run.name, `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`),
+          "attempt",
+        );
+        demand(
+          prior === ABSENT ||
+            prior.issue !== issueUrl ||
+            prior.phase !== "failed" ||
+            prior.candidateAttempt < 4,
+          "accepted-replan-required",
+        );
+      }
+    }
+  }
   let sourceAttempt = 1;
   let attemptBase = selected.base;
   let mainBase = selected.base;
@@ -593,42 +631,72 @@ export async function queueConfigFromLoop(
   let rejectedHead: string | undefined;
   let replan:
     | {
-        publication: { number: number; url: string; head: string; sourceBranch: string };
+        publication: AcceptedReplan["publication"];
         prompt: string;
       }
     | undefined;
   let pendingRebase: { directory: string; slug: string; attempt: FailedAttemptReceipt } | undefined;
-  const priorReplanDirectory = resolve(stateRoot, ACCEPTED_REPLAN.priorRun, "cs-7766-attempt-4");
-  if (config.repository === "chase-sets/chase-sets" && selected.key === ACCEPTED_REPLAN.key) {
+  if (config.acceptedReplan) {
+    const packet = config.acceptedReplan;
+    const priorReplanDirectory = packet.priorAttemptDirectory;
+    demand(
+      selected.key === packet.issueKey && issueUrl === packet.issueUrl,
+      "accepted-replan-issue-mismatch",
+    );
     const prior = await optionalRecord(priorReplanDirectory, "attempt");
-    if (config.run !== ACCEPTED_REPLAN.priorRun)
-      demand(config.acceptedReplan === ACCEPTED_REPLAN.id, "accepted-replan-required");
-    if (config.acceptedReplan) {
-      demand(selected.number === 7766 && prior !== ABSENT, "accepted-replan-history-unavailable");
-      validateFailedAttempt(prior, 4, 4);
-      const priorSource = resolve(priorReplanDirectory, "source");
-      const publication = await optionalRecord(priorSource, "publication");
-      const original = await optionalRecord(priorSource, "config");
+    demand(prior !== ABSENT, "accepted-replan-history-unavailable");
+    const priorSourceAttempt = Number(prior.item?.split(":").at(-1));
+    demand(
+      [packet.priorAbsoluteAttempt - 1, packet.priorAbsoluteAttempt].includes(priorSourceAttempt),
+      "accepted-replan-history-unavailable",
+    );
+    validateFailedAttempt(prior, priorSourceAttempt, packet.priorAbsoluteAttempt);
+    const priorSource = resolve(
+      priorReplanDirectory,
+      priorSourceAttempt < packet.priorAbsoluteAttempt ? "repair" : "source",
+    );
+    const publication = await optionalRecord(priorSource, "publication");
+    const original = await optionalRecord(priorSource, "config");
+    demand(
+      prior.run === packet.priorRun &&
+        prior.issue === issueUrl &&
+        prior.item === `${packet.issueKey}:${priorSourceAttempt}` &&
+        prior.candidateAttempt === packet.priorAbsoluteAttempt &&
+        prior.head === packet.candidateHead &&
+        queueDigest(prior.history) === packet.priorHistoryDigest &&
+        prior.history.length > 0 &&
+        prior.history.at(-1)?.item === prior.item &&
+        prior.history.at(-1)?.id === prior.reviewId &&
+        original !== ABSENT &&
+        original.config?.repository === config.repository &&
+        original.config.issue === issueUrl &&
+        !original.config.correctionPaths &&
+        SHA.test(original.config?.mainBase),
+      "accepted-replan-history-unavailable",
+    );
+    if (packet.publication) {
       demand(
-        prior.run === ACCEPTED_REPLAN.priorRun &&
-          prior.issue === issueUrl &&
-          prior.candidateAttempt === 4 &&
-          publication !== ABSENT &&
-          publication.number === 8005 &&
-          publication.head === prior.head &&
+        publication !== ABSENT &&
           publication.repository === config.repository &&
-          publication.url === "https://github.com/chase-sets/chase-sets/pull/8005" &&
-          typeof publication.sourceBranch === "string" &&
-          original !== ABSENT &&
-          SHA.test(original.config?.mainBase),
-        "accepted-replan-history-unavailable",
+          Object.entries(packet.publication).every(([key, value]) => publication[key] === value),
+        "accepted-replan-publication-mismatch",
       );
-      // Keep the rejected head as an ancestor so the existing PR refresh is forward-only.
+    } else demand(publication === ABSENT, "accepted-replan-publication-mismatch");
+    for (const path of packet.allowedPaths) {
       demand(
-        (await git(["rev-parse", "--verify", `${prior.head}^{commit}`])) === prior.head,
-        "selected-base-unavailable",
+        (await git(["--literal-pathspecs", "ls-tree", "-z", packet.candidateHead, "--", path]))
+          .split("\0")
+          .some((line) => line.startsWith("100") && line.endsWith(`\t${path}`)),
+        "accepted-replan-path-widened",
       );
-      const evidence = resolve(priorSource, "hosted-failure.log");
+    }
+    // Keep the rejected head as an ancestor so the existing PR refresh is forward-only.
+    demand(
+      (await git(["rev-parse", "--verify", `${prior.head}^{commit}`])) === prior.head,
+      "selected-base-unavailable",
+    );
+    const evidence = resolve(priorSource, "hosted-failure.log");
+    if (packet.publication) {
       let log: string;
       try {
         log = await readFile(evidence, "utf8");
@@ -636,15 +704,34 @@ export async function queueConfigFromLoop(
         throw new QueueBlocked("hosted-failure-evidence-unavailable");
       }
       demand(log.trim().length > 0, "hosted-failure-evidence-unavailable");
-      initialHistory = prior.history;
-      validateHistory(initialHistory, config.nativeLaunchCeiling);
-      sourceAttempt = 5;
-      attemptBase = prior.head;
-      mainBase = original.config.mainBase;
-      const prompt = `Accepted corrective plan https://github.com/chase-sets/chase-sets/issues/8014; Todd's ruling https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5665159522 and acceptance https://github.com/chase-sets/chase-sets/issues/7766#issuecomment-5665196633. Exactly one correction is authorized, solely for the route-collision inventory failure on PR #8005 at ${prior.head}. Preserve the JPEG acceptance and existing implementation; this is not initial authoring. The four original attempts and all reviews/participants remain history at ${resolve(stateRoot, ACCEPTED_REPLAN.priorRun)}. Read the prior attempt ${resolve(priorReplanDirectory, "attempt.json")} and source records/traces in ${priorSource}. Prior PASS is not current review authority. Verify current execution independently and retain every local, review, hosted, merge and actual deployment gate. After failure or a new loop defect, the host proposes rollback and waits for Todd.\n${hostedFailurePrompt(evidence)}`;
-      replan = { publication, prompt };
-      reviewerPrompt += `\n\n${prompt}`;
     }
+    initialHistory = prior.history;
+    demand(
+      priorHistory.length === 0 || queueDigest(priorHistory) === queueDigest(initialHistory),
+      "accepted-replan-history-unavailable",
+    );
+    validateHistory(initialHistory, config.nativeLaunchCeiling);
+    sourceAttempt = packet.nextAbsoluteAttempt;
+    attemptBase = prior.head;
+    mainBase = original.config.mainBase;
+    const prompt = `Closed continuation authorized by ${packet.authorityUrl}. Exactly one final correction at absolute attempt ${sourceAttempt}, ceiling ${packet.absoluteCeiling}, from ${prior.head}. Change only these exact files: ${JSON.stringify(packet.allowedPaths)}. Preserve product contracts and all prior implementation; do not redesign or expand scope. Read prior findings ${JSON.stringify(prior.findings)}, attempt ${resolve(priorReplanDirectory, "attempt.json")}, and source records/traces in ${priorSource}. All accumulated participants remain charged. Prior PASS is not current review authority. All local, review, hosted, merge and deployment gates remain mandatory. No further implementation or repair is authorized; any work failure parks terminally. ${packet.preReviewEvidence ? `After author PASS the executor pauses for exact-head host verification of workspace ${packet.preReviewEvidence.workspace}, gate ${packet.preReviewEvidence.gate}, before review. The reviewer must inspect only the retained snapshot linked at launch.` : ""}\n${packet.publication ? hostedFailurePrompt(evidence) : "No prior publication exists; do not infer delivery authority."}`;
+    // Reserve the lineage outside both runs. Changing the packet or run cannot spend it twice.
+    const claimName = `accepted-replan-${queueDigest({ repository: packet.repository, issue: packet.issueKey })}`;
+    const claim = await optionalRecord(stateRoot, claimName);
+    demand(
+      claim === ABSENT || queueDigest(claim) === queueDigest(packet),
+      "accepted-replan-already-consumed",
+    );
+    if (claim === ABSENT)
+      await writeFile(resolve(stateRoot, `${claimName}.json`), JSON.stringify(packet), {
+        flag: "wx",
+        flush: true,
+      });
+    replan = {
+      publication: packet.publication,
+      prompt: `${prompt}\nAuthorized correction scope: ${packet.scope}`,
+    };
+    reviewerPrompt += `\n\n${replan.prompt}`;
   }
   demand(!config.acceptedReplan || replan, "accepted-replan-issue-mismatch");
   while (!replan) {
@@ -689,7 +776,7 @@ export async function queueConfigFromLoop(
     });
   }
   const slug = replan
-    ? ACCEPTED_REPLAN.slug
+    ? continuationSlug(config.acceptedReplan!)
     : `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   const paths = {
     queue: resolve(runState, slug),
@@ -759,6 +846,10 @@ export async function queueConfigFromLoop(
     reviewWorktree: paths.reviewWorktree,
     stateDirectory: paths.source,
     allowedPaths: ["."],
+    ...(config.acceptedReplan ? { correctionPaths: config.acceptedReplan.allowedPaths } : {}),
+    ...(config.acceptedReplan?.preReviewEvidence
+      ? { preReviewEvidence: config.acceptedReplan.preReviewEvidence }
+      : {}),
     repository: config.repository,
     requiredChecks: hostedChecks,
     ...(localGates ? { localGates } : {}),
@@ -773,12 +864,12 @@ export async function queueConfigFromLoop(
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
   };
   const item: QueueItem = {
-    ...(replan ? { acceptedReplan: ACCEPTED_REPLAN.id } : {}),
-    id: replan ? "cs-7766-replan-8014:5" : `${selected.key}:${sourceAttempt}`,
+    ...(replan ? { acceptedReplan: config.acceptedReplan } : {}),
+    id: replan ? slug.replace(/-attempt-(\d+)$/, ":$1") : `${selected.key}:${sourceAttempt}`,
     issue: issueUrl,
     base: attemptBase,
     implementationAttempt: sourceAttempt,
-    implementationAttemptCeiling: replan ? 5 : config.attemptCeiling,
+    implementationAttemptCeiling: config.acceptedReplan?.absoluteCeiling ?? config.attemptCeiling,
     setup,
     source,
     repair: {
@@ -788,8 +879,10 @@ export async function queueConfigFromLoop(
       reviewer: { ...reviewer, prompt: reviewerPrompt },
     },
     delivery: {
-      ...(sourceBranch !== publishedBranch && !replan ? { localBranch: sourceBranch } : {}),
-      ...(replan
+      ...(sourceBranch !== publishedBranch && !replan?.publication
+        ? { localBranch: sourceBranch }
+        : {}),
+      ...(replan?.publication
         ? {
             refresh: {
               number: replan.publication.number,
@@ -804,7 +897,7 @@ export async function queueConfigFromLoop(
         key: selected.key,
         number: selected.number,
         title: issueContext.title,
-        sourceBranch: replan?.publication.sourceBranch ?? publishedBranch,
+        sourceBranch: replan?.publication?.sourceBranch ?? publishedBranch,
       },
     },
   };
@@ -922,14 +1015,27 @@ export function validateQueueConfig(config: QueueConfig) {
         item.implementationAttempt > 0 &&
         Number.isSafeInteger(item.implementationAttemptCeiling) &&
         item.implementationAttemptCeiling > 0 &&
-        (item.acceptedReplan === ACCEPTED_REPLAN.id
-          ? config.run === ACCEPTED_REPLAN.run &&
-            item.implementationAttempt === 5 &&
-            item.implementationAttemptCeiling === 5
+        (item.acceptedReplan
+          ? config.run === item.acceptedReplan.targetRun &&
+            item.implementationAttempt === item.acceptedReplan.nextAbsoluteAttempt &&
+            item.implementationAttemptCeiling === item.acceptedReplan.absoluteCeiling
           : item.acceptedReplan === undefined && item.implementationAttemptCeiling <= 4) &&
         item.implementationAttempt <= item.implementationAttemptCeiling,
       "malformed-queue-item",
     );
+    if (item.acceptedReplan) {
+      validateAcceptedReplan(item.acceptedReplan);
+      demand(
+        item.issue === item.acceptedReplan.issueUrl &&
+          item.source.repository === item.acceptedReplan.repository &&
+          item.base === item.acceptedReplan.candidateHead &&
+          queueDigest(item.source.correctionPaths) ===
+            queueDigest(item.acceptedReplan.allowedPaths) &&
+          queueDigest(item.source.preReviewEvidence ?? null) ===
+            queueDigest(item.acceptedReplan.preReviewEvidence),
+        "accepted-replan-binding-mismatch",
+      );
+    }
     demand(!itemIds.has(item.id), "duplicate-queue-item");
     itemIds.add(item.id);
     demand(item.setup.run === item.source.run, "queue-run-drift");
@@ -1350,6 +1456,84 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
   if (saved === ABSENT) await record(directory, "attempt", attempt);
   else validateAttempt(attempt, config);
 
+  const finalStep = async <T>(item: QueueItem, operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        item.acceptedReplan &&
+        error instanceof QueueBlocked &&
+        ([
+          "author-failed",
+          "author-malformed",
+          "author-wrong-head",
+          "author-head-moved",
+          "missing-candidate-commit",
+          "dirty-author",
+          "outside-footprint",
+          "reviewer-failed",
+          "reviewer-malformed",
+          "reviewer-wrong-head",
+          "reviewer-modified-worktree",
+          "source-finding-location-outside-candidate",
+          "launcher-failed",
+          "operator-evidence-failed",
+          "continuation-repair-not-authorized",
+          "refresh-review-failed",
+          "gate-correction-not-authorized",
+          "conflict-resolution-failed",
+          "conflict-resolution-exhausted",
+          "conflict-resolution-scope-escape",
+          "conflict-resolution-unsupported",
+          "deploy-not-verified",
+        ].includes(error.reason) ||
+          error.reason.startsWith("gate-failed:") ||
+          error.reason.startsWith("gate-base-failed:") ||
+          error.reason.startsWith("hosted-check-failed:"))
+      ) {
+        const candidate = await optionalRecord(item.source.stateDirectory, "candidate");
+        const refreshed =
+          attempt.phase === "delivery"
+            ? await optionalRecord(item.source.stateDirectory, "native-refresh")
+            : ABSENT;
+        const failedHead =
+          refreshed !== ABSENT && SHA.test(refreshed.head)
+            ? refreshed.head
+            : candidate === ABSENT
+              ? attempt.head
+              : candidate.head;
+        await record(
+          directory,
+          "attempt",
+          attemptFailureRecord(
+            config,
+            item,
+            item.implementationAttempt,
+            {
+              head: failedHead,
+              reviewId: attempt.reviewId ?? "",
+              findings: [
+                {
+                  file: item.acceptedReplan.allowedPaths[0]!,
+                  line: 1,
+                  severity: "blocking",
+                  text: `${error.reason}: ${error.diagnostics ?? ""}`,
+                },
+              ],
+            },
+            await adapter.history(),
+            Math.max(attempt.retries, error.retries),
+          ),
+        );
+        throw new QueueBlocked(
+          error.reason === "operator-evidence-failed" ? error.reason : "continuation-failed",
+          error.message + (error.diagnostics ? `: ${error.diagnostics}` : ""),
+        );
+      }
+      throw error;
+    }
+  };
+
   for (;;) {
     const item = config.items[attempt.index]!;
     if (attempt.phase === "failed") {
@@ -1384,7 +1568,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
     }
 
     if (attempt.phase === "source") {
-      const source = await adapter.source(item);
+      const source = await finalStep(item, () => adapter.source(item));
       const history = await adapter.history();
       if (source.status === "observing-author" || source.status === "observing-reviewer") {
         attempt = advance(attempt, history, {
@@ -1443,6 +1627,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
     }
 
     if (attempt.phase === "repair") {
+      demand(!item.acceptedReplan, "continuation-repair-not-authorized");
       const repair = await adapter.repair(item);
       const history = await adapter.history();
       if (repair.status === "observing-author" || repair.status === "observing-reviewer") {
@@ -1506,15 +1691,19 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         attempt.stateDirectory !== null,
       "malformed-attempt-record",
     );
-    const delivery = await adapter.delivery(item, {
-      head: attempt.head,
-      reviewId: attempt.reviewId,
-      stateDirectory: attempt.stateDirectory,
-      retries: attempt.retries,
-    });
+    const delivery = await finalStep(item, () =>
+      adapter.delivery(item, {
+        head: attempt.head,
+        reviewId: attempt.reviewId!,
+        stateDirectory: attempt.stateDirectory!,
+        retries: attempt.retries,
+      }),
+    );
     const history = await adapter.history();
     if (delivery.status === "observing-author" || delivery.status === "observing-reviewer") {
-      attempt = advance(attempt, history, {});
+      attempt = advance(attempt, history, {
+        retries: Math.max(attempt.retries, delivery.retries ?? 0),
+      });
       await record(directory, "attempt", attempt);
       return {
         status: delivery.status,
@@ -1742,8 +1931,11 @@ export function repositoryQueueAdapter(
     if (prior === ABSENT || prior.phase !== "failed" || prior.issue !== item.issue) return "";
     for (const stage of ["source", "repair"]) {
       const originalDirectory = resolve(priorDirectory, stage);
-      const refreshed = await optionalRecord(originalDirectory, "native-refresh");
-      const directory = refreshed === ABSENT ? originalDirectory : refreshed.directory;
+      const correction = await optionalRecord(originalDirectory, "gate-correction-result");
+      const acceptedDirectory =
+        correction === ABSENT ? originalDirectory : resolve(originalDirectory, "gate-correction");
+      const refreshed = await optionalRecord(acceptedDirectory, "native-refresh");
+      const directory = refreshed === ABSENT ? acceptedDirectory : refreshed.directory;
       const publication = await optionalRecord(directory, "publication");
       if (publication === ABSENT || publication.head !== prior.head) continue;
       const source = await json(directory, "delivery-source");
@@ -1779,6 +1971,10 @@ export function repositoryQueueAdapter(
       await correctiveEvidence(item);
     },
     async launch(role: Role, current: SourceConfig, prompt: string): Promise<Attempt> {
+      demand(
+        !item.acceptedReplan || stage === "source" || role !== "author",
+        "continuation-repair-not-authorized",
+      );
       const priorHistory = await readHistory();
       demand(priorHistory.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
       const repairCompatiblePrompt =
@@ -2260,9 +2456,15 @@ export function repositoryQueueAdapter(
       }
     },
     async delivery(item, accepted): Promise<QueueDeliveryResult> {
-      const stage = samePath(accepted.stateDirectory, item.source.stateDirectory)
-        ? "source"
-        : "repair";
+      const stopped = await optionalRecord(accepted.stateDirectory, "gate-stop");
+      if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+      const stopGate = async (reason: string, diagnostics?: string): Promise<never> => {
+        await record(accepted.stateDirectory, "gate-stop", {
+          reason,
+          ...(diagnostics ? { diagnostics } : {}),
+        });
+        throw new QueueBlocked(reason, diagnostics);
+      };
       const flowAttempts = await Promise.all(
         ["author", "reviewer"].map((role) =>
           optionalRecord(accepted.stateDirectory, `${role}-attempt`),
@@ -2273,26 +2475,14 @@ export function repositoryQueueAdapter(
       )
         ? 1
         : 0;
-      let savedAttempt = await optionalRecord(state, "attempt");
+      const savedAttempt = await optionalRecord(state, "attempt");
       if (savedAttempt !== ABSENT) validateAttempt(savedAttempt, config);
-      let gateRetryCounted =
+      const previousRefresh = await optionalRecord(accepted.stateDirectory, "native-refresh");
+      const legacyCorrectionUsed =
         savedAttempt !== ABSENT &&
-        savedAttempt.phase === "delivery" &&
-        savedAttempt.item === item.id &&
-        savedAttempt.retries > flowRetries;
-      let retries = savedAttempt === ABSENT ? (accepted.retries ?? 0) : savedAttempt.retries;
-      const persistDeliveryAttempt = async (fields: Partial<AttemptRecord>) => {
-        if (savedAttempt === ABSENT) return;
-        demand(
-          savedAttempt.phase === "delivery" &&
-            savedAttempt.item === item.id &&
-            savedAttempt.reviewId === accepted.reviewId &&
-            savedAttempt.stateDirectory === accepted.stateDirectory,
-          "delivery-source-drift",
-        );
-        savedAttempt = advance(savedAttempt, await readHistory(), fields);
-        await record(state, "attempt", savedAttempt);
-      };
+        savedAttempt.retries >
+          Math.max(flowRetries, previousRefresh !== ABSENT && previousRefresh.flowRetried ? 1 : 0);
+      const correctionRecord = await optionalRecord(accepted.stateDirectory, "gate-correction");
       let delivery: DeliveryConfig = {
         controller: config.controller,
         run: item.source.run,
@@ -2319,74 +2509,106 @@ export function repositoryQueueAdapter(
         ...delivery,
         candidateHead: originalCandidate.head,
       });
+      let sourceConfig: SourceConfig = originalConfig.config;
+      let sourceEvidence = originalEvidence;
+      delivery.candidateHead = originalCandidate.head;
+      if (correctionRecord !== ABSENT) {
+        const correction = correctionRecord;
+        let completed = await optionalRecord(accepted.stateDirectory, "gate-correction-result");
+        if (completed === ABSENT) {
+          let result;
+          try {
+            result = await correctGate(
+              correction.source,
+              boundedNative(item, "refresh"),
+              item.setup.pilotWorktree,
+              correction.gate,
+              correction.context,
+            );
+          } catch (error) {
+            if (
+              error instanceof QueueBlocked &&
+              ["author-failed", "reviewer-failed"].includes(error.reason)
+            )
+              return stopGate(
+                error.reason === "author-failed"
+                  ? "gate-correction-failed"
+                  : "gate-correction-review-failed",
+                error.diagnostics,
+              );
+            if (
+              error instanceof QueueBlocked &&
+              [
+                "native-launch-ceiling-exhausted",
+                "provider-model-refused",
+                "launcher-failed",
+                "reviewer-malformed",
+              ].includes(error.reason)
+            )
+              return stopGate(error.reason, error.diagnostics);
+            throw error;
+          }
+          if (result.status === "observing-author" || result.status === "observing-reviewer")
+            return { status: result.status, retries: correction.delivery.retries + 1 };
+          demand(result.status === "awaiting-publication", "gate-correction-failed");
+          const pair = await passingReview(
+            item,
+            correction.directory,
+            "gate-correction-review-failed",
+          );
+          demand(
+            pair.candidate.head !== correction.failedHead &&
+              (await native.git(delivery.worktree, [
+                "merge-base",
+                correction.failedHead,
+                pair.candidate.head,
+              ])) === correction.failedHead,
+            "gate-correction-failed",
+          );
+          completed = {
+            head: pair.candidate.head,
+            reviewId: pair.selected.attempt.id,
+            retries: correction.delivery.retries + 1 + (result.retries && !flowRetries ? 1 : 0),
+          };
+          await record(accepted.stateDirectory, "gate-correction-result", completed);
+        }
+        delivery = {
+          ...correction.delivery,
+          controllerRevision: config.controllerRevision,
+          stateDirectory: correction.directory,
+          candidateHead: completed.head,
+          retries: completed.retries,
+        };
+        sourceConfig = (await json(correction.directory, "config")).config;
+        sourceEvidence = await deliveryAdapter.source(delivery);
+        demand(
+          sourceEvidence.reviewId === completed.reviewId &&
+            sourceEvidence.reviewId !== correction.previousReview,
+          "gate-correction-review-failed",
+        );
+      }
       const refreshed = await refreshDelivery(
         delivery,
-        originalConfig.config,
-        originalEvidence,
+        sourceConfig,
+        sourceEvidence,
         boundedNative(item, "refresh"),
         item.setup.pilotWorktree,
         flowRetries,
+        deliveryAdapter,
+        previousRefresh !== ABSENT && previousRefresh.resolutionUsed === true,
       );
-      if (refreshed.status === "observing-reviewer") return refreshed;
+      if (refreshed.status !== "ready") return refreshed;
       delivery = refreshed.config;
       const refreshedSource = refreshed.evidence;
-      if (refreshed.flowRetried) gateRetryCounted = delivery.retries > Math.max(flowRetries, 1);
       if (
         delivery.stateDirectory !== accepted.stateDirectory &&
         (await optionalRecord(delivery.stateDirectory, "cleanup")) === ABSENT
       )
         await passingReview(item, delivery.stateDirectory, "refresh-review-not-accepted");
-      const correctionNative = boundedNative(item, stage);
       const inlineDelivery: DeliveryAdapter = {
         ...deliveryAdapter,
         async source() {
           return refreshedSource;
-        },
-        async verifyWorkspace(current, head) {
-          return (
-            (await deliveryAdapter.verifyWorkspace(current, head)) ||
-            (gateRetryCounted && head === current.candidateHead)
-          );
-        },
-        async correctGate(current, gate, output) {
-          if (current.stateDirectory !== accepted.stateDirectory) {
-            // ISS-148: retry a transient gate on the exact delta-reviewed head.
-            // A semantic correction needs its own review; do not import the old verdict.
-            demand(!gateRetryCounted, `gate-retry-exhausted:${gate}`);
-            retries = current.retries + 1;
-            await persistDeliveryAttempt({
-              head: current.candidateHead,
-              reviewId: refreshedSource.reviewId,
-              retries,
-            });
-            gateRetryCounted = true;
-            return { head: current.candidateHead, retries };
-          }
-          const resuming = gateRetryCounted;
-          if (!gateRetryCounted) {
-            retries = (accepted.retries ?? 0) + 1;
-            await persistDeliveryAttempt({ retries });
-            gateRetryCounted = true;
-          }
-          const correctionBase = resuming
-            ? await correctionNative.git(current.worktree, ["rev-parse", "HEAD"])
-            : current.candidateHead;
-          const correction = await correctGate(
-            {
-              ...item.source,
-              author: item.repair.author,
-              base: correctionBase,
-              stateDirectory: current.stateDirectory,
-            },
-            correctionNative,
-            item.setup.pilotWorktree,
-            gate,
-            output,
-            resuming,
-          );
-          await syncParticipant(item, stage, "author", correction.attempt, correction.terminal);
-          await persistDeliveryAttempt({ head: correction.head, retries });
-          return { head: correction.head, retries };
         },
       };
       try {
@@ -2409,6 +2631,75 @@ export function repositoryQueueAdapter(
           });
         return result;
       } catch (error) {
+        if (error instanceof LocalGateFailure) {
+          const failure = error.evidence;
+          if (!failure || failure.cause !== "diagnostic" || !deliveryAdapter.attributeGate)
+            return stopGate(error.reason, error.diagnostics);
+          const currentSource = (await json(delivery.stateDirectory, "config"))
+            .config as SourceConfig;
+          const main = currentSource.mainBase ?? currentSource.base;
+          let attribution = await optionalRecord(delivery.stateDirectory, "gate-attribution");
+          if (attribution === ABSENT) {
+            attribution = {
+              ...(await deliveryAdapter.attributeGate(delivery, error.gate, failure, main)),
+              head: delivery.candidateHead,
+              gate: error.gate,
+              evidence: failure,
+            };
+            await record(delivery.stateDirectory, "gate-attribution", attribution);
+          }
+          if (attribution.cause !== "candidate")
+            return stopGate(
+              `gate-${attribution.cause === "base" ? "base-failed" : attribution.cause === "host" ? "host-failed" : "attribution-unknown"}:${error.gate}`,
+              `Failed head ${delivery.candidateHead}, delivery main ${main}; diagnostics ${failure.log}; control ${attribution.log}`,
+            );
+          if (correctionRecord !== ABSENT || legacyCorrectionUsed)
+            return stopGate(`gate-correction-exhausted:${error.gate}`, failure.log);
+          if (item.acceptedReplan) return stopGate("gate-correction-not-authorized", failure.log);
+          const directory = resolve(accepted.stateDirectory, "gate-correction");
+          const context = `Failed exact reviewed head: ${delivery.candidateHead}; delivery main base: ${main}; predecessor complete review: ${refreshedSource.reviewId}. Exact failed command: ${JSON.stringify(failure.command)}. Full diagnostic artifact: ${failure.log}; failing identities/diagnostics: ${JSON.stringify(failure.diagnostics)}. Base control and attribution: ${resolve(delivery.stateDirectory, "gate-attribution.json")}. Original acceptance and preserved author/reviewer records and captured traces: ${accepted.stateDirectory}; predecessor delivery and review records: ${delivery.stateDirectory}. Read both directories' config, candidate, author/reviewer attempt and terminal files and the trace paths they name. Start from the failed head, retain the full implementation diff against main, and correct only this failure and its direct causes. All original acceptance criteria remain mandatory.`;
+          await mkdir(directory, { recursive: true });
+          await record(accepted.stateDirectory, "gate-correction", {
+            failedHead: delivery.candidateHead,
+            main,
+            previousReview: refreshedSource.reviewId,
+            gate: error.gate,
+            directory,
+            context,
+            delivery,
+            source: {
+              ...currentSource,
+              base: delivery.candidateHead,
+              mainBase: main,
+              stateDirectory: directory,
+              author: { ...item.source.author, ...item.repair.author },
+              reviewer: {
+                ...item.source.reviewer,
+                ...(await json(delivery.stateDirectory, "reviewer-attempt")).placement,
+              },
+            },
+          });
+          return { status: "observing-author", retries: delivery.retries + 1 };
+        }
+
+        if (error instanceof DeliveryBlocked && error.reason === "published-candidate-conflict") {
+          if ((await optionalRecord(delivery.stateDirectory, "publication-conflict")) === ABSENT)
+            await record(delivery.stateDirectory, "publication-conflict", {
+              head: delivery.candidateHead,
+            });
+          return {
+            status: "observing-hosted-checks",
+            head: delivery.candidateHead,
+            reviewId: refreshedSource.reviewId,
+            retries: delivery.retries,
+          };
+        }
+        if (
+          error instanceof DeliveryBlocked &&
+          (error.reason.startsWith("gate-host-failed:") ||
+            error.reason.startsWith("gate-attribution-unknown:"))
+        )
+          return stopGate(error.reason, error.diagnostics);
         if (error instanceof QueueBlocked) throw error;
         throw new QueueBlocked(
           error instanceof DeliveryBlocked ? error.reason : "delivery-state-unknown",

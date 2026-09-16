@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import {
-  ACCEPTED_REPLAN,
   currentCandidateAttempt,
   queueConfigFromLoop,
   repositoryQueueAdapter,
@@ -21,6 +21,12 @@ import {
   type QueueItem,
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
+import {
+  ACCEPTED_REPLAN,
+  evidenceDescriptor,
+  replanPacket,
+  writeEvidence,
+} from "./fixtures/continuation.js";
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
 import { workerPrompt } from "../../scripts/dogfood/flow.js";
 import * as selfAdapter from "../../adapters/self.mjs";
@@ -192,14 +198,15 @@ async function fixture(itemCount = 1) {
   return { root, stateDirectory, config, items };
 }
 
-async function loopFixture(withRuntime = false) {
+async function loopFixture(
+  withRuntime = false,
+  acceptanceCriteria = "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.",
+) {
   const root = await mkdtemp(resolve(tmpdir(), "loop-config-fixture-"));
   roots.push(root);
   const repository = resolve(root, "repository");
   const stateRoot = resolve(root, "state");
   const worktreeRoot = resolve(root, "worktrees");
-  const acceptanceCriteria =
-    "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.";
   await Promise.all([
     mkdir(resolve(repository, "docs"), { recursive: true }),
     mkdir(resolve(repository, "planning/drafts"), { recursive: true }),
@@ -282,7 +289,7 @@ async function acceptedReplanFixture() {
     routingRows: [{ ...SELF_ROUTING, row: 7, review: 11 }],
     repository: "chase-sets/chase-sets",
     targetMilestone: 158,
-    acceptedReplan: ACCEPTED_REPLAN.id,
+    acceptedReplan: replanPacket(f.loop.stateRoot, head),
     nativeLaunchCeiling: 16,
   };
   const selected = { ...f.selected, key: "cs-7766", number: 7766 };
@@ -310,6 +317,7 @@ async function acceptedReplanFixture() {
     participant(9, "cs-7766:4", "source", "reviewer", "passed"),
   ];
   const priorDirectory = resolve(loop.stateRoot, ACCEPTED_REPLAN.priorRun, "cs-7766-attempt-4");
+  loop.acceptedReplan = replanPacket(loop.stateRoot, head, history);
   const priorSource = resolve(priorDirectory, "source");
   await mkdir(priorSource, { recursive: true });
   const prior = {
@@ -341,7 +349,12 @@ async function acceptedReplanFixture() {
   const preserved = new Map<string, string>([
     [resolve(priorDirectory, "attempt.json"), JSON.stringify(prior)],
     [resolve(priorSource, "publication.json"), JSON.stringify(publication)],
-    [resolve(priorSource, "config.json"), JSON.stringify({ config: { mainBase: selected.base } })],
+    [
+      resolve(priorSource, "config.json"),
+      JSON.stringify({
+        config: { mainBase: selected.base, repository: loop.repository, issue: prior.issue },
+      }),
+    ],
     [
       resolve(priorSource, "hosted-failure.log"),
       "Original failed run: route-collision inventory\n",
@@ -378,8 +391,344 @@ async function acceptedReplanFixture() {
       return "succeeded";
     },
   });
-  return { ...f, loop, selected, head, history, preserved, oldSource, git, compose, setup };
+  return { ...f, loop, selected, head, history, preserved, oldSource, git, compose, setup, policy };
 }
+
+async function unpublishedReplanFixture() {
+  const f = await acceptedReplanFixture();
+  const key = "cs-7844";
+  const number = 7844;
+  const priorRun = "m2-ordering-prior";
+  const run = "m2-ordering-final";
+  const file = "bounded-contexts/ordering/features/orders/api/purchase-limits.db.test.ts";
+  await f.git(["checkout", "--detach", f.head]);
+  await mkdir(resolve(f.repository, file, ".."), { recursive: true });
+  await writeFile(resolve(f.repository, file), "prior two unsupported reads\n");
+  await f.git(["add", file]);
+  await f.git(["commit", "-m", "unpublished ordering candidate"]);
+  const head = await f.git(["rev-parse", "HEAD"]);
+  await f.git(["checkout", "main"]);
+  const packet = replanPacket(f.loop.stateRoot, head);
+  const history = f.history.slice(0, 8).map((p, index) => ({
+    ...p,
+    item: `${key}:${index < 4 ? 1 : 3}`,
+    stage: index % 4 >= 2 ? ("repair" as const) : ("source" as const),
+    role: index % 2 ? ("reviewer" as const) : ("author" as const),
+    outcome: index % 2 ? ("failed" as const) : ("passed" as const),
+  }));
+  Object.assign(packet, {
+    issueKey: key,
+    issueUrl: `https://github.com/${f.loop.repository}/issues/${number}`,
+    priorRun,
+    priorAttemptDirectory: resolve(f.loop.stateRoot, priorRun, `${key}-attempt-3`),
+    priorHistoryDigest: createHash("sha256").update(JSON.stringify(history)).digest("hex"),
+    targetRun: run,
+    attemptSlug: `${key}-final-attempt-5`,
+    publication: null,
+    allowedPaths: [file],
+    preReviewEvidence: evidenceDescriptor(resolve(f.loop.stateRoot, "host-evidence")),
+    scope:
+      "Correct only the two unsupported event-store reads before the day +0/+1 cancellation proof",
+  });
+  const priorSource = resolve(packet.priorAttemptDirectory, "repair");
+  await mkdir(priorSource, { recursive: true });
+  const old = JSON.parse(
+    await readFile(resolve(f.loop.acceptedReplan!.priorAttemptDirectory, "attempt.json"), "utf8"),
+  );
+  const prior = {
+    ...old,
+    run: priorRun,
+    issue: packet.issueUrl,
+    item: `${key}:3`,
+    head,
+    history,
+    reviewId: history.at(-1)!.id,
+    findings: [
+      { file, line: 340, severity: "blocking", text: "Missing PostgreSQL cancellation proof" },
+    ],
+  };
+  await writeFile(resolve(packet.priorAttemptDirectory, "attempt.json"), JSON.stringify(prior));
+  await writeFile(
+    resolve(priorSource, "config.json"),
+    JSON.stringify({
+      config: { mainBase: f.selected.base, repository: f.loop.repository, issue: packet.issueUrl },
+    }),
+  );
+  const loop = { ...f.loop, run, acceptedReplan: packet };
+  const selected = { ...f.selected, key, number };
+  const policy = {
+    ...f.policy,
+    branchName: ({ attempt }: { attempt: number }) => `codex/ordering-g${attempt}`,
+  };
+  const compose = (config = loop) => queueConfigFromLoop(config, f.repository, selected, policy);
+  return { ...f, loop, selected, head, history, prior, priorSource, file, compose, policy };
+}
+
+it("composes an unpublished repair-attempt lineage without importing publication or PASS", async () => {
+  const f = await unpublishedReplanFixture();
+  const q = await f.compose();
+  const item = q.items[0]!;
+  expect(q.initialHistory).toEqual(f.history);
+  expect(item).toMatchObject({
+    base: f.head,
+    implementationAttempt: 5,
+    implementationAttemptCeiling: 5,
+    source: { mainBase: f.selected.base, correctionPaths: [f.file] },
+  });
+  expect(item.delivery.refresh).toBeUndefined();
+  for (const role of ["author", "reviewer"] as const) {
+    expect(item.source[role].prompt).toContain(f.priorSource);
+    expect(item.source[role].prompt).toContain("Missing PostgreSQL cancellation proof");
+  }
+  for (const name of ["publication", "author-terminal", "reviewer-terminal"])
+    await expect(
+      readFile(resolve(item.source.stateDirectory, `${name}.json`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await f.compose()).toEqual(q);
+  const renewed = {
+    ...f.loop,
+    run: "second-final",
+    acceptedReplan: { ...f.loop.acceptedReplan, targetRun: "second-final" },
+  };
+  await expect(f.compose(renewed)).rejects.toThrow("accepted-replan-already-consumed");
+}, 30_000);
+
+it.each([
+  "missing",
+  "phase",
+  "issue",
+  "item",
+  "head",
+  "attempt",
+  "history",
+  "repository",
+  "publication",
+])(
+  "refuses a %s mismatch in the named prior lineage before setup",
+  async (mode) => {
+    const f = await unpublishedReplanFixture();
+    const path = resolve(f.loop.acceptedReplan.priorAttemptDirectory, "attempt.json");
+    if (mode === "missing") await rm(path);
+    else if (mode === "repository")
+      await writeFile(
+        resolve(f.priorSource, "config.json"),
+        JSON.stringify({
+          config: { mainBase: f.selected.base, repository: "borrowed/repo", issue: f.prior.issue },
+        }),
+      );
+    else if (mode === "publication")
+      await writeFile(resolve(f.priorSource, "publication.json"), "{}");
+    else {
+      const value = { ...f.prior };
+      if (mode === "phase") value.phase = "delivery";
+      if (mode === "issue") value.issue = "https://github.com/chase-sets/chase-sets/issues/999";
+      if (mode === "item") value.item = "borrowed:3";
+      if (mode === "head") value.head = f.selected.base;
+      if (mode === "attempt") value.candidateAttempt = 3;
+      if (mode === "history") value.history = value.history.slice(0, 7);
+      await writeFile(path, JSON.stringify(value));
+    }
+    await expect(f.compose()).rejects.toThrow();
+    await expect(
+      readFile(
+        resolve(
+          f.loop.stateRoot,
+          f.loop.run,
+          f.loop.acceptedReplan.attemptSlug,
+          "setup/setup-plan.json",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  },
+  30_000,
+);
+
+it.each(["absent", "invalid", "fail", "pass", "author-fail"])(
+  "runs the real composed source lifecycle through %s operator evidence and restart",
+  async (mode) => {
+    const f = await unpublishedReplanFixture();
+    const q = await f.compose();
+    const item = q.items[0]!;
+    const launches: string[] = [];
+    const git = async (cwd: string, args: string[]) =>
+      (await execute(f.gitExecutable, ["-C", cwd, ...args])).stdout.trim();
+    const native: Adapter = {
+      async preflight() {},
+      git,
+      async launch(role, config) {
+        launches.push(role);
+        if (role === "author")
+          await writeFile(resolve(config.worktree, f.file), "two corrected production reads\n");
+        return {
+          id: randomUUID(),
+          pid: 111,
+          trace: resolve(q.stateDirectory, `${role}.trace`),
+          launchedAt: Date.now(),
+        };
+      },
+      async observe(role, config, attempt) {
+        if (role === "reviewer") return { id: attempt.id, status: "running" };
+        return {
+          id: attempt.id,
+          status: mode === "author-fail" ? "failed" : "passed",
+          head: config.base,
+        };
+      },
+      async checks() {
+        throw new Error("No publication before review");
+      },
+    };
+    const adapter = repositoryQueueAdapter(q, f.repository, {
+      native,
+      setup: f.setup,
+      gitExecutable: f.gitExecutable,
+      async assertExecutor() {},
+    });
+    if (mode === "author-fail") {
+      await expect(queueStep(q, adapter)).rejects.toThrow("continuation-failed");
+      await expect(queueStep(await f.compose(), adapter)).rejects.toThrow(
+        "implementation-attempt-ceiling-exhausted",
+      );
+      const saved = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+      expect(saved).toMatchObject({ phase: "failed", candidateAttempt: 5, head: f.head });
+      expect(saved.history.at(-1)).toMatchObject({ role: "author", outcome: "failed" });
+      expect(launches).toEqual(["author"]);
+      return;
+    }
+    await expect(queueStep(q, adapter)).rejects.toThrow("operator-evidence-required");
+    const candidate = JSON.parse(
+      await readFile(resolve(item.source.stateDirectory, "candidate.json"), "utf8"),
+    );
+    expect(candidate.changed).toEqual([f.file, "jpeg.txt"]);
+    const descriptor = f.loop.acceptedReplan.preReviewEvidence!;
+    if (mode !== "absent")
+      await writeEvidence(
+        descriptor,
+        f.loop.repository,
+        mode === "invalid" ? f.head : candidate.head,
+        mode === "fail" ? { exitCode: 1 } : {},
+      );
+    const resume = async () => {
+      const replay = await f.compose();
+      return queueStep(
+        replay,
+        repositoryQueueAdapter(replay, f.repository, {
+          native,
+          setup: f.setup,
+          gitExecutable: f.gitExecutable,
+          async assertExecutor() {},
+        }),
+      );
+    };
+    if (mode === "pass") {
+      await expect(resume()).resolves.toMatchObject({ status: "observing-reviewer" });
+      await Promise.all(Object.values(descriptor.bundle).map((path) => rm(path)));
+      await expect(resume()).resolves.toMatchObject({ status: "observing-reviewer" });
+      expect(launches).toEqual(["author", "reviewer"]);
+    } else {
+      await expect(resume()).rejects.toThrow(
+        mode === "absent"
+          ? "operator-evidence-required"
+          : mode === "invalid"
+            ? "operator-evidence-authority"
+            : "operator-evidence-failed",
+      );
+      if (mode === "fail") {
+        await writeEvidence(descriptor, f.loop.repository, candidate.head);
+        await expect(resume()).rejects.toThrow("implementation-attempt-ceiling-exhausted");
+        const saved = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+        expect(saved).toMatchObject({ phase: "failed", candidateAttempt: 5, head: candidate.head });
+        expect(saved.history).toHaveLength(f.history.length + 1);
+      }
+      expect(launches).toEqual(["author"]);
+    }
+  },
+  30_000,
+);
+
+it("validates the closed packet before any setup, including its evidence descriptor", async () => {
+  const f = await loopFixture();
+  const packet = replanPacket(f.loop.stateRoot);
+  const config = {
+    ...f.loop,
+    repository: packet.repository,
+    run: packet.targetRun,
+    acceptedReplan: packet,
+  };
+  validateLoopConfig(config);
+  const negatives: Record<string, unknown>[] = [
+    { extra: true },
+    { schemaVersion: "future" },
+    { priorAbsoluteAttempt: 3 },
+    { priorAbsoluteAttempt: 5, nextAbsoluteAttempt: 6, absoluteCeiling: 6 },
+    { nextAbsoluteAttempt: 6 },
+    { absoluteCeiling: 6 },
+    { priorHistoryDigest: "missing" },
+    { candidateHead: "main" },
+    { targetRun: "renewed" },
+    { priorRun: "../prior" },
+    { priorAttemptDirectory: "relative/attempt" },
+    { attemptSlug: "../attempt-5" },
+    { authorityUrl: "issue prose" },
+    { publication: {} },
+    ...[
+      [],
+      ["."],
+      ["/absolute"],
+      ["C:\\absolute"],
+      ["../escape"],
+      ["a/../b"],
+      ["a//b"],
+      ["a/"],
+      ["a", "a"],
+      ["a/*"],
+      [".git/config"],
+    ].map((allowedPaths) => ({ allowedPaths })),
+    {
+      preReviewEvidence: {
+        ...evidenceDescriptor(resolve(f.loop.stateRoot, "evidence")),
+        extra: true,
+      },
+    },
+    {
+      preReviewEvidence: { ...evidenceDescriptor(resolve(f.loop.stateRoot, "evidence")), skips: 1 },
+    },
+    {
+      preReviewEvidence: {
+        ...evidenceDescriptor(resolve(f.loop.stateRoot, "evidence")),
+        receiptSchema: "unknown",
+      },
+    },
+    {
+      preReviewEvidence: {
+        ...evidenceDescriptor(resolve(f.loop.stateRoot, "evidence")),
+        command: { executable: "pnpm" },
+      },
+    },
+  ];
+  for (const delta of negatives)
+    expect(
+      () =>
+        validateLoopConfig({ ...config, acceptedReplan: { ...packet, ...delta } } as LoopConfig),
+      JSON.stringify(delta),
+    ).toThrow();
+  expect(() => validateLoopConfig({ ...f.loop, attemptCeiling: 5 })).toThrow(
+    "invalid-attempt-ceiling",
+  );
+});
+
+it("refuses widened directory authority and a packet whose source paths changed on replay", async () => {
+  const f = await unpublishedReplanFixture();
+  await expect(
+    f.compose({
+      ...f.loop,
+      acceptedReplan: { ...f.loop.acceptedReplan, allowedPaths: ["bounded-contexts"] },
+    }),
+  ).rejects.toThrow("accepted-replan-path-widened");
+  const q = await f.compose();
+  q.items[0]!.source.correctionPaths = ["."];
+  expect(() => validateQueueConfig(q)).toThrow("accepted-replan-binding-mismatch");
+}, 30_000);
 
 it("admits only the accepted replan beside preserved workspaces and refuses renewal by run name", async () => {
   const f = await acceptedReplanFixture();
@@ -388,7 +737,7 @@ it("admits only the accepted replan beside preserved workspaces and refuses rene
   await expect(f.compose({ ...f.loop, run: "another-fresh-run" })).rejects.toThrow(
     "invalid-accepted-replan",
   );
-  await expect(f.compose({ ...f.loop, targetMilestone: 155 })).rejects.toThrow(
+  await expect(f.compose({ ...f.loop, repository: "other/repository" })).rejects.toThrow(
     "invalid-accepted-replan",
   );
   const queue = await f.compose();
@@ -455,10 +804,6 @@ it("stops accepted correction before setup when its original failed log is unava
   await expect(
     readFile(resolve(f.loop.stateRoot, f.loop.run, ACCEPTED_REPLAN.slug, "attempt.json")),
   ).rejects.toMatchObject({ code: "ENOENT" });
-  const { acceptedReplan: _accepted, ...absent } = f.loop;
-  await expect(
-    f.compose({ ...absent, stateRoot: resolve(f.loop.stateRoot, "new-state") }),
-  ).rejects.toThrow("accepted-replan-required");
 }, 30_000);
 
 it.each([false, true])(
@@ -1055,6 +1400,43 @@ it("derives and prepares a repository cycle without modifying the controller rep
       "loop-roots-overlap",
     );
 }, 30_000);
+
+it.each([true, false])(
+  "uses real self criteria before setup for a valid selection (supported items: %s)",
+  async (supported) => {
+    const { loop, repository, gitExecutable, selected } = await loopFixture(
+      false,
+      supported
+        ? "1. First criterion\n   Continued detail\n2. Second criterion"
+        : "   Orphan continuation without an item.",
+    );
+    const queue = queueConfigFromLoop(
+      { ...loop, repository: "todd-skelton/orchestration-platform" },
+      repository,
+      selected,
+      selfAdapter,
+    );
+    if (supported) {
+      const item = (await queue).items[0]!;
+      expect(item.repair.acceptanceCriteria).toEqual([
+        "First criterion\nContinued detail",
+        "Second criterion",
+      ]);
+      expect(item.implementationAttempt).toBe(1);
+      expect(item.implementationAttemptCeiling).toBe(4);
+    } else {
+      await expect(queue).rejects.toMatchObject({ reason: "selected-issue-criteria-missing" });
+      expect(await readdir(loop.stateRoot)).toEqual([]);
+    }
+    expect(await readdir(loop.worktreeRoot)).toEqual([]);
+    expect((await execute(gitExecutable, ["-C", repository, "status", "--porcelain"])).stdout).toBe(
+      "",
+    );
+    expect(
+      (await execute(gitExecutable, ["-C", repository, "rev-parse", "HEAD"])).stdout.trim(),
+    ).toBe(selected.base);
+  },
+);
 
 it("preserves registered multiline criteria through the genuine repository repair path", async () => {
   const { loop, repository, gitExecutable, acceptanceCriteria, selected } = await loopFixture(true);

@@ -3,6 +3,9 @@ import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { parseReview, RepairBlocked } from "./repair-policy.mjs";
 import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import * as continuation from "./continuation.ts";
+import type { PreReviewEvidence } from "./continuation.js";
 
 export type Role = "author" | "reviewer";
 export interface Config {
@@ -17,6 +20,8 @@ export interface Config {
   reviewWorktree: string;
   stateDirectory: string;
   allowedPaths: string[];
+  correctionPaths?: string[];
+  preReviewEvidence?: PreReviewEvidence;
   repository: string;
   requiredChecks: string[];
   localGates?: string[];
@@ -68,6 +73,7 @@ export interface Check {
   link: string;
 }
 export interface Adapter {
+  validateAuthorChanges?(config: Config): Promise<void>;
   preflight(config: Config): Promise<void>;
   waitForProvider?(config: Config): Promise<void>;
   git(worktree: string, args: string[]): Promise<string>;
@@ -119,6 +125,9 @@ async function replace(directory: string, name: string, value: unknown) {
   await rename(temporary, path);
 }
 export function validateConfig(config: Config) {
+  if (config.correctionPaths !== undefined)
+    continuation.validateCorrectionPaths(config.correctionPaths);
+  if (config.preReviewEvidence) continuation.validatePreReviewEvidence(config.preReviewEvidence);
   requireThat(config && /^[\w.-]{1,64}$/.test(config.run), "invalid-run");
   requireThat(
     config.adapter &&
@@ -200,10 +209,14 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
       : `Final response must be ONLY JSON: {"run":"${config.run}","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<is there a simpler way?>"} (or verdict FAIL). Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block.`;
   return (
     `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
+<<<<<<< HEAD
     `Allowed author paths: ${JSON.stringify(config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
     (role === "author"
       ? `Write all scratch, temporary fixtures, command captures and execution evidence under the existing attempt temp root ${JSON.stringify(resolve(config.stateDirectory, "author-temp"))}, outside the source tree. Reuse that path on correction and resume; do not create scratch directories in the source tree, even if ignored or empty. Product source and committed test fixtures still belong in the allowed author paths.\n`
       : "") +
+=======
+    `Allowed author paths: ${JSON.stringify(config.correctionPaths ?? config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
+>>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
     `Explain substantive findings in progress messages before the final response; these remain in the captured trace. ${report} Review every changed assertion independently.${localVerification}\n` +
     (role === "author" && config.mainBase && config.mainBase !== config.base
       ? "This corrective base already contains implementation work. If inspection and executed checks support the existing source, report PASS without manufacturing source changes; the unchanged candidate still requires independent review and all delivery gates.\n"
@@ -226,7 +239,7 @@ function footprint(config: Config, changed: string[]) {
   return changed;
 }
 const paths = (output: string) => output.split("\0").filter(Boolean);
-async function candidate(config: Config, adapter: Adapter) {
+async function candidate(config: Config, adapter: Adapter, correction = true) {
   requireThat(
     (await adapter.git(config.worktree, ["status", "--porcelain"])) === "",
     "dirty-author",
@@ -251,6 +264,19 @@ async function candidate(config: Config, adapter: Adapter) {
       ]),
     ),
   );
+  if (correction && config.correctionPaths) {
+    const delta = paths(
+      await adapter.git(config.worktree, [
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        config.base,
+        head,
+      ]),
+    );
+    if (delta.length) footprint({ ...config, allowedPaths: config.correctionPaths }, delta);
+  }
   return { head, changed };
 }
 async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inherited?: string) {
@@ -308,6 +334,15 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
   });
   for (const role of inherited ? (["reviewer"] as const) : (["author", "reviewer"] as const)) {
     const reviewed = await get("candidate");
+    const hostEvidence =
+      role === "reviewer" && config.preReviewEvidence
+        ? await continuation.retainPreReviewEvidence(
+            directory,
+            config.repository,
+            reviewed?.head,
+            config.preReviewEvidence,
+          )
+        : "";
     let attempt: Attempt | undefined = await get(`${role}-attempt`);
     let terminal: Terminal | undefined = await get(`${role}-terminal`);
     if (attempt?.retries === 1) retries = 1;
@@ -327,7 +362,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
       if (!attempt) {
         await adapter.waitForProvider?.(config);
         let reviewerHead: string | undefined;
-        let authorEvidence = "";
+        let authorEvidence = hostEvidence;
         if (!relaunch) {
           requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
           // Reserve before the first launch. A retry replaces this attempt once launched.
@@ -376,14 +411,14 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           );
         } else {
           requireThat(reviewed, "candidate-head-moved");
-          const candidateHead = (await candidate(config, adapter)).head;
+          const candidateHead = (await candidate(config, adapter, !inherited)).head;
           requireThat(candidateHead === reviewed.head, "candidate-head-moved");
           reviewerHead = candidateHead;
           const author: Attempt = await get("author-attempt");
           const authorBase = inherited
             ? (await readOptional(resolve(inherited, "config.json"))).config.base
             : config.base;
-          authorEvidence =
+          authorEvidence +=
             `\nSelected author attempt ${author.id}; exact author base: ${authorBase}; exact candidate: ${candidateHead}. Captured execution trace: ${JSON.stringify(author.trace)}. ` +
             `Delivery main base: ${config.mainBase ?? config.base}; inspect the full implementation diff from this base to the candidate, including when the corrective delta is empty. ` +
             `Existing attempt, terminal report and candidate records: ${JSON.stringify([resolve(inherited ?? directory, "author-attempt.json"), resolve(inherited ?? directory, "author-terminal.json"), resolve(directory, "candidate.json")])}.\n` +
@@ -513,6 +548,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
     if (role === "author") {
       requireThat(terminal.head === config.base, "author-wrong-head");
       if (!reviewed) {
+        await adapter.validateAuthorChanges?.(config);
         requireThat(!(await get("commit-intent")), "commit-result-unknown-reconcile");
         requireThat(
           (await adapter.git(config.worktree, ["rev-parse", "HEAD"])) === config.base,
@@ -549,7 +585,10 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           ]),
         ];
         if (changed.length > 0) {
-          footprint(config, changed);
+          footprint(
+            { ...config, allowedPaths: config.correctionPaths ?? config.allowedPaths },
+            changed,
+          );
           await put("commit-intent", { base: config.base, changed });
           await adapter.git(config.worktree, [
             "--literal-pathspecs",
@@ -566,7 +605,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
       requireThat(current.head === (await get("candidate")).head, "candidate-head-moved");
       continue;
     }
-    const current = await candidate(config, adapter);
+    const current = await candidate(config, adapter, !inherited);
     requireThat(terminal.head === current.head, `${role}-wrong-head`);
     if (role === "reviewer") {
       requireThat(reviewed.head === current.head, "candidate-head-moved");
@@ -636,6 +675,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
 }
 
 export async function step(config: Config, adapter: Adapter, pilotRoot: string) {
+  if (config.correctionPaths) await reconcileCorrectionCommit(config, adapter);
   return runStep(config, adapter, pilotRoot);
 }
 
@@ -647,8 +687,35 @@ export async function reviewRefresh(
   inherited: string,
 ) {
   if (!(await readOptional(resolve(config.stateDirectory, "candidate.json"))))
-    await record(config.stateDirectory, "candidate", await candidate(config, adapter));
+    await record(config.stateDirectory, "candidate", await candidate(config, adapter, false));
   return runStep(config, adapter, pilotRoot, inherited);
+}
+
+// ISS-152: corrections use the same persisted author/reviewer lifecycle and retries.
+async function reconcileCorrectionCommit(config: Config, adapter: Adapter) {
+  const intent = await readOptional(resolve(config.stateDirectory, "commit-intent.json"));
+  if (intent && !(await readOptional(resolve(config.stateDirectory, "candidate.json")))) {
+    const terminal = await readOptional(resolve(config.stateDirectory, "author-terminal.json"));
+    requireThat(
+      terminal?.status === "passed" && terminal.head === config.base,
+      "gate-correction-failed",
+    );
+    let head = await adapter.git(config.worktree, ["rev-parse", "HEAD"]);
+    if (head === config.base) {
+      const changed = footprint(
+        { ...config, allowedPaths: config.correctionPaths ?? config.allowedPaths },
+        intent.changed,
+      );
+      await adapter.git(config.worktree, ["--literal-pathspecs", "add", "--all", "--", ...changed]);
+      await adapter.git(config.worktree, ["commit", "-m", `dogfood: ${config.run}`]);
+      head = await adapter.git(config.worktree, ["rev-parse", "HEAD"]);
+    }
+    requireThat(
+      (await adapter.git(config.worktree, ["rev-parse", `${head}^`])) === config.base,
+      "candidate-workspace-drift",
+    );
+    await record(config.stateDirectory, "candidate", await candidate(config, adapter));
+  }
 }
 
 export async function correctGate(
@@ -656,98 +723,22 @@ export async function correctGate(
   adapter: Adapter,
   pilotRoot: string,
   gate: string,
-  output: string,
-  resume = false,
+  evidence: string,
 ) {
-  validateConfig(config);
-  requireThat(
-    (await adapter.git(pilotRoot, ["rev-parse", "HEAD"])) === config.pilotRevision &&
-      (await adapter.git(pilotRoot, ["status", "--porcelain"])) === "",
-    "pilot-revision-moved",
+  await reconcileCorrectionCommit(config, adapter);
+  return step(
+    {
+      ...config,
+      author: {
+        ...config.author,
+        prompt: `${config.author.prompt}\nCorrect only the ${gate} failure and its direct causes. ${evidence}`,
+      },
+      reviewer: {
+        ...config.reviewer,
+        prompt: `${config.reviewer.prompt}\nIndependent DELTA review: inspect the corrected hunks and direct callers against the failed head and delivery main base. Reject scope expansion, lost acceptance behavior and inadequate execution evidence. The predecessor PASS is context, never changed-code authority. ${evidence}`,
+      },
+    },
+    adapter,
+    pilotRoot,
   );
-  requireThat(
-    (await adapter.git(config.worktree, ["rev-parse", "HEAD"])) === config.base &&
-      (resume || (await adapter.git(config.worktree, ["status", "--porcelain"])) === ""),
-    "candidate-workspace-drift",
-  );
-  const prompt = `${workerPrompt(config, "author", config.base, config.author.prompt)}\nCorrect the ${gate} gate failure on this same branch. The gate output was:\n${output}\n`;
-  let attempt: Attempt;
-  let terminal: Terminal;
-  let relaunch = false;
-  let retries = 0;
-  for (;;) {
-    await adapter.waitForProvider?.(config);
-    if (relaunch) {
-      await adapter.git(config.worktree, ["reset", "--hard", config.base]);
-      await adapter.git(config.worktree, ["clean", "-fd"]);
-    }
-    attempt = routedAttempt(config, "author", await adapter.launch("author", config, prompt));
-    requireThat(
-      typeof attempt.id === "string" &&
-        attempt.id.length > 0 &&
-        Number.isSafeInteger(attempt.pid) &&
-        attempt.pid > 0 &&
-        isAbsolute(attempt.trace) &&
-        Number.isFinite(attempt.launchedAt) &&
-        attempt.launchedAt > 0,
-      "invalid-attempt-identity",
-    );
-    for (;;) {
-      terminal = await adapter.observe("author", config, attempt);
-      requireThat(
-        terminal.id === attempt.id &&
-          ["running", "passed", "failed", "dead"].includes(terminal.status),
-        "malformed-terminal",
-      );
-      if (terminal.status !== "running") break;
-      await new Promise((done) => setTimeout(done, 1_000));
-    }
-    if (terminal.status !== "dead") break;
-    if (!terminal.providerFailure) {
-      if (retries)
-        throw new QueueBlocked("launcher-failed", terminalSummary(terminal.summary), retries);
-      retries = 1;
-    }
-    relaunch = true;
-  }
-  if (terminal.status !== "passed")
-    throw new QueueBlocked("gate-correction-failed", terminalSummary(terminal.summary));
-  requireThat(terminal.head === config.base, "author-wrong-head");
-  const changedPaths = [
-    ...new Set([
-      ...paths(
-        await adapter.git(config.worktree, ["diff", "--name-only", "--no-renames", "-z", "HEAD"]),
-      ),
-      ...paths(
-        await adapter.git(config.worktree, [
-          "diff",
-          "--cached",
-          "--name-only",
-          "--no-renames",
-          "-z",
-        ]),
-      ),
-      ...paths(
-        await adapter.git(config.worktree, ["ls-files", "--others", "--exclude-standard", "-z"]),
-      ),
-    ]),
-  ];
-  if (resume && changedPaths.length === 0) {
-    requireThat(
-      (await adapter.git(config.reviewWorktree, ["status", "--porcelain"])) === "",
-      "dirty-reviewer",
-    );
-    await adapter.git(config.reviewWorktree, ["checkout", "--detach", config.base]);
-    return { head: config.base, attempt, terminal };
-  }
-  const changed = footprint(config, changedPaths);
-  await adapter.git(config.worktree, ["--literal-pathspecs", "add", "--all", "--", ...changed]);
-  await adapter.git(config.worktree, ["commit", "-m", `dogfood: ${config.run} gate correction`]);
-  const corrected = await candidate(config, adapter);
-  requireThat(
-    (await adapter.git(config.reviewWorktree, ["status", "--porcelain"])) === "",
-    "dirty-reviewer",
-  );
-  await adapter.git(config.reviewWorktree, ["checkout", "--detach", corrected.head]);
-  return { head: corrected.head, attempt, terminal };
 }

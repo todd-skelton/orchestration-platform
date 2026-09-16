@@ -1,6 +1,11 @@
 import { execFile, spawn } from "node:child_process";
+<<<<<<< HEAD
 import { randomUUID } from "node:crypto";
 import { open, readFile, realpath, writeFile } from "node:fs/promises";
+=======
+import { createHash } from "node:crypto";
+import { mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
+>>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
@@ -12,16 +17,75 @@ import {
   type CleanupPlan,
   type DeliveryAdapter,
   type DeliveryConfig,
+  type GateFailureEvidence,
   type DraftPlan,
   type MergeEvidence,
   type PublicationEvidence,
   type PublicationPlan,
+  type PublicationObservation,
 } from "./delivery.mjs";
 
 const exec = promisify(execFile);
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const ATTEMPT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+
+// ISS-152: pipe directly to a runtime file, not execFile's bounded output buffer.
+async function gateCommand(command: GateFailureEvidence["command"], log: string) {
+  const file = await open(log, "wx");
+  try {
+    return await new Promise<{ code: number | null; signal: string | null; startup?: string }>(
+      (done) => {
+        const child = spawn(command.executable, command.argv, {
+          cwd: command.cwd,
+          windowsHide: true,
+          stdio: ["ignore", file.fd, file.fd],
+        });
+        child.once("error", (error) => done({ code: null, signal: null, startup: error.message }));
+        child.once("close", (code, signal) => done({ code, signal }));
+      },
+    );
+  } finally {
+    await file.sync();
+    await file.close();
+  }
+}
+
+// Deliberately recognize only completed compiler, formatter and assertion diagnostics.
+// Timeouts, resource failures and mixed causes have no candidate attribution.
+export function gateDiagnostics(name: string, raw: string): string[] {
+  const output = raw.replace(/\u001b\[[0-9;]*m/g, "");
+  if (
+    /timed?\s*out|TimeoutError:|(?:test|hook|command|process) timeout|timeout of \d+|ENOMEM|ENOSPC|EACCES|ENOENT|ECONN|heap out of memory|SIGKILL|Unhandled|unhandled|ELIFECYCLE.*signal|command not found|Cannot find (?:module|package)|ERR_PNPM|failed to (?:load|start|resolve)|Errors\s+[1-9]\d*\s+errors?|^(?:TypeError|ReferenceError|SyntaxError|FATAL ERROR):/im.test(
+      output,
+    )
+  )
+    return [];
+  if (name === "typecheck")
+    return [...output.matchAll(/^([^\r\n]+\(\d+,\d+\): error TS\d+: .+)$/gm)].map((m) => m[1]!);
+  if (name === "format:check" && output.includes("Code style issues found"))
+    return [...output.matchAll(/^\[warn\] (\S+\.[a-z]+)$/gm)].map((m) => m[1]!);
+  if (
+    name === "test" &&
+    /Test Files\s+\d+ failed/.test(output) &&
+    /Tests\s+.*failed/.test(output) &&
+    /AssertionError:|Error: expect\(/.test(output)
+  ) {
+    const tests = [
+      ...output.matchAll(/^\s*FAIL\s+(.+\.(?:test|spec)\.[cm]?[jt]sx?\s+>\s+.+)$/gm),
+    ].map((m) => m[1]!);
+    // Every failed test must identify an assertion; setup/suite failures stay unknown.
+    const count = output.match(/Tests\s+(\d+) failed/);
+    const blocks = output.split(/^\s*FAIL\s+/m).slice(1);
+    if (
+      tests.length === Number(count?.[1]) &&
+      blocks.length === tests.length &&
+      blocks.every((block) => /AssertionError:|Error: expect\(/.test(block))
+    )
+      return tests;
+  }
+  return [];
+}
 
 function validPublicationTarget(target: unknown): target is string {
   return (
@@ -254,6 +318,10 @@ function matchesPublicationTarget(row: any, config: DeliveryConfig, plan: Public
     row.headRefName === plan.sourceBranch &&
     row.baseRefName === plan.baseBranch
   );
+}
+
+function isConflicting(row: any) {
+  return row.mergeable === "CONFLICTING" || row.mergeStateStatus === "DIRTY";
 }
 
 function matchesPublicationIdentity(
@@ -534,6 +602,27 @@ export function githubDeliveryAdapter(
   };
   return {
     publicationUrl,
+    async conflictingPublication(config, current) {
+      try {
+        const row = await commands.ghJson(config, [
+          "pr",
+          "view",
+          String(current.number),
+          "--json",
+          "number,url,headRefOid,headRefName,baseRefName,state,title,body,mergeable,mergeStateStatus",
+        ]);
+        if (
+          !matchesPublication(row, current, config) ||
+          row.state !== "OPEN" ||
+          (await publicationRemoteBranchHead(gitExecutable, config, current.sourceBranch)) !==
+            current.head
+        )
+          throw new Error("publication moved");
+        return isConflicting(row);
+      } catch {
+        throw new DeliveryBlocked("publication-state-unknown");
+      }
+    },
     async source(config) {
       const pinned = await json(
         resolve(config.stateDirectory, "config.json"),
@@ -611,15 +700,210 @@ export function githubDeliveryAdapter(
     verifyWorkspace,
     async runGate(config, name, head) {
       if (!(await verifyWorkspace(config, head)))
+<<<<<<< HEAD
         return { status: "failed", output: "candidate workspace drifted before gate" };
       const result = await committedGate(config, name, head, gitExecutable);
       if (result.status === "failed") return result;
       return (await verifyWorkspace(config, head))
         ? result
         : { status: "failed", output: "candidate workspace drifted after gate" };
+=======
+        throw new DeliveryBlocked("candidate-workspace-drift");
+      const directory = resolve(
+        config.stateDirectory,
+        `gate-${createHash("sha256").update(name).digest("hex")}`,
+      );
+      try {
+        await mkdir(directory, { recursive: true });
+      } catch (error) {
+        throw new DeliveryBlocked(
+          `gate-host-failed:${name}`,
+          `${String(error)}; evidence directory: ${directory}`,
+        );
+      }
+      const log = resolve(directory, "candidate.log");
+      let command: GateFailureEvidence["command"];
+      try {
+        const launcher = await resolvePnpmLauncher();
+        command = {
+          executable: launcher.executable,
+          argv: [...launcher.prefixArgs, "run", name],
+          cwd: config.worktree,
+        };
+      } catch (error) {
+        throw new DeliveryBlocked(`gate-host-failed:${name}`, String(error));
+      }
+      try {
+        if (
+          name === "planning:board-check" &&
+          config.repository === "todd-skelton/orchestration-platform"
+        ) {
+          // This gate observes the live board and cannot be attributed by a local base control.
+          try {
+            await checkCandidateBoard(config.worktree, head, gitExecutable);
+          } catch (error) {
+            await stagedFile(config, `board-failure.log`, String(error));
+            return { status: "failed", output: String(error) };
+          }
+          if (!(await verifyWorkspace(config, head)))
+            throw new DeliveryBlocked("candidate-workspace-drift");
+          return { status: "passed" };
+        }
+        const terminalPath = resolve(directory, "candidate-terminal.json");
+        let saved;
+        try {
+          saved = JSON.parse(await readFile(terminalPath, "utf8"));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (saved) {
+          if (saved.head !== head) throw new DeliveryBlocked("gate-failure-head-drift");
+          command = saved.command;
+        }
+        const result = saved ?? (await gateCommand(command, log));
+        await stagedFile(
+          config,
+          `${directory.split(/[\\/]/).at(-1)}/candidate-terminal.json`,
+          JSON.stringify({ head, command, ...result }),
+        );
+        const output = await readFile(log, "utf8");
+        if (!(await verifyWorkspace(config, head)))
+          throw new DeliveryBlocked("candidate-workspace-drift");
+        if (result.code === 0 && !result.signal && !result.startup) return { status: "passed" };
+        const diagnostics =
+          result.code !== null && !result.signal && !result.startup
+            ? gateDiagnostics(name, output)
+            : [];
+        // Tie every diagnostic to a file in the committed candidate, not an external path.
+        let committed = diagnostics.length > 0;
+        for (const diagnostic of diagnostics) {
+          const path = diagnostic.split(/\(\d+,\d+\):| > /)[0]!;
+          try {
+            await git(
+              gitExecutable,
+              config,
+              ["cat-file", "-e", `${head}:${path}`],
+              config.worktree,
+            );
+          } catch {
+            committed = false;
+          }
+        }
+        const evidence: GateFailureEvidence = {
+          head,
+          command,
+          log,
+          diagnostics,
+          cause:
+            result.startup ||
+            (/(?:tsc|prettier|vitest): (?:not found|command not found)|'(?:tsc|prettier|vitest)' is not recognized/.test(
+              output,
+            ) &&
+              !/error TS\d+:|AssertionError:|Code style issues found/.test(output))
+              ? "host"
+              : committed
+                ? "diagnostic"
+                : "unknown",
+        };
+        return { status: "failed", output: result.startup ?? output, evidence };
+      } catch (error) {
+        if (error instanceof DeliveryBlocked) throw error;
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          throw new DeliveryBlocked(
+            `gate-attribution-unknown:${name}`,
+            `Incomplete terminal observation; retained output: ${log}`,
+          );
+        throw new DeliveryBlocked(`gate-host-failed:${name}`, `${String(error)}; evidence: ${log}`);
+      }
+>>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
     },
-    async correctGate() {
-      throw new DeliveryBlocked("gate-correction-unavailable");
+    async attributeGate(config, name, evidence, main) {
+      const directory = resolve(evidence.log, "..");
+      const tree = resolve(directory, "base");
+      const log = resolve(directory, "base.log");
+      const result = { cause: "unknown" as "candidate" | "base" | "host" | "unknown", main, log };
+      const savedPath = resolve(directory, "base-attribution.json");
+      try {
+        return JSON.parse(await readFile(savedPath, "utf8"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (evidence.cause !== "diagnostic" || evidence.head !== config.candidateHead) return result;
+      let added = false;
+      try {
+        // Dependencies and the script must be comparable. A changed toolchain stays unknown.
+        for (const path of ["package.json", "pnpm-lock.yaml"]) {
+          const before = await git(
+            gitExecutable,
+            config,
+            ["show", `${main}:${path}`],
+            config.worktree,
+          );
+          const after = await git(
+            gitExecutable,
+            config,
+            ["show", `${evidence.head}:${path}`],
+            config.worktree,
+          );
+          if (before !== after) return result;
+        }
+        await git(gitExecutable, config, ["worktree", "add", "--detach", tree, main]);
+        added = true;
+        const launcher = await resolvePnpmLauncher();
+        const install = await gateCommand(
+          {
+            executable: launcher.executable,
+            argv: [...launcher.prefixArgs, "install", "--offline", "--frozen-lockfile"],
+            cwd: tree,
+          },
+          resolve(directory, "base-install.log"),
+        );
+        if (
+          install.code !== 0 ||
+          install.signal ||
+          install.startup ||
+          (await git(gitExecutable, config, ["rev-parse", "HEAD"], tree)) !== main ||
+          (await git(gitExecutable, config, ["status", "--porcelain"], tree)) !== ""
+        )
+          result.cause = "host";
+        else {
+          const command = { ...evidence.command, cwd: tree };
+          const terminal = await gateCommand(command, log);
+          await stagedFile(
+            config,
+            `${directory.split(/[\\/]/).at(-1)}/base-terminal.json`,
+            JSON.stringify({ head: main, command, ...terminal }),
+          );
+          const output = await readFile(log, "utf8");
+          const clean =
+            (await git(gitExecutable, config, ["status", "--porcelain"], tree)) === "" &&
+            (await git(gitExecutable, config, ["rev-parse", "HEAD"], tree)) === main;
+          if (!clean || terminal.startup) result.cause = "host";
+          else if (terminal.code === 0 && !terminal.signal) result.cause = "candidate";
+          else if (
+            terminal.code !== null &&
+            !terminal.signal &&
+            gateDiagnostics(name, output).length
+          )
+            result.cause = "base";
+        }
+      } catch (error) {
+        result.cause = (error as NodeJS.ErrnoException).code === "EEXIST" ? "unknown" : "host";
+      } finally {
+        if (added) {
+          try {
+            await git(gitExecutable, config, ["worktree", "remove", "--force", tree]);
+          } catch {
+            result.cause = "host";
+          }
+        }
+      }
+      await stagedFile(
+        config,
+        `${directory.split(/[\\/]/).at(-1)}/base-attribution.json`,
+        JSON.stringify(result),
+      );
+      return result;
     },
     async observeDraft(config, draft) {
       try {
@@ -660,6 +944,18 @@ export function githubDeliveryAdapter(
     },
     async observePublication(config, plan, planDigest, target) {
       try {
+        const observed = async (
+          row: any,
+          value: PublicationEvidence,
+        ): Promise<PublicationObservation> => {
+          if (!isConflicting(row)) return { state: "confirmed", value };
+          if (
+            (await publicationRemoteBranchHead(gitExecutable, config, plan.sourceBranch)) !==
+            value.head
+          )
+            return { state: "unknown" };
+          return { state: "conflicting", value };
+        };
         if (target !== undefined && !validPublicationTarget(target)) return { state: "unknown" };
         const refresh = publicationRefresh(config);
         const rows = await commands.ghJson(config, [
@@ -672,7 +968,7 @@ export function githubDeliveryAdapter(
           "--state",
           "all",
           "--json",
-          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body",
+          "number,url,headRefOid,headRefName,baseRefName,state,isDraft,title,body,mergeable,mergeStateStatus",
         ]);
         if (!Array.isArray(rows) || rows.length > 1) return { state: "unknown" };
         if (rows.length === 0) {
@@ -687,14 +983,14 @@ export function githubDeliveryAdapter(
           if (
             !matchesPublicationIdentity(row, config, plan, refresh.number) ||
             row?.state !== "OPEN" ||
-            row?.isDraft !== true ||
+            typeof row?.isDraft !== "boolean" ||
             (target !== undefined && target !== selectedTarget)
           )
             return { state: "unknown" };
           if (row.headRefOid === config.candidateHead) {
             const value = publication(row, config, plan, planDigest);
             return value
-              ? { state: "confirmed", value }
+              ? await observed(row, value)
               : { state: "needs-mutation", target: selectedTarget };
           }
           return row.headRefOid === refresh.head && target === undefined
@@ -702,6 +998,15 @@ export function githubDeliveryAdapter(
             : { state: "unknown" };
         }
         const value = publication(rows[0], config, plan, planDigest);
+        // An exact published head can become conflicting after leaving draft state.
+        // Reconcile it before applying the prerequisites for a new publication.
+        if (
+          value &&
+          isConflicting(rows[0]) &&
+          rows[0].state === "OPEN" &&
+          (target === undefined || target === "absent" || target === `pr:${rows[0].number}`)
+        )
+          return await observed(rows[0], value);
         if (
           !matchesPublicationTarget(rows[0], config, plan) ||
           rows[0]?.state !== "OPEN" ||
@@ -718,7 +1023,7 @@ export function githubDeliveryAdapter(
           }
           return { state: "unknown" };
         }
-        if (value) return { state: "confirmed", value };
+        if (value) return await observed(rows[0], value);
         if (target === "absent") return { state: "unknown" };
         return { state: "needs-mutation", target: `pr:${rows[0].number}` };
       } catch (error) {
@@ -767,7 +1072,7 @@ export function githubDeliveryAdapter(
                 : !matchesPublicationTarget(rows[0], config, plan)) ||
               target !== `pr:${rows[0].number}` ||
               rows[0].state !== "OPEN" ||
-              rows[0].isDraft !== true ||
+              (refresh ? typeof rows[0].isDraft !== "boolean" : rows[0].isDraft !== true) ||
               typeof rows[0].title !== "string" ||
               typeof rows[0].body !== "string")
         )
@@ -838,11 +1143,22 @@ export function githubDeliveryAdapter(
           "view",
           String(current.number),
           "--json",
-          "number,url,headRefOid,headRefName,baseRefName,state,title,body",
+          "number,url,headRefOid,headRefName,baseRefName,state,title,body,mergeable,mergeStateStatus",
         ]);
         if (row?.state !== "OPEN" || !matchesPublication(row, current, config))
           throw new Error("publication moved");
-        return row;
+        if (isConflicting(row)) {
+          if (
+            (await publicationRemoteBranchHead(gitExecutable, config, current.sourceBranch)) !==
+            current.head
+          )
+            throw new DeliveryBlocked("publication-state-unknown");
+          throw new DeliveryBlocked("published-candidate-conflict");
+        }
+        // GitHub computes mergeability asynchronously; only publication identity
+        // must stay equal across the hosted-check observation.
+        const { mergeable: _mergeable, mergeStateStatus: _mergeStateStatus, ...identity } = row;
+        return identity;
       };
       for (let retry = 0; ; retry += 1) {
         try {
@@ -914,6 +1230,11 @@ export function githubDeliveryAdapter(
             ...(workflowPending ? { workflowPending } : {}),
           };
         } catch (error) {
+          if (
+            error instanceof DeliveryBlocked &&
+            ["published-candidate-conflict", "publication-state-unknown"].includes(error.reason)
+          )
+            throw error;
           const failure = error as { stderr?: string; message?: string };
           const detail = [failure.stderr, failure.message].find(
             (value) => typeof value === "string" && value.trim() !== "",

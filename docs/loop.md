@@ -18,9 +18,11 @@ capability is added only when a real cycle records a blocker.
    answer: is there a simpler way. A blocking finding fails the review. Two
    blocking rounds force a third repair that applies the reviewer's prescribed
    fixes verbatim.
-5. Transient failures get one automatic retry inside the same attempt: a
-   failed typecheck or format gate, an unparsable verdict, a delayed exit
-   receipt. Four attempts per issue, then stop.
+5. Transient worker failures get one automatic retry inside the same attempt:
+   an unparsable verdict or a delayed exit receipt. One candidate-caused local
+   gate failure may receive the attributed correction and fresh review below;
+   this replaces the old typecheck/format correction. Four attempts per issue,
+   then stop.
 6. Authority does not move. Workers never push, publish, merge, or edit the
    running loop. The executor is the checked-out stable `main`. The author
    never reviews its own work.
@@ -200,51 +202,103 @@ accepted plan #8014 and #7766 comment `5665196633` authorize one correction
 of the route-collision inventory failure on PR #8005 at
 `ac2c54ce80865c0501d71aae4676c719b0d1eaf1`.
 
-The native config opt-in `"acceptedReplan": "cs-7766-plan-8014"` admits only
-that plan, only in the recorded fresh run, with `targetMilestone: 158` and
-`attemptCeiling: 4`. Native composition reads attempt 4, its publication,
-source config and original `source/hosted-failure.log` from
-`stateRoot/m2-jpeg-20260914/cs-7766-attempt-4`. Missing history or logs stops
-before authoring. All nine prior participants, including failed reviews and
-the dead author launch, remain charged to the native launch ceiling. The
-original four attempts remain history; only this queue item admits attempt 5,
-with ceiling 5. A current blocking review or hosted failure cannot dispatch
-a sixth attempt or a repair pair. Ordinary transient retries remain bounded
-inside this one attempt. Any stop exits this corrective invocation and its
-note asks the host to propose rollback and wait for Todd.
+That historical continuation used `cs-7766-replan-8014-attempt-5`, retaining
+all nine participants and the original main base. Its published candidate
+used the existing forward-only refresh of PR #8005's `-g4` branch from a new
+local `-g5` branch. Those records, branches and worktrees remain history;
+the singleton string configuration is replaced by ISS-154's packet below.
+No historical record migration or restart is authorized.
 
-The new queue uses `cs-7766-replan-8014-attempt-5` under the fresh run, with
-matching pilot/source/review worktree names and a new `-g5` local branch.
-Its author starts at the preserved rejected candidate, retaining the original
-main base for the full implementation review. It does not rebase or edit the
-old candidate/worktrees. Both workers receive the accepted scope and the
-original attempt/source/trace and hosted-log paths. Current author completion
-and independent exact-head review remain required. Native delivery uses the
-existing forward-only PR refresh and observed remote-head lease to update
-PR #8005's `-g4` branch from the new local branch. Cleanup removes only the
-new source/review worktrees and local branch; it leaves the preserved local
-`-g4` branch and worktrees intact. The published PR branch may remain remotely
-unless GitHub deletes it after merge. Local gates, hosted green, native merge
-and verified actual deployment remain mandatory.
+ISS-154 records the next closed ruling, Chase Sets #4388 comment `5681842811`.
+#7844 exhausted four absolute attempts in `m2-purchase-limit-20260915T0132`.
+Its final unpublished head is `25b602832b8d33768c6e1aab1b611c48ad4d3f21`;
+absolute attempt 4 is the repair in `cs-7844-attempt-3`, not a directory named
+attempt-4. Real PostgreSQL execution in comment `5678264608` ran 386 tests
+with zero skips; only the two day +0/+1 source-retry concurrency cases failed
+at the unsupported `fromVersion: 0` reads before the cancellation proof.
+Todd authorizes one final Astra/high correction of those reads, followed by
+exact-head host evidence and fresh Sol/high review. Any work non-PASS parks
+at absolute ceiling five; there is no attempt six or second repair.
 
-To resume, the host first preserves both runtimes and all old worktrees while
-the supervisors are stopped, then installs this reviewed implementation as
-the stable platform executor. Add the opt-in above to the existing corrective
-loop config; retain `run: "m2-jpeg-corrective-20260914T1402"`, the same
-`stateRoot` and `worktreeRoot`, `targetMilestone: 158`, `attemptCeiling: 4`
-and the existing native launch ceiling. Start from Windows using the canonical
-`scripts/executor/start-loop.ps1 -Config <absolute-WSL-corrective-config-path>`.
-Do not change or archive the old run's records or the fresh run's selection,
-setup attempt or stop records. Native composition leaves them untouched and
-resumes the dedicated attempt-5 directory. A repeated restart selects the
-same attempt, including its failure or completion; changing the run name
-cannot renew admission. Fresh #7766 authoring without this accepted replan
-is refused. There is no new admission receipt or record migration.
+`LoopConfig.acceptedReplan` is now an exact-key object. Its closed fields are:
 
-This implementation does not restart either run, repair JPEG, touch PR #8005
-from the host, or claim milestone 158 or ISS-110 exit evidence. After the
-bounded cycle fails to land or a new loop defect stops it, the host proposes
-rollback and waits for Todd; another config/run name is not authorization.
+- `schemaVersion: "dogfood-accepted-replan/v1"`, `repository`, `issueKey`,
+  `issueUrl`, `priorRun`, and absolute normalized `priorAttemptDirectory`.
+  The directory is immediately beneath `stateRoot/priorRun` and names the
+  actual queue attempt record, including a repair's containing directory.
+- `priorAbsoluteAttempt: 4`, `nextAbsoluteAttempt: 5`, `absoluteCeiling: 5`,
+  `candidateHead` (full immutable SHA), and `priorHistoryDigest` (SHA-256 of
+  `JSON.stringify(prior.history)`). The failed prior attempt, repository,
+  issue, head and accumulated participant history must agree. Source or
+  repair evidence follows the prior absolute attempt; historical PASS is
+  never imported as current authority.
+- `targetRun` (equal to the loop's run), `attemptSlug` (a normalized name
+  ending in `-attempt-5`), `authorityUrl` (the immutable ruling comment),
+  `scope` (the ruled correction), and `allowedPaths`. Paths are unique exact
+  repository-relative tracked regular files, not directories, globs, parent
+  traversals or absolute paths. For #7844 the sole path is
+  `bounded-contexts/ordering/features/orders/api/purchase-limits.db.test.ts`.
+  Both sides of renames and untracked additions count against the boundary.
+- `publication` is either `null` or exactly `{number, url, head, sourceBranch}`
+  matching the prior publication. Published continuation retains its branch
+  and forward-refresh lease; unpublished continuation invents no PR or receipt.
+- `preReviewEvidence` is either `null` or the descriptor below. Ordinary
+  loop routing supplies the ruled worker placements; the packet does not
+  classify models or issue prose. The host must configure the ruled pair.
+
+The ordinary loop config still caps `attemptCeiling` at four. Before setup,
+composition reserves the exact packet in
+`stateRoot/accepted-replan-<sha256({repository,issue})>.json`, outside both runs.
+This single lineage reservation prevents changed run names, paths or packets
+from spending another continuation. Replay uses the same attempt directory.
+Fresh ordinary composition also refuses recorded exhausted lineages on this
+host. The reservation and all prior records remain history. No running executor
+or preserved runtime is edited to admit work.
+
+The optional pre-review descriptor has exactly `receiptSchema` (currently
+`"dogfood-host-verification/v1"`), `workspace`, `gate`, `command` (exactly
+`{executable, args}`), `bundle` (absolute distinct paths named `receipt`,
+`runMetadata`, `preflightLog`, `verifierLog`), positive complete-suite `files`
+and `tests` counts, `skips: 0`, and unique `requiredCases` identities. The host
+sets actual verifier identities and the complete workspace file count; a
+subset or an inferred count is not accepted evidence.
+
+The host verifier receipt has exactly `schemaVersion`, `repository`, `head`,
+`workspace`, `gate`, `command`, `runId`, `exitCode`, `files`, `tests`, `skips`,
+`cases` (executed case identities), and `artifacts`. `artifacts` binds SHA-256
+digests of the raw `runMetadata`, `preflightLog` and `verifierLog` bytes. Run
+metadata repeats every identity and result field, omits `artifacts`, and uses
+`schemaVersion: "dogfood-host-verification-run/v1"`. Logs must be nonempty.
+The platform consumes this closed host receipt contract; it does not infer
+PostgreSQL execution from author claims or reinterpret a log as authority.
+The installed host verifier must supply that contract before resume.
+
+Author PASS pins the candidate and yields `operator-evidence-required` before
+any reviewer intent or launch. Missing material keeps that non-parking stop.
+Malformed, duplicate, wrong-identity or contradictory material stops as
+`operator-evidence-authority`, also without parking or new authoring. An
+identity-valid nonzero exit, skip, wrong complete-suite count or missing
+required case is `operator-evidence-failed`: terminal failure and parking,
+without review or another attempt. Valid bundles, including failed executions,
+are atomically retained under `source/pre-review-evidence`, together with
+`acceptance.json` (`dogfood-pre-review-acceptance/v1`) binding their digests,
+parsed identities, results and decision. Replay and reviewer prompts use only
+this snapshot. External replacement or removal cannot turn failure into PASS.
+
+An accepted snapshot admits the ordinary independent reviewer lifecycle once.
+No ordinary repair, gate correction, conflict author or chained continuation
+is admitted. Current-main integration still requires delta review and, when
+declared, new exact-head host evidence. Local gates, hosted green, native merge
+and applicable actual deployment remain required. Host/authority observation
+stops retain the same in-flight step; work failures record terminal history.
+
+After this issue lands with three-OS bootstrap green, only the operator may
+advance the stable executor while both supervisors are absent and write the
+exact ruled continuation config. After author PASS the operator runs the
+installed PostgreSQL host verifier and resumes the same run with its bundle.
+This implementation does not author the product fix, start either loop,
+install an executor, alter old records or milestone ownership, or claim M2
+completion. The historical JPEG rollback remains intact.
 
 ISS-148 records ISS-146's two `planning:board-check` stops in
 `m1-accepted-replan-20260914T1416`: a later registration had landed on main,
@@ -256,9 +310,8 @@ an existing PR, integration merges main instead, retaining the recorded publishe
 head as an ancestor for the unchanged forward-only publication and remote-head
 lease checks (ISS-145). Unavailable,
 incompatible or moving main stops with `current-main-unavailable`,
-`current-main-incompatible` or `current-main-moved`. Conflicts use the existing
-`rebase-conflict` stop, the shared handoff point for ISS-147; there is no
-second conflict-resolution loop here.
+`current-main-incompatible` or `current-main-moved`. Conflicts use the bounded
+ISS-147 handoff below; other integration failures retain `rebase-conflict`.
 
 The original source author, review, traces and attempt remain unchanged.
 `native-refresh.json` in that source's runtime remembers the integration;
@@ -274,14 +327,14 @@ and follows the ordinary work-caused stop and parking policy.
 Main moving during review requires another refresh before any gates run.
 
 A refreshed head requires new local gate receipts and its current delta review;
-old gate receipts remain history. Its transient typecheck/format retry reruns
-the same reviewed head once; a persistent failure stops, without an unreviewed
-source correction or renewed implementation budget. Draft mutations are
+old gate receipts remain history. ISS-152's shared, attributed correction applies
+to refreshed gates too, without renewing the allowance. Draft mutations are
 observed before applying them, so an already matching mirror is not repeated.
 Publication, hosted checks and merge/deploy remain bound to the resulting head.
 Published delivery, including a pending publication intent whose response may
 have been lost, resumes its existing reconciliation, checks and mutations; it
-does not rewrite an in-flight publication merely because main moved.
+does not rewrite an in-flight publication merely because main moved. An exact
+published conflict follows ISS-147 after publication reconciliation.
 
 The self adapter's `afterMirror` board gate validates candidate planning locally
 and checks only keys changed by its planning delta against the live board and
@@ -294,6 +347,7 @@ incorrect board bodies and missing project membership still fail. The ordinary
 This behavior does not edit or restart the preserved ISS-146 run, change issue
 order, waive hosted bootstrap or grant workers mutation authority.
 
+<<<<<<< HEAD
 ISS-146 records the local static-gate stop on #7766 at candidate
 `42bac8439e31b8354447f2675edfaea72890d4b5`: two empty ignored author scratch
 directories failed structure validation, and the stop excerpt hid the subcheck.
@@ -322,6 +376,112 @@ gate log paths as execution evidence. Logs survive failed gates and resume. Miss
 offline dependencies still fail delivery; this does not weaken any local or
 hosted check or replace independent exact-head review. This change neither
 restarts #7766 nor authorizes changes to its preserved worktrees or runtime.
+=======
+ISS-147 records the `publication-outcome-unknown` stop for reviewed Chase Sets
+candidate `42bac8439e31b8354447f2675edfaea72890d4b5` on PR #8005 in
+`m2-jpeg-corrective-20260914T1402`. Read-only reconciliation found the published
+head DIRTY/CONFLICTING against main `78848d23d610d3eba6c8f980fef81e6d82b56b42`,
+with one list-hunk conflict in
+`deployables/platform-api/__tests__/route-collision.test.ts`. Todd accepted
+milestone 158 rollback and ordered this bounded capability in #4388 comment
+`5666826318`; #7766 comment `5666729434` retains the original stop.
+
+A reviewed delivery candidate's conflict now consumes one resolution in its
+existing `native-refresh.json`. After aborting the conflicting integration, the
+executor merges the reviewed head with that same current main and pins the
+marked text as an intermediate merge commit. This input preserves both parents
+and supplies a clean, repeatable base for the ordinary author lifecycle; it is
+never an accepted delivery head. The existing author placement resolves only
+the marked hunks. Text outside them (including line endings), other files and
+file modes cannot change.
+Only ordinary text conflicts with both sides present are supported; unsupported
+conflicts stop as `conflict-resolution-unsupported`. Scope escape or author
+failure stops as `conflict-resolution-scope-escape` or
+`conflict-resolution-failed`.
+
+The independent delta reviewer inherits the original review, author trace and
+source records, plus the resolution author's captured execution evidence. It
+checks the resolved hunks and direct callers for semantic expansion or lost
+feature/main behavior at the exact resulting head. A failed review remains
+`refresh-review-failed`; neither a clean merge nor author PASS supplies review
+authority. The existing per-main refresh directory retains worker attempts,
+terminals, candidate and review evidence. Restart resumes those workers and
+reconciles interrupted commits; it does not reset implementation attempts,
+participants or native launch charges. Ordinary worker retries remain inside
+this resolution. A later conflict in the same delivery lineage stops as
+`conflict-resolution-exhausted`, including across main movements and restarts.
+Conflict-free refresh still uses the existing delta review without an author.
+
+An exact remote/PR head with DIRTY or CONFLICTING status is a confirmed
+publication with a conflict, including when a publish response was lost or the
+PR already left draft state. Delivery retains its publication receipt and
+`publication-conflict.json`, then revalidates actual remote and PR identity
+before current-main integration. Unknown or wrong heads cannot authorize a
+repeat mutation. The resolved head passes a new delta review and local gates,
+then updates the same PR forward from its recorded remote head using the
+existing lease. Hosted checks, native landing and verified deployment still
+apply to the resulting head; prior gate and publication records remain history.
+
+This capability does not reopen, unpark or restart the rolled-back JPEG run,
+repair JPEG or PR #8005, alter preserved M2 runtime/worktrees, reset historical
+reviews, or establish milestone completion. Milestone 158 remains incumbent-owned
+and only milestone 155 remains platform-owned; milestone 159 needs Todd's
+separate assignment. The historical rollback and stop evidence remain intact.
+
+ISS-152 records ISS-146 (#457)'s `gate-failed:test` after author and independent
+review PASS in `m1-iss146-147-20260914T2325`. Native delivery now captures the
+complete gate output and terminal execution before considering correction.
+The candidate terminal records the exact executable, arguments, working directory
+and reviewed head. Recognized compiler, formatter or completed test assertion
+diagnostics must name committed candidate files. The same command runs in an
+isolated committed tree at the recorded delivery main base, with an offline,
+frozen dependency install. Changed manifests or lockfiles remain unknown.
+The candidate and base logs and terminal records remain in the delivery runtime.
+
+Only a passing base control admits candidate attribution. Base reproduction
+stops as `gate-base-failed:<gate>`. Startup, install, log I/O and cleanup failures
+stop as `gate-host-failed:<gate>`; drift retains its workspace stop. Missing or
+incomplete diagnostics, unsupported gates, timeouts, resource failures and mixed
+causes stop as `gate-attribution-unknown:<gate>`. These stops do not dispatch a
+correction or publish; host and unknown stops do not park the issue. No timeout
+increase, test skip, passing subset or author opinion establishes attribution.
+
+`gate-correction.json` beneath the accepted source reserves the existing single
+local correction allowance across all gate names, original and refreshed
+delivery, and gates before or after mirroring. Its author starts at the exact
+failed head, retaining the main base and full implementation diff. The prompt
+names the complete diagnostic artifact, command, failing identities, acceptance
+and preserved source/review records and traces. Scope is the failure and its
+direct causes. The ordinary native lifecycle retains attempts, terminals,
+execution evidence and a descendant candidate in its `gate-correction` directory.
+An independent DELTA reviewer inspects the correction and direct callers with
+the predecessor review and correction execution evidence. Only this current
+exact-head PASS authorizes changed code; the predecessor PASS stays unchanged.
+
+All gates run again at the resulting reviewed head, including prior green gates
+and after-mirror gates. Further main movement requires another delta review and
+new receipts, without another correction allowance. Existing mirrors are observed
+before mutation; publication intents still reconcile normally. Publication,
+hosted checks, merge and applicable deployment remain mandatory at the final head.
+Second candidate failure stops as `gate-correction-exhausted:<gate>`; author FAIL
+or blocking DELTA review stops as `gate-correction-failed` or
+`gate-correction-review-failed`. These are work stops with ordinary parking,
+not another implementation attempt or pair. ISS-145's smaller authority refuses
+the pair as `gate-correction-not-authorized`. Native launch ceilings, routing,
+placements, participant history and bounded worker retries remain in force.
+
+Resume observes the saved author or reviewer, reconciles an interrupted correction
+commit, and uses `gate-correction-result.json` for subsequent delivery and refresh.
+The first failure, original source and review records remain unchanged. `gate-stop.json`
+retains a terminal gate stop; replay cannot bypass it by moving main. Completed
+delivery reuses its receipts without another worker, publication or merge.
+Legacy untyped failures supply no correction eligibility.
+
+#457 remains unready until ISS-152 lands independently reviewed and hosted-green
+and the host installs that stable executor. Landing permits the host to restore
+readiness; it does not authorize restarting or editing the preserved run. Workers
+do not change #457, its preserved records or worktrees, or the running executor.
+>>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
 
 ## Planning
 
@@ -411,6 +571,12 @@ blocked_by: [ISS-120, ISS-121]
 
 ## Out of scope
 ```
+
+`## Done when` accepts unordered `-`, `*`, or `+` items or ordinary top-level
+`N.` ordered items, with indented continuation lines. The self adapter consumes
+each item as one acceptance criterion; a section without supported list items
+stops with `selected-issue-criteria-missing`, never a whole-body fallback.
+ISS-153 fixes the ordered form recorded in ISS-152's pre-dispatch stop.
 
 `pnpm planning:check` proves drafts and roadmap agree and the graph is
 acyclic. `pnpm planning:board-check` proves every open registered issue on

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { ACCEPTED_REPLAN, QueueBlocked, readQueueHistory, validateHistory } from "./queue.ts";
+import { continuationSlug, QueueBlocked, readQueueHistory, validateHistory } from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
 
 type ActionableStopReason = import("./queue.js").ActionableStopReason;
@@ -45,16 +45,27 @@ export interface SupervisionAdapter {
 export function isItemStopReason(reason: string) {
   return (
     [
+      "operator-evidence-failed",
+      "continuation-failed",
+      "continuation-repair-not-authorized",
       "implementation-attempt-ceiling-exhausted",
       "reviewer-malformed",
       "exit-receipt-timeout",
       "launcher-failed",
       "rebase-conflict",
       "refresh-review-failed",
+      "gate-correction-failed",
+      "gate-correction-review-failed",
+      "gate-correction-not-authorized",
+      "conflict-resolution-failed",
+      "conflict-resolution-exhausted",
+      "conflict-resolution-scope-escape",
+      "conflict-resolution-unsupported",
       "deploy-not-verified",
       "source-finding-location-outside-candidate",
     ].includes(reason) ||
     reason.startsWith("gate-retry-exhausted:") ||
+    reason.startsWith("gate-correction-exhausted:") ||
     reason.startsWith("hosted-check-failed:") ||
     reason.startsWith("hosted-check-log-unavailable:")
   );
@@ -173,16 +184,16 @@ export async function nextCycle(
           { length: config.attemptCeiling },
           (_, index) => `${selected.key.toLowerCase()}-attempt-${index + 1}`,
         );
-        if (config.acceptedReplan && selected.key === ACCEPTED_REPLAN.key) {
+        if (config.acceptedReplan && selected.key === config.acceptedReplan.issueKey) {
           const prior = await optionalRecord(
-            resolve(config.stateRoot, ACCEPTED_REPLAN.priorRun, "cs-7766-attempt-4"),
+            config.acceptedReplan.priorAttemptDirectory,
             "attempt",
           );
           if (prior !== ABSENT) {
             validateHistory(prior.history, config.nativeLaunchCeiling);
             if (prior.history.length > initialHistory.length) initialHistory = prior.history;
           }
-          slugs.push(ACCEPTED_REPLAN.slug);
+          slugs.push(continuationSlug(config.acceptedReplan));
         }
         for (const slug of slugs) {
           const history = await readQueueHistory({
@@ -349,11 +360,14 @@ function stopMessage(
   const exact = Object.hasOwn(stopRecoveryActions, reason)
     ? stopRecoveryActions[reason as ActionableStopReason]
     : undefined;
-  const change = config.acceptedReplan
-    ? "preserve this run and the original four attempts, propose rollback, and wait for Todd; do not start another corrective cycle or restart after a new loop defect without his decision"
-    : exact
-      ? exact(context)
-      : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
+  const change =
+    reason === "operator-evidence-required" || reason === "operator-evidence-authority"
+      ? `retain the current candidate and author records, supply the declared exact-head host verification bundle, and resume this same run; no reviewer or new author is authorized until the evidence is accepted`
+      : config.acceptedReplan
+        ? "preserve this run and the original four attempts, propose rollback, and wait for Todd; do not start another corrective cycle or restart after a new loop defect without his decision"
+        : exact
+          ? exact(context)
+          : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
   const count = `after ${attempts} implementation attempt${attempts === 1 ? "" : "s"}`;
   const detail = diagnostics?.trim();
   const placements = history
@@ -414,7 +428,7 @@ export async function stopCycle(
   // A setup stop can have a selected row without having launched a worker yet.
   let routing = cycle.selection.routing;
   const slugs = config.acceptedReplan
-    ? [ACCEPTED_REPLAN.slug]
+    ? [continuationSlug(config.acceptedReplan)]
     : Array.from(
         { length: config.attemptCeiling },
         (_, index) => `${cycle.selection.key.toLowerCase()}-attempt-${index + 1}`,

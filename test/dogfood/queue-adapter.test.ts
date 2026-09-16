@@ -141,7 +141,14 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-it.each(["initial", "legacy retry", "failed fetch", "spent retry"])(
+it.each([
+  "initial",
+  "legacy retry",
+  "failed fetch",
+  "spent retry",
+  "corrected",
+  "corrected-refreshed",
+])(
   "hands full hosted diagnostics to corrective workers on %s without rewriting historical prompts",
   async (mode) => {
     const current = await fixture([
@@ -159,7 +166,25 @@ it.each(["initial", "legacy retry", "failed fetch", "spent retry"])(
     current.item.implementationAttempt = 4;
     current.source.author.prompt = "Fix prior failure: " + "PR Required boilerplate ".repeat(170);
     const previous = resolve(current.paths.queue, "..", "iss-141-attempt-3");
-    const previousSource = resolve(previous, "source");
+    const originalSource = resolve(previous, "source");
+    let previousSource = originalSource;
+    if (mode.startsWith("corrected")) {
+      await mkdir(originalSource, { recursive: true });
+      await writeFile(
+        resolve(originalSource, "gate-correction-result.json"),
+        JSON.stringify({ head: base }),
+      );
+      previousSource = resolve(originalSource, "gate-correction");
+      if (mode === "corrected-refreshed") {
+        await mkdir(previousSource);
+        const directory = resolve(previousSource, `refresh-${stable}`);
+        await writeFile(
+          resolve(previousSource, "native-refresh.json"),
+          JSON.stringify({ directory }),
+        );
+        previousSource = directory;
+      }
+    }
     await mkdir(previousSource, { recursive: true });
     const findings = [
       {
@@ -216,7 +241,8 @@ it.each(["initial", "legacy retry", "failed fetch", "spent retry"])(
     const child = spawn(process.execPath, ["-e", ""], { windowsHide: true, stdio: "ignore" });
     await once(child, "exit");
     expect(() => process.kill(child.pid!, 0)).toThrow();
-    if (mode !== "initial")
+    const interrupted = ["legacy retry", "failed fetch", "spent retry"].includes(mode);
+    if (interrupted)
       await writeFile(
         resolve(current.paths.source, "author-attempt.json"),
         JSON.stringify({
@@ -229,7 +255,7 @@ it.each(["initial", "legacy retry", "failed fetch", "spent retry"])(
       );
     const patch =
       "diff --git a/fixture.ts b/fixture.ts\n--- a/fixture.ts\n+++ b/fixture.ts\n@@ -1 +1 @@\n-process.cwd()\n+import.meta.url\n";
-    let dirty = mode !== "initial";
+    let dirty = interrupted;
     let sourceHead = base;
     let reviewHead = base;
     let authorDone = false;
@@ -472,6 +498,7 @@ it.each([false, true])(
       async preflight() {},
       async git(worktree, args) {
         if (args[0] === "rev-parse" && args[1] === "--verify") return base;
+        if (args[0] === "rev-parse" && args[1] === `${corrected}^`) return candidate;
         if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
         if (args[0] === "rev-parse" && args[1] === "HEAD") {
           if (worktree === current.paths.pilot) return stable;
@@ -485,7 +512,7 @@ it.each([false, true])(
         }
         if (args[0] === "merge-base") return String(args[1]);
         if (args[0] === "diff")
-          return args.includes("--cached") || sourceHead === corrected
+          return args.includes("--cached") || (sourceHead === corrected && !args.includes(base))
             ? ""
             : `scripts/dogfood/queue.ts\0`;
         if (args[0] === "ls-files") return "";
@@ -500,10 +527,12 @@ it.each([false, true])(
         return "";
       },
       async launch(role, selectedConfig, prompt): Promise<Attempt> {
-        if (role === "reviewer") {
+        const correction = selectedConfig.stateDirectory.endsWith("gate-correction");
+        if (role === "reviewer" && !correction) {
           expect(prompt).toContain("is there a simpler way?");
           expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
         }
+<<<<<<< HEAD
         const selected = prompt.includes("Correct the") ? `gate-${role}` : role;
         if (role === "author") {
           expect(prompt).toContain(
@@ -517,6 +546,9 @@ it.each([false, true])(
           );
           expect(prompt).toContain("Inspect the actual failures independently");
         }
+=======
+        const selected = correction ? `gate-${role}` : role;
+>>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
         const deadAuthor = selected === "author" && launches.length === 0;
         launches.push(selected);
         return {
@@ -537,11 +569,8 @@ it.each([false, true])(
             ...(providerFailure ? { providerFailure: true } : {}),
           };
         const correction = attempt.id.startsWith("source-gate-");
-        const terminalHead = correction
-          ? selectedConfig.base
-          : role === "author"
-            ? base
-            : candidate;
+        const terminalHead =
+          role === "author" ? selectedConfig.base : correction ? corrected : candidate;
         return {
           status: "passed",
           id: attempt.id,
@@ -627,8 +656,9 @@ it.each([false, true])(
         capturedDelivery = config;
         return {
           head: config.candidateHead,
-          reviewId:
-            config.candidateHead === corrected ? "source-gate-retry-reviewer" : "source-reviewer",
+          reviewId: JSON.parse(
+            await readFile(resolve(config.stateDirectory, "reviewer-attempt.json"), "utf8"),
+          ).id,
           controller: current.source.owner,
           run: config.run,
           issue: config.issue,
@@ -652,7 +682,27 @@ it.each([false, true])(
           );
         if (sourceHead !== config.candidateHead || reviewHead !== config.candidateHead)
           return { status: "failed", output: "candidate workspace drifted before gate" };
-        return gateCalls === 1 ? { status: "failed", output: "transient typecheck" } : "passed";
+        if (gateCalls !== 1) return "passed";
+        const log = resolve(config.stateDirectory, "typecheck.log");
+        await writeFile(log, "scripts/dogfood/queue.ts(1,1): error TS2322: incorrect type\n");
+        return {
+          status: "failed",
+          output: "compiler diagnostic",
+          evidence: {
+            head: config.candidateHead,
+            log,
+            cause: "diagnostic",
+            diagnostics: ["scripts/dogfood/queue.ts(1,1): error TS2322: incorrect type"],
+            command: {
+              executable: process.execPath,
+              argv: ["fixture-pnpm", "run", "typecheck"],
+              cwd: config.worktree,
+            },
+          },
+        };
+      },
+      async attributeGate(_config, _name, _evidence, main) {
+        return { cause: "candidate", main, log: resolve(current.paths.source, "base.log") };
       },
       async observeDraft() {
         return draft ? { state: "confirmed", value: { issue: 338 } } : { state: "needs-mutation" };
@@ -757,7 +807,12 @@ it.each([false, true])(
         stateDirectory: accepted.stateDirectory,
       })}\n`,
     );
-    await expect(queueStep(current.config, queueAdapter)).rejects.toThrow("delivery-state-unknown");
+    await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
+      status: "observing-author",
+    });
+    await expect(queueStep(current.config, queueAdapter)).rejects.toThrow(
+      "simulated restart after gate commit",
+    );
     const interrupted = JSON.parse(
       await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
     );
@@ -765,11 +820,18 @@ it.each([false, true])(
     await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
       status: "observing-hosted-checks",
     });
+    const freshReviewer = JSON.parse(
+      await readFile(
+        resolve(current.paths.source, "gate-correction/reviewer-attempt.json"),
+        "utf8",
+      ),
+    ).id;
+    expect(freshReviewer).not.toBe("source-reviewer");
     await expect(
       readFile(resolve(current.paths.queue, "attempt.json"), "utf8").then(JSON.parse),
     ).resolves.toMatchObject({
       head: corrected,
-      reviewId: "source-reviewer",
+      reviewId: freshReviewer,
       retries: providerFailure ? 1 : 2,
     });
     const effectsAfterCorrection = { launches: [...launches], gateCalls };
@@ -786,7 +848,7 @@ it.each([false, true])(
       candidateAttempt: 2,
     });
     expect({ launches, gateCalls }).toEqual(effectsAfterCorrection);
-    expect(launches).toEqual(["author", "author", "reviewer", "gate-author", "gate-author"]);
+    expect(launches).toEqual(["author", "author", "reviewer", "gate-author", "gate-reviewer"]);
     expect({ draft, published, merged, cleaned }).toEqual({
       draft: true,
       published: true,
