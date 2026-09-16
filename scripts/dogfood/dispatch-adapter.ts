@@ -117,6 +117,7 @@ export async function probePoolModel(
   const malformed = () => new Error("malformed pool status response");
   if (!Array.isArray(status?.accounts)) throw malformed();
   const entries: { status: "ready" | "blocked"; next_retry_after?: string }[] = [];
+  let mentioned = false;
   for (const account of status.accounts as unknown[]) {
     if (!isRecord(account)) throw malformed();
     const { disabled, routingModels } = account;
@@ -130,13 +131,16 @@ export async function probePoolModel(
       (entry.next_retry_after !== undefined && typeof entry.next_retry_after !== "string")
     )
       throw malformed();
+    mentioned = true;
     if (disabled) continue;
     entries.push(entry as { status: "ready" | "blocked"; next_retry_after?: string });
   }
   // The pool does not know the model, or its observations are stale: the
   // models probe alone decides.
-  if (entries.length === 0) return;
+  if (!mentioned) return;
   if (entries.some((entry) => entry.status === "ready")) return;
+  // Mentioned only by disabled accounts: no eligible account, no known end.
+  if (entries.length === 0) throw new Error(`pool has no enabled account for ${model}`);
   // Only a block whose every end is a known future time can be measured
   // against the deadline; an unknown or past end is uncertainty, so wait.
   const resets = entries.map((entry) => Date.parse(entry.next_retry_after ?? ""));

@@ -499,6 +499,24 @@ it("admits a launch only when the pool has a ready account for the model", async
       ),
     ),
   ).rejects.toThrow("pool blocks gpt-6-astra at every account until 2026-09-16T19:05:00.000Z");
+  // Mentioned only by disabled accounts: no eligible account admits and no
+  // known end exists, so the ordinary wait path, never success (review r2).
+  for (const disabledOnly of [
+    [{ disabled: true, routingModels: { "gpt-6-astra": { status: "ready" } } }],
+    [
+      { disabled: true, routingModels: { "gpt-6-astra": { status: "ready" } } },
+      { disabled: true, routingModels: { "gpt-6-astra": blocked("2026-09-19T08:13:52Z") } },
+      { routingModels: {} },
+    ],
+  ]) {
+    let observed: unknown;
+    await probe(status(...disabledOnly)).catch((error: unknown) => {
+      observed = error;
+    });
+    expect(observed).toBeInstanceOf(Error);
+    expect(observed).not.toMatchObject({ reason: "provider-model-refused" });
+    expect((observed as Error).message).toBe("pool has no enabled account for gpt-6-astra");
+  }
   // Unknown to the pool, or stale observations: the models probe alone decides.
   await expect(
     probe(
