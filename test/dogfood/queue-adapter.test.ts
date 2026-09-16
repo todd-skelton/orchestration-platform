@@ -532,23 +532,18 @@ it.each([false, true])(
           expect(prompt).toContain("is there a simpler way?");
           expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
         }
-<<<<<<< HEAD
-        const selected = prompt.includes("Correct the") ? `gate-${role}` : role;
+        const selected = correction ? `gate-${role}` : role;
         if (role === "author") {
           expect(prompt).toContain(
             JSON.stringify(resolve(selectedConfig.stateDirectory, "author-temp")),
           );
           expect(prompt).toContain("do not create scratch directories in the source tree");
         }
-        if (selected === "gate-author") {
-          expect(prompt).toContain(
-            JSON.stringify(resolve(selectedConfig.stateDirectory, "delivery-gate-fixture.log")),
-          );
-          expect(prompt).toContain("Inspect the actual failures independently");
+        if (correction) {
+          expect(prompt).toContain(resolve(current.source.stateDirectory, "typecheck.log"));
+          expect(prompt).toContain("Full diagnostic artifact:");
+          expect(prompt).toContain("Exact failed command:");
         }
-=======
-        const selected = correction ? `gate-${role}` : role;
->>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
         const deadAuthor = selected === "author" && launches.length === 0;
         launches.push(selected);
         return {

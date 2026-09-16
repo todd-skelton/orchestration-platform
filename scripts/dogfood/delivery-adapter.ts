@@ -1,11 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-<<<<<<< HEAD
-import { randomUUID } from "node:crypto";
-import { open, readFile, realpath, writeFile } from "node:fs/promises";
-=======
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
->>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
@@ -110,32 +105,40 @@ async function committedGate(
   name: string,
   head: string,
   gitExecutable: string,
+  directory: string,
 ) {
-  const id = randomUUID();
-  const worktree = resolve(config.stateDirectory, `delivery-gate-${id}`);
-  const path = resolve(
-    config.stateDirectory,
-    `delivery-gate-${name.replaceAll(":", "-")}-${id}.log`,
-  );
+  const worktree = resolve(directory, `candidate-${randomUUID()}`);
+  const path = resolve(directory, "candidate.log");
   const log = await open(path, "wx");
   let added = false;
-  let failed = false;
+  let host: string | undefined;
+  let drift: string | undefined;
+  let executed: GateFailureEvidence["command"] = {
+    executable: gitExecutable,
+    argv: ["worktree", "add", "--detach", worktree, head],
+    cwd: config.repositoryRoot,
+  };
+  let result: { code: number | null; signal: string | null; startup?: string } = {
+    code: null,
+    signal: null,
+  };
   const command = async (executable: string, args: string[], cwd: string) => {
     await log.write(`\nCommand: ${JSON.stringify([executable, ...args])}\nCwd: ${cwd}\n`);
-    const result = await new Promise<{ code: number | null; signal: string | null }>(
-      (done, reject) => {
-        const child = spawn(executable, args, {
-          cwd,
-          windowsHide: true,
-          stdio: ["ignore", log.fd, log.fd],
-        });
-        child.once("error", reject);
-        child.once("close", (code, signal) => done({ code, signal }));
-      },
-    );
+    executed = { executable, argv: args, cwd };
+    result = await new Promise<typeof result>((done) => {
+      const child = spawn(executable, args, {
+        cwd,
+        windowsHide: true,
+        stdio: ["ignore", log.fd, log.fd],
+      });
+      child.once("error", (error) => done({ code: null, signal: null, startup: error.message }));
+      child.once("close", (code, signal) => done({ code, signal }));
+    });
     await log.write(`\nExit: ${JSON.stringify(result)}\n`);
-    if (result.code !== 0)
-      throw new Error(`Command failed: ${JSON.stringify([executable, ...args])}`);
+  };
+  const requireSuccess = () => {
+    if (result.code !== 0 || result.signal || result.startup)
+      throw new Error(result.startup ?? `Command failed: ${JSON.stringify(executed)}`);
   };
   try {
     await log.write(
@@ -146,15 +149,33 @@ async function committedGate(
       ["worktree", "add", "--detach", worktree, head],
       config.repositoryRoot,
     );
+    requireSuccess();
     added = true;
     if (
       name === "planning:board-check" &&
       config.repository === "todd-skelton/orchestration-platform"
     ) {
-      await log.write(
-        `\nCommand: checkCandidateBoard(${JSON.stringify(worktree)}, ${JSON.stringify(head)})\n`,
-      );
-      await checkCandidateBoard(worktree, head, gitExecutable);
+      // Keep the executor's internal board adapter; this is a function call,
+      // not a pnpm subprocess or a gate eligible for local base attribution.
+      executed = {
+        executable: "internal:checkCandidateBoard",
+        argv: [worktree, head, gitExecutable],
+        cwd: worktree,
+      };
+      await log.write(`\nInternal call: ${JSON.stringify(executed)}\n`);
+      try {
+        await checkCandidateBoard(worktree, head, gitExecutable);
+        result = { code: 0, signal: null };
+      } catch (error) {
+        result = { code: 1, signal: null };
+        const failure = error as { stdout?: string; stderr?: string; stack?: string };
+        await log.write(
+          [failure.stdout, failure.stderr, failure.stack ?? String(error)]
+            .filter(Boolean)
+            .join("\n") + "\n",
+        );
+      }
+      await log.write(`\nReturn: ${JSON.stringify(result)}\n`);
     } else {
       const launcher = await resolvePnpmLauncher();
       await command(
@@ -162,14 +183,28 @@ async function committedGate(
         [...launcher.prefixArgs, "install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
         worktree,
       );
+      requireSuccess();
+      const installedHead = await git(gitExecutable, config, ["rev-parse", "HEAD"], worktree);
+      const installedChanges = await git(
+        gitExecutable,
+        config,
+        ["status", "--porcelain"],
+        worktree,
+      );
+      if (installedHead !== head || installedChanges)
+        throw new Error(
+          `Dependency install changed gate checkout: HEAD ${installedHead}\n${installedChanges}`,
+        );
       await command(launcher.executable, [...launcher.prefixArgs, "run", name], worktree);
     }
     const gateHead = await git(gitExecutable, config, ["rev-parse", "HEAD"], worktree);
     const changes = await git(gitExecutable, config, ["status", "--porcelain"], worktree);
-    if (gateHead !== head || changes)
-      throw new Error(`Candidate gate checkout drifted after gate: HEAD ${gateHead}\n${changes}`);
+    if (gateHead !== head || changes) {
+      drift = `Candidate gate checkout drifted after gate: HEAD ${gateHead}\n${changes}`;
+      await log.write(`${drift}\n`);
+    }
   } catch (error) {
-    failed = true;
+    host = String(error);
     const failure = error as { stdout?: string; stderr?: string; stack?: string };
     await log.write(
       [failure.stdout, failure.stderr, failure.stack ?? String(error)].filter(Boolean).join("\n") +
@@ -177,25 +212,29 @@ async function committedGate(
     );
   } finally {
     try {
-      if (added)
-        await command(
-          gitExecutable,
-          ["worktree", "remove", "--force", worktree],
-          config.repositoryRoot,
-        );
+      if (added) {
+        const args = ["worktree", "remove", "--force", worktree];
+        await log.write(`\nCleanup: ${JSON.stringify([gitExecutable, ...args])}\n`);
+        await git(gitExecutable, config, args);
+      }
     } catch (error) {
-      failed = true;
+      host = String(error);
       await log.write(`Cleanup failed: ${String(error)}\n`);
     } finally {
-      await log.close();
+      try {
+        await log.sync();
+      } finally {
+        await log.close();
+      }
     }
   }
-  return failed
-    ? {
-        status: "failed" as const,
-        output: `Complete delivery gate command and diagnostic: ${JSON.stringify(path)}`,
-      }
-    : { status: "passed" as const };
+  return {
+    head,
+    command: executed,
+    ...result,
+    ...(host ? { host } : {}),
+    ...(drift ? { drift } : {}),
+  };
 }
 
 async function git(
@@ -700,14 +739,6 @@ export function githubDeliveryAdapter(
     verifyWorkspace,
     async runGate(config, name, head) {
       if (!(await verifyWorkspace(config, head)))
-<<<<<<< HEAD
-        return { status: "failed", output: "candidate workspace drifted before gate" };
-      const result = await committedGate(config, name, head, gitExecutable);
-      if (result.status === "failed") return result;
-      return (await verifyWorkspace(config, head))
-        ? result
-        : { status: "failed", output: "candidate workspace drifted after gate" };
-=======
         throw new DeliveryBlocked("candidate-workspace-drift");
       const directory = resolve(
         config.stateDirectory,
@@ -722,33 +753,7 @@ export function githubDeliveryAdapter(
         );
       }
       const log = resolve(directory, "candidate.log");
-      let command: GateFailureEvidence["command"];
       try {
-        const launcher = await resolvePnpmLauncher();
-        command = {
-          executable: launcher.executable,
-          argv: [...launcher.prefixArgs, "run", name],
-          cwd: config.worktree,
-        };
-      } catch (error) {
-        throw new DeliveryBlocked(`gate-host-failed:${name}`, String(error));
-      }
-      try {
-        if (
-          name === "planning:board-check" &&
-          config.repository === "todd-skelton/orchestration-platform"
-        ) {
-          // This gate observes the live board and cannot be attributed by a local base control.
-          try {
-            await checkCandidateBoard(config.worktree, head, gitExecutable);
-          } catch (error) {
-            await stagedFile(config, `board-failure.log`, String(error));
-            return { status: "failed", output: String(error) };
-          }
-          if (!(await verifyWorkspace(config, head)))
-            throw new DeliveryBlocked("candidate-workspace-drift");
-          return { status: "passed" };
-        }
         const terminalPath = resolve(directory, "candidate-terminal.json");
         let saved;
         try {
@@ -758,20 +763,22 @@ export function githubDeliveryAdapter(
         }
         if (saved) {
           if (saved.head !== head) throw new DeliveryBlocked("gate-failure-head-drift");
-          command = saved.command;
         }
-        const result = saved ?? (await gateCommand(command, log));
+        const result = saved ?? (await committedGate(config, name, head, gitExecutable, directory));
         await stagedFile(
           config,
           `${directory.split(/[\\/]/).at(-1)}/candidate-terminal.json`,
-          JSON.stringify({ head, command, ...result }),
+          JSON.stringify(result),
         );
         const output = await readFile(log, "utf8");
+        if (result.drift)
+          throw new DeliveryBlocked("candidate-workspace-drift", `Retained output: ${log}`);
         if (!(await verifyWorkspace(config, head)))
           throw new DeliveryBlocked("candidate-workspace-drift");
-        if (result.code === 0 && !result.signal && !result.startup) return { status: "passed" };
+        if (result.code === 0 && !result.signal && !result.startup && !result.host)
+          return { status: "passed" };
         const diagnostics =
-          result.code !== null && !result.signal && !result.startup
+          result.code !== null && !result.signal && !result.startup && !result.host
             ? gateDiagnostics(name, output)
             : [];
         // Tie every diagnostic to a file in the committed candidate, not an external path.
@@ -791,10 +798,11 @@ export function githubDeliveryAdapter(
         }
         const evidence: GateFailureEvidence = {
           head,
-          command,
+          command: result.command,
           log,
           diagnostics,
           cause:
+            result.host ||
             result.startup ||
             (/(?:tsc|prettier|vitest): (?:not found|command not found)|'(?:tsc|prettier|vitest)' is not recognized/.test(
               output,
@@ -805,7 +813,11 @@ export function githubDeliveryAdapter(
                 ? "diagnostic"
                 : "unknown",
         };
-        return { status: "failed", output: result.startup ?? output, evidence };
+        return {
+          status: "failed",
+          output: `Complete delivery gate command and diagnostic: ${JSON.stringify(log)}`,
+          evidence,
+        };
       } catch (error) {
         if (error instanceof DeliveryBlocked) throw error;
         if ((error as NodeJS.ErrnoException).code === "EEXIST")
@@ -815,7 +827,6 @@ export function githubDeliveryAdapter(
           );
         throw new DeliveryBlocked(`gate-host-failed:${name}`, `${String(error)}; evidence: ${log}`);
       }
->>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
     },
     async attributeGate(config, name, evidence, main) {
       const directory = resolve(evidence.log, "..");
@@ -853,7 +864,13 @@ export function githubDeliveryAdapter(
         const install = await gateCommand(
           {
             executable: launcher.executable,
-            argv: [...launcher.prefixArgs, "install", "--offline", "--frozen-lockfile"],
+            argv: [
+              ...launcher.prefixArgs,
+              "install",
+              "--offline",
+              "--frozen-lockfile",
+              "--ignore-scripts",
+            ],
             cwd: tree,
           },
           resolve(directory, "base-install.log"),

@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-<<<<<<< HEAD
 import { mkdir, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
-=======
-import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
->>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.

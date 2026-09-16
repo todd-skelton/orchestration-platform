@@ -293,6 +293,8 @@ it("rejects obsolete extra Git write configuration instead of exposing hooks/con
   expect(() => launchArguments(unsafe, "author")).toThrow("unsupported-adapter-configuration");
 });
 it("creates author-temp before launch and reuses its evidence on correction and resume", async () => {
+  vi.stubEnv("CODEX_PROVIDER_BASE_URL", undefined);
+  vi.stubEnv("CODEX_PROVIDER_AUTH_COMMAND", undefined);
   const stateDirectory = await mkdtemp(resolve(tmpdir(), "author-scratch-"));
   cleanup.push(stateDirectory);
   // Stop at argument validation so no real worker/provider is launched.

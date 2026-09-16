@@ -347,7 +347,6 @@ incorrect board bodies and missing project membership still fail. The ordinary
 This behavior does not edit or restart the preserved ISS-146 run, change issue
 order, waive hosted bootstrap or grant workers mutation authority.
 
-<<<<<<< HEAD
 ISS-146 records the local static-gate stop on #7766 at candidate
 `42bac8439e31b8354447f2675edfaea72890d4b5`: two empty ignored author scratch
 directories failed structure validation, and the stop excerpt hid the subcheck.
@@ -360,23 +359,28 @@ edits; this is a worker instruction, not a new per-file authority mechanism.
 Each local delivery gate uses a fresh detached checkout of the exact reviewed
 commit under its delivery runtime. Pnpm gates use the same offline,
 frozen-lockfile, ignore-scripts dependency install as setup; the executor's
-internal board gate needs no candidate dependencies. Ignored files and even empty ignored
+internal board gate keeps its existing adapter, records its function invocation,
+and needs no candidate dependencies. Ignored files and even empty ignored
 directories in the author worktree cannot influence the gate. Source and review
 worktrees, tracked edits and unrelated paths are never cleaned. Ordinary workspace
 drift checks remain in place. The executor removes only its disposable gate
-checkout; an interrupted checkout can remain as runtime history. Resume creates
-another disposable checkout for an unfinished gate, retaining existing gate
-receipts, workers, reviews and implementation counts.
+checkout; an interrupted checkout can remain as runtime history. Resume retains
+existing gate receipts, workers, reviews and implementation counts.
 
-`delivery-gate-<gate>-<uuid>.log` retains the candidate, command arguments, working
-directory, full stdout/stderr and exit status, including install and cleanup
-failures. Output streams to the runtime file rather than an in-memory excerpt.
-Stops name that absolute artifact path; native recovery launches receive existing
-gate log paths as execution evidence. Logs survive failed gates and resume. Missing
-offline dependencies still fail delivery; this does not weaken any local or
-hosted check or replace independent exact-head review. This change neither
-restarts #7766 nor authorizes changes to its preserved worktrees or runtime.
-=======
+The existing `gate-<sha256(gate)>/candidate.log` retains the candidate, command
+arguments, disposable working directory, full stdout/stderr and exit status,
+including install and cleanup failures. Output streams to the runtime file
+rather than an in-memory excerpt. `candidate-terminal.json` binds that execution
+to the exact head after cleanup; a log without a terminal remains incomplete,
+never a passing gate. Resume reuses the same-head terminal and full log. Stops
+name the absolute artifact path; native correction inputs retain that path and
+the actual failed command, alongside the prior source/review evidence. ISS-152
+still distinguishes candidate, base, host and unknown failures; only its passing
+base control admits correction. Missing offline dependencies still fail delivery.
+This does not weaken any local or hosted check or replace independent exact-head
+review. This change neither restarts #7766 nor authorizes changes to its preserved
+worktrees or runtime.
+
 ISS-147 records the `publication-outcome-unknown` stop for reviewed Chase Sets
 candidate `42bac8439e31b8354447f2675edfaea72890d4b5` on PR #8005 in
 `m2-jpeg-corrective-20260914T1402`. Read-only reconciliation found the published
@@ -481,7 +485,6 @@ Legacy untyped failures supply no correction eligibility.
 and the host installs that stable executor. Landing permits the host to restore
 readiness; it does not authorize restarting or editing the preserved run. Workers
 do not change #457, its preserved records or worktrees, or the running executor.
->>>>>>> 0a21eb5a446f30f921bfeca11d6a463e99700d50
 
 ## Planning
 
