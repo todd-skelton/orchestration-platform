@@ -129,6 +129,7 @@ export async function queueConfigFromLoop(
       pilotWorktree: resolve(loop.worktreeRoot, `${selected.key.toLowerCase()}-pilot`),
     },
     source: {
+      author: { model: loop.author.model, effort: loop.author.effort, prompt: "author" },
       owner: controller,
       run: loop.run,
       issue,

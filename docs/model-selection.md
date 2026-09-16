@@ -16,14 +16,19 @@ and must sit on that model's ladder.
 | `claude-sonnet-5`  | Claude Sonnet 5  | low, medium, high, max                 | author, reviewer |
 | `claude-fable-5-1` | Claude Fable 5.1 | low, medium, high, max                 | author, reviewer |
 
-Placement comes from the routing row, not from a per-run pair (ISS-149,
-`docs/loop.md`): the self adapter uses Astra/high author and repair with
-Opus/high review and Sol/high fallback; Chase Sets issues carry a routing
-marker that selects a row from `adapters/chase-sets-routing.json`. The only
-structural rule is that the reviewer's model never equals the author's; the
-shipped rows also keep the primary reviewer on the other vendor so one
-provider outage cannot take both seats. `claude-fable-5` is retired and never
-selectable.
+Placement comes from the routing row (ISS-149, ISS-158, `docs/loop.md`).
+Each row has ordered author and reviewer ladders; reviewer models are disjoint
+from every author model. Self uses Astra/high, Astra/xhigh, Fable/high author
+with Opus/high then Sol/high review. Chase Sets planning markers select the
+ladders in `adapters/chase-sets-routing.json`. `claude-fable-5` is retired.
+
+Model size is the ceiling; effort buys search. After every author failure,
+try more effort before a larger model, with the other vendor last. The recorded
+failed-launch counter carries across attempts, including corrective and gate
+correction authors, and clamps at the top. Refusal, death, review FAIL and
+attributed gate failure all advance it; PASS never descends. Reviewer ladders
+advance only on refusal. Launches record zero-based rungs; resume preserves
+the selected rung. Attempt ceilings and retry budgets are unchanged.
 
 ## Shipped placements (2026-09-15)
 
@@ -42,12 +47,25 @@ withdrawn. Cheapest configuration that clears the row's bar wins.
 | 14  | Opus medium    | GDPval-AA leader (1861) at half Fable's price; Astra scores ~45 Elo below Sol on GDPval    |
 | 15  | Opus high      | Within 0.5% of Fable on CursorBench at half cost; front-end is Astra's weakest coding area |
 
-Review 11 (high recall) runs the other vendor's judge at high: Opus for GPT
-authors, Sol for Claude authors. Review 12 (precision) runs the same pair at
-medium. Fallbacks are the remaining flagship at the same effort, or Sonnet
-when that flagship authored. Fable 5.1 and Terra ship in no row: Fable ties
-Astra at higher cost and emits about 1.5x Fable 5's output tokens; Terra is
-Pareto-dominated. Both stay selectable for future rows.
+Rung 1 retains PR #491's placements. ISS-158 supplies these escalation ladders:
+
+| Row | Author rung 1 | Author rung 2 | Author rung 3 | Review 11 | Review 12 |
+| --- | --- | --- | --- | --- | --- |
+| 2 | Luna high | Luna xhigh | Sonnet medium | Opus high, Sol high | Opus medium, Sol medium |
+| 3 | Sonnet medium | Sonnet high | Luna high | Sol high, Opus high | Sol medium, Opus medium |
+| 4 | Astra medium | Astra high | Fable high | Opus high, Sol high | Opus medium, Sol medium |
+| 7 | Astra high | Astra xhigh | Fable high | Opus high, Sol high | Opus medium, Sol medium |
+| 10 | Sol high | Astra high | Fable high | Opus high, Sonnet high | Opus medium, Sonnet medium |
+| 14 | Opus medium | Opus high | Astra high | Sol high, Sonnet high | Sol medium, Sonnet medium |
+| 15 | Opus high | Opus max | Astra high | Sol high, Sonnet high | Sol medium, Sonnet medium |
+
+Review 11 uses high effort for recall; review 12 uses medium for precision.
+Row 10 changes model at rung 2 because Sol xhigh costs three to four times
+the tokens for less gain than Astra's Terminal-Bench lead on debugging.
+Fable 5.1 ties Astra at higher cost and emits about 1.5x Fable 5's output
+tokens, so it enters as a final cross-vendor author rung. Terra remains
+Pareto-dominated and ships in no row. Reviewer fallbacks exclude all models
+in their row's author ladder, including later rungs.
 
 The pool converts `reasoning.effort` into Claude thinking; an effort off a
 Claude ladder is not refused, so keep Claude rows on the ladder above.

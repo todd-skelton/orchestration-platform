@@ -62,6 +62,7 @@ export type QueueUsage = {
 };
 
 export interface QueueParticipant {
+  rung?: number;
   routing?: import("./routing.mjs").RoutingSelection;
   models?: { author: string; reviewer: string | null };
   placement?: import("./routing.mjs").ModelPlacement;
@@ -378,6 +379,7 @@ export function validateLoopConfig(config: LoopConfig) {
 }
 
 interface FailedAttemptReceipt {
+  authorFailures?: SourceConfig["authorFailures"];
   routing?: import("./routing.mjs").RoutingSelection;
   schemaVersion: "dogfood-bounded-queue-attempt/v1";
   phase: "failed";
@@ -423,6 +425,7 @@ function validateFailedAttempt(
       ...(object(value) && Object.hasOwn(value, "rebasedBase") ? ["rebasedBase"] : []),
       ...(object(value) && Object.hasOwn(value, "rebasedMainBase") ? ["rebasedMainBase"] : []),
       ...(object(value) && Object.hasOwn(value, "routing") ? ["routing"] : []),
+      ...(object(value) && Object.hasOwn(value, "authorFailures") ? ["authorFailures"] : []),
     ]) &&
       value.schemaVersion === "dogfood-bounded-queue-attempt/v1" &&
       value.phase === "failed" &&
@@ -617,8 +620,10 @@ export async function queueConfigFromLoop(
   );
   const issueUrl = `https://github.com/${config.repository}/issues/${selected.number}`;
   const routing = resolveRouting(config.adapter, issueContext.routing, config.routingRows);
-  const author = routing?.author ?? config.author;
-  const reviewer = routing?.reviewer ?? config.reviewer;
+  const author = routing ? { ...routing.author[0]!, ladder: routing.author } : config.author;
+  const reviewer = routing
+    ? { ...routing.reviewer[0]!, ladder: routing.reviewer }
+    : config.reviewer;
   demand(author && reviewer, "routing-row-unconfigured");
   demand(author.model !== reviewer.model, "routing-reviewer-not-independent");
   const promptContext = `Repository loop rules:\n\n${issueContext.rules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${issueContext.body.trim()}`;
@@ -648,6 +653,8 @@ export async function queueConfigFromLoop(
   let attemptBase = selected.base;
   let mainBase = selected.base;
   let initialHistory: QueueParticipant[] = [...priorHistory];
+  let authorFailures: SourceConfig["authorFailures"] = { count: 0, ids: [] };
+  let reviewerRung = 0;
   let prescribedFindings: ReviewFinding[] | undefined;
   let rejectedHead: string | undefined;
   let replan:
@@ -773,6 +780,9 @@ export async function queueConfigFromLoop(
       ? undefined
       : { directory: priorQueue, slug: priorSlug, attempt };
     initialHistory = attempt.history;
+    authorFailures = attempt.authorFailures ?? authorFailures;
+    reviewerRung =
+      attempt.history.findLast((p) => p.item === attempt.item && p.role === "reviewer")?.rung ?? 0;
     prescribedFindings = attempt.findings;
   }
   if (pendingRebase) {
@@ -856,6 +866,16 @@ export async function queueConfigFromLoop(
     reviewWorktree: paths.reviewWorktree,
     stateDirectory: paths.setup,
   };
+  const routedAuthor = routing
+    ? {
+        ...author,
+        ...routing.author[Math.min(authorFailures.count, routing.author.length - 1)]!,
+        rung: Math.min(authorFailures.count, routing.author.length - 1),
+      }
+    : author;
+  const routedReviewer = routing
+    ? { ...reviewer, ...routing.reviewer[reviewerRung]!, rung: reviewerRung }
+    : reviewer;
   const source: SourceConfig = {
     owner: controller,
     run: config.run,
@@ -880,8 +900,9 @@ export async function queueConfigFromLoop(
     routing: routing
       ? { row: routing.row, ...(routing.review ? { review: routing.review } : {}) }
       : { row: "self" },
-    author: { ...(sourceAttempt > 1 ? (routing?.repair ?? author) : author), prompt: sourcePrompt },
-    reviewer: { ...reviewer, prompt: reviewerPrompt },
+    authorFailures,
+    author: { ...routedAuthor, prompt: sourcePrompt },
+    reviewer: { ...routedReviewer, prompt: reviewerPrompt },
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
   };
   const item: QueueItem = {
@@ -896,8 +917,8 @@ export async function queueConfigFromLoop(
     repair: {
       stateDirectory: paths.repair,
       acceptanceCriteria: issueContext.acceptanceCriteria,
-      author: { ...(routing?.repair ?? author), prompt: sourcePrompt },
-      reviewer: { ...reviewer, prompt: reviewerPrompt },
+      author: { ...routedAuthor, prompt: sourcePrompt },
+      reviewer: { ...routedReviewer, prompt: reviewerPrompt },
     },
     delivery: {
       ...(sourceBranch !== publishedBranch && !replan?.publication
@@ -1163,6 +1184,21 @@ export async function readQueueHistory(
   return history;
 }
 async function record(directory: string, name: string, value: unknown) {
+  // Worker observation may advance the ladder inside a queue step. Preserve that
+  // progress when the enclosing step writes its earlier phase snapshot.
+  if (
+    name === "attempt" &&
+    object(value) &&
+    value.schemaVersion === "dogfood-bounded-queue-attempt/v1"
+  ) {
+    const saved = await optionalRecord(directory, name);
+    if (
+      saved !== ABSENT &&
+      saved.item === value.item &&
+      (saved.authorFailures?.count ?? 0) > (value.authorFailures?.count ?? 0)
+    )
+      value = { ...value, authorFailures: saved.authorFailures };
+  }
   const path = resolve(directory, `${name}.json`);
   const temporary = `${path}.tmp`;
   const bytes = `${JSON.stringify(value, null, 2)}\n`;
@@ -1172,6 +1208,7 @@ async function record(directory: string, name: string, value: unknown) {
 
 type AttemptPhase = "setup" | "source" | "repair" | "delivery" | "failed" | "complete";
 interface AttemptRecord {
+  authorFailures?: SourceConfig["authorFailures"];
   routing?: import("./routing.mjs").RoutingSelection;
   schemaVersion: "dogfood-bounded-queue-attempt/v1";
   phase: AttemptPhase;
@@ -1210,6 +1247,9 @@ function initialAttempt(
     reviewId: null,
     findings: [],
     history,
+    ...(item.source.author.ladder
+      ? { authorFailures: item.source.authorFailures ?? { count: 0, ids: [] } }
+      : {}),
     retries: 0,
     acceptedStage: null,
     stateDirectory: null,
@@ -1920,6 +1960,17 @@ export function repositoryQueueAdapter(
 
   const readHistory = () => readQueueHistory(config);
 
+  const failAuthor = async (id: string) => {
+    const attempt = await json(state, "attempt");
+    const failures = attempt.authorFailures ?? { count: 0, ids: [] };
+    if (failures.ids.includes(id)) return;
+    await record(state, "attempt", {
+      ...attempt,
+      authorFailures: { count: failures.count + 1, ids: [...failures.ids, id] },
+      history: await readHistory(),
+    });
+  };
+
   const seedHistory = async () => {
     for (const participant of config.initialHistory) {
       const name = `participant-${participant.ordinal}-terminal`;
@@ -1992,6 +2043,12 @@ export function repositoryQueueAdapter(
 
   const boundedNative = (item: QueueItem, stage: QueueParticipant["stage"]): Adapter => ({
     ...native,
+    async authorRung() {
+      return (await json(state, "attempt")).authorFailures?.count ?? 0;
+    },
+    async authorRefused(_current, identity) {
+      await failAuthor(identity);
+    },
     async waitForProvider(current) {
       await native.waitForProvider?.(current);
       // Acquire missing legacy evidence before the clean-base dead-worker retry.
@@ -2067,6 +2124,7 @@ export function repositoryQueueAdapter(
       ...(attempt.routing ? { routing: attempt.routing } : {}),
       ...(attempt.models ? { models: attempt.models } : {}),
       ...(attempt.placement ? { placement: attempt.placement } : {}),
+      ...(attempt.rung === undefined ? {} : { rung: attempt.rung }),
     };
     if (existingParticipant)
       demand(
@@ -2076,6 +2134,14 @@ export function repositoryQueueAdapter(
     else {
       demand(history.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
       await record(state, `participant-${participant.ordinal}-terminal`, participant);
+    }
+    if (item.source.author.ladder && role === "author" && outcome !== "passed")
+      await failAuthor(attempt.id);
+    if (item.source.author.ladder && role === "reviewer" && outcome === "failed") {
+      const author = history.findLast(
+        (p) => p.item === item.id && p.role === "author" && p.ordinal < participant.ordinal,
+      );
+      if (author) await failAuthor(author.id);
     }
   }
 
@@ -2243,7 +2309,15 @@ export function repositoryQueueAdapter(
       mainBase: item.source.mainBase ?? item.base,
       stateDirectory: item.repair.stateDirectory,
       author: item.repair.author,
-      reviewer: item.repair.reviewer,
+      reviewer: {
+        ...item.repair.reviewer,
+        ...(item.repair.reviewer.ladder
+          ? {
+              ...selected.attempt.placement,
+              rung: selected.attempt.rung,
+            }
+          : {}),
+      },
     };
     return {
       repair,
@@ -2857,6 +2931,10 @@ export function repositoryQueueAdapter(
               `gate-${attribution.cause === "base" ? "base-failed" : attribution.cause === "host" ? "host-failed" : "attribution-unknown"}:${error.gate}`,
               `Failed head ${delivery.candidateHead}, delivery main ${main}; diagnostics ${failure.log}; control ${attribution.log}`,
             );
+          const failedAuthor = (await readHistory()).findLast(
+            (p) => p.item === item.id && p.role === "author",
+          );
+          if (item.source.author.ladder && failedAuthor) await failAuthor(failedAuthor.id);
           if (correctionRecord !== ABSENT || legacyCorrectionUsed)
             return stopGate(`gate-correction-exhausted:${error.gate}`, failure.log);
           if (item.acceptedReplan) return stopGate("gate-correction-not-authorized", failure.log);
@@ -2881,6 +2959,7 @@ export function repositoryQueueAdapter(
               reviewer: {
                 ...item.source.reviewer,
                 ...(await json(delivery.stateDirectory, "reviewer-attempt")).placement,
+                rung: (await json(delivery.stateDirectory, "reviewer-attempt")).rung,
               },
             },
           });
