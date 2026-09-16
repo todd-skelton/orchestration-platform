@@ -406,6 +406,7 @@ it("retains actual routing and refused primary/fallback launches in a learning n
       outcome: "failed",
       routing: { row: "self" },
       placement: { model: "gpt-5.6-sol", effort: "high" },
+      rung: 1,
       usage,
     },
   ];
@@ -428,6 +429,7 @@ it("retains actual routing and refused primary/fallback launches in a learning n
   for (const model of ["gpt-6-astra", "claude-opus-5", "gpt-5.6-sol"])
     expect(observation.comments[0]).toContain(`"model":"${model}"`);
   expect(observation.comments[0]).toContain('"row":"self"');
+  expect(observation.comments[0]).toContain('"rung":1');
   expect(observation.comments[0]).toContain('"outcome":"dead"');
 });
 

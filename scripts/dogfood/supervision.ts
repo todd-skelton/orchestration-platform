@@ -376,12 +376,13 @@ function stopMessage(
         participant.item.toLowerCase().startsWith(`${selection.key.toLowerCase()}:`) ||
         participant.item.toLowerCase().startsWith(`${selection.key.toLowerCase()}-`),
     )
-    .map(({ role, routing, placement, outcome }) => ({
+    .map(({ role, routing, placement, rung, outcome }) => ({
       row: routing?.row ?? "unrecorded",
       review: routing?.review,
       role,
       model: placement?.model ?? "unrecorded",
       effort: placement?.effort,
+      rung,
       outcome,
     }));
   const routingDetail = placements.length

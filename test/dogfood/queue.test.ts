@@ -1219,13 +1219,12 @@ it("admits repository-wide source scope without a pre-authored repair path list"
   expect(() => validateQueueConfig(current.config)).not.toThrow();
 });
 
-it("resolves routing before any setup, uses repair placement, and keeps the self policy fixed", async () => {
+it("resolves ladders before setup and rejects the old fixed-seat config", async () => {
   const f = await loopFixture();
   const row = {
     ...SELF_ROUTING,
     row: 7,
     review: 11 as const,
-    repair: { model: "repair-model", effort: "medium" },
   };
   const policy: RepositoryAdapter = {
     ...repositoryPolicy,
@@ -1235,6 +1234,20 @@ it("resolves routing before any setup, uses repair placement, and keeps the self
     }),
   };
   const config = { ...f.loop, adapter: "chase-sets", routingRows: [] };
+  expect(() =>
+    validateLoopConfig({
+      ...config,
+      routingRows: [
+        {
+          row: 7,
+          review: 11,
+          author: SELF_ROUTING.author[0],
+          reviewer: { ...SELF_ROUTING.reviewer[0], fallback: SELF_ROUTING.reviewer[1] },
+          repair: SELF_ROUTING.author[0],
+        },
+      ],
+    } as unknown as LoopConfig),
+  ).toThrow("invalid-routing-row");
   await expect(queueConfigFromLoop(config, f.repository, f.selected, policy)).rejects.toThrow(
     "routing-row-unconfigured",
   );
@@ -1249,10 +1262,10 @@ it("resolves routing before any setup, uses repair placement, and keeps the self
   );
   expect(queue.items[0]?.source).toMatchObject({
     routing: { row: 7, review: 11 },
-    author: row.author,
-    reviewer: row.reviewer,
+    author: { ...row.author[0], ladder: row.author },
+    reviewer: { ...row.reviewer[0], ladder: row.reviewer },
   });
-  expect(queue.items[0]?.repair.author).toMatchObject(row.repair);
+  expect(queue.items[0]?.repair.author).toMatchObject({ ...row.author[0], ladder: row.author });
   const self = await queueConfigFromLoop(
     { ...f.loop, routingRows: [row] },
     f.repository,
@@ -1267,8 +1280,8 @@ it("resolves routing before any setup, uses repair placement, and keeps the self
   );
   expect(self.items[0]?.source).toMatchObject({
     routing: { row: "self" },
-    author: SELF_ROUTING.author,
-    reviewer: SELF_ROUTING.reviewer,
+    author: { ...SELF_ROUTING.author[0], ladder: SELF_ROUTING.author },
+    reviewer: { ...SELF_ROUTING.reviewer[0], ladder: SELF_ROUTING.reviewer },
   });
   const {
     author: _author,
@@ -1910,6 +1923,13 @@ it.each([false, true])(
   "rebased attempt 3 (changed: %s)",
   async (correctiveChanges) => {
     const { loop, repository, stateRoot, gitExecutable, selected } = await loopFixture();
+    const policy: RepositoryAdapter = {
+      ...repositoryPolicy,
+      issueContext: async (input) => ({
+        ...(await repositoryPolicy.issueContext(input)),
+        routing: { row: "self" },
+      }),
+    };
     await execute(gitExecutable, ["-C", repository, "checkout", "-b", "rejected"]);
     await writeFile(resolve(repository, "rejected.txt"), "candidate two\n");
     await execute(gitExecutable, ["-C", repository, "add", "."]);
@@ -1947,7 +1967,7 @@ it.each([false, true])(
       participant(1, "ISS-104:1", "source", "author", "passed"),
       participant(2, "ISS-104:1", "source", "reviewer", "failed"),
       participant(3, "ISS-104:1", "repair", "author", "passed"),
-      participant(4, "ISS-104:1", "repair", "reviewer", "failed"),
+      { ...participant(4, "ISS-104:1", "repair", "reviewer", "failed"), rung: 1 },
     ];
     const queueState = resolve(stateRoot, loop.run, "iss-104-attempt-1");
     await mkdir(queueState, { recursive: true });
@@ -1966,13 +1986,17 @@ it.each([false, true])(
         reviewId: firstHistory[3]!.id,
         findings: prescribed,
         history: firstHistory,
+        authorFailures: { count: 2, ids: [firstHistory[0]!.id, firstHistory[2]!.id] },
         retries: 0,
         acceptedStage: null,
         stateDirectory: null,
       })}\n`,
     );
-    const third = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+    const third = await queueConfigFromLoop(loop, repository, selected, policy);
     const rebasedBase = third.items[0]!.base;
+    expect(third.items[0]!.source.author).toMatchObject({ ...SELF_ROUTING.author[2], rung: 2 });
+    expect(third.items[0]!.source.authorFailures?.count).toBe(2);
+    expect(third.items[0]!.source.reviewer).toMatchObject({ ...SELF_ROUTING.reviewer[1], rung: 1 });
     expect(third.items[0]).toMatchObject({
       id: "ISS-104:3",
       base: rebasedBase,
@@ -2004,7 +2028,7 @@ it.each([false, true])(
     await expect(
       gitSetupAdapter({ gitExecutable }).assertExecutor(third.items[0]!.setup, repository),
     ).resolves.toBeUndefined();
-    expect(await queueConfigFromLoop(loop, repository, selected, repositoryPolicy)).toEqual(third);
+    expect(await queueConfigFromLoop(loop, repository, selected, policy)).toEqual(third);
     const item = third.items[0]!;
     await setupStep(
       item.setup,
@@ -2029,6 +2053,8 @@ it.each([false, true])(
       },
       async launch(role, config, prompt) {
         launches.push(role);
+        if (role === "author")
+          expect(config.author).toMatchObject({ ...SELF_ROUTING.author[2], rung: 2 });
         if (role === "author" && correctiveChanges)
           await writeFile(resolve(config.worktree, "correction.txt"), "new corrective work\n");
         if (role === "reviewer") {
@@ -2067,6 +2093,19 @@ it.each([false, true])(
     };
     const sourceAdapter = repositoryQueueAdapter(third, repository, { native, gitExecutable });
     await sourceAdapter.assertExecutor();
+    await writeFile(
+      resolve(third.stateDirectory, "attempt.json"),
+      JSON.stringify({
+        ...JSON.parse(failedRecord),
+        phase: "source",
+        item: item.id,
+        base: item.base,
+        candidateAttempt: 3,
+        head: item.base,
+        reviewId: null,
+        findings: [],
+      }),
+    );
     await expect(sourceAdapter.source(item)).resolves.toMatchObject({
       status: "observing-reviewer",
     });
@@ -2078,7 +2117,7 @@ it.each([false, true])(
       changed: correctiveChanges ? ["correction.txt", "rejected.txt"] : ["rejected.txt"],
     });
     passReview = true;
-    const resumed = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+    const resumed = await queueConfigFromLoop(loop, repository, selected, policy);
     await expect(
       repositoryQueueAdapter(resumed, repository, { native }).source(resumed.items[0]!),
     ).resolves.toMatchObject({

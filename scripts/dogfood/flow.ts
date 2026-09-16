@@ -9,6 +9,7 @@ import type { PreReviewEvidence } from "./continuation.js";
 
 export type Role = "author" | "reviewer";
 export interface Config {
+  authorFailures?: { count: number; ids: string[] };
   routing?: import("./routing.mjs").RoutingSelection;
   owner: string;
   run: string;
@@ -26,16 +27,24 @@ export interface Config {
   requiredChecks: string[];
   localGates?: string[];
   providerOutageCeilingMs?: number;
-  author: { model: string; effort: string; prompt: string };
+  author: {
+    model: string;
+    effort: string;
+    prompt: string;
+    ladder?: import("./routing.mjs").ModelPlacement[];
+    rung?: number;
+  };
   reviewer: {
     model: string;
     effort: string;
     prompt: string;
-    fallback?: import("./routing.mjs").ModelPlacement;
+    ladder?: import("./routing.mjs").ModelPlacement[];
+    rung?: number;
   };
   adapter: { kind: "codex-exec"; executable: string };
 }
 export interface Attempt {
+  rung?: number;
   routing?: import("./routing.mjs").RoutingSelection;
   models?: { author: string; reviewer: string | null };
   placement?: import("./routing.mjs").ModelPlacement;
@@ -61,6 +70,7 @@ function routedAttempt(config: Config, role: Role, attempt: Attempt): Attempt {
     ...attempt,
     ...(config.routing ? { routing: config.routing } : {}),
     placement: { model: config[role].model, effort: config[role].effort },
+    ...(config[role].rung === undefined ? {} : { rung: config[role].rung }),
     models: {
       author: config.author.model,
       reviewer: role === "reviewer" ? config.reviewer.model : null,
@@ -73,6 +83,8 @@ export interface Check {
   link: string;
 }
 export interface Adapter {
+  authorRung?(config: Config): Promise<number>;
+  authorRefused?(config: Config, identity: string): Promise<void>;
   validateAuthorChanges?(config: Config): Promise<void>;
   preflight(config: Config): Promise<void>;
   waitForProvider?(config: Config): Promise<void>;
@@ -343,17 +355,28 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
     let parseError: string | undefined;
     let retryContext = attempt?.retryContext ?? "";
     let retry = attempt?.retries === 1;
-    let placement = attempt?.placement ?? config[role];
-    const fallback = role === "reviewer" ? config.reviewer.fallback : undefined;
+    const ladder = config[role].ladder;
+    const selectedAuthor: Attempt | undefined =
+      role === "reviewer" ? await get("author-attempt") : undefined;
+    let rung = attempt?.rung ?? config[role].rung ?? 0;
+    let placement = attempt?.placement ?? ladder?.[rung] ?? config[role];
     const useFallback = () => {
-      requireThat(fallback && placement.model !== fallback.model, "provider-model-refused");
-      placement = fallback;
+      requireThat(ladder && rung + 1 < ladder.length, "provider-model-refused");
+      placement = ladder[++rung]!;
     };
-    const launchConfig = () => ({ ...config, [role]: { ...config[role], ...placement } });
+    const launchConfig = () => ({
+      ...config,
+      author: { ...config.author, ...selectedAuthor?.placement },
+      [role]: { ...config[role], ...placement, ...(ladder ? { rung } : {}) },
+    });
     let relaunch = false;
     for (;;) {
       if (!attempt) {
         await adapter.waitForProvider?.(config);
+        if (role === "author" && ladder) {
+          rung = Math.min((await adapter.authorRung?.(config)) ?? rung, ladder.length - 1);
+          placement = ladder[rung]!;
+        }
         let reviewerHead: string | undefined;
         let authorEvidence = hostEvidence;
         if (!relaunch) {
@@ -433,13 +456,25 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
           prompts[role === "author" ? 0 : 1],
         )}${authorEvidence}${retryContext}`;
         let launched: Attempt;
-        try {
-          launched = await adapter.launch(role, launchConfig(), prompt);
-        } catch (error) {
-          if (!(error instanceof QueueBlocked) || error.reason !== "provider-model-refused")
-            throw error;
-          useFallback();
-          launched = await adapter.launch(role, launchConfig(), prompt);
+        for (;;) {
+          // Persist selection before dispatch; a running attempt carries this same rung.
+          await replace(directory, `${role}-intent`, {
+            at: new Date().toISOString(),
+            fingerprint,
+            role,
+            head: reviewHead,
+            ...(ladder ? { rung, placement } : {}),
+          });
+          try {
+            launched = await adapter.launch(role, launchConfig(), prompt);
+            break;
+          } catch (error) {
+            if (!(error instanceof QueueBlocked) || error.reason !== "provider-model-refused")
+              throw error;
+            if (role === "author")
+              await adapter.authorRefused?.(config, `${directory}:probe:${rung}`);
+            useFallback();
+          }
         }
         attempt = {
           ...routedAttempt(launchConfig(), role, launched),
@@ -490,7 +525,7 @@ async function runStep(config: Config, adapter: Adapter, pilotRoot: string, inhe
         await replace(directory, `${role}-terminal`, terminal);
         if (terminal.modelRefused) {
           useFallback();
-          // Keep the refused launch in participant history; it performed no review.
+          // Keep the refused launch in participant history; it performed no work.
           relaunch = true;
           attempt = undefined;
           terminal = undefined;

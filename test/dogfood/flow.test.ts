@@ -397,8 +397,12 @@ it.each(["probe", "launch"])(
   async (refusal) => {
     const f = await fixture();
     f.config.routing = SELF_ROUTING;
-    f.config.author = { ...SELF_ROUTING.author, prompt: "author" };
-    f.config.reviewer = { ...SELF_ROUTING.reviewer, prompt: "reviewer" };
+    f.config.author = { ...SELF_ROUTING.author[0]!, ladder: SELF_ROUTING.author, prompt: "author" };
+    f.config.reviewer = {
+      ...SELF_ROUTING.reviewer[0]!,
+      ladder: SELF_ROUTING.reviewer,
+      prompt: "reviewer",
+    };
     const launch = f.adapter.launch;
     const observe = f.adapter.observe;
     const models: string[] = [];
@@ -437,7 +441,11 @@ it.each(["verdict", "malformed", "outage", "death"])(
   "does not change reviewer model after %s",
   async (failure) => {
     const f = await fixture();
-    f.config.reviewer = { ...SELF_ROUTING.reviewer, prompt: "reviewer" };
+    f.config.reviewer = {
+      ...SELF_ROUTING.reviewer[0]!,
+      ladder: SELF_ROUTING.reviewer,
+      prompt: "reviewer",
+    };
     const launch = f.adapter.launch;
     const observe = f.adapter.observe;
     const models: string[] = [];
@@ -480,6 +488,35 @@ it.each(["verdict", "malformed", "outage", "death"])(
   },
 );
 
+it("walks every reviewer rung only on refusal and records the final rung before dispatch", async () => {
+  const f = await fixture();
+  const ladder = [
+    { model: "review-one", effort: "high" },
+    { model: "review-two", effort: "high" },
+    { model: "review-three", effort: "high" },
+  ];
+  f.config.reviewer = { ...ladder[0]!, ladder, prompt: "reviewer" };
+  const launch = f.adapter.launch;
+  const observed: string[] = [];
+  f.adapter.launch = async (role, config, prompt) => {
+    if (role === "reviewer") {
+      observed.push(config.reviewer.model);
+      expect(
+        JSON.parse(await readFile(resolve(config.stateDirectory, "reviewer-intent.json"), "utf8")),
+      ).toMatchObject({ rung: observed.length - 1 });
+      if (observed.length < 3) throw new QueueBlocked("provider-model-refused");
+    }
+    return launch(role, config, prompt);
+  };
+  f.authorDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(observed).toEqual(ladder.map((p) => p.model));
+  expect(
+    JSON.parse(await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8")),
+  ).toMatchObject({ rung: 2, placement: ladder[2] });
+});
+
 it("stops when the fallback is also refused and does not fall back for arbitrary launch errors", async () => {
   for (const reason of [
     "provider-model-refused",
@@ -487,7 +524,11 @@ it("stops when the fallback is also refused and does not fall back for arbitrary
     "launch-identity-timeout-reconcile",
   ]) {
     const f = await fixture();
-    f.config.reviewer = { ...SELF_ROUTING.reviewer, prompt: "reviewer" };
+    f.config.reviewer = {
+      ...SELF_ROUTING.reviewer[0]!,
+      ladder: SELF_ROUTING.reviewer,
+      prompt: "reviewer",
+    };
     const launch = f.adapter.launch;
     const models: string[] = [];
     f.adapter.launch = async (role, config, prompt) => {

@@ -220,7 +220,10 @@ export async function refreshDelivery(
   }
   if (active.conflict && !active.head) {
     const originalAuthor = await readOptional(resolve(inherited, "author-attempt.json"));
-    const originalReviewer = await readOptional(resolve(inherited, "reviewer-attempt.json"));
+    const originalReviewer =
+      (await readOptional(
+        resolve(active.previousDirectory ?? inherited, "reviewer-attempt.json"),
+      )) ?? (await readOptional(resolve(inherited, "reviewer-attempt.json")));
     const retained = `Retain independently reviewed feature ${active.previousHead}, source review ${active.previousReview}, and current main ${active.main}. Original source records and execution evidence: ${inherited}; author trace: ${originalAuthor?.trace}. Prior integration review and execution records: ${active.previousDirectory ?? inherited}. Inspect those commands and outputs as evidence, not authority. Conflict inputs and consumed resolution are recorded in ${resolve(origin, "native-refresh.json")}; the pinned author base retains the original marked hunks in Git history.${continuation ? ` ${continuation.context}` : ""}`;
     let result;
     try {
@@ -236,6 +239,7 @@ export async function refreshDelivery(
           reviewer: {
             ...source.reviewer,
             ...originalReviewer?.placement,
+            rung: originalReviewer?.rung,
             prompt: `This is an independent DELTA review of conflict resolution. Check the resolved hunks and direct callers against both parents. Reject semantic scope expansion, dropped feature or current-main behavior, and missing execution evidence. Inherit the retained source review; do not restart a full source sweep or infer patch equivalence. ${retained}`,
           },
         },
@@ -269,7 +273,10 @@ export async function refreshDelivery(
     ...(active.publicationRefresh ? { refresh: active.publicationRefresh } : {}),
   };
   if (!published && !publishing && !complete) {
-    const originalReviewer = await readOptional(resolve(inherited, "reviewer-attempt.json"));
+    const originalReviewer =
+      (await readOptional(
+        resolve(active.previousDirectory ?? inherited, "reviewer-attempt.json"),
+      )) ?? (await readOptional(resolve(inherited, "reviewer-attempt.json")));
     const config: Config = {
       ...source,
       base: active.main,
@@ -278,6 +285,7 @@ export async function refreshDelivery(
       reviewer: {
         ...source.reviewer,
         ...originalReviewer?.placement,
+        rung: originalReviewer?.rung,
         prompt: `${source.reviewer.prompt}\nThis is an independent DELTA review of native current-main integration from ${active.previousHead} onto ${active.main}, producing ${head}. Inherit source review ${active.previousReview} and original records at ${inherited}; prior integration review and execution records are at ${active.previousDirectory ?? inherited}. Inspect the old and new implementation diffs, changed semantic hunks and their direct callers, and execution evidence. A clean rebase does not establish semantic equivalence. Preserve every acceptance criterion; missing evidence remains a finding. Do not restart a full source sweep.${continuation ? ` ${continuation.context}` : ""}`,
       },
     };

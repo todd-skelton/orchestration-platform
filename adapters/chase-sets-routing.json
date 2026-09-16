@@ -2,281 +2,393 @@
   {
     "row": 2,
     "review": 11,
-    "author": {
-      "model": "gpt-5.6-luna",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "high",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-5.6-luna",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-5.6-luna",
+        "effort": "xhigh"
+      },
+      {
+        "model": "claude-sonnet-5",
+        "effort": "medium"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
         "model": "gpt-5.6-sol",
         "effort": "high"
       }
-    },
-    "repair": {
-      "model": "gpt-5.6-luna",
-      "effort": "high"
-    }
+    ]
   },
   {
     "row": 2,
     "review": 12,
-    "author": {
-      "model": "gpt-5.6-luna",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "medium",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-5.6-luna",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-5.6-luna",
+        "effort": "xhigh"
+      },
+      {
+        "model": "claude-sonnet-5",
+        "effort": "medium"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      {
         "model": "gpt-5.6-sol",
         "effort": "medium"
       }
-    },
-    "repair": {
-      "model": "gpt-5.6-luna",
-      "effort": "high"
-    }
+    ]
   },
   {
     "row": 3,
     "review": 11,
-    "author": {
-      "model": "claude-sonnet-5",
-      "effort": "medium"
-    },
-    "reviewer": {
-      "model": "gpt-5.6-sol",
-      "effort": "high",
-      "fallback": {
+    "author": [
+      {
+        "model": "claude-sonnet-5",
+        "effort": "medium"
+      },
+      {
+        "model": "claude-sonnet-5",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-5.6-luna",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "high"
+      },
+      {
         "model": "claude-opus-5",
         "effort": "high"
       }
-    },
-    "repair": {
-      "model": "claude-sonnet-5",
-      "effort": "medium"
-    }
+    ]
   },
   {
     "row": 3,
     "review": 12,
-    "author": {
-      "model": "claude-sonnet-5",
-      "effort": "medium"
-    },
-    "reviewer": {
-      "model": "gpt-5.6-sol",
-      "effort": "medium",
-      "fallback": {
+    "author": [
+      {
+        "model": "claude-sonnet-5",
+        "effort": "medium"
+      },
+      {
+        "model": "claude-sonnet-5",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-5.6-luna",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "medium"
+      },
+      {
         "model": "claude-opus-5",
         "effort": "medium"
       }
-    },
-    "repair": {
-      "model": "claude-sonnet-5",
-      "effort": "medium"
-    }
+    ]
   },
   {
     "row": 4,
     "review": 11,
-    "author": {
-      "model": "gpt-6-astra",
-      "effort": "medium"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "high",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-6-astra",
+        "effort": "medium"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      {
+        "model": "claude-fable-5-1",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
         "model": "gpt-5.6-sol",
         "effort": "high"
       }
-    },
-    "repair": {
-      "model": "gpt-6-astra",
-      "effort": "medium"
-    }
+    ]
   },
   {
     "row": 4,
     "review": 12,
-    "author": {
-      "model": "gpt-6-astra",
-      "effort": "medium"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "medium",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-6-astra",
+        "effort": "medium"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      {
+        "model": "claude-fable-5-1",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      {
         "model": "gpt-5.6-sol",
         "effort": "medium"
       }
-    },
-    "repair": {
-      "model": "gpt-6-astra",
-      "effort": "medium"
-    }
+    ]
   },
   {
     "row": 7,
     "review": 11,
-    "author": {
-      "model": "gpt-6-astra",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "high",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "xhigh"
+      },
+      {
+        "model": "claude-fable-5-1",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
         "model": "gpt-5.6-sol",
         "effort": "high"
       }
-    },
-    "repair": {
-      "model": "gpt-6-astra",
-      "effort": "high"
-    }
+    ]
   },
   {
     "row": 7,
     "review": 12,
-    "author": {
-      "model": "gpt-6-astra",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "medium",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "xhigh"
+      },
+      {
+        "model": "claude-fable-5-1",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      {
         "model": "gpt-5.6-sol",
         "effort": "medium"
       }
-    },
-    "repair": {
-      "model": "gpt-6-astra",
-      "effort": "high"
-    }
+    ]
   },
   {
     "row": 10,
     "review": 11,
-    "author": {
-      "model": "gpt-5.6-sol",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "high",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      {
+        "model": "claude-fable-5-1",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "high"
       }
-    },
-    "repair": {
-      "model": "gpt-5.6-sol",
-      "effort": "high"
-    }
+    ]
   },
   {
     "row": 10,
     "review": 12,
-    "author": {
-      "model": "gpt-5.6-sol",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "claude-opus-5",
-      "effort": "medium",
-      "fallback": {
+    "author": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      {
+        "model": "claude-fable-5-1",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "medium"
       }
-    },
-    "repair": {
-      "model": "gpt-5.6-sol",
-      "effort": "high"
-    }
+    ]
   },
   {
     "row": 14,
     "review": 11,
-    "author": {
-      "model": "claude-opus-5",
-      "effort": "medium"
-    },
-    "reviewer": {
-      "model": "gpt-5.6-sol",
-      "effort": "high",
-      "fallback": {
+    "author": [
+      {
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "high"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "high"
       }
-    },
-    "repair": {
-      "model": "claude-opus-5",
-      "effort": "medium"
-    }
+    ]
   },
   {
     "row": 14,
     "review": 12,
-    "author": {
-      "model": "claude-opus-5",
-      "effort": "medium"
-    },
-    "reviewer": {
-      "model": "gpt-5.6-sol",
-      "effort": "medium",
-      "fallback": {
+    "author": [
+      {
+        "model": "claude-opus-5",
+        "effort": "medium"
+      },
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "medium"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "medium"
       }
-    },
-    "repair": {
-      "model": "claude-opus-5",
-      "effort": "medium"
-    }
+    ]
   },
   {
     "row": 15,
     "review": 11,
-    "author": {
-      "model": "claude-opus-5",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "gpt-5.6-sol",
-      "effort": "high",
-      "fallback": {
+    "author": [
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
+        "model": "claude-opus-5",
+        "effort": "max"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "high"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "high"
       }
-    },
-    "repair": {
-      "model": "claude-opus-5",
-      "effort": "high"
-    }
+    ]
   },
   {
     "row": 15,
     "review": 12,
-    "author": {
-      "model": "claude-opus-5",
-      "effort": "high"
-    },
-    "reviewer": {
-      "model": "gpt-5.6-sol",
-      "effort": "medium",
-      "fallback": {
+    "author": [
+      {
+        "model": "claude-opus-5",
+        "effort": "high"
+      },
+      {
+        "model": "claude-opus-5",
+        "effort": "max"
+      },
+      {
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "gpt-5.6-sol",
+        "effort": "medium"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "medium"
       }
-    },
-    "repair": {
-      "model": "claude-opus-5",
-      "effort": "high"
-    }
+    ]
   }
 ]

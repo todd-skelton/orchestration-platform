@@ -22,6 +22,7 @@ import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
+import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import {
   type QueueConfig,
   type QueueAdapter,
@@ -139,6 +140,141 @@ async function fixture(history: QueueParticipant[] = []) {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function enableLadders(current: Awaited<ReturnType<typeof fixture>>) {
+  current.item.source.author = {
+    ...current.item.source.author,
+    ...SELF_ROUTING.author[0]!,
+    ladder: SELF_ROUTING.author,
+  };
+  current.item.source.reviewer = {
+    ...current.item.source.reviewer,
+    ...SELF_ROUTING.reviewer[0]!,
+    ladder: SELF_ROUTING.reviewer,
+  };
+  current.item.repair.author = current.item.source.author;
+  current.item.repair.reviewer = current.item.source.reviewer;
+  await writeFile(
+    resolve(current.paths.queue, "attempt.json"),
+    JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      phase: "setup",
+      run: current.config.run,
+      index: 0,
+      item: current.item.id,
+      issue: current.item.issue,
+      base,
+      candidateAttempt: current.item.implementationAttempt,
+      head: base,
+      reviewId: null,
+      findings: [],
+      history: [],
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
+      authorFailures: { count: 0, ids: [] },
+    }),
+  );
+}
+
+it.each([
+  "refused-probe",
+  "refused-worker",
+  "dead-before-work",
+  "dead-after-work",
+  "failed",
+  "malformed",
+  "outages",
+])("advances the author ladder after %s and keeps the rung across resume", async (failure) => {
+  const f = await fixture();
+  await enableLadders(f);
+  const placements: { model: string; effort: string; rung: number | undefined }[] = [];
+  let serial = 0;
+  let partialWork = false;
+  const native: Adapter = {
+    async preflight() {},
+    async git(tree, args) {
+      if (args[0] === "status" && partialWork) return " M fixture.ts";
+      if (args[0] === "diff" && args.includes("--binary") && partialWork)
+        return "retained partial work";
+      if (args[0] === "reset") partialWork = false;
+      if (args[0] === "rev-parse")
+        return args[1] === "--show-toplevel" ? tree : tree === f.paths.pilot ? stable : base;
+      return "";
+    },
+    async launch(role, config) {
+      expect(role).toBe("author");
+      const { model, effort, rung } = config.author;
+      placements.push({ model, effort, rung });
+      expect(
+        JSON.parse(await readFile(resolve(config.stateDirectory, "author-intent.json"), "utf8")),
+      ).toMatchObject({ rung, placement: { model, effort } });
+      serial++;
+      if (failure === "refused-probe" && serial === 1)
+        throw new QueueBlocked("provider-model-refused");
+      return {
+        id: `author-${serial}`,
+        pid: serial,
+        launchedAt: 1,
+        trace: resolve(config.stateDirectory, `trace-${serial}`),
+      };
+    },
+    async observe(_role, _config, attempt) {
+      if (serial > (failure === "outages" ? 4 : failure === "refused-worker" ? 2 : 1))
+        return { id: attempt.id, status: "running" };
+      if (failure === "dead-after-work") partialWork = true;
+      return {
+        id: attempt.id,
+        status: failure === "failed" ? "failed" : failure === "malformed" ? "malformed" : "dead",
+        head: base,
+        ...(failure === "outages" ? { providerFailure: true } : {}),
+        ...(failure === "refused-worker" ? { modelRefused: true } : {}),
+        summary: failure === "dead-after-work" ? "worker died after editing source" : "",
+      };
+    },
+    async checks() {
+      return { head: candidate, checks: [] };
+    },
+  };
+  const adapter = () => repositoryQueueAdapter(f.config, f.paths.controller, { native });
+  if (["failed", "malformed"].includes(failure)) {
+    await expect(adapter().source(f.item)).rejects.toThrow(`author-${failure}`);
+    await expect(adapter().source(f.item)).rejects.toThrow(`author-${failure}`);
+    f.item.source.stateDirectory = resolve(f.paths.queue, "next-author");
+    await mkdir(f.item.source.stateDirectory);
+  }
+  await expect(adapter().source(f.item)).resolves.toMatchObject({ status: "observing-author" });
+  const saved = await readFile(
+    resolve(f.item.source.stateDirectory, "author-attempt.json"),
+    "utf8",
+  );
+  await expect(adapter().source(f.item)).resolves.toMatchObject({ status: "observing-author" });
+  expect(await readFile(resolve(f.item.source.stateDirectory, "author-attempt.json"), "utf8")).toBe(
+    saved,
+  );
+  const count = failure === "outages" ? 4 : failure === "refused-worker" ? 2 : 1;
+  expect(placements).toEqual(
+    Array.from({ length: count + 1 }, (_, index) => ({
+      ...SELF_ROUTING.author[Math.min(index, 2)],
+      rung: Math.min(index, 2),
+    })),
+  );
+  expect(
+    JSON.parse(await readFile(resolve(f.paths.queue, "attempt.json"), "utf8")).authorFailures.count,
+  ).toBe(count);
+  expect(JSON.parse(saved)).toMatchObject({
+    rung: Math.min(count, 2),
+    placement: SELF_ROUTING.author[Math.min(count, 2)],
+  });
+  if (failure.startsWith("refused")) expect(JSON.parse(saved).retries).toBeUndefined();
+  if (failure === "dead-after-work") {
+    expect(partialWork).toBe(false);
+    expect(
+      await readFile(resolve(f.item.source.stateDirectory, "author-retry-author-1.patch"), "utf8"),
+    ).toContain("retained partial work");
+  }
+  expect((await adapter().history()).every((p) => p.rung !== undefined)).toBe(true);
 });
 
 it.each([
@@ -484,6 +620,7 @@ it.each([false, true])(
     const current = await fixture();
     const corrected = "f".repeat(40);
     current.item.implementationAttempt = 2;
+    await enableLadders(current);
     current.item.delivery.refresh = {
       number: 337,
       url: "https://example.test/pull/337",
@@ -528,6 +665,15 @@ it.each([false, true])(
       },
       async launch(role, selectedConfig, prompt): Promise<Attempt> {
         const correction = selectedConfig.stateDirectory.endsWith("gate-correction");
+        if (role === "author") {
+          const rung = correction ? 2 : launches.length === 0 ? 0 : 1;
+          expect(selectedConfig.author).toMatchObject({ ...SELF_ROUTING.author[rung], rung });
+          expect(
+            JSON.parse(
+              await readFile(resolve(selectedConfig.stateDirectory, "author-intent.json"), "utf8"),
+            ),
+          ).toMatchObject({ rung });
+        }
         if (role === "reviewer" && !correction) {
           expect(prompt).toContain("is there a simpler way?");
           expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
@@ -781,6 +927,9 @@ it.each([false, true])(
         reviewId: accepted.reviewId,
         findings: [],
         history: await adapter.history(),
+        authorFailures: JSON.parse(
+          await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
+        ).authorFailures,
         retries: accepted.retries ?? 0,
         acceptedStage: "source",
         stateDirectory: accepted.stateDirectory,
@@ -796,6 +945,7 @@ it.each([false, true])(
       await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
     );
     expect(interrupted).toMatchObject({ head: candidate, retries: providerFailure ? 1 : 2 });
+    expect(interrupted.authorFailures).toEqual({ count: 2, ids: ["dead-author", "source-author"] });
     await expect(queueStep(current.config, queueAdapter)).resolves.toMatchObject({
       status: "observing-hosted-checks",
     });
@@ -849,6 +999,7 @@ it.each([false, true])(
 
 it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged) => {
   const current = await fixture();
+  if (unchanged) await enableLadders(current);
   const repaired = unchanged ? candidate : "d".repeat(40);
   const sourceSummary = JSON.stringify({
     run: current.source.run,
@@ -906,6 +1057,16 @@ it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged)
     },
     async launch(role, config, prompt) {
       const stage = config.stateDirectory === current.paths.repair ? "repair" : "source";
+      if (unchanged && role === "author")
+        expect(config.author).toMatchObject({
+          ...SELF_ROUTING.author[stage === "source" ? 0 : 1],
+          rung: stage === "source" ? 0 : 1,
+        });
+      if (unchanged && role === "reviewer")
+        if (config.reviewer.model === SELF_ROUTING.reviewer[0]!.model) {
+          expect(stage).toBe("source");
+          throw new QueueBlocked("provider-model-refused");
+        } else expect(config.reviewer).toMatchObject({ ...SELF_ROUTING.reviewer[1], rung: 1 });
       workerEffects.push(`${stage}:${role}`);
       if (stage === "repair") {
         expect(config).toMatchObject({ base: candidate, mainBase: base });
@@ -1175,8 +1336,20 @@ it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged)
   const completed = JSON.parse(
     await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"),
   );
+  if (unchanged) {
+    expect(completed.authorFailures).toEqual({ count: 1, ids: ["synthetic-source-author"] });
+    // Re-observing the predecessor FAIL must not charge the later corrective author.
+    await expect(repository.source(current.item)).resolves.toMatchObject({
+      status: "fixable-review",
+    });
+    expect(
+      JSON.parse(await readFile(resolve(current.paths.queue, "attempt.json"), "utf8"))
+        .authorFailures,
+    ).toEqual(completed.authorFailures);
+  }
   expect(Object.keys(completed).sort()).toEqual(
     [
+      ...(unchanged ? ["authorFailures"] : []),
       "schemaVersion",
       "phase",
       "index",

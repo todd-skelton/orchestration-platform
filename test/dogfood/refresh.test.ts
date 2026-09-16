@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   repositoryQueueAdapter,
+  QueueBlocked,
   queueStep,
   queueUsage,
   type QueueConfig,
@@ -1326,13 +1327,47 @@ it("retains the chosen fallback reviewer for current-main delta review", async (
     model: "claude-opus-5",
     effort: "high",
     prompt: "review",
-    fallback: { model: "gpt-5.6-sol", effort: "high" },
+    ladder: [
+      { model: "claude-opus-5", effort: "high" },
+      { model: "gpt-5.6-sol", effort: "high" },
+    ],
   };
   f.reviewer.placement = { model: "gpt-5.6-sol", effort: "high" };
+  f.reviewer.rung = 1;
   await f.pinSource();
   await f.advanceMain();
   await f.deliver();
   expect(f.reviewerModels).toEqual(["gpt-5.6-sol"]);
+});
+
+it("carries a delta review refusal forward when main moves again", async () => {
+  const f = await fixture();
+  f.source.reviewer = {
+    model: "claude-opus-5",
+    effort: "high",
+    prompt: "review",
+    ladder: [
+      { model: "claude-opus-5", effort: "high" },
+      { model: "gpt-5.6-sol", effort: "high" },
+    ],
+  };
+  f.reviewer.placement = { model: "claude-opus-5", effort: "high" };
+  f.reviewer.rung = 0;
+  await f.pinSource();
+  const launch = f.native.launch;
+  const models: string[] = [];
+  f.native.launch = async (role, config, prompt) => {
+    models.push(config.reviewer.model);
+    if (config.reviewer.model === "claude-opus-5") throw new QueueBlocked("provider-model-refused");
+    return launch(role, config, prompt);
+  };
+  await f.advanceMain();
+  f.setStopGate(true);
+  await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+  await f.advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
+  f.setStopGate(false);
+  await f.deliver();
+  expect(models).toEqual(["claude-opus-5", "gpt-5.6-sol", "gpt-5.6-sol"]);
 });
 
 it("refreshes first and resumed self gates with current registrations and candidate planning, preserving mutations and review history", async () => {
