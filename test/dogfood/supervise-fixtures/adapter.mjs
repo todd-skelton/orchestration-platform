@@ -1,6 +1,9 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
 import { QueueBlocked } from "../../../scripts/dogfood/queue.ts";
+import { nextCycle as nativeNextCycle } from "../../../scripts/dogfood/supervision.ts";
+export const nextCycle = (loop, root, supervisor, repository) =>
+  nativeNextCycle(loop, root, supervisor, repository, () => validateLoopExecutor(loop, root));
 let sourceObserved = false;
 export {
   currentCandidateAttempt,
@@ -11,7 +14,6 @@ export {
 export { QueueBlocked };
 export {
   completeCycle,
-  nextCycle,
   persistCycle,
   reconcilePendingStop,
   startCycle,

@@ -4,8 +4,69 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
+import { queueStep } from "../../scripts/dogfood/queue.js";
 
 const roots: string[] = [];
+
+it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] as const)(
+  "retained source FAIL survives upgrade without source replay: %s",
+  async (shape) => {
+    const f = await sourceFailureFixture(5);
+    roots.push(f.root);
+    await f.fail();
+    await historicalStops(f, shape);
+    const old = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    await f.upgrade();
+    // Old composition would enter the source flow with the new pilot revision.
+    const replay = await f.compose(f.cycle);
+    await expect(queueStep(replay.config, replay.adapter)).rejects.toMatchObject({
+      reason: "pilot-revision-moved",
+    });
+    const calls = f.calls.length;
+    const next = await f.advance();
+    expect(next).toMatchObject({
+      selection: { key: "fixture-159" },
+      initialHistory: f.cycle.initialHistory,
+    });
+    expect(
+      f.calls.slice(calls).every((call) => call.startsWith("park:") || call.startsWith("note:")),
+    ).toBe(true);
+    for (const [path, bytes] of old) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    for (const [path, bytes] of trees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await f.advance()).toEqual(next);
+    const names = await readdir(f.runState);
+    expect(names.filter((name) => name.startsWith("fixture-110-attempt"))).toEqual([
+      "fixture-110-attempt-1",
+    ]);
+    expect(names).not.toContain(
+      `cycle-${f.cycle.selection.cycle}-stop-${shape.startsWith("pilot") ? 3 : 2}.json`,
+    );
+    expect(f.rows[0]).toMatchObject({ state: "OPEN", ready: false });
+  },
+);
+
+it.each([false, true])("FAIL drains unrelated ready order: resumed=%s", async (resumed) => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  if (resumed) {
+    await historicalStops(f, "pilot-pending");
+    await f.upgrade();
+  } else await f.stop();
+  expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+  expect(await f.drain()).toEqual([]);
+  expect(f.rows.map(({ number, state, ready }) => ({ number, state, ready }))).toEqual([
+    { number: 110, state: "OPEN", ready: false },
+    { number: 159, state: "CLOSED", ready: false },
+    { number: 160, state: "CLOSED", ready: false },
+    { number: 999, state: "OPEN", ready: true },
+  ]);
+  expect(
+    f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
+  ).toHaveLength(1);
+});
 let runOrdinal = 0;
 const command = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
 const hook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");

@@ -3,8 +3,17 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { continuationSlug, QueueBlocked, readQueueHistory, validateHistory } from "./queue.ts";
+import * as queue from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
+
+const {
+  continuationSlug,
+  QueueBlocked,
+  readQueueHistory,
+  retainedSourceFailure,
+  validateHistory,
+  validateLoopExecutor,
+} = queue;
 
 type ActionableStopReason = import("./queue.js").ActionableStopReason;
 type LoopConfig = import("./queue.js").LoopConfig;
@@ -45,6 +54,7 @@ export interface SupervisionAdapter {
 export function isItemStopReason(reason: string) {
   return (
     [
+      "author-failed",
       "operator-evidence-failed",
       "continuation-failed",
       "continuation-repair-not-authorized",
@@ -132,7 +142,9 @@ async function completedItemStop(directory: string, cycle: number, selection: Se
       !Array.isArray(completed.history)
     )
       throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-stop-${stop}-complete`);
-    if (isItemStopReason(intent.reason)) return completed.history as QueueParticipant[];
+    // Old author-failed completions were run notes, not parking receipts.
+    if (intent.reason !== "author-failed" && isItemStopReason(intent.reason))
+      return completed.history as QueueParticipant[];
   }
 }
 
@@ -145,6 +157,7 @@ export async function nextCycle(
   executingRoot: string,
   adapter: SupervisionAdapter,
   repositoryAdapter: RepositoryAdapter,
+  validateExecutor: () => Promise<unknown> = () => validateLoopExecutor(config, executingRoot),
 ): Promise<SupervisedCycle | undefined> {
   const directory = stateDirectory(config);
   let cycle = 1;
@@ -169,6 +182,7 @@ export async function nextCycle(
     if (selected !== ABSENT) {
       if (!validSelection(selected, cycle))
         throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-selected`);
+      await validateExecutor();
       const stoppedHistory = await completedItemStop(directory, cycle, selected);
       if (stoppedHistory) {
         validateHistory(stoppedHistory, config.nativeLaunchCeiling);
@@ -211,6 +225,45 @@ export async function nextCycle(
         continue;
       }
       if (observed.state !== "OPEN") throw new QueueBlocked("issue-observation-unavailable");
+      const failed = await retainedSourceFailure(config, selected);
+      if (failed) {
+        const current = { selection: selected, initialHistory: failed.history };
+        let authorStop: number | undefined;
+        // Finish pending notes, including an upgrade's later pilot stop. Replay the
+        // original author marker even if its old run-scoped completion exists.
+        for (let stop = 1; ; stop++) {
+          const intent = await optionalRecord(directory, `cycle-${cycle}-stop-${stop}`);
+          if (intent === ABSENT) break;
+          if (intent.reason === "author-failed") {
+            authorStop ??= stop;
+            continue;
+          }
+          if ((await optionalRecord(directory, `cycle-${cycle}-stop-${stop}-complete`)) === ABSENT)
+            await stopCycle(
+              config,
+              current,
+              intent.reason,
+              intent.attempts,
+              adapter,
+              repositoryAdapter,
+              undefined,
+              stop,
+            );
+        }
+        await stopCycle(
+          config,
+          current,
+          "author-failed",
+          failed.attempts,
+          adapter,
+          repositoryAdapter,
+          failed.diagnostics,
+          authorStop,
+        );
+        initialHistory = failed.history;
+        cycle += 1;
+        continue;
+      }
       return { selection: selected, initialHistory };
     }
 
@@ -314,6 +367,8 @@ type RecoveryContext = {
 type RecoveryAction = (context: RecoveryContext) => string;
 
 const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
+  "author-failed": ({ evidence }) =>
+    `inspect the failed source author's terminal and trace under ${evidence}, resolve the reported blocker, and explicitly restore planning readiness before selecting this issue again`,
   "completed-issue-state-unknown": ({ issue }) =>
     `check PR delivery for issue #${issue} on GitHub; if the PR merged, close the issue by hand and restart so the cycle reconciles`,
   "issue-observation-unavailable": () =>
@@ -423,6 +478,7 @@ export async function stopCycle(
   adapter: SupervisionAdapter,
   repositoryAdapter: RepositoryAdapter,
   diagnostics?: string,
+  retainedStop?: number,
 ) {
   validateHistory(cycle.initialHistory, config.nativeLaunchCeiling);
   const directory = stateDirectory(config);
@@ -438,7 +494,7 @@ export async function stopCycle(
     const attempt = await optionalRecord(resolve(directory, slug), "attempt");
     if (attempt !== ABSENT && attempt.routing) routing = attempt.routing;
   }
-  let stop = 1;
+  let stop = retainedStop ?? 1;
   let intent: any;
   for (;;) {
     const current = await optionalRecord(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`);
@@ -468,7 +524,7 @@ export async function stopCycle(
       await record(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`, intent);
       break;
     }
-    if (completed === ABSENT) {
+    if (completed === ABSENT || retainedStop !== undefined) {
       intent = current;
       break;
     }
@@ -488,7 +544,11 @@ export async function stopCycle(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
   validateHistory(intent.history, config.nativeLaunchCeiling);
-  const scope = isItemStopReason(intent.reason) ? "item" : "run";
+  const scope =
+    isItemStopReason(intent.reason) &&
+    (intent.reason !== "author-failed" || (await retainedSourceFailure(config, cycle.selection)))
+      ? "item"
+      : "run";
 
   let unpark: string | undefined;
   if (scope === "item") {
@@ -533,6 +593,11 @@ export async function stopCycle(
     stop,
     history: intent.history,
   });
+  if (scope === "item" && intent.reason === "author-failed")
+    await record(directory, `cycle-${cycle.selection.cycle}-complete`, {
+      selection: cycle.selection,
+      history: cycle.initialHistory,
+    });
   return scope;
 }
 
