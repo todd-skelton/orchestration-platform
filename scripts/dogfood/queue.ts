@@ -158,6 +158,7 @@ function validateGateStopAuthorization(value: GateStopAuthorization) {
 }
 
 export const ACTIONABLE_STOP_REASONS = [
+  "author-failed",
   "completed-issue-state-unknown",
   "issue-observation-unavailable",
   "selected-base-unavailable",
@@ -1249,6 +1250,61 @@ export async function currentCandidateAttempt(config: QueueConfig) {
 export async function hasStartedDelivery(config: QueueConfig) {
   const attempt = await optionalRecord(config.stateDirectory, "attempt");
   return attempt !== ABSENT && ["delivery", "complete"].includes(attempt.phase);
+}
+
+// ISS-161: observe a completed source author without entering its saved worktree.
+// A stop reason alone does not establish a worker verdict.
+async function sourceAuthorFailure(source: SourceConfig) {
+  const author = await optionalRecord(source.stateDirectory, "author-attempt");
+  const terminal = await optionalRecord(source.stateDirectory, "author-terminal");
+  return author !== ABSENT &&
+    terminal !== ABSENT &&
+    typeof author.id === "string" &&
+    terminal.id === author.id &&
+    terminal.status === "failed" &&
+    terminal.head === source.base
+    ? terminal
+    : undefined;
+}
+
+export async function retainedSourceFailure(config: LoopConfig, selected: SelectedLoopIssue) {
+  if (config.acceptedReplan) return undefined;
+  const issue = `https://github.com/${config.repository}/issues/${selected.number}`;
+  for (let number = config.attemptCeiling; number > 0; number--) {
+    const directory = resolve(
+      config.stateRoot,
+      config.run,
+      `${selected.key.toLowerCase()}-attempt-${number}`,
+    );
+    const attempt = await optionalRecord(directory, "attempt");
+    if (attempt === ABSENT) continue;
+    const sourceDirectory = resolve(directory, "source");
+    const pinned = await optionalRecord(sourceDirectory, "config");
+    if (
+      attempt.phase !== "source" ||
+      attempt.run !== config.run ||
+      attempt.item !== `${selected.key}:${number}` ||
+      attempt.issue !== issue ||
+      attempt.candidateAttempt !== number ||
+      attempt.acceptedStage !== null ||
+      pinned === ABSENT ||
+      pinned.config?.run !== config.run ||
+      pinned.config.issue !== issue ||
+      pinned.config.repository !== config.repository ||
+      pinned.config.base !== attempt.base ||
+      pinned.config.stateDirectory !== sourceDirectory
+    )
+      return undefined;
+    const terminal = await sourceAuthorFailure(pinned.config);
+    if (!terminal) return undefined;
+    const history = await readQueueHistory({
+      stateDirectory: directory,
+      nativeLaunchCeiling: config.nativeLaunchCeiling,
+      initialHistory: [],
+    });
+    return { attempts: attempt.candidateAttempt, history, diagnostics: terminal.summary };
+  }
+  return undefined;
 }
 
 export async function readQueueHistory(

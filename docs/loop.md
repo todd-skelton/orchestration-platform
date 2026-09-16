@@ -38,6 +38,29 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+ISS-161 records ISS-110's source-author FAIL and later `pilot-revision-moved`
+stop in `m1-iss146-147-20260914T2325`. A matching native source-author FAIL
+now parks the item through ordinary stop handling and advances to unrelated
+ready work. Before reconstructing a saved source, supervision validates the
+current executor and observes the saved attempt, source configuration and
+matching failed author terminal. It reconciles pending notes and replays the
+original author stop's marker, body and ordinal, including when an old run-stop
+completion or a later pilot stop exists. An old note completion does not prove
+parking. The ordinary cycle completion then retains accumulated participants;
+repeated resume does not replay the failed source or launch attempt 2.
+
+Old attempts, selections, source/setup records, terminals, stops and worktrees
+remain unchanged. Failure counts and spent allowances remain history; later
+launches still consume the run's ceiling. Missing or mismatched terminals,
+unfinished authors and non-FAIL results cannot establish this transition.
+Source pilot/configuration checks and executor drift refusals remain in force.
+Parking leaves the self issue open and unready; only explicit planning unpark
+can admit it again. This implementation does not retry or complete ISS-110,
+establish M2 completion, restart a loop or install an executor. Independent
+exact-head review and three-OS bootstrap green must precede host installation
+with supervisors absent; resuming the preserved run requires separate host
+authorization.
+
 ISS-160 records ISS-146's unpublished conflict-author FAIL in
 `m1-iss146-147-20260914T2325`. Before scanning failed attempts, composition
 observes the matching failed author terminal at the pinned conflict seed and

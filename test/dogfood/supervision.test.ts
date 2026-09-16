@@ -3,11 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
 import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
 import { ACCEPTED_REPLAN, replanPacket } from "./fixtures/continuation.js";
+import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { selectCandidates } from "../../adapters/self.mjs";
 import {
   loadRepositoryAdapter,
@@ -16,7 +17,7 @@ import {
 import {
   completeCycle,
   isItemStopReason,
-  nextCycle,
+  nextCycle as nativeNextCycle,
   persistCycle,
   reconcilePendingStop,
   startCycle,
@@ -28,6 +29,146 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
+const nextCycle: typeof nativeNextCycle = (config, root, adapter, repository) =>
+  nativeNextCycle(config, root, adapter, repository, async () => {});
+
+it("fresh FAIL parks and selects next ready", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  expect(await f.stop()).toBe("item");
+  expect(f.rows[0]).toMatchObject({ state: "OPEN", ready: false });
+  expect(f.rows[0]!.comments).toHaveLength(1);
+  expect(f.rows[0]!.comments[0]).toContain("author-failed");
+  expect(f.rows[0]!.comments[0]).toContain("1 implementation attempt");
+  expect(f.rows[0]!.comments[0]).toContain("To unpark");
+  expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+  expect(
+    f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
+  ).toHaveLength(1);
+  expect(f.calls).not.toContain("delivery:fixture-110:1");
+  expect(f.cycle.initialHistory).toMatchObject([{ role: "author", outcome: "failed" }]);
+});
+
+it.each(["park", "note", "completion"])(
+  "replayed failed source stop preserves history and spent allowances: %s",
+  async (interruption) => {
+    const f = await sourceFailureFixture(5);
+    roots.push(f.root);
+    await f.fail();
+    const directory = f.current.config.stateDirectory;
+    const attemptPath = resolve(directory, "attempt.json");
+    const attempt = JSON.parse(await readFile(attemptPath, "utf8"));
+    expect(attempt).toMatchObject({
+      phase: "source",
+      candidateAttempt: 1,
+      head: f.base,
+      reviewId: null,
+      acceptedStage: null,
+    });
+    await writeFile(attemptPath, JSON.stringify({ ...attempt, retries: 1 }));
+    const source = f.current.config.items[0]!.source.stateDirectory;
+    const authorPath = resolve(source, "author-attempt.json");
+    const author = JSON.parse(await readFile(authorPath, "utf8"));
+    await writeFile(authorPath, JSON.stringify({ ...author, retries: 1 }));
+    for (const [name, value] of Object.entries({
+      "gate-correction": { failedHead: f.base },
+      "native-refresh": { resolutionUsed: true, flowRetried: true, retries: 2 },
+    }))
+      await writeFile(
+        resolve(f.current.config.items[0]!.source.stateDirectory, `${name}.json`),
+        JSON.stringify(value),
+      );
+    await historicalStops(f, "pilot-complete");
+    const prior = await snapshot(f.runState);
+    const priorTrees = await snapshot(f.loop.worktreeRoot);
+    const expectedHistory = structuredClone(f.cycle.initialHistory);
+    expect(expectedHistory).toHaveLength(6);
+    expect(attempt.authorFailures).toEqual({ count: 1, ids: [expectedHistory[5]!.id] });
+    const park = f.policy.park;
+    const comment = f.host.comment;
+    if (interruption === "park")
+      f.policy.park = async (input) => {
+        await park(input);
+        throw new Error("synthetic park interruption");
+      };
+    if (interruption === "note") {
+      // A historical note may be absent even though the old completion exists.
+      f.rows[0]!.comments = [];
+      f.host.comment = async (...args) => {
+        await comment(...args);
+        throw new Error("synthetic note interruption");
+      };
+    }
+    if (interruption === "completion") {
+      // Exclusive cycle completion write fails after parking/notes have reconciled.
+      f.policy.park = async (input) => {
+        const result = await park(input);
+        await mkdir(resolve(f.runState, `cycle-${f.cycle.selection.cycle}-complete.json`));
+        return result;
+      };
+    }
+    await expect(f.advance()).rejects.toThrow();
+    f.policy.park = park;
+    f.host.comment = comment;
+    if (interruption === "completion")
+      await rm(resolve(f.runState, `cycle-${f.cycle.selection.cycle}-complete.json`), {
+        recursive: true,
+      });
+    expect(await f.advance()).toMatchObject({
+      selection: { key: "fixture-159" },
+      initialHistory: expectedHistory,
+    });
+    const parks = f.calls.filter((call) => call.startsWith("park:")).length;
+    expect(await f.advance()).toMatchObject({
+      selection: { key: "fixture-159" },
+      initialHistory: expectedHistory,
+    });
+    expect(f.calls.filter((call) => call.startsWith("park:"))).toHaveLength(parks);
+    for (const [path, bytes] of prior) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    for (const [path, bytes] of priorTrees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(
+      f.rows[0]!.comments.filter((body) => body.includes(`:${f.cycle.selection.cycle}:1 -->`)),
+    ).toHaveLength(1);
+    f.loop.nativeLaunchCeiling = 8;
+    const next = (await f.advance())!;
+    await persistCycle(f.loop, next);
+    const q = await f.compose(next);
+    await startCycle(f.loop, next, f.host);
+    const { queueStep } = await import("../../scripts/dogfood/queue.js");
+    await queueStep(q.config, q.adapter);
+    await completeCycle(f.loop, next, await q.adapter.history(), f.host);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 24 * 60 * 60 * 1000);
+    let later: SupervisedCycle;
+    try {
+      later = (await f.advance())!;
+    } finally {
+      clock.mockRestore();
+    }
+    expect(later.initialHistory.slice(0, 6)).toEqual(expectedHistory);
+    expect(later.initialHistory).toHaveLength(8);
+    await persistCycle(f.loop, later);
+    const exhausted = await f.compose(later);
+    await expect(queueStep(exhausted.config, exhausted.adapter)).rejects.toMatchObject({
+      reason: "native-launch-ceiling-exhausted",
+    });
+    expect((await f.advance())!.initialHistory).toEqual(later.initialHistory);
+    expect(
+      f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
+    ).toHaveLength(1);
+    expect(await readFile(attemptPath, "utf8")).toBe(prior.get(attemptPath));
+    for (const name of [
+      "candidate",
+      "reviewer-attempt",
+      "reviewer-terminal",
+      "publication",
+      "ready",
+    ])
+      await expect(readFile(resolve(source, `${name}.json`))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+  },
+);
 const execute = (file: string, args: string[], options: ExecFileOptions) =>
   new Promise<void>((resolvePromise, reject) => {
     execFile(file, args, { ...options, encoding: "utf8" }, (error, _stdout, stderr) => {
@@ -756,9 +897,16 @@ it.each([
   expect(observation.comments[0]).toContain("1 implementation attempt");
 });
 
-it.each(["controller-executor-mismatch", "provider-unavailable"])(
-  "exits on %s without parking or selecting again",
-  async (reason) => {
+it.each(
+  ["controller-executor-mismatch", "unstable-executor", "provider-unavailable"].flatMap((reason) =>
+    ["fresh", "saved", "pending-item-stop", "completed-item-stop"].map((shape) => ({
+      reason,
+      shape,
+    })),
+  ),
+)(
+  "exits on $reason from $shape with a host note without parking or selecting again",
+  async ({ reason, shape }) => {
     const root = await mkdtemp(resolve(tmpdir(), "supervision-command-run-stop-"));
     roots.push(root);
     const config = loop(root);
@@ -767,7 +915,29 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
     const request = resolve(root, "loop.json");
     const controlsPath = resolve(fixtureState, "command-controls.json");
     const issuePath = resolve(fixtureState, "command-issue.json");
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "ISS-105",
+      labels: ["ready"],
+      comments: [],
+    };
     await mkdir(fixtureState, { recursive: true });
+    if (shape !== "fresh") await persistCycle(config, selected());
+    if (shape.endsWith("item-stop"))
+      await stopCycle(
+        config,
+        selected(),
+        "gate-correction-failed",
+        1,
+        fakeAdapter(observation),
+        repositoryPolicy,
+      );
+    if (shape === "pending-item-stop") {
+      await rm(resolve(runState, "cycle-1-stop-1-complete.json"));
+      observation.comments = [];
+    }
+    const prior = shape === "fresh" ? new Map<string, string>() : await snapshot(runState);
+    const priorNotes = [...observation.comments];
     await Promise.all([
       writeFile(request, `${JSON.stringify(config)}\n`),
       writeFile(
@@ -778,10 +948,7 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
           parkCalls: 0,
         })}\n`,
       ),
-      writeFile(
-        issuePath,
-        `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
-      ),
+      writeFile(issuePath, `${JSON.stringify(observation)}\n`),
     ]);
 
     let failure: { code?: number | string; stderr?: string } | undefined;
@@ -800,17 +967,28 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
     }
 
     expect(failure).toMatchObject({ code: 1 });
-    expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({
-      parkCalls: 0,
-      selectCalls: 1,
-    });
+    const controls = JSON.parse(await readFile(controlsPath, "utf8"));
+    expect(controls.parkCalls).toBe(0);
+    expect(controls.selectCalls ?? 0).toBe(shape === "fresh" ? 1 : 0);
     const issue = JSON.parse(await readFile(issuePath, "utf8"));
-    expect(issue.comments).toHaveLength(1);
-    expect(issue.comments[0]).toContain(reason);
-    expect(issue.comments[0]).not.toContain("To unpark");
+    expect(issue.state).toBe("OPEN");
+    expect(issue.labels).toEqual(observation.labels);
+    expect(issue.comments.slice(0, priorNotes.length)).toEqual(priorNotes);
+    expect(issue.comments).toHaveLength(priorNotes.length + 1);
+    expect(issue.comments.at(-1)).toContain(reason);
+    expect(issue.comments.at(-1)).not.toContain("To unpark");
     expect(failure?.stderr).toContain(`"reason":"${reason}"`);
+    for (const [path, bytes] of prior) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await readFile(resolve(fixtureState, "command-calls.log"), "utf8")).not.toContain(
+      "workspace:",
+    );
+    if (shape === "pending-item-stop")
+      await expect(
+        readFile(resolve(runState, "cycle-1-stop-1-complete.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    const ordinal = shape.endsWith("item-stop") ? 2 : 1;
     await expect(
-      readFile(resolve(runState, "cycle-1-stop-1-complete.json"), "utf8"),
+      readFile(resolve(runState, `cycle-1-stop-${ordinal}-complete.json`), "utf8"),
     ).resolves.toEqual(expect.any(String));
   },
 );
@@ -838,7 +1016,7 @@ it("exits an accepted corrective run on an item stop and asks Todd before furthe
   await writeFile(
     resolve(runState, "command-controls.json"),
     JSON.stringify({
-      validationStopReason: "implementation-attempt-ceiling-exhausted",
+      workspaceStops: { "cs-7766": "implementation-attempt-ceiling-exhausted" },
       parkCalls: 0,
     }),
   );

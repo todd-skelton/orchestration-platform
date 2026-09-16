@@ -35,6 +35,7 @@ import {
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import {
   type QueueConfig,
   type QueueAdapter,
@@ -43,6 +44,111 @@ import {
 } from "../../scripts/dogfood/queue.js";
 
 const roots: string[] = [];
+
+it("FAIL requires matching terminal and stable executor: terminal match", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  await historicalStops(f, "complete");
+  const source = f.current.config.items[0]!.source.stateDirectory;
+  const terminalPath = resolve(source, "author-terminal.json");
+  const terminalBytes = await readFile(terminalPath, "utf8");
+  const terminal = JSON.parse(terminalBytes);
+  const attemptPath = resolve(f.current.config.stateDirectory, "attempt.json");
+  const attemptBytes = await readFile(attemptPath, "utf8");
+  const attempt = JSON.parse(attemptBytes);
+  const pinnedPath = resolve(source, "config.json");
+  const pinnedBytes = await readFile(pinnedPath, "utf8");
+  const pinned = JSON.parse(pinnedBytes);
+  const authorPath = resolve(source, "author-attempt.json");
+  const authorBytes = await readFile(authorPath, "utf8");
+  const controls: Array<[string, string, unknown]> = [
+    ["missing terminal", terminalPath, undefined],
+    ["missing author", authorPath, undefined],
+    ["mismatched terminal", terminalPath, { ...terminal, id: "another-synthetic-worker" }],
+    ...["running", "passed", "dead", "malformed"].map(
+      (status) => [status, terminalPath, { ...terminal, status }] as [string, string, unknown],
+    ),
+    ["wrong head", terminalPath, { ...terminal, head: "a".repeat(40) }],
+    ["missing head", terminalPath, { ...terminal, head: undefined }],
+    ["missing queue attempt", attemptPath, undefined],
+    ["wrong item", attemptPath, { ...attempt, item: "fixture-other:1" }],
+    ["wrong run", attemptPath, { ...attempt, run: "other-synthetic-run" }],
+    [
+      "wrong issue",
+      attemptPath,
+      { ...attempt, issue: "https://github.com/fixture/repository/issues/123" },
+    ],
+    ["wrong attempt", attemptPath, { ...attempt, candidateAttempt: 2 }],
+    [
+      "wrong source run",
+      pinnedPath,
+      { ...pinned, config: { ...pinned.config, run: "other-synthetic-run" } },
+    ],
+  ];
+  for (const [name, path, value] of controls) {
+    if (value === undefined) await rm(path);
+    else await writeFile(path, JSON.stringify(value));
+    expect(await f.advance(), name).toMatchObject({ selection: f.cycle.selection });
+    expect(
+      f.calls.filter((call) => call.startsWith("park:")),
+      name,
+    ).toEqual([]);
+    await writeFile(terminalPath, terminalBytes);
+    await writeFile(authorPath, authorBytes);
+    await writeFile(attemptPath, attemptBytes);
+    await writeFile(pinnedPath, pinnedBytes);
+  }
+  expect(await f.advance()).toMatchObject({ selection: { key: "fixture-159" } });
+  expect(f.calls.filter((call) => call.startsWith("park:"))).toEqual(["park:110"]);
+});
+
+it("FAIL requires matching terminal and stable executor: live executor", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  await historicalStops(f, "pilot-pending");
+  const old = await snapshot(f.runState);
+  await writeFile(resolve(f.repository, "product.txt"), "synthetic dirty executor\n");
+  await expect(f.advance()).rejects.toMatchObject({ reason: "unstable-executor" });
+  expect(f.calls.filter((call) => call.startsWith("park:"))).toEqual([]);
+  expect(f.calls.filter((call) => call.startsWith("note:"))).toEqual(["note:110"]);
+  expect(f.rows[0]!.comments.at(-1)).toContain("unstable-executor");
+  expect(f.rows[0]!.comments.at(-1)).not.toContain("To unpark");
+  await expect(
+    readFile(resolve(f.runState, `cycle-${f.cycle.selection.cycle}-stop-2-complete.json`)),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  for (const [path, bytes] of old) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  await f.git(f.repository, ["restore", "product.txt"]);
+  await f.upgrade();
+  // A changed queue executor binding is still rejected before source observation.
+  const queue = await f.compose(f.cycle);
+  queue.config.items[0]!.setup.controllerRevision = f.base;
+  await expect(queueStep(queue.config, queue.adapter)).rejects.toMatchObject({
+    reason: "queue-executor-drift",
+  });
+  expect(await f.advance()).toMatchObject({ selection: { key: "fixture-159" } });
+});
+
+it("FAIL requires matching terminal and stable executor: live author retains source checks", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  f.setAuthorStatus("running");
+  await expect(queueStep(f.current.config, f.current.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(await f.advance()).toMatchObject({ selection: f.cycle.selection });
+  await expect(queueStep(f.current.config, f.current.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
+  await f.upgrade();
+  const q = await f.compose(f.cycle);
+  await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+    reason: "pilot-revision-moved",
+  });
+  expect(f.calls.filter((call) => call.startsWith("park:"))).toEqual([]);
+});
 const stable = "a".repeat(40);
 const base = "b".repeat(40);
 const candidate = "c".repeat(40);
