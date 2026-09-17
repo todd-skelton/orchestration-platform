@@ -447,10 +447,14 @@ export function parseTrace(
           ["run", "role", "head", "verdict", "summary"].every((key) =>
             Object.hasOwn(verdict, key),
           ) &&
-          typeof verdict.summary === "string" &&
-          verdict.summary.length <= MAX_TERMINAL_SUMMARY_LENGTH,
+          typeof verdict.summary === "string",
     "malformed-worker-verdict",
   );
+  if (role === "author" && verdict.summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
+    throw new QueueBlocked(
+      "malformed-worker-verdict",
+      `Author summary length is ${verdict.summary.length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Inspect and verify the work, then return a valid verdict with a shorter summary.`,
+    );
   const summary = role === "reviewer" ? JSON.stringify(verdict) : terminalSummary(verdict.summary);
   if (role === "reviewer" && summary && summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
     throw new QueueBlocked(
@@ -606,16 +610,14 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
       } catch (error) {
         const summary =
           error instanceof QueueBlocked ? terminalSummary(error.diagnostics) : undefined;
-        if (
-          role === "reviewer" &&
-          Boolean(exit) &&
-          error instanceof Error &&
-          error.message === "malformed-worker-verdict"
-        )
+        if (Boolean(exit) && error instanceof Error && error.message === "malformed-worker-verdict")
           return {
             id: attempt.id,
             status: "malformed",
-            head: await git(config.reviewWorktree, ["rev-parse", "HEAD"]),
+            head: await git(role === "author" ? config.worktree : config.reviewWorktree, [
+              "rev-parse",
+              "HEAD",
+            ]),
             usage: events(trace, true).find((row) => row.type === "turn.completed")?.usage,
             ...(summary ? { summary } : {}),
           };

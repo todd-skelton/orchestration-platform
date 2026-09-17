@@ -1166,6 +1166,7 @@ it("parks only the explicit item stop reasons", async () => {
       "implementation-attempt-ceiling-exhausted",
       "gate-retry-exhausted:typecheck",
       "reviewer-malformed",
+      "author-malformed",
       "exit-receipt-timeout",
       "launcher-failed",
       "rebase-conflict",
@@ -1186,6 +1187,8 @@ it("parks only the explicit item stop reasons", async () => {
 });
 
 it.each([
+  ["author-malformed", true],
+  ["worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility", false],
   ["gate-base-failed:test", false],
   ["gate-host-failed:test", false],
   ["gate-attribution-unknown:test", false],
