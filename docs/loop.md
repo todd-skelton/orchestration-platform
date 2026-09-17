@@ -15,7 +15,11 @@ capability is added only when a real cycle records a blocker.
    worktree before handing off. The hosted three-OS `bootstrap` workflow is
    the only required check on a PR.
 4. Review is a verdict (PASS or FAIL), findings with `file:line`, and a G0
-   answer: is there a simpler way. A blocking finding fails the review. Two
+   answer: "Is there a simpler shape that still satisfies every acceptance
+   criterion and every stated not-built reason? Answer No with one reason, or
+   name the shape and the constraint you checked it against." The PR body
+   carries the accepted answer after its line changes as `Review G0:` (ISS-172).
+   A blocking finding fails the review. Two
    blocking rounds force a third repair that applies the reviewer's prescribed
    fixes verbatim.
 5. Transient worker failures get one automatic retry inside the same attempt:

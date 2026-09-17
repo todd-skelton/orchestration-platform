@@ -30,7 +30,7 @@ export function sourceReviewerReportPrompt(reviewPaths: string[]) {
   return (
     "The final reviewer report has exactly run, role, head, verdict, findings and g0. " +
     'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
-    'Answer G0, "is there a simpler way?", with a string. A blocking finding requires FAIL; notes never block. ' +
+    'Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(reviewPaths) +
     " Keep the complete JSON report within 2000 characters."
   );
@@ -43,7 +43,7 @@ function reviewerReportPrompt(handoff: RepairHandoff) {
     `Inspect only the prescribed remedies ${JSON.stringify(handoff.failedReview.findings)} and their direct callers; preserve all acceptance criteria and assertions.\n` +
     "The final reviewer report has exactly run, role, head, verdict, findings and g0. " +
     'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
-    'Answer G0, "is there a simpler way?", with a string. A blocking finding requires FAIL; notes never block. ' +
+    'Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(handoff.sourcePaths) +
     " Keep the complete JSON report within 2000 characters."
   );
