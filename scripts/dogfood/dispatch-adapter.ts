@@ -319,7 +319,7 @@ function events(trace: string, complete: boolean): any[] {
   if (!complete && !trace.endsWith("\n")) lines.pop();
   return lines.filter((line) => line.trim()).map((line) => JSON.parse(line));
 }
-function reviewerVerdict(message: string): unknown {
+function finalVerdict(message: string): unknown {
   // ISS-150: prose braces need not begin JSON. Once a complete object parses,
   // require it to end the message, rejecting additional objects or trailing prose.
   for (let start = message.indexOf("{"); start >= 0; start = message.indexOf("{", start + 1)) {
@@ -419,7 +419,7 @@ export function parseTrace(
   let verdict: any;
   try {
     const message = messages.at(-1)?.item.text ?? "null";
-    verdict = role === "reviewer" ? reviewerVerdict(message) : JSON.parse(message);
+    verdict = finalVerdict(message);
   } catch {
     throw new Error("malformed-worker-verdict");
   }

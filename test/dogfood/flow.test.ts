@@ -13,7 +13,11 @@ import {
   repositoryDeliveryPolicy,
   type RepositoryAdapter,
 } from "../../scripts/dogfood/repository-adapter.js";
-import { parseTrace, waitForProvider } from "../../scripts/dogfood/dispatch-adapter.js";
+import {
+  codexAdapter,
+  parseTrace,
+  waitForProvider,
+} from "../../scripts/dogfood/dispatch-adapter.js";
 import { stopCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
@@ -159,6 +163,55 @@ it.each([
   await expect(f.run()).rejects.toThrow("operator-evidence-failed");
   expect(await readFile(path, "utf8")).toBe(failure);
   expect(f.launches).toEqual(["author"]);
+});
+
+it.each([
+  ["wrong-head", "author-wrong-head"],
+  ["FAIL", "author-failed"],
+  ["trailing-prose", "malformed-worker-verdict"],
+])("refuses a completed prefixed author at the flow boundary: %s", async (mode, reason) => {
+  const f = await fixture();
+  const attempt = {
+    id: "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
+    pid: 999_999,
+    trace: resolve(f.config.stateDirectory, "author.jsonl"),
+    launchedAt: 1,
+  };
+  await writeFile(resolve(f.config.stateDirectory, "author-attempt.json"), JSON.stringify(attempt));
+  const verdict = {
+    run: f.config.run,
+    role: "author",
+    head: mode === "wrong-head" ? head : base,
+    verdict: mode === "FAIL" ? "FAIL" : "PASS",
+    summary: "Unfinished.",
+  };
+  await writeFile(
+    attempt.trace,
+    [
+      { type: "thread.started", thread_id: attempt.id },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: `Work complete.\n${JSON.stringify(verdict)}${mode === "trailing-prose" ? "\nDone." : ""}`,
+        },
+      },
+      { type: "turn.completed" },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n") + "\n",
+  );
+  await writeFile(
+    resolve(f.config.stateDirectory, "author.exit.json"),
+    JSON.stringify({ code: 0 }),
+  );
+  f.adapter.observe = codexAdapter().observe;
+  for (let replay = 0; replay < 2; replay++) await expect(f.run()).rejects.toThrow(reason);
+  expect(f.launches).toEqual([]);
+  expect(f.commits).toEqual([]);
+  await expect(readFile(resolve(f.config.stateDirectory, "candidate.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
 });
 
 it("reconciles an interrupted final author commit without another author", async () => {

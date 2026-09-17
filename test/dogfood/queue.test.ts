@@ -30,6 +30,8 @@ import {
 } from "./fixtures/continuation.js";
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
 import { workerPrompt } from "../../scripts/dogfood/flow.js";
+import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
+import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
 import * as selfAdapter from "../../adapters/self.mjs";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
@@ -350,6 +352,257 @@ async function loopFixture(
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+it.each(["pass", "saved-candidate", "lost-commit-inherited-retry", "review-fail", "malformed"])(
+  "resumes a saved prefixed author through the real observer and Git: %s",
+  async (mode) => {
+    const f = await loopFixture();
+    const inherited = [
+      participant(1, "ISS-100:1", "source", "author", "passed"),
+      participant(2, "ISS-100:1", "source", "reviewer", "failed"),
+    ];
+    const q = await queueConfigFromLoop(
+      f.loop,
+      f.repository,
+      f.selected,
+      repositoryPolicy,
+      inherited,
+    );
+    const item = q.items[0]!;
+    // This sibling source shape already supports reconciliation of a lost commit
+    // response. Ordinary sources also resume a durably recorded candidate below.
+    if (mode === "lost-commit-inherited-retry") item.source.inheritedWorkerRetry = true;
+    const setup = gitSetupAdapter({
+      gitExecutable: f.gitExecutable,
+      async install(_launcher, _args, cwd) {
+        await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+        await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+        return "succeeded";
+      },
+    });
+    // Persist the ordinary setup-to-source transition before restoring the
+    // saved worker artifacts and its dirty permitted work.
+    await queueStep(q, {
+      ...repositoryQueueAdapter(q, f.repository, { setup, gitExecutable: f.gitExecutable }),
+      async source() {
+        return { status: "observing-author" };
+      },
+    });
+    await mkdir(item.source.stateDirectory, { recursive: true });
+    const path = (name: string) => resolve(item.source.stateDirectory, name);
+    const read = (name: string) => readFile(path(name), "utf8");
+    const author: Attempt = {
+      id: randomUUID(),
+      pid: process.pid,
+      trace: path("author.jsonl"),
+      launchedAt: 1,
+      retries: 1,
+    };
+    const recorded = prefixedAuthor[1]!.item!.text;
+    // Only synthetic identities and summary enter lifecycle controls. The
+    // separate adapter fixture preserves the original final message verbatim.
+    const message =
+      recorded.slice(0, recorded.indexOf("{")) +
+      JSON.stringify({
+        run: item.source.run,
+        role: "author",
+        head: item.source.base,
+        verdict: "PASS",
+        summary: "Synthetic implementation completed.",
+      }) +
+      (mode === "malformed" ? "\nTrailing prose." : "");
+    const trace = (id: string, text?: string) =>
+      [
+        { type: "thread.started", thread_id: id },
+        ...(text === undefined
+          ? []
+          : [
+              { type: "item.completed", item: { type: "agent_message", text } },
+              { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
+            ]),
+      ]
+        .map((event) => JSON.stringify(event))
+        .join("\n") + "\n";
+    await writeFile(path("author-attempt.json"), JSON.stringify(author));
+    await writeFile(author.trace, trace(author.id, message));
+    await writeFile(path("author.exit.json"), JSON.stringify({ code: 0 }));
+    await writeFile(
+      path("prior-stop.json"),
+      JSON.stringify({ reason: "source-flow-state-unknown", ordinal: 1 }),
+    );
+    await writeFile(
+      resolve(item.source.worktree, "docs/loop.md"),
+      "# Synthetic permitted implementation\n",
+    );
+    const preservedNames = [
+      "author-attempt.json",
+      "author.jsonl",
+      "author.exit.json",
+      "prior-stop.json",
+    ];
+    const preserved = await Promise.all(preservedNames.map(read));
+    const unchanged = async () => {
+      expect(await Promise.all(preservedNames.map(read))).toEqual(preserved);
+      await expect(read("publication.json")).rejects.toMatchObject({ code: "ENOENT" });
+    };
+    await expect(read("author-terminal.json")).rejects.toMatchObject({ code: "ENOENT" });
+    const real = codexAdapter(f.gitExecutable);
+    const launches: string[] = [];
+    let commits = 0;
+    let interrupted = false;
+    let reviewer: Attempt | undefined;
+    let candidateHead = "";
+    const native: Adapter = {
+      ...real,
+      async waitForProvider() {},
+      async preflight() {},
+      async git(tree, args) {
+        const result = await real.git(tree, args);
+        if (args[0] === "commit") {
+          commits++;
+          if (mode === "lost-commit-inherited-retry" && !interrupted) {
+            interrupted = true;
+            throw new Error("lost commit response");
+          }
+        }
+        if (
+          mode === "saved-candidate" &&
+          !interrupted &&
+          commits === 1 &&
+          (await read("candidate.json").then(
+            () => true,
+            () => false,
+          ))
+        ) {
+          interrupted = true;
+          throw new Error("interrupted after durable candidate");
+        }
+        return result;
+      },
+      async launch(role, config, prompt) {
+        launches.push(role);
+        expect(role).toBe("reviewer");
+        candidateHead = await real.git(config.worktree, ["rev-parse", "HEAD"]);
+        expect(candidateHead).not.toBe(config.base);
+        expect(await real.git(config.reviewWorktree, ["rev-parse", "HEAD"])).toBe(candidateHead);
+        expect(prompt).toContain(candidateHead);
+        expect(prompt).toContain(JSON.stringify(author.trace));
+        expect(prompt).toContain(JSON.stringify(path("author-terminal.json")));
+        reviewer = {
+          id: randomUUID(),
+          pid: process.pid,
+          trace: path("reviewer.jsonl"),
+          launchedAt: 1,
+        };
+        expect(reviewer.id).not.toBe(author.id);
+        await writeFile(reviewer.trace, trace(reviewer.id));
+        return reviewer;
+      },
+    };
+    const adapter = () =>
+      repositoryQueueAdapter(q, f.repository, { native, setup, gitExecutable: f.gitExecutable });
+    const run = () =>
+      queueStep(q, {
+        ...adapter(),
+        async delivery() {
+          throw new Error("independent review reached delivery boundary");
+        },
+        async repair() {
+          throw new Error("blocking review reached repair boundary");
+        },
+      });
+    if (mode === "malformed") {
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run()).rejects.toThrow("source-flow-state-unknown");
+      expect(launches).toEqual([]);
+      expect(commits).toBe(0);
+      await expect(read("author-terminal.json")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(read("candidate.json")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await real.git(item.source.worktree, ["status", "--porcelain"])).toContain(
+        "docs/loop.md",
+      );
+      await unchanged();
+      return;
+    }
+    if (mode === "saved-candidate" || mode === "lost-commit-inherited-retry") {
+      await expect(run()).rejects.toThrow("source-flow-state-unknown");
+      expect(commits).toBe(1);
+      expect(launches).toEqual([]);
+    }
+    await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    const candidate = await read("candidate.json");
+    const terminal = await read("author-terminal.json");
+    expect(JSON.parse(terminal)).toMatchObject({
+      id: author.id,
+      status: "passed",
+      head: item.base,
+    });
+    expect(JSON.parse(candidate)).toMatchObject({ head: candidateHead, changed: ["docs/loop.md"] });
+    expect(await real.git(item.source.worktree, ["rev-parse", `${candidateHead}^`])).toBe(
+      item.base,
+    );
+    const queuePath = resolve(q.stateDirectory, "attempt.json");
+    const pending = JSON.parse(await readFile(queuePath, "utf8"));
+    expect(pending.retries).toBe(1);
+    expect(pending.history.slice(0, inherited.length)).toEqual(inherited);
+    expect(pending.history.find((p: QueueParticipant) => p.id === author.id)).toMatchObject({
+      outcome: "passed",
+      role: "author",
+    });
+    for (let replay = 0; replay < 2; replay++)
+      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(JSON.parse(await readFile(queuePath, "utf8"))).toEqual(pending);
+    const reviewerBytes = await read("reviewer-attempt.json");
+    await writeFile(
+      reviewer!.trace,
+      trace(
+        reviewer!.id,
+        JSON.stringify({
+          run: item.source.run,
+          role: "reviewer",
+          head: candidateHead,
+          verdict: mode === "review-fail" ? "FAIL" : "PASS",
+          findings:
+            mode === "review-fail"
+              ? [
+                  {
+                    file: "docs/loop.md",
+                    line: 1,
+                    severity: "blocking",
+                    text: "Synthetic missing acceptance behavior.",
+                  },
+                ]
+              : [],
+          g0: "No; the existing extractor satisfies the framing requirement.",
+        }),
+      ),
+    );
+    await writeFile(path("reviewer.exit.json"), JSON.stringify({ code: 0 }));
+    const reason =
+      mode === "review-fail"
+        ? "blocking review reached repair boundary"
+        : "independent review reached delivery boundary";
+    await expect(run()).rejects.toThrow(reason);
+    const finished = await readFile(queuePath, "utf8");
+    for (let replay = 0; replay < 2; replay++) await expect(run()).rejects.toThrow(reason);
+    expect(await readFile(queuePath, "utf8")).toBe(finished);
+    expect(JSON.parse(finished)).toMatchObject({
+      phase: mode === "review-fail" ? "repair" : "delivery",
+      head: candidateHead,
+      reviewId: reviewer!.id,
+      retries: 1,
+      acceptedStage: mode === "review-fail" ? null : "source",
+    });
+    expect(JSON.parse(finished).history.slice(0, inherited.length)).toEqual(inherited);
+    expect(JSON.parse(finished).history).toHaveLength(inherited.length + 2);
+    expect(launches).toEqual(["reviewer"]);
+    expect(commits).toBe(1);
+    expect(await read("candidate.json")).toBe(candidate);
+    expect(await read("author-terminal.json")).toBe(terminal);
+    expect(await read("reviewer-attempt.json")).toBe(reviewerBytes);
+    await unchanged();
+  },
+);
 
 it("composes a four-input saved-stop grant outside immutable source and delivery inputs", async () => {
   const f = await loopFixture();

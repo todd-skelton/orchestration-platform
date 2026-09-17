@@ -54,7 +54,12 @@ including any nested JSON objects. Trailing prose, multiple objects, missing obj
 invalid verdicts remain malformed; key, identity, head, enum and findings
 checks remain unchanged. An otherwise valid over-length verdict remains
 malformed with its measured length and cap in the terminal summary and the
-existing single automatic retry context. Author prompts and parsing are unchanged (ISS-150).
+existing single automatic retry context (ISS-150). Authors share this extraction
+rule (ISS-177), retaining their JSON-only prompts, five-key schema and
+2000-character summary cap; the whole author message has no summary cap.
+Completion, identity and head checks remain unchanged. Parsing grants no
+acceptance: independent exact-head review, native local gates and final-head
+Ubuntu/Windows/macOS bootstrap green remain required before landing.
 
 Initial and delta reviewers receive the selected author's captured trace
 and existing attempt, terminal and candidate record paths, including on resume
