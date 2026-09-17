@@ -1251,6 +1251,100 @@ it("validates an optional Chase Sets milestone number and keeps self runs unscop
   );
 });
 
+it("validates the singleton ops admission at the config boundary", async () => {
+  const { loop } = await loopFixture();
+  const opsAdmission = {
+    issueNumber: 9001,
+    authorityUrl: "https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5707757731",
+  };
+  const config: LoopConfig = {
+    ...loop,
+    adapter: "chase-sets",
+    repository: "chase-sets/chase-sets",
+    targetMilestone: 155,
+    routingRows: [],
+    opsAdmission,
+  };
+  const selectionInput: Parameters<RepositoryAdapter["selectCandidates"]>[0] = {
+    repository: config.repository,
+    executorRoot: config.stableExecutorRoot,
+    targetMilestone: 155,
+    opsAdmission,
+  };
+  const contextInput: Parameters<RepositoryAdapter["issueContext"]>[0] = {
+    ...selectionInput,
+    key: "cs-9001",
+    number: 9001,
+  };
+  expect(contextInput.opsAdmission).toEqual(opsAdmission);
+  expect(() => validateLoopConfig(config)).not.toThrow();
+  expect(() =>
+    validateLoopConfig({
+      ...config,
+      opsAdmission: { ...opsAdmission, issueNumber: Number.MAX_SAFE_INTEGER },
+    }),
+  ).not.toThrow();
+  const prefix = "https://github.com/chase-sets/chase-sets/issues/1#issuecomment-";
+  for (const length of [499, 500, 501]) {
+    const check = () =>
+      validateLoopConfig({
+        ...config,
+        opsAdmission: {
+          ...opsAdmission,
+          authorityUrl: prefix + "1".repeat(length - prefix.length),
+        },
+      });
+    if (length <= 500) expect(check).not.toThrow();
+    else expect(check).toThrow("invalid-ops-admission");
+  }
+  expect(() => validateLoopConfig(loop)).not.toThrow();
+  const { opsAdmission: omitted, ...legacy } = config;
+  expect(omitted).toEqual(opsAdmission);
+  expect(() => validateLoopConfig(legacy)).not.toThrow();
+  const { targetMilestone: target, ...unscoped } = legacy;
+  expect(target).toBe(155);
+  expect(() => validateLoopConfig(unscoped)).not.toThrow();
+  expect(() => validateLoopConfig({ ...unscoped, opsAdmission })).toThrow("invalid-ops-admission");
+  expect(() => validateLoopConfig({ ...loop, opsAdmission })).toThrow("invalid-ops-admission");
+  expect(() => validateLoopConfig({ ...config, repository: "other/repo" })).toThrow(
+    "invalid-ops-admission",
+  );
+  expect(() => validateLoopConfig({ ...config, targetMilestone: 0 })).toThrow(
+    "invalid-target-milestone",
+  );
+  for (const value of [
+    null,
+    [],
+    [opsAdmission],
+    "9001",
+    {},
+    { issueNumber: 9001 },
+    { ...opsAdmission, milestone: 155 },
+    ...[0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "9001", [9001], "*"].map((issueNumber) => ({
+      ...opsAdmission,
+      issueNumber,
+    })),
+    ...[
+      null,
+      1,
+      "http://github.com/chase-sets/chase-sets/issues/1#issuecomment-2",
+      "https://github.com/other/repo/issues/1#issuecomment-2",
+      "https://user@github.com/chase-sets/chase-sets/issues/1#issuecomment-2",
+      "https://github.com/chase-sets/chase-sets/issues/0#issuecomment-2",
+      "https://github.com/chase-sets/chase-sets/issues/1#issuecomment-0",
+      `${opsAdmission.authorityUrl}?x=1`,
+      `${opsAdmission.authorityUrl}\n`,
+      opsAdmission.authorityUrl.replace("4388", "1".repeat(500)),
+    ].map((authorityUrl) => ({ ...opsAdmission, authorityUrl })),
+  ]) {
+    // Exercise the same untyped JSON boundary as a loaded loop config.
+    const parsed: LoopConfig = JSON.parse(JSON.stringify({ ...config, opsAdmission: value }));
+    expect(() => validateLoopConfig(parsed), JSON.stringify(value)).toThrow(
+      "invalid-ops-admission",
+    );
+  }
+});
+
 it("validates and carries the provider outage ceiling into worker configuration", async () => {
   const { loop, repository, selected } = await loopFixture();
   for (const value of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {

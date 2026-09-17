@@ -44,7 +44,12 @@ import {
   type ValidatedReview,
   validateLocations,
 } from "./repair-policy.mjs";
-import { repositoryDeliveryPolicy, type RepositoryAdapter } from "./repository-adapter.mjs";
+import {
+  repositoryDeliveryPolicy,
+  validateOpsAdmission,
+  type OpsAdmission,
+  type RepositoryAdapter,
+} from "./repository-adapter.mjs";
 import { gitSetupAdapter } from "./setup-adapter.mjs";
 import { SetupBlocked, setupStep, type SetupAdapter, type SetupConfig } from "./setup.mjs";
 
@@ -131,6 +136,7 @@ export interface LoopConfig {
   attemptCeiling: number;
   providerOutageCeilingMs?: number;
   targetMilestone?: number;
+  opsAdmission?: OpsAdmission;
   acceptedReplan?: AcceptedReplan;
 }
 
@@ -281,6 +287,7 @@ export function validateLoopConfig(config: LoopConfig) {
       "attemptCeiling",
       ...(config.providerOutageCeilingMs === undefined ? [] : ["providerOutageCeilingMs"]),
       ...(config.targetMilestone === undefined ? [] : ["targetMilestone"]),
+      ...(config.opsAdmission === undefined ? [] : ["opsAdmission"]),
       ...(config.acceptedReplan === undefined ? [] : ["acceptedReplan"]),
       ...(config.gateStopAuthorization === undefined ? [] : ["gateStopAuthorization"]),
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
@@ -334,6 +341,11 @@ export function validateLoopConfig(config: LoopConfig) {
     "target-milestone-unsupported-adapter",
   );
   demand(/^[^/\s]+\/[^/\s]+$/.test(config.repository), "invalid-repository");
+  demand(
+    config.opsAdmission === undefined || config.adapter === "chase-sets",
+    "invalid-ops-admission",
+  );
+  validateOpsAdmission(config);
   for (const name of [
     "stableExecutorRoot",
     "stateRoot",
@@ -612,6 +624,7 @@ export async function queueConfigFromLoop(
             gitExecutable: config.gitExecutable,
           }),
       ...(config.targetMilestone === undefined ? {} : { targetMilestone: config.targetMilestone }),
+      ...(config.opsAdmission === undefined ? {} : { opsAdmission: config.opsAdmission }),
     }),
   ]);
   demand(selectedBase === selected.base, "selected-base-unavailable");

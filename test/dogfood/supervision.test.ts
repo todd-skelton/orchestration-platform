@@ -1624,6 +1624,71 @@ it("gives the three prescribed stops exact actions without forbidden advice", as
   expect(selectedBase).not.toMatch(/change (?:the )?selection/i);
 });
 
+it.each(["selected-ops-not-admitted", "selected-ops-not-runnable"])(
+  "%s retains a pending native stop and never parks or consumes another attempt",
+  async (reason) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-ops-stop-"));
+    roots.push(root);
+    const config = {
+      ...loop(root),
+      adapter: "chase-sets",
+      repository: "chase-sets/chase-sets",
+      targetMilestone: 155,
+    };
+    const cycle = selected();
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: cycle.selection.key,
+      labels: ["kind:ops"],
+      comments: [],
+    };
+    const host = fakeAdapter(observation);
+    const park = vi.fn(() => {
+      throw new Error("ops refusal must not park");
+    });
+    const policy = { ...repositoryPolicy, park };
+    await persistCycle(config, cycle);
+    const runState = resolve(config.stateRoot, config.run);
+    const selectedBytes = await readFile(resolve(runState, "cycle-1-selected.json"));
+    expect(isItemStopReason(reason)).toBe(false);
+    const interrupted = {
+      ...host,
+      comment: async (...args: Parameters<SupervisionAdapter["comment"]>) => {
+        await host.comment(...args);
+        throw new Error("lost receipt");
+      },
+    };
+    await expect(
+      stopCycle(
+        config,
+        cycle,
+        reason,
+        3,
+        interrupted,
+        policy,
+        "Issue #9001; target 155; admission-required.",
+      ),
+    ).rejects.toThrow("lost receipt");
+    const stopBytes = await readFile(resolve(runState, "cycle-1-stop-1.json"));
+    await expect(reconcilePendingStop(config, cycle, host, policy)).resolves.toEqual({
+      scope: "run",
+      reason,
+    });
+    await expect(reconcilePendingStop(config, cycle, host, policy)).resolves.toBeUndefined();
+    expect(park).not.toHaveBeenCalled();
+    expect(observation.labels).toEqual(["kind:ops"]);
+    expect(observation.state).toBe("OPEN");
+    expect(observation.comments).toHaveLength(1);
+    expect(observation.comments[0]).toContain("after 3 implementation attempts");
+    expect(observation.comments[0]).not.toContain("To unpark");
+    expect(await readFile(resolve(runState, "cycle-1-selected.json"))).toEqual(selectedBytes);
+    expect(await readFile(resolve(runState, "cycle-1-stop-1.json"))).toEqual(stopBytes);
+    await expect(readFile(resolve(runState, "cycle-1-complete.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
 it("closes a completed issue without restoring ready", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-complete-"));
   roots.push(root);
