@@ -110,7 +110,7 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
     if (caller === "repair") {
       expect(f.launchPrompts[1]).toContain("Synthetic prescribed repair.");
       expect(f.launchPrompts[1]).toContain("Preserve the original criterion.");
-      expect(f.launchPrompts[1]).toContain(handoff.sourceRecords);
+      expect(f.launchPrompts[1]).toContain(JSON.stringify(handoff.sourceRecords));
     }
     if (caller === "gate") expect(f.launchPrompts[1]).toContain("Correct only the test failure");
     f.retry("passed");

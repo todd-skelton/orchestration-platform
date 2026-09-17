@@ -1452,9 +1452,9 @@ it.each([
         expect(await partials()).toEqual(bytes);
         expect(await real.git(config.worktree, ["rev-parse", "HEAD"])).toBe(item.base);
         expect(prompt).toContain("Author summary length is 2079 characters; maximum is 2000");
-        expect(prompt).toContain(author.trace);
+        expect(prompt).toContain(JSON.stringify(author.trace));
         expect(prompt).toContain("Inspect and verify");
-        expect(prompt).toContain(path("author-retry-discard.json"));
+        expect(prompt).toContain(JSON.stringify(path("author-retry-discard.json")));
         expect(JSON.parse(await read("author-retry-discard.json"))).toMatchObject({
           attempt: author,
           terminal: { id: author.id, status: "malformed" },
@@ -1477,7 +1477,7 @@ it.each([
       if (role === "author") retry = attempt;
       else {
         reviewer = attempt;
-        expect(prompt).toContain(retry!.trace);
+        expect(prompt).toContain(JSON.stringify(retry!.trace));
         expect(await real.git(config.reviewWorktree, ["rev-parse", "HEAD"])).toBe(
           await real.git(config.worktree, ["rev-parse", "HEAD"]),
         );
@@ -1540,7 +1540,7 @@ it.each([
     await expect(run()).resolves.toMatchObject({ status: "observing-author" });
     const persisted = await read("author-attempt.json");
     expect(JSON.parse(persisted)).toMatchObject({ id: retry!.id, retries: 1, rung: 2 });
-    expect(JSON.parse(persisted).retryContext).toContain(author.trace);
+    expect(JSON.parse(persisted).retryContext).toContain(JSON.stringify(author.trace));
     for (let i = 0; i < 2; i++)
       await expect(run()).resolves.toMatchObject({ status: "observing-author" });
     expect(await read("author-attempt.json")).toBe(persisted);
