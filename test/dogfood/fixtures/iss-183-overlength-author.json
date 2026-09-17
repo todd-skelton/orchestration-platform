@@ -1,0 +1,23 @@
+[
+  {
+    "type": "thread.started",
+    "thread_id": "01a0b007-9b90-7e83-aa02-0b49577e38d4"
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_62",
+      "type": "agent_message",
+      "text": "{\"run\":\"m1-sibling-mirror-recovery-20260917T0848\",\"role\":\"author\",\"head\":\"956bc2aaf1a8f1ed7e8f2bda7ea4bfa2c3244a54\",\"verdict\":\"PASS\",\"summary\":\"Implemented the brief's concrete candidate in test/dogfood/refresh.test.ts only: fixture() takes an optional prepareCandidate hook and siblingRegression authors the six frozen QUALITY_PROFILE deletions before the fixture's single source commit and evidence pin, removing the intermediate commit, rewrite, recommit and pinSource repin. Head now equals f.head. Measured on this host (Linux, GIT_TRACE spawn counts, temporary instrumented copy since deleted, 3 samples each): siblingRegression setup 55 -> 48 git spawns (fixture-routed commands 19 -> 13; removed: add/commit/rev-parse of the rewrite, rev-parse/checkout --detach repin, their maintenance hooks), ~290ms -> ~250ms; complete closure cases before 2544-2824ms, after 2164-2862ms (noise). Fixture-only counts; ~565 of ~615 spawns per case are runtime verifyWorkspace (rev-parse HEAD, git-common-dir, remote get-url, status --porcelain, branch --show-current) before every draft observation and gate across the three real deliver() calls. Retained Windows logs (sha256 verified a78698f8.../6e6d3422...) corroborate: the identically set-up 'refuses synthetic sibling body at plan time' case ran 3129/3348ms there versus 25-30s closure cases, so the fence's fixture setup is roughly 3s of the failing 30s; the dominant cost is runtime workspace verification, outside this fence. AC3 evidence: candidate patch vs base has identical sha256 a8cb947c... before and after, commits ahead 2 -> 1, head/review worktree/candidate.json/reviewer-terminal/summary head all agree; all assertions, both variants, replay checkpoints, seven-draft plan, and autocrlf/refusal/drift/lost-response cases unchanged. Tried also replacing the fixture-side candidatePlanningBase read (12 spawns) with the authored base; that changed the selfPlanFromSnapshots comparison (git-read bodies are trimEnd'ed), so it was reverted. Gates: pnpm typecheck, format:check, planning:check pass; refresh.test.ts 213/213 (171s); pnpm test 991 passed, 3 skipped, 20 files (365s). Hosted Windows full-file timing at the final head remains the required AC4 evidence.\"}"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "usage": {
+      "input_tokens": 3124622,
+      "cached_input_tokens": 3025475,
+      "output_tokens": 55072,
+      "reasoning_output_tokens": 37879
+    }
+  }
+]

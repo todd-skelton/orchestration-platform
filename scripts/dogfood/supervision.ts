@@ -56,6 +56,7 @@ export function isItemStopReason(reason: string) {
   return (
     [
       "author-failed",
+      "author-malformed",
       "operator-evidence-failed",
       "continuation-failed",
       "continuation-repair-not-authorized",
@@ -428,6 +429,8 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
     `inspect ${evidence} for the format gate output, format the reported files, and rerun format:check`,
   "reviewer-malformed": ({ evidence }) =>
     `inspect ${evidence} for the reviewer terminal, correct the verdict/findings/G0 shape, and restart`,
+  "author-malformed": ({ evidence }) =>
+    `inspect ${evidence} for the author trace, retained partial work and parse diagnostic, correct the verdict transport, and explicitly unpark after verification`,
   "exit-receipt-timeout": ({ evidence }) =>
     `inspect ${evidence} for the worker attempt and trace, restore the missing exit receipt, and restart`,
   "provider-unavailable": () =>

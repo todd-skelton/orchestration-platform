@@ -300,9 +300,12 @@ export async function historicalStops(
   if (shape === "terminal") return;
   const selection = f.cycle.selection;
   const history = f.cycle.initialHistory;
+  const attempt = JSON.parse(
+    await readFile(resolve(f.current.config.stateDirectory, "attempt.json"), "utf8"),
+  ).candidateAttempt;
   for (let stop = 1; stop <= (shape.startsWith("pilot-") ? 2 : 1); stop++) {
     const marker = `loop-stop:${f.loop.run}:${selection.cycle}:${stop}`;
-    const body = `<!-- ${marker} --> Synthetic retained ${stop === 1 ? "author-failed" : "pilot-revision-moved"} stop after one attempt; inspect retained diagnostics.`;
+    const body = `<!-- ${marker} --> Synthetic retained ${stop === 1 ? "author-failed" : "pilot-revision-moved"} stop after ${attempt} attempts; inspect retained diagnostics.`;
     await writeFile(
       resolve(f.runState, `cycle-${selection.cycle}-stop-${stop}.json`),
       JSON.stringify(
@@ -310,7 +313,7 @@ export async function historicalStops(
           selection,
           stop,
           reason: stop === 1 ? "author-failed" : "pilot-revision-moved",
-          attempts: 1,
+          attempts: attempt,
           history,
           marker,
           body,
@@ -326,4 +329,71 @@ export async function historicalStops(
     );
     f.rows[0]!.comments.push(body);
   }
+}
+
+// A real native source rejection (including its malformed-review retry) then
+// native repair FAIL in directory 2, candidate 3. No incident files are inputs.
+export async function repairFailureFixture() {
+  const f = await sourceFailureFixture(1);
+  await f.fail();
+  await f.stop();
+  const remote = resolve(f.root, "remote.git");
+  await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
+  await f.git(f.repository, ["remote", "add", "origin", remote]);
+  f.rows[0]!.ready = true;
+  const cycle = (await f.advance())!;
+  await persistCycle(f.loop, cycle);
+  const launch = f.native.launch;
+  f.native.launch = async (role, config, prompt) => {
+    if (role === "author" && config.issue.endsWith("/110"))
+      await writeFile(
+        resolve(config.worktree, "product.txt"),
+        config.stateDirectory.endsWith("repair")
+          ? "partial failed repair left dirty\n"
+          : "synthetic rejected implementation\n",
+      );
+    return launch(role, config, prompt);
+  };
+  const observe = f.native.observe;
+  let malformed: string | undefined;
+  const findings = [
+    { file: "product.txt", line: 1, severity: "blocking", text: "Use fixture mode legacy." },
+    { file: "product.txt", line: 1, severity: "blocking", text: "Preserve the invariant." },
+  ];
+  f.native.observe = async (role, config, attempt) => {
+    const result = await observe(role, config, attempt);
+    if (!config.issue.endsWith("/110") || config.stateDirectory.endsWith("repair")) return result;
+    if (role === "author") return { ...result, status: "passed", summary: "" };
+    malformed ??= attempt.id;
+    if (attempt.id === malformed) return { ...result, status: "passed", summary: "malformed" };
+    return {
+      ...result,
+      status: "failed",
+      summary: JSON.stringify({
+        run: config.run,
+        role,
+        head: result.head,
+        verdict: "FAIL",
+        findings,
+        g0: "No; both fixture requirements must hold.",
+      }),
+    };
+  };
+  const current = await f.compose(cycle);
+  return {
+    ...f,
+    cycle,
+    current,
+    fail: async () => {
+      await startCycle(f.loop, cycle, f.host);
+      try {
+        await queueStep(current.config, current.adapter);
+        throw new Error("expected repair failure");
+      } catch (error) {
+        if ((error as { reason?: string }).reason !== "author-failed") throw error;
+      }
+      cycle.initialHistory = await current.adapter.history();
+    },
+    stop: () => stopCycle(f.loop, cycle, "author-failed", 3, f.host, f.policy),
+  };
 }

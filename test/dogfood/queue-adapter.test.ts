@@ -502,7 +502,7 @@ it.each([
     },
   };
   const adapter = () => repositoryQueueAdapter(f.config, f.paths.controller, { native });
-  if (["failed", "malformed"].includes(failure)) {
+  if (failure === "failed") {
     await expect(adapter().source(f.item)).rejects.toThrow(`author-${failure}`);
     await expect(adapter().source(f.item)).rejects.toThrow(`author-${failure}`);
     f.item.source.stateDirectory = resolve(f.paths.queue, "next-author");
@@ -532,6 +532,15 @@ it.each([
     placement: SELF_ROUTING.author[Math.min(count, 2)],
   });
   if (failure.startsWith("refused")) expect(JSON.parse(saved).retries).toBeUndefined();
+  if (failure === "malformed") {
+    expect(JSON.parse(saved)).toMatchObject({
+      retries: 1,
+      retryContext: expect.stringContaining("could not be parsed"),
+    });
+    expect(await adapter().history()).toMatchObject([
+      { id: "author-1", role: "author", outcome: "malformed", rung: 0 },
+    ]);
+  }
   if (failure === "dead-after-work") {
     expect(partialWork).toBe(false);
     expect(

@@ -57,6 +57,13 @@ malformed with its measured length and cap in the terminal summary and the
 existing single automatic retry context (ISS-150). Authors share this extraction
 rule (ISS-177), retaining their JSON-only prompts, five-key schema and
 2000-character summary cap; the whole author message has no summary cap.
+An oversized author summary reports its measured length and the 2000 limit.
+Completed malformed authors use the same single transient retry, retaining
+staged, unstaged and untracked partial work at the recorded base rather than
+the dead-author reset. The retry receives the diagnostic, prior trace and
+attempt/terminal context, inspects and verifies the work, and returns its own
+verdict. Malformed launches remain charged failures; a spent retry stops as
+`author-malformed` with ordinary parking, without another attempt (ISS-183).
 Completion, identity and head checks remain unchanged. Parsing grants no
 acceptance: independent exact-head review, native local gates and final-head
 Ubuntu/Windows/macOS bootstrap green remain required before landing.
@@ -324,6 +331,7 @@ unfinished authors and non-FAIL results cannot establish this transition.
 Source pilot/configuration checks and executor drift refusals remain in force.
 Parking leaves the self issue open and unready; only explicit planning unpark
 can admit it again.
+Terminal repair-author FAIL likewise parks through matching retained evidence; explicit same-run planning unpark admits only the next unused implementation attempt within the existing ceiling, preserving history and charged allowances (ISS-181).
 
 Before scanning failed attempts, composition observes the matching failed
 author terminal at the pinned conflict seed or a parked source-author failure
