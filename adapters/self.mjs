@@ -74,12 +74,45 @@ function boardByKey(board) {
   return { open, closed };
 }
 
-export async function selectCandidates({ repository, executorRoot, planning, board }) {
+function pinnedPlanning(executorRoot, planningRevision, gitExecutable = "git") {
+  if (planningRevision === undefined) return undefined;
+  requirePolicy(
+    typeof planningRevision === "string" && /^[a-f0-9]{40}$/.test(planningRevision),
+    "invalid-selected-issue",
+  );
+  return {
+    revision: planningRevision,
+    async git(args) {
+      try {
+        return (
+          await runFile(gitExecutable, ["-C", executorRoot, ...args], {
+            windowsHide: true,
+            maxBuffer: 32 * 1024 * 1024,
+          })
+        ).stdout;
+      } catch (error) {
+        throw new DeliveryBlocked("current-main-unavailable", String(error));
+      }
+    },
+  };
+}
+
+export async function selectCandidates({
+  repository,
+  executorRoot,
+  planningRevision,
+  gitExecutable,
+  planning,
+  board,
+}) {
   validateRepository(repository);
+  const pinned = pinnedPlanning(executorRoot, planningRevision, gitExecutable);
   if (!planning || !board)
     [planning, board] = await Promise.all([
-      loadPlanningSnapshot(executorRoot),
-      loadBoardSnapshot(repository),
+      loadPlanningSnapshot(executorRoot, pinned),
+      loadBoardSnapshot(repository).catch((error) => {
+        throw new DeliveryBlocked("issue-observation-unavailable", String(error));
+      }),
     ]);
   validatePlanningSnapshot(planning);
   validateBoardSnapshot(planning, board);
@@ -118,9 +151,16 @@ function listItems(section) {
   return items;
 }
 
-export async function issueContext({ repository, key, executorRoot }) {
+export async function issueContext({
+  repository,
+  key,
+  executorRoot,
+  planningRevision,
+  gitExecutable,
+}) {
   validateRepository(repository);
-  const planning = await loadPlanningSnapshot(executorRoot);
+  const pinned = pinnedPlanning(executorRoot, planningRevision, gitExecutable);
+  const planning = await loadPlanningSnapshot(executorRoot, pinned);
   const registered = planning.roadmap.issues.find((issue) => issue.key === key);
   requirePolicy(registered, "selected-issue-unregistered");
   const draft = planning.issueDrafts[key];
@@ -129,7 +169,9 @@ export async function issueContext({ repository, key, executorRoot }) {
   requirePolicy(section, "selected-issue-criteria-missing");
   const acceptanceCriteria = listItems(section);
   requirePolicy(acceptanceCriteria.length > 0, "selected-issue-criteria-missing");
-  const loopRules = await readFile(resolve(executorRoot, "docs/loop.md"), "utf8");
+  const loopRules = pinned
+    ? await pinned.git(["show", `${pinned.revision}:docs/loop.md`])
+    : await readFile(resolve(executorRoot, "docs/loop.md"), "utf8");
   return {
     title: frontmatter.title,
     routing: { row: "self" },

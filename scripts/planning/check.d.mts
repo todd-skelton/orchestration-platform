@@ -6,4 +6,7 @@ export interface PlanningSnapshot {
 export declare const PLANNING_REPOSITORY: string;
 export declare function parseFrontmatter(source: string, file: string): Record<string, any>;
 export declare function validatePlanningSnapshot(snapshot: PlanningSnapshot): void;
-export declare function loadPlanningSnapshot(root?: string): Promise<PlanningSnapshot>;
+export declare function loadPlanningSnapshot(
+  root?: string,
+  pinned?: { revision: string; git(args: string[]): Promise<string> },
+): Promise<PlanningSnapshot>;

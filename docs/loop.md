@@ -38,6 +38,39 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+ISS-163 records the between-cycle `BOARD_CONTRACT_MISMATCH` in
+`m1-iss159-160-20260916T0240`: installed planning predated ISS-161's registration.
+Before each fresh self selection, supervision fetches current main and pins one
+immutable commit as both the source base and `planningRevision`. Installed code
+reads the full draft tree and roadmap through the configured Git executable,
+then validates the complete board census. Queue composition reads the selected
+brief and loop rules from that same commit, including after restart or later
+main movement. No fetched JavaScript executes, checkout moves, or scratch
+worktree is created for these reads. Rules may describe uninstalled behavior;
+they grant no authority to execute it.
+
+Before a selection is persisted, Git acquisition failure blocks with
+`current-main-unavailable` and board acquisition failure (including incomplete
+pagination/census) with `issue-observation-unavailable`. Acquired planning or
+board mismatches remain `queue-internal-error`. All retain the originating
+diagnostic in supervisor blocked output, without an issue note, parking,
+fallback or polling. Registration ahead of its board item also refuses; the
+operator may retry the same run once the two authorities agree.
+
+Saved selections resume without selection or fetching. The optional
+`planningRevision === base` is a transitional behavior marker, not separate
+provenance. Its absence retains executor-root brief/rules reads, including
+direct adapter calls, so existing source fingerprints remain strict and legacy
+records remain byte-identical. There is no backfill, migration or fingerprint
+waiver. Chase Sets selection, routing and context are unchanged. Retire the
+producer and compatibility branch only at a reviewed stopped-install cutover
+after an operator's read-only census finds zero unfinished or re-enterable
+pre-cutover self cycles, legacy or marked; completed history stays readable.
+This is not a time-based sunset and authorizes no census here. Landing grants
+no executor installation, restart, unpark or M2 exit. Host installation still
+requires independent exact-head PASS and three-OS bootstrap green with
+supervisors absent; this change does not stop the live M2 loop.
+
 ISS-161 records ISS-110's source-author FAIL and later `pilot-revision-moved`
 stop in `m1-iss146-147-20260914T2325`. A matching native source-author FAIL
 now parks the item through ordinary stop handling and advances to unrelated

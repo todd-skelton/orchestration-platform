@@ -28,6 +28,7 @@ export interface SelectedIssue {
   key: string;
   number: number;
   base: string;
+  planningRevision?: string;
   routing?: import("./routing.mjs").RoutingSelection;
 }
 
@@ -98,13 +99,17 @@ function validSelection(value: unknown, cycle: number): value is SelectedIssue {
       "key",
       "number",
       "base",
+      ...(value && typeof value === "object" && Object.hasOwn(value, "planningRevision")
+        ? ["planningRevision"]
+        : []),
       ...(value && typeof value === "object" && Object.hasOwn(value, "routing") ? ["routing"] : []),
     ]) &&
     value.cycle === cycle &&
     /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.key) &&
     Number.isSafeInteger(value.number) &&
     value.number > 0 &&
-    SHA.test(value.base)
+    SHA.test(value.base) &&
+    (!Object.hasOwn(value, "planningRevision") || value.planningRevision === value.base)
   );
 }
 
@@ -286,9 +291,25 @@ export async function nextCycle(
       return { selection: selected, initialHistory };
     }
 
+    const readMain = async () => {
+      try {
+        const main = await adapter.currentMain(config, config.stableExecutorRoot);
+        if (!SHA.test(main)) throw new Error(`Invalid current main revision: ${String(main)}`);
+        return main;
+      } catch (error) {
+        throw new QueueBlocked(
+          "current-main-unavailable",
+          error instanceof QueueBlocked ? (error.diagnostics ?? error.message) : String(error),
+        );
+      }
+    };
+    const planningRevision = config.adapter === "self" ? await readMain() : undefined;
     const candidates = await repositoryAdapter.selectCandidates({
       repository: config.repository,
       executorRoot: config.stableExecutorRoot,
+      ...(planningRevision === undefined
+        ? {}
+        : { planningRevision, gitExecutable: config.gitExecutable }),
       ...(config.targetMilestone === undefined ? {} : { targetMilestone: config.targetMilestone }),
     });
     if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
@@ -307,9 +328,8 @@ export async function nextCycle(
       throw new QueueBlocked("malformed-repository-candidates");
     let base;
     try {
-      base = await adapter.currentMain(config, config.stableExecutorRoot);
-      if (!SHA.test(base)) throw new QueueBlocked("current-main-unavailable");
-    } catch {
+      base = planningRevision ?? (await readMain());
+    } catch (error) {
       const target = { cycle, ...issue };
       await postLearningNote(
         config,
@@ -317,10 +337,15 @@ export async function nextCycle(
         stopMessage(config, target, 0, "current-main-unavailable", 0),
         adapter,
       );
-      throw new QueueBlocked("current-main-unavailable");
+      throw error;
     }
     return {
-      selection: { cycle, ...issue, base },
+      selection: {
+        cycle,
+        ...issue,
+        base,
+        ...(planningRevision === undefined ? {} : { planningRevision }),
+      },
       initialHistory,
     };
   }
@@ -727,8 +752,8 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
         return (
           await run(config.gitExecutable, ["-C", repositoryRoot, "rev-parse", main], repositoryRoot)
         ).stdout.trim();
-      } catch {
-        throw new QueueBlocked("current-main-unavailable");
+      } catch (error) {
+        throw new QueueBlocked("current-main-unavailable", String(error));
       }
     },
     issue: observe,
