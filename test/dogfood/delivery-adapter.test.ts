@@ -13,12 +13,18 @@ import {
 } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   deliveryStep,
+  DeliveryBlocked,
   type DeliveryConfig,
   type DeliveryAdapter,
   type DeliveryPlan,
   type PublicationEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
-import { candidateLineChanges, selfPlanFromSnapshots } from "../../adapters/self.mjs";
+import {
+  candidateLineChanges,
+  selfPlanFromSnapshots,
+  pullRequest as selfPullRequest,
+} from "../../adapters/self.mjs";
+import { pullRequest as chaseSetsPullRequest } from "../../adapters/chase-sets.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 import {
@@ -1061,6 +1067,77 @@ it("keeps a published head collision blocked and identifies its preserved worktr
   expect(await git(["rev-parse", "HEAD"], preserved)).toBe(priorHead);
 });
 
+it.each([selfPullRequest, chaseSetsPullRequest])(
+  "carries accepted G0 verbatim in the PR body and refuses unavailable review evidence (%#)",
+  async (pullRequest) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    await git(["update-ref", "refs/remotes/origin/main", current.candidateHead]);
+    await commitCandidate(current, git);
+    if (pullRequest === chaseSetsPullRequest) {
+      current.repository = "chase-sets/chase-sets";
+      current.issue = "https://github.com/chase-sets/chase-sets/issues/332";
+      current.requiredChecks = ["PR Required"];
+      current.policy = {
+        key: "cs-332",
+        number: 332,
+        title: "Deliver",
+        sourceBranch: "codex/332-deliver-g1",
+      };
+    }
+    const terminalPath = resolve(current.stateDirectory, "reviewer-terminal.json");
+    const report = {
+      ...JSON.parse(reviewerReport(current)),
+      g0: "Remove `unused()`; checked against the **same** acceptance criteria & not-built reasons.",
+    };
+    await writeFile(terminalPath, JSON.stringify({ summary: JSON.stringify(report) }));
+    const input = { config: current, gitExecutable: "git" };
+    const pr = await pullRequest(input);
+    expect(pr.body).toBe(
+      "Closes #332\n\nLine changes:\n" +
+        "- Total: 1 added, 0 deleted, net +1\n" +
+        "- Source (`scripts/`): 0 added, 0 deleted, net 0\n" +
+        "- Tests (`test/`): 0 added, 0 deleted, net 0\n\n" +
+        `Review G0: ${report.g0}`,
+    );
+    expect(await pullRequest(input)).toEqual(pr);
+    await writeFile(
+      terminalPath,
+      JSON.stringify({
+        summary: JSON.stringify({
+          ...report,
+          findings: [
+            { file: "refresh.txt", line: 1, severity: "note", text: "Optional simplification." },
+          ],
+        }),
+      }),
+    );
+    expect(await pullRequest(input)).toEqual(pr);
+    for (const [summary, reason] of [
+      ["not JSON", "unreviewed-delivery-source"],
+      [JSON.stringify({ ...report, head: "f".repeat(40) }), "unreviewed-delivery-source"],
+      [JSON.stringify({ ...report, run: "wrong-run" }), "unreviewed-delivery-source"],
+      [JSON.stringify({ ...report, g0: "" }), "unreviewed-delivery-source"],
+      [JSON.stringify({ ...report, g0: "x".repeat(2000) }), "unreviewed-delivery-source"],
+      [
+        reviewerReport(current, "FAIL", [
+          { file: "refresh.txt", line: 1, severity: "blocking", text: "Fix it" },
+        ]),
+        "unreviewed-delivery-source",
+      ],
+    ]) {
+      await writeFile(terminalPath, JSON.stringify({ summary }));
+      await expect(pullRequest(input)).rejects.toBeInstanceOf(DeliveryBlocked);
+      await expect(pullRequest(input)).rejects.toMatchObject({ reason });
+    }
+    await writeFile(terminalPath, "not JSON");
+    await expect(pullRequest(input)).rejects.toMatchObject({ reason: "missing-reviewer-terminal" });
+    await rm(terminalPath);
+    await expect(pullRequest(input)).rejects.toMatchObject({ reason: "missing-reviewer-terminal" });
+  },
+);
+
 it.each([false, true, "run-scoped", "ready"])(
   "refreshes one exact existing draft forward (preserved prior branch: %s)",
   async (preservePrior) => {
@@ -1082,6 +1159,7 @@ it.each([false, true, "run-scoped", "ready"])(
     if (preservePrior === "run-scoped" || preservePrior === "ready")
       current.localBranch = localBranch;
     const publication = publicationEvidence(current);
+    publication.body += "\n\nReview G0: No, the same constraints require this shape.";
     const plan = {
       sourceBranch: publication.sourceBranch,
       baseBranch: publication.baseBranch,
@@ -1094,16 +1172,21 @@ it.each([false, true, "run-scoped", "ready"])(
       (await git(["ls-remote", "--heads", "origin", `refs/heads/${plan.sourceBranch}`])).split(
         /\s+/,
       )[0]!;
+    let bodyEdited = false;
     const adapter = githubDeliveryAdapter({
       async gh(_config, args) {
         effects.push(args);
+        bodyEdited = true;
         return "";
       },
       async ghJson() {
         return [
           publicationRow(publication, {
             headRefOid: await remoteHead(),
-            title: "earlier failed attempt",
+            title: bodyEdited ? publication.title : "earlier failed attempt",
+            body: bodyEdited
+              ? plan.body.replaceAll("\n", "\r\n") + "\r\n"
+              : "Earlier body\n\nReview G0: Earlier review answer.",
             isDraft: preservePrior !== "ready",
           }),
         ];
@@ -1118,7 +1201,14 @@ it.each([false, true, "run-scoped", "ready"])(
       adapter.observePublication(current, plan, "f".repeat(64), "pr:44"),
     ).resolves.toEqual({ state: "unknown" });
     await expect(adapter.publish(current, plan, "pr:44")).resolves.toBeUndefined();
+    expect(
+      await readFile(resolve(current.stateDirectory, "approved-pull-request.md"), "utf8"),
+    ).toBe(plan.body);
     expect(await remoteHead()).toBe(candidate);
+    await expect(adapter.observePublication(current, plan, "f".repeat(64))).resolves.toMatchObject({
+      state: "confirmed",
+      value: { head: candidate, body: plan.body },
+    });
     expect(effects).toEqual([
       [
         "pr",

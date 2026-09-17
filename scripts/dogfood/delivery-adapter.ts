@@ -134,6 +134,21 @@ async function json(path: string, reason: string) {
   }
 }
 
+// ISS-172: publish the accepted review's existing answer, without another record.
+export async function acceptedReviewG0(config: DeliveryConfig): Promise<string> {
+  const terminal = await json(
+    resolve(config.stateDirectory, "reviewer-terminal.json"),
+    "missing-reviewer-terminal",
+  );
+  try {
+    const review = parseReview(terminal?.summary, config.run, config.candidateHead);
+    if (review.verdict === "PASS") return review.g0;
+  } catch (error) {
+    if (!(error instanceof RepairBlocked)) throw error;
+  }
+  throw new DeliveryBlocked("unreviewed-delivery-source");
+}
+
 async function stagedFile(config: DeliveryConfig, name: string, contents: string) {
   const path = resolve(config.stateDirectory, name);
   try {

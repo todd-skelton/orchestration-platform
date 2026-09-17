@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
+import { acceptedReviewG0 } from "../scripts/dogfood/delivery-adapter.mjs";
 import { parseRoutingMarker } from "../scripts/dogfood/routing.mjs";
 
 const EXPECTED_REPOSITORY = "chase-sets/chase-sets";
@@ -375,7 +376,7 @@ export async function pullRequest({ config, gitExecutable }) {
     sourceBranch: value.sourceBranch,
     baseBranch: "main",
     title: value.title,
-    body: `Closes #${value.number}\n\nLine changes:\n- Total: ${describeLineChanges(changes.total)}\n- Source (\`scripts/\`): ${describeLineChanges(changes.scripts)}\n- Tests (\`test/\`): ${describeLineChanges(changes.test)}`,
+    body: `Closes #${value.number}\n\nLine changes:\n- Total: ${describeLineChanges(changes.total)}\n- Source (\`scripts/\`): ${describeLineChanges(changes.scripts)}\n- Tests (\`test/\`): ${describeLineChanges(changes.test)}\n\nReview G0: ${await acceptedReviewG0(config)}`,
     draft: true,
   };
 }

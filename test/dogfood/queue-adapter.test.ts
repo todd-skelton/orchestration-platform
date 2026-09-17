@@ -1173,9 +1173,11 @@ it.each([false, true])(
             ),
           ).toMatchObject({ rung });
         }
-        if (role === "reviewer" && !correction) {
-          expect(prompt).toContain("is there a simpler way?");
-          expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
+        if (role === "reviewer") {
+          expect(prompt).toContain(
+            "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against.",
+          );
+          if (!correction) expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
         }
         const selected = correction ? `gate-${role}` : role;
         const deadAuthor = selected === "author" && launches.length === 0;

@@ -13,6 +13,7 @@ import {
   validateBoardSnapshot,
 } from "../scripts/planning/board-check.mjs";
 import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
+import { acceptedReviewG0 } from "../scripts/dogfood/delivery-adapter.mjs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -276,7 +277,8 @@ function publication(config, lineChanges) {
 }
 
 export async function pullRequest({ config, gitExecutable }) {
-  return publication(config, await candidateLineChanges(config, gitExecutable));
+  const pr = publication(config, await candidateLineChanges(config, gitExecutable));
+  return { ...pr, body: `${pr.body}\n\nReview G0: ${await acceptedReviewG0(config)}` };
 }
 
 function planningMirror(config, planning, board) {

@@ -362,6 +362,46 @@ it("rejects a self-consistent saved plan that was not authorized by policy", asy
   expect(f.calls).toEqual(["source", "policy"]);
 });
 
+it.each([false, true])(
+  "handles a pre-G0 delivery plan on resume (authorized: %s)",
+  async (authorized) => {
+    const f = await fixture();
+    const saved = { head, digest: digest(f.plan), plan: f.plan };
+    await writeState(f.config, "delivery-plan", saved);
+    if (authorized)
+      await writeState(f.config, "delivery-plan-authorization", {
+        head,
+        digest: saved.digest,
+        policyDigest: digest(f.config.policy),
+        controller: f.config.controller,
+      });
+    const nextPlan = structuredClone(f.plan);
+    nextPlan.publication.body += "\n\nReview G0: No, all stated constraints require this shape.";
+    const policy = {
+      async plan() {
+        f.calls.push("new-policy");
+        return nextPlan;
+      },
+    };
+    if (authorized) {
+      await expect(deliveryStep(f.config, f.adapter, policy)).resolves.toMatchObject({
+        status: "complete",
+      });
+      expect(f.state.publication?.body).toBe(saved.plan.publication.body);
+      expect(f.calls).not.toContain("new-policy");
+    } else {
+      await expect(deliveryStep(f.config, f.adapter, policy)).rejects.toThrow(
+        "unauthorized-delivery-plan",
+      );
+      expect(f.calls).toEqual(["source", "new-policy"]);
+      expectNoProviderAction(f.calls);
+    }
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "delivery-plan.json"), "utf8")),
+    ).toEqual(saved);
+  },
+);
+
 it("observes check startup and pending checks without republishing", async () => {
   const f = await fixture();
   f.state.checks = "empty";

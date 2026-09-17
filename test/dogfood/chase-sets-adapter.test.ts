@@ -442,6 +442,8 @@ it.skipIf(process.platform === "win32")(
       pullRequestTitle: "Issue 9",
     });
     const deliveryConfig = {
+      run: "chase-sets-fixture",
+      stateDirectory: executorRoot,
       repository: "chase-sets/chase-sets",
       issue: "https://github.com/chase-sets/chase-sets/issues/9",
       worktree: executorRoot,
@@ -454,6 +456,19 @@ it.skipIf(process.platform === "win32")(
         sourceBranch: "codex/9-issue-9-g1",
       },
     } as DeliveryConfig;
+    await writeFile(
+      resolve(executorRoot, "reviewer-terminal.json"),
+      JSON.stringify({
+        summary: JSON.stringify({
+          run: deliveryConfig.run,
+          role: "reviewer",
+          head: deliveryConfig.candidateHead,
+          verdict: "PASS",
+          findings: [],
+          g0: "No, the existing adapter seam is required.",
+        }),
+      }),
+    );
     await expect(
       chaseSets.pullRequest({
         config: deliveryConfig,
@@ -467,7 +482,8 @@ it.skipIf(process.platform === "win32")(
         "Closes #9\n\nLine changes:\n" +
         "- Total: 10 added, 7 deleted, net +3\n" +
         "- Source (`scripts/`): 2 added, 1 deleted, net +1\n" +
-        "- Tests (`test/`): 3 added, 4 deleted, net -1",
+        "- Tests (`test/`): 3 added, 4 deleted, net -1\n\n" +
+        "Review G0: No, the existing adapter seam is required.",
       draft: true,
     });
     await expect(
