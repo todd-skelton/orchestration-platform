@@ -818,6 +818,25 @@ export async function queueConfigFromLoop(
       };
       await record(priorQueue, "attempt", attempt);
     }
+    // ISS-179: an explicitly unparked source FAIL consumes its original attempt,
+    // just as the retained conflict failure above does, without inventing a review.
+    if (await pinnedSourceFailure(config, selected, sourceAttempt, priorQueue, attempt)) {
+      attempt = {
+        ...attempt,
+        phase: "failed",
+        head: attempt.base,
+        reviewId: "",
+        findings: [],
+        history: await readQueueHistory({
+          stateDirectory: priorQueue,
+          nativeLaunchCeiling: config.nativeLaunchCeiling,
+          initialHistory: [],
+        }),
+        acceptedStage: null,
+        stateDirectory: null,
+      };
+      await record(priorQueue, "attempt", attempt);
+    }
     if (attempt === ABSENT || attempt.phase !== "failed") break;
     demand(!conflictContinuation, "continuation-failed");
     validateFailedAttempt(attempt, sourceAttempt, config.attemptCeiling);
@@ -919,7 +938,7 @@ export async function queueConfigFromLoop(
     ? `${baseSourcePrompt}\n\n${conflictPrompt}`
     : replan
       ? `${baseSourcePrompt}\n\n${replan.prompt}`
-      : prescribedFindings
+      : prescribedFindings?.length
         ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
         : baseSourcePrompt;
   const setup: SetupConfig = {
@@ -1296,7 +1315,6 @@ async function sourceAuthorFailure(source: SourceConfig) {
 
 export async function retainedSourceFailure(config: LoopConfig, selected: SelectedLoopIssue) {
   if (config.acceptedReplan) return undefined;
-  const issue = `https://github.com/${config.repository}/issues/${selected.number}`;
   for (let number = config.attemptCeiling; number > 0; number--) {
     const directory = resolve(
       config.stateRoot,
@@ -1305,24 +1323,7 @@ export async function retainedSourceFailure(config: LoopConfig, selected: Select
     );
     const attempt = await optionalRecord(directory, "attempt");
     if (attempt === ABSENT) continue;
-    const sourceDirectory = resolve(directory, "source");
-    const pinned = await optionalRecord(sourceDirectory, "config");
-    if (
-      attempt.phase !== "source" ||
-      attempt.run !== config.run ||
-      attempt.item !== `${selected.key}:${number}` ||
-      attempt.issue !== issue ||
-      attempt.candidateAttempt !== number ||
-      attempt.acceptedStage !== null ||
-      pinned === ABSENT ||
-      pinned.config?.run !== config.run ||
-      pinned.config.issue !== issue ||
-      pinned.config.repository !== config.repository ||
-      pinned.config.base !== attempt.base ||
-      pinned.config.stateDirectory !== sourceDirectory
-    )
-      return undefined;
-    const terminal = await sourceAuthorFailure(pinned.config);
+    const terminal = await pinnedSourceFailure(config, selected, number, directory, attempt);
     if (!terminal) return undefined;
     const history = await readQueueHistory({
       stateDirectory: directory,
@@ -1332,6 +1333,38 @@ export async function retainedSourceFailure(config: LoopConfig, selected: Select
     return { attempts: attempt.candidateAttempt, history, diagnostics: terminal.summary };
   }
   return undefined;
+}
+
+async function pinnedSourceFailure(
+  config: LoopConfig,
+  selected: SelectedLoopIssue,
+  number: number,
+  directory: string,
+  attempt: AttemptRecord | typeof ABSENT,
+) {
+  const issue = `https://github.com/${config.repository}/issues/${selected.number}`;
+  if (
+    attempt === ABSENT ||
+    attempt.phase !== "source" ||
+    attempt.run !== config.run ||
+    attempt.item !== `${selected.key}:${number}` ||
+    attempt.issue !== issue ||
+    attempt.candidateAttempt !== number ||
+    attempt.acceptedStage !== null
+  )
+    return undefined;
+  const sourceDirectory = resolve(directory, "source");
+  const pinned = await optionalRecord(sourceDirectory, "config");
+  if (
+    pinned === ABSENT ||
+    pinned.config?.run !== config.run ||
+    pinned.config.issue !== issue ||
+    pinned.config.repository !== config.repository ||
+    pinned.config.base !== attempt.base ||
+    pinned.config.stateDirectory !== sourceDirectory
+  )
+    return undefined;
+  return sourceAuthorFailure(pinned.config);
 }
 
 export async function readQueueHistory(
@@ -2192,18 +2225,22 @@ export function repositoryQueueAdapter(
   };
 
   const priorFailedAttempt = async (item: QueueItem) => {
-    const predecessor = config.initialHistory.findLast(
-      (participant) => participant.role === "reviewer" && participant.item !== item.id,
-    );
-    if (!predecessor) return null;
-    const priorDirectory = resolve(
-      config.stateDirectory,
-      "..",
-      predecessor.item.toLowerCase().replace(/:(\d+)$/, "-attempt-$1"),
-    );
-    const prior = await optionalRecord(priorDirectory, "attempt");
-    if (prior === ABSENT || prior.phase !== "failed" || prior.issue !== item.issue) return null;
-    return { item: predecessor.item, directory: priorDirectory, prior };
+    for (const predecessor of config.initialHistory.toReversed()) {
+      if (
+        predecessor.item === item.id ||
+        (predecessor.role !== "reviewer" && predecessor.outcome !== "failed")
+      )
+        continue;
+      const priorDirectory = resolve(
+        config.stateDirectory,
+        "..",
+        predecessor.item.toLowerCase().replace(/:(\d+)$/, "-attempt-$1"),
+      );
+      const prior = await optionalRecord(priorDirectory, "attempt");
+      if (prior === ABSENT || prior.phase !== "failed" || prior.issue !== item.issue) continue;
+      return { item: predecessor.item, directory: priorDirectory, prior };
+    }
+    return null;
   };
 
   // Launch-time evidence keeps the saved source prompt fingerprint unchanged (ISS-141).

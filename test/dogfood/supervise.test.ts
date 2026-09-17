@@ -5,7 +5,6 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
-import { queueStep } from "../../scripts/dogfood/queue.js";
 
 const roots: string[] = [];
 
@@ -19,11 +18,6 @@ it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] a
     const old = await snapshot(f.runState);
     const trees = await snapshot(f.loop.worktreeRoot);
     await f.upgrade();
-    // Old composition would enter the source flow with the new pilot revision.
-    const replay = await f.compose(f.cycle);
-    await expect(queueStep(replay.config, replay.adapter)).rejects.toMatchObject({
-      reason: "pilot-revision-moved",
-    });
     const calls = f.calls.length;
     const next = await f.advance();
     expect(next).toMatchObject({

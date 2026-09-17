@@ -124,8 +124,8 @@ it("FAIL requires matching terminal and stable executor: live executor", async (
   await f.git(f.repository, ["restore", "product.txt"]);
   await f.upgrade();
   // A changed queue executor binding is still rejected before source observation.
-  const queue = await f.compose(f.cycle);
-  queue.config.items[0]!.setup.controllerRevision = f.base;
+  const queue = f.current;
+  queue.config.controllerRevision = await f.git(f.repository, ["rev-parse", "HEAD"]);
   await expect(queueStep(queue.config, queue.adapter)).rejects.toMatchObject({
     reason: "queue-executor-drift",
   });

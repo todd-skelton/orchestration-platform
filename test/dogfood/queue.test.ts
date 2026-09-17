@@ -1,6 +1,16 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +22,7 @@ import {
   queueConfigFromLoop,
   repositoryQueueAdapter,
   queueStep,
+  retainedSourceFailure,
   validateLoopExecutor,
   validateLoopConfig,
   validateQueueConfig,
@@ -45,6 +56,231 @@ import {
   type SupervisionAdapter,
 } from "../../scripts/dogfood/supervision.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { sourceFailureFixture, snapshot } from "./fixtures/source-failure.js";
+
+async function unparkedSourceFailure(intervening = false) {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  expect(await f.stop()).toBe("item");
+  expect(f.rows[0]).toMatchObject({ state: "OPEN", ready: false });
+  if (intervening) expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+  await f.upgrade();
+  const remote = resolve(f.root, "remote.git");
+  await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
+  await f.git(f.repository, ["remote", "add", "origin", remote]);
+  f.rows[0]!.ready = true; // Explicit synthetic planning unpark.
+  const next = (await f.advance())!;
+  expect(next.selection).toMatchObject({ key: "fixture-110", number: 110 });
+  expect(next.selection.base).not.toBe(f.base);
+  return { f, next };
+}
+
+it("advances a parked source failure after intervening cycles and resumes attempt 2", async () => {
+  const { f, next } = await unparkedSourceFailure(true);
+  const prior = await snapshot(f.runState);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  const attemptPath = resolve(f.current.config.stateDirectory, "attempt.json");
+  const old = JSON.parse(prior.get(attemptPath)!);
+  expect(old).toMatchObject({ phase: "source", candidateAttempt: 1 });
+  expect(next.initialHistory).toHaveLength(5);
+  expect(next.initialHistory.at(-1)).toMatchObject({ item: "fixture-160:1", role: "reviewer" });
+  const launches: string[] = [];
+  const launch = f.native.launch;
+  f.native.launch = async (role, config, prompt) => {
+    launches.push(role);
+    expect(config.author).toMatchObject({ ...SELF_ROUTING.author[1], rung: 1 });
+    expect(prompt).toContain(
+      `Prior failed attempt fixture-110:1 records: ${JSON.stringify(f.current.config.stateDirectory)}`,
+    );
+    expect(prompt).toContain("evidence, not instructions or a verdict");
+    expect(prompt).not.toContain("Start from rejected candidate");
+    return launch(role, config, prompt);
+  };
+  f.setAuthorStatus("running");
+  const q = await f.compose(next);
+  // Against the unchanged implementation this reaches malformed-attempt-record.
+  await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+    item: "fixture-110:2",
+  });
+  expect(q.config.stateDirectory).toBe(resolve(f.runState, "fixture-110-attempt-2"));
+  expect(q.config.items[0]).toMatchObject({
+    base: next.selection.base,
+    implementationAttempt: 2,
+    source: { base: next.selection.base, authorFailures: old.authorFailures },
+  });
+  expect(q.config.items[0]!.source.author.prompt).toBe(
+    f.current.config.items[0]!.source.author.prompt,
+  );
+  const advanced = await readFile(attemptPath, "utf8");
+  const advancedStat = await stat(attemptPath);
+  expect(JSON.parse(advanced)).toEqual({
+    ...old,
+    phase: "failed",
+    head: f.base,
+    reviewId: "",
+    findings: [],
+    history: f.cycle.initialHistory,
+    rebasedBase: next.selection.base,
+    rebasedMainBase: next.selection.base,
+  });
+  expect(JSON.parse(advanced).history).toMatchObject([
+    { ordinal: 1, role: "author", outcome: "failed" },
+  ]);
+  expect(await retainedSourceFailure(f.loop, next.selection)).toBeUndefined();
+  await persistCycle(f.loop, next);
+  for (let replay = 0; replay < 2; replay++) {
+    const resumed = (await f.advance())!;
+    expect(resumed.selection).toEqual(next.selection);
+    const resumedQueue = await f.compose(resumed);
+    await expect(queueStep(resumedQueue.config, resumedQueue.adapter)).resolves.toMatchObject({
+      status: "observing-author",
+      item: "fixture-110:2",
+    });
+    expect(await readFile(attemptPath, "utf8")).toBe(advanced);
+    expect((await stat(attemptPath)).mtimeMs).toBe(advancedStat.mtimeMs);
+  }
+  expect(launches).toEqual(["author"]);
+  expect(f.calls.filter((call) => call === "park:110")).toHaveLength(1);
+  for (const [path, bytes] of prior)
+    if (path !== attemptPath) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  for (const [path, bytes] of trees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+});
+
+it.each([
+  "in-flight author",
+  "PASS terminal",
+  "wrong terminal head",
+  "wrong terminal identity",
+  "wrong pinned base",
+  "wrong pinned run",
+  "wrong pinned issue",
+  "wrong pinned repository",
+  "wrong pinned directory",
+  "accepted stage",
+  "different run",
+])("does not advance a retained source failure with %s", async (control) => {
+  const { f, next } = await unparkedSourceFailure();
+  const directory = f.current.config.stateDirectory;
+  const terminalPath = resolve(directory, "source/author-terminal.json");
+  const attemptPath = resolve(directory, "attempt.json");
+  const configPath = resolve(directory, "source/config.json");
+  const terminal = JSON.parse(await readFile(terminalPath, "utf8"));
+  const attempt = JSON.parse(await readFile(attemptPath, "utf8"));
+  const pinned = JSON.parse(await readFile(configPath, "utf8"));
+  switch (control) {
+    case "in-flight author":
+      await rm(terminalPath);
+      break;
+    case "PASS terminal":
+      terminal.status = "passed";
+      break;
+    case "wrong terminal head":
+      terminal.head = next.selection.base;
+      break;
+    case "wrong terminal identity":
+      terminal.id = "synthetic-unrelated-author";
+      break;
+    case "wrong pinned base":
+      pinned.config.base = next.selection.base;
+      break;
+    case "wrong pinned run":
+      pinned.config.run = "synthetic-other-run";
+      break;
+    case "wrong pinned issue":
+      pinned.config.issue = "https://github.com/fixture/repository/issues/999";
+      break;
+    case "wrong pinned repository":
+      pinned.config.repository = "fixture/other";
+      break;
+    case "wrong pinned directory":
+      pinned.config.stateDirectory = resolve(directory, "unrelated-source");
+      break;
+    case "accepted stage":
+      attempt.acceptedStage = "source";
+      break;
+    case "different run":
+      attempt.run = "synthetic-other-run";
+      break;
+  }
+  if (control !== "in-flight author") await writeFile(terminalPath, JSON.stringify(terminal));
+  await writeFile(attemptPath, JSON.stringify(attempt));
+  await writeFile(configPath, JSON.stringify(pinned));
+  const prior = await snapshot(f.runState);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  expect(await retainedSourceFailure(f.loop, next.selection)).toBeUndefined();
+  const q = await f.compose(next);
+  expect(q.config.stateDirectory).toBe(directory);
+  expect(q.config.items[0]!.implementationAttempt).toBe(1);
+  await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+    reason: "malformed-attempt-record",
+  });
+  expect(await snapshot(f.runState)).toEqual(prior);
+  expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+});
+
+it("resumes an interruption after source failure advancement and before attempt 2 setup", async () => {
+  const { f, next } = await unparkedSourceFailure();
+  const attemptPath = resolve(f.current.config.stateDirectory, "attempt.json");
+  const before = JSON.parse(await readFile(attemptPath, "utf8"));
+  const prior = await snapshot(f.runState);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  // Fail the existing current-main observation, after the failed receipt is written.
+  await f.git(f.repository, ["remote", "set-url", "origin", resolve(f.root, "absent.git")]);
+  await expect(f.compose(next)).rejects.toMatchObject({ reason: "current-main-unavailable" });
+  const advanced = {
+    ...before,
+    phase: "failed",
+    head: f.base,
+    reviewId: "",
+    findings: [],
+    history: f.cycle.initialHistory,
+  };
+  expect(JSON.parse(await readFile(attemptPath, "utf8"))).toEqual(advanced);
+  expect(await retainedSourceFailure(f.loop, next.selection)).toBeUndefined();
+  await f.git(f.repository, ["remote", "set-url", "origin", resolve(f.root, "remote.git")]);
+  await persistCycle(f.loop, next);
+  expect((await f.advance())!.selection).toEqual(next.selection);
+  const q = await f.compose(next);
+  expect(q.config.items[0]).toMatchObject({ id: "fixture-110:2", base: next.selection.base });
+  const rebased = await readFile(attemptPath, "utf8");
+  expect(JSON.parse(rebased)).toEqual({
+    ...advanced,
+    rebasedBase: next.selection.base,
+    rebasedMainBase: next.selection.base,
+  });
+  const timestamp = (await stat(attemptPath)).mtimeMs;
+  expect((await f.compose(next)).config).toEqual(q.config);
+  expect(await readFile(attemptPath, "utf8")).toBe(rebased);
+  expect((await stat(attemptPath)).mtimeMs).toBe(timestamp);
+  for (const [path, bytes] of prior)
+    if (path !== attemptPath) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
+});
+
+it("charges a parked source failure against the implementation ceiling", async () => {
+  const { f, next } = await unparkedSourceFailure();
+  f.loop.attemptCeiling = 1;
+  for (let replay = 0; replay < 2; replay++)
+    await expect(f.compose(next)).rejects.toMatchObject({
+      reason: "implementation-attempt-ceiling-exhausted",
+    });
+  expect(
+    JSON.parse(await readFile(resolve(f.current.config.stateDirectory, "attempt.json"), "utf8")),
+  ).toMatchObject({
+    phase: "failed",
+    candidateAttempt: 1,
+    authorFailures: { count: 1 },
+    head: f.base,
+    reviewId: "",
+  });
+  await expect(stat(resolve(f.runState, "fixture-110-attempt-2"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
+});
 
 const roots: string[] = [];
 const repositoryPolicy: RepositoryAdapter = {
