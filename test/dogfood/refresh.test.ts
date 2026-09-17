@@ -107,7 +107,17 @@ async function fixture(
     commands.push(args);
     const actual =
       args[0] === "fetch" ? args.map((arg) => (arg === "origin" ? origin : arg)) : args;
-    return (await exec("git", ["-C", cwd, ...actual])).stdout.trim();
+    return (
+      await exec("git", [
+        "-C",
+        cwd,
+        "-c",
+        "user.email=fixture@example.test",
+        "-c",
+        "user.name=Fixture",
+        ...actual,
+      ])
+    ).stdout.trim();
   };
   const writePlanning = async (tree: string, snapshot: PlanningSnapshot) => {
     await mkdir(resolve(tree, "planning/drafts"), { recursive: true });
@@ -124,8 +134,6 @@ async function fixture(
     return git(tree, ["rev-parse", "HEAD"]);
   };
   await git(repo, ["init", "-b", "main"]);
-  await git(repo, ["config", "user.email", "fixture@example.test"]);
-  await git(repo, ["config", "user.name", "Fixture"]);
   await writePlanning(repo, planning(seedKeys));
   await writeFile(
     resolve(repo, "feature.txt"),
@@ -204,9 +212,7 @@ async function fixture(
     });
   const record = (name: string, value: unknown) =>
     writeFile(resolve(sourceState, `${name}.json`), JSON.stringify(value));
-  const pinSource = async () => {
-    head = await git(sourceTree, ["rev-parse", "HEAD"]);
-    await git(reviewTree, ["checkout", "--detach", head]);
+  const writeSourceEvidence = async () => {
     await record("config", { fingerprint: "a".repeat(64), config: source });
     await record("candidate", { head, changed: ["feature.txt", "planning/drafts/ISS-100.md"] });
     await record("author-attempt", author);
@@ -220,7 +226,13 @@ async function fixture(
     });
     await writeFile(author.trace, "Captured original execution evidence\n");
   };
-  await pinSource();
+  // The review worktree was just created at head; only later mutations need repinning.
+  await writeSourceEvidence();
+  const pinSource = async () => {
+    head = await git(sourceTree, ["rev-parse", "HEAD"]);
+    await git(reviewTree, ["checkout", "--detach", head]);
+    await writeSourceEvidence();
+  };
   const item: QueueItem = {
     id: "ISS-100:1",
     issue: source.issue,
