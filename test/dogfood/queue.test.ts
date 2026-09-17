@@ -1209,10 +1209,13 @@ it.each(["pass", "saved-candidate", "lost-commit-inherited-retry", "review-fail"
       });
     if (mode === "malformed") {
       for (let replay = 0; replay < 2; replay++)
-        await expect(run()).rejects.toThrow("source-flow-state-unknown");
+        await expect(run()).rejects.toMatchObject({ reason: "author-malformed", retries: 1 });
       expect(launches).toEqual([]);
       expect(commits).toBe(0);
-      await expect(read("author-terminal.json")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.parse(await read("author-terminal.json"))).toMatchObject({
+        id: author.id,
+        status: "malformed",
+      });
       await expect(read("candidate.json")).rejects.toMatchObject({ code: "ENOENT" });
       expect(await real.git(item.source.worktree, ["status", "--porcelain"])).toContain(
         "docs/loop.md",
@@ -1299,6 +1302,347 @@ it.each(["pass", "saved-candidate", "lost-commit-inherited-retry", "review-fail"
     await unchanged();
   },
 );
+
+it.each([
+  "pass",
+  "before-replacement",
+  "after-persistence",
+  "second-malformed",
+  "spent",
+  "inherited",
+  "ceiling",
+  "wrong-identity",
+  "moved-head",
+  "wrong-verdict-head",
+  "review-fail",
+])("recovers saved malformed author transport with real observation and Git: %s", async (mode) => {
+  const f = await loopFixture();
+  f.loop.nativeLaunchCeiling = mode === "ceiling" ? 13 : 20;
+  const inherited = Array.from({ length: 12 }, (_, i) =>
+    participant(
+      i + 1,
+      `ISS-synthetic-${Math.floor(i / 2)}:1`,
+      "source",
+      i % 2 ? "reviewer" : "author",
+      i % 2 ? "failed" : "passed",
+    ),
+  );
+  const q = await queueConfigFromLoop(
+    f.loop,
+    f.repository,
+    f.selected,
+    repositoryPolicy,
+    inherited,
+  );
+  const item = q.items[0]!;
+  item.source.author = {
+    ...item.source.author,
+    ...SELF_ROUTING.author[0]!,
+    ladder: SELF_ROUTING.author,
+    rung: 0,
+  };
+  item.source.authorFailures = { count: 2, ids: ["synthetic-probe-0", "synthetic-probe-1"] };
+  if (mode === "inherited") item.source.inheritedWorkerRetry = true;
+  const setup = gitSetupAdapter({
+    gitExecutable: f.gitExecutable,
+    async install(_launcher, _args, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+      return "succeeded";
+    },
+  });
+  await queueStep(q, {
+    ...repositoryQueueAdapter(q, f.repository, { setup, gitExecutable: f.gitExecutable }),
+    async source() {
+      return { status: "observing-author" };
+    },
+  });
+  await mkdir(item.source.stateDirectory, { recursive: true });
+  const path = (name: string) => resolve(item.source.stateDirectory, name);
+  const read = (name: string) => readFile(path(name), "utf8");
+  const real = codexAdapter(f.gitExecutable);
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        config: item.source,
+        prompts: [item.source.author.prompt, item.source.reviewer.prompt],
+      }),
+    )
+    .digest("hex");
+  await writeFile(
+    path("config.json"),
+    JSON.stringify({ fingerprint, config: item.source, host: process.platform }),
+  );
+  await writeFile(
+    path("author-intent.json"),
+    JSON.stringify({ fingerprint, role: "author", head: item.base }),
+  );
+  const pinnedConfig = await read("config.json");
+  const author: Attempt = {
+    id: "00000000-0000-4000-8000-000000000183",
+    pid: process.pid,
+    trace: path("synthetic-author.jsonl"),
+    launchedAt: 1,
+    placement: SELF_ROUTING.author[0]!,
+    rung: 0,
+    ...(mode === "spent" ? { retries: 1 as const } : {}),
+  };
+  const trace = (id: string, verdict?: object) =>
+    [
+      { type: "thread.started", thread_id: id },
+      ...(verdict
+        ? [
+            {
+              type: "item.completed",
+              item: { type: "agent_message", text: JSON.stringify(verdict) },
+            },
+            { type: "turn.completed", usage: { input_tokens: 12, output_tokens: 8 } },
+          ]
+        : []),
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n") + "\n";
+  const verdict = {
+    run: mode === "wrong-identity" ? "synthetic-wrong-run" : item.source.run,
+    role: "author",
+    head: item.base,
+    verdict: "PASS",
+    summary: "x".repeat(2079),
+  };
+  await writeFile(path("author-attempt.json"), JSON.stringify(author));
+  await writeFile(author.trace, trace(author.id, verdict));
+  await writeFile(path("synthetic-author.exit.json"), JSON.stringify({ code: 0 }));
+  const file = resolve(item.source.worktree, "docs/loop.md");
+  await writeFile(file, "# Synthetic staged partial\n");
+  await real.git(item.source.worktree, ["add", "docs/loop.md"]);
+  await writeFile(file, "# Synthetic unstaged partial\r\nWith retained bytes.\r\n");
+  const untracked = resolve(item.source.worktree, "synthetic-partial.txt");
+  await writeFile(untracked, Buffer.from([0, 1, 2, 255, 13, 10]));
+  const partials = async () => ({
+    index: (await execute(f.gitExecutable, ["-C", item.source.worktree, "show", ":docs/loop.md"]))
+      .stdout,
+    work: await readFile(file),
+    untracked: await readFile(untracked),
+    status: await real.git(item.source.worktree, ["status", "--porcelain"]),
+  });
+  const bytes = await partials();
+  const evidence = await Promise.all([
+    read("synthetic-author.jsonl"),
+    read("synthetic-author.exit.json"),
+  ]);
+  if (mode === "moved-head")
+    await real.git(item.source.worktree, ["commit", "-m", "synthetic forbidden head change"]);
+  const launches: string[] = [];
+  const authorLaunches = mode === "before-replacement" ? ["author", "author"] : ["author"];
+  let interrupted = false;
+  let retry: Attempt | undefined;
+  let reviewer: Attempt | undefined;
+  let commits = 0;
+  const native: Adapter = {
+    ...real,
+    async preflight() {},
+    async waitForProvider() {},
+    async git(tree, args) {
+      expect(["reset", "clean"]).not.toContain(args[0]);
+      if (args[0] === "commit") commits++;
+      return real.git(tree, args);
+    },
+    async launch(role, config, prompt) {
+      if (role === "author") {
+        expect(await partials()).toEqual(bytes);
+        expect(await real.git(config.worktree, ["rev-parse", "HEAD"])).toBe(item.base);
+        expect(prompt).toContain("Author summary length is 2079 characters; maximum is 2000");
+        expect(prompt).toContain(author.trace);
+        expect(prompt).toContain("Inspect and verify");
+        expect(prompt).toContain(path("author-retry-discard.json"));
+        expect(JSON.parse(await read("author-retry-discard.json"))).toMatchObject({
+          attempt: author,
+          terminal: { id: author.id, status: "malformed" },
+          base: item.base,
+        });
+        expect(config.author).toMatchObject({ ...SELF_ROUTING.author[2]!, rung: 2 });
+      }
+      launches.push(role);
+      const attempt = {
+        id: randomUUID(),
+        pid: process.pid,
+        trace: path(`synthetic-${role}-retry-${launches.length}.jsonl`),
+        launchedAt: Date.now(),
+      };
+      await writeFile(attempt.trace, trace(attempt.id));
+      if (mode === "before-replacement" && !interrupted) {
+        interrupted = true;
+        throw new Error("synthetic interruption after worker launch, before attempt replacement");
+      }
+      if (role === "author") retry = attempt;
+      else {
+        reviewer = attempt;
+        expect(prompt).toContain(retry!.trace);
+        expect(await real.git(config.reviewWorktree, ["rev-parse", "HEAD"])).toBe(
+          await real.git(config.worktree, ["rev-parse", "HEAD"]),
+        );
+      }
+      return attempt;
+    },
+    async observe(role, config, attempt) {
+      if (mode === "after-persistence" && attempt.id !== author.id && !interrupted) {
+        interrupted = true;
+        expect(JSON.parse(await read("author-attempt.json"))).toMatchObject({
+          id: attempt.id,
+          retries: 1,
+        });
+        throw new Error("synthetic interruption after retry persistence");
+      }
+      return real.observe(role, config, attempt);
+    },
+  };
+  const compose = () =>
+    repositoryQueueAdapter(q, f.repository, { native, setup, gitExecutable: f.gitExecutable });
+  const run = () =>
+    queueStep(q, {
+      ...compose(),
+      async delivery() {
+        throw new Error("synthetic reviewed delivery boundary");
+      },
+      async repair() {
+        throw new Error("synthetic rejected review boundary");
+      },
+    });
+  const queueRecord = async () =>
+    JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+  const noAcceptance = async () => {
+    await expect(read("candidate.json")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(read("publication.json")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(commits).toBe(0);
+    expect(launches).not.toContain("reviewer");
+  };
+  if (["spent", "inherited", "ceiling", "wrong-identity", "moved-head"].includes(mode)) {
+    const reason =
+      mode === "ceiling"
+        ? "native-launch-ceiling-exhausted"
+        : mode === "wrong-identity"
+          ? "worker-verdict-identity-mismatch"
+          : mode === "moved-head"
+            ? "changed-base"
+            : "author-malformed";
+    for (let i = 0; i < 2; i++) await expect(run()).rejects.toThrow(reason);
+    expect(launches).toEqual([]);
+    if (mode !== "moved-head") expect(await partials()).toEqual(bytes);
+    await noAcceptance();
+  } else {
+    if (mode === "before-replacement") {
+      await expect(run()).rejects.toThrow("source-flow-state-unknown");
+      expect(JSON.parse(await read("author-attempt.json"))).toEqual(author);
+      expect(await partials()).toEqual(bytes);
+    }
+    if (mode === "after-persistence")
+      await expect(run()).rejects.toThrow("source-flow-state-unknown");
+    await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    const persisted = await read("author-attempt.json");
+    expect(JSON.parse(persisted)).toMatchObject({ id: retry!.id, retries: 1, rung: 2 });
+    expect(JSON.parse(persisted).retryContext).toContain(author.trace);
+    for (let i = 0; i < 2; i++)
+      await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    expect(await read("author-attempt.json")).toBe(persisted);
+    expect(launches).toEqual(authorLaunches);
+    expect(await partials()).toEqual(bytes);
+    expect((await queueRecord()).authorFailures).toEqual({
+      count: 3,
+      ids: ["synthetic-probe-0", "synthetic-probe-1", author.id],
+    });
+    await writeFile(
+      retry!.trace,
+      trace(retry!.id, {
+        ...verdict,
+        head: mode === "wrong-verdict-head" ? "f".repeat(40) : item.base,
+        summary: mode === "second-malformed" ? "x".repeat(2001) : "Synthetic verified work.",
+      }),
+    );
+    await writeFile(retry!.trace.replace(/\.jsonl$/, ".exit.json"), JSON.stringify({ code: 0 }));
+    if (mode === "second-malformed" || mode === "wrong-verdict-head") {
+      for (let i = 0; i < 2; i++)
+        await expect(run()).rejects.toMatchObject({
+          reason: mode === "second-malformed" ? "author-malformed" : "author-wrong-head",
+          ...(mode === "second-malformed"
+            ? { retries: 1, diagnostics: expect.stringContaining("2001") }
+            : {}),
+        });
+      expect(launches).toEqual(["author"]);
+      if (mode === "second-malformed") expect((await queueRecord()).authorFailures.count).toBe(4);
+      await noAcceptance();
+    } else {
+      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+      const candidate = JSON.parse(await read("candidate.json"));
+      expect(commits).toBe(1);
+      expect(await real.git(item.source.worktree, ["rev-parse", `${candidate.head}^`])).toBe(
+        item.base,
+      );
+      expect(await readFile(file)).toEqual(bytes.work);
+      expect(await readFile(untracked)).toEqual(bytes.untracked);
+      await writeFile(
+        reviewer!.trace,
+        trace(reviewer!.id, {
+          run: item.source.run,
+          role: "reviewer",
+          head: candidate.head,
+          verdict: mode === "review-fail" ? "FAIL" : "PASS",
+          findings:
+            mode === "review-fail"
+              ? [
+                  {
+                    file: "docs/loop.md",
+                    line: 1,
+                    severity: "blocking",
+                    text: "Synthetic acceptance defect.",
+                  },
+                ]
+              : [],
+          g0: "No; shared transport retry preserves the existing boundaries.",
+        }),
+      );
+      await writeFile(
+        reviewer!.trace.replace(/\.jsonl$/, ".exit.json"),
+        JSON.stringify({ code: 0 }),
+      );
+      for (let i = 0; i < 3; i++)
+        await expect(run()).rejects.toThrow(
+          mode === "review-fail"
+            ? "synthetic rejected review boundary"
+            : "synthetic reviewed delivery boundary",
+        );
+      expect(launches).toEqual([...authorLaunches, "reviewer"]);
+      const saved = await queueRecord();
+      expect(saved).toMatchObject({
+        retries: 1,
+        head: candidate.head,
+        acceptedStage: mode === "review-fail" ? null : "source",
+      });
+      expect(saved.history.slice(12).map((p: QueueParticipant) => [p.role, p.outcome])).toEqual([
+        ["author", "malformed"],
+        ["author", "passed"],
+        ["reviewer", mode === "review-fail" ? "failed" : "passed"],
+      ]);
+      expect(saved.authorFailures.count).toBe(mode === "review-fail" ? 4 : 3);
+    }
+  }
+  const saved = await queueRecord();
+  expect(saved.candidateAttempt).toBe(mode === "review-fail" ? 2 : 1);
+  expect(saved.history.slice(0, 12)).toEqual(inherited);
+  if (mode !== "wrong-identity") {
+    expect(saved.history[12]).toMatchObject({
+      id: author.id,
+      role: "author",
+      outcome: "malformed",
+      placement: SELF_ROUTING.author[0]!,
+      rung: 0,
+    });
+  }
+  expect(
+    await Promise.all([read("synthetic-author.jsonl"), read("synthetic-author.exit.json")]),
+  ).toEqual(evidence);
+  await expect(read("publication.json")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await read("config.json")).toBe(pinnedConfig);
+});
 
 it("composes a four-input saved-stop grant outside immutable source and delivery inputs", async () => {
   const f = await loopFixture();
@@ -4463,45 +4807,60 @@ it("retains an interrupted wait target and refuses a moved delivery identity", a
   ).resolves.toContain('"phase": "delivery"');
 });
 
-it("binds an accepted review identity to the exact stage history before delivery", async () => {
-  const current = await fixture();
-  const history: QueueParticipant[] = [];
-  let deliveryCalls = 0;
-  const adapter: QueueAdapter = {
-    async assertExecutor() {},
-    async history() {
-      return [...history];
-    },
-    async setup() {
-      return { status: "ready" };
-    },
-    async source(item) {
-      history.push(
-        participant(1, item.id, "source", "author", "passed"),
-        participant(2, item.id, "source", "reviewer", "passed"),
-      );
-      return {
-        status: "accepted",
-        head: "b".repeat(40),
-        reviewId: "forged-review",
-        stateDirectory: resolve(current.root, "source"),
-      };
-    },
-    async repair() {
-      throw new Error("repair must not run");
-    },
-    async delivery() {
-      deliveryCalls += 1;
-      throw new Error("delivery must not run");
-    },
-  };
+it.each(["forged-review", "failed-author", "malformed-pair"])(
+  "refuses invalid accepted review history: %s",
+  async (mode) => {
+    const current = await fixture();
+    const history: QueueParticipant[] = [];
+    let deliveryCalls = 0;
+    const adapter: QueueAdapter = {
+      async assertExecutor() {},
+      async history() {
+        return [...history];
+      },
+      async setup() {
+        return { status: "ready" };
+      },
+      async source(item) {
+        history.push(
+          participant(
+            1,
+            item.id,
+            "source",
+            "author",
+            mode === "failed-author"
+              ? "failed"
+              : mode === "malformed-pair"
+                ? "malformed"
+                : "passed",
+          ),
+          participant(2, item.id, "source", "reviewer", "passed"),
+        );
+        return {
+          status: "accepted",
+          head: "b".repeat(40),
+          reviewId: mode === "forged-review" ? "forged-review" : history.at(-1)!.id,
+          stateDirectory: resolve(current.root, "source"),
+        };
+      },
+      async repair() {
+        throw new Error("repair must not run");
+      },
+      async delivery() {
+        deliveryCalls += 1;
+        throw new Error("delivery must not run");
+      },
+    };
 
-  await expect(queueStep(current.config, adapter)).rejects.toThrow("item-review-history-mismatch");
-  expect(deliveryCalls).toBe(0);
-  await expect(
-    readFile(resolve(current.stateDirectory, "attempt.json"), "utf8"),
-  ).resolves.toContain('"phase": "source"');
-});
+    await expect(queueStep(current.config, adapter)).rejects.toThrow(
+      "item-review-history-mismatch",
+    );
+    expect(deliveryCalls).toBe(0);
+    await expect(
+      readFile(resolve(current.stateDirectory, "attempt.json"), "utf8"),
+    ).resolves.toContain('"phase": "source"');
+  },
+);
 
 it.each([
   [

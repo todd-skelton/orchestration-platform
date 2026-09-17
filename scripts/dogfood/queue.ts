@@ -165,6 +165,7 @@ function validateGateStopAuthorization(value: GateStopAuthorization) {
 
 export const ACTIONABLE_STOP_REASONS = [
   "author-failed",
+  "author-malformed",
   "completed-issue-state-unknown",
   "issue-observation-unavailable",
   "selected-base-unavailable",
@@ -1706,13 +1707,15 @@ function participantGroups(participants: QueueParticipant[], reason: string) {
     demand(
       [1, 2, 3].includes(group.length) &&
         group[0]!.role === "author" &&
-        group[0]!.outcome === "passed" &&
+        (group[0]!.outcome === "passed" ||
+          (group.length === 1 && group[0]!.outcome === "malformed")) &&
         group.slice(1).every((participant) => participant.role === "reviewer") &&
         (group.length < 3 || group[1]!.outcome === "malformed") &&
         new Set(group.map((participant) => participant.id)).size === group.length,
       reason,
     );
-  return groups;
+  // ISS-183: a malformed author is charged history, never a review pair.
+  return groups.filter((group) => group[0]!.outcome !== "malformed");
 }
 
 function assertItemReviewHistory(
@@ -3044,6 +3047,7 @@ export function repositoryQueueAdapter(
                 "native-launch-ceiling-exhausted",
                 "provider-model-refused",
                 "launcher-failed",
+                "author-malformed",
                 "reviewer-malformed",
               ].includes(error.reason)
             )
