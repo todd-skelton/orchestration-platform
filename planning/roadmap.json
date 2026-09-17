@@ -568,6 +568,12 @@
       "file": "planning/drafts/ISS-171.md",
       "milestone": "M2",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-177",
+      "file": "planning/drafts/ISS-177.md",
+      "milestone": "M2",
+      "blockedBy": []
     }
   ]
 }
