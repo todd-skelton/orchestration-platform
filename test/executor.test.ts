@@ -187,8 +187,10 @@ it.skipIf(process.platform !== "linux")(
     });
     const config = resolve(root, "loop.json");
     await writeFile(config, "{}\n");
+    const env = { ...process.env };
+    delete env.LOOP_DETACHED;
     const { stdout } = await exec("bash", [resolve(executor, "run-loop.sh"), config], {
-      env: { ...process.env, TASK_ROOT: taskRoot, PATH: `${fakes}:${process.env.PATH}` },
+      env: { ...env, TASK_ROOT: taskRoot, PATH: `${fakes}:${process.env.PATH}` },
     });
     expect(stdout).toMatch(/^loop started in background \(pid \d+\) with /);
     let recorded = "";
