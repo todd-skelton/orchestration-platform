@@ -1,0 +1,218 @@
+---
+key: ISS-146
+title: "Confine author scratch and expose complete delivery-gate failures"
+labels: ["type:slice"]
+milestone: "Chase Sets delivery adapter"
+blocked_by: [ISS-145, ISS-160]
+---
+
+Unpark proposal; host-only `ready` publication.
+
+## Why
+
+Chase Sets #7766 corrective run `m2-jpeg-corrective-20260914T1402` stopped in delivery at independently reviewed candidate `42bac8439e31b8354447f2675edfaea72890d4b5`. Reproduction of the full static chain found only `check:structure` failing on `bounded-contexts/marketplace/artifacts/jpeg-corrective`, two empty git-ignored directories created by the author inside the attempt-5 source worktree. They are absent from the commit and hosted CI; attempt 1 has the same scratch, explaining the earlier static stop. The 500-character stop diagnostic hid the actual failing subcheck. Learning note: https://github.com/chase-sets/chase-sets/issues/7766#issuecomment-5666590839. Todd's ruling: https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5666535088. This is a recurring loop defect, not a product finding.
+
+## Done when
+
+- Author scratch and evidence writes are confined to the existing attempt temp root (`author-temp`), outside the source tree. Apply the same existing-path rule on initial, corrective and resumed launches; do not add a separate authority framework.
+- Delivery gates run against the committed candidate tree, or explicitly refuse source-tree contamination with the offending untracked/ignored path. An empty ignored scratch directory cannot become an unexplained committed-product failure. Preserve tracked edits and unrelated paths; do not silently clean the source worktree.
+- Persist the complete failing command and diagnostic and expose its artifact path in the stop note and native recovery inputs. A 500-character excerpt is not the only retained evidence. Keep ordinary exact-head independent review and all local/hosted gates.
+- Regress the observed empty ignored directory, clean committed tree, actual committed structure failure and nonempty contamination cases. Cover resumed delivery without minting another author, implementation attempt or corrective cycle; retain old runtime, reviews and consumed attempts unchanged.
+- Document the small native behavior and its limits. This implementation supplies no permission to restart #7766 or to mutate its preserved worktree/runtime.
+
+## Out of scope
+
+JPEG product edits, host PR #8005 mutation or CI reruns, attempt-budget reset, new generic sandbox/receipt framework, deleting historical evidence, weakening structure validation, rollback or milestone ownership transfer. Todd separately authorized only a one-time removal of the two proven-empty ignored directories in attempt-5 source and unchanged-config resume of its existing delivery phase. A consumed-cycle refusal or any other gate failure requires a new rollback proposal and wait.
+
+## Recovery context
+
+Unpublished; no closed implementation PR.
+Stop: https://github.com/todd-skelton/orchestration-platform/issues/457#issuecomment-5689997022.
+Read-only salvage:
+`codex/run-8206815a33822cf85ef7cf38c7489e0119b73ff7765e4a052e629fec938661bb/iss-146-attempt-1`
+@ `810fe31b16d286af838a8dc491bfed5305810ad0`, unresolved marker seed.
+Parents: source `2a83519c5053b0f3db13344061e0a0751ac86342` and main
+`0a21eb5a446f30f921bfeca11d6a463e99700d50`. Never reuse unresolved code,
+old gates or historical source PASS as new-code authority.
+Main: landed ISS-160 below.
+
+Runtime: `/root/orchestration-m1/runtime/m1-iss146-147-20260914T2325`.
+Attempt-1 delivery projection has TWO participants; files/completed stop THREE.
+Refresh author `01a0a78f-f5d9-7fb3-a5ee-d5ac34b92fd9` failed.
+`source/native-refresh.json`: seed/main, resolutionUsed true, flowRetried false,
+retries 0; no gate correction/publication. Preserve history/worktrees/allowances.
+
+ISS-160 supplies same-run attempt 2/new worktrees, not this outcome.
+No grant/reservation/terminal-park framework. AC4 replay adds no author.
+
+Stopped config (host-relative):
+`.orchestrator/platform-runs/m1-iss146-147-20260914T2325/loop.json`:
+`nativeLaunchCeiling: 64`, `attemptCeiling: 4`. Absolute attempt 2 is within four;
+all three old participants plus later launches stay charged against 64.
+No increase/reset; non-PASS parks, no automatic 3.
+
+## Decisions and operator actions
+
+Hunk ruling
+https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5666826318
+is consumed, not wider authority.
+https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5690656885
+was the seven-file question. Todd-delegated approval accepts it as written:
+https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5691451762:
+`docs/loop.md`, `scripts/dogfood/delivery-adapter.ts`, `scripts/dogfood/flow.ts`,
+`scripts/dogfood/queue.ts`, `test/dogfood/queue-adapter.test.ts`,
+`test/dogfood/delivery-adapter.test.ts`, plus:
+
+`test/dogfood/adapter.test.ts` ONLY isolates fixture
+`CODEX_PROVIDER_BASE_URL` / `CODEX_PROVIDER_AUTH_COMMAND`. Exact-candidate probe
+2026-09-16T01:19:12Z: loopback + `/bin/false` causes provider-unavailable before
+adapter validation; clearing only these variables passes original author-temp
+creation/evidence assertions across initial/correction/resume. Zero HTTP/workers.
+Not integrated Vitest/full-gate PASS or proof of the lost historical assertion.
+Keep production probe order and all assertions; prove the integrated
+focused test under synthetic supervisor environment, then admitted full test.
+
+Handoff sections 3-4: ISS-160/#504 PR #510 landed independently
+reviewed at `05fccc7d3c132c9878838f8c6e060d5f425e1d39`, three-OS bootstrap
+`35105999686` green. Handoff 2026-09-16 14:40Z records safe install at 14:37Z,
+supervisors/workers absent.
+
+Original run saved cycle 3, ISS-110/#367: `pilot-revision-moved` after source FAIL
+(`5691175772`). ISS-161/#508 PR #511 at
+`5279d1775b5ec75f5bc1cd66a7058ed77893a4bc` is checking. Its reconciliation must
+precede same-run selection of #457; it is not #457 scope. Host owns safe install/
+start and publication after exact inherited DELTA PASS; current M1 must not take
+this continuation. No fresh #457 run, invented completion/cursor or record edit.
+ISS-158/159 independent; no credentials.
+
+## Integration precision
+
+Compose scratch/prompt with current correctionPaths; integrate unmarked committedGate
+with structured failure attribution: disposable exact-commit cwd/head, executable/argv,
+full log/terminal, not author-worktree identity. Preserve install/startup/log-I/O/cleanup
+host classification, base/candidate/unknown distinction and candidate-board ownership.
+No expected-path-only edits or silent contamination cleanup.
+
+Author from seed/recorded mainBase, then current-main refresh/fresh inherited
+DELTA with full diff. No pre-author seed rebase or renewed allowances. ISS-152
+eligibility and all local/after-mirror/hosted checks remain; FAIL/blocking DELTA
+stops without automatic repair/attempt 3.
+
+### Don't-rebuild pointers
+
+- `scripts/dogfood/dispatch-adapter.ts`
+- `scripts/dogfood/delivery-adapter.ts`
+- `scripts/dogfood/queue.ts`
+- `scripts/dogfood/refresh.ts`
+- `scripts/dogfood/flow.ts`
+
+## Scope fence
+
+In: unchanged five acceptance items, implemented within separately ruled scope.
+Non-goals: new recovery authority, broader hunks, provider behavior changes,
+timeout/skip workarounds, product/JPEG implementation, historical PASS reuse.
+
+## Defect constraints
+
+- `review-probe-live-provider-credential-inheritance`: scrub live authority;
+  fake URL/auth only, production order unchanged.
+- `mutable-reference-breaks-candidate-identity`, `stale-review-bound-to-wrong-head`:
+  bind execution/review to exact candidate, never old PASS.
+- `canonical-artifact-directory-masks-missing-payload`,
+  `presence-evidence-treated-as-completeness`: directory/log is not complete attribution/delivery.
+- `state-machine-steady-state-missing`, `lifecycle-repair-misses-sibling-retained-state-entrypoint`,
+  `steady-state-fast-path-skips-required-reconciliation`: all launch/delivery paths;
+  inert steady replay still reconciles notes/publication.
+- `retained-artifact-schema-ratchet`, `retry-events-double-count-terminal-outcome`:
+  old history readable; launches/allowances retained once.
+- `missing-fail-closed-regression-evidence`: vary only governing inputs; execute
+  contamination/committed-failure/stale-head bypass controls with other inputs valid.
+- `aggregate-failure-dismissed-as-environmental-without-a-discriminating-control`,
+  `vitest-wall-clock-timeout-under-parallel-host-load`: no subset waiver; load needs
+  unchanged isolated timing collapse AND complete one-worker/file-serial gate;
+  no timeout increase, product edit or skip.
+- `parallel-node-verifiers-exhaust-host-memory`, `worker-tool-ceiling-kills-heavy-verifier-wrapper`:
+  admitted foreground gates; finish children, never steal owners.
+- `container-controller-installed-before-review-terminal`: exact-head independent
+  PASS/hosted green before host install.
+- `format-check-not-run`, `unrunnable-verification-command`: manifest-resolved
+  scripts and formatter at exact head; lint is not acceptance.
+- `future-capability-documented-as-current`: ISS-160 installed; ISS-161/#457
+  incomplete. Proposed unpark is not execution.
+
+## Verification plan
+
+AC1-5 evidence: author-temp across launches; committed cwd/head, four contamination/
+structure cases; full logs/attribution; same-head replay; documentation. No new AC.
+Native WSL: `pnpm typecheck`, `pnpm format:check`, `pnpm planning:check`, `pnpm test`.
+Focused: `pnpm exec vitest run test/dogfood/adapter.test.ts test/dogfood/queue-adapter.test.ts test/dogfood/delivery-adapter.test.ts`.
+Installed bounded foreground machine admission owns every command: no exclusive-lock bypass or
+parallel full verifiers. Windows wrapper: host-only.
+
+## Footprint & chain
+
+Direct callers: dispatch initial/corrective/resumed author; source prompt;
+original/refreshed/corrected delivery and after-mirror gates/stop evidence.
+Native #504 Blocks #457/reverse Blocked by wired; ISS-145/#504 closed.
+Neither satisfies this outcome.
+
+## External authority probe & evidence timing
+
+Pre-unpark probe 2026-09-16T15:42:03Z: approval, #510 green/merged, #511 checking.
+Recheck at publication/start. No new payload contract or execution receipt;
+terminals/hosted/publication probes retain timing.
+
+## Review packet seed
+
+Attack disposable cwd attribution, contamination cleanup, lost diagnostics,
+false fixture isolation, stale reviews and spent allowances. Use retained native
+evidence, exact-candidate F2 control and integrated execution evidence.
+`platform-iss146-pressure-r3` complete-sweep PASS resolved F1-F5; fresh exact-delta
+review required.
+
+QUALITY_PROFILE: contract
+
+### Intent surfaces
+
+| Acceptance criterion | Exercised surface |
+| --- | --- |
+| Original 1 | Initial/corrective/resumed scratch |
+| Original 2 | Committed-tree delivery gates |
+| Original 3 | Full diagnostic/terminal attribution |
+| Original 4 | Contamination and delivery replay |
+| Original 5 | Loop documentation/operator boundary |
+
+### Simplest shape
+
+Keep the existing five outcomes and integrate their helper/caller behavior without rebuilding shipped native recovery.
+
+### Not built
+
+| Not built | Reason |
+| --- | --- |
+| New requirements in #457 | New recovery capability belongs to ISS-160. |
+| Wider provider change | Only fixture environment isolation is demonstrated. |
+
+### UI states and design-system sources
+
+none — no UI surface changes.
+
+### Data-path envelope
+
+| Data path | Bound | Index expectation | Per-item I/O |
+| --- | --- | --- | --- |
+| Delivery verification | Existing configured gate list | Exact commit/runtime paths | Existing gate execution plus complete diagnostics |
+
+### Contract compatibility
+
+| Changed contract | Compatibility posture | Removed path |
+| --- | --- | --- |
+| Brief precision only | Five acceptance items and settled rulings unchanged | No executable path changed by this proposal |
+
+### Glossary impact
+
+none — no new or renamed public names.
+
+### Tier + routing hint
+
+Full path/system; existing self routing, no new placement policy.

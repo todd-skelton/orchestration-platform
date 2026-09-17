@@ -259,8 +259,30 @@ describe("board contract", () => {
       totalCount: 101,
       issues: nodes.map(({ labels, ...node }) => ({
         ...node,
+        reopenedEvent: null,
         labels: labels.nodes.map(({ name }) => name),
       })),
+    });
+  });
+
+  test("retains reopening evidence and never invents an OPEN state for sibling reconciliation", () => {
+    const node = {
+      ...issueNodes(1)[0],
+      state: undefined,
+      timelineItems: { nodes: [{ id: "RE_fixture_2" }] },
+    };
+    const snapshot = boardSnapshotFromGraphqlPages("owner/repository", [
+      {
+        data: {
+          repository: {
+            issues: { totalCount: 1, nodes: [node], pageInfo: { hasNextPage: false } },
+          },
+        },
+      },
+    ]);
+    expect(snapshot.issues[0]).toMatchObject({
+      state: undefined,
+      reopenedEvent: "RE_fixture_2",
     });
   });
 

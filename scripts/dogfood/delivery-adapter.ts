@@ -4,7 +4,7 @@ import { mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
-import { normalizeBody } from "../planning/board-check.mjs";
+import { loadBoardSnapshot, normalizeBody, planningKeyOf } from "../planning/board-check.mjs";
 import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 import {
@@ -488,6 +488,26 @@ export function githubDeliveryAdapter(
   gitExecutable = "git",
   pause: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms)),
 ): DeliveryAdapter {
+  const observeSibling = async (config: DeliveryConfig, draft: DraftPlan) => {
+    const refuse = () => new DeliveryBlocked(`self-sibling-refused:${draft.key}`);
+    const board = await loadBoardSnapshot(config.repository);
+    const rows = board.issues.filter((row) => planningKeyOf(row.body) === draft.key);
+    if (rows.length !== 1 || rows[0]!.number !== draft.issue) throw refuse();
+    const row = rows[0]!;
+    if (row.state === "CLOSED")
+      return { state: "confirmed" as const, value: { issue: draft.issue } };
+    if (
+      row.state !== "OPEN" ||
+      (row.reopenedEvent ?? null) !== draft.attributes.reopenedEvent ||
+      row.title !== draft.title ||
+      row.milestone !== draft.attributes.milestone
+    )
+      throw refuse();
+    if (normalizeBody(row.body) === normalizeBody(draft.body))
+      return { state: "confirmed" as const, value: { issue: draft.issue } };
+    if (normalizeBody(row.body) !== normalizeBody(draft.attributes.baseBody)) throw refuse();
+    return { state: "needs-mutation" as const };
+  };
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
       await assertWorktreeRepository(gitExecutable, config);
@@ -812,6 +832,7 @@ export function githubDeliveryAdapter(
       return result;
     },
     async observeDraft(config, draft) {
+      if (typeof draft.attributes.baseBody === "string") return observeSibling(config, draft);
       try {
         const row = await commands.ghJson(config, [
           "issue",
@@ -833,6 +854,13 @@ export function githubDeliveryAdapter(
     async applyDraft(config, draft) {
       if (!(await verifyWorkspace(config, config.candidateHead)))
         throw new DeliveryBlocked("candidate-workspace-drift");
+      if (typeof draft.attributes.baseBody === "string") {
+        // Reobserve even when called after a saved intent or a lost mutation response.
+        if ((await observeSibling(config, draft)).state === "confirmed") return;
+        const path = await stagedFile(config, `approved-${draft.key}.md`, draft.body);
+        await commands.gh(config, ["issue", "edit", String(draft.issue), "--body-file", path]);
+        return;
+      }
       const path = await stagedFile(config, `approved-${draft.key}.md`, draft.body);
       const milestone = draft.attributes.milestone;
       if (typeof milestone !== "string" && milestone !== null)

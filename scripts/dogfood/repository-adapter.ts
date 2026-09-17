@@ -96,7 +96,7 @@ export interface RepositoryAdapter {
     config: DeliveryConfig;
     delivery: Extract<DeliveryResult, { status: "complete" }>;
   }): Promise<void> | void;
-  mirrorPlanning?(input: { config: DeliveryConfig }):
+  mirrorPlanning?(input: { config: DeliveryConfig; gitExecutable?: string }):
     | Promise<{
         gates: DeliveryPlan["gates"];
         drafts: DraftPlan[];
@@ -181,7 +181,7 @@ export function repositoryDeliveryPolicy(
         ? await adapter.localGates({ repository: config.repository })
         : [];
       const mirror = adapter.mirrorPlanning
-        ? await adapter.mirrorPlanning({ config })
+        ? await adapter.mirrorPlanning({ config, gitExecutable })
         : { gates: { beforeMirror: [], afterMirror: [] }, drafts: [] };
       return {
         gates: {
