@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
 import { acceptedReviewG0 } from "../scripts/dogfood/delivery-adapter.mjs";
 import { parseRoutingMarker } from "../scripts/dogfood/routing.mjs";
+import { validateOpsAdmission } from "../scripts/dogfood/repository-adapter.mjs";
 
 const EXPECTED_REPOSITORY = "chase-sets/chase-sets";
 const runFile = promisify(execFile);
@@ -46,6 +47,17 @@ query($owner:String!, $name:String!, $after:String) {
   }
 }`;
 
+const ISSUE_CONTEXT_QUERY = `
+query($owner:String!, $name:String!, $number:Int!) {
+  repository(owner:$owner, name:$name) {
+    issue(number:$number) {
+      number title body
+      milestone { number }
+      labels(first:100) { pageInfo { hasNextPage } nodes { name } }
+    }
+  }
+}`;
+
 function requireRepository(repository) {
   if (repository !== EXPECTED_REPOSITORY) throw new Error("wrong-chase-sets-repository");
 }
@@ -59,7 +71,7 @@ async function gh(args, repository = EXPECTED_REPOSITORY) {
   ).stdout.trim();
 }
 
-async function graphqlPage(query, owner, name, after) {
+async function graphqlPage(query, owner, name, after, number) {
   const args = [
     "api",
     "graphql",
@@ -71,7 +83,8 @@ async function graphqlPage(query, owner, name, after) {
     `name=${name}`,
   ];
   if (after) args.push("-F", `after=${after}`);
-  return JSON.parse(
+  if (number !== undefined) args.push("-F", `number=${number}`);
+  const response = JSON.parse(
     (
       await runFile("gh", args, {
         windowsHide: true,
@@ -79,6 +92,8 @@ async function graphqlPage(query, owner, name, after) {
       })
     ).stdout,
   );
+  if (response.errors) throw new Error("incomplete-chase-sets-authority");
+  return response;
 }
 
 async function connection(query, field, repository) {
@@ -124,7 +139,10 @@ async function authority(repository, executorRoot, targetMilestone) {
   const milestones = milestoneRows.map((row) => ({ ...row, state: row.state.toLowerCase() }));
   const milestoneById = new Map(milestones.map((row) => [row.id, row]));
   const issues = issueRows.map((row) => {
-    if (row.labels?.pageInfo?.hasNextPage || row.blockedBy?.pageInfo?.hasNextPage)
+    if (
+      row.labels?.pageInfo?.hasNextPage !== false ||
+      row.blockedBy?.pageInfo?.hasNextPage !== false
+    )
       throw new Error("incomplete-chase-sets-authority");
     return {
       id: row.id,
@@ -158,18 +176,28 @@ function priority(issue) {
   return 4;
 }
 
-function candidatesFromAuthority(snapshot) {
+function isOps(issue) {
+  return issue.labels.some((label) => label.name.toLowerCase() === "kind:ops");
+}
+
+function opsAdmitted(issue, targetMilestone, opsAdmission) {
+  return opsAdmission?.issueNumber === issue.number && issue.milestone?.number === targetMilestone;
+}
+
+function runnable(issue, snapshot, targetMilestone, opsAdmission) {
+  return (
+    snapshot.window &&
+    issue.milestone?.id === snapshot.window.id &&
+    snapshot.product.isRunnableRefined(issue) &&
+    !issue.labels.some((label) => label.name.toLowerCase().startsWith("status:needs-")) &&
+    (!isOps(issue) || opsAdmitted(issue, targetMilestone, opsAdmission))
+  );
+}
+
+function candidatesFromAuthority(snapshot, targetMilestone, opsAdmission) {
   if (!snapshot.window) return [];
   return snapshot.issues
-    .filter(
-      (issue) =>
-        issue.milestone?.id === snapshot.window.id &&
-        snapshot.product.isRunnableRefined(issue) &&
-        !issue.labels.some((label) => {
-          const name = label.name.toLowerCase();
-          return name.startsWith("status:needs-") || name === "kind:ops";
-        }),
-    )
+    .filter((issue) => runnable(issue, snapshot, targetMilestone, opsAdmission))
     .sort((left, right) => priority(left) - priority(right) || left.number - right.number)
     .flatMap((issue) => {
       try {
@@ -177,15 +205,29 @@ function candidatesFromAuthority(snapshot) {
         return [{ key: `cs-${issue.number}`, number: issue.number, routing }];
       } catch (error) {
         process.stdout.write(
-          `${JSON.stringify({ status: "not-runnable", issue: issue.number, reason: error.reason })}\n`,
+          `${JSON.stringify({ status: "not-runnable", issue: issue.number, ...(targetMilestone === undefined ? {} : { target: targetMilestone }), reason: error.reason })}\n`,
         );
         return [];
       }
     });
 }
 
-export async function selectCandidates({ repository, executorRoot, targetMilestone }) {
-  return candidatesFromAuthority(await authority(repository, executorRoot, targetMilestone));
+export async function selectCandidates({
+  repository,
+  executorRoot,
+  targetMilestone,
+  opsAdmission,
+}) {
+  validateOpsAdmission({ repository, targetMilestone, opsAdmission });
+  try {
+    const snapshot = await authority(repository, executorRoot, targetMilestone);
+    return candidatesFromAuthority(snapshot, targetMilestone, opsAdmission);
+  } catch {
+    throw new DeliveryBlocked(
+      "issue-observation-unavailable",
+      `Issue #${opsAdmission?.issueNumber ?? "none"}; target ${targetMilestone ?? "none"}; authority-unavailable.`,
+    );
+  }
 }
 
 function listItems(section) {
@@ -202,21 +244,28 @@ function listItems(section) {
   return items;
 }
 
-export async function issueContext({ repository, key, number, executorRoot, targetMilestone }) {
+export async function issueContext({
+  repository,
+  key,
+  number,
+  executorRoot,
+  targetMilestone,
+  opsAdmission,
+}) {
+  validateOpsAdmission({ repository, targetMilestone, opsAdmission });
   requireRepository(repository);
   if (key !== `cs-${number}`) throw new Error("wrong-chase-sets-issue");
-  const row = JSON.parse(
-    await gh(
-      [
-        "issue",
-        "view",
-        String(number),
-        "--json",
-        targetMilestone === undefined ? "number,title,body" : "number,title,body,milestone",
-      ],
-      repository,
-    ),
-  );
+  let row;
+  try {
+    const [owner, name] = repository.split("/");
+    row = (await graphqlPage(ISSUE_CONTEXT_QUERY, owner, name, undefined, number))?.data?.repository
+      ?.issue;
+  } catch {
+    throw new DeliveryBlocked(
+      "issue-observation-unavailable",
+      `Issue #${number}; target ${targetMilestone ?? "none"}; context-unavailable.`,
+    );
+  }
   if (row?.number !== number || typeof row.title !== "string" || typeof row.body !== "string")
     throw new Error("malformed-chase-sets-issue");
   if (targetMilestone !== undefined && row.milestone?.number !== targetMilestone)
@@ -224,6 +273,39 @@ export async function issueContext({ repository, key, number, executorRoot, targ
       "selected-milestone-mismatch",
       `Issue #${number} belongs to milestone ${row.milestone?.number ?? "none"}, outside target milestone ${targetMilestone}. Preserve the saved cycle and scope before restarting.`,
     );
+  if (row.labels?.pageInfo?.hasNextPage !== false || !Array.isArray(row.labels?.nodes))
+    throw new DeliveryBlocked(
+      "selected-ops-not-runnable",
+      `Issue #${number}; target ${targetMilestone ?? "none"}; incomplete-labels.`,
+    );
+  row = { ...row, labels: row.labels.nodes };
+  if (isOps(row)) {
+    const refuse = (reason, detail) =>
+      new DeliveryBlocked(
+        reason,
+        `Issue #${number}; target ${targetMilestone ?? "none"}; ${detail}.`,
+      );
+    if (!opsAdmitted(row, targetMilestone, opsAdmission))
+      throw refuse("selected-ops-not-admitted", "admission-required");
+    let current;
+    let eligible;
+    try {
+      const snapshot = await authority(repository, executorRoot, targetMilestone);
+      current = snapshot.issues.find((issue) => issue.number === number);
+      eligible = current && runnable(current, snapshot, targetMilestone, opsAdmission);
+    } catch {
+      throw refuse("selected-ops-not-runnable", "authority-unavailable");
+    }
+    if (current?.milestone && current.milestone.number !== targetMilestone)
+      throw refuse("selected-milestone-mismatch", "milestone-changed");
+    if (!eligible) throw refuse("selected-ops-not-runnable", "eligibility-changed");
+    try {
+      parseRoutingMarker(current.body);
+    } catch (error) {
+      throw refuse("selected-ops-not-runnable", error.reason);
+    }
+    row = current;
+  }
   const heading = /^#{1,6}\s+Acceptance(?: Criteria)?\s*$/im.exec(row.body);
   const routing = parseRoutingMarker(row.body);
   const section = heading

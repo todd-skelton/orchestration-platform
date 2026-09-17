@@ -534,6 +534,24 @@ hosted CI only.
   mismatch stops the run with `selected-milestone-mismatch` and a host note;
   it does not park or complete the selected issue.
 
+ISS-176 adds optional `opsAdmission: { issueNumber, authorityUrl }` only for
+`chase-sets` on `chase-sets/chase-sets` with a positive `targetMilestone`.
+The exact two-field object names one positive safe integer issue number and a
+canonical HTTPS issue-comment URL in that repository (positive issue/comment
+IDs, at most 500 characters, no query, credentials or whitespace). Invalid
+admission stops as `invalid-ops-admission` before selection. The operator supplies
+the ruled issue/target reference; URL shape is not approval.
+Omission excludes all `kind:ops`. Admission relaxes only that exclusion for the
+named issue in the target, preserving refinement, executable window, blockers,
+needs labels, routing and ordinary priority order. Current ops context is checked
+again before setup, including saved selections with admission removed; membership
+is checked without displacing saved work with a higher-priority sibling.
+`selected-ops-not-admitted` and `selected-ops-not-runnable` are non-parking host
+stops; milestone drift retains `selected-milestone-mismatch`. Incomplete authority
+cannot admit work. Existing records and fingerprints are not migrated. This
+supplies no pilot readiness, installation or start authority; independent review,
+local gates and final-head three-OS bootstrap remain required.
+
 ISS-135 recovery for `m2-payout-fees-replanned-20260913`: with supervisors and
 the interrupted #4382 author stopped, the host first preserves the runtime and
 uses the reviewed stable executor with `targetMilestone: 155`. Restart with

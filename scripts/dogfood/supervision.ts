@@ -311,6 +311,7 @@ export async function nextCycle(
         ? {}
         : { planningRevision, gitExecutable: config.gitExecutable }),
       ...(config.targetMilestone === undefined ? {} : { targetMilestone: config.targetMilestone }),
+      ...(config.opsAdmission === undefined ? {} : { opsAdmission: config.opsAdmission }),
     });
     if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
     const issue = candidates[0];
