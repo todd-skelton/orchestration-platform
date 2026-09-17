@@ -4,6 +4,8 @@ import type { RepositoryAdapter } from "../scripts/dogfood/repository-adapter.js
 export function selectCandidates(input: {
   repository: string;
   executorRoot?: string;
+  planningRevision?: string;
+  gitExecutable?: string;
   planning?: unknown;
   board?: unknown;
 }): Promise<{ key: string; number: number }[]>;

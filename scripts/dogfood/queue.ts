@@ -177,6 +177,7 @@ export interface SelectedLoopIssue {
   key: string;
   number: number;
   base: string;
+  planningRevision?: string;
 }
 
 export type QueueSourceResult =
@@ -560,11 +561,18 @@ export async function queueConfigFromLoop(
 ) {
   validateLoopConfig(config);
   demand(
-    exactKeys(selected, ["key", "number", "base"]) &&
+    exactKeys(selected, [
+      "key",
+      "number",
+      "base",
+      ...(Object.hasOwn(selected, "planningRevision") ? ["planningRevision"] : []),
+    ]) &&
       /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(selected.key) &&
       Number.isSafeInteger(selected.number) &&
       selected.number > 0 &&
-      SHA.test(selected.base),
+      SHA.test(selected.base) &&
+      (!Object.hasOwn(selected, "planningRevision") ||
+        (config.adapter === "self" && selected.planningRevision === selected.base)),
     "invalid-selected-issue",
   );
   validateHistory(priorHistory, config.nativeLaunchCeiling);
@@ -597,6 +605,12 @@ export async function queueConfigFromLoop(
       key: selected.key,
       number: selected.number,
       executorRoot: repositoryRoot,
+      ...(selected.planningRevision === undefined
+        ? {}
+        : {
+            planningRevision: selected.planningRevision,
+            gitExecutable: config.gitExecutable,
+          }),
       ...(config.targetMilestone === undefined ? {} : { targetMilestone: config.targetMilestone }),
     }),
   ]);

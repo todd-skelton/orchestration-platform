@@ -5,7 +5,9 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import * as boardLoader from "../../scripts/planning/board-check.mjs";
+import { planningSelectionFixture, retainedFiles } from "./fixtures/planning-selection.js";
 import {
   QueueBlocked,
   queueStep,
@@ -257,7 +259,151 @@ async function fixture(history: QueueParticipant[] = []) {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function planningSource(
+  f: Awaited<ReturnType<typeof planningSelectionFixture>>,
+  q: QueueConfig,
+) {
+  const launches: string[] = [];
+  const setup = gitSetupAdapter({
+    gitExecutable: f.loop.gitExecutable,
+    resolveLauncher: async () => ({ executable: process.execPath, prefixArgs: [] }),
+    install: async (_launcher, _args, cwd) => {
+      await mkdir(resolve(cwd, "node_modules"));
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "synthetic: true\n");
+      return "succeeded";
+    },
+  });
+  const native: Adapter = {
+    async preflight() {},
+    git: f.git,
+    async launch(role, config) {
+      launches.push(role);
+      const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+      await writeFile(trace, "synthetic running worker\n");
+      return { id: "synthetic-pinned-author", pid: 111, trace, launchedAt: 1 };
+    },
+    async observe(_role, _config, attempt) {
+      return { id: attempt.id, status: "running" };
+    },
+    async checks() {
+      throw new Error("no publication during pinned source test");
+    },
+  };
+  const adapter = (config: QueueConfig) =>
+    repositoryQueueAdapter(config, f.executor, {
+      gitExecutable: f.loop.gitExecutable,
+      native,
+      setup,
+    });
+  await expect(queueStep(q, adapter(q))).resolves.toMatchObject({ status: "observing-author" });
+  return { adapter, launches };
+}
+
+it("new selection context remains pinned after main moves", async () => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  const installed = await f.installed();
+  vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(await f.board());
+  const cycle = (await nextCycle(f.loop, f.executor, f.host, f.policy))!;
+  await persistCycle(f.loop, cycle);
+  const { cycle: _cycle, ...selection } = cycle.selection;
+  const compose = () => queueConfigFromLoop(f.loop, f.executor, selection, f.policy);
+  const first = await compose();
+  const item = first.items[0]!;
+  expect(item.setup.base).toBe(f.current);
+  expect(item.source.base).toBe(f.current);
+  expect(item.source.pilotRevision).toBe(f.old);
+  expect(item.delivery.policy).toMatchObject({ title: "Synthetic ISS-002" });
+  expect(item.repair.acceptanceCriteria).toEqual(["Execute ISS-002\nKeep the pinned brief."]);
+  const body = await readFile(resolve(f.remote, "planning/drafts/ISS-002.md"), "utf8");
+  expect(item.source.author.prompt).toContain(body.trim());
+  expect(item.source.reviewer.prompt).toContain(body.trim());
+  expect(item.source.author.prompt).toContain(
+    "Synthetic current rules describe uninstalled behavior",
+  );
+  await writeFile(
+    resolve(f.remote, "planning/drafts/ISS-002.md"),
+    body.replaceAll("Execute ISS-002", "Mutated later brief"),
+  );
+  const later = await f.commit("Synthetic later rules");
+  await f.host.currentMain(f.loop, f.executor);
+  expect(await f.git(f.executor, ["rev-parse", "refs/remotes/origin/main"])).toBe(later);
+  f.host.issue = async () => ({ key: "ISS-002", state: "OPEN", labels: [], comments: [] });
+  f.host.currentMain = async () => {
+    throw new Error("saved selection must not fetch");
+  };
+  const resumed = (await nextCycle(f.loop, f.executor, f.host, f.policy))!;
+  expect(resumed).toEqual(cycle);
+  expect(await compose()).toEqual(first);
+  expect(await f.installed()).toEqual(installed);
+  const active = await planningSource(f, first);
+  const retained = await retainedFiles(resolve(f.loop.stateRoot, f.loop.run));
+  const again = await compose();
+  expect(await retainedFiles(resolve(f.loop.stateRoot, f.loop.run))).toEqual(retained);
+  await expect(active.adapter(again).source(again.items[0]!)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(active.launches).toEqual(["author"]);
+  expect(await retainedFiles(resolve(f.loop.stateRoot, f.loop.run))).toEqual(retained);
+  // Exact fingerprints remain strict even when only prompt data differs.
+  again.items[0]!.source.author.prompt += "\nSynthetic changed brief";
+  await expect(active.adapter(again).source(again.items[0]!)).rejects.toMatchObject({
+    reason: "conflicting-run-configuration",
+  });
+});
+
+it("legacy selection base differs from executor HEAD", async () => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  await f.host.currentMain(f.loop, f.executor);
+  const selection = { key: "ISS-001", number: 1, base: f.current };
+  const compose = (planningRevision?: string) =>
+    queueConfigFromLoop(
+      f.loop,
+      f.executor,
+      { ...selection, ...(planningRevision === undefined ? {} : { planningRevision }) },
+      f.policy,
+    );
+  const legacy = await compose();
+  expect(f.current).not.toBe(f.old);
+  expect(legacy.items[0]!.source.author.prompt).toContain("Synthetic installed rules");
+  expect(legacy.items[0]!.repair.acceptanceCriteria).toEqual([
+    "Execute ISS-001\nKeep the pinned brief.",
+  ]);
+  const active = await planningSource(f, legacy);
+  const retained = await retainedFiles(resolve(f.loop.stateRoot, f.loop.run));
+  const resumed = await compose();
+  expect(resumed.items[0]!.source).toEqual(legacy.items[0]!.source);
+  expect(await retainedFiles(resolve(f.loop.stateRoot, f.loop.run))).toEqual(retained);
+  await expect(active.adapter(resumed).source(resumed.items[0]!)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(active.launches).toEqual(["author"]);
+  expect(await retainedFiles(resolve(f.loop.stateRoot, f.loop.run))).toEqual(retained);
+  const marked = await compose(f.current);
+  expect(marked.items[0]!.source.author.prompt).toContain(
+    "Synthetic current rules describe uninstalled behavior",
+  );
+  expect(marked.items[0]!.repair.acceptanceCriteria).toEqual([
+    "New criterion ISS-001\nKeep the pinned brief.",
+  ]);
+  await expect(active.adapter(marked).source(marked.items[0]!)).rejects.toMatchObject({
+    reason: "conflicting-run-configuration",
+  });
+  for (const revision of ["main", f.old, "A".repeat(40), "", null]) {
+    await expect(
+      queueConfigFromLoop(
+        f.loop,
+        f.executor,
+        { ...selection, planningRevision: revision as string },
+        f.policy,
+      ),
+    ).rejects.toMatchObject({ reason: "invalid-selected-issue" });
+  }
 });
 
 async function enableLadders(current: Awaited<ReturnType<typeof fixture>>) {

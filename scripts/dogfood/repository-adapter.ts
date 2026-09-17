@@ -29,6 +29,8 @@ export interface RepositoryAdapter {
   selectCandidates(input: {
     repository: string;
     executorRoot: string;
+    planningRevision?: string;
+    gitExecutable?: string;
     targetMilestone?: number;
   }): Promise<RepositoryCandidate[]> | RepositoryCandidate[];
   issueContext(input: {
@@ -36,6 +38,8 @@ export interface RepositoryAdapter {
     key: string;
     number: number;
     executorRoot: string;
+    planningRevision?: string;
+    gitExecutable?: string;
     targetMilestone?: number;
   }): Promise<RepositoryIssueContext> | RepositoryIssueContext;
   branchName(input: {

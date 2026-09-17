@@ -112,6 +112,11 @@ try {
           key: active.selection.key,
           number: active.selection.number,
           base: active.selection.base,
+          ...(active.selection.planningRevision === undefined
+            ? {}
+            : {
+                planningRevision: active.selection.planningRevision,
+              }),
         },
         repositoryAdapter,
         active.initialHistory,
