@@ -465,10 +465,12 @@ async function confirmMutation<T>(
   mutate: () => Promise<void>,
   project: (value: T) => object,
   validate: (value: unknown) => void,
+  reobserve = false,
 ) {
   const receipt = await optionalRecord(directory, name);
   if (receipt !== ABSENT_RECORD) {
     validate(receipt);
+    if (reobserve) demand((await observe()).state === "confirmed", `${name}-state-unknown`);
     return receipt;
   }
   let observation = await observe();
@@ -1197,6 +1199,7 @@ export async function deliveryStep(
               value.issue === draft.issue,
             `malformed-record:draft-${draft.key}`,
           ),
+        typeof draft.attributes.baseBody === "string",
       );
       demand(
         exactKeys(receipt, ["head", "issue"]) &&

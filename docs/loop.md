@@ -142,6 +142,29 @@ cannot fail a live candidate, while candidate omissions, malformed planning,
 incorrect board bodies and missing project membership still fail. The ordinary
 `pnpm planning:board-check` and selection retain their full-board validation.
 
+ISS-178 fixes ISS-174's six sibling body mismatches before publication. After
+refresh and exact-head review, self delivery adds changed registered open sibling
+drafts to its existing mirror plan, using candidate versus refreshed-main bodies.
+Sibling mirroring changes only the body: registration, frontmatter and project
+changes refuse. Independent review must authorize the prose under the selected
+brief; a changed path alone grants no authority. The selected issue retains its
+seed and full-draft behavior.
+
+Each sibling is observed again before applying or replaying the saved plan.
+Missing, duplicate, reopened or retargeted identities refuse with the sibling key;
+the issue census includes the latest reopening event for this comparison. Closed
+siblings receive no writes and remain ignored by the scoped board gate. Open
+title or milestone drift refuses even when the body matches. A target body is a
+no-op, a main-base body permits one body-only edit, and any other body refuses.
+Existing draft receipts reconcile lost responses; replay reobserves completed
+drafts too. No new receipt format or migration is involved. Unchanged siblings
+are never repaired. Later closure does not remove the candidate's authored hunk.
+
+Ahead-of-main mirrored bodies still fail fresh full-board selection. The single
+writer finishes delivery, then selection pins published main. Saved selections
+keep their pinned brief and identity. Abandonment requires a separate host
+decision authorizing restoration; there is no rollback or selection overlay.
+
 A reviewed delivery candidate's conflict consumes one resolution in its
 existing `native-refresh.json`. After aborting the conflicting integration, the
 executor merges the reviewed head with that same current main and pins the

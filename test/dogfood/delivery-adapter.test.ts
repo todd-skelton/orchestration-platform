@@ -2184,9 +2184,16 @@ it("keeps repository identities and mirror rules in the explicit private policy 
   const root = await mkdtemp(resolve(tmpdir(), "delivery-policy-"));
   roots.push(root);
   const current = config(root);
-  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: [ISS-073]\n---\n\n## Why\n\nFixture.\n`;
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n`;
   const planning = {
     roadmap: {
+      schemaVersion: "orchestration-roadmap/v1",
+      project: {
+        id: "PVT_fixture",
+        number: 1,
+        title: "Delivery",
+        url: "https://example.test/project",
+      },
       repository: current.repository,
       milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
       issues: [
@@ -2194,7 +2201,7 @@ it("keeps repository identities and mirror rules in the explicit private policy 
           key: "ISS-074",
           file: "planning/drafts/ISS-074.md",
           milestone: "M2",
-          blockedBy: ["ISS-073"],
+          blockedBy: [],
         },
       ],
     },
@@ -2211,11 +2218,17 @@ it("keeps repository identities and mirror rules in the explicit private policy 
       { number: 332, title: "reserved seed", body: "reserved" },
     ],
   };
-  const plan = selfPlanFromSnapshots(current, planning, board, {
-    total: { added: 7, deleted: 6 },
-    scripts: { added: 1, deleted: 3 },
-    test: { added: 4, deleted: 2 },
-  });
+  const plan = selfPlanFromSnapshots(
+    current,
+    planning,
+    board,
+    {
+      total: { added: 7, deleted: 6 },
+      scripts: { added: 1, deleted: 3 },
+      test: { added: 4, deleted: 2 },
+    },
+    planning,
+  );
   expect(plan.gates).toEqual({
     beforeMirror: ["typecheck", "format:check", "test"],
     afterMirror: ["planning:board-check"],
@@ -2350,26 +2363,35 @@ it("uses the later-cycle merge base for repaired candidate line counts", async (
     test: { added: 5, deleted: 2 },
   });
 
-  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: [ISS-073]\n---\n\n## Why\n\nFixture.\n`;
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n`;
+  const planning = {
+    roadmap: {
+      schemaVersion: "orchestration-roadmap/v1",
+      project: {
+        id: "PVT_fixture",
+        number: 1,
+        title: "Delivery",
+        url: "https://example.test/project",
+      },
+      repository: current.repository,
+      milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
+      issues: [
+        {
+          key: "ISS-074",
+          file: "planning/drafts/ISS-074.md",
+          milestone: "M2",
+          blockedBy: [],
+        },
+      ],
+    },
+    issueDrafts: { "ISS-074": issue },
+  };
   const plan = selfPlanFromSnapshots(
     current,
-    {
-      roadmap: {
-        repository: current.repository,
-        milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
-        issues: [
-          {
-            key: "ISS-074",
-            file: "planning/drafts/ISS-074.md",
-            milestone: "M2",
-            blockedBy: ["ISS-073"],
-          },
-        ],
-      },
-      issueDrafts: { "ISS-074": issue },
-    },
+    planning,
     { issues: [{ number: 332, title: "reserved seed", body: "reserved" }] },
     changes,
+    planning,
   );
   expect(plan.publication.body).toContain(
     "- Total: 10 added, 6 deleted, net +4\n" +
