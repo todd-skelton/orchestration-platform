@@ -324,6 +324,7 @@ unfinished authors and non-FAIL results cannot establish this transition.
 Source pilot/configuration checks and executor drift refusals remain in force.
 Parking leaves the self issue open and unready; only explicit planning unpark
 can admit it again.
+Terminal repair-author FAIL likewise parks through matching retained evidence; explicit same-run planning unpark admits only the next unused implementation attempt within the existing ceiling, preserving history and charged allowances (ISS-181).
 
 Before scanning failed attempts, composition observes the matching failed
 author terminal at the pinned conflict seed or a parked source-author failure
