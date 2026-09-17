@@ -326,9 +326,11 @@ Parking leaves the self issue open and unready; only explicit planning unpark
 can admit it again.
 
 Before scanning failed attempts, composition observes the matching failed
-author terminal at the pinned conflict seed and
-advances the stale delivery projection to failed once. It retains the original
-base, attempt number and historical review identity/findings, recovers native
+author terminal at the pinned conflict seed or a parked source-author failure
+at its matching pinned configuration and base, and advances the attempt to failed
+once (ISS-179). A source failure retains its history and author failure count,
+with its base as head, an empty review identity and no findings. A conflict retains
+the original base, attempt number and historical review identity/findings, recovers native
 participants, and clears the accepted stage and directory. Source, review,
 refresh, worker, stop and completed-stop records and the old worktree remain
 unchanged. Nonfailed and in-flight authors do not establish this transition (ISS-160).
