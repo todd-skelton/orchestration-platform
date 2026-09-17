@@ -4,9 +4,51 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
+import {
+  sourceFailureFixture,
+  repairFailureFixture,
+  historicalStops,
+  snapshot,
+} from "./fixtures/source-failure.js";
 
 const roots: string[] = [];
+
+it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] as const)(
+  "retained native repair FAIL parks without replay and drains unrelated work: %s",
+  async (shape) => {
+    const f = await repairFailureFixture();
+    roots.push(f.root);
+    await f.fail();
+    expect(f.cycle.initialHistory).toHaveLength(6);
+    expect(f.cycle.initialHistory.slice(-4)).toMatchObject([
+      { role: "author", outcome: "passed" },
+      { role: "reviewer", outcome: "malformed" },
+      { ordinal: 5, role: "reviewer", stage: "source", outcome: "failed" },
+      { ordinal: 6, role: "author", stage: "repair", outcome: "failed" },
+    ]);
+    await historicalStops(f, shape);
+    const old = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const launches = f.calls.filter((c) => c.startsWith("launch:"));
+    if (shape === "terminal") {
+      expect(await f.stop()).toBe("item");
+      expect(f.rows[0]!.comments.at(-1)).toContain("3 implementation attempts");
+    } else await f.upgrade();
+    expect(await f.advance()).toMatchObject({
+      selection: { key: "fixture-159" },
+      initialHistory: f.cycle.initialHistory,
+    });
+    expect(f.rows[0]).toMatchObject({ ready: false, state: "OPEN" });
+    const notes = [...f.rows[0]!.comments];
+    await f.advance();
+    expect(f.rows[0]!.comments).toEqual(notes);
+    expect(f.calls.filter((c) => c.startsWith("launch:"))).toEqual(launches);
+    for (const [path, bytes] of old) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+    expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+    expect(await f.drain()).toEqual([]);
+  },
+);
 
 it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] as const)(
   "retained source FAIL survives upgrade without source replay: %s",
