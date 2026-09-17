@@ -56,7 +56,467 @@ import {
   type SupervisionAdapter,
 } from "../../scripts/dogfood/supervision.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
-import { sourceFailureFixture, snapshot } from "./fixtures/source-failure.js";
+import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
+
+it("binds repair FAIL to its retained setup, source, review, author and complete history", async () => {
+  const f = await repairFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  const directory = f.current.config.stateDirectory;
+  const selected = f.cycle.selection;
+  const original = await snapshot(directory);
+  const observe = () => retainedSourceFailure(f.loop, selected);
+  expect(await observe()).toMatchObject({ attempts: 3, history: f.cycle.initialHistory });
+  const change = async (name: string, mutate: (record: any) => void) => {
+    const path = resolve(directory, `${name}.json`);
+    const value = JSON.parse(original.get(path)!);
+    mutate(value);
+    await writeFile(path, JSON.stringify(value));
+  };
+  const controls: [string, (value: any) => void][] = [
+    [
+      "attempt",
+      (r) => {
+        r.run = "other";
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.issue += "9";
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.item = "fixture-110:3";
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.candidateAttempt = 2;
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.candidateAttempt = 5;
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.acceptedStage = "repair";
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.stateDirectory = resolve(directory, "repair");
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.head = f.base;
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.reviewId = "other";
+      },
+    ],
+    [
+      "attempt",
+      (r) => {
+        r.history.pop();
+      },
+    ],
+    [
+      "setup/setup-plan",
+      (r) => {
+        r.run = "other";
+      },
+    ],
+    [
+      "setup/setup-plan",
+      (r) => {
+        r.repository = "fixture/other";
+      },
+    ],
+    [
+      "setup/setup-plan",
+      (r) => {
+        r.issue += "9";
+      },
+    ],
+    [
+      "setup/setup-plan",
+      (r) => {
+        r.stateDirectory = directory;
+      },
+    ],
+    [
+      "setup/setup-plan",
+      (r) => {
+        r.base = "e".repeat(40);
+      },
+    ],
+    [
+      "setup/setup-plan",
+      (r) => {
+        r.sourceBranch = "other";
+      },
+    ],
+    [
+      "setup/setup-plan",
+      (r) => {
+        r.worktrees[1].path = directory;
+      },
+    ],
+    [
+      "source/candidate",
+      (r) => {
+        r.head = f.base;
+      },
+    ],
+    [
+      "source/reviewer-attempt",
+      (r) => {
+        r.id = "other";
+      },
+    ],
+    [
+      "source/reviewer-terminal",
+      (r) => {
+        r.id = "other";
+      },
+    ],
+    [
+      "source/reviewer-terminal",
+      (r) => {
+        r.head = f.base;
+      },
+    ],
+    [
+      "source/reviewer-terminal",
+      (r) => {
+        r.status = "passed";
+      },
+    ],
+    [
+      "repair/author-attempt",
+      (r) => {
+        r.id = "other";
+      },
+    ],
+    [
+      "repair/author-terminal",
+      (r) => {
+        r.id = "other";
+      },
+    ],
+    [
+      "repair/author-terminal",
+      (r) => {
+        r.head = f.base;
+      },
+    ],
+    ...["passed", "running", "dead", "malformed"].map((status): [string, (r: any) => void] => [
+      "repair/author-terminal",
+      (r) => {
+        r.status = status;
+      },
+    ]),
+    ...["source", "repair"].flatMap((stage): [string, (r: any) => void][] => [
+      [
+        `${stage}/config`,
+        (r) => {
+          r.config.run = "other";
+        },
+      ],
+      [
+        `${stage}/config`,
+        (r) => {
+          r.config.repository = "fixture/other";
+        },
+      ],
+      [
+        `${stage}/config`,
+        (r) => {
+          r.config.issue += "9";
+        },
+      ],
+      [
+        `${stage}/config`,
+        (r) => {
+          r.config.stateDirectory = directory;
+        },
+      ],
+      [
+        `${stage}/config`,
+        (r) => {
+          r.config.base = "e".repeat(40);
+        },
+      ],
+      [
+        `${stage}/config`,
+        (r) => {
+          r.config.mainBase = "e".repeat(40);
+        },
+      ],
+      [
+        `${stage}/config`,
+        (r) => {
+          r.config.worktree = directory;
+        },
+      ],
+    ]),
+  ];
+  for (const [name, mutate] of controls) {
+    await change(name, mutate);
+    expect(await observe(), name).toBeUndefined();
+    expect(await f.stop(), name).toBe("run");
+    await writeFile(
+      resolve(directory, `${name}.json`),
+      original.get(resolve(directory, `${name}.json`))!,
+    );
+  }
+  // Binding checks still matter when the queue history and its reduction agree.
+  for (const ordinal of [5, 6]) {
+    for (const field of ["id", "item", "stage", "role", "outcome"]) {
+      const mutate = (p: any) => {
+        p[field] = {
+          id: "other",
+          item: "other:2",
+          stage: "refresh",
+          role: ordinal === 5 ? "author" : "reviewer",
+          outcome: "passed",
+        }[field];
+      };
+      await change(`participant-${ordinal}-terminal`, mutate);
+      await change("attempt", (r) => mutate(r.history[ordinal - 1]));
+      expect(await observe(), `${ordinal}:${field}`).toBeUndefined();
+      for (const name of ["attempt", `participant-${ordinal}-terminal`])
+        await writeFile(
+          resolve(directory, `${name}.json`),
+          original.get(resolve(directory, `${name}.json`))!,
+        );
+    }
+  }
+  const terminal = resolve(directory, "repair/author-terminal.json");
+  await rm(terminal);
+  expect(await observe()).toBeUndefined();
+  expect(await f.stop()).toBe("run");
+  await writeFile(terminal, original.get(terminal)!);
+  f.loop.nativeLaunchCeiling = 5;
+  await expect(observe()).rejects.toMatchObject({ reason: "native-launch-ceiling-exhausted" });
+  f.loop.nativeLaunchCeiling = 16;
+  expect(await observe()).toMatchObject({ attempts: 3, history: f.cycle.initialHistory });
+  expect(await f.stop()).toBe("item");
+  expect(await snapshot(directory)).toEqual(original);
+});
+
+async function unparkedRepairFailure(intervening = false) {
+  const f = await repairFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  expect(await f.stop()).toBe("item");
+  expect((await f.advance())!.selection.key).toBe("fixture-159");
+  if (intervening) expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+  await writeFile(resolve(f.repository, "main.txt"), "later main\n");
+  await f.git(f.repository, ["add", "main.txt"]);
+  await f.git(f.repository, ["commit", "-m", "synthetic later main"]);
+  await f.git(f.repository, ["push", "origin", "main"]);
+  f.rows[0]!.ready = true; // External acceptance plus explicit planning unpark.
+  const context = f.policy.issueContext;
+  f.policy.issueContext = async (input) => ({
+    ...(await context(input)),
+    body: "Accepted brief repair: use fixture mode current. Preserve the invariant.",
+    acceptanceCriteria: ["Use fixture mode current", "Preserve the invariant"],
+  });
+  const next = (await f.advance())!;
+  return { f, next };
+}
+
+it("unparks only attempt 4 with current guidance, full diff, history and fresh review", async () => {
+  const { f, next } = await unparkedRepairFailure(true);
+  const prior = await snapshot(f.runState);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  const path = resolve(f.current.config.stateDirectory, "attempt.json");
+  const old = JSON.parse(prior.get(path)!);
+  expect(old).toMatchObject({ phase: "repair", candidateAttempt: 3, retries: 1 });
+  expect(old.authorFailures).toEqual({
+    count: 3,
+    ids: ["synthetic-worker-1", "synthetic-worker-2", "synthetic-worker-5"],
+  });
+  expect(await f.git(f.current.config.items[0]!.source.worktree, ["status", "--porcelain"])).toBe(
+    "M product.txt",
+  );
+  expect(next.initialHistory).toHaveLength(10);
+  const q = await f.compose(next);
+  const item = q.config.items[0]!;
+  expect(item).toMatchObject({
+    id: "fixture-110:4",
+    implementationAttempt: 4,
+    source: { mainBase: next.selection.base, authorFailures: old.authorFailures },
+  });
+  expect(item.source.base).not.toBe(old.head);
+  expect(
+    await f.git(f.repository, ["diff", "--name-only", item.source.mainBase!, item.source.base]),
+  ).toBe("product.txt");
+  expect(q.config.initialHistory).toEqual(next.initialHistory);
+  expect(item.source.author.rung).toBe(2);
+  expect(item.source.reviewer.rung).toBe(0);
+  for (const prompt of [item.source.author.prompt, item.source.reviewer.prompt]) {
+    expect(prompt).toContain("Accepted brief repair: use fixture mode current");
+    expect(prompt).toContain("Use fixture mode legacy.");
+    expect(prompt).toContain("Preserve the invariant.");
+    expect(prompt).toContain("unchanged requirements and still-applicable findings remain binding");
+    expect(prompt).toContain("resolved or superseded");
+    expect(prompt).toContain(f.current.config.stateDirectory);
+    expect(prompt).toContain(resolve(f.current.config.stateDirectory, "source"));
+    expect(prompt).toContain(resolve(f.current.config.stateDirectory, "repair"));
+    expect(prompt).not.toContain("Apply these reviewer-prescribed fixes verbatim");
+  }
+  const advanced = await readFile(path, "utf8");
+  expect(JSON.parse(advanced)).toEqual({
+    ...old,
+    phase: "failed",
+    rebasedBase: item.base,
+    rebasedMainBase: next.selection.base,
+  });
+  expect((await f.compose(next)).config).toEqual(q.config);
+  expect(await readFile(path, "utf8")).toBe(advanced);
+  await persistCycle(f.loop, next);
+  const launches: string[] = [];
+  const launch = f.native.launch;
+  f.native.launch = async (role, config, prompt) => {
+    launches.push(role);
+    if (role === "author") {
+      expect(prompt).toContain("Prior failed attempt fixture-110:2 records");
+      expect(prompt).toContain("still-applicable findings");
+    }
+    const result = await launch(role, config, prompt);
+    if (role === "author")
+      await writeFile(
+        resolve(config.worktree, "product.txt"),
+        "mode current; invariant preserved\n",
+      );
+    return result;
+  };
+  const observe = f.native.observe;
+  let running = true;
+  f.native.observe = async (role, config, attempt) => {
+    const result = await observe(role, config, attempt);
+    if (role === "author") return { ...result, status: running ? "running" : "passed" };
+    return {
+      ...result,
+      status: "passed",
+      summary: JSON.stringify({
+        run: config.run,
+        role,
+        head: result.head,
+        verdict: "PASS",
+        findings: [],
+        g0: "No; the accepted brief and invariant both hold.",
+      }),
+    };
+  };
+  await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  const pinPath = resolve(item.source.stateDirectory, "config.json");
+  const pin = await readFile(pinPath, "utf8");
+  const resumed = await f.compose((await f.advance())!);
+  await queueStep(resumed.config, resumed.adapter);
+  expect(launches).toEqual(["author"]);
+  const context = f.policy.issueContext;
+  f.policy.issueContext = async (input) => ({
+    ...(await context(input)),
+    body: "Later unaccepted prose",
+  });
+  const drift = await f.compose(next);
+  await expect(queueStep(drift.config, drift.adapter)).rejects.toMatchObject({
+    reason: "conflicting-run-configuration",
+  });
+  expect(await readFile(pinPath, "utf8")).toBe(pin);
+  f.policy.issueContext = context;
+  running = false;
+  await expect(queueStep(resumed.config, resumed.adapter)).resolves.toMatchObject({
+    status: "complete",
+  });
+  expect(launches).toEqual(["author", "reviewer"]);
+  for (const [file, bytes] of prior)
+    if (file !== path) expect(await readFile(file, "utf8"), file).toBe(bytes);
+  for (const [file, bytes] of trees) expect(await readFile(file, "utf8"), file).toBe(bytes);
+});
+
+it("re-derives repair FAIL after interrupted projection before successor setup", async () => {
+  const { f, next } = await unparkedRepairFailure();
+  const path = resolve(f.current.config.stateDirectory, "attempt.json");
+  const old = JSON.parse(await readFile(path, "utf8"));
+  await f.git(f.repository, ["remote", "set-url", "origin", resolve(f.root, "absent.git")]);
+  await expect(f.compose(next)).rejects.toMatchObject({ reason: "current-main-unavailable" });
+  expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ ...old, phase: "failed" });
+  await f.git(f.repository, ["remote", "set-url", "origin", resolve(f.root, "remote.git")]);
+  const q = await f.compose(next);
+  expect(q.config.items[0]!.source.author.prompt).toContain(
+    "Do not restore a superseded prescription",
+  );
+  const terminalPath = resolve(f.current.config.stateDirectory, "repair/author-terminal.json");
+  const terminal = await readFile(terminalPath, "utf8");
+  await rm(terminalPath);
+  const ordinary = await f.compose(next);
+  expect(ordinary.config.items[0]!.source.author.prompt).toContain(
+    "Apply these reviewer-prescribed fixes verbatim",
+  );
+  expect(ordinary.config.items[0]!.source.author.prompt).not.toContain(
+    "Do not restore a superseded prescription",
+  );
+  await writeFile(terminalPath, terminal);
+  expect((await f.compose(next)).config).toEqual(q.config);
+});
+
+it.each([0, 1])(
+  "admits each successor launch independently with %i remaining slots",
+  async (slots) => {
+    const { f, next } = await unparkedRepairFailure();
+    f.loop.nativeLaunchCeiling = next.initialHistory.length + slots;
+    const q = await f.compose(next);
+    const calls = f.calls.length;
+    await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+      reason: "native-launch-ceiling-exhausted",
+    });
+    expect(f.calls.slice(calls).filter((c) => c.startsWith("launch:"))).toHaveLength(slots);
+    expect((await q.adapter.history()).length).toBe(f.loop.nativeLaunchCeiling);
+  },
+);
+
+it("charges repair candidate 3 and the failed fourth successor to the existing ceiling", async () => {
+  const { f, next } = await unparkedRepairFailure();
+  f.loop.attemptCeiling = 3;
+  await expect(f.compose(next)).rejects.toMatchObject({
+    reason: "implementation-attempt-ceiling-exhausted",
+  });
+  f.loop.attemptCeiling = 4;
+  const q = await f.compose(next);
+  await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+    reason: "implementation-attempt-ceiling-exhausted",
+  });
+  await expect(f.compose(next)).rejects.toMatchObject({
+    reason: "implementation-attempt-ceiling-exhausted",
+  });
+  expect(
+    JSON.parse(await readFile(resolve(q.config.stateDirectory, "attempt.json"), "utf8")),
+  ).toMatchObject({
+    phase: "failed",
+    candidateAttempt: 4,
+    findings: [{ text: "Use fixture mode legacy." }, { text: "Preserve the invariant." }],
+  });
+});
 
 async function unparkedSourceFailure(intervening = false) {
   const f = await sourceFailureFixture();
