@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ReviewFinding } from "./repair-policy.mjs";
 
@@ -98,6 +98,7 @@ export interface CheckEvidence {
   name: string;
   bucket: "pass" | "pending" | "fail" | "cancel" | "skipping";
   link: string;
+  actions?: { run: number; attempt: number; job: number; workflow: number };
 }
 
 export type DeliveryResult =
@@ -200,7 +201,11 @@ export interface DeliveryAdapter {
     workflowPending?: boolean;
   }>;
   /** Returns null while the check's run is not completed. */
-  failedCheckLog?(config: DeliveryConfig, check: CheckEvidence): Promise<string | null>;
+  failedCheckLog?(
+    config: DeliveryConfig,
+    check: CheckEvidence,
+    publication: PublicationEvidence,
+  ): Promise<string | null>;
   observeMerge(
     config: DeliveryConfig,
     publication: PublicationEvidence,
@@ -830,10 +835,26 @@ export async function hostedFailureEvidence(
 ): Promise<string | null> {
   const path = resolve(config.stateDirectory, "hosted-failure.log");
   try {
-    await stat(path);
+    const saved = JSON.parse((await readFile(path, "utf8")).split("\n")[0]!);
+    demand(
+      saved.repository === config.repository &&
+        saved.head === config.candidateHead &&
+        JSON.stringify(saved.publication) === JSON.stringify(publication) &&
+        Array.isArray(saved.checks) &&
+        saved.checks.length > 0 &&
+        saved.checks.every((check: CheckEvidence) => check.actions) &&
+        (!checks ||
+          JSON.stringify(saved.checks) ===
+            JSON.stringify(checks.filter((check) => ["fail", "cancel"].includes(check.bucket)))),
+      "hosted-observation-unavailable",
+    );
     return path;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw new DeliveryBlocked(
+        "hosted-observation-unavailable",
+        "Retained hosted-failure.log cannot establish this publication's selected Actions failure; preserve it and reobserve before recovery.",
+      );
   }
   if (!checks) {
     const observed = await adapter.checks(config, publication);
@@ -849,7 +870,7 @@ export async function hostedFailureEvidence(
     if (runs.has(run)) continue;
     runs.add(run);
     demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${check.name}`);
-    const log = await adapter.failedCheckLog(config, check);
+    const log = await adapter.failedCheckLog(config, check, publication);
     if (log === null) return null;
     demand(log.trim().length > 0, `hosted-check-log-unavailable:${check.name}`);
     logs.push(`\nCheck: ${JSON.stringify(check)}\n${log}`);
@@ -1254,7 +1275,12 @@ export async function deliveryStep(
           hostedFailurePrompt(path),
         );
     }
-    if (failed || awaitingRequired || checks.some((check) => check.bucket === "pending")) {
+    if (
+      failed ||
+      awaitingRequired ||
+      observed.workflowPending ||
+      checks.some((check) => check.bucket === "pending")
+    ) {
       return {
         status: "observing-hosted-checks",
         run: config.run,

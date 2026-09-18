@@ -1,9 +1,21 @@
-import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.mjs";
 import {
   setupStep,
+  SetupBlocked,
   type SetupAdapter,
   type SetupConfig,
   type SetupRole,
@@ -12,6 +24,28 @@ import {
 const roots: string[] = [];
 const pilot = "a".repeat(40);
 const base = "b".repeat(40);
+
+const controlledGit = vi.hoisted(() => ({
+  execute: undefined as
+    ((args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>) | undefined,
+}));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const execute = promisify(actual.execFile);
+  const injected = actual.execFile.bind(null);
+  Object.defineProperty(injected, promisify.custom, {
+    value: (
+      executable: string,
+      args: string[],
+      options: import("node:child_process").ExecFileOptions,
+    ) =>
+      executable === "deferred-setup-git"
+        ? controlledGit.execute!(args, String(options.cwd))
+        : execute(executable, args, options),
+  });
+  return { ...actual, execFile: injected };
+});
 
 async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), "setup-engine-fixture-"));
@@ -127,8 +161,117 @@ function selectCaseAliasWorktrees(
 }
 
 afterEach(async () => {
+  controlledGit.execute = undefined;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+it.each(["pilotRevision", "base", "sourceBranch", "worktree", "aliased worktree"] as const)(
+  "waits for real adapter children before setupStep refuses %s without mutation",
+  async (scenario) => {
+    const failure = scenario === "aliased worktree" ? "worktree" : scenario;
+    const { config } = await fixture();
+    await mkdir(resolve(config.repositoryRoot, ".git"));
+    if (failure === "worktree") await mkdir(config.pilotWorktree);
+    else config[failure] = failure === "sourceBranch" ? "invalid..ref" : "f".repeat(40);
+    if (scenario === "aliased worktree") {
+      const target = config.pilotWorktree;
+      config.pilotWorktree = resolve(target, "../pilot-alias");
+      await symlink(target, config.pilotWorktree, "junction");
+    }
+    const pilotWorktree = failure === "worktree" ? await realpath(config.pilotWorktree) : undefined;
+    const calls: string[][] = [];
+    const children: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+    const started = Promise.withResolvers<void>();
+    let pending = 0;
+    controlledGit.execute = async (args, cwd) => {
+      calls.push(args);
+      if (args[0] === "worktree")
+        return {
+          stdout:
+            failure === "worktree" ? `worktree ${config.pilotWorktree}\0HEAD ${pilot}\0\0` : "",
+          stderr: "",
+        };
+      if (args.includes("--git-common-dir"))
+        return { stdout: resolve(config.repositoryRoot, ".git"), stderr: "" };
+      const observing = cwd === pilotWorktree;
+      const invalid =
+        failure === "worktree"
+          ? observing && args.includes("HEAD")
+          : args.includes(
+              failure === "sourceBranch" ? config.sourceBranch : `${config[failure]}^{commit}`,
+            );
+      if (invalid) throw new Error("invalid setup read");
+      const hold =
+        failure === "worktree"
+          ? observing
+          : failure === "sourceBranch"
+            ? args[0] === "status"
+            : args.includes("HEAD");
+      if (hold) {
+        const child = Promise.withResolvers<void>();
+        children.push(child);
+        pending += 1;
+        if (children.length === 2) started.resolve();
+        try {
+          await child.promise;
+        } finally {
+          pending -= 1;
+        }
+      }
+      let stdout = "";
+      if (args.includes("--show-toplevel")) stdout = cwd;
+      else if (args.includes("HEAD")) stdout = pilot;
+      else if (args.includes("--verify")) stdout = args[2]!.split("^")[0]!;
+      else if (args[0] === "branch") stdout = observing ? "" : config.baseBranch;
+      else if (args[0] !== "status" && args[0] !== "check-ref-format")
+        throw new Error(`unexpected Git read: ${args.join(" ")}`);
+      return { stdout, stderr: "" };
+    };
+    const adapter = gitSetupAdapter({ gitExecutable: "deferred-setup-git" });
+    const observe = vi.spyOn(adapter, "observeWorktree");
+    const create = vi.spyOn(adapter, "createWorktree");
+    const dependencies = vi.spyOn(adapter, "observeDependencies");
+    const install = vi.spyOn(adapter, "installDependencies");
+    let settled = false;
+    const outcome = setupStep(config, adapter, config.controllerRoot).then(
+      (value) => {
+        settled = true;
+        return value;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await Promise.race([started.promise, outcome]);
+      await new Promise<void>((done) => setImmediate(done));
+      expect(settled).toBe(false);
+      expect(pending).toBe(2);
+      expect(await readdir(config.stateDirectory)).toEqual([]);
+      children[0]!.reject(new Error("late sibling failure"));
+      await new Promise<void>((done) => setImmediate(done));
+      expect(settled).toBe(false);
+      expect(pending).toBe(1);
+      children[1]!.resolve();
+      const refusal = await outcome;
+      expect(refusal).toBeInstanceOf(SetupBlocked);
+      expect(refusal).toMatchObject({
+        reason: failure === "worktree" ? "worktree-state-unknown:pilot" : "setup-state-unverified",
+      });
+      expect(pending).toBe(0);
+      expect(calls).toHaveLength(failure === "worktree" ? 19 : failure === "sourceBranch" ? 13 : 9);
+      expect(observe).toHaveBeenCalledTimes(failure === "worktree" ? 1 : 0);
+      expect(create).not.toHaveBeenCalled();
+      expect(dependencies).not.toHaveBeenCalled();
+      expect(install).not.toHaveBeenCalled();
+      expect(await readdir(config.stateDirectory)).toEqual([]);
+    } finally {
+      for (const child of children) child.resolve();
+      await outcome;
+    }
+  },
+);
 
 it("rejects a malformed controller before recording intent or calling the adapter", async () => {
   const current = await fixture();
@@ -190,11 +333,11 @@ it.each(["base", "ignoreScripts"])(
     if (field === "base") saved.base = "c".repeat(40);
     else saved.dependencies.ignoreScripts = false;
     await writeFile(path, JSON.stringify(saved, null, 2) + "\n");
-    const installs = current.calls.filter((call) => call.startsWith("install:"));
+    const calls = [...current.calls];
     await expect(
       setupStep(current.config, current.adapter, current.config.controllerRoot),
     ).rejects.toMatchObject({ reason: "conflicting-record:setup-plan" });
-    expect(current.calls.filter((call) => call.startsWith("install:"))).toEqual(installs);
+    expect(current.calls).toEqual(calls);
   },
 );
 

@@ -55,7 +55,11 @@ export interface WorktreeObservation {
 }
 
 export interface SetupAdapter {
-  assertExecutor(config: SetupConfig, executingRoot: string): Promise<void>;
+  assertExecutor(
+    config: SetupConfig,
+    executingRoot: string,
+    matchedReplay?: boolean,
+  ): Promise<void>;
   observeWorktree(
     config: SetupConfig,
     role: SetupRole,
@@ -384,7 +388,32 @@ export async function setupStep(
 ): Promise<SetupResult> {
   validateConfig(config);
   await assertSafePaths(config);
-  await adapter.assertExecutor(config, executingRoot);
+  const plan = {
+    schemaVersion: "dogfood-setup-plan/v1",
+    run: config.run,
+    issue: config.issue,
+    repository: config.repository,
+    repositoryRoot: config.repositoryRoot,
+    controllerRoot: config.controllerRoot,
+    stateDirectory: config.stateDirectory,
+    controller: config.controller,
+    controllerRevision: config.controllerRevision,
+    pilotRevision: config.pilotRevision,
+    base: config.base,
+    baseBranch: config.baseBranch,
+    sourceBranch: config.sourceBranch,
+    worktrees: SETUP_ROLES.map((role) => worktreeRecord(config, role)),
+    dependencies: { launcher: "pnpm", offline: true, frozenLockfile: true, ignoreScripts: true },
+  };
+  const savedPlan = await optionalRecord(config.stateDirectory, "setup-plan");
+  if (savedPlan !== ABSENT) {
+    // ISS-180: establish exact replay before separating executor and retained pilot.
+    // Only the installed executor may change on replay. Keep the old plan bytes.
+    const { controllerRevision: _revision, ...expected } = plan;
+    const { controllerRevision: _savedRevision, ...saved } = savedPlan as typeof plan;
+    exactRecord(saved, expected, "conflicting-record:setup-plan");
+  }
+  await adapter.assertExecutor(config, executingRoot, savedPlan !== ABSENT);
   await assertStateCensus(config);
 
   const observations = new Map<SetupRole, WorktreeObservation>();
@@ -432,31 +461,7 @@ export async function setupStep(
       exactRecord(intent, dependencyIntent(config, role), `malformed-dependency-intent:${role}`);
   }
 
-  const plan = {
-    schemaVersion: "dogfood-setup-plan/v1",
-    run: config.run,
-    issue: config.issue,
-    repository: config.repository,
-    repositoryRoot: config.repositoryRoot,
-    controllerRoot: config.controllerRoot,
-    stateDirectory: config.stateDirectory,
-    controller: config.controller,
-    controllerRevision: config.controllerRevision,
-    pilotRevision: config.pilotRevision,
-    base: config.base,
-    baseBranch: config.baseBranch,
-    sourceBranch: config.sourceBranch,
-    worktrees: SETUP_ROLES.map((role) => worktreeRecord(config, role)),
-    dependencies: { launcher: "pnpm", offline: true, frozenLockfile: true, ignoreScripts: true },
-  };
-  const savedPlan = await optionalRecord(config.stateDirectory, "setup-plan");
   if (savedPlan === ABSENT) await record(config.stateDirectory, "setup-plan", plan);
-  else {
-    // Only the installed executor may change on replay. Keep the old plan bytes.
-    const { controllerRevision: _revision, ...expected } = plan;
-    const { controllerRevision: _savedRevision, ...saved } = savedPlan as typeof plan;
-    exactRecord(saved, expected, "conflicting-record:setup-plan");
-  }
 
   for (const role of SETUP_ROLES) {
     let observation = observations.get(role)!;

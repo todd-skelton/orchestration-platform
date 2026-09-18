@@ -1,4 +1,5 @@
-import { execFile, type ExecFileOptions } from "node:child_process";
+import { execFile, spawn, type ExecFileOptions } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -7,7 +8,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
 import * as planningLoader from "../../scripts/planning/check.mjs";
-import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
+import {
+  QueueBlocked,
+  queueStep,
+  validateLoopConfig,
+  type LoopConfig,
+} from "../../scripts/dogfood/queue.js";
+import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import { ACCEPTED_REPLAN, replanPacket } from "./fixtures/continuation.js";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { selectCandidates } from "../../adapters/self.mjs";
@@ -19,6 +26,7 @@ import {
 } from "../../scripts/dogfood/repository-adapter.js";
 import {
   completeCycle,
+  prerequisiteOwners,
   isItemStopReason,
   nextCycle as nativeNextCycle,
   persistCycle,
@@ -34,6 +42,520 @@ import {
 const roots: string[] = [];
 const nextCycle: typeof nativeNextCycle = (config, root, adapter, repository) =>
   nativeNextCycle(config, root, adapter, repository, async () => {});
+
+it("ISS-187 observes live process identity, excludes itself and defers unknown owners", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const workerPath = resolve(
+    f.blockedQueue.config.items[0]!.source.stateDirectory,
+    "author-attempt.json",
+  );
+  const worker = await f.json(workerPath);
+  await writeFile(workerPath, JSON.stringify({ ...worker, pid: 2147483647 }));
+  if (process.platform !== "linux") {
+    expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("unknown");
+    return;
+  }
+  const config = resolve(f.root, "process-config.json");
+  await writeFile(config, JSON.stringify(f.loop));
+  const entry = resolve(f.root, "supervise.mjs");
+  const module = pathToFileURL(
+    resolve(import.meta.dirname, "../../scripts/dogfood/supervision.ts"),
+  ).href;
+  await writeFile(
+    entry,
+    `import {readFileSync, writeFileSync} from 'node:fs';\nimport {prerequisiteOwners} from ${JSON.stringify(module)};\nconst config = JSON.parse(readFileSync(process.argv[2], 'utf8'));\nwriteFileSync(process.argv[3], await prerequisiteOwners(config, ${JSON.stringify(f.blocked.selection)}));\n`,
+  );
+  const output = resolve(f.root, "self-observation.txt");
+  await execute(process.execPath, [entry, config, output], { cwd: f.root });
+  expect(await readFile(output, "utf8")).toBe("absent");
+  await writeFile(entry, "setInterval(() => {}, 1000);\n");
+  const other = spawn(process.execPath, [entry, config], { cwd: f.root, stdio: "ignore" });
+  try {
+    await once(other, "spawn");
+    expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("live");
+  } finally {
+    const exited = once(other, "exit");
+    other.kill();
+    await exited;
+  }
+  // A PID belonging to this test process is not a worker identity.
+  await writeFile(workerPath, JSON.stringify({ ...worker, pid: process.pid }));
+  expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("unknown");
+  const liveWorkerScript = resolve(f.root, "synthetic-process.mjs");
+  await writeFile(liveWorkerScript, "setInterval(() => {}, 1000);\n");
+  const child = spawn(process.execPath, [liveWorkerScript], {
+    cwd: f.blockedQueue.config.items[0]!.source.worktree,
+    stdio: "ignore",
+  });
+  try {
+    await once(child, "spawn");
+    await writeFile(workerPath, JSON.stringify({ ...worker, pid: child.pid }));
+    expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("live");
+  } finally {
+    const exited = once(child, "exit");
+    child.kill();
+    await exited;
+  }
+});
+
+it("ISS-187 admission refusals leave the whole run, labels, traces and partials untouched", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const declaration = structuredClone(f.loop.prerequisite!);
+  const rows = structuredClone(f.rows);
+  const loop = structuredClone(f.loop);
+  const files = await snapshot(f.runState);
+  const context = f.policy.issueContext;
+  const candidates = f.policy.selectCandidates;
+  const attemptPath = resolve(f.current.config.stateDirectory, "attempt.json");
+  const terminalPath = resolve(
+    f.current.config.items[0]!.source.stateDirectory,
+    "author-terminal.json",
+  );
+  const stopPath = resolve(f.runState, "cycle-5-stop-2.json");
+  const completionPath = resolve(f.runState, "cycle-5-stop-2-complete.json");
+  const changes: Array<[string, () => void | Promise<void>]> = [
+    [
+      "same issue",
+      () => {
+        f.loop.prerequisite = {
+          ...declaration,
+          key: declaration.blockedKey,
+          number: declaration.blockedNumber,
+        };
+      },
+    ],
+    [
+      "wrong cycle",
+      () => {
+        f.loop.prerequisite!.blockedCycle = 4;
+      },
+    ],
+    [
+      "wrong key",
+      () => {
+        f.loop.prerequisite!.blockedKey = "fixture-other";
+      },
+    ],
+    [
+      "wrong number",
+      () => {
+        f.loop.prerequisite!.blockedNumber = 999;
+      },
+    ],
+    [
+      "missing stop",
+      () => {
+        f.loop.prerequisite!.stop = 3;
+      },
+    ],
+    [
+      "wrong stop",
+      () => {
+        f.loop.prerequisite!.stop = 1;
+      },
+    ],
+    ["missing completion", () => rm(completionPath)],
+    [
+      "wrong stop binding",
+      () =>
+        writeFile(
+          stopPath,
+          JSON.stringify({
+            ...JSON.parse(files.get(stopPath)!),
+            selection: { ...f.blocked.selection, key: "fixture-other" },
+          }),
+        ),
+    ],
+    [
+      "wrong completion binding",
+      () =>
+        writeFile(
+          completionPath,
+          JSON.stringify({ ...JSON.parse(files.get(completionPath)!), stop: 1 }),
+        ),
+    ],
+    [
+      "would be attempt1",
+      () => {
+        f.loop.prerequisite = { ...declaration, key: "fixture-160", number: 160 };
+      },
+    ],
+    ["missing pinned FAIL", () => rm(terminalPath)],
+    [
+      "non-FAIL terminal",
+      () =>
+        writeFile(
+          terminalPath,
+          JSON.stringify({ ...JSON.parse(files.get(terminalPath)!), status: "passed" }),
+        ),
+    ],
+    [
+      "wrong terminal identity",
+      () =>
+        writeFile(
+          terminalPath,
+          JSON.stringify({ ...JSON.parse(files.get(terminalPath)!), id: "unknown-worker" }),
+        ),
+    ],
+    [
+      "wrong terminal head",
+      () =>
+        writeFile(
+          terminalPath,
+          JSON.stringify({ ...JSON.parse(files.get(terminalPath)!), head: "a".repeat(40) }),
+        ),
+    ],
+    [
+      "wrong pinned run",
+      () =>
+        writeFile(
+          attemptPath,
+          JSON.stringify({ ...JSON.parse(files.get(attemptPath)!), run: "another-run" }),
+        ),
+    ],
+    [
+      "changed worktree root",
+      () => {
+        f.loop.worktreeRoot = resolve(f.root, "other-worktrees");
+      },
+    ],
+    [
+      "changed ceiling",
+      () => {
+        f.loop.nativeLaunchCeiling = 32;
+      },
+    ],
+    [
+      "not ready",
+      () => {
+        f.rows[0]!.ready = false;
+      },
+    ],
+    [
+      "ineligible",
+      () => {
+        f.rows[0]!.blocked = true;
+      },
+    ],
+    [
+      "closed prerequisite",
+      () => {
+        f.rows[0]!.state = "CLOSED";
+      },
+    ],
+    [
+      "closed blocked cycle",
+      () => {
+        f.rows[1]!.state = "CLOSED";
+      },
+    ],
+    [
+      "live owner",
+      () => {
+        f.host.prerequisiteOwners = async () => "live";
+      },
+    ],
+    [
+      "unknown owner",
+      () => {
+        f.host.prerequisiteOwners = async () => "unknown";
+      },
+    ],
+    [
+      "planning or board mismatch",
+      () => {
+        f.policy.selectCandidates = () => {
+          throw new QueueBlocked("queue-internal-error");
+        };
+      },
+    ],
+    [
+      "unconfigured routing",
+      () => {
+        delete f.loop.author;
+        delete f.loop.reviewer;
+        f.policy.issueContext = async (input) => {
+          const { routing: _routing, ...brief } = await context(input);
+          return brief;
+        };
+      },
+    ],
+  ];
+  for (const [name, change] of changes) {
+    await change();
+    const before = await snapshot(f.runState);
+    const trees = await snapshot(loop.worktreeRoot);
+    const labels = structuredClone(f.rows);
+    const effects = f.calls.filter((call) =>
+      /^(launch|probe|install|park|note|delivery):/.test(call),
+    );
+    await expect(
+      (async () => {
+        validateLoopConfig(f.loop);
+        return f.advance();
+      })(),
+      name,
+    ).rejects.toThrow();
+    expect(await snapshot(f.runState), name).toEqual(before);
+    expect(await snapshot(loop.worktreeRoot), name).toEqual(trees);
+    expect(f.rows, name).toEqual(labels);
+    expect(
+      f.calls.filter((call) => /^(launch|probe|install|park|note|delivery):/.test(call)),
+      name,
+    ).toEqual(effects);
+    Object.assign(f.loop, structuredClone(loop));
+    f.rows.splice(0, f.rows.length, ...structuredClone(rows));
+    f.policy.issueContext = context;
+    f.policy.selectCandidates = candidates;
+    f.host.prerequisiteOwners = async () => "absent";
+    for (const [path, bytes] of files) await writeFile(path, bytes);
+  }
+});
+
+it("ISS-187 leaves ordinary saved selection and item-stop advancement in their native paths", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const declaration = f.loop.prerequisite!;
+  delete f.loop.prerequisite;
+  const before = await snapshot(f.runState);
+  const launches = f.calls.filter((call) => call.startsWith("launch:"));
+  expect(await f.advance()).toMatchObject({ selection: f.blocked.selection });
+  const q = await f.compose((await f.advance())!);
+  await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toEqual(launches);
+  expect(await snapshot(f.runState)).toEqual(before);
+  f.loop.prerequisite = declaration;
+  // An ordinary completed work stop remains advanceable with a declaration.
+  await stopCycle(f.loop, f.blocked, "launcher-failed", 1, f.host, f.policy);
+  expect((await f.advance())!.selection.key).toBe("fixture-110");
+  expect((await f.advance())!.prerequisite).toBeUndefined();
+  await expect(readFile(resolve(f.runState, "prerequisite/admission.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+it("ISS-187 does not freeze ordinary source-FAIL parking or its completed replay", async () => {
+  const f = await sourceFailureFixture(5);
+  roots.push(f.root);
+  await f.fail();
+  await historicalStops(f, "complete");
+  f.loop.nativeLaunchCeiling = 64;
+  f.loop.prerequisite = {
+    blockedCycle: f.cycle.selection.cycle,
+    blockedKey: "fixture-110",
+    blockedNumber: 110,
+    stop: 1,
+    key: "fixture-159",
+    number: 159,
+    authorityUrl: "https://github.com/fixture/repository/issues/1#issuecomment-1",
+  };
+  for (let replay = 0; replay < 2; replay++) {
+    const selected = (await f.advance())!;
+    expect(selected.selection.key).toBe("fixture-159");
+    expect(selected.prerequisite).toBeUndefined();
+    expect(f.rows[0]!.ready).toBe(false);
+  }
+});
+
+it("ISS-187 keeps the real self planning, dependency, milestone and board admission", async () => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  f.loop.nativeLaunchCeiling = 64;
+  const run = resolve(f.loop.stateRoot, f.loop.run);
+  const blocked = { cycle: 5, key: "ISS-003", number: 3, base: f.old };
+  for (let cycle = 1; cycle <= 4; cycle++) {
+    const selection = {
+      cycle,
+      key: cycle === 3 ? "ISS-002" : "ISS-001",
+      number: cycle === 3 ? 2 : 1,
+      base: f.old,
+    };
+    await persistCycle(f.loop, { selection, initialHistory: [] });
+    await writeFile(
+      resolve(run, `cycle-${cycle}-complete.json`),
+      JSON.stringify({ selection, history: [] }),
+    );
+  }
+  await persistCycle(f.loop, { selection: blocked, initialHistory: [] });
+  const intent = {
+    selection: blocked,
+    stop: 1,
+    reason: "pilot-revision-moved",
+    attempts: 1,
+    history: [],
+    marker: "synthetic-stop",
+    body: "Synthetic host stop",
+  };
+  await writeFile(resolve(run, "cycle-5-stop-1.json"), JSON.stringify(intent));
+  await writeFile(
+    resolve(run, "cycle-5-stop-1-complete.json"),
+    JSON.stringify({ selection: blocked, stop: 1, history: [] }),
+  );
+  const prior = resolve(run, "iss-002-attempt-1");
+  const source = resolve(prior, "source");
+  const setup = resolve(prior, "setup");
+  await Promise.all([mkdir(source, { recursive: true }), mkdir(setup, { recursive: true })]);
+  const issue = `https://github.com/${f.loop.repository}/issues/2`;
+  await writeFile(
+    resolve(prior, "attempt.json"),
+    JSON.stringify({
+      run: f.loop.run,
+      item: "ISS-002:1",
+      issue,
+      phase: "source",
+      base: f.old,
+      candidateAttempt: 1,
+      acceptedStage: null,
+    }),
+  );
+  await writeFile(
+    resolve(source, "config.json"),
+    JSON.stringify({
+      config: {
+        run: f.loop.run,
+        issue,
+        repository: f.loop.repository,
+        base: f.old,
+        stateDirectory: source,
+      },
+    }),
+  );
+  await writeFile(
+    resolve(source, "author-attempt.json"),
+    JSON.stringify({ id: "synthetic-prior-author" }),
+  );
+  await writeFile(
+    resolve(source, "author-terminal.json"),
+    JSON.stringify({ id: "synthetic-prior-author", status: "failed", head: f.old }),
+  );
+  await writeFile(
+    resolve(setup, "setup-plan.json"),
+    JSON.stringify({
+      worktrees: ["source", "pilot", "review"].map((role) => ({
+        path: resolve(f.loop.worktreeRoot, `iss-002-attempt-1-${role}`),
+      })),
+    }),
+  );
+  f.loop.prerequisite = {
+    blockedCycle: 5,
+    blockedKey: "ISS-003",
+    blockedNumber: 3,
+    stop: 1,
+    key: "ISS-002",
+    number: 2,
+    authorityUrl: "https://github.com/fixture/repository/issues/1#issuecomment-1",
+  };
+  f.host.prerequisiteOwners = async () => "absent";
+  f.host.issue = async (_config, number) => ({
+    state: "OPEN",
+    key: number === 2 ? "ISS-002" : "ISS-003",
+    labels: ["ready"],
+    comments: [],
+  });
+  const board = await f.board();
+  const census = vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(board);
+  const before = await snapshot(run);
+  const selected = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+  expect(selected.selection).toEqual({
+    cycle: 5,
+    key: "ISS-002",
+    number: 2,
+    base: f.current,
+    planningRevision: f.current,
+  });
+  for (const kind of ["unready", "body", "milestone", "dependency"] as const) {
+    const changed = structuredClone(board);
+    if (kind === "unready") changed.issues[1]!.labels = [];
+    if (kind === "body") changed.issues[1]!.body += "\nUnmirrored content";
+    if (kind === "milestone") changed.issues[1]!.milestone = "Second";
+    if (kind === "dependency") {
+      // ISS-003 remains blocked by the open ISS-002 and cannot preempt it.
+      const candidates = await f.policy.selectCandidates({
+        repository: f.loop.repository,
+        executorRoot: f.executor,
+        planningRevision: f.current,
+        gitExecutable: f.loop.gitExecutable,
+      });
+      expect(candidates.map((row) => row.key)).toEqual(["ISS-002"]);
+      continue;
+    }
+    census.mockResolvedValue(changed);
+    await expect(nativeNextCycle(f.loop, f.executor, f.host, f.policy), kind).rejects.toThrow();
+    census.mockResolvedValue(board);
+    expect(await snapshot(run)).toEqual(before);
+  }
+  expect(await snapshot(run)).toEqual(before);
+});
+
+it.each(["host-stop", "dispatch-interruption", "author-fail", "park-completion", "external-close"])(
+  "ISS-187 resumes only its existing lineage at %s",
+  async (boundary) => {
+    const f = await prerequisiteFixture();
+    roots.push(f.root);
+    const before = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const selected = (await f.advance())!;
+    await persistCycle(f.loop, selected);
+    // A crash after selection must not mistake the old attempt1 FAIL for a
+    // terminal result of the detour itself.
+    expect(await f.advance()).toEqual(selected);
+    const q = await f.compose(selected);
+    await startCycle(f.loop, selected, f.host);
+    if (boundary === "host-stop" || boundary === "dispatch-interruption") {
+      f.setAuthorStatus("running");
+      if (boundary === "dispatch-interruption") {
+        const observe = f.native.observe;
+        f.native.observe = async () => {
+          throw new QueueBlocked("provider-unavailable");
+        };
+        await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+          reason: "provider-unavailable",
+        });
+        f.native.observe = observe;
+      } else await queueStep(q.config, q.adapter);
+      await stopCycle(f.loop, selected, "provider-unavailable", 2, f.host, f.policy);
+      const launches = f.calls.filter((c) => c.startsWith("launch:"));
+      expect(await f.advance()).toEqual(selected);
+      const resumed = await f.compose((await f.advance())!);
+      expect(await reconcilePendingStop(f.loop, selected, f.host, f.policy)).toBeUndefined();
+      expect(await queueStep(resumed.config, resumed.adapter)).toMatchObject({
+        status: "observing-author",
+      });
+      expect(f.calls.filter((c) => c.startsWith("launch:"))).toEqual(launches);
+    } else {
+      if (boundary === "external-close") f.rows[0]!.state = "CLOSED";
+      else {
+        await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+          reason: "author-failed",
+        });
+        if (boundary === "park-completion") {
+          await stopCycle(
+            f.loop,
+            { ...selected, initialHistory: await q.adapter.history() },
+            "author-failed",
+            2,
+            f.host,
+            f.policy,
+          );
+          // Interruption after the native note receipt but before cycle completion.
+          await rm(resolve(f.runState, "prerequisite/cycle-5-complete.json"));
+        }
+      }
+      await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+      const terminal = await snapshot(f.runState);
+      await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+      expect(await snapshot(f.runState)).toEqual(terminal);
+      await expect(
+        readFile(resolve(f.runState, "fixture-110-attempt-3/attempt.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await prerequisiteProof(f, before, trees, boundary);
+  },
+);
 
 it("fresh FAIL parks and selects next ready", async () => {
   const f = await sourceFailureFixture();
@@ -1166,6 +1688,7 @@ it("parks only the explicit item stop reasons", async () => {
       "implementation-attempt-ceiling-exhausted",
       "gate-retry-exhausted:typecheck",
       "reviewer-malformed",
+      "author-malformed",
       "exit-receipt-timeout",
       "launcher-failed",
       "rebase-conflict",
@@ -1186,6 +1709,8 @@ it("parks only the explicit item stop reasons", async () => {
 });
 
 it.each([
+  ["author-malformed", true],
+  ["worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility", false],
   ["gate-base-failed:test", false],
   ["gate-host-failed:test", false],
   ["gate-attribution-unknown:test", false],

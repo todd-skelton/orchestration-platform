@@ -57,6 +57,13 @@ malformed with its measured length and cap in the terminal summary and the
 existing single automatic retry context (ISS-150). Authors share this extraction
 rule (ISS-177), retaining their JSON-only prompts, five-key schema and
 2000-character summary cap; the whole author message has no summary cap.
+An oversized author summary reports its measured length and the 2000 limit.
+Completed malformed authors use the same single transient retry, retaining
+staged, unstaged and untracked partial work at the recorded base rather than
+the dead-author reset. The retry receives the diagnostic, prior trace and
+attempt/terminal context, inspects and verifies the work, and returns its own
+verdict. Malformed launches remain charged failures; a spent retry stops as
+`author-malformed` with ordinary parking, without another attempt (ISS-183).
 Completion, identity and head checks remain unchanged. Parsing grants no
 acceptance: independent exact-head review, native local gates and final-head
 Ubuntu/Windows/macOS bootstrap green remain required before landing.
@@ -280,20 +287,40 @@ This recovery requires the previous publication to remain on the recorded head
 and GitHub to retain its logs until capture. Once captured, resumed worker
 launches use the runtime file without refetching.
 
-When all required checks and all workflow runs are absent, the checks adapter
+ISS-185 binds hosted decisions and failed logs to Actions' structured repository,
+PR, source/base and head association. It selects the latest run within each
+owning workflow and that run's current effective jobs, including failed-only
+reruns; shared-SHA rollup rows supply no authority. Logs pin the selected attempt
+and recheck it after acquisition. Unknown attribution stops observation without
+parking or spending another attempt; old unattributed logs remain unchanged.
+When the current publication's workflow runs are absent, the checks adapter
 waits ten seconds and reobserves, at most twelve times in that observation
-call (two minutes of waits, plus API request time). Advisory check rows do not
+call (two minutes of waits, plus API request time). Foreign and advisory rows do not
 prevent this startup retry. Each poll revalidates exact publication identity.
-Any visible workflow run or required-check row leaves startup retry and follows
+An attributed current workflow run leaves startup retry and follows
 the existing validation; wrong-head/PR, malformed, duplicate, failed or skipped
 required evidence is not converted into success. Persistent absence still
-stops at the existing missing-check error. A linked pending workflow follows
+stops through the non-parking hosted-observation path. A current pending workflow follows
 ordinary observation until actual required green, with no republishing or
 worker/implementation retry budget consumed. A host interruption can repeat
 this bounded in-flight observation under rule 9; no new runtime schema or
 migration is required (ISS-143).
 
 ### Saved-cycle recovery
+
+ISS-187 permits one self prerequisite detour declared by `prerequisite` on the
+existing 64-launch/four-attempt run: `blockedCycle`, `blockedKey`, `blockedNumber`,
+completed run-scoped `stop`, prerequisite `key`/`number`, and `authorityUrl`.
+Admission requires ordinary current eligibility, a retained pinned source FAIL
+at attempt 1, and no live or uncertain competing owner. Its supervision records
+live under `prerequisite/`; ordinary same-run queue paths retain the charges and
+enter attempt 2, including native repair/advance through the existing ceiling.
+Keep that executor installed throughout the detour. Delivery, parking and host
+stops yield; restart resumes the same lineage. Terminal replay holds the saved
+cycle until the operator removes the declaration and supplies
+`blockedCycleResume: { cycle, authorityUrl }` with a different host grant, after
+separately landing and installing its repair. Neither the declaration nor this
+capability authorizes installation, readiness or preserved-run execution.
 
 Native resume observes an unfinished saved selection's issue before
 reconstructing its source workspace or replaying a pending stop. When that
@@ -605,7 +632,9 @@ Payout Fees remains incomplete until its operator-blocked work is resolved.
 New ordinary attempts use the local source branch
 `codex/run-<sha256(run)>/<issue-key>-attempt-<attempt>`; the hash keeps every
 accepted run name valid in a Git ref. Pilot and review remain detached.
-Resume reads the branch from the existing setup plan, including legacy names.
+Resume reads the branch and pilot revision from the existing setup plan, including
+legacy names; matched same-checkout replay validates the live repository against
+the current executor without repinning the pilot (ISS-180).
 Published branch names, PR identity and forward-only refresh rules stay the same;
 delivery publishes the candidate to that existing name and cleans up its own
 local branch. A preserved worktree is never removed, moved or reused by a fresh

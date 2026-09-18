@@ -7,21 +7,293 @@ import {
   readdir,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   gitSetupAdapter,
   SetupOutputSanitizer,
   type SetupAdapterOptions,
 } from "../../scripts/dogfood/setup-adapter.mjs";
-import { setupStep, type SetupConfig, type InstallResult } from "../../scripts/dogfood/setup.mjs";
+import {
+  setupStep,
+  SetupBlocked,
+  type SetupConfig,
+  type InstallResult,
+} from "../../scripts/dogfood/setup.mjs";
+import { retainedFiles } from "./fixtures/planning-selection.js";
 
 const run = promisify(execFile);
 const roots: string[] = [];
+
+const controlledGit = vi.hoisted(() => ({
+  execute: undefined as
+    ((args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>) | undefined,
+}));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const execute = promisify(actual.execFile);
+  const injected = actual.execFile.bind(null);
+  Object.defineProperty(injected, promisify.custom, {
+    value: (
+      executable: string,
+      args: string[],
+      options: import("node:child_process").ExecFileOptions,
+    ) =>
+      executable === "deferred-setup-git"
+        ? controlledGit.execute!(args, String(options.cwd))
+        : execute(executable, args, options),
+  });
+  return { ...actual, execFile: injected };
+});
+
+async function deferredReads(batch: "identity" | "validation" | "worktree", aliasRoot = false) {
+  let root = await mkdtemp(resolve(tmpdir(), "setup-deferred-"));
+  roots.push(root);
+  if (aliasRoot) {
+    const target = resolve(root, "actual");
+    await mkdir(target);
+    const alias = resolve(root, "alias");
+    await symlink(target, alias, "junction");
+    root = alias;
+  }
+  const config: SetupConfig = {
+    controller: "synthetic-controller",
+    run: "deferred-setup",
+    issue: "fixture-190",
+    repository: "fixture/repository",
+    controllerRoot: resolve(root, "controller"),
+    repositoryRoot: resolve(root, "repository"),
+    stateDirectory: resolve(root, "state"),
+    pilotWorktree: resolve(root, "pilot"),
+    sourceWorktree: resolve(root, "source"),
+    reviewWorktree: resolve(root, "review"),
+    controllerRevision: "a".repeat(40),
+    pilotRevision: "b".repeat(40),
+    base: "c".repeat(40),
+    baseBranch: "main",
+    sourceBranch: "fixture/source",
+  };
+  await Promise.all(
+    [config.controllerRoot, config.repositoryRoot, config.stateDirectory, config.pilotWorktree].map(
+      (path) => mkdir(path),
+    ),
+  );
+  const controllerRoot = await realpath(config.controllerRoot);
+  const calls: string[][] = [];
+  const children: {
+    args: string[];
+    finish(stdout?: string): void;
+    fail(error: Error): void;
+  }[] = [];
+  const started = Promise.withResolvers<void>();
+  let pending = 0;
+  controlledGit.execute = async (args, cwd) => {
+    calls.push(args);
+    let stdout = "";
+    if (args.includes("--git-common-dir"))
+      return { stdout: resolve(config.repositoryRoot, ".git"), stderr: "" };
+    if (args[0] === "worktree")
+      return {
+        stdout:
+          batch === "worktree"
+            ? `worktree ${config.pilotWorktree}\0HEAD ${config.pilotRevision}\0\0`
+            : "",
+        stderr: "",
+      };
+    if (args.includes("--show-toplevel")) stdout = cwd;
+    else if (args.includes("HEAD"))
+      stdout = cwd === controllerRoot ? config.controllerRevision : config.pilotRevision;
+    else if (args.includes("--verify")) stdout = args[2]!.split("^")[0]!;
+    else if (args[0] === "branch") stdout = batch === "worktree" ? "" : config.baseBranch;
+    else if (args[0] !== "status" && args[0] !== "check-ref-format")
+      throw new Error(`unexpected Git read: ${args.join(" ")}`);
+    const validation = args[0] === "status" || args[0] === "check-ref-format";
+    if (batch === "worktree" || validation === (batch === "validation")) {
+      const child = Promise.withResolvers<{ stdout: string; stderr: string }>();
+      pending += 1;
+      children.push({
+        args,
+        finish: (value = stdout) => child.resolve({ stdout: value, stderr: "" }),
+        fail: child.reject,
+      });
+      if (children.length === (batch === "identity" ? 7 : batch === "validation" ? 4 : 3))
+        started.resolve();
+      try {
+        return await child.promise;
+      } finally {
+        pending -= 1;
+      }
+    }
+    return { stdout, stderr: "" };
+  };
+  await mkdir(resolve(config.repositoryRoot, ".git"));
+  const adapter = gitSetupAdapter({ gitExecutable: "deferred-setup-git" });
+  let settled = false;
+  const operation =
+    batch === "worktree"
+      ? adapter.observeWorktree(config, "pilot", true)
+      : adapter.assertExecutor(config, config.controllerRoot);
+  const outcome = operation.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (error: unknown) => {
+      settled = true;
+      return error;
+    },
+  );
+  return {
+    config,
+    calls,
+    children,
+    async waitForReads() {
+      await Promise.race([started.promise, outcome]);
+      expect(settled).toBe(false);
+    },
+    outcome,
+    settled: () => settled,
+    pending: () => pending,
+    async finish() {
+      for (const child of children) child.finish();
+      await outcome;
+    },
+  };
+}
+
+// All controlled completions and their promise reactions precede this event-loop turn.
+const drainedReactions = () => new Promise<void>((done) => setImmediate(done));
+
+it.each(["pilotRevision", "base", "sourceBranch"] as const)(
+  "joins deferred siblings before refusing invalid %s",
+  async (field) => {
+    const f = await deferredReads(field === "sourceBranch" ? "validation" : "identity");
+    try {
+      await f.waitForReads();
+      const invalid = f.children.find((child) =>
+        child.args.includes(
+          field === "sourceBranch" ? f.config[field] : `${f.config[field]}^{commit}`,
+        ),
+      )!;
+      invalid.fail(new Error("invalid reference"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      expect(f.pending()).toBe(f.children.length - 1);
+      expect(f.calls).toHaveLength(field === "sourceBranch" ? 13 : 9);
+      const late = f.children.find((child) => child !== invalid)!;
+      late.fail(new Error("late sibling failure"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toBeInstanceOf(SetupBlocked);
+      expect(await f.outcome).toMatchObject({ reason: "setup-state-unverified" });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(field === "sourceBranch" ? 13 : 9);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["dirty", "invalid"] as const)(
+  "keeps the first observed %s refusal while draining differently failing siblings",
+  async (first) => {
+    const f = await deferredReads("validation");
+    try {
+      await f.waitForReads();
+      const dirty = f.children.find((child) => child.args[0] === "status")!;
+      const invalid = f.children.find((child) => child.args.includes(f.config.sourceBranch))!;
+      if (first === "dirty") dirty.finish("?? dirty.txt");
+      else invalid.fail(new Error("invalid branch"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      if (first === "dirty") invalid.fail(new Error("late invalid branch"));
+      else dirty.finish("?? dirty.txt");
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toBeInstanceOf(SetupBlocked);
+      expect(await f.outcome).toMatchObject({
+        reason: first === "dirty" ? "dirty-setup-repository" : "setup-state-unverified",
+      });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(13);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["identity", "validation", "worktree"] as const)(
+  "keeps every successful %s read concurrent without extra Git calls",
+  async (batch) => {
+    const f = await deferredReads(batch);
+    try {
+      await f.waitForReads();
+      expect(f.pending()).toBe(batch === "identity" ? 7 : batch === "validation" ? 4 : 3);
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toEqual(
+        batch === "worktree"
+          ? { state: "confirmed", head: f.config.pilotRevision, branch: null }
+          : undefined,
+      );
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(batch === "worktree" ? 6 : 13);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["identity", "validation"] as const)(
+  "keeps successful %s reads concurrent through a symlinked fixture root",
+  async (batch) => {
+    const f = await deferredReads(batch, true);
+    try {
+      await f.waitForReads();
+      expect(f.config.controllerRoot).not.toBe(await realpath(f.config.controllerRoot));
+      expect(f.pending()).toBe(batch === "identity" ? 7 : 4);
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toBeUndefined();
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(13);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["HEAD", "--show-current", "--porcelain"])(
+  "joins worktree siblings before returning unknown for %s failure",
+  async (argument) => {
+    const f = await deferredReads("worktree");
+    try {
+      await f.waitForReads();
+      const failed = f.children.find((child) => child.args.includes(argument))!;
+      failed.fail(new Error("worktree read failed"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      expect(f.pending()).toBe(2);
+      f.children.find((child) => child !== failed)!.fail(new Error("late sibling failure"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toEqual({ state: "unknown" });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(6);
+    } finally {
+      await f.finish();
+    }
+  },
+);
 
 async function git(cwd: string, args: string[]) {
   return (
@@ -114,6 +386,7 @@ async function fixture() {
 }
 
 afterEach(async () => {
+  controlledGit.execute = undefined;
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -156,6 +429,205 @@ it("prepares three real portable Git worktrees and resumes without duplicate set
   ).rejects.toMatchObject({ reason: "dependency-state-drift:pilot" });
   expect(current.installs()).toBe(3);
 }, 30_000);
+
+async function upgradeRepository(current: Awaited<ReturnType<typeof fixture>>) {
+  await git(current.repository, [
+    "-c",
+    "user.name=Synthetic Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--quiet",
+    "--allow-empty",
+    "-m",
+    "executor B",
+  ]);
+  return git(current.repository, ["rev-parse", "HEAD"]);
+}
+
+it.each([false, true])(
+  "keeps fresh pilot A versus checkout B refused (same checkout: %s)",
+  async (sameCheckout) => {
+    const f = await fixture();
+    const upgraded = await upgradeRepository(f);
+    if (sameCheckout) {
+      f.config.controllerRoot = f.repository;
+      f.config.controllerRevision = upgraded;
+    }
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.config.controllerRoot)).rejects.toMatchObject({
+      reason: "setup-head-drift",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(f.installs()).toBe(0);
+    expect(await readdir(f.config.stateDirectory)).toEqual([]);
+  },
+);
+
+it("admits matched distinct-repository replay only while the product checkout stays at pilot A", async () => {
+  const f = await fixture();
+  await setupStep(f.config, f.adapter, f.controller);
+  const retained = await retainedFiles(f.config.stateDirectory);
+  // A controller upgrade alone does not change the separate product HEAD.
+  await git(f.controller, ["checkout", "--detach", f.config.pilotRevision]);
+  f.config.controllerRevision = f.config.pilotRevision;
+  await expect(setupStep(f.config, f.adapter, f.controller)).resolves.toMatchObject({
+    status: "ready",
+  });
+  const upgraded = await upgradeRepository(f);
+  await git(f.controller, ["checkout", "--detach", upgraded]);
+  f.config.controllerRevision = upgraded;
+  // Same Git common directory is insufficient: these are distinct checkouts.
+  await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+    reason: "setup-head-drift",
+  });
+  expect(await retainedFiles(f.config.stateDirectory)).toEqual(retained);
+  expect(await git(f.config.pilotWorktree, ["rev-parse", "HEAD"])).toBe(f.config.pilotRevision);
+  expect(f.installs()).toBe(3);
+});
+
+it("uses canonical checkout identity for matched replay through a directory alias", async () => {
+  const f = await fixture();
+  const alias = resolve(f.root, "controller alias");
+  await symlink(f.repository, alias, "junction");
+  f.config.controllerRoot = alias;
+  f.config.controllerRevision = f.config.pilotRevision;
+  await setupStep(f.config, f.adapter, f.repository);
+  const before = await retainedFiles(f.config.stateDirectory);
+  f.config.controllerRevision = await upgradeRepository(f);
+  await expect(setupStep(f.config, f.adapter, f.repository)).resolves.toMatchObject({
+    status: "ready",
+  });
+  expect(await retainedFiles(f.config.stateDirectory)).toEqual(before);
+  expect(await git(f.config.pilotWorktree, ["rev-parse", "HEAD"])).toBe(f.config.pilotRevision);
+  expect(f.installs()).toBe(3);
+});
+
+it.each(["controller", "repository", "branch"] as const)(
+  "retains the %s boundary in fresh and matched replay",
+  async (boundary) => {
+    for (const replay of [false, true]) {
+      const f = await fixture();
+      if (replay) {
+        await setupStep(f.config, f.adapter, f.controller);
+        await git(f.controller, ["checkout", "--detach", f.config.pilotRevision]);
+        f.config.controllerRevision = f.config.pilotRevision;
+      }
+      if (boundary === "branch") await git(f.repository, ["checkout", "-b", "other"]);
+      else await writeFile(resolve(f[boundary], "dirty.txt"), "synthetic drift\n");
+      const before = await retainedFiles(f.root, true);
+      await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+        reason: boundary === "branch" ? "setup-head-drift" : "dirty-setup-repository",
+      });
+      expect(await retainedFiles(f.root, true)).toEqual(before);
+      expect(f.installs()).toBe(replay ? 3 : 0);
+    }
+  },
+);
+
+it.each(["pilotRevision", "base", "sourceBranch"] as const)(
+  "keeps fresh %s resolution ahead of plan persistence",
+  async (field) => {
+    const f = await fixture();
+    f.config[field] = field === "sourceBranch" ? "invalid..ref" : "f".repeat(40);
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+      reason: "setup-state-unverified",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(await readdir(f.config.stateDirectory)).toEqual([]);
+    expect(f.installs()).toBe(0);
+  },
+);
+
+it("compares the whole saved plan before executor validation and keeps the comparison read-only", async () => {
+  const f = await fixture();
+  f.config.controllerRoot = f.repository;
+  f.config.controllerRevision = f.config.pilotRevision;
+  await setupStep(f.config, f.adapter, f.repository);
+  const planPath = resolve(f.config.stateDirectory, "setup-plan.json");
+  const bytes = await readFile(planPath, "utf8");
+  const plan = JSON.parse(bytes);
+  const upgraded = await upgradeRepository(f);
+  // The stale controller revision would fail the adapter. Mismatched plans must
+  // instead fail the earlier exact comparison, even though pilot A agrees.
+  const mutations = [
+    ...[
+      "schemaVersion",
+      "run",
+      "issue",
+      "repository",
+      "repositoryRoot",
+      "controllerRoot",
+      "stateDirectory",
+      "controller",
+      "base",
+      "baseBranch",
+      "sourceBranch",
+    ].map((key) => (saved: typeof plan) => {
+      saved[key] += "-changed";
+    }),
+    ...[0, 1, 2].flatMap((index) =>
+      ["run", "role", "path", "head", "branch"].map((key) => (saved: typeof plan) => {
+        saved.worktrees[index][key] = "changed";
+      }),
+    ),
+    ...["launcher", "offline", "frozenLockfile", "ignoreScripts"].map(
+      (key) => (saved: typeof plan) => {
+        saved.dependencies[key] = "changed";
+      },
+    ),
+  ];
+  for (const mutate of mutations) {
+    const saved = JSON.parse(bytes);
+    mutate(saved);
+    await writeFile(planPath, JSON.stringify(saved));
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+      reason: "conflicting-record:setup-plan",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+  }
+  await writeFile(planPath, bytes);
+  await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+    reason: "setup-head-drift",
+  });
+  f.config.controllerRevision = upgraded;
+  await expect(setupStep(f.config, f.adapter, f.repository)).resolves.toMatchObject({
+    status: "ready",
+  });
+  expect(await readFile(planPath, "utf8")).toBe(bytes);
+  expect(f.installs()).toBe(3);
+});
+
+it.each(["missing", "malformed", "pilot-only"])(
+  "a %s plan cannot authorize same-checkout replay",
+  async (kind) => {
+    const f = await fixture();
+    f.config.controllerRoot = f.repository;
+    f.config.controllerRevision = f.config.pilotRevision;
+    await setupStep(f.config, f.adapter, f.repository);
+    f.config.controllerRevision = await upgradeRepository(f);
+    const path = resolve(f.config.stateDirectory, "setup-plan.json");
+    if (kind === "missing") await rm(path);
+    else
+      await writeFile(
+        path,
+        kind === "malformed" ? "{" : JSON.stringify({ pilotRevision: f.config.pilotRevision }),
+      );
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+      reason:
+        kind === "missing"
+          ? "setup-head-drift"
+          : kind === "malformed"
+            ? "malformed-record:setup-plan"
+            : "conflicting-record:setup-plan",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(f.installs()).toBe(3);
+  },
+);
 
 it("keeps a marker-then-unknown install uncertain without repeating it on resume", async () => {
   const current = await fixture();

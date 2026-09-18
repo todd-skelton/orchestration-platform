@@ -40,6 +40,55 @@ const authorId = "11111111-1111-1111-1111-111111111111";
 const reviewId = "22222222-2222-2222-2222-222222222222";
 const roots: string[] = [];
 
+// Synthetic structured Actions response for the existing delivery lifecycle tests.
+function hostedResponse(
+  config: DeliveryConfig,
+  publication: PublicationEvidence,
+  args: string[],
+  pending = false,
+) {
+  if (args[0] !== "api" || !args[1]?.includes("/actions/runs")) return undefined;
+  const repo = { id: 10, full_name: config.repository };
+  const run = {
+    id: 123,
+    workflow_id: 7,
+    run_number: 1,
+    run_attempt: 1,
+    path: ".github/workflows/bootstrap.yml",
+    event: "pull_request",
+    repository: repo,
+    head_repository: repo,
+    head_sha: config.candidateHead,
+    head_branch: publication.sourceBranch,
+    status: pending ? "in_progress" : "completed",
+    pull_requests: [
+      {
+        number: publication.number,
+        url: `https://api.github.com/repos/${config.repository}/pulls/${publication.number}`,
+        head: { ref: publication.sourceBranch, sha: config.candidateHead, repo: { id: 10 } },
+        base: { ref: publication.baseBranch, repo: { id: 10 } },
+      },
+    ],
+  };
+  if (args[1].includes("/jobs?"))
+    return [
+      {
+        jobs: config.requiredChecks.map((name, index) => ({
+          id: 456 + index,
+          run_id: 123,
+          run_attempt: 1,
+          head_sha: config.candidateHead,
+          name,
+          html_url: `https://github.com/${config.repository}/actions/runs/123/job/${456 + index}`,
+          status: pending ? "in_progress" : "completed",
+          conclusion: pending ? null : "success",
+        })),
+      },
+    ];
+  if (args[1].endsWith("/123")) return run;
+  return [{ workflow_runs: [run] }];
+}
+
 const gateFaults = vi.hoisted(() => ({ cleanup: false }));
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
@@ -611,16 +660,17 @@ it("revalidates full publication identity after checks before ready or merge eff
         return "[]";
       },
       async ghJson(_config, args) {
-        if (args[0] === "api") return [{ workflow_runs: [] }];
+        const hosted = hostedResponse(current, publication, args, true);
+        if (hosted) return hosted;
         return publicationRow(publication, drifted ? { baseRefName: "release" } : {});
       },
     },
     "git",
     async () => {},
   );
-  await expect(adapter.checks(current, publication)).resolves.toEqual({
+  await expect(adapter.checks(current, publication)).resolves.toMatchObject({
     head: current.candidateHead,
-    checks: [],
+    workflowPending: true,
   });
   drifted = true;
   await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow(
@@ -629,7 +679,7 @@ it("revalidates full publication identity after checks before ready or merge eff
   expect(effects).toEqual([]);
 });
 
-it("distinguishes the installed CLI no-check response from provider failure", async () => {
+it("distinguishes absent current workflows from failed provider acquisition", async () => {
   const { current } = await repositoryFixture(
     "https://github.com/todd-skelton/orchestration-platform.git",
   );
@@ -651,9 +701,9 @@ it("distinguishes the installed CLI no-check response from provider failure", as
     "git",
     async () => {},
   );
-  await expect(noChecks.checks(current, publication)).resolves.toEqual({
-    head: current.candidateHead,
-    checks: [],
+  await expect(noChecks.checks(current, publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics: "current publication workflow absent after 12 startup waits",
   });
 
   const unavailable = githubDeliveryAdapter({
@@ -664,7 +714,8 @@ it("distinguishes the installed CLI no-check response from provider failure", as
         stderr: "provider unavailable\n",
       });
     },
-    async ghJson() {
+    async ghJson(_config, args) {
+      if (args[0] === "api") throw new Error("provider unavailable");
       return publicationRow(publication);
     },
   });
@@ -686,7 +737,8 @@ it("does not mistake asynchronously computed mergeability for publication identi
         return "[]";
       },
       async ghJson(_config, args) {
-        if (args[0] === "api") return [{ workflow_runs: [] }];
+        const hosted = hostedResponse(current, publication, args, true);
+        if (hosted) return hosted;
         return publicationRow(
           publication,
           ++reads % 2
@@ -698,9 +750,9 @@ it("does not mistake asynchronously computed mergeability for publication identi
     "git",
     async () => {},
   );
-  await expect(adapter.checks(current, publication)).resolves.toEqual({
+  await expect(adapter.checks(current, publication)).resolves.toMatchObject({
     head: current.candidateHead,
-    checks: [],
+    workflowPending: true,
   });
 });
 
@@ -1492,6 +1544,11 @@ async function preUpgradeDeliveryFixture(
       return "";
     },
     async ghJson(_config, args) {
+      const hosted = hostedResponse(current, publication, args, pending);
+      if (hosted) {
+        if (args[1]!.includes("runs?")) calls.push("actions observation");
+        return hosted;
+      }
       if (args[0] === "api" && args[3]?.includes("enqueuePullRequest")) {
         calls.push("enqueue");
         if (admission === "failed")
@@ -1597,14 +1654,28 @@ it("resumes legacy published delivery records after a stopped executor upgrade a
     sha(JSON.stringify({ ...f.current, controllerRevision: historicalRevision })),
   );
   await expect(f.resume()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-  expect(f.calls).toEqual(["pr checks"]);
+  expect(f.calls).toEqual(["actions observation", "actions observation"]);
   f.pass();
   await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
-  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "enqueue"]);
+  expect(f.calls).toEqual([
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "pr ready",
+    "enqueue",
+  ]);
   const after = await stateSnapshot(f.current.stateDirectory);
   for (const [name, contents] of Object.entries(f.before)) expect(after[name]).toBe(contents);
   await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
-  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "enqueue"]);
+  expect(f.calls).toEqual([
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "pr ready",
+    "enqueue",
+  ]);
 });
 
 it.each(["pending", "lost"] as const)(
@@ -1872,6 +1943,11 @@ it("reconciles a lost merge through the engine and the real OPEN-only checks ada
       return "";
     },
     async ghJson(_config, args) {
+      const hosted = hostedResponse(current, publication, args);
+      if (hosted) {
+        if (args[1]!.includes("runs?")) effects.push(args);
+        return hosted;
+      }
       if (lostObservation) {
         lostObservation = false;
         throw new Error("lost observation");
@@ -1908,7 +1984,7 @@ it("reconciles a lost merge through the engine and the real OPEN-only checks ada
     status: "complete",
   });
   expect(effects.filter((args) => args[1] === "merge")).toHaveLength(1);
-  expect(effects.filter((args) => args[1] === "checks")).toHaveLength(1);
+  expect(effects.filter((args) => args[1]?.includes("runs?"))).toHaveLength(2);
   expect(cleaned).toBe(true);
   // Two engine cycles perform real Git identity checks; Windows CI exceeds the 5s default.
 }, 30_000);
@@ -1964,6 +2040,11 @@ it("cleans real Git state, confirms exact absence, and restarts without effects"
       return "";
     },
     async ghJson(_config, args) {
+      const hosted = hostedResponse(current, publication, args);
+      if (hosted) {
+        if (args[1]!.includes("runs?")) effects.push(args);
+        return hosted;
+      }
       providerReads += 1;
       const row = publicationRow(publication, {
         state: merged ? "MERGED" : "OPEN",

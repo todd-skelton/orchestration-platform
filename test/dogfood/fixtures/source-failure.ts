@@ -25,7 +25,7 @@ import type { Adapter } from "../../../scripts/dogfood/flow.js";
 import { SELF_ROUTING } from "../../../scripts/dogfood/routing.mjs";
 
 // All issue identities, workers and delivery results in this fixture are synthetic.
-export async function sourceFailureFixture(priorWorkers = 0) {
+export async function sourceFailureFixture(priorWorkers = 0, files: string[] = []) {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "source-fail-native-")));
   const repository = resolve(root, "repository");
   await mkdir(repository);
@@ -42,6 +42,11 @@ export async function sourceFailureFixture(priorWorkers = 0) {
   await git(repository, ["config", "user.email", "fixture@example.test"]);
   await writeFile(resolve(repository, ".gitignore"), "node_modules/\n");
   await writeFile(resolve(repository, "product.txt"), "synthetic base\n");
+  for (const file of files) {
+    const path = resolve(repository, file);
+    await mkdir(resolve(path, ".."), { recursive: true });
+    await writeFile(path, "synthetic preserved base\n");
+  }
   await git(repository, ["add", "."]);
   await git(repository, ["commit", "-m", "synthetic old executor"]);
   const base = await git(repository, ["rev-parse", "HEAD"]);
