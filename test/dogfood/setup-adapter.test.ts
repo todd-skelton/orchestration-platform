@@ -7,6 +7,7 @@ import {
   readdir,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import {
   type SetupAdapterOptions,
 } from "../../scripts/dogfood/setup-adapter.mjs";
 import { setupStep, type SetupConfig, type InstallResult } from "../../scripts/dogfood/setup.mjs";
+import { retainedFiles } from "./fixtures/planning-selection.js";
 
 const run = promisify(execFile);
 const roots: string[] = [];
@@ -156,6 +158,205 @@ it("prepares three real portable Git worktrees and resumes without duplicate set
   ).rejects.toMatchObject({ reason: "dependency-state-drift:pilot" });
   expect(current.installs()).toBe(3);
 }, 30_000);
+
+async function upgradeRepository(current: Awaited<ReturnType<typeof fixture>>) {
+  await git(current.repository, [
+    "-c",
+    "user.name=Synthetic Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--quiet",
+    "--allow-empty",
+    "-m",
+    "executor B",
+  ]);
+  return git(current.repository, ["rev-parse", "HEAD"]);
+}
+
+it.each([false, true])(
+  "keeps fresh pilot A versus checkout B refused (same checkout: %s)",
+  async (sameCheckout) => {
+    const f = await fixture();
+    const upgraded = await upgradeRepository(f);
+    if (sameCheckout) {
+      f.config.controllerRoot = f.repository;
+      f.config.controllerRevision = upgraded;
+    }
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.config.controllerRoot)).rejects.toMatchObject({
+      reason: "setup-head-drift",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(f.installs()).toBe(0);
+    expect(await readdir(f.config.stateDirectory)).toEqual([]);
+  },
+);
+
+it("admits matched distinct-repository replay only while the product checkout stays at pilot A", async () => {
+  const f = await fixture();
+  await setupStep(f.config, f.adapter, f.controller);
+  const retained = await retainedFiles(f.config.stateDirectory);
+  // A controller upgrade alone does not change the separate product HEAD.
+  await git(f.controller, ["checkout", "--detach", f.config.pilotRevision]);
+  f.config.controllerRevision = f.config.pilotRevision;
+  await expect(setupStep(f.config, f.adapter, f.controller)).resolves.toMatchObject({
+    status: "ready",
+  });
+  const upgraded = await upgradeRepository(f);
+  await git(f.controller, ["checkout", "--detach", upgraded]);
+  f.config.controllerRevision = upgraded;
+  // Same Git common directory is insufficient: these are distinct checkouts.
+  await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+    reason: "setup-head-drift",
+  });
+  expect(await retainedFiles(f.config.stateDirectory)).toEqual(retained);
+  expect(await git(f.config.pilotWorktree, ["rev-parse", "HEAD"])).toBe(f.config.pilotRevision);
+  expect(f.installs()).toBe(3);
+});
+
+it("uses canonical checkout identity for matched replay through a directory alias", async () => {
+  const f = await fixture();
+  const alias = resolve(f.root, "controller alias");
+  await symlink(f.repository, alias, "junction");
+  f.config.controllerRoot = alias;
+  f.config.controllerRevision = f.config.pilotRevision;
+  await setupStep(f.config, f.adapter, f.repository);
+  const before = await retainedFiles(f.config.stateDirectory);
+  f.config.controllerRevision = await upgradeRepository(f);
+  await expect(setupStep(f.config, f.adapter, f.repository)).resolves.toMatchObject({
+    status: "ready",
+  });
+  expect(await retainedFiles(f.config.stateDirectory)).toEqual(before);
+  expect(await git(f.config.pilotWorktree, ["rev-parse", "HEAD"])).toBe(f.config.pilotRevision);
+  expect(f.installs()).toBe(3);
+});
+
+it.each(["controller", "repository", "branch"] as const)(
+  "retains the %s boundary in fresh and matched replay",
+  async (boundary) => {
+    for (const replay of [false, true]) {
+      const f = await fixture();
+      if (replay) {
+        await setupStep(f.config, f.adapter, f.controller);
+        await git(f.controller, ["checkout", "--detach", f.config.pilotRevision]);
+        f.config.controllerRevision = f.config.pilotRevision;
+      }
+      if (boundary === "branch") await git(f.repository, ["checkout", "-b", "other"]);
+      else await writeFile(resolve(f[boundary], "dirty.txt"), "synthetic drift\n");
+      const before = await retainedFiles(f.root, true);
+      await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+        reason: boundary === "branch" ? "setup-head-drift" : "dirty-setup-repository",
+      });
+      expect(await retainedFiles(f.root, true)).toEqual(before);
+      expect(f.installs()).toBe(replay ? 3 : 0);
+    }
+  },
+);
+
+it.each(["pilotRevision", "base", "sourceBranch"] as const)(
+  "keeps fresh %s resolution ahead of plan persistence",
+  async (field) => {
+    const f = await fixture();
+    f.config[field] = field === "sourceBranch" ? "invalid..ref" : "f".repeat(40);
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+      reason: "setup-state-unverified",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(await readdir(f.config.stateDirectory)).toEqual([]);
+    expect(f.installs()).toBe(0);
+  },
+);
+
+it("compares the whole saved plan before executor validation and keeps the comparison read-only", async () => {
+  const f = await fixture();
+  f.config.controllerRoot = f.repository;
+  f.config.controllerRevision = f.config.pilotRevision;
+  await setupStep(f.config, f.adapter, f.repository);
+  const planPath = resolve(f.config.stateDirectory, "setup-plan.json");
+  const bytes = await readFile(planPath, "utf8");
+  const plan = JSON.parse(bytes);
+  const upgraded = await upgradeRepository(f);
+  // The stale controller revision would fail the adapter. Mismatched plans must
+  // instead fail the earlier exact comparison, even though pilot A agrees.
+  const mutations = [
+    ...[
+      "schemaVersion",
+      "run",
+      "issue",
+      "repository",
+      "repositoryRoot",
+      "controllerRoot",
+      "stateDirectory",
+      "controller",
+      "base",
+      "baseBranch",
+      "sourceBranch",
+    ].map((key) => (saved: typeof plan) => {
+      saved[key] += "-changed";
+    }),
+    ...[0, 1, 2].flatMap((index) =>
+      ["run", "role", "path", "head", "branch"].map((key) => (saved: typeof plan) => {
+        saved.worktrees[index][key] = "changed";
+      }),
+    ),
+    ...["launcher", "offline", "frozenLockfile", "ignoreScripts"].map(
+      (key) => (saved: typeof plan) => {
+        saved.dependencies[key] = "changed";
+      },
+    ),
+  ];
+  for (const mutate of mutations) {
+    const saved = JSON.parse(bytes);
+    mutate(saved);
+    await writeFile(planPath, JSON.stringify(saved));
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+      reason: "conflicting-record:setup-plan",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+  }
+  await writeFile(planPath, bytes);
+  await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+    reason: "setup-head-drift",
+  });
+  f.config.controllerRevision = upgraded;
+  await expect(setupStep(f.config, f.adapter, f.repository)).resolves.toMatchObject({
+    status: "ready",
+  });
+  expect(await readFile(planPath, "utf8")).toBe(bytes);
+  expect(f.installs()).toBe(3);
+});
+
+it.each(["missing", "malformed", "pilot-only"])(
+  "a %s plan cannot authorize same-checkout replay",
+  async (kind) => {
+    const f = await fixture();
+    f.config.controllerRoot = f.repository;
+    f.config.controllerRevision = f.config.pilotRevision;
+    await setupStep(f.config, f.adapter, f.repository);
+    f.config.controllerRevision = await upgradeRepository(f);
+    const path = resolve(f.config.stateDirectory, "setup-plan.json");
+    if (kind === "missing") await rm(path);
+    else
+      await writeFile(
+        path,
+        kind === "malformed" ? "{" : JSON.stringify({ pilotRevision: f.config.pilotRevision }),
+      );
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+      reason:
+        kind === "missing"
+          ? "setup-head-drift"
+          : kind === "malformed"
+            ? "malformed-record:setup-plan"
+            : "conflicting-record:setup-plan",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(f.installs()).toBe(3);
+  },
+);
 
 it("keeps a marker-then-unknown install uncertain without repeating it on resume", async () => {
   const current = await fixture();

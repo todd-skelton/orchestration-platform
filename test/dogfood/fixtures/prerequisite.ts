@@ -112,6 +112,12 @@ export async function prerequisiteFixture() {
   await f.git(f.repository, ["remote", "add", "origin", remote]);
   await f.upgrade();
   const replay = await f.compose(blocked);
+  // ISS-187's historical stop predates ISS-180. Reconstruct the old composition
+  // explicitly; ordinary composition now keeps the saved pilot at its old head.
+  const replayItem = replay.config.items[0]!;
+  expect(replayItem.source.pilotRevision).toBe(blockedQueue.config.items[0]!.source.pilotRevision);
+  replayItem.setup.pilotRevision = replay.config.controllerRevision;
+  replayItem.source.pilotRevision = replay.config.controllerRevision;
   try {
     await queueStep(replay.config, replay.adapter);
     throw new Error("missing saved pilot obstruction");

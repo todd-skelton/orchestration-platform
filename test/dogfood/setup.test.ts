@@ -190,11 +190,11 @@ it.each(["base", "ignoreScripts"])(
     if (field === "base") saved.base = "c".repeat(40);
     else saved.dependencies.ignoreScripts = false;
     await writeFile(path, JSON.stringify(saved, null, 2) + "\n");
-    const installs = current.calls.filter((call) => call.startsWith("install:"));
+    const calls = [...current.calls];
     await expect(
       setupStep(current.config, current.adapter, current.config.controllerRoot),
     ).rejects.toMatchObject({ reason: "conflicting-record:setup-plan" });
-    expect(current.calls.filter((call) => call.startsWith("install:"))).toEqual(installs);
+    expect(current.calls).toEqual(calls);
   },
 );
 

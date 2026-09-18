@@ -999,7 +999,7 @@ export async function queueConfigFromLoop(
     title: issueContext.title,
     attempt: sourceAttempt,
   });
-  // ISS-151: preserve saved setup names, including attempts created before run scoping.
+  // ISS-151/180: retain the attempt's branch and pilot across executor upgrades.
   const savedSetup = await optionalRecord(paths.setup, "setup-plan");
   const sourceBranch =
     savedSetup !== ABSENT
@@ -1007,6 +1007,18 @@ export async function queueConfigFromLoop(
       : replan
         ? publishedBranch
         : `codex/run-${createHash("sha256").update(config.run).digest("hex")}/${slug}`;
+  const pilotRevision = savedSetup !== ABSENT ? savedSetup.pilotRevision : repositoryRevision;
+  if (savedSetup !== ABSENT) {
+    demand(
+      typeof pilotRevision === "string" && SHA.test(pilotRevision),
+      "invalid-saved-pilot-revision",
+    );
+    demand(
+      (await git(["rev-parse", "--verify", `${pilotRevision}^{commit}`]).catch(() => "")) ===
+        pilotRevision,
+      "invalid-saved-pilot-revision",
+    );
+  }
   const [hostedChecks, localGates] = await Promise.all([
     repositoryAdapter.requiredChecks({ repository: config.repository }),
     repositoryAdapter.localGates
@@ -1031,7 +1043,7 @@ export async function queueConfigFromLoop(
     repositoryRoot,
     controllerRoot,
     controllerRevision,
-    pilotRevision: repositoryRevision,
+    pilotRevision,
     base: attemptBase,
     baseBranch: "main",
     sourceBranch,
@@ -1054,7 +1066,7 @@ export async function queueConfigFromLoop(
     owner: controller,
     run: config.run,
     issue: issueUrl,
-    pilotRevision: repositoryRevision,
+    pilotRevision,
     base: attemptBase,
     ...(sourceAttempt > 1 ? { mainBase } : {}),
     ...(conflictContinuation ? { inheritedWorkerRetry } : {}),
