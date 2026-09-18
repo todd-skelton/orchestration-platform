@@ -293,6 +293,10 @@ owning workflow and that run's current effective jobs, including failed-only
 reruns; shared-SHA rollup rows supply no authority. Logs pin the selected attempt
 and recheck it after acquisition. Unknown attribution stops observation without
 parking or spending another attempt; old unattributed logs remain unchanged.
+Same-selection lifecycle status changes keep ordinary observation pending when
+either validated workflow snapshot is non-completed; immutable workflow/run/attempt
+identity and publication/job validation still apply. Terminal non-success retains
+its existing handling, with no extra polling or retry allowance (ISS-188).
 When the current publication's workflow runs are absent, the checks adapter
 waits ten seconds and reobserves, at most twelve times in that observation
 call (two minutes of waits, plus API request time). Foreign and advisory rows do not

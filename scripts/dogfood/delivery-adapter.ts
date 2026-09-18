@@ -288,27 +288,24 @@ async function attributedChecks(
     // The latest-jobs endpoint supplies the effective set for failed-only reruns.
     // Never combine jobs from separate runs or manually fill gaps with old jobs.
   }
-  for (const name of config.requiredChecks) {
-    const count = checks.filter((check) => check.name === name).length;
-    if (count > 1 || (count === 0 && workflows.size > 0 && !workflowPending))
-      throw new Error(`missing or duplicate current job: ${name}`);
-  }
   if (workflows.size > 0) {
+    const after = await publicationRuns(commands, config, current);
     const signature = (runs: Map<number, any>) =>
       JSON.stringify(
         [...runs.values()]
           .sort((a, b) => a.workflow_id - b.workflow_id)
-          .map((run) => [
-            run.workflow_id,
-            run.id,
-            run.run_number,
-            run.run_attempt,
-            run.status,
-            run.path,
-          ]),
+          .map((run) => [run.workflow_id, run.id, run.run_number, run.run_attempt, run.path]),
       );
-    if (signature(workflows) !== signature(await publicationRuns(commands, config, current)))
+    if (signature(workflows) !== signature(after))
       throw new Error("applicable workflow changed during observation; reobserve checks");
+    // ISS-188: lifecycle progress preserves attribution, but sampled green is
+    // insufficient when either validated observation is still pending.
+    workflowPending ||= [...after.values()].some((run) => run.status !== "completed");
+  }
+  for (const name of config.requiredChecks) {
+    const count = checks.filter((check) => check.name === name).length;
+    if (count > 1 || (count === 0 && workflows.size > 0 && !workflowPending))
+      throw new Error(`missing or duplicate current job: ${name}`);
   }
   return { checks, workflowPending, startupInvisible: workflows.size === 0 };
 }
