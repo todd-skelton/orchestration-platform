@@ -745,6 +745,12 @@ it.each([
       name,
       bucket: "fail" as const,
       link: `https://github.com/fixture/repository/actions/runs/${index === 3 ? 34818999246 : 34818999245}/job/${index + 1}`,
+      actions: {
+        run: index === 3 ? 34818999246 : 34818999245,
+        attempt: 1,
+        job: index + 1,
+        workflow: index === 3 ? 2 : 1,
+      },
     }));
     let fetches = 0;
     const delivery = {
@@ -755,8 +761,13 @@ it.each([
         expect(observedPublication).toEqual(publication);
         return { head: base, checks };
       },
-      async failedCheckLog(config: DeliveryConfig, check: { name: string }) {
+      async failedCheckLog(
+        config: DeliveryConfig,
+        check: { name: string },
+        observedPublication: PublicationEvidence,
+      ) {
         expect(config.candidateHead).toBe(base);
+        expect(observedPublication).toEqual(publication);
         fetches++;
         if (mode === "failed fetch") throw new Error("hosted logs unavailable");
         return `${(check.name === "E2E" ? ["E2E"] : ["PR Required", "Static Checks", "Unit Tests"]).map((name) => `${name}: actual underlying diagnostic`).join("\n")}\n${"PR Required aggregate boilerplate\n".repeat(200)}`;
