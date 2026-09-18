@@ -89,6 +89,210 @@ function hostedResponse(
   return [{ workflow_runs: [run] }];
 }
 
+// ISS-188: entirely synthetic identities; no Git, provider or mutation calls.
+function statusObservation(beforeStatus = "in_progress", afterStatus = "completed") {
+  const current = { ...config(tmpdir()), repository: "fixture/repository" };
+  const publication = {
+    ...publicationEvidence(current),
+    repository: current.repository,
+    url: "https://github.com/fixture/repository/pull/44",
+  };
+  const response = hostedResponse(current, publication, ["api", "/actions/runs?"]);
+  if (!Array.isArray(response) || !("workflow_runs" in response[0]!))
+    throw new Error("expected synthetic workflow response");
+  const run = response[0].workflow_runs[0]!;
+  const before = [{ ...run, status: beforeStatus }];
+  const after = [{ ...structuredClone(run), status: afterStatus }];
+  const jobResponse = hostedResponse(current, publication, ["api", "/actions/runs/123/jobs?"]);
+  if (!Array.isArray(jobResponse) || !("jobs" in jobResponse[0]!))
+    throw new Error("expected synthetic jobs response");
+  const state = {
+    before,
+    after,
+    jobs: jobResponse[0].jobs,
+    publicationAfter: publicationRow(publication),
+    failAfter: false,
+  };
+  const requests: string[][] = [];
+  const mutations = vi.fn(async () => {
+    throw new Error("unexpected mutation");
+  });
+  const pause = vi.fn(async () => {});
+  let workflowReads = 0;
+  let publicationReads = 0;
+  const adapter = githubDeliveryAdapter(
+    {
+      gh: mutations,
+      async ghJson(_config, args) {
+        requests.push(args);
+        if (args[0] === "pr" && args[1] === "view")
+          return ++publicationReads === 1 ? publicationRow(publication) : state.publicationAfter;
+        expect(args[0]).toBe("api");
+        if (args[1]!.includes("/jobs?")) return structuredClone([{ jobs: state.jobs }]);
+        expect(args[1]).toContain("/actions/runs?");
+        if (++workflowReads === 2 && state.failAfter) throw new Error("synthetic API failure");
+        return structuredClone([
+          { workflow_runs: workflowReads === 1 ? state.before : state.after },
+        ]);
+      },
+    },
+    "unused-git",
+    pause,
+  );
+  const assertCalls = (count: number) => {
+    expect(requests).toHaveLength(count);
+    expect(workflowReads).toBe(count >= 4 ? 2 : 1);
+    expect(publicationReads).toBe(count === 5 ? 2 : 1);
+    expect(pause).not.toHaveBeenCalled();
+    expect(mutations).not.toHaveBeenCalled();
+  };
+  return { current, publication, state, adapter, assertCalls };
+}
+
+it.each([
+  ["in_progress", "in_progress", "pending", true],
+  ["completed", "completed", "success", false],
+  ["completed", "completed", "failure", false],
+  ["completed", "completed", "cancelled", false],
+  ["completed", "completed", "skipped", false],
+  ["queued", "in_progress", "missing", true],
+  ["queued", "in_progress", "pending", true],
+  ["in_progress", "completed", "missing", true],
+  ["in_progress", "completed", "pending", true],
+  ["in_progress", "completed", "success", true],
+  ["in_progress", "completed", "failure", true],
+  ["completed", "in_progress", "success", true],
+] as const)(
+  "SYNTHETIC %s to %s with %s jobs preserves pending=%s",
+  async (before, after, jobs, pending) => {
+    const f = statusObservation(before, after);
+    if (jobs === "missing") f.state.jobs = [];
+    else
+      for (const job of f.state.jobs) {
+        job.status = jobs === "pending" ? "in_progress" : "completed";
+        job.conclusion = jobs === "pending" ? null : jobs;
+      }
+    const result = await f.adapter.checks(f.current, f.publication);
+    expect(result.workflowPending ?? false).toBe(pending);
+    expect(result.head).toBe(f.publication.head);
+    expect(result.checks).toEqual(
+      jobs === "missing"
+        ? []
+        : f.current.requiredChecks.map((name, index) => ({
+            name,
+            bucket: {
+              pending: "pending",
+              success: "pass",
+              failure: "fail",
+              cancelled: "cancel",
+              skipped: "skipping",
+            }[jobs],
+            link: `https://github.com/fixture/repository/actions/runs/123/job/${456 + index}`,
+            actions: { run: 123, attempt: 1, job: 456 + index, workflow: 7 },
+          })),
+    );
+    f.assertCalls(5);
+  },
+);
+
+it.each(["workflow_id", "id", "run_number", "run_attempt", "path", "addition", "removal"] as const)(
+  "SYNTHETIC status progress cannot admit changed selection: %s",
+  async (field) => {
+    const f = statusObservation();
+    const after = f.state.after[0]!;
+    if (field === "path") after.path = ".github/workflows/other.yml";
+    else if (field === "addition")
+      f.state.after.push({
+        ...after,
+        id: 124,
+        workflow_id: 8,
+        path: ".github/workflows/other.yml",
+      });
+    else if (field === "removal") f.state.after = [];
+    else after[field]++;
+    await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+      reason: "hosted-observation-unavailable",
+      diagnostics: "applicable workflow changed during observation; reobserve checks",
+    });
+    f.assertCalls(4);
+  },
+);
+
+it.each(["before", "after"] as const)(
+  "SYNTHETIC %s association is independently checked despite status progress",
+  async (snapshot) => {
+    for (const field of [
+      "repository",
+      "PR",
+      "head",
+      "source",
+      "base",
+      "status",
+      "duplicate",
+      "malformed",
+    ] as const) {
+      const f = statusObservation();
+      const run = f.state[snapshot][0]!;
+      if (field === "repository") run.repository.full_name = "foreign/repository";
+      if (field === "PR")
+        run.pull_requests[0]!.url = "https://api.github.com/repos/fixture/repository/pulls/45";
+      if (field === "head") run.head_sha = "f".repeat(40);
+      if (field === "source") run.pull_requests[0]!.head.ref = "other-source";
+      if (field === "base") run.pull_requests[0]!.base.ref = "other-base";
+      if (field === "status") run.status = "invalid";
+      if (field === "duplicate") f.state[snapshot].push(run);
+      if (field === "malformed") run.run_attempt = 0;
+      await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+        reason: "hosted-observation-unavailable",
+      });
+      f.assertCalls(snapshot === "before" ? 2 : 4);
+    }
+  },
+);
+
+it.each([
+  "head",
+  "run",
+  "attempt",
+  "old failure",
+  "duplicate",
+  "duplicate name",
+  "malformed",
+  "acquisition",
+  "publication",
+] as const)("SYNTHETIC status progress cannot hide invalid %s evidence", async (field) => {
+  const f = statusObservation();
+  const job = f.state.jobs[0]!;
+  if (field === "head") job.head_sha = "f".repeat(40);
+  if (field === "run") job.run_id++;
+  if (field === "attempt") job.run_attempt++;
+  if (field === "old failure") {
+    f.state.before[0]!.run_attempt = f.state.after[0]!.run_attempt = 2;
+    job.conclusion = "failure";
+  }
+  if (field === "duplicate") f.state.jobs.push(job);
+  if (field === "duplicate name") f.state.jobs[1]!.name = job.name;
+  if (field === "malformed") job.status = "invalid";
+  if (field === "acquisition") f.state.failAfter = true;
+  if (field === "publication") f.state.publicationAfter.headRefOid = "f".repeat(40);
+  await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+  f.assertCalls(
+    field === "publication" ? 5 : ["acquisition", "duplicate name"].includes(field) ? 4 : 3,
+  );
+});
+
+it("SYNTHETIC stable completion still refuses a missing terminal required job", async () => {
+  const f = statusObservation("completed", "completed");
+  f.state.jobs.pop();
+  await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics: "missing or duplicate current job: Node 24 / macos-latest",
+  });
+  f.assertCalls(4);
+});
+
 const gateFaults = vi.hoisted(() => ({ cleanup: false }));
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();

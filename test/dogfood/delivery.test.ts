@@ -254,6 +254,7 @@ async function aggregateFixture(
   const evidence = {
     checks: [] as CheckEvidence[],
     runs: [syntheticRun(f.publication)],
+    workflowStatuses: [] as string[],
     driftAfterWorkflow: false,
     log: "PR Required failed",
     logError: false,
@@ -309,7 +310,10 @@ async function aggregateFixture(
             "--slurp",
           ]);
           if (evidence.driftAfterWorkflow) publicationHead = "f".repeat(40);
-          return [{ workflow_runs: evidence.runs }];
+          const runs = structuredClone(evidence.runs);
+          const status = evidence.workflowStatuses.shift();
+          if (status) for (const run of runs) run.status = status;
+          return [{ workflow_runs: runs }];
         }
         return {
           number: f.publication.number,
@@ -680,127 +684,132 @@ it.each(["jobs", "logs"] as const)(
   },
 );
 
+async function owningQueueFixture(f: Awaited<ReturnType<typeof fixture>>) {
+  const current = f.config;
+  current.retries = 1;
+  const stateDirectory = resolve(current.stateDirectory, "../queue");
+  await mkdir(stateDirectory);
+  const actor = { model: "fixture", effort: "high", prompt: "fixture" };
+  const history: QueueParticipant[] = Array.from({ length: 6 }, (_, index) => ({
+    ordinal: index + 1,
+    id: index === 5 ? "review-fixture" : `participant-${index}`,
+    item: index < 4 ? `prior-${Math.floor(index / 2)}` : "fixture",
+    stage: "source",
+    role: index % 2 ? "reviewer" : "author",
+    outcome: index < 4 && index % 2 ? "failed" : "passed",
+    rung: 0,
+    usage: queueUsage(undefined),
+  }));
+  const queue: QueueConfig = {
+    schemaVersion: "dogfood-bounded-queue-config/v1",
+    controller: current.controller,
+    run: current.run,
+    controllerRoot: current.controllerRoot,
+    controllerRevision: current.controllerRevision,
+    stateDirectory,
+    limit: 1,
+    nativeLaunchCeiling: 8,
+    initialHistory: history.slice(0, 4),
+    items: [
+      {
+        id: "fixture",
+        issue: current.issue,
+        base: current.candidateHead,
+        implementationAttempt: 3,
+        implementationAttemptCeiling: 4,
+        setup: {
+          controller: current.controller,
+          run: current.run,
+          issue: current.issue,
+          repository: current.repository,
+          repositoryRoot: current.repositoryRoot,
+          controllerRoot: current.controllerRoot,
+          controllerRevision: current.controllerRevision,
+          pilotRevision: current.controllerRevision,
+          base: current.candidateHead,
+          baseBranch: "main",
+          sourceBranch: f.publication.sourceBranch,
+          pilotWorktree: resolve(stateDirectory, "../pilot"),
+          sourceWorktree: current.worktree,
+          reviewWorktree: current.reviewWorktree,
+          stateDirectory: resolve(stateDirectory, "setup"),
+        },
+        source: {
+          owner: current.controller,
+          run: current.run,
+          issue: current.issue,
+          pilotRevision: current.controllerRevision,
+          base: current.candidateHead,
+          worktree: current.worktree,
+          reviewWorktree: current.reviewWorktree,
+          stateDirectory: current.stateDirectory,
+          allowedPaths: ["."],
+          repository: current.repository,
+          requiredChecks: current.requiredChecks,
+          author: actor,
+          reviewer: actor,
+          adapter: { kind: "codex-exec", executable: process.execPath },
+        },
+        repair: {
+          stateDirectory: resolve(stateDirectory, "repair"),
+          acceptanceCriteria: ["fixture"],
+          author: actor,
+          reviewer: actor,
+        },
+        delivery: { requiredChecks: current.requiredChecks, policy: current.policy },
+      },
+    ],
+  };
+  const saved = {
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "delivery",
+    run: queue.run,
+    index: 0,
+    item: "fixture",
+    issue: current.issue,
+    base: current.candidateHead,
+    candidateAttempt: 3,
+    head: current.candidateHead,
+    reviewId: "review-fixture",
+    findings: [],
+    history,
+    retries: 1,
+    acceptedStage: "source",
+    stateDirectory: current.stateDirectory,
+    authorFailures: { count: 2, ids: ["participant-0", "participant-2"] },
+  };
+  const path = resolve(stateDirectory, "attempt.json");
+  const bytes = `${JSON.stringify(saved, null, 2)}\n`;
+  await writeFile(path, bytes);
+  let workers = 0;
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return history;
+    },
+    async setup() {
+      throw new Error("unexpected setup");
+    },
+    async source() {
+      workers++;
+      throw new Error("unexpected source launch");
+    },
+    async repair() {
+      workers++;
+      throw new Error("unexpected corrective launch");
+    },
+    async delivery() {
+      return deliveryStep(current, f.adapter, f.policy);
+    },
+  };
+  return { queue, adapter, path, bytes, history, workers: () => workers };
+}
+
 it.each(["stale failure", "stale green", "current failure"] as const)(
   "SYNTHETIC owning queue preserves charges on restart with %s",
   async (mode) => {
     const f = await incidentFixture();
-    const current = f.config;
-    current.retries = 1;
-    const stateDirectory = resolve(current.stateDirectory, "../queue");
-    await mkdir(stateDirectory);
-    const actor = { model: "fixture", effort: "high", prompt: "fixture" };
-    const history: QueueParticipant[] = Array.from({ length: 6 }, (_, index) => ({
-      ordinal: index + 1,
-      id: index === 5 ? "review-fixture" : `participant-${index}`,
-      item: index < 4 ? `prior-${Math.floor(index / 2)}` : "fixture",
-      stage: "source",
-      role: index % 2 ? "reviewer" : "author",
-      outcome: index < 4 && index % 2 ? "failed" : "passed",
-      rung: 0,
-      usage: queueUsage(undefined),
-    }));
-    const queue: QueueConfig = {
-      schemaVersion: "dogfood-bounded-queue-config/v1",
-      controller: current.controller,
-      run: current.run,
-      controllerRoot: current.controllerRoot,
-      controllerRevision: current.controllerRevision,
-      stateDirectory,
-      limit: 1,
-      nativeLaunchCeiling: 8,
-      initialHistory: history.slice(0, 4),
-      items: [
-        {
-          id: "fixture",
-          issue: current.issue,
-          base: current.candidateHead,
-          implementationAttempt: 3,
-          implementationAttemptCeiling: 4,
-          setup: {
-            controller: current.controller,
-            run: current.run,
-            issue: current.issue,
-            repository: current.repository,
-            repositoryRoot: current.repositoryRoot,
-            controllerRoot: current.controllerRoot,
-            controllerRevision: current.controllerRevision,
-            pilotRevision: current.controllerRevision,
-            base: current.candidateHead,
-            baseBranch: "main",
-            sourceBranch: f.publication.sourceBranch,
-            pilotWorktree: resolve(stateDirectory, "../pilot"),
-            sourceWorktree: current.worktree,
-            reviewWorktree: current.reviewWorktree,
-            stateDirectory: resolve(stateDirectory, "setup"),
-          },
-          source: {
-            owner: current.controller,
-            run: current.run,
-            issue: current.issue,
-            pilotRevision: current.controllerRevision,
-            base: current.candidateHead,
-            worktree: current.worktree,
-            reviewWorktree: current.reviewWorktree,
-            stateDirectory: current.stateDirectory,
-            allowedPaths: ["."],
-            repository: current.repository,
-            requiredChecks: current.requiredChecks,
-            author: actor,
-            reviewer: actor,
-            adapter: { kind: "codex-exec", executable: process.execPath },
-          },
-          repair: {
-            stateDirectory: resolve(stateDirectory, "repair"),
-            acceptanceCriteria: ["fixture"],
-            author: actor,
-            reviewer: actor,
-          },
-          delivery: { requiredChecks: current.requiredChecks, policy: current.policy },
-        },
-      ],
-    };
-    const saved = {
-      schemaVersion: "dogfood-bounded-queue-attempt/v1",
-      phase: "delivery",
-      run: queue.run,
-      index: 0,
-      item: "fixture",
-      issue: current.issue,
-      base: current.candidateHead,
-      candidateAttempt: 3,
-      head: current.candidateHead,
-      reviewId: "review-fixture",
-      findings: [],
-      history,
-      retries: 1,
-      acceptedStage: "source",
-      stateDirectory: current.stateDirectory,
-      authorFailures: { count: 2, ids: ["participant-0", "participant-2"] },
-    };
-    const path = resolve(stateDirectory, "attempt.json");
-    const bytes = `${JSON.stringify(saved, null, 2)}\n`;
-    await writeFile(path, bytes);
-    let workers = 0;
-    const adapter: QueueAdapter = {
-      async assertExecutor() {},
-      async history() {
-        return history;
-      },
-      async setup() {
-        throw new Error("unexpected setup");
-      },
-      async source() {
-        workers++;
-        throw new Error("unexpected source launch");
-      },
-      async repair() {
-        workers++;
-        throw new Error("unexpected corrective launch");
-      },
-      async delivery() {
-        return deliveryStep(current, f.adapter, f.policy);
-      },
-    };
+    const { queue, adapter, path, bytes, history, workers } = await owningQueueFixture(f);
     if (mode !== "stale failure")
       f.hosted.projection.forEach((row) => {
         row.bucket = "pass";
@@ -831,9 +840,107 @@ it.each(["stale failure", "stale green", "current failure"] as const)(
         expect(await readFile(path, "utf8")).toBe(bytes);
       }
     }
-    expect(workers).toBe(0);
+    expect(workers()).toBe(0);
     expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
     expect(f.calls).not.toContain("merge");
+  },
+);
+
+it("ISS-188 SYNTHETIC same-run progress stays in ordinary queue observation until stable green", async () => {
+  const waits: number[] = [];
+  const f = await aggregateFixture(
+    async (ms) => {
+      waits.push(ms);
+    },
+    ["linux", "windows", "macos"],
+  );
+  const q = await owningQueueFixture(f);
+  const priorPath = resolve(f.config.stateDirectory, "prior-stop.json");
+  const prior = JSON.stringify({
+    status: "failed",
+    candidateAttempt: 2,
+    retries: 1,
+    history: q.history.slice(0, 4),
+  });
+  await writeFile(priorPath, prior);
+  const observe = () => queueStep(q.queue, q.adapter);
+  const pending = async (statuses: string[], bucket: CheckEvidence["bucket"] | "missing") => {
+    f.evidence.workflowStatuses = statuses;
+    f.evidence.checks =
+      bucket === "missing"
+        ? []
+        : f.config.requiredChecks.map((name, index) => f.check(name, bucket, 456 + index));
+    const requestsBefore = f.requests.length;
+    await expect(observe()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.requests.length - requestsBefore).toBe(5);
+    expect(f.evidence.workflowStatuses).toEqual([]);
+    expect(await readFile(q.path, "utf8")).toBe(q.bytes);
+    expect(await readFile(priorPath, "utf8")).toBe(prior);
+    expect(f.calls).not.toContain("merge");
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "hosted-checks.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(q.workers()).toBe(0);
+  };
+  await pending(["queued", "in_progress"], "missing");
+  const publicationPath = resolve(f.config.stateDirectory, "publication.json");
+  const publication = await readFile(publicationPath, "utf8");
+  await pending(["in_progress", "completed"], "pending");
+  await pending(["in_progress", "completed"], "pass");
+  // Synthetic stale-read control: sampled green cannot authorize early merge.
+  await pending(["completed", "in_progress"], "pass");
+  f.evidence.runs[0]!.status = "completed";
+  await expect(observe()).resolves.toMatchObject({ status: "complete" });
+  const complete = JSON.parse(await readFile(q.path, "utf8"));
+  expect(complete).toMatchObject({
+    phase: "complete",
+    candidateAttempt: 3,
+    retries: 1,
+    history: q.history,
+    authorFailures: { count: 2, ids: ["participant-0", "participant-2"] },
+  });
+  const requestsAfter = f.requests.length;
+  await expect(observe()).resolves.toMatchObject({ status: "complete" });
+  expect(f.requests).toHaveLength(requestsAfter);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+  expect(f.requests.filter((args) => args.includes("--log-failed"))).toEqual([]);
+  expect(waits).toEqual([]);
+  expect(q.workers()).toBe(0);
+  expect(await readFile(publicationPath, "utf8")).toBe(publication);
+  expect(await readFile(priorPath, "utf8")).toBe(prior);
+});
+
+it.each(["fail", "cancel", "skipping"] as const)(
+  "ISS-188 SYNTHETIC status progress preserves terminal %s handling",
+  async (bucket) => {
+    const waits: number[] = [];
+    const f = await aggregateFixture(async (ms) => {
+      waits.push(ms);
+    });
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.workflowStatuses = ["in_progress", "completed"];
+    f.evidence.checks = [f.check("PR Required", bucket)];
+    const result = deliveryStep(f.config, f.adapter, f.policy);
+    if (bucket === "skipping")
+      await expect(result).rejects.toMatchObject({ reason: "hosted-check-failed:PR Required" });
+    else {
+      await expect(result).resolves.toMatchObject({
+        status: "failed",
+        head,
+        findings: [{ file: "PR Required", severity: "blocking" }],
+      });
+      const log = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+      expect(log).toContain(f.evidence.log);
+      expect(log).toContain(f.evidence.checks[0]!.link);
+    }
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
+      bucket === "skipping" ? 0 : 1,
+    );
+    expect(f.calls).not.toContain("merge");
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(waits).toEqual([]);
   },
 );
 
