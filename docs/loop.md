@@ -308,6 +308,20 @@ migration is required (ISS-143).
 
 ### Saved-cycle recovery
 
+ISS-187 permits one self prerequisite detour declared by `prerequisite` on the
+existing 64-launch/four-attempt run: `blockedCycle`, `blockedKey`, `blockedNumber`,
+completed run-scoped `stop`, prerequisite `key`/`number`, and `authorityUrl`.
+Admission requires ordinary current eligibility, a retained pinned source FAIL
+at attempt 1, and no live or uncertain competing owner. Its supervision records
+live under `prerequisite/`; ordinary same-run queue paths retain the charges and
+enter attempt 2, including native repair/advance through the existing ceiling.
+Keep that executor installed throughout the detour. Delivery, parking and host
+stops yield; restart resumes the same lineage. Terminal replay holds the saved
+cycle until the operator removes the declaration and supplies
+`blockedCycleResume: { cycle, authorityUrl }` with a different host grant, after
+separately landing and installing its repair. Neither the declaration nor this
+capability authorizes installation, readiness or preserved-run execution.
+
 Native resume observes an unfinished saved selection's issue before
 reconstructing its source workspace or replaying a pending stop. When that
 same issue is closed, the existing cycle completion record carries forward

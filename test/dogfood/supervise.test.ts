@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import {
   sourceFailureFixture,
   repairFailureFixture,
@@ -12,6 +13,66 @@ import {
 } from "./fixtures/source-failure.js";
 
 const roots: string[] = [];
+
+it("ISS-187 enters through the supervisory command, completes one detour and holds the saved cycle", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const entry = resolve(f.repository, "scripts/dogfood/supervise.mjs");
+  await writeFile(entry, await readFile(command));
+  await f.git(f.repository, ["add", "scripts/dogfood/supervise.mjs"]);
+  await f.git(f.repository, ["commit", "-m", "synthetic canonical entry"]);
+  const config = resolve(f.root, "loop.json");
+  const control = resolve(f.root, "command-control.json");
+  await writeFile(config, JSON.stringify(f.loop));
+  await writeFile(
+    control,
+    JSON.stringify({ rows: f.rows, gitExecutable: f.loop.gitExecutable, launches: [] }),
+  );
+  const hook = resolve(import.meta.dirname, "supervise-fixtures/prerequisite.mjs");
+  let invocation = 0;
+  const invoke = async () => {
+    const outPath = resolve(f.root, `invoke-${++invocation}.stdout`);
+    const errPath = resolve(f.root, `invoke-${invocation}.stderr`);
+    const [stdout, stderr] = await Promise.all([open(outPath, "wx"), open(errPath, "wx")]);
+    let code: number | null;
+    try {
+      code = await new Promise<number | null>((done, reject) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", pathToFileURL(hook).href, entry, config],
+          {
+            env: { ...process.env, PREREQUISITE_FIXTURE: control },
+            stdio: ["ignore", stdout.fd, stderr.fd],
+          },
+        );
+        child.on("error", reject);
+        child.on("close", done);
+      });
+    } finally {
+      await Promise.all([stdout.close(), stderr.close()]);
+    }
+    return { code, output: (await readFile(outPath, "utf8")) + (await readFile(errPath, "utf8")) };
+  };
+  const before = await snapshot(f.runState);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  const result = await invoke();
+  expect(result.output).toContain('"status":"complete"');
+  expect(result.output).toContain('"reason":"prerequisite-held"');
+  expect(result.code).toBe(1);
+  const after = await snapshot(f.runState);
+  for (const [path, bytes] of before)
+    if (path !== resolve(f.current.config.stateDirectory, "attempt.json"))
+      expect(after.get(path), path).toBe(bytes);
+  const effects = await readFile(control, "utf8");
+  expect(JSON.parse(effects).launches).toEqual([
+    { role: "author", issue: "https://github.com/fixture/repository/issues/110" },
+    { role: "reviewer", issue: "https://github.com/fixture/repository/issues/110" },
+  ]);
+  expect((await invoke()).output).toContain('"reason":"prerequisite-held"');
+  expect(await readFile(control, "utf8")).toBe(effects);
+  expect(await snapshot(f.runState)).toEqual(after);
+  await prerequisiteProof(f, before, trees, "supervisory-entry");
+});
 
 it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] as const)(
   "retained native repair FAIL parks without replay and drains unrelated work: %s",
