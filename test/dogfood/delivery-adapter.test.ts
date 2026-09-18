@@ -294,6 +294,7 @@ it("SYNTHETIC stable completion still refuses a missing terminal required job", 
 });
 
 const gateFaults = vi.hoisted(() => ({ cleanup: false }));
+const workspaceGit = vi.hoisted(() => vi.fn<(args: string[], cwd: string) => string>());
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   const { promisify } = await import("node:util");
@@ -305,6 +306,8 @@ vi.mock("node:child_process", async (original) => {
       args: string[],
       options: import("node:child_process").ExecFileOptions,
     ) => {
+      if (executable === "workspace-git")
+        return Promise.resolve({ stdout: workspaceGit(args, String(options.cwd)), stderr: "" });
       if (gateFaults.cleanup && args[0] === "worktree" && args[1] === "remove")
         return Promise.reject(new Error("fixture control cleanup failed"));
       return execute(executable, args, options);
@@ -782,6 +785,83 @@ function publicationRow(current: PublicationEvidence, values: Record<string, unk
     ...values,
   };
 }
+
+it.each(["common-directory", "HEAD", "dirty", "fetch", "push"] as const)(
+  "SYNTHETIC reuses only the call-local root common directory and refuses later %s drift",
+  async (drift) => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-reads-")));
+    roots.push(root);
+    const current = config(root);
+    const remote = `https://github.com/${current.repository}.git`;
+    const reads: [string[], string, string][] = [];
+    for (const cwd of [current.repositoryRoot, current.worktree, current.reviewWorktree]) {
+      reads.push(
+        [["rev-parse", "--git-common-dir"], cwd, root],
+        [["remote", "get-url", "--all", "origin"], cwd, remote],
+        [["remote", "get-url", "--push", "--all", "origin"], cwd, remote],
+      );
+    }
+    reads.push(
+      [["rev-parse", "HEAD"], current.controllerRoot, current.controllerRevision],
+      [["status", "--porcelain"], current.controllerRoot, ""],
+      [["branch", "--show-current"], current.repositoryRoot, "main"],
+      [["status", "--porcelain"], current.repositoryRoot, ""],
+    );
+    for (const cwd of [current.worktree, current.reviewWorktree])
+      reads.push(
+        [["rev-parse", "HEAD"], cwd, current.candidateHead],
+        [["status", "--porcelain"], cwd, ""],
+      );
+    const changed = {
+      "common-directory": [current.reviewWorktree, "rev-parse --git-common-dir", dirname(root)],
+      HEAD: [current.worktree, "rev-parse HEAD", "b".repeat(40)],
+      dirty: [current.worktree, "status --porcelain", "?? uncommitted.txt"],
+      fetch: [current.worktree, "remote get-url --all origin", "https://github.com/foreign/repo"],
+      push: [
+        current.reviewWorktree,
+        "remote get-url --push --all origin",
+        "https://github.com/foreign/repo",
+      ],
+    }[drift]!;
+    let drifted = false;
+    workspaceGit.mockReset();
+    workspaceGit.mockImplementation((args, cwd) => {
+      const read = reads.find(
+        ([command, directory]) => directory === cwd && command.join(" ") === args.join(" "),
+      );
+      if (!read) throw new Error(`unexpected Git command: ${args.join(" ")}`);
+      return drifted && cwd === changed[0] && args.join(" ") === changed[1] ? changed[2]! : read[2];
+    });
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands, "workspace-git");
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(workspaceGit).toHaveBeenCalledTimes(17);
+    expect(workspaceGit.mock.calls).toEqual(reads.map(([args, cwd]) => [args, cwd]));
+
+    drifted = true;
+    workspaceGit.mockClear();
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.publish(
+        current,
+        {
+          sourceBranch: "codex/iss-074-delivery",
+          baseBranch: "main",
+          title: "fixture",
+          body: "fixture",
+          draft: true,
+        },
+        "absent",
+      ),
+    ).rejects.toThrow("candidate-workspace-drift");
+    expect(workspaceGit.mock.calls).toContainEqual([changed[1]!.split(" "), changed[0]]);
+    for (const call of workspaceGit.mock.calls)
+      expect(reads.map(([args, cwd]) => [args, cwd])).toContainEqual(call);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  },
+);
 
 it.each([
   "https://github.com/todd-skelton/orchestration-platform.git",
