@@ -57,6 +57,7 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
+import { beginCase, phase, finishCleanup } from "./fixtures/iss191-observer.js";
 
 it("binds repair FAIL to its retained setup, source, review, author and complete history", async () => {
   const f = await repairFailureFixture();
@@ -320,16 +321,22 @@ it("binds repair FAIL to its retained setup, source, review, author and complete
 });
 
 async function unparkedRepairFailure(intervening = false) {
+  phase("repair-fixture:entry");
   const f = await repairFailureFixture();
+  phase("repair-fixture:return");
   roots.push(f.root);
+  phase("failed-lifecycle:start");
   await f.fail();
   expect(await f.stop()).toBe("item");
   expect((await f.advance())!.selection.key).toBe("fixture-159");
   if (intervening) expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+  phase("failed-lifecycle:end");
+  phase("later-main:start");
   await writeFile(resolve(f.repository, "main.txt"), "later main\n");
   await f.git(f.repository, ["add", "main.txt"]);
   await f.git(f.repository, ["commit", "-m", "synthetic later main"]);
   await f.git(f.repository, ["push", "origin", "main"]);
+  phase("later-main:end");
   f.rows[0]!.ready = true; // External acceptance plus explicit planning unpark.
   const context = f.policy.issueContext;
   f.policy.issueContext = async (input) => ({
@@ -337,7 +344,9 @@ async function unparkedRepairFailure(intervening = false) {
     body: "Accepted brief repair: use fixture mode current. Preserve the invariant.",
     acceptanceCriteria: ["Use fixture mode current", "Preserve the invariant"],
   });
+  phase("next-selection:start");
   const next = (await f.advance())!;
+  phase("next-selection:end");
   return { f, next };
 }
 
@@ -483,15 +492,24 @@ it("re-derives repair FAIL after interrupted projection before successor setup",
 it.each([0, 1])(
   "admits each successor launch independently with %i remaining slots",
   async (slots) => {
-    const { f, next } = await unparkedRepairFailure();
-    f.loop.nativeLaunchCeiling = next.initialHistory.length + slots;
-    const q = await f.compose(next);
-    const calls = f.calls.length;
-    await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
-      reason: "native-launch-ceiling-exhausted",
-    });
-    expect(f.calls.slice(calls).filter((c) => c.startsWith("launch:"))).toHaveLength(slots);
-    expect((await q.adapter.history()).length).toBe(f.loop.nativeLaunchCeiling);
+    beginCase(`admits each successor launch independently with ${slots} remaining slots`);
+    try {
+      const { f, next } = await unparkedRepairFailure();
+      f.loop.nativeLaunchCeiling = next.initialHistory.length + slots;
+      phase("successor-compose:start");
+      const q = await f.compose(next);
+      phase("successor-compose:end");
+      const calls = f.calls.length;
+      phase("queue-refusal:start");
+      await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+        reason: "native-launch-ceiling-exhausted",
+      });
+      phase("queue-refusal:end");
+      expect(f.calls.slice(calls).filter((c) => c.startsWith("launch:"))).toHaveLength(slots);
+      expect((await q.adapter.history()).length).toBe(f.loop.nativeLaunchCeiling);
+    } finally {
+      phase("body:settled");
+    }
   },
 );
 
@@ -1046,7 +1064,12 @@ async function loopFixture(
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  phase("cleanup:start");
+  try {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  } finally {
+    finishCleanup();
+  }
 });
 
 it.each(["pass", "saved-candidate", "lost-commit-inherited-retry", "review-fail", "malformed"])(

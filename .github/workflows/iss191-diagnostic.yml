@@ -1,0 +1,90 @@
+name: ISS191 diagnostic (never land)
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  measurement:
+    if: >-
+      github.event.pull_request.head.ref == 'codex/iss191-measurement-g1' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == true
+    name: ISS191 isolated Windows evidence
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.22.0 --activate
+      - run: corepack pnpm install --frozen-lockfile
+      - name: Record authority and tool profile
+        shell: pwsh
+        env:
+          ISS191_HEAD: ${{ github.event.pull_request.head.sha }}
+          ISS191_BASE: ${{ github.event.pull_request.base.sha }}
+          ISS191_PR: ${{ github.event.pull_request.number }}
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'iss191-measurement'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $receipts = @{}
+          $script:failed = $false
+          function Observe($key, $executable, [string[]]$arguments) {
+            $text = & $executable @arguments 2>&1
+            $code = $LASTEXITCODE
+            $receipts[$key] = @{ exitCode = $code; output = ($text -join "`n") }
+            if ($code -ne 0) { $script:failed = $true }
+          }
+          Observe 'checkout' 'git' @('rev-parse', 'HEAD')
+          Observe 'main' 'git' @('rev-parse', 'refs/remotes/origin/main')
+          Observe 'node' 'node' @('--version')
+          Observe 'pnpm' 'pnpm' @('--version')
+          Observe 'git' 'git' @('--version')
+          Observe 'blobs' 'git' @('ls-tree', 'HEAD', 'test/dogfood/queue.test.ts', 'test/dogfood/fixtures/source-failure.ts', 'test/dogfood/fixtures/iss191-observer.ts', 'scripts/diagnostics/iss191-measure.mjs', '.github/workflows/iss191-diagnostic.yml', '.github/workflows/bootstrap.yml', 'vitest.config.ts')
+          @{
+            runnerImage = $env:ImageOS
+            runnerImageVersion = $env:ImageVersion
+            runnerOS = $env:RUNNER_OS
+            head = $env:ISS191_HEAD
+            pullRequestBase = $env:ISS191_BASE
+            sourceBase = '53187f9d093a819377d71e76dedeb894d4b0d11a'
+            run = $env:GITHUB_RUN_ID
+            attempt = $env:GITHUB_RUN_ATTEMPT
+            jobKey = $env:GITHUB_JOB
+            pr = $env:ISS191_PR
+            commands = $receipts
+          } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $out 'authority.json')
+          if ($script:failed) { exit 1 }
+      - name: Fixed controls then paired measurement
+        run: node scripts/diagnostics/iss191-measure.mjs
+      # No unshipped upload action or extra token. Complete sanitized artifacts are
+      # framed in the job log for the host's full run-log capture, even after failure.
+      - name: Retain complete diagnostic artifacts in job log
+        if: always()
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'iss191-measurement'
+          if (-not (Test-Path -LiteralPath $out)) {
+            Write-Output 'ISS191 artifacts absent: incomplete measurement'
+            exit 1
+          }
+          Get-ChildItem -LiteralPath $out -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+            $encoded = [Convert]::ToBase64String($bytes)
+            Write-Output "ISS191_ARTIFACT_BEGIN $($_.Name) $($bytes.Length) $hash"
+            for ($offset = 0; $offset -lt $encoded.Length; $offset += 4096) {
+              $size = [Math]::Min(4096, $encoded.Length - $offset)
+              Write-Output "ISS191_ARTIFACT_CHUNK $($_.Name) $offset $($encoded.Substring($offset, $size))"
+            }
+            Write-Output "ISS191_ARTIFACT_END $($_.Name)"
+          }
