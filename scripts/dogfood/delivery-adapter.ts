@@ -9,6 +9,7 @@ import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 import {
   DeliveryBlocked,
+  type CheckEvidence,
   type CleanupPlan,
   type DeliveryAdapter,
   type DeliveryConfig,
@@ -124,6 +125,192 @@ async function ghJson(config: DeliveryConfig, args: string[]) {
 export interface GithubDeliveryCommands {
   gh(config: DeliveryConfig, args: string[]): Promise<string>;
   ghJson(config: DeliveryConfig, args: string[]): Promise<any>;
+}
+
+// ISS-185: the PR rollup is shared by SHA. Only Actions' structured association
+// and effective jobs can establish whose result this is.
+function positive(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function associatedRun(run: any, config: DeliveryConfig, current: PublicationEvidence) {
+  if (
+    run?.repository?.full_name !== config.repository ||
+    run.head_repository?.full_name !== config.repository ||
+    run.head_sha !== current.head ||
+    run.event !== "pull_request" ||
+    !Array.isArray(run.pull_requests) ||
+    run.pull_requests.length === 0
+  )
+    throw new Error(`unknown workflow association: ${run?.id}`);
+  const matches = run.pull_requests.filter((pull: any) => pull.number === current.number);
+  if (matches.length === 0) {
+    if (!run.pull_requests.every((pull: any) => positive(pull.number)))
+      throw new Error(`malformed workflow association: ${run.id}`);
+    return false;
+  }
+  const pull = matches[0];
+  if (
+    matches.length !== 1 ||
+    pull.url !== `https://api.github.com/repos/${config.repository}/pulls/${current.number}` ||
+    pull.head?.repo?.id !== run.head_repository.id ||
+    pull.base?.repo?.id !== run.repository.id ||
+    !positive(run.repository.id) ||
+    !positive(run.head_repository.id) ||
+    pull.head?.sha !== current.head ||
+    pull.head?.ref !== current.sourceBranch ||
+    pull.base?.ref !== current.baseBranch ||
+    run.head_branch !== current.sourceBranch ||
+    !positive(run.id) ||
+    !positive(run.workflow_id) ||
+    !positive(run.run_number) ||
+    !positive(run.run_attempt) ||
+    typeof run.path !== "string" ||
+    !run.path.startsWith(".github/workflows/") ||
+    !["queued", "in_progress", "waiting", "pending", "requested", "completed"].includes(run.status)
+  )
+    throw new Error(`contradictory workflow association: ${run.id}`);
+  return true;
+}
+
+async function publicationRuns(
+  commands: GithubDeliveryCommands,
+  config: DeliveryConfig,
+  current: PublicationEvidence,
+) {
+  const pages = await commands.ghJson(config, [
+    "api",
+    `repos/${config.repository}/actions/runs?head_sha=${current.head}&event=pull_request&per_page=100`,
+    "--paginate",
+    "--slurp",
+  ]);
+  if (
+    !Array.isArray(pages) ||
+    pages.length === 0 ||
+    pages.some((page) => !Array.isArray(page?.workflow_runs))
+  )
+    throw new Error("malformed workflow observation");
+  const workflows = new Map<number, any>();
+  const ids = new Set<number>();
+  for (const run of pages.flatMap((page) => page.workflow_runs)) {
+    if (!associatedRun(run, config, current)) continue;
+    if (ids.has(run.id)) throw new Error(`duplicate workflow run: ${run.id}`);
+    ids.add(run.id);
+    const prior = workflows.get(run.workflow_id);
+    if (prior && (prior.path !== run.path || prior.run_number === run.run_number))
+      throw new Error(`competing workflow runs: ${run.workflow_id}`);
+    // run_number is GitHub's sequence within this workflow, not a global ID/date.
+    if (!prior || prior.run_number < run.run_number) workflows.set(run.workflow_id, run);
+  }
+  return workflows;
+}
+
+async function attributedChecks(
+  commands: GithubDeliveryCommands,
+  config: DeliveryConfig,
+  current: PublicationEvidence,
+) {
+  const workflows = await publicationRuns(commands, config, current);
+  const checks: CheckEvidence[] = [];
+  let workflowPending = false;
+  for (const run of workflows.values()) {
+    workflowPending ||= run.status !== "completed";
+    const jobPages = await commands.ghJson(config, [
+      "api",
+      `repos/${config.repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`,
+      "--paginate",
+      "--slurp",
+    ]);
+    if (
+      !Array.isArray(jobPages) ||
+      jobPages.length === 0 ||
+      jobPages.some((page) => !Array.isArray(page?.jobs))
+    )
+      throw new Error(`malformed workflow jobs: ${run.id}`);
+    const jobs = jobPages.flatMap((page) => page.jobs);
+    const jobIds = new Set<number>();
+    for (const job of jobs) {
+      if (
+        !positive(job.id) ||
+        jobIds.has(job.id) ||
+        job.run_id !== run.id ||
+        job.head_sha !== current.head ||
+        !positive(job.run_attempt) ||
+        job.run_attempt > run.run_attempt ||
+        (job.run_attempt < run.run_attempt && job.conclusion !== "success") ||
+        typeof job.name !== "string" ||
+        job.html_url !==
+          `https://github.com/${config.repository}/actions/runs/${run.id}/job/${job.id}`
+      )
+        throw new Error(`contradictory workflow job: ${run.id}/${job.id}`);
+      jobIds.add(job.id);
+      let bucket: CheckEvidence["bucket"];
+      if (
+        ["queued", "in_progress", "waiting", "pending"].includes(job.status) &&
+        job.conclusion === null
+      )
+        bucket = "pending";
+      else if (job.status === "completed") {
+        switch (job.conclusion) {
+          case "success":
+            bucket = "pass";
+            break;
+          case "failure":
+          case "timed_out":
+          case "action_required":
+          case "startup_failure":
+            bucket = "fail";
+            break;
+          case "cancelled":
+            bucket = "cancel";
+            break;
+          case "skipped":
+          case "neutral":
+            bucket = "skipping";
+            break;
+          default:
+            throw new Error(`unknown job conclusion: ${job.id}`);
+        }
+      } else throw new Error(`unknown job status: ${job.id}`);
+      if (config.requiredChecks.includes(job.name))
+        checks.push({
+          name: job.name,
+          bucket,
+          link: job.html_url,
+          actions: {
+            run: run.id,
+            attempt: run.run_attempt,
+            job: job.id,
+            workflow: run.workflow_id,
+          },
+        });
+    }
+    // The latest-jobs endpoint supplies the effective set for failed-only reruns.
+    // Never combine jobs from separate runs or manually fill gaps with old jobs.
+  }
+  for (const name of config.requiredChecks) {
+    const count = checks.filter((check) => check.name === name).length;
+    if (count > 1 || (count === 0 && workflows.size > 0 && !workflowPending))
+      throw new Error(`missing or duplicate current job: ${name}`);
+  }
+  if (workflows.size > 0) {
+    const signature = (runs: Map<number, any>) =>
+      JSON.stringify(
+        [...runs.values()]
+          .sort((a, b) => a.workflow_id - b.workflow_id)
+          .map((run) => [
+            run.workflow_id,
+            run.id,
+            run.run_number,
+            run.run_attempt,
+            run.status,
+            run.path,
+          ]),
+      );
+    if (signature(workflows) !== signature(await publicationRuns(commands, config, current)))
+      throw new Error("applicable workflow changed during observation; reobserve checks");
+  }
+  return { checks, workflowPending, startupInvisible: workflows.size === 0 };
 }
 
 async function json(path: string, reason: string) {
@@ -1097,59 +1284,11 @@ export function githubDeliveryAdapter(
       for (let retry = 0; ; retry += 1) {
         try {
           const before = await readIdentity();
-          let stdout: string;
-          try {
-            stdout = await commands.gh(config, [
-              "pr",
-              "checks",
-              String(current.number),
-              "--json",
-              "name,bucket,link",
-            ]);
-          } catch (error) {
-            const result = error as { code?: number; stdout?: string; stderr?: string };
-            if (
-              result.code === 1 &&
-              result.stdout === "" &&
-              /^no checks reported on the '.+' branch\s*$/.test(result.stderr ?? "")
-            )
-              stdout = "[]";
-            else {
-              if (
-                ![1, 8].includes(result.code ?? -1) ||
-                typeof result.stdout !== "string" ||
-                result.stdout === ""
-              )
-                throw error;
-              stdout = result.stdout;
-            }
-          }
-          const checks = JSON.parse(stdout);
-          if (!Array.isArray(checks)) throw new Error("malformed hosted checks");
-          let workflowPending = false;
-          let startupInvisible = false;
-          if (config.requiredChecks.some((name) => !checks.some((check) => check?.name === name))) {
-            // ISS-132: aggregate jobs can be absent between jobs of a running workflow.
-            const pages = await commands.ghJson(config, [
-              "api",
-              `repos/${config.repository}/actions/runs?head_sha=${before.headRefOid}&event=pull_request&per_page=100`,
-              "--paginate",
-              "--slurp",
-            ]);
-            if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page?.workflow_runs)))
-              throw new Error("malformed workflow observation");
-            startupInvisible =
-              pages.every((page) => page.workflow_runs.length === 0) &&
-              config.requiredChecks.every((name) => !checks.some((check) => check?.name === name));
-            workflowPending = pages.some((page) =>
-              page.workflow_runs.some(
-                (run: any) =>
-                  run.head_sha === before.headRefOid &&
-                  run.pull_requests?.some((pull: any) => pull.number === current.number) &&
-                  ["queued", "in_progress"].includes(run.status),
-              ),
-            );
-          }
+          const { checks, workflowPending, startupInvisible } = await attributedChecks(
+            commands,
+            config,
+            current,
+          );
           const after = await readIdentity();
           if (JSON.stringify(before) !== JSON.stringify(after))
             throw new Error("publication moved");
@@ -1158,6 +1297,8 @@ export function githubDeliveryAdapter(
             await pause(10_000);
             continue;
           }
+          if (startupInvisible)
+            throw new Error("current publication workflow absent after 12 startup waits");
           return {
             head: before.headRefOid,
             checks,
@@ -1177,23 +1318,34 @@ export function githubDeliveryAdapter(
         }
       }
     },
-    async failedCheckLog(config, check) {
-      const match =
-        /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/([1-9][0-9]*)(?:\/|$)/.exec(
-          check.link,
-        );
-      if (!match) throw new DeliveryBlocked(`hosted-check-log-unavailable:${check.name}`);
-      const run = await commands.ghJson(config, [
-        "run",
-        "view",
-        match[1]!,
-        "--json",
-        "status,headSha",
-      ]);
-      if (run.headSha !== config.candidateHead) throw new DeliveryBlocked("hosted-head-drift");
-      if (run.status !== "completed") return null;
+    async failedCheckLog(config, check, current) {
       try {
-        return await commands.gh(config, ["run", "view", match[1]!, "--log-failed"]);
+        if (!check.actions)
+          throw new Error("missing current Actions attribution; reobserve checks");
+        const selection = check.actions;
+        const verify = async () => {
+          const observed = await this.checks(config, current);
+          if (!observed.checks.some((row) => JSON.stringify(row) === JSON.stringify(check)))
+            throw new Error("selected failure changed; reobserve checks");
+          const run = await commands.ghJson(config, [
+            "api",
+            `repos/${config.repository}/actions/runs/${selection.run}`,
+          ]);
+          if (!associatedRun(run, config, current) || run.run_attempt !== selection.attempt)
+            throw new Error("selected run attempt changed; reobserve checks");
+          return run.status === "completed";
+        };
+        if (!(await verify())) return null;
+        const log = await commands.gh(config, [
+          "run",
+          "view",
+          String(selection.run),
+          "--attempt",
+          String(selection.attempt),
+          "--log-failed",
+        ]);
+        if (!(await verify())) throw new Error("workflow changed while fetching logs");
+        return log;
       } catch (error) {
         const failure = error as { stderr?: string; message?: string };
         const detail = [failure.stderr, failure.message].find(

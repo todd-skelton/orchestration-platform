@@ -287,14 +287,20 @@ This recovery requires the previous publication to remain on the recorded head
 and GitHub to retain its logs until capture. Once captured, resumed worker
 launches use the runtime file without refetching.
 
-When all required checks and all workflow runs are absent, the checks adapter
+ISS-185 binds hosted decisions and failed logs to Actions' structured repository,
+PR, source/base and head association. It selects the latest run within each
+owning workflow and that run's current effective jobs, including failed-only
+reruns; shared-SHA rollup rows supply no authority. Logs pin the selected attempt
+and recheck it after acquisition. Unknown attribution stops observation without
+parking or spending another attempt; old unattributed logs remain unchanged.
+When the current publication's workflow runs are absent, the checks adapter
 waits ten seconds and reobserves, at most twelve times in that observation
-call (two minutes of waits, plus API request time). Advisory check rows do not
+call (two minutes of waits, plus API request time). Foreign and advisory rows do not
 prevent this startup retry. Each poll revalidates exact publication identity.
-Any visible workflow run or required-check row leaves startup retry and follows
+An attributed current workflow run leaves startup retry and follows
 the existing validation; wrong-head/PR, malformed, duplicate, failed or skipped
 required evidence is not converted into success. Persistent absence still
-stops at the existing missing-check error. A linked pending workflow follows
+stops through the non-parking hosted-observation path. A current pending workflow follows
 ordinary observation until actual required green, with no republishing or
 worker/implementation retry budget consumed. A host interruption can repeat
 this bounded in-flight observation under rule 9; no new runtime schema or
