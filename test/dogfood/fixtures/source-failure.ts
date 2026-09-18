@@ -23,18 +23,23 @@ import {
 import type { RepositoryAdapter } from "../../../scripts/dogfood/repository-adapter.js";
 import type { Adapter } from "../../../scripts/dogfood/flow.js";
 import { SELF_ROUTING } from "../../../scripts/dogfood/routing.mjs";
+import { phase, ownRoot } from "./iss191-observer.js";
 
 // All issue identities, workers and delivery results in this fixture are synthetic.
 export async function sourceFailureFixture(priorWorkers = 0, files: string[] = []) {
+  phase("source-fixture:entry");
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "source-fail-native-")));
+  ownRoot(root);
   const repository = resolve(root, "repository");
   await mkdir(repository);
   const execute = promisify(execFile);
+  phase("git-discovery:start");
   const gitExecutable = (
     await execute(process.platform === "win32" ? "where.exe" : "which", ["git"])
   ).stdout
     .trim()
     .split(/\r?\n/)[0]!;
+  phase("git-discovery:end");
   const git = async (cwd: string, args: string[]) =>
     (await execute(gitExecutable, ["-C", cwd, ...args])).stdout.trim();
   await git(repository, ["init", "-b", "main"]);
@@ -260,6 +265,7 @@ export async function sourceFailureFixture(priorWorkers = 0, files: string[] = [
   const upgrade = async () => {
     await git(repository, ["commit", "--allow-empty", "-m", "synthetic upgraded executor"]);
   };
+  phase("source-fixture:return");
   return {
     root,
     repository,
@@ -339,9 +345,13 @@ export async function historicalStops(
 // A real native source rejection (including its malformed-review retry) then
 // native repair FAIL in directory 2, candidate 3. No incident files are inputs.
 export async function repairFailureFixture() {
+  phase("repair-construction:start");
   const f = await sourceFailureFixture(1);
+  phase("initial-source-failure:start");
   await f.fail();
   await f.stop();
+  phase("initial-source-failure:end");
+  phase("remote-and-repair-setup:start");
   const remote = resolve(f.root, "remote.git");
   await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
   await f.git(f.repository, ["remote", "add", "origin", remote]);
@@ -385,6 +395,8 @@ export async function repairFailureFixture() {
     };
   };
   const current = await f.compose(cycle);
+  phase("remote-and-repair-setup:end");
+  phase("repair-construction:end");
   return {
     ...f,
     cycle,
