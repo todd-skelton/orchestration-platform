@@ -32,8 +32,7 @@ const roots: string[] = [];
 
 const controlledGit = vi.hoisted(() => ({
   execute: undefined as
-    | ((args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>)
-    | undefined,
+    ((args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>) | undefined,
 }));
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();

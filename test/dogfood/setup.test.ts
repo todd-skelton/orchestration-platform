@@ -17,8 +17,7 @@ const base = "b".repeat(40);
 
 const controlledGit = vi.hoisted(() => ({
   execute: undefined as
-    | ((args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>)
-    | undefined,
+    ((args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>) | undefined,
 }));
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
@@ -172,9 +171,7 @@ it.each(["pilotRevision", "base", "sourceBranch", "worktree"] as const)(
       if (args[0] === "worktree")
         return {
           stdout:
-            failure === "worktree"
-              ? `worktree ${config.pilotWorktree}\0HEAD ${pilot}\0\0`
-              : "",
+            failure === "worktree" ? `worktree ${config.pilotWorktree}\0HEAD ${pilot}\0\0` : "",
           stderr: "",
         };
       if (args.includes("--git-common-dir"))
