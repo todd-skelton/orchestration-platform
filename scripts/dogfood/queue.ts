@@ -119,6 +119,8 @@ export interface QueueConfig {
 }
 
 export interface LoopConfig {
+  prerequisite?: Prerequisite;
+  blockedCycleResume?: { cycle: number; authorityUrl: string };
   gateStopAuthorization?: GateStopAuthorization;
   schemaVersion: typeof LOOP_CONFIG_SCHEMA;
   run: string;
@@ -138,6 +140,16 @@ export interface LoopConfig {
   targetMilestone?: number;
   opsAdmission?: OpsAdmission;
   acceptedReplan?: AcceptedReplan;
+}
+
+export interface Prerequisite {
+  blockedCycle: number;
+  blockedKey: string;
+  blockedNumber: number;
+  stop: number;
+  key: string;
+  number: number;
+  authorityUrl: string;
 }
 
 export interface GateStopAuthorization {
@@ -291,10 +303,58 @@ export function validateLoopConfig(config: LoopConfig) {
       ...(config.opsAdmission === undefined ? [] : ["opsAdmission"]),
       ...(config.acceptedReplan === undefined ? [] : ["acceptedReplan"]),
       ...(config.gateStopAuthorization === undefined ? [] : ["gateStopAuthorization"]),
+      ...(config.prerequisite === undefined ? [] : ["prerequisite"]),
+      ...(config.blockedCycleResume === undefined ? [] : ["blockedCycleResume"]),
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
+  for (const grant of [config.prerequisite, config.blockedCycleResume]) {
+    if (grant === undefined) continue;
+    demand(
+      config.adapter === "self" &&
+        !config.acceptedReplan &&
+        typeof grant.authorityUrl === "string" &&
+        grant.authorityUrl.length <= 500 &&
+        /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
+          grant.authorityUrl,
+        ),
+      "invalid-prerequisite",
+    );
+  }
+  if (config.prerequisite) {
+    const p = config.prerequisite;
+    demand(
+      exactKeys(p, [
+        "blockedCycle",
+        "blockedKey",
+        "blockedNumber",
+        "stop",
+        "key",
+        "number",
+        "authorityUrl",
+      ]) &&
+        [p.blockedCycle, p.blockedNumber, p.stop, p.number].every(
+          (n) => Number.isSafeInteger(n) && n > 0,
+        ) &&
+        [p.key, p.blockedKey].every(
+          (key) => typeof key === "string" && /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(key),
+        ) &&
+        p.key !== p.blockedKey &&
+        p.number !== p.blockedNumber &&
+        config.nativeLaunchCeiling === 64 &&
+        config.attemptCeiling === 4 &&
+        !config.blockedCycleResume,
+      "invalid-prerequisite",
+    );
+  }
+  if (config.blockedCycleResume)
+    demand(
+      exactKeys(config.blockedCycleResume, ["cycle", "authorityUrl"]) &&
+        Number.isSafeInteger(config.blockedCycleResume.cycle) &&
+        config.blockedCycleResume.cycle > 0,
+      "invalid-prerequisite",
+    );
   if (config.gateStopAuthorization !== undefined)
     validateGateStopAuthorization(config.gateStopAuthorization);
   if (config.acceptedReplan !== undefined) {
@@ -1358,6 +1418,23 @@ export async function retainedSourceFailure(config: LoopConfig, selected: Select
     return { attempts: attempt.candidateAttempt, history, diagnostics: terminal.summary };
   }
   return undefined;
+}
+
+// ISS-187 admission is read-only; projection remains owned by composition.
+export async function prerequisiteSourceFailure(config: LoopConfig, selected: SelectedLoopIssue) {
+  const failed = await retainedSourceFailure(config, selected);
+  if (!failed || failed.attempts !== 1) return false;
+  const setup = await optionalRecord(
+    resolve(config.stateRoot, config.run, `${selected.key.toLowerCase()}-attempt-1`, "setup"),
+    "setup-plan",
+  );
+  return (
+    setup !== ABSENT &&
+    setup.worktrees?.length === 3 &&
+    setup.worktrees.every(
+      (tree: { path: string }) => resolve(tree.path, "..") === resolve(config.worktreeRoot),
+    )
+  );
 }
 
 async function pinnedSourceFailure(
