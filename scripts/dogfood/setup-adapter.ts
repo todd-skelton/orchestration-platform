@@ -406,7 +406,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
   const gitExecutable = options.gitExecutable ?? "git";
 
   return {
-    async assertExecutor(config, executingRoot) {
+    async assertExecutor(config, executingRoot, matchedReplay = false) {
       try {
         const [actualExecuting, controller, repository, state] = await Promise.all([
           realpath(executingRoot),
@@ -464,7 +464,10 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           controllerHead !== config.controllerRevision ||
           comparable(await realpath(repositoryTop)) !== comparable(repository) ||
           pilotObject !== config.pilotRevision ||
-          repositoryHead !== config.pilotRevision ||
+          repositoryHead !==
+            (matchedReplay && comparable(repository) === comparable(controller)
+              ? config.controllerRevision
+              : config.pilotRevision) ||
           baseObject !== config.base ||
           repositoryBranch !== config.baseBranch
         )

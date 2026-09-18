@@ -320,6 +320,16 @@ it("FAIL requires matching terminal and stable executor: live author retains sou
   expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
   await f.upgrade();
   const q = await f.compose(f.cycle);
+  await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
+  // An executor upgrade retains the saved pilot; moving that worktree still refuses.
+  await f.git(q.config.items[0]!.setup.pilotWorktree, [
+    "checkout",
+    "--detach",
+    await f.git(f.repository, ["rev-parse", "HEAD"]),
+  ]);
   await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
     reason: "pilot-revision-moved",
   });

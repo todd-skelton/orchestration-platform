@@ -40,7 +40,7 @@ import {
   writeEvidence,
 } from "./fixtures/continuation.js";
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
-import { workerPrompt } from "../../scripts/dogfood/flow.js";
+import { step as sourceStep, workerPrompt } from "../../scripts/dogfood/flow.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
 import * as selfAdapter from "../../adapters/self.mjs";
@@ -1696,11 +1696,13 @@ it("recomposes a saved selection after its pending gate-stop note and admits one
   let q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
   const item = q.items[0]!;
   const launches: { role: string; directory: string; prompt: string }[] = [];
+  let refreshObservations = 0;
   const native: Adapter = {
     async preflight() {},
     git,
     async launch(role, current, prompt) {
       launches.push({ role, directory: current.stateDirectory, prompt });
+      expect(current.pilotRevision).toBe(f.selected.base);
       if (role === "author")
         await writeFile(resolve(current.worktree, "feature.txt"), "reviewed feature\n");
       const trace = resolve(current.stateDirectory, `${role}.jsonl`);
@@ -1708,8 +1710,11 @@ it("recomposes a saved selection after its pending gate-stop note and admits one
       return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
     },
     async observe(role, current, attempt) {
-      if (current.stateDirectory !== item.source.stateDirectory)
+      if (current.stateDirectory !== item.source.stateDirectory) {
+        refreshObservations++;
+        expect(current.pilotRevision).toBe(f.selected.base);
         return { id: attempt.id, status: "running" };
+      }
       const head =
         role === "author" ? current.base : await git(current.worktree, ["rev-parse", "HEAD"]);
       return {
@@ -1735,6 +1740,11 @@ it("recomposes a saved selection after its pending gate-stop note and admits one
     },
   };
   const delivery = githubDeliveryAdapter();
+  const sourceEvidence = delivery.source;
+  delivery.source = async (current) => {
+    expect(current).not.toHaveProperty("pilotRevision");
+    return sourceEvidence(current);
+  };
   delivery.runGate = async (current, gate, head) => {
     const path = resolve(
       current.stateDirectory,
@@ -1785,6 +1795,8 @@ it("recomposes a saved selection after its pending gate-stop note and admits one
     await readFile(resolve(item.source.stateDirectory, "candidate.json"), "utf8"),
   );
   const oldConfig = await readFile(resolve(item.source.stateDirectory, "config.json"));
+  const oldSetup = await snapshot(item.setup.stateDirectory);
+  const oldAuthor = await readFile(resolve(item.source.stateDirectory, "author-attempt.json"));
   const oldStop = await readFile(resolve(item.source.stateDirectory, "gate-stop.json"));
   const comments: string[] = [];
   const supervisor: SupervisionAdapter = {
@@ -1832,8 +1844,16 @@ it("recomposes a saved selection after its pending gate-stop note and admits one
   ).resolves.toBeUndefined();
   for (let replay = 0; replay < 2; replay++) {
     q = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
+    expect(q.controllerRevision).toBe(repairSha);
+    expect(q.items[0]!.setup.pilotRevision).toBe(f.selected.base);
+    expect(q.items[0]!.source.pilotRevision).toBe(f.selected.base);
     await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "observing-reviewer" });
   }
+  expect(refreshObservations).toBe(2);
+  expect(await snapshot(item.setup.stateDirectory)).toEqual(oldSetup);
+  expect(await readFile(resolve(item.source.stateDirectory, "author-attempt.json"))).toEqual(
+    oldAuthor,
+  );
   expect(launches.map((row) => row.role)).toEqual(["author", "reviewer", "reviewer"]);
   expect(launches.at(-1)!.prompt).toContain("independent DELTA");
   const reservation = JSON.parse(
@@ -3003,6 +3023,181 @@ it("retains a legacy attempt's published local branch from its saved setup plan"
   });
 }, 30_000);
 
+async function retainedPilotFixture(partialWork = false) {
+  const f = await loopFixture();
+  const selected = { ...f.selected, planningRevision: f.selected.base };
+  const compose = () => queueConfigFromLoop(f.loop, f.repository, selected, repositoryPolicy);
+  const first = await compose();
+  const item = first.items[0]!;
+  const real = codexAdapter(f.gitExecutable);
+  let launches = 0;
+  let observations = 0;
+  const native: Adapter = {
+    ...real,
+    async preflight() {},
+    async waitForProvider() {},
+    async launch(role, config) {
+      launches++;
+      const id = randomUUID();
+      const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+      await writeFile(trace, JSON.stringify({ type: "thread.started", thread_id: id }) + "\n");
+      return { id, pid: process.pid, trace, launchedAt: Date.now() };
+    },
+    async observe(...args) {
+      observations++;
+      return real.observe(...args);
+    },
+  };
+  const setup = gitSetupAdapter({
+    gitExecutable: f.gitExecutable,
+    async install(_launcher, _args, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+      return "succeeded";
+    },
+  });
+  const adapter = (q: QueueConfig) =>
+    repositoryQueueAdapter(q, f.repository, { native, setup, gitExecutable: f.gitExecutable });
+  await expect(queueStep(first, adapter(first))).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  if (partialWork)
+    await writeFile(resolve(item.source.worktree, "docs/loop.md"), "Synthetic partial work\n");
+  await writeFile(resolve(f.repository, "executor-upgrade.txt"), "Synthetic executor B\n");
+  await real.git(f.repository, ["add", "."]);
+  await real.git(f.repository, ["commit", "-m", "synthetic executor upgrade"]);
+  const upgraded = await real.git(f.repository, ["rev-parse", "HEAD"]);
+  expect(upgraded).not.toBe(selected.base);
+  return {
+    ...f,
+    selected,
+    first,
+    item,
+    compose,
+    native,
+    setup,
+    adapter,
+    upgraded,
+    counts: () => ({ launches, observations }),
+  };
+}
+
+it.each([false, true])(
+  "resumes a saved pilot at A under executor B (partial source: %s)",
+  async (partialWork) => {
+    const f = await retainedPilotFixture(partialWork);
+    const records = await snapshot(f.first.stateDirectory);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const before = f.counts();
+    const resumed = await f.compose();
+    const item = resumed.items[0]!;
+    // Run the real flow first: the unchanged base fails here with pilot-revision-moved.
+    await expect(
+      sourceStep(item.source, f.native, item.setup.pilotWorktree),
+    ).resolves.toMatchObject({
+      status: "observing-author",
+    });
+    expect(resumed.controllerRevision).toBe(f.upgraded);
+    expect(item.setup.controllerRevision).toBe(f.upgraded);
+    expect(item.setup.pilotRevision).toBe(f.selected.base);
+    expect(item.source).toEqual(f.item.source);
+    if (!partialWork)
+      await expect(setupStep(item.setup, f.setup, f.repository)).resolves.toMatchObject({
+        status: "ready",
+      });
+    for (let replay = 0; replay < 2; replay++)
+      await expect(queueStep(resumed, f.adapter(resumed))).resolves.toMatchObject({
+        status: "observing-author",
+      });
+    expect(f.counts()).toEqual({
+      launches: before.launches,
+      observations: before.observations + 3,
+    });
+    for (const [path, bytes] of records) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+    await expect(
+      readFile(resolve(item.source.stateDirectory, "author-terminal.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    const fresh = await queueConfigFromLoop(
+      { ...f.loop, run: "synthetic-fresh-after-upgrade" },
+      f.repository,
+      f.selected,
+      repositoryPolicy,
+    );
+    expect(fresh.items[0]!.setup.pilotRevision).toBe(f.upgraded);
+    expect(fresh.items[0]!.source.pilotRevision).toBe(f.upgraded);
+  },
+);
+
+it("replays real setup explicitly pinned to pilot A at live checkout B", async () => {
+  const f = await retainedPilotFixture();
+  const records = await snapshot(f.first.stateDirectory);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  // Isolate the adapter discriminator from queue composition: this fails on
+  // both the unchanged base and the queue-only partial with setup-head-drift.
+  const setup = { ...f.item.setup, controllerRevision: f.upgraded };
+  await expect(setupStep(setup, f.setup, f.repository)).resolves.toMatchObject({
+    status: "ready",
+    heads: { pilot: f.selected.base },
+  });
+  await expect(sourceStep(f.item.source, f.native, setup.pilotWorktree)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.counts()).toEqual({ launches: 1, observations: 2 });
+  expect(await snapshot(f.first.stateDirectory)).toEqual(records);
+  expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+});
+
+it.each(["not-a-sha", "f".repeat(40)])(
+  "refuses an unresolved saved pilot %s before setup",
+  async (pilotRevision) => {
+    const f = await retainedPilotFixture();
+    const path = resolve(f.item.setup.stateDirectory, "setup-plan.json");
+    const plan = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, JSON.stringify({ ...plan, pilotRevision }));
+    const records = await snapshot(f.first.stateDirectory);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    await expect(f.compose()).rejects.toThrow("invalid-saved-pilot-revision");
+    expect(await snapshot(f.first.stateDirectory)).toEqual(records);
+    expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+    expect(f.counts().launches).toBe(1);
+  },
+);
+
+it.each(["moved", "dirty"])(
+  "still refuses a %s retained pilot after an executor upgrade",
+  async (mode) => {
+    const f = await retainedPilotFixture();
+    const q = await f.compose();
+    const item = q.items[0]!;
+    if (mode === "moved")
+      await f.native.git(item.setup.pilotWorktree, ["checkout", "--detach", f.upgraded]);
+    else await writeFile(resolve(item.setup.pilotWorktree, "dirty.txt"), "synthetic drift\n");
+    await expect(sourceStep(item.source, f.native, item.setup.pilotWorktree)).rejects.toThrow(
+      mode === "moved" ? "pilot-revision-moved" : "dirty-pilot",
+    );
+    expect(f.counts().launches).toBe(1);
+  },
+);
+
+it("retains controller, pilot-selection and base drift refusals after an executor upgrade", async () => {
+  const f = await retainedPilotFixture();
+  await expect(setupStep(f.item.setup, f.setup, f.repository)).rejects.toThrow("setup-head-drift");
+  await expect(queueStep(f.first, f.adapter(f.first))).rejects.toThrow(
+    "controller-executor-revision-moved",
+  );
+  const q = await f.compose();
+  const item = q.items[0]!;
+  item.setup.controllerRevision = f.selected.base;
+  expect(() => validateQueueConfig(q)).toThrow("queue-executor-drift");
+  item.setup.controllerRevision = f.upgraded;
+  item.source.pilotRevision = f.upgraded;
+  expect(() => validateQueueConfig(q)).toThrow("candidate-as-pilot-selection");
+  item.source.pilotRevision = f.selected.base;
+  item.source.base = f.upgraded;
+  expect(() => validateQueueConfig(q)).toThrow("queue-base-drift");
+});
+
 it("derives and prepares a repository cycle without modifying the controller repository", async () => {
   const { loop, repository, gitExecutable, selected } = await loopFixture();
   const controller = resolve(repository, "..", "controller");
@@ -3124,15 +3319,16 @@ it.each([true, false])(
   },
 );
 
-it("preserves registered multiline criteria through the genuine repository repair path", async () => {
+it("preserves registered multiline criteria and the pilot through repair resume after upgrade", async () => {
   const { loop, repository, gitExecutable, acceptanceCriteria, selected } = await loopFixture(true);
-  const queue = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+  let queue = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
   const item = queue.items[0]!;
   const fixtureQueue = (await import(
     /* @vite-ignore */ pathToFileURL(resolve(repository, "scripts/dogfood/queue.ts")).href
   )) as { repositoryQueueAdapter: typeof repositoryQueueAdapter };
   let repairPrompt = "";
   let pid = 1;
+  let repairObservations = 0;
   const native: Adapter = {
     async preflight() {},
     async git(worktree, args) {
@@ -3152,8 +3348,11 @@ it("preserves registered multiline criteria through the genuine repository repai
       };
     },
     async observe(role, config, attempt) {
-      if (config.stateDirectory === item.repair.stateDirectory)
+      if (config.stateDirectory === item.repair.stateDirectory) {
+        repairObservations++;
+        expect(config.pilotRevision).toBe(selected.base);
         return { status: "running", id: attempt.id, head: config.base };
+      }
       if (role === "author") return { status: "passed", id: attempt.id, head: config.base };
       const head = await native.git(config.reviewWorktree, ["rev-parse", "HEAD"]);
       return {
@@ -3181,26 +3380,46 @@ it("preserves registered multiline criteria through the genuine repository repai
       return { head: selected.base, checks: [] };
     },
   };
-  const adapter = fixtureQueue.repositoryQueueAdapter(queue, repository, {
-    gitExecutable,
-    native,
-    setup: gitSetupAdapter({
+  const adapter = () =>
+    fixtureQueue.repositoryQueueAdapter(queue, repository, {
       gitExecutable,
-      async install(_launcher, _args, cwd) {
-        await mkdir(resolve(cwd, "node_modules"), { recursive: true });
-        await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
-        return "succeeded";
-      },
-    }),
-  });
+      native,
+      setup: gitSetupAdapter({
+        gitExecutable,
+        async install(_launcher, _args, cwd) {
+          await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+          await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
+    });
 
-  await expect(queueStep(queue, adapter)).resolves.toMatchObject({ status: "observing-author" });
+  await expect(queueStep(queue, adapter())).resolves.toMatchObject({ status: "observing-author" });
   expect(item.repair.acceptanceCriteria).toEqual([acceptanceCriteria]);
   const encodedCriteria = repairPrompt
     .split("Preserve these acceptance criteria verbatim: ")[1]
     ?.split(". Authorized exact review paths are ")[0];
   expect(encodedCriteria).toBeDefined();
   expect(JSON.parse(encodedCriteria!)).toEqual(item.repair.acceptanceCriteria);
+  const retained = await snapshot(queue.stateDirectory);
+  const trees = await snapshot(loop.worktreeRoot);
+  const launchCount = pid;
+  const observationCount = repairObservations;
+  await writeFile(resolve(repository, "executor-upgrade.txt"), "Synthetic executor B\n");
+  await native.git(repository, ["add", "."]);
+  await native.git(repository, ["commit", "-m", "synthetic executor upgrade"]);
+  const upgraded = await native.git(repository, ["rev-parse", "HEAD"]);
+  for (let replay = 0; replay < 2; replay++) {
+    queue = await queueConfigFromLoop(loop, repository, selected, repositoryPolicy);
+    expect(queue.controllerRevision).toBe(upgraded);
+    await expect(queueStep(queue, adapter())).resolves.toMatchObject({
+      status: "observing-author",
+    });
+  }
+  expect(pid).toBe(launchCount);
+  expect(repairObservations).toBe(observationCount + 2);
+  for (const [path, bytes] of retained) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  expect(await snapshot(loop.worktreeRoot)).toEqual(trees);
 }, 30_000);
 
 it.each(["author", "reviewer"] as const)(

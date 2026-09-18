@@ -632,7 +632,9 @@ Payout Fees remains incomplete until its operator-blocked work is resolved.
 New ordinary attempts use the local source branch
 `codex/run-<sha256(run)>/<issue-key>-attempt-<attempt>`; the hash keeps every
 accepted run name valid in a Git ref. Pilot and review remain detached.
-Resume reads the branch from the existing setup plan, including legacy names.
+Resume reads the branch and pilot revision from the existing setup plan, including
+legacy names; matched same-checkout replay validates the live repository against
+the current executor without repinning the pilot (ISS-180).
 Published branch names, PR identity and forward-only refresh rules stay the same;
 delivery publishes the candidate to that existing name and cleans up its own
 local branch. A preserved worktree is never removed, moved or reused by a fresh

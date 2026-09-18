@@ -320,11 +320,13 @@ it("ISS-187 leaves ordinary saved selection and item-stop advancement in their n
   const declaration = f.loop.prerequisite!;
   delete f.loop.prerequisite;
   const before = await snapshot(f.runState);
+  const launches = f.calls.filter((call) => call.startsWith("launch:"));
   expect(await f.advance()).toMatchObject({ selection: f.blocked.selection });
   const q = await f.compose((await f.advance())!);
-  await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
-    reason: "pilot-revision-moved",
+  await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+    status: "observing-author",
   });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toEqual(launches);
   expect(await snapshot(f.runState)).toEqual(before);
   f.loop.prerequisite = declaration;
   // An ordinary completed work stop remains advanceable with a declaration.
