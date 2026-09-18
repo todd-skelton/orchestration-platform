@@ -100,6 +100,7 @@ async function fixture(
   fixed = { prefix: "", suffix: "" },
   snapshot?: PlanningSnapshot,
   selection = { key: "ISS-100", number: 100 },
+  prepareCandidate?: (candidate: PlanningSnapshot) => void,
 ) {
   // Delivery expects canonical roots, including macOS /var and Windows temp aliases.
   const root = await realpath(await mkdtemp(resolve(temporaryRoot, "native-refresh-")));
@@ -165,6 +166,8 @@ async function fixture(
   await git(repo, ["worktree", "add", "-b", "codex/iss-100", sourceTree, base]);
   const candidatePlanning = structuredClone(snapshot ?? planning(seedKeys));
   candidatePlanning.issueDrafts[selection.key] += "\nCandidate planning delta.\n";
+  // Author the whole candidate before its single source commit and evidence pin (ISS-182).
+  prepareCandidate?.(candidatePlanning);
   await writePlanning(sourceTree, candidatePlanning);
   await writeFile(
     resolve(sourceTree, "feature.txt"),
@@ -758,26 +761,29 @@ async function siblingRegression() {
         `milestone: "${milestone}"`,
       );
   }
-  const f = await fixture(undefined, undefined, undefined, undefined, base, {
-    key: "ISS-174",
-    number: 529,
-  });
+  const f = await fixture(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    base,
+    { key: "ISS-174", number: 529 },
+    (candidate) => {
+      for (const key of regressionSiblings.keys()) {
+        const before = candidate.issueDrafts[key]!;
+        const after = before.replace(/QUALITY_PROFILE: [^\r\n]+\r?\n\r?\n/, "");
+        expect(after).not.toBe(before);
+        candidate.issueDrafts[key] = after;
+      }
+    },
+  );
   for (const row of f.board().issues) {
     const key = /planning-key: (ISS-\d+)/.exec(row.body)![1]!;
     row.state = key === "ISS-174" || regressionSiblings.has(key) ? "OPEN" : "CLOSED";
     row.number = regressionSiblings.get(key) ?? row.number;
   }
   const candidate = await loadPlanningSnapshot(f.sourceTree);
-  for (const key of regressionSiblings.keys()) {
-    const before = candidate.issueDrafts[key]!;
-    const after = before.replace(/QUALITY_PROFILE: [^\r\n]+\r?\n\r?\n/, "");
-    expect(after).not.toBe(before);
-    candidate.issueDrafts[key] = after;
-  }
-  await f.writePlanning(f.sourceTree, candidate);
-  await f.commit(f.sourceTree);
-  await f.pinSource();
-  const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  const head = f.head;
   const config: DeliveryConfig = {
     controller: f.config.controller,
     run: f.config.run,
