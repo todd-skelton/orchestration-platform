@@ -1,4 +1,14 @@
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -155,13 +165,20 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-it.each(["pilotRevision", "base", "sourceBranch", "worktree"] as const)(
+it.each(["pilotRevision", "base", "sourceBranch", "worktree", "aliased worktree"] as const)(
   "waits for real adapter children before setupStep refuses %s without mutation",
-  async (failure) => {
+  async (scenario) => {
+    const failure = scenario === "aliased worktree" ? "worktree" : scenario;
     const { config } = await fixture();
     await mkdir(resolve(config.repositoryRoot, ".git"));
     if (failure === "worktree") await mkdir(config.pilotWorktree);
     else config[failure] = failure === "sourceBranch" ? "invalid..ref" : "f".repeat(40);
+    if (scenario === "aliased worktree") {
+      const target = config.pilotWorktree;
+      config.pilotWorktree = resolve(target, "../pilot-alias");
+      await symlink(target, config.pilotWorktree, "junction");
+    }
+    const pilotWorktree = failure === "worktree" ? await realpath(config.pilotWorktree) : undefined;
     const calls: string[][] = [];
     const children: ReturnType<typeof Promise.withResolvers<void>>[] = [];
     const started = Promise.withResolvers<void>();
@@ -176,7 +193,7 @@ it.each(["pilotRevision", "base", "sourceBranch", "worktree"] as const)(
         };
       if (args.includes("--git-common-dir"))
         return { stdout: resolve(config.repositoryRoot, ".git"), stderr: "" };
-      const observing = cwd === config.pilotWorktree;
+      const observing = cwd === pilotWorktree;
       const invalid =
         failure === "worktree"
           ? observing && args.includes("HEAD")
@@ -227,7 +244,7 @@ it.each(["pilotRevision", "base", "sourceBranch", "worktree"] as const)(
       },
     );
     try {
-      await started.promise;
+      await Promise.race([started.promise, outcome]);
       await new Promise<void>((done) => setImmediate(done));
       expect(settled).toBe(false);
       expect(pending).toBe(2);

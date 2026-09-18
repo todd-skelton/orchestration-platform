@@ -52,9 +52,16 @@ vi.mock("node:child_process", async (original) => {
   return { ...actual, execFile: injected };
 });
 
-async function deferredReads(batch: "identity" | "validation" | "worktree") {
-  const root = await mkdtemp(resolve(tmpdir(), "setup-deferred-"));
+async function deferredReads(batch: "identity" | "validation" | "worktree", aliasRoot = false) {
+  let root = await mkdtemp(resolve(tmpdir(), "setup-deferred-"));
   roots.push(root);
+  if (aliasRoot) {
+    const target = resolve(root, "actual");
+    await mkdir(target);
+    const alias = resolve(root, "alias");
+    await symlink(target, alias, "junction");
+    root = alias;
+  }
   const config: SetupConfig = {
     controller: "synthetic-controller",
     run: "deferred-setup",
@@ -77,6 +84,7 @@ async function deferredReads(batch: "identity" | "validation" | "worktree") {
       (path) => mkdir(path),
     ),
   );
+  const controllerRoot = await realpath(config.controllerRoot);
   const calls: string[][] = [];
   const children: {
     args: string[];
@@ -100,7 +108,7 @@ async function deferredReads(batch: "identity" | "validation" | "worktree") {
       };
     if (args.includes("--show-toplevel")) stdout = cwd;
     else if (args.includes("HEAD"))
-      stdout = cwd === config.controllerRoot ? config.controllerRevision : config.pilotRevision;
+      stdout = cwd === controllerRoot ? config.controllerRevision : config.pilotRevision;
     else if (args.includes("--verify")) stdout = args[2]!.split("^")[0]!;
     else if (args[0] === "branch") stdout = batch === "worktree" ? "" : config.baseBranch;
     else if (args[0] !== "status" && args[0] !== "check-ref-format")
@@ -145,7 +153,10 @@ async function deferredReads(batch: "identity" | "validation" | "worktree") {
     config,
     calls,
     children,
-    started: started.promise,
+    async waitForReads() {
+      await Promise.race([started.promise, outcome]);
+      expect(settled).toBe(false);
+    },
     outcome,
     settled: () => settled,
     pending: () => pending,
@@ -164,7 +175,7 @@ it.each(["pilotRevision", "base", "sourceBranch"] as const)(
   async (field) => {
     const f = await deferredReads(field === "sourceBranch" ? "validation" : "identity");
     try {
-      await f.started;
+      await f.waitForReads();
       const invalid = f.children.find((child) =>
         child.args.includes(
           field === "sourceBranch" ? f.config[field] : `${f.config[field]}^{commit}`,
@@ -195,7 +206,7 @@ it.each(["dirty", "invalid"] as const)(
   async (first) => {
     const f = await deferredReads("validation");
     try {
-      await f.started;
+      await f.waitForReads();
       const dirty = f.children.find((child) => child.args[0] === "status")!;
       const invalid = f.children.find((child) => child.args.includes(f.config.sourceBranch))!;
       if (first === "dirty") dirty.finish("?? dirty.txt");
@@ -224,7 +235,7 @@ it.each(["identity", "validation", "worktree"] as const)(
   async (batch) => {
     const f = await deferredReads(batch);
     try {
-      await f.started;
+      await f.waitForReads();
       expect(f.pending()).toBe(batch === "identity" ? 7 : batch === "validation" ? 4 : 3);
       expect(f.settled()).toBe(false);
       await f.finish();
@@ -241,12 +252,31 @@ it.each(["identity", "validation", "worktree"] as const)(
   },
 );
 
+it.each(["identity", "validation"] as const)(
+  "keeps successful %s reads concurrent through a symlinked fixture root",
+  async (batch) => {
+    const f = await deferredReads(batch, true);
+    try {
+      await f.waitForReads();
+      expect(f.config.controllerRoot).not.toBe(await realpath(f.config.controllerRoot));
+      expect(f.pending()).toBe(batch === "identity" ? 7 : 4);
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toBeUndefined();
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(13);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
 it.each(["HEAD", "--show-current", "--porcelain"])(
   "joins worktree siblings before returning unknown for %s failure",
   async (argument) => {
     const f = await deferredReads("worktree");
     try {
-      await f.started;
+      await f.waitForReads();
       const failed = f.children.find((child) => child.args.includes(argument))!;
       failed.fail(new Error("worktree read failed"));
       await drainedReactions();
