@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
+import { afterAll, afterEach, expect, it } from "vitest";
 import {
   currentCandidateAttempt,
   QueueBlocked,
@@ -57,7 +57,7 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
-import { beginCase, phase, finishCleanup } from "./fixtures/iss191-observer.js";
+import { beginCase, phase, finishCleanup, finishFile } from "./fixtures/iss191-observer.js";
 
 it("binds repair FAIL to its retained setup, source, review, author and complete history", async () => {
   const f = await repairFailureFixture();
@@ -1071,6 +1071,8 @@ afterEach(async () => {
     finishCleanup();
   }
 });
+
+afterAll(finishFile);
 
 it.each(["pass", "saved-candidate", "lost-commit-inherited-retry", "review-fail", "malformed"])(
   "resumes a saved prefixed author through the real observer and Git: %s",

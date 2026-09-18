@@ -21,7 +21,8 @@ function sanitize(value) {
 const self = fileURLToPath(import.meta.url);
 const repository = resolve(self, "../../..");
 const base = "53187f9d093a819377d71e76dedeb894d4b0d11a";
-const exactName = (slots) => `admits each successor launch independently with ${slots} remaining slots`;
+const exactName = (slots) =>
+  `admits each successor launch independently with ${slots} remaining slots`;
 const declared = Array.from({ length: 5 }, (_, pair) =>
   [0, 1].map((slots) => ({
     id: `pair-${pair + 1}-slots-${slots}`,
@@ -48,7 +49,10 @@ export default class DiagnosticReporter {
 function rows(path) {
   const text = readFileSync(path, "utf8");
   if (!text.endsWith("\n")) throw new Error("missing or truncated evidence");
-  return text.trimEnd().split("\n").map((line) => JSON.parse(line));
+  return text
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line));
 }
 
 async function main() {
@@ -123,7 +127,11 @@ async function main() {
           streamError = true;
         }
         console.log(
-          JSON.stringify({ id: spec.id, stream: path === stdout ? "stdout" : "stderr", text: safe }),
+          JSON.stringify({
+            id: spec.id,
+            stream: path === stdout ? "stdout" : "stderr",
+            text: safe,
+          }),
         );
       });
       return new Promise((done) => lines.once("close", done));
@@ -179,7 +187,13 @@ async function main() {
     } catch {
       log("missing-or-truncated-evidence", { id: spec.id });
     }
-    log("transition", { id: spec.id, evidenceComplete, complete, rawExit: terminal, stickyFailure });
+    log("transition", {
+      id: spec.id,
+      evidenceComplete,
+      complete,
+      rawExit: terminal,
+      stickyFailure,
+    });
     return { complete: complete && !evidenceError, evidenceComplete, observed, terminal };
   }
 

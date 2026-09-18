@@ -143,6 +143,34 @@ function finishSpan() {
   clearTimeout(timer);
 }
 
+export function finishFile() {
+  if (!enabled) return;
+  if (started !== undefined && performance.now() - started >= 25_000) {
+    observe25("file-completion-before-timer-delivery");
+  }
+  clearTimeout(timer);
+  record("worker-terminal", {
+    complete:
+      started !== undefined &&
+      bodySettled &&
+      cleanupSettled &&
+      !incomplete &&
+      commands.size > 0 &&
+      [...commands.values()].every(
+        (c) => c.pid !== null && c.spawn !== null && c.exit !== null && c.close !== null,
+      ),
+    observerIncomplete: incomplete,
+    bodySettled,
+    cleanupSettled,
+    unresolved: unresolved(),
+    commandCount: commands.size,
+    fixtureCalls,
+    overheadMs,
+    overheadScope: "event persistence and spawn callback only; not total timing perturbation",
+    uninstrumentedMs: null,
+  });
+}
+
 function inside(path: string) {
   if (!root) return false;
   const part = relative(root, path);
@@ -224,32 +252,6 @@ if (enabled) {
       record("spawn-tracing-error", { id: command.id });
     }
   });
-  process.once("exit", () => {
-    if (started !== undefined && performance.now() - started >= 25_000) {
-      observe25("worker-exit-before-timer-delivery");
-    }
-    clearTimeout(timer);
-    record("worker-terminal", {
-      complete:
-        started !== undefined &&
-        bodySettled &&
-        cleanupSettled &&
-        !incomplete &&
-        commands.size > 0 &&
-        [...commands.values()].every(
-          (c) => c.pid !== null && c.spawn !== null && c.exit !== null && c.close !== null,
-        ),
-      observerIncomplete: incomplete,
-      bodySettled,
-      cleanupSettled,
-      unresolved: unresolved(),
-      commandCount: commands.size,
-      fixtureCalls,
-      overheadMs,
-      overheadScope: "event persistence and spawn callback only; not total timing perturbation",
-      uninstrumentedMs: null,
-    });
-  });
 }
 
 // Same Vitest file/worker and promisify(execFile) path as the real fixture.
@@ -264,9 +266,13 @@ if (enabled && process.env.ISS191_CONTROL) {
     );
     ownRoot(directory);
     const execute = promisify(execFile);
-    const result = await execute(process.execPath, ["-e", "process.stdout.write('iss191-synthetic')"], {
-      cwd: directory,
-    });
+    const result = await execute(
+      process.execPath,
+      ["-e", "process.stdout.write('iss191-synthetic')"],
+      {
+        cwd: directory,
+      },
+    );
     expect(result.stdout).toBe("iss191-synthetic");
     const gitExecutable = (await execute("where.exe", ["git"])).stdout.trim().split(/\r?\n/)[0]!;
     await execute(gitExecutable, ["-C", directory, "--version"]);
