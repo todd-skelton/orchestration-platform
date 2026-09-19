@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   realpath,
@@ -1066,8 +1067,18 @@ it("canonicalizes a real repository alias while retaining fresh worktree-family 
   expect(await git(["rev-parse", "HEAD"], foreign)).toBe(current.candidateHead);
   const gitfile = resolve(current.reviewWorktree, ".git");
   const original = await readFile(gitfile, "utf8");
+  async function writeGitfile(contents: string) {
+    const file = await open(gitfile, "r+");
+    try {
+      await file.truncate(0);
+      await file.writeFile(contents);
+    } finally {
+      await file.close();
+    }
+  }
+  let completed = false;
   try {
-    await writeFile(gitfile, `gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
+    await writeGitfile(`gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
     expect(await git(["rev-parse", "HEAD"], current.reviewWorktree)).toBe(current.candidateHead);
     expect(
       await realpath(
@@ -1097,8 +1108,11 @@ it("canonicalizes a real repository alias while retaining fresh worktree-family 
     expect(commands.gh).not.toHaveBeenCalled();
     expect(commands.ghJson).not.toHaveBeenCalled();
     expect(await readdir(current.stateDirectory)).toEqual([]);
+    completed = true;
   } finally {
-    await writeFile(gitfile, original);
+    await writeGitfile(original).catch((error) => {
+      if (completed) throw error;
+    });
   }
 });
 
