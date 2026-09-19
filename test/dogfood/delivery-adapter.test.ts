@@ -672,7 +672,8 @@ afterEach(async () => {
   gateFaults.cleanup = false;
   workspaceCommands.observe = undefined;
   vi.unstubAllEnvs();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
 async function repositoryFixture(remote: string) {

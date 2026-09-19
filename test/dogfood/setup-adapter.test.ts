@@ -387,7 +387,11 @@ async function fixture() {
 
 afterEach(async () => {
   controlledGit.execute = undefined;
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
 });
 
 it("prepares three real portable Git worktrees and resumes without duplicate setup", async () => {

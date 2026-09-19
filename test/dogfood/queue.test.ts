@@ -1046,7 +1046,11 @@ async function loopFixture(
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
 });
 
 it.each(["pass", "saved-candidate", "lost-commit-inherited-retry", "review-fail", "malformed"])(
