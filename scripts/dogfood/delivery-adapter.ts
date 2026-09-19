@@ -527,7 +527,8 @@ async function assertWorktreeRepository(executable: string, config: DeliveryConf
       await git(executable, config, ["rev-parse", "--git-common-dir"]),
     ),
   );
-  for (const cwd of [config.repositoryRoot, config.worktree, config.reviewWorktree]) {
+  await assertGitTarget(executable, config, config.repositoryRoot);
+  for (const cwd of [config.worktree, config.reviewWorktree]) {
     const selected = await realpath(
       resolve(cwd, await git(executable, config, ["rev-parse", "--git-common-dir"], cwd)),
     );
